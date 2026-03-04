@@ -16,7 +16,6 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
-	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -124,16 +123,9 @@ func run() error {
 	// Create REST API now that switcher and mixer exist.
 	api = control.NewAPI(sw, control.WithMixer(mixer))
 
-	// Wire AFV: when program source changes, update mixer channel states.
-	// This must be registered BEFORE the controlPub callback so AFV state
-	// is correct before the state snapshot is broadcast.
-	sw.OnStateChange(func(state internal.ControlRoomState) {
-		if state.ProgramSource != "" {
-			mixer.OnProgramChange(state.ProgramSource)
-		}
-	})
-
 	// Wire state publisher and health monitor.
+	// Note: AFV program changes and crossfade are wired automatically via
+	// SetMixer (Switcher calls OnProgramChange/OnCut during Cut).
 	sw.OnStateChange(controlPub.Publish)
 	sw.StartHealthMonitor(1 * time.Second)
 

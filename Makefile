@@ -1,4 +1,4 @@
-.PHONY: build test lint dev ui-install ui-dev ui-build ui-test ui-e2e test-all
+.PHONY: build test lint dev ui-install ui-dev ui-build ui-test ui-e2e test-all sync-prism-ts
 
 # Go server
 build:
@@ -33,3 +33,18 @@ dev: build
 	@echo "Start Go server: ./bin/switchframe"
 	@echo "Start UI dev server: cd ui && npm run dev"
 	@echo "UI proxies /api to Go server"
+
+# Prism TS vendor sync
+PRISM_TS_SRC ?= ../prism/web/src
+PRISM_TS_DST := ui/src/lib/prism
+
+sync-prism-ts:
+	@if [ ! -d "$(PRISM_TS_SRC)" ]; then \
+		echo "Error: Prism source not found at $(PRISM_TS_SRC)"; \
+		echo "Set PRISM_TS_SRC to the Prism web/src directory"; \
+		exit 1; \
+	fi
+	@echo "Diffing vendored Prism TS against $(PRISM_TS_SRC)..."
+	@diff -rq "$(PRISM_TS_SRC)" "$(PRISM_TS_DST)" \
+		--exclude="main.ts" --exclude="lib.ts" --exclude="index.ts" \
+		|| echo "\nFiles differ. Review changes and copy manually if needed."

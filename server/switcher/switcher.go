@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
@@ -20,6 +21,12 @@ type audioStateProvider interface {
 	ProgramPeak() [2]float64
 	ChannelStates() map[string]internal.AudioChannel
 	MasterLevel() float64
+}
+
+// audioCutHandler is called during a cut to trigger audio crossfade.
+type audioCutHandler interface {
+	OnCut(oldSource, newSource string)
+	OnProgramChange(newProgramSource string)
 }
 
 // sourceState tracks a registered source and its Relay/viewer pair.
@@ -45,6 +52,7 @@ type Switcher struct {
 	health         *healthMonitor
 	audioHandler   func(sourceKey string, frame *media.AudioFrame)
 	mixer          audioStateProvider
+	audioCut       audioCutHandler
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -61,11 +69,16 @@ func New(programRelay *distribution.Relay) *Switcher {
 
 // SetMixer attaches an audio mixer to the switcher for state broadcasts.
 // When set, buildStateLocked will include audio channel states, master level,
-// and program peak levels in the ControlRoomState.
+// and program peak levels in the ControlRoomState. If the mixer also implements
+// audioCutHandler, crossfade and AFV program changes are triggered automatically
+// on Cut().
 func (s *Switcher) SetMixer(m audioStateProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mixer = m
+	if handler, ok := m.(audioCutHandler); ok {
+		s.audioCut = handler
+	}
 }
 
 // Close stops the health monitor and unregisters all sources.
@@ -139,8 +152,12 @@ func (s *Switcher) UnregisterSource(key string) {
 // Cut performs a hard cut to the named source, making it the program output.
 // The previous program source is automatically moved to preview. If the
 // source is already on program, Cut is a no-op (Seq is not incremented).
+// When an audioCutHandler (mixer) is attached, Cut triggers an audio crossfade
+// and AFV program change automatically.
 func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var snapshot internal.ControlRoomState
+	var oldProgram string
+	var audioCut audioCutHandler
 	changed := false
 
 	s.mu.Lock()
@@ -149,12 +166,13 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		return fmt.Errorf("source %q not found", sourceKey)
 	}
 	if s.programSource != sourceKey {
-		oldProgram := s.programSource
+		oldProgram = s.programSource
 		s.programSource = sourceKey
 		s.sources[sourceKey].pendingIDR = true
 		if oldProgram != "" {
 			s.previewSource = oldProgram
 		}
+		audioCut = s.audioCut
 		s.seq++
 		snapshot = s.buildStateLocked()
 		changed = true
@@ -162,6 +180,13 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Unlock()
 
 	if changed {
+		// Notify mixer of program change (AFV + crossfade) outside the lock.
+		if audioCut != nil {
+			if oldProgram != "" {
+				audioCut.OnCut(oldProgram, sourceKey)
+			}
+			audioCut.OnProgramChange(sourceKey)
+		}
 		s.notifyStateChange(snapshot)
 	}
 	return nil
@@ -281,17 +306,27 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey)
 
-	s.mu.Lock()
+	// Fast path: RLock for steady-state (pendingIDR is false most of the time).
+	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
 	if !ok || s.programSource != sourceKey {
-		s.mu.Unlock()
+		s.mu.RUnlock()
 		return
 	}
+	if !ss.pendingIDR {
+		s.mu.RUnlock()
+		s.programRelay.BroadcastVideo(frame)
+		return
+	}
+	s.mu.RUnlock()
+
+	// Slow path: pendingIDR is true. Need write lock to clear it.
+	if !frame.IsKeyframe {
+		return
+	}
+	s.mu.Lock()
+	// Re-check under write lock (another goroutine may have cleared it).
 	if ss.pendingIDR {
-		if !frame.IsKeyframe {
-			s.mu.Unlock()
-			return
-		}
 		ss.pendingIDR = false
 	}
 	s.mu.Unlock()
@@ -304,6 +339,8 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 // Otherwise, only the current program source's audio is forwarded to the
 // program Relay, gated along with video until the first keyframe after a cut.
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
+	s.health.recordFrame(sourceKey)
+
 	s.mu.RLock()
 	handler := s.audioHandler
 	ss, ok := s.sources[sourceKey]
@@ -321,4 +358,19 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 		return
 	}
 	s.programRelay.BroadcastAudio(frame)
+}
+
+// handleCaptionFrame implements frameHandler. Only the current program
+// source's captions are forwarded to the program Relay, gated by the
+// same pendingIDR flag as video/audio.
+func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
+	s.mu.RLock()
+	ss, ok := s.sources[sourceKey]
+	isProgram := ok && s.programSource == sourceKey && !ss.pendingIDR
+	s.mu.RUnlock()
+
+	if !isProgram {
+		return
+	}
+	s.programRelay.BroadcastCaptions(frame)
 }

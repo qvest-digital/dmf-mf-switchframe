@@ -1,28 +1,19 @@
 # Tech Debt & Deferred Review Findings
 
-Captured from Phase 1 and Phase 2 code reviews. Address these before or during the relevant phase.
+Captured from Phase 1, Phase 2, and Phase 3 code reviews. Address these before or during the relevant phase.
 
 ## Performance
 
-### Write lock on video hot path
-- **File:** `server/switcher/switcher.go` `handleVideoFrame()`
-- **Issue:** Uses `mu.Lock()` (write lock) on every program-source video frame to check/clear `pendingIDR`. After the first keyframe, `pendingIDR` is always false, so we only need `mu.RLock()` on the steady-state path.
-- **Fix:** Check `pendingIDR` under RLock first. Only upgrade to write lock when clearing it (once per cut). Reduces contention at high frame rates (60fps+) with many sources.
-- **Priority:** Low. At 30fps, lock hold time is nanoseconds. Revisit if profiling shows contention.
+### ~~Write lock on video hot path~~ RESOLVED
+- **Resolution:** `handleVideoFrame` now uses RLock fast path for steady-state. Write lock only acquired when clearing `pendingIDR` (once per cut).
 
 ## Correctness
 
-### health.recordFrame only called for video, not audio
-- **File:** `server/switcher/switcher.go` `handleVideoFrame()` line ~210
-- **Issue:** `health.recordFrame()` is only called from `handleVideoFrame`, not `handleAudioFrame`. Audio-only sources (if they ever exist) would always show as offline.
-- **Fix:** Call `health.recordFrame()` in `handleAudioFrame()` too.
-- **Priority:** Low. No audio-only sources exist in Phase 1.
+### ~~health.recordFrame only called for video, not audio~~ RESOLVED
+- **Resolution:** `handleAudioFrame` now calls `health.recordFrame(sourceKey)` at the top, matching `handleVideoFrame`.
 
-### Caption passthrough missing
-- **File:** `server/switcher/source_viewer.go` `SendCaptions()`
-- **Issue:** Captions are counted but dropped. In production (FCC compliance for US broadcasts), captions from the program source should be forwarded like audio.
-- **Fix:** Add `handleCaptionFrame` to `frameHandler` interface, forward from program source in Switcher.
-- **Priority:** Medium. Address before any deployment where captions are expected.
+### ~~Caption passthrough missing~~ RESOLVED
+- **Resolution:** Added `handleCaptionFrame` to `frameHandler` interface. `sourceViewer.SendCaptions` forwards to handler. `Switcher.handleCaptionFrame` forwards program source captions to program Relay, gated by `pendingIDR`.
 
 ## Design
 
@@ -35,7 +26,7 @@ Captured from Phase 1 and Phase 2 code reviews. Address these before or during t
 ### Transition endpoint returns 501
 - **File:** `server/control/api.go` `handleTransition()`
 - **Issue:** Mix/wipe transitions are not yet implemented. The endpoint returns 501 Not Implemented.
-- **Fix:** Implement transition state machine in Phase 3/4.
+- **Fix:** Implement transition state machine in Phase 4.
 - **Priority:** Medium. Phase 4 feature.
 
 ### ~~No context.Context on Switcher methods~~ RESOLVED in Phase 3
@@ -46,30 +37,21 @@ Captured from Phase 1 and Phase 2 code reviews. Address these before or during t
 
 ## Testing
 
-### time.Sleep in integration tests
-- **File:** `server/switcher/integration_test.go`
-- **Issue:** Uses `time.Sleep(10ms)` to wait for frame delivery. The frame path is fully synchronous (Relay -> sourceViewer -> Switcher -> programRelay -> viewer), so sleeps are unnecessary. If the path ever becomes async, they'll be flaky.
-- **Fix:** Remove sleeps (path is sync) or replace with channels/polling with deadlines.
-- **Priority:** Low. Tests pass reliably today.
+### ~~time.Sleep in integration tests~~ RESOLVED
+- **Resolution:** Removed all `time.Sleep(10ms)` calls from integration tests. Frame path is fully synchronous (Relay → sourceViewer → Switcher → programRelay → viewer), so no async waits needed.
 
 ## JSON/API
 
-### ControlRoomState zero-valued fields in JSON
-- **File:** `server/internal/types.go`
-- **Issue:** Fields like `TransitionDurationMs`, `TransitionPosition`, `InTransition`, `AudioLevels` are always zero-valued in Phase 1. Every JSON response includes them as `0`/`false`/`null`.
-- **Fix:** Add `omitempty` to future-phase fields. Be careful with `bool` (false is "empty" in Go).
-- **Priority:** Low. A few extra bytes per response.
+### ~~ControlRoomState zero-valued fields in JSON~~ RESOLVED
+- **Resolution:** Added `omitempty` to `TransitionDurationMs`, `TransitionPosition`, `InTransition`, and `AudioLevels` fields in `ControlRoomState`.
 
 ## Phase 2 — Frontend
 
 ### ~~REST polling fallback instead of MoQ~~ RESOLVED in Phase 3
 - **Resolution:** WebTransport connection manager with automatic MoQ state sync. REST polling kept as automatic fallback when WebTransport unavailable.
 
-### Vendored Prism TS files need sync strategy
-- **File:** `ui/src/lib/prism/` (35+ files)
-- **Issue:** Prism TypeScript modules are copied wholesale into the Switchframe repo. When Prism's TS source changes, the vendored copy must be manually updated. No automated diffing or version tracking exists.
-- **Fix:** Add a sync script or Makefile target that diffs `ui/src/lib/prism/` against Prism's source directory and reports changes. Consider git submodule or npm package for Prism's TS client.
-- **Priority:** Low for now (Prism TS API is stable). Will matter when Prism ships breaking changes.
+### ~~Vendored Prism TS files need sync strategy~~ RESOLVED
+- **Resolution:** Added `make sync-prism-ts` Makefile target that diffs `ui/src/lib/prism/` against Prism's `web/src/` directory and reports changes. Configurable via `PRISM_TS_SRC` variable.
 
 ### ~~MoQ video playback not wired~~ RESOLVED in Phase 3
 - **Resolution:** Video playback manager connects MoQ subscriptions to decoders. Canvas elements added to multiview tiles and program/preview windows for live video rendering.
@@ -78,15 +60,12 @@ Captured from Phase 1 and Phase 2 code reviews. Address these before or during t
 
 ### FDK AAC cgo bindings require system library
 - **File:** `server/audio/fdk_cgo.go`, `fdk_decoder.go`, `fdk_encoder.go`
-- **Issue:** Direct cgo bindings to system `fdk-aac` library. Requires `fdk-aac` installed via Homebrew (macOS) or apt (Linux). No pure-Go fallback.
-- **Fix:** Document build requirements. Consider build tags to allow compile without cgo for development/testing.
+- **Issue:** Direct cgo bindings to system `fdk-aac` library via pkg-config. Requires `fdk-aac` installed via Homebrew (macOS) or apt (Linux). No pure-Go fallback.
+- **Fix:** Consider build tags to allow compile without cgo for development/testing.
 - **Priority:** Low. All target deployments will have fdk-aac available.
 
-### Audio crossfade not wired to production code path
-- **File:** `server/audio/mixer.go`, `server/switcher/switcher.go`
-- **Issue:** `OnCut(oldSource, newSource)` is implemented and tested but never called from `Switcher.Cut()`. Audio cuts are abrupt (no equal-power crossfade ramp). Additionally, `OnProgramChange` sets crossfade state internally but the crossfade requires both old and new source to deliver frames. If the old source stops sending (SRT disconnect), the crossfade hangs with no timeout.
-- **Fix:** (1) Call `mixer.OnCut(oldProgram, newProgram)` from `Switcher.Cut()`. (2) Add a ~50ms timeout to crossfade state — if the outgoing source doesn't deliver, complete the transition without crossfade.
-- **Priority:** Medium. Crossfade is implemented but not active in production.
+### ~~Audio crossfade not wired to production code path~~ RESOLVED
+- **Resolution:** `Switcher.Cut()` now auto-calls `mixer.OnCut(oldProgram, newProgram)` and `mixer.OnProgramChange(newProgram)` via the `audioCutHandler` interface. Added 50ms crossfade timeout — if the outgoing source stops delivering frames, the crossfade completes with only the incoming source's audio.
 
 ### PFL manager is stub-only
 - **File:** `ui/src/lib/audio/pfl.ts`

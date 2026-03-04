@@ -14,6 +14,7 @@ import (
 type frameHandler interface {
 	handleVideoFrame(sourceKey string, frame *media.VideoFrame)
 	handleAudioFrame(sourceKey string, frame *media.AudioFrame)
+	handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame)
 }
 
 // sourceViewer implements distribution.Viewer and acts as a proxy that
@@ -58,10 +59,10 @@ func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.handler.handleAudioFrame(sv.sourceKey, frame)
 }
 
-// SendCaptions counts caption frames but does not forward them (captions
-// are not switched in the current design).
-func (sv *sourceViewer) SendCaptions(_ *ccx.CaptionFrame) {
+// SendCaptions forwards a caption frame to the handler tagged with the source key.
+func (sv *sourceViewer) SendCaptions(frame *ccx.CaptionFrame) {
 	sv.captionSent.Add(1)
+	sv.handler.handleCaptionFrame(sv.sourceKey, frame)
 }
 
 // Stats returns delivery metrics for this source viewer.

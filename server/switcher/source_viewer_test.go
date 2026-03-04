@@ -4,14 +4,21 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 )
 
 type mockFrameHandler struct {
-	mu     sync.Mutex
-	videos []videoFrameWithSource
-	audios []audioFrameWithSource
+	mu       sync.Mutex
+	videos   []videoFrameWithSource
+	audios   []audioFrameWithSource
+	captions []captionFrameWithSource
+}
+
+type captionFrameWithSource struct {
+	sourceKey string
+	frame     *ccx.CaptionFrame
 }
 
 type videoFrameWithSource struct {
@@ -34,6 +41,12 @@ func (m *mockFrameHandler) handleAudioFrame(sourceKey string, frame *media.Audio
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audios = append(m.audios, audioFrameWithSource{sourceKey, frame})
+}
+
+func (m *mockFrameHandler) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.captions = append(m.captions, captionFrameWithSource{sourceKey, frame})
 }
 
 func TestSourceViewerImplementsViewer(t *testing.T) {

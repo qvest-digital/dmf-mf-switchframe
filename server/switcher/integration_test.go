@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
@@ -52,11 +51,7 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	cam2Frame := &media.VideoFrame{PTS: 2000, IsKeyframe: true, WireData: []byte{0x02}}
 	cam2Relay.BroadcastVideo(cam2Frame)
 
-	// Give time for any asynchronous delivery (currently synchronous, but
-	// this guards against future changes).
-	time.Sleep(10 * time.Millisecond)
-
-	// Only camera1 frame should arrive at program.
+	// Only camera1 frame should arrive at program (path is synchronous).
 	capture.mu.Lock()
 	if len(capture.videos) != 1 {
 		t.Fatalf("got %d program frames, want 1", len(capture.videos))
@@ -78,8 +73,6 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	// Send frame from camera1 (no longer on program).
 	cam1Frame2 := &media.VideoFrame{PTS: 4000, IsKeyframe: true, WireData: []byte{0x04}}
 	cam1Relay.BroadcastVideo(cam1Frame2)
-
-	time.Sleep(10 * time.Millisecond)
 
 	capture.mu.Lock()
 	if len(capture.videos) != 2 {
@@ -125,8 +118,6 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	audio2 := &media.AudioFrame{PTS: 200, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
 	cam2Relay.BroadcastAudio(audio2)
 
-	time.Sleep(10 * time.Millisecond)
-
 	capture.mu.Lock()
 	if len(capture.audios) != 1 {
 		t.Fatalf("got %d audio frames, want 1", len(capture.audios))
@@ -153,7 +144,6 @@ func TestProgramRelayFromPrismServer(t *testing.T) {
 
 	// Send keyframe — should flow through switcher to program relay viewer.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}})
-	time.Sleep(10 * time.Millisecond)
 
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.videos), "frame should reach MoQ viewer via program relay")
@@ -179,7 +169,6 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 
 	// This frame should not forward (viewer was removed from relay).
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 5000, IsKeyframe: true})
-	time.Sleep(10 * time.Millisecond)
 
 	state := sw.State()
 	if state.ProgramSource != "" {
@@ -211,7 +200,6 @@ func TestIntegrationAudioWithMixerHandler(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
 
 	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
-	time.Sleep(10 * time.Millisecond)
 
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.audios))
@@ -248,9 +236,8 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 	mixer.AddChannel("cam1")
 	require.NoError(t, mixer.SetAFV("cam1", true))
 
-	// Cut to cam1 — AFV activates it.
+	// Cut to cam1 — AFV activates it (Switcher auto-calls OnProgramChange).
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	mixer.OnProgramChange("cam1")
 
 	// Clear IDR gate.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
@@ -260,7 +247,6 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 
 	// Send audio — should pass through to program relay.
 	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
-	time.Sleep(10 * time.Millisecond)
 
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.audios), "audio should reach program via passthrough")
@@ -300,9 +286,8 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	require.NoError(t, mixer.SetAFV("cam1", true))
 	require.NoError(t, mixer.SetAFV("cam2", true))
 
-	// Cut to cam1.
+	// Cut to cam1 (Switcher auto-calls OnProgramChange + OnCut).
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	mixer.OnProgramChange("cam1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("cam1"))
@@ -310,15 +295,13 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 
 	// Send audio from cam1 (active) — should arrive.
 	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
-	time.Sleep(10 * time.Millisecond)
 
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.audios))
 	capture.mu.Unlock()
 
-	// Cut to cam2 — cam2 activates, cam1 deactivates.
+	// Cut to cam2 — cam2 activates, cam1 deactivates (auto-wired).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
-	mixer.OnProgramChange("cam2")
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 150, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("cam2"))

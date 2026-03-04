@@ -4,10 +4,16 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
 )
+
+// crossfadeTimeout is the maximum time to wait for both sources to deliver
+// frames during a crossfade. If the outgoing source disconnects, the crossfade
+// completes with only the incoming source's audio after this deadline.
+const crossfadeTimeout = 50 * time.Millisecond
 
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
@@ -47,10 +53,11 @@ type AudioMixer struct {
 	mixCycleSize int                  // how many active unmuted channels expected
 
 	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
-	crossfadeFrom   string // outgoing source key
-	crossfadeTo     string // incoming source key
-	crossfadeActive bool
-	crossfadePCM    map[string][]float32 // "from" and "to" PCM buffers
+	crossfadeFrom     string               // outgoing source key
+	crossfadeTo       string               // incoming source key
+	crossfadeActive   bool
+	crossfadePCM      map[string][]float32 // "from" and "to" PCM buffers
+	crossfadeDeadline time.Time            // timeout for crossfade completion
 
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
@@ -191,7 +198,8 @@ func (m *AudioMixer) OnProgramChange(newProgramSource string) {
 }
 
 // OnCut initiates a one-frame equal-power crossfade between old and new source.
-// Called by the switcher when a cut occurs.
+// Called by the switcher when a cut occurs. A timeout ensures the crossfade
+// completes even if the outgoing source stops sending frames.
 func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -199,6 +207,7 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.crossfadeTo = newSource
 	m.crossfadeActive = true
 	m.crossfadePCM = make(map[string][]float32)
+	m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
 }
 
 // IsPassthrough returns whether the mixer is in passthrough mode.
@@ -214,10 +223,24 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	crossfadeActive := m.crossfadeActive
 	crossfadeFrom := m.crossfadeFrom
 	crossfadeTo := m.crossfadeTo
+	crossfadeDeadline := m.crossfadeDeadline
 	m.mu.RUnlock()
 
-	// Handle crossfade mode
-	if crossfadeActive && (sourceKey == crossfadeFrom || sourceKey == crossfadeTo) {
+	isParticipant := sourceKey == crossfadeFrom || sourceKey == crossfadeTo
+
+	// Cancel expired crossfade if a non-participant source triggers it
+	if crossfadeActive && !isParticipant && !crossfadeDeadline.IsZero() && time.Now().After(crossfadeDeadline) {
+		m.mu.Lock()
+		if m.crossfadeActive {
+			m.crossfadeActive = false
+			m.crossfadePCM = nil
+		}
+		m.mu.Unlock()
+		crossfadeActive = false
+	}
+
+	// Handle crossfade mode (participants route here; timeout handled inside)
+	if crossfadeActive && isParticipant {
 		m.ingestCrossfadeFrame(sourceKey, frame)
 		return
 	}
@@ -407,16 +430,30 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 
 	m.crossfadePCM[sourceKey] = gainedPCM
 
-	// Wait for both sources
+	// Wait for both sources (with timeout)
 	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
 	_, hasTo := m.crossfadePCM[m.crossfadeTo]
-	if !hasFrom || !hasTo {
+	timedOut := !m.crossfadeDeadline.IsZero() && time.Now().After(m.crossfadeDeadline)
+	if !hasFrom && !hasTo {
+		m.mu.Unlock()
+		return
+	}
+	if (!hasFrom || !hasTo) && !timedOut {
 		m.mu.Unlock()
 		return
 	}
 
-	// Apply equal-power crossfade
-	mixed := EqualPowerCrossfade(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo])
+	// Apply equal-power crossfade (or use single source if timed out)
+	var mixed []float32
+	if hasFrom && hasTo {
+		mixed = EqualPowerCrossfade(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo])
+	} else if hasTo {
+		// Outgoing source timed out — use incoming source only
+		mixed = m.crossfadePCM[m.crossfadeTo]
+	} else {
+		// Incoming source timed out — use outgoing source only (unusual)
+		mixed = m.crossfadePCM[m.crossfadeFrom]
+	}
 
 	// Apply master gain
 	masterGain := float32(DBToLinear(m.masterLevel))

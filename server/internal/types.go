@@ -44,10 +44,10 @@ type ControlRoomState struct {
 	ProgramSource        string                    `json:"programSource"`
 	PreviewSource        string                    `json:"previewSource"`
 	TransitionType       string                    `json:"transitionType"`
-	TransitionDurationMs int                       `json:"transitionDurationMs"`
-	TransitionPosition   float64                   `json:"transitionPosition"`
-	InTransition         bool                      `json:"inTransition"`
-	AudioLevels          map[string]float64        `json:"audioLevels"`
+	TransitionDurationMs int                       `json:"transitionDurationMs,omitempty"`
+	TransitionPosition   float64                   `json:"transitionPosition,omitempty"`
+	InTransition         bool                      `json:"inTransition,omitempty"`
+	AudioLevels          map[string]float64        `json:"audioLevels,omitempty"`
 	AudioChannels        map[string]AudioChannel   `json:"audioChannels"`
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`

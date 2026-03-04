@@ -422,6 +422,50 @@ func TestMixerCrossfadeClears(t *testing.T) {
 	require.False(t, active, "crossfade should be cleared after completion")
 }
 
+func TestMixerCrossfadeTimeout(t *testing.T) {
+	// When the outgoing source disconnects, the crossfade should complete
+	// after the timeout with only the incoming source's audio.
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.5, 0.3, 0.3}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Trigger crossfade with immediate deadline (expired)
+	m.OnCut("cam1", "cam2")
+	m.mu.Lock()
+	m.crossfadeDeadline = m.crossfadeDeadline.Add(-crossfadeTimeout * 2) // force expiry
+	m.mu.Unlock()
+
+	// Only the incoming source delivers a frame — outgoing timed out
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames), "should produce output with only incoming source after timeout")
+
+	// Crossfade should be cleared
+	m.mu.RLock()
+	active := m.crossfadeActive
+	m.mu.RUnlock()
+	require.False(t, active, "crossfade should be cleared after timeout completion")
+}
+
 func TestMixerSetAFV(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
