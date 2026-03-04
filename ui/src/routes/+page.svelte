@@ -61,6 +61,54 @@
 	// Media pipeline for MoQ video/audio decode
 	const pipeline = createMediaPipeline();
 
+	function handleDebugDump(e: KeyboardEvent) {
+		if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
+			e.preventDefault();
+			exportDebugSnapshot();
+		}
+	}
+
+	async function exportDebugSnapshot() {
+		const frontend = { sources: await pipeline.getAllDiagnostics() };
+
+		let backend: Record<string, unknown> | null = null;
+		try {
+			const resp = await fetch('/api/debug/snapshot');
+			if (resp.ok) backend = await resp.json();
+		} catch { /* ignore */ }
+
+		const snapshot = {
+			timestamp: new Date().toISOString(),
+			frontend,
+			backend,
+		};
+
+		const json = JSON.stringify(snapshot, null, 2);
+		try {
+			await navigator.clipboard.writeText(json);
+			flashMessage('Debug snapshot copied to clipboard');
+		} catch {
+			console.log('=== SWITCHFRAME DEBUG SNAPSHOT ===');
+			console.log(json);
+			flashMessage('Debug snapshot logged to console');
+		}
+	}
+
+	function flashMessage(msg: string) {
+		const badge = document.createElement('div');
+		Object.assign(badge.style, {
+			position: 'fixed', bottom: '20px', left: '50%',
+			transform: 'translateX(-50%)', background: 'rgba(0,200,100,0.9)',
+			color: '#fff', padding: '8px 20px', borderRadius: '6px',
+			fontFamily: "'SF Mono', monospace", fontSize: '13px',
+			zIndex: '99999', transition: 'opacity 0.5s',
+		});
+		badge.textContent = msg;
+		document.body.appendChild(badge);
+		setTimeout(() => { badge.style.opacity = '0'; }, 1500);
+		setTimeout(() => badge.remove(), 2000);
+	}
+
 	// Track which sources are connected to avoid duplicate work
 	let connectedSources = new Set<string>();
 	// Track which canvases are attached
@@ -205,6 +253,7 @@
 
 	onMount(async () => {
 		keyboard.attach();
+		document.addEventListener('keydown', handleDebugDump);
 		mounted = true;
 
 		// Initial state fetch via REST
@@ -224,6 +273,7 @@
 
 	onDestroy(() => {
 		keyboard.detach();
+		document.removeEventListener('keydown', handleDebugDump);
 		stopPolling();
 		connection.disconnect();
 		pipeline.destroy();

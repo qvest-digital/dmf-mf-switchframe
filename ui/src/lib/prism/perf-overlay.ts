@@ -118,9 +118,8 @@ export class PerfOverlay {
 	}
 
 	private async fetchServerDebug(): Promise<Record<string, unknown> | null> {
-		if (!this.streamKey) return null;
 		try {
-			const resp = await fetch(`/api/streams/${encodeURIComponent(this.streamKey)}/debug`);
+			const resp = await fetch('/api/debug/snapshot');
 			if (!resp.ok) return null;
 			return await resp.json();
 		} catch {
