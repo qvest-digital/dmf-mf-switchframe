@@ -13,7 +13,10 @@ import (
 
 	"github.com/zsiec/prism/certs"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -39,10 +42,11 @@ func run() error {
 		"fingerprint", cert.FingerprintBase64(),
 		"expires", cert.NotAfter.Format(time.RFC3339))
 
-	// Deferred pointer: closures below capture sw before it's assigned.
-	// Safe because OnStreamRegistered is only called when external SRT
-	// sources connect (after server.Start()), by which time sw is set.
+	// Deferred pointers: closures below capture sw/mixer before they're
+	// assigned. Safe because OnStreamRegistered is only called when external
+	// SRT sources connect (after server.Start()), by which time both are set.
 	var sw *switcher.Switcher
+	var mixer *audio.AudioMixer
 
 	// Create channel-based state publisher for MoQ control track.
 	controlPub := control.NewChannelPublisher(16)
@@ -67,6 +71,7 @@ func run() error {
 			}
 			slog.Info("stream registered, adding source", "key", key)
 			sw.RegisterSource(key, relay)
+			mixer.AddChannel(key)
 		},
 		OnStreamUnregistered: func(key string) {
 			if key == "program" {
@@ -74,6 +79,7 @@ func run() error {
 			}
 			slog.Info("stream unregistered, removing source", "key", key)
 			sw.UnregisterSource(key)
+			mixer.RemoveChannel(key)
 		},
 		ControlCh: controlPub.Ch(),
 	}
@@ -86,12 +92,38 @@ func run() error {
 	// Get Prism's relay for "program" — MoQ viewers subscribe to this.
 	programRelay := server.RegisterStream("program")
 
+	// Create audio mixer — sends mixed audio to the program relay.
+	mixer = audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			programRelay.BroadcastAudio(frame)
+		},
+	})
+	defer mixer.Close()
+
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	sw = switcher.New(programRelay)
 	defer sw.Close()
 
-	// Create REST API now that switcher exists.
-	api = control.NewAPI(sw)
+	// Wire audio mixer to the switcher: all source audio flows through the
+	// mixer instead of being forwarded directly from the program source.
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mixer.IngestFrame(sourceKey, frame)
+	})
+	sw.SetMixer(mixer)
+
+	// Create REST API now that switcher and mixer exist.
+	api = control.NewAPI(sw, control.WithMixer(mixer))
+
+	// Wire AFV: when program source changes, update mixer channel states.
+	// This must be registered BEFORE the controlPub callback so AFV state
+	// is correct before the state snapshot is broadcast.
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		if state.ProgramSource != "" {
+			mixer.OnProgramChange(state.ProgramSource)
+		}
+	})
 
 	// Wire state publisher and health monitor.
 	sw.OnStateChange(controlPub.Publish)
