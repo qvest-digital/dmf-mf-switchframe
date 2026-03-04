@@ -17,7 +17,7 @@ Thumbs.db
 .env
 .env.local
 
-# Recordings
+# Recordings (MPEG-TS and MP4 video files)
 recordings/
 *.mp4
-*.ts
+*.mts
