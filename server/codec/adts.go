@@ -13,9 +13,8 @@ func IsADTS(data []byte) bool {
 
 // BuildADTS constructs a 7-byte ADTS header for an AAC-LC frame.
 //
-// The header assumes MPEG-4 (ID=0), AAC-LC profile (profile=1, stored
-// as profile-1=0 in the 2-bit objectType field), no CRC (protection
-// absent=1).
+// The header assumes MPEG-4 (ID=0), AAC-LC (audioObjectType=2, ADTS
+// profile field=objectType-1=1), no CRC (protection absent=1).
 //
 // Frame length in the header includes the 7-byte header itself.
 //
