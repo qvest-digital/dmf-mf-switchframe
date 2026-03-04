@@ -319,3 +319,105 @@ func TestMixerMutedChannelInMixMode(t *testing.T) {
 		require.InDelta(t, 0.5, s, 0.001, "sample %d: only cam1 should contribute", i)
 	}
 }
+
+func TestMixerOnCutCrossfade(t *testing.T) {
+	// OnCut triggers a crossfade from old source to new source.
+	// During crossfade, old source PCM fades out, new source fades in.
+	var allCapturedPCM [][]float32
+	var outputFrames []*media.AudioFrame
+
+	oldPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	newPCM := []float32{0.0, 0.0, 0.0, 0.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			var captured []float32
+			allCapturedPCM = append(allCapturedPCM, captured)
+			idx := len(allCapturedPCM) - 1
+			return &mockEncoderCapture{pcmRef: &allCapturedPCM[idx]}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Set up decoders with known PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: newPCM}
+	m.mu.Unlock()
+
+	// Trigger crossfade: cam1 → cam2
+	m.OnCut("cam1", "cam2")
+
+	// During crossfade, both old and new source frames should be accepted
+	// even though cam2 might not be "active" yet from the perspective of the channels
+	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame2 := &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+
+	m.IngestFrame("cam1", frame1) // outgoing source
+	m.IngestFrame("cam2", frame2) // incoming source
+
+	require.Equal(t, 1, len(outputFrames), "crossfade should produce one output frame")
+
+	// The crossfaded PCM: at start old=1.0, new=0.0
+	// EqualPowerCrossfade: result[0] = 1.0*cos(0) + 0.0*sin(0) = 1.0
+	// result[3] = 1.0*cos(3/4·π/2) + 0.0*sin(3/4·π/2) ≈ cos(3π/8) ≈ 0.383
+	// The crossfade output should be between 0 and 1 for all samples
+	lastPCM := allCapturedPCM[len(allCapturedPCM)-1]
+	require.Equal(t, 4, len(lastPCM))
+	require.InDelta(t, 1.0, lastPCM[0], 0.01, "first sample should be ~old")
+	// Last sample should be faded from old toward new
+	require.True(t, lastPCM[3] < lastPCM[0], "signal should be fading")
+}
+
+func TestMixerCrossfadeClears(t *testing.T) {
+	// After crossfade completes, subsequent frames go through normal mixing
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Trigger crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Complete the crossfade with one frame each
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames))
+
+	// After crossfade, verify it's cleared
+	m.mu.RLock()
+	active := m.crossfadeActive
+	m.mu.RUnlock()
+	require.False(t, active, "crossfade should be cleared after completion")
+}

@@ -44,6 +44,12 @@ type AudioMixer struct {
 	mixBuffer    map[string][]float32 // sourceKey → decoded PCM for current cycle
 	mixPTS       int64                // PTS of the current mix cycle
 	mixCycleSize int                  // how many active unmuted channels expected
+
+	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
+	crossfadeFrom   string // outgoing source key
+	crossfadeTo     string // incoming source key
+	crossfadeActive bool
+	crossfadePCM    map[string][]float32 // "from" and "to" PCM buffers
 }
 
 // NewMixer creates an AudioMixer.
@@ -139,6 +145,17 @@ func (m *AudioMixer) SetMasterLevel(levelDB float64) {
 	m.recalcPassthrough()
 }
 
+// OnCut initiates a one-frame equal-power crossfade between old and new source.
+// Called by the switcher when a cut occurs.
+func (m *AudioMixer) OnCut(oldSource, newSource string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.crossfadeFrom = oldSource
+	m.crossfadeTo = newSource
+	m.crossfadeActive = true
+	m.crossfadePCM = make(map[string][]float32)
+}
+
 // IsPassthrough returns whether the mixer is in passthrough mode.
 func (m *AudioMixer) IsPassthrough() bool {
 	m.mu.RLock()
@@ -148,6 +165,18 @@ func (m *AudioMixer) IsPassthrough() bool {
 
 // IngestFrame processes an audio frame from a source.
 func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
+	m.mu.RLock()
+	crossfadeActive := m.crossfadeActive
+	crossfadeFrom := m.crossfadeFrom
+	crossfadeTo := m.crossfadeTo
+	m.mu.RUnlock()
+
+	// Handle crossfade mode
+	if crossfadeActive && (sourceKey == crossfadeFrom || sourceKey == crossfadeTo) {
+		m.ingestCrossfadeFrame(sourceKey, frame)
+		return
+	}
+
 	m.mu.RLock()
 	ch, ok := m.channels[sourceKey]
 	if !ok || !ch.active {
@@ -269,6 +298,97 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mixBuffer = make(map[string][]float32)
 
 	// Output the mixed frame
+	m.output(&media.AudioFrame{
+		PTS:        frame.PTS,
+		Data:       aacData,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
+	})
+}
+
+// ingestCrossfadeFrame handles frames during an active crossfade transition.
+// It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
+func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.crossfadeActive {
+		return
+	}
+
+	// Ensure decoder exists for this channel
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return
+	}
+	if ch.decoder == nil && m.config.DecoderFactory != nil {
+		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			return
+		}
+		ch.decoder = dec
+	}
+	if ch.decoder == nil {
+		return
+	}
+
+	// Decode
+	pcm, err := ch.decoder.Decode(frame.Data)
+	if err != nil {
+		return
+	}
+
+	// Apply per-channel gain
+	gain := float32(DBToLinear(ch.level))
+	gainedPCM := make([]float32, len(pcm))
+	for i, s := range pcm {
+		gainedPCM[i] = s * gain
+	}
+
+	m.crossfadePCM[sourceKey] = gainedPCM
+
+	// Wait for both sources
+	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
+	_, hasTo := m.crossfadePCM[m.crossfadeTo]
+	if !hasFrom || !hasTo {
+		return
+	}
+
+	// Apply equal-power crossfade
+	mixed := EqualPowerCrossfade(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo])
+
+	// Apply master gain
+	masterGain := float32(DBToLinear(m.masterLevel))
+	for i := range mixed {
+		mixed[i] *= masterGain
+	}
+
+	// Lazy-init encoder
+	if m.encoder == nil && m.config.EncoderFactory != nil {
+		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			m.crossfadeActive = false
+			return
+		}
+		m.encoder = enc
+	}
+	if m.encoder == nil {
+		m.crossfadeActive = false
+		return
+	}
+
+	// Encode
+	aacData, err := m.encoder.Encode(mixed)
+	if err != nil {
+		m.crossfadeActive = false
+		return
+	}
+
+	// Clear crossfade state
+	m.crossfadeActive = false
+	m.crossfadePCM = nil
+
+	// Output the crossfaded frame
 	m.output(&media.AudioFrame{
 		PTS:        frame.PTS,
 		Data:       aacData,
