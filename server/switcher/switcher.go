@@ -31,7 +31,7 @@ type Switcher struct {
 	previewSource string
 	programRelay  *distribution.Relay
 	seq           uint64
-	stateCallback func(internal.ControlRoomState)
+	stateCallbacks []func(internal.ControlRoomState)
 	health        *healthMonitor
 }
 
@@ -62,12 +62,13 @@ func (s *Switcher) Close() {
 }
 
 // OnStateChange registers a callback invoked whenever the switcher state
-// changes. The callback is called outside the lock so it may safely perform
-// slow operations (JSON marshal, network I/O).
+// changes. Multiple callbacks may be registered; they are called in order.
+// Callbacks are called outside the lock so they may safely perform slow
+// operations (JSON marshal, network I/O).
 func (s *Switcher) OnStateChange(cb func(internal.ControlRoomState)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stateCallback = cb
+	s.stateCallbacks = append(s.stateCallbacks, cb)
 }
 
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
@@ -194,11 +195,11 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 }
 
-// notifyStateChange calls the registered state callback, if any.
+// notifyStateChange calls all registered state callbacks.
 // Must be called WITHOUT holding s.mu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
-	if s.stateCallback != nil {
-		s.stateCallback(snapshot)
+	for _, cb := range s.stateCallbacks {
+		cb(snapshot)
 	}
 }
 

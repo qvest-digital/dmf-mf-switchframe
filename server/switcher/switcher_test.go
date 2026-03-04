@@ -4,6 +4,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
@@ -399,6 +400,29 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 	if state.Sources["camera1"].Status != internal.SourceHealthy {
 		t.Errorf("after frame: status = %q, want %q", state.Sources["camera1"].Status, internal.SourceHealthy)
 	}
+}
+
+func TestMultipleStateCallbacks(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	var count1, count2 int
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		count1++
+	})
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		count2++
+	})
+
+	relay := newTestRelay()
+	sw.RegisterSource("cam1", relay)
+	sw.RegisterSource("cam2", relay)
+	require.NoError(t, sw.Cut("cam1"))
+	require.NoError(t, sw.Cut("cam2"))
+
+	require.Equal(t, 2, count1, "first callback should fire twice")
+	require.Equal(t, 2, count2, "second callback should fire twice")
 }
 
 func TestSourceKeys(t *testing.T) {
