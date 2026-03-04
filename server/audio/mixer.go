@@ -38,6 +38,12 @@ type AudioMixer struct {
 	output      func(*media.AudioFrame)
 	passthrough bool
 	config      MixerConfig
+
+	// Mix accumulation state: tracks which active unmuted channels
+	// have contributed to the current mix cycle.
+	mixBuffer    map[string][]float32 // sourceKey → decoded PCM for current cycle
+	mixPTS       int64                // PTS of the current mix cycle
+	mixCycleSize int                  // how many active unmuted channels expected
 }
 
 // NewMixer creates an AudioMixer.
@@ -125,6 +131,14 @@ func (m *AudioMixer) SetMuted(sourceKey string, muted bool) error {
 	return nil
 }
 
+// SetMasterLevel sets the master output level in dB.
+func (m *AudioMixer) SetMasterLevel(levelDB float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.masterLevel = levelDB
+	m.recalcPassthrough()
+}
+
 // IsPassthrough returns whether the mixer is in passthrough mode.
 func (m *AudioMixer) IsPassthrough() bool {
 	m.mu.RLock()
@@ -153,7 +167,114 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	}
 	m.mu.RUnlock()
 
-	// Multi-channel mixing handled in Task 7
+	// Multi-channel mixing: decode, gain, accumulate, sum, encode
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Lazy-init decoder for this channel
+	if ch.decoder == nil && m.config.DecoderFactory != nil {
+		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			return
+		}
+		ch.decoder = dec
+	}
+	if ch.decoder == nil {
+		return
+	}
+
+	// Decode AAC → float32 PCM
+	pcm, err := ch.decoder.Decode(frame.Data)
+	if err != nil {
+		return
+	}
+
+	// Apply per-channel gain
+	gain := float32(DBToLinear(ch.level))
+	gainedPCM := make([]float32, len(pcm))
+	for i, s := range pcm {
+		gainedPCM[i] = s * gain
+	}
+
+	// Count active unmuted channels for this cycle
+	activeUnmuted := 0
+	for _, c := range m.channels {
+		if c.active && !c.muted {
+			activeUnmuted++
+		}
+	}
+
+	// Initialize mix buffer if needed (new cycle)
+	if m.mixBuffer == nil {
+		m.mixBuffer = make(map[string][]float32)
+	}
+
+	// If PTS changed or buffer is empty, start new cycle
+	if len(m.mixBuffer) > 0 && m.mixPTS != frame.PTS {
+		// PTS mismatch — flush old cycle and start fresh
+		m.mixBuffer = make(map[string][]float32)
+	}
+
+	m.mixPTS = frame.PTS
+	m.mixBuffer[sourceKey] = gainedPCM
+	m.mixCycleSize = activeUnmuted
+
+	// Check if all active unmuted channels have contributed
+	if len(m.mixBuffer) < activeUnmuted {
+		return // wait for more channels
+	}
+
+	// Sum all channel PCM buffers
+	var mixLen int
+	for _, buf := range m.mixBuffer {
+		if len(buf) > mixLen {
+			mixLen = len(buf)
+		}
+	}
+	mixed := make([]float32, mixLen)
+	for _, buf := range m.mixBuffer {
+		for i := 0; i < len(buf) && i < mixLen; i++ {
+			mixed[i] += buf[i]
+		}
+	}
+
+	// Apply master gain
+	masterGain := float32(DBToLinear(m.masterLevel))
+	for i := range mixed {
+		mixed[i] *= masterGain
+	}
+
+	// Lazy-init encoder
+	if m.encoder == nil && m.config.EncoderFactory != nil {
+		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			m.mixBuffer = make(map[string][]float32)
+			return
+		}
+		m.encoder = enc
+	}
+	if m.encoder == nil {
+		m.mixBuffer = make(map[string][]float32)
+		return
+	}
+
+	// Encode mixed PCM → AAC
+	aacData, err := m.encoder.Encode(mixed)
+	if err != nil {
+		m.mixBuffer = make(map[string][]float32)
+		return
+	}
+
+	// Reset mix buffer for next cycle
+	m.mixBuffer = make(map[string][]float32)
+
+	// Output the mixed frame
+	m.output(&media.AudioFrame{
+		PTS:        frame.PTS,
+		Data:       aacData,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
+	})
 }
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
