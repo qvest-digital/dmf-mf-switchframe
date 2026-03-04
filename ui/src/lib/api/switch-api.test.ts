@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack } from './switch-api';
 
 describe('switch-api', () => {
 	beforeEach(() => {
@@ -154,6 +154,57 @@ describe('Audio API', () => {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ level: -3.0 }),
+		});
+	});
+});
+
+describe('Transition API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('should call startTransition endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1, programSource: 'cam1', inTransition: true }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await startTransition('cam2', 'mix', 1000);
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/transition', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ source: 'cam2', type: 'mix', durationMs: 1000 }),
+		});
+	});
+
+	it('should call setTransitionPosition endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({}),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setTransitionPosition(0.5);
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/transition/position', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ position: 0.5 }),
+		});
+	});
+
+	it('should call fadeToBlack endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1, ftbActive: true }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await fadeToBlack();
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/ftb', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
 		});
 	});
 });

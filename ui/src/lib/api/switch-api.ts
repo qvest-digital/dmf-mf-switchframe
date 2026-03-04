@@ -63,6 +63,18 @@ export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }
 
+export function startTransition(source: string, type: string, durationMs: number): Promise<ControlRoomState> {
+	return post('/api/switch/transition', { source, type, durationMs });
+}
+
+export function setTransitionPosition(position: number): Promise<void> {
+	return post('/api/switch/transition/position', { position });
+}
+
+export function fadeToBlack(): Promise<ControlRoomState> {
+	return post('/api/switch/ftb', {});
+}
+
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
 export function fireAndForget(promise: Promise<unknown>): void {
 	promise.catch((err) => console.warn('API call failed:', err));
