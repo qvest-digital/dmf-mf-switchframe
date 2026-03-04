@@ -82,6 +82,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	viewer := newSourceViewer(key, s)
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
+	s.health.registerSource(key)
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -167,6 +168,16 @@ func (s *Switcher) SetLabel(sourceKey, label string) error {
 
 	s.notifyStateChange(snapshot)
 	return nil
+}
+
+// StartHealthMonitor begins periodic health checking at the given interval.
+// When any source's health status changes, a state snapshot is published
+// to all registered state-change callbacks.
+func (s *Switcher) StartHealthMonitor(interval time.Duration) {
+	s.health.start(interval, func() {
+		snapshot := s.State()
+		s.notifyStateChange(snapshot)
+	})
 }
 
 // State returns a snapshot of the current control room state.

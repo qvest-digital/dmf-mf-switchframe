@@ -1,9 +1,12 @@
 package switcher
 
 import (
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
 )
 
@@ -57,4 +60,49 @@ func TestHealthMonitorUnknownSource(t *testing.T) {
 		t.Errorf("status = %q, want %q", status, internal.SourceOffline)
 	}
 	hm.stop()
+}
+
+func TestProactiveHealthBroadcast(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	var mu sync.Mutex
+	var states []internal.ControlRoomState
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		mu.Lock()
+		states = append(states, state)
+		mu.Unlock()
+	})
+
+	relay := newTestRelay()
+	sw.RegisterSource("cam1", relay)
+	require.NoError(t, sw.Cut("cam1"))
+
+	// Send a keyframe so the source is initially healthy.
+	relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
+
+	// Clear recorded states from cut and frame activity.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	states = nil
+	mu.Unlock()
+
+	// Start health monitor with fast tick for testing.
+	sw.StartHealthMonitor(100 * time.Millisecond)
+
+	// Wait for source to become stale (>1s with no frames, per staleThreshold).
+	// The health monitor should detect this and publish state.
+	time.Sleep(1500 * time.Millisecond)
+
+	mu.Lock()
+	found := false
+	for _, s := range states {
+		if s.Sources["cam1"].Status == internal.SourceStale {
+			found = true
+			break
+		}
+	}
+	mu.Unlock()
+	require.True(t, found, "health monitor should broadcast state when source becomes stale")
 }
