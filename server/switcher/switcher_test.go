@@ -447,6 +447,86 @@ func TestSetLabel(t *testing.T) {
 	require.Error(t, err)
 }
 
+// mockAudioStateProvider implements audioStateProvider for testing.
+type mockAudioStateProvider struct {
+	programPeak   [2]float64
+	channelStates map[string]internal.AudioChannel
+	masterLevel   float64
+}
+
+func (m *mockAudioStateProvider) ProgramPeak() [2]float64 {
+	return m.programPeak
+}
+
+func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChannel {
+	return m.channelStates
+}
+
+func (m *mockAudioStateProvider) MasterLevel() float64 {
+	return m.masterLevel
+}
+
+func TestStateIncludesAudioFromMixer(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	relay := newTestRelay()
+	sw.RegisterSource("cam1", relay)
+
+	// Without mixer: audio fields should be zero/nil
+	state := sw.State()
+	require.Nil(t, state.AudioChannels)
+	require.Equal(t, 0.0, state.MasterLevel)
+	require.Equal(t, [2]float64{0, 0}, state.ProgramPeak)
+
+	// Attach a mock mixer
+	mock := &mockAudioStateProvider{
+		programPeak: [2]float64{-6.0, -12.0},
+		channelStates: map[string]internal.AudioChannel{
+			"cam1": {Level: -3.0, Muted: false, AFV: true},
+		},
+		masterLevel: -1.5,
+	}
+	sw.SetMixer(mock)
+
+	// With mixer: audio fields should be populated
+	state = sw.State()
+	require.Equal(t, [2]float64{-6.0, -12.0}, state.ProgramPeak)
+	require.Equal(t, -1.5, state.MasterLevel)
+	require.Len(t, state.AudioChannels, 1)
+	require.Equal(t, -3.0, state.AudioChannels["cam1"].Level)
+	require.True(t, state.AudioChannels["cam1"].AFV)
+}
+
+func TestSetMixerConcurrentSafe(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	relay := newTestRelay()
+	sw.RegisterSource("cam1", relay)
+
+	mock := &mockAudioStateProvider{
+		programPeak:   [2]float64{-6.0, -12.0},
+		channelStates: map[string]internal.AudioChannel{},
+		masterLevel:   0.0,
+	}
+
+	// SetMixer should be safe to call concurrently with State()
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			sw.SetMixer(mock)
+		}
+		close(done)
+	}()
+	for i := 0; i < 100; i++ {
+		_ = sw.State()
+	}
+	<-done
+}
+
 func TestSourceKeys(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)

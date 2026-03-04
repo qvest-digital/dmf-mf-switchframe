@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 // MixerConfig configures the AudioMixer.
@@ -50,6 +51,10 @@ type AudioMixer struct {
 	crossfadeTo     string // incoming source key
 	crossfadeActive bool
 	crossfadePCM    map[string][]float32 // "from" and "to" PCM buffers
+
+	// Metering state
+	programPeakL float64 // linear amplitude [0,1]
+	programPeakR float64 // linear amplitude [0,1]
 }
 
 // NewMixer creates an AudioMixer.
@@ -454,6 +459,41 @@ func (m *AudioMixer) recalcPassthrough() {
 	} else {
 		m.passthrough = false
 	}
+}
+
+// ProgramPeak returns the current program output peak levels in dBFS.
+// Returns [leftDBFS, rightDBFS]. Silence is -Inf.
+func (m *AudioMixer) ProgramPeak() [2]float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
+}
+
+// SetProgramPeak updates the stored program peak levels (linear amplitude).
+// Called after metering mixed PCM output.
+func (m *AudioMixer) SetProgramPeak(peakL, peakR float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.programPeakL = peakL
+	m.programPeakR = peakR
+}
+
+// ChannelStates returns a snapshot of all channel states for state broadcast.
+func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]internal.AudioChannel, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = internal.AudioChannel{Level: ch.level, Muted: ch.muted, AFV: ch.afv}
+	}
+	return result
+}
+
+// MasterLevel returns the current master level in dB.
+func (m *AudioMixer) MasterLevel() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.masterLevel
 }
 
 // DBToLinear converts decibels to a linear gain multiplier.

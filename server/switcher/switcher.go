@@ -14,6 +14,14 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
+// audioStateProvider is the interface the Switcher needs from the AudioMixer
+// to populate audio fields in state broadcasts.
+type audioStateProvider interface {
+	ProgramPeak() [2]float64
+	ChannelStates() map[string]internal.AudioChannel
+	MasterLevel() float64
+}
+
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
 	key        string
@@ -36,6 +44,7 @@ type Switcher struct {
 	stateCallbacks []func(internal.ControlRoomState)
 	health         *healthMonitor
 	audioHandler   func(sourceKey string, frame *media.AudioFrame)
+	mixer          audioStateProvider
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -48,6 +57,15 @@ func New(programRelay *distribution.Relay) *Switcher {
 		programRelay: programRelay,
 		health:       newHealthMonitor(nil),
 	}
+}
+
+// SetMixer attaches an audio mixer to the switcher for state broadcasts.
+// When set, buildStateLocked will include audio channel states, master level,
+// and program peak levels in the ControlRoomState.
+func (s *Switcher) SetMixer(m audioStateProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mixer = m
 }
 
 // Close stops the health monitor and unregisters all sources.
@@ -225,7 +243,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	if s.previewSource != "" && s.previewSource != s.programSource {
 		tally[s.previewSource] = internal.TallyPreview
 	}
-	return internal.ControlRoomState{
+	state := internal.ControlRoomState{
 		ProgramSource:  s.programSource,
 		PreviewSource:  s.previewSource,
 		TransitionType: "cut",
@@ -234,6 +252,15 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		Seq:            s.seq,
 		Timestamp:      time.Now().UnixMilli(),
 	}
+
+	// Populate audio state from mixer if available.
+	if s.mixer != nil {
+		state.AudioChannels = s.mixer.ChannelStates()
+		state.MasterLevel = s.mixer.MasterLevel()
+		state.ProgramPeak = s.mixer.ProgramPeak()
+	}
+
+	return state
 }
 
 // notifyStateChange calls all registered state callbacks.
