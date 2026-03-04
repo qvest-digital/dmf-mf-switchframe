@@ -6,6 +6,7 @@
 	import ProgramBus from '../components/ProgramBus.svelte';
 	import TransitionControls from '../components/TransitionControls.svelte';
 	import AudioMixer from '../components/AudioMixer.svelte';
+	import OutputControls from '../components/OutputControls.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, getState, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
@@ -107,6 +108,10 @@
 </script>
 
 <div class="control-room">
+	<header class="header">
+		<OutputControls state={store.state} />
+	</header>
+
 	<section class="top">
 		<ProgramPreview state={store.state} />
 	</section>
@@ -133,10 +138,11 @@
 <style>
 	.control-room {
 		display: grid;
-		grid-template-rows: auto 1fr auto auto;
+		grid-template-rows: auto auto 1fr auto auto;
 		height: 100vh;
 		background: var(--bg-primary);
 	}
+	.header { border-bottom: 1px solid #333; background: var(--bg-secondary); }
 	.top { border-bottom: 1px solid #333; }
 	.multiview-section { overflow: hidden; }
 	.audio-section { border-top: 1px solid #333; max-height: 200px; overflow-y: auto; }
