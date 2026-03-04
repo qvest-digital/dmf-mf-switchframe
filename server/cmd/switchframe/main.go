@@ -16,6 +16,8 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -131,13 +133,37 @@ func run() error {
 		},
 	})
 
-	// Create REST API now that switcher and mixer exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer))
+	// Create output manager for recording and SRT output.
+	outputMgr := output.NewOutputManager(programRelay)
+	defer outputMgr.Close()
 
-	// Wire state publisher and health monitor.
+	// Create REST API now that switcher, mixer, and output manager exist.
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr))
+
+	// enrichState patches a ControlRoomState snapshot with output status.
+	enrichState := func(state internal.ControlRoomState) internal.ControlRoomState {
+		if recStatus := outputMgr.RecordingStatus(); recStatus.Active {
+			state.Recording = &recStatus
+		}
+		if srtStatus := outputMgr.SRTOutputStatus(); srtStatus.Active {
+			state.SRTOutput = &srtStatus
+		}
+		return state
+	}
+
+	// Wire state publisher: enrich switcher state with output status before broadcast.
 	// Note: AFV program changes and crossfade are wired automatically via
 	// SetMixer (Switcher calls OnProgramChange/OnCut during Cut).
-	sw.OnStateChange(controlPub.Publish)
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		controlPub.Publish(enrichState(state))
+	})
+
+	// Output state changes (recording start/stop, SRT connect/disconnect)
+	// also trigger a full state broadcast.
+	outputMgr.OnStateChange(func() {
+		controlPub.Publish(enrichState(sw.State()))
+	})
+
 	sw.StartHealthMonitor(1 * time.Second)
 
 	slog.Info("starting Prism distribution server", "addr", addr)
