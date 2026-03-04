@@ -13,6 +13,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // audioStateProvider is the interface the Switcher needs from the AudioMixer
@@ -27,6 +28,20 @@ type audioStateProvider interface {
 type audioCutHandler interface {
 	OnCut(oldSource, newSource string)
 	OnProgramChange(newProgramSource string)
+}
+
+// audioTransitionHandler is called during transitions to sync audio crossfade
+// with video dissolve progress.
+type audioTransitionHandler interface {
+	OnTransitionStart(oldSource, newSource string, durationMs int)
+	OnTransitionPosition(position float64)
+	OnTransitionComplete()
+}
+
+// TransitionConfig holds the codec factories needed to create TransitionEngines.
+type TransitionConfig struct {
+	DecoderFactory transition.DecoderFactory
+	EncoderFactory transition.EncoderFactory
 }
 
 // sourceState tracks a registered source and its Relay/viewer pair.
@@ -50,9 +65,14 @@ type Switcher struct {
 	seq            uint64
 	stateCallbacks []func(internal.ControlRoomState)
 	health         *healthMonitor
-	audioHandler   func(sourceKey string, frame *media.AudioFrame)
-	mixer          audioStateProvider
-	audioCut       audioCutHandler
+	audioHandler    func(sourceKey string, frame *media.AudioFrame)
+	mixer           audioStateProvider
+	audioCut        audioCutHandler
+	transConfig     *TransitionConfig
+	transEngine     *transition.TransitionEngine
+	inTransition    bool
+	ftbActive       bool
+	audioTransition audioTransitionHandler
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -113,6 +133,276 @@ func (s *Switcher) SetAudioHandler(handler func(sourceKey string, frame *media.A
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audioHandler = handler
+}
+
+// SetTransitionConfig stores the transition codec configuration under lock.
+func (s *Switcher) SetTransitionConfig(config TransitionConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transConfig = &config
+}
+
+// SetAudioTransition attaches an audio transition handler for dissolve sync.
+func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audioTransition = handler
+}
+
+// StartTransition begins a mix/dip transition from the current program source
+// to the given target source. Frames from both sources are routed to the
+// TransitionEngine which produces blended output on the program relay.
+func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int) error {
+	s.mu.Lock()
+
+	if s.transConfig == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("transition not configured")
+	}
+	if s.inTransition {
+		s.mu.Unlock()
+		return fmt.Errorf("transition already active")
+	}
+	if s.ftbActive {
+		s.mu.Unlock()
+		return fmt.Errorf("cannot start transition while FTB is active")
+	}
+	if s.programSource == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("no program source set")
+	}
+	if sourceKey == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("no target source specified")
+	}
+	if _, ok := s.sources[sourceKey]; !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("source %q not found", sourceKey)
+	}
+
+	tt := transition.TransitionType(transType)
+	if tt != transition.TransitionMix && tt != transition.TransitionDip {
+		s.mu.Unlock()
+		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+
+	fromSource := s.programSource
+	programRelay := s.programRelay
+
+	engine := transition.NewTransitionEngine(transition.EngineConfig{
+		DecoderFactory: s.transConfig.DecoderFactory,
+		EncoderFactory: s.transConfig.EncoderFactory,
+		Output: func(data []byte, isKeyframe bool) {
+			programRelay.BroadcastVideo(&media.VideoFrame{
+				PTS:        time.Now().UnixMilli(),
+				IsKeyframe: isKeyframe,
+				WireData:   data,
+			})
+		},
+		OnComplete: func(aborted bool) {
+			s.handleTransitionComplete(aborted)
+		},
+	})
+
+	if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("start transition: %w", err)
+	}
+
+	s.transEngine = engine
+	s.inTransition = true
+	s.previewSource = sourceKey
+	audioHandler := s.audioTransition
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionStart(fromSource, sourceKey, durationMs)
+	}
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
+// SetTransitionPosition sets the T-bar position during an active transition.
+func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) error {
+	s.mu.RLock()
+	engine := s.transEngine
+	inTrans := s.inTransition
+	audioHandler := s.audioTransition
+	s.mu.RUnlock()
+
+	if !inTrans || engine == nil {
+		return fmt.Errorf("no active transition")
+	}
+
+	engine.SetPosition(position)
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionPosition(position)
+	}
+	return nil
+}
+
+// FadeToBlack starts or toggles a Fade to Black transition. If FTB is already
+// active and no transition is running, it toggles off (restores normal output).
+// If a non-FTB transition is active, FTB is rejected.
+func (s *Switcher) FadeToBlack(ctx context.Context) error {
+	s.mu.Lock()
+
+	if s.transConfig == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("transition not configured")
+	}
+
+	// Reject if a non-FTB transition is active
+	if s.inTransition && !s.ftbActive {
+		s.mu.Unlock()
+		return fmt.Errorf("cannot FTB while mix/dip transition is active")
+	}
+
+	// Toggle off: FTB is active but transition is complete (fully black)
+	if s.ftbActive && !s.inTransition {
+		s.ftbActive = false
+		s.seq++
+		snapshot := s.buildStateLocked()
+		s.mu.Unlock()
+		s.notifyStateChange(snapshot)
+		return nil
+	}
+
+	if s.programSource == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("no program source set")
+	}
+
+	fromSource := s.programSource
+	programRelay := s.programRelay
+
+	engine := transition.NewTransitionEngine(transition.EngineConfig{
+		DecoderFactory: s.transConfig.DecoderFactory,
+		EncoderFactory: s.transConfig.EncoderFactory,
+		Output: func(data []byte, isKeyframe bool) {
+			programRelay.BroadcastVideo(&media.VideoFrame{
+				PTS:        time.Now().UnixMilli(),
+				IsKeyframe: isKeyframe,
+				WireData:   data,
+			})
+		},
+		OnComplete: func(aborted bool) {
+			s.handleFTBComplete(aborted)
+		},
+	})
+
+	if err := engine.Start(fromSource, "", transition.TransitionFTB, 1000); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("start FTB: %w", err)
+	}
+
+	s.transEngine = engine
+	s.inTransition = true
+	s.ftbActive = true
+	audioHandler := s.audioTransition
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionStart(fromSource, "", 1000)
+	}
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
+// AbortTransition stops any active transition and restores normal frame routing.
+func (s *Switcher) AbortTransition() {
+	s.mu.Lock()
+	engine := s.transEngine
+	wasActive := s.inTransition
+	audioHandler := s.audioTransition
+
+	if wasActive {
+		s.inTransition = false
+		s.ftbActive = false
+		s.transEngine = nil
+		s.seq++
+	}
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if engine != nil {
+		engine.Stop()
+	}
+	if wasActive {
+		if audioHandler != nil {
+			audioHandler.OnTransitionComplete()
+		}
+		s.notifyStateChange(snapshot)
+	}
+}
+
+// handleTransitionComplete is called by the TransitionEngine when a mix/dip
+// transition finishes. If completed (not aborted), it swaps program/preview
+// sources.
+func (s *Switcher) handleTransitionComplete(aborted bool) {
+	s.mu.Lock()
+	if !s.inTransition {
+		s.mu.Unlock()
+		return
+	}
+
+	audioHandler := s.audioTransition
+	var audioCut audioCutHandler
+
+	if !aborted && s.transEngine != nil {
+		newProgram := s.transEngine.ToSource()
+		oldProgram := s.programSource
+		if newProgram != "" {
+			s.programSource = newProgram
+			s.previewSource = oldProgram
+			audioCut = s.audioCut
+		}
+	}
+
+	s.inTransition = false
+	s.transEngine = nil
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionComplete()
+	}
+	if !aborted && audioCut != nil {
+		audioCut.OnProgramChange(snapshot.ProgramSource)
+	}
+	s.notifyStateChange(snapshot)
+}
+
+// handleFTBComplete is called by the TransitionEngine when an FTB transition
+// finishes. FTB stays active (screen is black) unless aborted.
+func (s *Switcher) handleFTBComplete(aborted bool) {
+	s.mu.Lock()
+	if !s.inTransition {
+		s.mu.Unlock()
+		return
+	}
+
+	audioHandler := s.audioTransition
+	s.inTransition = false
+	s.transEngine = nil
+	if aborted {
+		s.ftbActive = false
+	}
+	// ftbActive stays true when completed (screen is black)
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionComplete()
+	}
+	s.notifyStateChange(snapshot)
 }
 
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
@@ -268,14 +558,23 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	if s.previewSource != "" && s.previewSource != s.programSource {
 		tally[s.previewSource] = internal.TallyPreview
 	}
+	transType := "cut"
+	if s.inTransition && s.transEngine != nil {
+		transType = string(s.transEngine.TransitionType())
+	}
 	state := internal.ControlRoomState{
 		ProgramSource:  s.programSource,
 		PreviewSource:  s.previewSource,
-		TransitionType: "cut",
+		TransitionType: transType,
+		InTransition:   s.inTransition,
+		FTBActive:      s.ftbActive,
 		TallyState:     tally,
 		Sources:        sources,
 		Seq:            s.seq,
 		Timestamp:      time.Now().UnixMilli(),
+	}
+	if s.inTransition && s.transEngine != nil {
+		state.TransitionPosition = s.transEngine.Position()
 	}
 
 	// Populate audio state from mixer if available.
@@ -306,7 +605,18 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey)
 
-	// Fast path: RLock for steady-state (pendingIDR is false most of the time).
+	// Check if transition is active — route both sources to engine
+	s.mu.RLock()
+	engine := s.transEngine
+	inTrans := s.inTransition
+	s.mu.RUnlock()
+
+	if inTrans && engine != nil {
+		engine.IngestFrame(sourceKey, frame.WireData)
+		return
+	}
+
+	// Normal passthrough: RLock for steady-state (pendingIDR is false most of the time).
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
 	if !ok || s.programSource != sourceKey {

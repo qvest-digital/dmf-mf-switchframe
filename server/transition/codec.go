@@ -66,3 +66,13 @@ func (e *mockEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
 }
 
 func (e *mockEncoder) Close() {}
+
+// NewMockDecoder creates a mock decoder for cross-package testing.
+func NewMockDecoder(width, height int) VideoDecoder {
+	return &mockDecoder{width: width, height: height}
+}
+
+// NewMockEncoder creates a mock encoder for cross-package testing.
+func NewMockEncoder() VideoEncoder {
+	return &mockEncoder{}
+}
