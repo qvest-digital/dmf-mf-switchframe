@@ -4,6 +4,8 @@ package internal
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestControlRoomStateJSON(t *testing.T) {
@@ -64,4 +66,40 @@ func TestSourceInfoHealthStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAudioChannelJSON(t *testing.T) {
+	ch := AudioChannel{
+		Level: -6.0,
+		Muted: false,
+		AFV:   true,
+	}
+
+	data, err := json.Marshal(ch)
+	require.NoError(t, err)
+
+	var decoded AudioChannel
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, ch, decoded)
+}
+
+func TestControlRoomStateAudioFields(t *testing.T) {
+	state := ControlRoomState{
+		ProgramSource: "cam1",
+		AudioChannels: map[string]AudioChannel{
+			"cam1": {Level: 0, Muted: false, AFV: true},
+			"cam2": {Level: -12, Muted: true, AFV: false},
+		},
+		MasterLevel: -3.0,
+		ProgramPeak: [2]float64{-6.0, -8.0},
+	}
+
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	var decoded ControlRoomState
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, state.AudioChannels, decoded.AudioChannels)
+	require.Equal(t, state.MasterLevel, decoded.MasterLevel)
+	require.Equal(t, state.ProgramPeak, decoded.ProgramPeak)
 }
