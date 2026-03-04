@@ -191,3 +191,28 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 	}
 	capture.mu.Unlock()
 }
+
+func TestIntegrationAudioWithMixerHandler(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		programRelay.BroadcastAudio(frame)
+	})
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
+
+	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	time.Sleep(10 * time.Millisecond)
+
+	capture.mu.Lock()
+	require.Equal(t, 1, len(capture.audios))
+	capture.mu.Unlock()
+}

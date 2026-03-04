@@ -27,14 +27,15 @@ type sourceState struct {
 // on-program (live output) and which is on-preview, maintains tally state,
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
-	mu            sync.RWMutex
-	sources       map[string]*sourceState
-	programSource string
-	previewSource string
-	programRelay  *distribution.Relay
-	seq           uint64
+	mu             sync.RWMutex
+	sources        map[string]*sourceState
+	programSource  string
+	previewSource  string
+	programRelay   *distribution.Relay
+	seq            uint64
 	stateCallbacks []func(internal.ControlRoomState)
-	health        *healthMonitor
+	health         *healthMonitor
+	audioHandler   func(sourceKey string, frame *media.AudioFrame)
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -71,6 +72,16 @@ func (s *Switcher) OnStateChange(cb func(internal.ControlRoomState)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stateCallbacks = append(s.stateCallbacks, cb)
+}
+
+// SetAudioHandler registers a handler that receives audio frames from ALL
+// sources. When set, the handler (typically an audio mixer) is responsible
+// for deciding which audio reaches the program output. When no handler is
+// set, the original behavior (only program source audio forwarded) is used.
+func (s *Switcher) SetAudioHandler(handler func(sourceKey string, frame *media.AudioFrame)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.audioHandler = handler
 }
 
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
@@ -261,16 +272,26 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 }
 
 // handleAudioFrame implements frameHandler. It is called by sourceViewers
-// when an audio frame arrives from a source. Only frames from the current
-// program source are forwarded to the program Relay. Audio is gated along
-// with video until the first keyframe after a cut.
+// when an audio frame arrives from a source. If an audio handler (mixer)
+// is set, ALL source audio is forwarded to it — the mixer decides routing.
+// Otherwise, only the current program source's audio is forwarded to the
+// program Relay, gated along with video until the first keyframe after a cut.
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	s.mu.RLock()
+	handler := s.audioHandler
 	ss, ok := s.sources[sourceKey]
-	if !ok || s.programSource != sourceKey || ss.pendingIDR {
-		s.mu.RUnlock()
+	isProgram := ok && s.programSource == sourceKey && !ss.pendingIDR
+	s.mu.RUnlock()
+
+	// Route to audio handler (mixer) if set — ALL sources
+	if handler != nil {
+		handler(sourceKey, frame)
 		return
 	}
-	s.mu.RUnlock()
+
+	// Fallback: original behavior (only program source)
+	if !isProgram {
+		return
+	}
 	s.programRelay.BroadcastAudio(frame)
 }
