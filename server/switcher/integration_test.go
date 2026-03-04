@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1.
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut(camera1): %v", err)
 	}
 
@@ -65,7 +66,7 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	capture.mu.Unlock()
 
 	// Now cut to camera2.
-	if err := sw.Cut("camera2"); err != nil {
+	if err := sw.Cut(context.Background(), "camera2"); err != nil {
 		t.Fatalf("Cut(camera2): %v", err)
 	}
 
@@ -108,7 +109,7 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut(camera1): %v", err)
 	}
 
@@ -147,7 +148,7 @@ func TestProgramRelayFromPrismServer(t *testing.T) {
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut("cam1"))
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// Send keyframe — should flow through switcher to program relay viewer.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}})
@@ -168,7 +169,7 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut(camera1): %v", err)
 	}
 

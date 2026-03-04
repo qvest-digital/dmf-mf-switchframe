@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func setupTestAPI(t *testing.T) (*API, *switcher.Switcher) {
 
 func TestCutEndpoint(t *testing.T) {
 	api, sw := setupTestAPI(t)
-	sw.Cut("camera1")
+	sw.Cut(context.Background(), "camera1")
 	body := `{"source":"camera2"}`
 	req := httptest.NewRequest("POST", "/api/switch/cut", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -71,7 +72,7 @@ func TestPreviewEndpoint(t *testing.T) {
 
 func TestStateEndpoint(t *testing.T) {
 	api, sw := setupTestAPI(t)
-	sw.Cut("camera1")
+	sw.Cut(context.Background(), "camera1")
 	req := httptest.NewRequest("GET", "/api/switch/state", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)

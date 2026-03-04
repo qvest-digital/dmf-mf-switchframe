@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -77,7 +78,7 @@ func TestProactiveHealthBroadcast(t *testing.T) {
 
 	relay := newTestRelay()
 	sw.RegisterSource("cam1", relay)
-	require.NoError(t, sw.Cut("cam1"))
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// Send a keyframe so the source is initially healthy.
 	relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})

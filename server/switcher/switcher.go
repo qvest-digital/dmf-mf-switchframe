@@ -4,6 +4,7 @@
 package switcher
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -109,7 +110,7 @@ func (s *Switcher) UnregisterSource(key string) {
 // Cut performs a hard cut to the named source, making it the program output.
 // The previous program source is automatically moved to preview. If the
 // source is already on program, Cut is a no-op (Seq is not incremented).
-func (s *Switcher) Cut(sourceKey string) error {
+func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var snapshot internal.ControlRoomState
 	changed := false
 
@@ -138,7 +139,7 @@ func (s *Switcher) Cut(sourceKey string) error {
 }
 
 // SetPreview sets the preview source. This does not affect the program output.
-func (s *Switcher) SetPreview(sourceKey string) error {
+func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	s.mu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
 		s.mu.Unlock()
@@ -154,7 +155,7 @@ func (s *Switcher) SetPreview(sourceKey string) error {
 }
 
 // SetLabel sets a human-readable label for the given source.
-func (s *Switcher) SetLabel(sourceKey, label string) error {
+func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error {
 	s.mu.Lock()
 	ss, ok := s.sources[sourceKey]
 	if !ok {

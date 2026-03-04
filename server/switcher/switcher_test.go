@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -112,7 +113,7 @@ func TestCutToSource(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	err := sw.Cut("camera1")
+	err := sw.Cut(context.Background(), "camera1")
 	if err != nil {
 		t.Fatalf("Cut() error: %v", err)
 	}
@@ -138,13 +139,13 @@ func TestCutSwapsPreview(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1, set preview to camera2, then cut to camera2.
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut(camera1) error: %v", err)
 	}
-	if err := sw.SetPreview("camera2"); err != nil {
+	if err := sw.SetPreview(context.Background(), "camera2"); err != nil {
 		t.Fatalf("SetPreview(camera2) error: %v", err)
 	}
-	if err := sw.Cut("camera2"); err != nil {
+	if err := sw.Cut(context.Background(), "camera2"); err != nil {
 		t.Fatalf("Cut(camera2) error: %v", err)
 	}
 
@@ -161,7 +162,7 @@ func TestCutToMissingSourceErrors(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
-	err := sw.Cut("nonexistent")
+	err := sw.Cut(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("Cut(nonexistent) should return error")
 	}
@@ -173,13 +174,13 @@ func TestCutToCurrentProgramIsNoop(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut() error: %v", err)
 	}
 	seqAfterFirst := sw.State().Seq
 
 	// Second cut to the same source should be a no-op.
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut() error: %v", err)
 	}
 	seqAfterSecond := sw.State().Seq
@@ -195,7 +196,7 @@ func TestSetPreview(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	err := sw.SetPreview("camera1")
+	err := sw.SetPreview(context.Background(), "camera1")
 	if err != nil {
 		t.Fatalf("SetPreview() error: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestSetPreviewMissingSourceErrors(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
-	err := sw.SetPreview("nonexistent")
+	err := sw.SetPreview(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("SetPreview(nonexistent) should return error")
 	}
@@ -233,7 +234,7 @@ func TestFrameForwarding(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1.
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut() error: %v", err)
 	}
 
@@ -268,7 +269,7 @@ func TestAudioFrameForwarding(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	if err := sw.Cut("camera1"); err != nil {
+	if err := sw.Cut(context.Background(), "camera1"); err != nil {
 		t.Fatalf("Cut() error: %v", err)
 	}
 
@@ -307,11 +308,11 @@ func TestCutGatesUntilKeyframe(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1, send a keyframe to establish it.
-	sw.Cut("camera1")
+	sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// Cut to camera2.
-	sw.Cut("camera2")
+	sw.Cut(context.Background(), "camera2")
 
 	// Send P-frame from camera2 — should be DROPPED (no keyframe yet).
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 200, IsKeyframe: false})
@@ -352,11 +353,11 @@ func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	sw.Cut("camera1")
+	sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// Cut to camera2.
-	sw.Cut("camera2")
+	sw.Cut(context.Background(), "camera2")
 
 	// Audio from camera2 before video keyframe — should be DROPPED.
 	cam2Relay.BroadcastAudio(&media.AudioFrame{PTS: 200, Data: []byte{0xAA}})
@@ -392,7 +393,7 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 	}
 
 	// Send a frame (source must be on program for handleVideoFrame to record).
-	sw.Cut("camera1")
+	sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// After frame: healthy.
@@ -418,8 +419,8 @@ func TestMultipleStateCallbacks(t *testing.T) {
 	relay := newTestRelay()
 	sw.RegisterSource("cam1", relay)
 	sw.RegisterSource("cam2", relay)
-	require.NoError(t, sw.Cut("cam1"))
-	require.NoError(t, sw.Cut("cam2"))
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 
 	require.Equal(t, 2, count1, "first callback should fire twice")
 	require.Equal(t, 2, count2, "second callback should fire twice")
@@ -434,14 +435,14 @@ func TestSetLabel(t *testing.T) {
 	sw.RegisterSource("cam1", relay)
 
 	// Set label
-	err := sw.SetLabel("cam1", "Camera 1")
+	err := sw.SetLabel(context.Background(), "cam1", "Camera 1")
 	require.NoError(t, err)
 
 	state := sw.State()
 	require.Equal(t, "Camera 1", state.Sources["cam1"].Label)
 
 	// Unknown source
-	err = sw.SetLabel("nonexistent", "Nope")
+	err = sw.SetLabel(context.Background(), "nonexistent", "Nope")
 	require.Error(t, err)
 }
 

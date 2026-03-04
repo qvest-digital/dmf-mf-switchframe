@@ -57,7 +57,7 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.switcher.Cut(req.Source); err != nil {
+	if err := a.switcher.Cut(r.Context(), req.Source); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -78,7 +78,7 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.switcher.SetPreview(req.Source); err != nil {
+	if err := a.switcher.SetPreview(r.Context(), req.Source); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -112,7 +112,7 @@ func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.switcher.SetLabel(key, req.Label); err != nil {
+	if err := a.switcher.SetLabel(r.Context(), key, req.Label); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
