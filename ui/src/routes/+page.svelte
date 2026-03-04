@@ -9,6 +9,7 @@
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, getState, fireAndForget } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
+	import { createPrismConnection } from '$lib/transport/connection';
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -30,7 +31,39 @@
 		getSourceKeys: () => store.sourceKeys,
 	});
 
-	let pollInterval: ReturnType<typeof setInterval>;
+	let pollInterval: ReturnType<typeof setInterval> | undefined;
+
+	function startPolling() {
+		if (pollInterval) return;
+		pollInterval = setInterval(async () => {
+			try {
+				const state = await getState();
+				store.applyUpdate(state);
+			} catch { /* ignore */ }
+		}, 500);
+	}
+
+	function stopPolling() {
+		if (pollInterval) {
+			clearInterval(pollInterval);
+			pollInterval = undefined;
+		}
+	}
+
+	const connection = createPrismConnection({
+		url: window.location.origin,
+		onControlState: (data) => {
+			store.applyFromMoQ(data);
+			// MoQ is delivering state; stop polling
+			stopPolling();
+		},
+		onConnectionChange: (connectionState) => {
+			if (connectionState === 'disconnected' || connectionState === 'error') {
+				// WebTransport lost; fall back to REST polling
+				startPolling();
+			}
+		},
+	});
 
 	onMount(async () => {
 		keyboard.attach();
@@ -43,21 +76,17 @@
 			console.warn('Failed to fetch initial state:', e);
 		}
 
-		// TODO: Connect MoQ control track for real-time updates.
-		// When MoQ is connected, the onControlState callback will call
-		// store.applyFromMoQ(data) for each state update, and we can
-		// clear the poll interval. For now, poll REST as fallback.
-		pollInterval = setInterval(async () => {
-			try {
-				const state = await getState();
-				store.applyUpdate(state);
-			} catch { /* ignore */ }
-		}, 500);
+		// Start REST polling as immediate fallback
+		startPolling();
+
+		// Attempt WebTransport connection (will replace polling on success)
+		connection.connect();
 	});
 
 	onDestroy(() => {
 		keyboard.detach();
-		if (pollInterval) clearInterval(pollInterval);
+		stopPolling();
+		connection.disconnect();
 	});
 </script>
 
