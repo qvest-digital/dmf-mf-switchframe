@@ -82,11 +82,11 @@ Captured from Phase 1 and Phase 2 code reviews. Address these before or during t
 - **Fix:** Document build requirements. Consider build tags to allow compile without cgo for development/testing.
 - **Priority:** Low. All target deployments will have fdk-aac available.
 
-### Audio mixer crossfade not wired to switcher Cut
-- **File:** `server/audio/mixer.go` `OnProgramChange()`
-- **Issue:** `OnProgramChange` triggers AFV activation and sets crossfade state, but the crossfade requires both old and new source to deliver a frame within the same cycle. If the old source stops sending (e.g., SRT disconnect), the crossfade hangs.
-- **Fix:** Add a timeout to crossfade state (e.g., 50ms). If the outgoing source doesn't deliver, complete the transition without crossfade.
-- **Priority:** Medium. Crossfade works for normal cuts but not for source-loss scenarios.
+### Audio crossfade not wired to production code path
+- **File:** `server/audio/mixer.go`, `server/switcher/switcher.go`
+- **Issue:** `OnCut(oldSource, newSource)` is implemented and tested but never called from `Switcher.Cut()`. Audio cuts are abrupt (no equal-power crossfade ramp). Additionally, `OnProgramChange` sets crossfade state internally but the crossfade requires both old and new source to deliver frames. If the old source stops sending (SRT disconnect), the crossfade hangs with no timeout.
+- **Fix:** (1) Call `mixer.OnCut(oldProgram, newProgram)` from `Switcher.Cut()`. (2) Add a ~50ms timeout to crossfade state — if the outgoing source doesn't deliver, complete the transition without crossfade.
+- **Priority:** Medium. Crossfade is implemented but not active in production.
 
 ### PFL manager is stub-only
 - **File:** `ui/src/lib/audio/pfl.ts`
