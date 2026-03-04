@@ -47,6 +47,22 @@ export function getSources(): Promise<Record<string, SourceInfo>> {
 	return request('/api/sources');
 }
 
+export function setLevel(source: string, level: number): Promise<ControlRoomState> {
+	return post('/api/audio/level', { source, level });
+}
+
+export function setMute(source: string, muted: boolean): Promise<ControlRoomState> {
+	return post('/api/audio/mute', { source, muted });
+}
+
+export function setAFV(source: string, afv: boolean): Promise<ControlRoomState> {
+	return post('/api/audio/afv', { source, afv });
+}
+
+export function setMasterLevel(level: number): Promise<ControlRoomState> {
+	return post('/api/audio/master', { level });
+}
+
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
 export function fireAndForget(promise: Promise<unknown>): void {
 	promise.catch((err) => console.warn('API call failed:', err));

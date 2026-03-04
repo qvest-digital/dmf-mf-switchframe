@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel } from './switch-api';
 
 describe('switch-api', () => {
 	beforeEach(() => {
@@ -89,5 +89,71 @@ describe('switch-api', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		await expect(cut('cam99')).rejects.toThrow('source "cam99" not found');
+	});
+});
+
+describe('Audio API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('should call setLevel endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1, programSource: 'cam1' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setLevel('cam1', -6.0);
+		expect(mockFetch).toHaveBeenCalledWith('/api/audio/level', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ source: 'cam1', level: -6.0 }),
+		});
+	});
+
+	it('should call setMute endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setMute('cam1', true);
+		expect(mockFetch).toHaveBeenCalledWith('/api/audio/mute', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ source: 'cam1', muted: true }),
+		});
+	});
+
+	it('should call setAFV endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setAFV('cam1', true);
+		expect(mockFetch).toHaveBeenCalledWith('/api/audio/afv', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ source: 'cam1', afv: true }),
+		});
+	});
+
+	it('should call setMasterLevel endpoint', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setMasterLevel(-3.0);
+		expect(mockFetch).toHaveBeenCalledWith('/api/audio/master', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ level: -3.0 }),
+		});
 	});
 });

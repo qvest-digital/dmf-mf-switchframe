@@ -5,6 +5,7 @@
 	import PreviewBus from '../components/PreviewBus.svelte';
 	import ProgramBus from '../components/ProgramBus.svelte';
 	import TransitionControls from '../components/TransitionControls.svelte';
+	import AudioMixer from '../components/AudioMixer.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, getState, fireAndForget } from '$lib/api/switch-api';
@@ -99,6 +100,10 @@
 		<Multiview state={store.state} />
 	</section>
 
+	<section class="audio-section">
+		<AudioMixer state={store.state} />
+	</section>
+
 	<section class="controls">
 		<PreviewBus state={store.state} />
 		<ProgramBus state={store.state} />
@@ -113,11 +118,12 @@
 <style>
 	.control-room {
 		display: grid;
-		grid-template-rows: auto 1fr auto;
+		grid-template-rows: auto 1fr auto auto;
 		height: 100vh;
 		background: var(--bg-primary);
 	}
 	.top { border-bottom: 1px solid #333; }
 	.multiview-section { overflow: hidden; }
+	.audio-section { border-top: 1px solid #333; max-height: 200px; overflow-y: auto; }
 	.controls { border-top: 1px solid #333; background: var(--bg-secondary); }
 </style>

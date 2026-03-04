@@ -1,5 +1,12 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
+	import {
+		setLevel as apiSetLevel,
+		setMute as apiSetMute,
+		setAFV as apiSetAFV,
+		setMasterLevel as apiSetMasterLevel,
+		fireAndForget,
+	} from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
@@ -7,22 +14,20 @@
 
 	let { state }: Props = $props();
 
-	// TODO: Import audio API functions from switch-api.ts once Task 21 adds them.
-	// For now, define placeholder handlers that log to console.
-	function setLevel(_source: string, _level: number) {
-		console.warn('Audio API not yet wired (Task 21): setLevel');
+	function setLevel(source: string, level: number) {
+		fireAndForget(apiSetLevel(source, level));
 	}
 
-	function setMute(_source: string, _muted: boolean) {
-		console.warn('Audio API not yet wired (Task 21): setMute');
+	function setMute(source: string, muted: boolean) {
+		fireAndForget(apiSetMute(source, muted));
 	}
 
-	function setAFV(_source: string, _afv: boolean) {
-		console.warn('Audio API not yet wired (Task 21): setAFV');
+	function setAFV(source: string, afv: boolean) {
+		fireAndForget(apiSetAFV(source, afv));
 	}
 
-	function setMasterLevel(_level: number) {
-		console.warn('Audio API not yet wired (Task 21): setMasterLevel');
+	function setMasterLevel(level: number) {
+		fireAndForget(apiSetMasterLevel(level));
 	}
 
 	/**
