@@ -41,6 +41,7 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
+	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
@@ -94,6 +95,29 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 
 // handleState returns the current ControlRoomState as JSON.
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// labelRequest is the JSON body for the set-label command.
+type labelRequest struct {
+	Label string `json:"label"`
+}
+
+// handleSetLabel sets a human-readable label on a source.
+func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	var req labelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.switcher.SetLabel(key, req.Label); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.switcher.State())
 }

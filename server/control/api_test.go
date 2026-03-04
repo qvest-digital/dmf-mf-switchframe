@@ -87,6 +87,39 @@ func TestStateEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandleSetLabel(t *testing.T) {
+	api, sw := setupTestAPI(t)
+	defer sw.Close()
+
+	// Set label
+	body := strings.NewReader(`{"label":"Camera 1"}`)
+	req := httptest.NewRequest("POST", "/api/sources/camera1/label", body)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	// Verify in state
+	req = httptest.NewRequest("GET", "/api/switch/state", nil)
+	w = httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+	var state internal.ControlRoomState
+	json.NewDecoder(w.Body).Decode(&state)
+	if state.Sources["camera1"].Label != "Camera 1" {
+		t.Errorf("Label = %q, want %q", state.Sources["camera1"].Label, "Camera 1")
+	}
+
+	// Unknown source
+	body = strings.NewReader(`{"label":"Nope"}`)
+	req = httptest.NewRequest("POST", "/api/sources/nonexistent/label", body)
+	w = httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
 func TestSourcesEndpoint(t *testing.T) {
 	api, _ := setupTestAPI(t)
 	req := httptest.NewRequest("GET", "/api/sources", nil)

@@ -425,6 +425,26 @@ func TestMultipleStateCallbacks(t *testing.T) {
 	require.Equal(t, 2, count2, "second callback should fire twice")
 }
 
+func TestSetLabel(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	relay := newTestRelay()
+	sw.RegisterSource("cam1", relay)
+
+	// Set label
+	err := sw.SetLabel("cam1", "Camera 1")
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.Equal(t, "Camera 1", state.Sources["cam1"].Label)
+
+	// Unknown source
+	err = sw.SetLabel("nonexistent", "Nope")
+	require.Error(t, err)
+}
+
 func TestSourceKeys(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)

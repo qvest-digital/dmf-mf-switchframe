@@ -23,6 +23,7 @@ const (
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
 	Key           string             `json:"key"`
+	Label         string             `json:"label,omitempty"`
 	Status        SourceHealthStatus `json:"status"`
 	LastFrameTime int64              `json:"lastFrameTime"`
 	Width         int                `json:"width,omitempty"`

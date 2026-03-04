@@ -16,6 +16,7 @@ import (
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
 	key        string
+	label      string
 	relay      *distribution.Relay
 	viewer     *sourceViewer
 	pendingIDR bool // true after a cut until first keyframe from this source
@@ -151,6 +152,23 @@ func (s *Switcher) SetPreview(sourceKey string) error {
 	return nil
 }
 
+// SetLabel sets a human-readable label for the given source.
+func (s *Switcher) SetLabel(sourceKey, label string) error {
+	s.mu.Lock()
+	ss, ok := s.sources[sourceKey]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("source %q not found", sourceKey)
+	}
+	ss.label = label
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
 // State returns a snapshot of the current control room state.
 func (s *Switcher) State() internal.ControlRoomState {
 	s.mu.RLock()
@@ -176,7 +194,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
 	for key := range s.sources {
 		tally[key] = internal.TallyIdle
-		sources[key] = internal.SourceInfo{Key: key, Status: s.health.status(key)}
+		sources[key] = internal.SourceInfo{Key: key, Label: s.sources[key].label, Status: s.health.status(key)}
 	}
 	if s.programSource != "" {
 		tally[s.programSource] = internal.TallyProgram
