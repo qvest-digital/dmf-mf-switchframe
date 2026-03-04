@@ -17,6 +17,33 @@ export interface AudioChannel {
 	afv: boolean;   // audio-follows-video
 }
 
+export interface RecordingStatus {
+	active: boolean;
+	filename?: string;
+	bytesWritten?: number;
+	durationSecs?: number;
+	error?: string;
+}
+
+export interface SRTOutputStatus {
+	active: boolean;
+	mode?: 'caller' | 'listener';
+	address?: string;
+	port?: number;
+	state?: string;
+	connections?: number;
+	bytesWritten?: number;
+	error?: string;
+}
+
+export interface SRTOutputConfig {
+	mode: 'caller' | 'listener';
+	address?: string;
+	port: number;
+	latency?: number;
+	streamID?: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -31,6 +58,8 @@ export interface ControlRoomState {
 	programPeak: [number, number];
 	tallyState: Record<string, TallyStatus>;
 	sources: Record<string, SourceInfo>;
+	recording?: RecordingStatus;
+	srtOutput?: SRTOutputStatus;
 	seq: number;
 	timestamp: number;
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus } from './switch-api';
+import type { SRTOutputConfig } from './types';
 
 describe('switch-api', () => {
 	beforeEach(() => {
@@ -206,5 +207,154 @@ describe('Transition API', () => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({}),
 		});
+	});
+});
+
+describe('Recording API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('should call startRecording with no outputDir', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, filename: 'rec-2026.ts' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await startRecording();
+		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+		expect(result.active).toBe(true);
+		expect(result.filename).toBe('rec-2026.ts');
+	});
+
+	it('should call startRecording with outputDir', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, filename: '/tmp/rec.ts' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await startRecording('/tmp');
+		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ outputDir: '/tmp' }),
+		});
+		expect(result.active).toBe(true);
+	});
+
+	it('should call stopRecording', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: false, bytesWritten: 1024000, durationSecs: 60 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await stopRecording();
+		expect(mockFetch).toHaveBeenCalledWith('/api/recording/stop', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+		expect(result.active).toBe(false);
+		expect(result.bytesWritten).toBe(1024000);
+	});
+
+	it('should call getRecordingStatus', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, filename: 'rec.ts', bytesWritten: 512000, durationSecs: 30 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await getRecordingStatus();
+		expect(mockFetch).toHaveBeenCalledWith('/api/recording/status');
+		expect(result.active).toBe(true);
+		expect(result.durationSecs).toBe(30);
+	});
+});
+
+describe('SRT Output API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('should call startSRTOutput with config', async () => {
+		const config: SRTOutputConfig = {
+			mode: 'caller',
+			address: '192.168.1.100',
+			port: 9000,
+			latency: 200,
+		};
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, mode: 'caller', address: '192.168.1.100', port: 9000 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await startSRTOutput(config);
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/start', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
+		});
+		expect(result.active).toBe(true);
+		expect(result.mode).toBe('caller');
+	});
+
+	it('should call startSRTOutput in listener mode', async () => {
+		const config: SRTOutputConfig = {
+			mode: 'listener',
+			port: 9001,
+			streamID: 'program',
+		};
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, mode: 'listener', port: 9001, connections: 0 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await startSRTOutput(config);
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/start', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
+		});
+		expect(result.active).toBe(true);
+		expect(result.mode).toBe('listener');
+	});
+
+	it('should call stopSRTOutput', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: false }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await stopSRTOutput();
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/stop', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+		expect(result.active).toBe(false);
+	});
+
+	it('should call getSRTOutputStatus', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ active: true, mode: 'listener', port: 9001, connections: 3, bytesWritten: 2048000 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await getSRTOutputStatus();
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/status');
+		expect(result.active).toBe(true);
+		expect(result.connections).toBe(3);
 	});
 });

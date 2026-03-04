@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus } from './types';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -73,6 +73,30 @@ export function setTransitionPosition(position: number): Promise<void> {
 
 export function fadeToBlack(): Promise<ControlRoomState> {
 	return post('/api/switch/ftb', {});
+}
+
+export function startRecording(outputDir?: string): Promise<RecordingStatus> {
+	return post('/api/recording/start', outputDir ? { outputDir } : {});
+}
+
+export function stopRecording(): Promise<RecordingStatus> {
+	return post('/api/recording/stop', {});
+}
+
+export function getRecordingStatus(): Promise<RecordingStatus> {
+	return request('/api/recording/status');
+}
+
+export function startSRTOutput(config: SRTOutputConfig): Promise<SRTOutputStatus> {
+	return post('/api/output/srt/start', config);
+}
+
+export function stopSRTOutput(): Promise<SRTOutputStatus> {
+	return post('/api/output/srt/stop', {});
+}
+
+export function getSRTOutputStatus(): Promise<SRTOutputStatus> {
+	return request('/api/output/srt/status');
 }
 
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
