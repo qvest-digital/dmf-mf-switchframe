@@ -29,6 +29,18 @@ Captured from Phase 1 and Phase 2 code reviews. Address these before or during t
 ### ~~Single state callback (OnStateChange overwrites)~~ RESOLVED in Phase 2
 - **Resolution:** Converted to fan-out callbacks via `OnStateChange()` appending to a slice. Multiple consumers (MoQ publisher, health monitor, etc.) now supported.
 
+### Program relay not bridged to Prism's MoQ relay
+- **File:** `server/cmd/switchframe/main.go` lines 83-91
+- **Issue:** `main.go` creates a `programRelay` for the switcher and separately calls `server.RegisterStream("program")`, which creates its own relay. Frames routed through the switcher's program relay don't reach MoQ viewers subscribed to "program" via Prism.
+- **Fix:** Either expose relay replacement in Prism's `distribution.Server`, or add a bridging viewer that copies frames from the switcher's relay to the server's relay.
+- **Priority:** High. Required for MoQ video playback (Phase 3).
+
+### Transition endpoint returns 501
+- **File:** `server/control/api.go` `handleTransition()`
+- **Issue:** Mix/wipe transitions are not yet implemented. The endpoint returns 501 Not Implemented.
+- **Fix:** Implement transition state machine in Phase 3/4.
+- **Priority:** Medium. Phase 4 feature.
+
 ### No context.Context on Switcher methods
 - **File:** `server/switcher/switcher.go`
 - **Issue:** `Cut()`, `SetPreview()`, etc. don't accept `context.Context`. Transitions in Phase 3+ will need cancellation (abort dissolve mid-transition).

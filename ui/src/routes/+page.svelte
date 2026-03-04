@@ -7,7 +7,7 @@
 	import TransitionControls from '../components/TransitionControls.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, getState } from '$lib/api/switch-api';
+	import { cut, setPreview, getState, fireAndForget } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 
 	const store = createControlRoomStore();
@@ -15,10 +15,10 @@
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
-			if (store.state.previewSource) cut(store.state.previewSource);
+			if (store.state.previewSource) fireAndForget(cut(store.state.previewSource));
 		},
-		onSetPreview: (key) => setPreview(key),
-		onHotPunch: (key) => cut(key),
+		onSetPreview: (key) => fireAndForget(setPreview(key)),
+		onHotPunch: (key) => fireAndForget(cut(key)),
 		onAutoTransition: () => {},
 		onFadeToBlack: () => {},
 		onToggleFullscreen: () => {

@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo } from './types';
 
-class SwitchApiError extends Error {
+export class SwitchApiError extends Error {
 	constructor(
 		public status: number,
 		message: string,
@@ -45,4 +45,9 @@ export function getState(): Promise<ControlRoomState> {
 
 export function getSources(): Promise<Record<string, SourceInfo>> {
 	return request('/api/sources');
+}
+
+/** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
+export function fireAndForget(promise: Promise<unknown>): void {
+	promise.catch((err) => console.warn('API call failed:', err));
 }

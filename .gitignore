@@ -1,6 +1,7 @@
 # Build artifacts
 bin/
 dist/
+server/switchframe
 node_modules/
 
 # OS files

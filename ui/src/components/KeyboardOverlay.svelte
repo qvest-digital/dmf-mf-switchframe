@@ -26,7 +26,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="overlay-backdrop" onclick={onclose} role="presentation">
-	<div class="overlay" onclick={(e) => e.stopPropagation()} onkeydown={handleKeydown} role="dialog" aria-label="Keyboard shortcuts" tabindex="-1">
+	<div class="overlay" onclick={(e) => e.stopPropagation()} onkeydown={handleKeydown} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
 		<h2>Keyboard Shortcuts</h2>
 		<table>
 			<thead>

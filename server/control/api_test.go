@@ -120,6 +120,72 @@ func TestHandleSetLabel(t *testing.T) {
 	}
 }
 
+func TestCutInvalidJSON(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/switch/cut", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCutEmptySource(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/switch/cut", strings.NewReader(`{"source":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPreviewInvalidJSON(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/switch/preview", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPreviewEmptySource(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/switch/preview", strings.NewReader(`{"source":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSetLabelInvalidJSON(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/sources/camera1/label", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestTransitionReturns501(t *testing.T) {
+	api, _ := setupTestAPI(t)
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+}
+
 func TestSourcesEndpoint(t *testing.T) {
 	api, _ := setupTestAPI(t)
 	req := httptest.NewRequest("GET", "/api/sources", nil)

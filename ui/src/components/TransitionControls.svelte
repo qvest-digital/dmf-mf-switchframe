@@ -1,13 +1,13 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { cut } from '$lib/api/switch-api';
+	import { cut, fireAndForget } from '$lib/api/switch-api';
 
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
 </script>
 
 <div class="transition-controls">
-	<button class="btn cut" onclick={() => cut(state.previewSource)} disabled={!state.previewSource}>
+	<button class="btn cut" onclick={() => fireAndForget(cut(state.previewSource))} disabled={!state.previewSource}>
 		CUT
 		<span class="shortcut">Space</span>
 	</button>

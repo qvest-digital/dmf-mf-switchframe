@@ -7,6 +7,9 @@ describe('KeyboardHandler', () => {
 		cut: ReturnType<typeof vi.fn>;
 		setPreview: ReturnType<typeof vi.fn>;
 		hotPunch: ReturnType<typeof vi.fn>;
+		autoTransition: ReturnType<typeof vi.fn>;
+		fadeToBlack: ReturnType<typeof vi.fn>;
+		toggleFullscreen: ReturnType<typeof vi.fn>;
 		toggleOverlay: ReturnType<typeof vi.fn>;
 	};
 
@@ -15,15 +18,18 @@ describe('KeyboardHandler', () => {
 			cut: vi.fn(),
 			setPreview: vi.fn(),
 			hotPunch: vi.fn(),
+			autoTransition: vi.fn(),
+			fadeToBlack: vi.fn(),
+			toggleFullscreen: vi.fn(),
 			toggleOverlay: vi.fn(),
 		};
 		handler = new KeyboardHandler({
 			onCut: actions.cut,
 			onSetPreview: actions.setPreview,
 			onHotPunch: actions.hotPunch,
-			onAutoTransition: vi.fn(),
-			onFadeToBlack: vi.fn(),
-			onToggleFullscreen: vi.fn(),
+			onAutoTransition: actions.autoTransition,
+			onFadeToBlack: actions.fadeToBlack,
+			onToggleFullscreen: actions.toggleFullscreen,
 			onToggleOverlay: actions.toggleOverlay,
 			getSourceKeys: () => ['cam1', 'cam2', 'cam3'],
 		});
@@ -73,6 +79,31 @@ describe('KeyboardHandler', () => {
 	it('Slash toggles keyboard overlay', () => {
 		press('Slash');
 		expect(actions.toggleOverlay).toHaveBeenCalled();
+	});
+
+	it('Enter dispatches auto-transition', () => {
+		press('Enter');
+		expect(actions.autoTransition).toHaveBeenCalled();
+	});
+
+	it('F1 dispatches fade-to-black', () => {
+		press('F1');
+		expect(actions.fadeToBlack).toHaveBeenCalled();
+	});
+
+	it('Backquote dispatches toggle-fullscreen', () => {
+		press('Backquote');
+		expect(actions.toggleFullscreen).toHaveBeenCalled();
+	});
+
+	it('Ctrl+Space does not dispatch cut', () => {
+		press('Space', { ctrlKey: true });
+		expect(actions.cut).not.toHaveBeenCalled();
+	});
+
+	it('Meta+Digit1 does not dispatch preview', () => {
+		press('Digit1', { metaKey: true });
+		expect(actions.setPreview).not.toHaveBeenCalled();
 	});
 
 	it('ignores events when input is focused', () => {

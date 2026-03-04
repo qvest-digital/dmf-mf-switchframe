@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, TallyStatus } from '$lib/api/types';
-	import { setPreview } from '$lib/api/switch-api';
+	import { setPreview, fireAndForget } from '$lib/api/switch-api';
 
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
@@ -20,7 +20,7 @@
 
 <div class="multiview">
 	{#each sourceKeys as key, i}
-		<button class="tile" style:outline-color={tallyColor(getTally(key))} onclick={() => setPreview(key)}>
+		<button class="tile" style:outline-color={tallyColor(getTally(key))} onclick={() => fireAndForget(setPreview(key))}>
 			<div class="tile-video" id="tile-{i}"></div>
 			<div class="tile-bar">
 				<span class="tile-num">{i + 1}</span>

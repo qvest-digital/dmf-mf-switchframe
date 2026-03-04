@@ -30,9 +30,13 @@ export class KeyboardHandler {
 	}
 
 	private handleKeydown(e: KeyboardEvent) {
-		// Ignore when focus is in an input/textarea/select
+		// Ignore when focus is in an input/textarea/select/contenteditable
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		if ((e.target as HTMLElement)?.isContentEditable) return;
+
+		// Ignore when modifier keys are held (avoid conflicts with browser shortcuts)
+		if (e.ctrlKey || e.metaKey || e.altKey) return;
 
 		// Digit1-Digit9: preview select or hot-punch
 		if (e.code.startsWith('Digit') && e.code.length === 6) {

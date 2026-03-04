@@ -1,4 +1,4 @@
-.PHONY: build test lint dev ui-install ui-dev ui-build ui-test test-all
+.PHONY: build test lint dev ui-install ui-dev ui-build ui-test ui-e2e test-all
 
 # Go server
 build:
@@ -23,8 +23,11 @@ ui-build:
 ui-test:
 	cd ui && npx vitest run
 
+ui-e2e:
+	cd ui && npx playwright test
+
 # Combined
-test-all: test ui-test
+test-all: test ui-test ui-e2e
 
 dev: build
 	@echo "Start Go server: ./bin/switchframe"

@@ -227,7 +227,10 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 // notifyStateChange calls all registered state callbacks.
 // Must be called WITHOUT holding s.mu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
-	for _, cb := range s.stateCallbacks {
+	s.mu.RLock()
+	cbs := s.stateCallbacks
+	s.mu.RUnlock()
+	for _, cb := range cbs {
 		cb(snapshot)
 	}
 }

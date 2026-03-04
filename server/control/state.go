@@ -56,15 +56,17 @@ func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 		slog.Error("failed to marshal state", "error", err)
 		return
 	}
-	select {
-	case cp.ch <- data:
-	default:
-		// Drop oldest, send newest
+	for {
 		select {
-		case <-cp.ch:
+		case cp.ch <- data:
+			return
 		default:
+			// Drop oldest to make room
+			select {
+			case <-cp.ch:
+			default:
+			}
 		}
-		cp.ch <- data
 	}
 }
 
