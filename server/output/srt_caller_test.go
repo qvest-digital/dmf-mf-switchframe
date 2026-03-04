@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockSRTConn implements the srtConn interface for testing without cgo.
+// mockSRTConn implements the srtConn interface for testing without real network I/O.
 type mockSRTConn struct {
 	connected atomic.Bool
 	written   atomic.Int64

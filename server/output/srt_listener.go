@@ -47,7 +47,7 @@ type SRTListener struct {
 	lastError    atomic.Value // string
 	startedAt    time.Time
 
-	// acceptFn is overridden in tests to avoid cgo.
+	// acceptFn is overridden in tests to avoid real network I/O.
 	// When set, Start() launches it in a background goroutine.
 	acceptFn func(ctx context.Context, config SRTListenerConfig) error
 }

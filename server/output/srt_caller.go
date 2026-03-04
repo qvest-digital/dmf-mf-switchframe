@@ -41,7 +41,7 @@ type SRTCaller struct {
 	lastError    atomic.Value // string
 	startedAt    time.Time
 
-	// connectFn is overridden in tests to avoid cgo.
+	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
 }
 
@@ -274,7 +274,7 @@ func (c *SRTCaller) resetBackoff() {
 
 // defaultSRTConnect is a placeholder connection function. The real SRT
 // connection wiring happens in main.go (Task 11). This keeps the output
-// package free of cgo imports for clean unit testing.
+// package free of srtgo imports for clean unit testing.
 func defaultSRTConnect(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
 	return nil, fmt.Errorf("SRT connect not configured (set connectFn)")
 }
