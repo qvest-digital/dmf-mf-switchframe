@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 // MixerConfig configures the AudioMixer.
@@ -29,15 +30,17 @@ type Channel struct {
 
 // AudioMixer mixes audio from multiple sources.
 type AudioMixer struct {
-	mu          sync.RWMutex
-	channels    map[string]*Channel
-	masterLevel float64 // dB, default 0.0
-	sampleRate  int
-	numChannels int
-	encoder     AudioEncoder
-	output      func(*media.AudioFrame)
-	passthrough bool
-	config      MixerConfig
+	mu           sync.RWMutex
+	channels     map[string]*Channel
+	masterLevel  float64 // dB, default 0.0
+	sampleRate   int
+	numChannels  int
+	encoder      AudioEncoder
+	output       func(*media.AudioFrame)
+	passthrough  bool
+	config       MixerConfig
+	programPeakL float64 // linear amplitude [0,1]
+	programPeakR float64 // linear amplitude [0,1]
 }
 
 // NewMixer creates an AudioMixer.
@@ -173,6 +176,49 @@ func (m *AudioMixer) recalcPassthrough() {
 	} else {
 		m.passthrough = false
 	}
+}
+
+// ProgramPeak returns the current program output peak levels in dBFS.
+// Returns [leftDBFS, rightDBFS]. Silence is -Inf.
+func (m *AudioMixer) ProgramPeak() [2]float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
+}
+
+// SetProgramPeak updates the stored program peak levels (linear amplitude).
+// Called after metering mixed PCM output.
+func (m *AudioMixer) SetProgramPeak(peakL, peakR float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.programPeakL = peakL
+	m.programPeakR = peakR
+}
+
+// ChannelStates returns a snapshot of all channel states for state broadcast.
+func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]internal.AudioChannel, len(m.channels))
+	for key, ch := range m.channels {
+		result[key] = internal.AudioChannel{Level: ch.level, Muted: ch.muted, AFV: ch.afv}
+	}
+	return result
+}
+
+// MasterLevel returns the current master level in dB.
+func (m *AudioMixer) MasterLevel() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.masterLevel
+}
+
+// SetMasterLevel sets the master output level in dB.
+func (m *AudioMixer) SetMasterLevel(levelDB float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.masterLevel = levelDB
+	m.recalcPassthrough()
 }
 
 // DBToLinear converts decibels to a linear gain multiplier.
