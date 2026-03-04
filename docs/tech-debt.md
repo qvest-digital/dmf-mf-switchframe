@@ -1,6 +1,6 @@
 # Tech Debt & Deferred Review Findings
 
-Captured from Phase 1 code review. Address these before or during the relevant phase.
+Captured from Phase 1 and Phase 2 code reviews. Address these before or during the relevant phase.
 
 ## Performance
 
@@ -26,11 +26,8 @@ Captured from Phase 1 code review. Address these before or during the relevant p
 
 ## Design
 
-### Single state callback (OnStateChange overwrites)
-- **File:** `server/switcher/switcher.go` `OnStateChange()` line ~50
-- **Issue:** Second call to `OnStateChange()` silently replaces the first callback. If multiple consumers need state updates (MoQ publisher + metrics + health), the second registration kills the first.
-- **Fix:** Change `stateCallback` to `[]func(internal.ControlRoomState)`, or use a channel/fan-out.
-- **Priority:** Medium. Fix when adding a second state consumer.
+### ~~Single state callback (OnStateChange overwrites)~~ RESOLVED in Phase 2
+- **Resolution:** Converted to fan-out callbacks via `OnStateChange()` appending to a slice. Multiple consumers (MoQ publisher, health monitor, etc.) now supported.
 
 ### No context.Context on Switcher methods
 - **File:** `server/switcher/switcher.go`
@@ -38,11 +35,8 @@ Captured from Phase 1 code review. Address these before or during the relevant p
 - **Fix:** Add `ctx context.Context` as first parameter when implementing transitions.
 - **Priority:** Low for Phase 1 (cuts are instantaneous). Required for Phase 3.
 
-### main.go standalone HTTP, not wired to Prism
-- **File:** `server/cmd/switchframe/main.go`
-- **Issue:** REST API runs on its own `http.Server` on `:8080`, separate from Prism's WebTransport/HTTP3 server. The `ExtraRoutes` extension point was added to Prism but isn't used yet.
-- **Fix:** When integrating full Prism server, use `ServerConfig.ExtraRoutes` to mount the API on Prism's mux.
-- **Priority:** Required for Phase 2 (browser UI needs both MoQ and REST on same origin).
+### ~~main.go standalone HTTP, not wired to Prism~~ RESOLVED in Phase 2
+- **Resolution:** main.go now uses `ServerConfig.ExtraRoutes` to mount the REST API on Prism's HTTP/3 mux. MoQ control track publisher wired to switcher state callbacks.
 
 ## Testing
 
@@ -59,3 +53,23 @@ Captured from Phase 1 code review. Address these before or during the relevant p
 - **Issue:** Fields like `TransitionDurationMs`, `TransitionPosition`, `InTransition`, `AudioLevels` are always zero-valued in Phase 1. Every JSON response includes them as `0`/`false`/`null`.
 - **Fix:** Add `omitempty` to future-phase fields. Be careful with `bool` (false is "empty" in Go).
 - **Priority:** Low. A few extra bytes per response.
+
+## Phase 2 — Frontend
+
+### REST polling fallback instead of MoQ
+- **File:** `ui/src/routes/+page.svelte`
+- **Issue:** The MoQ control track subscriber is implemented but WebTransport connection is not yet established. The UI falls back to REST polling (`GET /api/switch/state` every 500ms) for state updates.
+- **Fix:** Wire WebTransport connection in production mode. Keep REST polling as a fallback for browsers without WebTransport.
+- **Priority:** Medium. REST polling works but adds latency and server load compared to event-driven MoQ updates.
+
+### Vendored Prism TS files need sync strategy
+- **File:** `ui/src/lib/prism/` (35+ files)
+- **Issue:** Prism TypeScript modules are copied wholesale into the Switchframe repo. When Prism's TS source changes, the vendored copy must be manually updated. No automated diffing or version tracking exists.
+- **Fix:** Add a sync script or Makefile target that diffs `ui/src/lib/prism/` against Prism's source directory and reports changes. Consider git submodule or npm package for Prism's TS client.
+- **Priority:** Low for now (Prism TS API is stable). Will matter when Prism ships breaking changes.
+
+### MoQ video playback not wired
+- **File:** `ui/src/lib/prism/` (transport, decoder, renderer modules vendored but unused)
+- **Issue:** The vendored Prism modules include full MoQ video transport, WebCodecs decode, and WebGPU render pipeline. These are imported but not connected to the multiview tiles — tiles currently show placeholder content.
+- **Fix:** Wire `MoQMultiviewTransport` to per-source video decoders and renderers in each `SourceTile`.
+- **Priority:** High. Required for Phase 3 (live video in multiview tiles).
