@@ -5,6 +5,14 @@ import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 
+/** Diagnostics snapshot for a single source. */
+export interface SourceDiagnostics {
+	renderer: Record<string, unknown> | null;
+	videoDecoder: Record<string, unknown> | null;
+	audio: Record<string, unknown> | null;
+	transport: Record<string, unknown> | null;
+}
+
 /**
  * Per-source media state: decoder, buffer, and renderers.
  * Each source stream has its own MoQTransport, video decoder pipeline,
@@ -62,6 +70,8 @@ export interface MediaPipeline {
 		data: Uint8Array,
 		timestamp: number,
 	): void;
+	/** Get diagnostics from all active sources for debug snapshot. */
+	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
 }
 
 /**
@@ -327,6 +337,26 @@ export function createMediaPipeline(): MediaPipeline {
 		}
 	}
 
+	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
+		const result: Record<string, SourceDiagnostics> = {};
+		for (const [key, source] of sources) {
+			// Get diagnostics from first renderer (tile renderer)
+			let rendererDiag: Record<string, unknown> | null = null;
+			for (const renderer of source.renderers.values()) {
+				rendererDiag = renderer.getDiagnostics();
+				break;
+			}
+
+			result[key] = {
+				renderer: rendererDiag,
+				videoDecoder: await source.videoDecoder.getDiagnostics(),
+				audio: source.audioDecoder?.getDiagnostics() ?? null,
+				transport: source.transport?.getDiagnostics() ?? null,
+			};
+		}
+		return result;
+	}
+
 	return {
 		addSource,
 		removeSource,
@@ -339,5 +369,6 @@ export function createMediaPipeline(): MediaPipeline {
 		destroy,
 		feedVideoFrame,
 		feedAudioFrame,
+		getAllDiagnostics,
 	};
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMediaPipeline } from './media-pipeline';
+import { createMediaPipeline, type SourceDiagnostics } from './media-pipeline';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
@@ -53,7 +53,7 @@ vi.mock('$lib/prism/renderer', () => {
 			renderOnce = vi.fn();
 			destroy = vi.fn();
 			getVideoBuffer = vi.fn();
-			getDiagnostics = vi.fn();
+			getDiagnostics = vi.fn().mockReturnValue({ rafCount: 0, framesDrawn: 0 });
 			freeRunOnly = false;
 			maxResolution = 0;
 			externallyDriven = false;
@@ -243,5 +243,56 @@ describe('MediaPipeline', () => {
 
 		// Should not throw
 		pipeline.detachCanvas('cam1', 'program');
+	});
+
+	it('should return empty diagnostics when no sources', async () => {
+		const pipeline = createMediaPipeline();
+		const diag = await pipeline.getAllDiagnostics();
+		expect(diag).toEqual({});
+	});
+
+	it('should return diagnostics for all sources', async () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.addSource('cam2');
+
+		const diag = await pipeline.getAllDiagnostics();
+
+		// Both sources should be present
+		expect(Object.keys(diag)).toHaveLength(2);
+		expect(diag['cam1']).toBeDefined();
+		expect(diag['cam2']).toBeDefined();
+
+		// Each source should have the SourceDiagnostics shape
+		for (const key of ['cam1', 'cam2']) {
+			const sd: SourceDiagnostics = diag[key];
+			// No renderer attached, no audio configured, no transport connected
+			expect(sd.renderer).toBeNull();
+			expect(sd.videoDecoder).toBeDefined(); // async mock resolves to {}
+			expect(sd.audio).toBeNull(); // no audio decoder until track info
+			expect(sd.transport).toBeNull(); // not connected
+		}
+	});
+
+	it('should include renderer diagnostics when canvas attached', async () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		const canvas = document.createElement('canvas');
+		pipeline.attachCanvas('cam1', 'tile-cam1', canvas);
+
+		const diag = await pipeline.getAllDiagnostics();
+		// Renderer getDiagnostics was called (mock returns undefined by default)
+		expect(diag['cam1'].renderer).toBeDefined();
+	});
+
+	it('should include transport diagnostics when connected', async () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.connectSource('cam1');
+
+		const diag = await pipeline.getAllDiagnostics();
+		// Transport getDiagnostics was called (mock returns {})
+		expect(diag['cam1'].transport).toEqual({});
 	});
 });
