@@ -12,6 +12,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func setupTestAPI(t *testing.T) (*API, *switcher.Switcher) {
@@ -177,14 +178,176 @@ func TestSetLabelInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestTransitionReturns501(t *testing.T) {
-	api, _ := setupTestAPI(t)
-	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(`{}`))
+// setupTransitionTestAPI creates a test API with transition support configured.
+// Sources "camera1" and "camera2" are registered, and "camera1" is set on program.
+func setupTransitionTestAPI(t *testing.T) (*API, *switcher.Switcher) {
+	t.Helper()
+	programRelay := distribution.NewRelay()
+	sw := switcher.New(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+	r2 := distribution.NewRelay()
+	sw.RegisterSource("camera2", r2)
+	sw.SetTransitionConfig(switcher.TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(320, 240), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+	sw.Cut(context.Background(), "camera1")
+	api := NewAPI(sw)
+	return api, sw
+}
+
+func TestHandleTransition(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	body := `{"source":"camera2","type":"mix","durationMs":500}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var state internal.ControlRoomState
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !state.InTransition {
+		t.Error("expected InTransition=true")
+	}
+}
+
+func TestHandleTransitionBadType(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	body := `{"source":"camera2","type":"wipe","durationMs":500}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandleTransitionBadDuration(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	// Too short
+	body := `{"source":"camera2","type":"mix","durationMs":50}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	// Too long
+	body = `{"source":"camera2","type":"mix","durationMs":6000}`
+	req = httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("too long: status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandleTransitionPosition(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	// Start a transition first
+	body := `{"source":"camera2","type":"mix","durationMs":2000}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start transition: status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Set position
+	body = `{"position":0.5}`
+	req = httptest.NewRequest("POST", "/api/switch/transition/position", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestHandleTransitionPositionNoTransition(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	// No transition active — set position should fail
+	body := `{"position":0.5}`
+	req := httptest.NewRequest("POST", "/api/switch/transition/position", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+func TestHandleFTB(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	req := httptest.NewRequest("POST", "/api/switch/ftb", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var state internal.ControlRoomState
+	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !state.FTBActive {
+		t.Error("expected FTBActive=true")
+	}
+}
+
+func TestHandleFTBDuringMix(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	// Start a mix transition first
+	body := `{"source":"camera2","type":"mix","durationMs":2000}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start transition: status = %d; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// FTB during active mix should fail with 409
+	req = httptest.NewRequest("POST", "/api/switch/ftb", nil)
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
 	}
 }
 

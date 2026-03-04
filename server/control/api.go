@@ -7,6 +7,7 @@ package control
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -59,6 +60,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/cut", a.handleCut)
 	mux.HandleFunc("POST /api/switch/preview", a.handlePreview)
 	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)
+	mux.HandleFunc("POST /api/switch/transition/position", a.handleTransitionPosition)
+	mux.HandleFunc("POST /api/switch/ftb", a.handleFTB)
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
@@ -112,9 +115,88 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
-// handleTransition is a placeholder for mix/wipe transitions (Phase 3+).
+// transitionRequest is the JSON body for transition commands.
+type transitionRequest struct {
+	Source     string `json:"source"`
+	Type       string `json:"type"`
+	DurationMs int    `json:"durationMs"`
+}
+
+// handleTransition starts a mix or dip transition to the specified source.
 func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, `{"error":"transitions not yet implemented"}`, http.StatusNotImplemented)
+	var req transitionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Type != "mix" && req.Type != "dip" {
+		http.Error(w, `{"error":"type must be 'mix' or 'dip'"}`, http.StatusBadRequest)
+		return
+	}
+	if req.DurationMs < 100 || req.DurationMs > 5000 {
+		http.Error(w, `{"error":"durationMs must be 100-5000"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(errMsg, "already active") || strings.Contains(errMsg, "FTB is active") {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// transitionPositionRequest is the JSON body for the transition position endpoint.
+type transitionPositionRequest struct {
+	Position float64 `json:"position"`
+}
+
+// handleTransitionPosition sets the T-bar position during an active transition.
+func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
+	var req transitionPositionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Position < 0 || req.Position > 1 {
+		http.Error(w, `{"error":"position must be 0-1"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.switcher.SetTransitionPosition(r.Context(), req.Position); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// handleFTB starts or toggles a Fade to Black transition.
+func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
+	if err := a.switcher.FadeToBlack(r.Context()); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "active") {
+			status = http.StatusConflict
+		} else if strings.Contains(errMsg, "not configured") {
+			status = http.StatusNotImplemented
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleState returns the current ControlRoomState as JSON.
