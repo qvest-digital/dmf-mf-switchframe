@@ -582,3 +582,182 @@ func TestMixerIsChannelActive(t *testing.T) {
 	m.SetActive("cam1", true)
 	require.True(t, m.IsChannelActive("cam1"))
 }
+
+func TestMixerOnTransitionStart(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Before transition, no crossfade active
+	require.False(t, m.IsInTransitionCrossfade())
+
+	// Start transition
+	m.OnTransitionStart("cam1", "cam2", 1000)
+
+	require.True(t, m.IsInTransitionCrossfade(), "transition crossfade should be active")
+	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should start at 0")
+
+	// Both channels should be considered active during transition
+	// The new source channel must be activated so audio frames are accepted
+	m.mu.RLock()
+	ch2 := m.channels["cam2"]
+	active := ch2.active
+	m.mu.RUnlock()
+	require.True(t, active, "new source channel should be activated on transition start")
+}
+
+func TestMixerOnTransitionPosition(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", 1000)
+
+	// Update position
+	m.OnTransitionPosition(0.25)
+	require.InDelta(t, 0.25, m.TransitionPosition(), 0.001)
+
+	m.OnTransitionPosition(0.75)
+	require.InDelta(t, 0.75, m.TransitionPosition(), 0.001)
+}
+
+func TestMixerOnTransitionComplete(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionPosition(0.5)
+	require.True(t, m.IsInTransitionCrossfade())
+
+	m.OnTransitionComplete()
+
+	require.False(t, m.IsInTransitionCrossfade(), "transition crossfade should be cleared")
+	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should be reset")
+}
+
+func TestMixerTransitionCrossfadeGains(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", 1000)
+
+	// At position 0.0: old=1.0, new=0.0
+	m.OnTransitionPosition(0.0)
+	oldGain, newGain := m.TransitionGains()
+	require.InDelta(t, 1.0, oldGain, 0.001, "old gain at 0.0")
+	require.InDelta(t, 0.0, newGain, 0.001, "new gain at 0.0")
+
+	// At position 0.5: old≈0.707, new≈0.707
+	m.OnTransitionPosition(0.5)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.707, oldGain, 0.001, "old gain at 0.5")
+	require.InDelta(t, 0.707, newGain, 0.001, "new gain at 0.5")
+
+	// At position 1.0: old=0.0, new=1.0
+	m.OnTransitionPosition(1.0)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "old gain at 1.0")
+	require.InDelta(t, 1.0, newGain, 0.001, "new gain at 1.0")
+}
+
+func TestMixerTransitionGainsNotActive(t *testing.T) {
+	// When no transition is active, gains should return 1.0, 0.0
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	oldGain, newGain := m.TransitionGains()
+	require.InDelta(t, 1.0, oldGain, 0.001, "old gain when inactive")
+	require.InDelta(t, 0.0, newGain, 0.001, "new gain when inactive")
+}
+
+func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
+	// During a transition crossfade, IngestFrame should apply position-based
+	// gains to the from/to sources, multiplied with channel gain.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	fromPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	toPCM := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Set up decoders with known PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: fromPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
+	m.mu.Unlock()
+
+	// Start transition at 50%
+	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionPosition(0.5)
+
+	// Ingest from both sources — the mixer is in mixing mode (2 active channels)
+	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame2 := &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+
+	m.IngestFrame("cam1", frame1)
+	m.IngestFrame("cam2", frame2)
+
+	require.Equal(t, 1, len(outputFrames), "should produce one mixed output frame")
+
+	// At position 0.5: oldGain = cos(0.5·π/2) ≈ 0.707, newGain = sin(0.5·π/2) ≈ 0.707
+	// Both sources have 1.0 PCM at 0dB channel gain
+	// Expected mixed sample: 1.0*0.707 + 1.0*0.707 ≈ 1.414
+	expectedSum := math.Cos(0.5*math.Pi/2) + math.Sin(0.5*math.Pi/2)
+	require.Equal(t, 4, len(capturedPCM))
+	for i, s := range capturedPCM {
+		require.InDelta(t, expectedSum, s, 0.01, "sample %d should have transition gains applied", i)
+	}
+}

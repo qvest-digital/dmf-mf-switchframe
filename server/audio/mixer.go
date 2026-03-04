@@ -59,6 +59,12 @@ type AudioMixer struct {
 	crossfadePCM      map[string][]float32 // "from" and "to" PCM buffers
 	crossfadeDeadline time.Time            // timeout for crossfade completion
 
+	// Transition crossfade state: multi-frame crossfade synced with video transition.
+	transCrossfadeActive   bool
+	transCrossfadeFrom     string  // outgoing source key
+	transCrossfadeTo       string  // incoming source key
+	transCrossfadePosition float64 // 0.0 = fully old, 1.0 = fully new
+
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
 	programPeakR float64 // linear amplitude [0,1]
@@ -210,6 +216,76 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
 }
 
+// OnTransitionStart begins a multi-frame crossfade between old and new source,
+// synchronized with a video transition. The new source channel is activated so
+// its audio frames are accepted during the transition.
+func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, durationMs int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transCrossfadeActive = true
+	m.transCrossfadeFrom = oldSource
+	m.transCrossfadeTo = newSource
+	m.transCrossfadePosition = 0.0
+
+	// Ensure the incoming source's channel is active so frames are accepted
+	if ch, ok := m.channels[newSource]; ok {
+		ch.active = true
+	}
+	m.recalcPassthrough()
+}
+
+// OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
+// Called by the switcher as the video transition progresses.
+func (m *AudioMixer) OnTransitionPosition(position float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transCrossfadePosition = position
+}
+
+// OnTransitionComplete clears the transition crossfade state.
+// Called by the switcher when the video transition finishes.
+func (m *AudioMixer) OnTransitionComplete() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transCrossfadeActive = false
+	m.transCrossfadeFrom = ""
+	m.transCrossfadeTo = ""
+	m.transCrossfadePosition = 0.0
+	m.recalcPassthrough()
+}
+
+// IsInTransitionCrossfade returns whether a multi-frame transition crossfade is active.
+func (m *AudioMixer) IsInTransitionCrossfade() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.transCrossfadeActive
+}
+
+// TransitionPosition returns the current transition crossfade position (0.0–1.0).
+func (m *AudioMixer) TransitionPosition() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.transCrossfadePosition
+}
+
+// TransitionGains returns the equal-power crossfade gains for the old and new sources
+// based on the current transition position:
+//
+//	oldGain = cos(position × π/2)
+//	newGain = sin(position × π/2)
+//
+// When no transition is active, returns (1.0, 0.0).
+func (m *AudioMixer) TransitionGains() (oldGain, newGain float64) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.transCrossfadeActive {
+		return 1.0, 0.0
+	}
+	oldGain = math.Cos(m.transCrossfadePosition * math.Pi / 2)
+	newGain = math.Sin(m.transCrossfadePosition * math.Pi / 2)
+	return oldGain, newGain
+}
+
 // IsPassthrough returns whether the mixer is in passthrough mode.
 func (m *AudioMixer) IsPassthrough() bool {
 	m.mu.RLock()
@@ -290,6 +366,16 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	// Apply per-channel gain
 	gain := float32(DBToLinear(ch.level))
+
+	// Apply transition crossfade gain if active
+	if m.transCrossfadeActive {
+		if sourceKey == m.transCrossfadeFrom {
+			gain *= float32(math.Cos(m.transCrossfadePosition * math.Pi / 2))
+		} else if sourceKey == m.transCrossfadeTo {
+			gain *= float32(math.Sin(m.transCrossfadePosition * math.Pi / 2))
+		}
+	}
+
 	gainedPCM := make([]float32, len(pcm))
 	for i, s := range pcm {
 		gainedPCM[i] = s * gain
