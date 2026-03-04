@@ -147,6 +147,39 @@ func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 	require.False(t, status.Active)
 }
 
+func TestOutputManager_DebugSnapshot(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer mgr.Close()
+
+	snap := mgr.DebugSnapshot()
+	require.NotNil(t, snap["recording"], "expected recording in snapshot")
+	require.NotNil(t, snap["srt"], "expected srt in snapshot")
+	// viewer should be nil when no outputs active
+	require.Nil(t, snap["viewer"], "expected nil viewer when no outputs active")
+}
+
+func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer mgr.Close()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	snap := mgr.DebugSnapshot()
+	require.NotNil(t, snap["viewer"], "expected viewer snapshot when output active")
+
+	viewerSnap, ok := snap["viewer"].(map[string]any)
+	require.True(t, ok, "viewer snapshot should be a map")
+	require.Contains(t, viewerSnap, "video_sent")
+	require.Contains(t, viewerSnap, "audio_sent")
+	require.Contains(t, viewerSnap, "caption_sent")
+	require.Contains(t, viewerSnap, "video_dropped")
+	require.Contains(t, viewerSnap, "audio_dropped")
+	require.Contains(t, viewerSnap, "caption_dropped")
+}
+
 func TestOutputManager_Close(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)

@@ -164,5 +164,17 @@ func (v *OutputViewer) drain() {
 	}
 }
 
+// DebugSnapshot returns viewer metrics for debug snapshots.
+func (v *OutputViewer) DebugSnapshot() map[string]any {
+	return map[string]any{
+		"video_sent":      v.videoSent.Load(),
+		"audio_sent":      v.audioSent.Load(),
+		"caption_sent":    v.captionSent.Load(),
+		"video_dropped":   v.videoDropped.Load(),
+		"audio_dropped":   v.audioDropped.Load(),
+		"caption_dropped": v.captionDropped.Load(),
+	}
+}
+
 // Compile-time check that OutputViewer satisfies the Viewer interface.
 var _ distribution.Viewer = (*OutputViewer)(nil)

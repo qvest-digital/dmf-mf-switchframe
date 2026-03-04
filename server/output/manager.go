@@ -406,6 +406,22 @@ type OutputManagerStatus struct {
 	SRT       SRTOutputStatus  `json:"srt"`
 }
 
+// DebugSnapshot implements debug.SnapshotProvider.
+func (m *OutputManager) DebugSnapshot() map[string]any {
+	m.mu.Lock()
+	var viewerSnap map[string]any
+	if m.viewer != nil {
+		viewerSnap = m.viewer.DebugSnapshot()
+	}
+	m.mu.Unlock()
+
+	return map[string]any{
+		"viewer":    viewerSnap,
+		"recording": m.RecordingStatus(),
+		"srt":       m.SRTOutputStatus(),
+	}
+}
+
 // HasActiveOutputs returns true if at least one output is active.
 func (m *OutputManager) HasActiveOutputs() bool {
 	m.mu.Lock()
