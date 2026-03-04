@@ -16,15 +16,35 @@ type switchRequest struct {
 	Source string `json:"source"`
 }
 
+// AudioMixerAPI is the interface for audio mixer operations used by the REST API.
+type AudioMixerAPI interface {
+	SetLevel(sourceKey string, levelDB float64) error
+	SetMuted(sourceKey string, muted bool) error
+	SetAFV(sourceKey string, afv bool) error
+	SetMasterLevel(level float64)
+}
+
+// APIOption configures optional API dependencies.
+type APIOption func(*API)
+
+// WithMixer attaches an audio mixer to the API.
+func WithMixer(m AudioMixerAPI) APIOption {
+	return func(a *API) { a.mixer = m }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher *switcher.Switcher
+	mixer    AudioMixerAPI
 	mux      *http.ServeMux
 }
 
 // NewAPI creates an API that delegates to sw.
-func NewAPI(sw *switcher.Switcher) *API {
+func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
 	a := &API{switcher: sw, mux: http.NewServeMux()}
+	for _, opt := range opts {
+		opt(a)
+	}
 	a.registerRoutes()
 	return a
 }
@@ -42,6 +62,10 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
+	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
+	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
+	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
+	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
@@ -127,4 +151,120 @@ func (a *API) handleSources(w http.ResponseWriter, r *http.Request) {
 	state := a.switcher.State()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(state.Sources)
+}
+
+// --- Audio API ---
+
+// audioLevelRequest is the JSON body for the audio level endpoint.
+type audioLevelRequest struct {
+	Source string  `json:"source"`
+	Level  float64 `json:"level"`
+}
+
+// audioMuteRequest is the JSON body for the audio mute endpoint.
+type audioMuteRequest struct {
+	Source string `json:"source"`
+	Muted bool   `json:"muted"`
+}
+
+// audioAFVRequest is the JSON body for the audio AFV endpoint.
+type audioAFVRequest struct {
+	Source string `json:"source"`
+	AFV    bool   `json:"afv"`
+}
+
+// audioMasterRequest is the JSON body for the audio master level endpoint.
+type audioMasterRequest struct {
+	Level float64 `json:"level"`
+}
+
+// handleAudioLevel sets the audio level for a source channel.
+func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req audioLevelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetLevel(req.Source, req.Level); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleAudioMute sets the mute state for a source channel.
+func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req audioMuteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetMuted(req.Source, req.Muted); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleAudioAFV sets the audio-follow-video state for a source channel.
+func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req audioAFVRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetAFV(req.Source, req.AFV); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleAudioMaster sets the master output level.
+func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req audioMasterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	a.mixer.SetMasterLevel(req.Level)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
