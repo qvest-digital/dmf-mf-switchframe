@@ -7,6 +7,7 @@ const EMPTY_STATE: ControlRoomState = {
 	transitionDurationMs: 0,
 	transitionPosition: 0,
 	inTransition: false,
+	ftbActive: false,
 	audioLevels: null,
 	audioChannels: null,
 	masterLevel: 0,

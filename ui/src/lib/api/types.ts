@@ -24,6 +24,7 @@ export interface ControlRoomState {
 	transitionDurationMs: number;
 	transitionPosition: number;
 	inTransition: boolean;
+	ftbActive: boolean;
 	audioLevels: Record<string, number> | null;
 	audioChannels: Record<string, AudioChannel> | null;
 	masterLevel: number;
