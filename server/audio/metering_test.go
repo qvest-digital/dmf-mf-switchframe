@@ -105,6 +105,26 @@ func TestMixerChannelStates(t *testing.T) {
 	require.True(t, states["cam2"].Muted)
 }
 
+func TestMixer_DebugSnapshot(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	snap := m.DebugSnapshot()
+	if snap["mode"] != "passthrough" {
+		t.Errorf("expected passthrough, got %v", snap["mode"])
+	}
+	if snap["frames_passthrough"] != int64(0) {
+		t.Errorf("expected 0, got %v", snap["frames_passthrough"])
+	}
+	if snap["decode_errors"] != int64(0) {
+		t.Errorf("expected 0, got %v", snap["decode_errors"])
+	}
+}
+
 func TestMixerMasterLevelGetter(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,

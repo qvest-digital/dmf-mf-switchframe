@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -68,6 +69,14 @@ type AudioMixer struct {
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
 	programPeakR float64 // linear amplitude [0,1]
+
+	// Debug counters (atomic, no lock needed)
+	framesPassthrough atomic.Int64
+	framesMixed       atomic.Int64
+	crossfadeCount    atomic.Int64
+	crossfadeTimeouts atomic.Int64
+	decodeErrors      atomic.Int64
+	encodeErrors      atomic.Int64
 }
 
 // NewMixer creates an AudioMixer.
@@ -214,6 +223,7 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.crossfadeActive = true
 	m.crossfadePCM = make(map[string][]float32)
 	m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
+	m.crossfadeCount.Add(1)
 }
 
 // OnTransitionStart begins a multi-frame crossfade between old and new source,
@@ -336,6 +346,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	if m.passthrough {
 		m.mu.RUnlock()
 		m.output(frame)
+		m.framesPassthrough.Add(1)
 		return
 	}
 	m.mu.RUnlock()
@@ -360,6 +371,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Decode AAC → float32 PCM
 	pcm, err := ch.decoder.Decode(frame.Data)
 	if err != nil {
+		m.decodeErrors.Add(1)
 		m.mu.Unlock()
 		return
 	}
@@ -450,10 +462,12 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Encode mixed PCM → AAC
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
+		m.encodeErrors.Add(1)
 		m.mixBuffer = make(map[string][]float32)
 		m.mu.Unlock()
 		return
 	}
+	m.framesMixed.Add(1)
 
 	// Reset mix buffer for next cycle
 	m.mixBuffer = make(map[string][]float32)
@@ -503,6 +517,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Decode
 	pcm, err := ch.decoder.Decode(frame.Data)
 	if err != nil {
+		m.decodeErrors.Add(1)
 		m.mu.Unlock()
 		return
 	}
@@ -527,6 +542,11 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	if (!hasFrom || !hasTo) && !timedOut {
 		m.mu.Unlock()
 		return
+	}
+
+	// Track crossfade timeouts (timed out with only one source)
+	if timedOut && (!hasFrom || !hasTo) {
+		m.crossfadeTimeouts.Add(1)
 	}
 
 	// Apply equal-power crossfade (or use single source if timed out)
@@ -566,6 +586,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Encode
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
+		m.encodeErrors.Add(1)
 		m.crossfadeActive = false
 		m.mu.Unlock()
 		return
@@ -631,6 +652,40 @@ func (m *AudioMixer) MasterLevel() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.masterLevel
+}
+
+// DebugSnapshot implements debug.SnapshotProvider.
+func (m *AudioMixer) DebugSnapshot() map[string]any {
+	m.mu.RLock()
+	mode := "mixing"
+	if m.passthrough {
+		mode = "passthrough"
+	}
+	activeCount := 0
+	mutedCount := 0
+	for _, ch := range m.channels {
+		if ch.active {
+			activeCount++
+		}
+		if ch.muted {
+			mutedCount++
+		}
+	}
+	peak := [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
+	m.mu.RUnlock()
+
+	return map[string]any{
+		"mode":                mode,
+		"program_peak_dbfs":  peak,
+		"channels_active":    activeCount,
+		"channels_muted":     mutedCount,
+		"frames_passthrough": m.framesPassthrough.Load(),
+		"frames_mixed":       m.framesMixed.Load(),
+		"crossfade_count":    m.crossfadeCount.Load(),
+		"crossfade_timeouts": m.crossfadeTimeouts.Load(),
+		"decode_errors":      m.decodeErrors.Load(),
+		"encode_errors":      m.encodeErrors.Load(),
+	}
 }
 
 // DBToLinear converts decibels to a linear gain multiplier.
