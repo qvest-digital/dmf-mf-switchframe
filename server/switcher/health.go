@@ -73,6 +73,20 @@ func (hm *healthMonitor) status(sourceKey string) internal.SourceHealthStatus {
 	return hm.computeStatus(sourceKey, now)
 }
 
+// lastFrameAgoMs returns how many milliseconds ago the last frame was received
+// for the given source. Returns -1 if no frame has ever been recorded.
+func (hm *healthMonitor) lastFrameAgoMs(sourceKey string) int64 {
+	val, ok := hm.lastFrame.Load(sourceKey)
+	if !ok {
+		return -1
+	}
+	ns := val.(*atomic.Int64).Load()
+	if ns == 0 {
+		return -1
+	}
+	return time.Since(time.Unix(0, ns)).Milliseconds()
+}
+
 // computeStatus computes the health status for a source at a given time.
 func (hm *healthMonitor) computeStatus(sourceKey string, now time.Time) internal.SourceHealthStatus {
 	val, ok := hm.lastFrame.Load(sourceKey)

@@ -587,3 +587,89 @@ func TestAllAudioRoutedToMixer(t *testing.T) {
 	require.Equal(t, 2, len(mixerFrames), "both sources' audio should reach mixer")
 	mu.Unlock()
 }
+
+func TestSwitcher_DebugSnapshot(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Empty switcher snapshot.
+	snap := sw.DebugSnapshot()
+	require.Equal(t, "", snap["program_source"])
+	require.Equal(t, "", snap["preview_source"])
+	require.Equal(t, false, snap["in_transition"])
+	require.Equal(t, false, snap["ftb_active"])
+	require.Equal(t, uint64(0), snap["seq"])
+	require.Equal(t, int64(0), snap["idr_gate_events"])
+	require.Equal(t, int64(0), snap["last_idr_gate_duration_ms"])
+	require.Equal(t, int64(0), snap["transitions_started"])
+	require.Equal(t, int64(0), snap["transitions_completed"])
+
+	sources, ok := snap["sources"].(map[string]any)
+	require.True(t, ok, "sources should be map[string]any")
+	require.Len(t, sources, 0)
+
+	// Register sources and cut.
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	snap = sw.DebugSnapshot()
+	require.Equal(t, "cam1", snap["program_source"])
+	require.Equal(t, int64(1), snap["idr_gate_events"])
+
+	sources = snap["sources"].(map[string]any)
+	require.Len(t, sources, 2)
+
+	cam1Info, ok := sources["cam1"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, cam1Info["pending_idr"], "should be pending IDR after cut")
+
+	// Send keyframe to clear IDR gate.
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
+
+	snap = sw.DebugSnapshot()
+	sources = snap["sources"].(map[string]any)
+	cam1Info = sources["cam1"].(map[string]any)
+	require.Equal(t, false, cam1Info["pending_idr"], "should be cleared after keyframe")
+	require.Equal(t, int64(1), cam1Info["video_frames_in"])
+	require.GreaterOrEqual(t, snap["last_idr_gate_duration_ms"].(int64), int64(0))
+
+	// Second cut increments idr_gate_events.
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+	snap = sw.DebugSnapshot()
+	require.Equal(t, int64(2), snap["idr_gate_events"])
+	require.Equal(t, "cam2", snap["program_source"])
+	require.Equal(t, "cam1", snap["preview_source"])
+}
+
+func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+
+	// Before any frames: offline, lastFrameAgoMs = -1.
+	snap := sw.DebugSnapshot()
+	sources := snap["sources"].(map[string]any)
+	cam1Info := sources["cam1"].(map[string]any)
+	require.Equal(t, string(internal.SourceOffline), cam1Info["health_status"])
+	require.Equal(t, int64(-1), cam1Info["last_frame_ago_ms"])
+
+	// Send a frame (via cut + keyframe).
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
+
+	snap = sw.DebugSnapshot()
+	sources = snap["sources"].(map[string]any)
+	cam1Info = sources["cam1"].(map[string]any)
+	require.Equal(t, string(internal.SourceHealthy), cam1Info["health_status"])
+	// last_frame_ago_ms should be small (just sent a frame).
+	agoMs := cam1Info["last_frame_ago_ms"].(int64)
+	require.GreaterOrEqual(t, agoMs, int64(0))
+	require.Less(t, agoMs, int64(1000), "should be less than 1s since we just sent a frame")
+}

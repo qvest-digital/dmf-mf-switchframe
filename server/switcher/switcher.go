@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/ccx"
@@ -77,6 +78,13 @@ type Switcher struct {
 	inTransition    bool
 	ftbActive       bool
 	audioTransition audioTransitionHandler
+
+	// Debug instrumentation counters (atomic, lock-free)
+	idrGateEvents         atomic.Int64 // number of cuts (pendingIDR set)
+	idrGateStartNano      atomic.Int64 // when current IDR gate started (UnixNano)
+	lastIDRGateDurationMs atomic.Int64 // duration of last IDR gate
+	transitionsStarted    atomic.Int64
+	transitionsCompleted  atomic.Int64
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -219,6 +227,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.transEngine = engine
 	s.inTransition = true
 	s.previewSource = sourceKey
+	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
 	s.seq++
 	snapshot := s.buildStateLocked()
@@ -302,6 +311,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.transEngine = engine
 		s.inTransition = true
 		// ftbActive stays true during the reverse transition
+		s.transitionsStarted.Add(1)
 		audioHandler := s.audioTransition
 		s.seq++
 		snapshot := s.buildStateLocked()
@@ -345,6 +355,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.transEngine = engine
 	s.inTransition = true
 	s.ftbActive = true
+	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
 	s.seq++
 	snapshot := s.buildStateLocked()
@@ -415,6 +426,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	s.inTransition = false
 	s.transEngine = nil
+	s.transitionsCompleted.Add(1)
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -440,6 +452,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	audioHandler := s.audioTransition
 	s.inTransition = false
 	s.transEngine = nil
+	s.transitionsCompleted.Add(1)
 	if aborted {
 		s.ftbActive = false
 	}
@@ -468,6 +481,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	audioHandler := s.audioTransition
 	s.inTransition = false
 	s.transEngine = nil
+	s.transitionsCompleted.Add(1)
 	if !aborted {
 		s.ftbActive = false
 	}
@@ -536,6 +550,8 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		oldProgram = s.programSource
 		s.programSource = sourceKey
 		s.sources[sourceKey].pendingIDR = true
+		s.idrGateEvents.Add(1)
+		s.idrGateStartNano.Store(time.Now().UnixNano())
 		if oldProgram != "" {
 			s.previewSource = oldProgram
 		}
@@ -607,6 +623,36 @@ func (s *Switcher) State() internal.ControlRoomState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.buildStateLocked()
+}
+
+// DebugSnapshot returns a map of debug instrumentation data for diagnostics.
+func (s *Switcher) DebugSnapshot() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sources := make(map[string]any, len(s.sources))
+	for key, ss := range s.sources {
+		sources[key] = map[string]any{
+			"video_frames_in":   ss.viewer.videoSent.Load(),
+			"audio_frames_in":   ss.viewer.audioSent.Load(),
+			"health_status":     string(s.health.status(key)),
+			"last_frame_ago_ms": s.health.lastFrameAgoMs(key),
+			"pending_idr":       ss.pendingIDR,
+		}
+	}
+
+	return map[string]any{
+		"program_source":            s.programSource,
+		"preview_source":            s.previewSource,
+		"in_transition":             s.inTransition,
+		"ftb_active":                s.ftbActive,
+		"seq":                       s.seq,
+		"sources":                   sources,
+		"idr_gate_events":           s.idrGateEvents.Load(),
+		"last_idr_gate_duration_ms": s.lastIDRGateDurationMs.Load(),
+		"transitions_started":       s.transitionsStarted.Load(),
+		"transitions_completed":     s.transitionsCompleted.Load(),
+	}
 }
 
 // SourceKeys returns the keys of all registered sources.
@@ -715,6 +761,11 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	// Re-check under write lock (another goroutine may have cleared it).
 	if ss.pendingIDR {
 		ss.pendingIDR = false
+		// Record how long the IDR gate was active.
+		if startNano := s.idrGateStartNano.Load(); startNano > 0 {
+			dur := time.Since(time.Unix(0, startNano))
+			s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+		}
 	}
 	s.mu.Unlock()
 	s.programRelay.BroadcastVideo(frame)
