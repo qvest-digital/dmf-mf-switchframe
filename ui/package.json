@@ -12,6 +12,7 @@
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {
+		"@playwright/test": "^1.58.2",
 		"@sveltejs/adapter-auto": "^7.0.0",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.50.2",
@@ -19,6 +20,7 @@
 		"@testing-library/svelte": "^5.3.1",
 		"@webgpu/types": "^0.1.69",
 		"jsdom": "^28.1.0",
+		"serve": "^14.2.6",
 		"svelte": "^5.51.0",
 		"svelte-check": "^4.4.2",
 		"typescript": "^5.9.3",
