@@ -1,49 +1,55 @@
 package output
 
-// NOTE: This is a stub file created to allow the package to compile while
-// the SRT listener implementation (Task 8) is in progress. The test file
-// srt_listener_test.go was already committed and references these types.
-// Replace this stub with the real implementation.
-
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const (
-	defaultMaxConns    = 4
-	defaultListenerBuf = 64 // channel buffer per connection
+	defaultMaxConns    = 8
+	listenerChanBuffer = 64
 )
 
 // SRTListenerConfig holds configuration for SRT listener (pull mode).
 type SRTListenerConfig struct {
 	Port     int
 	Latency  int // ms, default 120
-	MaxConns int // max simultaneous connections
+	MaxConns int // max simultaneous connections, default 8
 }
 
-// listenerClient represents a single connected SRT client.
-type listenerClient struct {
-	id   string
-	conn srtConn
-	ch   chan []byte
+// listenerConn wraps an SRT connection with a buffered channel for non-blocking writes.
+type listenerConn struct {
+	conn   srtConn
+	dataCh chan []byte
+	id     string
+	cancel context.CancelFunc
 }
 
-// SRTListener accepts SRT connections and fans out MPEG-TS data.
+// SRTListener accepts SRT pull connections and fans out TS data to all clients.
+// Each connection has a buffered channel and a dedicated writer goroutine.
+// Write() sends data to all channels non-blocking: slow clients get dropped
+// data rather than stalling the pipeline.
 type SRTListener struct {
 	config SRTListenerConfig
 
-	mu       sync.Mutex
-	clients  map[string]*listenerClient
-	ctx      context.Context
-	cancel   context.CancelFunc
-	state    atomic.Value // AdapterState
-	started  time.Time
-	bytes    atomic.Int64
-	lastErr  string
+	mu    sync.RWMutex
+	conns map[string]*listenerConn
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	bytesWritten atomic.Int64
+	state        atomic.Value // AdapterState
+	lastError    atomic.Value // string
+	startedAt    time.Time
+
+	// acceptFn is overridden in tests to avoid cgo.
+	// When set, Start() launches it in a background goroutine.
+	acceptFn func(ctx context.Context, config SRTListenerConfig) error
 }
 
 // NewSRTListener creates an SRT listener adapter.
@@ -54,119 +60,140 @@ func NewSRTListener(config SRTListenerConfig) *SRTListener {
 	if config.MaxConns == 0 {
 		config.MaxConns = defaultMaxConns
 	}
+
 	l := &SRTListener{
-		config:  config,
-		clients: make(map[string]*listenerClient),
+		config: config,
+		conns:  make(map[string]*listenerConn),
 	}
 	l.state.Store(StateStopped)
+	l.lastError.Store("")
 	return l
 }
 
+// ID returns the adapter identifier.
 func (l *SRTListener) ID() string { return "srt-listener" }
 
+// Start begins listening for SRT connections.
 func (l *SRTListener) Start(ctx context.Context) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.ctx, l.cancel = context.WithCancel(ctx)
-	l.started = time.Now()
+	l.startedAt = time.Now()
+	l.bytesWritten.Store(0)
 	l.state.Store(StateActive)
+	l.lastError.Store("")
+
+	if l.acceptFn != nil {
+		go func() {
+			if err := l.acceptFn(l.ctx, l.config); err != nil {
+				slog.Warn("SRT listener accept error", "error", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
-func (l *SRTListener) Write(tsData []byte) (int, error) {
-	state := l.state.Load().(AdapterState)
-	if state != StateActive {
-		return 0, fmt.Errorf("listener not active")
-	}
-
-	l.bytes.Add(int64(len(tsData)))
-
-	l.mu.Lock()
-	clients := make([]*listenerClient, 0, len(l.clients))
-	for _, c := range l.clients {
-		clients = append(clients, c)
-	}
-	l.mu.Unlock()
-
-	for _, c := range clients {
-		cp := make([]byte, len(tsData))
-		copy(cp, tsData)
-		select {
-		case c.ch <- cp:
-		default:
-			// Drop frame for slow client
-		}
-	}
-
-	return len(tsData), nil
-}
-
-func (l *SRTListener) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.cancel != nil {
-		l.cancel()
-	}
-
-	for id, c := range l.clients {
-		c.conn.Close()
-		close(c.ch)
-		delete(l.clients, id)
-	}
-
-	l.state.Store(StateStopped)
-	return nil
-}
-
-func (l *SRTListener) Status() AdapterStatus {
-	state := l.state.Load().(AdapterState)
-	return AdapterStatus{
-		State:        state,
-		BytesWritten: l.bytes.Load(),
-		StartedAt:    l.started,
-		Error:        l.lastErr,
-	}
-}
-
+// AddConnection registers a new SRT pull connection.
+// Returns error if max connections reached.
 func (l *SRTListener) AddConnection(id string, conn srtConn) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if len(l.clients) >= l.config.MaxConns {
-		return fmt.Errorf("max connections (%d) reached", l.config.MaxConns)
+	if len(l.conns) >= l.config.MaxConns {
+		conn.Close()
+		return fmt.Errorf("max connections reached (%d)", l.config.MaxConns)
 	}
 
-	c := &listenerClient{
-		id:   id,
-		conn: conn,
-		ch:   make(chan []byte, defaultListenerBuf),
+	ctx, cancel := context.WithCancel(l.ctx)
+	lc := &listenerConn{
+		conn:   conn,
+		dataCh: make(chan []byte, listenerChanBuffer),
+		id:     id,
+		cancel: cancel,
 	}
-	l.clients[id] = c
+	l.conns[id] = lc
 
-	go l.clientWriter(c)
+	// Start writer goroutine for this connection
+	go l.connWriter(ctx, lc)
+
+	slog.Info("SRT listener client connected", "id", id, "total", len(l.conns))
 	return nil
 }
 
+// RemoveConnection disconnects and removes a client.
 func (l *SRTListener) RemoveConnection(id string) {
 	l.mu.Lock()
-	c, ok := l.clients[id]
+	lc, ok := l.conns[id]
 	if ok {
-		delete(l.clients, id)
+		delete(l.conns, id)
 	}
 	l.mu.Unlock()
 
 	if ok {
-		c.conn.Close()
+		lc.cancel()
+		lc.conn.Close()
+		slog.Info("SRT listener client disconnected", "id", id)
 	}
 }
 
+// ConnectionCount returns the number of active connections.
 func (l *SRTListener) ConnectionCount() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.clients)
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return len(l.conns)
 }
 
+// Write fans out TS data to all connected clients non-blocking.
+func (l *SRTListener) Write(tsData []byte) (int, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	for _, lc := range l.conns {
+		// Non-blocking send: drop data for slow clients
+		cp := make([]byte, len(tsData))
+		copy(cp, tsData)
+		select {
+		case lc.dataCh <- cp:
+		default:
+			// Slow client — drop this chunk
+		}
+	}
+
+	l.bytesWritten.Add(int64(len(tsData)))
+	return len(tsData), nil
+}
+
+// Close stops the listener and disconnects all clients.
+func (l *SRTListener) Close() error {
+	if l.cancel != nil {
+		l.cancel()
+	}
+
+	l.mu.Lock()
+	for id, lc := range l.conns {
+		lc.cancel()
+		lc.conn.Close()
+		delete(l.conns, id)
+	}
+	l.mu.Unlock()
+
+	l.state.Store(StateStopped)
+	return nil
+}
+
+// Status returns the current listener status.
+func (l *SRTListener) Status() AdapterStatus {
+	state := l.state.Load().(AdapterState)
+	errStr, _ := l.lastError.Load().(string)
+
+	return AdapterStatus{
+		State:        state,
+		BytesWritten: l.bytesWritten.Load(),
+		StartedAt:    l.startedAt,
+		Error:        errStr,
+	}
+}
+
+// SRTStatusSnapshot returns an SRTOutputStatus for ControlRoomState.
 func (l *SRTListener) SRTStatusSnapshot() SRTOutputStatus {
 	status := l.Status()
 	return SRTOutputStatus{
@@ -180,13 +207,27 @@ func (l *SRTListener) SRTStatusSnapshot() SRTOutputStatus {
 	}
 }
 
-func (l *SRTListener) clientWriter(c *listenerClient) {
-	for data := range c.ch {
-		if _, err := c.conn.Write(data); err != nil {
-			l.RemoveConnection(c.id)
+// connWriter drains the data channel and writes to the SRT connection.
+// On write error, the client is removed. Exits when the connection's
+// context is cancelled.
+func (l *SRTListener) connWriter(ctx context.Context, lc *listenerConn) {
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case data, ok := <-lc.dataCh:
+			if !ok {
+				return
+			}
+			if _, err := lc.conn.Write(data); err != nil {
+				slog.Warn("SRT listener write failed, removing client",
+					"id", lc.id, "error", err)
+				l.RemoveConnection(lc.id)
+				return
+			}
 		}
 	}
 }
 
+// Compile-time check that SRTListener satisfies the OutputAdapter interface.
 var _ OutputAdapter = (*SRTListener)(nil)
