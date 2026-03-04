@@ -6,6 +6,7 @@ export interface KeyboardActions {
 	onFadeToBlack: () => void;
 	onToggleFullscreen: () => void;
 	onToggleOverlay: () => void;
+	onSetTransitionType?: (type: string) => void;
 	getSourceKeys: () => string[];
 }
 
@@ -34,6 +35,22 @@ export class KeyboardHandler {
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 		if ((e.target as HTMLElement)?.isContentEditable) return;
+
+		// Alt+Digit shortcuts for transition type
+		if (e.altKey && !e.ctrlKey && !e.metaKey) {
+			if (e.code === 'Digit1') {
+				e.preventDefault();
+				e.stopPropagation();
+				this.actions.onSetTransitionType?.('mix');
+				return;
+			}
+			if (e.code === 'Digit2') {
+				e.preventDefault();
+				e.stopPropagation();
+				this.actions.onSetTransitionType?.('dip');
+				return;
+			}
+		}
 
 		// Ignore when modifier keys are held (avoid conflicts with browser shortcuts)
 		if (e.ctrlKey || e.metaKey || e.altKey) return;

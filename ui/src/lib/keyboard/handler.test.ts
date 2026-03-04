@@ -120,3 +120,57 @@ describe('KeyboardHandler', () => {
 		document.body.removeChild(input);
 	});
 });
+
+describe('Transition keyboard shortcuts', () => {
+	it('should handle Alt+1 for Mix type', () => {
+		const onSetTransitionType = vi.fn();
+		const handler = new KeyboardHandler({
+			onCut: vi.fn(),
+			onSetPreview: vi.fn(),
+			onHotPunch: vi.fn(),
+			onAutoTransition: vi.fn(),
+			onFadeToBlack: vi.fn(),
+			onToggleFullscreen: vi.fn(),
+			onToggleOverlay: vi.fn(),
+			onSetTransitionType,
+			getSourceKeys: () => ['cam1'],
+		});
+		handler.attach();
+
+		const event = new KeyboardEvent('keydown', {
+			code: 'Digit1',
+			altKey: true,
+			bubbles: true,
+		});
+		document.dispatchEvent(event);
+
+		expect(onSetTransitionType).toHaveBeenCalledWith('mix');
+		handler.detach();
+	});
+
+	it('should handle Alt+2 for Dip type', () => {
+		const onSetTransitionType = vi.fn();
+		const handler = new KeyboardHandler({
+			onCut: vi.fn(),
+			onSetPreview: vi.fn(),
+			onHotPunch: vi.fn(),
+			onAutoTransition: vi.fn(),
+			onFadeToBlack: vi.fn(),
+			onToggleFullscreen: vi.fn(),
+			onToggleOverlay: vi.fn(),
+			onSetTransitionType,
+			getSourceKeys: () => ['cam1'],
+		});
+		handler.attach();
+
+		const event = new KeyboardEvent('keydown', {
+			code: 'Digit2',
+			altKey: true,
+			bubbles: true,
+		});
+		document.dispatchEvent(event);
+
+		expect(onSetTransitionType).toHaveBeenCalledWith('dip');
+		handler.detach();
+	});
+});
