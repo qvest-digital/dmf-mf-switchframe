@@ -11,6 +11,12 @@ export interface SourceInfo {
 	codec?: string;
 }
 
+export interface AudioChannel {
+	level: number;  // dB (-inf to +12)
+	muted: boolean;
+	afv: boolean;   // audio-follows-video
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -19,6 +25,9 @@ export interface ControlRoomState {
 	transitionPosition: number;
 	inTransition: boolean;
 	audioLevels: Record<string, number> | null;
+	audioChannels: Record<string, AudioChannel> | null;
+	masterLevel: number;
+	programPeak: [number, number];
 	tallyState: Record<string, TallyStatus>;
 	sources: Record<string, SourceInfo>;
 	seq: number;

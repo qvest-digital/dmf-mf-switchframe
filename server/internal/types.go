@@ -31,18 +31,28 @@ type SourceInfo struct {
 	Codec         string             `json:"codec,omitempty"`
 }
 
+// AudioChannel describes the audio mixer state for a single source.
+type AudioChannel struct {
+	Level float64 `json:"level"` // dB (-inf to +12)
+	Muted bool    `json:"muted"`
+	AFV   bool    `json:"afv"` // audio-follows-video
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
-	ProgramSource        string                 `json:"programSource"`
-	PreviewSource        string                 `json:"previewSource"`
-	TransitionType       string                 `json:"transitionType"`
-	TransitionDurationMs int                    `json:"transitionDurationMs"`
-	TransitionPosition   float64                `json:"transitionPosition"`
-	InTransition         bool                   `json:"inTransition"`
-	AudioLevels          map[string]float64     `json:"audioLevels"`
-	TallyState           map[string]TallyStatus `json:"tallyState"`
-	Sources              map[string]SourceInfo  `json:"sources"`
-	Seq                  uint64                 `json:"seq"`
-	Timestamp            int64                  `json:"timestamp"`
+	ProgramSource        string                    `json:"programSource"`
+	PreviewSource        string                    `json:"previewSource"`
+	TransitionType       string                    `json:"transitionType"`
+	TransitionDurationMs int                       `json:"transitionDurationMs"`
+	TransitionPosition   float64                   `json:"transitionPosition"`
+	InTransition         bool                      `json:"inTransition"`
+	AudioLevels          map[string]float64        `json:"audioLevels"`
+	AudioChannels        map[string]AudioChannel   `json:"audioChannels"`
+	MasterLevel          float64                   `json:"masterLevel"`
+	ProgramPeak          [2]float64                `json:"programPeak"`
+	TallyState           map[string]TallyStatus    `json:"tallyState"`
+	Sources              map[string]SourceInfo     `json:"sources"`
+	Seq                  uint64                    `json:"seq"`
+	Timestamp            int64                     `json:"timestamp"`
 }
