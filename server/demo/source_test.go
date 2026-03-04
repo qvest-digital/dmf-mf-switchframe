@@ -75,7 +75,7 @@ func TestStartSources_RegistersAndLabels(t *testing.T) {
 	mixer := &mockMixer{}
 	ctx := context.Background()
 
-	stop := StartSources(ctx, sw, mixer, 4)
+	stop := StartSources(ctx, sw, mixer, 4, NewDemoStats())
 	defer stop()
 
 	sw.mu.Lock()
@@ -109,7 +109,7 @@ func TestStartSources_GeneratesFrames(t *testing.T) {
 	mixer := &mockMixer{}
 	ctx := context.Background()
 
-	stop := StartSources(ctx, sw, mixer, 1)
+	stop := StartSources(ctx, sw, mixer, 1, NewDemoStats())
 
 	// Add a viewer to cam1's relay to capture frames.
 	sw.mu.Lock()
@@ -145,7 +145,7 @@ func TestStartSources_StopCancels(t *testing.T) {
 	mixer := &mockMixer{}
 	ctx := context.Background()
 
-	stop := StartSources(ctx, sw, mixer, 2)
+	stop := StartSources(ctx, sw, mixer, 2, NewDemoStats())
 
 	sw.mu.Lock()
 	relay := sw.sources["cam1"]
@@ -194,4 +194,34 @@ func (f *frameCollector) SendAudio(frame *media.AudioFrame) {
 func (f *frameCollector) SendCaptions(_ *ccx.CaptionFrame) {}
 func (f *frameCollector) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{}
+}
+
+func TestDemoStats_DebugSnapshot(t *testing.T) {
+	stats := NewDemoStats()
+	stats.SetFileInfo("real_video", "test.ts", 100, 200)
+
+	src := stats.Source("cam1")
+	src.VideoSent.Add(50)
+	src.AudioSent.Add(50)
+	src.LoopsCompleted.Add(1)
+
+	snap := stats.DebugSnapshot()
+	if snap["mode"] != "real_video" {
+		t.Errorf("expected real_video, got %v", snap["mode"])
+	}
+	if snap["video_frames_loaded"] != int64(100) {
+		t.Errorf("expected 100, got %v", snap["video_frames_loaded"])
+	}
+
+	perSource, ok := snap["per_source"].(map[string]any)
+	if !ok {
+		t.Fatal("expected per_source map")
+	}
+	cam1, ok := perSource["cam1"].(map[string]any)
+	if !ok {
+		t.Fatal("expected cam1 map")
+	}
+	if cam1["video_sent"] != int64(50) {
+		t.Errorf("expected 50, got %v", cam1["video_sent"])
+	}
 }

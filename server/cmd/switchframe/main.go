@@ -178,7 +178,7 @@ func run() error {
 
 	if *demoFlag {
 		slog.Info("demo mode: starting 4 simulated camera sources")
-		stopDemo := demo.StartSources(ctx, sw, mixer, 4)
+		stopDemo := demo.StartSources(ctx, sw, mixer, 4, demo.NewDemoStats())
 		defer stopDemo()
 	}
 

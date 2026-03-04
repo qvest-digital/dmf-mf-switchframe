@@ -5,11 +5,73 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 )
+
+// DemoStats tracks per-source frame counts for debug snapshots.
+type DemoStats struct {
+	mode              string
+	file              string
+	videoFramesLoaded int64
+	audioFramesLoaded int64
+	sources           sync.Map // map[string]*SourceStats
+}
+
+// SourceStats tracks per-source counters.
+type SourceStats struct {
+	VideoSent      atomic.Int64
+	AudioSent      atomic.Int64
+	LoopsCompleted atomic.Int64
+}
+
+// NewDemoStats creates a new DemoStats instance.
+func NewDemoStats() *DemoStats {
+	return &DemoStats{}
+}
+
+// SetFileInfo records the mode and file info after demuxing.
+func (d *DemoStats) SetFileInfo(mode, file string, videoFrames, audioFrames int) {
+	d.mode = mode
+	d.file = file
+	d.videoFramesLoaded = int64(videoFrames)
+	d.audioFramesLoaded = int64(audioFrames)
+}
+
+// Source returns the SourceStats for a given key, creating one if needed.
+func (d *DemoStats) Source(key string) *SourceStats {
+	if val, ok := d.sources.Load(key); ok {
+		return val.(*SourceStats)
+	}
+	s := &SourceStats{}
+	actual, _ := d.sources.LoadOrStore(key, s)
+	return actual.(*SourceStats)
+}
+
+// DebugSnapshot returns a snapshot of all demo stats for the debug endpoint.
+func (d *DemoStats) DebugSnapshot() map[string]any {
+	perSource := make(map[string]any)
+	d.sources.Range(func(key, val any) bool {
+		s := val.(*SourceStats)
+		perSource[key.(string)] = map[string]any{
+			"video_sent":      s.VideoSent.Load(),
+			"audio_sent":      s.AudioSent.Load(),
+			"loops_completed": s.LoopsCompleted.Load(),
+		}
+		return true
+	})
+	return map[string]any{
+		"mode":                d.mode,
+		"file":                d.file,
+		"video_frames_loaded": d.videoFramesLoaded,
+		"audio_frames_loaded": d.audioFramesLoaded,
+		"per_source":          perSource,
+	}
+}
 
 // SwitcherAPI is the subset of switcher.Switcher needed by the demo package.
 type SwitcherAPI interface {
@@ -34,7 +96,7 @@ var (
 // sets cam1 as program / cam2 as preview, labels them "Camera 1" etc,
 // and starts frame generation goroutines at ~30fps.
 // Returns a stop function that cancels all generators.
-func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int) func() {
+func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int, stats *DemoStats) func() {
 	ctx, cancel := context.WithCancel(ctx)
 
 	relays := make([]*distribution.Relay, n)
@@ -62,9 +124,14 @@ func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int) fu
 		}
 	}
 
+	// Record synthetic mode info.
+	if stats != nil {
+		stats.SetFileInfo("synthetic", "", 0, 0)
+	}
+
 	// Start frame generators.
 	for i := range n {
-		go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1))
+		go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1), stats)
 	}
 
 	slog.Info("demo: started simulated sources", "count", n)
@@ -73,7 +140,7 @@ func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int) fu
 
 // generateFrames pumps video+audio frames into a relay at ~30fps.
 // Every 30th frame is a keyframe (1 per second). PTS uses 90kHz clock.
-func generateFrames(ctx context.Context, relay *distribution.Relay, key string) {
+func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *DemoStats) {
 	ticker := time.NewTicker(33 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -108,6 +175,9 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string) 
 					Codec:      "h264",
 				})
 			}
+			if stats != nil {
+				stats.Source(key).VideoSent.Add(1)
+			}
 
 			relay.BroadcastAudio(&media.AudioFrame{
 				PTS:        pts,
@@ -115,6 +185,9 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string) 
 				SampleRate: 48000,
 				Channels:   2,
 			})
+			if stats != nil {
+				stats.Source(key).AudioSent.Add(1)
+			}
 
 			frameNum++
 		}
