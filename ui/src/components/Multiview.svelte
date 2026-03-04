@@ -21,7 +21,7 @@
 <div class="multiview">
 	{#each sourceKeys as key, i}
 		<button class="tile" style:outline-color={tallyColor(getTally(key))} onclick={() => fireAndForget(setPreview(key))}>
-			<div class="tile-video" id="tile-{i}"></div>
+			<canvas class="tile-video" id="tile-{key}" width="320" height="180"></canvas>
 			<div class="tile-bar">
 				<span class="tile-num">{i + 1}</span>
 				<span class="tile-name">{state.sources[key].label || key}</span>
