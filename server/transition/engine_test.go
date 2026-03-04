@@ -152,3 +152,102 @@ func TestEngineTransitionType(t *testing.T) {
 
 	e.Stop()
 }
+
+func TestEngineIngestProducesOutput(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+
+	// Ingest from source A (stored but doesn't trigger output)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 0, len(*outputs), "source A alone should not produce output")
+	mu.Unlock()
+
+	// Ingest from source B (triggers blend+output)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "source B should trigger output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineIngestOnlyFromParticipants(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+
+	e.IngestFrame("cam3", []byte{0x00, 0x00, 0x00, 0x01})
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "only cam1+cam2 should produce output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineIngestWhileIdle(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 0, len(*outputs))
+	mu.Unlock()
+}
+
+func TestEngineFTBIngestTriggersOnFromSource(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "", TransitionFTB, 1000))
+
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "FTB: source A should trigger output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineMultipleFrames(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	for i := 0; i < 5; i++ {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+	}
+
+	mu.Lock()
+	require.Equal(t, 5, len(*outputs), "each B frame with existing A should produce output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineAutoCompletes(t *testing.T) {
+	e, mu, _, completions := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50)) // 50ms
+
+	for i := 0; i < 20; i++ {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+		time.Sleep(10 * time.Millisecond)
+		if e.State() == StateIdle {
+			break
+		}
+	}
+
+	mu.Lock()
+	require.GreaterOrEqual(t, len(*completions), 1, "should have completed")
+	require.True(t, (*completions)[0], "should be completed, not aborted")
+	mu.Unlock()
+}
