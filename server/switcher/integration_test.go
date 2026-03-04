@@ -9,6 +9,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // Integration tests verify the full pipeline: source relays → switcher → program relay.
@@ -345,4 +346,51 @@ func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
 	require.Contains(t, lastState.AudioChannels, "cam1")
 	require.InDelta(t, -6.0, lastState.AudioChannels["cam1"].Level, 0.001)
 	statesMu.Unlock()
+}
+
+func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
+	})
+	defer mixer.Close()
+
+	sw.SetMixer(mixer)
+
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	mixer.AddChannel("cam1")
+	mixer.AddChannel("cam2")
+	mixer.SetAFV("cam1", true)
+	mixer.SetAFV("cam2", true)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Start transition — audio should enter transition crossfade
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+	require.True(t, mixer.IsInTransitionCrossfade())
+
+	// Set position — audio should track
+	sw.SetTransitionPosition(context.Background(), 0.5)
+	require.InDelta(t, 0.5, mixer.TransitionPosition(), 0.01)
+
+	// Abort — audio should exit crossfade
+	sw.AbortTransition()
+	require.False(t, mixer.IsInTransitionCrossfade())
 }

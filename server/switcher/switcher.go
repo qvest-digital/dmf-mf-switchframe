@@ -99,6 +99,9 @@ func (s *Switcher) SetMixer(m audioStateProvider) {
 	if handler, ok := m.(audioCutHandler); ok {
 		s.audioCut = handler
 	}
+	if handler, ok := m.(audioTransitionHandler); ok {
+		s.audioTransition = handler
+	}
 }
 
 // Close stops the health monitor and unregisters all sources.
