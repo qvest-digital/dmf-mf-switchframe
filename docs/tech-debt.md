@@ -1,6 +1,6 @@
 # Tech Debt & Deferred Review Findings
 
-Captured from Phase 1, Phase 2, Phase 3, and Phase 4 code reviews. Address these before or during the relevant phase.
+Captured from Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 code reviews. Address these before or during the relevant phase.
 
 ## Performance
 
@@ -96,8 +96,31 @@ Captured from Phase 1, Phase 2, Phase 3, and Phase 4 code reviews. Address these
 - **Fix:** Init GPUDevice during page load, create pipeline with WGSL shader.
 - **Priority:** Low. Canvas 2D dissolve is visually identical for the operator.
 
-### No AVC1↔Annex B conversion in transition pipeline
-- **File:** `server/transition/openh264_decoder.go`, `openh264_encoder.go`
-- **Issue:** OpenH264 expects Annex B but Prism stores AVC1 format.
-- **Fix:** Use Prism's `mp4ff/avc` package for conversion.
-- **Priority:** High. Required for real video sources. Mock codecs work without conversion.
+### ~~No AVC1↔Annex B conversion in transition pipeline~~ RESOLVED in Phase 5
+- **Resolution:** Created shared `server/codec/` package with `AVC1ToAnnexB()` and `AnnexBToAVC1()` functions. Used by both transition pipeline and output muxer.
+
+## Phase 5 — Recording + SRT Output
+
+### Recording has no file rotation
+- **File:** `server/output/recorder.go`
+- **Issue:** Recording creates a single file that grows unbounded. No automatic rotation by time or size.
+- **Fix:** Add configurable rotation (e.g., every 1 hour or every 4GB).
+- **Priority:** Medium.
+
+### No multi-destination SRT output
+- **File:** `server/output/manager.go`
+- **Issue:** Only one SRT output at a time (caller or listener, not both).
+- **Fix:** Allow multiple SRT outputs to be active simultaneously.
+- **Priority:** Low. Single output sufficient for MVP.
+
+### SRT connection not wired to srtgo yet
+- **File:** `server/output/srt_caller.go`, `srt_listener.go`
+- **Issue:** SRT adapters use injectable functions (connectFn/acceptFn) with placeholders. Real srtgo wiring not yet implemented in main.go.
+- **Fix:** Import srtgo and wire real connection functions.
+- **Priority:** High for production use.
+
+### Ring buffer Write() may overflow silently
+- **File:** `server/output/ringbuf.go`
+- **Issue:** When ring buffer overflows during SRT reconnection, data is silently discarded. The Overflowed() flag is available but the OutputManager doesn't currently check it.
+- **Fix:** OutputManager should monitor Overflowed() and request keyframe after reconnection.
+- **Priority:** Medium.
