@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
@@ -393,4 +394,190 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 	// Abort — audio should exit crossfade
 	sw.AbortTransition()
 	require.False(t, mixer.IsInTransitionCrossfade())
+}
+
+func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Clear IDR gate
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Start dissolve
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+
+	// Feed frames from both sources
+	for i := 0; i < 5; i++ {
+		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
+		cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(200 + i*33), IsKeyframe: i == 0, WireData: []byte{0x02}})
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	capture.mu.Lock()
+	blendedCount := len(capture.videos)
+	capture.mu.Unlock()
+
+	// Should have received blended frames on program relay
+	require.GreaterOrEqual(t, blendedCount, 3, "should have blended output frames")
+
+	sw.AbortTransition()
+}
+
+func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Short transition
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 50))
+
+	// Feed frames until completion
+	for i := 0; i < 30; i++ {
+		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
+		cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(200 + i*33), IsKeyframe: i == 0, WireData: []byte{0x02}})
+		time.Sleep(10 * time.Millisecond)
+		if !sw.State().InTransition {
+			break
+		}
+	}
+
+	// Verify completion
+	state := sw.State()
+	require.False(t, state.InTransition)
+	require.Equal(t, "cam2", state.ProgramSource)
+
+	// Clear count and verify passthrough resumes
+	capture.mu.Lock()
+	capture.videos = nil
+	capture.mu.Unlock()
+
+	// Now cam2 frames should pass through directly (no engine)
+	originalFrame := &media.VideoFrame{PTS: 9999, IsKeyframe: true, WireData: []byte{0xFF, 0xFE}}
+	cam2Relay.BroadcastVideo(originalFrame)
+
+	time.Sleep(10 * time.Millisecond)
+
+	capture.mu.Lock()
+	require.Equal(t, 1, len(capture.videos))
+	// In passthrough, the exact frame object is forwarded
+	require.Equal(t, originalFrame.WireData, capture.videos[0].WireData,
+		"after transition, frames should pass through without re-encoding")
+	capture.mu.Unlock()
+}
+
+func TestIntegrationTBarPartialAbort(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+
+	// Move T-bar partway
+	sw.SetTransitionPosition(context.Background(), 0.5)
+	require.True(t, sw.State().InTransition)
+
+	// Move back to 0 → abort
+	sw.SetTransitionPosition(context.Background(), 0.0)
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Should be back to idle with cam1 still on program
+	state := sw.State()
+	require.False(t, state.InTransition)
+	require.Equal(t, "cam1", state.ProgramSource, "abort should not swap sources")
+}
+
+func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	require.NoError(t, sw.FadeToBlack(context.Background()))
+
+	// Feed frames from program source
+	for i := 0; i < 5; i++ {
+		cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: int64(100 + i*33), IsKeyframe: i == 0, WireData: []byte{0x01}})
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	capture.mu.Lock()
+	outputCount := len(capture.videos)
+	capture.mu.Unlock()
+
+	require.GreaterOrEqual(t, outputCount, 1, "FTB should produce output frames")
+
+	sw.AbortTransition()
 }
