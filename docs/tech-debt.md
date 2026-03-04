@@ -1,6 +1,6 @@
 # Tech Debt & Deferred Review Findings
 
-Captured from Phase 1, Phase 2, and Phase 3 code reviews. Address these before or during the relevant phase.
+Captured from Phase 1, Phase 2, Phase 3, and Phase 4 code reviews. Address these before or during the relevant phase.
 
 ## Performance
 
@@ -23,11 +23,8 @@ Captured from Phase 1, Phase 2, and Phase 3 code reviews. Address these before o
 ### ~~Program relay not bridged to Prism's MoQ relay~~ RESOLVED in Phase 3
 - **Resolution:** Restructured main.go to use relay from `server.RegisterStream("program")` directly. Switcher's BroadcastVideo/Audio goes directly to MoQ viewers.
 
-### Transition endpoint returns 501
-- **File:** `server/control/api.go` `handleTransition()`
-- **Issue:** Mix/wipe transitions are not yet implemented. The endpoint returns 501 Not Implemented.
-- **Fix:** Implement transition state machine in Phase 4.
-- **Priority:** Medium. Phase 4 feature.
+### ~~Transition endpoint returns 501~~ RESOLVED in Phase 4
+- **Resolution:** Full transition REST API implemented: `/api/transition` (POST auto/manual), `/api/transition/position` (PUT T-bar), `/api/ftb` (POST fade to black). TransitionEngine handles Mix, Dip to Black, and FTB.
 
 ### ~~No context.Context on Switcher methods~~ RESOLVED in Phase 3
 - **Resolution:** Added `ctx context.Context` as first parameter to `Cut`, `SetPreview`, `SetLabel`.
@@ -78,3 +75,29 @@ Captured from Phase 1, Phase 2, and Phase 3 code reviews. Address these before o
 - **Issue:** The video playback manager tracks sources and decoder state, but actual frame decode → canvas rendering is not wired. Canvas elements exist in tiles and program/preview windows but show black.
 - **Fix:** Connect playback manager to vendored Prism decoder/renderer when WebTransport delivers video tracks.
 - **Priority:** High. Required for live video display.
+
+## Phase 4 — Transitions
+
+### OpenH264 cgo bindings require system library
+- **File:** `server/transition/openh264_cgo.go`, `openh264_decoder.go`, `openh264_encoder.go`
+- **Issue:** Direct cgo bindings to system `openh264` library via pkg-config. Requires `openh264` installed via Homebrew (macOS) or apt (Linux). No pure-Go fallback.
+- **Fix:** Consider build tags to allow compile without cgo for development/testing.
+- **Priority:** Low. Same pattern as fdk-aac.
+
+### FTB reverse toggle not implemented
+- **File:** `server/switcher/switcher.go` `FadeToBlack()`
+- **Issue:** FTB toggle off (unfade from black) is a simple state reset, not a reverse transition animation.
+- **Fix:** Add reverse mode to TransitionEngine.
+- **Priority:** Medium.
+
+### WebGPU dissolve not implemented (Canvas 2D only)
+- **File:** `ui/src/lib/video/dissolve.ts`
+- **Issue:** The dissolve renderer always uses Canvas 2D fallback. WebGPU path is designed but not wired.
+- **Fix:** Init GPUDevice during page load, create pipeline with WGSL shader.
+- **Priority:** Low. Canvas 2D dissolve is visually identical for the operator.
+
+### No AVC1↔Annex B conversion in transition pipeline
+- **File:** `server/transition/openh264_decoder.go`, `openh264_encoder.go`
+- **Issue:** OpenH264 expects Annex B but Prism stores AVC1 format.
+- **Fix:** Use Prism's `mp4ff/avc` package for conversion.
+- **Priority:** High. Required for real video sources. Mock codecs work without conversion.
