@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func main() {
@@ -119,6 +120,16 @@ func run() error {
 		mixer.IngestFrame(sourceKey, frame)
 	})
 	sw.SetMixer(mixer)
+
+	// Configure transition engine with OpenH264 codec factories
+	sw.SetTransitionConfig(switcher.TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewOpenH264Decoder()
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewOpenH264Encoder(w, h, bitrate, fps)
+		},
+	})
 
 	// Create REST API now that switcher and mixer exist.
 	api = control.NewAPI(sw, control.WithMixer(mixer))
