@@ -7,6 +7,11 @@ import { VideoRenderBuffer } from "./video-render-buffer";
 const SHADER_SOURCE = /* wgsl */ `
 struct TileRect {
 	rect: vec4f,
+	borderColor: vec4f,
+	borderWidth: f32,
+	_pad1: f32,
+	_pad2: f32,
+	_pad3: f32,
 };
 
 struct VertexOutput {
@@ -39,6 +44,13 @@ struct VertexOutput {
 }
 
 @fragment fn fs(in: VertexOutput) -> @location(0) vec4f {
+	let bw = tile.borderWidth;
+	if (tile.borderColor.a > 0.0 && bw > 0.0) {
+		if (in.uv.x < bw || in.uv.x > 1.0 - bw ||
+		    in.uv.y < bw || in.uv.y > 1.0 - bw) {
+			return tile.borderColor;
+		}
+	}
 	return textureSampleBaseClampToEdge(tex, samp, in.uv);
 }
 `;
@@ -51,6 +63,13 @@ const ADAPTIVE_GAIN = 0.002;           // rate adjustment per frame of error
 const ADAPTIVE_MAX_CORRECTION = 0.02;  // hard clamp: +/- 2% speed
 const ADAPTIVE_DEAD_ZONE = 1;          // no correction within +/- 1 frame of target
 const PTS_DISCONTINUITY_US = 1_000_000; // 1 second backward jump = reset clock
+
+const TALLY_COLORS: Record<string, [number, number, number, number]> = {
+	program:    [0.8, 0.0, 0.0, 1.0],      // #CC0000 red
+	preview:    [0.0, 0.667, 0.0, 1.0],     // #00AA00 green
+	transition: [0.8, 0.533, 0.133, 1.0],   // #CC8822 amber
+	idle:       [0.0, 0.0, 0.0, 0.0],       // transparent
+};
 
 interface TileSlot {
 	buffer: VideoRenderBuffer;
@@ -166,7 +185,7 @@ export class WebGPUCompositor {
 			entries: [
 				{ binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
 				{ binding: 1, visibility: GPUShaderStage.FRAGMENT, externalTexture: {} },
-				{ binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } },
+				{ binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
 			],
 		});
 
@@ -211,7 +230,7 @@ export class WebGPUCompositor {
 		this.tiles = buffers.map((buf) => ({
 			buffer: buf,
 			uniformBuffer: this.device!.createBuffer({
-				size: 16,
+				size: 48,
 				usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 			}),
 			lastFrame: null,
@@ -230,6 +249,16 @@ export class WebGPUCompositor {
 		}));
 
 		this.updateTransforms();
+	}
+
+	setTally(tileIndex: number, tallyState: string): void {
+		if (!this.device) return;
+		const slot = this.tiles[tileIndex];
+		if (!slot) return;
+		const color = TALLY_COLORS[tallyState] || TALLY_COLORS.idle;
+		const borderWidth = color[3] > 0 ? 0.015 : 0;
+		const data = new Float32Array([...color, borderWidth, 0, 0, 0]);
+		this.device.queue.writeBuffer(slot.uniformBuffer, 16, data);
 	}
 
 	private updateTransforms(): void {
