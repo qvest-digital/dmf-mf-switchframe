@@ -39,22 +39,17 @@ func run() error {
 		"fingerprint", cert.FingerprintBase64(),
 		"expires", cert.NotAfter.Format(time.RFC3339))
 
-	// Create program relay for switched output.
-	programRelay := distribution.NewRelay()
-
-	// Create switcher.
-	sw := switcher.New(programRelay)
-	defer sw.Close()
-
-	// Create REST API.
-	api := control.NewAPI(sw)
+	// Deferred pointer: closures below capture sw before it's assigned.
+	// Safe because OnStreamRegistered is only called when external SRT
+	// sources connect (after server.Start()), by which time sw is set.
+	var sw *switcher.Switcher
 
 	// Create channel-based state publisher for MoQ control track.
 	controlPub := control.NewChannelPublisher(16)
-	sw.OnStateChange(controlPub.Publish)
 
-	// Start health monitor (checks every second).
-	sw.StartHealthMonitor(1 * time.Second)
+	// Create REST API (captures sw pointer; called during server.Start()
+	// mux setup, after sw is initialized below).
+	var api *control.API
 
 	addr := ":8080"
 
@@ -65,10 +60,18 @@ func run() error {
 			api.RegisterOnMux(mux)
 		},
 		OnStreamRegistered: func(key string, relay *distribution.Relay) {
+			// RegisterStream("program") triggers this callback immediately,
+			// before sw is initialized. Guard against that.
+			if key == "program" {
+				return
+			}
 			slog.Info("stream registered, adding source", "key", key)
 			sw.RegisterSource(key, relay)
 		},
 		OnStreamUnregistered: func(key string) {
+			if key == "program" {
+				return
+			}
 			slog.Info("stream unregistered, removing source", "key", key)
 			sw.UnregisterSource(key)
 		},
@@ -80,14 +83,19 @@ func run() error {
 		return fmt.Errorf("create distribution server: %w", err)
 	}
 
-	// Register the program relay so MoQ viewers can subscribe to "program".
-	server.RegisterStream("program")
-	// Replace the auto-created relay with our programRelay by wiring
-	// the switcher's output into the server's relay for "program".
-	// TODO: Prism doesn't expose relay replacement; for now the program
-	// relay is separate. Viewers watch "program" via the server's relay,
-	// and we bridge frames in a future integration step. This is a known
-	// gap documented in tech-debt.md.
+	// Get Prism's relay for "program" — MoQ viewers subscribe to this.
+	programRelay := server.RegisterStream("program")
+
+	// Create switcher with Prism's relay so frames reach MoQ viewers.
+	sw = switcher.New(programRelay)
+	defer sw.Close()
+
+	// Create REST API now that switcher exists.
+	api = control.NewAPI(sw)
+
+	// Wire state publisher and health monitor.
+	sw.OnStateChange(controlPub.Publish)
+	sw.StartHealthMonitor(1 * time.Second)
 
 	slog.Info("starting Prism distribution server", "addr", addr)
 	return server.Start(ctx)

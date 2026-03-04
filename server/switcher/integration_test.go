@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
 )
@@ -131,6 +132,29 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	if capture.audios[0].PTS != 100 {
 		t.Errorf("audio PTS = %d, want 100", capture.audios[0].PTS)
 	}
+	capture.mu.Unlock()
+}
+
+func TestProgramRelayFromPrismServer(t *testing.T) {
+	// Simulate the pattern used in restructured main.go:
+	// Get a relay (as RegisterStream would return), create switcher with it.
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("moq-viewer")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut("cam1"))
+
+	// Send keyframe — should flow through switcher to program relay viewer.
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}})
+	time.Sleep(10 * time.Millisecond)
+
+	capture.mu.Lock()
+	require.Equal(t, 1, len(capture.videos), "frame should reach MoQ viewer via program relay")
 	capture.mu.Unlock()
 }
 
