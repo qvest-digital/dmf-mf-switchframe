@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
 )
 
@@ -215,4 +216,150 @@ func TestIntegrationAudioWithMixerHandler(t *testing.T) {
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.audios))
 	capture.mu.Unlock()
+}
+
+func TestIntegrationMixerPassthrough(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Create a mixer that outputs to program relay.
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			programRelay.BroadcastAudio(frame)
+		},
+	})
+	defer mixer.Close()
+
+	// Wire mixer to switcher.
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mixer.IngestFrame(sourceKey, frame)
+	})
+	sw.SetMixer(mixer)
+
+	// Register source and add mixer channel.
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	mixer.AddChannel("cam1")
+	require.NoError(t, mixer.SetAFV("cam1", true))
+
+	// Cut to cam1 — AFV activates it.
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	mixer.OnProgramChange("cam1")
+
+	// Clear IDR gate.
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
+
+	// Mixer should be in passthrough (single active source at 0dB).
+	require.True(t, mixer.IsPassthrough())
+
+	// Send audio — should pass through to program relay.
+	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	time.Sleep(10 * time.Millisecond)
+
+	capture.mu.Lock()
+	require.Equal(t, 1, len(capture.audios), "audio should reach program via passthrough")
+	require.Equal(t, int64(100), capture.audios[0].PTS)
+	capture.mu.Unlock()
+}
+
+func TestIntegrationMixerAFVOnCut(t *testing.T) {
+	programRelay := newTestRelay()
+	capture := newMockProgramViewer("capture")
+	programRelay.AddViewer(capture)
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			programRelay.BroadcastAudio(frame)
+		},
+	})
+	defer mixer.Close()
+
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mixer.IngestFrame(sourceKey, frame)
+	})
+	sw.SetMixer(mixer)
+
+	// Register two sources.
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	mixer.AddChannel("cam1")
+	mixer.AddChannel("cam2")
+	require.NoError(t, mixer.SetAFV("cam1", true))
+	require.NoError(t, mixer.SetAFV("cam2", true))
+
+	// Cut to cam1.
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	mixer.OnProgramChange("cam1")
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
+
+	require.True(t, mixer.IsChannelActive("cam1"))
+	require.False(t, mixer.IsChannelActive("cam2"))
+
+	// Send audio from cam1 (active) — should arrive.
+	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	time.Sleep(10 * time.Millisecond)
+
+	capture.mu.Lock()
+	require.Equal(t, 1, len(capture.audios))
+	capture.mu.Unlock()
+
+	// Cut to cam2 — cam2 activates, cam1 deactivates.
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+	mixer.OnProgramChange("cam2")
+	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 150, IsKeyframe: true})
+
+	require.True(t, mixer.IsChannelActive("cam2"))
+	require.False(t, mixer.IsChannelActive("cam1"))
+}
+
+func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer mixer.Close()
+
+	sw.SetMixer(mixer)
+
+	// Register source and add mixer channel.
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	mixer.AddChannel("cam1")
+	require.NoError(t, mixer.SetLevel("cam1", -6.0))
+
+	// Track state changes.
+	var lastState internal.ControlRoomState
+	var statesMu sync.Mutex
+	sw.OnStateChange(func(state internal.ControlRoomState) {
+		statesMu.Lock()
+		lastState = state
+		statesMu.Unlock()
+	})
+
+	// Trigger a state change.
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	statesMu.Lock()
+	require.NotNil(t, lastState.AudioChannels)
+	require.Contains(t, lastState.AudioChannels, "cam1")
+	require.InDelta(t, -6.0, lastState.AudioChannels["cam1"].Level, 0.001)
+	statesMu.Unlock()
 }
