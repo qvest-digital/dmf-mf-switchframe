@@ -75,8 +75,12 @@ export function fadeToBlack(): Promise<ControlRoomState> {
 	return post('/api/switch/ftb', {});
 }
 
-export function startRecording(outputDir?: string): Promise<RecordingStatus> {
-	return post('/api/recording/start', outputDir ? { outputDir } : {});
+export function startRecording(options?: {
+	outputDir?: string;
+	rotateAfterMins?: number;
+	maxFileSizeMB?: number;
+}): Promise<RecordingStatus> {
+	return post('/api/recording/start', options ?? {});
 }
 
 export function stopRecording(): Promise<RecordingStatus> {

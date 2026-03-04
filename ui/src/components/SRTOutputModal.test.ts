@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import SRTOutputModal from './SRTOutputModal.svelte';
 
 const baseState = {
@@ -10,8 +10,7 @@ const baseState = {
 	transitionPosition: 0,
 	inTransition: false,
 	ftbActive: false,
-	audioLevels: null,
-	audioChannels: null,
+	audioChannels: undefined,
 	masterLevel: 0,
 	programPeak: [0, 0] as [number, number],
 	tallyState: { cam1: 'program' as const, cam2: 'preview' as const },
@@ -90,5 +89,20 @@ describe('SRTOutputModal', () => {
 		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
 		const modal = container.querySelector('.srt-modal');
 		expect(modal).toBeTruthy();
+	});
+
+	it('should disable Start button when caller mode and address is empty', () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		const startBtn = container.querySelector('.start-btn') as HTMLButtonElement;
+		expect(startBtn.disabled).toBe(true);
+	});
+
+	it('should enable Start button in listener mode even without address', async () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		// Switch to listener mode
+		const listenerRadio = container.querySelector('input[value="listener"]') as HTMLInputElement;
+		await fireEvent.click(listenerRadio);
+		const startBtn = container.querySelector('.start-btn') as HTMLButtonElement;
+		expect(startBtn.disabled).toBe(false);
 	});
 });

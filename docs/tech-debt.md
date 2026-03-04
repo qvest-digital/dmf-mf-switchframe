@@ -64,17 +64,11 @@ Captured from Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 code reviews. Addr
 ### ~~Audio crossfade not wired to production code path~~ RESOLVED
 - **Resolution:** `Switcher.Cut()` now auto-calls `mixer.OnCut(oldProgram, newProgram)` and `mixer.OnProgramChange(newProgram)` via the `audioCutHandler` interface. Added 50ms crossfade timeout — if the outgoing source stops delivering frames, the crossfade completes with only the incoming source's audio.
 
-### PFL manager is stub-only
-- **File:** `ui/src/lib/audio/pfl.ts`
-- **Issue:** PFL management API is implemented but actual audio decode/routing through Web Audio API is not wired. The `enablePFL` function creates placeholder entries but doesn't decode source audio to speakers.
-- **Fix:** Wire PrismAudioDecoder → AudioContext → GainNode for PFL routing when WebTransport video sources are connected.
-- **Priority:** Low. PFL is operator convenience, not required for basic operation.
+### ~~PFL manager is stub-only~~ RESOLVED in Phase 6
+- **Resolution:** Wired real `PrismAudioDecoder` instances with shared `AudioContext`. Per-source decode with metering enabled. `enablePFL(sourceKey)` unmutes target decoder, mutes previous. `getSourceLevels()` returns peak/RMS from ring buffer metering. `getPlaybackPTS()` provides A/V sync clock.
 
-### Video playback manager not connected to canvas rendering
-- **File:** `ui/src/lib/video/playback.ts`, `ui/src/components/SourceTile.svelte`
-- **Issue:** The video playback manager tracks sources and decoder state, but actual frame decode → canvas rendering is not wired. Canvas elements exist in tiles and program/preview windows but show black.
-- **Fix:** Connect playback manager to vendored Prism decoder/renderer when WebTransport delivers video tracks.
-- **Priority:** High. Required for live video display.
+### ~~Video playback manager not connected to canvas rendering~~ RESOLVED in Phase 6
+- **Resolution:** Full pipeline wired: `MoQTransport` → `PrismVideoDecoder` → `VideoRenderBuffer` → `PrismRenderer` (rAF loop). Canvas attachment via `attachCanvas(sourceKey, canvas)`. A/V sync via audio decoder playback PTS. Reactive `$effect` in `+page.svelte` syncs sources and rebinds canvases on program/preview changes.
 
 ## Phase 4 — Transitions
 
@@ -84,11 +78,8 @@ Captured from Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 code reviews. Addr
 - **Fix:** Consider build tags to allow compile without cgo for development/testing.
 - **Priority:** Low. Same pattern as fdk-aac.
 
-### FTB reverse toggle not implemented
-- **File:** `server/switcher/switcher.go` `FadeToBlack()`
-- **Issue:** FTB toggle off (unfade from black) is a simple state reset, not a reverse transition animation.
-- **Fix:** Add reverse mode to TransitionEngine.
-- **Priority:** Medium.
+### ~~FTB reverse toggle not implemented~~ RESOLVED in Phase 6
+- **Resolution:** Added `TransitionFTBReverse` type with inverted blend position (`1.0 - pos`). FTB toggle-off creates a smooth reverse transition. `handleFTBReverseComplete()` clears `ftbActive` on completion.
 
 ### WebGPU dissolve not implemented (Canvas 2D only)
 - **File:** `ui/src/lib/video/dissolve.ts`
@@ -101,11 +92,8 @@ Captured from Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 code reviews. Addr
 
 ## Phase 5 — Recording + SRT Output
 
-### Recording has no file rotation
-- **File:** `server/output/recorder.go`
-- **Issue:** Recording creates a single file that grows unbounded. No automatic rotation by time or size.
-- **Fix:** Add configurable rotation (e.g., every 1 hour or every 4GB).
-- **Priority:** Medium.
+### ~~Recording has no file rotation~~ RESOLVED in Phase 6
+- **Resolution:** Added `RecorderConfig` with `RotateAfter` (default 1h) and `MaxFileSize` (default unlimited). Sequential naming `program_YYYYMMDD_HHMMSS_NNN.ts`. API accepts `rotateAfterMins` and `maxFileSizeMB` params.
 
 ### No multi-destination SRT output
 - **File:** `server/output/manager.go`
@@ -113,14 +101,8 @@ Captured from Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5 code reviews. Addr
 - **Fix:** Allow multiple SRT outputs to be active simultaneously.
 - **Priority:** Low. Single output sufficient for MVP.
 
-### SRT connection not wired to srtgo yet
-- **File:** `server/output/srt_caller.go`, `srt_listener.go`
-- **Issue:** SRT adapters use injectable functions (connectFn/acceptFn) with placeholders. Real srtgo wiring not yet implemented in main.go.
-- **Fix:** Import srtgo and wire real connection functions.
-- **Priority:** High for production use.
+### ~~SRT connection not wired to srtgo yet~~ RESOLVED in Phase 6
+- **Resolution:** Created `srt_wire.go` with real `zsiec/srtgo` (pure Go) wrappers. `SRTConnect()` wraps `srt.Dial()`, `SRTAcceptLoop()` wraps `srt.Listen()` + accept loop. Injected into OutputManager from `main.go` via `SetSRTWiring()`.
 
-### Ring buffer Write() may overflow silently
-- **File:** `server/output/ringbuf.go`
-- **Issue:** When ring buffer overflows during SRT reconnection, data is silently discarded. The Overflowed() flag is available but the OutputManager doesn't currently check it.
-- **Fix:** OutputManager should monitor Overflowed() and request keyframe after reconnection.
-- **Priority:** Medium.
+### ~~Ring buffer Write() may overflow silently~~ RESOLVED in Phase 6
+- **Resolution:** Added `onReconnect(overflowed bool)` callback to `SRTCaller`. OutputManager sets the callback when creating SRT callers — logs warning and broadcasts state on overflow. Existing `Overflowed()` flag still drives keyframe-resume logic in reconnect loop.

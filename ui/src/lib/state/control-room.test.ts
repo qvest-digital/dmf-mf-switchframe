@@ -19,7 +19,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: { cam1: 'program', cam2: 'preview' },
 			sources: {
 				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy', lastFrameTime: 0 },
@@ -43,7 +43,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: {},
 			sources: {},
 			timestamp: 0,
@@ -56,7 +56,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: {},
 			sources: {},
 			timestamp: 0,
@@ -75,7 +75,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: {},
 			sources: {},
 			timestamp: 0,
@@ -88,7 +88,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: {},
 			sources: {},
 			timestamp: 0,
@@ -105,7 +105,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: {},
 			sources: {
 				cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
@@ -126,7 +126,7 @@ describe('control-room store', () => {
 			transitionDurationMs: 0,
 			transitionPosition: 0,
 			inTransition: false,
-			audioLevels: null,
+
 			tallyState: { cam1: 'program' },
 			sources: {
 				cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/internal"
@@ -29,20 +30,17 @@ func healthStatusFromAge(age time.Duration) internal.SourceHealthStatus {
 type healthMonitor struct {
 	mu         sync.RWMutex
 	sources    map[string]bool                         // all registered source keys
-	lastFrame  map[string]time.Time                    // last frame time per source
+	lastFrame  sync.Map                                // map[string]*atomic.Int64 (UnixNano)
 	lastStatus map[string]internal.SourceHealthStatus  // last broadcast status per source
 	running    bool
 	stopCh     chan struct{}
-	callback   func(internal.ControlRoomState)
 }
 
-func newHealthMonitor(callback func(internal.ControlRoomState)) *healthMonitor {
+func newHealthMonitor() *healthMonitor {
 	return &healthMonitor{
 		sources:    make(map[string]bool),
-		lastFrame:  make(map[string]time.Time),
 		lastStatus: make(map[string]internal.SourceHealthStatus),
 		stopCh:     make(chan struct{}),
-		callback:   callback,
 	}
 }
 
@@ -53,24 +51,36 @@ func (hm *healthMonitor) registerSource(sourceKey string) {
 }
 
 func (hm *healthMonitor) recordFrame(sourceKey string) {
-	hm.mu.Lock()
-	hm.lastFrame[sourceKey] = time.Now()
-	hm.mu.Unlock()
+	now := time.Now().UnixNano()
+
+	// Load-or-store an *atomic.Int64 for this source.
+	if val, ok := hm.lastFrame.Load(sourceKey); ok {
+		val.(*atomic.Int64).Store(now)
+		return
+	}
+
+	// First frame for this source: store a new atomic.
+	v := &atomic.Int64{}
+	v.Store(now)
+	if actual, loaded := hm.lastFrame.LoadOrStore(sourceKey, v); loaded {
+		// Another goroutine beat us; use the existing entry.
+		actual.(*atomic.Int64).Store(now)
+	}
 }
 
 func (hm *healthMonitor) status(sourceKey string) internal.SourceHealthStatus {
-	hm.mu.RLock()
-	defer hm.mu.RUnlock()
-	return hm.computeStatusLocked(sourceKey, time.Now())
+	now := time.Now()
+	return hm.computeStatus(sourceKey, now)
 }
 
-// computeStatusLocked computes the health status for a source at a given time.
-// Caller must hold at least hm.mu.RLock().
-func (hm *healthMonitor) computeStatusLocked(sourceKey string, now time.Time) internal.SourceHealthStatus {
-	lastTime, ok := hm.lastFrame[sourceKey]
+// computeStatus computes the health status for a source at a given time.
+func (hm *healthMonitor) computeStatus(sourceKey string, now time.Time) internal.SourceHealthStatus {
+	val, ok := hm.lastFrame.Load(sourceKey)
 	if !ok {
 		return internal.SourceOffline
 	}
+	ns := val.(*atomic.Int64).Load()
+	lastTime := time.Unix(0, ns)
 	return healthStatusFromAge(now.Sub(lastTime))
 }
 
@@ -110,7 +120,7 @@ func (hm *healthMonitor) checkForChanges() bool {
 	changed := false
 	now := time.Now()
 	for key := range hm.sources {
-		newStatus := hm.computeStatusLocked(key, now)
+		newStatus := hm.computeStatus(key, now)
 		if prev, ok := hm.lastStatus[key]; !ok || prev != newStatus {
 			hm.lastStatus[key] = newStatus
 			changed = true
@@ -122,9 +132,9 @@ func (hm *healthMonitor) checkForChanges() bool {
 func (hm *healthMonitor) removeSource(sourceKey string) {
 	hm.mu.Lock()
 	delete(hm.sources, sourceKey)
-	delete(hm.lastFrame, sourceKey)
 	delete(hm.lastStatus, sourceKey)
 	hm.mu.Unlock()
+	hm.lastFrame.Delete(sourceKey)
 }
 
 func (hm *healthMonitor) stop() {

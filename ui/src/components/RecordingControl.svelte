@@ -8,7 +8,7 @@
 	const isActive = $derived(state.recording?.active ?? false);
 	const hasError = $derived(!isActive && !!state.recording?.error);
 
-	const duration = $derived(() => {
+	const duration = $derived.by(() => {
 		const secs = state.recording?.durationSecs ?? 0;
 		const mins = Math.floor(secs / 60);
 		const remainSecs = Math.floor(secs % 60);
@@ -28,7 +28,7 @@
 	<div class="recording-control rec-active">
 		<span class="rec-dot"></span>
 		<span class="rec-label">REC</span>
-		<span class="rec-duration">{duration()}</span>
+		<span class="rec-duration">{duration}</span>
 		<button class="rec-stop" onclick={handleStop}>STOP</button>
 	</div>
 {:else if hasError}

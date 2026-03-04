@@ -285,6 +285,109 @@ func TestSRTCaller_CloseWithoutStart(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+
+	// Write small data (no overflow)
+	c.ringBuf.Write(make([]byte, 188))
+
+	var callbackOverflowed atomic.Bool
+	callbackOverflowed.Store(true) // default to true so we can verify it was set to false
+	var callbackCalled atomic.Bool
+	c.onReconnect = func(overflowed bool) {
+		callbackOverflowed.Store(overflowed)
+		callbackCalled.Store(true)
+	}
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return callbackCalled.Load()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.False(t, callbackOverflowed.Load())
+	c.Close()
+}
+
+func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 256, // small buffer
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+
+	// Write more data than the buffer can hold to trigger overflow
+	c.ringBuf.Write(make([]byte, 512))
+
+	var callbackOverflowed atomic.Bool
+	var callbackCalled atomic.Bool
+	c.onReconnect = func(overflowed bool) {
+		callbackOverflowed.Store(overflowed)
+		callbackCalled.Store(true)
+	}
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return callbackCalled.Load()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.True(t, callbackOverflowed.Load())
+	c.Close()
+}
+
+func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+	// onReconnect is nil by default
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// No panic — nil callback is safe
+	c.Close()
+}
+
 func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{

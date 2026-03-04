@@ -10,9 +10,11 @@
 
 	interface Props {
 		state: ControlRoomState;
+		pflActiveSource?: string | null;
+		onPFLToggle?: (sourceKey: string) => void;
 	}
 
-	let { state }: Props = $props();
+	let { state, pflActiveSource = null, onPFLToggle }: Props = $props();
 
 	function setLevel(source: string, level: number) {
 		fireAndForget(apiSetLevel(source, level));
@@ -44,7 +46,7 @@
 
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
-		state.audioChannels
+		state.audioChannels != null
 			? Object.keys(state.audioChannels).sort()
 			: [],
 	);
@@ -53,7 +55,7 @@
 <div class="audio-mixer">
 	<!-- Channel strips -->
 	{#each sortedKeys as key (key)}
-		{@const channel = state.audioChannels![key]}
+		{@const channel = state.audioChannels?.[key]!}
 		{@const source = state.sources[key]}
 		{@const label = source?.label || key}
 		{@const tally = state.tallyState[key] ?? 'idle'}
@@ -82,7 +84,8 @@
 			<div class="strip-buttons">
 				<button
 					class="pfl-btn"
-					class:active={false}
+					class:active={pflActiveSource === key}
+					onclick={() => onPFLToggle?.(key)}
 					title="Pre-Fader Listen"
 				>
 					PFL

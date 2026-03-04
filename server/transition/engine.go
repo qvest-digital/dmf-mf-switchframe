@@ -18,7 +18,7 @@ type EngineConfig struct {
 // TransitionEngine manages the dissolve pipeline lifecycle.
 // Created when a transition starts, destroyed when it completes or aborts.
 type TransitionEngine struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	state          TransitionState
 	transitionType TransitionType
 	fromSource     string
@@ -60,29 +60,29 @@ func NewTransitionEngine(config EngineConfig) *TransitionEngine {
 
 // State returns the current engine state.
 func (e *TransitionEngine) State() TransitionState {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.state
 }
 
 // TransitionType returns the current transition type.
 func (e *TransitionEngine) TransitionType() TransitionType {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.transitionType
 }
 
 // FromSource returns the outgoing source key.
 func (e *TransitionEngine) FromSource() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.fromSource
 }
 
 // ToSource returns the incoming source key.
 func (e *TransitionEngine) ToSource() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.toSource
 }
 
@@ -93,7 +93,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	defer e.mu.Unlock()
 
 	if e.state == StateActive {
-		return fmt.Errorf("transition already active")
+		return ErrTransitionActive
 	}
 
 	// Create decoders
@@ -103,7 +103,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	}
 
 	var decB VideoDecoder
-	if ttype != TransitionFTB {
+	if ttype != TransitionFTB && ttype != TransitionFTBReverse {
 		decB, err = e.config.DecoderFactory()
 		if err != nil {
 			decA.Close()
@@ -134,8 +134,8 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 
 // Position returns the current transition position (0.0 to 1.0).
 func (e *TransitionEngine) Position() float64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.currentPosition()
 }
 
@@ -260,11 +260,11 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 
 	// Determine if we should trigger blend+output
 	// For Mix/Dip: triggered by incoming source (toSource) frame
-	// For FTB: triggered by fromSource frame (no toSource)
+	// For FTB/FTBReverse: triggered by fromSource frame (no toSource)
 	shouldBlend := false
-	if e.transitionType == TransitionFTB && isFrom {
+	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType != TransitionFTB && isTo && e.latestRGBA != nil {
+	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo && e.latestRGBA != nil {
 		shouldBlend = true
 	}
 
@@ -285,6 +285,9 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 		blended = e.blender.BlendDip(e.latestRGBA, e.latestRGBB, pos)
 	case TransitionFTB:
 		blended = e.blender.BlendFTB(e.latestRGBA, pos)
+	case TransitionFTBReverse:
+		// Inverted: position 0→1 fades from black to fully visible
+		blended = e.blender.BlendFTB(e.latestRGBA, 1.0-pos)
 	}
 
 	// Convert blended RGB -> YUV420 for encoding

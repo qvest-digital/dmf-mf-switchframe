@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -43,6 +44,10 @@ type SRTCaller struct {
 
 	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
+
+	// onReconnect is called after a successful reconnection with a boolean
+	// indicating whether the ring buffer overflowed (data was lost).
+	onReconnect func(overflowed bool)
 }
 
 // NewSRTCaller creates an SRT caller adapter.
@@ -190,15 +195,6 @@ func (c *SRTCaller) SRTStatusSnapshot() SRTOutputStatus {
 	}
 }
 
-// Overflowed reports whether the ring buffer overflowed during the last
-// reconnect period. The OutputManager uses this to decide whether to
-// wait for the next keyframe before resuming writes.
-func (c *SRTCaller) Overflowed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.ringBuf.Overflowed()
-}
-
 // reconnectLoop retries SRT connection with exponential backoff.
 // On success, if the ring buffer did not overflow, buffered data is
 // flushed to the new connection. If it did overflow, the data is
@@ -250,7 +246,11 @@ func (c *SRTCaller) reconnectLoop() {
 		c.lastError.Store("")
 		c.resetBackoff()
 
-		slog.Info("SRT reconnected", "address", c.config.Address)
+		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)
+
+		if c.onReconnect != nil {
+			c.onReconnect(overflowed)
+		}
 		return
 	}
 }
@@ -276,7 +276,7 @@ func (c *SRTCaller) resetBackoff() {
 // connection wiring happens in main.go (Task 11). This keeps the output
 // package free of srtgo imports for clean unit testing.
 func defaultSRTConnect(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
-	return nil, fmt.Errorf("SRT connect not configured (set connectFn)")
+	return nil, errors.New("SRT connect not configured (set connectFn)")
 }
 
 // Compile-time check that SRTCaller satisfies the OutputAdapter interface.

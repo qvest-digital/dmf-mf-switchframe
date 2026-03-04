@@ -239,7 +239,7 @@ describe('Recording API', () => {
 		});
 		vi.stubGlobal('fetch', mockFetch);
 
-		const result = await startRecording('/tmp');
+		const result = await startRecording({ outputDir: '/tmp' });
 		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },

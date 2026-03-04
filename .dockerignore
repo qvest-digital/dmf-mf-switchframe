@@ -1,0 +1,7 @@
+.git
+bin/
+node_modules/
+server/test-results/
+docs/
+*.md
+!ui/package*.json

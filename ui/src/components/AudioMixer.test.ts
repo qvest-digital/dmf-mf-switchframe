@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, it, expect, vi } from 'vitest';
+import { render, fireEvent } from '@testing-library/svelte';
 import AudioMixer from './AudioMixer.svelte';
 
 describe('AudioMixer', () => {
@@ -10,7 +10,6 @@ describe('AudioMixer', () => {
 		transitionDurationMs: 0,
 		transitionPosition: 0,
 		inTransition: false,
-		audioLevels: null,
 		audioChannels: {
 			cam1: { level: 0, muted: false, afv: true },
 			cam2: { level: -6, muted: true, afv: false },
@@ -60,5 +59,28 @@ describe('AudioMixer', () => {
 		const { container } = render(AudioMixer, { props: { state } });
 		const meter = container.querySelector('.program-meter');
 		expect(meter).toBeTruthy();
+	});
+
+	it('should show PFL active state for matching source', () => {
+		const { container } = render(AudioMixer, { props: { state, pflActiveSource: 'cam1' } });
+		const pflButtons = container.querySelectorAll('.pfl-btn');
+		// cam1 is first (sorted), cam2 is second
+		expect(pflButtons[0].classList.contains('active')).toBe(true);
+		expect(pflButtons[1].classList.contains('active')).toBe(false);
+	});
+
+	it('should not show any PFL active when pflActiveSource is null', () => {
+		const { container } = render(AudioMixer, { props: { state, pflActiveSource: null } });
+		const pflButtons = container.querySelectorAll('.pfl-btn');
+		expect(pflButtons[0].classList.contains('active')).toBe(false);
+		expect(pflButtons[1].classList.contains('active')).toBe(false);
+	});
+
+	it('should call onPFLToggle when PFL button is clicked', async () => {
+		const onPFLToggle = vi.fn();
+		const { container } = render(AudioMixer, { props: { state, onPFLToggle } });
+		const pflButtons = container.querySelectorAll('.pfl-btn');
+		await fireEvent.click(pflButtons[0]);
+		expect(onPFLToggle).toHaveBeenCalledWith('cam1');
 	});
 });

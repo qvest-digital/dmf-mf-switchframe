@@ -2,7 +2,18 @@ package output
 
 import (
 	"context"
+	"errors"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal"
+)
+
+// Sentinel errors for the output package.
+var (
+	ErrRecorderActive    = errors.New("recorder already active")
+	ErrRecorderNotActive = errors.New("recorder not active")
+	ErrSRTActive         = errors.New("SRT output already active")
+	ErrSRTNotActive      = errors.New("SRT output not active")
 )
 
 // AdapterState represents the lifecycle state of an output adapter.
@@ -40,28 +51,11 @@ type OutputAdapter interface {
 	Status() AdapterStatus
 }
 
-// RecordingStatus is the JSON-serializable status for recording output,
-// included in ControlRoomState for the browser.
-type RecordingStatus struct {
-	Active       bool    `json:"active"`
-	Filename     string  `json:"filename,omitempty"`
-	BytesWritten int64   `json:"bytesWritten,omitempty"`
-	DurationSecs float64 `json:"durationSecs,omitempty"`
-	Error        string  `json:"error,omitempty"`
-}
+// RecordingStatus is an alias for the canonical type in internal.
+type RecordingStatus = internal.RecordingStatus
 
-// SRTOutputStatus is the JSON-serializable status for SRT output,
-// included in ControlRoomState for the browser.
-type SRTOutputStatus struct {
-	Active      bool   `json:"active"`
-	Mode        string `json:"mode,omitempty"`
-	Address     string `json:"address,omitempty"`
-	Port        int    `json:"port,omitempty"`
-	State       string `json:"state,omitempty"`
-	Connections int    `json:"connections,omitempty"`
-	BytesWritten int64 `json:"bytesWritten,omitempty"`
-	Error       string `json:"error,omitempty"`
-}
+// SRTOutputStatus is an alias for the canonical type in internal.
+type SRTOutputStatus = internal.SRTOutputStatus
 
 // SRTOutputConfig holds configuration for creating an SRT output adapter.
 type SRTOutputConfig struct {

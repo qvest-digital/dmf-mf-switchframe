@@ -6,9 +6,6 @@ export interface SourceInfo {
 	label?: string;
 	status: SourceHealthStatus;
 	lastFrameTime: number;
-	width?: number;
-	height?: number;
-	codec?: string;
 }
 
 export interface AudioChannel {
@@ -52,8 +49,7 @@ export interface ControlRoomState {
 	transitionPosition: number;
 	inTransition: boolean;
 	ftbActive: boolean;
-	audioLevels: Record<string, number> | null;
-	audioChannels: Record<string, AudioChannel> | null;
+	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;
 	programPeak: [number, number];
 	tallyState: Record<string, TallyStatus>;

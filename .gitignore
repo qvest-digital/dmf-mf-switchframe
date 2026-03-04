@@ -21,4 +21,9 @@ Thumbs.db
 # Recordings (MPEG-TS and MP4 video files)
 recordings/
 *.mp4
-*.mts
+
+# Embedded UI symlink (created by Makefile for production builds)
+server/cmd/switchframe/ui
+
+# Internal plan docs (local only)
+docs/plans/

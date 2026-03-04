@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install UI deps
+        run: cd ui && npm ci
+      - name: Svelte check
+        run: cd ui && npx svelte-check --tsconfig ./tsconfig.json
+
+  test-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Install cgo dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfdk-aac-dev libopenh264-dev pkg-config
+      - name: Vet
+        run: cd server && go vet ./...
+      - name: Run tests
+        run: cd server && go test ./... -race
+
+  test-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deps
+        run: cd ui && npm ci
+      - name: Unit tests
+        run: cd ui && npx vitest run
+      - name: Install Playwright
+        run: cd ui && npx playwright install --with-deps chromium
+      - name: E2E tests
+        run: cd ui && npx playwright test
+
+  docker:
+    needs: [test-go, test-ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t switchframe:ci .

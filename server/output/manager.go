@@ -28,11 +28,27 @@ type OutputManager struct {
 
 	onState func() // triggers ControlRoomState broadcast
 	closed  bool
+
+	// SRT wiring functions injected from main.go.
+	srtConnectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
+	srtAcceptFn  func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error
 }
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
 func NewOutputManager(relay *distribution.Relay) *OutputManager {
 	return &OutputManager{relay: relay}
+}
+
+// SetSRTWiring injects real SRT connection functions. Called from main.go
+// after construction so the output package stays testable without srtgo.
+func (m *OutputManager) SetSRTWiring(
+	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error),
+	acceptFn func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error,
+) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.srtConnectFn = connectFn
+	m.srtAcceptFn = acceptFn
 }
 
 // OnStateChange registers a callback fired when output state changes.
@@ -44,16 +60,16 @@ func (m *OutputManager) OnStateChange(fn func()) {
 	m.onState = fn
 }
 
-// StartRecording begins recording program output to a file in outputDir.
+// StartRecording begins recording program output to a file.
 // Returns an error if recording is already active.
-func (m *OutputManager) StartRecording(outputDir string) error {
+func (m *OutputManager) StartRecording(config RecorderConfig) error {
 	m.mu.Lock()
 	if m.recorder != nil {
 		m.mu.Unlock()
-		return fmt.Errorf("recording already active")
+		return ErrRecorderActive
 	}
 
-	rec := NewFileRecorder(outputDir)
+	rec := NewFileRecorder(config)
 	if err := rec.Start(nil); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start recorder: %w", err)
@@ -70,7 +86,7 @@ func (m *OutputManager) StartRecording(outputDir string) error {
 		fn()
 	}
 
-	slog.Info("recording started", "dir", outputDir, "file", rec.Filename())
+	slog.Info("recording started", "dir", config.Dir, "file", rec.Filename())
 	return nil
 }
 
@@ -80,7 +96,7 @@ func (m *OutputManager) StopRecording() error {
 	m.mu.Lock()
 	if m.recorder == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("recording not active")
+		return ErrRecorderNotActive
 	}
 
 	rec := m.recorder
@@ -110,7 +126,7 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 	m.mu.Lock()
 	if m.srtOutput != nil {
 		m.mu.Unlock()
-		return fmt.Errorf("SRT output already active")
+		return ErrSRTActive
 	}
 
 	var adapter OutputAdapter
@@ -122,12 +138,33 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 			Latency:  config.Latency,
 			StreamID: config.StreamID,
 		})
+		if m.srtConnectFn != nil {
+			caller.connectFn = m.srtConnectFn
+		}
+		caller.onReconnect = func(overflowed bool) {
+			if overflowed {
+				slog.Warn("SRT ring buffer overflowed during reconnect, data was lost",
+					"address", config.Address, "port", config.Port)
+			}
+			m.mu.Lock()
+			fn := m.onState
+			m.mu.Unlock()
+			if fn != nil {
+				fn()
+			}
+		}
 		adapter = caller
 	case "listener":
 		listener := NewSRTListener(SRTListenerConfig{
 			Port:    config.Port,
 			Latency: config.Latency,
 		})
+		if m.srtAcceptFn != nil {
+			lCfg := listener.config
+			listener.acceptFn = func(ctx context.Context, _ SRTListenerConfig) error {
+				return m.srtAcceptFn(ctx, lCfg, listener)
+			}
+		}
 		adapter = listener
 	default:
 		m.mu.Unlock()
@@ -161,7 +198,7 @@ func (m *OutputManager) StopSRTOutput() error {
 	m.mu.Lock()
 	if m.srtOutput == nil {
 		m.mu.Unlock()
-		return fmt.Errorf("SRT output not active")
+		return ErrSRTNotActive
 	}
 
 	adapter := m.srtOutput
@@ -316,7 +353,9 @@ func (m *OutputManager) stopMuxerIfNoAdaptersLocked() {
 }
 
 // stopMuxerLocked tears down the muxer and viewer unconditionally.
-// Must be called with m.mu held.
+// Must be called with m.mu held. Temporarily releases the lock while
+// waiting for the viewer goroutine to exit, to avoid deadlock with
+// the muxer output callback which also acquires m.mu.
 func (m *OutputManager) stopMuxerLocked() {
 	if m.viewer == nil {
 		return
@@ -330,6 +369,11 @@ func (m *OutputManager) stopMuxerLocked() {
 	// Remove viewer from relay first so no new frames arrive.
 	m.relay.RemoveViewer(viewer.ID())
 
+	// Release the lock before blocking on viewer stop. The viewer's
+	// drain loop invokes the muxer output callback which needs m.mu.
+	// Without releasing here, we'd deadlock.
+	m.mu.Unlock()
+
 	// Stop the viewer (signals its drain goroutine to exit).
 	viewer.Stop()
 
@@ -340,6 +384,9 @@ func (m *OutputManager) stopMuxerLocked() {
 	if err := muxer.Close(); err != nil {
 		slog.Error("error closing muxer", "err", err)
 	}
+
+	// Re-acquire the lock (callers expect it held on return).
+	m.mu.Lock()
 
 	slog.Info("output pipeline stopped")
 }

@@ -19,7 +19,10 @@
 
 	const isActive = $derived(crState.srtOutput?.active ?? false);
 
+	const isCallerAddressEmpty = $derived(form.mode === 'caller' && !form.address.trim());
+
 	function handleStart() {
+		if (isCallerAddressEmpty) return;
 		const config: SRTOutputConfig = { mode: form.mode, port: form.port };
 		if (form.mode === 'caller') {
 			config.address = form.address;
@@ -111,7 +114,7 @@
 						<input id="srt-latency" type="number" name="latency" bind:value={form.latency} min="0" step="50" />
 					</div>
 
-					<button class="btn start-btn" onclick={handleStart}>Start</button>
+					<button class="btn start-btn" onclick={handleStart} disabled={isCallerAddressEmpty}>Start</button>
 				</div>
 			{/if}
 		</div>

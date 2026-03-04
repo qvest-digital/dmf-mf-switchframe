@@ -1,8 +1,6 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
-import "github.com/zsiec/switchframe/server/output"
-
 // TallyStatus represents the tally light state for a source.
 type TallyStatus string
 
@@ -24,13 +22,9 @@ const (
 
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
-	Key           string             `json:"key"`
-	Label         string             `json:"label,omitempty"`
-	Status        SourceHealthStatus `json:"status"`
-	LastFrameTime int64              `json:"lastFrameTime"`
-	Width         int                `json:"width,omitempty"`
-	Height        int                `json:"height,omitempty"`
-	Codec         string             `json:"codec,omitempty"`
+	Key    string             `json:"key"`
+	Label  string             `json:"label,omitempty"`
+	Status SourceHealthStatus `json:"status"`
 }
 
 // AudioChannel describes the audio mixer state for a single source.
@@ -38,6 +32,29 @@ type AudioChannel struct {
 	Level float64 `json:"level"` // dB (-inf to +12)
 	Muted bool    `json:"muted"`
 	AFV   bool    `json:"afv"` // audio-follows-video
+}
+
+// RecordingStatus is the JSON-serializable status for recording output,
+// included in ControlRoomState for the browser.
+type RecordingStatus struct {
+	Active       bool    `json:"active"`
+	Filename     string  `json:"filename,omitempty"`
+	BytesWritten int64   `json:"bytesWritten,omitempty"`
+	DurationSecs float64 `json:"durationSecs,omitempty"`
+	Error        string  `json:"error,omitempty"`
+}
+
+// SRTOutputStatus is the JSON-serializable status for SRT output,
+// included in ControlRoomState for the browser.
+type SRTOutputStatus struct {
+	Active       bool   `json:"active"`
+	Mode         string `json:"mode,omitempty"`
+	Address      string `json:"address,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	State        string `json:"state,omitempty"`
+	Connections  int    `json:"connections,omitempty"`
+	BytesWritten int64  `json:"bytesWritten,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // ControlRoomState is the full state of the switcher control room,
@@ -50,13 +67,12 @@ type ControlRoomState struct {
 	TransitionPosition   float64                   `json:"transitionPosition,omitempty"`
 	InTransition         bool                      `json:"inTransition,omitempty"`
 	FTBActive            bool                      `json:"ftbActive,omitempty"`
-	AudioLevels          map[string]float64        `json:"audioLevels,omitempty"`
 	AudioChannels        map[string]AudioChannel   `json:"audioChannels"`
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`
 	TallyState           map[string]TallyStatus    `json:"tallyState"`
-	Recording            *output.RecordingStatus   `json:"recording,omitempty"`
-	SRTOutput            *output.SRTOutputStatus   `json:"srtOutput,omitempty"`
+	Recording            *RecordingStatus           `json:"recording,omitempty"`
+	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`
 	Seq                  uint64                    `json:"seq"`
 	Timestamp            int64                     `json:"timestamp"`

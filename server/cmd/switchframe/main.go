@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -30,6 +32,9 @@ func main() {
 }
 
 func run() error {
+	demoFlag := flag.Bool("demo", false, "Start with simulated camera sources")
+	flag.Parse()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -64,6 +69,10 @@ func run() error {
 		Cert: cert,
 		ExtraRoutes: func(mux *http.ServeMux) {
 			api.RegisterOnMux(mux)
+			if h := uiHandler(); h != nil {
+				// Mount embedded UI as catch-all (after API routes)
+				mux.Handle("/", h)
+			}
 		},
 		OnStreamRegistered: func(key string, relay *distribution.Relay) {
 			// RegisterStream("program") triggers this callback immediately,
@@ -135,6 +144,7 @@ func run() error {
 
 	// Create output manager for recording and SRT output.
 	outputMgr := output.NewOutputManager(programRelay)
+	outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	defer outputMgr.Close()
 
 	// Create REST API now that switcher, mixer, and output manager exist.
@@ -165,6 +175,12 @@ func run() error {
 	})
 
 	sw.StartHealthMonitor(1 * time.Second)
+
+	if *demoFlag {
+		slog.Info("demo mode: starting 4 simulated camera sources")
+		stopDemo := demo.StartSources(ctx, sw, mixer, 4)
+		defer stopDemo()
+	}
 
 	slog.Info("starting Prism distribution server", "addr", addr)
 	return server.Start(ctx)

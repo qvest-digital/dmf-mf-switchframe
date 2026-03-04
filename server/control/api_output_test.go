@@ -2,11 +2,11 @@ package control
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
@@ -16,21 +16,21 @@ import (
 
 // mockOutputManager implements OutputManagerAPI for testing.
 type mockOutputManager struct {
-	recording    bool
-	srtActive    bool
-	startRecErr  error
-	stopRecErr   error
-	startSRTErr  error
-	stopSRTErr   error
-	lastOutputDir string
-	lastSRTConfig output.SRTOutputConfig
+	recording      bool
+	srtActive      bool
+	startRecErr    error
+	stopRecErr     error
+	startSRTErr    error
+	stopSRTErr     error
+	lastRecConfig  output.RecorderConfig
+	lastSRTConfig  output.SRTOutputConfig
 }
 
-func (m *mockOutputManager) StartRecording(outputDir string) error {
+func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
 	if m.startRecErr != nil {
 		return m.startRecErr
 	}
-	m.lastOutputDir = outputDir
+	m.lastRecConfig = config
 	m.recording = true
 	return nil
 }
@@ -107,13 +107,46 @@ func TestRecordingStart(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
-	require.Equal(t, "/tmp/recordings", mock.lastOutputDir)
+	require.Equal(t, "/tmp/recordings", mock.lastRecConfig.Dir)
 	require.True(t, mock.recording)
+}
+
+func TestRecordingStartWithRotationParams(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"outputDir":"/tmp/recordings","rotateAfterMins":30,"maxFileSizeMB":500}`
+	req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.True(t, mock.recording)
+	require.Equal(t, "/tmp/recordings", mock.lastRecConfig.Dir)
+	require.Equal(t, 30*time.Minute, mock.lastRecConfig.RotateAfter)
+	require.Equal(t, int64(500*1024*1024), mock.lastRecConfig.MaxFileSize)
+}
+
+func TestRecordingStartDefaultRotation(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"outputDir":"/tmp/recordings"}`
+	req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.True(t, mock.recording)
+	require.Equal(t, time.Hour, mock.lastRecConfig.RotateAfter,
+		"should default to 1 hour rotation")
+	require.Equal(t, int64(0), mock.lastRecConfig.MaxFileSize,
+		"should default to no file size limit")
 }
 
 func TestRecordingStartAlreadyActive(t *testing.T) {
 	api, mock := setupOutputTestAPI(t)
-	mock.startRecErr = fmt.Errorf("recording already active")
+	mock.startRecErr = output.ErrRecorderActive
 
 	body := `{"outputDir":"/tmp/recordings"}`
 	req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
@@ -122,6 +155,18 @@ func TestRecordingStartAlreadyActive(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestRecordingStartRelativeDir(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"outputDir":"../../../etc/recordings"}`
+	req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestRecordingStartInvalidJSON(t *testing.T) {
@@ -149,7 +194,7 @@ func TestRecordingStop(t *testing.T) {
 
 func TestRecordingStopNotActive(t *testing.T) {
 	api, mock := setupOutputTestAPI(t)
-	mock.stopRecErr = fmt.Errorf("recording not active")
+	mock.stopRecErr = output.ErrRecorderNotActive
 
 	req := httptest.NewRequest("POST", "/api/recording/stop", nil)
 	rec := httptest.NewRecorder()
@@ -258,7 +303,7 @@ func TestSRTStartMissingPort(t *testing.T) {
 
 func TestSRTStartAlreadyActive(t *testing.T) {
 	api, mock := setupOutputTestAPI(t)
-	mock.startSRTErr = fmt.Errorf("SRT output already active")
+	mock.startSRTErr = output.ErrSRTActive
 
 	body := `{"mode":"caller","address":"192.168.1.100","port":9000}`
 	req := httptest.NewRequest("POST", "/api/output/srt/start", strings.NewReader(body))
@@ -294,7 +339,7 @@ func TestSRTStop(t *testing.T) {
 
 func TestSRTStopNotActive(t *testing.T) {
 	api, mock := setupOutputTestAPI(t)
-	mock.stopSRTErr = fmt.Errorf("SRT output not active")
+	mock.stopSRTErr = output.ErrSRTNotActive
 
 	req := httptest.NewRequest("POST", "/api/output/srt/stop", nil)
 	rec := httptest.NewRecorder()

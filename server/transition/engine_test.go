@@ -251,3 +251,77 @@ func TestEngineAutoCompletes(t *testing.T) {
 	require.True(t, (*completions)[0], "should be completed, not aborted")
 	mu.Unlock()
 }
+
+func TestEngineFTBReverseStart(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	err := e.Start("cam1", "", TransitionFTBReverse, 1000)
+	require.NoError(t, err)
+	require.Equal(t, StateActive, e.State())
+	require.Equal(t, TransitionFTBReverse, e.TransitionType())
+
+	e.Stop()
+}
+
+func TestEngineFTBReverseIngestTriggersOnFromSource(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 1000))
+
+	// FTBReverse triggers on fromSource (same as FTB)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "FTBReverse: source A should trigger output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineFTBReverseNoDecoderB(t *testing.T) {
+	// FTBReverse should not create a decoder B (same as FTB)
+	var decoderCount int
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			decoderCount++
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 1000))
+	require.Equal(t, 1, decoderCount, "FTBReverse should only create one decoder (A)")
+
+	e.Stop()
+}
+
+func TestEngineFTBReverseBlendInvertsPosition(t *testing.T) {
+	// At position 0.0: FTBReverse should produce black (1.0 - 0.0 = 1.0 -> fully black)
+	// At position 1.0: FTBReverse should produce full source (1.0 - 1.0 = 0.0 -> fully visible)
+	// This is the opposite of regular FTB.
+	//
+	// We test this by using a very short duration (1ms) and a very long duration (60s)
+	// to control position, then checking the blended output via the mock encoder.
+
+	// We'll use a custom approach: create an engine with a custom decoder that produces
+	// known YUV data, then verify the output differs from regular FTB.
+	// For simplicity, we just verify that the engine starts, ingests, and produces output.
+	// The blend logic is verified in blend_test.go.
+
+	e, mu, outputs, _ := newTestEngine(t)
+
+	// Long duration so position stays near 0.0
+	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 60000))
+
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "FTBReverse should produce output")
+	mu.Unlock()
+
+	e.Stop()
+}

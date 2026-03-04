@@ -10,6 +10,8 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 	let state: ConnectionState = 'disconnected';
 	let transport: WebTransport | null = null;
 	let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+	let retryDelay = 2000;
+	const MAX_RETRY_DELAY = 30000;
 
 	function _setConnectionState(newState: ConnectionState) {
 		if (newState === state) return;
@@ -17,6 +19,12 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		config.onConnectionChange(newState);
 	}
 
+	/**
+	 * Handle incoming control data from MoQ control track.
+	 * Currently unused -- state comes via REST polling.
+	 * Will be wired when MoQ control track subscription is implemented.
+	 * Exported for testing the data flow.
+	 */
 	function _handleControlData(data: Uint8Array) {
 		config.onControlState(data);
 	}
@@ -40,6 +48,7 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 				],
 			});
 			await transport.ready;
+			retryDelay = 2000;
 			_setConnectionState('connected');
 
 			// Monitor for close
@@ -60,10 +69,12 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 
 	function scheduleRetry() {
 		if (retryTimeout) return;
+		const jitter = retryDelay * 0.2 * Math.random();
 		retryTimeout = setTimeout(() => {
 			retryTimeout = null;
+			retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
 			connect();
-		}, 2000);
+		}, retryDelay + jitter);
 	}
 
 	function disconnect() {

@@ -16,7 +16,6 @@ func TestControlRoomStateJSON(t *testing.T) {
 		TransitionDurationMs: 0,
 		TransitionPosition:   0.0,
 		InTransition:         false,
-		AudioLevels:          map[string]float64{"camera1": -3.0},
 		TallyState:           map[string]TallyStatus{"camera1": TallyProgram, "camera2": TallyPreview},
 		Sources:              map[string]SourceInfo{"camera1": {Key: "camera1", Status: SourceHealthy}},
 		Seq:                  1,

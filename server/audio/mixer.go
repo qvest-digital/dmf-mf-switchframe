@@ -615,15 +615,6 @@ func (m *AudioMixer) ProgramPeak() [2]float64 {
 	return [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
 }
 
-// SetProgramPeak updates the stored program peak levels (linear amplitude).
-// Called after metering mixed PCM output.
-func (m *AudioMixer) SetProgramPeak(peakL, peakR float64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.programPeakL = peakL
-	m.programPeakR = peakR
-}
-
 // ChannelStates returns a snapshot of all channel states for state broadcast.
 func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 	m.mu.RLock()

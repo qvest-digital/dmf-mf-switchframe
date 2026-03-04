@@ -25,7 +25,7 @@ func TestOutputManager_StartRecording(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	err := mgr.StartRecording(dir)
+	err := mgr.StartRecording(RecorderConfig{Dir: dir})
 	require.NoError(t, err)
 
 	status := mgr.RecordingStatus()
@@ -39,7 +39,7 @@ func TestOutputManager_StopRecording(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 	require.NoError(t, mgr.StopRecording())
 
 	status := mgr.RecordingStatus()
@@ -52,8 +52,8 @@ func TestOutputManager_DoubleStartRecording(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
-	err := mgr.StartRecording(dir)
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	err := mgr.StartRecording(RecorderConfig{Dir: dir})
 	require.Error(t, err, "should reject double start")
 }
 
@@ -74,7 +74,7 @@ func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
 	require.Nil(t, mgr.viewer)
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	require.NotNil(t, mgr.viewer)
 	require.NotNil(t, mgr.muxer)
@@ -86,7 +86,7 @@ func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 	require.NotNil(t, mgr.viewer)
 
 	require.NoError(t, mgr.StopRecording())
@@ -100,7 +100,7 @@ func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	idrFrame := &media.VideoFrame{
 		PTS:        90000,
@@ -130,7 +130,7 @@ func TestOutputManager_StateCallback(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	mgr.StartRecording(dir)
+	mgr.StartRecording(RecorderConfig{Dir: dir})
 	require.Greater(t, callCount, 0)
 
 	prevCount := callCount
@@ -152,7 +152,7 @@ func TestOutputManager_Close(t *testing.T) {
 	mgr := NewOutputManager(relay)
 
 	dir := t.TempDir()
-	mgr.StartRecording(dir)
+	mgr.StartRecording(RecorderConfig{Dir: dir})
 	err := mgr.Close()
 	require.NoError(t, err)
 }

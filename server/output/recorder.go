@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,24 +12,40 @@ import (
 	"time"
 )
 
-// FileRecorder is an OutputAdapter that writes muxed MPEG-TS data to a file.
-// Files are named program_{date}_{time}.ts in the configured directory.
-type FileRecorder struct {
-	dir      string
-	mu       sync.Mutex
-	file     *os.File
-	filename string
-	state    AdapterState
-	started  time.Time
-	bytes    atomic.Int64
-	errMsg   string
+// RecorderConfig configures a FileRecorder.
+type RecorderConfig struct {
+	Dir         string        // Output directory for recording files.
+	RotateAfter time.Duration // Rotate after this duration; default 1h, 0 = disabled.
+	MaxFileSize int64         // Rotate after this many bytes; default 0 (unlimited).
 }
 
-// NewFileRecorder creates a FileRecorder that writes files to dir.
-func NewFileRecorder(dir string) *FileRecorder {
+// FileRecorder is an OutputAdapter that writes muxed MPEG-TS data to a file.
+// Files are named program_{date}_{time}_{index}.ts in the configured directory.
+// Rotation occurs based on time elapsed and/or file size thresholds.
+type FileRecorder struct {
+	config RecorderConfig
+
+	mu            sync.Mutex
+	file          *os.File
+	filename      string
+	state         AdapterState
+	started       time.Time // overall recording start
+	fileStarted   time.Time // current file start
+	fileBytes     int64     // bytes written to current file
+	fileIndex     int       // 1-based file index
+	baseTimestamp string    // shared timestamp across rotated files
+	bytes         atomic.Int64
+	errMsg        string
+}
+
+// NewFileRecorder creates a FileRecorder with the given configuration.
+// Both RotateAfter and MaxFileSize default to zero (disabled). To get the
+// recommended 1-hour rotation, set RotateAfter explicitly or use the API
+// handler which applies defaults.
+func NewFileRecorder(config RecorderConfig) *FileRecorder {
 	return &FileRecorder{
-		dir:   dir,
-		state: StateStopped,
+		config: config,
+		state:  StateStopped,
 	}
 }
 
@@ -47,8 +64,24 @@ func (r *FileRecorder) Start(_ context.Context) error {
 	}
 
 	now := time.Now()
-	r.filename = fmt.Sprintf("program_%s.ts", now.Format("20060102_150405"))
-	path := filepath.Join(r.dir, r.filename)
+	r.baseTimestamp = now.Format("20060102_150405")
+	r.fileIndex = 1
+	r.started = now
+	r.bytes.Store(0)
+	r.errMsg = ""
+
+	if err := r.openFileLocked(now); err != nil {
+		return err
+	}
+
+	r.state = StateActive
+	return nil
+}
+
+// openFileLocked creates a new file for recording. Must be called with r.mu held.
+func (r *FileRecorder) openFileLocked(now time.Time) error {
+	r.filename = fmt.Sprintf("program_%s_%03d.ts", r.baseTimestamp, r.fileIndex)
+	path := filepath.Join(r.config.Dir, r.filename)
 
 	f, err := os.Create(path)
 	if err != nil {
@@ -58,14 +91,50 @@ func (r *FileRecorder) Start(_ context.Context) error {
 	}
 
 	r.file = f
-	r.state = StateActive
-	r.started = now
-	r.bytes.Store(0)
-	r.errMsg = ""
+	r.fileStarted = now
+	r.fileBytes = 0
 	return nil
 }
 
-// Write sends muxed MPEG-TS data to the file.
+// shouldRotate checks whether the current file should be rotated based on
+// the configured time and size thresholds.
+func (r *FileRecorder) shouldRotate() bool {
+	// Check time-based rotation.
+	if r.config.RotateAfter > 0 && time.Since(r.fileStarted) >= r.config.RotateAfter {
+		return true
+	}
+
+	// Check size-based rotation.
+	if r.config.MaxFileSize > 0 && r.fileBytes >= r.config.MaxFileSize {
+		return true
+	}
+
+	return false
+}
+
+// rotateLocked closes the current file and opens a new one with an
+// incremented index. Must be called with r.mu held.
+func (r *FileRecorder) rotateLocked() error {
+	// Close current file.
+	if r.file != nil {
+		if err := r.file.Close(); err != nil {
+			slog.Error("error closing rotated file", "file", r.filename, "err", err)
+		}
+	}
+
+	r.fileIndex++
+	now := time.Now()
+	if err := r.openFileLocked(now); err != nil {
+		return err
+	}
+
+	slog.Info("recording file rotated", "file", r.filename, "index", r.fileIndex)
+	return nil
+}
+
+// Write sends muxed MPEG-TS data to the file. If a rotation threshold
+// has been reached, the current file is closed and a new one is opened
+// before writing.
 func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -74,7 +143,15 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 		return 0, errors.New("recorder not active")
 	}
 
+	// Check if rotation is needed before writing.
+	if r.shouldRotate() {
+		if err := r.rotateLocked(); err != nil {
+			return 0, fmt.Errorf("rotate file: %w", err)
+		}
+	}
+
 	n, err := r.file.Write(tsData)
+	r.fileBytes += int64(n)
 	r.bytes.Add(int64(n))
 	if err != nil {
 		r.errMsg = err.Error()

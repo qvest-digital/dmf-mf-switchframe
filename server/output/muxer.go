@@ -215,8 +215,7 @@ func (m *TSMuxer) init() error {
 
 	m.initialized = true
 
-	// Flush the PAT/PMT — they are part of the first output chunk
-	// that will be combined with the keyframe data.
+	// PAT/PMT remain in the buffer and will be flushed alongside the first keyframe.
 	return nil
 }
 

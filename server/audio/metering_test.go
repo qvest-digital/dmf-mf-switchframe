@@ -78,16 +78,11 @@ func TestMixerProgramPeak(t *testing.T) {
 	})
 	defer m.Close()
 
-	// Before any metering, peaks should be -inf dBFS
+	// Before any metering, peaks should be -inf dBFS (peaks are updated
+	// internally during IngestFrame, not via a public setter)
 	peak := m.ProgramPeak()
 	require.True(t, math.IsInf(peak[0], -1), "initial left peak should be -inf")
 	require.True(t, math.IsInf(peak[1], -1), "initial right peak should be -inf")
-
-	// Set program peaks directly
-	m.SetProgramPeak(0.5, 0.8)
-	peak = m.ProgramPeak()
-	require.InDelta(t, LinearToDBFS(0.5), peak[0], 0.001)
-	require.InDelta(t, LinearToDBFS(0.8), peak[1], 0.001)
 }
 
 func TestMixerChannelStates(t *testing.T) {

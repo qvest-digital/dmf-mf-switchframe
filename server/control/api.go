@@ -6,11 +6,14 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
+	"path/filepath"
+	"time"
 
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // switchRequest is the JSON body for cut and preview commands.
@@ -29,7 +32,7 @@ type AudioMixerAPI interface {
 // OutputManagerAPI is the interface for recording and SRT output operations
 // used by the REST API.
 type OutputManagerAPI interface {
-	StartRecording(outputDir string) error
+	StartRecording(config output.RecorderConfig) error
 	StopRecording() error
 	RecordingStatus() output.RecordingStatus
 	StartSRTOutput(config output.SRTOutputConfig) error
@@ -110,7 +113,11 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.switcher.Cut(r.Context(), req.Source); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
+		status := http.StatusInternalServerError
+		if errors.Is(err, switcher.ErrSourceNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
@@ -131,7 +138,11 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.switcher.SetPreview(r.Context(), req.Source); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
+		status := http.StatusInternalServerError
+		if errors.Is(err, switcher.ErrSourceNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
@@ -163,15 +174,14 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "not found") {
+		if errors.Is(err, switcher.ErrSourceNotFound) {
 			status = http.StatusNotFound
-		} else if strings.Contains(errMsg, "already active") || strings.Contains(errMsg, "FTB is active") {
+		} else if errors.Is(err, transition.ErrTransitionActive) || errors.Is(err, transition.ErrFTBActive) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -208,15 +218,12 @@ func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
 	if err := a.switcher.FadeToBlack(r.Context()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "active") {
+		if errors.Is(err, transition.ErrTransitionActive) || errors.Is(err, transition.ErrFTBActive) {
 			status = http.StatusConflict
-		} else if strings.Contains(errMsg, "not configured") {
-			status = http.StatusNotImplemented
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -379,7 +386,9 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 
 // recordingStartRequest is the JSON body for the recording start endpoint.
 type recordingStartRequest struct {
-	OutputDir string `json:"outputDir"`
+	OutputDir      string `json:"outputDir"`
+	RotateAfterMins int   `json:"rotateAfterMins,omitempty"` // optional, minutes
+	MaxFileSizeMB   int   `json:"maxFileSizeMB,omitempty"`   // optional, megabytes
 }
 
 // handleRecordingStart begins recording program output to a file.
@@ -393,19 +402,37 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.outputMgr.StartRecording(req.OutputDir); err != nil {
+
+	// Validate output directory: must be absolute and cleaned path
+	outDir := filepath.Clean(req.OutputDir)
+	if !filepath.IsAbs(outDir) {
+		http.Error(w, `{"error":"outputDir must be an absolute path"}`, http.StatusBadRequest)
+		return
+	}
+
+	config := output.RecorderConfig{
+		Dir:         outDir,
+		RotateAfter: time.Hour, // default: rotate every hour
+	}
+	if req.RotateAfterMins > 0 {
+		config.RotateAfter = time.Duration(req.RotateAfterMins) * time.Minute
+	}
+	if req.MaxFileSizeMB > 0 {
+		config.MaxFileSize = int64(req.MaxFileSizeMB) * 1024 * 1024
+	}
+
+	if err := a.outputMgr.StartRecording(config); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "already active") {
+		if errors.Is(err, output.ErrRecorderActive) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }
 
 // handleRecordingStop stops the active recording.
@@ -416,17 +443,16 @@ func (a *API) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.outputMgr.StopRecording(); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "not active") {
+		if errors.Is(err, output.ErrRecorderNotActive) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }
 
 // handleRecordingStatus returns the current recording status.
@@ -464,17 +490,16 @@ func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.outputMgr.StartSRTOutput(config); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "already active") {
+		if errors.Is(err, output.ErrSRTActive) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }
 
 // handleSRTStop stops the active SRT output.
@@ -485,17 +510,16 @@ func (a *API) handleSRTStop(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.outputMgr.StopSRTOutput(); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		errMsg := err.Error()
 		status := http.StatusInternalServerError
-		if strings.Contains(errMsg, "not active") {
+		if errors.Is(err, output.ErrSRTNotActive) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }
 
 // handleSRTStatus returns the current SRT output status.

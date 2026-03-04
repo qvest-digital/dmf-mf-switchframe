@@ -339,12 +339,23 @@ func TestSwitcherFTBCompleteKeepsActive(t *testing.T) {
 	require.False(t, state.InTransition, "transition itself should be done")
 	require.True(t, state.FTBActive, "FTB should stay active (screen is black)")
 
-	// Toggle FTB off
+	// Toggle FTB off -- now starts a reverse FTB transition
 	err = sw.FadeToBlack(context.Background())
 	require.NoError(t, err)
 
 	state = sw.State()
-	require.False(t, state.FTBActive, "FTB should be toggled off")
+	require.True(t, state.InTransition, "reverse FTB transition should be active")
+	require.True(t, state.FTBActive, "FTB should stay active during reverse transition")
+	require.Equal(t, "ftb_reverse", state.TransitionType)
+
+	// Complete the reverse transition
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	state = sw.State()
+	require.False(t, state.InTransition, "reverse transition should be complete")
+	require.False(t, state.FTBActive, "FTB should be toggled off after reverse completes")
 }
 
 func TestSwitcherTransitionAudioNotified(t *testing.T) {
@@ -430,6 +441,117 @@ func TestSwitcherFTBNoProgramSource(t *testing.T) {
 	err := sw.FadeToBlack(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no program source set")
+}
+
+func TestSwitcherFTBToggleOffCreatesReverseTransition(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// Start FTB
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	// Complete the FTB via position
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	state := sw.State()
+	require.True(t, state.FTBActive, "FTB should be active (screen is black)")
+	require.False(t, state.InTransition, "transition should be complete")
+
+	// Toggle FTB off -- should create a reverse FTB transition
+	err = sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	state = sw.State()
+	require.True(t, state.InTransition, "reverse FTB transition should be active")
+	require.True(t, state.FTBActive, "FTB should still be active during reverse")
+	require.Equal(t, "ftb_reverse", state.TransitionType)
+}
+
+func TestSwitcherFTBReverseCompletionClearsFTBActive(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// Start FTB and complete it
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	// Toggle FTB off (starts reverse transition)
+	err = sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.True(t, state.InTransition)
+
+	// Complete the reverse transition
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	state = sw.State()
+	require.False(t, state.InTransition, "reverse transition should be complete")
+	require.False(t, state.FTBActive, "FTB should be cleared after reverse completes")
+	require.Equal(t, "cam1", state.ProgramSource, "program source should remain cam1")
+}
+
+func TestSwitcherFTBReverseAbortKeepsFTBActive(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// Start FTB and complete it
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	// Toggle FTB off (starts reverse transition)
+	err = sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	// Abort the reverse transition (user cancels)
+	sw.AbortTransition()
+
+	state := sw.State()
+	require.False(t, state.InTransition, "transition should be aborted")
+	// After aborting a reverse FTB, we should still be in FTB-active state (screen is black)
+	require.True(t, state.FTBActive, "FTB should remain active when reverse is aborted")
+}
+
+func TestSwitcherFTBReverseAudioNotified(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	audioTrans := &mockAudioTransHandler{}
+	sw.SetAudioTransition(audioTrans)
+
+	// Start FTB and complete it
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	audioTrans.mu.Lock()
+	initialStartCalls := len(audioTrans.startCalls)
+	audioTrans.mu.Unlock()
+
+	// Toggle FTB off (starts reverse transition)
+	err = sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	audioTrans.mu.Lock()
+	require.Equal(t, initialStartCalls+1, len(audioTrans.startCalls), "audio should be notified of reverse FTB start")
+	lastCall := audioTrans.startCalls[len(audioTrans.startCalls)-1]
+	require.Equal(t, "cam1", lastCall.oldSrc)
+	require.Equal(t, "", lastCall.newSrc)
+	require.Equal(t, 1000, lastCall.durationMs)
+	audioTrans.mu.Unlock()
 }
 
 func TestSwitcherMixRejectsAfterFTBComplete(t *testing.T) {

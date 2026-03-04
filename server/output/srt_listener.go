@@ -101,7 +101,6 @@ func (l *SRTListener) AddConnection(id string, conn srtConn) error {
 	defer l.mu.Unlock()
 
 	if len(l.conns) >= l.config.MaxConns {
-		conn.Close()
 		return fmt.Errorf("max connections reached (%d)", l.config.MaxConns)
 	}
 

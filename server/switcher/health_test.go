@@ -3,6 +3,7 @@ package switcher
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestHealthStatusFromAge(t *testing.T) {
 }
 
 func TestHealthMonitorRecordAndStatus(t *testing.T) {
-	hm := newHealthMonitor(nil)
+	hm := newHealthMonitor()
 	hm.recordFrame("camera1")
 	status := hm.status("camera1")
 	if status != internal.SourceHealthy {
@@ -43,10 +44,10 @@ func TestHealthMonitorRecordAndStatus(t *testing.T) {
 }
 
 func TestHealthMonitorStaleAfterNoFrames(t *testing.T) {
-	hm := newHealthMonitor(nil)
-	hm.mu.Lock()
-	hm.lastFrame["camera1"] = time.Now().Add(-3 * time.Second)
-	hm.mu.Unlock()
+	hm := newHealthMonitor()
+	v := &atomic.Int64{}
+	v.Store(time.Now().Add(-3 * time.Second).UnixNano())
+	hm.lastFrame.Store("camera1", v)
 	status := hm.status("camera1")
 	if status != internal.SourceNoSignal {
 		t.Errorf("status = %q, want %q", status, internal.SourceNoSignal)
@@ -55,7 +56,7 @@ func TestHealthMonitorStaleAfterNoFrames(t *testing.T) {
 }
 
 func TestHealthMonitorUnknownSource(t *testing.T) {
-	hm := newHealthMonitor(nil)
+	hm := newHealthMonitor()
 	status := hm.status("nonexistent")
 	if status != internal.SourceOffline {
 		t.Errorf("status = %q, want %q", status, internal.SourceOffline)

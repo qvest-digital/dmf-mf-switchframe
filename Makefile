@@ -1,23 +1,12 @@
-.PHONY: build test lint dev ui-install ui-dev ui-build ui-test ui-e2e test-all sync-prism-ts
+.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-all docker clean sync-prism-ts
 
-# Go server
-build:
-	cd server && go build -o ../bin/switchframe ./cmd/switchframe
+EMBED_LINK := server/cmd/switchframe/ui
 
-test:
-	cd server && go test ./... -v -race
-
-lint:
-	cd server && golangci-lint run ./...
-
-# Frontend
+# UI build
 ui-install:
-	cd ui && npm install
+	cd ui && npm ci
 
-ui-dev:
-	cd ui && npm run dev
-
-ui-build:
+ui-build: ui-install
 	cd ui && npm run build
 
 ui-test:
@@ -26,13 +15,51 @@ ui-test:
 ui-e2e:
 	cd ui && npx playwright test
 
-# Combined
+# Symlink for go:embed
+$(EMBED_LINK): ui-build
+	@ln -sfn ../../../ui/build $(EMBED_LINK)
+
+# Production build: UI + embedded Go binary
+build: $(EMBED_LINK)
+	cd server && go build -tags embed_ui -o ../bin/switchframe ./cmd/switchframe
+
+# Dev build: Go only (no UI embed)
+build-server:
+	cd server && go build -o ../bin/switchframe ./cmd/switchframe
+
+# Go tests
+test:
+	cd server && go test ./... -race
+
+# Auto-install UI deps if missing
+node_modules_check:
+	@test -d ui/node_modules || (echo "Installing UI dependencies..." && cd ui && npm ci)
+
+# Dev mode: start both servers
+dev: build-server node_modules_check
+	@trap 'kill 0' EXIT; \
+		./bin/switchframe & \
+		cd ui && npm run dev & \
+		wait
+
+# Demo mode: start with 4 simulated cameras
+demo: build-server node_modules_check
+	@echo ""
+	@echo "  SwitchFrame Demo"
+	@echo "  Open http://localhost:5173 in your browser"
+	@echo "  Press Ctrl+C to stop"
+	@echo ""
+	@trap 'kill 0' EXIT; \
+		./bin/switchframe --demo & \
+		cd ui && npm run dev & \
+		wait
+
+# All tests
 test-all: test ui-test ui-e2e
 
-dev: build
-	@echo "Start Go server: ./bin/switchframe"
-	@echo "Start UI dev server: cd ui && npm run dev"
-	@echo "UI proxies /api to Go server"
+# Docker
+docker:
+	docker build -t switchframe .
 
 # Prism TS vendor sync
 PRISM_TS_SRC ?= ../prism/web/src
@@ -48,3 +75,6 @@ sync-prism-ts:
 	@diff -rq "$(PRISM_TS_SRC)" "$(PRISM_TS_DST)" \
 		--exclude="main.ts" --exclude="lib.ts" --exclude="index.ts" \
 		|| echo "\nFiles differ. Review changes and copy manually if needed."
+
+clean:
+	rm -rf bin/ $(EMBED_LINK)

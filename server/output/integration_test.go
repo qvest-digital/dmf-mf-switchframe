@@ -57,7 +57,7 @@ func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send a mini-GOP: keyframe + P-frame with interleaved audio.
 	relay.BroadcastVideo(makeKeyframe(90000))
@@ -99,7 +99,7 @@ func TestIntegration_OutputManagerLifecycle(t *testing.T) {
 
 	// Starting recording should create the viewer.
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 	require.NotNil(t, mgr.viewer, "viewer must be created when recording starts")
 	require.NotNil(t, mgr.muxer, "muxer must be created when recording starts")
 
@@ -121,7 +121,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Add a mock adapter alongside the file recorder to verify fan-out.
 	// We insert it after StartRecording so the muxer output callback
@@ -159,7 +159,7 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 	mgr := NewOutputManager(relay)
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send a keyframe to initialize the muxer.
 	relay.BroadcastVideo(makeKeyframe(90000))
@@ -198,7 +198,7 @@ func TestIntegration_PreKeyframeDropped(t *testing.T) {
 	defer mgr.Close()
 
 	dir := t.TempDir()
-	require.NoError(t, mgr.StartRecording(dir))
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send P-frames and audio before any keyframe.
 	relay.BroadcastVideo(makePFrame(90000))

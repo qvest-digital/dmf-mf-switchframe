@@ -5,6 +5,7 @@ package switcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,9 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// Sentinel errors for the switcher package.
+var ErrSourceNotFound = errors.New("source not found")
 
 // audioStateProvider is the interface the Switcher needs from the AudioMixer
 // to populate audio fields in state broadcasts.
@@ -83,7 +87,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 	return &Switcher{
 		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
-		health:       newHealthMonitor(nil),
+		health:       newHealthMonitor(),
 	}
 }
 
@@ -164,11 +168,11 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 	if s.inTransition {
 		s.mu.Unlock()
-		return fmt.Errorf("transition already active")
+		return fmt.Errorf("transition: %w", transition.ErrTransitionActive)
 	}
 	if s.ftbActive {
 		s.mu.Unlock()
-		return fmt.Errorf("cannot start transition while FTB is active")
+		return fmt.Errorf("cannot start transition: %w", transition.ErrFTBActive)
 	}
 	if s.programSource == "" {
 		s.mu.Unlock()
@@ -180,7 +184,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 	if _, ok := s.sources[sourceKey]; !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("source %q not found", sourceKey)
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 
 	tt := transition.TransitionType(transType)
@@ -261,15 +265,51 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	// Reject if a non-FTB transition is active
 	if s.inTransition && !s.ftbActive {
 		s.mu.Unlock()
-		return fmt.Errorf("cannot FTB while mix/dip transition is active")
+		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrTransitionActive)
 	}
 
-	// Toggle off: FTB is active but transition is complete (fully black)
+	// Toggle off: FTB is active but transition is complete (fully black).
+	// Start a reverse FTB transition to fade back from black.
 	if s.ftbActive && !s.inTransition {
-		s.ftbActive = false
+		if s.programSource == "" {
+			s.mu.Unlock()
+			return fmt.Errorf("no program source set")
+		}
+
+		fromSource := s.programSource
+		programRelay := s.programRelay
+
+		engine := transition.NewTransitionEngine(transition.EngineConfig{
+			DecoderFactory: s.transConfig.DecoderFactory,
+			EncoderFactory: s.transConfig.EncoderFactory,
+			Output: func(data []byte, isKeyframe bool) {
+				programRelay.BroadcastVideo(&media.VideoFrame{
+					PTS:        time.Now().UnixMilli(),
+					IsKeyframe: isKeyframe,
+					WireData:   data,
+				})
+			},
+			OnComplete: func(aborted bool) {
+				s.handleFTBReverseComplete(aborted)
+			},
+		})
+
+		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, 1000); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("start FTB reverse: %w", err)
+		}
+
+		s.transEngine = engine
+		s.inTransition = true
+		// ftbActive stays true during the reverse transition
+		audioHandler := s.audioTransition
 		s.seq++
 		snapshot := s.buildStateLocked()
 		s.mu.Unlock()
+
+		if audioHandler != nil {
+			audioHandler.OnTransitionStart(fromSource, "", 1000)
+		}
 		s.notifyStateChange(snapshot)
 		return nil
 	}
@@ -326,7 +366,13 @@ func (s *Switcher) AbortTransition() {
 
 	if wasActive {
 		s.inTransition = false
-		s.ftbActive = false
+		// When aborting a reverse FTB, keep ftbActive true (screen stays black).
+		// For all other transitions (including forward FTB), clear ftbActive.
+		if engine != nil && engine.TransitionType() == transition.TransitionFTBReverse {
+			// ftbActive stays true — we're still in FTB state
+		} else {
+			s.ftbActive = false
+		}
 		s.transEngine = nil
 		s.seq++
 	}
@@ -408,6 +454,34 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.notifyStateChange(snapshot)
 }
 
+// handleFTBReverseComplete is called by the TransitionEngine when a reverse
+// FTB transition finishes. If completed (not aborted), it clears ftbActive
+// (screen is now fully visible). If aborted, ftbActive stays true (screen
+// stays black).
+func (s *Switcher) handleFTBReverseComplete(aborted bool) {
+	s.mu.Lock()
+	if !s.inTransition {
+		s.mu.Unlock()
+		return
+	}
+
+	audioHandler := s.audioTransition
+	s.inTransition = false
+	s.transEngine = nil
+	if !aborted {
+		s.ftbActive = false
+	}
+	// If aborted, ftbActive stays true (screen remains black)
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	if audioHandler != nil {
+		audioHandler.OnTransitionComplete()
+	}
+	s.notifyStateChange(snapshot)
+}
+
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
 // created and attached to the source's Relay so that frames flow into the
 // Switcher's handleVideoFrame/handleAudioFrame methods tagged with the
@@ -456,7 +530,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("source %q not found", sourceKey)
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	if s.programSource != sourceKey {
 		oldProgram = s.programSource
@@ -490,7 +564,7 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	s.mu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("source %q not found", sourceKey)
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	s.previewSource = sourceKey
 	s.seq++
@@ -507,7 +581,7 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 	ss, ok := s.sources[sourceKey]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("source %q not found", sourceKey)
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	ss.label = label
 	s.seq++

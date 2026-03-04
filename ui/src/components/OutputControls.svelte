@@ -3,8 +3,8 @@
 	import RecordingControl from './RecordingControl.svelte';
 	import SRTOutputModal from './SRTOutputModal.svelte';
 
-	interface Props { state: ControlRoomState; }
-	let { state: crState }: Props = $props();
+	interface Props { state: ControlRoomState; switchLayout?: () => void; }
+	let { state: crState, switchLayout }: Props = $props();
 
 	let showSRTModal = $state(false);
 
@@ -18,6 +18,9 @@
 		class:srt-active={srtActive}
 		onclick={() => showSRTModal = !showSRTModal}
 	>SRT</button>
+	{#if switchLayout}
+		<button class="mode-btn" onclick={switchLayout} title="Switch layout mode">MODE</button>
+	{/if}
 </div>
 
 <SRTOutputModal state={crState} visible={showSRTModal} onclose={() => showSRTModal = false} />
@@ -52,5 +55,22 @@
 		border-color: #4488ff;
 		background: #1a2a44;
 		color: #88bbff;
+	}
+
+	.mode-btn {
+		margin-left: auto;
+		padding: 0.4rem 0.75rem;
+		border: 2px solid #444;
+		border-radius: 4px;
+		background: #1a1a1a;
+		color: #ccc;
+		cursor: pointer;
+		font-family: monospace;
+		font-weight: bold;
+		font-size: 0.85rem;
+	}
+	.mode-btn:hover {
+		border-color: #888;
+		color: #fff;
 	}
 </style>
