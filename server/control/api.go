@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -25,6 +26,17 @@ type AudioMixerAPI interface {
 	SetMasterLevel(level float64)
 }
 
+// OutputManagerAPI is the interface for recording and SRT output operations
+// used by the REST API.
+type OutputManagerAPI interface {
+	StartRecording(outputDir string) error
+	StopRecording() error
+	RecordingStatus() output.RecordingStatus
+	StartSRTOutput(config output.SRTOutputConfig) error
+	StopSRTOutput() error
+	SRTOutputStatus() output.SRTOutputStatus
+}
+
 // APIOption configures optional API dependencies.
 type APIOption func(*API)
 
@@ -33,11 +45,17 @@ func WithMixer(m AudioMixerAPI) APIOption {
 	return func(a *API) { a.mixer = m }
 }
 
+// WithOutputManager attaches a recording/SRT output manager to the API.
+func WithOutputManager(m OutputManagerAPI) APIOption {
+	return func(a *API) { a.outputMgr = m }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
-	switcher *switcher.Switcher
-	mixer    AudioMixerAPI
-	mux      *http.ServeMux
+	switcher  *switcher.Switcher
+	mixer     AudioMixerAPI
+	outputMgr OutputManagerAPI
+	mux       *http.ServeMux
 }
 
 // NewAPI creates an API that delegates to sw.
@@ -69,6 +87,12 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
 	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
+	mux.HandleFunc("POST /api/recording/start", a.handleRecordingStart)
+	mux.HandleFunc("POST /api/recording/stop", a.handleRecordingStop)
+	mux.HandleFunc("GET /api/recording/status", a.handleRecordingStatus)
+	mux.HandleFunc("POST /api/output/srt/start", a.handleSRTStart)
+	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
+	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
@@ -349,4 +373,137 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 	a.mixer.SetMasterLevel(req.Level)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// --- Recording & SRT Output API ---
+
+// recordingStartRequest is the JSON body for the recording start endpoint.
+type recordingStartRequest struct {
+	OutputDir string `json:"outputDir"`
+}
+
+// handleRecordingStart begins recording program output to a file.
+func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req recordingStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.outputMgr.StartRecording(req.OutputDir); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "already active") {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleRecordingStop stops the active recording.
+func (a *API) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	if err := a.outputMgr.StopRecording(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "not active") {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleRecordingStatus returns the current recording status.
+func (a *API) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
+}
+
+// handleSRTStart begins SRT output with the given configuration.
+func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var config output.SRTOutputConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if config.Mode != "caller" && config.Mode != "listener" {
+		http.Error(w, `{"error":"mode must be 'caller' or 'listener'"}`, http.StatusBadRequest)
+		return
+	}
+	if config.Port <= 0 {
+		http.Error(w, `{"error":"port is required"}`, http.StatusBadRequest)
+		return
+	}
+	if config.Mode == "caller" && config.Address == "" {
+		http.Error(w, `{"error":"address is required for caller mode"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.outputMgr.StartSRTOutput(config); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "already active") {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleSRTStop stops the active SRT output.
+func (a *API) handleSRTStop(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	if err := a.outputMgr.StopSRTOutput(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		errMsg := err.Error()
+		status := http.StatusInternalServerError
+		if strings.Contains(errMsg, "not active") {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": errMsg})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleSRTStatus returns the current SRT output status.
+func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }

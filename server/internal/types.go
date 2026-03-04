@@ -1,6 +1,8 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
+import "github.com/zsiec/switchframe/server/output"
+
 // TallyStatus represents the tally light state for a source.
 type TallyStatus string
 
@@ -53,6 +55,8 @@ type ControlRoomState struct {
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`
 	TallyState           map[string]TallyStatus    `json:"tallyState"`
+	Recording            *output.RecordingStatus   `json:"recording,omitempty"`
+	SRTOutput            *output.SRTOutputStatus   `json:"srtOutput,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`
 	Seq                  uint64                    `json:"seq"`
 	Timestamp            int64                     `json:"timestamp"`
