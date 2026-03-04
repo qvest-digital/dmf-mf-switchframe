@@ -93,11 +93,19 @@ func run() error {
 	programRelay := server.RegisterStream("program")
 
 	// Create audio mixer — sends mixed audio to the program relay.
+	// DecoderFactory/EncoderFactory enable multi-channel mixing (decode AAC → PCM,
+	// mix, encode PCM → AAC). Without them, only passthrough mode works.
 	mixer = audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
 			programRelay.BroadcastAudio(frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (audio.AudioDecoder, error) {
+			return audio.NewFDKDecoder(sampleRate, channels)
+		},
+		EncoderFactory: func(sampleRate, channels int) (audio.AudioEncoder, error) {
+			return audio.NewFDKEncoder(sampleRate, channels)
 		},
 	})
 	defer mixer.Close()

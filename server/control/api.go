@@ -200,7 +200,7 @@ func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioMute sets the mute state for a source channel.
@@ -225,7 +225,7 @@ func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioAFV sets the audio-follow-video state for a source channel.
@@ -250,7 +250,7 @@ func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioMaster sets the master output level.
@@ -266,5 +266,5 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mixer.SetMasterLevel(req.Level)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(a.switcher.State())
 }

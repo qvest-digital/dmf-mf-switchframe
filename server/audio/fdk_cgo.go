@@ -5,7 +5,6 @@ package audio
 // avoiding duplicate library warnings.
 
 /*
-#cgo CFLAGS: -I/opt/homebrew/include
-#cgo LDFLAGS: -L/opt/homebrew/lib -lfdk-aac
+#cgo pkg-config: fdk-aac
 */
 import "C"

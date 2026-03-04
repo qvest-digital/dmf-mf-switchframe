@@ -243,23 +243,25 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	// Multi-channel mixing: decode, gain, accumulate, sum, encode
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Lazy-init decoder for this channel
 	if ch.decoder == nil && m.config.DecoderFactory != nil {
 		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
+			m.mu.Unlock()
 			return
 		}
 		ch.decoder = dec
 	}
 	if ch.decoder == nil {
+		m.mu.Unlock()
 		return
 	}
 
 	// Decode AAC → float32 PCM
 	pcm, err := ch.decoder.Decode(frame.Data)
 	if err != nil {
+		m.mu.Unlock()
 		return
 	}
 
@@ -283,18 +285,15 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		m.mixBuffer = make(map[string][]float32)
 	}
 
-	// If PTS changed or buffer is empty, start new cycle
-	if len(m.mixBuffer) > 0 && m.mixPTS != frame.PTS {
-		// PTS mismatch — flush old cycle and start fresh
-		m.mixBuffer = make(map[string][]float32)
-	}
-
-	m.mixPTS = frame.PTS
+	// Mix on frame arrival: each source contributes its latest frame.
+	// When all active unmuted channels have contributed, produce output.
 	m.mixBuffer[sourceKey] = gainedPCM
+	m.mixPTS = frame.PTS
 	m.mixCycleSize = activeUnmuted
 
 	// Check if all active unmuted channels have contributed
 	if len(m.mixBuffer) < activeUnmuted {
+		m.mu.Unlock()
 		return // wait for more channels
 	}
 
@@ -318,17 +317,24 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		mixed[i] *= masterGain
 	}
 
+	// Update program peak metering
+	peakL, peakR := PeakLevel(mixed, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
+
 	// Lazy-init encoder
 	if m.encoder == nil && m.config.EncoderFactory != nil {
 		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
 			m.mixBuffer = make(map[string][]float32)
+			m.mu.Unlock()
 			return
 		}
 		m.encoder = enc
 	}
 	if m.encoder == nil {
 		m.mixBuffer = make(map[string][]float32)
+		m.mu.Unlock()
 		return
 	}
 
@@ -336,50 +342,59 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.mixBuffer = make(map[string][]float32)
+		m.mu.Unlock()
 		return
 	}
 
 	// Reset mix buffer for next cycle
 	m.mixBuffer = make(map[string][]float32)
 
-	// Output the mixed frame
-	m.output(&media.AudioFrame{
+	// Build output frame before releasing lock
+	outputFrame := &media.AudioFrame{
 		PTS:        frame.PTS,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
-	})
+	}
+	m.mu.Unlock()
+
+	// Output outside the lock to avoid blocking other goroutines
+	m.output(outputFrame)
 }
 
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
 // It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
 func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if !m.crossfadeActive {
+		m.mu.Unlock()
 		return
 	}
 
 	// Ensure decoder exists for this channel
 	ch, ok := m.channels[sourceKey]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 	if ch.decoder == nil && m.config.DecoderFactory != nil {
 		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
+			m.mu.Unlock()
 			return
 		}
 		ch.decoder = dec
 	}
 	if ch.decoder == nil {
+		m.mu.Unlock()
 		return
 	}
 
 	// Decode
 	pcm, err := ch.decoder.Decode(frame.Data)
 	if err != nil {
+		m.mu.Unlock()
 		return
 	}
 
@@ -396,6 +411,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
 	_, hasTo := m.crossfadePCM[m.crossfadeTo]
 	if !hasFrom || !hasTo {
+		m.mu.Unlock()
 		return
 	}
 
@@ -413,12 +429,14 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
 			m.crossfadeActive = false
+			m.mu.Unlock()
 			return
 		}
 		m.encoder = enc
 	}
 	if m.encoder == nil {
 		m.crossfadeActive = false
+		m.mu.Unlock()
 		return
 	}
 
@@ -426,6 +444,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.crossfadeActive = false
+		m.mu.Unlock()
 		return
 	}
 
@@ -433,13 +452,17 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	m.crossfadeActive = false
 	m.crossfadePCM = nil
 
-	// Output the crossfaded frame
-	m.output(&media.AudioFrame{
+	// Build output frame before releasing lock
+	outputFrame := &media.AudioFrame{
 		PTS:        frame.PTS,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
-	})
+	}
+	m.mu.Unlock()
+
+	// Output outside the lock to avoid blocking other goroutines
+	m.output(outputFrame)
 }
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
