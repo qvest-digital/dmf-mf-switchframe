@@ -421,3 +421,120 @@ func TestMixerCrossfadeClears(t *testing.T) {
 	m.mu.RUnlock()
 	require.False(t, active, "crossfade should be cleared after completion")
 }
+
+func TestMixerSetAFV(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+
+	err := m.SetAFV("cam1", true)
+	require.NoError(t, err)
+
+	err = m.SetAFV("nonexistent", true)
+	require.Error(t, err, "SetAFV on unknown channel should error")
+}
+
+func TestMixerAFVActivatesOnCut(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+
+	// Both channels have AFV enabled
+	m.SetAFV("cam1", true)
+	m.SetAFV("cam2", true)
+
+	// Initially neither is active (no program source set yet)
+	require.False(t, m.IsChannelActive("cam1"))
+	require.False(t, m.IsChannelActive("cam2"))
+
+	// cam1 goes to program → cam1 activates, cam2 stays inactive
+	m.OnProgramChange("cam1")
+	require.True(t, m.IsChannelActive("cam1"), "AFV channel on program should be active")
+	require.False(t, m.IsChannelActive("cam2"), "AFV channel not on program should be inactive")
+
+	// cam2 goes to program → cam2 activates, cam1 deactivates
+	m.OnProgramChange("cam2")
+	require.False(t, m.IsChannelActive("cam1"), "cam1 should deactivate when leaving program")
+	require.True(t, m.IsChannelActive("cam2"), "cam2 should activate on program")
+}
+
+func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("music")
+
+	// cam1 has AFV, music does not
+	m.SetAFV("cam1", true)
+	// music is manually activated and stays on regardless of program changes
+	m.SetActive("music", true)
+
+	require.True(t, m.IsChannelActive("music"), "non-AFV channel should be active")
+
+	// Program changes should not affect non-AFV channels
+	m.OnProgramChange("cam1")
+	require.True(t, m.IsChannelActive("cam1"), "AFV cam1 on program")
+	require.True(t, m.IsChannelActive("music"), "non-AFV music stays active")
+
+	m.OnProgramChange("cam1") // stay on cam1
+	require.True(t, m.IsChannelActive("music"), "non-AFV music still active")
+}
+
+func TestMixerAFVToggledOff(t *testing.T) {
+	// When AFV is toggled off, channel keeps its current active state
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetAFV("cam1", true)
+
+	// Activate via program change
+	m.OnProgramChange("cam1")
+	require.True(t, m.IsChannelActive("cam1"))
+
+	// Turn off AFV — channel stays active (was already active)
+	m.SetAFV("cam1", false)
+	require.True(t, m.IsChannelActive("cam1"), "turning off AFV should not deactivate")
+
+	// Now program changes should not affect cam1
+	m.OnProgramChange("cam2") // cam2 doesn't exist, but that's fine
+	require.True(t, m.IsChannelActive("cam1"), "non-AFV channel unaffected by program change")
+}
+
+func TestMixerIsChannelActive(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	// Unknown channel returns false
+	require.False(t, m.IsChannelActive("unknown"))
+
+	m.AddChannel("cam1")
+	require.False(t, m.IsChannelActive("cam1"), "new channel starts inactive")
+
+	m.SetActive("cam1", true)
+	require.True(t, m.IsChannelActive("cam1"))
+}

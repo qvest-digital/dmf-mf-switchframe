@@ -145,6 +145,46 @@ func (m *AudioMixer) SetMasterLevel(levelDB float64) {
 	m.recalcPassthrough()
 }
 
+// SetAFV enables or disables audio-follows-video for a channel.
+// When AFV is enabled, the channel activates when its source goes to program
+// and deactivates when it leaves program.
+func (m *AudioMixer) SetAFV(sourceKey string, afv bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return fmt.Errorf("channel %q not found", sourceKey)
+	}
+	ch.afv = afv
+	return nil
+}
+
+// IsChannelActive returns whether a channel is currently active.
+func (m *AudioMixer) IsChannelActive(sourceKey string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return false
+	}
+	return ch.active
+}
+
+// OnProgramChange updates AFV channel states based on the new program source.
+// Channels with AFV enabled activate when they match the program source and
+// deactivate when they don't. Non-AFV channels are unaffected.
+func (m *AudioMixer) OnProgramChange(newProgramSource string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, ch := range m.channels {
+		if !ch.afv {
+			continue
+		}
+		ch.active = (key == newProgramSource)
+	}
+	m.recalcPassthrough()
+}
+
 // OnCut initiates a one-frame equal-power crossfade between old and new source.
 // Called by the switcher when a cut occurs.
 func (m *AudioMixer) OnCut(oldSource, newSource string) {
