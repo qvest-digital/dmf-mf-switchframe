@@ -37,3 +37,38 @@ func (sp *StatePublisher) Publish(state internal.ControlRoomState) {
 	}
 	sp.publishFn(data)
 }
+
+// ChannelPublisher sends serialized JSON state to a channel for MoQ broadcast.
+type ChannelPublisher struct {
+	ch chan []byte
+}
+
+// NewChannelPublisher creates a publisher with a buffered channel.
+func NewChannelPublisher(bufSize int) *ChannelPublisher {
+	return &ChannelPublisher{ch: make(chan []byte, bufSize)}
+}
+
+// Publish serializes state and sends to the channel.
+// If the channel is full, the oldest message is dropped.
+func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
+	data, err := json.Marshal(state)
+	if err != nil {
+		slog.Error("failed to marshal state", "error", err)
+		return
+	}
+	select {
+	case cp.ch <- data:
+	default:
+		// Drop oldest, send newest
+		select {
+		case <-cp.ch:
+		default:
+		}
+		cp.ch <- data
+	}
+}
+
+// Ch returns the read-only channel for MoQ consumption.
+func (cp *ChannelPublisher) Ch() <-chan []byte {
+	return cp.ch
+}

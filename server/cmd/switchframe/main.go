@@ -9,10 +9,11 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/zsiec/prism/certs"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/control"
-	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -29,37 +30,65 @@ func run() error {
 
 	slog.Info("switchframe starting")
 
-	// Create program relay for switched output
+	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
+	cert, err := certs.Generate(14 * 24 * time.Hour)
+	if err != nil {
+		return fmt.Errorf("generate certificate: %w", err)
+	}
+	slog.Info("certificate generated",
+		"fingerprint", cert.FingerprintBase64(),
+		"expires", cert.NotAfter.Format(time.RFC3339))
+
+	// Create program relay for switched output.
 	programRelay := distribution.NewRelay()
 
-	// Create switcher
+	// Create switcher.
 	sw := switcher.New(programRelay)
+	defer sw.Close()
 
-	// Create REST API
+	// Create REST API.
 	api := control.NewAPI(sw)
 
-	// Create state publisher (wired to MoQ in future)
-	statePub := control.NewStatePublisher(func(data []byte) {
-		slog.Debug("state published", "bytes", len(data))
-	})
+	// Create channel-based state publisher for MoQ control track.
+	controlPub := control.NewChannelPublisher(16)
+	sw.OnStateChange(controlPub.Publish)
 
-	// Wire state changes to publisher
-	sw.OnStateChange(func(state internal.ControlRoomState) {
-		statePub.Publish(state)
-	})
-
-	// Serve REST API
-	mux := http.NewServeMux()
-	api.RegisterOnMux(mux)
+	// Start health monitor (checks every second).
+	sw.StartHealthMonitor(1 * time.Second)
 
 	addr := ":8080"
-	slog.Info("listening", "addr", addr)
 
-	srv := &http.Server{Addr: addr, Handler: mux}
-	go func() {
-		<-ctx.Done()
-		srv.Close()
-	}()
+	config := distribution.ServerConfig{
+		Addr: addr,
+		Cert: cert,
+		ExtraRoutes: func(mux *http.ServeMux) {
+			api.RegisterOnMux(mux)
+		},
+		OnStreamRegistered: func(key string, relay *distribution.Relay) {
+			slog.Info("stream registered, adding source", "key", key)
+			sw.RegisterSource(key, relay)
+		},
+		OnStreamUnregistered: func(key string) {
+			slog.Info("stream unregistered, removing source", "key", key)
+			sw.UnregisterSource(key)
+		},
+		ControlCh: controlPub.Ch(),
+	}
 
-	return srv.ListenAndServe()
+	server, err := distribution.NewServer(config)
+	if err != nil {
+		return fmt.Errorf("create distribution server: %w", err)
+	}
+
+	// Register the program relay so MoQ viewers can subscribe to "program".
+	server.RegisterStream("program")
+	// Replace the auto-created relay with our programRelay by wiring
+	// the switcher's output into the server's relay for "program".
+	// TODO: Prism doesn't expose relay replacement; for now the program
+	// relay is separate. Viewers watch "program" via the server's relay,
+	// and we bridge frames in a future integration step. This is a known
+	// gap documented in tech-debt.md.
+
+	slog.Info("starting Prism distribution server", "addr", addr)
+	return server.Start(ctx)
 }

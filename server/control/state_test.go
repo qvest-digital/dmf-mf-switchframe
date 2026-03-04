@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/internal"
 )
 
@@ -56,5 +57,65 @@ func TestStatePublisherSequentialPublishes(t *testing.T) {
 	}
 	if count != 5 {
 		t.Errorf("published %d times, want 5", count)
+	}
+}
+
+func TestChannelPublisher(t *testing.T) {
+	pub := NewChannelPublisher(2)
+
+	// Publish a state
+	state := internal.ControlRoomState{ProgramSource: "cam1", Seq: 1}
+	pub.Publish(state)
+
+	// Read from channel
+	select {
+	case data := <-pub.Ch():
+		var got internal.ControlRoomState
+		require.NoError(t, json.Unmarshal(data, &got))
+		require.Equal(t, "cam1", got.ProgramSource)
+	default:
+		t.Fatal("expected data on channel")
+	}
+
+	// Test overflow: fill buffer, then publish one more
+	pub.Publish(internal.ControlRoomState{Seq: 2})
+	pub.Publish(internal.ControlRoomState{Seq: 3})
+	pub.Publish(internal.ControlRoomState{Seq: 4}) // should drop seq 2
+
+	data := <-pub.Ch()
+	var got internal.ControlRoomState
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Equal(t, uint64(3), got.Seq) // seq 2 was dropped
+}
+
+func TestChannelPublisherEmptyBuffer(t *testing.T) {
+	pub := NewChannelPublisher(1)
+
+	// Channel should be empty initially
+	select {
+	case <-pub.Ch():
+		t.Fatal("expected empty channel")
+	default:
+		// expected
+	}
+}
+
+func TestChannelPublisherMultipleReads(t *testing.T) {
+	pub := NewChannelPublisher(4)
+
+	for i := uint64(1); i <= 4; i++ {
+		pub.Publish(internal.ControlRoomState{Seq: i})
+	}
+
+	// Read all four in order
+	for i := uint64(1); i <= 4; i++ {
+		select {
+		case data := <-pub.Ch():
+			var got internal.ControlRoomState
+			require.NoError(t, json.Unmarshal(data, &got))
+			require.Equal(t, i, got.Seq)
+		default:
+			t.Fatalf("expected data for seq %d", i)
+		}
 	}
 }
