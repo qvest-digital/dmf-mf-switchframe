@@ -75,11 +75,13 @@ func (l *SRTListener) ID() string { return "srt-listener" }
 
 // Start begins listening for SRT connections.
 func (l *SRTListener) Start(ctx context.Context) error {
+	l.mu.Lock()
 	l.ctx, l.cancel = context.WithCancel(ctx)
 	l.startedAt = time.Now()
 	l.bytesWritten.Store(0)
 	l.state.Store(StateActive)
 	l.lastError.Store("")
+	l.mu.Unlock()
 
 	if l.acceptFn != nil {
 		go func() {
@@ -144,6 +146,10 @@ func (l *SRTListener) ConnectionCount() int {
 
 // Write fans out TS data to all connected clients non-blocking.
 func (l *SRTListener) Write(tsData []byte) (int, error) {
+	if state := l.state.Load().(AdapterState); state != StateActive {
+		return 0, fmt.Errorf("srt listener not active (state: %s)", state)
+	}
+
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -164,11 +170,10 @@ func (l *SRTListener) Write(tsData []byte) (int, error) {
 
 // Close stops the listener and disconnects all clients.
 func (l *SRTListener) Close() error {
+	l.mu.Lock()
 	if l.cancel != nil {
 		l.cancel()
 	}
-
-	l.mu.Lock()
 	for id, lc := range l.conns {
 		lc.cancel()
 		lc.conn.Close()

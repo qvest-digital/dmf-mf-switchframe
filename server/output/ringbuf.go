@@ -1,8 +1,5 @@
 package output
 
-// defaultRingBufferCapacity is the default size for the SRT reconnection buffer (4MB).
-const defaultRingBufferCapacity = 4 * 1024 * 1024
-
 // ringBuffer is a fixed-size circular buffer used to hold MPEG-TS data during
 // SRT reconnection. If writes exceed the capacity, the oldest data is silently
 // overwritten and the overflowed flag is set. On reconnect the SRT caller
@@ -30,14 +27,13 @@ func newRingBuffer(capacity int) *ringBuffer {
 // Write always succeeds (never returns an error) and always reports len(p)
 // bytes written, matching the io.Writer contract.
 func (r *ringBuffer) Write(p []byte) (int, error) {
-	n := len(p)
+	total := len(p) // preserve original length for io.Writer contract
 
 	// If the write is larger than total capacity, only keep the last
 	// capacity bytes (everything older is lost).
-	if n > r.capacity {
+	if total > r.capacity {
 		r.overflowed = true
-		p = p[n-r.capacity:]
-		n = len(p) // still report original n at return
+		p = p[total-r.capacity:]
 		// Reset positions — we're filling the entire buffer.
 		r.writePos = 0
 		r.readPos = 0
@@ -57,7 +53,7 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 		r.count++
 	}
 
-	return n, nil
+	return total, nil
 }
 
 // ReadAll returns all readable data as a new byte slice and resets the buffer.

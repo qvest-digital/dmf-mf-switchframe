@@ -35,6 +35,7 @@ type SRTCaller struct {
 	cancel       context.CancelFunc
 	ringBuf      *ringBuffer
 	backoff      time.Duration
+	reconnecting atomic.Bool  // guards against duplicate reconnect goroutines
 	bytesWritten atomic.Int64
 	state        atomic.Value // AdapterState
 	lastError    atomic.Value // string
@@ -86,6 +87,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	if err != nil {
 		c.state.Store(StateReconnecting)
 		c.lastError.Store(err.Error())
+		c.reconnecting.Store(true)
 		go c.reconnectLoop()
 		return nil // Don't fail start — reconnect will keep trying
 	}
@@ -121,7 +123,10 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 			c.mu.Lock()
 			c.ringBuf.Write(tsData)
 			c.mu.Unlock()
-			go c.reconnectLoop()
+			// CAS guard prevents duplicate reconnect goroutines.
+			if c.reconnecting.CompareAndSwap(false, true) {
+				go c.reconnectLoop()
+			}
 			return len(tsData), nil // Don't propagate error to muxer
 		}
 
@@ -199,6 +204,7 @@ func (c *SRTCaller) Overflowed() bool {
 // flushed to the new connection. If it did overflow, the data is
 // discarded (the OutputManager should wait for a keyframe).
 func (c *SRTCaller) reconnectLoop() {
+	defer c.reconnecting.Store(false)
 	for {
 		select {
 		case <-c.ctx.Done():
