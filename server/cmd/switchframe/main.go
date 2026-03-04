@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
@@ -147,8 +148,14 @@ func run() error {
 	outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	defer outputMgr.Close()
 
+	// Create debug collector for pipeline instrumentation.
+	debugCollector := debug.NewCollector()
+	debugCollector.Register("switcher", sw)
+	debugCollector.Register("mixer", mixer)
+	debugCollector.Register("output", outputMgr)
+
 	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr))
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector))
 
 	// enrichState patches a ControlRoomState snapshot with output status.
 	enrichState := func(state internal.ControlRoomState) internal.ControlRoomState {
@@ -176,11 +183,13 @@ func run() error {
 
 	sw.StartHealthMonitor(1 * time.Second)
 
+	demoStats := demo.NewDemoStats()
 	if *demoFlag {
 		slog.Info("demo mode: starting 4 simulated camera sources")
-		stopDemo := demo.StartSources(ctx, sw, mixer, 4, demo.NewDemoStats())
+		stopDemo := demo.StartSources(ctx, sw, mixer, 4, demoStats)
 		defer stopDemo()
 	}
+	debugCollector.Register("demo", demoStats)
 
 	slog.Info("starting Prism distribution server", "addr", addr)
 	return server.Start(ctx)

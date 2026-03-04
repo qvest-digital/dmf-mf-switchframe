@@ -40,6 +40,11 @@ type OutputManagerAPI interface {
 	SRTOutputStatus() output.SRTOutputStatus
 }
 
+// DebugAPI is the interface for the debug snapshot endpoint.
+type DebugAPI interface {
+	HandleSnapshot(w http.ResponseWriter, r *http.Request)
+}
+
 // APIOption configures optional API dependencies.
 type APIOption func(*API)
 
@@ -53,11 +58,17 @@ func WithOutputManager(m OutputManagerAPI) APIOption {
 	return func(a *API) { a.outputMgr = m }
 }
 
+// WithDebugCollector attaches a debug snapshot handler to the API.
+func WithDebugCollector(d DebugAPI) APIOption {
+	return func(a *API) { a.debug = d }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher  *switcher.Switcher
 	mixer     AudioMixerAPI
 	outputMgr OutputManagerAPI
+	debug     DebugAPI
 	mux       *http.ServeMux
 }
 
@@ -96,6 +107,9 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/output/srt/start", a.handleSRTStart)
 	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
 	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
+	if a.debug != nil {
+		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
+	}
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
