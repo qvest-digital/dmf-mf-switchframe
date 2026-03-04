@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
@@ -466,4 +467,43 @@ func TestSourceKeys(t *testing.T) {
 	if !keySet["camera1"] || !keySet["camera2"] {
 		t.Errorf("SourceKeys() = %v, want [camera1, camera2]", keys)
 	}
+}
+
+func TestAllAudioRoutedToMixer(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	var mu sync.Mutex
+	var mixerFrames []struct {
+		key   string
+		frame *media.AudioFrame
+	}
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mu.Lock()
+		mixerFrames = append(mixerFrames, struct {
+			key   string
+			frame *media.AudioFrame
+		}{sourceKey, frame})
+		mu.Unlock()
+	})
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Clear IDR gate
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
+
+	// Audio from BOTH sources should reach the mixer handler
+	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	cam2Relay.BroadcastAudio(&media.AudioFrame{PTS: 200, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	time.Sleep(10 * time.Millisecond)
+
+	mu.Lock()
+	require.Equal(t, 2, len(mixerFrames), "both sources' audio should reach mixer")
+	mu.Unlock()
 }
