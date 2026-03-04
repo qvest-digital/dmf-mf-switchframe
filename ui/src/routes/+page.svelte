@@ -8,12 +8,14 @@
 	import AudioMixer from '../components/AudioMixer.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, getState, fireAndForget } from '$lib/api/switch-api';
+	import { cut, setPreview, getState, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { createPrismConnection } from '$lib/transport/connection';
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
+	let transitionType: 'mix' | 'dip' = 'mix';
+	let transitionDuration = 1000;
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
@@ -21,14 +23,27 @@
 		},
 		onSetPreview: (key) => fireAndForget(setPreview(key)),
 		onHotPunch: (key) => fireAndForget(cut(key)),
-		onAutoTransition: () => {},
-		onFadeToBlack: () => {},
+		onAutoTransition: () => {
+			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
+				fireAndForget(startTransition(store.state.previewSource, transitionType, transitionDuration));
+			}
+		},
+		onFadeToBlack: () => {
+			if (!store.state.inTransition || store.state.ftbActive) {
+				fireAndForget(fadeToBlack());
+			}
+		},
 		onToggleFullscreen: () => {
 			document.fullscreenElement
 				? document.exitFullscreen()
 				: document.documentElement.requestFullscreen();
 		},
 		onToggleOverlay: () => { showOverlay = !showOverlay; },
+		onSetTransitionType: (type) => {
+			if (type === 'mix' || type === 'dip') {
+				transitionType = type;
+			}
+		},
 		getSourceKeys: () => store.sourceKeys,
 	});
 
