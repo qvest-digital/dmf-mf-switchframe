@@ -46,6 +46,7 @@ export interface MoQTransportCallbacks {
 	onCaptionFrame: (caption: CaptionData, timestamp: number) => void;
 	onServerStats: (stats: ServerStats) => void;
 	onViewerStats?: (stats: ServerViewerStats) => void;
+	onControlState?: (data: Uint8Array) => void;
 	onClose: () => void;
 	onError: (err: string) => void;
 }
@@ -523,6 +524,10 @@ export class MoQTransport {
 						}
 					} catch {
 						// malformed stats JSON
+					}
+				} else if (trackName === "control") {
+					if (this.callbacks.onControlState) {
+						this.callbacks.onControlState(payload);
 					}
 				}
 			}

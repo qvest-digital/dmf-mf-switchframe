@@ -35,7 +35,7 @@
 	onMount(async () => {
 		keyboard.attach();
 
-		// Initial state fetch
+		// Initial state fetch via REST
 		try {
 			const state = await getState();
 			store.applyUpdate(state);
@@ -43,7 +43,10 @@
 			console.warn('Failed to fetch initial state:', e);
 		}
 
-		// Poll REST every 500ms (will be replaced by MoQ in Task 18)
+		// TODO: Connect MoQ control track for real-time updates.
+		// When MoQ is connected, the onControlState callback will call
+		// store.applyFromMoQ(data) for each state update, and we can
+		// clear the poll interval. For now, poll REST as fallback.
 		pollInterval = setInterval(async () => {
 			try {
 				const state = await getState();
