@@ -274,7 +274,11 @@ func run() error {
 	}()
 	go func() {
 		<-ctx.Done()
-		httpSrv.Close()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("HTTP API server shutdown error", "err", err)
+		}
 	}()
 
 	slog.Info("starting Prism distribution server", "addr", addr)
