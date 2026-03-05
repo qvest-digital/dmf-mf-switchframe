@@ -27,16 +27,48 @@ static int oh264enc_open(oh264enc_t* h, int width, int height, int bitrate, floa
 	h->width = width;
 	h->height = height;
 
-	SEncParamBase param;
-	memset(&param, 0, sizeof(SEncParamBase));
+	// Use SEncParamExt for full control over encoder settings.
+	// Transition frames (dissolves, dips, fades) are the hardest content
+	// for H.264 encoders: every frame differs from its neighbors, motion
+	// estimation has reduced reference value, and scene-change detection
+	// can incorrectly trigger mid-transition.
+	SEncParamExt param;
+	memset(&param, 0, sizeof(SEncParamExt));
+	(*h->enc)->GetDefaultParams(h->enc, &param);
+
 	param.iUsageType = CAMERA_VIDEO_REAL_TIME;
 	param.iPicWidth = width;
 	param.iPicHeight = height;
 	param.iTargetBitrate = bitrate;
-	param.iRCMode = RC_BITRATE_MODE;
+	param.iRCMode = RC_QUALITY_MODE;
 	param.fMaxFrameRate = fps;
+	param.iMinQp = 18;
+	param.iMaxQp = 28;
 
-	rc = (*h->enc)->Initialize(h->enc, &param);
+	// Disable scene-change detection: the dissolve IS the content change,
+	// and unplanned IDR insertions spike bitrate at the worst moment.
+	param.bEnableSceneChangeDetect = false;
+
+	// Never skip frames during transitions — skipping produces visible
+	// stutter because the blend position jumps non-linearly.
+	param.bEnableFrameSkip = false;
+
+	// Adaptive quantization allocates more bits to perceptually important
+	// regions, which helps preserve edges from both sources during blending.
+	param.bEnableAdaptiveQuant = true;
+
+	// Disable denoise — adds latency with no benefit for synthetic blend content.
+	param.bEnableDenoise = false;
+
+	// Single spatial layer at full resolution.
+	param.iSpatialLayerNum = 1;
+	param.sSpatialLayers[0].iVideoWidth = width;
+	param.sSpatialLayers[0].iVideoHeight = height;
+	param.sSpatialLayers[0].fFrameRate = fps;
+	param.sSpatialLayers[0].iSpatialBitrate = bitrate;
+	param.sSpatialLayers[0].iMaxSpatialBitrate = bitrate * 2;
+
+	rc = (*h->enc)->InitializeExt(h->enc, &param);
 	if (rc != 0) {
 		WelsDestroySVCEncoder(h->enc);
 		h->enc = NULL;

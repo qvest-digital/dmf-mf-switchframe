@@ -406,4 +406,5 @@ func (e *TransitionEngine) cleanup() {
 	e.latestYUVA = nil
 	e.latestYUVB = nil
 	e.blender = nil
+	e.scaleBuf = nil
 }
