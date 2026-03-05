@@ -9,6 +9,7 @@
 	import OutputControls from '../components/OutputControls.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import LoadingOverlay from '../components/LoadingOverlay.svelte';
+	import ConnectionBanner from '../components/ConnectionBanner.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
@@ -38,6 +39,18 @@
 	// ARIA live region for screen reader announcements
 	let announcement = $state('');
 	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// Periodic tick for sync status detection (drives time-based re-evaluation)
+	let now = $state(Date.now());
+	let syncInterval: ReturnType<typeof setInterval> | undefined;
+
+	let syncStatus = $derived.by(() => {
+		const _tick = now; // reactive dependency on now
+		const elapsed = Date.now() - store.lastServerUpdate;
+		if (elapsed > 5000) return 'disconnected' as const;
+		if (elapsed > 2000) return 'resyncing' as const;
+		return 'ok' as const;
+	});
 
 	function announce(msg: string) {
 		announcement = msg;
@@ -298,6 +311,7 @@
 		keyboard.attach();
 		document.addEventListener('keydown', handleDebugDump);
 		mounted = true;
+		syncInterval = setInterval(() => { now = Date.now(); }, 1000);
 
 		// Subscribe to "program" MoQ stream so the program canvas shows
 		// the actual server output (including transition blends).
@@ -325,6 +339,7 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
+		clearInterval(syncInterval);
 		pflManager.destroy();
 		pipelineManager.destroy();
 		connectionManager.stop();
@@ -353,6 +368,7 @@
 {/if}
 
 <ErrorBoundary>
+	<ConnectionBanner {connectionState} {syncStatus} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

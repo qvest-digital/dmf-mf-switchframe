@@ -168,6 +168,80 @@ describe('control-room store', () => {
 		expect(store.state.programSource).toBe('');
 	});
 
+	describe('lastServerUpdate tracking', () => {
+		it('initializes lastServerUpdate to current time', () => {
+			const before = Date.now();
+			const store = createControlRoomStore();
+			const after = Date.now();
+			expect(store.lastServerUpdate).toBeGreaterThanOrEqual(before);
+			expect(store.lastServerUpdate).toBeLessThanOrEqual(after);
+		});
+
+		it('updates lastServerUpdate on applyUpdate', () => {
+			vi.useFakeTimers();
+			const now = Date.now();
+			vi.setSystemTime(now);
+
+			const store = createControlRoomStore();
+
+			vi.setSystemTime(now + 5000);
+			store.applyUpdate(makeState({ seq: 1, programSource: 'cam1' }));
+
+			expect(store.lastServerUpdate).toBe(now + 5000);
+			vi.useRealTimers();
+		});
+
+		it('updates lastServerUpdate on applyFromMoQ', () => {
+			vi.useFakeTimers();
+			const now = Date.now();
+			vi.setSystemTime(now);
+
+			const store = createControlRoomStore();
+
+			vi.setSystemTime(now + 3000);
+			const data = new TextEncoder().encode(
+				JSON.stringify(makeState({ seq: 1, programSource: 'cam1' }))
+			);
+			store.applyFromMoQ(data);
+
+			expect(store.lastServerUpdate).toBe(now + 3000);
+			vi.useRealTimers();
+		});
+
+		it('does not update lastServerUpdate on stale update', () => {
+			vi.useFakeTimers();
+			const now = Date.now();
+			vi.setSystemTime(now);
+
+			const store = createControlRoomStore();
+
+			vi.setSystemTime(now + 1000);
+			store.applyUpdate(makeState({ seq: 5, programSource: 'cam1' }));
+			const afterFirst = store.lastServerUpdate;
+
+			vi.setSystemTime(now + 2000);
+			store.applyUpdate(makeState({ seq: 3, programSource: 'stale' }));
+
+			expect(store.lastServerUpdate).toBe(afterFirst);
+			vi.useRealTimers();
+		});
+
+		it('does not update lastServerUpdate on malformed MoQ data', () => {
+			vi.useFakeTimers();
+			const now = Date.now();
+			vi.setSystemTime(now);
+
+			const store = createControlRoomStore();
+			const initial = store.lastServerUpdate;
+
+			vi.setSystemTime(now + 5000);
+			store.applyFromMoQ(new TextEncoder().encode('not valid json{{{'));
+
+			expect(store.lastServerUpdate).toBe(initial);
+			vi.useRealTimers();
+		});
+	});
+
 	describe('optimistic updates', () => {
 		it('optimisticCut immediately reflects in effectiveState', () => {
 			const store = createControlRoomStore();

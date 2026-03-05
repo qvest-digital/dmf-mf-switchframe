@@ -29,10 +29,12 @@ interface PendingAction {
 export function createControlRoomStore() {
 	let state = $state<ControlRoomState>({ ...EMPTY_STATE });
 	let pendingAction = $state<PendingAction | null>(null);
+	let lastServerUpdate = $state(Date.now());
 
 	function applyUpdate(update: ControlRoomState) {
 		if (update.seq <= state.seq) return;
 		state = update;
+		lastServerUpdate = Date.now();
 		// Clear pending if server state matches the optimistic prediction or it expired
 		if (pendingAction) {
 			const expired = Date.now() - pendingAction.timestamp > PENDING_TIMEOUT_MS;
@@ -95,6 +97,9 @@ export function createControlRoomStore() {
 		},
 		get sourceKeys() {
 			return Object.keys(state.sources).sort();
+		},
+		get lastServerUpdate() {
+			return lastServerUpdate;
 		},
 		applyUpdate,
 		applyFromMoQ,
