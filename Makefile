@@ -1,4 +1,4 @@
-.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-all docker clean sync-prism-ts
+.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-all docker clean sync-prism-ts lint format
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -79,6 +79,16 @@ sync-prism-ts:
 	@diff -rq "$(PRISM_TS_SRC)" "$(PRISM_TS_DST)" \
 		--exclude="main.ts" --exclude="lib.ts" --exclude="index.ts" \
 		|| echo "\nFiles differ. Review changes and copy manually if needed."
+
+# Lint
+lint: node_modules_check
+	cd server && go vet ./...
+	cd ui && npx svelte-check --tsconfig ./tsconfig.json
+
+# Format
+format:
+	cd server && gofmt -w .
+	cd ui && npx prettier --write 'src/**/*.{ts,svelte,css}'
 
 clean:
 	rm -rf bin/ $(EMBED_LINK)
