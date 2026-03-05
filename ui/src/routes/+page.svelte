@@ -10,6 +10,7 @@
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
 	import LoadingOverlay from '../components/LoadingOverlay.svelte';
 	import ConnectionBanner from '../components/ConnectionBanner.svelte';
+	import ProgramHealthBanner from '../components/ProgramHealthBanner.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
@@ -17,6 +18,7 @@
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import { getSourceError } from '$lib/transport/source-errors.svelte';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -261,6 +263,17 @@
 		prevFtb = isFtb;
 	});
 
+	// Notify operator when the program source has a decoder error
+	let prevProgramError: string | null = null;
+	$effect(() => {
+		const programKey = store.state.programSource;
+		const error = programKey ? getSourceError(programKey) : null;
+		if (error && error !== prevProgramError) {
+			notify('error', `Program source error: ${error}`);
+		}
+		prevProgramError = error;
+	});
+
 	async function submitToken() {
 		if (!tokenInput.trim()) return;
 		setAuthToken(tokenInput.trim());
@@ -355,6 +368,11 @@
 		</div>
 	</div>
 {/if}
+
+<ProgramHealthBanner
+	programSource={store.state.programSource}
+	status={store.state.sources[store.state.programSource]?.status ?? 'healthy'}
+/>
 
 <ErrorBoundary>
 	<ConnectionBanner {connectionState} {syncStatus} />

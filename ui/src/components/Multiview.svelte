@@ -2,6 +2,7 @@
 	import type { ControlRoomState, TallyStatus } from '$lib/api/types';
 	import { setPreview, apiCall } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
+	import { getSourceError } from '$lib/transport/source-errors.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -82,6 +83,20 @@
 			onclick={() => apiCall(setPreview(key), 'Preview failed')}
 		>
 			<canvas class="tile-video" id="tile-{key}"></canvas>
+			{#if crState.sources[key].status === 'stale'}
+				<div class="health-overlay stale"></div>
+			{:else if crState.sources[key].status === 'no_signal'}
+				<div class="health-overlay no-signal">
+					<span class="health-text">NO SIGNAL</span>
+				</div>
+			{:else if crState.sources[key].status === 'offline'}
+				<div class="health-overlay offline">
+					<span class="health-text">OFFLINE</span>
+				</div>
+			{/if}
+			{#if getSourceError(key)}
+				<span class="tile-error" title={getSourceError(key)}>!</span>
+			{/if}
 			<div class="tile-bar">
 				<span class="tile-num">{i + 1}</span>
 				{#if editingKey === key}
@@ -211,5 +226,60 @@
 		font-size: 0.55rem;
 		font-weight: 600;
 		letter-spacing: 0.05em;
+	}
+
+	.health-overlay {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		pointer-events: none;
+		z-index: 1;
+	}
+
+	.health-overlay.stale {
+		border: 2px solid #cc8822;
+		animation: pulse-stale 2s ease-in-out infinite;
+	}
+
+	.health-overlay.no-signal {
+		background: rgba(200, 30, 30, 0.4);
+	}
+
+	.health-overlay.offline {
+		background: rgba(0, 0, 0, 0.7);
+	}
+
+	.health-text {
+		font-family: var(--font-ui);
+		font-size: 0.9rem;
+		font-weight: 700;
+		letter-spacing: 0.1em;
+		color: rgba(255, 255, 255, 0.8);
+		text-transform: uppercase;
+	}
+
+	.tile-error {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		width: 18px;
+		height: 18px;
+		background: #cc0000;
+		color: #fff;
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-weight: 700;
+		font-size: 0.7rem;
+		z-index: 2;
+		cursor: help;
+	}
+
+	@keyframes pulse-stale {
+		0%, 100% { border-color: #cc8822; box-shadow: none; }
+		50% { border-color: #ffaa33; box-shadow: 0 0 8px rgba(204, 136, 34, 0.4); }
 	}
 </style>
