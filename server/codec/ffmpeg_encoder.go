@@ -28,6 +28,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
                       void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
+	// Suppress verbose FFmpeg/x264 logging (only show errors).
+	av_log_set_level(AV_LOG_ERROR);
+
 	const AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
 	if (!codec) {
 		return -1; // codec not found
@@ -209,6 +212,8 @@ var _ transition.VideoEncoder = (*FFmpegEncoder)(nil)
 
 // FFmpegEncoder wraps an FFmpeg libavcodec encoder and implements transition.VideoEncoder.
 // It encodes packed YUV420 planar frames to Annex B H.264 bitstream.
+//
+// FFmpegEncoder is NOT safe for concurrent use. Callers must synchronize access externally.
 type FFmpegEncoder struct {
 	handle C.ffenc_t
 	closed bool
