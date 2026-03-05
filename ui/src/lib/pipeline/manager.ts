@@ -21,6 +21,7 @@ export interface PeakLevels {
 export class PipelineManager {
 	private pipeline: MediaPipeline;
 	private getSourceKeys: () => string[];
+	private onLevelsUpdate?: (sourceLevels: Record<string, PeakLevels>, programLevels: PeakLevels) => void;
 
 	/** Track which sources are connected to avoid duplicate work. */
 	private connectedSources = new Set<string>();
@@ -38,9 +39,14 @@ export class PipelineManager {
 	/** rAF handle for metering loop. */
 	private meterRafId: number | undefined;
 
-	constructor(pipeline: MediaPipeline, getSourceKeys: () => string[]) {
+	constructor(
+		pipeline: MediaPipeline,
+		getSourceKeys: () => string[],
+		onLevelsUpdate?: (sourceLevels: Record<string, PeakLevels>, programLevels: PeakLevels) => void,
+	) {
 		this.pipeline = pipeline;
 		this.getSourceKeys = getSourceKeys;
+		this.onLevelsUpdate = onLevelsUpdate;
 	}
 
 	/**
@@ -193,6 +199,11 @@ export class PipelineManager {
 		if (programDecoder) {
 			const pl = programDecoder.getLevels();
 			this.programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };
+		}
+
+		// Push levels to subscriber on each rAF tick (no polling delay)
+		if (this.onLevelsUpdate) {
+			this.onLevelsUpdate(this.sourceLevels, this.programLevels);
 		}
 
 		this.meterRafId = requestAnimationFrame(this.meterLoop);

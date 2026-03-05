@@ -363,6 +363,28 @@ describe('PipelineManager', () => {
 			// Only one rAF should be requested
 			expect(rafCallbacks.length).toBe(1);
 		});
+
+		it('should invoke onLevelsUpdate callback on each rAF tick', () => {
+			const onLevelsUpdate = vi.fn();
+			const mgr = new PipelineManager(pipeline, () => ['cam1'], onLevelsUpdate);
+
+			const mockDecoder = {
+				getLevels: vi.fn().mockReturnValue({ peak: [0.5, 0.7], rms: [0, 0], peakHold: [0, 0], channels: 2 }),
+			};
+			pipeline.getAudioDecoder.mockImplementation((key: string) => {
+				if (key === 'cam1') return mockDecoder;
+				return null;
+			});
+
+			mgr.startMetering();
+			rafCallbacks[0](performance.now());
+
+			expect(onLevelsUpdate).toHaveBeenCalledWith(
+				{ cam1: { peakL: 0.5, peakR: 0.7 } },
+				{ peakL: 0, peakR: 0 },
+			);
+			mgr.destroy();
+		});
 	});
 
 	describe('destroy', () => {

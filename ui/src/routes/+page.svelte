@@ -67,7 +67,10 @@
 
 	// Media pipeline for MoQ video/audio decode
 	const pipeline = createMediaPipeline();
-	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys);
+	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys, (src, pgm) => {
+		sourceLevels = src;
+		programLevels = pgm;
+	});
 
 	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
 	let sourceLevels = $state<Record<string, { peakL: number; peakR: number }>>({});
@@ -151,17 +154,6 @@
 			pipelineManager.syncSources(store.state.sources);
 			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
 		});
-	});
-
-	// Sync metering levels from PipelineManager into reactive state
-	$effect(() => {
-		if (!mounted) return;
-		const interval = setInterval(() => {
-			const levels = pipelineManager.getLevels();
-			sourceLevels = levels.sourceLevels;
-			programLevels = levels.programLevels;
-		}, 50);
-		return () => clearInterval(interval);
 	});
 
 	const connectionManager = new ConnectionManager({
