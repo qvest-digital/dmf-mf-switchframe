@@ -12,6 +12,7 @@ import (
 // slowAdapter is a test adapter that sleeps on every Write call.
 type slowAdapter struct {
 	mu       sync.Mutex
+	id       string
 	writes   [][]byte
 	delay    time.Duration
 	state    AdapterState
@@ -21,6 +22,7 @@ type slowAdapter struct {
 
 func newSlowAdapter(delay time.Duration) *slowAdapter {
 	return &slowAdapter{
+		id:    "slow-test",
 		delay: delay,
 		state: StateStopped,
 	}
@@ -28,13 +30,14 @@ func newSlowAdapter(delay time.Duration) *slowAdapter {
 
 func newBlockingAdapter() *slowAdapter {
 	return &slowAdapter{
+		id:       "blocking-test",
 		blocking: true,
 		unblock:  make(chan struct{}),
 		state:    StateStopped,
 	}
 }
 
-func (a *slowAdapter) ID() string { return "slow-test" }
+func (a *slowAdapter) ID() string { return a.id }
 
 func (a *slowAdapter) Start(_ context.Context) error {
 	a.mu.Lock()
@@ -214,4 +217,70 @@ func TestAsyncAdapter_StopDrainsRemaining(t *testing.T) {
 func TestAsyncAdapter_ImplementsInterface(t *testing.T) {
 	// Compile-time check that AsyncAdapter satisfies OutputAdapter.
 	var _ OutputAdapter = (*AsyncAdapter)(nil)
+}
+
+func TestSlowAdapterDoesntBlockFastAdapter(t *testing.T) {
+	// Two adapters share a simulated muxer output callback: one fast (no delay)
+	// and one very slow (50ms per write). We send 100 packets through the
+	// callback. The fast adapter must receive all 100 packets. The slow adapter
+	// will receive some and drop the rest (buffer size 4).
+	// Critically, the callback must return near-instantly for each packet,
+	// proving the slow adapter does not block the fast one.
+	const packetCount = 100
+
+	fastInner := newSlowAdapter(0) // instant writes
+	fastInner.id = "fast-adapter"
+	slowInner := newSlowAdapter(50 * time.Millisecond) // 50ms per write
+	slowInner.id = "slow-adapter"
+
+	fastAsync := NewAsyncAdapter(fastInner, 256) // large buffer, no drops
+	slowAsync := NewAsyncAdapter(slowInner, 4)   // tiny buffer, will drop
+
+	require.NoError(t, fastAsync.Start(context.Background()))
+	require.NoError(t, slowAsync.Start(context.Background()))
+
+	// Simulate the muxer output callback: fan-out to both adapters.
+	start := time.Now()
+	for i := 0; i < packetCount; i++ {
+		data := []byte{byte(i), 0x47, 0xDA}
+		fastAsync.Write(data)
+		slowAsync.Write(data)
+	}
+	elapsed := time.Since(start)
+
+	// The fan-out loop itself must be non-blocking. 100 iterations should
+	// complete well under 50ms (each Write is a non-blocking channel send).
+	require.Less(t, elapsed, 50*time.Millisecond,
+		"fan-out to %d packets must be non-blocking (took %v)", packetCount, elapsed)
+
+	// Wait for the fast adapter to drain all packets.
+	require.Eventually(t, func() bool {
+		return len(fastInner.getWrites()) == packetCount
+	}, 2*time.Second, 10*time.Millisecond,
+		"fast adapter must receive all %d packets", packetCount)
+
+	// The slow adapter should have dropped some packets.
+	slowDrops := slowAsync.Dropped()
+	require.Greater(t, slowDrops, int64(0),
+		"slow adapter must have dropped packets due to backpressure")
+
+	// The slow adapter's received + dropped should equal the total sent.
+	// Wait briefly so the slow adapter drains what it can.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the fast adapter received every packet with correct data.
+	fastWrites := fastInner.getWrites()
+	require.Len(t, fastWrites, packetCount)
+	for i, w := range fastWrites {
+		require.Equal(t, byte(i), w[0],
+			"fast adapter packet %d should have correct sequence byte", i)
+	}
+
+	// Clean up.
+	fastAsync.Stop()
+	slowAsync.Stop()
+
+	t.Logf("fast adapter: %d received, 0 dropped", len(fastWrites))
+	t.Logf("slow adapter: %d received, %d dropped",
+		len(slowInner.getWrites()), slowDrops)
 }
