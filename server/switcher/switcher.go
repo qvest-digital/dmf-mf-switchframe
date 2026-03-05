@@ -83,7 +83,7 @@ type Switcher struct {
 	programSource  string
 	previewSource  string
 	programRelay   *distribution.Relay
-	seq            uint64
+	seq            uint64 // always use atomic ops, even under s.mu, to prevent races on lock-free read paths
 	stateCallbacks []func(internal.ControlRoomState)
 	health         *healthMonitor
 	audioHandler    func(sourceKey string, frame *media.AudioFrame)
