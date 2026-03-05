@@ -1,7 +1,7 @@
 package transition
 
 // VideoDecoder decodes AVC1/Annex B wire data into YUV420 planar buffers.
-// Implementations: OpenH264Decoder (cgo), mockDecoder (tests).
+// Implementations: codec.FFmpegDecoder (cgo), codec.OpenH264Decoder (cgo+openh264), mockDecoder (tests).
 type VideoDecoder interface {
 	// Decode decodes encoded video data and returns YUV420 planar bytes,
 	// width, height, and any error. The returned YUV buffer length is
@@ -13,7 +13,7 @@ type VideoDecoder interface {
 }
 
 // VideoEncoder encodes YUV420 planar frames into AVC1/Annex B wire data.
-// Implementations: OpenH264Encoder (cgo), mockEncoder (tests).
+// Implementations: codec.FFmpegEncoder (cgo), codec.OpenH264Encoder (cgo+openh264), mockEncoder (tests).
 type VideoEncoder interface {
 	// Encode encodes a YUV420 planar frame. If forceIDR is true, the
 	// encoder produces a keyframe. Returns encoded data, whether the
@@ -35,7 +35,7 @@ type EncoderFactory func(width, height, bitrate int, fps float32) (VideoEncoder,
 // --- Mock implementations for testing ---
 
 // mockDecoder returns pre-configured YUV data. Used in unit tests to
-// avoid cgo/OpenH264 dependency.
+// avoid cgo/codec dependency.
 type mockDecoder struct {
 	width  int
 	height int
