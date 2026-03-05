@@ -176,7 +176,8 @@ func (e *TransitionEngine) currentPosition() float64 {
 	t := math.Min(float64(elapsed)/float64(e.durationMs), 1.0)
 	// Smoothstep easing: zero-derivative at endpoints for perceptually smooth
 	// transitions. Eliminates the abrupt start/stop of linear interpolation.
-	return t * t * (3.0 - 2.0*t)
+	pos := t * t * (3.0 - 2.0*t)
+	return math.Max(0.0, math.Min(1.0, pos))
 }
 
 // SetPosition sets the T-bar manual position (0.0-1.0).
@@ -191,13 +192,14 @@ func (e *TransitionEngine) SetPosition(pos float64) {
 
 	e.manualControl = true
 	wasPastZero := e.manualPosition > 0
-	e.manualPosition = math.Max(0, math.Min(1.0, pos))
-	e.position = e.manualPosition
+	clamped := math.Max(0, math.Min(1.0, pos))
+	e.manualPosition = clamped
+	e.position = clamped
 
 	var complete, abort bool
-	if pos >= 1.0 {
+	if clamped >= 0.999 {
 		complete = true
-	} else if pos <= 0.0 && wasPastZero {
+	} else if clamped <= 0.0 && wasPastZero {
 		abort = true
 	}
 

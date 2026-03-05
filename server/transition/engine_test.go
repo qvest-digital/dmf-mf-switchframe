@@ -583,6 +583,71 @@ func TestEngineWipeIngestProducesOutput(t *testing.T) {
 	e.Stop()
 }
 
+func TestPositionClampedAboveOne(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	e.SetPosition(0.5) // move past zero first
+	e.SetPosition(1.5) // should be clamped — triggers completion since >= 0.999
+
+	// After completion the engine returns to idle, so Position() returns 0.
+	// The key assertion is that the engine didn't panic and state is idle
+	// (completion was triggered, not a hang).
+	require.Equal(t, StateIdle, e.State(), "pos 1.5 should trigger completion")
+}
+
+func TestPositionClampedBelowZero(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	// SetPosition(-0.5) without moving past zero first — should not abort,
+	// just clamp to 0.0 and stay active.
+	e.SetPosition(-0.5)
+
+	require.Equal(t, StateActive, e.State(), "negative pos without prior movement should stay active")
+	require.InDelta(t, 0.0, e.Position(), 0.01, "position should be clamped to 0")
+}
+
+func TestCompletionThreshold(t *testing.T) {
+	e, mu, _, completions := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	e.SetPosition(0.5) // move past zero
+	e.SetPosition(0.999)
+
+	time.Sleep(10 * time.Millisecond)
+
+	mu.Lock()
+	require.Equal(t, 1, len(*completions), "0.999 should trigger completion")
+	require.True(t, (*completions)[0], "should be completed, not aborted")
+	mu.Unlock()
+
+	require.Equal(t, StateIdle, e.State())
+}
+
+func TestCompletionThresholdBelowThreshold(t *testing.T) {
+	e, mu, _, completions := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	e.SetPosition(0.5) // move past zero
+	e.SetPosition(0.99)
+
+	time.Sleep(10 * time.Millisecond)
+
+	mu.Lock()
+	require.Equal(t, 0, len(*completions), "0.99 should NOT trigger completion")
+	mu.Unlock()
+
+	require.Equal(t, StateActive, e.State())
+	require.InDelta(t, 0.99, e.Position(), 0.01)
+
+	e.Stop()
+}
+
 func TestEngineDefaultBitrateFPSWhenZero(t *testing.T) {
 	// Verify that zero Bitrate/FPS falls back to defaults.
 	var capturedBitrate int
