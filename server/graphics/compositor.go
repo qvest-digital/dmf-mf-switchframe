@@ -306,16 +306,24 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	yuv, w, h, err := c.decoder.Decode(annexB)
 	if err != nil {
 		slog.Debug("graphics: decode failed", "err", err)
+		// Once the encoder has produced frames, we must NOT pass through
+		// source frames — they have different SPS/PPS and would break
+		// the browser's decoder. Drop the frame instead (nil = skip).
+		if c.encoder != nil {
+			return nil
+		}
 		return frame
 	}
 
-	// If overlay resolution doesn't match video, pass through unchanged.
-	// Don't re-encode just to re-encode — it wastes CPU and causes
-	// codec parameter switches that confuse the browser decoder.
+	// If overlay resolution doesn't match video, pass through unchanged
+	// (only safe before the encoder starts producing frames).
 	if overlayW != w || overlayH != h {
 		slog.Debug("graphics: overlay resolution mismatch, passthrough",
 			"overlay", fmt.Sprintf("%dx%d", overlayW, overlayH),
 			"frame", fmt.Sprintf("%dx%d", w, h))
+		if c.encoder != nil {
+			return nil
+		}
 		return frame
 	}
 
@@ -352,7 +360,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	encoded, isKeyframe, err := c.encoder.Encode(c.yuvBuf, forceIDR)
 	if err != nil {
 		slog.Warn("graphics: encode failed", "err", err)
-		return frame
+		return nil // don't pass through source frame — codec mismatch
 	}
 
 	// Ensure groupID stays monotonically increasing relative to the source
