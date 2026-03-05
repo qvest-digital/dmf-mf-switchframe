@@ -34,18 +34,18 @@ RUN echo 'deb http://deb.debian.org/debian bookworm non-free' >> /etc/apt/source
     apt-get install -y --no-install-recommends \
         libfdk-aac2 \
         libopenh264-7 \
-        ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN useradd --system --no-create-home switchframe && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
-    rm -rf /var/lib/apt/lists/*
+        ca-certificates \
+        curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --system --no-create-home switchframe
 
 COPY --from=go-builder /switchframe /usr/local/bin/switchframe
 
 USER switchframe
 EXPOSE 8080
+EXPOSE 9090
+# SRT listener mode (configurable via --srt-port)
+EXPOSE 9000/udp
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/switch/state || exit 1
+    CMD curl -f http://localhost:9090/health || exit 1
 ENTRYPOINT ["switchframe"]
