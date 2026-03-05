@@ -68,7 +68,7 @@
 	/* ─ Text ─ */
 	--text-primary: #e4e4e8;
 	--text-secondary: #85858f;
-	--text-tertiary: #505058;
+	--text-tertiary: #8b8b93; /* WCAG AA: ~5.2:1 against --bg-base #09090b */
 	--text-on-color: #ffffff;
 
 	/* ─ Tally: Program (red) ─ */
@@ -216,4 +216,17 @@ input[type='range']::-moz-range-thumb:hover {
 ::selection {
 	background: rgba(59, 130, 246, 0.3);
 	color: var(--text-primary);
+}
+
+/* Screen-reader only (visually hidden, accessible to assistive tech) */
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border-width: 0;
 }
