@@ -17,6 +17,7 @@
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
+	import { createPFLManager } from '$lib/audio/pfl';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import type { ControlRoomState } from '$lib/api/types';
 
@@ -92,6 +93,27 @@
 		sourceLevels = src;
 		programLevels = pgm;
 	});
+
+	// PFL (Pre-Fade Listen) manager for client-side per-source audio monitoring
+	const pflManager = createPFLManager();
+	let pflActiveSource = $state<string | null>(null);
+
+	function handlePFLToggle(sourceKey: string) {
+		if (pflActiveSource === sourceKey) {
+			pflManager.disablePFL();
+			pipeline.setSourceMuted(sourceKey, true);
+			pflActiveSource = null;
+		} else {
+			// Mute previous PFL source in pipeline
+			if (pflActiveSource) {
+				pipeline.setSourceMuted(pflActiveSource, true);
+			}
+			pflManager.enablePFL(sourceKey);
+			// Unmute in pipeline so audio actually plays
+			pipeline.setSourceMuted(sourceKey, false);
+			pflActiveSource = sourceKey;
+		}
+	}
 
 	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
 	let sourceLevels = $state<Record<string, { peakL: number; peakR: number }>>({});
@@ -182,6 +204,17 @@
 		});
 	});
 
+	// Sync PFL manager sources with pipeline sources
+	$effect(() => {
+		const keys = store.sourceKeys;
+		for (const key of keys) {
+			const decoder = pipeline.getAudioDecoder(key);
+			if (decoder && !pflManager.getDecoder(key)) {
+				pflManager.addSource(key, 'mp4a.40.2', 48000, 2);
+			}
+		}
+	});
+
 	// Track previous values for state change announcements
 	let prevRecording: boolean | undefined;
 	let prevFtb: boolean | undefined;
@@ -250,6 +283,7 @@
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
 		const resumeAudio = () => {
 			pipeline.resumeAllAudio();
+			pflManager.resumeContext();
 			document.removeEventListener('click', resumeAudio);
 			document.removeEventListener('keydown', resumeAudio);
 		};
@@ -266,6 +300,7 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
+		pflManager.destroy();
 		pipelineManager.destroy();
 		connectionManager.stop();
 		pipeline.destroy();
@@ -311,7 +346,7 @@
 
 			<section class="bottom-panel">
 				<div class="audio-section">
-					<AudioMixer state={store.state} {sourceLevels} {programLevels} onStateUpdate={store.applyUpdate} />
+					<AudioMixer state={store.state} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
 				</div>
 				<div class="control-section">
 					<div class="buses">
