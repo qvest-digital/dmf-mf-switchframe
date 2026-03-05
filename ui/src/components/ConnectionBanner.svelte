@@ -6,12 +6,19 @@
 
 	let { connectionState, syncStatus }: Props = $props();
 
+	// Track whether WebTransport was ever connected so we only show
+	// the polling banner as a degradation, not on initial fallback.
+	let hadWebTransport = $state(false);
+	$effect(() => {
+		if (connectionState === 'webtransport') hadWebTransport = true;
+	});
+
 	let isDisconnected = $derived(
 		connectionState === 'disconnected' || syncStatus === 'disconnected'
 	);
 	let isResyncing = $derived(!isDisconnected && syncStatus === 'resyncing');
 	let isPolling = $derived(
-		!isDisconnected && !isResyncing && connectionState === 'polling' && syncStatus === 'ok'
+		!isDisconnected && !isResyncing && hadWebTransport && connectionState === 'polling' && syncStatus === 'ok'
 	);
 </script>
 

@@ -11,14 +11,24 @@ describe('ConnectionBanner', () => {
 		expect(container.querySelector('.disconnect-overlay')).toBeFalsy();
 	});
 
-	it('shows amber banner when polling + ok', () => {
-		const { container } = render(ConnectionBanner, {
-			props: { connectionState: 'polling', syncStatus: 'ok' },
+	it('shows amber banner when polling after prior webtransport', async () => {
+		const { container, rerender } = render(ConnectionBanner, {
+			props: { connectionState: 'webtransport', syncStatus: 'ok' },
 		});
+		// Simulate degradation: was connected, now polling
+		await rerender({ connectionState: 'polling', syncStatus: 'ok' });
 		const banner = container.querySelector('.connection-banner.polling');
 		expect(banner).toBeTruthy();
 		expect(banner?.textContent).toContain('Low-latency connection lost');
 		expect(banner?.textContent).toContain('fallback');
+	});
+
+	it('does not show polling banner if webtransport was never connected', () => {
+		const { container } = render(ConnectionBanner, {
+			props: { connectionState: 'polling', syncStatus: 'ok' },
+		});
+		const banner = container.querySelector('.connection-banner.polling');
+		expect(banner).toBeFalsy();
 	});
 
 	it('shows yellow banner when resyncing', () => {
@@ -53,7 +63,6 @@ describe('ConnectionBanner', () => {
 		const { container } = render(ConnectionBanner, {
 			props: { connectionState: 'disconnected', syncStatus: 'resyncing' },
 		});
-		// Should show overlay, not banner
 		const overlay = container.querySelector('.disconnect-overlay');
 		expect(overlay).toBeTruthy();
 		const banner = container.querySelector('.connection-banner');
@@ -80,10 +89,11 @@ describe('ConnectionBanner', () => {
 		expect(overlay?.getAttribute('aria-live')).toBe('assertive');
 	});
 
-	it('banner has appropriate ARIA attributes', () => {
-		const { container } = render(ConnectionBanner, {
-			props: { connectionState: 'polling', syncStatus: 'ok' },
+	it('banner has appropriate ARIA attributes', async () => {
+		const { container, rerender } = render(ConnectionBanner, {
+			props: { connectionState: 'webtransport', syncStatus: 'ok' },
 		});
+		await rerender({ connectionState: 'polling', syncStatus: 'ok' });
 		const banner = container.querySelector('.connection-banner');
 		expect(banner).toBeTruthy();
 		expect(banner?.getAttribute('role')).toBe('status');
