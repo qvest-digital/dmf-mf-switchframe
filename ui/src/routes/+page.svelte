@@ -20,6 +20,7 @@
 	let showOverlay = $state(false);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
+	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
 
 	function switchLayout() {
 		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
@@ -60,6 +61,12 @@
 
 	// Media pipeline for MoQ video/audio decode
 	const pipeline = createMediaPipeline();
+
+	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
+	let sourceLevels = $state<Record<string, { peakL: number; peakR: number }>>({});
+	// Program output peak levels sampled from program audio decoder (linear 0..1)
+	let programLevels = $state<{ peakL: number; peakR: number }>({ peakL: 0, peakR: 0 });
+	let meterRafId: number | undefined;
 
 	function handleDebugDump(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -107,6 +114,28 @@
 		document.body.appendChild(badge);
 		setTimeout(() => { badge.style.opacity = '0'; }, 1500);
 		setTimeout(() => badge.remove(), 2000);
+	}
+
+	/** Poll audio decoders for per-source peak levels at display refresh rate. */
+	function meterLoop() {
+		const levels: Record<string, { peakL: number; peakR: number }> = {};
+		for (const key of store.sourceKeys) {
+			const decoder = pipeline.getAudioDecoder(key);
+			if (decoder) {
+				const l = decoder.getLevels();
+				levels[key] = { peakL: l.peak[0] ?? 0, peakR: l.peak[1] ?? 0 };
+			}
+		}
+		sourceLevels = levels;
+
+		// Sample program output peak from program audio decoder
+		const programDecoder = pipeline.getAudioDecoder('program');
+		if (programDecoder) {
+			const pl = programDecoder.getLevels();
+			programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };
+		}
+
+		meterRafId = requestAnimationFrame(meterLoop);
 	}
 
 	// Track which sources are connected to avoid duplicate work
@@ -250,6 +279,10 @@
 				store.applyUpdate(state);
 			} catch { /* ignore */ }
 		}, 500);
+		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
+		if (connectionState !== 'webtransport') {
+			connectionState = 'polling';
+		}
 	}
 
 	function stopPolling() {
@@ -265,10 +298,14 @@
 			store.applyFromMoQ(data);
 			// MoQ is delivering state; stop polling
 			stopPolling();
+			connectionState = 'webtransport';
 		},
-		onConnectionChange: (connectionState) => {
-			if (connectionState === 'disconnected' || connectionState === 'error') {
+		onConnectionChange: (connState) => {
+			if (connState === 'connected') {
+				connectionState = 'webtransport';
+			} else if (connState === 'disconnected' || connState === 'error') {
 				// WebTransport lost; fall back to REST polling
+				connectionState = pollInterval ? 'polling' : 'disconnected';
 				startPolling();
 			}
 		},
@@ -281,8 +318,18 @@
 
 		// Subscribe to "program" MoQ stream so the program canvas shows
 		// the actual server output (including transition blends).
+		pipeline.setSourceMuted('program', false);
 		pipeline.addSource('program');
 		pipeline.connectSource('program');
+
+		// Resume AudioContexts on first user gesture (browser autoplay policy).
+		const resumeAudio = () => {
+			pipeline.resumeAllAudio();
+			document.removeEventListener('click', resumeAudio);
+			document.removeEventListener('keydown', resumeAudio);
+		};
+		document.addEventListener('click', resumeAudio, { once: true });
+		document.addEventListener('keydown', resumeAudio, { once: true });
 
 		// Initial state fetch via REST
 		try {
@@ -291,6 +338,9 @@
 		} catch (e) {
 			console.warn('Failed to fetch initial state:', e);
 		}
+
+		// Start audio metering rAF loop
+		meterRafId = requestAnimationFrame(meterLoop);
 
 		// Start REST polling as immediate fallback
 		startPolling();
@@ -302,6 +352,7 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
+		if (meterRafId !== undefined) cancelAnimationFrame(meterRafId);
 		stopPolling();
 		connection.disconnect();
 		pipeline.destroy();
@@ -314,10 +365,10 @@
 {:else}
 	<div class="control-room">
 		<header class="header">
-			<OutputControls state={store.state} {switchLayout} />
+			<OutputControls state={store.state} {connectionState} {switchLayout} />
 		</header>
 
-		<section class="top">
+		<section class="monitors">
 			<ProgramPreview state={store.state} />
 		</section>
 
@@ -325,14 +376,17 @@
 			<Multiview state={store.state} />
 		</section>
 
-		<section class="audio-section">
-			<AudioMixer state={store.state} />
-		</section>
-
-		<section class="controls">
-			<PreviewBus state={store.state} />
-			<ProgramBus state={store.state} />
-			<TransitionControls state={store.state} />
+		<section class="bottom-panel">
+			<div class="audio-section">
+				<AudioMixer state={store.state} {sourceLevels} {programLevels} onStateUpdate={store.applyUpdate} />
+			</div>
+			<div class="control-section">
+				<div class="buses">
+					<PreviewBus state={store.state} />
+					<ProgramBus state={store.state} />
+				</div>
+				<TransitionControls state={store.state} />
+			</div>
 		</section>
 	</div>
 
@@ -344,13 +398,50 @@
 <style>
 	.control-room {
 		display: grid;
-		grid-template-rows: auto auto 1fr auto auto;
+		grid-template-rows: auto auto 1fr auto;
 		height: 100vh;
-		background: var(--bg-primary);
+		background: var(--bg-base);
 	}
-	.header { border-bottom: 1px solid #333; background: var(--bg-secondary); }
-	.top { border-bottom: 1px solid #333; }
-	.multiview-section { overflow: hidden; }
-	.audio-section { border-top: 1px solid #333; max-height: 200px; overflow-y: auto; }
-	.controls { border-top: 1px solid #333; background: var(--bg-secondary); }
+
+	.header {
+		background: var(--bg-surface);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.monitors {
+		background: var(--bg-base);
+	}
+
+	.multiview-section {
+		overflow: hidden;
+		background: var(--bg-base);
+		min-height: 0;
+	}
+
+	.bottom-panel {
+		display: flex;
+		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-surface);
+		max-height: 240px;
+	}
+
+	.audio-section {
+		overflow-x: auto;
+		overflow-y: hidden;
+		border-right: 1px solid var(--border-subtle);
+		flex-shrink: 0;
+	}
+
+	.control-section {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.buses {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+	}
 </style>
