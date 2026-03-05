@@ -1,7 +1,13 @@
 .git
 bin/
 node_modules/
+server/bin
 server/test-results/
+ui/build
+ui/.svelte-kit
 docs/
+research/
+.github/
+.claude/
 *.md
 !ui/package*.json
