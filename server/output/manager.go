@@ -10,6 +10,11 @@ import (
 	"github.com/zsiec/prism/distribution"
 )
 
+// asyncAdapterBufSize is the default buffer size for async adapter wrappers.
+// Each slot holds one muxed TS packet batch. At ~188*7 bytes per batch and
+// 30fps video, 256 slots provides ~8 seconds of buffering.
+const asyncAdapterBufSize = 256
+
 // OutputManager orchestrates the outputViewer, TSMuxer, and output adapters.
 // It auto-starts the viewer (registers on the program relay) when the first
 // output is enabled and removes it when the last output is disabled, ensuring
@@ -25,6 +30,10 @@ type OutputManager struct {
 	recorder  *FileRecorder
 	srtOutput OutputAdapter // SRTCaller or SRTListener
 	adapters  []OutputAdapter
+
+	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
+	// so they can be stopped when adapters are removed.
+	asyncWrappers map[string]*AsyncAdapter
 
 	onState func() // triggers ControlRoomState broadcast
 	closed  bool
@@ -272,8 +281,17 @@ func (m *OutputManager) Close() error {
 	m.srtOutput = nil
 	m.adapters = nil
 
+	// Snapshot and clear async wrappers so we can stop them outside the lock.
+	wrappers := m.asyncWrappers
+	m.asyncWrappers = nil
+
 	m.stopMuxerLocked()
 	m.mu.Unlock()
+
+	// Stop async wrappers first so no more writes reach inner adapters.
+	for _, w := range wrappers {
+		w.Stop()
+	}
 
 	// Close adapters outside the lock.
 	if rec != nil {
@@ -291,15 +309,45 @@ func (m *OutputManager) Close() error {
 }
 
 // rebuildAdaptersLocked rebuilds the adapter slice from the active outputs.
+// Each adapter is wrapped in an AsyncAdapter for non-blocking writes.
+// Wrappers for removed adapters are stopped; new wrappers are started.
 // Must be called with m.mu held.
 func (m *OutputManager) rebuildAdaptersLocked() {
-	var adapters []OutputAdapter
+	// Collect the current set of raw adapters.
+	raw := make(map[string]OutputAdapter)
 	if m.recorder != nil {
-		adapters = append(adapters, m.recorder)
+		raw[m.recorder.ID()] = m.recorder
 	}
 	if m.srtOutput != nil {
-		adapters = append(adapters, m.srtOutput)
+		raw[m.srtOutput.ID()] = m.srtOutput
 	}
+
+	if m.asyncWrappers == nil {
+		m.asyncWrappers = make(map[string]*AsyncAdapter)
+	}
+
+	// Stop wrappers for adapters that are no longer present.
+	for id, wrapper := range m.asyncWrappers {
+		if _, ok := raw[id]; !ok {
+			wrapper.Stop()
+			delete(m.asyncWrappers, id)
+		}
+	}
+
+	// Create wrappers for new adapters, reuse existing ones.
+	var adapters []OutputAdapter
+	for id, adapter := range raw {
+		wrapper, exists := m.asyncWrappers[id]
+		if !exists {
+			wrapper = NewAsyncAdapter(adapter, asyncAdapterBufSize)
+			// Start the drain goroutine. We pass a background context
+			// since the inner adapter's Start() was already called.
+			wrapper.startDrain()
+			m.asyncWrappers[id] = wrapper
+		}
+		adapters = append(adapters, wrapper)
+	}
+
 	m.adapters = adapters
 }
 
