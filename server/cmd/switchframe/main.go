@@ -87,6 +87,7 @@ func run() error {
 			slog.Info("stream registered, adding source", "key", key)
 			sw.RegisterSource(key, relay)
 			mixer.AddChannel(key)
+			mixer.SetAFV(key, true) // cameras default to audio-follows-video
 		},
 		OnStreamUnregistered: func(key string) {
 			if key == "program" {

@@ -39,9 +39,10 @@ type audioCutHandler interface {
 // audioTransitionHandler is called during transitions to sync audio crossfade
 // with video dissolve progress.
 type audioTransitionHandler interface {
-	OnTransitionStart(oldSource, newSource string, durationMs int)
+	OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int)
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
+	SetProgramMute(muted bool)
 }
 
 // TransitionConfig holds the codec factories needed to create TransitionEngines.
@@ -57,6 +58,14 @@ type sourceState struct {
 	relay      *distribution.Relay
 	viewer     *sourceViewer
 	pendingIDR bool // true after a cut until first keyframe from this source
+
+	// Rolling frame statistics for dynamic encoder parameters.
+	// Updated on every video frame. Used to estimate bitrate/fps for
+	// the transition encoder so it matches the source stream quality.
+	avgFrameSize float64 // exponential moving average of len(WireData) in bytes
+	avgFPS       float64 // exponential moving average of fps from PTS deltas
+	lastPTS      int64   // PTS of the most recent video frame (microseconds)
+	frameCount   int     // total video frames received (for EMA warmup)
 }
 
 // Switcher is the central switching engine. It manages which source is
@@ -79,6 +88,7 @@ type Switcher struct {
 	inTransition    bool
 	ftbActive       bool
 	audioTransition audioTransitionHandler
+	gopCache        *gopCache
 
 	// Debug instrumentation counters (atomic, lock-free)
 	idrGateEvents         atomic.Int64 // number of cuts (pendingIDR set)
@@ -97,6 +107,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
+		gopCache:     newGOPCache(),
 	}
 }
 
@@ -210,15 +221,20 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	fromSource := s.programSource
 	programRelay := s.programRelay
 
+	// Estimate encoder parameters from the program source's recent frames.
+	bitrate, fps := s.estimateEncoderParams(fromSource)
+
 	var transGroupID uint32
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
-		Output: func(data []byte, isKeyframe bool) {
+		Bitrate:        bitrate,
+		FPS:            fps,
+		Output: func(data []byte, isKeyframe bool, pts int64) {
 			if isKeyframe {
 				transGroupID++
 			}
-			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID))
+			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID, pts))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -230,17 +246,36 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("start transition: %w", err)
 	}
 
+	// Warm up decoders BEFORE publishing the engine. This ensures live
+	// frames cannot reach the engine (via handleVideoFrame) before the
+	// decoders have been primed with the cached GOP. The warmup acquires
+	// engine.mu (not s.mu), so there is no deadlock risk. Holding s.mu
+	// briefly during warmup (~1ms for a typical GOP) is acceptable.
+	fromGOP := s.gopCache.GetGOP(fromSource)
+	toGOP := s.gopCache.GetGOP(sourceKey)
+	for _, cf := range fromGOP {
+		engine.WarmupDecode(fromSource, cf.annexB)
+	}
+	for _, cf := range toGOP {
+		engine.WarmupDecode(sourceKey, cf.annexB)
+	}
+
 	s.transEngine = engine
 	s.inTransition = true
 	s.previewSource = sourceKey
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
+
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, sourceKey, durationMs)
+		audioMode := internal.AudioCrossfade
+		if tt == transition.TransitionDip {
+			audioMode = internal.AudioDipToSilence
+		}
+		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 	}
 	s.notifyStateChange(snapshot)
 	return nil
@@ -293,16 +328,19 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		fromSource := s.programSource
 		programRelay := s.programRelay
+		bitrate, fps := s.estimateEncoderParams(fromSource)
 
 		var revGroupID uint32
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
 			DecoderFactory: s.transConfig.DecoderFactory,
 			EncoderFactory: s.transConfig.EncoderFactory,
-			Output: func(data []byte, isKeyframe bool) {
+			Bitrate:        bitrate,
+			FPS:            fps,
+			Output: func(data []byte, isKeyframe bool, pts int64) {
 				if isKeyframe {
 					revGroupID++
 				}
-				programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID))
+				programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID, pts))
 			},
 			OnComplete: func(aborted bool) {
 				s.handleFTBReverseComplete(aborted)
@@ -314,17 +352,26 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
 
+		// Warm up decoder BEFORE publishing the engine (see StartTransition).
+		fromGOP := s.gopCache.GetGOP(fromSource)
+		for _, cf := range fromGOP {
+			engine.WarmupDecode(fromSource, cf.annexB)
+		}
+
 		s.transEngine = engine
 		s.inTransition = true
 		// ftbActive stays true during the reverse transition
 		s.transitionsStarted.Add(1)
 		audioHandler := s.audioTransition
+
 		s.seq++
 		snapshot := s.buildStateLocked()
 		s.mu.Unlock()
 
 		if audioHandler != nil {
-			audioHandler.OnTransitionStart(fromSource, "", 1000)
+			// Unmute program audio so the fade-in is audible
+			audioHandler.SetProgramMute(false)
+			audioHandler.OnTransitionStart(fromSource, "", internal.AudioFadeIn, 1000)
 		}
 		s.notifyStateChange(snapshot)
 		return nil
@@ -337,16 +384,19 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	fromSource := s.programSource
 	programRelay := s.programRelay
+	bitrate, fps := s.estimateEncoderParams(fromSource)
 
 	var ftbGroupID uint32
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
-		Output: func(data []byte, isKeyframe bool) {
+		Bitrate:        bitrate,
+		FPS:            fps,
+		Output: func(data []byte, isKeyframe bool, pts int64) {
 			if isKeyframe {
 				ftbGroupID++
 			}
-			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID))
+			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID, pts))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleFTBComplete(aborted)
@@ -358,17 +408,24 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		return fmt.Errorf("start FTB: %w", err)
 	}
 
+	// Warm up decoder BEFORE publishing the engine (see StartTransition).
+	fromGOP := s.gopCache.GetGOP(fromSource)
+	for _, cf := range fromGOP {
+		engine.WarmupDecode(fromSource, cf.annexB)
+	}
+
 	s.transEngine = engine
 	s.inTransition = true
 	s.ftbActive = true
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
+
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", 1000)
+		audioHandler.OnTransitionStart(fromSource, "", internal.AudioFadeOut, 1000)
 	}
 	s.notifyStateChange(snapshot)
 	return nil
@@ -409,7 +466,7 @@ func (s *Switcher) AbortTransition() {
 
 // handleTransitionComplete is called by the TransitionEngine when a mix/dip
 // transition finishes. If completed (not aborted), it swaps program/preview
-// sources.
+// sources and replays the new source's cached GOP to avoid a keyframe gap.
 func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.mu.Lock()
 	if !s.inTransition {
@@ -419,22 +476,30 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	audioHandler := s.audioTransition
 	var audioCut audioCutHandler
+	var newProgram string
 
 	if !aborted && s.transEngine != nil {
-		newProgram := s.transEngine.ToSource()
+		newProgram = s.transEngine.ToSource()
 		oldProgram := s.programSource
 		if newProgram != "" {
 			s.programSource = newProgram
 			s.previewSource = oldProgram
 			audioCut = s.audioCut
-			// Gate passthrough frames until next keyframe from the new
-			// source. The transition encoder's SPS/PPS differ from the
-			// source's, so delta frames would be undecodable.
+			// Gate passthrough frames. The transition encoder's SPS/PPS
+			// differ from the source's, so delta frames would be
+			// undecodable. The gate is cleared below after GOP replay,
+			// or held until the next natural keyframe as fallback.
 			if ss, ok := s.sources[newProgram]; ok {
 				ss.pendingIDR = true
 				s.idrGateStartNano.Store(time.Now().UnixNano())
 			}
 		}
+	}
+
+	// Get cached GOP for replay (uses its own mutex, no deadlock risk)
+	var replayFrames []*media.VideoFrame
+	if newProgram != "" {
+		replayFrames = s.gopCache.GetOriginalGOP(newProgram)
 	}
 
 	s.inTransition = false
@@ -443,6 +508,24 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
+
+	// Replay the source's cached GOP to bridge the transition→passthrough
+	// gap. pendingIDR=true prevents live passthrough from interleaving.
+	if len(replayFrames) > 0 {
+		for _, f := range replayFrames {
+			s.programRelay.BroadcastVideo(f)
+		}
+		// Clear the IDR gate — the replayed GOP provided a keyframe
+		s.mu.Lock()
+		if ss, ok := s.sources[newProgram]; ok && ss.pendingIDR {
+			ss.pendingIDR = false
+			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
+				dur := time.Since(time.Unix(0, startNano))
+				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+			}
+		}
+		s.mu.Unlock()
+	}
 
 	if audioHandler != nil {
 		audioHandler.OnTransitionComplete()
@@ -476,14 +559,18 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 
 	if audioHandler != nil {
 		audioHandler.OnTransitionComplete()
+		if !aborted {
+			// FTB completed — screen is black, mute program audio
+			audioHandler.SetProgramMute(true)
+		}
 	}
 	s.notifyStateChange(snapshot)
 }
 
 // handleFTBReverseComplete is called by the TransitionEngine when a reverse
 // FTB transition finishes. If completed (not aborted), it clears ftbActive
-// (screen is now fully visible). If aborted, ftbActive stays true (screen
-// stays black).
+// (screen is now fully visible) and replays the GOP to avoid a keyframe gap.
+// If aborted, ftbActive stays true (screen stays black).
 func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	s.mu.Lock()
 	if !s.inTransition {
@@ -492,19 +579,53 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	}
 
 	audioHandler := s.audioTransition
+	programSource := s.programSource
+
 	s.inTransition = false
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
 	if !aborted {
 		s.ftbActive = false
+		// Gate passthrough until GOP replay provides a keyframe.
+		// The transition encoder's SPS/PPS differ from the source's.
+		if ss, ok := s.sources[programSource]; ok {
+			ss.pendingIDR = true
+			s.idrGateStartNano.Store(time.Now().UnixNano())
+		}
 	}
 	// If aborted, ftbActive stays true (screen remains black)
+
+	var replayFrames []*media.VideoFrame
+	if !aborted && programSource != "" {
+		replayFrames = s.gopCache.GetOriginalGOP(programSource)
+	}
+
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	// Replay the source's cached GOP to bridge the gap
+	if len(replayFrames) > 0 {
+		for _, f := range replayFrames {
+			s.programRelay.BroadcastVideo(f)
+		}
+		s.mu.Lock()
+		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
+			ss.pendingIDR = false
+			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
+				dur := time.Since(time.Unix(0, startNano))
+				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+			}
+		}
+		s.mu.Unlock()
+	}
+
 	if audioHandler != nil {
 		audioHandler.OnTransitionComplete()
+		if aborted {
+			// FTB reverse aborted — screen stays black, re-mute audio
+			audioHandler.SetProgramMute(true)
+		}
 	}
 	s.notifyStateChange(snapshot)
 }
@@ -535,6 +656,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	ss.relay.RemoveViewer(ss.viewer.ID())
 	delete(s.sources, key)
 	s.health.removeSource(key)
+	s.gopCache.RemoveSource(key)
 	if s.programSource == key {
 		s.programSource = ""
 	}
@@ -735,11 +857,12 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 }
 
 // annexBToVideoFrame converts Annex B encoder output to a media.VideoFrame
-// with AVC1 WireData and extracted SPS/PPS for keyframes.
-func annexBToVideoFrame(annexBData []byte, isKeyframe bool, groupID uint32) *media.VideoFrame {
+// with AVC1 WireData and extracted SPS/PPS for keyframes. PTS is passed
+// through from the source frame to maintain timestamp continuity.
+func annexBToVideoFrame(annexBData []byte, isKeyframe bool, groupID uint32, pts int64) *media.VideoFrame {
 	avc1 := codec.AnnexBToAVC1(annexBData)
 	frame := &media.VideoFrame{
-		PTS:        time.Now().UnixMilli(),
+		PTS:        pts,
 		IsKeyframe: isKeyframe,
 		WireData:   avc1,
 		Codec:      "h264",
@@ -761,12 +884,89 @@ func annexBToVideoFrame(annexBData []byte, isKeyframe bool, groupID uint32) *med
 	return frame
 }
 
+// updateFrameStats updates the rolling frame size and FPS estimates for a
+// source. Called on every video frame. Uses an exponential moving average
+// with alpha=0.1 for stability. Caller must hold s.mu (write lock).
+func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
+	const alpha = 0.1 // EMA smoothing factor
+
+	frameSize := float64(len(frame.WireData))
+	ss.frameCount++
+
+	if ss.frameCount == 1 {
+		// First frame — seed the averages
+		ss.avgFrameSize = frameSize
+		ss.lastPTS = frame.PTS
+		return
+	}
+
+	// Update frame size EMA
+	ss.avgFrameSize = alpha*frameSize + (1-alpha)*ss.avgFrameSize
+
+	// Update FPS EMA from PTS delta
+	if frame.PTS > ss.lastPTS {
+		deltaPTS := frame.PTS - ss.lastPTS
+		// PTS is in microseconds (90kHz clock is common, but Prism uses µs)
+		// Protect against unreasonable deltas (>1 second or negative)
+		if deltaPTS > 0 && deltaPTS < 1_000_000 {
+			instantFPS := 1_000_000.0 / float64(deltaPTS)
+			if ss.avgFPS == 0 {
+				ss.avgFPS = instantFPS
+			} else {
+				ss.avgFPS = alpha*instantFPS + (1-alpha)*ss.avgFPS
+			}
+		}
+	}
+	ss.lastPTS = frame.PTS
+}
+
+// estimateEncoderParams returns the estimated bitrate (bps) and FPS for the
+// given source key, clamped to safe ranges. Returns defaults if no frames
+// have been received or the source is not found. Caller must hold s.mu.RLock.
+func (s *Switcher) estimateEncoderParams(sourceKey string) (bitrate int, fps float64) {
+	ss, ok := s.sources[sourceKey]
+	if !ok || ss.frameCount < 2 || ss.avgFPS == 0 {
+		return transition.DefaultBitrate, transition.DefaultFPS
+	}
+
+	fps = ss.avgFPS
+	// Clamp FPS to 15-60 range
+	if fps < 15 {
+		fps = 15
+	} else if fps > 60 {
+		fps = 60
+	}
+
+	// bitrate = avgFrameSize * fps * 8
+	bitrateF := ss.avgFrameSize * fps * 8
+	bitrate = int(bitrateF)
+
+	// Clamp bitrate to 1-20 Mbps range
+	if bitrate < 1_000_000 {
+		bitrate = 1_000_000
+	} else if bitrate > 20_000_000 {
+		bitrate = 20_000_000
+	}
+
+	return bitrate, fps
+}
+
 // handleVideoFrame implements frameHandler. It is called by sourceViewers
 // when a video frame arrives from a source. Only frames from the current
 // program source are forwarded to the program Relay. After a cut, frames
 // are gated until the first keyframe (IDR) to prevent decoder artifacts.
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey)
+
+	// Update per-source frame statistics (needs write lock)
+	s.mu.Lock()
+	if ss, ok := s.sources[sourceKey]; ok {
+		s.updateFrameStats(ss, frame)
+	}
+	s.mu.Unlock()
+
+	// Record frame in GOP cache for all sources (uses its own mutex)
+	s.gopCache.RecordFrame(sourceKey, frame)
 
 	// Check if transition is active — route both sources to engine
 	s.mu.RLock()
@@ -787,7 +987,18 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 			buf = append(buf, annexB...)
 			annexB = buf
 		}
-		engine.IngestFrame(sourceKey, annexB)
+		engine.IngestFrame(sourceKey, annexB, frame.PTS)
+
+		// Sync audio crossfade position with video on every frame.
+		// Without this, auto-timed transitions only update audio at
+		// start/complete, causing the audio to jump 0→1 instead of
+		// smoothly tracking the video dissolve.
+		s.mu.RLock()
+		audioHandler := s.audioTransition
+		s.mu.RUnlock()
+		if audioHandler != nil {
+			audioHandler.OnTransitionPosition(engine.Position())
+		}
 		return
 	}
 

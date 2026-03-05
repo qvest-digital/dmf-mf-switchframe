@@ -27,6 +27,16 @@ type SourceInfo struct {
 	Status SourceHealthStatus `json:"status"`
 }
 
+// AudioTransitionMode describes how audio should behave during a video transition.
+type AudioTransitionMode int
+
+const (
+	AudioCrossfade    AudioTransitionMode = iota // Mix: equal-power A→B
+	AudioDipToSilence                            // Dip: A→silence→B
+	AudioFadeOut                                 // FTB: A→silence
+	AudioFadeIn                                  // FTB Reverse: silence→A
+)
+
 // AudioChannel describes the audio mixer state for a single source.
 type AudioChannel struct {
 	Level float64 `json:"level"` // dB (-inf to +12)

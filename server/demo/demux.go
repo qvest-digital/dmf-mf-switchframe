@@ -77,11 +77,8 @@ func demuxTS(r io.Reader) (*demuxResult, error) {
 			result.Video = append(result.Video, *frame)
 
 		case isAudioStream(d.PES.Header.StreamID):
-			frame := parseAudioFrame(d, oh)
-			if frame == nil {
-				continue
-			}
-			result.Audio = append(result.Audio, *frame)
+			frames := parseAudioFrames(d, oh)
+			result.Audio = append(result.Audio, frames...)
 		}
 	}
 
@@ -186,30 +183,35 @@ func parseVideoFrame(d *astits.DemuxerData, oh *astits.PESOptionalHeader, lastSP
 	return frame, sps, pps, nil
 }
 
-// parseAudioFrame converts a PES audio packet into a media.AudioFrame.
-func parseAudioFrame(d *astits.DemuxerData, oh *astits.PESOptionalHeader) *media.AudioFrame {
+// parseAudioFrames splits a PES audio packet into individual AAC frames.
+// PES packets often contain multiple concatenated ADTS frames; each is
+// returned as a separate media.AudioFrame with correct PTS offsets.
+func parseAudioFrames(d *astits.DemuxerData, oh *astits.PESOptionalHeader) []media.AudioFrame {
 	if len(d.PES.Data) == 0 {
 		return nil
 	}
 
-	data := d.PES.Data
-
-	// Strip ADTS header if present — Prism expects raw AAC.
-	if codec.IsADTS(data) && len(data) > 7 {
-		data = data[7:]
-	}
-
-	var pts int64
+	var basePTS int64
 	if oh != nil && oh.PTS != nil {
-		pts = oh.PTS.Base
+		basePTS = oh.PTS.Base
 	}
 
-	return &media.AudioFrame{
-		PTS:        pts,
-		Data:       data,
-		SampleRate: 48000,
-		Channels:   2,
+	// Split concatenated ADTS frames into individual raw AAC payloads.
+	payloads := codec.SplitADTSFrames(d.PES.Data)
+
+	frames := make([]media.AudioFrame, len(payloads))
+	for i, payload := range payloads {
+		// Each AAC-LC frame is 1024 samples. PTS ticks at 90kHz.
+		// Offset = i * 1024 * 90000 / sampleRate
+		pts := basePTS + int64(i)*1024*90000/48000
+		frames[i] = media.AudioFrame{
+			PTS:        pts,
+			Data:       payload,
+			SampleRate: 48000,
+			Channels:   2,
+		}
 	}
+	return frames
 }
 
 // isAudioStream checks if a PES stream ID is an audio stream (0xC0-0xDF).

@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 // mockEncoderCapture captures the PCM input passed to Encode.
@@ -599,7 +600,7 @@ func TestMixerOnTransitionStart(t *testing.T) {
 	require.False(t, m.IsInTransitionCrossfade())
 
 	// Start transition
-	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
 
 	require.True(t, m.IsInTransitionCrossfade(), "transition crossfade should be active")
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should start at 0")
@@ -625,7 +626,7 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
 
 	// Update position
 	m.OnTransitionPosition(0.25)
@@ -647,7 +648,7 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	require.True(t, m.IsInTransitionCrossfade())
 
@@ -669,7 +670,7 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", 1000)
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
 
 	// At position 0.0: old=1.0, new=0.0
 	m.OnTransitionPosition(0.0)
@@ -739,9 +740,11 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
 	m.mu.Unlock()
 
-	// Start transition at 50%
-	m.OnTransitionStart("cam1", "cam2", 1000)
+	// Start transition at 50% — set position twice so prevPos and currentPos
+	// are both 0.5, ensuring a flat gain (no per-sample ramp).
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
+	m.OnTransitionPosition(0.5) // stabilize: prevPos = currentPos = 0.5
 
 	// Ingest from both sources — the mixer is in mixing mode (2 active channels)
 	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
@@ -759,5 +762,285 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	require.Equal(t, 4, len(capturedPCM))
 	for i, s := range capturedPCM {
 		require.InDelta(t, expectedSum, s, 0.01, "sample %d should have transition gains applied", i)
+	}
+}
+
+// --- Bug 1: FTB Reverse audio should fade IN (not out) ---
+
+func TestMixerTransitionFTBReverseGains(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// FTB reverse: fade the "from" source IN from silence
+	m.OnTransitionStart("cam1", "", internal.AudioFadeIn, 1000)
+
+	// At position 0.0: audio should be silent (starting from black)
+	m.OnTransitionPosition(0.0)
+	oldGain, newGain := m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "FTB reverse at 0.0: from source should be silent")
+	require.InDelta(t, 0.0, newGain, 0.001, "FTB reverse: no 'to' source")
+
+	// At position 0.5: audio should be at ~0.707 (fading in)
+	m.OnTransitionPosition(0.5)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.707, oldGain, 0.001, "FTB reverse at 0.5: from source fading in")
+	require.InDelta(t, 0.0, newGain, 0.001, "FTB reverse: no 'to' source")
+
+	// At position 1.0: audio should be at full volume
+	m.OnTransitionPosition(1.0)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 1.0, oldGain, 0.001, "FTB reverse at 1.0: from source fully in")
+	require.InDelta(t, 0.0, newGain, 0.001, "FTB reverse: no 'to' source")
+}
+
+func TestMixerTransitionFTBForwardGains(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// FTB forward: fade the "from" source OUT to silence
+	m.OnTransitionStart("cam1", "", internal.AudioFadeOut, 1000)
+
+	// At position 0.0: audio should be full
+	m.OnTransitionPosition(0.0)
+	oldGain, _ := m.TransitionGains()
+	require.InDelta(t, 1.0, oldGain, 0.001, "FTB forward at 0.0: full volume")
+
+	// At position 0.5: fading out
+	m.OnTransitionPosition(0.5)
+	oldGain, _ = m.TransitionGains()
+	require.InDelta(t, 0.707, oldGain, 0.001, "FTB forward at 0.5: fading out")
+
+	// At position 1.0: silent
+	m.OnTransitionPosition(1.0)
+	oldGain, _ = m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "FTB forward at 1.0: silent")
+}
+
+// --- Bug 2: Program mute (FTB held) ---
+
+func TestMixerProgramMute(t *testing.T) {
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Mute program output (FTB held)
+	m.SetProgramMute(true)
+	require.True(t, m.IsProgramMuted())
+	require.False(t, m.IsPassthrough(), "program mute disables passthrough")
+
+	// Ingest a frame — output should be produced but with silent PCM
+	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame)
+
+	require.Equal(t, 1, len(outputFrames), "muted mixer should still produce output frames")
+	require.Equal(t, 4, len(capturedPCM))
+	for i, s := range capturedPCM {
+		require.InDelta(t, 0.0, s, 0.001, "sample %d should be silent when program muted", i)
+	}
+
+	// Verify metering shows silence (LinearToDBFS clamps to -96)
+	peak := m.ProgramPeak()
+	require.InDelta(t, -96.0, peak[0], 0.001, "left peak should be -96 (silence)")
+	require.InDelta(t, -96.0, peak[1], 0.001, "right peak should be -96 (silence)")
+
+	// Unmute — next frame should have audio
+	m.SetProgramMute(false)
+	require.False(t, m.IsProgramMuted())
+
+	outputFrames = nil
+	capturedPCM = nil
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames))
+	for i, s := range capturedPCM {
+		require.InDelta(t, 1.0, s, 0.001, "sample %d should have audio after unmute", i)
+	}
+}
+
+// --- Bug 3: Dip transition dips audio to silence at midpoint ---
+
+func TestMixerTransitionDipGains(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", internal.AudioDipToSilence, 1000)
+
+	// Position 0.0: fully source A
+	m.OnTransitionPosition(0.0)
+	oldGain, newGain := m.TransitionGains()
+	require.InDelta(t, 1.0, oldGain, 0.001, "dip at 0.0: source A full")
+	require.InDelta(t, 0.0, newGain, 0.001, "dip at 0.0: source B silent")
+
+	// Position 0.25: source A fading out, source B still silent
+	m.OnTransitionPosition(0.25)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.707, oldGain, 0.001, "dip at 0.25: source A fading")
+	require.InDelta(t, 0.0, newGain, 0.001, "dip at 0.25: source B still silent")
+
+	// Position 0.5: both sources SILENT (the dip midpoint)
+	m.OnTransitionPosition(0.5)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "dip at 0.5: source A silent")
+	require.InDelta(t, 0.0, newGain, 0.001, "dip at 0.5: source B silent")
+
+	// Position 0.75: source A gone, source B fading in
+	m.OnTransitionPosition(0.75)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "dip at 0.75: source A gone")
+	require.InDelta(t, 0.707, newGain, 0.001, "dip at 0.75: source B fading in")
+
+	// Position 1.0: fully source B
+	m.OnTransitionPosition(1.0)
+	oldGain, newGain = m.TransitionGains()
+	require.InDelta(t, 0.0, oldGain, 0.001, "dip at 1.0: source A gone")
+	require.InDelta(t, 1.0, newGain, 0.001, "dip at 1.0: source B full")
+}
+
+func TestMixerDipIngestFrameMidpoint(t *testing.T) {
+	// At the dip midpoint (0.5), both sources should produce silent output.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	fromPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	toPCM := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: fromPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
+	m.mu.Unlock()
+
+	// Start dip at 0.5 (midpoint = silence), stabilize position
+	m.OnTransitionStart("cam1", "cam2", internal.AudioDipToSilence, 1000)
+	m.OnTransitionPosition(0.5)
+	m.OnTransitionPosition(0.5)
+
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames))
+	require.Equal(t, 4, len(capturedPCM))
+	for i, s := range capturedPCM {
+		require.InDelta(t, 0.0, s, 0.001, "sample %d should be silent at dip midpoint", i)
+	}
+}
+
+// --- Bug 4: Per-sample interpolation (no zipper noise) ---
+
+func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
+	// When position changes between frames, gain should ramp smoothly
+	// across samples rather than being a flat block.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	// 8 samples of constant 1.0 — enough to see the ramp
+	pcm := make([]float32, 8)
+	for i := range pcm {
+		pcm[i] = 1.0
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: pcm}
+	m.mu.Unlock()
+
+	// FTB forward from position 0.0 to 0.5 — gain should ramp from 1.0 to 0.707
+	m.OnTransitionStart("cam1", "", internal.AudioFadeOut, 1000)
+	m.OnTransitionPosition(0.0) // prevPos=0, currentPos=0
+	m.OnTransitionPosition(0.5) // prevPos=0, currentPos=0.5
+
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames))
+	require.Equal(t, 8, len(capturedPCM))
+
+	// First sample should be at prevPos gain: cos(0 * π/2) = 1.0
+	// Last sample should approach currentPos gain: cos(0.5 * π/2) ≈ 0.707
+	// Intermediate samples should be between these values (monotonically decreasing)
+	require.InDelta(t, 1.0, capturedPCM[0], 0.01, "first sample at prevPos gain")
+	require.True(t, capturedPCM[7] < capturedPCM[0], "last sample should be less than first (fading out)")
+	require.InDelta(t, math.Cos(0.5*math.Pi/2), capturedPCM[7], 0.1, "last sample approaching currentPos gain")
+
+	// Check monotonically decreasing (no staircase)
+	for i := 1; i < len(capturedPCM); i++ {
+		require.True(t, capturedPCM[i] <= capturedPCM[i-1]+0.001,
+			"sample %d (%.4f) should be <= sample %d (%.4f) — smooth ramp", i, capturedPCM[i], i-1, capturedPCM[i-1])
 	}
 }

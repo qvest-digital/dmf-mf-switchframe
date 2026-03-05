@@ -515,3 +515,63 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 
 	e.Stop()
 }
+
+func TestEngineUsesConfigBitrateFPS(t *testing.T) {
+	// Verify the encoder factory receives the config's Bitrate and FPS
+	// instead of hardcoded 4Mbps/30fps.
+	var capturedBitrate int
+	var capturedFPS float32
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			capturedBitrate = bitrate
+			capturedFPS = fps
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {},
+		Bitrate:    8_000_000,
+		FPS:        60.0,
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// First ingest triggers lazy encoder init
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	require.Equal(t, 8_000_000, capturedBitrate, "encoder should receive config bitrate")
+	require.InDelta(t, 60.0, capturedFPS, 0.01, "encoder should receive config fps")
+
+	e.Stop()
+}
+
+func TestEngineDefaultBitrateFPSWhenZero(t *testing.T) {
+	// Verify that zero Bitrate/FPS falls back to defaults.
+	var capturedBitrate int
+	var capturedFPS float32
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			capturedBitrate = bitrate
+			capturedFPS = fps
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {},
+		// Bitrate and FPS intentionally left at zero
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	require.Equal(t, DefaultBitrate, capturedBitrate, "should fall back to default bitrate")
+	require.InDelta(t, DefaultFPS, capturedFPS, 0.01, "should fall back to default fps")
+
+	e.Stop()
+}

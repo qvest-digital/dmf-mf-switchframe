@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
 )
 
@@ -62,9 +63,14 @@ type AudioMixer struct {
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
 	transCrossfadeActive   bool
-	transCrossfadeFrom     string  // outgoing source key
-	transCrossfadeTo       string  // incoming source key
-	transCrossfadePosition float64 // 0.0 = fully old, 1.0 = fully new
+	transCrossfadeFrom     string                      // outgoing source key
+	transCrossfadeTo       string                      // incoming source key
+	transCrossfadePosition float64                     // 0.0 = fully old, 1.0 = fully new
+	transCrossfadeMode     internal.AudioTransitionMode // gain curve selection
+	transCrossfadePrevPos  float64                     // previous position for per-sample interpolation
+
+	// Program mute: true while FTB is held (screen is black, audio is silent).
+	programMuted bool
 
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
@@ -227,15 +233,22 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 }
 
 // OnTransitionStart begins a multi-frame crossfade between old and new source,
-// synchronized with a video transition. The new source channel is activated so
-// its audio frames are accepted during the transition.
-func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, durationMs int) {
+// synchronized with a video transition. The mode selects the gain curve:
+//   - AudioCrossfade: equal-power A→B (mix/dissolve)
+//   - AudioDipToSilence: A→silence→B (dip through black)
+//   - AudioFadeOut: A→silence (fade to black)
+//   - AudioFadeIn: silence→A (fade from black)
+//
+// The new source channel is activated so its audio frames are accepted.
+func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transCrossfadeActive = true
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadePosition = 0.0
+	m.transCrossfadeMode = mode
+	m.transCrossfadePrevPos = 0.0
 
 	// Ensure the incoming source's channel is active so frames are accepted
 	if ch, ok := m.channels[newSource]; ok {
@@ -245,10 +258,12 @@ func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, durationMs i
 }
 
 // OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
-// Called by the switcher as the video transition progresses.
+// Called by the switcher as the video transition progresses. Tracks the previous position
+// for per-sample gain interpolation within audio frames.
 func (m *AudioMixer) OnTransitionPosition(position float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.transCrossfadePrevPos = m.transCrossfadePosition
 	m.transCrossfadePosition = position
 }
 
@@ -261,7 +276,25 @@ func (m *AudioMixer) OnTransitionComplete() {
 	m.transCrossfadeFrom = ""
 	m.transCrossfadeTo = ""
 	m.transCrossfadePosition = 0.0
+	m.transCrossfadeMode = 0
+	m.transCrossfadePrevPos = 0.0
 	m.recalcPassthrough()
+}
+
+// SetProgramMute sets the program output mute state. When muted, the mixer
+// produces silent output (FTB held). Metering reflects silence.
+func (m *AudioMixer) SetProgramMute(muted bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.programMuted = muted
+	m.recalcPassthrough()
+}
+
+// IsProgramMuted returns whether program output is muted (FTB held).
+func (m *AudioMixer) IsProgramMuted() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.programMuted
 }
 
 // IsInTransitionCrossfade returns whether a multi-frame transition crossfade is active.
@@ -278,22 +311,57 @@ func (m *AudioMixer) TransitionPosition() float64 {
 	return m.transCrossfadePosition
 }
 
-// TransitionGains returns the equal-power crossfade gains for the old and new sources
-// based on the current transition position:
-//
-//	oldGain = cos(position × π/2)
-//	newGain = sin(position × π/2)
-//
-// When no transition is active, returns (1.0, 0.0).
+// TransitionGains returns the crossfade gains for the old and new sources based
+// on the current transition position and mode. When no transition is active,
+// returns (1.0, 0.0).
 func (m *AudioMixer) TransitionGains() (oldGain, newGain float64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if !m.transCrossfadeActive {
 		return 1.0, 0.0
 	}
-	oldGain = math.Cos(m.transCrossfadePosition * math.Pi / 2)
-	newGain = math.Sin(m.transCrossfadePosition * math.Pi / 2)
-	return oldGain, newGain
+	return transitionFromGain(m.transCrossfadeMode, m.transCrossfadePosition),
+		transitionToGain(m.transCrossfadeMode, m.transCrossfadePosition)
+}
+
+// transitionFromGain computes the gain for the outgoing ("from") source at the
+// given position and mode.
+func transitionFromGain(mode internal.AudioTransitionMode, pos float64) float64 {
+	switch mode {
+	case internal.AudioCrossfade:
+		return math.Cos(pos * math.Pi / 2)
+	case internal.AudioDipToSilence:
+		if pos < 0.5 {
+			// Phase 1: fade out A (equal-power over the first half)
+			return math.Cos(pos * 2 * math.Pi / 2)
+		}
+		return 0
+	case internal.AudioFadeOut:
+		return math.Cos(pos * math.Pi / 2)
+	case internal.AudioFadeIn:
+		// FTB reverse: fade the "from" source IN from silence
+		return math.Sin(pos * math.Pi / 2)
+	}
+	return 1.0
+}
+
+// transitionToGain computes the gain for the incoming ("to") source at the
+// given position and mode.
+func transitionToGain(mode internal.AudioTransitionMode, pos float64) float64 {
+	switch mode {
+	case internal.AudioCrossfade:
+		return math.Sin(pos * math.Pi / 2)
+	case internal.AudioDipToSilence:
+		if pos >= 0.5 {
+			// Phase 2: fade in B (equal-power over the second half)
+			return math.Sin((pos*2 - 1) * math.Pi / 2)
+		}
+		return 0
+	case internal.AudioFadeOut, internal.AudioFadeIn:
+		// FTB has no "to" source
+		return 0
+	}
+	return 0
 }
 
 // IsPassthrough returns whether the mixer is in passthrough mode.
@@ -345,6 +413,26 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	if m.passthrough {
 		m.mu.RUnlock()
+
+		// Decode for peak metering even in passthrough (skip encode).
+		m.mu.Lock()
+		if ch.decoder == nil && m.config.DecoderFactory != nil {
+			if dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels); err == nil {
+				ch.decoder = dec
+			}
+		}
+		if ch.decoder != nil {
+			adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
+			if pcm, err := ch.decoder.Decode(adtsFrame); err == nil && len(pcm) > 0 {
+				peakL, peakR := PeakLevel(pcm, m.numChannels)
+				m.programPeakL = peakL
+				m.programPeakR = peakR
+			} else if err != nil {
+				m.decodeErrors.Add(1)
+			}
+		}
+		m.mu.Unlock()
+
 		m.output(frame)
 		m.framesPassthrough.Add(1)
 		return
@@ -368,29 +456,47 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		return
 	}
 
+	// Ensure ADTS header is present — FDK decoder requires ADTS framing.
+	adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
+
 	// Decode AAC → float32 PCM
-	pcm, err := ch.decoder.Decode(frame.Data)
+	pcm, err := ch.decoder.Decode(adtsFrame)
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
 		return
 	}
 
-	// Apply per-channel gain
-	gain := float32(DBToLinear(ch.level))
-
-	// Apply transition crossfade gain if active
-	if m.transCrossfadeActive {
-		if sourceKey == m.transCrossfadeFrom {
-			gain *= float32(math.Cos(m.transCrossfadePosition * math.Pi / 2))
-		} else if sourceKey == m.transCrossfadeTo {
-			gain *= float32(math.Sin(m.transCrossfadePosition * math.Pi / 2))
-		}
-	}
-
+	// Apply per-channel gain with per-sample transition interpolation
+	channelGain := float32(DBToLinear(ch.level))
 	gainedPCM := make([]float32, len(pcm))
-	for i, s := range pcm {
-		gainedPCM[i] = s * gain
+
+	isTransParticipant := m.transCrossfadeActive &&
+		(sourceKey == m.transCrossfadeFrom || sourceKey == m.transCrossfadeTo)
+
+	if isTransParticipant {
+		// Per-sample interpolation: ramp gain smoothly from prevPos to currentPos
+		// across the frame to eliminate zipper noise.
+		var gainStartFn, gainEndFn func(float64) float64
+		if sourceKey == m.transCrossfadeFrom {
+			gainStartFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
+			gainEndFn = gainStartFn
+		} else {
+			gainStartFn = func(p float64) float64 { return transitionToGain(m.transCrossfadeMode, p) }
+			gainEndFn = gainStartFn
+		}
+		gStart := float32(gainStartFn(m.transCrossfadePrevPos))
+		gEnd := float32(gainEndFn(m.transCrossfadePosition))
+		n := float32(len(pcm))
+		for i, s := range pcm {
+			t := float32(i) / n
+			transGain := gStart + (gEnd-gStart)*t
+			gainedPCM[i] = s * channelGain * transGain
+		}
+	} else {
+		for i, s := range pcm {
+			gainedPCM[i] = s * channelGain
+		}
 	}
 
 	// Count active unmuted channels for this cycle
@@ -438,7 +544,14 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		mixed[i] *= masterGain
 	}
 
-	// Update program peak metering
+	// Apply program mute (FTB held): zero the buffer so output is silent
+	if m.programMuted {
+		for i := range mixed {
+			mixed[i] = 0
+		}
+	}
+
+	// Update program peak metering (after mute so meters show silence)
 	peakL, peakR := PeakLevel(mixed, m.numChannels)
 	m.programPeakL = peakL
 	m.programPeakR = peakR
@@ -514,8 +627,11 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		return
 	}
 
+	// Ensure ADTS header is present — FDK decoder requires ADTS framing.
+	adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
+
 	// Decode
-	pcm, err := ch.decoder.Decode(frame.Data)
+	pcm, err := ch.decoder.Decode(adtsFrame)
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
@@ -611,6 +727,12 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
 func (m *AudioMixer) recalcPassthrough() {
+	// Program mute or active transition crossfade require the mixing path.
+	if m.programMuted || m.transCrossfadeActive {
+		m.passthrough = false
+		return
+	}
+
 	activeCount := 0
 	var activeKey string
 	for key, ch := range m.channels {

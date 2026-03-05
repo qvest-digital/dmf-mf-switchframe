@@ -30,18 +30,20 @@ type mockAudioTransHandler struct {
 	startCalls      []audioTransStartCall
 	positionCalls   []float64
 	completionCount int
+	programMuted    bool
 }
 
 type audioTransStartCall struct {
 	oldSrc     string
 	newSrc     string
+	mode       internal.AudioTransitionMode
 	durationMs int
 }
 
-func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, durationMs int) {
+func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.startCalls = append(m.startCalls, audioTransStartCall{oldSource, newSource, durationMs})
+	m.startCalls = append(m.startCalls, audioTransStartCall{oldSource, newSource, mode, durationMs})
 }
 
 func (m *mockAudioTransHandler) OnTransitionPosition(position float64) {
@@ -54,6 +56,12 @@ func (m *mockAudioTransHandler) OnTransitionComplete() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completionCount++
+}
+
+func (m *mockAudioTransHandler) SetProgramMute(muted bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.programMuted = muted
 }
 
 // setupSwitcherWithTransition creates a switcher with two sources, program on cam1,

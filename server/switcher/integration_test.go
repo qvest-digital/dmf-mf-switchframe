@@ -581,3 +581,107 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 
 	sw.AbortTransition()
 }
+
+func TestIntegrationFTBMutesAudio(t *testing.T) {
+	programRelay := newTestRelay()
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
+	})
+	defer mixer.Close()
+
+	sw.SetMixer(mixer)
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mixer.IngestFrame(sourceKey, frame)
+	})
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	mixer.AddChannel("cam1")
+	mixer.SetAFV("cam1", true)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Before FTB: audio should NOT be program-muted
+	require.False(t, mixer.IsProgramMuted(), "audio should not be muted before FTB")
+
+	// Start FTB — audio enters transition crossfade (fade out)
+	require.NoError(t, sw.FadeToBlack(context.Background()))
+	require.True(t, mixer.IsInTransitionCrossfade(), "audio should be in transition during FTB")
+
+	// Feed a keyframe so the encoder initializes, then drive position to 1.0 via T-bar
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 133, IsKeyframe: false, WireData: []byte{0x01}})
+	time.Sleep(10 * time.Millisecond)
+	sw.SetTransitionPosition(context.Background(), 1.0) // triggers completion
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 166, IsKeyframe: false, WireData: []byte{0x01}})
+	time.Sleep(30 * time.Millisecond)
+
+	// After FTB completes: audio should be program-muted (screen is black)
+	require.True(t, mixer.IsProgramMuted(), "audio should be muted after FTB completes")
+	require.False(t, mixer.IsInTransitionCrossfade(), "transition should be complete")
+}
+
+func TestIntegrationFTBReverseFadesIn(t *testing.T) {
+	programRelay := newTestRelay()
+
+	sw := New(programRelay)
+	defer sw.Close()
+
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
+	})
+	defer mixer.Close()
+
+	sw.SetMixer(mixer)
+	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		mixer.IngestFrame(sourceKey, frame)
+	})
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	})
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	mixer.AddChannel("cam1")
+	mixer.SetAFV("cam1", true)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Complete FTB first using T-bar
+	require.NoError(t, sw.FadeToBlack(context.Background()))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 133, IsKeyframe: false, WireData: []byte{0x01}})
+	time.Sleep(10 * time.Millisecond)
+	sw.SetTransitionPosition(context.Background(), 1.0)
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 166, IsKeyframe: false, WireData: []byte{0x01}})
+	time.Sleep(30 * time.Millisecond)
+	require.True(t, mixer.IsProgramMuted(), "audio should be muted after FTB")
+
+	// Start FTB reverse — audio should unmute and enter fade-in transition
+	require.NoError(t, sw.FadeToBlack(context.Background()))
+	require.False(t, mixer.IsProgramMuted(), "audio should be unmuted during FTB reverse")
+	require.True(t, mixer.IsInTransitionCrossfade(), "audio should be in transition during FTB reverse")
+}

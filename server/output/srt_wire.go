@@ -46,7 +46,7 @@ func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return nil, fmt.Errorf("srt dial %s: %w", addr, err)
 	}
 
-	return &srtgoConn{conn: conn}, nil
+	return &chunkedConn{inner: &srtgoConn{conn: conn}}, nil
 }
 
 // SRTAcceptLoop runs the SRT listener accept loop. It binds on the configured
@@ -86,7 +86,7 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 		}
 
 		id := fmt.Sprintf("srt-%d", srtConnCounter.Add(1))
-		if err := listener.AddConnection(id, &srtgoConn{conn: conn}); err != nil {
+		if err := listener.AddConnection(id, &chunkedConn{inner: &srtgoConn{conn: conn}}); err != nil {
 			slog.Warn("SRT reject connection (max reached)", "error", err)
 			conn.Close()
 		}

@@ -51,6 +51,58 @@ func TestEnsureADTS_NoHeader(t *testing.T) {
 	require.Equal(t, raw, result[7:])
 }
 
+func TestADTSFrameLen(t *testing.T) {
+	// Build a header for a 100-byte payload, total = 107 (100 + 7 header)
+	header := BuildADTS(48000, 2, 100)
+	require.Equal(t, 107, ADTSFrameLen(header))
+
+	// Too short
+	require.Equal(t, 0, ADTSFrameLen(nil))
+	require.Equal(t, 0, ADTSFrameLen([]byte{0xFF}))
+
+	// Not ADTS
+	require.Equal(t, 0, ADTSFrameLen([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06}))
+}
+
+func TestSplitADTSFrames(t *testing.T) {
+	// Build 3 concatenated ADTS frames with distinct payloads
+	payload1 := []byte{0x01, 0x02, 0x03}
+	payload2 := []byte{0x04, 0x05, 0x06, 0x07}
+	payload3 := []byte{0x08, 0x09}
+
+	frame1 := append(BuildADTS(48000, 2, len(payload1)), payload1...)
+	frame2 := append(BuildADTS(48000, 2, len(payload2)), payload2...)
+	frame3 := append(BuildADTS(48000, 2, len(payload3)), payload3...)
+
+	concat := make([]byte, 0, len(frame1)+len(frame2)+len(frame3))
+	concat = append(concat, frame1...)
+	concat = append(concat, frame2...)
+	concat = append(concat, frame3...)
+
+	result := SplitADTSFrames(concat)
+	require.Len(t, result, 3)
+	require.Equal(t, payload1, result[0])
+	require.Equal(t, payload2, result[1])
+	require.Equal(t, payload3, result[2])
+}
+
+func TestSplitADTSFrames_SingleFrame(t *testing.T) {
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	frame := append(BuildADTS(48000, 2, len(payload)), payload...)
+
+	result := SplitADTSFrames(frame)
+	require.Len(t, result, 1)
+	require.Equal(t, payload, result[0])
+}
+
+func TestSplitADTSFrames_NotADTS(t *testing.T) {
+	// Non-ADTS data returned as single raw payload
+	raw := []byte{0xDE, 0x04, 0x00, 0x26, 0x20}
+	result := SplitADTSFrames(raw)
+	require.Len(t, result, 1)
+	require.Equal(t, raw, result[0])
+}
+
 func TestSampleRateIndex(t *testing.T) {
 	tests := []struct {
 		rate  int

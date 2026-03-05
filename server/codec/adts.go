@@ -11,6 +11,21 @@ func IsADTS(data []byte) bool {
 	return data[0] == 0xFF && (data[1]&0xF0) == 0xF0
 }
 
+// ADTSHeaderLen returns the ADTS header length for data that starts
+// with an ADTS sync word: 7 bytes when protection_absent=1 (no CRC),
+// 9 bytes when protection_absent=0 (CRC present). Returns 0 if the
+// data is not ADTS or too short.
+func ADTSHeaderLen(data []byte) int {
+	if !IsADTS(data) {
+		return 0
+	}
+	// protection_absent is bit 0 of byte 1.
+	if data[1]&0x01 == 1 {
+		return 7 // no CRC
+	}
+	return 9 // CRC present
+}
+
 // BuildADTS constructs a 7-byte ADTS header for an AAC-LC frame.
 //
 // The header assumes MPEG-4 (ID=0), AAC-LC (audioObjectType=2, ADTS
@@ -70,6 +85,44 @@ func EnsureADTS(data []byte, sampleRate, channels int) []byte {
 	copy(out, header)
 	copy(out[7:], data)
 	return out
+}
+
+// ADTSFrameLen extracts the total frame length (including header) from
+// an ADTS header. Returns 0 if the data is not ADTS or too short.
+func ADTSFrameLen(data []byte) int {
+	if len(data) < 7 || !IsADTS(data) {
+		return 0
+	}
+	// Frame length is a 13-bit field spanning bytes 3-5:
+	//   byte3 bits 1-0 (high 2), byte4 all 8 (mid), byte5 bits 7-5 (low 3)
+	return (int(data[3]&0x03) << 11) | (int(data[4]) << 3) | (int(data[5]) >> 5)
+}
+
+// SplitADTSFrames splits concatenated ADTS frames into individual raw
+// AAC payloads (headers stripped). If the data is not ADTS, it is
+// returned as a single raw payload.
+func SplitADTSFrames(data []byte) [][]byte {
+	if !IsADTS(data) {
+		return [][]byte{data}
+	}
+
+	var frames [][]byte
+	for len(data) >= 7 && IsADTS(data) {
+		frameLen := ADTSFrameLen(data)
+		if frameLen < 7 || frameLen > len(data) {
+			break
+		}
+		hdrLen := ADTSHeaderLen(data)
+		payload := make([]byte, frameLen-hdrLen)
+		copy(payload, data[hdrLen:frameLen])
+		frames = append(frames, payload)
+		data = data[frameLen:]
+	}
+
+	if len(frames) == 0 {
+		return [][]byte{data}
+	}
+	return frames
 }
 
 // sampleRateIndex maps a sample rate in Hz to the MPEG-4 Audio sample

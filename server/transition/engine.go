@@ -8,12 +8,27 @@ import (
 	"time"
 )
 
+// Default encoder parameters used when Bitrate/FPS are not set.
+const (
+	DefaultBitrate = 4_000_000 // 4 Mbps
+	DefaultFPS     = 30.0
+)
+
 // EngineConfig configures the TransitionEngine.
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
 	EncoderFactory EncoderFactory
 	Output         func(data []byte, isKeyframe bool, pts int64)
 	OnComplete     func(aborted bool)
+
+	// Bitrate for the transition encoder in bits/sec. If zero, defaults
+	// to DefaultBitrate (4 Mbps). Derived from the program source's
+	// recent frame statistics by the switcher.
+	Bitrate int
+
+	// FPS for the transition encoder. If zero, defaults to DefaultFPS (30).
+	// Derived from the program source's recent PTS deltas by the switcher.
+	FPS float64
 }
 
 // TransitionEngine manages the dissolve pipeline lifecycle.
@@ -224,13 +239,22 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 		e.height = h
 		e.blender = NewFrameBlender(w, h)
 
-		enc, encErr := e.config.EncoderFactory(w, h, 4000000, 30.0)
+		bitrate := e.config.Bitrate
+		if bitrate <= 0 {
+			bitrate = DefaultBitrate
+		}
+		fps := e.config.FPS
+		if fps <= 0 {
+			fps = DefaultFPS
+		}
+
+		enc, encErr := e.config.EncoderFactory(w, h, bitrate, float32(fps))
 		if encErr != nil {
 			slog.Error("transition: encoder init failed", "err", encErr, "w", w, "h", h)
 			return false
 		}
 		e.encoder = enc
-		slog.Info("transition: encoder initialized", "w", w, "h", h)
+		slog.Info("transition: encoder initialized", "w", w, "h", h, "bitrate", bitrate, "fps", fps)
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
