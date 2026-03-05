@@ -1,0 +1,162 @@
+package control
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/zsiec/switchframe/server/metrics"
+)
+
+// ctxKeyLogger is the unexported context key for the request-scoped logger.
+type ctxKeyLogger struct{}
+
+// LoggerMiddleware returns middleware that adds structured logging to each request.
+// It generates or preserves a request ID, creates a child logger with request
+// attributes, and logs the completed request with status, latency, and bytes written.
+func LoggerMiddleware(base *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+
+			// Use incoming X-Request-ID or generate a new one.
+			reqID := r.Header.Get("X-Request-ID")
+			if reqID == "" {
+				reqID = newRequestID()
+			}
+
+			// Create child logger with request attributes.
+			child := base.With(
+				"request_id", reqID,
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
+			)
+
+			// Store child logger in context.
+			ctx := context.WithValue(r.Context(), ctxKeyLogger{}, child)
+			r = r.WithContext(ctx)
+
+			// Set response header.
+			w.Header().Set("X-Request-ID", reqID)
+
+			// Wrap ResponseWriter to capture status and bytes.
+			sr := &statusRecorder{ResponseWriter: w, status: 0}
+
+			next.ServeHTTP(sr, r)
+
+			// Default to 200 if WriteHeader was never called.
+			status := sr.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+
+			latency := time.Since(start)
+
+			// Log at DEBUG for noisy paths, INFO for everything else.
+			level := slog.LevelInfo
+			if isNoisyPath(r.URL.Path) {
+				level = slog.LevelDebug
+			}
+
+			child.Log(r.Context(), level, "http request",
+				"status", status,
+				"latency", latency,
+				"bytes", sr.written,
+			)
+		})
+	}
+}
+
+// LogFromCtx retrieves the request-scoped logger from the context.
+// If no logger is found (e.g., called outside middleware), it returns slog.Default().
+func LogFromCtx(ctx context.Context) *slog.Logger {
+	if l, ok := ctx.Value(ctxKeyLogger{}).(*slog.Logger); ok {
+		return l
+	}
+	return slog.Default()
+}
+
+// MetricsMiddleware records Prometheus HTTP request metrics (counter and histogram)
+// for each request. It uses r.Pattern (Go 1.22+ ServeMux feature) for route labels
+// to avoid cardinality explosion from path parameters.
+func MetricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		sr := &statusRecorder{ResponseWriter: w, status: 0}
+		next.ServeHTTP(sr, r)
+
+		status := sr.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		// Use r.Pattern for the route label. This is set by Go 1.22+ ServeMux
+		// after routing, so it contains the pattern like "GET /api/sources"
+		// rather than the actual path (which could have unbounded cardinality).
+		pattern := r.Pattern
+		if pattern == "" {
+			pattern = "unknown"
+		}
+
+		metrics.HTTPRequestsTotal.WithLabelValues(
+			r.Method,
+			pattern,
+			strconv.Itoa(status),
+		).Inc()
+
+		metrics.HTTPRequestDuration.WithLabelValues(
+			r.Method,
+			pattern,
+		).Observe(time.Since(start).Seconds())
+	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the response status code
+// and total bytes written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int64
+}
+
+// WriteHeader captures the status code before delegating to the underlying writer.
+func (sr *statusRecorder) WriteHeader(code int) {
+	if sr.status == 0 {
+		sr.status = code
+	}
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures the number of bytes written and delegates to the underlying writer.
+func (sr *statusRecorder) Write(b []byte) (int, error) {
+	n, err := sr.ResponseWriter.Write(b)
+	sr.written += int64(n)
+	return n, err
+}
+
+// newRequestID generates a random 8-byte hex string for request tracing.
+func newRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: should never happen in practice.
+		return fmt.Sprintf("%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// isNoisyPath returns true for paths that are polled frequently and should
+// be logged at DEBUG level to avoid log spam.
+func isNoisyPath(path string) bool {
+	switch path {
+	case "/api/switch/state", "/metrics":
+		return true
+	}
+	return false
+}

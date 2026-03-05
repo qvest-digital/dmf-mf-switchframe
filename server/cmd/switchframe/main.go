@@ -256,8 +256,11 @@ func run() error {
 			"addr": addr,
 		})
 	})
+	var apiHandler http.Handler = apiMux
+	apiHandler = control.MetricsMiddleware(apiHandler)
+	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	httpSrv := &http.Server{
-		Handler: apiMux,
+		Handler: apiHandler,
 	}
 	httpLn, err := net.Listen("tcp", ":8081")
 	if err != nil {

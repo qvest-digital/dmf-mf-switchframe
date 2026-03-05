@@ -22,6 +22,8 @@ func init() {
 		TransitionsTotal,
 		ActiveOutputs,
 		AudioMixDuration,
+		HTTPRequestsTotal,
+		HTTPRequestDuration,
 	)
 }
 
@@ -71,4 +73,27 @@ var AudioMixDuration = prometheus.NewHistogram(
 		Help:      "Time spent in the audio mixer per AAC frame.",
 		Buckets:   prometheus.ExponentialBuckets(0.0001, 2, 12),
 	},
+)
+
+// HTTPRequestsTotal counts HTTP requests by method, path pattern, and status code.
+var HTTPRequestsTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: "switchframe",
+		Subsystem: "http",
+		Name:      "requests_total",
+		Help:      "Total HTTP requests by method, path pattern, and status code.",
+	},
+	[]string{"method", "pattern", "status"},
+)
+
+// HTTPRequestDuration measures HTTP request latency distribution.
+var HTTPRequestDuration = prometheus.NewHistogramVec(
+	prometheus.HistogramOpts{
+		Namespace: "switchframe",
+		Subsystem: "http",
+		Name:      "request_duration_seconds",
+		Help:      "HTTP request latency distribution.",
+		Buckets:   []float64{.0005, .001, .005, .01, .025, .05, .1, .25, .5},
+	},
+	[]string{"method", "pattern"},
 )

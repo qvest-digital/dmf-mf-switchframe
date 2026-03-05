@@ -8,7 +8,9 @@
 	import AudioMixer from '../components/AudioMixer.svelte';
 	import OutputControls from '../components/OutputControls.svelte';
 	import KeyboardOverlay from '../components/KeyboardOverlay.svelte';
+	import LoadingOverlay from '../components/LoadingOverlay.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
+	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, getState, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
@@ -21,6 +23,9 @@
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
 	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
+	let initialLoading = $state(true);
+	let connectionError: string | null = $state(null);
+	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 	function switchLayout() {
 		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
@@ -331,13 +336,22 @@
 		document.addEventListener('click', resumeAudio, { once: true });
 		document.addEventListener('keydown', resumeAudio, { once: true });
 
-		// Initial state fetch via REST
-		try {
-			const state = await getState();
-			store.applyUpdate(state);
-		} catch (e) {
-			console.warn('Failed to fetch initial state:', e);
+		// Initial state fetch via REST (with retry on failure)
+		async function fetchInitialState() {
+			try {
+				const state = await getState();
+				store.applyUpdate(state);
+				initialLoading = false;
+				connectionError = null;
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				console.warn('Failed to fetch initial state:', msg);
+				connectionError = msg;
+				// Retry every 3 seconds until successful
+				retryTimer = setTimeout(fetchInitialState, 3000);
+			}
 		}
+		await fetchInitialState();
 
 		// Start audio metering rAF loop
 		meterRafId = requestAnimationFrame(meterLoop);
@@ -353,6 +367,7 @@
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
 		if (meterRafId !== undefined) cancelAnimationFrame(meterRafId);
+		if (retryTimer !== undefined) clearTimeout(retryTimer);
 		stopPolling();
 		connection.disconnect();
 		pipeline.destroy();
@@ -360,40 +375,44 @@
 	});
 </script>
 
-{#if layoutMode === 'simple'}
-	<SimpleMode state={store.state} onSwitchLayout={switchLayout} />
-{:else}
-	<div class="control-room">
-		<header class="header">
-			<OutputControls state={store.state} {connectionState} {switchLayout} />
-		</header>
+<LoadingOverlay loading={initialLoading} error={connectionError} />
 
-		<section class="monitors">
-			<ProgramPreview state={store.state} />
-		</section>
+<ErrorBoundary>
+	{#if layoutMode === 'simple'}
+		<SimpleMode state={store.state} onSwitchLayout={switchLayout} />
+	{:else}
+		<div class="control-room">
+			<header class="header">
+				<OutputControls state={store.state} {connectionState} {switchLayout} />
+			</header>
 
-		<section class="multiview-section">
-			<Multiview state={store.state} />
-		</section>
+			<section class="monitors">
+				<ProgramPreview state={store.state} />
+			</section>
 
-		<section class="bottom-panel">
-			<div class="audio-section">
-				<AudioMixer state={store.state} {sourceLevels} {programLevels} onStateUpdate={store.applyUpdate} />
-			</div>
-			<div class="control-section">
-				<div class="buses">
-					<PreviewBus state={store.state} />
-					<ProgramBus state={store.state} />
+			<section class="multiview-section">
+				<Multiview state={store.state} />
+			</section>
+
+			<section class="bottom-panel">
+				<div class="audio-section">
+					<AudioMixer state={store.state} {sourceLevels} {programLevels} onStateUpdate={store.applyUpdate} />
 				</div>
-				<TransitionControls state={store.state} />
-			</div>
-		</section>
-	</div>
+				<div class="control-section">
+					<div class="buses">
+						<PreviewBus state={store.state} />
+						<ProgramBus state={store.state} />
+					</div>
+					<TransitionControls state={store.state} />
+				</div>
+			</section>
+		</div>
 
-	{#if showOverlay}
-		<KeyboardOverlay onclose={() => showOverlay = false} />
+		{#if showOverlay}
+			<KeyboardOverlay onclose={() => showOverlay = false} />
+		{/if}
 	{/if}
-{/if}
+</ErrorBoundary>
 
 <style>
 	.control-room {
