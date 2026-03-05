@@ -355,6 +355,13 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 		return frame
 	}
 
+	// Ensure groupID stays monotonically increasing relative to the source
+	// stream. Without this, the compositor's counter (starting at 0) would
+	// produce GroupIDs lower than the source's current value, causing MoQ
+	// subscribers to discard composited frames as stale.
+	if frame.GroupID > c.groupID {
+		c.groupID = frame.GroupID
+	}
 	if isKeyframe {
 		c.groupID++
 	}
@@ -363,6 +370,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	avc1 := codec.AnnexBToAVC1(encoded)
 	result := &media.VideoFrame{
 		PTS:        frame.PTS,
+		DTS:        frame.DTS,
 		IsKeyframe: isKeyframe,
 		WireData:   avc1,
 		Codec:      frame.Codec,
