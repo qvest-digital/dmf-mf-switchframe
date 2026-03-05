@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import SRTOutputModal from './SRTOutputModal.svelte';
@@ -147,5 +149,51 @@ describe('SRTOutputModal', () => {
 		await fireEvent.click(cancelBtn);
 		const dialog = container.querySelector('[role="alertdialog"]');
 		expect(dialog).toBeFalsy();
+	});
+
+	it('should have role="dialog" when visible', () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		const dialog = container.querySelector('[role="dialog"]');
+		expect(dialog).toBeTruthy();
+	});
+
+	it('should have aria-modal="true" when visible', () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		const dialog = container.querySelector('[role="dialog"]');
+		expect(dialog?.getAttribute('aria-modal')).toBe('true');
+	});
+
+	it('should have aria-labelledby pointing to the title element', () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		const dialog = container.querySelector('[role="dialog"]');
+		const labelledBy = dialog?.getAttribute('aria-labelledby');
+		expect(labelledBy).toBe('srt-modal-title');
+		const title = container.querySelector(`#${labelledBy}`);
+		expect(title).toBeTruthy();
+		expect(title?.textContent).toBe('SRT Output');
+	});
+
+	it('should close on Escape key', async () => {
+		let closed = false;
+		const { container } = render(SRTOutputModal, {
+			props: { state: baseState, visible: true, onclose: () => { closed = true; } },
+		});
+		const dialog = container.querySelector('[role="dialog"]') as HTMLElement;
+		await fireEvent.keyDown(dialog, { key: 'Escape' });
+		expect(closed).toBe(true);
+	});
+
+	it('should have role="presentation" on the backdrop', () => {
+		const { container } = render(SRTOutputModal, { props: { state: baseState, visible: true } });
+		const backdrop = container.querySelector('.srt-modal-backdrop');
+		expect(backdrop?.getAttribute('role')).toBe('presentation');
+	});
+
+	it('should not contain svelte-ignore a11y comments in source', () => {
+		const source = fs.readFileSync(
+			path.resolve(__dirname, 'SRTOutputModal.svelte'),
+			'utf-8',
+		);
+		expect(source).not.toContain('svelte-ignore a11y');
 	});
 });

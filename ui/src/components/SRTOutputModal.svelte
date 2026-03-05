@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { ControlRoomState, SRTOutputConfig } from '$lib/api/types';
 	import { startSRTOutput, stopSRTOutput, fireAndForget } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
@@ -22,6 +23,58 @@
 	let confirmingStop = $state(false);
 
 	const isCallerAddressEmpty = $derived(form.mode === 'caller' && !form.address.trim());
+
+	let modalElement: HTMLDivElement | undefined = $state();
+
+	// Focus trap: when modal becomes visible, focus the first focusable element
+	$effect(() => {
+		if (visible) {
+			tick().then(() => {
+				if (modalElement) {
+					const first = getFocusableElements()?.[0];
+					if (first) first.focus();
+				}
+			});
+		}
+	});
+
+	function getFocusableElements(): HTMLElement[] {
+		if (!modalElement) return [];
+		return Array.from(
+			modalElement.querySelectorAll<HTMLElement>(
+				'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+			),
+		);
+	}
+
+	function handleModalKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			handleClose();
+			return;
+		}
+
+		// Focus trap: wrap Tab navigation within the modal
+		if (e.key === 'Tab') {
+			const focusable = getFocusableElements();
+			if (focusable.length === 0) return;
+
+			const first = focusable[0];
+			const last = focusable[focusable.length - 1];
+
+			if (e.shiftKey) {
+				if (document.activeElement === first) {
+					e.preventDefault();
+					last.focus();
+				}
+			} else {
+				if (document.activeElement === last) {
+					e.preventDefault();
+					first.focus();
+				}
+			}
+		}
+	}
 
 	function handleStart() {
 		if (isCallerAddressEmpty) return;
@@ -53,12 +106,19 @@
 </script>
 
 {#if visible}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="srt-modal-backdrop" onclick={handleClose} onkeydown={() => {}}>
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="srt-modal" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+	<div class="srt-modal-backdrop" role="presentation" onclick={handleClose}>
+		<div
+			class="srt-modal"
+			role="dialog"
+			aria-modal="true"
+			aria-labelledby="srt-modal-title"
+			tabindex="-1"
+			bind:this={modalElement}
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={handleModalKeydown}
+		>
 			<div class="modal-header">
-				<h3>SRT Output</h3>
+				<h3 id="srt-modal-title">SRT Output</h3>
 				<button class="close-btn" onclick={handleClose}>&#x2715;</button>
 			</div>
 
