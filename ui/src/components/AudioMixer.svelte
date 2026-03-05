@@ -89,7 +89,7 @@
 
 			<div class="meter-fader">
 				<!-- Stereo VU meter (pre-fader input level, L/R) -->
-				<div class="meter-wrapper">
+				<div class="meter-wrapper" aria-hidden="true">
 					<div class="db-scale">
 						{#each [-6, -12, -24, -48] as db}
 							<div class="db-mark" style="bottom: {dbToPercent(db)}%">
@@ -116,6 +116,7 @@
 					step="0.5"
 					value={channel.level}
 					orient="vertical"
+					aria-label="Volume for {label}"
 					oninput={(e) => setLevel(key, parseFloat((e.target as HTMLInputElement).value))}
 				/>
 			</div>
@@ -157,7 +158,7 @@
 
 		<div class="meter-fader">
 			<!-- Program peak meter (L/R) -->
-			<div class="meter-wrapper">
+			<div class="meter-wrapper" aria-hidden="true">
 				<div class="db-scale">
 					{#each [-6, -12, -24, -48] as db}
 						<div class="db-mark" style="bottom: {dbToPercent(db)}%">
@@ -184,6 +185,7 @@
 				step="0.5"
 				value={state.masterLevel}
 				orient="vertical"
+				aria-label="Master volume"
 				oninput={(e) => setMasterLevel(parseFloat((e.target as HTMLInputElement).value))}
 			/>
 		</div>
@@ -235,7 +237,7 @@
 
 	.strip-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: 0.75rem;
 		font-weight: 600;
 		letter-spacing: 0.04em;
 		color: var(--text-primary);
@@ -400,7 +402,7 @@
 		color: var(--text-tertiary);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: 0.7rem;
 		font-weight: 600;
 		letter-spacing: 0.04em;
 		text-align: center;
@@ -435,7 +437,7 @@
 
 	.strip-db {
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: 0.7rem;
 		font-weight: 500;
 		color: var(--text-tertiary);
 	}
