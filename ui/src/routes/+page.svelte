@@ -12,7 +12,7 @@
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, startTransition, fadeToBlack, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -97,6 +97,10 @@
 	// PFL (Pre-Fade Listen) manager for client-side per-source audio monitoring
 	const pflManager = createPFLManager();
 	let pflActiveSource = $state<string | null>(null);
+
+	function handleLabelChange(key: string, label: string) {
+		fireAndForget(setLabel(key, label));
+	}
 
 	function handlePFLToggle(sourceKey: string) {
 		if (pflActiveSource === sourceKey) {
@@ -189,19 +193,26 @@
 		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 	});
 
-	// Re-attach canvases when layout mode changes (DOM is replaced)
+	// Re-attach canvases when layout mode changes (DOM is replaced).
+	// Skip the initial run — ProgramPreview's onCanvasReady sets the canvas
+	// refs during mount, and resetting them here would permanently null them
+	// (ProgramPreview's $effect won't re-fire since its bind:this refs are stable).
+	let prevLayoutMode: LayoutMode | undefined;
 	$effect(() => {
-		const _mode = layoutMode;
-		pipelineManager.onLayoutChange();
-		// Reset canvas refs — new DOM elements will be provided by onCanvasReady
-		programCanvas = null;
-		previewCanvas = null;
-		// Re-sync after DOM updates
-		tick().then(() => {
-			if (!mounted) return;
-			pipelineManager.syncSources(store.state.sources);
-			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
-		});
+		const mode = layoutMode;
+		if (prevLayoutMode !== undefined && mode !== prevLayoutMode) {
+			pipelineManager.onLayoutChange();
+			// Reset canvas refs — new DOM elements will be provided by onCanvasReady
+			programCanvas = null;
+			previewCanvas = null;
+			// Re-sync after DOM updates
+			tick().then(() => {
+				if (!mounted) return;
+				pipelineManager.syncSources(store.state.sources);
+				pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+			});
+		}
+		prevLayoutMode = mode;
 	});
 
 	// Sync PFL manager sources with pipeline sources
@@ -341,7 +352,7 @@
 			</section>
 
 			<section class="multiview-section">
-				<Multiview state={store.state} />
+				<Multiview state={store.state} onLabelChange={handleLabelChange} />
 			</section>
 
 			<section class="bottom-panel">

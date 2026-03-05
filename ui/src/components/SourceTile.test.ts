@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent } from '@testing-library/svelte';
 import SourceTile from './SourceTile.svelte';
 import type { SourceInfo, TallyStatus } from '$lib/api/types';
 
@@ -134,5 +134,90 @@ describe('SourceTile', () => {
 		});
 		const status = container.querySelector('.tile-status');
 		expect(status?.classList.contains('stale')).toBe(true);
+	});
+});
+
+describe('SourceTile label editing', () => {
+	it('enters edit mode on double-click', async () => {
+		const onLabelChange = vi.fn();
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, onLabelChange },
+		});
+
+		const label = container.querySelector('.tile-label') as HTMLElement;
+		expect(label.tagName).toBe('SPAN');
+
+		await fireEvent.dblClick(label);
+
+		const input = container.querySelector('.tile-label-input') as HTMLInputElement;
+		expect(input).toBeTruthy();
+		expect(input.tagName).toBe('INPUT');
+	});
+
+	it('shows the current label value in the input', async () => {
+		const onLabelChange = vi.fn();
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ label: 'My Source' }), tally: 'idle', index: 0, onLabelChange },
+		});
+
+		const label = container.querySelector('.tile-label') as HTMLElement;
+		await fireEvent.dblClick(label);
+
+		const input = container.querySelector('.tile-label-input') as HTMLInputElement;
+		expect(input.value).toBe('My Source');
+	});
+
+	it('commits label on Enter', async () => {
+		const onLabelChange = vi.fn();
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ key: 'cam1', label: 'Camera 1' }), tally: 'idle', index: 0, onLabelChange },
+		});
+
+		const label = container.querySelector('.tile-label') as HTMLElement;
+		await fireEvent.dblClick(label);
+
+		const input = container.querySelector('.tile-label-input') as HTMLInputElement;
+		await fireEvent.input(input, { target: { value: 'Wide Shot' } });
+		await fireEvent.keyDown(input, { key: 'Enter' });
+
+		expect(onLabelChange).toHaveBeenCalledWith('cam1', 'Wide Shot');
+		// Should exit edit mode
+		expect(container.querySelector('.tile-label-input')).toBeNull();
+	});
+
+	it('commits label on blur', async () => {
+		const onLabelChange = vi.fn();
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ key: 'cam1', label: 'Camera 1' }), tally: 'idle', index: 0, onLabelChange },
+		});
+
+		const label = container.querySelector('.tile-label') as HTMLElement;
+		await fireEvent.dblClick(label);
+
+		const input = container.querySelector('.tile-label-input') as HTMLInputElement;
+		await fireEvent.input(input, { target: { value: 'Close Up' } });
+		await fireEvent.blur(input);
+
+		expect(onLabelChange).toHaveBeenCalledWith('cam1', 'Close Up');
+		expect(container.querySelector('.tile-label-input')).toBeNull();
+	});
+
+	it('cancels editing on Escape without calling onLabelChange', async () => {
+		const onLabelChange = vi.fn();
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ key: 'cam1', label: 'Camera 1' }), tally: 'idle', index: 0, onLabelChange },
+		});
+
+		const label = container.querySelector('.tile-label') as HTMLElement;
+		await fireEvent.dblClick(label);
+
+		const input = container.querySelector('.tile-label-input') as HTMLInputElement;
+		await fireEvent.input(input, { target: { value: 'Changed' } });
+		await fireEvent.keyDown(input, { key: 'Escape' });
+
+		expect(onLabelChange).not.toHaveBeenCalled();
+		// Should exit edit mode and show original label
+		expect(container.querySelector('.tile-label-input')).toBeNull();
+		expect(container.querySelector('.tile-label')?.textContent).toBe('Camera 1');
 	});
 });

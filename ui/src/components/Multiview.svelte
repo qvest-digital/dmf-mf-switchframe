@@ -2,12 +2,53 @@
 	import type { ControlRoomState, TallyStatus } from '$lib/api/types';
 	import { setPreview, fireAndForget } from '$lib/api/switch-api';
 
-	interface Props { state: ControlRoomState; }
-	let { state }: Props = $props();
-	let sourceKeys = $derived(Object.keys(state.sources).sort());
+	interface Props {
+		state: ControlRoomState;
+		onLabelChange?: (key: string, label: string) => void;
+	}
+	let { state: crState, onLabelChange }: Props = $props();
+	let sourceKeys = $derived(Object.keys(crState.sources).sort());
+
+	// Track which tile is being edited
+	let editingKey = $state<string | null>(null);
+	let editValue = $state('');
+	let inputEl: HTMLInputElement | undefined = $state();
+
+	function startEditing(key: string, e: MouseEvent) {
+		e.stopPropagation();
+		editingKey = key;
+		editValue = crState.sources[key].label || key;
+		queueMicrotask(() => {
+			inputEl?.select();
+		});
+	}
+
+	function commitEdit() {
+		if (!editingKey) return;
+		const key = editingKey;
+		const trimmed = editValue.trim();
+		editingKey = null;
+		if (trimmed && trimmed !== (crState.sources[key]?.label || key)) {
+			onLabelChange?.(key, trimmed);
+		}
+	}
+
+	function cancelEdit() {
+		editingKey = null;
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			commitEdit();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelEdit();
+		}
+	}
 
 	function getTally(key: string): TallyStatus {
-		return state.tallyState[key] || 'idle';
+		return crState.tallyState[key] || 'idle';
 	}
 </script>
 
@@ -22,9 +63,25 @@
 			<canvas class="tile-video" id="tile-{key}" width="320" height="180"></canvas>
 			<div class="tile-bar">
 				<span class="tile-num">{i + 1}</span>
-				<span class="tile-name">{state.sources[key].label || key}</span>
-				{#if state.sources[key].status !== 'healthy'}
-					<span class="tile-health">{state.sources[key].status}</span>
+				{#if editingKey === key}
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						class="tile-name-input"
+						bind:this={inputEl}
+						bind:value={editValue}
+						onkeydown={handleKeydown}
+						onblur={commitEdit}
+						onclick={(e) => e.stopPropagation()}
+						autofocus
+					/>
+				{:else}
+					<span
+						class="tile-name"
+						ondblclick={onLabelChange ? (e: MouseEvent) => startEditing(key, e) : undefined}
+					>{crState.sources[key].label || key}</span>
+				{/if}
+				{#if crState.sources[key].status !== 'healthy'}
+					<span class="tile-health">{crState.sources[key].status}</span>
 				{/if}
 			</div>
 		</button>
@@ -106,6 +163,25 @@
 	.tile-name {
 		flex: 1;
 		letter-spacing: 0.01em;
+	}
+
+	.tile-name-input {
+		flex: 1;
+		font-size: 0.7rem;
+		font-weight: 500;
+		font-family: inherit;
+		letter-spacing: 0.01em;
+		color: var(--text-primary);
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.3);
+		border-radius: 2px;
+		padding: 0 4px;
+		outline: none;
+		min-width: 0;
+	}
+
+	.tile-name-input:focus {
+		border-color: rgba(255, 255, 255, 0.6);
 	}
 
 	.tile-health {
