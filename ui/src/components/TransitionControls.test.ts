@@ -1,6 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import TransitionControls from './TransitionControls.svelte';
+
+vi.mock('$lib/api/switch-api', () => ({
+	cut: vi.fn().mockResolvedValue({}),
+	startTransition: vi.fn().mockResolvedValue({}),
+	setTransitionPosition: vi.fn().mockResolvedValue(undefined),
+	fadeToBlack: vi.fn().mockResolvedValue({}),
+	fireAndForget: (p: Promise<unknown>) => p?.catch?.(() => {}),
+}));
 
 const baseState = {
 	programSource: 'cam1',
@@ -97,5 +106,53 @@ describe('TransitionControls', () => {
 		if (tbar) {
 			expect(parseFloat(tbar.value)).toBeCloseTo(0.5, 1);
 		}
+	});
+
+	describe('ARIA labels', () => {
+		it('should have aria-label on T-bar slider', () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
+			expect(tbar.getAttribute('aria-label')).toBe('Transition position');
+		});
+
+		it('should have aria-label on duration select', () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			const select = container.querySelector('.duration-select') as HTMLSelectElement;
+			expect(select.getAttribute('aria-label')).toBe('Transition duration');
+		});
+
+		it('should have aria-label on transition type radio group', () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			const group = container.querySelector('.type-selector');
+			expect(group?.getAttribute('role')).toBe('radiogroup');
+			expect(group?.getAttribute('aria-label')).toBe('Transition type');
+		});
+	});
+
+	describe('T-bar auto-animation wiring', () => {
+		it('should call startTransition API when AUTO is clicked', async () => {
+			const { startTransition } = await import('$lib/api/switch-api');
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+
+			const autoBtn = container.querySelector('.btn.auto') as HTMLButtonElement;
+			autoBtn.click();
+			await tick();
+
+			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000);
+		});
+
+		it('should still show server-driven position for manual T-bar', () => {
+			// When no auto animation is active, server position drives the T-bar
+			const state = { ...baseState, inTransition: true, transitionPosition: 0.75 };
+			const { container } = render(TransitionControls, { props: { state } });
+			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
+			expect(parseFloat(tbar.value)).toBeCloseTo(0.75, 1);
+		});
+
+		it('should show T-bar at 0 when not in transition', () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
+			expect(parseFloat(tbar.value)).toBe(0);
+		});
 	});
 });

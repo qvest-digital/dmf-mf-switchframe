@@ -145,4 +145,52 @@ describe('AudioMixer', () => {
 		expect(peakBars[0].classList.contains('left')).toBe(true);
 		expect(peakBars[1].classList.contains('right')).toBe(true);
 	});
+
+	describe('ARIA labels', () => {
+		it('should have aria-label on each channel fader with source label', () => {
+			const { container } = render(AudioMixer, { props: { state } });
+			const faders = container.querySelectorAll('.channel-strip .fader');
+			expect(faders.length).toBe(2);
+
+			const labels = Array.from(faders).map(f => f.getAttribute('aria-label'));
+			expect(labels).toContain('Volume for Camera 1');
+			expect(labels).toContain('Volume for Camera 2');
+		});
+
+		it('should have aria-label on master fader', () => {
+			const { container } = render(AudioMixer, { props: { state } });
+			const masterFader = container.querySelector('.master-strip .fader') as HTMLInputElement;
+			expect(masterFader.getAttribute('aria-label')).toBe('Master volume');
+		});
+
+		it('should have aria-hidden on channel meter wrappers', () => {
+			const { container } = render(AudioMixer, { props: { state } });
+			const meters = container.querySelectorAll('.channel-strip .meter-wrapper');
+			for (const meter of meters) {
+				expect(meter.getAttribute('aria-hidden')).toBe('true');
+			}
+		});
+
+		it('should have aria-hidden on master meter wrapper', () => {
+			const { container } = render(AudioMixer, { props: { state } });
+			const meter = container.querySelector('.master-strip .meter-wrapper');
+			expect(meter?.getAttribute('aria-hidden')).toBe('true');
+		});
+
+		it('should use source key as fallback label when no source label is set', () => {
+			const stateNoLabels = {
+				...state,
+				sources: {
+					cam1: { key: 'cam1', label: '', status: 'healthy' as const, lastFrameTime: 0 },
+				},
+				audioChannels: {
+					cam1: { level: 0, muted: false, afv: false },
+				},
+				tallyState: { cam1: 'program' as const },
+			};
+			const { container } = render(AudioMixer, { props: { state: stateNoLabels } });
+			const fader = container.querySelector('.channel-strip .fader') as HTMLInputElement;
+			expect(fader.getAttribute('aria-label')).toBe('Volume for cam1');
+		});
+	});
 });

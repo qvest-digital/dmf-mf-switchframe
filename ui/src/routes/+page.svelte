@@ -28,6 +28,16 @@
 	let initialLoading = $state(true);
 	let connectionError: string | null = $state(null);
 
+	// ARIA live region for screen reader announcements
+	let announcement = $state('');
+	let announcementTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function announce(msg: string) {
+		announcement = msg;
+		clearTimeout(announcementTimer);
+		announcementTimer = setTimeout(() => { announcement = ''; }, 3000);
+	}
+
 	// Canvas refs passed up from ProgramPreview / SimpleMode via onCanvasReady
 	let programCanvas: HTMLCanvasElement | null = $state(null);
 	let previewCanvas: HTMLCanvasElement | null = $state(null);
@@ -170,6 +180,25 @@
 		});
 	});
 
+	// Track previous values for state change announcements
+	let prevRecording: boolean | undefined;
+	let prevFtb: boolean | undefined;
+
+	$effect(() => {
+		const isRecording = store.state.recording?.active === true;
+		const isFtb = store.state.ftbActive;
+
+		if (prevRecording !== undefined && isRecording !== prevRecording) {
+			announce(isRecording ? 'Recording started' : 'Recording stopped');
+		}
+		if (prevFtb !== undefined && isFtb !== prevFtb && isFtb) {
+			announce('Fade to black active');
+		}
+
+		prevRecording = isRecording;
+		prevFtb = isFtb;
+	});
+
 	const connectionManager = new ConnectionManager({
 		url: window.location.origin,
 		onStateUpdate: (update) => {
@@ -267,6 +296,8 @@
 		{/if}
 	{/if}
 </ErrorBoundary>
+
+<div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>
 	.control-room {

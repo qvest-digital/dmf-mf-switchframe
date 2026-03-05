@@ -81,7 +81,7 @@
 		</div>
 
 		<div class="transition-options">
-			<div class="type-selector">
+			<div class="type-selector" role="radiogroup" aria-label="Transition type">
 				<label class="type-option" class:selected={transType === 'mix'}>
 					<input type="radio" name="transType" value="mix" bind:group={transType} />
 					Mix
@@ -92,7 +92,7 @@
 				</label>
 			</div>
 
-			<select class="duration-select" bind:value={durationMs}>
+			<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
 				<option value={500}>0.5s</option>
 				<option value={1000}>1.0s</option>
 				<option value={1500}>1.5s</option>
@@ -110,6 +110,7 @@
 			max="1"
 			step="0.01"
 			value={tbarValue}
+			aria-label="Transition position"
 			oninput={handleTbarInput}
 		/>
 	</div>
