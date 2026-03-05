@@ -71,7 +71,7 @@ func probeEncoder() string {
 	// Nothing works. This should be extremely rare -- it means FFmpeg is linked
 	// but has no H.264 encoder AND OpenH264 is also unavailable.
 	slog.Warn("codec: no H.264 encoder found during probe")
-	return "openh264"
+	return "none"
 }
 
 // tryEncoder attempts to create a small FFmpeg encoder, encode one frame,
