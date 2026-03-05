@@ -19,6 +19,15 @@ export interface VideoDecoderDiagnostics {
 	outputFps: number;
 	ptsJumps: number;
 	bufferDropped: number;
+	// Lifetime counters (survive reconfigures)
+	lifetimeInputCount: number;
+	lifetimeOutputCount: number;
+	lifetimeKeyframeCount: number;
+	lifetimeDecodeErrors: number;
+	lifetimeDiscardedDelta: number;
+	lifetimeDiscardedBufferFull: number;
+	lifetimeConfigureCount: number;
+	lifetimeConfigGuardDrops: number;
 }
 
 /**
@@ -55,10 +64,16 @@ export class PrismVideoDecoder {
 		// kills all queued frames, causing massive frame loss on the program
 		// stream during transitions (SPS/PPS changes every transition boundary).
 		// The worker handles "configure" internally by closing the old decoder
-		// and creating a new one, preserving any frames already in the pipeline.
+		// and creating a new one.
 		if (!this.worker) {
 			this.preload();
 		}
+
+		// Don't clear render buffer on reconfigure — old frames are still
+		// displayable until new frames arrive. PTS is monotonic on the
+		// program stream (server uses tsOffset), so binary search ordering
+		// is preserved. Clearing would discard the last displayable frames,
+		// causing visible stutter while waiting for the next keyframe.
 
 		this.worker!.postMessage({
 			type: "configure",
@@ -119,6 +134,9 @@ export class PrismVideoDecoder {
 			avgInputIntervalMs: 0, minInputIntervalMs: 0, maxInputIntervalMs: 0,
 			avgOutputIntervalMs: 0, minOutputIntervalMs: 0, maxOutputIntervalMs: 0,
 			inputFps: 0, outputFps: 0, ptsJumps: 0, bufferDropped: 0,
+			lifetimeInputCount: 0, lifetimeOutputCount: 0, lifetimeKeyframeCount: 0,
+			lifetimeDecodeErrors: 0, lifetimeDiscardedDelta: 0, lifetimeDiscardedBufferFull: 0,
+			lifetimeConfigureCount: 0, lifetimeConfigGuardDrops: 0,
 		};
 	}
 

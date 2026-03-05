@@ -257,7 +257,7 @@ func run() error {
 		avcC := moq.BuildAVCDecoderConfig(sps, pps)
 		if avcC != nil {
 			programRelay.SetVideoInfo(distribution.VideoInfo{
-				Codec:         "avc1.640028",
+				Codec:         codec.ParseSPSCodecString(sps),
 				Width:         width,
 				Height:        height,
 				DecoderConfig: avcC,
@@ -333,7 +333,7 @@ func run() error {
 			// overrides this in StartSources after demuxing SPS data.
 			if *demoVideoDir == "" {
 				relays[i].SetVideoInfo(distribution.VideoInfo{
-					Codec:  "avc1.640028",
+					Codec:  "avc1.42C01E",
 					Width:  320,
 					Height: 240,
 				})

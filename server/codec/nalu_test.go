@@ -126,3 +126,32 @@ func TestSplitAnnexBNALUs_MixedStartCodes(t *testing.T) {
 	require.Equal(t, []byte{0x67, 0xAA}, nalus[0])
 	require.Equal(t, []byte{0x65, 0xBB}, nalus[1])
 }
+
+func TestParseSPSCodecString_HighProfile(t *testing.T) {
+	// SPS: nalu_type=0x67, profile_idc=0x64 (High), constraint=0x00, level=0x28 (4.0)
+	sps := []byte{0x67, 0x64, 0x00, 0x28, 0xAC, 0xD9}
+	result := ParseSPSCodecString(sps)
+	require.Equal(t, "avc1.640028", result)
+}
+
+func TestParseSPSCodecString_BaselineProfile(t *testing.T) {
+	// SPS: nalu_type=0x67, profile_idc=0x42 (Baseline), constraint=0xC0, level=0x1E (3.0)
+	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00}
+	result := ParseSPSCodecString(sps)
+	require.Equal(t, "avc1.42C01E", result)
+}
+
+func TestParseSPSCodecString_MainProfile(t *testing.T) {
+	// SPS: nalu_type=0x67, profile_idc=0x4D (Main), constraint=0x40, level=0x1F (3.1)
+	sps := []byte{0x67, 0x4D, 0x40, 0x1F, 0xEC, 0xA0}
+	result := ParseSPSCodecString(sps)
+	require.Equal(t, "avc1.4D401F", result)
+}
+
+func TestParseSPSCodecString_TooShort(t *testing.T) {
+	// Fallback for short SPS
+	require.Equal(t, "avc1.42C01E", ParseSPSCodecString(nil))
+	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{}))
+	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67}))
+	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67, 0x42, 0xC0}))
+}

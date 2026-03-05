@@ -245,12 +245,7 @@ func parseSPS(sps []byte) (codecStr string, width, height int) {
 		return "avc1.42C01E", 0, 0
 	}
 
-	// Codec string from first 3 bytes after the NALU type byte.
-	// SPS: [type_byte] [profile_idc] [constraint_flags] [level_idc] ...
-	profileIDC := sps[1]
-	constraintFlags := sps[2]
-	levelIDC := sps[3]
-	codecStr = fmt.Sprintf("avc1.%02X%02X%02X", profileIDC, constraintFlags, levelIDC)
+	codecStr = codec.ParseSPSCodecString(sps)
 
 	// Parse width/height from SPS using Exp-Golomb decoding.
 	w, h, ok := decodeSPSResolution(sps)

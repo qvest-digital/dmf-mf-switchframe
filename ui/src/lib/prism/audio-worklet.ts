@@ -23,13 +23,13 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 
 // Adaptive rate control: when buffer is between LOW and HIGH, consume at 1x.
 // Below LOW, slow down consumption; above HIGH, speed up. Drift is
-// compensated by skipping or repeating 2-3 samples per 128-sample quantum
-// (~62µs, inaudible) — no resampling or interpolation is used.
+// compensated by skipping or repeating ~6 samples per 128-sample quantum
+// (~125µs, inaudible) — no resampling or interpolation is used.
 const TARGET_BUFFER_MS = 1000;
 const LOW_WATER_MS = 600;
 const HIGH_WATER_MS = 1500;
-const MAX_SPEED_RATIO = 1.02;
-const MIN_SPEED_RATIO = 0.98;
+const MAX_SPEED_RATIO = 1.05;
+const MIN_SPEED_RATIO = 0.95;
 
 function writePTS(states: Int32Array, pts: number): void {
 	const intPart = Math.trunc(pts);
@@ -46,6 +46,7 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 	private basePTS = 0;
 	private sampleOffset = 0;
 	private samplesConsumed = 0;
+	private samplesOutput = 0;
 	private localSampleRate = 0;
 
 	private fractionalAccum = 0;
@@ -69,6 +70,7 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 			this.basePTS = msg.pts!;
 			this.sampleOffset = msg.sampleOffset ?? 0;
 			this.samplesConsumed = 0;
+			this.samplesOutput = 0;
 		}
 	}
 
@@ -114,8 +116,8 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 		// Drift compensation via pointer-rate adjustment:
 		// Always copy clean source samples to output (no interpolation/resampling).
 		// Compensate by advancing the ring read pointer at a slightly different
-		// rate than the output frame size. At ±2%, this means 2-3 samples of
-		// overlap (slow) or skip (fast) per 128-sample quantum — ~62µs, inaudible.
+		// rate than the output frame size. At ±5%, this means ~6 samples of
+		// overlap (slow) or skip (fast) per 128-sample quantum — ~125µs, inaudible.
 		const exactAdvance = framesToFill * speedRatio + this.fractionalAccum;
 		const toAdvance = Math.min(Math.floor(exactAdvance), available);
 		this.fractionalAccum = exactAdvance - Math.floor(exactAdvance);
@@ -136,9 +138,16 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 		const newStart = (start + toAdvance) % this.ringSize;
 		Atomics.store(this.sharedStates, SharedStates.BUFF_START, newStart);
 		this.samplesConsumed += toAdvance;
+		this.samplesOutput += toRead;
 
+		// PTS tracks samples actually output to speakers (toRead), not the
+		// speed-adjusted ring pointer advance (toAdvance). When adaptive rate
+		// control drains excess buffer at >1.0x speed, the ring pointer jumps
+		// ahead (skipping samples), but PTS should reflect wall-clock playback
+		// position. Using samplesConsumed would cause PTS to overshoot by
+		// ~50ms/sec at 1.05x, accumulating seconds of AV sync drift over time.
 		const currentPTS = this.basePTS +
-			((this.sampleOffset + this.samplesConsumed) / this.localSampleRate) * 1_000_000;
+			((this.sampleOffset + this.samplesOutput) / this.localSampleRate) * 1_000_000;
 		writePTS(this.sharedStates, currentPTS);
 
 		this.computeLevels(output, channelsToFill, framesToFill);

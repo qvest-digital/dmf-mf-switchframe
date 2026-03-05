@@ -29,6 +29,17 @@ let diagInputIntervalMin = Infinity;
 let diagFirstInputTime = 0;
 let diagLastPTS = -1;
 let diagPtsJumps = 0;
+
+// Lifetime counters — survive reconfigures for session-wide visibility.
+let lifetimeInputCount = 0;
+let lifetimeOutputCount = 0;
+let lifetimeKeyframeCount = 0;
+let lifetimeDecodeErrors = 0;
+let lifetimeDiscardedDelta = 0;
+let lifetimeDiscardedBufferFull = 0;
+let lifetimeConfigureCount = 0;
+let lifetimeConfigGuardDrops = 0;
+
 let lastConfigCodec = "";
 let lastConfigWidth = 0;
 let lastConfigHeight = 0;
@@ -39,6 +50,7 @@ function createDecoder(): VideoDecoder {
 		output: (frame) => processVideoFrame(frame),
 		error: (err) => {
 			diagDecodeErrors++;
+			lifetimeDecodeErrors++;
 			waitForKeyframe = true;
 			self.postMessage({ type: "error", message: err.message });
 			recoverDecoder();
@@ -89,6 +101,7 @@ function recoverDecoder(): void {
 
 function processVideoFrame(frame: VideoFrame): void {
 	diagFrameCount++;
+	lifetimeOutputCount++;
 	const now = performance.now();
 	if (diagLastOutputTime > 0) {
 		const interval = now - diagLastOutputTime;
@@ -118,6 +131,7 @@ self.onmessage = async (e: MessageEvent) => {
 		lastDescription = msg.description ?? null;
 
 		videoDecoder = createDecoder();
+		lifetimeConfigureCount++;
 		waitForKeyframe = true;
 		discardedDelta = 0;
 		discardedBufferFull = 0;
@@ -141,11 +155,15 @@ self.onmessage = async (e: MessageEvent) => {
 
 		self.postMessage({ type: "configured" });
 	} else if (msg.type === "decode") {
-		if (!videoDecoder || videoDecoder.state !== "configured") return;
+		if (!videoDecoder || videoDecoder.state !== "configured") {
+			lifetimeConfigGuardDrops++;
+			return;
+		}
 
 		const inputNow = performance.now();
 		if (diagFirstInputTime === 0) diagFirstInputTime = inputNow;
 		diagDecodeCount++;
+		lifetimeInputCount++;
 		if (diagLastInputTime > 0) {
 			const interval = inputNow - diagLastInputTime;
 			diagInputIntervalSum += interval;
@@ -157,6 +175,7 @@ self.onmessage = async (e: MessageEvent) => {
 		if (videoDecoder.decodeQueueSize >= MAX_QUEUED_CHUNKS) {
 			discardedBufferFull++;
 			diagTotalDiscardedFull++;
+			lifetimeDiscardedBufferFull++;
 			// Subsequent deltas would reference this dropped frame and cause
 			// decode errors, so skip ahead to the next keyframe immediately
 			// rather than triggering an expensive error → recovery cycle.
@@ -177,6 +196,7 @@ self.onmessage = async (e: MessageEvent) => {
 		if (waitForKeyframe && !isKeyframe) {
 			discardedDelta++;
 			diagTotalDiscardedDelta++;
+			lifetimeDiscardedDelta++;
 			return;
 		}
 
@@ -185,7 +205,10 @@ self.onmessage = async (e: MessageEvent) => {
 			discardedDelta = 0;
 		}
 		waitForKeyframe = false;
-		if (isKeyframe) diagKeyframeCount++;
+		if (isKeyframe) {
+			diagKeyframeCount++;
+			lifetimeKeyframeCount++;
+		}
 
 		const ts: number = msg.timestamp;
 		if (diagLastPTS >= 0) {
@@ -210,6 +233,7 @@ self.onmessage = async (e: MessageEvent) => {
 			// to avoid cascading into a more expensive async recovery.
 			waitForKeyframe = true;
 			diagDecodeErrors++;
+			lifetimeDecodeErrors++;
 		}
 	} else if (msg.type === "getDiagnostics") {
 		const avgInputInterval = diagDecodeCount > 1
@@ -237,6 +261,14 @@ self.onmessage = async (e: MessageEvent) => {
 				outputFps: diagLastOutputTime > 0 && diagFrameCount > 1
 					? (diagFrameCount - 1) / (diagOutputIntervalSum / 1000) : 0,
 				ptsJumps: diagPtsJumps,
+				lifetimeInputCount,
+				lifetimeOutputCount,
+				lifetimeKeyframeCount,
+				lifetimeDecodeErrors,
+				lifetimeDiscardedDelta,
+				lifetimeDiscardedBufferFull,
+				lifetimeConfigureCount,
+				lifetimeConfigGuardDrops,
 			},
 		});
 	} else if (msg.type === "stop") {

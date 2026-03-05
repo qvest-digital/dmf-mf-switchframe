@@ -268,13 +268,32 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 	// Add one frame duration to avoid timestamp collision on loop boundary.
 	clipDuration += 3750 // ~41ms at 90kHz (24fps frame)
 
+	// Cap audio frames per loop to match video clip duration. Without this,
+	// audio tracks longer than video (e.g. 15.04s vs 14.46s in elephants_dream.ts)
+	// accumulate excess audio each loop, bloating client ring buffers.
+	// Audio PTS in the TS file may start before video DTS, so PTS-based
+	// truncation doesn't work — all audio PTS fall within the video DTS range.
+	// Instead, cap by frame count: clipDuration(ticks) * sampleRate / (samplesPerFrame * tickRate).
+	maxAudioPerLoop := len(audioFrames) // default: no cap
+	if len(audioFrames) > 0 {
+		sampleRate := int64(audioFrames[0].SampleRate)
+		if sampleRate <= 0 {
+			sampleRate = 48000
+		}
+		maxAudioPerLoop = int(clipDuration * sampleRate / (1024 * 90000))
+		if maxAudioPerLoop > len(audioFrames) {
+			maxAudioPerLoop = len(audioFrames)
+		}
+	}
+
 	var (
-		vidIdx    int
-		audIdx    int
-		tsOffset  int64
-		groupID   uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
-		startTime = time.Now()
-		baseDTS   = videoFrames[0].DTS
+		vidIdx           int
+		audIdx           int
+		audioSentThisLoop int
+		tsOffset         int64
+		groupID          uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
+		startTime        = time.Now()
+		baseDTS          = videoFrames[0].DTS
 	)
 
 	for {
@@ -296,8 +315,9 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 			}
 		}
 
-		// Send any audio frames with PTS <= current video frame's DTS.
-		for audIdx < len(audioFrames) && audioFrames[audIdx].PTS <= videoFrames[vidIdx].DTS {
+		// Send any audio frames with PTS <= current video frame's DTS,
+		// up to the per-loop audio cap.
+		for audIdx < len(audioFrames) && audioSentThisLoop < maxAudioPerLoop && audioFrames[audIdx].PTS <= videoFrames[vidIdx].DTS {
 			af := audioFrames[audIdx]
 			af.PTS = af.PTS - baseDTS + tsOffset
 			relay.BroadcastAudio(&af)
@@ -305,6 +325,7 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 				stats.Source(key).AudioSent.Add(1)
 			}
 			audIdx++
+			audioSentThisLoop++
 		}
 
 		// Send video frame with adjusted timestamps.
@@ -324,8 +345,8 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 
 		// Loop wrap: reset indices, bump timestamp offset.
 		if vidIdx >= len(videoFrames) {
-			// Send remaining audio frames.
-			for audIdx < len(audioFrames) {
+			// Send remaining audio frames up to the per-loop cap.
+			for audIdx < len(audioFrames) && audioSentThisLoop < maxAudioPerLoop {
 				af := audioFrames[audIdx]
 				af.PTS = af.PTS - baseDTS + tsOffset
 				relay.BroadcastAudio(&af)
@@ -333,10 +354,12 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 					stats.Source(key).AudioSent.Add(1)
 				}
 				audIdx++
+				audioSentThisLoop++
 			}
 
 			vidIdx = 0
 			audIdx = 0
+			audioSentThisLoop = 0
 			tsOffset += clipDuration
 			startTime = time.Now()
 			if stats != nil {

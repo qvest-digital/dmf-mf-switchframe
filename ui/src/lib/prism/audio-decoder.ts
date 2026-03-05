@@ -198,6 +198,10 @@ export class PrismAudioDecoder {
 				this._diagLastInputPTS - timestamp > 30_000_000) {
 				this._diagInputPtsWraps++;
 				this._ptsEpochReset = true;
+			} else if (gap > 500_000 && this.playing) {
+				// PTS discontinuity >500ms (source cut, mixer gap, backward jump).
+				// Re-anchor worklet PTS to prevent clock drift.
+				this._ptsEpochReset = true;
 			}
 		}
 		this._diagLastInputPTS = timestamp;
@@ -432,14 +436,20 @@ export class PrismAudioDecoder {
 
 		if (this._ptsEpochReset) {
 			this._ptsEpochReset = false;
-			// PTS epoch reset (stream loop). Do NOT clear the ring buffer —
-			// the buffered PCM is still valid decoded audio. Clearing it
-			// would cause a silence gap while the buffer refills.
-			//
-			// The worklet continues playing from its existing buffer and
-			// PTS monotonically advances based on samples consumed. The
-			// renderer handles A/V resync independently when it detects
-			// the video PTS discontinuity.
+			// Re-anchor the worklet's PTS clock to the current decoded frame.
+			// sampleOffset accounts for samples already in the ring buffer
+			// from the old PTS epoch — when samplesConsumed catches up,
+			// the worklet's PTS equals `pts` (the frame being decoded now).
+			if (this.workletNode && this.ringBuffer) {
+				const bufferedSamples = Math.round(
+					(this.ringBuffer.getStats().queueLengthMs / 1000) * this.sampleRate
+				);
+				this.workletNode.port.postMessage({
+					type: "set-pts",
+					pts: pts,
+					sampleOffset: -bufferedSamples,
+				});
+			}
 		}
 
 		const written = this.ringBuffer.write(audioData);

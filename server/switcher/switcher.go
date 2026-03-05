@@ -71,6 +71,7 @@ type sourceState struct {
 	avgFPS       float64 // exponential moving average of fps from PTS deltas
 	lastPTS      int64   // PTS of the most recent video frame (microseconds)
 	frameCount   int     // total video frames received (for EMA warmup)
+	lastGroupID  uint32  // most recent GroupID from this source's video frames
 }
 
 // Switcher is the central switching engine. It manages which source is
@@ -285,7 +286,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// Estimate encoder parameters from the program source's recent frames.
 	bitrate, fps := s.estimateEncoderParams(fromSource)
 
-	var transGroupID uint32
+	// Initialize GroupID from the program source's last GroupID so transition
+	// output continues monotonically on the program relay. Starting from 0
+	// would cause non-monotonic GroupIDs that break MoQ subscriber state.
+	transGroupID := s.sources[fromSource].lastGroupID
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
@@ -394,7 +398,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		fromSource := s.programSource
 		bitrate, fps := s.estimateEncoderParams(fromSource)
 
-		var revGroupID uint32
+		revGroupID := s.sources[fromSource].lastGroupID
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
 			DecoderFactory: s.transConfig.DecoderFactory,
 			EncoderFactory: s.transConfig.EncoderFactory,
@@ -452,7 +456,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	fromSource := s.programSource
 	bitrate, fps := s.estimateEncoderParams(fromSource)
 
-	var ftbGroupID uint32
+	ftbGroupID := s.sources[fromSource].lastGroupID
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
@@ -1085,6 +1089,9 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 		}
 	}
 	ss.lastPTS = frame.PTS
+	if frame.GroupID > ss.lastGroupID {
+		ss.lastGroupID = frame.GroupID
+	}
 }
 
 // estimateEncoderParams returns the estimated bitrate (bps) and FPS for the

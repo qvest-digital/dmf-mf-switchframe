@@ -61,6 +61,7 @@ export class PrismRenderer {
 	private onStats: ((stats: RendererStats) => void) | null = null;
 	private freeRunStart = -1;
 	private freeRunBasePTS = -1;
+	/** @deprecated freeRunOnly is no longer used; audioClock returns -1 dynamically when unavailable */
 	private _freeRunOnly = false;
 	private _maxResolution = 0;
 	private _externallyDriven = false;
@@ -147,7 +148,11 @@ export class PrismRenderer {
 		this._diagLastRafTime = now;
 
 		let targetPTS: number;
-		const audioPTS = this._freeRunOnly ? -1 : this.audioClock.getPlaybackPTS();
+		// Always check the audio clock — it returns -1 dynamically when
+		// unavailable (audioDecoder not yet configured, not playing, etc.).
+		// This allows the renderer to transition from freerun to audio-driven
+		// mode once audio becomes available, rather than being locked out.
+		const audioPTS = this.audioClock.getPlaybackPTS();
 
 		const AUDIO_STALE_MS = 200;
 
@@ -224,9 +229,44 @@ export class PrismRenderer {
 		} else {
 			const result = this.videoBuffer.getFrameByTimestamp(targetPTS);
 			frame = result.frame;
+
+			// PTS discontinuity detection for freerun mode: if binary search
+			// found nothing but the buffer has frames, all frames are "in the
+			// future" — reset the freerun clock to catch up immediately.
+			if (!frame && this.freeRunStart >= 0) {
+				const peek = this.videoBuffer.peekFirstFrame();
+				if (peek && Math.abs(peek.timestamp - targetPTS) > 500_000) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = peek.timestamp;
+					targetPTS = peek.timestamp;
+					const retry = this.videoBuffer.getFrameByTimestamp(targetPTS);
+					frame = retry.frame;
+				}
+			}
+
+			// Look-ahead for video-ahead-of-audio: the program stream's audio
+			// goes through the mixer (decode/mix/encode) which adds latency
+			// relative to video. This causes video frames to arrive before
+			// their corresponding audio, so the buffer fills with "future"
+			// frames the binary search can't match. Draw the earliest frame
+			// if it's within tolerance to keep the display responsive.
+			if (!frame) {
+				const peek = this.videoBuffer.peekFirstFrame();
+				if (peek && peek.timestamp > targetPTS &&
+					peek.timestamp - targetPTS < 500_000) {
+					frame = this.videoBuffer.takeNextFrame();
+				}
+			}
 		}
 
 		if (frame) {
+			// If the drawn frame's PTS is far from targetPTS, re-anchor the
+			// freerun clock so subsequent frames don't drift or freeze.
+			if (this.freeRunStart >= 0 && Math.abs(frame.timestamp - targetPTS) > 500_000) {
+				this.freeRunStart = now;
+				this.freeRunBasePTS = frame.timestamp;
+			}
+
 			if (this.lastDrawnFrame) {
 				this.lastDrawnFrame.close();
 			}
@@ -319,7 +359,7 @@ export class PrismRenderer {
 			avSyncMin: this._diagAvSyncMin === Infinity ? 0 : this._diagAvSyncMin,
 			avSyncMax: this._diagAvSyncMax === -Infinity ? 0 : this._diagAvSyncMax,
 			avSyncAvg: this._diagAvSyncCount > 0 ? this._diagAvSyncSum / this._diagAvSyncCount : 0,
-			clockMode: (this.freeRunStart >= 0 || this._freeRunOnly) ? "freerun"
+			clockMode: this.freeRunStart >= 0 ? "freerun"
 				: this.audioStallFreeRunStart >= 0 ? "audio-stall-freerun"
 				: "audio",
 			emptyBufferHits: this._diagEmptyBufferHits,

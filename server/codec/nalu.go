@@ -3,7 +3,10 @@
 // conversion and ADTS header helpers.
 package codec
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+)
 
 // annexBStartCode is the 4-byte Annex B start code prefix.
 var annexBStartCode = []byte{0x00, 0x00, 0x00, 0x01}
@@ -147,4 +150,14 @@ func splitAnnexBNALUs(data []byte) [][]byte {
 	}
 
 	return nalus
+}
+
+// ParseSPSCodecString returns a WebCodecs-compatible codec string from SPS NALU bytes.
+// The SPS NALU format is: [nalu_type_byte] [profile_idc] [constraint_flags] [level_idc] ...
+// Example: "avc1.640028" for High profile Level 4.0.
+func ParseSPSCodecString(sps []byte) string {
+	if len(sps) < 4 {
+		return "avc1.42C01E" // fallback: Baseline Level 3.0
+	}
+	return fmt.Sprintf("avc1.%02X%02X%02X", sps[1], sps[2], sps[3])
 }
