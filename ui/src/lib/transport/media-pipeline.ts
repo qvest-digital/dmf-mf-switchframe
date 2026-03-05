@@ -74,6 +74,10 @@ export interface MediaPipeline {
 		data: Uint8Array,
 		timestamp: number,
 	): void;
+	/** Set muted state for a source's audio decoder. */
+	setSourceMuted(sourceKey: string, muted: boolean): void;
+	/** Resume all AudioContexts. Must be called from a user gesture handler. */
+	resumeAllAudio(): Promise<void>;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
 }
@@ -140,7 +144,7 @@ export function createMediaPipeline(): MediaPipeline {
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
 						audioDecoder.configure(codec, sampleRate, channels).then(() => {
-							audioDecoder.setMuted(true);
+							audioDecoder.setMuted(!unmutedSources.has(key));
 							audioDecoder.enableMetering();
 							source.audioDecoder = audioDecoder;
 						}).catch((err) => {
@@ -385,6 +389,31 @@ export function createMediaPipeline(): MediaPipeline {
 		}
 	}
 
+	/** Track which sources should be unmuted (set before audio decoder is ready). */
+	const unmutedSources = new Set<string>();
+
+	function setSourceMuted(sourceKey: string, muted: boolean): void {
+		if (muted) {
+			unmutedSources.delete(sourceKey);
+		} else {
+			unmutedSources.add(sourceKey);
+		}
+		const source = sources.get(sourceKey);
+		if (source?.audioDecoder) {
+			source.audioDecoder.setMuted(muted);
+		}
+	}
+
+	async function resumeAllAudio(): Promise<void> {
+		const promises: Promise<void>[] = [];
+		for (const source of sources.values()) {
+			if (source.audioDecoder) {
+				promises.push(source.audioDecoder.resumeContext());
+			}
+		}
+		await Promise.all(promises);
+	}
+
 	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
 		const result: Record<string, SourceDiagnostics> = {};
 		for (const [key, source] of sources) {
@@ -412,6 +441,8 @@ export function createMediaPipeline(): MediaPipeline {
 		disconnectSource,
 		getVideoBuffer,
 		getAudioDecoder,
+		setSourceMuted,
+		resumeAllAudio,
 		attachCanvas,
 		detachCanvas,
 		destroy,

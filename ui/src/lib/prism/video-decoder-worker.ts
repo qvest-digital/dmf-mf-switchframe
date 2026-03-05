@@ -104,9 +104,12 @@ self.onmessage = async (e: MessageEvent) => {
 	const msg = e.data;
 
 	if (msg.type === "configure") {
-		if (videoDecoder) {
-			await videoDecoder.flush();
-			videoDecoder.close();
+		// Close synchronously — no flush. We don't need in-flight frames
+		// from the old codec config (SPS/PPS changed), and flush() is async
+		// which yields to the event loop, allowing queued decode messages
+		// to race with the reconfigure.
+		if (videoDecoder && videoDecoder.state !== "closed") {
+			try { videoDecoder.close(); } catch { /* already closed */ }
 		}
 
 		lastConfigCodec = msg.codec;

@@ -9,7 +9,7 @@
 </script>
 
 <div class="bus preview-bus">
-	<span class="bus-label">PREVIEW</span>
+	<span class="bus-label">PVW</span>
 	<div class="bus-buttons">
 		{#each sourceKeys as key, i}
 			<SourceTile
@@ -23,7 +23,26 @@
 </div>
 
 <style>
-	.bus { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; }
-	.bus-label { font-weight: bold; font-size: 0.8rem; min-width: 70px; color: #00aa00; font-family: monospace; }
-	.bus-buttons { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+	.bus {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 10px;
+	}
+
+	.bus-label {
+		font-family: var(--font-ui);
+		font-weight: 700;
+		font-size: 0.6rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		min-width: 32px;
+		color: var(--tally-preview);
+	}
+
+	.bus-buttons {
+		display: flex;
+		gap: 3px;
+		flex-wrap: wrap;
+	}
 </style>

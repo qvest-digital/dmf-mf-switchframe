@@ -30,21 +30,72 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		padding: 0.5rem 1rem;
-		border: 2px solid var(--tally-idle);
-		border-radius: 4px;
-		background: #1a1a1a;
-		color: #ccc;
+		padding: 4px 10px;
+		border: 1.5px solid var(--border-default);
+		border-radius: var(--radius-md);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
 		cursor: pointer;
-		font-family: monospace;
-		min-width: 80px;
-		transition: border-color 0.1s;
+		font-family: var(--font-ui);
+		min-width: 72px;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast),
+			box-shadow var(--transition-normal),
+			color var(--transition-fast);
 	}
-	.source-tile.program { border-color: var(--tally-program); background: #2a0000; color: white; }
-	.source-tile.preview { border-color: var(--tally-preview); background: #002a00; color: white; }
-	.tile-number { font-size: 0.7rem; opacity: 0.6; }
-	.tile-label { font-weight: bold; font-size: 0.9rem; }
-	.tile-status { font-size: 0.65rem; text-transform: uppercase; }
-	.tile-status.offline { color: #cc0000; }
-	.tile-status.stale { color: #cc8822; }
+
+	.source-tile:hover {
+		border-color: var(--border-strong);
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.source-tile:active {
+		transform: scale(0.97);
+	}
+
+	.source-tile.program {
+		border-color: var(--tally-program);
+		background: var(--tally-program-dim);
+		color: var(--text-on-color);
+		box-shadow: var(--tally-program-glow);
+	}
+
+	.source-tile.preview {
+		border-color: var(--tally-preview);
+		background: var(--tally-preview-dim);
+		color: var(--text-on-color);
+		box-shadow: var(--tally-preview-glow);
+	}
+
+	.tile-number {
+		font-size: 0.55rem;
+		font-family: var(--font-mono);
+		font-weight: 500;
+		opacity: 0.5;
+		line-height: 1;
+	}
+
+	.tile-label {
+		font-weight: 600;
+		font-size: 0.75rem;
+		letter-spacing: 0.01em;
+		line-height: 1.2;
+	}
+
+	.tile-status {
+		font-size: 0.6rem;
+		text-transform: uppercase;
+		font-weight: 500;
+		letter-spacing: 0.04em;
+	}
+
+	.tile-status.offline {
+		color: var(--tally-program);
+	}
+
+	.tile-status.stale {
+		color: var(--accent-orange);
+	}
 </style>

@@ -46,13 +46,91 @@
 </div>
 
 <style>
-	.overlay-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-	.overlay { background: #222; border: 1px solid #444; border-radius: 8px; padding: 2rem; max-width: 500px; width: 90%; }
-	h2 { margin-bottom: 1rem; font-family: monospace; font-size: 1.2rem; }
-	table { width: 100%; border-collapse: collapse; }
-	th { text-align: left; padding: 0.3rem 0; border-bottom: 1px solid #444; font-family: monospace; font-size: 0.8rem; color: #888; }
-	td { padding: 0.4rem 0; font-family: monospace; font-size: 0.85rem; }
-	.key { width: 40%; }
-	kbd { background: #333; border: 1px solid #555; border-radius: 3px; padding: 0.1rem 0.4rem; font-family: monospace; font-size: 0.8rem; }
-	.dismiss { margin-top: 1rem; text-align: center; font-size: 0.75rem; color: #666; }
+	.overlay-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.6);
+		backdrop-filter: blur(4px);
+		-webkit-backdrop-filter: blur(4px);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
+	}
+
+	.overlay {
+		background: var(--bg-panel);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-lg);
+		padding: 24px;
+		max-width: 460px;
+		width: 90%;
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+	}
+
+	h2 {
+		margin-bottom: 16px;
+		font-family: var(--font-ui);
+		font-size: 1rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		letter-spacing: 0.01em;
+	}
+
+	table {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	th {
+		text-align: left;
+		padding: 6px 0;
+		border-bottom: 1px solid var(--border-default);
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		font-weight: 600;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+
+	td {
+		padding: 7px 0;
+		font-family: var(--font-ui);
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	tr:last-child td {
+		border-bottom: none;
+	}
+
+	.key {
+		width: 40%;
+	}
+
+	kbd {
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-bottom-width: 2px;
+		border-radius: var(--radius-sm);
+		padding: 2px 7px;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		font-weight: 500;
+		color: var(--text-primary);
+	}
+
+	.dismiss {
+		margin-top: 14px;
+		text-align: center;
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
+		font-family: var(--font-ui);
+	}
+
+	.dismiss kbd {
+		font-size: 0.6rem;
+	}
 </style>

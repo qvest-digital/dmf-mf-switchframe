@@ -458,6 +458,13 @@ export class PrismAudioDecoder {
 		}
 	}
 
+	/** Resume the AudioContext. Must be called from a user gesture handler. */
+	async resumeContext(): Promise<void> {
+		if (this.context && this.context.state === "suspended") {
+			await this.context.resume();
+		}
+	}
+
 	private startPlayback(): void {
 		if (!this.context || this.playing || this.starting || !this.workletNode || !this.ringBuffer) return;
 

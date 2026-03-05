@@ -51,17 +51,11 @@ export class PrismVideoDecoder {
 	}
 
 	configure(codec: string, width: number, height: number, description?: ArrayBuffer): void {
-		if (this.configured) {
-			// Already configured — reconfigure the existing worker
-			if (this.worker) {
-				this.worker.postMessage({ type: "stop" });
-				this.worker.terminate();
-				this.worker = null;
-			}
-			this.renderBuffer.clear();
-			this.configured = false;
-		}
-
+		// Reuse the existing worker on reconfigure — terminating the worker
+		// kills all queued frames, causing massive frame loss on the program
+		// stream during transitions (SPS/PPS changes every transition boundary).
+		// The worker handles "configure" internally by closing the old decoder
+		// and creating a new one, preserving any frames already in the pipeline.
 		if (!this.worker) {
 			this.preload();
 		}
