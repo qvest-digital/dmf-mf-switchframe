@@ -108,3 +108,133 @@ func TestProactiveHealthBroadcast(t *testing.T) {
 	mu.Unlock()
 	require.True(t, found, "health monitor should broadcast state when source becomes stale")
 }
+
+func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	// Initial check establishes the source as healthy (first-time: applies immediately).
+	changed := hm.checkForChanges()
+	require.True(t, changed, "first-time source should apply status immediately")
+	hm.mu.RLock()
+	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"])
+	hm.mu.RUnlock()
+
+	// Let the source become stale (wait past 1s stale threshold).
+	time.Sleep(1100 * time.Millisecond)
+
+	// First degradation check: should NOT transition yet (hysteresis count = 1 of 3).
+	changed = hm.checkForChanges()
+	require.False(t, changed, "first degradation check should not cause transition (count=1)")
+
+	hm.mu.RLock()
+	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"], "status should remain healthy after 1 check")
+	hm.mu.RUnlock()
+
+	// Second check: should NOT transition yet (count = 2 of 3).
+	changed = hm.checkForChanges()
+	require.False(t, changed, "second degradation check should not cause transition (count=2)")
+
+	// Third check: SHOULD transition now (count = 3, meets degradationThreshold).
+	changed = hm.checkForChanges()
+	require.True(t, changed, "third degradation check should cause transition (count=3)")
+
+	hm.mu.RLock()
+	finalStatus := hm.lastStatus["cam1"]
+	hm.mu.RUnlock()
+	require.Equal(t, internal.SourceStale, finalStatus, "status should be stale after 3 consecutive checks")
+
+	hm.stop()
+}
+
+func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	// Establish initial status as healthy.
+	hm.checkForChanges()
+
+	// Let the source become stale (wait past 1s threshold).
+	time.Sleep(1100 * time.Millisecond)
+
+	// Run 3 degradation checks to get through hysteresis.
+	hm.checkForChanges()
+	hm.checkForChanges()
+	changed := hm.checkForChanges()
+	require.True(t, changed, "third check should trigger stale transition")
+
+	hm.mu.RLock()
+	require.Equal(t, internal.SourceStale, hm.lastStatus["cam1"])
+	hm.mu.RUnlock()
+
+	// Now record a fresh frame to simulate recovery.
+	hm.recordFrame("cam1")
+
+	// First check after recovery: should recover immediately (threshold = 1).
+	changed = hm.checkForChanges()
+	require.True(t, changed, "recovery should be immediate (threshold=1)")
+
+	hm.mu.RLock()
+	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"], "status should be healthy after immediate recovery")
+	hm.mu.RUnlock()
+
+	hm.stop()
+}
+
+func TestHealthHysteresis_IntermittentFramesResetCounter(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	// Establish initial status as healthy.
+	hm.checkForChanges()
+
+	// Let the source become stale.
+	time.Sleep(1100 * time.Millisecond)
+
+	// First degradation check: count=1 toward stale.
+	changed := hm.checkForChanges()
+	require.False(t, changed, "first check should not trigger transition")
+
+	// Second degradation check: count=2 toward stale.
+	changed = hm.checkForChanges()
+	require.False(t, changed, "second check should not trigger transition")
+
+	// Now a frame arrives — source is healthy again.
+	hm.recordFrame("cam1")
+
+	// Next check: source is healthy, which matches current status → reset counter.
+	changed = hm.checkForChanges()
+	require.False(t, changed, "check after recovery frame should not change (already healthy)")
+
+	// Let source go stale again.
+	time.Sleep(1100 * time.Millisecond)
+
+	// Counter should have been reset — need 3 fresh consecutive checks.
+	changed = hm.checkForChanges()
+	require.False(t, changed, "first check of new stale period should not trigger (count=1)")
+	changed = hm.checkForChanges()
+	require.False(t, changed, "second check should not trigger (count=2)")
+	changed = hm.checkForChanges()
+	require.True(t, changed, "third check should trigger stale transition (count=3)")
+
+	hm.stop()
+}
+
+func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	// First check for a new source should apply the initial status immediately.
+	changed := hm.checkForChanges()
+	require.True(t, changed, "first-time source should apply status immediately")
+
+	hm.mu.RLock()
+	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"])
+	hm.mu.RUnlock()
+
+	hm.stop()
+}

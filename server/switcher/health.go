@@ -13,6 +13,11 @@ const (
 	staleThreshold    = 1 * time.Second
 	noSignalThreshold = 2 * time.Second
 	offlineThreshold  = 10 * time.Second
+
+	// Hysteresis thresholds: require N consecutive checks at a new status
+	// before transitioning, to prevent tally flicker on congested networks.
+	degradationThreshold = 3 // require 3 consecutive checks for degradation
+	recoveryThreshold    = 1 // instant recovery to healthy
 )
 
 func healthStatusFromAge(age time.Duration) internal.SourceHealthStatus {
@@ -29,19 +34,23 @@ func healthStatusFromAge(age time.Duration) internal.SourceHealthStatus {
 }
 
 type healthMonitor struct {
-	mu         sync.RWMutex
-	sources    map[string]bool                         // all registered source keys
-	lastFrame  sync.Map                                // map[string]*atomic.Int64 (UnixNano)
-	lastStatus map[string]internal.SourceHealthStatus  // last broadcast status per source
-	running    bool
-	stopCh     chan struct{}
+	mu               sync.RWMutex
+	sources          map[string]bool                        // all registered source keys
+	lastFrame        sync.Map                               // map[string]*atomic.Int64 (UnixNano)
+	lastStatus       map[string]internal.SourceHealthStatus // last broadcast status per source
+	pendingStatus    map[string]internal.SourceHealthStatus // status awaiting hysteresis threshold
+	consecutiveCount map[string]int                         // consecutive checks at pending status
+	running          bool
+	stopCh           chan struct{}
 }
 
 func newHealthMonitor() *healthMonitor {
 	return &healthMonitor{
-		sources:    make(map[string]bool),
-		lastStatus: make(map[string]internal.SourceHealthStatus),
-		stopCh:     make(chan struct{}),
+		sources:          make(map[string]bool),
+		lastStatus:       make(map[string]internal.SourceHealthStatus),
+		pendingStatus:    make(map[string]internal.SourceHealthStatus),
+		consecutiveCount: make(map[string]int),
+		stopCh:           make(chan struct{}),
 	}
 }
 
@@ -134,7 +143,9 @@ type healthChange struct {
 }
 
 // checkForChanges compares current health status of all registered sources
-// against their last-known status. Returns true if any source changed.
+// against their last-known status. Uses hysteresis to prevent tally flicker:
+// degradation requires N consecutive checks, recovery is immediate.
+// Returns true if any source's committed status changed.
 func (hm *healthMonitor) checkForChanges() bool {
 	hm.mu.Lock()
 
@@ -143,12 +154,46 @@ func (hm *healthMonitor) checkForChanges() bool {
 	now := time.Now()
 	for key := range hm.sources {
 		newStatus := hm.computeStatus(key, now)
-		if prev, ok := hm.lastStatus[key]; !ok || prev != newStatus {
-			if ok {
-				changes = append(changes, healthChange{source: key, fromStatus: prev, toStatus: newStatus})
-			}
+
+		prev, hasPrev := hm.lastStatus[key]
+
+		// First-time source: apply immediately.
+		if !hasPrev {
 			hm.lastStatus[key] = newStatus
 			changed = true
+			delete(hm.pendingStatus, key)
+			delete(hm.consecutiveCount, key)
+			continue
+		}
+
+		// Status matches current committed status: reset hysteresis, no change.
+		if newStatus == prev {
+			delete(hm.pendingStatus, key)
+			delete(hm.consecutiveCount, key)
+			continue
+		}
+
+		// Status differs from committed status. Determine threshold.
+		threshold := degradationThreshold
+		if newStatus == internal.SourceHealthy {
+			threshold = recoveryThreshold
+		}
+
+		// Track consecutive checks at this pending status.
+		if pending, ok := hm.pendingStatus[key]; ok && pending == newStatus {
+			hm.consecutiveCount[key]++
+		} else {
+			hm.pendingStatus[key] = newStatus
+			hm.consecutiveCount[key] = 1
+		}
+
+		// Apply the change if threshold is met.
+		if hm.consecutiveCount[key] >= threshold {
+			changes = append(changes, healthChange{source: key, fromStatus: prev, toStatus: newStatus})
+			hm.lastStatus[key] = newStatus
+			changed = true
+			delete(hm.pendingStatus, key)
+			delete(hm.consecutiveCount, key)
 		}
 	}
 	hm.mu.Unlock()
@@ -168,6 +213,8 @@ func (hm *healthMonitor) removeSource(sourceKey string) {
 	hm.mu.Lock()
 	delete(hm.sources, sourceKey)
 	delete(hm.lastStatus, sourceKey)
+	delete(hm.pendingStatus, sourceKey)
+	delete(hm.consecutiveCount, sourceKey)
 	hm.mu.Unlock()
 	hm.lastFrame.Delete(sourceKey)
 }
