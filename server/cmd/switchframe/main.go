@@ -18,6 +18,7 @@ import (
 	"github.com/zsiec/prism/certs"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/prism/moq"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
@@ -246,6 +247,18 @@ func run() error {
 	compositor.SetResolutionProvider(func() (int, int) {
 		vi := programRelay.VideoInfo()
 		return vi.Width, vi.Height
+	})
+	compositor.OnVideoInfoChange(func(sps, pps []byte, width, height int) {
+		avcC := moq.BuildAVCDecoderConfig(sps, pps)
+		if avcC != nil {
+			programRelay.SetVideoInfo(distribution.VideoInfo{
+				Codec:         "avc1.42C01E",
+				Width:         width,
+				Height:        height,
+				DecoderConfig: avcC,
+			})
+			slog.Info("graphics: updated program relay VideoInfo", "w", width, "h", height)
+		}
 	})
 	sw.SetVideoProcessor(compositor.ProcessFrame)
 	defer compositor.Close()

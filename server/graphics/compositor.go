@@ -70,6 +70,11 @@ type Compositor struct {
 
 	// Returns program video resolution. Set via SetResolutionProvider.
 	resolutionProvider func() (width, height int)
+
+	// Callback invoked when the compositor produces its first keyframe
+	// with new SPS/PPS. Used to update the program relay's VideoInfo
+	// so new MoQ connections get the compositor's avcC in the catalog.
+	onVideoInfoChange func(sps, pps []byte, width, height int)
 }
 
 // NewCompositor creates a new graphics overlay compositor.
@@ -224,6 +229,15 @@ func (c *Compositor) SetResolutionProvider(fn func() (width, height int)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.resolutionProvider = fn
+}
+
+// OnVideoInfoChange registers a callback invoked when the compositor produces
+// its first keyframe with new SPS/PPS. The callback receives raw SPS/PPS NALUs
+// and frame dimensions so the caller can update the program relay's VideoInfo.
+func (c *Compositor) OnVideoInfoChange(fn func(sps, pps []byte, width, height int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onVideoInfoChange = fn
 }
 
 // OnStateChange registers a callback invoked when the overlay state changes.
@@ -395,6 +409,11 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 			case 8:
 				result.PPS = nalu
 			}
+		}
+		// Notify the program relay about the new codec config so the MoQ
+		// catalog serves the compositor's avcC to new connections.
+		if result.SPS != nil && result.PPS != nil && c.onVideoInfoChange != nil {
+			c.onVideoInfoChange(result.SPS, result.PPS, c.encWidth, c.encHeight)
 		}
 	}
 	return result

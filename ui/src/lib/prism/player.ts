@@ -93,6 +93,10 @@ export class PrismPlayer {
 	private pendingVideoCodec: string | null = null;
 	private pendingVideoWidth = 0;
 	private pendingVideoHeight = 0;
+	private activeVideoCodec: string | null = null;
+	private activeVideoWidth = 0;
+	private activeVideoHeight = 0;
+	private lastVideoDescription: ArrayBuffer | null = null;
 
 	private connectedStreamKey: string | null = null;
 	private destroyed = false;
@@ -257,11 +261,16 @@ export class PrismPlayer {
 							// Decoder config available in catalog — configure immediately
 							// so the decoder is ready before the first keyframe arrives.
 							const desc = Uint8Array.from(atob(videoTrack.initData), c => c.charCodeAt(0));
+							const descBuf = desc.buffer as ArrayBuffer;
+							this.activeVideoCodec = videoTrack.codec;
+							this.activeVideoWidth = videoTrack.width;
+							this.activeVideoHeight = videoTrack.height;
+							this.lastVideoDescription = descBuf.slice(0);
 							this.videoDecoder.configure(
 								videoTrack.codec,
 								videoTrack.width,
 								videoTrack.height,
-								desc.buffer as ArrayBuffer,
+								descBuf,
 							);
 						} else {
 							// Defer configuration until the first keyframe with description.
@@ -303,16 +312,33 @@ export class PrismPlayer {
 				},
 				onVideoFrame: (data: Uint8Array, isKeyframe: boolean, timestamp: number, _groupID: number, description: Uint8Array | null) => {
 					void _groupID;
-					// Configure the video decoder on the first keyframe with a description
-					if (description && this.pendingVideoCodec) {
-						const descCopy = new Uint8Array(description).buffer as ArrayBuffer;
-						this.videoDecoder.configure(
-							this.pendingVideoCodec,
-							this.pendingVideoWidth,
-							this.pendingVideoHeight,
-							descCopy,
-						);
-						this.pendingVideoCodec = null;
+					if (description) {
+						const descBuf = new Uint8Array(description).buffer as ArrayBuffer;
+						if (this.pendingVideoCodec) {
+							// First keyframe — configure decoder from deferred catalog info
+							this.activeVideoCodec = this.pendingVideoCodec;
+							this.activeVideoWidth = this.pendingVideoWidth;
+							this.activeVideoHeight = this.pendingVideoHeight;
+							// slice(0) keeps an independent copy; configure() transfers the original.
+							this.lastVideoDescription = descBuf.slice(0);
+							this.videoDecoder.configure(
+								this.activeVideoCodec,
+								this.activeVideoWidth,
+								this.activeVideoHeight,
+								descBuf,
+							);
+							this.pendingVideoCodec = null;
+						} else if (this.activeVideoCodec && !this.descriptionsEqual(descBuf, this.lastVideoDescription)) {
+							// Mid-stream codec change (e.g. compositor activated/deactivated).
+							// Reconfigure the decoder with the new SPS/PPS.
+							this.lastVideoDescription = descBuf.slice(0);
+							this.videoDecoder.configure(
+								this.activeVideoCodec,
+								this.activeVideoWidth,
+								this.activeVideoHeight,
+								descBuf,
+							);
+						}
 					}
 					this.metricsStore.recordFrameEvent(isKeyframe, data.byteLength);
 					this.videoDecoder.decode(data, isKeyframe, timestamp, false);
@@ -381,11 +407,16 @@ export class PrismPlayer {
 			if (deferVideoConfig && videoTrack.initData) {
 				// Decoder config available in catalog — configure immediately.
 				const desc = Uint8Array.from(atob(videoTrack.initData), c => c.charCodeAt(0));
+				const descBuf = desc.buffer as ArrayBuffer;
+				this.activeVideoCodec = videoTrack.codec;
+				this.activeVideoWidth = videoTrack.width;
+				this.activeVideoHeight = videoTrack.height;
+				this.lastVideoDescription = descBuf.slice(0);
 				this.videoDecoder.configure(
 					videoTrack.codec,
 					videoTrack.width,
 					videoTrack.height,
-					desc.buffer as ArrayBuffer,
+					descBuf,
 				);
 			} else if (deferVideoConfig) {
 				// Defer configuration until the first keyframe with description.
@@ -393,6 +424,9 @@ export class PrismPlayer {
 				this.pendingVideoWidth = videoTrack.width;
 				this.pendingVideoHeight = videoTrack.height;
 			} else {
+				this.activeVideoCodec = videoTrack.codec;
+				this.activeVideoWidth = videoTrack.width;
+				this.activeVideoHeight = videoTrack.height;
 				this.videoDecoder.configure(videoTrack.codec, videoTrack.width, videoTrack.height);
 			}
 		}
@@ -431,15 +465,29 @@ export class PrismPlayer {
 
 	/** Feed a compressed video frame into the decoder. Used in mux mode where the transport is external. */
 	injectVideoFrame(data: Uint8Array, isKeyframe: boolean, timestamp: number, description?: Uint8Array): void {
-		if (description && this.pendingVideoCodec) {
-			const descCopy = new Uint8Array(description).buffer as ArrayBuffer;
-			this.videoDecoder.configure(
-				this.pendingVideoCodec,
-				this.pendingVideoWidth,
-				this.pendingVideoHeight,
-				descCopy,
-			);
-			this.pendingVideoCodec = null;
+		if (description) {
+			const descBuf = new Uint8Array(description).buffer as ArrayBuffer;
+			if (this.pendingVideoCodec) {
+				this.activeVideoCodec = this.pendingVideoCodec;
+				this.activeVideoWidth = this.pendingVideoWidth;
+				this.activeVideoHeight = this.pendingVideoHeight;
+				this.lastVideoDescription = descBuf.slice(0);
+				this.videoDecoder.configure(
+					this.activeVideoCodec,
+					this.activeVideoWidth,
+					this.activeVideoHeight,
+					descBuf,
+				);
+				this.pendingVideoCodec = null;
+			} else if (this.activeVideoCodec && !this.descriptionsEqual(descBuf, this.lastVideoDescription)) {
+				this.lastVideoDescription = descBuf.slice(0);
+				this.videoDecoder.configure(
+					this.activeVideoCodec,
+					this.activeVideoWidth,
+					this.activeVideoHeight,
+					descBuf,
+				);
+			}
 		}
 		// If still waiting for AVC/HEVC description, skip — the decoder
 		// can't handle AVC1 data without the configuration record.
@@ -693,6 +741,10 @@ export class PrismPlayer {
 		this.pendingVideoCodec = null;
 		this.pendingVideoWidth = 0;
 		this.pendingVideoHeight = 0;
+		this.activeVideoCodec = null;
+		this.activeVideoWidth = 0;
+		this.activeVideoHeight = 0;
+		this.lastVideoDescription = null;
 		this.videoDecoder.reset();
 		for (const [, decoder] of this.audioDecoders) {
 			decoder.reset();
@@ -713,6 +765,18 @@ export class PrismPlayer {
 		this.metricsStore.reset();
 		this.closePanel();
 		this.hud.stop();
+	}
+
+	/** Compare two ArrayBuffers for byte-level equality. */
+	private descriptionsEqual(a: ArrayBuffer | null, b: ArrayBuffer | null): boolean {
+		if (a === b) return true;
+		if (!a || !b || a.byteLength !== b.byteLength) return false;
+		const va = new Uint8Array(a);
+		const vb = new Uint8Array(b);
+		for (let i = 0; i < va.length; i++) {
+			if (va[i] !== vb[i]) return false;
+		}
+		return true;
 	}
 
 	private applyCondensedStyles(): void {
