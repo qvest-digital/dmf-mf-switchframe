@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError } from './switch-api';
+import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig } from './types';
 
 describe('switch-api', () => {
@@ -357,6 +358,71 @@ describe('SRT Output API', () => {
 		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/status', { headers: {} });
 		expect(result.active).toBe(true);
 		expect(result.connections).toBe(3);
+	});
+});
+
+describe('apiCall', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('shows error toast on API failure', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const err = new SwitchApiError(404, 'source "cam99" not found');
+		const promise = Promise.reject(err);
+
+		apiCall(promise, 'Cut failed');
+
+		// Wait for the microtask (catch handler) to run
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledWith('error', 'Cut failed: source "cam99" not found');
+	});
+
+	it('includes context prefix in error message', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const err = new SwitchApiError(500, 'internal error');
+		const promise = Promise.reject(err);
+
+		apiCall(promise, 'Preview failed');
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledWith('error', 'Preview failed: internal error');
+	});
+
+	it('shows "Network error" for non-SwitchApiError', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const promise = Promise.reject(new TypeError('Failed to fetch'));
+
+		apiCall(promise, 'Cut failed');
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledWith('error', 'Cut failed: Network error');
+	});
+
+	it('does not show toast on success', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const promise = Promise.resolve({ programSource: 'cam1' });
+
+		apiCall(promise, 'Cut failed');
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).not.toHaveBeenCalled();
+	});
+
+	it('shows raw error message when no context given', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const err = new SwitchApiError(404, 'not found');
+		const promise = Promise.reject(err);
+
+		apiCall(promise);
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledWith('error', 'not found');
 	});
 });
 

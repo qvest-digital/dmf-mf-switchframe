@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 
@@ -38,10 +38,10 @@
 	function handleAuto() {
 		if (autoDisabled) return;
 		anim.start(durationMs);
-		fireAndForget(startTransition(
+		apiCall(startTransition(
 			state.previewSource, transType, durationMs,
 			transType === 'wipe' ? wipeDirection : undefined
-		));
+		), 'Transition failed');
 
 		// Safety timeout: cancel animation if server never confirms
 		const safeDuration = durationMs;
@@ -52,22 +52,22 @@
 
 	function handleFTB() {
 		if (ftbDisabled) return;
-		fireAndForget(fadeToBlack());
+		apiCall(fadeToBlack(), 'FTB failed');
 	}
 
 	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly. */
 	const setPositionThrottled = throttle((value: number) => {
-		fireAndForget(setTransitionPosition(value));
+		apiCall(setTransitionPosition(value), 'T-bar failed');
 	}, 50);
 
 	function handleTbarInput(e: Event) {
 		anim.active = false;
 		const value = parseFloat((e.target as HTMLInputElement).value);
 		if (!state.inTransition && value > 0 && state.previewSource) {
-			fireAndForget(startTransition(
+			apiCall(startTransition(
 				state.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined
-			));
+			), 'Transition failed');
 		}
 		setPositionThrottled(value);
 	}
@@ -76,7 +76,7 @@
 <div class="transition-controls">
 	<div class="transition-row">
 		<div class="transition-buttons">
-			<button class="btn cut" onclick={() => fireAndForget(cut(state.previewSource))} disabled={!state.previewSource}>
+			<button class="btn cut" onclick={() => apiCall(cut(state.previewSource), 'Cut failed')} disabled={!state.previewSource}>
 				CUT
 				<span class="shortcut">Space</span>
 			</button>

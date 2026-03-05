@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { startRecording, stopRecording, fireAndForget } from '$lib/api/switch-api';
+	import { startRecording, stopRecording, apiCall } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	interface Props { state: ControlRoomState; }
@@ -18,7 +18,7 @@
 	});
 
 	function handleStart() {
-		fireAndForget(startRecording());
+		apiCall(startRecording(), 'Recording failed');
 	}
 
 	function handleStop() {
@@ -26,7 +26,7 @@
 	}
 
 	function confirmStop() {
-		fireAndForget(stopRecording());
+		apiCall(stopRecording(), 'Stop recording failed');
 		confirmingStop = false;
 	}
 

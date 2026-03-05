@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, TallyStatus } from '$lib/api/types';
-	import { setPreview, fireAndForget } from '$lib/api/switch-api';
+	import { setPreview, apiCall } from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
@@ -58,7 +58,7 @@
 			class="tile"
 			class:tally-program={getTally(key) === 'program'}
 			class:tally-preview={getTally(key) === 'preview'}
-			onclick={() => fireAndForget(setPreview(key))}
+			onclick={() => apiCall(setPreview(key), 'Preview failed')}
 		>
 			<canvas class="tile-video" id="tile-{key}" width="320" height="180"></canvas>
 			<div class="tile-bar">

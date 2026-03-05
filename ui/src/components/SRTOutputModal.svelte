@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { ControlRoomState, SRTOutputConfig } from '$lib/api/types';
-	import { startSRTOutput, stopSRTOutput, fireAndForget } from '$lib/api/switch-api';
+	import { startSRTOutput, stopSRTOutput, apiCall } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	interface Props {
@@ -84,7 +84,7 @@
 			if (form.streamID) config.streamID = form.streamID;
 		}
 		if (form.latency > 0) config.latency = form.latency;
-		fireAndForget(startSRTOutput(config));
+		apiCall(startSRTOutput(config), 'SRT start failed');
 	}
 
 	function handleStop() {
@@ -92,7 +92,7 @@
 	}
 
 	function confirmStop() {
-		fireAndForget(stopSRTOutput());
+		apiCall(stopSRTOutput(), 'SRT stop failed');
 		confirmingStop = false;
 	}
 

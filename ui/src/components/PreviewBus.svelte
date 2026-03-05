@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import SourceTile from './SourceTile.svelte';
-	import { setPreview, fireAndForget } from '$lib/api/switch-api';
+	import { setPreview, apiCall } from '$lib/api/switch-api';
 
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
@@ -16,7 +16,7 @@
 				source={state.sources[key]}
 				tally={state.previewSource === key ? 'preview' : 'idle'}
 				index={i}
-				onclick={() => fireAndForget(setPreview(key))}
+				onclick={() => apiCall(setPreview(key), 'Preview failed')}
 			/>
 		{/each}
 	</div>

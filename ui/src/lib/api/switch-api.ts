@@ -1,4 +1,5 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState } from './types';
+import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -190,4 +191,13 @@ export function getGraphicsStatus(): Promise<GraphicsState> {
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
 export function fireAndForget(promise: Promise<unknown>): void {
 	promise.catch((err) => console.warn('API call failed:', err));
+}
+
+/** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */
+export function apiCall(promise: Promise<unknown>, context?: string): void {
+	promise.catch((err) => {
+		const msg = err instanceof SwitchApiError ? err.message : 'Network error';
+		notify('error', context ? `${context}: ${msg}` : msg);
+		console.warn('API call failed:', err);
+	});
 }

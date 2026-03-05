@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { setPreview, cut, startTransition, fireAndForget } from '$lib/api/switch-api';
+	import { setPreview, cut, startTransition, apiCall } from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
@@ -36,17 +36,17 @@
 	let canCut = $derived(state.previewSource !== '' && !state.inTransition);
 
 	function handleSourceClick(key: string) {
-		fireAndForget(setPreview(key));
+		apiCall(setPreview(key), 'Preview failed');
 	}
 
 	function handleCut() {
 		if (!canCut) return;
-		fireAndForget(cut(state.previewSource));
+		apiCall(cut(state.previewSource), 'Cut failed');
 	}
 
 	function handleDissolve() {
 		if (!canTransition) return;
-		fireAndForget(startTransition(state.previewSource, 'mix', 1000));
+		apiCall(startTransition(state.previewSource, 'mix', 1000), 'Dissolve failed');
 	}
 
 	function tallyClass(key: string): string {

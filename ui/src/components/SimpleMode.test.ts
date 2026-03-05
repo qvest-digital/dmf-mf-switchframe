@@ -7,7 +7,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setPreview: vi.fn(() => Promise.resolve({})),
 	cut: vi.fn(() => Promise.resolve({})),
 	startTransition: vi.fn(() => Promise.resolve({})),
-	fireAndForget: vi.fn((p: Promise<unknown>) => p.catch(() => {})),
+	apiCall: vi.fn((p: Promise<unknown>) => p.catch(() => {})),
 }));
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {

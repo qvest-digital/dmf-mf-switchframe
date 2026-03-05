@@ -6,7 +6,7 @@ import type { ControlRoomState } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
 	setPreview: vi.fn().mockResolvedValue({}),
-	fireAndForget: (p: Promise<unknown>) => p?.catch?.(() => {}),
+	apiCall: (p: Promise<unknown>) => p?.catch?.(() => {}),
 }));
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {

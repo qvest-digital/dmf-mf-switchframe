@@ -8,7 +8,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	startTransition: vi.fn().mockResolvedValue({}),
 	setTransitionPosition: vi.fn().mockResolvedValue(undefined),
 	fadeToBlack: vi.fn().mockResolvedValue({}),
-	fireAndForget: (p: Promise<unknown>) => p?.catch?.(() => {}),
+	apiCall: (p: Promise<unknown>) => p?.catch?.(() => {}),
 }));
 
 const baseState = {

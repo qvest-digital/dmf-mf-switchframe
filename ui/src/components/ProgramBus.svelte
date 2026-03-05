@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import SourceTile from './SourceTile.svelte';
-	import { cut, fireAndForget } from '$lib/api/switch-api';
+	import { cut, apiCall } from '$lib/api/switch-api';
 
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
@@ -16,7 +16,7 @@
 				source={state.sources[key]}
 				tally={state.programSource === key ? 'program' : 'idle'}
 				index={i}
-				onclick={() => fireAndForget(cut(key))}
+				onclick={() => apiCall(cut(key), 'Cut failed')}
 			/>
 		{/each}
 	</div>

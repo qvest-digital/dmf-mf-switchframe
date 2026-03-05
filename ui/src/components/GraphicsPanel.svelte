@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, fireAndForget } from '$lib/api/switch-api';
+	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall } from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates, type GraphicsTemplate } from '$lib/graphics/templates';
 
@@ -48,7 +48,7 @@
 		if (!tpl) return;
 		try {
 			await publisher.publish(tpl, fieldValues);
-			fireAndForget(graphicsOn());
+			apiCall(graphicsOn(), 'Graphics failed');
 		} catch (err) {
 			console.warn('Graphics publish failed:', err);
 		}
@@ -59,18 +59,18 @@
 		if (!tpl) return;
 		try {
 			await publisher.publish(tpl, fieldValues);
-			fireAndForget(graphicsAutoOn());
+			apiCall(graphicsAutoOn(), 'Graphics failed');
 		} catch (err) {
 			console.warn('Graphics publish failed:', err);
 		}
 	}
 
 	function handleOff() {
-		fireAndForget(graphicsOff());
+		apiCall(graphicsOff(), 'Graphics failed');
 	}
 
 	function handleAutoOff() {
-		fireAndForget(graphicsAutoOff());
+		apiCall(graphicsAutoOff(), 'Graphics failed');
 	}
 
 	function handleTemplateChange(e: Event) {

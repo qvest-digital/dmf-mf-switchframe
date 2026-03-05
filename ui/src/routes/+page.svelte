@@ -14,7 +14,8 @@
 	import Toast from '../components/Toast.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -62,18 +63,18 @@
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
-			if (store.state.previewSource) fireAndForget(cut(store.state.previewSource));
+			if (store.state.previewSource) apiCall(cut(store.state.previewSource), 'Cut failed');
 		},
-		onSetPreview: (key) => fireAndForget(setPreview(key)),
-		onHotPunch: (key) => fireAndForget(cut(key)),
+		onSetPreview: (key) => apiCall(setPreview(key), 'Preview failed'),
+		onHotPunch: (key) => apiCall(cut(key), 'Cut failed'),
 		onAutoTransition: () => {
 			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
-				fireAndForget(startTransition(store.state.previewSource, transitionType, transitionDuration));
+				apiCall(startTransition(store.state.previewSource, transitionType, transitionDuration), 'Transition failed');
 			}
 		},
 		onFadeToBlack: () => {
 			if (!store.state.inTransition || store.state.ftbActive) {
-				fireAndForget(fadeToBlack());
+				apiCall(fadeToBlack(), 'FTB failed');
 			}
 		},
 		onToggleFullscreen: () => {
@@ -84,9 +85,9 @@
 		onToggleOverlay: () => { showOverlay = !showOverlay; },
 		onToggleDSK: () => {
 			if (store.state.graphics?.active) {
-				fireAndForget(graphicsOff());
+				apiCall(graphicsOff(), 'Graphics failed');
 			} else {
-				fireAndForget(graphicsOn());
+				apiCall(graphicsOn(), 'Graphics failed');
 			}
 		},
 		onSetTransitionType: (type) => {
@@ -118,7 +119,7 @@
 	}
 
 	function handleLabelChange(key: string, label: string) {
-		fireAndForget(setLabel(key, label));
+		apiCall(setLabel(key, label), 'Label update failed');
 	}
 
 	function handlePFLToggle(sourceKey: string) {
@@ -168,27 +169,12 @@
 		const json = JSON.stringify(snapshot, null, 2);
 		try {
 			await navigator.clipboard.writeText(json);
-			flashMessage('Debug snapshot copied to clipboard');
+			notify('info', 'Debug snapshot copied to clipboard');
 		} catch {
 			console.log('=== SWITCHFRAME DEBUG SNAPSHOT ===');
 			console.log(json);
-			flashMessage('Debug snapshot logged to console');
+			notify('info', 'Debug snapshot logged to console');
 		}
-	}
-
-	function flashMessage(msg: string) {
-		const badge = document.createElement('div');
-		Object.assign(badge.style, {
-			position: 'fixed', bottom: '20px', left: '50%',
-			transform: 'translateX(-50%)', background: 'rgba(0,200,100,0.9)',
-			color: '#fff', padding: '8px 20px', borderRadius: '6px',
-			fontFamily: "'SF Mono', monospace", fontSize: '13px',
-			zIndex: '99999', transition: 'opacity 0.5s',
-		});
-		badge.textContent = msg;
-		document.body.appendChild(badge);
-		setTimeout(() => { badge.style.opacity = '0'; }, 1500);
-		setTimeout(() => badge.remove(), 2000);
 	}
 
 	// React to source list changes — delegate to PipelineManager
