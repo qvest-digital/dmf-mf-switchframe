@@ -59,6 +59,7 @@ type Compositor struct {
 	encHeight      int
 	yuvBuf         []byte // reusable buffer for decoded YUV data
 	groupID        uint32 // monotonic group ID for encoded frames
+	needsIDR       bool   // force IDR on next encoded frame after activation
 
 	// Callback invoked on state change (active/inactive/fade).
 	onStateChange func()
@@ -108,6 +109,7 @@ func (c *Compositor) On() error {
 
 	c.active = true
 	c.fadePosition = 1.0
+	c.needsIDR = true
 	slog.Debug("graphics overlay CUT ON")
 	c.notifyStateChange()
 	return nil
@@ -150,6 +152,7 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 
 	c.active = true
 	c.fadePosition = 0.0
+	c.needsIDR = true
 	c.fadeDone = make(chan struct{})
 	c.fadeCancel = make(chan struct{})
 	c.notifyStateChange()
@@ -223,25 +226,41 @@ func (c *Compositor) SetCodecFactories(dec transition.DecoderFactory, enc transi
 // program frame. When the overlay is active and codec factories are configured,
 // it decodes the H.264 frame, composites the RGBA overlay, and re-encodes.
 // When inactive, it returns the frame unchanged (zero overhead).
+//
+// On activation, the first composited frame is forced to be an IDR (keyframe)
+// so the browser decoder gets a clean start with the new codec parameters.
 func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	c.mu.RLock()
 	active := c.active
 	alphaScale := c.fadePosition
+	overlayW := c.overlayWidth
+	overlayH := c.overlayHeight
+	hasOverlay := c.overlay != nil
+	hasCodecs := c.decoderFactory != nil && c.encoderFactory != nil
 	c.mu.RUnlock()
 
-	if !active || alphaScale < 1.0/255.0 {
+	if !active || alphaScale < 1.0/255.0 || !hasOverlay || !hasCodecs {
 		return frame // passthrough
 	}
 
+	// We can only composite if the overlay resolution matches the video.
+	// We don't know the video resolution until we decode, but we can
+	// skip non-keyframes when we haven't initialized codecs yet (need
+	// a keyframe with SPS/PPS to start the decoder).
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.overlay == nil || c.decoderFactory == nil || c.encoderFactory == nil {
-		return frame // no overlay or no codecs configured
+	// Double-check state under write lock (may have changed)
+	if !c.active || c.overlay == nil {
+		return frame
 	}
 
 	// Lazy-init decoder
 	if c.decoder == nil {
+		// Need a keyframe to initialize the decoder (requires SPS/PPS)
+		if !frame.IsKeyframe {
+			return frame
+		}
 		dec, err := c.decoderFactory()
 		if err != nil {
 			slog.Error("graphics: decoder init failed", "err", err)
@@ -267,6 +286,16 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 		return frame
 	}
 
+	// If overlay resolution doesn't match video, pass through unchanged.
+	// Don't re-encode just to re-encode — it wastes CPU and causes
+	// codec parameter switches that confuse the browser decoder.
+	if overlayW != w || overlayH != h {
+		slog.Debug("graphics: overlay resolution mismatch, passthrough",
+			"overlay", fmt.Sprintf("%dx%d", overlayW, overlayH),
+			"frame", fmt.Sprintf("%dx%d", w, h))
+		return frame
+	}
+
 	// Lazy-init encoder (need dimensions from first decode)
 	if c.encoder == nil {
 		enc, err := c.encoderFactory(w, h, transition.DefaultBitrate, transition.DefaultFPS)
@@ -287,17 +316,16 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	}
 	copy(c.yuvBuf, yuv[:yuvSize])
 
-	// Composite: only blend if overlay matches frame resolution
-	if c.overlayWidth == w && c.overlayHeight == h {
-		AlphaBlendRGBA(c.yuvBuf, c.overlay, w, h, c.fadePosition)
-	} else {
-		slog.Debug("graphics: overlay resolution mismatch, skipping blend",
-			"overlay", fmt.Sprintf("%dx%d", c.overlayWidth, c.overlayHeight),
-			"frame", fmt.Sprintf("%dx%d", w, h))
-	}
+	// Composite the RGBA overlay onto the YUV frame
+	AlphaBlendRGBA(c.yuvBuf, c.overlay, w, h, c.fadePosition)
 
-	// Encode composited YUV → H.264
-	forceIDR := frame.IsKeyframe
+	// Force IDR on the first composited frame after activation so the
+	// browser decoder gets a clean start with new SPS/PPS. Also force
+	// IDR whenever the source frame was a keyframe to maintain GOP
+	// structure.
+	forceIDR := frame.IsKeyframe || c.needsIDR
+	c.needsIDR = false
+
 	encoded, isKeyframe, err := c.encoder.Encode(c.yuvBuf, forceIDR)
 	if err != nil {
 		slog.Warn("graphics: encode failed", "err", err)

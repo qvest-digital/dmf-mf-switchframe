@@ -4,6 +4,15 @@
  */
 import type { GraphicsTemplate } from './templates';
 
+/** Encode a Uint8Array/Uint8ClampedArray to a base64 string. */
+function uint8ArrayToBase64(bytes: Uint8Array | Uint8ClampedArray): string {
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) {
+		binary += String.fromCharCode(bytes[i]);
+	}
+	return btoa(binary);
+}
+
 export class GraphicsPublisher {
 	private canvas: OffscreenCanvas | null = null;
 	private ctx: OffscreenCanvasRenderingContext2D | null = null;
@@ -41,10 +50,9 @@ export class GraphicsPublisher {
 
 		// Extract RGBA pixel data
 		const imageData = this.ctx.getImageData(0, 0, this.width, this.height);
-		const rgba = imageData.data;
 
-		// Convert Uint8ClampedArray to regular array for JSON serialization
-		const rgbaArray = Array.from(rgba);
+		// Encode as base64 — Go's encoding/json decodes []byte from base64.
+		const base64 = uint8ArrayToBase64(imageData.data);
 
 		// Upload to server
 		const response = await fetch('/api/graphics/frame', {
@@ -54,7 +62,7 @@ export class GraphicsPublisher {
 				width: this.width,
 				height: this.height,
 				template: template.id,
-				rgba: rgbaArray,
+				rgba: base64,
 			}),
 		});
 
