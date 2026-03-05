@@ -32,7 +32,7 @@ jobs:
       - name: Install cgo dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfdk-aac-dev libopenh264-dev pkg-config
+          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
       - name: Vet
         run: cd server && go vet ./...
       - name: golangci-lint
@@ -51,7 +51,7 @@ jobs:
       - name: Install cgo dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfdk-aac-dev libopenh264-dev pkg-config
+          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
       - name: Run tests with coverage
         run: cd server && go test ./... -race -coverprofile=coverage.out
       - name: Upload Go coverage

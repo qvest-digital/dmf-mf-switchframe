@@ -75,6 +75,10 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(handler))
 
+	// Probe available video codecs at startup (cached for process lifetime).
+	encName, decName := codec.ProbeEncoders()
+	slog.Info("video codec selected", "encoder", encName, "decoder", decName)
+
 	// Register subsystem metrics on the shared Prometheus registry so they
 	// appear at /metrics on the admin server. The returned Metrics struct
 	// is passed to subsystems (switcher, mixer, output manager) below.
@@ -200,13 +204,13 @@ func run() error {
 	})
 	sw.SetMixer(mixer)
 
-	// Configure transition engine with OpenH264 codec factories
+	// Configure transition engine with auto-detected video codec
 	sw.SetTransitionConfig(switcher.TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return codec.NewOpenH264Decoder()
+			return codec.NewVideoDecoder()
 		},
 		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return codec.NewOpenH264Encoder(w, h, bitrate, fps)
+			return codec.NewVideoEncoder(w, h, bitrate, fps)
 		},
 	})
 
@@ -239,10 +243,10 @@ func run() error {
 	compositor := graphics.NewCompositor()
 	compositor.SetCodecFactories(
 		func() (transition.VideoDecoder, error) {
-			return codec.NewOpenH264Decoder()
+			return codec.NewVideoDecoder()
 		},
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return codec.NewOpenH264Encoder(w, h, bitrate, fps)
+			return codec.NewVideoEncoder(w, h, bitrate, fps)
 		},
 	)
 	compositor.SetResolutionProvider(func() (int, int) {
@@ -253,7 +257,7 @@ func run() error {
 		avcC := moq.BuildAVCDecoderConfig(sps, pps)
 		if avcC != nil {
 			programRelay.SetVideoInfo(distribution.VideoInfo{
-				Codec:         "avc1.42C01E",
+				Codec:         "avc1.640028",
 				Width:         width,
 				Height:        height,
 				DecoderConfig: avcC,
@@ -329,7 +333,7 @@ func run() error {
 			// overrides this in StartSources after demuxing SPS data.
 			if *demoVideoDir == "" {
 				relays[i].SetVideoInfo(distribution.VideoInfo{
-					Codec:  "avc1.42C01E",
+					Codec:  "avc1.640028",
 					Width:  320,
 					Height: 240,
 				})

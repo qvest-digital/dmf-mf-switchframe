@@ -9,12 +9,13 @@ RUN npm run build
 # Stage 2: Build Go
 FROM golang:1.25-bookworm AS go-builder
 
-# Install cgo dependencies from non-free repos
-RUN echo 'deb http://deb.debian.org/debian bookworm non-free' >> /etc/apt/sources.list && \
-    apt-get update && \
+# Install cgo dependencies (FFmpeg + fdk-aac for audio)
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        libavcodec-dev \
+        libavutil-dev \
+        libx264-dev \
         libfdk-aac-dev \
-        libopenh264-dev \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
@@ -29,11 +30,11 @@ RUN cd server && go build -tags embed_ui -o /switchframe ./cmd/switchframe
 # Stage 3: Runtime
 FROM debian:bookworm-slim
 
-RUN echo 'deb http://deb.debian.org/debian bookworm non-free' >> /etc/apt/sources.list && \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        libavcodec59 \
+        libx264-164 \
         libfdk-aac2 \
-        libopenh264-7 \
         ca-certificates \
         curl && \
     rm -rf /var/lib/apt/lists/* && \
