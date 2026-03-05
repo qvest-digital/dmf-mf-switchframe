@@ -96,6 +96,10 @@ type Switcher struct {
 	gopCache        *gopCache
 	delayBuffer     *DelayBuffer
 
+	// Optional video processor hook — called before BroadcastVideo to allow
+	// downstream keying (graphics overlay compositing) on every program frame.
+	videoProcessor func(*media.VideoFrame) *media.VideoFrame
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -197,6 +201,32 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.audioTransition = handler
 }
 
+// SetVideoProcessor attaches a video frame processor that is called on every
+// program frame before it is broadcast to viewers. Used by the graphics
+// compositor to overlay lower-thirds / DSK onto the program output.
+// The processor receives a frame and returns the (possibly modified) frame.
+// Return nil to drop the frame. Passing nil disables processing.
+func (s *Switcher) SetVideoProcessor(proc func(*media.VideoFrame) *media.VideoFrame) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.videoProcessor = proc
+}
+
+// broadcastVideo sends a video frame to the program relay, optionally
+// running it through the video processor first (for DSK compositing).
+func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
+	s.mu.RLock()
+	proc := s.videoProcessor
+	s.mu.RUnlock()
+	if proc != nil {
+		frame = proc(frame)
+		if frame == nil {
+			return
+		}
+	}
+	s.programRelay.BroadcastVideo(frame)
+}
+
 // StartTransition begins a mix/dip/wipe transition from the current program source
 // to the given target source. Frames from both sources are routed to the
 // TransitionEngine which produces blended output on the program relay.
@@ -251,7 +281,6 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 
 	fromSource := s.programSource
-	programRelay := s.programRelay
 
 	// Estimate encoder parameters from the program source's recent frames.
 	bitrate, fps := s.estimateEncoderParams(fromSource)
@@ -267,7 +296,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 			if isKeyframe {
 				transGroupID++
 			}
-			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID, pts))
+			s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID, pts))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -363,7 +392,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		}
 
 		fromSource := s.programSource
-		programRelay := s.programRelay
 		bitrate, fps := s.estimateEncoderParams(fromSource)
 
 		var revGroupID uint32
@@ -376,7 +404,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 				if isKeyframe {
 					revGroupID++
 				}
-				programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID, pts))
+				s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID, pts))
 			},
 			OnComplete: func(aborted bool) {
 				s.handleFTBReverseComplete(aborted)
@@ -422,7 +450,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	fromSource := s.programSource
-	programRelay := s.programRelay
 	bitrate, fps := s.estimateEncoderParams(fromSource)
 
 	var ftbGroupID uint32
@@ -435,7 +462,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			if isKeyframe {
 				ftbGroupID++
 			}
-			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID, pts))
+			s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID, pts))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleFTBComplete(aborted)
@@ -575,7 +602,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	// gap. pendingIDR=true prevents live passthrough from interleaving.
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.programRelay.BroadcastVideo(f)
+			s.broadcastVideo(f)
 		}
 		// Clear the IDR gate — the replayed GOP provided a keyframe
 		s.mu.Lock()
@@ -684,7 +711,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	// Replay the source's cached GOP to bridge the gap
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.programRelay.BroadcastVideo(f)
+			s.broadcastVideo(f)
 		}
 		s.mu.Lock()
 		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
@@ -1151,7 +1178,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	}
 	if !ss.pendingIDR {
 		s.mu.RUnlock()
-		s.programRelay.BroadcastVideo(frame)
+		s.broadcastVideo(frame)
 		return
 	}
 	s.mu.RUnlock()
@@ -1178,7 +1205,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.Unlock()
 
 	slog.Debug("switcher: IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
-	s.programRelay.BroadcastVideo(frame)
+	s.broadcastVideo(frame)
 }
 
 // handleAudioFrame implements frameHandler. It is called by sourceViewers

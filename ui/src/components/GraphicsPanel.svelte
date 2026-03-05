@@ -2,10 +2,13 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, fireAndForget } from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
-	import { templateList, builtinTemplates } from '$lib/graphics/templates';
+	import { templateList, builtinTemplates, type GraphicsTemplate } from '$lib/graphics/templates';
 
-	interface Props { state: ControlRoomState; }
-	let { state: crState }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		onTemplateChange?: (template: GraphicsTemplate | null, values: Record<string, string>) => void;
+	}
+	let { state: crState, onTemplateChange }: Props = $props();
 
 	let selectedTemplateId = $state('lower-third');
 	let fieldValues = $state<Record<string, string>>(getDefaultValues('lower-third'));
@@ -27,7 +30,7 @@
 		return values;
 	}
 
-	// Re-render preview when fields change
+	// Re-render preview when fields change, and notify parent
 	$effect(() => {
 		const tpl = selectedTemplate;
 		const vals = fieldValues;
@@ -38,6 +41,7 @@
 		} catch {
 			// Canvas rendering may fail in test environments
 		}
+		onTemplateChange?.(tpl, vals);
 	});
 
 	async function handlePublishAndOn() {

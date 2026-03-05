@@ -18,7 +18,7 @@ export class GraphicsPublisher {
 		this.width = width;
 		this.height = height;
 		this.canvas = new OffscreenCanvas(width, height);
-		this.ctx = this.canvas.getContext('2d')!;
+		this.ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
 	}
 
 	/**

@@ -6,6 +6,10 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // Errors returned by Compositor methods.
@@ -44,6 +48,17 @@ type Compositor struct {
 	fadeDone     chan struct{}
 	fadeCancel   chan struct{}
 	closed       bool
+
+	// Codec pipeline for server-side compositing (decode → blend → encode).
+	// Lazy-initialized on first active frame, destroyed on deactivation.
+	decoderFactory transition.DecoderFactory
+	encoderFactory transition.EncoderFactory
+	decoder        transition.VideoDecoder
+	encoder        transition.VideoEncoder
+	encWidth       int
+	encHeight      int
+	yuvBuf         []byte // reusable buffer for decoded YUV data
+	groupID        uint32 // monotonic group ID for encoded frames
 
 	// Callback invoked on state change (active/inactive/fade).
 	onStateChange func()
@@ -112,6 +127,7 @@ func (c *Compositor) Off() error {
 
 	c.active = false
 	c.fadePosition = 0.0
+	c.destroyCodecs()
 	slog.Debug("graphics overlay CUT OFF")
 	c.notifyStateChange()
 	return nil
@@ -194,12 +210,151 @@ func (c *Compositor) OnStateChange(fn func()) {
 	c.onStateChange = fn
 }
 
-// Close shuts down the compositor, cancelling any active fade.
+// SetCodecFactories configures the decoder/encoder factories for server-side
+// compositing. Without these, ProcessFrame will pass through frames unchanged.
+func (c *Compositor) SetCodecFactories(dec transition.DecoderFactory, enc transition.EncoderFactory) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.decoderFactory = dec
+	c.encoderFactory = enc
+}
+
+// ProcessFrame is the video processor hook called by the switcher on every
+// program frame. When the overlay is active and codec factories are configured,
+// it decodes the H.264 frame, composites the RGBA overlay, and re-encodes.
+// When inactive, it returns the frame unchanged (zero overhead).
+func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
+	c.mu.RLock()
+	active := c.active
+	alphaScale := c.fadePosition
+	c.mu.RUnlock()
+
+	if !active || alphaScale < 1.0/255.0 {
+		return frame // passthrough
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.overlay == nil || c.decoderFactory == nil || c.encoderFactory == nil {
+		return frame // no overlay or no codecs configured
+	}
+
+	// Lazy-init decoder
+	if c.decoder == nil {
+		dec, err := c.decoderFactory()
+		if err != nil {
+			slog.Error("graphics: decoder init failed", "err", err)
+			return frame
+		}
+		c.decoder = dec
+	}
+
+	// Decode H.264 → YUV420
+	annexB := codec.AVC1ToAnnexB(frame.WireData)
+	if frame.IsKeyframe && len(frame.SPS) > 0 {
+		var buf []byte
+		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
+		buf = append(buf, frame.SPS...)
+		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
+		buf = append(buf, frame.PPS...)
+		buf = append(buf, annexB...)
+		annexB = buf
+	}
+	yuv, w, h, err := c.decoder.Decode(annexB)
+	if err != nil {
+		slog.Debug("graphics: decode failed", "err", err)
+		return frame
+	}
+
+	// Lazy-init encoder (need dimensions from first decode)
+	if c.encoder == nil {
+		enc, err := c.encoderFactory(w, h, transition.DefaultBitrate, transition.DefaultFPS)
+		if err != nil {
+			slog.Error("graphics: encoder init failed", "err", err, "w", w, "h", h)
+			return frame
+		}
+		c.encoder = enc
+		c.encWidth = w
+		c.encHeight = h
+		slog.Info("graphics: codec pipeline initialized", "w", w, "h", h)
+	}
+
+	// Deep-copy decoded YUV (decoder reuses internal buffer)
+	yuvSize := w * h * 3 / 2
+	if len(c.yuvBuf) != yuvSize {
+		c.yuvBuf = make([]byte, yuvSize)
+	}
+	copy(c.yuvBuf, yuv[:yuvSize])
+
+	// Composite: only blend if overlay matches frame resolution
+	if c.overlayWidth == w && c.overlayHeight == h {
+		AlphaBlendRGBA(c.yuvBuf, c.overlay, w, h, c.fadePosition)
+	} else {
+		slog.Debug("graphics: overlay resolution mismatch, skipping blend",
+			"overlay", fmt.Sprintf("%dx%d", c.overlayWidth, c.overlayHeight),
+			"frame", fmt.Sprintf("%dx%d", w, h))
+	}
+
+	// Encode composited YUV → H.264
+	forceIDR := frame.IsKeyframe
+	encoded, isKeyframe, err := c.encoder.Encode(c.yuvBuf, forceIDR)
+	if err != nil {
+		slog.Warn("graphics: encode failed", "err", err)
+		return frame
+	}
+
+	if isKeyframe {
+		c.groupID++
+	}
+
+	// Convert Annex B output to AVC1 VideoFrame
+	avc1 := codec.AnnexBToAVC1(encoded)
+	result := &media.VideoFrame{
+		PTS:        frame.PTS,
+		IsKeyframe: isKeyframe,
+		WireData:   avc1,
+		Codec:      frame.Codec,
+		GroupID:    c.groupID,
+	}
+	if isKeyframe {
+		for _, nalu := range codec.ExtractNALUs(avc1) {
+			if len(nalu) == 0 {
+				continue
+			}
+			switch nalu[0] & 0x1F {
+			case 7:
+				result.SPS = nalu
+			case 8:
+				result.PPS = nalu
+			}
+		}
+	}
+	return result
+}
+
+// destroyCodecs releases decoder/encoder resources. Caller must hold c.mu.
+func (c *Compositor) destroyCodecs() {
+	if c.decoder != nil {
+		c.decoder.Close()
+		c.decoder = nil
+	}
+	if c.encoder != nil {
+		c.encoder.Close()
+		c.encoder = nil
+	}
+	c.yuvBuf = nil
+	c.encWidth = 0
+	c.encHeight = 0
+}
+
+// Close shuts down the compositor, cancelling any active fade and releasing codecs.
 func (c *Compositor) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
 	c.cancelFadeLocked()
+	c.destroyCodecs()
 }
 
 // runFade drives a fade from startAlpha to endAlpha over the given duration.
@@ -251,6 +406,7 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 				// Fade complete.
 				if endAlpha == 0.0 {
 					c.active = false
+					c.destroyCodecs()
 				}
 				c.mu.Unlock()
 				return

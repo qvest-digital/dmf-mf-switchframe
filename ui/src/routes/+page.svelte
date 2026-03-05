@@ -21,6 +21,7 @@
 	import { createPFLManager } from '$lib/audio/pfl';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import type { ControlRoomState } from '$lib/api/types';
+	import type { GraphicsTemplate } from '$lib/graphics/templates';
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -105,6 +106,15 @@
 	// PFL (Pre-Fade Listen) manager for client-side per-source audio monitoring
 	const pflManager = createPFLManager();
 	let pflActiveSource = $state<string | null>(null);
+
+	// Graphics overlay template/values for rendering on program monitor
+	let gfxTemplate = $state<GraphicsTemplate | null>(null);
+	let gfxValues = $state<Record<string, string>>({});
+
+	function handleGraphicsTemplateChange(template: GraphicsTemplate | null, values: Record<string, string>) {
+		gfxTemplate = template;
+		gfxValues = values;
+	}
 
 	function handleLabelChange(key: string, label: string) {
 		fireAndForget(setLabel(key, label));
@@ -356,7 +366,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.state} {onCanvasReady} />
+				<ProgramPreview state={store.state} {onCanvasReady} graphicsTemplate={gfxTemplate} graphicsValues={gfxValues} />
 			</section>
 
 			<section class="multiview-section">
@@ -375,7 +385,7 @@
 					<TransitionControls state={store.state} />
 				</div>
 				<div class="graphics-section">
-					<GraphicsPanel state={store.state} />
+					<GraphicsPanel state={store.state} onTemplateChange={handleGraphicsTemplateChange} />
 				</div>
 			</section>
 		</div>

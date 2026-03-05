@@ -233,7 +233,17 @@ func run() error {
 	slog.Info("preset store initialized", "path", presetPath)
 
 	// Create graphics compositor for the downstream keyer (DSK).
+	// When active, it decodes program frames, composites RGBA overlay, and re-encodes.
 	compositor := graphics.NewCompositor()
+	compositor.SetCodecFactories(
+		func() (transition.VideoDecoder, error) {
+			return transition.NewOpenH264Decoder()
+		},
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewOpenH264Encoder(w, h, bitrate, fps)
+		},
+	)
+	sw.SetVideoProcessor(compositor.ProcessFrame)
 	defer compositor.Close()
 
 	// Create REST API now that switcher, mixer, and output manager exist.
