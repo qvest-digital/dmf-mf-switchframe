@@ -22,6 +22,7 @@
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
+	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import type { ControlRoomState } from '$lib/api/types';
 	import type { GraphicsTemplate } from '$lib/graphics/templates';
@@ -130,6 +131,7 @@
 	// PFL (Pre-Fade Listen) manager for client-side per-source audio monitoring
 	const pflManager = createPFLManager();
 	let pflActiveSource = $state<string | null>(null);
+	const pflToggle = createPFLToggle({ pflManager, pipeline });
 
 	// Graphics overlay template/values for rendering on program monitor
 	let gfxTemplate = $state<GraphicsTemplate | null>(null);
@@ -145,20 +147,7 @@
 	}
 
 	function handlePFLToggle(sourceKey: string) {
-		if (pflActiveSource === sourceKey) {
-			pflManager.disablePFL();
-			pipeline.setSourceMuted(sourceKey, true);
-			pflActiveSource = null;
-		} else {
-			// Mute previous PFL source in pipeline
-			if (pflActiveSource) {
-				pipeline.setSourceMuted(pflActiveSource, true);
-			}
-			pflManager.enablePFL(sourceKey);
-			// Unmute in pipeline so audio actually plays
-			pipeline.setSourceMuted(sourceKey, false);
-			pflActiveSource = sourceKey;
-		}
+		pflActiveSource = pflToggle.toggle(sourceKey);
 	}
 
 	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
