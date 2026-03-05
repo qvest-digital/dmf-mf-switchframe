@@ -29,3 +29,19 @@ func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) 
 
 // Close is a no-op stub.
 func (e *FFmpegEncoder) Close() {}
+
+// FFmpegDecoder is a stub for builds without FFmpeg support.
+type FFmpegDecoder struct{}
+
+// NewFFmpegDecoder returns an error when FFmpeg is not available.
+func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// Decode is a stub that always returns an error.
+func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	return nil, 0, 0, errFFmpegDisabled
+}
+
+// Close is a no-op stub.
+func (d *FFmpegDecoder) Close() {}
