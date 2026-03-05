@@ -1,6 +1,6 @@
-//go:build cgo
+//go:build cgo && openh264
 
-package transition
+package codec
 
 /*
 #include <wels/codec_api.h>
@@ -83,12 +83,14 @@ import "C"
 import (
 	"fmt"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
-// Compile-time check that OpenH264Decoder implements VideoDecoder.
-var _ VideoDecoder = (*OpenH264Decoder)(nil)
+// Compile-time check that OpenH264Decoder implements transition.VideoDecoder.
+var _ transition.VideoDecoder = (*OpenH264Decoder)(nil)
 
-// OpenH264Decoder wraps the OpenH264 decoder and implements VideoDecoder.
+// OpenH264Decoder wraps the OpenH264 decoder and implements transition.VideoDecoder.
 // It decodes Annex B H.264 bitstream to packed YUV420 planar.
 type OpenH264Decoder struct {
 	handle C.oh264dec_t

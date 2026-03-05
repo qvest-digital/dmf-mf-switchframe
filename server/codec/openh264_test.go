@@ -1,11 +1,12 @@
-//go:build cgo
+//go:build cgo && openh264
 
-package transition
+package codec
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func TestOpenH264DecoderCreate(t *testing.T) {
@@ -127,8 +128,8 @@ func TestOpenH264DecoderEmptyInput(t *testing.T) {
 }
 
 func TestOpenH264DecoderInterface(t *testing.T) {
-	// Verify OpenH264Decoder implements VideoDecoder.
-	var dec VideoDecoder
+	// Verify OpenH264Decoder implements transition.VideoDecoder.
+	var dec transition.VideoDecoder
 	d, err := NewOpenH264Decoder()
 	require.NoError(t, err)
 	dec = d
@@ -137,8 +138,8 @@ func TestOpenH264DecoderInterface(t *testing.T) {
 }
 
 func TestOpenH264EncoderInterface(t *testing.T) {
-	// Verify OpenH264Encoder implements VideoEncoder.
-	var enc VideoEncoder
+	// Verify OpenH264Encoder implements transition.VideoEncoder.
+	var enc transition.VideoEncoder
 	e, err := NewOpenH264Encoder(320, 240, 500000, 30.0)
 	require.NoError(t, err)
 	enc = e

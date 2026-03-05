@@ -1,6 +1,6 @@
-//go:build cgo
+//go:build cgo && openh264
 
-package transition
+package codec
 
 /*
 #include <wels/codec_api.h>
@@ -168,12 +168,14 @@ import "C"
 import (
 	"fmt"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
-// Compile-time check that OpenH264Encoder implements VideoEncoder.
-var _ VideoEncoder = (*OpenH264Encoder)(nil)
+// Compile-time check that OpenH264Encoder implements transition.VideoEncoder.
+var _ transition.VideoEncoder = (*OpenH264Encoder)(nil)
 
-// OpenH264Encoder wraps the OpenH264 encoder and implements VideoEncoder.
+// OpenH264Encoder wraps the OpenH264 encoder and implements transition.VideoEncoder.
 // It encodes packed YUV420 planar frames to Annex B H.264 bitstream.
 type OpenH264Encoder struct {
 	handle C.oh264enc_t

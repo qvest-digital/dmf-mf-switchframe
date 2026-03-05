@@ -1,6 +1,6 @@
-//go:build cgo
+//go:build cgo && openh264
 
-package transition
+package codec
 
 // openh264_cgo.go provides the cgo link directives for the OpenH264 library.
 // This is separated into its own file so the linker flags are specified once,

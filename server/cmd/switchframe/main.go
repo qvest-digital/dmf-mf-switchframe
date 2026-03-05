@@ -20,6 +20,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
@@ -202,10 +203,10 @@ func run() error {
 	// Configure transition engine with OpenH264 codec factories
 	sw.SetTransitionConfig(switcher.TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return transition.NewOpenH264Decoder()
+			return codec.NewOpenH264Decoder()
 		},
 		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewOpenH264Encoder(w, h, bitrate, fps)
+			return codec.NewOpenH264Encoder(w, h, bitrate, fps)
 		},
 	})
 
@@ -238,10 +239,10 @@ func run() error {
 	compositor := graphics.NewCompositor()
 	compositor.SetCodecFactories(
 		func() (transition.VideoDecoder, error) {
-			return transition.NewOpenH264Decoder()
+			return codec.NewOpenH264Decoder()
 		},
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewOpenH264Encoder(w, h, bitrate, fps)
+			return codec.NewOpenH264Encoder(w, h, bitrate, fps)
 		},
 	)
 	compositor.SetResolutionProvider(func() (int, int) {
