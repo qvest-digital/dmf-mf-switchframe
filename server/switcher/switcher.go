@@ -922,7 +922,7 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 
 // estimateEncoderParams returns the estimated bitrate (bps) and FPS for the
 // given source key, clamped to safe ranges. Returns defaults if no frames
-// have been received or the source is not found. Caller must hold s.mu.RLock.
+// have been received or the source is not found. Caller must hold s.mu (write lock).
 func (s *Switcher) estimateEncoderParams(sourceKey string) (bitrate int, fps float64) {
 	ss, ok := s.sources[sourceKey]
 	if !ok || ss.frameCount < 2 || ss.avgFPS == 0 {
