@@ -26,6 +26,83 @@ var ErrSourceNotFound = errors.New("source not found")
 var ErrAlreadyOnProgram = errors.New("already on program")
 var ErrInvalidDelay = errors.New("delay must be 0-500ms")
 
+// SwitcherState represents the global state of the switching engine.
+// It replaces the implicit (inTransition, ftbActive) boolean pair with an
+// explicit enum that makes every valid state and transition auditable.
+type SwitcherState int
+
+const (
+	StateIdle             SwitcherState = iota // No transition, normal passthrough
+	StateTransitioning                         // Mix/dip/wipe in progress
+	StateFTBTransitioning                      // FTB forward in progress (transitioning to black)
+	StateFTB                                   // Faded to black (holding black)
+	StateFTBReversing                          // Reversing FTB (fading back in)
+)
+
+// String returns the human-readable name of the switcher state.
+func (s SwitcherState) String() string {
+	switch s {
+	case StateIdle:
+		return "idle"
+	case StateTransitioning:
+		return "transitioning"
+	case StateFTBTransitioning:
+		return "ftb_transitioning"
+	case StateFTB:
+		return "ftb"
+	case StateFTBReversing:
+		return "ftb_reversing"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(s))
+	}
+}
+
+// isInTransition returns true if the switcher is in any transitioning state
+// (mix/dip/wipe, FTB forward, or FTB reverse). This maps to the
+// ControlRoomState.InTransition API field.
+func (s SwitcherState) isInTransition() bool {
+	return s == StateTransitioning || s == StateFTBTransitioning || s == StateFTBReversing
+}
+
+// isFTBActive returns true if the switcher is in any FTB-related state
+// (transitioning to black, holding at black, or reversing from black).
+// This maps to the ControlRoomState.FTBActive API field.
+func (s SwitcherState) isFTBActive() bool {
+	return s == StateFTBTransitioning || s == StateFTB || s == StateFTBReversing
+}
+
+// validTransitions defines the allowed state transitions. Any transition not
+// in this map is logged as a warning but still executed (no panics in production).
+var validTransitions = map[SwitcherState][]SwitcherState{
+	StateIdle:             {StateTransitioning, StateFTBTransitioning},
+	StateTransitioning:    {StateIdle},
+	StateFTBTransitioning: {StateFTB, StateIdle},
+	StateFTB:              {StateFTBReversing},
+	StateFTBReversing:     {StateFTB, StateIdle},
+}
+
+// transitionState changes the switcher state, logging a warning if the transition
+// is not in the valid transitions map. Never panics in production.
+// Caller must hold s.mu (write lock).
+func (s *Switcher) transitionState(to SwitcherState) {
+	from := s.state
+	if from == to {
+		return
+	}
+	valid := false
+	for _, allowed := range validTransitions[from] {
+		if allowed == to {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		slog.Warn("switcher: invalid state transition",
+			"from", from.String(), "to", to.String())
+	}
+	s.state = to
+}
+
 // audioStateProvider is the interface the Switcher needs from the AudioMixer
 // to populate audio fields in state broadcasts.
 type audioStateProvider interface {
@@ -91,8 +168,7 @@ type Switcher struct {
 	audioCut        audioCutHandler
 	transConfig     *TransitionConfig
 	transEngine     *transition.TransitionEngine
-	inTransition    bool
-	ftbActive       bool
+	state           SwitcherState
 	audioTransition audioTransitionHandler
 	gopCache        *gopCache
 	delayBuffer     *DelayBuffer
@@ -233,20 +309,20 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 // TransitionEngine which produces blended output on the program relay.
 // wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
 func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string) error {
-	// Phase 1: Validate and read state under write lock. Set inTransition=true
-	// to prevent concurrent starts, then release the lock so warmup can proceed
-	// without blocking frame routing.
+	// Phase 1: Validate and read state under write lock. Set state to
+	// StateTransitioning to prevent concurrent starts, then release the lock
+	// so warmup can proceed without blocking frame routing.
 	s.mu.Lock()
 
 	if s.transConfig == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("transition not configured")
 	}
-	if s.inTransition {
+	if s.state.isInTransition() {
 		s.mu.Unlock()
 		return fmt.Errorf("transition: %w", transition.ErrTransitionActive)
 	}
-	if s.ftbActive {
+	if s.state.isFTBActive() {
 		s.mu.Unlock()
 		return fmt.Errorf("cannot start transition: %w", transition.ErrFTBActive)
 	}
@@ -300,9 +376,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	// Mark transition as starting to prevent concurrent StartTransition/FTB calls.
 	// handleVideoFrame checks transEngine != nil to route frames, so setting
-	// inTransition=true without transEngine is safe — frames won't route to
+	// StateTransitioning without transEngine is safe — frames won't route to
 	// the engine and normal passthrough continues for the current program source.
-	s.inTransition = true
+	s.transitionState(StateTransitioning)
 	s.mu.Unlock()
 
 	// Phase 2: Create engine, start it, and warm decoders with NO lock held.
@@ -327,9 +403,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	})
 
 	if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
-		// Roll back inTransition since we failed to start.
+		// Roll back state since we failed to start.
 		s.mu.Lock()
-		s.inTransition = false
+		s.transitionState(StateIdle)
 		s.mu.Unlock()
 		return fmt.Errorf("start transition: %w", err)
 	}
@@ -376,7 +452,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) error {
 	s.mu.RLock()
 	engine := s.transEngine
-	inTrans := s.inTransition
+	inTrans := s.state.isInTransition()
 	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 
@@ -403,15 +479,15 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		return fmt.Errorf("transition not configured")
 	}
 
-	// Reject if a non-FTB transition is active
-	if s.inTransition && !s.ftbActive {
+	// Reject if a non-FTB transition is active (mix/dip/wipe)
+	if s.state == StateTransitioning {
 		s.mu.Unlock()
 		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrTransitionActive)
 	}
 
 	// Toggle off: FTB is active but transition is complete (fully black).
 	// Start a reverse FTB transition to fade back from black.
-	if s.ftbActive && !s.inTransition {
+	if s.state == StateFTB {
 		if s.programSource == "" {
 			s.mu.Unlock()
 			return fmt.Errorf("no program source set")
@@ -424,7 +500,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		encoderFactory := s.transConfig.EncoderFactory
 
 		// Mark transition as starting, then release lock for warmup.
-		s.inTransition = true
+		s.transitionState(StateFTBReversing)
 		s.mu.Unlock()
 
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
@@ -445,7 +521,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, 1000); err != nil {
 			s.mu.Lock()
-			s.inTransition = false
+			s.transitionState(StateFTB) // Roll back to StateFTB
 			s.mu.Unlock()
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
@@ -459,7 +535,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		// Publish the warmed engine under write lock.
 		s.mu.Lock()
 		s.transEngine = engine
-		// ftbActive stays true during the reverse transition
 		s.transitionsStarted.Add(1)
 		audioHandler := s.audioTransition
 
@@ -491,8 +566,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	encoderFactory := s.transConfig.EncoderFactory
 
 	// Mark transition as starting, then release lock for warmup.
-	s.inTransition = true
-	s.ftbActive = true
+	s.transitionState(StateFTBTransitioning)
 	s.mu.Unlock()
 
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
@@ -513,8 +587,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	if err := engine.Start(fromSource, "", transition.TransitionFTB, 1000); err != nil {
 		s.mu.Lock()
-		s.inTransition = false
-		s.ftbActive = false
+		s.transitionState(StateIdle)
 		s.mu.Unlock()
 		return fmt.Errorf("start FTB: %w", err)
 	}
@@ -549,7 +622,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 func (s *Switcher) AbortTransition() {
 	s.mu.Lock()
 	engine := s.transEngine
-	wasActive := s.inTransition
+	wasActive := s.state.isInTransition()
 	audioHandler := s.audioTransition
 	var transType string
 
@@ -557,13 +630,12 @@ func (s *Switcher) AbortTransition() {
 		if engine != nil {
 			transType = string(engine.TransitionType())
 		}
-		s.inTransition = false
-		// When aborting a reverse FTB, keep ftbActive true (screen stays black).
-		// For all other transitions (including forward FTB), clear ftbActive.
-		if engine != nil && engine.TransitionType() == transition.TransitionFTBReverse {
-			// ftbActive stays true — we're still in FTB state
+		// When aborting a reverse FTB, keep in FTB state (screen stays black).
+		// For all other transitions (including forward FTB), return to idle.
+		if s.state == StateFTBReversing {
+			s.transitionState(StateFTB)
 		} else {
-			s.ftbActive = false
+			s.transitionState(StateIdle)
 		}
 		s.transEngine = nil
 		atomic.AddUint64(&s.seq, 1)
@@ -589,7 +661,7 @@ func (s *Switcher) AbortTransition() {
 // sources and replays the new source's cached GOP to avoid a keyframe gap.
 func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.mu.Lock()
-	if !s.inTransition {
+	if !s.state.isInTransition() {
 		s.mu.Unlock()
 		return
 	}
@@ -627,7 +699,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		transType = string(s.transEngine.TransitionType())
 	}
 
-	s.inTransition = false
+	s.transitionState(StateIdle)
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
@@ -677,22 +749,22 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 // finishes. FTB stays active (screen is black) unless aborted.
 func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.mu.Lock()
-	if !s.inTransition {
+	if !s.state.isInTransition() {
 		s.mu.Unlock()
 		return
 	}
 
 	audioHandler := s.audioTransition
-	s.inTransition = false
+	if aborted {
+		s.transitionState(StateIdle) // Aborted — return to idle
+	} else {
+		s.transitionState(StateFTB) // Completed — hold at black
+	}
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb").Inc()
 	}
-	if aborted {
-		s.ftbActive = false
-	}
-	// ftbActive stays true when completed (screen is black)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -714,12 +786,12 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 }
 
 // handleFTBReverseComplete is called by the TransitionEngine when a reverse
-// FTB transition finishes. If completed (not aborted), it clears ftbActive
-// (screen is now fully visible) and replays the GOP to avoid a keyframe gap.
-// If aborted, ftbActive stays true (screen stays black).
+// FTB transition finishes. If completed (not aborted), it transitions to
+// StateIdle (screen is now fully visible) and replays the GOP to avoid a
+// keyframe gap. If aborted, it transitions to StateFTB (screen stays black).
 func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	s.mu.Lock()
-	if !s.inTransition {
+	if !s.state.isInTransition() {
 		s.mu.Unlock()
 		return
 	}
@@ -727,14 +799,10 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	audioHandler := s.audioTransition
 	programSource := s.programSource
 
-	s.inTransition = false
-	s.transEngine = nil
-	s.transitionsCompleted.Add(1)
-	if s.promMetrics != nil && !aborted {
-		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
-	}
-	if !aborted {
-		s.ftbActive = false
+	if aborted {
+		s.transitionState(StateFTB) // Aborted — screen stays black
+	} else {
+		s.transitionState(StateIdle) // Completed — screen is visible
 		// Gate passthrough until GOP replay provides a keyframe.
 		// The transition encoder's SPS/PPS differ from the source's.
 		if ss, ok := s.sources[programSource]; ok {
@@ -742,7 +810,11 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 			s.idrGateStartNano.Store(time.Now().UnixNano())
 		}
 	}
-	// If aborted, ftbActive stays true (screen remains black)
+	s.transEngine = nil
+	s.transitionsCompleted.Add(1)
+	if s.promMetrics != nil && !aborted {
+		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
+	}
 
 	var replayFrames []*media.VideoFrame
 	if !aborted && programSource != "" {
@@ -985,8 +1057,9 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	return map[string]any{
 		"program_source":            s.programSource,
 		"preview_source":            s.previewSource,
-		"in_transition":             s.inTransition,
-		"ftb_active":                s.ftbActive,
+		"state":                     s.state.String(),
+		"in_transition":             s.state.isInTransition(),
+		"ftb_active":                s.state.isFTBActive(),
 		"seq":                       atomic.LoadUint64(&s.seq),
 		"sources":                   sources,
 		"idr_gate_events":           s.idrGateEvents.Load(),
@@ -1028,21 +1101,21 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		tally[s.previewSource] = internal.TallyPreview
 	}
 	transType := "cut"
-	if s.inTransition && s.transEngine != nil {
+	if s.state.isInTransition() && s.transEngine != nil {
 		transType = string(s.transEngine.TransitionType())
 	}
 	state := internal.ControlRoomState{
 		ProgramSource:  s.programSource,
 		PreviewSource:  s.previewSource,
 		TransitionType: transType,
-		InTransition:   s.inTransition,
-		FTBActive:      s.ftbActive,
+		InTransition:   s.state.isInTransition(),
+		FTBActive:      s.state.isFTBActive(),
 		TallyState:     tally,
 		Sources:        sources,
 		Seq:            atomic.LoadUint64(&s.seq),
 		Timestamp:      time.Now().UnixMilli(),
 	}
-	if s.inTransition && s.transEngine != nil {
+	if s.state.isInTransition() && s.transEngine != nil {
 		state.TransitionPosition = s.transEngine.Position()
 	}
 
@@ -1186,7 +1259,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	// Check if transition is active — route both sources to engine
 	s.mu.RLock()
 	engine := s.transEngine
-	inTrans := s.inTransition
+	inTrans := s.state.isInTransition()
 	s.mu.RUnlock()
 
 	if inTrans && engine != nil {
@@ -1220,7 +1293,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	// Normal passthrough: RLock for steady-state (pendingIDR is false most of the time).
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
-	if !ok || s.programSource != sourceKey || s.ftbActive {
+	if !ok || s.programSource != sourceKey || s.state.isFTBActive() {
 		s.mu.RUnlock()
 		return
 	}
