@@ -24,6 +24,37 @@ func mockTransitionCodecs() TransitionConfig {
 	}
 }
 
+// slowDecoder wraps a mock decoder and adds a delay to each Decode() call.
+// Used to verify that warmup does NOT hold the switcher write lock.
+type slowDecoder struct {
+	inner transition.VideoDecoder
+	delay time.Duration
+}
+
+func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	time.Sleep(d.delay)
+	return d.inner.Decode(data)
+}
+
+func (d *slowDecoder) Close() { d.inner.Close() }
+
+// slowTransitionCodecs returns factories that produce decoders with an
+// artificial delay per Decode() call. This lets tests verify that frame
+// routing is NOT blocked during transition decoder warmup.
+func slowTransitionCodecs(decodeDelay time.Duration) TransitionConfig {
+	return TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return &slowDecoder{
+				inner: transition.NewMockDecoder(4, 4),
+				delay: decodeDelay,
+			}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+}
+
 // mockAudioTransHandler records calls to audio transition methods.
 type mockAudioTransHandler struct {
 	mu              sync.Mutex
@@ -647,4 +678,205 @@ func TestSwitcherAbortTransitionWhenIdle(t *testing.T) {
 
 	state := sw.State()
 	require.Equal(t, initialSeq, state.Seq, "seq should not change on idle abort")
+}
+
+func TestStartTransitionWarmsDecodersOutsideLock(t *testing.T) {
+	// Use slow decoders so warmup takes measurable time.
+	// If warmup held the write lock, handleVideoFrame would block for the
+	// full warmup duration, and no frames would flow during that period.
+	const warmupPerFrame = 20 * time.Millisecond
+
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test-viewer")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetTransitionConfig(slowTransitionCodecs(warmupPerFrame))
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
+
+	// Seed the GOP cache with several frames so warmup takes noticeable time.
+	// Wire data must be valid AVC1 format (4-byte length prefix + NALU body)
+	// so that RecordFrame's AVC1ToAnnexB conversion produces non-empty output.
+	avc1Data := []byte{0x00, 0x00, 0x00, 0x01, 0x65} // length=1, NALU=0x65
+	for i := 0; i < 10; i++ {
+		kf := i == 0
+		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
+			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
+			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
+		})
+		sw.gopCache.RecordFrame("cam2", &media.VideoFrame{
+			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
+			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
+		})
+	}
+
+	// Total warmup will be ~20 frames * 20ms = ~400ms (10 from each source).
+	// If the lock were held, sending a frame from cam1 during that window
+	// would block for the full warmup duration.
+
+	// Start the transition in a goroutine since it will take ~400ms for warmup.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	}()
+
+	// Give the transition time to start but NOT finish warmup.
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a frame from cam1 (the program source). If warmup does NOT hold
+	// the write lock, handleVideoFrame should complete quickly because it
+	// only needs brief lock access for updateFrameStats.
+	frameDone := make(chan struct{})
+	go func() {
+		sw.handleVideoFrame("cam1", &media.VideoFrame{
+			PTS: 200, IsKeyframe: true, WireData: []byte{0x01},
+		})
+		close(frameDone)
+	}()
+
+	// The frame should complete quickly (well under warmup time).
+	select {
+	case <-frameDone:
+		// Good — frame was not blocked by warmup.
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handleVideoFrame blocked during transition warmup — lock not released")
+	}
+
+	// Wait for StartTransition to complete.
+	require.NoError(t, <-errCh)
+
+	// Engine should be published after warmup.
+	state := sw.State()
+	require.True(t, state.InTransition)
+}
+
+func TestFadeToBlackWarmsDecodersOutsideLock(t *testing.T) {
+	const warmupPerFrame = 20 * time.Millisecond
+
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test-viewer")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetTransitionConfig(slowTransitionCodecs(warmupPerFrame))
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Seed the GOP cache with frames so warmup takes noticeable time.
+	// Wire data must be valid AVC1 format.
+	avc1Data := []byte{0x00, 0x00, 0x00, 0x01, 0x65}
+	for i := 0; i < 10; i++ {
+		kf := i == 0
+		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
+			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
+			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
+		})
+	}
+
+	// Total warmup will be ~10 frames * 20ms = ~200ms.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sw.FadeToBlack(context.Background())
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a frame — should NOT be blocked by warmup.
+	frameDone := make(chan struct{})
+	go func() {
+		sw.handleVideoFrame("cam1", &media.VideoFrame{
+			PTS: 200, IsKeyframe: true, WireData: avc1Data,
+		})
+		close(frameDone)
+	}()
+
+	select {
+	case <-frameDone:
+		// Good — not blocked.
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("handleVideoFrame blocked during FTB warmup — lock not released")
+	}
+
+	require.NoError(t, <-errCh)
+
+	state := sw.State()
+	require.True(t, state.FTBActive)
+	require.True(t, state.InTransition)
+}
+
+func TestFTBReverseWarmsDecodersOutsideLock(t *testing.T) {
+	const warmupPerFrame = 20 * time.Millisecond
+
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test-viewer")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetTransitionConfig(slowTransitionCodecs(warmupPerFrame))
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Start FTB and complete it
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	state := sw.State()
+	require.True(t, state.FTBActive)
+	require.False(t, state.InTransition)
+
+	// Seed the GOP cache with frames so warmup takes noticeable time.
+	// Wire data must be valid AVC1 format.
+	avc1Data := []byte{0x00, 0x00, 0x00, 0x01, 0x65}
+	for i := 0; i < 10; i++ {
+		kf := i == 0
+		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
+			PTS: int64(200 + i), IsKeyframe: kf, WireData: avc1Data,
+			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
+		})
+	}
+
+	// Toggle FTB off (starts reverse FTB transition with slow warmup).
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sw.FadeToBlack(context.Background())
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a frame — should NOT be blocked by warmup.
+	frameDone := make(chan struct{})
+	go func() {
+		sw.handleVideoFrame("cam1", &media.VideoFrame{
+			PTS: 300, IsKeyframe: true, WireData: avc1Data,
+		})
+		close(frameDone)
+	}()
+
+	select {
+	case <-frameDone:
+		// Good — not blocked.
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("handleVideoFrame blocked during FTB reverse warmup — lock not released")
+	}
+
+	require.NoError(t, <-errCh)
 }

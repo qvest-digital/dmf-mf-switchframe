@@ -233,6 +233,9 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 // TransitionEngine which produces blended output on the program relay.
 // wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
 func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string) error {
+	// Phase 1: Validate and read state under write lock. Set inTransition=true
+	// to prevent concurrent starts, then release the lock so warmup can proceed
+	// without blocking frame routing.
 	s.mu.Lock()
 
 	if s.transConfig == nil {
@@ -290,9 +293,25 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// output continues monotonically on the program relay. Starting from 0
 	// would cause non-monotonic GroupIDs that break MoQ subscriber state.
 	transGroupID := s.sources[fromSource].lastGroupID
+
+	// Capture codec factories before releasing lock.
+	decoderFactory := s.transConfig.DecoderFactory
+	encoderFactory := s.transConfig.EncoderFactory
+
+	// Mark transition as starting to prevent concurrent StartTransition/FTB calls.
+	// handleVideoFrame checks transEngine != nil to route frames, so setting
+	// inTransition=true without transEngine is safe — frames won't route to
+	// the engine and normal passthrough continues for the current program source.
+	s.inTransition = true
+	s.mu.Unlock()
+
+	// Phase 2: Create engine, start it, and warm decoders with NO lock held.
+	// GOP cache has its own mutex, so GetGOP is safe without s.mu.
+	// Decoder warmup can be slow (codec init + GOP feed), so releasing the
+	// lock here allows frame routing to continue for all sources.
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
-		DecoderFactory: s.transConfig.DecoderFactory,
-		EncoderFactory: s.transConfig.EncoderFactory,
+		DecoderFactory: decoderFactory,
+		EncoderFactory: encoderFactory,
 		Bitrate:        bitrate,
 		FPS:            fps,
 		WipeDirection:  wipeDir,
@@ -308,15 +327,17 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	})
 
 	if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
+		// Roll back inTransition since we failed to start.
+		s.mu.Lock()
+		s.inTransition = false
 		s.mu.Unlock()
 		return fmt.Errorf("start transition: %w", err)
 	}
 
 	// Warm up decoders BEFORE publishing the engine. This ensures live
 	// frames cannot reach the engine (via handleVideoFrame) before the
-	// decoders have been primed with the cached GOP. The warmup acquires
-	// engine.mu (not s.mu), so there is no deadlock risk. Holding s.mu
-	// briefly during warmup (~1ms for a typical GOP) is acceptable.
+	// decoders have been primed with the cached GOP. Warmup runs with
+	// NO switcher lock held, so frame routing is unblocked.
 	fromGOP := s.gopCache.GetGOP(fromSource)
 	toGOP := s.gopCache.GetGOP(sourceKey)
 	for _, cf := range fromGOP {
@@ -326,8 +347,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		engine.WarmupDecode(sourceKey, cf.annexB)
 	}
 
+	// Phase 3: Publish the warmed engine under write lock (fast).
+	s.mu.Lock()
 	s.transEngine = engine
-	s.inTransition = true
 	s.previewSource = sourceKey
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
@@ -397,11 +419,17 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		fromSource := s.programSource
 		bitrate, fps := s.estimateEncoderParams(fromSource)
-
 		revGroupID := s.sources[fromSource].lastGroupID
+		decoderFactory := s.transConfig.DecoderFactory
+		encoderFactory := s.transConfig.EncoderFactory
+
+		// Mark transition as starting, then release lock for warmup.
+		s.inTransition = true
+		s.mu.Unlock()
+
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
-			DecoderFactory: s.transConfig.DecoderFactory,
-			EncoderFactory: s.transConfig.EncoderFactory,
+			DecoderFactory: decoderFactory,
+			EncoderFactory: encoderFactory,
 			Bitrate:        bitrate,
 			FPS:            fps,
 			Output: func(data []byte, isKeyframe bool, pts int64) {
@@ -416,18 +444,21 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		})
 
 		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, 1000); err != nil {
+			s.mu.Lock()
+			s.inTransition = false
 			s.mu.Unlock()
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
 
-		// Warm up decoder BEFORE publishing the engine (see StartTransition).
+		// Warm up decoder with NO lock held (see StartTransition).
 		fromGOP := s.gopCache.GetGOP(fromSource)
 		for _, cf := range fromGOP {
 			engine.WarmupDecode(fromSource, cf.annexB)
 		}
 
+		// Publish the warmed engine under write lock.
+		s.mu.Lock()
 		s.transEngine = engine
-		s.inTransition = true
 		// ftbActive stays true during the reverse transition
 		s.transitionsStarted.Add(1)
 		audioHandler := s.audioTransition
@@ -455,11 +486,18 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	fromSource := s.programSource
 	bitrate, fps := s.estimateEncoderParams(fromSource)
-
 	ftbGroupID := s.sources[fromSource].lastGroupID
+	decoderFactory := s.transConfig.DecoderFactory
+	encoderFactory := s.transConfig.EncoderFactory
+
+	// Mark transition as starting, then release lock for warmup.
+	s.inTransition = true
+	s.ftbActive = true
+	s.mu.Unlock()
+
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
-		DecoderFactory: s.transConfig.DecoderFactory,
-		EncoderFactory: s.transConfig.EncoderFactory,
+		DecoderFactory: decoderFactory,
+		EncoderFactory: encoderFactory,
 		Bitrate:        bitrate,
 		FPS:            fps,
 		Output: func(data []byte, isKeyframe bool, pts int64) {
@@ -474,19 +512,22 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	})
 
 	if err := engine.Start(fromSource, "", transition.TransitionFTB, 1000); err != nil {
+		s.mu.Lock()
+		s.inTransition = false
+		s.ftbActive = false
 		s.mu.Unlock()
 		return fmt.Errorf("start FTB: %w", err)
 	}
 
-	// Warm up decoder BEFORE publishing the engine (see StartTransition).
+	// Warm up decoder with NO lock held (see StartTransition).
 	fromGOP := s.gopCache.GetGOP(fromSource)
 	for _, cf := range fromGOP {
 		engine.WarmupDecode(fromSource, cf.annexB)
 	}
 
+	// Publish the warmed engine under write lock.
+	s.mu.Lock()
 	s.transEngine = engine
-	s.inTransition = true
-	s.ftbActive = true
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
 
