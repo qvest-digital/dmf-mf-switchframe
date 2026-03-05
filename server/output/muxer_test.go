@@ -138,6 +138,137 @@ func TestTSMuxer_WriteAudio_BeforeInit(t *testing.T) {
 	require.Empty(t, output, "should not produce output before muxer is initialized")
 }
 
+func TestMuxerBuffersAudioBeforeKeyframe(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Send 5 audio frames before any keyframe.
+	for i := 0; i < 5; i++ {
+		audioFrame := &media.AudioFrame{
+			PTS:        int64(90000 + i*1024),
+			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		err := m.WriteAudio(audioFrame)
+		require.NoError(t, err)
+	}
+	require.Empty(t, output, "no output before keyframe")
+
+	// Now send a keyframe to trigger init.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	err := m.WriteVideo(idrFrame)
+	require.NoError(t, err)
+	require.NotEmpty(t, output, "output should contain PAT/PMT + buffered audio + video")
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+
+	// The output should contain audio PID (0x101) packets from the buffered audio.
+	foundAudioPID := false
+	for i := 0; i < len(output); i += 188 {
+		pid := (uint16(output[i+1]&0x1F) << 8) | uint16(output[i+2])
+		if pid == audioPID {
+			foundAudioPID = true
+			break
+		}
+	}
+	require.True(t, foundAudioPID, "output should contain buffered audio packets")
+}
+
+func TestMuxerDropsExcessPendingAudio(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetOutput(func(data []byte) {})
+
+	// Send 60 audio frames — only the last 50 should be kept.
+	for i := 0; i < 60; i++ {
+		audioFrame := &media.AudioFrame{
+			PTS:        int64(90000 + i*1024),
+			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		err := m.WriteAudio(audioFrame)
+		require.NoError(t, err)
+	}
+
+	// Verify internal buffer is capped at 50.
+	m.mu.Lock()
+	require.Len(t, m.pendingAudio, 50, "pending audio buffer should be capped at 50")
+	// The oldest frames should have been dropped — first frame in buffer
+	// should be the 11th frame sent (index 10, PTS = 90000 + 10*1024).
+	require.Equal(t, int64(90000+10*1024), m.pendingAudio[0].PTS,
+		"oldest frames should have been dropped")
+	m.mu.Unlock()
+}
+
+func TestMuxerFlushesAudioOnInit(t *testing.T) {
+	m := NewTSMuxer()
+
+	// Track output in order: each callback is one flush.
+	type outputChunk struct {
+		data []byte
+	}
+	var chunks []outputChunk
+	m.SetOutput(func(data []byte) {
+		c := make([]byte, len(data))
+		copy(c, data)
+		chunks = append(chunks, outputChunk{data: c})
+	})
+
+	// Send 3 audio frames before keyframe.
+	for i := 0; i < 3; i++ {
+		audioFrame := &media.AudioFrame{
+			PTS:        int64(90000 + i*1024),
+			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		require.NoError(t, m.WriteAudio(audioFrame))
+	}
+
+	// Send keyframe — should init + flush buffered audio + write video.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	// After init, the pending audio buffer should be cleared.
+	m.mu.Lock()
+	require.Nil(t, m.pendingAudio, "pending audio should be nil after flush")
+	m.mu.Unlock()
+
+	// Now send a subsequent audio frame — should output immediately.
+	require.NoError(t, m.WriteAudio(&media.AudioFrame{
+		PTS: 93072, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		SampleRate: 48000, Channels: 2,
+	}))
+
+	// We should have at least 2 chunks: one from WriteVideo (init+flush audio+video),
+	// and one from the subsequent WriteAudio.
+	require.GreaterOrEqual(t, len(chunks), 2,
+		"should have output from init+flush and from subsequent audio")
+
+	// Every chunk must be valid TS packets.
+	for ci, chunk := range chunks {
+		require.Equal(t, 0, len(chunk.data)%188,
+			"chunk %d must be multiple of 188 bytes", ci)
+		for i := 0; i < len(chunk.data); i += 188 {
+			require.Equal(t, byte(0x47), chunk.data[i],
+				"chunk %d packet at offset %d must have sync byte", ci, i)
+		}
+	}
+}
+
 func TestTSMuxer_Close(t *testing.T) {
 	m := NewTSMuxer()
 	err := m.Close()

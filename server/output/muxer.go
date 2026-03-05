@@ -17,18 +17,23 @@ const (
 	videoPID uint16 = 0x100
 	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
 	audioPID uint16 = 0x101
+	// maxPendingAudio is the maximum number of audio frames buffered
+	// before the muxer is initialized (first keyframe). At 48kHz with
+	// 1024-sample AAC frames, 50 frames ≈ ~1 second of audio.
+	maxPendingAudio = 50
 )
 
 // TSMuxer wraps go-astits to produce 188-byte MPEG-TS packets from
 // Prism video and audio frames. Initialization is deferred until the
 // first keyframe arrives, since SPS/PPS are needed for PAT/PMT.
 type TSMuxer struct {
-	mu          sync.Mutex
-	muxer       *astits.Muxer
-	buf         *bytes.Buffer
-	output      func([]byte)
-	initialized bool
-	cancel      context.CancelFunc
+	mu           sync.Mutex
+	muxer        *astits.Muxer
+	buf          *bytes.Buffer
+	output       func([]byte)
+	initialized  bool
+	cancel       context.CancelFunc
+	pendingAudio []*media.AudioFrame
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -126,7 +131,8 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 }
 
 // WriteAudio muxes an audio frame into MPEG-TS packets. Frames
-// received before the muxer is initialized are silently dropped.
+// received before the muxer is initialized are buffered (up to
+// maxPendingAudio) and flushed when the first keyframe arrives.
 //
 // Audio data gets an ADTS header if one is not already present.
 func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
@@ -134,6 +140,13 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 	defer m.mu.Unlock()
 
 	if !m.initialized {
+		// Buffer audio frames before muxer initialization so they
+		// can be flushed when the first keyframe arrives, preventing
+		// AV sync drift at recording start.
+		m.pendingAudio = append(m.pendingAudio, frame)
+		if len(m.pendingAudio) > maxPendingAudio {
+			m.pendingAudio = m.pendingAudio[len(m.pendingAudio)-maxPendingAudio:]
+		}
 		return nil
 	}
 
@@ -174,6 +187,7 @@ func (m *TSMuxer) Close() error {
 	}
 	m.muxer = nil
 	m.initialized = false
+	m.pendingAudio = nil
 	return nil
 }
 
@@ -215,7 +229,36 @@ func (m *TSMuxer) init() error {
 
 	m.initialized = true
 
-	// PAT/PMT remain in the buffer and will be flushed alongside the first keyframe.
+	// Flush any audio frames that were buffered before initialization.
+	// These are written now so they appear in the output before the
+	// first video keyframe, preventing AV sync drift at recording start.
+	if len(m.pendingAudio) > 0 {
+		for _, af := range m.pendingAudio {
+			data := codec.EnsureADTS(af.Data, af.SampleRate, af.Channels)
+			ptsRef := &astits.ClockReference{Base: af.PTS}
+			md := &astits.MuxerData{
+				PID: audioPID,
+				PES: &astits.PESData{
+					Header: &astits.PESHeader{
+						StreamID: 0xC0,
+						OptionalHeader: &astits.PESOptionalHeader{
+							PTSDTSIndicator: uint8(astits.PTSDTSIndicatorOnlyPTS),
+							PTS:             ptsRef,
+						},
+					},
+					Data: data,
+				},
+			}
+			if _, err := m.muxer.WriteData(md); err != nil {
+				m.pendingAudio = nil
+				return err
+			}
+		}
+		m.pendingAudio = nil
+	}
+
+	// PAT/PMT + buffered audio remain in the buffer and will be flushed
+	// alongside the first keyframe.
 	return nil
 }
 
