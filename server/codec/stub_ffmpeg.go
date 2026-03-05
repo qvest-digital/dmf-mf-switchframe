@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 var errFFmpegDisabled = errors.New("FFmpeg codec unavailable: built without FFmpeg support (use cgo without noffmpeg tag)")
@@ -45,3 +47,23 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 // Close is a no-op stub.
 func (d *FFmpegDecoder) Close() {}
+
+// ProbeEncoders is a stub that returns "none" when FFmpeg is not available.
+// When FFmpeg is available, the real implementation probes hardware and software
+// encoders to find the best backend.
+func ProbeEncoders() (string, string) { return "none", "none" }
+
+// HWDeviceCtx is a stub that returns nil when FFmpeg is not available.
+func HWDeviceCtx() unsafe.Pointer { return nil }
+
+// NewVideoEncoder is a stub that returns an error when FFmpeg is not available.
+// When FFmpeg is available, the real implementation auto-selects the best encoder.
+func NewVideoEncoder(width, height, bitrate int, fps float32) (transition.VideoEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoder is a stub that returns an error when FFmpeg is not available.
+// When FFmpeg is available, the real implementation auto-selects the best decoder.
+func NewVideoDecoder() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}

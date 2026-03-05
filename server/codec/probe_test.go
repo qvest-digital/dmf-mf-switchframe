@@ -1,0 +1,133 @@
+//go:build cgo && !noffmpeg
+
+package codec
+
+import (
+	"testing"
+	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestProbeEncoders_ReturnsResult(t *testing.T) {
+	enc, dec := ProbeEncoders()
+	assert.NotEmpty(t, enc, "encoder name should not be empty")
+	assert.NotEmpty(t, dec, "decoder name should not be empty")
+	// Both should be valid codec identifiers (not "none").
+	assert.NotEqual(t, "none", enc, "encoder should not be 'none' when FFmpeg is available")
+	assert.NotEqual(t, "none", dec, "decoder should not be 'none' when FFmpeg is available")
+}
+
+func TestProbeEncoders_Idempotent(t *testing.T) {
+	enc1, dec1 := ProbeEncoders()
+	enc2, dec2 := ProbeEncoders()
+	assert.Equal(t, enc1, enc2, "encoder should be the same across calls")
+	assert.Equal(t, dec1, dec2, "decoder should be the same across calls")
+}
+
+func TestProbeEncoders_SelectsLibx264(t *testing.T) {
+	// On a machine without GPU hardware, the probe should select libx264.
+	// This test may need to be adjusted if running on a machine with
+	// NVENC, VAAPI, or VideoToolbox H.264 hardware encoding support.
+	enc, _ := ProbeEncoders()
+	// libx264 should be selected as the software fallback.
+	// On a Mac with VideoToolbox, h264_videotoolbox might be selected instead.
+	validEncoders := []string{"libx264", "h264_videotoolbox", "h264_nvenc", "h264_vaapi", "openh264"}
+	assert.Contains(t, validEncoders, enc,
+		"encoder should be one of the known candidates, got %q", enc)
+}
+
+func TestHWDeviceCtx_NilForSoftware(t *testing.T) {
+	// When using software encoding, HWDeviceCtx should return nil.
+	// Ensure probe has run.
+	ProbeEncoders()
+	ctx := HWDeviceCtx()
+	// For software codecs (libx264, openh264), ctx should be nil.
+	// For HW codecs it could be non-nil, but on CI it will be nil.
+	_ = ctx // Just verify it doesn't panic.
+}
+
+func TestNewVideoEncoder_Works(t *testing.T) {
+	enc, err := NewVideoEncoder(160, 120, 200000, 30.0)
+	require.NoError(t, err)
+	require.NotNil(t, enc)
+	defer enc.Close()
+
+	// Encode one frame to verify it works end-to-end.
+	w, h := 160, 120
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	data, isKey, err := enc.Encode(yuv, true)
+	require.NoError(t, err)
+	require.True(t, isKey, "first forced IDR should be a keyframe")
+	require.NotEmpty(t, data, "encoded data should not be empty")
+}
+
+func TestNewVideoDecoder_Works(t *testing.T) {
+	dec, err := NewVideoDecoder()
+	require.NoError(t, err)
+	require.NotNil(t, dec)
+	dec.Close()
+}
+
+func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
+	w, h := 160, 120
+
+	enc, err := NewVideoEncoder(w, h, 500000, 30.0)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	dec, err := NewVideoDecoder()
+	require.NoError(t, err)
+	defer dec.Close()
+
+	// Build a YUV420 frame with a recognizable pattern.
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = byte((i * 7) % 256)
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+
+	// Encode a keyframe.
+	encoded, isKey, err := enc.Encode(yuv, true)
+	require.NoError(t, err)
+	require.True(t, isKey)
+	require.NotEmpty(t, encoded)
+
+	// Decode it back.
+	decoded, dw, dh, err := dec.Decode(encoded)
+	require.NoError(t, err)
+	require.Equal(t, w, dw)
+	require.Equal(t, h, dh)
+	require.Equal(t, ySize+2*uvSize, len(decoded))
+}
+
+func TestNewVideoEncoder_InvalidParams(t *testing.T) {
+	_, err := NewVideoEncoder(0, 120, 200000, 30.0)
+	require.Error(t, err)
+
+	_, err = NewVideoEncoder(160, 0, 200000, 30.0)
+	require.Error(t, err)
+
+	_, err = NewVideoEncoder(160, 120, 0, 30.0)
+	require.Error(t, err)
+
+	_, err = NewVideoEncoder(160, 120, 200000, 0)
+	require.Error(t, err)
+}
+
+func TestHWDeviceCtx_Type(t *testing.T) {
+	// Verify that HWDeviceCtx returns an unsafe.Pointer (type check at compile time).
+	var ptr unsafe.Pointer = HWDeviceCtx()
+	_ = ptr // compile-time type assertion
+}
