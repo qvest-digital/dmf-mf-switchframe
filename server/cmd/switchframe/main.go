@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,6 +33,65 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// streamCallbackRouter safely forwards OnStreamRegistered/OnStreamUnregistered
+// callbacks to the Switcher and AudioMixer, which are initialized after the
+// distribution server that invokes these callbacks. Callers must call Init()
+// before any stream registrations that need forwarding.
+type streamCallbackRouter struct {
+	mu    sync.Mutex
+	sw    *switcher.Switcher
+	mixer *audio.AudioMixer
+}
+
+// Init sets the Switcher and AudioMixer targets. After Init returns, all
+// subsequent OnRegistered/OnUnregistered calls will be forwarded.
+func (r *streamCallbackRouter) Init(sw *switcher.Switcher, mixer *audio.AudioMixer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sw = sw
+	r.mixer = mixer
+}
+
+// OnRegistered handles a new stream. It skips the "program" stream (which is
+// an internal relay, not an external source) and guards against calls that
+// arrive before Init().
+func (r *streamCallbackRouter) OnRegistered(key string, relay *distribution.Relay) {
+	if key == "program" {
+		return
+	}
+	r.mu.Lock()
+	sw, mixer := r.sw, r.mixer
+	r.mu.Unlock()
+
+	if sw == nil || mixer == nil {
+		slog.Warn("stream registered before switcher/mixer initialized, ignoring", "key", key)
+		return
+	}
+	slog.Info("stream registered, adding source", "key", key)
+	sw.RegisterSource(key, relay)
+	mixer.AddChannel(key)
+	mixer.SetAFV(key, true) // cameras default to audio-follows-video
+}
+
+// OnUnregistered handles a removed stream. It skips the "program" stream and
+// guards against calls that arrive before Init().
+func (r *streamCallbackRouter) OnUnregistered(key string) {
+	if key == "program" {
+		return
+	}
+	r.mu.Lock()
+	sw, mixer := r.sw, r.mixer
+	r.mu.Unlock()
+
+	if sw == nil || mixer == nil {
+		slog.Warn("stream unregistered before switcher/mixer initialized, ignoring", "key", key)
+		return
+	}
+	slog.Info("stream unregistered, removing source", "key", key)
+	sw.UnregisterSource(key)
+	mixer.RemoveChannel(key)
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -106,11 +166,10 @@ func run() error {
 		"fingerprint", cert.FingerprintBase64(),
 		"expires", cert.NotAfter.Format(time.RFC3339))
 
-	// Deferred pointers: closures below capture sw/mixer before they're
-	// assigned. Safe because OnStreamRegistered is only called when external
-	// SRT sources connect (after server.Start()), by which time both are set.
-	var sw *switcher.Switcher
-	var mixer *audio.AudioMixer
+	// Stream callback router: safely forwards OnStreamRegistered /
+	// OnStreamUnregistered to the Switcher and AudioMixer. The router
+	// guards against nil dereferences if callbacks fire before Init().
+	var cbRouter streamCallbackRouter
 
 	// Create channel-based state publisher for MoQ control track.
 	controlPub := control.NewChannelPublisher(64)
@@ -143,26 +202,9 @@ func run() error {
 				mux.Handle("/", h)
 			}
 		},
-		OnStreamRegistered: func(key string, relay *distribution.Relay) {
-			// RegisterStream("program") triggers this callback immediately,
-			// before sw is initialized. Guard against that.
-			if key == "program" {
-				return
-			}
-			slog.Info("stream registered, adding source", "key", key)
-			sw.RegisterSource(key, relay)
-			mixer.AddChannel(key)
-			mixer.SetAFV(key, true) // cameras default to audio-follows-video
-		},
-		OnStreamUnregistered: func(key string) {
-			if key == "program" {
-				return
-			}
-			slog.Info("stream unregistered, removing source", "key", key)
-			sw.UnregisterSource(key)
-			mixer.RemoveChannel(key)
-		},
-		ControlCh: controlPub.Ch(),
+		OnStreamRegistered:   cbRouter.OnRegistered,
+		OnStreamUnregistered: cbRouter.OnUnregistered,
+		ControlCh:            controlPub.Ch(),
 	}
 
 	server, err := distribution.NewServer(config)
@@ -176,7 +218,7 @@ func run() error {
 	// Create audio mixer — sends mixed audio to the program relay.
 	// DecoderFactory/EncoderFactory enable multi-channel mixing (decode AAC → PCM,
 	// mix, encode PCM → AAC). Without them, only passthrough mode works.
-	mixer = audio.NewMixer(audio.MixerConfig{
+	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
@@ -193,9 +235,14 @@ func run() error {
 	defer mixer.Close()
 
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
-	sw = switcher.New(programRelay)
+	sw := switcher.New(programRelay)
 	sw.SetMetrics(appMetrics)
 	defer sw.Close()
+
+	// Now that both switcher and mixer are initialized, wire them into
+	// the stream callback router so future OnStreamRegistered /
+	// OnStreamUnregistered calls are forwarded safely.
+	cbRouter.Init(sw, mixer)
 
 	// Wire audio mixer to the switcher: all source audio flows through the
 	// mixer instead of being forwarded directly from the program source.
