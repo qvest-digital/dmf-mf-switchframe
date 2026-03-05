@@ -14,10 +14,31 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
       - name: Install UI deps
         run: cd ui && npm ci
       - name: Svelte check
         run: cd ui && npx svelte-check --tsconfig ./tsconfig.json
+
+  lint-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - name: Install cgo dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfdk-aac-dev libopenh264-dev pkg-config
+      - name: Vet
+        run: cd server && go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: server
 
   test-go:
     runs-on: ubuntu-latest
@@ -26,14 +47,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache-dependency-path: server/go.sum
       - name: Install cgo dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libfdk-aac-dev libopenh264-dev pkg-config
-      - name: Vet
-        run: cd server && go vet ./...
-      - name: Run tests
-        run: cd server && go test ./... -race
+      - name: Run tests with coverage
+        run: cd server && go test ./... -race -coverprofile=coverage.out
+      - name: Upload Go coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: server/coverage.out
 
   test-ui:
     runs-on: ubuntu-latest
@@ -42,10 +67,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
       - name: Install deps
         run: cd ui && npm ci
-      - name: Unit tests
-        run: cd ui && npx vitest run
+      - name: Unit tests with coverage
+        run: cd ui && npx vitest run --coverage
+      - name: Upload UI coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-coverage
+          path: ui/coverage/
       - name: Install Playwright
         run: cd ui && npx playwright install --with-deps chromium
       - name: E2E tests
