@@ -14,6 +14,10 @@ const (
 	DefaultFPS     = 30.0
 )
 
+// DefaultTimeout is the default watchdog timeout for transition frame starvation.
+// If no frames arrive from either source for this duration, the transition is aborted.
+const DefaultTimeout = 10 * time.Second
+
 // EngineConfig configures the TransitionEngine.
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
@@ -70,15 +74,38 @@ type TransitionEngine struct {
 	// Reusable buffer for scaling mismatched-resolution frames
 	scaleBuf []byte
 
+	// Watchdog: aborts transition if no frames arrive within timeout
+	timeout      time.Duration // default 10s, configurable via SetTimeout()
+	lastFrameAt  time.Time     // updated in IngestFrame()
+	watchdogStop chan struct{} // closed in cleanup() to stop watchdog goroutine
+	watchdogOnce sync.Once    // prevents double-close of watchdogStop
+
 	config EngineConfig
 }
 
 // NewTransitionEngine creates a new engine with the given configuration.
 func NewTransitionEngine(config EngineConfig) *TransitionEngine {
 	return &TransitionEngine{
-		state:  StateIdle,
-		config: config,
+		state:   StateIdle,
+		timeout: DefaultTimeout,
+		config:  config,
 	}
+}
+
+// SetTimeout configures the watchdog timeout. If no frames arrive from
+// either source for this duration during an active transition, the
+// transition is aborted. Must be called before Start().
+func (e *TransitionEngine) SetTimeout(d time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.timeout = d
+}
+
+// Timeout returns the current watchdog timeout.
+func (e *TransitionEngine) Timeout() time.Duration {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.timeout
 }
 
 // State returns the current engine state.
@@ -153,7 +180,16 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.width = 0
 	e.height = 0
 
+	// Initialize watchdog state
+	e.lastFrameAt = time.Now()
+	e.watchdogStop = make(chan struct{})
+	e.watchdogOnce = sync.Once{}
+
 	slog.Info("transition: engine started", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
+
+	// Start watchdog goroutine
+	go e.runWatchdog(e.watchdogStop, e.timeout)
+
 	return nil
 }
 
@@ -318,6 +354,9 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		return
 	}
 
+	// Reset watchdog timer on every valid frame
+	e.lastFrameAt = time.Now()
+
 	if !e.decodeAndStore(sourceKey, wireData, isFrom) {
 		e.mu.Unlock()
 		return
@@ -411,6 +450,23 @@ func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
 	e.decodeAndStore(sourceKey, wireData, isFrom)
 }
 
+// Abort cancels the active transition and invokes OnComplete(aborted=true).
+// Safe to call from any goroutine. Idempotent — calling on an idle engine is a no-op.
+func (e *TransitionEngine) Abort() {
+	e.mu.Lock()
+	if e.state != StateActive {
+		e.mu.Unlock()
+		return
+	}
+	slog.Warn("transition: aborted", "type", e.transitionType, "from", e.fromSource, "to", e.toSource)
+	e.cleanup()
+	e.mu.Unlock()
+
+	if e.config.OnComplete != nil {
+		e.config.OnComplete(true)
+	}
+}
+
 // Stop tears down decoders/encoder and resets state.
 func (e *TransitionEngine) Stop() {
 	e.mu.Lock()
@@ -418,8 +474,46 @@ func (e *TransitionEngine) Stop() {
 	e.mu.Unlock()
 }
 
+// runWatchdog periodically checks for frame starvation. If no frames have
+// arrived within the configured timeout, it aborts the transition.
+// Exits when the stop channel is closed.
+func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration) {
+	interval := timeout / 4
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			e.mu.RLock()
+			active := e.state == StateActive
+			elapsed := time.Since(e.lastFrameAt)
+			e.mu.RUnlock()
+
+			if active && elapsed > timeout {
+				slog.Warn("transition: watchdog timeout — no frames received",
+					"timeout", timeout, "elapsed", elapsed)
+				e.Abort()
+				return
+			}
+		}
+	}
+}
+
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
 func (e *TransitionEngine) cleanup() {
+	// Stop watchdog goroutine (idempotent via sync.Once)
+	if e.watchdogStop != nil {
+		e.watchdogOnce.Do(func() {
+			close(e.watchdogStop)
+		})
+	}
+
 	if e.decoderA != nil {
 		e.decoderA.Close()
 		e.decoderA = nil

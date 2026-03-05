@@ -675,3 +675,211 @@ func TestEngineDefaultBitrateFPSWhenZero(t *testing.T) {
 
 	e.Stop()
 }
+
+func TestTransitionTimeoutAbort(t *testing.T) {
+	// Start a transition with a short timeout and send no frames.
+	// The watchdog should detect starvation and abort.
+	var mu sync.Mutex
+	var completions []bool
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+	})
+
+	e.SetTimeout(100 * time.Millisecond)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.Equal(t, StateActive, e.State())
+
+	// Wait for watchdog to trigger (timeout=100ms, check interval=25ms)
+	time.Sleep(250 * time.Millisecond)
+
+	require.Equal(t, StateIdle, e.State(), "watchdog should have aborted the transition")
+
+	mu.Lock()
+	require.Equal(t, 1, len(completions), "OnComplete should have been called")
+	require.False(t, completions[0], "should be aborted, not completed")
+	mu.Unlock()
+}
+
+func TestTransitionNoTimeoutWhenFramesArrive(t *testing.T) {
+	// Start a transition with a short timeout but keep sending frames.
+	// The watchdog should NOT abort because frames keep arriving.
+	var mu sync.Mutex
+	var completions []bool
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+	})
+
+	e.SetTimeout(150 * time.Millisecond)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Send frames every 50ms for 400ms — well beyond the timeout window.
+	// Each frame resets the timer so the watchdog should never fire.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 8; i++ {
+			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	<-done
+
+	require.Equal(t, StateActive, e.State(), "transition should still be active — frames kept arriving")
+
+	mu.Lock()
+	require.Equal(t, 0, len(completions), "OnComplete should not have been called")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestTransitionWatchdogStopsOnComplete(t *testing.T) {
+	// Start a transition, complete it normally, and verify no goroutine leak.
+	// We do this by starting a transition, auto-completing it, then waiting
+	// a bit — if the watchdog leaked, it would try to abort an idle engine
+	// and we'd see extra OnComplete calls.
+	var mu sync.Mutex
+	var completions []bool
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+	})
+
+	e.SetTimeout(100 * time.Millisecond)
+
+	// Use a very short duration so it auto-completes quickly
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50))
+
+	// Feed frames until auto-complete
+	for i := 0; i < 30; i++ {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+		time.Sleep(10 * time.Millisecond)
+		if e.State() == StateIdle {
+			break
+		}
+	}
+
+	require.Equal(t, StateIdle, e.State(), "transition should have auto-completed")
+
+	mu.Lock()
+	completeCount := len(completions)
+	mu.Unlock()
+	require.GreaterOrEqual(t, completeCount, 1, "should have at least one completion")
+
+	// Wait longer than the timeout — if watchdog leaked, it would fire
+	time.Sleep(250 * time.Millisecond)
+
+	mu.Lock()
+	finalCount := len(completions)
+	mu.Unlock()
+	require.Equal(t, completeCount, finalCount, "no extra OnComplete calls — watchdog stopped cleanly")
+}
+
+func TestTransitionWatchdogStopsOnAbort(t *testing.T) {
+	// Verify the watchdog stops when Stop() is called externally.
+	var mu sync.Mutex
+	var completions []bool
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+	})
+
+	e.SetTimeout(200 * time.Millisecond)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Stop immediately (before watchdog fires)
+	e.Stop()
+
+	require.Equal(t, StateIdle, e.State())
+
+	// Wait longer than the timeout — if watchdog leaked, it would panic/fire
+	time.Sleep(400 * time.Millisecond)
+
+	mu.Lock()
+	require.Equal(t, 0, len(completions), "Stop() does not trigger OnComplete")
+	mu.Unlock()
+}
+
+func TestTransitionDefaultTimeout(t *testing.T) {
+	// Verify the default timeout is 10 seconds.
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.Equal(t, DefaultTimeout, e.Timeout())
+}
+
+func TestTransitionSetTimeoutOverrides(t *testing.T) {
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	e.SetTimeout(5 * time.Second)
+	require.Equal(t, 5*time.Second, e.Timeout())
+}
