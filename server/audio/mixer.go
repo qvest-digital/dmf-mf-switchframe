@@ -51,14 +51,14 @@ type AudioMixer struct {
 
 	// Mix accumulation state: tracks which active unmuted channels
 	// have contributed to the current mix cycle.
-	mixBuffer    map[string][]float32 // sourceKey → decoded PCM for current cycle
-	mixPTS       int64                // PTS of the current mix cycle
-	mixCycleSize int                  // how many active unmuted channels expected
-	mixStarted   bool                 // true when at least one channel has contributed
-	mixDeadline  time.Time            // deadline for current mix cycle
+	mixBuffer   map[string][]float32 // sourceKey → decoded PCM for current cycle
+	mixPTS      int64                // PTS of the current mix cycle
+	mixStarted  bool                 // true when at least one channel has contributed
+	mixDeadline time.Time            // deadline for current mix cycle
 
 	// Background ticker for deadline enforcement
 	stopTicker chan struct{}
+	tickerWg   sync.WaitGroup
 
 	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
 	crossfadeFrom     string               // outgoing source key
@@ -108,6 +108,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		config:      config,
 		stopTicker:  make(chan struct{}),
 	}
+	m.tickerWg.Add(1)
 	go m.mixDeadlineTicker()
 	return m
 }
@@ -115,6 +116,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 // Close releases all codec resources and stops the background ticker.
 func (m *AudioMixer) Close() error {
 	close(m.stopTicker)
+	m.tickerWg.Wait()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, ch := range m.channels {
@@ -132,6 +134,7 @@ func (m *AudioMixer) Close() error {
 // when the per-cycle deadline expires. This prevents deadlock when a source
 // stops sending audio while the mixer waits for all channels to contribute.
 func (m *AudioMixer) mixDeadlineTicker() {
+	defer m.tickerWg.Done()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -150,7 +153,11 @@ func (m *AudioMixer) mixDeadlineTicker() {
 
 // flushMixCycleLocked sums the accumulated mix buffers, applies master gain,
 // program mute, metering, encodes to AAC, and outputs the frame.
-// Caller must hold m.mu write lock. Releases the lock before calling output.
+//
+// IMPORTANT: This method temporarily releases and reacquires m.mu to call
+// m.output() without holding the lock. Any state read after this call may
+// have been modified by another goroutine. Callers must not assume lock
+// continuity across the call boundary.
 func (m *AudioMixer) flushMixCycleLocked() {
 	if m.mixBuffer == nil || len(m.mixBuffer) == 0 {
 		m.resetMixCycleLocked()
@@ -646,7 +653,6 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Mix on frame arrival: each source contributes its latest frame.
 	m.mixBuffer[sourceKey] = gainedPCM
 	m.mixPTS = frame.PTS
-	m.mixCycleSize = activeUnmuted
 
 	// Start the per-cycle deadline on first contribution
 	if !m.mixStarted {
