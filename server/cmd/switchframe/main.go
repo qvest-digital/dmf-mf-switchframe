@@ -38,6 +38,7 @@ func run() error {
 	demoFlag := flag.Bool("demo", false, "Start with simulated camera sources")
 	demoVideoDir := flag.String("demo-video", "", "Directory containing MPEG-TS clips for real video demo (requires --demo)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
+	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
 	flag.Parse()
 
 	// Configure structured logging before any slog calls.
@@ -234,6 +235,13 @@ func run() error {
 		}
 	}
 	debugCollector.Register("demo", demoStats)
+
+	// Start admin server (Prometheus metrics, health, readiness, pprof).
+	stopAdmin := StartAdminServer(ctx, *adminAddr)
+	defer stopAdmin()
+
+	// All components initialized — mark ready for readiness probe.
+	readyFlag.Store(true)
 
 	// Start a plain HTTP server on TCP for the REST API. Prism's distribution
 	// server only listens on QUIC/UDP, so the Vite dev proxy (and curl) can't
