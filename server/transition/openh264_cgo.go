@@ -1,3 +1,5 @@
+//go:build cgo
+
 package transition
 
 // openh264_cgo.go provides the cgo link directives for the OpenH264 library.

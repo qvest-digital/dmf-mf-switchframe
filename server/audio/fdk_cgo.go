@@ -1,3 +1,5 @@
+//go:build cgo
+
 package audio
 
 // fdk_cgo.go provides the cgo link directives for the FDK AAC library.
