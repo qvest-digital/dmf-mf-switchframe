@@ -1,12 +1,16 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
+	import { AutoAnimation } from './auto-animation.svelte';
+	import { throttle } from '$lib/util/throttle';
 
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
 
 	let transType: 'mix' | 'dip' = 'mix';
 	let durationMs: number = 1000;
+
+	const anim = new AutoAnimation();
 
 	const autoDisabled = $derived(
 		!state.previewSource || state.inTransition || state.ftbActive
@@ -17,12 +21,26 @@
 	);
 
 	const tbarValue = $derived(
-		state.inTransition ? state.transitionPosition : 0
+		anim.active ? anim.position : (state.inTransition ? state.transitionPosition : 0)
 	);
+
+	// Stop animation when server reports transition ended
+	$effect(() => {
+		if (!state.inTransition && anim.active) {
+			anim.stop();
+		}
+	});
 
 	function handleAuto() {
 		if (autoDisabled) return;
+		anim.start(durationMs);
 		fireAndForget(startTransition(state.previewSource, transType, durationMs));
+
+		// Safety timeout: cancel animation if server never confirms
+		const safeDuration = durationMs;
+		setTimeout(() => {
+			if (anim.active) anim.stop();
+		}, safeDuration + 500);
 	}
 
 	function handleFTB() {
@@ -30,29 +48,58 @@
 		fireAndForget(fadeToBlack());
 	}
 
+	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly. */
+	const setPositionThrottled = throttle((value: number) => {
+		fireAndForget(setTransitionPosition(value));
+	}, 50);
+
 	function handleTbarInput(e: Event) {
+		anim.active = false;
 		const value = parseFloat((e.target as HTMLInputElement).value);
 		if (!state.inTransition && value > 0 && state.previewSource) {
 			fireAndForget(startTransition(state.previewSource, transType, durationMs));
 		}
-		fireAndForget(setTransitionPosition(value));
+		setPositionThrottled(value);
 	}
 </script>
 
 <div class="transition-controls">
-	<div class="transition-buttons">
-		<button class="btn cut" onclick={() => fireAndForget(cut(state.previewSource))} disabled={!state.previewSource}>
-			CUT
-			<span class="shortcut">Space</span>
-		</button>
-		<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>
-			AUTO
-			<span class="shortcut">Enter</span>
-		</button>
-		<button class="btn ftb" class:active={state.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
-			FTB
-			<span class="shortcut">F1</span>
-		</button>
+	<div class="transition-row">
+		<div class="transition-buttons">
+			<button class="btn cut" onclick={() => fireAndForget(cut(state.previewSource))} disabled={!state.previewSource}>
+				CUT
+				<span class="shortcut">Space</span>
+			</button>
+			<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>
+				AUTO
+				<span class="shortcut">Enter</span>
+			</button>
+			<button class="btn ftb" class:active={state.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
+				FTB
+				<span class="shortcut">F1</span>
+			</button>
+		</div>
+
+		<div class="transition-options">
+			<div class="type-selector">
+				<label class="type-option" class:selected={transType === 'mix'}>
+					<input type="radio" name="transType" value="mix" bind:group={transType} />
+					Mix
+				</label>
+				<label class="type-option" class:selected={transType === 'dip'}>
+					<input type="radio" name="transType" value="dip" bind:group={transType} />
+					Dip
+				</label>
+			</div>
+
+			<select class="duration-select" bind:value={durationMs}>
+				<option value={500}>0.5s</option>
+				<option value={1000}>1.0s</option>
+				<option value={1500}>1.5s</option>
+				<option value={2000}>2.0s</option>
+				<option value={3000}>3.0s</option>
+			</select>
+		</div>
 	</div>
 
 	<div class="tbar-container">
@@ -66,56 +113,200 @@
 			oninput={handleTbarInput}
 		/>
 	</div>
-
-	<div class="transition-options">
-		<div class="type-selector">
-			<label class="type-option">
-				<input type="radio" name="transType" value="mix" bind:group={transType} />
-				Mix
-			</label>
-			<label class="type-option">
-				<input type="radio" name="transType" value="dip" bind:group={transType} />
-				Dip
-			</label>
-		</div>
-
-		<select class="duration-select" bind:value={durationMs}>
-			<option value={500}>0.5s</option>
-			<option value={1000}>1.0s</option>
-			<option value={1500}>1.5s</option>
-			<option value={2000}>2.0s</option>
-			<option value={3000}>3.0s</option>
-		</select>
-	</div>
 </div>
 
 <style>
-	.transition-controls { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.5rem; }
-	.transition-buttons { display: flex; gap: 0.5rem; }
+	.transition-controls {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 6px 10px;
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.transition-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.transition-buttons {
+		display: flex;
+		gap: 4px;
+	}
+
 	.btn {
-		padding: 0.75rem 1.5rem; border: 2px solid #444; border-radius: 4px;
-		background: #1a1a1a; color: #ccc; cursor: pointer; font-family: monospace;
-		font-weight: bold; font-size: 1rem; position: relative;
+		padding: 6px 14px;
+		border: 1.5px solid var(--border-default);
+		border-radius: var(--radius-md);
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		font-weight: 600;
+		font-size: 0.8rem;
+		letter-spacing: 0.04em;
+		position: relative;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast),
+			box-shadow var(--transition-normal);
 	}
-	.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-	.btn.cut:not(:disabled):hover { border-color: #cc0000; background: #2a0000; }
-	.btn.auto:not(:disabled):hover { border-color: #cccc00; background: #2a2a00; }
-	.btn.ftb:not(:disabled):hover { border-color: #cc8800; background: #2a1a00; }
-	.btn.ftb.active { background: #cc8800; color: #000; border-color: #cc8800; }
-	.shortcut { display: block; font-size: 0.6rem; opacity: 0.5; margin-top: 0.25rem; }
 
-	.tbar-container { padding: 0.25rem 0; }
-	.tbar-slider { width: 100%; height: 24px; accent-color: #cccc00; cursor: pointer; }
+	.btn:active:not(:disabled) {
+		transform: scale(0.97);
+	}
 
-	.transition-options { display: flex; gap: 1rem; align-items: center; }
-	.type-selector { display: flex; gap: 0.5rem; }
+	.btn:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
+
+	.btn.cut:not(:disabled):hover {
+		border-color: var(--tally-program);
+		background: var(--tally-program-dim);
+		box-shadow: 0 0 8px rgba(220, 38, 38, 0.15);
+	}
+
+	.btn.auto:not(:disabled):hover {
+		border-color: var(--accent-yellow);
+		background: var(--accent-yellow-dim);
+		box-shadow: 0 0 8px rgba(234, 179, 8, 0.15);
+	}
+
+	.btn.ftb:not(:disabled):hover {
+		border-color: var(--accent-orange);
+		background: var(--accent-orange-dim);
+		box-shadow: 0 0 8px rgba(245, 158, 11, 0.15);
+	}
+
+	.btn.ftb.active {
+		background: var(--accent-orange);
+		color: #000;
+		border-color: var(--accent-orange);
+		box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+	}
+
+	.shortcut {
+		display: block;
+		font-size: 0.5rem;
+		font-family: var(--font-mono);
+		font-weight: 400;
+		opacity: 0.35;
+		margin-top: 2px;
+		letter-spacing: 0;
+	}
+
+	.transition-options {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
+	.type-selector {
+		display: flex;
+		gap: 2px;
+		background: var(--bg-base);
+		border-radius: var(--radius-md);
+		padding: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
 	.type-option {
-		font-family: monospace; font-size: 0.8rem; color: #aaa; cursor: pointer;
-		display: flex; align-items: center; gap: 0.25rem;
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 500;
+		color: var(--text-secondary);
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		gap: 0;
+		padding: 3px 10px;
+		border-radius: var(--radius-sm);
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast);
 	}
-	.type-option input { accent-color: #cccc00; }
+
+	.type-option:hover {
+		color: var(--text-primary);
+	}
+
+	.type-option.selected {
+		background: var(--bg-elevated);
+		color: var(--accent-yellow);
+	}
+
+	.type-option input {
+		display: none;
+	}
+
 	.duration-select {
-		font-family: monospace; font-size: 0.8rem; background: #222; color: #ccc;
-		border: 1px solid #444; border-radius: 4px; padding: 0.25rem 0.5rem;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		font-weight: 500;
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		padding: 3px 6px;
+		cursor: pointer;
+		transition: border-color var(--transition-fast);
+	}
+
+	.duration-select:hover {
+		border-color: var(--border-strong);
+	}
+
+	.duration-select:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	.tbar-container {
+		padding: 0;
+	}
+
+	.tbar-slider {
+		width: 100%;
+		height: 16px;
+	}
+
+	.tbar-slider::-webkit-slider-runnable-track {
+		height: 4px;
+		background: var(--bg-control);
+		border-radius: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
+	.tbar-slider::-webkit-slider-thumb {
+		width: 14px;
+		height: 14px;
+		margin-top: -6px;
+		background: var(--text-primary);
+		border: 2px solid var(--bg-surface);
+		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+	}
+
+	.tbar-slider::-moz-range-track {
+		height: 4px;
+		background: var(--bg-control);
+		border-radius: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
+	.tbar-slider::-moz-range-progress {
+		background: var(--accent-yellow);
+		border-radius: 2px;
+		height: 4px;
+	}
+
+	.tbar-slider::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		background: var(--text-primary);
+		border: 2px solid var(--bg-surface);
+		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 	}
 </style>

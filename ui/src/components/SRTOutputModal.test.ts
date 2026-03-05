@@ -105,4 +105,47 @@ describe('SRTOutputModal', () => {
 		const startBtn = container.querySelector('.start-btn') as HTMLButtonElement;
 		expect(startBtn.disabled).toBe(false);
 	});
+
+	it('should show confirmation dialog when stop is clicked', async () => {
+		const state = {
+			...baseState,
+			srtOutput: {
+				active: true,
+				mode: 'caller' as const,
+				address: '192.168.1.1',
+				port: 9000,
+				state: 'connected',
+				connections: 0,
+				bytesWritten: 1024,
+			},
+		};
+		const { container } = render(SRTOutputModal, { props: { state, visible: true } });
+		const stopBtn = container.querySelector('.stop-btn') as HTMLButtonElement;
+		await fireEvent.click(stopBtn);
+		const dialog = container.querySelector('[role="alertdialog"]');
+		expect(dialog).toBeTruthy();
+		expect(container.textContent).toContain('Disconnect SRT output?');
+	});
+
+	it('should dismiss SRT confirmation dialog on cancel', async () => {
+		const state = {
+			...baseState,
+			srtOutput: {
+				active: true,
+				mode: 'caller' as const,
+				address: '192.168.1.1',
+				port: 9000,
+				state: 'connected',
+				connections: 0,
+				bytesWritten: 1024,
+			},
+		};
+		const { container } = render(SRTOutputModal, { props: { state, visible: true } });
+		const stopBtn = container.querySelector('.stop-btn') as HTMLButtonElement;
+		await fireEvent.click(stopBtn);
+		const cancelBtn = container.querySelector('.cancel-btn') as HTMLButtonElement;
+		await fireEvent.click(cancelBtn);
+		const dialog = container.querySelector('[role="alertdialog"]');
+		expect(dialog).toBeFalsy();
+	});
 });

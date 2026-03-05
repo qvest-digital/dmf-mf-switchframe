@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, SRTOutputConfig } from '$lib/api/types';
 	import { startSRTOutput, stopSRTOutput, fireAndForget } from '$lib/api/switch-api';
+	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -18,6 +19,7 @@
 	});
 
 	const isActive = $derived(crState.srtOutput?.active ?? false);
+	let confirmingStop = $state(false);
 
 	const isCallerAddressEmpty = $derived(form.mode === 'caller' && !form.address.trim());
 
@@ -33,7 +35,16 @@
 	}
 
 	function handleStop() {
+		confirmingStop = true;
+	}
+
+	function confirmStop() {
 		fireAndForget(stopSRTOutput());
+		confirmingStop = false;
+	}
+
+	function cancelStop() {
+		confirmingStop = false;
 	}
 
 	function handleClose() {
@@ -48,43 +59,43 @@
 		<div class="srt-modal" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
 			<div class="modal-header">
 				<h3>SRT Output</h3>
-				<button class="close-btn" onclick={handleClose}>X</button>
+				<button class="close-btn" onclick={handleClose}>&#x2715;</button>
 			</div>
 
 			{#if isActive}
 				<div class="srt-status">
 					<div class="status-row">
-						<span class="status-label">Mode:</span>
+						<span class="status-label">Mode</span>
 						<span class="status-value">{crState.srtOutput?.mode ?? ''}</span>
 					</div>
 					{#if crState.srtOutput?.address}
 						<div class="status-row">
-							<span class="status-label">Address:</span>
+							<span class="status-label">Address</span>
 							<span class="status-value">{crState.srtOutput.address}:{crState.srtOutput.port}</span>
 						</div>
 					{/if}
 					{#if crState.srtOutput?.state}
 						<div class="status-row">
-							<span class="status-label">State:</span>
+							<span class="status-label">State</span>
 							<span class="status-value">{crState.srtOutput.state}</span>
 						</div>
 					{/if}
 					{#if crState.srtOutput?.mode === 'listener'}
 						<div class="status-row">
-							<span class="status-label">Connections:</span>
+							<span class="status-label">Connections</span>
 							<span class="status-value">{crState.srtOutput?.connections ?? 0}</span>
 						</div>
 					{/if}
-					<button class="btn stop-btn" onclick={handleStop}>Stop</button>
+					<button class="modal-btn stop-btn" onclick={handleStop}>Stop</button>
 				</div>
 			{:else}
 				<div class="srt-form">
 					<div class="mode-selector">
-						<label class="mode-option">
+						<label class="mode-option" class:selected={form.mode === 'caller'}>
 							<input type="radio" value="caller" bind:group={form.mode} />
 							Caller
 						</label>
-						<label class="mode-option">
+						<label class="mode-option" class:selected={form.mode === 'listener'}>
 							<input type="radio" value="listener" bind:group={form.mode} />
 							Listener
 						</label>
@@ -114,18 +125,29 @@
 						<input id="srt-latency" type="number" name="latency" bind:value={form.latency} min="0" step="50" />
 					</div>
 
-					<button class="btn start-btn" onclick={handleStart} disabled={isCallerAddressEmpty}>Start</button>
+					<button class="modal-btn start-btn" onclick={handleStart} disabled={isCallerAddressEmpty}>Start</button>
 				</div>
 			{/if}
 		</div>
 	</div>
 {/if}
 
+<ConfirmDialog
+	open={confirmingStop}
+	title="Disconnect SRT"
+	message="Disconnect SRT output? The stream will be interrupted."
+	confirmLabel="Disconnect"
+	onconfirm={confirmStop}
+	oncancel={cancelStop}
+/>
+
 <style>
 	.srt-modal-backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.7);
+		background: rgba(0, 0, 0, 0.6);
+		backdrop-filter: blur(4px);
+		-webkit-backdrop-filter: blur(4px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -133,111 +155,181 @@
 	}
 
 	.srt-modal {
-		background: #1a1a1a;
-		border: 1px solid #444;
-		border-radius: 8px;
-		padding: 1.25rem;
+		background: var(--bg-panel);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-lg);
+		padding: 20px;
 		min-width: 320px;
-		max-width: 420px;
-		font-family: monospace;
-		color: #ccc;
+		max-width: 400px;
+		font-family: var(--font-ui);
+		color: var(--text-primary);
+		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 	}
 
 	.modal-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		margin-bottom: 1rem;
+		margin-bottom: 16px;
 	}
 
 	.modal-header h3 {
 		margin: 0;
-		font-size: 1rem;
-		color: #eee;
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: var(--text-primary);
 	}
 
 	.close-btn {
 		background: none;
 		border: none;
-		color: #888;
+		color: var(--text-tertiary);
 		cursor: pointer;
-		font-family: monospace;
-		font-size: 1rem;
-		padding: 0.25rem;
+		font-size: 0.9rem;
+		padding: 4px;
+		border-radius: var(--radius-sm);
+		transition: color var(--transition-fast);
 	}
 
-	.close-btn:hover { color: #ccc; }
+	.close-btn:hover {
+		color: var(--text-primary);
+	}
 
 	.mode-selector {
 		display: flex;
-		gap: 1rem;
-		margin-bottom: 1rem;
+		gap: 2px;
+		margin-bottom: 16px;
+		background: var(--bg-base);
+		border-radius: var(--radius-md);
+		padding: 2px;
+		border: 1px solid var(--border-subtle);
 	}
 
 	.mode-option {
+		flex: 1;
 		display: flex;
 		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.85rem;
+		justify-content: center;
+		gap: 0;
+		font-size: 0.8rem;
+		font-weight: 500;
 		cursor: pointer;
-		color: #ccc;
+		color: var(--text-secondary);
+		padding: 5px 12px;
+		border-radius: var(--radius-sm);
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast);
 	}
 
-	.mode-option input { accent-color: #4488ff; }
+	.mode-option:hover {
+		color: var(--text-primary);
+	}
+
+	.mode-option.selected {
+		background: var(--bg-elevated);
+		color: var(--accent-blue);
+	}
+
+	.mode-option input {
+		display: none;
+	}
 
 	.form-field {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
-		margin-bottom: 0.75rem;
+		gap: 4px;
+		margin-bottom: 12px;
 	}
 
 	.form-field label {
-		font-size: 0.75rem;
-		color: #888;
+		font-size: 0.65rem;
+		font-weight: 600;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 	}
 
 	.form-field input {
-		padding: 0.4rem 0.5rem;
-		border: 1px solid #444;
-		border-radius: 4px;
-		background: #222;
-		color: #ccc;
-		font-family: monospace;
-		font-size: 0.85rem;
+		padding: 7px 10px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		transition: border-color var(--transition-fast);
 	}
 
 	.form-field input:focus {
 		outline: none;
-		border-color: #4488ff;
+		border-color: var(--accent-blue);
 	}
 
-	.btn {
-		padding: 0.5rem 1rem;
-		border: 2px solid #444;
-		border-radius: 4px;
-		background: #222;
-		color: #ccc;
+	.form-field input::placeholder {
+		color: var(--text-tertiary);
+	}
+
+	.modal-btn {
+		padding: 8px 16px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		background: var(--bg-elevated);
+		color: var(--text-primary);
 		cursor: pointer;
-		font-family: monospace;
-		font-weight: bold;
-		font-size: 0.85rem;
+		font-family: var(--font-ui);
+		font-weight: 600;
+		font-size: 0.8rem;
+		letter-spacing: 0.02em;
 		width: 100%;
-		margin-top: 0.5rem;
+		margin-top: 8px;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast);
 	}
 
-	.start-btn:hover { border-color: #4488ff; background: #1a2a44; }
-	.stop-btn { border-color: #cc0000; }
-	.stop-btn:hover { background: #2a0000; }
+	.modal-btn:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
 
-	.srt-status { display: flex; flex-direction: column; gap: 0.5rem; }
+	.start-btn:hover:not(:disabled) {
+		border-color: var(--accent-blue);
+		background: var(--accent-blue-dim);
+	}
+
+	.stop-btn {
+		border-color: rgba(220, 38, 38, 0.4);
+		color: var(--tally-program);
+	}
+
+	.stop-btn:hover {
+		background: var(--tally-program-dim);
+	}
+
+	.srt-status {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
 
 	.status-row {
 		display: flex;
 		justify-content: space-between;
-		font-size: 0.85rem;
+		font-size: 0.8rem;
 	}
 
-	.status-label { color: #888; }
-	.status-value { color: #ccc; }
+	.status-label {
+		color: var(--text-tertiary);
+		font-size: 0.7rem;
+		font-weight: 500;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.status-value {
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+	}
 </style>

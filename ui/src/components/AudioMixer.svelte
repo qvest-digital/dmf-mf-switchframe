@@ -6,6 +6,7 @@
 		setAFV as apiSetAFV,
 		setMasterLevel as apiSetMasterLevel,
 	} from '$lib/api/switch-api';
+	import { throttle } from '$lib/util/throttle';
 
 	interface Props {
 		state: ControlRoomState;
@@ -23,8 +24,13 @@
 		promise.then(s => onStateUpdate?.(s)).catch(err => console.warn('API call failed:', err));
 	}
 
-	function setLevel(source: string, level: number) {
+	/** Throttled level API call -- max 20 calls/sec (50ms). Visual fader updates instantly. */
+	const setLevelThrottled = throttle((source: string, level: number) => {
 		applyResult(apiSetLevel(source, level));
+	}, 50);
+
+	function setLevel(source: string, level: number) {
+		setLevelThrottled(source, level);
 	}
 
 	function setMute(source: string, muted: boolean) {
@@ -35,8 +41,13 @@
 		applyResult(apiSetAFV(source, afv));
 	}
 
-	function setMasterLevel(level: number) {
+	/** Throttled master level API call -- max 20 calls/sec (50ms). */
+	const setMasterLevelThrottled = throttle((level: number) => {
 		applyResult(apiSetMasterLevel(level));
+	}, 50);
+
+	function setMasterLevel(level: number) {
+		setMasterLevelThrottled(level);
 	}
 
 	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */

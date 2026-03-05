@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import RecordingControl from './RecordingControl.svelte';
 
 const baseState = {
@@ -79,5 +79,32 @@ describe('RecordingControl', () => {
 		};
 		const { container } = render(RecordingControl, { props: { state } });
 		expect(container.textContent).toContain('00:00');
+	});
+
+	it('should show confirmation dialog when stop is clicked', async () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 30 },
+		};
+		const { container } = render(RecordingControl, { props: { state } });
+		const stopBtn = container.querySelector('.rec-stop') as HTMLButtonElement;
+		await fireEvent.click(stopBtn);
+		const dialog = container.querySelector('[role="alertdialog"]');
+		expect(dialog).toBeTruthy();
+		expect(container.textContent).toContain('Stop recording?');
+	});
+
+	it('should dismiss confirmation dialog on cancel', async () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 30 },
+		};
+		const { container } = render(RecordingControl, { props: { state } });
+		const stopBtn = container.querySelector('.rec-stop') as HTMLButtonElement;
+		await fireEvent.click(stopBtn);
+		const cancelBtn = container.querySelector('.cancel-btn') as HTMLButtonElement;
+		await fireEvent.click(cancelBtn);
+		const dialog = container.querySelector('[role="alertdialog"]');
+		expect(dialog).toBeFalsy();
 	});
 });
