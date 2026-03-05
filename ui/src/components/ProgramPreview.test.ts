@@ -10,6 +10,7 @@ describe('ProgramPreview with video', () => {
 		transitionDurationMs: 0,
 		transitionPosition: 0,
 		inTransition: false,
+		ftbActive: false,
 		audioChannels: undefined,
 		masterLevel: 0,
 		programPeak: [0, 0] as [number, number],
@@ -24,18 +25,53 @@ describe('ProgramPreview with video', () => {
 
 	it('should render canvas in program window', () => {
 		const { container } = render(ProgramPreview, { props: { state } });
-		const programCanvas = container.querySelector('.program-window canvas');
+		const programCanvas = container.querySelector('.program-monitor canvas');
 		expect(programCanvas).toBeTruthy();
 	});
 
 	it('should render canvas in preview window', () => {
 		const { container } = render(ProgramPreview, { props: { state } });
-		const previewCanvas = container.querySelector('.preview-window canvas');
+		const previewCanvas = container.querySelector('.preview-monitor canvas');
 		expect(previewCanvas).toBeTruthy();
 	});
 
 	it('should show source label in program window', () => {
 		const { container } = render(ProgramPreview, { props: { state } });
 		expect(container.textContent).toContain('Camera 1');
+	});
+
+	it('should not show health alarm when program source is healthy', () => {
+		const { container } = render(ProgramPreview, { props: { state } });
+		expect(container.querySelector('.health-alarm')).toBeNull();
+	});
+
+	it('should show health alarm when program source is offline', () => {
+		const degradedState = {
+			...state,
+			sources: {
+				...state.sources,
+				cam1: { ...state.sources.cam1, status: 'offline' as const },
+			},
+		};
+		const { container } = render(ProgramPreview, { props: { state: degradedState } });
+		const alarm = container.querySelector('.health-alarm');
+		expect(alarm).toBeTruthy();
+		expect(alarm?.textContent).toContain('Camera 1');
+		expect(alarm?.textContent).toContain('OFFLINE');
+	});
+
+	it('should show health alarm only on program monitor, not preview', () => {
+		const degradedState = {
+			...state,
+			sources: {
+				...state.sources,
+				cam1: { ...state.sources.cam1, status: 'no_signal' as const },
+			},
+		};
+		const { container } = render(ProgramPreview, { props: { state: degradedState } });
+		const programAlarm = container.querySelector('.program-monitor .health-alarm');
+		const previewAlarm = container.querySelector('.preview-monitor .health-alarm');
+		expect(programAlarm).toBeTruthy();
+		expect(previewAlarm).toBeNull();
 	});
 });
