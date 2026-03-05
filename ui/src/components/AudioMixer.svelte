@@ -5,31 +5,45 @@
 		setMute as apiSetMute,
 		setAFV as apiSetAFV,
 		setMasterLevel as apiSetMasterLevel,
-		fireAndForget,
 	} from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
+		sourceLevels?: Record<string, { peakL: number; peakR: number }>;
+		programLevels?: { peakL: number; peakR: number };
 		pflActiveSource?: string | null;
 		onPFLToggle?: (sourceKey: string) => void;
+		onStateUpdate?: (state: ControlRoomState) => void;
 	}
 
-	let { state, pflActiveSource = null, onPFLToggle }: Props = $props();
+	let { state, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, onPFLToggle, onStateUpdate }: Props = $props();
+
+	/** Fire API call and apply the returned state for immediate UI feedback. */
+	function applyResult(promise: Promise<ControlRoomState>) {
+		promise.then(s => onStateUpdate?.(s)).catch(err => console.warn('API call failed:', err));
+	}
 
 	function setLevel(source: string, level: number) {
-		fireAndForget(apiSetLevel(source, level));
+		applyResult(apiSetLevel(source, level));
 	}
 
 	function setMute(source: string, muted: boolean) {
-		fireAndForget(apiSetMute(source, muted));
+		applyResult(apiSetMute(source, muted));
 	}
 
 	function setAFV(source: string, afv: boolean) {
-		fireAndForget(apiSetAFV(source, afv));
+		applyResult(apiSetAFV(source, afv));
 	}
 
 	function setMasterLevel(level: number) {
-		fireAndForget(apiSetMasterLevel(level));
+		applyResult(apiSetMasterLevel(level));
+	}
+
+	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */
+	function linearToDb(linear: number): number {
+		if (linear <= 0) return -60;
+		const db = 20 * Math.log10(linear);
+		return db < -60 ? -60 : db;
 	}
 
 	/**
@@ -63,9 +77,23 @@
 			<span class="strip-label">{label}</span>
 
 			<div class="meter-fader">
-				<!-- VU meter bar -->
-				<div class="vu-meter">
-					<div class="vu-fill" style="height: {dbToPercent(channel.level)}%"></div>
+				<!-- Stereo VU meter (pre-fader input level, L/R) -->
+				<div class="meter-wrapper">
+					<div class="db-scale">
+						{#each [-6, -12, -24, -48] as db}
+							<div class="db-mark" style="bottom: {dbToPercent(db)}%">
+								<span class="db-label">{db}</span>
+							</div>
+						{/each}
+					</div>
+					<div class="stereo-meter">
+						<div class="peak-bar left">
+							<div class="peak-fill" style="height: {dbToPercent(linearToDb(sourceLevels[key]?.peakL ?? 0))}%"></div>
+						</div>
+						<div class="peak-bar right">
+							<div class="peak-fill" style="height: {dbToPercent(linearToDb(sourceLevels[key]?.peakR ?? 0))}%"></div>
+						</div>
+					</div>
 				</div>
 
 				<!-- Vertical fader -->
@@ -83,7 +111,7 @@
 
 			<div class="strip-buttons">
 				<button
-					class="pfl-btn"
+					class="strip-btn pfl-btn"
 					class:active={pflActiveSource === key}
 					onclick={() => onPFLToggle?.(key)}
 					title="Pre-Fader Listen"
@@ -91,7 +119,7 @@
 					PFL
 				</button>
 				<button
-					class="mute-btn"
+					class="strip-btn mute-btn"
 					class:active={channel.muted}
 					onclick={() => setMute(key, !channel.muted)}
 					title="Mute"
@@ -99,7 +127,7 @@
 					MUTE
 				</button>
 				<button
-					class="afv-btn"
+					class="strip-btn afv-btn"
 					class:active={channel.afv}
 					onclick={() => setAFV(key, !channel.afv)}
 					title="Audio Follows Video"
@@ -108,7 +136,7 @@
 				</button>
 			</div>
 
-			<span class="strip-db">{channel.level.toFixed(1)} dB</span>
+			<span class="strip-db">{channel.level.toFixed(1)}</span>
 		</div>
 	{/each}
 
@@ -118,12 +146,21 @@
 
 		<div class="meter-fader">
 			<!-- Program peak meter (L/R) -->
-			<div class="program-meter">
-				<div class="peak-bar left">
-					<div class="peak-fill" style="height: {dbToPercent(state.programPeak[0])}%"></div>
+			<div class="meter-wrapper">
+				<div class="db-scale">
+					{#each [-6, -12, -24, -48] as db}
+						<div class="db-mark" style="bottom: {dbToPercent(db)}%">
+							<span class="db-label">{db}</span>
+						</div>
+					{/each}
 				</div>
-				<div class="peak-bar right">
-					<div class="peak-fill" style="height: {dbToPercent(state.programPeak[1])}%"></div>
+				<div class="program-meter">
+					<div class="peak-bar left">
+						<div class="peak-fill" style="height: {dbToPercent(linearToDb(programLevels.peakL))}%"></div>
+					</div>
+					<div class="peak-bar right">
+						<div class="peak-fill" style="height: {dbToPercent(linearToDb(programLevels.peakR))}%"></div>
+					</div>
 				</div>
 			</div>
 
@@ -140,18 +177,18 @@
 			/>
 		</div>
 
-		<span class="strip-db">{state.masterLevel.toFixed(1)} dB</span>
+		<span class="strip-db">{state.masterLevel.toFixed(1)}</span>
 	</div>
 </div>
 
 <style>
 	.audio-mixer {
 		display: flex;
-		gap: 0.25rem;
-		padding: 0.5rem;
-		background: var(--bg-secondary);
-		border-top: 1px solid #333;
+		gap: 3px;
+		padding: 6px;
+		background: var(--bg-surface);
 		overflow-x: auto;
+		height: 100%;
 	}
 
 	.channel-strip,
@@ -159,71 +196,113 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 0.25rem;
-		padding: 0.5rem;
-		background: #1a1a1a;
-		border: 1px solid #333;
-		border-radius: 4px;
-		min-width: 64px;
+		gap: 4px;
+		padding: 6px 6px 5px;
+		background: var(--bg-panel);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		min-width: 66px;
+		transition:
+			border-color var(--transition-fast),
+			box-shadow var(--transition-normal);
 	}
 
-	.channel-strip.program { border-color: var(--tally-program); }
-	.channel-strip.preview { border-color: var(--tally-preview); }
+	.channel-strip.program {
+		border-color: rgba(220, 38, 38, 0.35);
+		box-shadow: 0 0 8px rgba(220, 38, 38, 0.1);
+	}
+
+	.channel-strip.preview {
+		border-color: rgba(22, 163, 74, 0.35);
+		box-shadow: 0 0 8px rgba(22, 163, 74, 0.1);
+	}
 
 	.master-strip {
-		border-color: #666;
-		background: #222;
+		border-color: var(--border-strong);
+		background: var(--bg-elevated);
 	}
 
 	.strip-label {
-		font-family: monospace;
-		font-size: 0.7rem;
-		font-weight: bold;
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
 		color: var(--text-primary);
 		text-align: center;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		max-width: 64px;
+		max-width: 60px;
 	}
 
 	.meter-fader {
 		display: flex;
-		gap: 0.25rem;
+		gap: 3px;
 		align-items: stretch;
-		height: 120px;
+		flex: 1;
+		min-height: 0;
 	}
 
-	/* VU meter */
-	.vu-meter {
-		width: 8px;
-		background: #0a0a0a;
-		border: 1px solid #333;
-		border-radius: 2px;
+	/* Meter wrapper (holds dB scale + stereo bars) */
+	.meter-wrapper {
 		position: relative;
-		overflow: hidden;
+		display: flex;
+		align-items: stretch;
 	}
 
-	.vu-fill {
+	/* dB scale markings */
+	.db-scale {
 		position: absolute;
+		top: 0;
 		bottom: 0;
 		left: 0;
 		right: 0;
-		background: linear-gradient(to top, #00cc00 0%, #cccc00 70%, #cc0000 90%);
-		transition: height 0.05s linear;
+		z-index: 0;
+		pointer-events: none;
+	}
+
+	.db-mark {
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: 0;
+		border-top: 1px solid rgba(255, 255, 255, 0.06);
+	}
+
+	.db-label {
+		position: absolute;
+		right: 100%;
+		top: -0.35rem;
+		margin-right: 2px;
+		font-family: var(--font-mono);
+		font-size: 0.5rem;
+		font-weight: 400;
+		color: var(--text-tertiary);
+		opacity: 0.5;
+		white-space: nowrap;
+		line-height: 1;
+	}
+
+	/* Stereo meter (channel strips) */
+	.stereo-meter {
+		display: flex;
+		gap: 1px;
+		width: 9px;
+		z-index: 1;
 	}
 
 	/* Program peak meter (L/R) */
 	.program-meter {
 		display: flex;
 		gap: 2px;
-		width: 20px;
+		width: 22px;
+		z-index: 1;
 	}
 
 	.peak-bar {
 		flex: 1;
-		background: #0a0a0a;
-		border: 1px solid #333;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
 		border-radius: 2px;
 		position: relative;
 		overflow: hidden;
@@ -234,48 +313,119 @@
 		bottom: 0;
 		left: 0;
 		right: 0;
-		background: linear-gradient(to top, #00cc00 0%, #cccc00 70%, #cc0000 90%);
-		transition: height 0.05s linear;
+		background: linear-gradient(
+			to top,
+			#059669 0%,
+			#22c55e 35%,
+			#eab308 72%,
+			#ef4444 92%
+		);
+		transition: height 0.06s linear;
 	}
 
 	/* Vertical fader */
 	.fader {
 		writing-mode: vertical-lr;
 		direction: rtl;
-		width: 24px;
+		width: 22px;
 		height: 100%;
-		cursor: pointer;
-		accent-color: #888;
+	}
+
+	.fader::-webkit-slider-runnable-track {
+		width: 4px;
+		background: var(--bg-control);
+		border-radius: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
+	.fader::-webkit-slider-thumb {
+		width: 18px;
+		height: 8px;
+		border-radius: 2px;
+		background: linear-gradient(to bottom, #999, #666);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		margin-left: -8px;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+	}
+
+	.fader::-webkit-slider-thumb:hover {
+		background: linear-gradient(to bottom, #bbb, #888);
+		transform: none;
+	}
+
+	.fader::-moz-range-track {
+		width: 4px;
+		background: var(--bg-control);
+		border-radius: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
+	.fader::-moz-range-thumb {
+		width: 18px;
+		height: 8px;
+		border-radius: 2px;
+		background: linear-gradient(to bottom, #999, #666);
+		border: 1px solid rgba(255, 255, 255, 0.15);
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+	}
+
+	.fader::-moz-range-thumb:hover {
+		background: linear-gradient(to bottom, #bbb, #888);
 	}
 
 	/* Strip buttons */
 	.strip-buttons {
 		display: flex;
 		flex-direction: column;
-		gap: 0.15rem;
+		gap: 2px;
 		width: 100%;
 	}
 
-	.strip-buttons button {
-		padding: 0.2rem 0.25rem;
-		border: 1px solid #444;
-		border-radius: 3px;
-		background: #1a1a1a;
-		color: #888;
+	.strip-btn {
+		padding: 2px 3px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-tertiary);
 		cursor: pointer;
-		font-family: monospace;
-		font-size: 0.6rem;
-		font-weight: bold;
+		font-family: var(--font-ui);
+		font-size: 0.55rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
 		text-align: center;
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast),
+			border-color var(--transition-fast);
 	}
 
-	.pfl-btn.active { background: #665500; color: #ffcc00; border-color: #ffcc00; }
-	.mute-btn.active { background: #440000; color: #ff4444; border-color: #ff4444; }
-	.afv-btn.active { background: #004400; color: #44ff44; border-color: #44ff44; }
+	.strip-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+	}
+
+	.pfl-btn.active {
+		background: var(--accent-yellow-dim);
+		color: var(--accent-yellow);
+		border-color: rgba(234, 179, 8, 0.4);
+	}
+
+	.mute-btn.active {
+		background: var(--tally-program-dim);
+		color: #ef4444;
+		border-color: rgba(239, 68, 68, 0.4);
+	}
+
+	.afv-btn.active {
+		background: var(--tally-preview-dim);
+		color: #22c55e;
+		border-color: rgba(34, 197, 94, 0.4);
+	}
 
 	.strip-db {
-		font-family: monospace;
-		font-size: 0.6rem;
-		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		font-weight: 500;
+		color: var(--text-tertiary);
 	}
 </style>

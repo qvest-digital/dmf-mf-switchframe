@@ -83,4 +83,66 @@ describe('AudioMixer', () => {
 		await fireEvent.click(pflButtons[0]);
 		expect(onPFLToggle).toHaveBeenCalledWith('cam1');
 	});
+
+	it('should render stereo L/R meter bars per channel strip', () => {
+		const sourceLevels = {
+			cam1: { peakL: 0.5, peakR: 0.3 },
+			cam2: { peakL: 0.1, peakR: 0.8 },
+		};
+		const { container } = render(AudioMixer, { props: { state, sourceLevels } });
+		const strips = container.querySelectorAll('.channel-strip');
+		// Each channel strip should have a stereo-meter container with L and R peak bars
+		strips.forEach((strip) => {
+			const stereoMeter = strip.querySelector('.stereo-meter');
+			expect(stereoMeter).toBeTruthy();
+			const peakBars = stereoMeter!.querySelectorAll('.peak-bar');
+			expect(peakBars.length).toBe(2);
+			expect(peakBars[0].classList.contains('left')).toBe(true);
+			expect(peakBars[1].classList.contains('right')).toBe(true);
+		});
+	});
+
+	it('should render L and R meter fills with correct heights from sourceLevels', () => {
+		const sourceLevels = {
+			cam1: { peakL: 0.5, peakR: 0.0 },
+			cam2: { peakL: 0.0, peakR: 0.0 },
+		};
+		const { container } = render(AudioMixer, { props: { state, sourceLevels } });
+		const strips = container.querySelectorAll('.channel-strip');
+		// cam1 (first sorted) should have a non-zero L fill and zero R fill
+		const cam1Fills = strips[0].querySelectorAll('.peak-fill');
+		expect(cam1Fills.length).toBe(2);
+		const lHeight = (cam1Fills[0] as HTMLElement).style.height;
+		const rHeight = (cam1Fills[1] as HTMLElement).style.height;
+		// peakL=0.5 => ~-6dB => ~75% ; peakR=0 => 0%
+		expect(parseFloat(lHeight)).toBeGreaterThan(0);
+		expect(rHeight).toBe('0%');
+	});
+
+	it('should render dB scale markings on channel strip meters', () => {
+		const { container } = render(AudioMixer, { props: { state } });
+		const strips = container.querySelectorAll('.channel-strip');
+		// Each channel strip meter area should contain dB scale markings
+		strips.forEach((strip) => {
+			const scaleMarks = strip.querySelectorAll('.db-mark');
+			expect(scaleMarks.length).toBeGreaterThanOrEqual(4);
+		});
+		// Verify the expected dB values are rendered as labels
+		const firstStrip = strips[0];
+		const labels = Array.from(firstStrip.querySelectorAll('.db-label')).map(el => el.textContent);
+		expect(labels).toContain('-6');
+		expect(labels).toContain('-12');
+		expect(labels).toContain('-24');
+		expect(labels).toContain('-48');
+	});
+
+	it('should still render L/R bars on the master meter', () => {
+		const programLevels = { peakL: 0.7, peakR: 0.4 };
+		const { container } = render(AudioMixer, { props: { state, programLevels } });
+		const master = container.querySelector('.master-strip');
+		const peakBars = master!.querySelectorAll('.peak-bar');
+		expect(peakBars.length).toBe(2);
+		expect(peakBars[0].classList.contains('left')).toBe(true);
+		expect(peakBars[1].classList.contains('right')).toBe(true);
+	});
 });
