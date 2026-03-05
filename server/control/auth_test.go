@@ -118,6 +118,22 @@ func TestGenerateToken_Returns64CharHex(t *testing.T) {
 	require.NoError(t, err, "token should be valid hex")
 }
 
+func TestNoopAuthMiddleware_PassesAllRequests(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+	handler := NoopAuthMiddleware()(inner)
+
+	// Request with no auth header should pass through.
+	req := httptest.NewRequest("POST", "/api/switch/cut", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "ok", rec.Body.String())
+}
+
 func TestGenerateToken_Unique(t *testing.T) {
 	token1, err := GenerateToken()
 	require.NoError(t, err)

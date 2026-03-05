@@ -304,8 +304,7 @@ func TestSwitcherStartTransitionSameSource(t *testing.T) {
 
 	// cam1 is already program — transitioning to cam1 should be rejected
 	err := sw.StartTransition(context.Background(), "cam1", "mix", 500)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "already on program")
+	require.ErrorIs(t, err, ErrAlreadyOnProgram)
 }
 
 func TestSwitcherStartTransitionUnsupportedType(t *testing.T) {

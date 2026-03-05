@@ -17,11 +17,13 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
 // Sentinel errors for the switcher package.
 var ErrSourceNotFound = errors.New("source not found")
+var ErrAlreadyOnProgram = errors.New("already on program")
 
 // audioStateProvider is the interface the Switcher needs from the AudioMixer
 // to populate audio fields in state broadcasts.
@@ -91,6 +93,9 @@ type Switcher struct {
 	audioTransition audioTransitionHandler
 	gopCache        *gopCache
 
+	// Prometheus metrics (optional, set via SetMetrics)
+	promMetrics *metrics.Metrics
+
 	// Debug instrumentation counters (atomic, lock-free)
 	idrGateEvents         atomic.Int64 // number of cuts (pendingIDR set)
 	idrGateStartNano      atomic.Int64 // when current IDR gate started (UnixNano)
@@ -127,6 +132,15 @@ func (s *Switcher) SetMixer(m audioStateProvider) {
 	if handler, ok := m.(audioTransitionHandler); ok {
 		s.audioTransition = handler
 	}
+}
+
+// SetMetrics attaches Prometheus metrics to the switcher for production
+// observability. When set, the switcher increments counters for cuts,
+// transitions, and IDR gate events alongside the existing atomic debug counters.
+func (s *Switcher) SetMetrics(m *metrics.Metrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.promMetrics = m
 }
 
 // Close stops the health monitor and unregisters all sources.
@@ -210,7 +224,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	if s.programSource == sourceKey {
 		s.mu.Unlock()
-		return fmt.Errorf("source %q already on program", sourceKey)
+		return fmt.Errorf("source %q: %w", sourceKey, ErrAlreadyOnProgram)
 	}
 
 	tt := transition.TransitionType(transType)
@@ -526,6 +540,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.inTransition = false
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
+	if s.promMetrics != nil && !aborted {
+		s.promMetrics.TransitionsTotal.WithLabelValues(transType).Inc()
+	}
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -549,6 +566,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
 				dur := time.Since(time.Unix(0, startNano))
 				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+				if s.promMetrics != nil {
+					s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -576,6 +596,9 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.inTransition = false
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
+	if s.promMetrics != nil && !aborted {
+		s.promMetrics.TransitionsTotal.WithLabelValues("ftb").Inc()
+	}
 	if aborted {
 		s.ftbActive = false
 	}
@@ -617,6 +640,9 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	s.inTransition = false
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
+	if s.promMetrics != nil && !aborted {
+		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
+	}
 	if !aborted {
 		s.ftbActive = false
 		// Gate passthrough until GOP replay provides a keyframe.
@@ -648,6 +674,9 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
 				dur := time.Since(time.Unix(0, startNano))
 				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+				if s.promMetrics != nil {
+					s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -731,6 +760,10 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		s.sources[sourceKey].pendingIDR = true
 		s.idrGateEvents.Add(1)
 		s.idrGateStartNano.Store(time.Now().UnixNano())
+		if s.promMetrics != nil {
+			s.promMetrics.CutsTotal.Inc()
+			s.promMetrics.IDRGateEventsTotal.Inc()
+		}
 		if oldProgram != "" {
 			s.previewSource = oldProgram
 		}
@@ -1076,6 +1109,9 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 			dur := time.Since(time.Unix(0, startNano))
 			gateDurationMs = dur.Milliseconds()
 			s.lastIDRGateDurationMs.Store(gateDurationMs)
+			if s.promMetrics != nil {
+				s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
+			}
 		}
 	}
 	s.mu.Unlock()

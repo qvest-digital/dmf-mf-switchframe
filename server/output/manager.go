@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // asyncAdapterBufSize is the default buffer size for async adapter wrappers.
@@ -38,6 +39,9 @@ type OutputManager struct {
 	onState func() // triggers ControlRoomState broadcast
 	closed  bool
 
+	// Prometheus metrics (optional, set via SetMetrics)
+	promMetrics *metrics.Metrics
+
 	// SRT wiring functions injected from main.go.
 	srtConnectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
 	srtAcceptFn  func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error
@@ -58,6 +62,13 @@ func (m *OutputManager) SetSRTWiring(
 	defer m.mu.Unlock()
 	m.srtConnectFn = connectFn
 	m.srtAcceptFn = acceptFn
+}
+
+// SetMetrics attaches Prometheus metrics to the output manager.
+func (m *OutputManager) SetMetrics(pm *metrics.Metrics) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.promMetrics = pm
 }
 
 // OnStateChange registers a callback fired when output state changes.
@@ -167,7 +178,14 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 			}
 			m.mu.Lock()
 			fn := m.onState
+			pm := m.promMetrics
 			m.mu.Unlock()
+			if pm != nil {
+				pm.SRTReconnectsTotal.Inc()
+				if overflowed {
+					pm.RingbufOverflowsTotal.Inc()
+				}
+			}
 			if fn != nil {
 				fn()
 			}

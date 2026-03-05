@@ -55,6 +55,14 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 	}
 }
 
+// NoopAuthMiddleware returns middleware that passes all requests through
+// without authentication. Used in demo mode for ease of use.
+func NoopAuthMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return next
+	}
+}
+
 // GenerateToken creates a cryptographically random 32-byte token
 // encoded as a 64-character hexadecimal string.
 func GenerateToken() (string, error) {

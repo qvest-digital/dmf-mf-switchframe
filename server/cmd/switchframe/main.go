@@ -72,15 +72,21 @@ func run() error {
 
 	// Register subsystem metrics on the shared Prometheus registry so they
 	// appear at /metrics on the admin server. The returned Metrics struct
-	// will be passed to subsystems in a follow-up wiring task.
-	_ = metrics.NewMetrics(metrics.Registry)
+	// is passed to subsystems (switcher, mixer, output manager) below.
+	appMetrics := metrics.NewMetrics(metrics.Registry)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	slog.Info("switchframe starting", "log_level", *logLevel)
-	slog.Info("API authentication enabled", "token_prefix", apiToken[:8]+"...")
-	fmt.Fprintf(os.Stderr, "\n  API Token: %s\n\n", apiToken)
+	if *demoFlag {
+		slog.Info("demo mode: API authentication disabled")
+	} else {
+		slog.Info("API authentication enabled", "token_prefix", apiToken[:8]+"...")
+		// Print full token to stdout (not stderr) so operators can capture it
+		// without it leaking into log files routed from stderr.
+		fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", apiToken)
+	}
 
 	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
 	cert, err := certs.Generate(14 * 24 * time.Hour)
@@ -106,6 +112,12 @@ func run() error {
 
 	addr := ":8080"
 
+	// In demo mode, skip auth entirely for ease of use.
+	authMW := control.AuthMiddleware(apiToken)
+	if *demoFlag {
+		authMW = control.NoopAuthMiddleware()
+	}
+
 	config := distribution.ServerConfig{
 		Addr: addr,
 		Cert: cert,
@@ -115,7 +127,7 @@ func run() error {
 			api.RegisterOnMux(apiSubMux)
 			// Wrap with auth middleware; Prism's own routes (MoQ, WebTransport)
 			// bypass this because they don't start with /api/.
-			authedAPI := control.AuthMiddleware(apiToken)(apiSubMux)
+			authedAPI := authMW(apiSubMux)
 			mux.Handle("/api/", authedAPI)
 			if h := uiHandler(); h != nil {
 				// Mount embedded UI as catch-all (after API routes)
@@ -168,10 +180,12 @@ func run() error {
 			return audio.NewFDKEncoder(sampleRate, channels)
 		},
 	})
+	mixer.SetMetrics(appMetrics)
 	defer mixer.Close()
 
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	sw = switcher.New(programRelay)
+	sw.SetMetrics(appMetrics)
 	defer sw.Close()
 
 	// Wire audio mixer to the switcher: all source audio flows through the
@@ -194,6 +208,7 @@ func run() error {
 	// Create output manager for recording and SRT output.
 	outputMgr := output.NewOutputManager(programRelay)
 	outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
+	outputMgr.SetMetrics(appMetrics)
 	defer outputMgr.Close()
 
 	// Create debug collector for pipeline instrumentation.
@@ -287,7 +302,7 @@ func run() error {
 	var apiHandler http.Handler = apiMux
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
-	apiHandler = control.AuthMiddleware(apiToken)(apiHandler)
+	apiHandler = authMW(apiHandler)
 	httpSrv := &http.Server{
 		Handler: apiHandler,
 	}

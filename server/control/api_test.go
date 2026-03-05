@@ -265,6 +265,22 @@ func TestHandleTransitionBadDuration(t *testing.T) {
 	}
 }
 
+func TestHandleTransitionAlreadyOnProgram(t *testing.T) {
+	api, sw := setupTransitionTestAPI(t)
+	defer sw.Close()
+
+	// camera1 is already on program — transition to it should return 400
+	body := `{"source":"camera1","type":"mix","durationMs":500}`
+	req := httptest.NewRequest("POST", "/api/switch/transition", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestHandleTransitionPosition(t *testing.T) {
 	api, sw := setupTransitionTestAPI(t)
 	defer sw.Close()

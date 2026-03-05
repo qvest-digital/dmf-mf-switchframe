@@ -194,6 +194,8 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		} else if errors.Is(err, transition.ErrTransitionActive) || errors.Is(err, transition.ErrFTBActive) {
 			status = http.StatusConflict
+		} else if errors.Is(err, switcher.ErrAlreadyOnProgram) {
+			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // crossfadeTimeout is the maximum time to wait for both sources to deliver
@@ -82,6 +83,9 @@ type AudioMixer struct {
 	programPeakL float64 // linear amplitude [0,1]
 	programPeakR float64 // linear amplitude [0,1]
 
+	// Prometheus metrics (optional, set via SetMetrics)
+	promMetrics *metrics.Metrics
+
 	// Debug counters (atomic, no lock needed)
 	framesPassthrough atomic.Int64
 	framesMixed       atomic.Int64
@@ -111,6 +115,13 @@ func NewMixer(config MixerConfig) *AudioMixer {
 	m.tickerWg.Add(1)
 	go m.mixDeadlineTicker()
 	return m
+}
+
+// SetMetrics attaches Prometheus metrics to the mixer.
+func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.promMetrics = pm
 }
 
 // Close releases all codec resources and stops the background ticker.
@@ -214,11 +225,17 @@ func (m *AudioMixer) flushMixCycleLocked() {
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.encodeErrors.Add(1)
+		if m.promMetrics != nil {
+			m.promMetrics.EncodeErrorsTotal.Inc()
+		}
 		m.resetMixCycleLocked()
 		slog.Warn("mixer: encode error", "err", err)
 		return
 	}
 	m.framesMixed.Add(1)
+	if m.promMetrics != nil {
+		m.promMetrics.FramesMixedTotal.Inc()
+	}
 
 	pts := m.mixPTS
 
@@ -572,6 +589,9 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 		m.output(frame)
 		m.framesPassthrough.Add(1)
+		if m.promMetrics != nil {
+			m.promMetrics.PassthroughBypassTotal.Inc()
+		}
 		return
 	}
 	m.mu.RUnlock()
@@ -784,6 +804,9 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.encodeErrors.Add(1)
+		if m.promMetrics != nil {
+			m.promMetrics.EncodeErrorsTotal.Inc()
+		}
 		m.crossfadeActive = false
 		m.mu.Unlock()
 		slog.Warn("mixer: encode error", "err", err)
