@@ -12,12 +12,13 @@
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, getState, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
+	import { cut, setPreview, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
-	import { createPrismConnection } from '$lib/transport/connection';
+	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
+	import type { ControlRoomState } from '$lib/api/types';
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -26,7 +27,6 @@
 	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
 	let initialLoading = $state(true);
 	let connectionError: string | null = $state(null);
-	let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 	function switchLayout() {
 		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
@@ -164,45 +164,25 @@
 		return () => clearInterval(interval);
 	});
 
-	let pollInterval: ReturnType<typeof setInterval> | undefined;
-
-	function startPolling() {
-		if (pollInterval) return;
-		pollInterval = setInterval(async () => {
-			try {
-				const state = await getState();
-				store.applyUpdate(state);
-			} catch { /* ignore */ }
-		}, 500);
-		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
-		if (connectionState !== 'webtransport') {
-			connectionState = 'polling';
-		}
-	}
-
-	function stopPolling() {
-		if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = undefined;
-		}
-	}
-
-	const connection = createPrismConnection({
+	const connectionManager = new ConnectionManager({
 		url: window.location.origin,
-		onControlState: (data) => {
-			store.applyFromMoQ(data);
-			// MoQ is delivering state; stop polling
-			stopPolling();
-			connectionState = 'webtransport';
-		},
-		onConnectionChange: (connState) => {
-			if (connState === 'connected') {
-				connectionState = 'webtransport';
-			} else if (connState === 'disconnected' || connState === 'error') {
-				// WebTransport lost; fall back to REST polling
-				connectionState = pollInterval ? 'polling' : 'disconnected';
-				startPolling();
+		onStateUpdate: (update) => {
+			if (update instanceof Uint8Array) {
+				store.applyFromMoQ(update);
+			} else {
+				store.applyUpdate(update as ControlRoomState);
 			}
+		},
+		onConnectionStateChange: (state) => {
+			connectionState = state;
+		},
+		onInitialLoadComplete: () => {
+			initialLoading = false;
+			connectionError = null;
+		},
+		onInitialLoadError: (error) => {
+			console.warn('Failed to fetch initial state:', error);
+			connectionError = error;
 		},
 	});
 
@@ -226,40 +206,18 @@
 		document.addEventListener('click', resumeAudio, { once: true });
 		document.addEventListener('keydown', resumeAudio, { once: true });
 
-		// Initial state fetch via REST (with retry on failure)
-		async function fetchInitialState() {
-			try {
-				const state = await getState();
-				store.applyUpdate(state);
-				initialLoading = false;
-				connectionError = null;
-			} catch (e) {
-				const msg = e instanceof Error ? e.message : String(e);
-				console.warn('Failed to fetch initial state:', msg);
-				connectionError = msg;
-				// Retry every 3 seconds until successful
-				retryTimer = setTimeout(fetchInitialState, 3000);
-			}
-		}
-		await fetchInitialState();
-
 		// Start audio metering rAF loop
 		pipelineManager.startMetering();
 
-		// Start REST polling as immediate fallback
-		startPolling();
-
-		// Attempt WebTransport connection (will replace polling on success)
-		connection.connect();
+		// Fetch initial state, start polling, and attempt WebTransport connection
+		await connectionManager.start();
 	});
 
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
 		pipelineManager.destroy();
-		if (retryTimer !== undefined) clearTimeout(retryTimer);
-		stopPolling();
-		connection.disconnect();
+		connectionManager.stop();
 		pipeline.destroy();
 		mounted = false;
 	});

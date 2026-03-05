@@ -1,0 +1,111 @@
+import { createPrismConnection } from '$lib/transport/connection';
+import { getState } from '$lib/api/switch-api';
+import type { ControlRoomState } from '$lib/api/types';
+
+export type ConnectionStatus = 'webtransport' | 'polling' | 'disconnected';
+
+export interface ConnectionManagerConfig {
+	url: string;
+	onStateUpdate: (state: ControlRoomState | Uint8Array) => void;
+	onConnectionStateChange: (state: ConnectionStatus) => void;
+	onInitialLoadComplete: () => void;
+	onInitialLoadError: (error: string) => void;
+}
+
+export class ConnectionManager {
+	private connectionState: ConnectionStatus = 'disconnected';
+	private pollInterval: ReturnType<typeof setInterval> | undefined;
+	private retryTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly config: ConnectionManagerConfig;
+	private readonly connection: ReturnType<typeof createPrismConnection>;
+
+	constructor(config: ConnectionManagerConfig) {
+		this.config = config;
+		this.connection = createPrismConnection({
+			url: config.url,
+			onControlState: (data) => {
+				config.onStateUpdate(data);
+				// MoQ is delivering state; stop polling
+				this.stopPolling();
+				this.setConnectionState('webtransport');
+			},
+			onConnectionChange: (connState) => {
+				if (connState === 'connected') {
+					this.setConnectionState('webtransport');
+				} else if (connState === 'disconnected' || connState === 'error') {
+					// WebTransport lost; fall back to REST polling
+					this.startPolling();
+					// Ensure state reflects polling (startPolling may skip if already active)
+					this.setConnectionState('polling');
+				}
+			},
+		});
+	}
+
+	async start(): Promise<void> {
+		// Initial state fetch via REST (with retry on failure)
+		await this.fetchInitialState();
+
+		// Start REST polling as immediate fallback
+		this.startPolling();
+
+		// Attempt WebTransport connection (will replace polling on success)
+		this.connection.connect();
+	}
+
+	stop(): void {
+		if (this.retryTimer !== undefined) {
+			clearTimeout(this.retryTimer);
+			this.retryTimer = undefined;
+		}
+		this.stopPolling();
+		this.connection.disconnect();
+	}
+
+	getConnectionState(): ConnectionStatus {
+		return this.connectionState;
+	}
+
+	private setConnectionState(state: ConnectionStatus): void {
+		if (state === this.connectionState) return;
+		this.connectionState = state;
+		this.config.onConnectionStateChange(state);
+	}
+
+	private startPolling(): void {
+		if (this.pollInterval) return;
+		this.pollInterval = setInterval(async () => {
+			try {
+				const state = await getState();
+				this.config.onStateUpdate(state);
+			} catch { /* ignore */ }
+		}, 500);
+		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
+		if (this.connectionState !== 'webtransport') {
+			this.setConnectionState('polling');
+		}
+	}
+
+	private stopPolling(): void {
+		if (this.pollInterval) {
+			clearInterval(this.pollInterval);
+			this.pollInterval = undefined;
+		}
+	}
+
+	private async fetchInitialState(): Promise<void> {
+		try {
+			const state = await getState();
+			this.config.onStateUpdate(state);
+			this.config.onInitialLoadComplete();
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			this.config.onInitialLoadError(msg);
+			// Retry every 3 seconds until successful
+			this.retryTimer = setTimeout(() => {
+				this.retryTimer = undefined;
+				this.fetchInitialState();
+			}, 3000);
+		}
+	}
+}
