@@ -61,6 +61,10 @@ export function setLabel(key: string, label: string): Promise<ControlRoomState> 
 	return post(`/api/sources/${encodeURIComponent(key)}/label`, { label });
 }
 
+export function setSourceDelay(key: string, delayMs: number): Promise<ControlRoomState> {
+	return post(`/api/sources/${encodeURIComponent(key)}/delay`, { delayMs });
+}
+
 export function getState(): Promise<ControlRoomState> {
 	return request('/api/switch/state');
 }

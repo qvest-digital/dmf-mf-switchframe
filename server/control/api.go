@@ -98,6 +98,7 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
+	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
 	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
@@ -269,6 +270,35 @@ func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 	if err := a.switcher.SetLabel(r.Context(), key, req.Label); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// delayRequest is the JSON body for the set-delay command.
+type delayRequest struct {
+	DelayMs int `json:"delayMs"`
+}
+
+// handleSetDelay sets the input delay for a source (0-500ms).
+func (a *API) handleSetDelay(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	var req delayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.switcher.SetSourceDelay(key, req.DelayMs); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, switcher.ErrSourceNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, switcher.ErrInvalidDelay) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
