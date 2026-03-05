@@ -52,6 +52,12 @@ func NewChannelPublisher(bufSize int) *ChannelPublisher {
 
 // Publish serializes state and sends to the channel.
 // If the channel is full, the oldest message is dropped.
+//
+// Note: under concurrent producers, the drain-and-retry loop may over-drain
+// (two goroutines both drain one message when only one slot was needed).
+// This is benign—the retry loop ensures all messages land, and the drop
+// counter may slightly over-report. Acceptable for the current low-contention
+// usage (2 producers: switcher + output manager state callbacks).
 func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -66,7 +72,8 @@ func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 			// Drop oldest to make room
 			select {
 			case <-cp.ch:
-				cp.dropped.Add(1)
+				count := cp.dropped.Add(1)
+				slog.Warn("state broadcast dropped", "total_dropped", count)
 			default:
 			}
 		}
