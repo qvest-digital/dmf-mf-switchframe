@@ -243,6 +243,10 @@ func run() error {
 			return transition.NewOpenH264Encoder(w, h, bitrate, fps)
 		},
 	)
+	compositor.SetResolutionProvider(func() (int, int) {
+		vi := programRelay.VideoInfo()
+		return vi.Width, vi.Height
+	})
 	sw.SetVideoProcessor(compositor.ProcessFrame)
 	defer compositor.Close()
 
@@ -250,14 +254,22 @@ func run() error {
 	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor))
 
 	// enrichState patches a ControlRoomState snapshot with output + graphics status.
-	enrichState := func(state internal.ControlRoomState) internal.ControlRoomState {
+	// gfxOverride, if non-nil, is used instead of calling compositor.Status()
+	// (which would deadlock when called from the compositor's own callback).
+	enrichState := func(state internal.ControlRoomState, gfxOverride *graphics.State) internal.ControlRoomState {
 		if recStatus := outputMgr.RecordingStatus(); recStatus.Active {
 			state.Recording = &recStatus
 		}
 		if srtStatus := outputMgr.SRTOutputStatus(); srtStatus.Active {
 			state.SRTOutput = &srtStatus
 		}
-		if gfxStatus := compositor.Status(); gfxStatus.Active {
+		var gfxStatus graphics.State
+		if gfxOverride != nil {
+			gfxStatus = *gfxOverride
+		} else {
+			gfxStatus = compositor.Status()
+		}
+		if gfxStatus.Active {
 			state.Graphics = &internal.GraphicsState{
 				Active:       gfxStatus.Active,
 				Template:     gfxStatus.Template,
@@ -271,18 +283,20 @@ func run() error {
 	// Note: AFV program changes and crossfade are wired automatically via
 	// SetMixer (Switcher calls OnProgramChange/OnCut during Cut).
 	sw.OnStateChange(func(state internal.ControlRoomState) {
-		controlPub.Publish(enrichState(state))
+		controlPub.Publish(enrichState(state, nil))
 	})
 
 	// Output state changes (recording start/stop, SRT connect/disconnect)
 	// also trigger a full state broadcast.
 	outputMgr.OnStateChange(func() {
-		controlPub.Publish(enrichState(sw.State()))
+		controlPub.Publish(enrichState(sw.State(), nil))
 	})
 
-	// Graphics overlay state changes also trigger a state broadcast.
-	compositor.OnStateChange(func() {
-		controlPub.Publish(enrichState(sw.State()))
+	// Graphics overlay state changes: the callback receives a state snapshot
+	// directly (avoids deadlock — can't call compositor.Status() from inside
+	// the compositor's lock).
+	compositor.OnStateChange(func(gfxState graphics.State) {
+		controlPub.Publish(enrichState(sw.State(), &gfxState))
 	})
 
 	sw.StartHealthMonitor(1 * time.Second)

@@ -1,6 +1,9 @@
 /**
  * GraphicsPublisher renders a template to an offscreen canvas, extracts
  * RGBA pixel data, and sends it to the server via REST POST.
+ *
+ * Before publishing, it queries the server for the program video resolution
+ * and renders at that size so the compositor can composite without scaling.
  */
 import type { GraphicsTemplate } from './templates';
 
@@ -20,10 +23,11 @@ export class GraphicsPublisher {
 	private height = 0;
 
 	/**
-	 * Initialize the publisher with the target resolution.
-	 * This should match the program output resolution.
+	 * Ensure the internal canvas matches the given resolution.
+	 * Re-creates canvas only when dimensions change.
 	 */
-	init(width: number, height: number): void {
+	private ensureCanvas(width: number, height: number): void {
+		if (this.width === width && this.height === height && this.canvas) return;
 		this.width = width;
 		this.height = height;
 		this.canvas = new OffscreenCanvas(width, height);
@@ -32,24 +36,29 @@ export class GraphicsPublisher {
 
 	/**
 	 * Render a template and upload the resulting RGBA frame to the server.
-	 *
-	 * @param template - The template to render.
-	 * @param values - Field values for the template.
-	 * @returns Promise that resolves when the upload is complete.
+	 * Queries the graphics status endpoint to learn the program resolution
+	 * and renders at that size.
 	 */
 	async publish(template: GraphicsTemplate, values: Record<string, string>): Promise<void> {
-		if (!this.canvas || !this.ctx) {
-			throw new Error('GraphicsPublisher not initialized. Call init() first.');
+		// Query program resolution from compositor status.
+		const statusRes = await fetch('/api/graphics/status');
+		if (!statusRes.ok) {
+			throw new Error(`Failed to get graphics status: HTTP ${statusRes.status}`);
 		}
+		const status = await statusRes.json();
+		const w = status.programWidth || 1280;
+		const h = status.programHeight || 720;
+
+		this.ensureCanvas(w, h);
 
 		// Clear canvas (fully transparent)
-		this.ctx.clearRect(0, 0, this.width, this.height);
+		this.ctx!.clearRect(0, 0, this.width, this.height);
 
-		// Render template
-		template.render(this.ctx, this.width, this.height, values);
+		// Render template at program resolution
+		template.render(this.ctx!, this.width, this.height, values);
 
 		// Extract RGBA pixel data
-		const imageData = this.ctx.getImageData(0, 0, this.width, this.height);
+		const imageData = this.ctx!.getImageData(0, 0, this.width, this.height);
 
 		// Encode as base64 — Go's encoding/json decodes []byte from base64.
 		const base64 = uint8ArrayToBase64(imageData.data);

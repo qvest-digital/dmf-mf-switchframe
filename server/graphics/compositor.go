@@ -25,6 +25,8 @@ type State struct {
 	Active       bool    `json:"active"`
 	Template     string  `json:"template,omitempty"`
 	FadePosition float64 `json:"fadePosition,omitempty"` // 0.0 = invisible, 1.0 = fully visible
+	ProgramWidth  int    `json:"programWidth,omitempty"`
+	ProgramHeight int    `json:"programHeight,omitempty"`
 }
 
 // Compositor manages the downstream keyer (DSK) graphics overlay state.
@@ -62,7 +64,12 @@ type Compositor struct {
 	needsIDR       bool   // force IDR on next encoded frame after activation
 
 	// Callback invoked on state change (active/inactive/fade).
-	onStateChange func()
+	// Receives a snapshot of the current state so callers don't need
+	// to call Status() (which would deadlock under the compositor's lock).
+	onStateChange func(State)
+
+	// Returns program video resolution. Set via SetResolutionProvider.
+	resolutionProvider func() (width, height int)
 }
 
 // NewCompositor creates a new graphics overlay compositor.
@@ -188,11 +195,15 @@ func (c *Compositor) AutoOff(duration time.Duration) error {
 func (c *Compositor) Status() State {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return State{
+	s := State{
 		Active:       c.active,
 		Template:     c.template,
 		FadePosition: c.fadePosition,
 	}
+	if c.resolutionProvider != nil {
+		s.ProgramWidth, s.ProgramHeight = c.resolutionProvider()
+	}
+	return s
 }
 
 // Overlay returns the current RGBA overlay data, dimensions, and alpha
@@ -206,8 +217,20 @@ func (c *Compositor) Overlay() (rgba []byte, width, height int, alphaScale float
 	return c.overlay, c.overlayWidth, c.overlayHeight, c.fadePosition
 }
 
+// SetResolutionProvider sets a callback that returns the current program
+// video resolution. Used by Status() to inform clients what resolution
+// to render graphics at.
+func (c *Compositor) SetResolutionProvider(fn func() (width, height int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resolutionProvider = fn
+}
+
 // OnStateChange registers a callback invoked when the overlay state changes.
-func (c *Compositor) OnStateChange(fn func()) {
+// The callback receives a snapshot of the compositor's state so it doesn't
+// need to call Status() (which would deadlock since the callback runs under
+// the compositor's lock).
+func (c *Compositor) OnStateChange(fn func(State)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onStateChange = fn
@@ -461,9 +484,15 @@ func (c *Compositor) cancelFadeLocked() {
 }
 
 // notifyStateChange invokes the state change callback if set.
-// Must be called with mu held (read or write).
+// Must be called with mu held (read or write). Builds a state snapshot
+// under the lock and passes it to the callback so the callback never
+// needs to call Status() (which would deadlock).
 func (c *Compositor) notifyStateChange() {
 	if c.onStateChange != nil {
-		c.onStateChange()
+		c.onStateChange(State{
+			Active:       c.active,
+			Template:     c.template,
+			FadePosition: c.fadePosition,
+		})
 	}
 }

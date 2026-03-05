@@ -129,7 +129,7 @@ func TestCompositor_AutoOnAutoOff(t *testing.T) {
 	defer c.Close()
 
 	var stateChanges int32
-	c.OnStateChange(func() {
+	c.OnStateChange(func(_ State) {
 		atomic.AddInt32(&stateChanges, 1)
 	})
 

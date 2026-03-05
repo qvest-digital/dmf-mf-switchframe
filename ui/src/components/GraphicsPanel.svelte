@@ -15,7 +15,6 @@
 	let previewCanvas: HTMLCanvasElement | null = $state(null);
 
 	const publisher = new GraphicsPublisher();
-	publisher.init(320, 240);
 
 	const selectedTemplate = $derived(builtinTemplates[selectedTemplateId]);
 	const graphicsActive = $derived(crState.graphics?.active ?? false);
