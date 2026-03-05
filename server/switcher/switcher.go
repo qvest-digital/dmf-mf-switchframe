@@ -332,7 +332,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
 
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -432,7 +432,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.transitionsStarted.Add(1)
 		audioHandler := s.audioTransition
 
-		s.seq++
+		atomic.AddUint64(&s.seq, 1)
 		snapshot := s.buildStateLocked()
 		s.mu.Unlock()
 
@@ -490,7 +490,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
 
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -525,7 +525,7 @@ func (s *Switcher) AbortTransition() {
 			s.ftbActive = false
 		}
 		s.transEngine = nil
-		s.seq++
+		atomic.AddUint64(&s.seq, 1)
 	}
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -592,7 +592,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues(transType).Inc()
 	}
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -652,7 +652,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 		s.ftbActive = false
 	}
 	// ftbActive stays true when completed (screen is black)
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -708,7 +708,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		replayFrames = s.gopCache.GetOriginalGOP(programSource)
 	}
 
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -820,7 +820,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			s.previewSource = oldProgram
 		}
 		audioCut = s.audioCut
-		s.seq++
+		atomic.AddUint64(&s.seq, 1)
 		snapshot = s.buildStateLocked()
 		changed = true
 	}
@@ -849,7 +849,7 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	s.previewSource = sourceKey
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -866,7 +866,7 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	ss.label = label
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -894,7 +894,7 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 	slog.Info("switcher: source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
 	s.mu.Lock()
-	s.seq++
+	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
@@ -946,7 +946,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"preview_source":            s.previewSource,
 		"in_transition":             s.inTransition,
 		"ftb_active":                s.ftbActive,
-		"seq":                       s.seq,
+		"seq":                       atomic.LoadUint64(&s.seq),
 		"sources":                   sources,
 		"idr_gate_events":           s.idrGateEvents.Load(),
 		"last_idr_gate_duration_ms": s.lastIDRGateDurationMs.Load(),
@@ -998,7 +998,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		FTBActive:      s.ftbActive,
 		TallyState:     tally,
 		Sources:        sources,
-		Seq:            s.seq,
+		Seq:            atomic.LoadUint64(&s.seq),
 		Timestamp:      time.Now().UnixMilli(),
 	}
 	if s.inTransition && s.transEngine != nil {

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -856,4 +857,78 @@ func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
 	agoMs := cam1Info["last_frame_ago_ms"].(int64)
 	require.GreaterOrEqual(t, agoMs, int64(0))
 	require.Less(t, agoMs, int64(1000), "should be less than 1s since we just sent a frame")
+}
+
+// TestSeqConcurrentAccess exercises concurrent reads and writes of the seq
+// counter to verify there are no data races. Under the race detector, bare
+// s.seq++ (non-atomic read-modify-write) concurrent with State() reads
+// would be flagged as a race. This test is designed to trigger that scenario.
+func TestSeqConcurrentAccess(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+
+	// Put cam1 on program so we can toggle between cam1 and cam2.
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	const goroutines = 4
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	// Writer goroutine 1: alternating Cut between cam1 and cam2.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if i%2 == 0 {
+				_ = sw.Cut(context.Background(), "cam2")
+			} else {
+				_ = sw.Cut(context.Background(), "cam1")
+			}
+		}
+	}()
+
+	// Writer goroutine 2: alternating SetPreview.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if i%2 == 0 {
+				_ = sw.SetPreview(context.Background(), "cam1")
+			} else {
+				_ = sw.SetPreview(context.Background(), "cam2")
+			}
+		}
+	}()
+
+	// Writer goroutine 3: SetLabel (also increments seq).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = sw.SetLabel(context.Background(), "cam1", fmt.Sprintf("Camera %d", i))
+		}
+	}()
+
+	// Reader goroutine: concurrent State() reads.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			state := sw.State()
+			// Seq should be monotonically increasing (each read should
+			// see a value >= previous), but we don't enforce strict ordering
+			// here — the key assertion is that the race detector does not fire.
+			_ = state.Seq
+		}
+	}()
+
+	wg.Wait()
+
+	// After all mutations, seq should be > 0.
+	finalState := sw.State()
+	require.Greater(t, finalState.Seq, uint64(0), "seq should have been incremented")
 }
