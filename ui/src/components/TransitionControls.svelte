@@ -4,8 +4,11 @@
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 
-	interface Props { state: ControlRoomState; }
-	let { state }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		pendingConfirm?: string | null;
+	}
+	let { state, pendingConfirm = null }: Props = $props();
 
 	type TransType = 'mix' | 'dip' | 'wipe';
 	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
@@ -76,7 +79,7 @@
 <div class="transition-controls">
 	<div class="transition-row">
 		<div class="transition-buttons">
-			<button class="btn cut" onclick={() => apiCall(cut(state.previewSource), 'Cut failed')} disabled={!state.previewSource}>
+			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(state.previewSource), 'Cut failed')} disabled={!state.previewSource}>
 				CUT
 				<span class="shortcut">Space</span>
 			</button>
@@ -193,6 +196,18 @@
 		border-color: var(--tally-program);
 		background: var(--tally-program-dim);
 		box-shadow: 0 0 8px rgba(220, 38, 38, 0.15);
+	}
+
+	.btn.cut.confirming {
+		animation: pulse-confirm 0.5s ease-in-out infinite;
+		border-color: var(--tally-program);
+		background: var(--tally-program-dim);
+		box-shadow: 0 0 16px rgba(220, 38, 38, 0.4);
+	}
+
+	@keyframes pulse-confirm {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.6; }
 	}
 
 	.btn.auto:not(:disabled):hover {

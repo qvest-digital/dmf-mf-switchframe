@@ -1,3 +1,5 @@
+import { getConfirmMode } from '$lib/state/preferences.svelte';
+
 export interface KeyboardActions {
 	onCut: () => void;
 	onSetPreview: (sourceKey: string) => void;
@@ -14,6 +16,12 @@ export interface KeyboardActions {
 export class KeyboardHandler {
 	private actions: KeyboardActions;
 	private listener: ((e: KeyboardEvent) => void) | null = null;
+	private pendingConfirm: { action: string; key?: string; timestamp: number } | null = null;
+	private confirmTimeout: ReturnType<typeof setTimeout> | null = null;
+
+	get pendingConfirmAction(): string | null {
+		return this.pendingConfirm?.action ?? null;
+	}
 
 	constructor(actions: KeyboardActions) {
 		this.actions = actions;
@@ -29,6 +37,24 @@ export class KeyboardHandler {
 			document.removeEventListener('keydown', this.listener, true);
 			this.listener = null;
 		}
+		this.clearPendingConfirm();
+	}
+
+	private setPendingConfirm(action: string, key?: string) {
+		this.clearPendingConfirm();
+		this.pendingConfirm = { action, key, timestamp: Date.now() };
+		this.confirmTimeout = setTimeout(() => {
+			this.pendingConfirm = null;
+			this.confirmTimeout = null;
+		}, 500);
+	}
+
+	private clearPendingConfirm() {
+		if (this.confirmTimeout) {
+			clearTimeout(this.confirmTimeout);
+			this.confirmTimeout = null;
+		}
+		this.pendingConfirm = null;
 	}
 
 	private handleKeydown(e: KeyboardEvent) {
@@ -66,7 +92,16 @@ export class KeyboardHandler {
 					e.preventDefault();
 					e.stopPropagation();
 					if (e.shiftKey) {
-						this.actions.onHotPunch(keys[idx]);
+						if (getConfirmMode()) {
+							if (this.pendingConfirm?.action === 'hotpunch' && this.pendingConfirm?.key === keys[idx]) {
+								this.clearPendingConfirm();
+								this.actions.onHotPunch(keys[idx]);
+							} else {
+								this.setPendingConfirm('hotpunch', keys[idx]);
+							}
+						} else {
+							this.actions.onHotPunch(keys[idx]);
+						}
 					} else {
 						this.actions.onSetPreview(keys[idx]);
 					}
@@ -79,7 +114,16 @@ export class KeyboardHandler {
 			case 'Space':
 				e.preventDefault();
 				e.stopPropagation();
-				this.actions.onCut();
+				if (getConfirmMode()) {
+					if (this.pendingConfirm?.action === 'cut') {
+						this.clearPendingConfirm();
+						this.actions.onCut();
+					} else {
+						this.setPendingConfirm('cut');
+					}
+				} else {
+					this.actions.onCut();
+				}
 				break;
 			case 'Enter':
 				e.preventDefault();

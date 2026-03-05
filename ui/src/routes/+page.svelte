@@ -400,7 +400,7 @@
 						<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
 						<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
 					</div>
-					<TransitionControls state={store.effectiveState} />
+					<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} />
 				</div>
 				<div class="graphics-section">
 					<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />

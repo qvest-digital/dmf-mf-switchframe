@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { KeyboardHandler } from './handler';
+import { getConfirmMode, setConfirmMode } from '$lib/state/preferences.svelte';
+
+vi.mock('$lib/state/preferences.svelte', () => {
+	let _confirmMode = false;
+	return {
+		getConfirmMode: vi.fn(() => _confirmMode),
+		setConfirmMode: vi.fn((val: boolean) => { _confirmMode = val; }),
+	};
+});
 
 describe('KeyboardHandler', () => {
 	let handler: KeyboardHandler;
@@ -184,5 +193,153 @@ describe('Transition keyboard shortcuts', () => {
 
 		expect(onSetTransitionType).toHaveBeenCalledWith('dip');
 		handler.detach();
+	});
+});
+
+describe('confirm mode', () => {
+	let handler: KeyboardHandler;
+	let actions: {
+		cut: ReturnType<typeof vi.fn>;
+		setPreview: ReturnType<typeof vi.fn>;
+		hotPunch: ReturnType<typeof vi.fn>;
+		autoTransition: ReturnType<typeof vi.fn>;
+		fadeToBlack: ReturnType<typeof vi.fn>;
+		toggleFullscreen: ReturnType<typeof vi.fn>;
+		toggleOverlay: ReturnType<typeof vi.fn>;
+	};
+
+	function press(code: string, opts: Partial<KeyboardEventInit> = {}) {
+		const event = new KeyboardEvent('keydown', {
+			code,
+			bubbles: true,
+			cancelable: true,
+			...opts,
+		});
+		document.dispatchEvent(event);
+		return event;
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// Enable confirm mode
+		vi.mocked(getConfirmMode).mockReturnValue(true);
+		actions = {
+			cut: vi.fn(),
+			setPreview: vi.fn(),
+			hotPunch: vi.fn(),
+			autoTransition: vi.fn(),
+			fadeToBlack: vi.fn(),
+			toggleFullscreen: vi.fn(),
+			toggleOverlay: vi.fn(),
+		};
+		handler = new KeyboardHandler({
+			onCut: actions.cut,
+			onSetPreview: actions.setPreview,
+			onHotPunch: actions.hotPunch,
+			onAutoTransition: actions.autoTransition,
+			onFadeToBlack: actions.fadeToBlack,
+			onToggleFullscreen: actions.toggleFullscreen,
+			onToggleOverlay: actions.toggleOverlay,
+			getSourceKeys: () => ['cam1', 'cam2', 'cam3'],
+		});
+		handler.attach();
+	});
+
+	afterEach(() => {
+		handler.detach();
+		vi.useRealTimers();
+	});
+
+	it('single Space does not execute cut when confirm mode is on', () => {
+		press('Space');
+		expect(actions.cut).not.toHaveBeenCalled();
+	});
+
+	it('single Space sets pendingConfirmAction to "cut"', () => {
+		press('Space');
+		expect(handler.pendingConfirmAction).toBe('cut');
+	});
+
+	it('double Space within 500ms executes cut', () => {
+		press('Space');
+		expect(actions.cut).not.toHaveBeenCalled();
+		press('Space');
+		expect(actions.cut).toHaveBeenCalledOnce();
+	});
+
+	it('double Space clears pendingConfirmAction after execution', () => {
+		press('Space');
+		press('Space');
+		expect(handler.pendingConfirmAction).toBeNull();
+	});
+
+	it('Space then timeout clears pending', () => {
+		press('Space');
+		expect(handler.pendingConfirmAction).toBe('cut');
+		vi.advanceTimersByTime(500);
+		expect(handler.pendingConfirmAction).toBeNull();
+	});
+
+	it('Space after timeout does not execute cut', () => {
+		press('Space');
+		vi.advanceTimersByTime(501);
+		press('Space');
+		expect(actions.cut).not.toHaveBeenCalled();
+		// Second press sets new pending
+		expect(handler.pendingConfirmAction).toBe('cut');
+	});
+
+	it('single Shift+Digit does not execute hot-punch', () => {
+		press('Digit1', { shiftKey: true });
+		expect(actions.hotPunch).not.toHaveBeenCalled();
+	});
+
+	it('single Shift+Digit sets pendingConfirmAction to "hotpunch"', () => {
+		press('Digit1', { shiftKey: true });
+		expect(handler.pendingConfirmAction).toBe('hotpunch');
+	});
+
+	it('double Shift+Digit within 500ms executes hot-punch', () => {
+		press('Digit1', { shiftKey: true });
+		expect(actions.hotPunch).not.toHaveBeenCalled();
+		press('Digit1', { shiftKey: true });
+		expect(actions.hotPunch).toHaveBeenCalledWith('cam1');
+	});
+
+	it('Shift+Digit1 then Shift+Digit2 does not execute (different key)', () => {
+		press('Digit1', { shiftKey: true });
+		press('Digit2', { shiftKey: true });
+		expect(actions.hotPunch).not.toHaveBeenCalled();
+		// Should now have pending for cam2
+		expect(handler.pendingConfirmAction).toBe('hotpunch');
+	});
+
+	it('confirm mode off bypasses double-press requirement for cut', () => {
+		vi.mocked(getConfirmMode).mockReturnValue(false);
+		press('Space');
+		expect(actions.cut).toHaveBeenCalledOnce();
+		expect(handler.pendingConfirmAction).toBeNull();
+	});
+
+	it('confirm mode off bypasses double-press requirement for hot-punch', () => {
+		vi.mocked(getConfirmMode).mockReturnValue(false);
+		press('Digit1', { shiftKey: true });
+		expect(actions.hotPunch).toHaveBeenCalledWith('cam1');
+		expect(handler.pendingConfirmAction).toBeNull();
+	});
+
+	it('AUTO is not gated by confirm mode', () => {
+		press('Enter');
+		expect(actions.autoTransition).toHaveBeenCalledOnce();
+	});
+
+	it('FTB is not gated by confirm mode', () => {
+		press('F1');
+		expect(actions.fadeToBlack).toHaveBeenCalledOnce();
+	});
+
+	it('preview select is not gated by confirm mode', () => {
+		press('Digit1');
+		expect(actions.setPreview).toHaveBeenCalledWith('cam1');
 	});
 });
