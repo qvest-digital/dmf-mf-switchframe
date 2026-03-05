@@ -95,7 +95,8 @@ func TestProactiveHealthBroadcast(t *testing.T) {
 
 	// Wait for source to become stale (>1s with no frames, per staleThreshold).
 	// The health monitor should detect this and publish state.
-	time.Sleep(1500 * time.Millisecond)
+	// With hysteresis (3 consecutive checks at 100ms), stale detection takes ~1300ms.
+	time.Sleep(2000 * time.Millisecond)
 
 	mu.Lock()
 	found := false
@@ -219,6 +220,32 @@ func TestHealthHysteresis_IntermittentFramesResetCounter(t *testing.T) {
 	require.False(t, changed, "second check should not trigger (count=2)")
 	changed = hm.checkForChanges()
 	require.True(t, changed, "third check should trigger stale transition (count=3)")
+
+	hm.stop()
+}
+
+func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	// Establish initial healthy status.
+	hm.checkForChanges()
+	require.Equal(t, internal.SourceHealthy, hm.status("cam1"))
+
+	// Let the source become stale (past 1s threshold).
+	time.Sleep(1100 * time.Millisecond)
+
+	// One degradation check: hysteresis count = 1 of 3, not committed yet.
+	hm.checkForChanges()
+
+	// status() should return the committed status (healthy), not the raw (stale).
+	require.Equal(t, internal.SourceHealthy, hm.status("cam1"),
+		"status() should return committed hysteresis-filtered status, not raw")
+
+	// rawStatus() should return the actual computed status (stale).
+	require.Equal(t, internal.SourceStale, hm.rawStatus("cam1"),
+		"rawStatus() should return the instantaneous computed status")
 
 	hm.stop()
 }

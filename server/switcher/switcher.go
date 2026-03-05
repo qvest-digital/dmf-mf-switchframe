@@ -816,7 +816,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		sources[key] = map[string]any{
 			"video_frames_in":   ss.viewer.videoSent.Load(),
 			"audio_frames_in":   ss.viewer.audioSent.Load(),
-			"health_status":     string(s.health.status(key)),
+			"health_status":     string(s.health.rawStatus(key)),
 			"last_frame_ago_ms": s.health.lastFrameAgoMs(key),
 			"pending_idr":       ss.pendingIDR,
 		}

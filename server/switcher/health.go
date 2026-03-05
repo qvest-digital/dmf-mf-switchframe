@@ -78,9 +78,25 @@ func (hm *healthMonitor) recordFrame(sourceKey string) {
 	}
 }
 
+// status returns the hysteresis-filtered health status for a source.
+// It reads from the committed lastStatus map (set by checkForChanges)
+// so that transient jitter does not appear in state broadcasts.
+// Falls back to raw computeStatus when no committed status exists yet.
 func (hm *healthMonitor) status(sourceKey string) internal.SourceHealthStatus {
-	now := time.Now()
-	return hm.computeStatus(sourceKey, now)
+	hm.mu.RLock()
+	if s, ok := hm.lastStatus[sourceKey]; ok {
+		hm.mu.RUnlock()
+		return s
+	}
+	hm.mu.RUnlock()
+	return hm.computeStatus(sourceKey, time.Now())
+}
+
+// rawStatus returns the instantaneous (non-hysteresis-filtered) health status.
+// Used for debug/diagnostic endpoints where the operator wants to see the
+// real-time computed status, not the committed broadcast status.
+func (hm *healthMonitor) rawStatus(sourceKey string) internal.SourceHealthStatus {
+	return hm.computeStatus(sourceKey, time.Now())
 }
 
 // lastFrameAgoMs returns how many milliseconds ago the last frame was received
