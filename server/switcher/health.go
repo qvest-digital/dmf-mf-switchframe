@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -125,21 +126,41 @@ func (hm *healthMonitor) start(interval time.Duration, publishFn func()) {
 	}()
 }
 
+// healthChange records a source health status transition for logging outside the lock.
+type healthChange struct {
+	source     string
+	fromStatus internal.SourceHealthStatus
+	toStatus   internal.SourceHealthStatus
+}
+
 // checkForChanges compares current health status of all registered sources
 // against their last-known status. Returns true if any source changed.
 func (hm *healthMonitor) checkForChanges() bool {
 	hm.mu.Lock()
-	defer hm.mu.Unlock()
 
 	changed := false
+	var changes []healthChange
 	now := time.Now()
 	for key := range hm.sources {
 		newStatus := hm.computeStatus(key, now)
 		if prev, ok := hm.lastStatus[key]; !ok || prev != newStatus {
+			if ok {
+				changes = append(changes, healthChange{source: key, fromStatus: prev, toStatus: newStatus})
+			}
 			hm.lastStatus[key] = newStatus
 			changed = true
 		}
 	}
+	hm.mu.Unlock()
+
+	// Log outside the lock
+	for _, c := range changes {
+		slog.Warn("switcher: source health changed",
+			"source", c.source,
+			"from_status", string(c.fromStatus),
+			"to_status", string(c.toStatus))
+	}
+
 	return changed
 }
 

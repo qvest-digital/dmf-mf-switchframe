@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -270,6 +271,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	slog.Info("switcher: transition started",
+		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
+
 	if audioHandler != nil {
 		audioMode := internal.AudioCrossfade
 		if tt == transition.TransitionDip {
@@ -368,6 +372,9 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		snapshot := s.buildStateLocked()
 		s.mu.Unlock()
 
+		slog.Info("switcher: transition started",
+			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", 1000)
+
 		if audioHandler != nil {
 			// Unmute program audio so the fade-in is audible
 			audioHandler.SetProgramMute(false)
@@ -424,6 +431,9 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	slog.Info("switcher: transition started",
+		"type", "ftb", "from", fromSource, "to", "", "duration_ms", 1000)
+
 	if audioHandler != nil {
 		audioHandler.OnTransitionStart(fromSource, "", internal.AudioFadeOut, 1000)
 	}
@@ -437,8 +447,12 @@ func (s *Switcher) AbortTransition() {
 	engine := s.transEngine
 	wasActive := s.inTransition
 	audioHandler := s.audioTransition
+	var transType string
 
 	if wasActive {
+		if engine != nil {
+			transType = string(engine.TransitionType())
+		}
 		s.inTransition = false
 		// When aborting a reverse FTB, keep ftbActive true (screen stays black).
 		// For all other transitions (including forward FTB), clear ftbActive.
@@ -457,6 +471,8 @@ func (s *Switcher) AbortTransition() {
 		engine.Stop()
 	}
 	if wasActive {
+		slog.Warn("switcher: transition aborted", "type", transType, "reason", "manual abort")
+
 		if audioHandler != nil {
 			audioHandler.OnTransitionComplete()
 		}
@@ -502,12 +518,23 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		replayFrames = s.gopCache.GetOriginalGOP(newProgram)
 	}
 
+	transType := ""
+	if s.transEngine != nil {
+		transType = string(s.transEngine.TransitionType())
+	}
+
 	s.inTransition = false
 	s.transEngine = nil
 	s.transitionsCompleted.Add(1)
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
+
+	if aborted {
+		slog.Warn("switcher: transition aborted", "type", transType, "reason", "engine aborted")
+	} else {
+		slog.Info("switcher: transition completed", "type", transType)
+	}
 
 	// Replay the source's cached GOP to bridge the transition→passthrough
 	// gap. pendingIDR=true prevents live passthrough from interleaving.
@@ -556,6 +583,12 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.seq++
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
+
+	if aborted {
+		slog.Warn("switcher: transition aborted", "type", "ftb", "reason", "engine aborted")
+	} else {
+		slog.Info("switcher: FTB activated")
+	}
 
 	if audioHandler != nil {
 		audioHandler.OnTransitionComplete()
@@ -620,6 +653,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.mu.Unlock()
 	}
 
+	if aborted {
+		slog.Warn("switcher: transition aborted", "type", "ftb_reverse", "reason", "engine aborted")
+	} else {
+		slog.Info("switcher: FTB deactivated")
+	}
+
 	if audioHandler != nil {
 		audioHandler.OnTransitionComplete()
 		if aborted {
@@ -636,11 +675,13 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 // source key.
 func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	viewer := newSourceViewer(key, s)
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
 	s.health.registerSource(key)
+	s.mu.Unlock()
+
+	slog.Info("switcher: source registered", "source_key", key)
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -648,9 +689,9 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 // preview, those fields are cleared.
 func (s *Switcher) UnregisterSource(key string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	ss, ok := s.sources[key]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	ss.relay.RemoveViewer(ss.viewer.ID())
@@ -663,6 +704,9 @@ func (s *Switcher) UnregisterSource(key string) {
 	if s.previewSource == key {
 		s.previewSource = ""
 	}
+	s.mu.Unlock()
+
+	slog.Info("switcher: source unregistered", "source_key", key)
 }
 
 // Cut performs a hard cut to the named source, making it the program output.
@@ -698,6 +742,8 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Unlock()
 
 	if changed {
+		slog.Info("switcher: cut executed", "source", sourceKey, "previous_source", oldProgram)
+
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
 		if audioCut != nil {
 			if oldProgram != "" {
@@ -1022,15 +1068,19 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	}
 	s.mu.Lock()
 	// Re-check under write lock (another goroutine may have cleared it).
+	var gateDurationMs int64
 	if ss.pendingIDR {
 		ss.pendingIDR = false
 		// Record how long the IDR gate was active.
 		if startNano := s.idrGateStartNano.Load(); startNano > 0 {
 			dur := time.Since(time.Unix(0, startNano))
-			s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+			gateDurationMs = dur.Milliseconds()
+			s.lastIDRGateDurationMs.Store(gateDurationMs)
 		}
 	}
 	s.mu.Unlock()
+
+	slog.Debug("switcher: IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
 	s.programRelay.BroadcastVideo(frame)
 }
 

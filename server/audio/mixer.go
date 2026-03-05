@@ -2,6 +2,7 @@ package audio
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -429,6 +430,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				m.programPeakR = peakR
 			} else if err != nil {
 				m.decodeErrors.Add(1)
+				slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
 			}
 		}
 		m.mu.Unlock()
@@ -464,6 +466,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
+		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
 		return
 	}
 
@@ -578,6 +581,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		m.encodeErrors.Add(1)
 		m.mixBuffer = make(map[string][]float32)
 		m.mu.Unlock()
+		slog.Warn("mixer: encode error", "err", err)
 		return
 	}
 	m.framesMixed.Add(1)
@@ -635,6 +639,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
+		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
 		return
 	}
 
@@ -663,6 +668,13 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Track crossfade timeouts (timed out with only one source)
 	if timedOut && (!hasFrom || !hasTo) {
 		m.crossfadeTimeouts.Add(1)
+		missingSrc := m.crossfadeFrom
+		if hasFrom {
+			missingSrc = m.crossfadeTo
+		}
+		slog.Warn("mixer: crossfade timeout",
+			"source", missingSrc,
+			"deadline_ms", crossfadeTimeout.Milliseconds())
 	}
 
 	// Apply equal-power crossfade (or use single source if timed out)
@@ -705,6 +717,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		m.encodeErrors.Add(1)
 		m.crossfadeActive = false
 		m.mu.Unlock()
+		slog.Warn("mixer: encode error", "err", err)
 		return
 	}
 
@@ -726,10 +739,18 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 }
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
+// Logs when the mode actually changes (rare — only on cuts, mute toggles, etc.).
 func (m *AudioMixer) recalcPassthrough() {
+	prev := m.passthrough
+
 	// Program mute or active transition crossfade require the mixing path.
 	if m.programMuted || m.transCrossfadeActive {
 		m.passthrough = false
+		if prev != m.passthrough {
+			slog.Info("mixer: passthrough mode changed",
+				slog.Bool("passthrough", false),
+				slog.String("reason", "program muted or transition crossfade active"))
+		}
 		return
 	}
 
@@ -747,6 +768,22 @@ func (m *AudioMixer) recalcPassthrough() {
 		m.passthrough = !ch.muted && ch.level == 0
 	} else {
 		m.passthrough = false
+	}
+
+	if prev != m.passthrough {
+		var reason string
+		if m.passthrough {
+			reason = "single active source at 0dB"
+		} else if activeCount == 0 {
+			reason = "no active sources"
+		} else if activeCount == 1 {
+			reason = "single active source with gain or mute"
+		} else {
+			reason = "multiple active sources or master gain"
+		}
+		slog.Info("mixer: passthrough mode changed",
+			slog.Bool("passthrough", m.passthrough),
+			slog.String("reason", reason))
 	}
 }
 
