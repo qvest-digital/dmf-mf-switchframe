@@ -22,6 +22,7 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/output"
@@ -231,16 +232,27 @@ func run() error {
 	}
 	slog.Info("preset store initialized", "path", presetPath)
 
-	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore))
+	// Create graphics compositor for the downstream keyer (DSK).
+	compositor := graphics.NewCompositor()
+	defer compositor.Close()
 
-	// enrichState patches a ControlRoomState snapshot with output status.
+	// Create REST API now that switcher, mixer, and output manager exist.
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor))
+
+	// enrichState patches a ControlRoomState snapshot with output + graphics status.
 	enrichState := func(state internal.ControlRoomState) internal.ControlRoomState {
 		if recStatus := outputMgr.RecordingStatus(); recStatus.Active {
 			state.Recording = &recStatus
 		}
 		if srtStatus := outputMgr.SRTOutputStatus(); srtStatus.Active {
 			state.SRTOutput = &srtStatus
+		}
+		if gfxStatus := compositor.Status(); gfxStatus.Active {
+			state.Graphics = &internal.GraphicsState{
+				Active:       gfxStatus.Active,
+				Template:     gfxStatus.Template,
+				FadePosition: gfxStatus.FadePosition,
+			}
 		}
 		return state
 	}
@@ -255,6 +267,11 @@ func run() error {
 	// Output state changes (recording start/stop, SRT connect/disconnect)
 	// also trigger a full state broadcast.
 	outputMgr.OnStateChange(func() {
+		controlPub.Publish(enrichState(sw.State()))
+	})
+
+	// Graphics overlay state changes also trigger a state broadcast.
+	compositor.OnStateChange(func() {
 		controlPub.Publish(enrichState(sw.State()))
 	})
 

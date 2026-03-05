@@ -91,6 +91,18 @@ describe('KeyboardHandler', () => {
 		expect(actions.fadeToBlack).toHaveBeenCalled();
 	});
 
+	it('F2 dispatches toggle-dsk', () => {
+		const toggleDSK = vi.fn();
+		handler.detach();
+		handler = new KeyboardHandler({
+			...handler['actions'],
+			onToggleDSK: toggleDSK,
+		});
+		handler.attach();
+		press('F2');
+		expect(toggleDSK).toHaveBeenCalled();
+	});
+
 	it('Backquote dispatches toggle-fullscreen', () => {
 		press('Backquote');
 		expect(actions.toggleFullscreen).toHaveBeenCalled();

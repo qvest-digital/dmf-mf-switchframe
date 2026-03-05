@@ -11,8 +11,9 @@
 	import LoadingOverlay from '../components/LoadingOverlay.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
+	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -79,6 +80,13 @@
 				: document.documentElement.requestFullscreen();
 		},
 		onToggleOverlay: () => { showOverlay = !showOverlay; },
+		onToggleDSK: () => {
+			if (store.state.graphics?.active) {
+				fireAndForget(graphicsOff());
+			} else {
+				fireAndForget(graphicsOn());
+			}
+		},
 		onSetTransitionType: (type) => {
 			if (type === 'mix' || type === 'dip') {
 				transitionType = type;
@@ -366,6 +374,9 @@
 					</div>
 					<TransitionControls state={store.state} />
 				</div>
+				<div class="graphics-section">
+					<GraphicsPanel state={store.state} />
+				</div>
 			</section>
 		</div>
 
@@ -419,6 +430,14 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+	}
+
+	.graphics-section {
+		width: 240px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border-subtle);
+		padding: 4px;
 	}
 
 	.buses {

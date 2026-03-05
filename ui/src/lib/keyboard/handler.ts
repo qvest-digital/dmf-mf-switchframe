@@ -7,6 +7,7 @@ export interface KeyboardActions {
 	onToggleFullscreen: () => void;
 	onToggleOverlay: () => void;
 	onSetTransitionType?: (type: string) => void;
+	onToggleDSK?: () => void;
 	getSourceKeys: () => string[];
 }
 
@@ -89,6 +90,11 @@ export class KeyboardHandler {
 				e.preventDefault();
 				e.stopPropagation();
 				this.actions.onFadeToBlack();
+				break;
+			case 'F2':
+				e.preventDefault();
+				e.stopPropagation();
+				this.actions.onToggleDSK?.();
 				break;
 			case 'Backquote':
 				e.preventDefault();

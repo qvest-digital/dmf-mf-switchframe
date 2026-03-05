@@ -42,6 +42,12 @@ export interface SRTOutputConfig {
 	streamID?: string;
 }
 
+export interface GraphicsState {
+	active: boolean;
+	template?: string;
+	fadePosition?: number;
+}
+
 export interface PresetInfo {
 	id: string;
 	name: string;
@@ -87,6 +93,7 @@ export interface ControlRoomState {
 	presets?: PresetInfo[];
 	recording?: RecordingStatus;
 	srtOutput?: SRTOutputStatus;
+	graphics?: GraphicsState;
 	seq: number;
 	timestamp: number;
 }

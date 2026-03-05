@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState } from './types';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -163,6 +163,28 @@ export function deletePreset(id: string): Promise<void> {
 
 export function recallPreset(id: string): Promise<RecallPresetResponse> {
 	return post(`/api/presets/${encodeURIComponent(id)}/recall`, {});
+}
+
+// --- Graphics Overlay API ---
+
+export function graphicsOn(): Promise<GraphicsState> {
+	return post('/api/graphics/on', {});
+}
+
+export function graphicsOff(): Promise<GraphicsState> {
+	return post('/api/graphics/off', {});
+}
+
+export function graphicsAutoOn(): Promise<GraphicsState> {
+	return post('/api/graphics/auto-on', {});
+}
+
+export function graphicsAutoOff(): Promise<GraphicsState> {
+	return post('/api/graphics/auto-off', {});
+}
+
+export function getGraphicsStatus(): Promise<GraphicsState> {
+	return request('/api/graphics/status');
 }
 
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */

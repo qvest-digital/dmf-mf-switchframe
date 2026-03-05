@@ -75,6 +75,14 @@ type PresetInfo struct {
 	Name string `json:"name"`
 }
 
+// GraphicsState is the JSON-serializable state for the downstream
+// keyer (DSK) graphics overlay, included in ControlRoomState.
+type GraphicsState struct {
+	Active       bool    `json:"active"`
+	Template     string  `json:"template,omitempty"`
+	FadePosition float64 `json:"fadePosition,omitempty"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -94,6 +102,7 @@ type ControlRoomState struct {
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`
 	Presets              []PresetInfo              `json:"presets,omitempty"`
+	Graphics             *GraphicsState            `json:"graphics,omitempty"`
 	Seq                  uint64                    `json:"seq"`
 	Timestamp            int64                     `json:"timestamp"`
 }

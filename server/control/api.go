@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
@@ -72,6 +74,11 @@ func WithPresetStore(ps *preset.PresetStore) APIOption {
 	return func(a *API) { a.presetStore = ps }
 }
 
+// WithCompositor attaches a graphics compositor to the API.
+func WithCompositor(c *graphics.Compositor) APIOption {
+	return func(a *API) { a.compositor = c }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher    *switcher.Switcher
@@ -79,6 +86,7 @@ type API struct {
 	outputMgr   OutputManagerAPI
 	debug       DebugAPI
 	presetStore *preset.PresetStore
+	compositor  *graphics.Compositor
 	mux         *http.ServeMux
 }
 
@@ -128,6 +136,14 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/presets/{id}", a.handleUpdatePreset)
 		mux.HandleFunc("DELETE /api/presets/{id}", a.handleDeletePreset)
 		mux.HandleFunc("POST /api/presets/{id}/recall", a.handleRecallPreset)
+	}
+	if a.compositor != nil {
+		mux.HandleFunc("POST /api/graphics/on", a.handleGraphicsOn)
+		mux.HandleFunc("POST /api/graphics/off", a.handleGraphicsOff)
+		mux.HandleFunc("POST /api/graphics/auto-on", a.handleGraphicsAutoOn)
+		mux.HandleFunc("POST /api/graphics/auto-off", a.handleGraphicsAutoOff)
+		mux.HandleFunc("GET /api/graphics/status", a.handleGraphicsStatus)
+		mux.HandleFunc("POST /api/graphics/frame", a.handleGraphicsFrame)
 	}
 }
 
@@ -785,6 +801,125 @@ func (t *apiRecallTarget) SetMasterLevel(level float64) {
 		return
 	}
 	t.mixer.SetMasterLevel(level)
+}
+
+// --- Graphics Overlay API ---
+
+// graphicsFrameRequest is the JSON body for the graphics frame upload endpoint.
+type graphicsFrameRequest struct {
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	Template string `json:"template"`
+	RGBA     []byte `json:"rgba"` // base64-encoded in JSON
+}
+
+// handleGraphicsOn activates the overlay immediately (CUT ON).
+func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
+	if err := a.compositor.On(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, graphics.ErrNoOverlay) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, graphics.ErrAlreadyActive) {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsOff deactivates the overlay immediately (CUT OFF).
+func (a *API) handleGraphicsOff(w http.ResponseWriter, r *http.Request) {
+	if err := a.compositor.Off(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, graphics.ErrNotActive) {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsAutoOn starts a 500ms fade-in transition (AUTO ON).
+func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
+	if err := a.compositor.AutoOn(500 * time.Millisecond); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, graphics.ErrNoOverlay) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, graphics.ErrFadeActive) {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsAutoOff starts a 500ms fade-out transition (AUTO OFF).
+func (a *API) handleGraphicsAutoOff(w http.ResponseWriter, r *http.Request) {
+	if err := a.compositor.AutoOff(500 * time.Millisecond); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, graphics.ErrNotActive) || errors.Is(err, graphics.ErrFadeActive) {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsStatus returns the current graphics overlay state.
+func (a *API) handleGraphicsStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsFrame receives an RGBA overlay frame from the browser.
+// The body is a JSON object with width, height, template name, and base64-encoded RGBA data.
+func (a *API) handleGraphicsFrame(w http.ResponseWriter, r *http.Request) {
+	// Limit body to 16MB to prevent abuse (1920*1080*4 = ~8MB).
+	body := io.LimitReader(r.Body, 16*1024*1024)
+
+	var req graphicsFrameRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Width <= 0 || req.Height <= 0 {
+		http.Error(w, `{"error":"width and height must be positive"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Width > 3840 || req.Height > 2160 {
+		http.Error(w, `{"error":"resolution exceeds 4K limit"}`, http.StatusBadRequest)
+		return
+	}
+	expected := req.Width * req.Height * 4
+	if len(req.RGBA) != expected {
+		http.Error(w, `{"error":"rgba data size mismatch"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err := a.compositor.SetOverlay(req.RGBA, req.Width, req.Height, req.Template); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // stateToSnapshot converts a ControlRoomState to a ControlRoomSnapshot
