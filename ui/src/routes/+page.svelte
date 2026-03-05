@@ -11,6 +11,7 @@
 	import LoadingOverlay from '../components/LoadingOverlay.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
+	import Toast from '../components/Toast.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
@@ -357,6 +358,7 @@
 {/if}
 
 <ErrorBoundary>
+	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode state={store.state} onSwitchLayout={switchLayout} {onCanvasReady} />
 	{:else}
