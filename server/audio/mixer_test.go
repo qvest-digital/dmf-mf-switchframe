@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1094,4 +1095,107 @@ func TestMixerDeadlockPrevention(t *testing.T) {
 	count := len(outputFrames)
 	mu.Unlock()
 	require.GreaterOrEqual(t, count, 1, "mixer should produce output after deadline even if channel 2 is silent")
+}
+
+func TestChannelDecoderInitOnce(t *testing.T) {
+	// Verify that the decoder factory is called exactly once per channel,
+	// even when multiple goroutines call IngestFrame concurrently.
+	const goroutines = 20
+
+	var factoryCalls atomic.Int64
+
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			factoryCalls.Add(1)
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Force non-passthrough mode so the mixing path's decoder init is exercised.
+	m.SetMasterLevel(-1.0)
+	require.False(t, m.IsPassthrough())
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start // synchronize all goroutines
+			frame := &media.AudioFrame{
+				PTS:        int64(1000 + i),
+				Data:       []byte{0xAA},
+				SampleRate: 48000,
+				Channels:   2,
+			}
+			m.IngestFrame("cam1", frame)
+		}(i)
+	}
+
+	close(start) // release all goroutines at once
+	wg.Wait()
+
+	// The decoder factory must have been called exactly once for "cam1".
+	require.Equal(t, int64(1), factoryCalls.Load(),
+		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
+}
+
+func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
+	// Verify sync.Once works for the crossfade path too.
+	var factoryCalls atomic.Int64
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			factoryCalls.Add(1)
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Trigger crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Ingest frames from both sources — each channel's decoder should init once
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Two channels, each initialized once = 2 factory calls total
+	require.Equal(t, int64(2), factoryCalls.Load(),
+		"decoder factory should be called once per channel (2 channels), got %d", factoryCalls.Load())
+
+	// Now do another crossfade — factories should NOT be called again
+	m.OnCut("cam2", "cam1")
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 2000, Data: []byte{0xCC}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xDD}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, int64(2), factoryCalls.Load(),
+		"decoder factory should not be called again on subsequent crossfades, got %d", factoryCalls.Load())
 }

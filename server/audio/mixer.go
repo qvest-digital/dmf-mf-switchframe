@@ -30,12 +30,13 @@ type MixerConfig struct {
 
 // Channel tracks per-source audio state.
 type Channel struct {
-	sourceKey string
-	level     float64 // dB (-inf to +12)
-	muted     bool
-	afv       bool
-	active    bool
-	decoder   AudioDecoder // lazy init, nil in passthrough
+	sourceKey   string
+	level       float64 // dB (-inf to +12)
+	muted       bool
+	afv         bool
+	active      bool
+	decoder     AudioDecoder // lazy init, nil in passthrough
+	decoderOnce sync.Once    // ensures decoder factory is called at most once
 }
 
 // AudioMixer mixes audio from multiple sources.
@@ -143,6 +144,25 @@ func (m *AudioMixer) Close() error {
 		m.encoder.Close()
 	}
 	return nil
+}
+
+// initChannelDecoder ensures the channel's AAC decoder is initialized exactly
+// once using sync.Once. If the factory returns an error, ch.decoder remains nil
+// and callers must handle that (all call sites already check ch.decoder != nil).
+// If ch.decoder was set externally (e.g., in tests), this is a no-op.
+// Caller must hold m.mu (read or write).
+func (m *AudioMixer) initChannelDecoder(ch *Channel) {
+	if ch.decoder != nil || m.config.DecoderFactory == nil {
+		return
+	}
+	ch.decoderOnce.Do(func() {
+		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			slog.Warn("mixer: decoder factory error", "source", ch.sourceKey, "err", err)
+			return
+		}
+		ch.decoder = dec
+	})
 }
 
 // mixDeadlineTicker runs in the background and forces a mix cycle flush
@@ -572,11 +592,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 		// Decode for peak metering even in passthrough (skip encode).
 		m.mu.Lock()
-		if ch.decoder == nil && m.config.DecoderFactory != nil {
-			if dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels); err == nil {
-				ch.decoder = dec
-			}
-		}
+		m.initChannelDecoder(ch)
 		if ch.decoder != nil {
 			adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 			if pcm, err := ch.decoder.Decode(adtsFrame); err == nil && len(pcm) > 0 {
@@ -603,14 +619,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mu.Lock()
 
 	// Lazy-init decoder for this channel
-	if ch.decoder == nil && m.config.DecoderFactory != nil {
-		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.mu.Unlock()
-			return
-		}
-		ch.decoder = dec
-	}
+	m.initChannelDecoder(ch)
 	if ch.decoder == nil {
 		m.mu.Unlock()
 		return
@@ -710,14 +719,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		m.mu.Unlock()
 		return
 	}
-	if ch.decoder == nil && m.config.DecoderFactory != nil {
-		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.mu.Unlock()
-			return
-		}
-		ch.decoder = dec
-	}
+	m.initChannelDecoder(ch)
 	if ch.decoder == nil {
 		m.mu.Unlock()
 		return
