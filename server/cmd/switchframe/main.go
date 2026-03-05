@@ -37,12 +37,27 @@ func main() {
 func run() error {
 	demoFlag := flag.Bool("demo", false, "Start with simulated camera sources")
 	demoVideoDir := flag.String("demo-video", "", "Directory containing MPEG-TS clips for real video demo (requires --demo)")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
+
+	// Configure structured logging before any slog calls.
+	var lvl slog.LevelVar
+	if err := lvl.UnmarshalText([]byte(*logLevel)); err != nil {
+		return fmt.Errorf("invalid --log-level %q: %w", *logLevel, err)
+	}
+	opts := &slog.HandlerOptions{Level: &lvl}
+	var handler slog.Handler
+	if os.Getenv("APP_ENV") == "production" {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(handler))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	slog.Info("switchframe starting")
+	slog.Info("switchframe starting", "log_level", *logLevel)
 
 	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
 	cert, err := certs.Generate(14 * 24 * time.Hour)
