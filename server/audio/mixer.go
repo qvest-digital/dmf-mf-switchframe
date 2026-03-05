@@ -54,6 +54,11 @@ type AudioMixer struct {
 	mixBuffer    map[string][]float32 // sourceKey → decoded PCM for current cycle
 	mixPTS       int64                // PTS of the current mix cycle
 	mixCycleSize int                  // how many active unmuted channels expected
+	mixStarted   bool                 // true when at least one channel has contributed
+	mixDeadline  time.Time            // deadline for current mix cycle
+
+	// Background ticker for deadline enforcement
+	stopTicker chan struct{}
 
 	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
 	crossfadeFrom     string               // outgoing source key
@@ -86,9 +91,14 @@ type AudioMixer struct {
 	encodeErrors      atomic.Int64
 }
 
+// mixCycleDeadline is the maximum time to wait for all active channels to
+// contribute a frame before producing output with whatever is available.
+// Prevents deadlock when a source stops sending audio.
+const mixCycleDeadline = 50 * time.Millisecond
+
 // NewMixer creates an AudioMixer.
 func NewMixer(config MixerConfig) *AudioMixer {
-	return &AudioMixer{
+	m := &AudioMixer{
 		channels:    make(map[string]*Channel),
 		masterLevel: 0.0,
 		sampleRate:  config.SampleRate,
@@ -96,11 +106,15 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		output:      config.Output,
 		passthrough: true,
 		config:      config,
+		stopTicker:  make(chan struct{}),
 	}
+	go m.mixDeadlineTicker()
+	return m
 }
 
-// Close releases all codec resources.
+// Close releases all codec resources and stops the background ticker.
 func (m *AudioMixer) Close() error {
+	close(m.stopTicker)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, ch := range m.channels {
@@ -112,6 +126,120 @@ func (m *AudioMixer) Close() error {
 		m.encoder.Close()
 	}
 	return nil
+}
+
+// mixDeadlineTicker runs in the background and forces a mix cycle flush
+// when the per-cycle deadline expires. This prevents deadlock when a source
+// stops sending audio while the mixer waits for all channels to contribute.
+func (m *AudioMixer) mixDeadlineTicker() {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stopTicker:
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
+				m.flushMixCycleLocked()
+			}
+			m.mu.Unlock()
+		}
+	}
+}
+
+// flushMixCycleLocked sums the accumulated mix buffers, applies master gain,
+// program mute, metering, encodes to AAC, and outputs the frame.
+// Caller must hold m.mu write lock. Releases the lock before calling output.
+func (m *AudioMixer) flushMixCycleLocked() {
+	if m.mixBuffer == nil || len(m.mixBuffer) == 0 {
+		m.resetMixCycleLocked()
+		return
+	}
+
+	// Sum all channel PCM buffers
+	var mixLen int
+	for _, buf := range m.mixBuffer {
+		if len(buf) > mixLen {
+			mixLen = len(buf)
+		}
+	}
+	mixed := make([]float32, mixLen)
+	for _, buf := range m.mixBuffer {
+		for i := 0; i < len(buf) && i < mixLen; i++ {
+			mixed[i] += buf[i]
+		}
+	}
+
+	// Apply master gain
+	masterGain := float32(DBToLinear(m.masterLevel))
+	for i := range mixed {
+		mixed[i] *= masterGain
+	}
+
+	// Apply program mute (FTB held): zero the buffer so output is silent
+	if m.programMuted {
+		for i := range mixed {
+			mixed[i] = 0
+		}
+	}
+
+	// Update program peak metering (after mute so meters show silence)
+	peakL, peakR := PeakLevel(mixed, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
+
+	// Lazy-init encoder
+	if m.encoder == nil && m.config.EncoderFactory != nil {
+		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			m.resetMixCycleLocked()
+			return
+		}
+		m.encoder = enc
+	}
+	if m.encoder == nil {
+		m.resetMixCycleLocked()
+		return
+	}
+
+	// Encode mixed PCM -> AAC
+	aacData, err := m.encoder.Encode(mixed)
+	if err != nil {
+		m.encodeErrors.Add(1)
+		m.resetMixCycleLocked()
+		slog.Warn("mixer: encode error", "err", err)
+		return
+	}
+	m.framesMixed.Add(1)
+
+	pts := m.mixPTS
+
+	// Reset mix cycle for next round
+	m.resetMixCycleLocked()
+
+	// Build output frame before releasing lock
+	outputFrame := &media.AudioFrame{
+		PTS:        pts,
+		Data:       aacData,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
+	}
+	m.mu.Unlock()
+
+	// Output outside the lock to avoid blocking other goroutines
+	m.output(outputFrame)
+
+	// Re-acquire lock (caller expects it held)
+	m.mu.Lock()
+}
+
+// resetMixCycleLocked clears the mix accumulation state for the next cycle.
+// Caller must hold m.mu write lock.
+func (m *AudioMixer) resetMixCycleLocked() {
+	m.mixBuffer = nil
+	m.mixStarted = false
+	m.mixDeadline = time.Time{}
 }
 
 // AddChannel registers a source with the mixer.
@@ -516,90 +644,25 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	}
 
 	// Mix on frame arrival: each source contributes its latest frame.
-	// When all active unmuted channels have contributed, produce output.
 	m.mixBuffer[sourceKey] = gainedPCM
 	m.mixPTS = frame.PTS
 	m.mixCycleSize = activeUnmuted
 
-	// Check if all active unmuted channels have contributed
-	if len(m.mixBuffer) < activeUnmuted {
-		m.mu.Unlock()
-		return // wait for more channels
+	// Start the per-cycle deadline on first contribution
+	if !m.mixStarted {
+		m.mixStarted = true
+		m.mixDeadline = time.Now().Add(mixCycleDeadline)
 	}
 
-	// Sum all channel PCM buffers
-	var mixLen int
-	for _, buf := range m.mixBuffer {
-		if len(buf) > mixLen {
-			mixLen = len(buf)
-		}
-	}
-	mixed := make([]float32, mixLen)
-	for _, buf := range m.mixBuffer {
-		for i := 0; i < len(buf) && i < mixLen; i++ {
-			mixed[i] += buf[i]
-		}
-	}
-
-	// Apply master gain
-	masterGain := float32(DBToLinear(m.masterLevel))
-	for i := range mixed {
-		mixed[i] *= masterGain
-	}
-
-	// Apply program mute (FTB held): zero the buffer so output is silent
-	if m.programMuted {
-		for i := range mixed {
-			mixed[i] = 0
-		}
-	}
-
-	// Update program peak metering (after mute so meters show silence)
-	peakL, peakR := PeakLevel(mixed, m.numChannels)
-	m.programPeakL = peakL
-	m.programPeakR = peakR
-
-	// Lazy-init encoder
-	if m.encoder == nil && m.config.EncoderFactory != nil {
-		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.mixBuffer = make(map[string][]float32)
-			m.mu.Unlock()
-			return
-		}
-		m.encoder = enc
-	}
-	if m.encoder == nil {
-		m.mixBuffer = make(map[string][]float32)
+	// Flush when all active unmuted channels have contributed OR deadline exceeded
+	if len(m.mixBuffer) >= activeUnmuted {
+		// flushMixCycleLocked releases and re-acquires the lock internally
+		m.flushMixCycleLocked()
 		m.mu.Unlock()
 		return
 	}
 
-	// Encode mixed PCM → AAC
-	aacData, err := m.encoder.Encode(mixed)
-	if err != nil {
-		m.encodeErrors.Add(1)
-		m.mixBuffer = make(map[string][]float32)
-		m.mu.Unlock()
-		slog.Warn("mixer: encode error", "err", err)
-		return
-	}
-	m.framesMixed.Add(1)
-
-	// Reset mix buffer for next cycle
-	m.mixBuffer = make(map[string][]float32)
-
-	// Build output frame before releasing lock
-	outputFrame := &media.AudioFrame{
-		PTS:        frame.PTS,
-		Data:       aacData,
-		SampleRate: m.sampleRate,
-		Channels:   m.numChannels,
-	}
 	m.mu.Unlock()
-
-	// Output outside the lock to avoid blocking other goroutines
-	m.output(outputFrame)
 }
 
 // ingestCrossfadeFrame handles frames during an active crossfade transition.

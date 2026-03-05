@@ -4,6 +4,7 @@ import (
 	"math"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
@@ -1043,4 +1044,52 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 		require.True(t, capturedPCM[i] <= capturedPCM[i-1]+0.001,
 			"sample %d (%.4f) should be <= sample %d (%.4f) — smooth ramp", i, capturedPCM[i], i-1, capturedPCM[i-1])
 	}
+}
+
+// --- Deadlock prevention: per-cycle deadline ---
+
+func TestMixerDeadlockPrevention(t *testing.T) {
+	// Two active channels, but only one sends frames.
+	// Without the fix, the mixer hangs forever waiting for channel 2.
+	// With the fix, output is produced after the 50ms deadline.
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	cam1PCM := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: cam1PCM}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+	require.False(t, m.IsPassthrough())
+
+	// Only send a frame to channel 1 — channel 2 is silent
+	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame)
+
+	// Wait longer than the 50ms deadline
+	time.Sleep(100 * time.Millisecond)
+
+	// Output should have been produced despite channel 2 being silent
+	mu.Lock()
+	count := len(outputFrames)
+	mu.Unlock()
+	require.GreaterOrEqual(t, count, 1, "mixer should produce output after deadline even if channel 2 is silent")
 }
