@@ -63,10 +63,19 @@
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
-			if (store.state.previewSource) apiCall(cut(store.state.previewSource), 'Cut failed');
+			if (store.state.previewSource) {
+				store.optimisticCut(store.state.previewSource);
+				apiCall(cut(store.state.previewSource), 'Cut failed');
+			}
 		},
-		onSetPreview: (key) => apiCall(setPreview(key), 'Preview failed'),
-		onHotPunch: (key) => apiCall(cut(key), 'Cut failed'),
+		onSetPreview: (key) => {
+			store.optimisticPreview(key);
+			apiCall(setPreview(key), 'Preview failed');
+		},
+		onHotPunch: (key) => {
+			store.optimisticCut(key);
+			apiCall(cut(key), 'Cut failed');
+		},
 		onAutoTransition: () => {
 			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
 				apiCall(startTransition(store.state.previewSource, transitionType, transitionDuration), 'Transition failed');
@@ -346,34 +355,50 @@
 <ErrorBoundary>
 	<Toast />
 	{#if layoutMode === 'simple'}
-		<SimpleMode state={store.state} onSwitchLayout={switchLayout} {onCanvasReady} />
+		<SimpleMode
+			state={store.effectiveState}
+			onSwitchLayout={switchLayout}
+			{onCanvasReady}
+			onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }}
+			onCut={() => {
+				if (store.state.previewSource) {
+					store.optimisticCut(store.state.previewSource);
+					apiCall(cut(store.state.previewSource), 'Cut failed');
+				}
+			}}
+			onDissolve={() => {
+				if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
+					apiCall(startTransition(store.state.previewSource, 'mix', 1000), 'Dissolve failed');
+				}
+			}}
+		/>
 	{:else}
 		<div class="control-room">
 			<header class="header">
-				<OutputControls state={store.state} {connectionState} {switchLayout} />
+				<OutputControls state={store.effectiveState} {connectionState} {switchLayout} />
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.state} {onCanvasReady} graphicsTemplate={gfxTemplate} graphicsValues={gfxValues} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} graphicsTemplate={gfxTemplate} graphicsValues={gfxValues} />
 			</section>
 
 			<section class="multiview-section">
-				<Multiview state={store.state} onLabelChange={handleLabelChange} />
+				<Multiview state={store.effectiveState} onLabelChange={handleLabelChange} />
 			</section>
 
 			<section class="bottom-panel">
 				<div class="audio-section">
-					<AudioMixer state={store.state} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
+					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
 				</div>
 				<div class="control-section">
 					<div class="buses">
-						<PreviewBus state={store.state} />
-						<ProgramBus state={store.state} />
+						<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
+						<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
 					</div>
-					<TransitionControls state={store.state} />
+					<TransitionControls state={store.effectiveState} />
 				</div>
 				<div class="graphics-section">
-					<GraphicsPanel state={store.state} onTemplateChange={handleGraphicsTemplateChange} />
+					<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
 				</div>
 			</section>
 		</div>

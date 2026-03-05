@@ -17,12 +17,32 @@ const EMPTY_STATE: ControlRoomState = {
 	timestamp: 0,
 };
 
+/** Timeout (ms) after which a pending optimistic action is discarded. */
+const PENDING_TIMEOUT_MS = 2000;
+
+interface PendingAction {
+	programSource?: string;
+	previewSource?: string;
+	timestamp: number;
+}
+
 export function createControlRoomStore() {
 	let state = $state<ControlRoomState>({ ...EMPTY_STATE });
+	let pendingAction = $state<PendingAction | null>(null);
 
 	function applyUpdate(update: ControlRoomState) {
 		if (update.seq <= state.seq) return;
 		state = update;
+		// Clear pending if server state matches the optimistic prediction or it expired
+		if (pendingAction) {
+			const expired = Date.now() - pendingAction.timestamp > PENDING_TIMEOUT_MS;
+			const confirmed =
+				(pendingAction.programSource && update.programSource === pendingAction.programSource) ||
+				(pendingAction.previewSource && update.previewSource === pendingAction.previewSource);
+			if (expired || confirmed) {
+				pendingAction = null;
+			}
+		}
 	}
 
 	function applyFromMoQ(data: Uint8Array) {
@@ -34,14 +54,51 @@ export function createControlRoomStore() {
 		}
 	}
 
+	function getEffectiveState(): ControlRoomState {
+		if (!pendingAction) return state;
+		// Return server state when pending action has expired (no mutation — cleanup happens in applyUpdate)
+		if (Date.now() - pendingAction.timestamp > PENDING_TIMEOUT_MS) {
+			return state;
+		}
+		const effective = { ...state };
+		if (pendingAction.programSource) {
+			effective.programSource = pendingAction.programSource;
+			effective.tallyState = { ...state.tallyState };
+			effective.tallyState[pendingAction.programSource] = 'program';
+			// Old program source becomes preview-like
+			if (state.programSource && state.programSource !== pendingAction.programSource) {
+				effective.tallyState[state.programSource] = 'preview';
+			}
+		}
+		if (pendingAction.previewSource) {
+			effective.previewSource = pendingAction.previewSource;
+			effective.tallyState = { ...(effective.tallyState || state.tallyState) };
+			effective.tallyState[pendingAction.previewSource] = 'preview';
+		}
+		return effective;
+	}
+
+	function optimisticCut(source: string) {
+		pendingAction = { programSource: source, timestamp: Date.now() };
+	}
+
+	function optimisticPreview(source: string) {
+		pendingAction = { previewSource: source, timestamp: Date.now() };
+	}
+
 	return {
 		get state() {
 			return state;
+		},
+		get effectiveState() {
+			return getEffectiveState();
 		},
 		get sourceKeys() {
 			return Object.keys(state.sources).sort();
 		},
 		applyUpdate,
 		applyFromMoQ,
+		optimisticCut,
+		optimisticPreview,
 	};
 }

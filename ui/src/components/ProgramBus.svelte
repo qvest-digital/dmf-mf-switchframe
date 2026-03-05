@@ -3,8 +3,11 @@
 	import SourceTile from './SourceTile.svelte';
 	import { cut, apiCall } from '$lib/api/switch-api';
 
-	interface Props { state: ControlRoomState; }
-	let { state }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		onCut?: (key: string) => void;
+	}
+	let { state, onCut }: Props = $props();
 	let sourceKeys = $derived(Object.keys(state.sources).sort());
 </script>
 
@@ -16,7 +19,7 @@
 				source={state.sources[key]}
 				tally={state.programSource === key ? 'program' : 'idle'}
 				index={i}
-				onclick={() => apiCall(cut(key), 'Cut failed')}
+				onclick={() => onCut ? onCut(key) : apiCall(cut(key), 'Cut failed')}
 			/>
 		{/each}
 	</div>

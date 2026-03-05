@@ -6,9 +6,12 @@
 		state: ControlRoomState;
 		onSwitchLayout?: () => void;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
+		onPreview?: (key: string) => void;
+		onCut?: () => void;
+		onDissolve?: () => void;
 	}
 
-	let { state, onSwitchLayout, onCanvasReady }: Props = $props();
+	let { state, onSwitchLayout, onCanvasReady, onPreview, onCut, onDissolve }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -36,17 +39,29 @@
 	let canCut = $derived(state.previewSource !== '' && !state.inTransition);
 
 	function handleSourceClick(key: string) {
-		apiCall(setPreview(key), 'Preview failed');
+		if (onPreview) {
+			onPreview(key);
+		} else {
+			apiCall(setPreview(key), 'Preview failed');
+		}
 	}
 
 	function handleCut() {
 		if (!canCut) return;
-		apiCall(cut(state.previewSource), 'Cut failed');
+		if (onCut) {
+			onCut();
+		} else {
+			apiCall(cut(state.previewSource), 'Cut failed');
+		}
 	}
 
 	function handleDissolve() {
 		if (!canTransition) return;
-		apiCall(startTransition(state.previewSource, 'mix', 1000), 'Dissolve failed');
+		if (onDissolve) {
+			onDissolve();
+		} else {
+			apiCall(startTransition(state.previewSource, 'mix', 1000), 'Dissolve failed');
+		}
 	}
 
 	function tallyClass(key: string): string {

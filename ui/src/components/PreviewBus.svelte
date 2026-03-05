@@ -3,8 +3,11 @@
 	import SourceTile from './SourceTile.svelte';
 	import { setPreview, apiCall } from '$lib/api/switch-api';
 
-	interface Props { state: ControlRoomState; }
-	let { state }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		onPreview?: (key: string) => void;
+	}
+	let { state, onPreview }: Props = $props();
 	let sourceKeys = $derived(Object.keys(state.sources).sort());
 </script>
 
@@ -16,7 +19,7 @@
 				source={state.sources[key]}
 				tally={state.previewSource === key ? 'preview' : 'idle'}
 				index={i}
-				onclick={() => apiCall(setPreview(key), 'Preview failed')}
+				onclick={() => onPreview ? onPreview(key) : apiCall(setPreview(key), 'Preview failed')}
 			/>
 		{/each}
 	</div>
