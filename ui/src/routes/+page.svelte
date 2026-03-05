@@ -16,6 +16,7 @@
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { createPrismConnection } from '$lib/transport/connection';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
+	import { PipelineManager } from '$lib/pipeline/manager';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 
 	const store = createControlRoomStore();
@@ -66,12 +67,12 @@
 
 	// Media pipeline for MoQ video/audio decode
 	const pipeline = createMediaPipeline();
+	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys);
 
 	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
 	let sourceLevels = $state<Record<string, { peakL: number; peakR: number }>>({});
 	// Program output peak levels sampled from program audio decoder (linear 0..1)
 	let programLevels = $state<{ peakL: number; peakR: number }>({ peakL: 0, peakR: 0 });
-	let meterRafId: number | undefined;
 
 	function handleDebugDump(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -121,157 +122,46 @@
 		setTimeout(() => badge.remove(), 2000);
 	}
 
-	/** Poll audio decoders for per-source peak levels at display refresh rate. */
-	function meterLoop() {
-		const levels: Record<string, { peakL: number; peakR: number }> = {};
-		for (const key of store.sourceKeys) {
-			const decoder = pipeline.getAudioDecoder(key);
-			if (decoder) {
-				const l = decoder.getLevels();
-				levels[key] = { peakL: l.peak[0] ?? 0, peakR: l.peak[1] ?? 0 };
-			}
-		}
-		sourceLevels = levels;
-
-		// Sample program output peak from program audio decoder
-		const programDecoder = pipeline.getAudioDecoder('program');
-		if (programDecoder) {
-			const pl = programDecoder.getLevels();
-			programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };
-		}
-
-		meterRafId = requestAnimationFrame(meterLoop);
-	}
-
-	// Track which sources are connected to avoid duplicate work
-	let connectedSources = new Set<string>();
-	// Track which canvases are attached
-	let attachedCanvases = new Set<string>();
-	// Track program/preview canvas bindings
-	let currentProgramCanvas: string | null = null;
-	let currentPreviewCanvas: string | null = null;
-
-	/**
-	 * Sync media pipeline sources with control room state.
-	 * Called when the source list changes: adds new sources, removes stale ones,
-	 * and attaches canvases once DOM elements are available.
-	 */
-	async function syncSources() {
-		if (!mounted) return;
-
-		const stateSourceKeys = Object.keys(store.state.sources).sort();
-		const pipelineSources = connectedSources;
-
-		// Add new sources
-		for (const key of stateSourceKeys) {
-			if (!pipelineSources.has(key)) {
-				pipeline.addSource(key);
-				pipeline.connectSource(key);
-				connectedSources.add(key);
-			}
-		}
-
-		// Remove stale sources
-		for (const key of pipelineSources) {
-			if (!store.state.sources[key]) {
-				pipeline.removeSource(key);
-				connectedSources.delete(key);
-				attachedCanvases.delete(key);
-			}
-		}
-
-		// Wait for DOM to update after source list change
-		await tick();
-
-		// Attach multiview tile canvases
-		for (const key of stateSourceKeys) {
-			if (!attachedCanvases.has(key)) {
-				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
-				if (canvas) {
-					pipeline.attachCanvas(key, `tile-${key}`, canvas);
-					attachedCanvases.add(key);
-				}
-			}
-		}
-
-		// Attach program/preview canvases based on current assignments
-		syncProgramPreviewCanvases();
-	}
-
-	/**
-	 * Update which source is rendered on the program and preview canvases.
-	 *
-	 * Program canvas: always renders the "program" MoQ stream, which is the
-	 * authoritative server output. During transitions, this shows the blended
-	 * dissolve/dip/FTB frames. During normal operation, it shows the program
-	 * source's passthrough video. Attached once and stays until layout change.
-	 *
-	 * Preview canvas: renders the preview source's individual stream so you
-	 * see the raw video of whatever source you're about to cut/transition to.
-	 */
-	function syncProgramPreviewCanvases() {
-		if (!mounted) return;
-
-		const previewSource = store.state.previewSource;
-
-		// Program canvas: render the "program" MoQ stream (shows transitions)
-		if (currentProgramCanvas !== 'program') {
-			if (currentProgramCanvas) {
-				pipeline.detachCanvas(currentProgramCanvas, 'program');
-			}
-			const programCanvas = document.getElementById('program-video') as HTMLCanvasElement | null;
-			if (programCanvas) {
-				pipeline.attachCanvas('program', 'program', programCanvas);
-				currentProgramCanvas = 'program';
-			}
-		}
-
-		// Preview canvas: render the preview source's video
-		if (previewSource !== currentPreviewCanvas) {
-			// Detach old preview renderer from previous source
-			if (currentPreviewCanvas) {
-				pipeline.detachCanvas(currentPreviewCanvas, 'preview');
-			}
-			const previewCanvas = document.getElementById('preview-video') as HTMLCanvasElement | null;
-			if (previewCanvas && previewSource) {
-				pipeline.attachCanvas(previewSource, 'preview', previewCanvas);
-			}
-			currentPreviewCanvas = previewSource;
-		}
-	}
-
-	// React to source list changes
+	// React to source list changes — delegate to PipelineManager
 	$effect(() => {
 		// Access sourceKeys to create the reactive dependency
 		const _keys = store.sourceKeys;
-		syncSources();
+		if (!mounted) return;
+		tick().then(() => {
+			pipelineManager.syncSources(store.state.sources);
+			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
+		});
 	});
 
 	// React to program/preview changes
 	$effect(() => {
 		const _program = store.state.programSource;
 		const _preview = store.state.previewSource;
-		syncProgramPreviewCanvases();
+		if (!mounted) return;
+		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
 	});
 
 	// Re-attach canvases when layout mode changes (DOM is replaced)
 	$effect(() => {
 		const _mode = layoutMode;
-		// Detach all current renderers — their canvases are about to be destroyed
-		for (const key of attachedCanvases) {
-			pipeline.detachCanvas(key, `tile-${key}`);
-		}
-		if (currentProgramCanvas) {
-			pipeline.detachCanvas(currentProgramCanvas, 'program');
-		}
-		if (currentPreviewCanvas) {
-			pipeline.detachCanvas(currentPreviewCanvas, 'preview');
-		}
-		attachedCanvases = new Set<string>();
-		currentProgramCanvas = null;
-		currentPreviewCanvas = null;
+		pipelineManager.onLayoutChange();
 		// Re-sync after DOM updates
-		tick().then(() => syncSources());
+		tick().then(() => {
+			if (!mounted) return;
+			pipelineManager.syncSources(store.state.sources);
+			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
+		});
+	});
+
+	// Sync metering levels from PipelineManager into reactive state
+	$effect(() => {
+		if (!mounted) return;
+		const interval = setInterval(() => {
+			const levels = pipelineManager.getLevels();
+			sourceLevels = levels.sourceLevels;
+			programLevels = levels.programLevels;
+		}, 50);
+		return () => clearInterval(interval);
 	});
 
 	let pollInterval: ReturnType<typeof setInterval> | undefined;
@@ -354,7 +244,7 @@
 		await fetchInitialState();
 
 		// Start audio metering rAF loop
-		meterRafId = requestAnimationFrame(meterLoop);
+		pipelineManager.startMetering();
 
 		// Start REST polling as immediate fallback
 		startPolling();
@@ -366,7 +256,7 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleDebugDump);
-		if (meterRafId !== undefined) cancelAnimationFrame(meterRafId);
+		pipelineManager.destroy();
 		if (retryTimer !== undefined) clearTimeout(retryTimer);
 		stopPolling();
 		connection.disconnect();
