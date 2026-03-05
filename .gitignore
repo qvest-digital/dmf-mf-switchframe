@@ -27,3 +27,6 @@ server/cmd/switchframe/ui
 
 # Internal plan docs (local only)
 docs/plans/
+
+# Git worktrees
+.worktrees/
