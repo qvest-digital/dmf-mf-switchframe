@@ -39,7 +39,21 @@ func run() error {
 	demoVideoDir := flag.String("demo-video", "", "Directory containing MPEG-TS clips for real video demo (requires --demo)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
+	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	flag.Parse()
+
+	// Resolve API token: flag > env > auto-generate.
+	apiToken := *apiTokenFlag
+	if apiToken == "" {
+		apiToken = os.Getenv("SWITCHFRAME_API_TOKEN")
+	}
+	if apiToken == "" {
+		var err error
+		apiToken, err = control.GenerateToken()
+		if err != nil {
+			return fmt.Errorf("generate API token: %w", err)
+		}
+	}
 
 	// Configure structured logging before any slog calls.
 	var lvl slog.LevelVar
@@ -59,6 +73,7 @@ func run() error {
 	defer cancel()
 
 	slog.Info("switchframe starting", "log_level", *logLevel)
+	slog.Info("API authentication enabled", "token", apiToken)
 
 	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
 	cert, err := certs.Generate(14 * 24 * time.Hour)
@@ -88,7 +103,13 @@ func run() error {
 		Addr: addr,
 		Cert: cert,
 		ExtraRoutes: func(mux *http.ServeMux) {
-			api.RegisterOnMux(mux)
+			// Register API routes on a sub-mux so we can wrap with auth.
+			apiSubMux := http.NewServeMux()
+			api.RegisterOnMux(apiSubMux)
+			// Wrap with auth middleware; Prism's own routes (MoQ, WebTransport)
+			// bypass this because they don't start with /api/.
+			authedAPI := control.AuthMiddleware(apiToken)(apiSubMux)
+			mux.Handle("/api/", authedAPI)
 			if h := uiHandler(); h != nil {
 				// Mount embedded UI as catch-all (after API routes)
 				mux.Handle("/", h)
@@ -259,6 +280,7 @@ func run() error {
 	var apiHandler http.Handler = apiMux
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
+	apiHandler = control.AuthMiddleware(apiToken)(apiHandler)
 	httpSrv := &http.Server{
 		Handler: apiHandler,
 	}
