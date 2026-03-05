@@ -85,10 +85,15 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 	}
 
 	m.recorder = rec
-	m.rebuildAdaptersLocked()
+	stale := m.rebuildAdaptersLocked()
 	m.ensureMuxerLocked()
 	fn := m.onState
 	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
 
 	// Notify outside lock (lock discipline).
 	if fn != nil {
@@ -110,10 +115,15 @@ func (m *OutputManager) StopRecording() error {
 
 	rec := m.recorder
 	m.recorder = nil
-	m.rebuildAdaptersLocked()
+	stale := m.rebuildAdaptersLocked()
 	m.stopMuxerIfNoAdaptersLocked()
 	fn := m.onState
 	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
 
 	// Close the recorder outside the lock.
 	if err := rec.Close(); err != nil {
@@ -187,10 +197,15 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 	}
 
 	m.srtOutput = adapter
-	m.rebuildAdaptersLocked()
+	stale := m.rebuildAdaptersLocked()
 	m.ensureMuxerLocked()
 	fn := m.onState
 	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
 
 	// Notify outside lock.
 	if fn != nil {
@@ -212,10 +227,15 @@ func (m *OutputManager) StopSRTOutput() error {
 
 	adapter := m.srtOutput
 	m.srtOutput = nil
-	m.rebuildAdaptersLocked()
+	stale := m.rebuildAdaptersLocked()
 	m.stopMuxerIfNoAdaptersLocked()
 	fn := m.onState
 	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
 
 	// Close the adapter outside the lock.
 	if err := adapter.Close(); err != nil {
@@ -312,7 +332,10 @@ func (m *OutputManager) Close() error {
 // Each adapter is wrapped in an AsyncAdapter for non-blocking writes.
 // Wrappers for removed adapters are stopped; new wrappers are started.
 // Must be called with m.mu held.
-func (m *OutputManager) rebuildAdaptersLocked() {
+// rebuildAdaptersLocked rebuilds the adapter slice and returns any stale
+// async wrappers that should be stopped. Callers MUST stop the returned
+// wrappers outside the lock to avoid blocking the muxer output callback.
+func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 	// Collect the current set of raw adapters.
 	raw := make(map[string]OutputAdapter)
 	if m.recorder != nil {
@@ -326,10 +349,12 @@ func (m *OutputManager) rebuildAdaptersLocked() {
 		m.asyncWrappers = make(map[string]*AsyncAdapter)
 	}
 
-	// Stop wrappers for adapters that are no longer present.
+	// Collect stale wrappers for adapters that are no longer present.
+	// Do NOT stop them here — caller stops outside the lock.
+	var stale []*AsyncAdapter
 	for id, wrapper := range m.asyncWrappers {
 		if _, ok := raw[id]; !ok {
-			wrapper.Stop()
+			stale = append(stale, wrapper)
 			delete(m.asyncWrappers, id)
 		}
 	}
@@ -349,6 +374,7 @@ func (m *OutputManager) rebuildAdaptersLocked() {
 	}
 
 	m.adapters = adapters
+	return stale
 }
 
 // ensureMuxerLocked creates the muxer, viewer, and registers the viewer

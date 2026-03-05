@@ -3,6 +3,7 @@ package output
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 )
 
@@ -11,11 +12,12 @@ import (
 // This prevents a slow adapter (e.g., disk I/O or network) from blocking other
 // adapters in the fan-out loop.
 type AsyncAdapter struct {
-	inner   OutputAdapter
-	buffer  chan []byte
-	dropped atomic.Int64
-	stopCh  chan struct{}
-	doneCh  chan struct{}
+	inner    OutputAdapter
+	buffer   chan []byte
+	dropped  atomic.Int64
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewAsyncAdapter creates an AsyncAdapter wrapping the given inner adapter
@@ -76,9 +78,11 @@ func (a *AsyncAdapter) Dropped() int64 {
 }
 
 // Stop signals the drain goroutine to exit and waits for it to finish
-// draining any remaining buffered data.
+// draining any remaining buffered data. Safe to call multiple times.
 func (a *AsyncAdapter) Stop() {
-	close(a.stopCh)
+	a.stopOnce.Do(func() {
+		close(a.stopCh)
+	})
 	<-a.doneCh
 }
 

@@ -3,7 +3,6 @@ package output
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,7 +194,6 @@ func TestAsyncAdapter_CopiesData(t *testing.T) {
 
 func TestAsyncAdapter_StopDrainsRemaining(t *testing.T) {
 	// Fill buffer, then Stop(). All buffered items should be drained.
-	var received atomic.Int64
 	inner := newSlowAdapter(0)
 
 	async := NewAsyncAdapter(inner, 64)
@@ -209,7 +207,6 @@ func TestAsyncAdapter_StopDrainsRemaining(t *testing.T) {
 	// Stop should block until all buffered items are drained.
 	async.Stop()
 
-	_ = received // not needed since we check inner.getWrites()
 	writes := inner.getWrites()
 	require.Equal(t, 10, len(writes), "all 10 packets should be drained on Stop")
 }

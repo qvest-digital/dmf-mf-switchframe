@@ -26,7 +26,7 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 	}
 
 	// We expect at least the number of distinct metric names we registered.
-	// CutsTotal, TransitionsTotal, IDRGateEventsTotal, IDRGateDurationMs,
+	// CutsTotal, TransitionsTotal, IDRGateEventsTotal, IDRGateDuration,
 	// FramesMixedTotal, EncodeErrorsTotal, PassthroughBypassTotal,
 	// RingbufOverflowsTotal, SRTReconnectsTotal, RecordingBytesTotal,
 	// SRTBytesTotal, SourceStatusChangesTotal = 12 metrics.
@@ -35,7 +35,7 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 	wantNames := map[string]bool{
 		"switchframe_cuts_total":                  false,
 		"switchframe_idr_gate_events_total":       false,
-		"switchframe_idr_gate_duration_ms":        false,
+		"switchframe_idr_gate_duration_seconds":        false,
 		"switchframe_mixer_frames_mixed_total":    false,
 		"switchframe_mixer_encode_errors_total":   false,
 		"switchframe_mixer_passthrough_bypass_total": false,
@@ -122,11 +122,11 @@ func TestNewMetrics_IDRGateHistogram(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
 
-	// Observe some values and verify the histogram doesn't panic.
-	m.IDRGateDurationMs.Observe(5)
-	m.IDRGateDurationMs.Observe(25)
-	m.IDRGateDurationMs.Observe(100)
-	m.IDRGateDurationMs.Observe(500)
+	// Observe some values in seconds and verify the histogram doesn't panic.
+	m.IDRGateDuration.Observe(0.005)
+	m.IDRGateDuration.Observe(0.025)
+	m.IDRGateDuration.Observe(0.1)
+	m.IDRGateDuration.Observe(0.5)
 
 	// Gather and verify the histogram has the right bucket count.
 	families, err := reg.Gather()
@@ -135,10 +135,10 @@ func TestNewMetrics_IDRGateHistogram(t *testing.T) {
 	}
 
 	for _, fam := range families {
-		if fam.GetName() == "switchframe_idr_gate_duration_ms" {
+		if fam.GetName() == "switchframe_idr_gate_duration_seconds" {
 			metric := fam.GetMetric()
 			if len(metric) == 0 {
-				t.Fatal("no metric data for IDRGateDurationMs")
+				t.Fatal("no metric data for IDRGateDuration")
 			}
 			hist := metric[0].GetHistogram()
 			if hist == nil {
@@ -147,15 +147,15 @@ func TestNewMetrics_IDRGateHistogram(t *testing.T) {
 			// We specified 8 bucket boundaries: {5, 10, 25, 50, 100, 250, 500, 1000}
 			// Prometheus adds +Inf, so we get 8 explicit buckets.
 			if got := len(hist.GetBucket()); got != 8 {
-				t.Errorf("IDRGateDurationMs bucket count = %d, want 8", got)
+				t.Errorf("IDRGateDuration bucket count = %d, want 8", got)
 			}
 			if hist.GetSampleCount() != 4 {
-				t.Errorf("IDRGateDurationMs sample count = %d, want 4", hist.GetSampleCount())
+				t.Errorf("IDRGateDuration sample count = %d, want 4", hist.GetSampleCount())
 			}
 			return
 		}
 	}
-	t.Error("IDRGateDurationMs metric not found in gathered families")
+	t.Error("IDRGateDuration metric not found in gathered families")
 }
 
 func TestNewMetrics_SeparateRegistries(t *testing.T) {

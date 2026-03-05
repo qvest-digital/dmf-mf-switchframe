@@ -106,7 +106,7 @@ type Metrics struct {
 	CutsTotal          prometheus.Counter
 	TransitionsTotal   *prometheus.CounterVec // label: type
 	IDRGateEventsTotal prometheus.Counter
-	IDRGateDurationMs  prometheus.Histogram
+	IDRGateDuration  prometheus.Histogram
 
 	// Mixer
 	FramesMixedTotal       prometheus.Counter
@@ -144,11 +144,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "idr_gate_events_total",
 			Help:      "Total IDR gate events (frames gated until first keyframe after cut).",
 		}),
-		IDRGateDurationMs: prometheus.NewHistogram(prometheus.HistogramOpts{
+		IDRGateDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: "switchframe",
-			Name:      "idr_gate_duration_ms",
-			Help:      "Duration of IDR gate wait in milliseconds.",
-			Buckets:   []float64{5, 10, 25, 50, 100, 250, 500, 1000},
+			Name:      "idr_gate_duration_seconds",
+			Help:      "Duration of IDR gate wait in seconds.",
+			Buckets:   []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
 		}),
 
 		// Mixer
@@ -209,7 +209,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.CutsTotal,
 		m.TransitionsTotal,
 		m.IDRGateEventsTotal,
-		m.IDRGateDurationMs,
+		m.IDRGateDuration,
 		m.FramesMixedTotal,
 		m.EncodeErrorsTotal,
 		m.PassthroughBypassTotal,
