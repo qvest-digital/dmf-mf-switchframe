@@ -22,9 +22,10 @@ const (
 
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
-	Key    string             `json:"key"`
-	Label  string             `json:"label,omitempty"`
-	Status SourceHealthStatus `json:"status"`
+	Key     string             `json:"key"`
+	Label   string             `json:"label,omitempty"`
+	Status  SourceHealthStatus `json:"status"`
+	DelayMs int                `json:"delayMs,omitempty"`
 }
 
 // AudioTransitionMode describes how audio should behave during a video transition.
@@ -80,6 +81,7 @@ type ControlRoomState struct {
 	AudioChannels        map[string]AudioChannel   `json:"audioChannels"`
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`
+	GainReduction        float64                   `json:"gainReduction,omitempty"`
 	TallyState           map[string]TallyStatus    `json:"tallyState"`
 	Recording            *RecordingStatus           `json:"recording,omitempty"`
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`

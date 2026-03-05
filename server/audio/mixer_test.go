@@ -709,11 +709,12 @@ func TestMixerTransitionGainsNotActive(t *testing.T) {
 func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	// During a transition crossfade, IngestFrame should apply position-based
 	// gains to the from/to sources, multiplied with channel gain.
+	// Use 0.5 amplitude to stay below the -1 dBFS limiter threshold.
 	var capturedPCM []float32
 	var outputFrames []*media.AudioFrame
 
-	fromPCM := []float32{1.0, 1.0, 1.0, 1.0}
-	toPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	fromPCM := []float32{0.5, 0.5, 0.5, 0.5}
+	toPCM := []float32{0.5, 0.5, 0.5, 0.5}
 
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -757,9 +758,9 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	require.Equal(t, 1, len(outputFrames), "should produce one mixed output frame")
 
 	// At position 0.5: oldGain = cos(0.5·π/2) ≈ 0.707, newGain = sin(0.5·π/2) ≈ 0.707
-	// Both sources have 1.0 PCM at 0dB channel gain
-	// Expected mixed sample: 1.0*0.707 + 1.0*0.707 ≈ 1.414
-	expectedSum := math.Cos(0.5*math.Pi/2) + math.Sin(0.5*math.Pi/2)
+	// Both sources have 0.5 PCM at 0dB channel gain
+	// Expected mixed sample: 0.5*0.707 + 0.5*0.707 ≈ 0.707
+	expectedSum := 0.5*(math.Cos(0.5*math.Pi/2) + math.Sin(0.5*math.Pi/2))
 	require.Equal(t, 4, len(capturedPCM))
 	for i, s := range capturedPCM {
 		require.InDelta(t, expectedSum, s, 0.01, "sample %d should have transition gains applied", i)
@@ -994,10 +995,11 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 	var capturedPCM []float32
 	var outputFrames []*media.AudioFrame
 
-	// 8 samples of constant 1.0 — enough to see the ramp
+	// 8 samples of constant 0.5 — enough to see the ramp.
+	// Use 0.5 to stay below the -1 dBFS limiter threshold.
 	pcm := make([]float32, 8)
 	for i := range pcm {
-		pcm[i] = 1.0
+		pcm[i] = 0.5
 	}
 
 	m := NewMixer(MixerConfig{
@@ -1032,12 +1034,12 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 	require.Equal(t, 1, len(outputFrames))
 	require.Equal(t, 8, len(capturedPCM))
 
-	// First sample should be at prevPos gain: cos(0 * π/2) = 1.0
-	// Last sample should approach currentPos gain: cos(0.5 * π/2) ≈ 0.707
+	// First sample should be at prevPos gain: 0.5 * cos(0 * π/2) = 0.5
+	// Last sample should approach currentPos gain: 0.5 * cos(0.5 * π/2) ≈ 0.354
 	// Intermediate samples should be between these values (monotonically decreasing)
-	require.InDelta(t, 1.0, capturedPCM[0], 0.01, "first sample at prevPos gain")
+	require.InDelta(t, 0.5, capturedPCM[0], 0.01, "first sample at prevPos gain")
 	require.True(t, capturedPCM[7] < capturedPCM[0], "last sample should be less than first (fading out)")
-	require.InDelta(t, math.Cos(0.5*math.Pi/2), capturedPCM[7], 0.1, "last sample approaching currentPos gain")
+	require.InDelta(t, 0.5*math.Cos(0.5*math.Pi/2), capturedPCM[7], 0.1, "last sample approaching currentPos gain")
 
 	// Check monotonically decreasing (no staircase)
 	for i := 1; i < len(capturedPCM); i++ {

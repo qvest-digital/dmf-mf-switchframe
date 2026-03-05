@@ -6,6 +6,7 @@ export interface SourceInfo {
 	label?: string;
 	status: SourceHealthStatus;
 	lastFrameTime: number;
+	delayMs?: number;
 }
 
 export interface AudioChannel {
@@ -52,6 +53,7 @@ export interface ControlRoomState {
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;
 	programPeak: [number, number];
+	gainReduction?: number;
 	tallyState: Record<string, TallyStatus>;
 	sources: Record<string, SourceInfo>;
 	recording?: RecordingStatus;

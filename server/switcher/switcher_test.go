@@ -453,6 +453,7 @@ type mockAudioStateProvider struct {
 	programPeak   [2]float64
 	channelStates map[string]internal.AudioChannel
 	masterLevel   float64
+	gainReduction float64
 }
 
 func (m *mockAudioStateProvider) ProgramPeak() [2]float64 {
@@ -465,6 +466,10 @@ func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChanne
 
 func (m *mockAudioStateProvider) MasterLevel() float64 {
 	return m.masterLevel
+}
+
+func (m *mockAudioStateProvider) GainReduction() float64 {
+	return m.gainReduction
 }
 
 func TestStateIncludesAudioFromMixer(t *testing.T) {

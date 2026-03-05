@@ -79,6 +79,9 @@ type AudioMixer struct {
 	// Program mute: true while FTB is held (screen is black, audio is silent).
 	programMuted bool
 
+	// Program bus limiter (always active)
+	limiter *Limiter
+
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
 	programPeakR float64 // linear amplitude [0,1]
@@ -111,6 +114,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		passthrough: true,
 		config:      config,
 		stopTicker:  make(chan struct{}),
+		limiter:     NewLimiter(config.SampleRate),
 	}
 	m.tickerWg.Add(1)
 	go m.mixDeadlineTicker()
@@ -194,6 +198,9 @@ func (m *AudioMixer) flushMixCycleLocked() {
 	for i := range mixed {
 		mixed[i] *= masterGain
 	}
+
+	// Apply brickwall limiter at -1 dBFS (always active)
+	m.limiter.Process(mixed)
 
 	// Apply program mute (FTB held): zero the buffer so output is silent
 	if m.programMuted {
@@ -896,6 +903,12 @@ func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 		result[key] = internal.AudioChannel{Level: ch.level, Muted: ch.muted, AFV: ch.afv}
 	}
 	return result
+}
+
+// GainReduction returns the current limiter gain reduction in dB.
+// 0 means no limiting; positive values indicate dB of reduction applied.
+func (m *AudioMixer) GainReduction() float64 {
+	return m.limiter.GainReduction()
 }
 
 // MasterLevel returns the current master level in dB.

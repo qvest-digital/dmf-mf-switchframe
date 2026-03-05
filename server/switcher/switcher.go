@@ -24,6 +24,7 @@ import (
 // Sentinel errors for the switcher package.
 var ErrSourceNotFound = errors.New("source not found")
 var ErrAlreadyOnProgram = errors.New("already on program")
+var ErrInvalidDelay = errors.New("delay must be 0-500ms")
 
 // audioStateProvider is the interface the Switcher needs from the AudioMixer
 // to populate audio fields in state broadcasts.
@@ -31,6 +32,7 @@ type audioStateProvider interface {
 	ProgramPeak() [2]float64
 	ChannelStates() map[string]internal.AudioChannel
 	MasterLevel() float64
+	GainReduction() float64
 }
 
 // audioCutHandler is called during a cut to trigger audio crossfade.
@@ -92,6 +94,7 @@ type Switcher struct {
 	ftbActive       bool
 	audioTransition audioTransitionHandler
 	gopCache        *gopCache
+	delayBuffer     *DelayBuffer
 
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
@@ -109,12 +112,14 @@ var _ frameHandler = (*Switcher)(nil)
 
 // New creates a Switcher that forwards program frames to programRelay.
 func New(programRelay *distribution.Relay) *Switcher {
-	return &Switcher{
+	s := &Switcher{
 		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
 		gopCache:     newGOPCache(),
 	}
+	s.delayBuffer = NewDelayBuffer(s)
+	return s
 }
 
 // SetMixer attaches an audio mixer to the switcher for state broadcasts.
@@ -143,9 +148,10 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.promMetrics = m
 }
 
-// Close stops the health monitor and unregisters all sources.
+// Close stops the health monitor, delay buffer, and unregisters all sources.
 func (s *Switcher) Close() {
 	s.health.stop()
+	s.delayBuffer.Close()
 	s.mu.Lock()
 	keys := make([]string, 0, len(s.sources))
 	for k := range s.sources {
@@ -701,10 +707,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
 // created and attached to the source's Relay so that frames flow into the
 // Switcher's handleVideoFrame/handleAudioFrame methods tagged with the
-// source key.
+// source key. The delay buffer is attached so per-source lip-sync
+// compensation is available.
 func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
 	viewer := newSourceViewer(key, s)
+	viewer.delayBuffer = s.delayBuffer
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
 	s.health.registerSource(key)
@@ -727,6 +735,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	delete(s.sources, key)
 	s.health.removeSource(key)
 	s.gopCache.RemoveSource(key)
+	s.delayBuffer.RemoveSource(key)
 	if s.programSource == key {
 		s.programSource = ""
 	}
@@ -822,6 +831,40 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 	return nil
 }
 
+// SetSourceDelay sets the input delay for a source in milliseconds (0-500).
+// A delay of 0 means no buffering (passthrough). Non-zero delays are used
+// for lip-sync compensation. Returns ErrSourceNotFound if the source is not
+// registered, or ErrInvalidDelay if the value is out of range.
+func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
+	if delayMs < 0 || delayMs > 500 {
+		return ErrInvalidDelay
+	}
+	s.mu.Lock()
+	if _, ok := s.sources[sourceKey]; !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
+	}
+	s.mu.Unlock()
+
+	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
+
+	slog.Info("switcher: source delay set", "source_key", sourceKey, "delay_ms", delayMs)
+
+	s.mu.Lock()
+	s.seq++
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
+// GetSourceDelay returns the configured input delay in milliseconds for a
+// source, or 0 if the source has no delay configured.
+func (s *Switcher) GetSourceDelay(sourceKey string) int {
+	return int(s.delayBuffer.GetDelay(sourceKey) / time.Millisecond)
+}
+
 // StartHealthMonitor begins periodic health checking at the given interval.
 // When any source's health status changes, a state snapshot is published
 // to all registered state-change callbacks.
@@ -887,7 +930,12 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
 	for key := range s.sources {
 		tally[key] = internal.TallyIdle
-		sources[key] = internal.SourceInfo{Key: key, Label: s.sources[key].label, Status: s.health.status(key)}
+		sources[key] = internal.SourceInfo{
+			Key:     key,
+			Label:   s.sources[key].label,
+			Status:  s.health.status(key),
+			DelayMs: int(s.delayBuffer.GetDelay(key) / time.Millisecond),
+		}
 	}
 	if s.programSource != "" {
 		tally[s.programSource] = internal.TallyProgram
@@ -919,6 +967,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		state.AudioChannels = s.mixer.ChannelStates()
 		state.MasterLevel = s.mixer.MasterLevel()
 		state.ProgramPeak = s.mixer.ProgramPeak()
+		state.GainReduction = s.mixer.GainReduction()
 	}
 
 	return state
