@@ -5,9 +5,10 @@ package transition
 // This matches how hardware broadcast mixers (ATEM, Ross, Datavideo) and
 // FFmpeg's xfade filter operate: blending in the native Y'CbCr domain.
 //
-// Three blend modes are supported:
+// Four blend modes are supported:
 //   - Mix: linear interpolation between source A and source B
 //   - Dip: two-phase blend through black (A fades out, then B fades in)
+//   - Wipe: per-pixel threshold mask with 4px soft edge (6 directions)
 //   - FTB: fade to black (single source fades to black)
 //
 // The blender pre-allocates its output buffer at construction time and
@@ -93,6 +94,142 @@ func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
 		}
 	}
 	return fb.yuvBufOut
+}
+
+// BlendWipe performs a directional wipe transition between yuvA and yuvB in
+// YUV420 space. For each pixel, a threshold is computed based on its position
+// and the wipe direction. Pixels whose threshold is below the transition
+// position show source B; those above show source A. A 4-pixel soft edge
+// provides a smooth gradient at the wipe boundary.
+//
+// Wipe directions:
+//   - h-left: wipes from left to right (B reveals from the left)
+//   - h-right: wipes from right to left (B reveals from the right)
+//   - v-top: wipes from top to bottom (B reveals from the top)
+//   - v-bottom: wipes from bottom to top (B reveals from the bottom)
+//   - box-center-out: B reveals from center expanding outward
+//   - box-edges-in: B reveals from edges contracting inward
+func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction WipeDirection) []byte {
+	w := fb.width
+	h := fb.height
+
+	// Soft edge half-width in normalized coordinates.
+	// 4 pixels total (2px on each side of boundary). Use the frame width
+	// for horizontal wipes and height for vertical; for box wipes use the
+	// larger dimension. The divisor is always the relevant axis dimension.
+	softEdge := 2.0 / float64(w)
+	if direction == WipeVTop || direction == WipeVBottom {
+		softEdge = 2.0 / float64(h)
+	} else if direction == WipeBoxCenterOut || direction == WipeBoxEdgesIn {
+		dim := w
+		if h > w {
+			dim = h
+		}
+		softEdge = 2.0 / float64(dim)
+	}
+
+	// Pre-compute center for box modes
+	cx := float64(w-1) / 2.0
+	cy := float64(h-1) / 2.0
+
+	// --- Y plane (full resolution) ---
+	for py := 0; py < h; py++ {
+		for px := 0; px < w; px++ {
+			threshold := wipeThreshold(px, py, w, h, cx, cy, direction)
+			alpha := wipeAlpha(threshold, position, softEdge)
+			idx := py*w + px
+			fb.yuvBufOut[idx] = clampByte(float64(yuvA[idx])*(1.0-alpha) + float64(yuvB[idx])*alpha)
+		}
+	}
+
+	// --- Cb and Cr planes (half resolution) ---
+	uvW := w / 2
+	uvH := h / 2
+	cbOffset := fb.ySize
+	crOffset := fb.ySize + fb.uvSize
+
+	for py := 0; py < uvH; py++ {
+		for px := 0; px < uvW; px++ {
+			// Map chroma pixel back to luma coordinates for threshold
+			threshold := wipeThreshold(px*2, py*2, w, h, cx, cy, direction)
+			alpha := wipeAlpha(threshold, position, softEdge)
+			idx := py*uvW + px
+			fb.yuvBufOut[cbOffset+idx] = clampByte(float64(yuvA[cbOffset+idx])*(1.0-alpha) + float64(yuvB[cbOffset+idx])*alpha)
+			fb.yuvBufOut[crOffset+idx] = clampByte(float64(yuvA[crOffset+idx])*(1.0-alpha) + float64(yuvB[crOffset+idx])*alpha)
+		}
+	}
+
+	return fb.yuvBufOut
+}
+
+// wipeThreshold computes the normalized threshold [0,1] for a pixel at (px,py)
+// in a frame of dimensions (w,h) with center (cx,cy) for the given direction.
+func wipeThreshold(px, py, w, h int, cx, cy float64, direction WipeDirection) float64 {
+	switch direction {
+	case WipeHLeft:
+		return float64(px) / float64(w)
+	case WipeHRight:
+		return 1.0 - float64(px)/float64(w)
+	case WipeVTop:
+		return float64(py) / float64(h)
+	case WipeVBottom:
+		return 1.0 - float64(py)/float64(h)
+	case WipeBoxCenterOut:
+		dx := float64(px) - cx
+		dy := float64(py) - cy
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		tx := dx / cx
+		ty := dy / cy
+		if tx > ty {
+			return tx
+		}
+		return ty
+	case WipeBoxEdgesIn:
+		dx := float64(px) - cx
+		dy := float64(py) - cy
+		if dx < 0 {
+			dx = -dx
+		}
+		if dy < 0 {
+			dy = -dy
+		}
+		tx := dx / cx
+		ty := dy / cy
+		if tx > ty {
+			return 1.0 - tx
+		}
+		return 1.0 - ty
+	default:
+		return float64(px) / float64(w) // fallback to h-left
+	}
+}
+
+// wipeAlpha computes the blend alpha for a pixel given its threshold, the
+// transition position, and the soft edge half-width. Returns 0.0 (fully A)
+// to 1.0 (fully B) with a linear ramp in the soft edge region.
+// At position 0.0 the result is always fully A; at position 1.0 always fully B.
+func wipeAlpha(threshold, position, softEdge float64) float64 {
+	// Guarantee clean edges at position extremes
+	if position <= 0.0 {
+		return 0.0
+	}
+	if position >= 1.0 {
+		return 1.0
+	}
+
+	if threshold < position-softEdge {
+		return 1.0 // fully B
+	}
+	if threshold > position+softEdge {
+		return 0.0 // fully A
+	}
+	// Linear interpolation within soft edge
+	return (position + softEdge - threshold) / (2.0 * softEdge)
 }
 
 // BlendFTB fades a single source to black in YUV420 space.

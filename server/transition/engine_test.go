@@ -548,6 +548,41 @@ func TestEngineUsesConfigBitrateFPS(t *testing.T) {
 	e.Stop()
 }
 
+func TestEngineWipeStart(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	e.config.WipeDirection = WipeHLeft
+	err := e.Start("cam1", "cam2", TransitionWipe, 1000)
+	require.NoError(t, err)
+	require.Equal(t, StateActive, e.State())
+	require.Equal(t, TransitionWipe, e.TransitionType())
+
+	e.Stop()
+}
+
+func TestEngineWipeIngestProducesOutput(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	e.config.WipeDirection = WipeVTop
+	require.NoError(t, e.Start("cam1", "cam2", TransitionWipe, 5000))
+
+	// Ingest from source A (stored but doesn't trigger output)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	mu.Lock()
+	require.Equal(t, 0, len(*outputs), "source A alone should not produce output")
+	mu.Unlock()
+
+	// Ingest from source B (triggers wipe blend+output)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "source B should trigger wipe output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
 func TestEngineDefaultBitrateFPSWhenZero(t *testing.T) {
 	// Verify that zero Bitrate/FPS falls back to defaults.
 	var capturedBitrate int

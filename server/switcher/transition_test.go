@@ -93,7 +93,7 @@ func TestSwitcherStartTransition(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.NoError(t, err)
 
 	state := sw.State()
@@ -114,7 +114,7 @@ func TestSwitcherStartTransitionNoPreview(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
 
 	// No target specified
-	err := sw.StartTransition(context.Background(), "", "mix", 500)
+	err := sw.StartTransition(context.Background(), "", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no target source")
 }
@@ -123,11 +123,11 @@ func TestSwitcherCannotDoubleTransition(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.NoError(t, err)
 
 	// Second transition should fail
-	err = sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err = sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already active")
 }
@@ -156,7 +156,7 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	viewer.mu.Unlock()
 
 	// Start a long transition so it doesn't auto-complete
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	// Now send frames from both sources — they should go to the engine
@@ -182,7 +182,7 @@ func TestSwitcherTransitionCompletion(t *testing.T) {
 	defer sw.Close()
 
 	// Start a transition with manual control (long duration)
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	// Complete via SetPosition(1.0)
@@ -217,7 +217,7 @@ func TestSwitcherFTBRejectsWhileMixActive(t *testing.T) {
 	defer sw.Close()
 
 	// Start a mix transition
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	// FTB should be rejected
@@ -235,7 +235,7 @@ func TestSwitcherMixRejectsWhileFTBActive(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mix should be rejected while FTB is active (inTransition=true from FTB start)
-	err = sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err = sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.Error(t, err)
 	// Could match "already active" or "FTB is active" — the FTB sets inTransition=true
 	require.Error(t, err)
@@ -248,7 +248,7 @@ func TestSwitcherSetTransitionPosition(t *testing.T) {
 	audioTrans := &mockAudioTransHandler{}
 	sw.SetAudioTransition(audioTrans)
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	// Set position via T-bar
@@ -284,7 +284,7 @@ func TestSwitcherStartTransitionNotConfigured(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// No transition config set
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "transition not configured")
 }
@@ -293,7 +293,7 @@ func TestSwitcherStartTransitionSourceNotFound(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
-	err := sw.StartTransition(context.Background(), "nonexistent", "mix", 500)
+	err := sw.StartTransition(context.Background(), "nonexistent", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -303,7 +303,7 @@ func TestSwitcherStartTransitionSameSource(t *testing.T) {
 	defer sw.Close()
 
 	// cam1 is already program — transitioning to cam1 should be rejected
-	err := sw.StartTransition(context.Background(), "cam1", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam1", "mix", 500, "")
 	require.ErrorIs(t, err, ErrAlreadyOnProgram)
 }
 
@@ -311,9 +311,39 @@ func TestSwitcherStartTransitionUnsupportedType(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
-	err := sw.StartTransition(context.Background(), "cam2", "wipe", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "fade", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported transition type")
+}
+
+func TestSwitcherStartWipeTransition(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	err := sw.StartTransition(context.Background(), "cam2", "wipe", 500, "h-left")
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.True(t, state.InTransition)
+	require.Equal(t, "wipe", state.TransitionType)
+}
+
+func TestSwitcherStartWipeInvalidDirection(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	err := sw.StartTransition(context.Background(), "cam2", "wipe", 500, "diagonal")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid wipe direction")
+}
+
+func TestSwitcherStartWipeMissingDirection(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	err := sw.StartTransition(context.Background(), "cam2", "wipe", 500, "")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid wipe direction")
 }
 
 func TestSwitcherAbortTransition(t *testing.T) {
@@ -323,7 +353,7 @@ func TestSwitcherAbortTransition(t *testing.T) {
 	audioTrans := &mockAudioTransHandler{}
 	sw.SetAudioTransition(audioTrans)
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	sw.AbortTransition()
@@ -382,7 +412,7 @@ func TestSwitcherTransitionAudioNotified(t *testing.T) {
 	audioTrans := &mockAudioTransHandler{}
 	sw.SetAudioTransition(audioTrans)
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.NoError(t, err)
 
 	audioTrans.mu.Lock()
@@ -403,7 +433,7 @@ func TestSwitcherStartTransitionNoProgramSource(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 
 	// No program source set — don't cut to anything
-	err := sw.StartTransition(context.Background(), "cam1", "mix", 500)
+	err := sw.StartTransition(context.Background(), "cam1", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no program source set")
 }
@@ -435,7 +465,7 @@ func TestSwitcherTransitionStateCallback(t *testing.T) {
 		mu.Unlock()
 	})
 
-	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000)
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
 	require.NoError(t, err)
 
 	mu.Lock()
@@ -589,7 +619,7 @@ func TestSwitcherMixRejectsAfterFTBComplete(t *testing.T) {
 	require.False(t, state.InTransition)
 
 	// Mix should be rejected while FTB is active (even though transition is done)
-	err = sw.StartTransition(context.Background(), "cam2", "mix", 500)
+	err = sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "FTB is active")
 }
@@ -598,7 +628,7 @@ func TestSwitcherDipTransition(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
-	err := sw.StartTransition(context.Background(), "cam2", "dip", 500)
+	err := sw.StartTransition(context.Background(), "cam2", "dip", 500, "")
 	require.NoError(t, err)
 
 	state := sw.State()

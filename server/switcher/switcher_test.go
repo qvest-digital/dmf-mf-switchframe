@@ -811,7 +811,7 @@ func TestTransitionUsesEstimatedEncoderParams(t *testing.T) {
 	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
 
 	// Start transition — engine should be created with estimated params
-	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000))
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
 
 	// Feed a frame to trigger encoder init (lazy)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{

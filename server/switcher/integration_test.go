@@ -384,7 +384,7 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// Start transition — audio should enter transition crossfade
-	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
 	require.True(t, mixer.IsInTransitionCrossfade())
 
 	// Set position — audio should track
@@ -423,7 +423,7 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
 	// Start dissolve
-	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
 
 	// Feed frames from both sources
 	for i := 0; i < 5; i++ {
@@ -468,7 +468,7 @@ func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
 	// Short transition
-	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 50))
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 50, ""))
 
 	// Feed frames until completion
 	for i := 0; i < 30; i++ {
@@ -525,7 +525,7 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
-	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000))
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
 
 	// Move T-bar partway
 	sw.SetTransitionPosition(context.Background(), 0.5)

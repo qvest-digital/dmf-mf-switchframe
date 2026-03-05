@@ -21,6 +21,10 @@ type EngineConfig struct {
 	Output         func(data []byte, isKeyframe bool, pts int64)
 	OnComplete     func(aborted bool)
 
+	// WipeDirection specifies the wipe direction when TransitionType is "wipe".
+	// Ignored for other transition types.
+	WipeDirection WipeDirection
+
 	// Bitrate for the transition encoder in bits/sec. If zero, defaults
 	// to DefaultBitrate (4 Mbps). Derived from the program source's
 	// recent frame statistics by the switcher.
@@ -37,6 +41,7 @@ type TransitionEngine struct {
 	mu             sync.RWMutex
 	state          TransitionState
 	transitionType TransitionType
+	wipeDirection  WipeDirection
 	fromSource     string
 	toSource       string // empty for FTB
 	durationMs     int
@@ -131,6 +136,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 
 	e.state = StateActive
 	e.transitionType = ttype
+	e.wipeDirection = e.config.WipeDirection
 	e.fromSource = from
 	e.toSource = to
 	e.durationMs = durationMs
@@ -346,6 +352,8 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	case TransitionFTBReverse:
 		// Inverted: position 0→1 fades from black to fully visible
 		blended = e.blender.BlendFTB(e.latestYUVA, 1.0-pos)
+	case TransitionWipe:
+		blended = e.blender.BlendWipe(e.latestYUVA, e.latestYUVB, pos, e.wipeDirection)
 	}
 
 	// Encode — force IDR on the very first encoded frame so downstream

@@ -7,8 +7,12 @@
 	interface Props { state: ControlRoomState; }
 	let { state }: Props = $props();
 
-	let transType: 'mix' | 'dip' = 'mix';
+	type TransType = 'mix' | 'dip' | 'wipe';
+	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
+
+	let transType: TransType = 'mix';
 	let durationMs: number = 1000;
+	let wipeDirection: WipeDir = 'h-left';
 
 	const anim = new AutoAnimation();
 
@@ -34,7 +38,10 @@
 	function handleAuto() {
 		if (autoDisabled) return;
 		anim.start(durationMs);
-		fireAndForget(startTransition(state.previewSource, transType, durationMs));
+		fireAndForget(startTransition(
+			state.previewSource, transType, durationMs,
+			transType === 'wipe' ? wipeDirection : undefined
+		));
 
 		// Safety timeout: cancel animation if server never confirms
 		const safeDuration = durationMs;
@@ -57,7 +64,10 @@
 		anim.active = false;
 		const value = parseFloat((e.target as HTMLInputElement).value);
 		if (!state.inTransition && value > 0 && state.previewSource) {
-			fireAndForget(startTransition(state.previewSource, transType, durationMs));
+			fireAndForget(startTransition(
+				state.previewSource, transType, durationMs,
+				transType === 'wipe' ? wipeDirection : undefined
+			));
 		}
 		setPositionThrottled(value);
 	}
@@ -90,7 +100,22 @@
 					<input type="radio" name="transType" value="dip" bind:group={transType} />
 					Dip
 				</label>
+				<label class="type-option" class:selected={transType === 'wipe'}>
+					<input type="radio" name="transType" value="wipe" bind:group={transType} />
+					Wipe
+				</label>
 			</div>
+
+			{#if transType === 'wipe'}
+				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
+				</div>
+			{/if}
 
 			<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
 				<option value={500}>0.5s</option>
@@ -241,6 +266,38 @@
 
 	.type-option input {
 		display: none;
+	}
+
+	.wipe-directions {
+		display: flex;
+		gap: 2px;
+		background: var(--bg-base);
+		border-radius: var(--radius-md);
+		padding: 2px;
+		border: 1px solid var(--border-subtle);
+	}
+
+	.wipe-dir-btn {
+		font-size: 0.75rem;
+		line-height: 1;
+		padding: 3px 6px;
+		border: none;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast);
+	}
+
+	.wipe-dir-btn:hover {
+		color: var(--text-primary);
+	}
+
+	.wipe-dir-btn.selected {
+		background: var(--bg-elevated);
+		color: var(--accent-yellow);
 	}
 
 	.duration-select {

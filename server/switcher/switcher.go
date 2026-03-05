@@ -197,10 +197,11 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.audioTransition = handler
 }
 
-// StartTransition begins a mix/dip transition from the current program source
+// StartTransition begins a mix/dip/wipe transition from the current program source
 // to the given target source. Frames from both sources are routed to the
 // TransitionEngine which produces blended output on the program relay.
-func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int) error {
+// wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
+func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string) error {
 	s.mu.Lock()
 
 	if s.transConfig == nil {
@@ -234,9 +235,19 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 
 	tt := transition.TransitionType(transType)
-	if tt != transition.TransitionMix && tt != transition.TransitionDip {
+	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe {
 		s.mu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+
+	// Validate wipe direction when type is wipe
+	var wipeDir transition.WipeDirection
+	if tt == transition.TransitionWipe {
+		wipeDir = transition.WipeDirection(wipeDirection)
+		if !transition.ValidWipeDirections[wipeDir] {
+			s.mu.Unlock()
+			return fmt.Errorf("invalid wipe direction: %q", wipeDirection)
+		}
 	}
 
 	fromSource := s.programSource
@@ -251,6 +262,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		EncoderFactory: s.transConfig.EncoderFactory,
 		Bitrate:        bitrate,
 		FPS:            fps,
+		WipeDirection:  wipeDir,
 		Output: func(data []byte, isKeyframe bool, pts int64) {
 			if isKeyframe {
 				transGroupID++

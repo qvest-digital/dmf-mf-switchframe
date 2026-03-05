@@ -138,7 +138,7 @@ describe('TransitionControls', () => {
 			autoBtn.click();
 			await tick();
 
-			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000);
+			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000, undefined);
 		});
 
 		it('should still show server-driven position for manual T-bar', () => {
