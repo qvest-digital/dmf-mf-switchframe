@@ -2,6 +2,7 @@ package transition
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -129,6 +130,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.width = 0
 	e.height = 0
 
+	slog.Info("transition: engine started", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
 	return nil
 }
 
@@ -223,9 +225,11 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 
 	yuv, w, h, err := decoder.Decode(wireData)
 	if err != nil {
+		slog.Debug("transition: decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
 		e.mu.Unlock()
 		return
 	}
+	slog.Debug("transition: decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
 
 	// Lazy-init encoder and blender on first successful decode
 	if e.width == 0 {
@@ -237,14 +241,18 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 
 		enc, encErr := e.config.EncoderFactory(w, h, 4000000, 30.0)
 		if encErr != nil {
+			slog.Error("transition: encoder init failed", "err", encErr, "w", w, "h", h)
 			e.mu.Unlock()
 			return
 		}
 		e.encoder = enc
+		slog.Info("transition: encoder initialized", "w", w, "h", h)
 	}
 
 	// Resolution mismatch check
 	if w != e.width || h != e.height {
+		slog.Warn("transition: resolution mismatch, skipping frame", "source", sourceKey,
+			"expected", fmt.Sprintf("%dx%d", e.width, e.height), "got", fmt.Sprintf("%dx%d", w, h))
 		e.mu.Unlock()
 		return
 	}
@@ -298,14 +306,17 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 	forceIDR := pos == 0.0 // force keyframe at start
 	encoded, isKeyframe, encErr := e.encoder.Encode(yuvOut, forceIDR)
 	if encErr != nil {
+		slog.Warn("transition: encode failed", "err", encErr, "pos", pos)
 		e.mu.Unlock()
 		return
 	}
+	slog.Debug("transition: blended+encoded", "pos", fmt.Sprintf("%.3f", pos), "isKeyframe", isKeyframe, "outBytes", len(encoded))
 
 	// Check if auto-mode completed
 	var autoComplete bool
 	if !e.manualControl && pos >= 1.0 {
 		autoComplete = true
+		slog.Info("transition: auto-complete", "type", e.transitionType)
 		e.cleanup()
 	}
 

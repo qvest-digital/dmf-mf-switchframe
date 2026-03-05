@@ -3,9 +3,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,6 +36,7 @@ func main() {
 
 func run() error {
 	demoFlag := flag.Bool("demo", false, "Start with simulated camera sources")
+	demoVideoDir := flag.String("demo-video", "", "Directory containing MPEG-TS clips for real video demo (requires --demo)")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -185,11 +188,67 @@ func run() error {
 
 	demoStats := demo.NewDemoStats()
 	if *demoFlag {
-		slog.Info("demo mode: starting 4 simulated camera sources")
-		stopDemo := demo.StartSources(ctx, sw, mixer, 4, demoStats)
+		const nCams = 4
+		slog.Info("demo mode: starting simulated camera sources", "count", nCams, "videoDir", *demoVideoDir)
+		// Register demo streams with Prism so MoQ clients can subscribe.
+		// OnStreamRegistered fires synchronously, wiring sw.RegisterSource + mixer.AddChannel.
+		relays := make([]*distribution.Relay, nCams)
+		for i := range nCams {
+			key := fmt.Sprintf("cam%d", i+1)
+			relays[i] = server.RegisterStream(key)
+			// Set fallback video info for synthetic mode. Real video mode
+			// overrides this in StartSources after demuxing SPS data.
+			if *demoVideoDir == "" {
+				relays[i].SetVideoInfo(distribution.VideoInfo{
+					Codec:  "avc1.42C01E",
+					Width:  320,
+					Height: 240,
+				})
+			}
+		}
+		stopDemo := demo.StartSources(ctx, sw, relays, demoStats, *demoVideoDir)
 		defer stopDemo()
+
+		// Copy video info from first source to program relay so the MoQ
+		// catalog advertises codec/resolution and avcC decoder config.
+		// Without this, browsers can't configure their decoder until a
+		// keyframe with SPS/PPS arrives in frame extensions.
+		if len(relays) > 0 {
+			programRelay.SetVideoInfo(relays[0].VideoInfo())
+		}
 	}
 	debugCollector.Register("demo", demoStats)
+
+	// Start a plain HTTP server on TCP for the REST API. Prism's distribution
+	// server only listens on QUIC/UDP, so the Vite dev proxy (and curl) can't
+	// reach it. This TCP listener mirrors the same API routes.
+	apiMux := http.NewServeMux()
+	api.RegisterOnMux(apiMux)
+	apiMux.HandleFunc("GET /api/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]string{
+			"hash": cert.FingerprintBase64(),
+			"addr": addr,
+		})
+	})
+	httpSrv := &http.Server{
+		Handler: apiMux,
+	}
+	httpLn, err := net.Listen("tcp", ":8081")
+	if err != nil {
+		return fmt.Errorf("listen TCP :8081: %w", err)
+	}
+	go func() {
+		slog.Info("HTTP API server listening", "addr", ":8081")
+		if err := httpSrv.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP API server error", "err", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		httpSrv.Close()
+	}()
 
 	slog.Info("starting Prism distribution server", "addr", addr)
 	return server.Start(ctx)

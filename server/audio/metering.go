@@ -24,10 +24,15 @@ func PeakLevel(pcm []float32, channels int) (peakL, peakR float64) {
 }
 
 // LinearToDBFS converts a linear amplitude (0..1) to dBFS.
-// Returns -Inf for silence (linear <= 0).
+// Returns -96 for silence (linear <= 0). Clamped to avoid -Inf
+// which is not JSON-serializable.
 func LinearToDBFS(linear float64) float64 {
 	if linear <= 0 {
-		return math.Inf(-1)
+		return -96
 	}
-	return 20 * math.Log10(linear)
+	db := 20 * math.Log10(linear)
+	if db < -96 {
+		return -96
+	}
+	return db
 }

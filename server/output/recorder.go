@@ -83,6 +83,12 @@ func (r *FileRecorder) openFileLocked(now time.Time) error {
 	r.filename = fmt.Sprintf("program_%s_%03d.ts", r.baseTimestamp, r.fileIndex)
 	path := filepath.Join(r.config.Dir, r.filename)
 
+	if err := os.MkdirAll(r.config.Dir, 0o755); err != nil {
+		r.state = StateError
+		r.errMsg = err.Error()
+		return err
+	}
+
 	f, err := os.Create(path)
 	if err != nil {
 		r.state = StateError

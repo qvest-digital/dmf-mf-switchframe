@@ -290,6 +290,16 @@ func TestSwitcherStartTransitionSourceNotFound(t *testing.T) {
 	require.Contains(t, err.Error(), "not found")
 }
 
+func TestSwitcherStartTransitionSameSource(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// cam1 is already program — transitioning to cam1 should be rejected
+	err := sw.StartTransition(context.Background(), "cam1", "mix", 500)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "already on program")
+}
+
 func TestSwitcherStartTransitionUnsupportedType(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()

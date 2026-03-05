@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -415,6 +416,11 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
+	}
+
+	// Default output directory to OS temp dir if not specified.
+	if req.OutputDir == "" {
+		req.OutputDir = filepath.Join(os.TempDir(), "switchframe-recordings")
 	}
 
 	// Validate output directory: must be absolute and cleaned path

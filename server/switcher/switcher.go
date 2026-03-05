@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -195,6 +196,11 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 
+	if s.programSource == sourceKey {
+		s.mu.Unlock()
+		return fmt.Errorf("source %q already on program", sourceKey)
+	}
+
 	tt := transition.TransitionType(transType)
 	if tt != transition.TransitionMix && tt != transition.TransitionDip {
 		s.mu.Unlock()
@@ -204,15 +210,15 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	fromSource := s.programSource
 	programRelay := s.programRelay
 
+	var transGroupID uint32
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
 		Output: func(data []byte, isKeyframe bool) {
-			programRelay.BroadcastVideo(&media.VideoFrame{
-				PTS:        time.Now().UnixMilli(),
-				IsKeyframe: isKeyframe,
-				WireData:   data,
-			})
+			if isKeyframe {
+				transGroupID++
+			}
+			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -288,15 +294,15 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		fromSource := s.programSource
 		programRelay := s.programRelay
 
+		var revGroupID uint32
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
 			DecoderFactory: s.transConfig.DecoderFactory,
 			EncoderFactory: s.transConfig.EncoderFactory,
 			Output: func(data []byte, isKeyframe bool) {
-				programRelay.BroadcastVideo(&media.VideoFrame{
-					PTS:        time.Now().UnixMilli(),
-					IsKeyframe: isKeyframe,
-					WireData:   data,
-				})
+				if isKeyframe {
+					revGroupID++
+				}
+				programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID))
 			},
 			OnComplete: func(aborted bool) {
 				s.handleFTBReverseComplete(aborted)
@@ -332,15 +338,15 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	fromSource := s.programSource
 	programRelay := s.programRelay
 
+	var ftbGroupID uint32
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: s.transConfig.DecoderFactory,
 		EncoderFactory: s.transConfig.EncoderFactory,
 		Output: func(data []byte, isKeyframe bool) {
-			programRelay.BroadcastVideo(&media.VideoFrame{
-				PTS:        time.Now().UnixMilli(),
-				IsKeyframe: isKeyframe,
-				WireData:   data,
-			})
+			if isKeyframe {
+				ftbGroupID++
+			}
+			programRelay.BroadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID))
 		},
 		OnComplete: func(aborted bool) {
 			s.handleFTBComplete(aborted)
@@ -421,6 +427,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 			s.programSource = newProgram
 			s.previewSource = oldProgram
 			audioCut = s.audioCut
+			// Gate passthrough frames until next keyframe from the new
+			// source. The transition encoder's SPS/PPS differ from the
+			// source's, so delta frames would be undecodable.
+			if ss, ok := s.sources[newProgram]; ok {
+				ss.pendingIDR = true
+				s.idrGateStartNano.Store(time.Now().UnixNano())
+			}
 		}
 	}
 
@@ -721,6 +734,33 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 	}
 }
 
+// annexBToVideoFrame converts Annex B encoder output to a media.VideoFrame
+// with AVC1 WireData and extracted SPS/PPS for keyframes.
+func annexBToVideoFrame(annexBData []byte, isKeyframe bool, groupID uint32) *media.VideoFrame {
+	avc1 := codec.AnnexBToAVC1(annexBData)
+	frame := &media.VideoFrame{
+		PTS:        time.Now().UnixMilli(),
+		IsKeyframe: isKeyframe,
+		WireData:   avc1,
+		Codec:      "h264",
+		GroupID:    groupID,
+	}
+	if isKeyframe {
+		for _, nalu := range codec.ExtractNALUs(avc1) {
+			if len(nalu) == 0 {
+				continue
+			}
+			switch nalu[0] & 0x1F {
+			case 7:
+				frame.SPS = nalu
+			case 8:
+				frame.PPS = nalu
+			}
+		}
+	}
+	return frame
+}
+
 // handleVideoFrame implements frameHandler. It is called by sourceViewers
 // when a video frame arrives from a source. Only frames from the current
 // program source are forwarded to the program Relay. After a cut, frames
@@ -735,14 +775,26 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.RUnlock()
 
 	if inTrans && engine != nil {
-		engine.IngestFrame(sourceKey, frame.WireData)
+		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
+		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe && len(frame.SPS) > 0 {
+			// Prepend SPS/PPS as Annex B NALUs so decoder can (re)configure.
+			var buf []byte
+			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
+			buf = append(buf, frame.SPS...)
+			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
+			buf = append(buf, frame.PPS...)
+			buf = append(buf, annexB...)
+			annexB = buf
+		}
+		engine.IngestFrame(sourceKey, annexB)
 		return
 	}
 
 	// Normal passthrough: RLock for steady-state (pendingIDR is false most of the time).
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
-	if !ok || s.programSource != sourceKey {
+	if !ok || s.programSource != sourceKey || s.ftbActive {
 		s.mu.RUnlock()
 		return
 	}

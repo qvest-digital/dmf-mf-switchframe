@@ -166,27 +166,30 @@
 
 	/**
 	 * Update which source is rendered on the program and preview canvases.
-	 * When the program/preview source changes, we detach the old renderer
-	 * and attach the new source to the program/preview canvas. Each source
-	 * can have multiple renderers (tile + program/preview) simultaneously.
+	 *
+	 * Program canvas: always renders the "program" MoQ stream, which is the
+	 * authoritative server output. During transitions, this shows the blended
+	 * dissolve/dip/FTB frames. During normal operation, it shows the program
+	 * source's passthrough video. Attached once and stays until layout change.
+	 *
+	 * Preview canvas: renders the preview source's individual stream so you
+	 * see the raw video of whatever source you're about to cut/transition to.
 	 */
 	function syncProgramPreviewCanvases() {
 		if (!mounted) return;
 
-		const programSource = store.state.programSource;
 		const previewSource = store.state.previewSource;
 
-		// Program canvas: render the program source's video
-		if (programSource !== currentProgramCanvas) {
-			// Detach old program renderer from previous source
+		// Program canvas: render the "program" MoQ stream (shows transitions)
+		if (currentProgramCanvas !== 'program') {
 			if (currentProgramCanvas) {
 				pipeline.detachCanvas(currentProgramCanvas, 'program');
 			}
 			const programCanvas = document.getElementById('program-video') as HTMLCanvasElement | null;
-			if (programCanvas && programSource) {
-				pipeline.attachCanvas(programSource, 'program', programCanvas);
+			if (programCanvas) {
+				pipeline.attachCanvas('program', 'program', programCanvas);
+				currentProgramCanvas = 'program';
 			}
-			currentProgramCanvas = programSource;
 		}
 
 		// Preview canvas: render the preview source's video
@@ -215,6 +218,26 @@
 		const _program = store.state.programSource;
 		const _preview = store.state.previewSource;
 		syncProgramPreviewCanvases();
+	});
+
+	// Re-attach canvases when layout mode changes (DOM is replaced)
+	$effect(() => {
+		const _mode = layoutMode;
+		// Detach all current renderers — their canvases are about to be destroyed
+		for (const key of attachedCanvases) {
+			pipeline.detachCanvas(key, `tile-${key}`);
+		}
+		if (currentProgramCanvas) {
+			pipeline.detachCanvas(currentProgramCanvas, 'program');
+		}
+		if (currentPreviewCanvas) {
+			pipeline.detachCanvas(currentPreviewCanvas, 'preview');
+		}
+		attachedCanvases = new Set<string>();
+		currentProgramCanvas = null;
+		currentPreviewCanvas = null;
+		// Re-sync after DOM updates
+		tick().then(() => syncSources());
 	});
 
 	let pollInterval: ReturnType<typeof setInterval> | undefined;
@@ -255,6 +278,11 @@
 		keyboard.attach();
 		document.addEventListener('keydown', handleDebugDump);
 		mounted = true;
+
+		// Subscribe to "program" MoQ stream so the program canvas shows
+		// the actual server output (including transition blends).
+		pipeline.addSource('program');
+		pipeline.connectSource('program');
 
 		// Initial state fetch via REST
 		try {

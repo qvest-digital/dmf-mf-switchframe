@@ -1,9 +1,23 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { svelteTesting } from '@testing-library/svelte/vite';
-import { defineConfig } from 'vitest/config';
+import { defineConfig, type Plugin } from 'vitest/config';
+
+/** Vite plugin that enables cross-origin isolation for SharedArrayBuffer. */
+function crossOriginIsolation(): Plugin {
+	return {
+		name: 'cross-origin-isolation',
+		configureServer(server) {
+			server.middlewares.use((_req, res, next) => {
+				res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+				res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+				next();
+			});
+		},
+	};
+}
 
 export default defineConfig({
-	plugins: [sveltekit(), svelteTesting()],
+	plugins: [crossOriginIsolation(), sveltekit(), svelteTesting()],
 	test: {
 		include: ['src/**/*.test.ts'],
 		environment: 'jsdom',
@@ -11,8 +25,7 @@ export default defineConfig({
 	server: {
 		proxy: {
 			'/api': {
-				target: 'https://localhost:8080',
-				secure: false,
+				target: 'http://localhost:8081',
 			},
 		},
 	},

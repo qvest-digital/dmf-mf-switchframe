@@ -26,9 +26,13 @@ interface SourceMedia {
 	videoDecoder: PrismVideoDecoder;
 	audioDecoder: PrismAudioDecoder | null;
 	renderers: Map<string, PrismRenderer>;
+	/** Per-renderer secondary buffers for multi-canvas sources (program/preview). */
+	secondaryBuffers: Map<string, VideoRenderBuffer>;
 	transport: MoQTransport | null;
 	configured: boolean;
 	audioConfigured: boolean;
+	/** Last avcC description bytes, for change detection. */
+	lastDescription: Uint8Array | null;
 	/** Codec string from catalog, for lazy configure on first frame. */
 	videoCodec: string | null;
 	videoWidth: number;
@@ -88,7 +92,15 @@ export function createMediaPipeline(): MediaPipeline {
 
 	function createSourceMedia(key: string): SourceMedia {
 		const videoBuffer = new VideoRenderBuffer();
-		const videoDecoder = new PrismVideoDecoder(videoBuffer);
+		const secondaryBuffers = new Map<string, VideoRenderBuffer>();
+
+		// Clone decoded frames into secondary buffers so multiple renderers
+		// (tile + program/preview) each get their own copy without contention.
+		const videoDecoder = new PrismVideoDecoder(videoBuffer, (frame: VideoFrame) => {
+			for (const buf of secondaryBuffers.values()) {
+				buf.addFrame(frame.clone());
+			}
+		});
 
 		return {
 			key,
@@ -96,9 +108,11 @@ export function createMediaPipeline(): MediaPipeline {
 			videoDecoder,
 			audioDecoder: null,
 			renderers: new Map(),
+			secondaryBuffers,
 			transport: null,
 			configured: false,
 			audioConfigured: false,
+			lastDescription: null,
 			videoCodec: null,
 			videoWidth: 0,
 			videoHeight: 0,
@@ -125,10 +139,13 @@ export function createMediaPipeline(): MediaPipeline {
 						const sampleRate = track.sampleRate || 48000;
 						const channels = track.channels || 2;
 						const audioDecoder = new PrismAudioDecoder();
-						audioDecoder.configure(codec, sampleRate, channels);
-						audioDecoder.setMuted(true); // muted by default
-						audioDecoder.enableMetering();
-						source.audioDecoder = audioDecoder;
+						audioDecoder.configure(codec, sampleRate, channels).then(() => {
+							audioDecoder.setMuted(true);
+							audioDecoder.enableMetering();
+							source.audioDecoder = audioDecoder;
+						}).catch((err) => {
+							console.warn(`[MediaPipeline] Audio decoder failed for "${key}":`, err);
+						});
 						source.audioConfigured = true;
 					}
 				}
@@ -141,7 +158,9 @@ export function createMediaPipeline(): MediaPipeline {
 				_groupID: number,
 				description: Uint8Array | null,
 			) {
-				feedVideoFrame(key, data, isKeyframe, timestamp, description);
+					// MoQ timestamps are in 90kHz (MPEG-TS clock); WebCodecs expects microseconds.
+				const timestampUs = Math.round(timestamp * 1_000_000 / 90_000);
+				feedVideoFrame(key, data, isKeyframe, timestampUs, description);
 			},
 
 			onAudioFrame(
@@ -150,7 +169,8 @@ export function createMediaPipeline(): MediaPipeline {
 				_groupID: number,
 				_trackIndex: number,
 			) {
-				feedAudioFrame(key, data, timestamp);
+				const timestampUs = Math.round(timestamp * 1_000_000 / 90_000);
+				feedAudioFrame(key, data, timestampUs);
 			},
 
 			onCaptionFrame() {
@@ -181,6 +201,16 @@ export function createMediaPipeline(): MediaPipeline {
 		};
 	}
 
+	/** Compare two avcC descriptions for byte equality. */
+	function descriptionEqual(a: Uint8Array | null, b: Uint8Array | null): boolean {
+		if (a === null || b === null) return a === b;
+		if (a.byteLength !== b.byteLength) return false;
+		for (let i = 0; i < a.byteLength; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	}
+
 	function feedVideoFrame(
 		sourceKey: string,
 		data: Uint8Array,
@@ -191,32 +221,29 @@ export function createMediaPipeline(): MediaPipeline {
 		const source = sources.get(sourceKey);
 		if (!source) return;
 
-		// Configure decoder on first frame with description (avcC config record)
+		// Configure decoder on first frame with description (avcC config record).
+		// description is often a subarray (view into a larger extensions buffer),
+		// so we must slice() to get an owned copy — .buffer would return the
+		// entire parent ArrayBuffer which contains other extension data.
+		// We need TWO copies: one to transfer to the worker (gets detached),
+		// and one to retain for change detection on subsequent keyframes.
 		if (description && !source.configured) {
 			const codec = source.videoCodec || 'avc1.64001f';
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
-			source.videoDecoder.configure(
-				codec,
-				width,
-				height,
-				description.buffer as ArrayBuffer,
-			);
+			source.lastDescription = description.slice(); // retained copy
+			source.videoDecoder.configure(codec, width, height, description.slice().buffer as ArrayBuffer);
 			source.configured = true;
-		} else if (description && source.configured) {
-			// Reconfigure when description changes (resolution/codec switch)
+		} else if (description && source.configured && !descriptionEqual(source.lastDescription, description)) {
+			// Reconfigure only when description actually changes (resolution/codec switch)
 			const codec = source.videoCodec || 'avc1.64001f';
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
-			source.videoDecoder.configure(
-				codec,
-				width,
-				height,
-				description.buffer as ArrayBuffer,
-			);
+			source.lastDescription = description.slice(); // retained copy
+			source.videoDecoder.configure(codec, width, height, description.slice().buffer as ArrayBuffer);
 		}
 
-		const isDisco = isKeyframe; // keyframes mark discontinuity boundaries
+		const isDisco = false; // continuous stream — keyframes are not discontinuities
 		source.videoDecoder.decode(data, isKeyframe, timestamp, isDisco);
 	}
 
@@ -247,11 +274,15 @@ export function createMediaPipeline(): MediaPipeline {
 			source.transport = null;
 		}
 
-		// Clean up all renderers
+		// Clean up all renderers and secondary buffers
 		for (const renderer of source.renderers.values()) {
 			renderer.destroy();
 		}
 		source.renderers.clear();
+		for (const buf of source.secondaryBuffers.values()) {
+			buf.clear();
+		}
+		source.secondaryBuffers.clear();
 
 		// Clean up video pipeline
 		source.videoDecoder.reset();
@@ -305,6 +336,7 @@ export function createMediaPipeline(): MediaPipeline {
 		const existing = source.renderers.get(canvasId);
 		if (existing) {
 			existing.destroy();
+			source.secondaryBuffers.delete(canvasId);
 		}
 
 		// Create audio clock from the source's audio decoder (or a no-op clock)
@@ -314,7 +346,17 @@ export function createMediaPipeline(): MediaPipeline {
 			},
 		};
 
-		const renderer = new PrismRenderer(canvas, source.videoBuffer, audioClock);
+		// First renderer uses the primary buffer; additional renderers get
+		// their own buffer with cloned frames to avoid contention.
+		let buffer: VideoRenderBuffer;
+		if (source.renderers.size === 0) {
+			buffer = source.videoBuffer;
+		} else {
+			buffer = new VideoRenderBuffer();
+			source.secondaryBuffers.set(canvasId, buffer);
+		}
+
+		const renderer = new PrismRenderer(canvas, buffer, audioClock);
 		renderer.freeRunOnly = !source.audioDecoder; // free-run if no audio
 		source.renderers.set(canvasId, renderer);
 		renderer.start();
@@ -329,6 +371,12 @@ export function createMediaPipeline(): MediaPipeline {
 
 		renderer.destroy();
 		source.renderers.delete(canvasId);
+
+		const secBuf = source.secondaryBuffers.get(canvasId);
+		if (secBuf) {
+			secBuf.clear();
+			source.secondaryBuffers.delete(canvasId);
+		}
 	}
 
 	function destroy(): void {

@@ -30,13 +30,13 @@ export interface VideoDecoderDiagnostics {
 export class PrismVideoDecoder {
 	private worker: Worker | null = null;
 	private renderBuffer: VideoRenderBuffer;
-	private onFrameReceived: (() => void) | null;
+	private onFrameReceived: ((frame: VideoFrame) => void) | null;
 	private configured = false;
 	private _lastDiag: VideoDecoderDiagnostics | null = null;
 	private _diagResolve: ((d: VideoDecoderDiagnostics) => void) | null = null;
 	private _bufferDropped = 0;
 
-	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: () => void) {
+	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
 		this.onFrameReceived = onFrameReceived ?? null;
 	}
@@ -133,10 +133,10 @@ export class PrismVideoDecoder {
 
 		if (msg.type === "frame") {
 			const frame: VideoFrame = msg.frame;
-			this.renderBuffer.addFrame(frame);
 			if (this.onFrameReceived) {
-				this.onFrameReceived();
+				this.onFrameReceived(frame);
 			}
+			this.renderBuffer.addFrame(frame);
 		} else if (msg.type === "diagnostics") {
 			const d: VideoDecoderDiagnostics = { ...msg.data, bufferDropped: this._bufferDropped };
 			this._lastDiag = d;

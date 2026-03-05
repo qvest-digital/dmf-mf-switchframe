@@ -1,7 +1,6 @@
 package audio
 
 import (
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,7 @@ func TestPeakLevelSilence(t *testing.T) {
 	dbL := LinearToDBFS(peakL)
 	require.Equal(t, float64(0), peakL)
 	require.Equal(t, float64(0), peakR)
-	require.True(t, math.IsInf(dbL, -1), "silence = -inf dBFS")
+	require.Equal(t, float64(-96), dbL, "silence = -96 dBFS")
 }
 
 func TestPeakLevelMono(t *testing.T) {
@@ -55,17 +54,13 @@ func TestLinearToDBFS(t *testing.T) {
 		{"full scale", 1.0, 0.0},
 		{"half", 0.5, -6.0206},
 		{"quarter", 0.25, -12.0412},
-		{"silence", 0.0, math.Inf(-1)},
-		{"negative", -0.1, math.Inf(-1)},
+		{"silence", 0.0, -96},
+		{"negative", -0.1, -96},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := LinearToDBFS(tt.linear)
-			if math.IsInf(tt.expected, -1) {
-				require.True(t, math.IsInf(result, -1))
-			} else {
-				require.InDelta(t, tt.expected, result, 0.001)
-			}
+			require.InDelta(t, tt.expected, result, 0.001)
 		})
 	}
 }
@@ -78,11 +73,10 @@ func TestMixerProgramPeak(t *testing.T) {
 	})
 	defer m.Close()
 
-	// Before any metering, peaks should be -inf dBFS (peaks are updated
-	// internally during IngestFrame, not via a public setter)
+	// Before any metering, peaks should be -96 dBFS (silence floor)
 	peak := m.ProgramPeak()
-	require.True(t, math.IsInf(peak[0], -1), "initial left peak should be -inf")
-	require.True(t, math.IsInf(peak[1], -1), "initial right peak should be -inf")
+	require.Equal(t, float64(-96), peak[0], "initial left peak should be -96 dBFS")
+	require.Equal(t, float64(-96), peak[1], "initial right peak should be -96 dBFS")
 }
 
 func TestMixerChannelStates(t *testing.T) {

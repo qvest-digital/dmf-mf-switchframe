@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/prism/moq"
 )
 
 // DemoStats tracks per-source frame counts for debug snapshots.
@@ -75,15 +77,9 @@ func (d *DemoStats) DebugSnapshot() map[string]any {
 
 // SwitcherAPI is the subset of switcher.Switcher needed by the demo package.
 type SwitcherAPI interface {
-	RegisterSource(key string, relay *distribution.Relay)
 	SetLabel(ctx context.Context, key, label string) error
 	Cut(ctx context.Context, source string) error
 	SetPreview(ctx context.Context, source string) error
-}
-
-// MixerAPI is the subset of audio.AudioMixer needed by the demo package.
-type MixerAPI interface {
-	AddChannel(key string)
 }
 
 // Minimal valid H.264 baseline SPS/PPS for a 320×240 stream.
@@ -92,21 +88,28 @@ var (
 	demoPPS = []byte{0x68, 0xCE, 0x38, 0x80}
 )
 
-// StartSources creates n demo sources, registers them with the switcher,
-// sets cam1 as program / cam2 as preview, labels them "Camera 1" etc,
-// and starts frame generation goroutines at ~30fps.
-// Returns a stop function that cancels all generators.
-func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int, stats *DemoStats) func() {
+// clipFiles maps camera indices to clip filenames (order matters for visual variety).
+var clipFiles = []string{
+	"tears_of_steel.ts",
+	"sintel.ts",
+	"bbb.ts",
+	"elephants_dream.ts",
+}
+
+// StartSources takes pre-registered relays (one per source), sets labels
+// and initial program/preview, then starts frame generation goroutines.
+// If videoDir is non-empty, real MPEG-TS clips are demuxed from that directory
+// and played back at real-time pace. Otherwise, synthetic frames are generated.
+// The caller is responsible for registering the relays with Prism's
+// server (so MoQ clients can subscribe) and with the switcher/mixer (via
+// OnStreamRegistered). Returns a stop function that cancels all generators.
+func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Relay, stats *DemoStats, videoDir string) func() {
 	ctx, cancel := context.WithCancel(ctx)
 
-	relays := make([]*distribution.Relay, n)
+	n := len(relays)
 	for i := range n {
 		key := fmt.Sprintf("cam%d", i+1)
 		label := fmt.Sprintf("Camera %d", i+1)
-
-		relays[i] = distribution.NewRelay()
-		sw.RegisterSource(key, relays[i])
-		mixer.AddChannel(key)
 		if err := sw.SetLabel(ctx, key, label); err != nil {
 			slog.Warn("demo: failed to set label", "key", key, "err", err)
 		}
@@ -124,27 +127,74 @@ func StartSources(ctx context.Context, sw SwitcherAPI, mixer MixerAPI, n int, st
 		}
 	}
 
-	// Record synthetic mode info.
-	if stats != nil {
-		stats.SetFileInfo("synthetic", "", 0, 0)
+	if videoDir != "" {
+		startFileBasedSources(ctx, relays, stats, videoDir)
+	} else {
+		// Record synthetic mode info.
+		if stats != nil {
+			stats.SetFileInfo("synthetic", "", 0, 0)
+		}
+		for i := range n {
+			go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1), stats)
+		}
 	}
 
-	// Start frame generators.
-	for i := range n {
-		go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1), stats)
-	}
-
-	slog.Info("demo: started simulated sources", "count", n)
+	slog.Info("demo: started sources", "count", n, "videoDir", videoDir)
 	return cancel
 }
 
-// generateFrames pumps video+audio frames into a relay at ~30fps.
+// startFileBasedSources demuxes clips from videoDir and starts real-time playback.
+func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, stats *DemoStats, videoDir string) {
+	for i, relay := range relays {
+		key := fmt.Sprintf("cam%d", i+1)
+		filename := clipFiles[i%len(clipFiles)]
+		path := filepath.Join(videoDir, filename)
+
+		result, err := demuxTSFile(path)
+		if err != nil {
+			slog.Error("demo: failed to demux clip, falling back to synthetic", "key", key, "path", path, "err", err)
+			go generateFrames(ctx, relay, key, stats)
+			continue
+		}
+
+		// Set VideoInfo on relay from real SPS data, including avcC
+		// for the MoQ catalog so the browser can configure the decoder
+		// before the first keyframe arrives.
+		if len(result.Video) > 0 {
+			for _, vf := range result.Video {
+				if vf.IsKeyframe && len(vf.SPS) > 0 {
+					codecStr, width, height := parseSPS(vf.SPS)
+					avcC := moq.BuildAVCDecoderConfig(vf.SPS, vf.PPS)
+					relay.SetVideoInfo(distribution.VideoInfo{
+						Codec:         codecStr,
+						Width:         width,
+						Height:        height,
+						DecoderConfig: avcC,
+					})
+					slog.Info("demo: set video info from SPS", "key", key, "codec", codecStr, "width", width, "height", height)
+					break
+				}
+			}
+		}
+
+		if stats != nil {
+			stats.SetFileInfo("real_video", filename, len(result.Video), len(result.Audio))
+		}
+
+		slog.Info("demo: demuxed clip", "key", key, "file", filename,
+			"video_frames", len(result.Video), "audio_frames", len(result.Audio))
+		go generateFramesFromFile(ctx, relay, result.Video, result.Audio, key, stats)
+	}
+}
+
+// generateFrames pumps synthetic video+audio frames into a relay at ~30fps.
 // Every 30th frame is a keyframe (1 per second). PTS uses 90kHz clock.
 func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *DemoStats) {
 	ticker := time.NewTicker(33 * time.Millisecond)
 	defer ticker.Stop()
 
 	var frameNum int64
+	var groupID uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
 	const ptsPerFrame = 3000 // 33ms × 90kHz
 
 	for {
@@ -157,10 +207,14 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string, 
 			isKeyframe := frameNum%30 == 0
 
 			if isKeyframe {
+				if frameNum > 0 {
+					groupID++
+				}
 				relay.BroadcastVideo(&media.VideoFrame{
 					PTS:        pts,
 					DTS:        pts,
 					IsKeyframe: true,
+					GroupID:    groupID,
 					SPS:        demoSPS,
 					PPS:        demoPPS,
 					WireData:   []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
@@ -171,6 +225,7 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string, 
 					PTS:        pts,
 					DTS:        pts,
 					IsKeyframe: false,
+					GroupID:    groupID,
 					WireData:   []byte{0x00, 0x00, 0x00, 0x03, 0x41, 0x9A, 0x24},
 					Codec:      "h264",
 				})
@@ -191,5 +246,113 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string, 
 
 			frameNum++
 		}
+	}
+}
+
+// generateFramesFromFile plays back pre-demuxed frames at real-time pace.
+// DTS deltas between consecutive frames control timing (DTS is monotonic
+// in decode order, unlike PTS which may reorder due to B-frames).
+// On loop wrap, a timestamp offset increases by the clip duration to keep
+// timestamps monotonically increasing.
+func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, videoFrames []media.VideoFrame, audioFrames []media.AudioFrame, key string, stats *DemoStats) {
+	if len(videoFrames) == 0 {
+		slog.Warn("demo: no video frames to play", "key", key)
+		return
+	}
+
+	// Compute clip duration from last - first DTS.
+	clipDuration := videoFrames[len(videoFrames)-1].DTS - videoFrames[0].DTS
+	if clipDuration <= 0 {
+		clipDuration = 90000 // 1 second fallback
+	}
+	// Add one frame duration to avoid timestamp collision on loop boundary.
+	clipDuration += 3750 // ~41ms at 90kHz (24fps frame)
+
+	var (
+		vidIdx    int
+		audIdx    int
+		tsOffset  int64
+		groupID   uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
+		startTime = time.Now()
+		baseDTS   = videoFrames[0].DTS
+	)
+
+	for {
+		if ctx.Err() != nil {
+			slog.Debug("demo: file source stopped", "key", key)
+			return
+		}
+
+		// Use DTS for timing — it's monotonic in decode order.
+		relDTS := videoFrames[vidIdx].DTS - baseDTS
+
+		// Wait until wall-clock time matches the frame's decode time.
+		elapsed := time.Since(startTime)
+		targetTime := time.Duration(relDTS) * time.Second / 90000
+		if targetTime > elapsed {
+			sleepCtx(ctx, targetTime-elapsed)
+			if ctx.Err() != nil {
+				return
+			}
+		}
+
+		// Send any audio frames with PTS <= current video frame's DTS.
+		for audIdx < len(audioFrames) && audioFrames[audIdx].PTS <= videoFrames[vidIdx].DTS {
+			af := audioFrames[audIdx]
+			af.PTS = af.PTS - baseDTS + tsOffset
+			relay.BroadcastAudio(&af)
+			if stats != nil {
+				stats.Source(key).AudioSent.Add(1)
+			}
+			audIdx++
+		}
+
+		// Send video frame with adjusted timestamps.
+		vf := videoFrames[vidIdx]
+		vf.PTS = vf.PTS - baseDTS + tsOffset
+		vf.DTS = vf.DTS - baseDTS + tsOffset
+		if vf.IsKeyframe && vidIdx > 0 {
+			groupID++
+		}
+		vf.GroupID = groupID
+		relay.BroadcastVideo(&vf)
+		if stats != nil {
+			stats.Source(key).VideoSent.Add(1)
+		}
+
+		vidIdx++
+
+		// Loop wrap: reset indices, bump timestamp offset.
+		if vidIdx >= len(videoFrames) {
+			// Send remaining audio frames.
+			for audIdx < len(audioFrames) {
+				af := audioFrames[audIdx]
+				af.PTS = af.PTS - baseDTS + tsOffset
+				relay.BroadcastAudio(&af)
+				if stats != nil {
+					stats.Source(key).AudioSent.Add(1)
+				}
+				audIdx++
+			}
+
+			vidIdx = 0
+			audIdx = 0
+			tsOffset += clipDuration
+			startTime = time.Now()
+			if stats != nil {
+				stats.Source(key).LoopsCompleted.Add(1)
+			}
+			slog.Debug("demo: clip looped", "key", key, "tsOffset", tsOffset)
+		}
+	}
+}
+
+// sleepCtx sleeps for the given duration or until ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
 	}
 }

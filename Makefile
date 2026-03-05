@@ -42,7 +42,7 @@ dev: build-server node_modules_check
 		cd ui && npm run dev & \
 		wait
 
-# Demo mode: start with 4 simulated cameras
+# Demo mode: start with 4 simulated cameras (real video if clips exist)
 demo: build-server node_modules_check
 	@echo ""
 	@echo "  SwitchFrame Demo"
@@ -50,7 +50,11 @@ demo: build-server node_modules_check
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
-		./bin/switchframe --demo & \
+		if [ -d test/clips ]; then \
+			./bin/switchframe --demo --demo-video test/clips & \
+		else \
+			./bin/switchframe --demo & \
+		fi; \
 		cd ui && npm run dev & \
 		wait
 

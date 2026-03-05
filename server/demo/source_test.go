@@ -2,6 +2,8 @@ package demo
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +18,6 @@ import (
 // mockSwitcher records calls to SwitcherAPI methods.
 type mockSwitcher struct {
 	mu       sync.Mutex
-	sources  map[string]*distribution.Relay
 	labels   map[string]string
 	program  string
 	preview  string
@@ -25,15 +26,8 @@ type mockSwitcher struct {
 
 func newMockSwitcher() *mockSwitcher {
 	return &mockSwitcher{
-		sources: make(map[string]*distribution.Relay),
-		labels:  make(map[string]string),
+		labels: make(map[string]string),
 	}
-}
-
-func (m *mockSwitcher) RegisterSource(key string, relay *distribution.Relay) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sources[key] = relay
 }
 
 func (m *mockSwitcher) SetLabel(_ context.Context, key, label string) error {
@@ -58,37 +52,24 @@ func (m *mockSwitcher) SetPreview(_ context.Context, source string) error {
 	return nil
 }
 
-// mockMixer records AddChannel calls.
-type mockMixer struct {
-	mu       sync.Mutex
-	channels []string
+func makeRelays(n int) []*distribution.Relay {
+	relays := make([]*distribution.Relay, n)
+	for i := range n {
+		relays[i] = distribution.NewRelay()
+	}
+	return relays
 }
 
-func (m *mockMixer) AddChannel(key string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.channels = append(m.channels, key)
-}
-
-func TestStartSources_RegistersAndLabels(t *testing.T) {
+func TestStartSources_LabelsAndState(t *testing.T) {
 	sw := newMockSwitcher()
-	mixer := &mockMixer{}
 	ctx := context.Background()
+	relays := makeRelays(4)
 
-	stop := StartSources(ctx, sw, mixer, 4, NewDemoStats())
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
 	defer stop()
 
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
-	mixer.mu.Lock()
-	defer mixer.mu.Unlock()
-
-	// Verify all 4 sources registered.
-	require.Len(t, sw.sources, 4)
-	for i := 1; i <= 4; i++ {
-		key := "cam" + string(rune('0'+i))
-		assert.Contains(t, sw.sources, key, "source %s should be registered", key)
-	}
 
 	// Verify labels.
 	assert.Equal(t, "Camera 1", sw.labels["cam1"])
@@ -99,26 +80,18 @@ func TestStartSources_RegistersAndLabels(t *testing.T) {
 	// Verify program/preview.
 	assert.Equal(t, "cam1", sw.program)
 	assert.Equal(t, "cam2", sw.preview)
-
-	// Verify mixer channels.
-	assert.Equal(t, []string{"cam1", "cam2", "cam3", "cam4"}, mixer.channels)
 }
 
 func TestStartSources_GeneratesFrames(t *testing.T) {
 	sw := newMockSwitcher()
-	mixer := &mockMixer{}
 	ctx := context.Background()
+	relays := makeRelays(1)
 
-	stop := StartSources(ctx, sw, mixer, 1, NewDemoStats())
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
 
 	// Add a viewer to cam1's relay to capture frames.
-	sw.mu.Lock()
-	relay := sw.sources["cam1"]
-	sw.mu.Unlock()
-	require.NotNil(t, relay)
-
 	viewer := &frameCollector{}
-	relay.AddViewer(viewer)
+	relays[0].AddViewer(viewer)
 
 	// Wait for some frames to arrive (~100ms = ~3 frames).
 	time.Sleep(150 * time.Millisecond)
@@ -142,17 +115,13 @@ func TestStartSources_GeneratesFrames(t *testing.T) {
 
 func TestStartSources_StopCancels(t *testing.T) {
 	sw := newMockSwitcher()
-	mixer := &mockMixer{}
 	ctx := context.Background()
+	relays := makeRelays(2)
 
-	stop := StartSources(ctx, sw, mixer, 2, NewDemoStats())
-
-	sw.mu.Lock()
-	relay := sw.sources["cam1"]
-	sw.mu.Unlock()
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
 
 	viewer := &frameCollector{}
-	relay.AddViewer(viewer)
+	relays[0].AddViewer(viewer)
 
 	// Let a few frames flow.
 	time.Sleep(100 * time.Millisecond)
@@ -194,6 +163,153 @@ func (f *frameCollector) SendAudio(frame *media.AudioFrame) {
 func (f *frameCollector) SendCaptions(_ *ccx.CaptionFrame) {}
 func (f *frameCollector) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{}
+}
+
+// testClipsDir returns the path to test clips, skipping if not present.
+func testClipsDir(t *testing.T) string {
+	t.Helper()
+	// Look relative to repo root (tests run from server/).
+	dir := filepath.Join("..", "..", "test", "clips")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		// Also try from repo root directly.
+		dir = filepath.Join("test", "clips")
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			t.Skip("test clips not found — run 'make' from repo root to generate them")
+		}
+	}
+	return dir
+}
+
+func TestDemuxTSFile(t *testing.T) {
+	dir := testClipsDir(t)
+
+	result, err := demuxTSFile(filepath.Join(dir, "tears_of_steel.ts"))
+	require.NoError(t, err)
+
+	// Should have extracted video and audio frames.
+	assert.Greater(t, len(result.Video), 0, "should have video frames")
+	assert.Greater(t, len(result.Audio), 0, "should have audio frames")
+
+	// First video frame should be a keyframe with SPS/PPS.
+	first := result.Video[0]
+	assert.True(t, first.IsKeyframe, "first frame should be a keyframe")
+	assert.NotEmpty(t, first.SPS, "first keyframe should have SPS")
+	assert.NotEmpty(t, first.PPS, "first keyframe should have PPS")
+	assert.NotEmpty(t, first.WireData, "first frame should have wire data")
+	assert.Equal(t, "h264", first.Codec)
+
+	// DTS should be monotonically non-decreasing (PTS may not be due to B-frames).
+	for i := 1; i < len(result.Video); i++ {
+		assert.GreaterOrEqual(t, result.Video[i].DTS, result.Video[i-1].DTS,
+			"DTS should be monotonic at frame %d", i)
+	}
+
+	// Audio frames should have data.
+	for i, af := range result.Audio {
+		assert.NotEmpty(t, af.Data, "audio frame %d should have data", i)
+		assert.Equal(t, 48000, af.SampleRate)
+		assert.Equal(t, 2, af.Channels)
+	}
+}
+
+func TestDemuxTSFile_ParsesSPS(t *testing.T) {
+	dir := testClipsDir(t)
+
+	result, err := demuxTSFile(filepath.Join(dir, "tears_of_steel.ts"))
+	require.NoError(t, err)
+
+	// Find first keyframe with SPS.
+	var sps []byte
+	for _, vf := range result.Video {
+		if vf.IsKeyframe && len(vf.SPS) > 0 {
+			sps = vf.SPS
+			break
+		}
+	}
+	require.NotEmpty(t, sps, "should have found SPS in keyframe")
+
+	codecStr, width, height := parseSPS(sps)
+	assert.Contains(t, codecStr, "avc1.", "codec string should start with avc1.")
+	assert.Equal(t, 1280, width, "should be 1280 wide")
+	assert.Equal(t, 720, height, "should be 720 tall")
+}
+
+func TestGenerateFramesFromFile(t *testing.T) {
+	dir := testClipsDir(t)
+
+	result, err := demuxTSFile(filepath.Join(dir, "tears_of_steel.ts"))
+	require.NoError(t, err)
+
+	relay := distribution.NewRelay()
+	viewer := &frameCollector{}
+	relay.AddViewer(viewer)
+
+	stats := NewDemoStats()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go generateFramesFromFile(ctx, relay, result.Video, result.Audio, "cam1", stats)
+
+	// Let it play for ~200ms — should get some frames.
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+
+	// Give goroutine time to exit.
+	time.Sleep(50 * time.Millisecond)
+
+	viewer.mu.Lock()
+	videoCount := len(viewer.videoFrames)
+	audioCount := len(viewer.audioFrames)
+	viewer.mu.Unlock()
+
+	assert.Greater(t, videoCount, 0, "should have received video frames")
+	assert.Greater(t, audioCount, 0, "should have received audio frames")
+
+	// DTS should be monotonically non-decreasing (frames in decode order).
+	viewer.mu.Lock()
+	for i := 1; i < len(viewer.videoFrames); i++ {
+		assert.GreaterOrEqual(t, viewer.videoFrames[i].DTS, viewer.videoFrames[i-1].DTS,
+			"DTS should be monotonic at frame %d", i)
+	}
+	viewer.mu.Unlock()
+
+	// Stats should reflect sent frames.
+	src := stats.Source("cam1")
+	assert.Equal(t, int64(videoCount), src.VideoSent.Load())
+	assert.Equal(t, int64(audioCount), src.AudioSent.Load())
+}
+
+func TestStartSources_WithVideoDir(t *testing.T) {
+	dir := testClipsDir(t)
+
+	sw := newMockSwitcher()
+	ctx := context.Background()
+	relays := makeRelays(4)
+	stats := NewDemoStats()
+
+	stop := StartSources(ctx, sw, relays, stats, dir)
+
+	// Add viewers to capture frames.
+	viewers := make([]*frameCollector, 4)
+	for i := range 4 {
+		viewers[i] = &frameCollector{}
+		relays[i].AddViewer(viewers[i])
+	}
+
+	// Let frames flow.
+	time.Sleep(300 * time.Millisecond)
+	stop()
+
+	// Each camera should have received frames.
+	for i, v := range viewers {
+		v.mu.Lock()
+		count := len(v.videoFrames)
+		v.mu.Unlock()
+		assert.Greater(t, count, 0, "cam%d should have received video frames", i+1)
+	}
+
+	// Stats should show real_video mode.
+	snap := stats.DebugSnapshot()
+	assert.Equal(t, "real_video", snap["mode"])
 }
 
 func TestDemoStats_DebugSnapshot(t *testing.T) {

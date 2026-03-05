@@ -203,26 +203,15 @@ export class PrismRenderer {
 			const firstFrame = this.videoBuffer.peekFirstFrame();
 			if (!firstFrame) {
 				this._diagEmptyBufferHits++;
+				// Reset free-run clock so the next burst of frames starts fresh
+				// rather than being treated as stale relative to the old clock.
+				this.freeRunStart = -1;
+				this.freeRunBasePTS = -1;
 				this.reportStats(now);
 				return;
 			}
 			if (this.freeRunStart < 0) {
 				this.freeRunStart = now;
-
-				const stats = this.videoBuffer.getStats();
-				if (stats.queueSize > 9) {
-					const skip = this.videoBuffer.getFrameByTimestamp(Infinity);
-					if (skip.frame) {
-						if (this.lastDrawnFrame) this.lastDrawnFrame.close();
-						this.lastDrawnFrame = skip.frame;
-						this.currentVideoPTS = skip.frame.timestamp;
-						this.freeRunBasePTS = skip.frame.timestamp;
-						this.drawFrame(skip.frame);
-						this.reportStats(now);
-						return;
-					}
-				}
-
 				this.freeRunBasePTS = firstFrame.timestamp;
 			}
 			targetPTS = this.freeRunBasePTS + (now - this.freeRunStart) * 1000;
