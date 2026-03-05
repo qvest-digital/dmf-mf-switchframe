@@ -149,7 +149,7 @@ describe('ConnectionManager', () => {
 
 			await manager.start();
 
-			expect(onInitialLoadError).toHaveBeenCalledWith('Network error');
+			expect(onInitialLoadError).toHaveBeenCalledWith('Network error', expect.any(Error));
 			expect(onInitialLoadComplete).not.toHaveBeenCalled();
 
 			// Now make it succeed on retry
@@ -178,7 +178,7 @@ describe('ConnectionManager', () => {
 
 			await manager.start();
 
-			expect(onInitialLoadError).toHaveBeenCalledWith('string error');
+			expect(onInitialLoadError).toHaveBeenCalledWith('string error', 'string error');
 		});
 
 		it('should begin polling after start', async () => {

@@ -10,8 +10,30 @@ export class SwitchApiError extends Error {
 	}
 }
 
+function getAuthToken(): string | null {
+	if (typeof sessionStorage === 'undefined') return null;
+	return sessionStorage.getItem('switchframe_api_token');
+}
+
+export function setAuthToken(token: string): void {
+	sessionStorage.setItem('switchframe_api_token', token);
+}
+
+function authHeaders(): Record<string, string> {
+	const token = getAuthToken();
+	const headers: Record<string, string> = {};
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
+	return headers;
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-	const res = options ? await fetch(url, options) : await fetch(url);
+	const opts: RequestInit = {
+		...options,
+		headers: { ...authHeaders(), ...options?.headers },
+	};
+	const res = await fetch(url, opts);
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);

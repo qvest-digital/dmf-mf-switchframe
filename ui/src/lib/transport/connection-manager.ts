@@ -9,7 +9,7 @@ export interface ConnectionManagerConfig {
 	onStateUpdate: (state: ControlRoomState | Uint8Array) => void;
 	onConnectionStateChange: (state: ConnectionStatus) => void;
 	onInitialLoadComplete: () => void;
-	onInitialLoadError: (error: string) => void;
+	onInitialLoadError: (error: string, rawError?: unknown) => void;
 }
 
 export class ConnectionManager {
@@ -100,7 +100,7 @@ export class ConnectionManager {
 			this.config.onInitialLoadComplete();
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			this.config.onInitialLoadError(msg);
+			this.config.onInitialLoadError(msg, e);
 			// Retry every 3 seconds until successful
 			this.retryTimer = setTimeout(() => {
 				this.retryTimer = undefined;

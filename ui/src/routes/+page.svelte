@@ -12,7 +12,7 @@
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, startTransition, fadeToBlack, fireAndForget } from '$lib/api/switch-api';
+	import { cut, setPreview, startTransition, fadeToBlack, fireAndForget, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
 	import { ConnectionManager } from '$lib/transport/connection-manager';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
@@ -27,6 +27,8 @@
 	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
 	let initialLoading = $state(true);
 	let connectionError: string | null = $state(null);
+	let tokenRequired = $state(false);
+	let tokenInput = $state('');
 
 	// ARIA live region for screen reader announcements
 	let announcement = $state('');
@@ -199,6 +201,15 @@
 		prevFtb = isFtb;
 	});
 
+	async function submitToken() {
+		if (!tokenInput.trim()) return;
+		setAuthToken(tokenInput.trim());
+		tokenRequired = false;
+		connectionError = null;
+		initialLoading = true;
+		await connectionManager.start();
+	}
+
 	const connectionManager = new ConnectionManager({
 		url: window.location.origin,
 		onStateUpdate: (update) => {
@@ -215,8 +226,12 @@
 			initialLoading = false;
 			connectionError = null;
 		},
-		onInitialLoadError: (error) => {
+		onInitialLoadError: (error, rawError) => {
 			console.warn('Failed to fetch initial state:', error);
+			if (rawError instanceof SwitchApiError && rawError.status === 401) {
+				tokenRequired = true;
+				initialLoading = false;
+			}
 			connectionError = error;
 		},
 	});
@@ -259,6 +274,23 @@
 </script>
 
 <LoadingOverlay loading={initialLoading} error={connectionError} />
+
+{#if tokenRequired}
+	<div class="token-prompt">
+		<div class="token-box">
+			<p>API token required</p>
+			<form onsubmit={(e) => { e.preventDefault(); submitToken(); }}>
+				<input
+					type="password"
+					bind:value={tokenInput}
+					placeholder="Paste API token"
+					autocomplete="off"
+				/>
+				<button type="submit">Connect</button>
+			</form>
+		</div>
+	</div>
+{/if}
 
 <ErrorBoundary>
 	{#if layoutMode === 'simple'}
@@ -347,5 +379,59 @@
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+	}
+
+	.token-prompt {
+		position: fixed;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(0, 0, 0, 0.85);
+		z-index: 10000;
+	}
+
+	.token-box {
+		background: var(--bg-surface, #1e1e1e);
+		border: 1px solid var(--border-subtle, #444);
+		border-radius: 8px;
+		padding: 24px;
+		text-align: center;
+	}
+
+	.token-box p {
+		margin: 0 0 12px;
+		color: var(--text-primary, #eee);
+		font-size: 14px;
+	}
+
+	.token-box form {
+		display: flex;
+		gap: 8px;
+	}
+
+	.token-box input {
+		padding: 6px 10px;
+		border: 1px solid var(--border-subtle, #555);
+		border-radius: 4px;
+		background: var(--bg-base, #111);
+		color: var(--text-primary, #eee);
+		font-family: monospace;
+		font-size: 13px;
+		width: 320px;
+	}
+
+	.token-box button {
+		padding: 6px 16px;
+		border: none;
+		border-radius: 4px;
+		background: #2563eb;
+		color: #fff;
+		font-size: 13px;
+		cursor: pointer;
+	}
+
+	.token-box button:hover {
+		background: #1d4ed8;
 	}
 </style>

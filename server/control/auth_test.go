@@ -20,6 +20,8 @@ func TestAuthMiddleware_RejectsUnauthenticated(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, `Bearer realm="switchframe"`, rec.Header().Get("WWW-Authenticate"))
 }
 
 func TestAuthMiddleware_AcceptsValidBearer(t *testing.T) {
@@ -51,6 +53,8 @@ func TestAuthMiddleware_RejectsInvalidToken(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, `Bearer realm="switchframe"`, rec.Header().Get("WWW-Authenticate"))
 }
 
 func TestAuthMiddleware_RejectsMalformedHeader(t *testing.T) {
@@ -66,6 +70,8 @@ func TestAuthMiddleware_RejectsMalformedHeader(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, `Bearer realm="switchframe"`, rec.Header().Get("WWW-Authenticate"))
 }
 
 func TestAuthMiddleware_ExemptPaths(t *testing.T) {

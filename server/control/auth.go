@@ -34,13 +34,19 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 			// Extract and validate Bearer token.
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
-				http.Error(w, `{"error":"missing or invalid authorization header"}`, http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"missing or invalid authorization header"}`))
 				return
 			}
 
 			provided := []byte(strings.TrimPrefix(authHeader, "Bearer "))
 			if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
-				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"error":"invalid token"}`))
 				return
 			}
 

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken } from './switch-api';
 import type { SRTOutputConfig } from './types';
 
 describe('switch-api', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
+		sessionStorage.clear();
 	});
 
 	it('cut sends POST with source', async () => {
@@ -62,7 +63,7 @@ describe('switch-api', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await getState();
-		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state');
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state', { headers: {} });
 		expect(result.seq).toBe(5);
 	});
 
@@ -77,7 +78,7 @@ describe('switch-api', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await getSources();
-		expect(mockFetch).toHaveBeenCalledWith('/api/sources');
+		expect(mockFetch).toHaveBeenCalledWith('/api/sources', { headers: {} });
 		expect(result.cam1.status).toBe('healthy');
 	});
 
@@ -273,7 +274,7 @@ describe('Recording API', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await getRecordingStatus();
-		expect(mockFetch).toHaveBeenCalledWith('/api/recording/status');
+		expect(mockFetch).toHaveBeenCalledWith('/api/recording/status', { headers: {} });
 		expect(result.active).toBe(true);
 		expect(result.durationSecs).toBe(30);
 	});
@@ -353,8 +354,58 @@ describe('SRT Output API', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await getSRTOutputStatus();
-		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/status');
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/srt/status', { headers: {} });
 		expect(result.active).toBe(true);
 		expect(result.connections).toBe(3);
+	});
+});
+
+describe('Auth token', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		sessionStorage.clear();
+	});
+
+	it('includes Authorization header when token is set', async () => {
+		setAuthToken('my-secret-token');
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await getState();
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state', {
+			headers: { Authorization: 'Bearer my-secret-token' },
+		});
+	});
+
+	it('includes Authorization header in POST requests', async () => {
+		setAuthToken('my-secret-token');
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam1');
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/cut', {
+			method: 'POST',
+			headers: { Authorization: 'Bearer my-secret-token', 'Content-Type': 'application/json' },
+			body: JSON.stringify({ source: 'cam1' }),
+		});
+	});
+
+	it('does not include Authorization header when no token is set', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await getState();
+		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state', {
+			headers: {},
+		});
 	});
 });
