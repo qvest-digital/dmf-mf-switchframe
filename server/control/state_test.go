@@ -100,6 +100,17 @@ func TestChannelPublisherEmptyBuffer(t *testing.T) {
 	}
 }
 
+func TestChannelPublisher_DroppedCounter(t *testing.T) {
+	pub := NewChannelPublisher(2) // small buffer for testing
+
+	// Publish 5 messages without reading — should drop 3
+	for i := 0; i < 5; i++ {
+		pub.Publish(internal.ControlRoomState{Seq: uint64(i)})
+	}
+
+	require.Equal(t, int64(3), pub.DroppedCount())
+}
+
 func TestChannelPublisherMultipleReads(t *testing.T) {
 	pub := NewChannelPublisher(4)
 

@@ -73,7 +73,8 @@ func run() error {
 	defer cancel()
 
 	slog.Info("switchframe starting", "log_level", *logLevel)
-	slog.Info("API authentication enabled", "token", apiToken)
+	slog.Info("API authentication enabled", "token_prefix", apiToken[:8]+"...")
+	fmt.Fprintf(os.Stderr, "\n  API Token: %s\n\n", apiToken)
 
 	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
 	cert, err := certs.Generate(14 * 24 * time.Hour)
@@ -91,7 +92,7 @@ func run() error {
 	var mixer *audio.AudioMixer
 
 	// Create channel-based state publisher for MoQ control track.
-	controlPub := control.NewChannelPublisher(16)
+	controlPub := control.NewChannelPublisher(64)
 
 	// Create REST API (captures sw pointer; called during server.Start()
 	// mux setup, after sw is initialized below).

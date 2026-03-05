@@ -5,6 +5,7 @@ package control
 import (
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/internal"
 )
@@ -40,7 +41,8 @@ func (sp *StatePublisher) Publish(state internal.ControlRoomState) {
 
 // ChannelPublisher sends serialized JSON state to a channel for MoQ broadcast.
 type ChannelPublisher struct {
-	ch chan []byte
+	ch      chan []byte
+	dropped atomic.Int64
 }
 
 // NewChannelPublisher creates a publisher with a buffered channel.
@@ -64,10 +66,16 @@ func (cp *ChannelPublisher) Publish(state internal.ControlRoomState) {
 			// Drop oldest to make room
 			select {
 			case <-cp.ch:
+				cp.dropped.Add(1)
 			default:
 			}
 		}
 	}
+}
+
+// DroppedCount returns the number of state messages dropped due to a full buffer.
+func (cp *ChannelPublisher) DroppedCount() int64 {
+	return cp.dropped.Load()
 }
 
 // Ch returns the read-only channel for MoQ consumption.
