@@ -12,7 +12,7 @@ import (
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
 	EncoderFactory EncoderFactory
-	Output         func(data []byte, isKeyframe bool)
+	Output         func(data []byte, isKeyframe bool, pts int64)
 	OnComplete     func(aborted bool)
 }
 
@@ -38,15 +38,17 @@ type TransitionEngine struct {
 	encoder  VideoEncoder
 	blender  *FrameBlender
 
-	// Latest decoded RGB frames
-	latestRGBA []byte
-	latestRGBB []byte
-	rgbBufA    []byte // reusable conversion buffer
-	rgbBufB    []byte // reusable conversion buffer
+	// Latest decoded YUV420 frames (stored directly, no RGB conversion)
+	latestYUVA   []byte
+	latestYUVB   []byte
+	firstEncoded bool // true after the first frame has been encoded
 
 	// Frame dimensions (set on first decode)
 	width  int
 	height int
+
+	// Reusable buffer for scaling mismatched-resolution frames
+	scaleBuf []byte
 
 	config EngineConfig
 }
@@ -125,8 +127,8 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.decoderB = decB
 	e.encoder = nil  // lazy-init on first frame (need dimensions)
 	e.blender = nil  // lazy-init on first frame (need dimensions)
-	e.latestRGBA = nil
-	e.latestRGBB = nil
+	e.latestYUVA = nil
+	e.latestYUVB = nil
 	e.width = 0
 	e.height = 0
 
@@ -150,7 +152,10 @@ func (e *TransitionEngine) currentPosition() float64 {
 		return e.manualPosition
 	}
 	elapsed := time.Since(e.startTime).Milliseconds()
-	return math.Min(float64(elapsed)/float64(e.durationMs), 1.0)
+	t := math.Min(float64(elapsed)/float64(e.durationMs), 1.0)
+	// Smoothstep easing: zero-derivative at endpoints for perceptually smooth
+	// transitions. Eliminates the abrupt start/stop of linear interpolation.
+	return t * t * (3.0 - 2.0*t)
 }
 
 // SetPosition sets the T-bar manual position (0.0-1.0).
@@ -192,11 +197,81 @@ func (e *TransitionEngine) SetPosition(pos float64) {
 	}
 }
 
+// decodeAndStore decodes a video frame and stores the result as the latest
+// YUV420 data for the given source side. Returns true if the decode and store
+// succeeded. Caller must hold e.mu.
+func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) bool {
+	var decoder VideoDecoder
+	if isFrom {
+		decoder = e.decoderA
+	} else {
+		decoder = e.decoderB
+	}
+	if decoder == nil {
+		return false
+	}
+
+	yuv, w, h, err := decoder.Decode(wireData)
+	if err != nil {
+		slog.Debug("transition: decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
+		return false
+	}
+	slog.Debug("transition: decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
+
+	// Lazy-init encoder and blender on first successful decode
+	if e.width == 0 {
+		e.width = w
+		e.height = h
+		e.blender = NewFrameBlender(w, h)
+
+		enc, encErr := e.config.EncoderFactory(w, h, 4000000, 30.0)
+		if encErr != nil {
+			slog.Error("transition: encoder init failed", "err", encErr, "w", w, "h", h)
+			return false
+		}
+		e.encoder = enc
+		slog.Info("transition: encoder initialized", "w", w, "h", h)
+	}
+
+	// Scale if resolution doesn't match the target (set from first decoded frame).
+	// Common in mixed-resolution setups (e.g. 1080p cameras + 720p ProPresenter).
+	if w != e.width || h != e.height {
+		slog.Debug("transition: scaling frame", "source", sourceKey,
+			"from_w", w, "from_h", h, "to_w", e.width, "to_h", e.height)
+		targetSize := e.width * e.height * 3 / 2
+		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
+			e.scaleBuf = make([]byte, targetSize)
+		}
+		ScaleYUV420(yuv, w, h, e.scaleBuf, e.width, e.height)
+		yuv = e.scaleBuf[:targetSize]
+		w = e.width
+		h = e.height
+	}
+
+	// Store YUV directly — no colorspace conversion needed.
+	// Deep-copy because the decoder may reuse its internal buffer.
+	yuvSize := w*h*3/2
+	if isFrom {
+		if len(e.latestYUVA) != yuvSize {
+			e.latestYUVA = make([]byte, yuvSize)
+		}
+		copy(e.latestYUVA, yuv)
+	} else {
+		if len(e.latestYUVB) != yuvSize {
+			e.latestYUVB = make([]byte, yuvSize)
+		}
+		copy(e.latestYUVB, yuv)
+	}
+
+	return true
+}
+
 // IngestFrame processes a video frame from one of the two transition sources.
-// Decodes frame, stores as latest RGB. If sourceKey matches the incoming
-// source (toSource), triggers blend+encode+output.
+// Decodes frame, stores as latest YUV420. If sourceKey matches the incoming
+// source (toSource), triggers blend+encode+output with the source's PTS
+// to maintain timestamp continuity on the program stream.
 // For FTB, the fromSource triggers blend (no toSource).
-func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
+func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64) {
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -211,59 +286,9 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 		return
 	}
 
-	// Decode
-	var decoder VideoDecoder
-	if isFrom {
-		decoder = e.decoderA
-	} else {
-		decoder = e.decoderB
-	}
-	if decoder == nil {
+	if !e.decodeAndStore(sourceKey, wireData, isFrom) {
 		e.mu.Unlock()
 		return
-	}
-
-	yuv, w, h, err := decoder.Decode(wireData)
-	if err != nil {
-		slog.Debug("transition: decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
-		e.mu.Unlock()
-		return
-	}
-	slog.Debug("transition: decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
-
-	// Lazy-init encoder and blender on first successful decode
-	if e.width == 0 {
-		e.width = w
-		e.height = h
-		e.blender = NewFrameBlender(w, h)
-		e.rgbBufA = make([]byte, w*h*3)
-		e.rgbBufB = make([]byte, w*h*3)
-
-		enc, encErr := e.config.EncoderFactory(w, h, 4000000, 30.0)
-		if encErr != nil {
-			slog.Error("transition: encoder init failed", "err", encErr, "w", w, "h", h)
-			e.mu.Unlock()
-			return
-		}
-		e.encoder = enc
-		slog.Info("transition: encoder initialized", "w", w, "h", h)
-	}
-
-	// Resolution mismatch check
-	if w != e.width || h != e.height {
-		slog.Warn("transition: resolution mismatch, skipping frame", "source", sourceKey,
-			"expected", fmt.Sprintf("%dx%d", e.width, e.height), "got", fmt.Sprintf("%dx%d", w, h))
-		e.mu.Unlock()
-		return
-	}
-
-	// Convert YUV->RGB and store
-	if isFrom {
-		YUV420ToRGB(yuv, w, h, e.rgbBufA)
-		e.latestRGBA = e.rgbBufA
-	} else {
-		YUV420ToRGB(yuv, w, h, e.rgbBufB)
-		e.latestRGBB = e.rgbBufB
 	}
 
 	// Determine if we should trigger blend+output
@@ -272,7 +297,7 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 	shouldBlend := false
 	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo && e.latestRGBA != nil {
+	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo && e.latestYUVA != nil {
 		shouldBlend = true
 	}
 
@@ -284,27 +309,26 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 	// Calculate position
 	pos := e.currentPosition()
 
-	// Blend
+	// Blend directly in YUV420 space — no colorspace conversion needed.
+	// The blender's output buffer is pre-allocated and reused across frames.
 	var blended []byte
 	switch e.transitionType {
 	case TransitionMix:
-		blended = e.blender.BlendMix(e.latestRGBA, e.latestRGBB, pos)
+		blended = e.blender.BlendMix(e.latestYUVA, e.latestYUVB, pos)
 	case TransitionDip:
-		blended = e.blender.BlendDip(e.latestRGBA, e.latestRGBB, pos)
+		blended = e.blender.BlendDip(e.latestYUVA, e.latestYUVB, pos)
 	case TransitionFTB:
-		blended = e.blender.BlendFTB(e.latestRGBA, pos)
+		blended = e.blender.BlendFTB(e.latestYUVA, pos)
 	case TransitionFTBReverse:
 		// Inverted: position 0→1 fades from black to fully visible
-		blended = e.blender.BlendFTB(e.latestRGBA, 1.0-pos)
+		blended = e.blender.BlendFTB(e.latestYUVA, 1.0-pos)
 	}
 
-	// Convert blended RGB -> YUV420 for encoding
-	yuvOut := make([]byte, e.width*e.height*3/2)
-	RGBToYUV420(blended, e.width, e.height, yuvOut)
-
-	// Encode
-	forceIDR := pos == 0.0 // force keyframe at start
-	encoded, isKeyframe, encErr := e.encoder.Encode(yuvOut, forceIDR)
+	// Encode — force IDR on the very first encoded frame so downstream
+	// decoders always get a clean start, regardless of elapsed time.
+	forceIDR := !e.firstEncoded
+	e.firstEncoded = true
+	encoded, isKeyframe, encErr := e.encoder.Encode(blended, forceIDR)
 	if encErr != nil {
 		slog.Warn("transition: encode failed", "err", encErr, "pos", pos)
 		e.mu.Unlock()
@@ -324,12 +348,33 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte) {
 
 	// Output and completion callbacks outside lock
 	if e.config.Output != nil {
-		e.config.Output(encoded, isKeyframe)
+		e.config.Output(encoded, isKeyframe, pts)
 	}
 
 	if autoComplete && e.config.OnComplete != nil {
 		e.config.OnComplete(false)
 	}
+}
+
+// WarmupDecode feeds a frame to the decoder for the given source side,
+// populating latestYUVA/latestYUVB so the first live IngestFrame can
+// produce blended output immediately. Produces no output callbacks.
+// No-op if the engine is not active.
+func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.state != StateActive {
+		return
+	}
+
+	isFrom := sourceKey == e.fromSource
+	isTo := sourceKey == e.toSource
+	if !isFrom && !isTo {
+		return
+	}
+
+	e.decodeAndStore(sourceKey, wireData, isFrom)
 }
 
 // Stop tears down decoders/encoder and resets state.
@@ -357,7 +402,8 @@ func (e *TransitionEngine) cleanup() {
 	e.position = 0
 	e.manualPosition = 0
 	e.manualControl = false
-	e.latestRGBA = nil
-	e.latestRGBB = nil
+	e.firstEncoded = false
+	e.latestYUVA = nil
+	e.latestYUVB = nil
 	e.blender = nil
 }
