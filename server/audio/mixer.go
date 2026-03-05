@@ -158,25 +158,28 @@ func (m *AudioMixer) mixDeadlineTicker() {
 			return
 		case <-ticker.C:
 			m.mu.Lock()
+			var outputFrame *media.AudioFrame
 			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
-				m.flushMixCycleLocked()
+				outputFrame = m.collectMixCycleLocked()
 			}
 			m.mu.Unlock()
+			if outputFrame != nil {
+				m.output(outputFrame)
+			}
 		}
 	}
 }
 
-// flushMixCycleLocked sums the accumulated mix buffers, applies master gain,
-// program mute, metering, encodes to AAC, and outputs the frame.
+// collectMixCycleLocked sums the accumulated mix buffers, applies master gain,
+// program mute, metering, encodes to AAC, and returns the output frame.
+// Returns nil if there is nothing to output (empty buffer, encoder error, etc.).
 //
-// IMPORTANT: This method temporarily releases and reacquires m.mu to call
-// m.output() without holding the lock. Any state read after this call may
-// have been modified by another goroutine. Callers must not assume lock
-// continuity across the call boundary.
-func (m *AudioMixer) flushMixCycleLocked() {
+// Caller must hold m.mu write lock. The lock is held for the entire call.
+// Callers are responsible for calling m.output() after releasing the lock.
+func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	if m.mixBuffer == nil || len(m.mixBuffer) == 0 {
 		m.resetMixCycleLocked()
-		return
+		return nil
 	}
 
 	// Sum all channel PCM buffers
@@ -219,13 +222,13 @@ func (m *AudioMixer) flushMixCycleLocked() {
 		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
 			m.resetMixCycleLocked()
-			return
+			return nil
 		}
 		m.encoder = enc
 	}
 	if m.encoder == nil {
 		m.resetMixCycleLocked()
-		return
+		return nil
 	}
 
 	// Encode mixed PCM -> AAC
@@ -237,7 +240,7 @@ func (m *AudioMixer) flushMixCycleLocked() {
 		}
 		m.resetMixCycleLocked()
 		slog.Warn("mixer: encode error", "err", err)
-		return
+		return nil
 	}
 	m.framesMixed.Add(1)
 	if m.promMetrics != nil {
@@ -249,20 +252,13 @@ func (m *AudioMixer) flushMixCycleLocked() {
 	// Reset mix cycle for next round
 	m.resetMixCycleLocked()
 
-	// Build output frame before releasing lock
-	outputFrame := &media.AudioFrame{
+	// Build output frame — caller will output after releasing the lock
+	return &media.AudioFrame{
 		PTS:        pts,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
 	}
-	m.mu.Unlock()
-
-	// Output outside the lock to avoid blocking other goroutines
-	m.output(outputFrame)
-
-	// Re-acquire lock (caller expects it held)
-	m.mu.Lock()
 }
 
 // resetMixCycleLocked clears the mix accumulation state for the next cycle.
@@ -688,14 +684,14 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	}
 
 	// Flush when all active unmuted channels have contributed OR deadline exceeded
+	var outputFrame *media.AudioFrame
 	if len(m.mixBuffer) >= activeUnmuted {
-		// flushMixCycleLocked releases and re-acquires the lock internally
-		m.flushMixCycleLocked()
-		m.mu.Unlock()
-		return
+		outputFrame = m.collectMixCycleLocked()
 	}
-
 	m.mu.Unlock()
+	if outputFrame != nil {
+		m.output(outputFrame)
+	}
 }
 
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
