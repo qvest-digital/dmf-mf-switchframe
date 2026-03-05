@@ -76,7 +76,7 @@ describe('ConnectionBanner', () => {
 		});
 		const overlay = container.querySelector('.disconnect-overlay');
 		expect(overlay).toBeTruthy();
-		expect(overlay?.getAttribute('role')).toBe('alert');
+		expect(overlay?.getAttribute('role')).toBe('alertdialog');
 		expect(overlay?.getAttribute('aria-live')).toBe('assertive');
 	});
 

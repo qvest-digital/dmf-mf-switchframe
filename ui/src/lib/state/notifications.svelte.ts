@@ -8,6 +8,8 @@ export interface Notification {
 	dismissed: boolean;
 }
 
+const MAX_VISIBLE = 20;
+
 let notifications = $state<Notification[]>([]);
 let nextId = 0;
 const dismissTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -22,6 +24,12 @@ export function notify(type: NotificationType, message: string): void {
 		dismissed: false,
 	};
 	notifications.push(notification);
+
+	// Cap visible notifications to prevent DOM bloat during error storms
+	const active = notifications.filter((n) => !n.dismissed);
+	if (active.length > MAX_VISIBLE) {
+		dismiss(active[0].id);
+	}
 
 	// Auto-dismiss warnings and info after 5 seconds
 	if (type === 'warning' || type === 'info') {

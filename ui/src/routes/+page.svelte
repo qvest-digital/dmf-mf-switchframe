@@ -48,8 +48,7 @@
 	let syncInterval: ReturnType<typeof setInterval> | undefined;
 
 	let syncStatus = $derived.by(() => {
-		const _tick = now; // reactive dependency on now
-		const elapsed = Date.now() - store.lastServerUpdate;
+		const elapsed = now - store.lastServerUpdate;
 		if (elapsed > 5000) return 'disconnected' as const;
 		if (elapsed > 2000) return 'resyncing' as const;
 		return 'ok' as const;

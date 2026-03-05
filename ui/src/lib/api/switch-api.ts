@@ -188,11 +188,6 @@ export function getGraphicsStatus(): Promise<GraphicsState> {
 	return request('/api/graphics/status');
 }
 
-/** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */
-export function fireAndForget(promise: Promise<unknown>): void {
-	promise.catch((err) => console.warn('API call failed:', err));
-}
-
 /** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */
 export function apiCall(promise: Promise<unknown>, context?: string): void {
 	promise.catch((err) => {

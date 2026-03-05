@@ -16,7 +16,7 @@
 </script>
 
 {#if isDisconnected}
-	<div class="disconnect-overlay" role="alert" aria-live="assertive" aria-modal="true">
+	<div class="disconnect-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
 		<div class="disconnect-content">
 			<span class="disconnect-text">CONNECTION LOST</span>
 			<span class="disconnect-sub">Reconnecting...</span>

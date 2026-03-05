@@ -9,7 +9,7 @@
 
 {#if show}
 	<div class="program-health-banner" role="alert" aria-live="assertive">
-		PROGRAM SOURCE "{programSource}" — {status.toUpperCase().replace('_', ' ')}
+		PROGRAM SOURCE "{programSource}" — {status.toUpperCase().replaceAll('_', ' ')}
 	</div>
 {/if}
 

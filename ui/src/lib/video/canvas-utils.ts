@@ -11,8 +11,11 @@ export function setupHiDPICanvas(
 	displayHeight: number,
 ): void {
 	const dpr = window.devicePixelRatio || 1;
-	canvas.width = Math.round(displayWidth * dpr);
-	canvas.height = Math.round(displayHeight * dpr);
+	const w = Math.round(displayWidth * dpr);
+	const h = Math.round(displayHeight * dpr);
+	if (canvas.width === w && canvas.height === h) return;
+	canvas.width = w;
+	canvas.height = h;
 	canvas.style.width = `${displayWidth}px`;
 	canvas.style.height = `${displayHeight}px`;
 }
