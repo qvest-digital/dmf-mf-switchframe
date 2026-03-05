@@ -22,6 +22,7 @@ import (
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -68,6 +69,11 @@ func run() error {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
+
+	// Register subsystem metrics on the shared Prometheus registry so they
+	// appear at /metrics on the admin server. The returned Metrics struct
+	// will be passed to subsystems in a follow-up wiring task.
+	_ = metrics.NewMetrics(metrics.Registry)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
