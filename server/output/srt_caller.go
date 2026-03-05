@@ -37,6 +37,7 @@ type SRTCaller struct {
 	ringBuf      *ringBuffer
 	backoff      time.Duration
 	reconnecting atomic.Bool  // guards against duplicate reconnect goroutines
+	pendingIDR   atomic.Bool  // when true, drop writes until a keyframe arrives
 	bytesWritten atomic.Int64
 	state        atomic.Value // AdapterState
 	lastError    atomic.Value // string
@@ -112,6 +113,16 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 
 	switch state {
 	case StateActive:
+		// IDR gating: after a ring buffer overflow during reconnect, drop
+		// all writes until we see a keyframe (RAI in the TS adaptation field).
+		// This prevents decoder artifacts on the remote SRT receiver.
+		if c.pendingIDR.Load() {
+			if !containsKeyframe(tsData) {
+				return len(tsData), nil // drop delta frames silently
+			}
+			c.pendingIDR.Store(false)
+		}
+
 		c.mu.Lock()
 		conn := c.conn
 		c.mu.Unlock()
@@ -242,6 +253,14 @@ func (c *SRTCaller) reconnectLoop() {
 			}
 		}
 
+		// When overflow occurred, gate subsequent writes until a keyframe
+		// arrives. This prevents sending delta frames that reference
+		// data lost during the overflow, which would cause decoder
+		// artifacts on the remote SRT receiver.
+		if overflowed {
+			c.pendingIDR.Store(true)
+		}
+
 		c.state.Store(StateActive)
 		c.lastError.Store("")
 		c.resetBackoff()
@@ -277,6 +296,46 @@ func (c *SRTCaller) resetBackoff() {
 // package free of srtgo imports for clean unit testing.
 func defaultSRTConnect(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
 	return nil, errors.New("SRT connect not configured (set connectFn)")
+}
+
+const tsPacketSize = 188
+
+// containsKeyframe scans 188-byte MPEG-TS packets in data for the
+// Random Access Indicator (RAI) flag, which signals an IDR/keyframe.
+//
+// TS packet structure (relevant bytes):
+//
+//	Byte 0:    sync byte (0x47)
+//	Byte 3:    bits 5-4 = adaptation field control
+//	             0b10 (2) = adaptation only
+//	             0b11 (3) = adaptation + payload
+//	Byte 4:    adaptation field length
+//	Byte 5:    adaptation flags, bit 6 = Random Access Indicator
+func containsKeyframe(data []byte) bool {
+	for i := 0; i+tsPacketSize <= len(data); i += tsPacketSize {
+		if data[i] != 0x47 {
+			continue // not a valid sync byte, skip
+		}
+
+		// Adaptation field control is in byte 3, bits 5-4.
+		// Values: 2 = adaptation only, 3 = adaptation + payload.
+		afc := (data[i+3] >> 4) & 0x03
+		if afc < 2 {
+			continue // no adaptation field
+		}
+
+		// Adaptation field length at byte 4.
+		afLen := data[i+4]
+		if afLen == 0 {
+			continue // no flags in adaptation field
+		}
+
+		// RAI is bit 6 of the adaptation flags byte (byte 5).
+		if data[i+5]&0x40 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Compile-time check that SRTCaller satisfies the OutputAdapter interface.

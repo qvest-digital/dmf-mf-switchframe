@@ -388,6 +388,188 @@ func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 	c.Close()
 }
 
+// makeTSPacket creates a 188-byte MPEG-TS packet with specified PID.
+// If keyframe is true, it sets the Random Access Indicator (RAI) flag
+// in the adaptation field, which signals an IDR/keyframe.
+func makeTSPacket(pid uint16, keyframe bool) []byte {
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47 // sync byte
+
+	// PID in bytes 1-2 (13 bits: 5 bits in byte 1, 8 bits in byte 2)
+	pkt[1] = byte(pid>>8) & 0x1F
+	pkt[2] = byte(pid & 0xFF)
+
+	if keyframe {
+		// Adaptation field control = 0x30 (adaptation + payload)
+		pkt[3] = 0x30
+		// Adaptation field length
+		pkt[4] = 7
+		// Adaptation field flags: RAI = bit 6 = 0x40
+		pkt[5] = 0x40
+	} else {
+		// No adaptation field, payload only = 0x10
+		pkt[3] = 0x10
+	}
+	return pkt
+}
+
+func TestContainsKeyframe(t *testing.T) {
+	t.Run("single keyframe packet", func(t *testing.T) {
+		pkt := makeTSPacket(0x100, true)
+		require.True(t, containsKeyframe(pkt))
+	})
+
+	t.Run("single delta packet", func(t *testing.T) {
+		pkt := makeTSPacket(0x100, false)
+		require.False(t, containsKeyframe(pkt))
+	})
+
+	t.Run("keyframe among delta packets", func(t *testing.T) {
+		data := make([]byte, 0, 188*3)
+		data = append(data, makeTSPacket(0x100, false)...)
+		data = append(data, makeTSPacket(0x100, true)...)
+		data = append(data, makeTSPacket(0x100, false)...)
+		require.True(t, containsKeyframe(data))
+	})
+
+	t.Run("all delta packets", func(t *testing.T) {
+		data := make([]byte, 0, 188*3)
+		data = append(data, makeTSPacket(0x100, false)...)
+		data = append(data, makeTSPacket(0x100, false)...)
+		data = append(data, makeTSPacket(0x100, false)...)
+		require.False(t, containsKeyframe(data))
+	})
+
+	t.Run("empty data", func(t *testing.T) {
+		require.False(t, containsKeyframe(nil))
+		require.False(t, containsKeyframe([]byte{}))
+	})
+
+	t.Run("data shorter than TS packet", func(t *testing.T) {
+		require.False(t, containsKeyframe([]byte{0x47, 0x00}))
+	})
+
+	t.Run("adaptation field length zero", func(t *testing.T) {
+		// Adaptation field present but length=0 means no flags byte
+		pkt := makeTSPacket(0x100, false)
+		pkt[3] = 0x30 // adaptation + payload
+		pkt[4] = 0    // adaptation field length = 0
+		require.False(t, containsKeyframe(pkt))
+	})
+}
+
+func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 256, // small buffer to force overflow
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+
+	// Write more data than the buffer can hold to trigger overflow
+	c.ringBuf.Write(make([]byte, 512))
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	var callbackCalled atomic.Bool
+	c.onReconnect = func(overflowed bool) {
+		callbackCalled.Store(true)
+	}
+
+	// Trigger reconnect
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// After overflow reconnect, pendingIDR should be true
+	require.True(t, c.pendingIDR.Load(), "pendingIDR should be set after overflow reconnect")
+
+	// Write a delta (non-keyframe) TS packet — should be dropped silently
+	deltaPkt := makeTSPacket(0x100, false)
+	n, err := c.Write(deltaPkt)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt), n)
+	require.Zero(t, mock.written.Load(), "delta packet should be dropped while IDR gate is active")
+
+	// pendingIDR should still be true
+	require.True(t, c.pendingIDR.Load(), "pendingIDR should remain set after delta packet")
+
+	// Write a keyframe TS packet — should pass through and clear the gate
+	keyframePkt := makeTSPacket(0x100, true)
+	n, err = c.Write(keyframePkt)
+	require.NoError(t, err)
+	require.Equal(t, len(keyframePkt), n)
+	require.Equal(t, int64(len(keyframePkt)), mock.written.Load(), "keyframe packet should be written")
+
+	// pendingIDR should be cleared
+	require.False(t, c.pendingIDR.Load(), "pendingIDR should be cleared after keyframe")
+
+	// Subsequent delta packets should now pass through
+	deltaPkt2 := makeTSPacket(0x100, false)
+	n, err = c.Write(deltaPkt2)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt2), n)
+	require.Equal(t, int64(len(keyframePkt)+len(deltaPkt2)), mock.written.Load(),
+		"delta packet should pass through after IDR gate is cleared")
+
+	c.Close()
+}
+
+func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+
+	// Write small data (no overflow)
+	c.ringBuf.Write(make([]byte, 188))
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	var callbackCalled atomic.Bool
+	c.onReconnect = func(overflowed bool) {
+		callbackCalled.Store(true)
+	}
+
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return callbackCalled.Load()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// No overflow — pendingIDR should NOT be set
+	require.False(t, c.pendingIDR.Load(), "pendingIDR should not be set when no overflow occurred")
+
+	// Delta packets should pass through immediately
+	deltaPkt := makeTSPacket(0x100, false)
+	n, err := c.Write(deltaPkt)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt), n)
+	// Written bytes = flushed buffer (188) + delta packet (188)
+	require.Equal(t, int64(188+188), mock.written.Load(),
+		"delta should pass through when no IDR gate is active")
+
+	c.Close()
+}
+
 func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
