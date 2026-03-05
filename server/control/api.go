@@ -5,6 +5,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,7 +13,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -64,13 +67,19 @@ func WithDebugCollector(d DebugAPI) APIOption {
 	return func(a *API) { a.debug = d }
 }
 
+// WithPresetStore attaches a preset store to the API.
+func WithPresetStore(ps *preset.PresetStore) APIOption {
+	return func(a *API) { a.presetStore = ps }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
-	switcher  *switcher.Switcher
-	mixer     AudioMixerAPI
-	outputMgr OutputManagerAPI
-	debug     DebugAPI
-	mux       *http.ServeMux
+	switcher    *switcher.Switcher
+	mixer       AudioMixerAPI
+	outputMgr   OutputManagerAPI
+	debug       DebugAPI
+	presetStore *preset.PresetStore
+	mux         *http.ServeMux
 }
 
 // NewAPI creates an API that delegates to sw.
@@ -111,6 +120,14 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
 	if a.debug != nil {
 		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
+	}
+	if a.presetStore != nil {
+		mux.HandleFunc("GET /api/presets", a.handleListPresets)
+		mux.HandleFunc("POST /api/presets", a.handleCreatePreset)
+		mux.HandleFunc("GET /api/presets/{id}", a.handleGetPreset)
+		mux.HandleFunc("PUT /api/presets/{id}", a.handleUpdatePreset)
+		mux.HandleFunc("DELETE /api/presets/{id}", a.handleDeletePreset)
+		mux.HandleFunc("POST /api/presets/{id}/recall", a.handleRecallPreset)
 	}
 }
 
@@ -168,27 +185,35 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 
 // transitionRequest is the JSON body for transition commands.
 type transitionRequest struct {
-	Source     string `json:"source"`
-	Type       string `json:"type"`
-	DurationMs int    `json:"durationMs"`
+	Source        string `json:"source"`
+	Type          string `json:"type"`
+	DurationMs    int    `json:"durationMs"`
+	WipeDirection string `json:"wipeDirection,omitempty"`
 }
 
-// handleTransition starts a mix or dip transition to the specified source.
+// handleTransition starts a mix, dip, or wipe transition to the specified source.
 func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	var req transitionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Type != "mix" && req.Type != "dip" {
-		http.Error(w, `{"error":"type must be 'mix' or 'dip'"}`, http.StatusBadRequest)
+	if req.Type != "mix" && req.Type != "dip" && req.Type != "wipe" {
+		http.Error(w, `{"error":"type must be 'mix', 'dip', or 'wipe'"}`, http.StatusBadRequest)
 		return
+	}
+	if req.Type == "wipe" {
+		wd := transition.WipeDirection(req.WipeDirection)
+		if !transition.ValidWipeDirections[wd] {
+			http.Error(w, `{"error":"wipeDirection must be one of: h-left, h-right, v-top, v-bottom, box-center-out, box-edges-in"}`, http.StatusBadRequest)
+			return
+		}
 	}
 	if req.DurationMs < 100 || req.DurationMs > 5000 {
 		http.Error(w, `{"error":"durationMs must be 100-5000"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs); err != nil {
+	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs, req.WipeDirection); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusInternalServerError
 		if errors.Is(err, switcher.ErrSourceNotFound) {
@@ -582,4 +607,203 @@ func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
+}
+
+// --- Preset API ---
+
+// createPresetRequest is the JSON body for creating a preset.
+type createPresetRequest struct {
+	Name string `json:"name"`
+}
+
+// updatePresetRequest is the JSON body for updating a preset.
+type updatePresetRequest struct {
+	Name string `json:"name"`
+}
+
+// recallPresetResponse is the JSON response for recalling a preset.
+type recallPresetResponse struct {
+	Preset   preset.Preset `json:"preset"`
+	Warnings []string      `json:"warnings,omitempty"`
+}
+
+// handleListPresets returns all presets.
+func (a *API) handleListPresets(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.presetStore.List())
+}
+
+// handleCreatePreset creates a new preset from the current switcher state.
+func (a *API) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
+	var req createPresetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
+		return
+	}
+
+	state := a.switcher.State()
+	snapshot := stateToSnapshot(state)
+
+	p, err := a.presetStore.Create(req.Name, snapshot)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(p)
+}
+
+// handleGetPreset returns a single preset by ID.
+func (a *API) handleGetPreset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p, ok := a.presetStore.Get(id)
+	if !ok {
+		http.Error(w, `{"error":"preset not found"}`, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(p)
+}
+
+// handleUpdatePreset updates a preset's name.
+func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req updatePresetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	updates := preset.PresetUpdate{}
+	if req.Name != "" {
+		updates.Name = &req.Name
+	}
+
+	p, err := a.presetStore.Update(id, updates)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, preset.ErrNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, preset.ErrEmptyName) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(p)
+}
+
+// handleDeletePreset deletes a preset by ID.
+func (a *API) handleDeletePreset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := a.presetStore.Delete(id); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, preset.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRecallPreset applies a preset to the switcher and mixer.
+func (a *API) handleRecallPreset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p, ok := a.presetStore.Get(id)
+	if !ok {
+		http.Error(w, `{"error":"preset not found"}`, http.StatusNotFound)
+		return
+	}
+
+	target := &apiRecallTarget{
+		switcher: a.switcher,
+		mixer:    a.mixer,
+	}
+
+	warnings := preset.Recall(r.Context(), p, target)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(recallPresetResponse{
+		Preset:   p,
+		Warnings: warnings,
+	})
+}
+
+// apiRecallTarget adapts the API's switcher and mixer to the preset.RecallTarget
+// interface so Recall() can apply presets without knowing about concrete types.
+type apiRecallTarget struct {
+	switcher *switcher.Switcher
+	mixer    AudioMixerAPI
+}
+
+func (t *apiRecallTarget) Cut(ctx context.Context, source string) error {
+	return t.switcher.Cut(ctx, source)
+}
+
+func (t *apiRecallTarget) SetPreview(ctx context.Context, source string) error {
+	return t.switcher.SetPreview(ctx, source)
+}
+
+func (t *apiRecallTarget) SetLevel(sourceKey string, levelDB float64) error {
+	if t.mixer == nil {
+		return nil
+	}
+	return t.mixer.SetLevel(sourceKey, levelDB)
+}
+
+func (t *apiRecallTarget) SetMuted(sourceKey string, muted bool) error {
+	if t.mixer == nil {
+		return nil
+	}
+	return t.mixer.SetMuted(sourceKey, muted)
+}
+
+func (t *apiRecallTarget) SetAFV(sourceKey string, afv bool) error {
+	if t.mixer == nil {
+		return nil
+	}
+	return t.mixer.SetAFV(sourceKey, afv)
+}
+
+func (t *apiRecallTarget) SetMasterLevel(level float64) {
+	if t.mixer == nil {
+		return
+	}
+	t.mixer.SetMasterLevel(level)
+}
+
+// stateToSnapshot converts a ControlRoomState to a ControlRoomSnapshot
+// for creating presets from the current state.
+func stateToSnapshot(state internal.ControlRoomState) preset.ControlRoomSnapshot {
+	channels := make(map[string]preset.AudioChannelSnapshot, len(state.AudioChannels))
+	for k, ch := range state.AudioChannels {
+		channels[k] = preset.AudioChannelSnapshot{
+			Level: ch.Level,
+			Muted: ch.Muted,
+			AFV:   ch.AFV,
+		}
+	}
+	return preset.ControlRoomSnapshot{
+		ProgramSource:        state.ProgramSource,
+		PreviewSource:        state.PreviewSource,
+		TransitionType:       state.TransitionType,
+		TransitionDurationMs: state.TransitionDurationMs,
+		AudioChannels:        channels,
+		MasterLevel:          state.MasterLevel,
+	}
 }

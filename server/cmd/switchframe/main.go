@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -217,8 +219,20 @@ func run() error {
 	debugCollector.Register("mixer", mixer)
 	debugCollector.Register("output", outputMgr)
 
+	// Create preset store for saving/loading production presets.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home directory: %w", err)
+	}
+	presetPath := filepath.Join(homeDir, ".switchframe", "presets.json")
+	presetStore, err := preset.NewPresetStore(presetPath)
+	if err != nil {
+		return fmt.Errorf("create preset store: %w", err)
+	}
+	slog.Info("preset store initialized", "path", presetPath)
+
 	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector))
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore))
 
 	// enrichState patches a ControlRoomState snapshot with output status.
 	enrichState := func(state internal.ControlRoomState) internal.ControlRoomState {

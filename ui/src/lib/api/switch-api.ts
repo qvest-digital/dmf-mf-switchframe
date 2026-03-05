@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse } from './types';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -89,8 +89,12 @@ export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }
 
-export function startTransition(source: string, type: string, durationMs: number): Promise<ControlRoomState> {
-	return post('/api/switch/transition', { source, type, durationMs });
+export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string): Promise<ControlRoomState> {
+	const body: Record<string, unknown> = { source, type, durationMs };
+	if (wipeDirection) {
+		body.wipeDirection = wipeDirection;
+	}
+	return post('/api/switch/transition', body);
 }
 
 export function setTransitionPosition(position: number): Promise<void> {
@@ -127,6 +131,38 @@ export function stopSRTOutput(): Promise<SRTOutputStatus> {
 
 export function getSRTOutputStatus(): Promise<SRTOutputStatus> {
 	return request('/api/output/srt/status');
+}
+
+// --- Preset API ---
+
+export function listPresets(): Promise<Preset[]> {
+	return request('/api/presets');
+}
+
+export function createPreset(name: string): Promise<Preset> {
+	return post('/api/presets', { name });
+}
+
+export function getPreset(id: string): Promise<Preset> {
+	return request(`/api/presets/${encodeURIComponent(id)}`);
+}
+
+export function updatePreset(id: string, name: string): Promise<Preset> {
+	return request(`/api/presets/${encodeURIComponent(id)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ name }),
+	});
+}
+
+export function deletePreset(id: string): Promise<void> {
+	return request(`/api/presets/${encodeURIComponent(id)}`, {
+		method: 'DELETE',
+	});
+}
+
+export function recallPreset(id: string): Promise<RecallPresetResponse> {
+	return post(`/api/presets/${encodeURIComponent(id)}/recall`, {});
 }
 
 /** Log and swallow errors from fire-and-forget API calls (click handlers, keyboard shortcuts). */

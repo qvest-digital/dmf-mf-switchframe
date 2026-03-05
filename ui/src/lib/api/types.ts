@@ -42,6 +42,34 @@ export interface SRTOutputConfig {
 	streamID?: string;
 }
 
+export interface PresetInfo {
+	id: string;
+	name: string;
+}
+
+export interface Preset {
+	id: string;
+	name: string;
+	programSource: string;
+	previewSource: string;
+	transitionType: string;
+	transitionDurMs: number;
+	audioChannels: Record<string, AudioChannelPreset>;
+	masterLevel: number;
+	createdAt: string;
+}
+
+export interface AudioChannelPreset {
+	level: number;
+	muted: boolean;
+	afv: boolean;
+}
+
+export interface RecallPresetResponse {
+	preset: Preset;
+	warnings?: string[];
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -56,6 +84,7 @@ export interface ControlRoomState {
 	gainReduction?: number;
 	tallyState: Record<string, TallyStatus>;
 	sources: Record<string, SourceInfo>;
+	presets?: PresetInfo[];
 	recording?: RecordingStatus;
 	srtOutput?: SRTOutputStatus;
 	seq: number;

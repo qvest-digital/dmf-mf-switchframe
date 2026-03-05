@@ -68,6 +68,13 @@ type SRTOutputStatus struct {
 	Error        string `json:"error,omitempty"`
 }
 
+// PresetInfo is a summary of a saved preset, included in ControlRoomState
+// so the browser knows which presets are available for recall.
+type PresetInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -86,6 +93,7 @@ type ControlRoomState struct {
 	Recording            *RecordingStatus           `json:"recording,omitempty"`
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`
+	Presets              []PresetInfo              `json:"presets,omitempty"`
 	Seq                  uint64                    `json:"seq"`
 	Timestamp            int64                     `json:"timestamp"`
 }
