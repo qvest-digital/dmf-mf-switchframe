@@ -35,9 +35,8 @@ export interface DissolveRenderer {
 }
 
 /**
- * Creates a dissolve renderer. Attempts WebGPU first, falls back to Canvas 2D.
- * Currently always uses Canvas 2D since WebGPU path requires async GPU device
- * initialization that will be wired in a future iteration.
+ * Creates a Canvas 2D dissolve renderer for browser-side transition preview.
+ * The server produces the authoritative blended output; this is operator preview only.
  */
 export function createDissolveRenderer(canvas: HTMLCanvasElement): DissolveRenderer {
 	let _mixFactor = 0;
@@ -78,8 +77,7 @@ export function createDissolveRenderer(canvas: HTMLCanvasElement): DissolveRende
 		},
 
 		destroy() {
-			// Canvas 2D context cleanup
-			// WebGPU pipeline/buffer cleanup would go here
+			// Canvas 2D context cleanup — nothing to release
 		},
 	};
 
