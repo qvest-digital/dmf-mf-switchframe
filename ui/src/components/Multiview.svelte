@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, TallyStatus } from '$lib/api/types';
 	import { setPreview, apiCall } from '$lib/api/switch-api';
+	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 
 	interface Props {
 		state: ControlRoomState;
@@ -8,6 +9,26 @@
 	}
 	let { state: crState, onLabelChange }: Props = $props();
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
+	let multiviewEl: HTMLDivElement;
+
+	// High-DPI canvas sizing for all tile canvases
+	$effect(() => {
+		if (!multiviewEl) return;
+		const observer = new ResizeObserver(() => {
+			const canvases = multiviewEl.querySelectorAll('.tile-video') as NodeListOf<HTMLCanvasElement>;
+			canvases.forEach((canvas) => {
+				const tile = canvas.closest('.tile');
+				if (tile) {
+					const rect = tile.getBoundingClientRect();
+					if (rect.width > 0 && rect.height > 0) {
+						setupHiDPICanvas(canvas, rect.width, rect.height);
+					}
+				}
+			});
+		});
+		observer.observe(multiviewEl);
+		return () => observer.disconnect();
+	});
 
 	// Track which tile is being edited
 	let editingKey = $state<string | null>(null);
@@ -52,7 +73,7 @@
 	}
 </script>
 
-<div class="multiview">
+<div class="multiview" bind:this={multiviewEl}>
 	{#each sourceKeys as key, i}
 		<button
 			class="tile"
@@ -60,7 +81,7 @@
 			class:tally-preview={getTally(key) === 'preview'}
 			onclick={() => apiCall(setPreview(key), 'Preview failed')}
 		>
-			<canvas class="tile-video" id="tile-{key}" width="320" height="180"></canvas>
+			<canvas class="tile-video" id="tile-{key}"></canvas>
 			<div class="tile-bar">
 				<span class="tile-num">{i + 1}</span>
 				{#if editingKey === key}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import { setPreview, cut, startTransition, apiCall } from '$lib/api/switch-api';
+	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 
 	interface Props {
 		state: ControlRoomState;
@@ -20,6 +21,35 @@
 		if (previewCanvas && programCanvas && onCanvasReady) {
 			onCanvasReady(previewCanvas, programCanvas);
 		}
+	});
+
+	// High-DPI canvas sizing via ResizeObserver
+	$effect(() => {
+		if (!previewCanvas || !programCanvas) return;
+
+		const observers: ResizeObserver[] = [];
+
+		// Preview canvas
+		if (previewCanvas.parentElement) {
+			const obs = new ResizeObserver(([entry]) => {
+				const { width, height } = entry.contentRect;
+				if (width > 0 && height > 0) setupHiDPICanvas(previewCanvas, width, height);
+			});
+			obs.observe(previewCanvas.parentElement);
+			observers.push(obs);
+		}
+
+		// Program canvas
+		if (programCanvas.parentElement) {
+			const obs = new ResizeObserver(([entry]) => {
+				const { width, height } = entry.contentRect;
+				if (width > 0 && height > 0) setupHiDPICanvas(programCanvas, width, height);
+			});
+			obs.observe(programCanvas.parentElement);
+			observers.push(obs);
+		}
+
+		return () => observers.forEach((obs) => obs.disconnect());
 	});
 
 	let sourceKeys = $derived(Object.keys(state.sources).sort());
@@ -83,12 +113,12 @@
 	<section class="monitors">
 		<div class="monitor preview-mon">
 			<div class="monitor-label preview-label">PREVIEW</div>
-			<canvas bind:this={previewCanvas} width="640" height="360"></canvas>
+			<canvas bind:this={previewCanvas}></canvas>
 			<div class="monitor-source">{previewLabel}</div>
 		</div>
 		<div class="monitor program-mon">
 			<div class="monitor-label program-label">PROGRAM</div>
-			<canvas bind:this={programCanvas} width="640" height="360"></canvas>
+			<canvas bind:this={programCanvas}></canvas>
 			<div class="monitor-source">{programLabel}</div>
 		</div>
 	</section>

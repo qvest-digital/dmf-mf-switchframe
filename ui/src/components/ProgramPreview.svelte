@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import type { GraphicsTemplate } from '$lib/graphics/templates';
+	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import HealthAlarm from './HealthAlarm.svelte';
 
 	interface Props {
@@ -26,6 +27,39 @@
 		}
 	});
 
+	// High-DPI canvas sizing via ResizeObserver
+	$effect(() => {
+		const canvases = [previewCanvas, programCanvas, overlayCanvas].filter(Boolean) as HTMLCanvasElement[];
+		if (canvases.length === 0) return;
+
+		const observers: ResizeObserver[] = [];
+
+		// Preview canvas
+		if (previewCanvas?.parentElement) {
+			const obs = new ResizeObserver(([entry]) => {
+				const { width, height } = entry.contentRect;
+				if (width > 0 && height > 0) setupHiDPICanvas(previewCanvas, width, height);
+			});
+			obs.observe(previewCanvas.parentElement);
+			observers.push(obs);
+		}
+
+		// Program canvas (and overlay)
+		if (programCanvas?.parentElement) {
+			const obs = new ResizeObserver(([entry]) => {
+				const { width, height } = entry.contentRect;
+				if (width > 0 && height > 0) {
+					setupHiDPICanvas(programCanvas, width, height);
+					if (overlayCanvas) setupHiDPICanvas(overlayCanvas, width, height);
+				}
+			});
+			obs.observe(programCanvas.parentElement);
+			observers.push(obs);
+		}
+
+		return () => observers.forEach((obs) => obs.disconnect());
+	});
+
 	// Render graphics overlay on the program monitor when active
 	$effect(() => {
 		if (!overlayCanvas) return;
@@ -42,15 +76,15 @@
 	<div class="monitor preview-monitor">
 		<div class="monitor-label preview-label">PREVIEW</div>
 		<div class="monitor-viewport">
-			<canvas bind:this={previewCanvas} width="640" height="360"></canvas>
+			<canvas bind:this={previewCanvas}></canvas>
 			<span class="source-name">{state.sources[state.previewSource]?.label || state.previewSource || '—'}</span>
 		</div>
 	</div>
 	<div class="monitor program-monitor">
 		<div class="monitor-label program-label">PROGRAM</div>
 		<div class="monitor-viewport">
-			<canvas bind:this={programCanvas} width="640" height="360"></canvas>
-			<canvas bind:this={overlayCanvas} class="graphics-overlay" width="640" height="360"></canvas>
+			<canvas bind:this={programCanvas}></canvas>
+			<canvas bind:this={overlayCanvas} class="graphics-overlay"></canvas>
 			<span class="source-name">{programLabel}</span>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} />
 		</div>
