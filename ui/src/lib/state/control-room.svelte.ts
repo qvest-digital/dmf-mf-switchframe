@@ -32,9 +32,10 @@ export function createControlRoomStore() {
 	let lastServerUpdate = $state(Date.now());
 
 	function applyUpdate(update: ControlRoomState) {
+		// Server is alive — update heartbeat regardless of seq
+		lastServerUpdate = Date.now();
 		if (update.seq <= state.seq) return;
 		state = update;
-		lastServerUpdate = Date.now();
 		// Clear pending if server state matches the optimistic prediction or it expired
 		if (pendingAction) {
 			const expired = Date.now() - pendingAction.timestamp > PENDING_TIMEOUT_MS;

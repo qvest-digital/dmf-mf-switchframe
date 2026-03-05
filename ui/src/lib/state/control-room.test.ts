@@ -208,7 +208,7 @@ describe('control-room store', () => {
 			vi.useRealTimers();
 		});
 
-		it('does not update lastServerUpdate on stale update', () => {
+		it('updates lastServerUpdate even on stale seq (server is alive)', () => {
 			vi.useFakeTimers();
 			const now = Date.now();
 			vi.setSystemTime(now);
@@ -217,12 +217,14 @@ describe('control-room store', () => {
 
 			vi.setSystemTime(now + 1000);
 			store.applyUpdate(makeState({ seq: 5, programSource: 'cam1' }));
-			const afterFirst = store.lastServerUpdate;
 
 			vi.setSystemTime(now + 2000);
 			store.applyUpdate(makeState({ seq: 3, programSource: 'stale' }));
 
-			expect(store.lastServerUpdate).toBe(afterFirst);
+			// Heartbeat updated even though state was not applied
+			expect(store.lastServerUpdate).toBe(now + 2000);
+			// But state itself should not change
+			expect(store.state.programSource).toBe('cam1');
 			vi.useRealTimers();
 		});
 
