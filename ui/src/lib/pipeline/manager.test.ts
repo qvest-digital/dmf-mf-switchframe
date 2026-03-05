@@ -31,6 +31,11 @@ function makeSources(...keys: string[]): Record<string, { key: string; status: s
 	return sources;
 }
 
+/** Create a mock canvas element. */
+function createCanvas(): HTMLCanvasElement {
+	return document.createElement('canvas');
+}
+
 describe('PipelineManager', () => {
 	let pipeline: ReturnType<typeof createMockPipeline>;
 	let manager: PipelineManager;
@@ -40,7 +45,7 @@ describe('PipelineManager', () => {
 		pipeline = createMockPipeline();
 		sourceKeys = [];
 		manager = new PipelineManager(pipeline, () => sourceKeys);
-		// Stub getElementById to return canvas elements
+		// Stub getElementById for tile canvases (still uses DOM lookup)
 		vi.spyOn(document, 'getElementById').mockImplementation((id: string) => {
 			const canvas = document.createElement('canvas');
 			canvas.id = id;
@@ -141,21 +146,37 @@ describe('PipelineManager', () => {
 	});
 
 	describe('syncProgramPreviewCanvases', () => {
-		it('should attach program canvas on first call', () => {
-			manager.syncProgramPreviewCanvases('cam1');
+		it('should attach program canvas when provided', () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
 				'program',
 				'program',
-				expect.any(HTMLCanvasElement),
+				pgmCanvas,
+			);
+		});
+
+		it('should attach preview canvas for the preview source', () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
+				'cam1',
+				'preview',
+				pvwCanvas,
 			);
 		});
 
 		it('should not re-attach program canvas if already attached', () => {
-			manager.syncProgramPreviewCanvases('cam1');
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.attachCanvas.mockClear();
 
-			manager.syncProgramPreviewCanvases('cam1');
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			const programCalls = pipeline.attachCanvas.mock.calls.filter(
 				(c: unknown[]) => c[0] === 'program' && c[1] === 'program',
@@ -163,22 +184,14 @@ describe('PipelineManager', () => {
 			expect(programCalls).toHaveLength(0);
 		});
 
-		it('should attach preview canvas for the preview source', () => {
-			manager.syncProgramPreviewCanvases('cam1');
-
-			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
-				'cam1',
-				'preview',
-				expect.any(HTMLCanvasElement),
-			);
-		});
-
 		it('should detach old preview and attach new on preview source change', () => {
-			manager.syncProgramPreviewCanvases('cam1');
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.detachCanvas.mockClear();
 			pipeline.attachCanvas.mockClear();
 
-			manager.syncProgramPreviewCanvases('cam2');
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
 
 			// Detach old preview source
 			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'preview');
@@ -186,16 +199,18 @@ describe('PipelineManager', () => {
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
 				'cam2',
 				'preview',
-				expect.any(HTMLCanvasElement),
+				pvwCanvas,
 			);
 		});
 
 		it('should handle empty preview source', () => {
-			manager.syncProgramPreviewCanvases('cam1');
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.detachCanvas.mockClear();
 			pipeline.attachCanvas.mockClear();
 
-			manager.syncProgramPreviewCanvases('');
+			manager.syncProgramPreviewCanvases('', pgmCanvas, pvwCanvas);
 
 			// Should detach old preview
 			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'preview');
@@ -206,13 +221,52 @@ describe('PipelineManager', () => {
 			expect(previewAttach).toHaveLength(0);
 		});
 
-		it('should handle program canvas not found in DOM', () => {
-			vi.spyOn(document, 'getElementById').mockReturnValue(null);
-
+		it('should not attach when canvas elements are not provided', () => {
 			manager.syncProgramPreviewCanvases('cam1');
 
-			// No canvas found, so nothing should be attached
+			// No canvas provided, so nothing should be attached
 			expect(pipeline.attachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('should not attach when canvas elements are null', () => {
+			manager.syncProgramPreviewCanvases('cam1', null, null);
+
+			// Null canvases, so nothing should be attached
+			expect(pipeline.attachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('should handle program canvas provided without preview canvas', () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			// Program should be attached
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
+				'program',
+				'program',
+				pgmCanvas,
+			);
+			// Preview should not be attached (no canvas)
+			const previewCalls = pipeline.attachCanvas.mock.calls.filter(
+				(c: unknown[]) => c[1] === 'preview',
+			);
+			expect(previewCalls).toHaveLength(0);
+		});
+
+		it('should handle preview canvas provided without program canvas', () => {
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', null, pvwCanvas);
+
+			// Program should not be attached (no canvas)
+			const programCalls = pipeline.attachCanvas.mock.calls.filter(
+				(c: unknown[]) => c[0] === 'program' && c[1] === 'program',
+			);
+			expect(programCalls).toHaveLength(0);
+			// Preview should be attached
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
+				'cam1',
+				'preview',
+				pvwCanvas,
+			);
 		});
 	});
 
@@ -228,7 +282,9 @@ describe('PipelineManager', () => {
 		});
 
 		it('should detach program canvas', async () => {
-			manager.syncProgramPreviewCanvases('cam1');
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.detachCanvas.mockClear();
 
 			manager.onLayoutChange();
@@ -237,7 +293,9 @@ describe('PipelineManager', () => {
 		});
 
 		it('should detach preview canvas', async () => {
-			manager.syncProgramPreviewCanvases('cam1');
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.detachCanvas.mockClear();
 
 			manager.onLayoutChange();
@@ -246,15 +304,19 @@ describe('PipelineManager', () => {
 		});
 
 		it('should reset canvas tracking so re-sync re-attaches', async () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
 			await manager.syncSources(makeSources('cam1'));
-			manager.syncProgramPreviewCanvases('cam1');
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 			pipeline.attachCanvas.mockClear();
 
 			manager.onLayoutChange();
 
-			// Re-sync should re-attach everything
+			// Re-sync should re-attach everything (with new canvas refs)
+			const newPgm = createCanvas();
+			const newPvw = createCanvas();
 			await manager.syncSources(makeSources('cam1'));
-			manager.syncProgramPreviewCanvases('cam1');
+			manager.syncProgramPreviewCanvases('cam1', newPgm, newPvw);
 
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
 				'cam1',
@@ -264,12 +326,12 @@ describe('PipelineManager', () => {
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
 				'program',
 				'program',
-				expect.any(HTMLCanvasElement),
+				newPgm,
 			);
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
 				'cam1',
 				'preview',
-				expect.any(HTMLCanvasElement),
+				newPvw,
 			);
 		});
 	});
@@ -399,8 +461,10 @@ describe('PipelineManager', () => {
 		});
 
 		it('should reset all tracking state', async () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
 			await manager.syncSources(makeSources('cam1'));
-			manager.syncProgramPreviewCanvases('cam1');
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			manager.destroy();
 

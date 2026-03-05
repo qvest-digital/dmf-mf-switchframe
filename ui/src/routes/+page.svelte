@@ -28,6 +28,15 @@
 	let initialLoading = $state(true);
 	let connectionError: string | null = $state(null);
 
+	// Canvas refs passed up from ProgramPreview / SimpleMode via onCanvasReady
+	let programCanvas: HTMLCanvasElement | null = $state(null);
+	let previewCanvas: HTMLCanvasElement | null = $state(null);
+
+	function onCanvasReady(preview: HTMLCanvasElement, program: HTMLCanvasElement) {
+		previewCanvas = preview;
+		programCanvas = program;
+	}
+
 	function switchLayout() {
 		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
 		setLayoutMode(layoutMode);
@@ -132,27 +141,32 @@
 		if (!mounted) return;
 		tick().then(() => {
 			pipelineManager.syncSources(store.state.sources);
-			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
+			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 		});
 	});
 
-	// React to program/preview changes
+	// React to program/preview changes and canvas ref updates
 	$effect(() => {
 		const _program = store.state.programSource;
 		const _preview = store.state.previewSource;
+		const _pgmCanvas = programCanvas;
+		const _pvwCanvas = previewCanvas;
 		if (!mounted) return;
-		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
+		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 	});
 
 	// Re-attach canvases when layout mode changes (DOM is replaced)
 	$effect(() => {
 		const _mode = layoutMode;
 		pipelineManager.onLayoutChange();
+		// Reset canvas refs — new DOM elements will be provided by onCanvasReady
+		programCanvas = null;
+		previewCanvas = null;
 		// Re-sync after DOM updates
 		tick().then(() => {
 			if (!mounted) return;
 			pipelineManager.syncSources(store.state.sources);
-			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource);
+			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 		});
 	});
 
@@ -219,7 +233,7 @@
 
 <ErrorBoundary>
 	{#if layoutMode === 'simple'}
-		<SimpleMode state={store.state} onSwitchLayout={switchLayout} />
+		<SimpleMode state={store.state} onSwitchLayout={switchLayout} {onCanvasReady} />
 	{:else}
 		<div class="control-room">
 			<header class="header">
@@ -227,7 +241,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.state} />
+				<ProgramPreview state={store.state} {onCanvasReady} />
 			</section>
 
 			<section class="multiview-section">

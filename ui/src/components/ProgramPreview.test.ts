@@ -35,6 +35,14 @@ describe('ProgramPreview with video', () => {
 		expect(previewCanvas).toBeTruthy();
 	});
 
+	it('should render canvases without id attributes', () => {
+		const { container } = render(ProgramPreview, { props: { state } });
+		const canvases = container.querySelectorAll('canvas');
+		for (const canvas of canvases) {
+			expect(canvas.id).toBe('');
+		}
+	});
+
 	it('should show source label in program window', () => {
 		const { container } = render(ProgramPreview, { props: { state } });
 		expect(container.textContent).toContain('Camera 1');

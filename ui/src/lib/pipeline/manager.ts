@@ -14,9 +14,9 @@ export interface PeakLevels {
  * - Canvas management: attaches multiview tile, program, and preview canvases
  * - Audio metering: rAF loop that samples per-source and program audio levels
  *
- * This is a plain TypeScript class (not a Svelte component). It uses
- * document.getElementById() for canvas lookup; Task 3.3 will replace
- * these with bind:this references.
+ * Program and preview canvases are passed in via syncProgramPreviewCanvases()
+ * to avoid getElementById collisions when multiple components share the same
+ * canvas IDs. Tile canvases still use getElementById (IDs are unique per source).
  */
 export class PipelineManager {
 	private pipeline: MediaPipeline;
@@ -98,16 +98,23 @@ export class PipelineManager {
 	 * until layout change.
 	 *
 	 * Preview canvas: renders the preview source's individual stream.
+	 *
+	 * Canvas elements are passed directly from Svelte bind:this to avoid
+	 * getElementById collisions when ProgramPreview and SimpleMode share
+	 * the same canvas IDs.
 	 */
-	syncProgramPreviewCanvases(previewSource: string): void {
+	syncProgramPreviewCanvases(
+		previewSource: string,
+		programCanvasEl?: HTMLCanvasElement | null,
+		previewCanvasEl?: HTMLCanvasElement | null,
+	): void {
 		// Program canvas: render the "program" MoQ stream (shows transitions)
 		if (this.currentProgramCanvas !== 'program') {
 			if (this.currentProgramCanvas) {
 				this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 			}
-			const programCanvas = document.getElementById('program-video') as HTMLCanvasElement | null;
-			if (programCanvas) {
-				this.pipeline.attachCanvas('program', 'program', programCanvas);
+			if (programCanvasEl) {
+				this.pipeline.attachCanvas('program', 'program', programCanvasEl);
 				this.currentProgramCanvas = 'program';
 			}
 		}
@@ -118,9 +125,8 @@ export class PipelineManager {
 			if (this.currentPreviewCanvas) {
 				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
 			}
-			const previewCanvas = document.getElementById('preview-video') as HTMLCanvasElement | null;
-			if (previewCanvas && previewSource) {
-				this.pipeline.attachCanvas(previewSource, 'preview', previewCanvas);
+			if (previewCanvasEl && previewSource) {
+				this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
 			}
 			this.currentPreviewCanvas = previewSource;
 		}

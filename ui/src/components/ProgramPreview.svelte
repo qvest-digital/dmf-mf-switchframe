@@ -2,26 +2,38 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import HealthAlarm from './HealthAlarm.svelte';
 
-	interface Props { state: ControlRoomState; }
-	let { state }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
+	}
+	let { state, onCanvasReady }: Props = $props();
+
+	let previewCanvas: HTMLCanvasElement;
+	let programCanvas: HTMLCanvasElement;
 
 	let programSource = $derived(state.sources[state.programSource]);
 	let programHealth = $derived(programSource?.status ?? 'healthy');
 	let programLabel = $derived(programSource?.label || state.programSource || '—');
+
+	$effect(() => {
+		if (previewCanvas && programCanvas && onCanvasReady) {
+			onCanvasReady(previewCanvas, programCanvas);
+		}
+	});
 </script>
 
 <div class="program-preview">
 	<div class="monitor preview-monitor">
 		<div class="monitor-label preview-label">PREVIEW</div>
 		<div class="monitor-viewport">
-			<canvas id="preview-video" width="640" height="360"></canvas>
+			<canvas bind:this={previewCanvas} width="640" height="360"></canvas>
 			<span class="source-name">{state.sources[state.previewSource]?.label || state.previewSource || '—'}</span>
 		</div>
 	</div>
 	<div class="monitor program-monitor">
 		<div class="monitor-label program-label">PROGRAM</div>
 		<div class="monitor-viewport">
-			<canvas id="program-video" width="640" height="360"></canvas>
+			<canvas bind:this={programCanvas} width="640" height="360"></canvas>
 			<span class="source-name">{programLabel}</span>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} />
 		</div>
