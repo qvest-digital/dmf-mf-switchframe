@@ -7,8 +7,20 @@ package codec
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/version.h>
 #include <stdlib.h>
 #include <string.h>
+
+// AV_FRAME_FLAG_KEY was added in FFmpeg 6.1 (libavutil 58.29).
+// For older versions (e.g. Debian Bookworm's FFmpeg 5.1), use key_frame field.
+#if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(58, 29, 100)
+#define COMPAT_SET_KEY_FRAME(frame, is_key) ((frame)->key_frame = (is_key))
+#else
+#define COMPAT_SET_KEY_FRAME(frame, is_key) do { \
+    if (is_key) (frame)->flags |= AV_FRAME_FLAG_KEY; \
+    else (frame)->flags &= ~AV_FRAME_FLAG_KEY; \
+} while(0)
+#endif
 
 // ffenc_t wraps an FFmpeg encoder context with its associated frame and packet.
 typedef struct {
@@ -151,10 +163,10 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 
 	if (force_idr) {
 		h->frame->pict_type = AV_PICTURE_TYPE_I;
-		h->frame->flags |= AV_FRAME_FLAG_KEY;
+		COMPAT_SET_KEY_FRAME(h->frame, 1);
 	} else {
 		h->frame->pict_type = AV_PICTURE_TYPE_NONE;
-		h->frame->flags &= ~AV_FRAME_FLAG_KEY;
+		COMPAT_SET_KEY_FRAME(h->frame, 0);
 	}
 
 	rc = avcodec_send_frame(h->ctx, h->frame);

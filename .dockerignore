@@ -5,6 +5,7 @@ server/bin
 server/test-results/
 ui/build
 ui/.svelte-kit
+server/cmd/switchframe/ui
 docs/
 research/
 .github/
