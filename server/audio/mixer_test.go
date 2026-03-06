@@ -65,6 +65,71 @@ func TestMixerCloseIdempotent(t *testing.T) {
 	require.NoError(t, m.Close(), "second Close must not panic")
 }
 
+// TestMixerCloseConcurrentNoDoubleClose verifies that calling Close()
+// concurrently from multiple goroutines closes each decoder and the
+// encoder exactly once (not zero, not twice).
+func TestMixerCloseConcurrentNoDoubleClose(t *testing.T) {
+	t.Parallel()
+
+	var decoderCloses atomic.Int64
+	var encoderCloses atomic.Int64
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(_ *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &closeCountDecoder{closes: &decoderCloses, samples: make([]float32, 1024)}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &closeCountEncoder{closes: &encoderCloses}, nil
+		},
+	})
+
+	// Add two channels and ingest frames to trigger lazy decoder init.
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+	// Two active channels = mixing mode, which also initializes the encoder.
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Call Close() concurrently from 10 goroutines.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_ = m.Close()
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, int64(2), decoderCloses.Load(),
+		"each decoder should be closed exactly once (2 channels)")
+	require.Equal(t, int64(1), encoderCloses.Load(),
+		"encoder should be closed exactly once")
+}
+
+// closeCountDecoder tracks Close() calls via an atomic counter.
+type closeCountDecoder struct {
+	closes  *atomic.Int64
+	samples []float32
+}
+
+func (d *closeCountDecoder) Decode([]byte) ([]float32, error) { return d.samples, nil }
+func (d *closeCountDecoder) Close() error                     { d.closes.Add(1); return nil }
+
+// closeCountEncoder tracks Close() calls via an atomic counter.
+type closeCountEncoder struct {
+	closes *atomic.Int64
+}
+
+func (e *closeCountEncoder) Encode([]float32) ([]byte, error) { return []byte{0xFF}, nil }
+func (e *closeCountEncoder) Close() error                     { e.closes.Add(1); return nil }
+
 func TestMixerIgnoresInactiveChannel(t *testing.T) {
 	var output []*media.AudioFrame
 

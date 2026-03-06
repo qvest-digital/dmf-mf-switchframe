@@ -151,18 +151,20 @@ func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
 // Close releases all codec resources and stops the background ticker.
 // It is safe to call multiple times.
 func (m *AudioMixer) Close() error {
-	m.closeOnce.Do(func() { close(m.stopTicker) })
-	m.tickerWg.Wait()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, ch := range m.channels {
-		if ch.decoder != nil {
-			_ = ch.decoder.Close()
+	m.closeOnce.Do(func() {
+		close(m.stopTicker)
+		m.tickerWg.Wait()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		for _, ch := range m.channels {
+			if ch.decoder != nil {
+				_ = ch.decoder.Close()
+			}
 		}
-	}
-	if m.encoder != nil {
-		_ = m.encoder.Close()
-	}
+		if m.encoder != nil {
+			_ = m.encoder.Close()
+		}
+	})
 	return nil
 }
 
