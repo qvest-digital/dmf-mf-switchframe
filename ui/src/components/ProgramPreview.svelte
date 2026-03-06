@@ -98,6 +98,7 @@
 		gap: 6px;
 		padding: 6px;
 		height: 100%;
+		align-content: center;
 	}
 
 	.monitor {

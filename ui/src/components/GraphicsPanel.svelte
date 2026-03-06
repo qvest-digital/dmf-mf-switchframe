@@ -240,10 +240,11 @@
 
 	.gfx-preview {
 		width: 100%;
-		aspect-ratio: 4 / 3;
+		max-height: 60px;
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
 		background: #111;
+		object-fit: contain;
 	}
 
 	.gfx-buttons {
