@@ -428,6 +428,10 @@ func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	})
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -486,6 +490,10 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	})
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -527,6 +535,10 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	})
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
