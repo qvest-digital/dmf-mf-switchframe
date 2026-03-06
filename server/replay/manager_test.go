@@ -444,6 +444,91 @@ func TestReplayManager_PlayerProgress(t *testing.T) {
 	}
 }
 
+func TestReplayManager_PlaybackLifecycleCallbacks(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	startCalled := make(chan struct{}, 1)
+	stopCalled := make(chan struct{}, 1)
+	m.OnPlaybackLifecycle(
+		func() { startCalled <- struct{}{} },
+		func() { stopCalled <- struct{}{} },
+	)
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	if err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+
+	// Verify onStart callback is called.
+	select {
+	case <-startCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onPlaybackStart not called within timeout")
+	}
+
+	// Wait for playback to finish — onStop should be called.
+	select {
+	case <-stopCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onPlaybackStop not called within timeout")
+	}
+}
+
+func TestReplayManager_PlaybackLifecycleCallbacks_ManualStop(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	startCalled := make(chan struct{}, 1)
+	stopCalled := make(chan struct{}, 1)
+	m.OnPlaybackLifecycle(
+		func() { startCalled <- struct{}{} },
+		func() { stopCalled <- struct{}{} },
+	)
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	// Play with loop so it doesn't end naturally.
+	err := m.Play("cam1", 0.25, true)
+	if err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+
+	// Wait for start callback.
+	select {
+	case <-startCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onPlaybackStart not called within timeout")
+	}
+
+	// Manual stop should trigger onStop.
+	_ = m.Stop()
+
+	select {
+	case <-stopCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onPlaybackStop not called after manual Stop()")
+	}
+}
+
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {
 	f := makeVideoFrame(pts, keyframe, size)
 	// Override wireData with valid AVC1 format.

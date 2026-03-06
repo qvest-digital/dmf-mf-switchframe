@@ -41,7 +41,9 @@ type Manager struct {
 	playerCtx    context.Context
 	playerCancel context.CancelFunc
 
-	onStateChange func()
+	onStateChange   func()
+	onPlaybackStart func() // called when player transitions to playing
+	onPlaybackStop  func() // called when player finishes or is stopped
 }
 
 // NewManager creates a replay manager.
@@ -224,13 +226,21 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 				m.player = nil
 				m.playerState = PlayerIdle
 				m.playerCancel = nil
+				stopCb := m.onPlaybackStop
 				m.mu.Unlock()
+				if stopCb != nil {
+					stopCb()
+				}
 				m.notifyStateChange()
 			},
 			OnReady: func() {
 				m.mu.Lock()
 				m.playerState = PlayerPlaying
+				startCb := m.onPlaybackStart
 				m.mu.Unlock()
+				if startCb != nil {
+					startCb()
+				}
 				m.notifyStateChange()
 			},
 		})
@@ -292,6 +302,16 @@ func (m *Manager) Status() ReplayStatus {
 	})
 
 	return status
+}
+
+// OnPlaybackLifecycle registers callbacks invoked when playback starts and stops.
+// onStart is called when the player transitions to playing (first frame decoded).
+// onStop is called when the player finishes naturally or is stopped manually.
+func (m *Manager) OnPlaybackLifecycle(onStart, onStop func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onPlaybackStart = onStart
+	m.onPlaybackStop = onStop
 }
 
 // OnStateChange registers a callback invoked when replay state changes.
