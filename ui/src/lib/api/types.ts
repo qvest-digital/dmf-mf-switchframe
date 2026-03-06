@@ -82,6 +82,16 @@ export interface RecallPresetResponse {
 	warnings?: string[];
 }
 
+export interface MacroStep {
+	action: 'cut' | 'preview' | 'transition' | 'wait' | 'set_audio';
+	params: Record<string, unknown>;
+}
+
+export interface Macro {
+	name: string;
+	steps: MacroStep[];
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;

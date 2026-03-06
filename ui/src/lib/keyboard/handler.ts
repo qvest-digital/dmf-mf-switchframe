@@ -10,6 +10,7 @@ export interface KeyboardActions {
 	onToggleOverlay: () => void;
 	onSetTransitionType?: (type: string) => void;
 	onToggleDSK?: () => void;
+	onRunMacro?: (slotIndex: number) => void;
 	getSourceKeys: () => string[];
 }
 
@@ -62,6 +63,19 @@ export class KeyboardHandler {
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 		if ((e.target as HTMLElement)?.isContentEditable) return;
+
+		// Ctrl+Digit shortcuts for macro triggers (Ctrl+1-9)
+		if (e.ctrlKey && !e.metaKey && !e.altKey) {
+			if (e.code.startsWith('Digit') && e.code.length === 6) {
+				const digit = parseInt(e.code[5]);
+				if (digit >= 1 && digit <= 9) {
+					e.preventDefault();
+					e.stopPropagation();
+					this.actions.onRunMacro?.(digit - 1);
+					return;
+				}
+			}
+		}
 
 		// Alt+Digit shortcuts for transition type
 		if (e.altKey && !e.ctrlKey && !e.metaKey) {

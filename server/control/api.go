@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/stinger"
@@ -88,6 +89,11 @@ func WithStingerStore(s *stinger.StingerStore) APIOption {
 	return func(a *API) { a.stingerStore = s }
 }
 
+// WithMacroStore attaches a macro store to the API.
+func WithMacroStore(s *macro.Store) APIOption {
+	return func(a *API) { a.macroStore = s }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher     *switcher.Switcher
@@ -97,6 +103,7 @@ type API struct {
 	presetStore  *preset.PresetStore
 	compositor   *graphics.Compositor
 	stingerStore *stinger.StingerStore
+	macroStore   *macro.Store
 	mux          *http.ServeMux
 }
 
@@ -162,6 +169,13 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/graphics/auto-off", a.handleGraphicsAutoOff)
 		mux.HandleFunc("GET /api/graphics/status", a.handleGraphicsStatus)
 		mux.HandleFunc("POST /api/graphics/frame", a.handleGraphicsFrame)
+	}
+	if a.macroStore != nil {
+		mux.HandleFunc("GET /api/macros", a.handleListMacros)
+		mux.HandleFunc("GET /api/macros/{name}", a.handleGetMacro)
+		mux.HandleFunc("PUT /api/macros/{name}", a.handleSaveMacro)
+		mux.HandleFunc("DELETE /api/macros/{name}", a.handleDeleteMacro)
+		mux.HandleFunc("POST /api/macros/{name}/run", a.handleRunMacro)
 	}
 }
 
@@ -1117,6 +1131,129 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// --- Macro API ---
+
+// handleListMacros returns all macros.
+func (a *API) handleListMacros(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.macroStore.List())
+}
+
+// handleGetMacro returns a single macro by name.
+func (a *API) handleGetMacro(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	m, err := a.macroStore.Get(name)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, macro.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+// handleSaveMacro creates or updates a macro.
+func (a *API) handleSaveMacro(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var m macro.Macro
+	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	m.Name = name // path takes precedence
+
+	if err := a.macroStore.Save(m); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusBadRequest
+		if !errors.Is(err, macro.ErrEmptyName) && !errors.Is(err, macro.ErrNoSteps) {
+			status = http.StatusInternalServerError
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(m)
+}
+
+// handleDeleteMacro deletes a macro by name.
+func (a *API) handleDeleteMacro(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := a.macroStore.Delete(name); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, macro.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRunMacro triggers execution of a macro.
+func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	m, err := a.macroStore.Get(name)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, macro.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	target := &apiMacroTarget{
+		switcher: a.switcher,
+		mixer:    a.mixer,
+	}
+
+	if err := macro.Run(r.Context(), m, target); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// apiMacroTarget adapts the API's switcher and mixer to the macro.MacroTarget
+// interface so Run() can execute macro steps without knowing concrete types.
+type apiMacroTarget struct {
+	switcher *switcher.Switcher
+	mixer    AudioMixerAPI
+}
+
+func (t *apiMacroTarget) Cut(source string) error {
+	return t.switcher.Cut(context.Background(), source)
+}
+
+func (t *apiMacroTarget) SetPreview(source string) error {
+	return t.switcher.SetPreview(context.Background(), source)
+}
+
+func (t *apiMacroTarget) StartTransition(transType string, durationMs int) error {
+	return t.switcher.StartTransition(context.Background(), "", transType, durationMs, "")
+}
+
+func (t *apiMacroTarget) SetLevel(source string, level float64) error {
+	if t.mixer == nil {
+		return nil
+	}
+	return t.mixer.SetLevel(source, level)
 }
 
 // stateToSnapshot converts a ControlRoomState to a ControlRoomSnapshot

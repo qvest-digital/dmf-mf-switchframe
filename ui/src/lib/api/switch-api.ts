@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, Macro } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -220,6 +220,34 @@ export function graphicsAutoOff(): Promise<GraphicsState> {
 
 export function getGraphicsStatus(): Promise<GraphicsState> {
 	return request('/api/graphics/status');
+}
+
+// --- Macro API ---
+
+export function listMacros(): Promise<Macro[]> {
+	return request('/api/macros');
+}
+
+export function getMacro(name: string): Promise<Macro> {
+	return request(`/api/macros/${encodeURIComponent(name)}`);
+}
+
+export function saveMacro(m: Macro): Promise<Macro> {
+	return request(`/api/macros/${encodeURIComponent(m.name)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(m),
+	});
+}
+
+export function deleteMacro(name: string): Promise<void> {
+	return request(`/api/macros/${encodeURIComponent(name)}`, {
+		method: 'DELETE',
+	});
+}
+
+export function runMacro(name: string): Promise<{ status: string }> {
+	return post(`/api/macros/${encodeURIComponent(name)}/run`, {});
 }
 
 /** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */
