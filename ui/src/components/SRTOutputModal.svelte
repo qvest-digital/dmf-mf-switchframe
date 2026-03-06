@@ -146,6 +146,12 @@
 							<span class="status-value">{crState.srtOutput?.connections ?? 0}</span>
 						</div>
 					{/if}
+					{#if (crState.srtOutput?.droppedPackets ?? 0) > 0}
+						<div class="status-row drop-warn-row">
+							<span class="status-label">Dropped</span>
+							<span class="status-value drop-warn-value">{crState.srtOutput?.droppedPackets}</span>
+						</div>
+					{/if}
 					<button class="modal-btn stop-btn" onclick={handleStop}>Stop</button>
 				</div>
 			{:else}
@@ -391,5 +397,15 @@
 		color: var(--text-primary);
 		font-family: var(--font-mono);
 		font-size: 0.8rem;
+	}
+
+	.drop-warn-row {
+		border-top: 1px solid rgba(245, 158, 11, 0.2);
+		padding-top: 6px;
+	}
+
+	.drop-warn-value {
+		color: var(--accent-amber, #f59e0b);
+		font-weight: 600;
 	}
 </style>

@@ -277,12 +277,20 @@ func (m *OutputManager) StopSRTOutput() error {
 func (m *OutputManager) RecordingStatus() RecordingStatus {
 	m.mu.Lock()
 	rec := m.recorder
+	var wrapper *AsyncAdapter
+	if rec != nil && m.asyncWrappers != nil {
+		wrapper = m.asyncWrappers[rec.ID()]
+	}
 	m.mu.Unlock()
 
 	if rec == nil {
 		return RecordingStatus{Active: false}
 	}
-	return rec.RecordingStatusSnapshot()
+	status := rec.RecordingStatusSnapshot()
+	if wrapper != nil {
+		status.DroppedPackets = wrapper.Dropped()
+	}
+	return status
 }
 
 // SRTOutputStatus returns the current SRT output status for inclusion in
@@ -290,20 +298,29 @@ func (m *OutputManager) RecordingStatus() RecordingStatus {
 func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
 	m.mu.Lock()
 	adapter := m.srtOutput
+	var wrapper *AsyncAdapter
+	if adapter != nil && m.asyncWrappers != nil {
+		wrapper = m.asyncWrappers[adapter.ID()]
+	}
 	m.mu.Unlock()
 
 	if adapter == nil {
 		return SRTOutputStatus{Active: false}
 	}
 
+	var status SRTOutputStatus
 	switch a := adapter.(type) {
 	case *SRTCaller:
-		return a.SRTStatusSnapshot()
+		status = a.SRTStatusSnapshot()
 	case *SRTListener:
-		return a.SRTStatusSnapshot()
+		status = a.SRTStatusSnapshot()
 	default:
 		return SRTOutputStatus{Active: false}
 	}
+	if wrapper != nil {
+		status.DroppedPackets = wrapper.Dropped()
+	}
+	return status
 }
 
 // Close stops all outputs, the muxer, and the viewer. Safe to call

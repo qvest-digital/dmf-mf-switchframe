@@ -23,6 +23,7 @@ export interface RecordingStatus {
 	filename?: string;
 	bytesWritten?: number;
 	durationSecs?: number;
+	droppedPackets?: number;
 	error?: string;
 }
 
@@ -34,6 +35,7 @@ export interface SRTOutputStatus {
 	state?: string;
 	connections?: number;
 	bytesWritten?: number;
+	droppedPackets?: number;
 	error?: string;
 }
 

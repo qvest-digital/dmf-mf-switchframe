@@ -16,15 +16,17 @@ import (
 
 // mockOutputManager implements OutputManagerAPI for testing.
 type mockOutputManager struct {
-	recording      bool
-	srtActive      bool
-	startRecErr    error
-	stopRecErr     error
-	startSRTErr    error
-	stopSRTErr     error
-	lastRecConfig  output.RecorderConfig
-	lastSRTConfig  output.SRTOutputConfig
-	thumbnail      []byte
+	recording         bool
+	srtActive         bool
+	startRecErr       error
+	stopRecErr        error
+	startSRTErr       error
+	stopSRTErr        error
+	lastRecConfig     output.RecorderConfig
+	lastSRTConfig     output.SRTOutputConfig
+	thumbnail         []byte
+	recDroppedPackets int64
+	srtDroppedPackets int64
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
@@ -46,10 +48,11 @@ func (m *mockOutputManager) StopRecording() error {
 
 func (m *mockOutputManager) RecordingStatus() output.RecordingStatus {
 	return output.RecordingStatus{
-		Active:       m.recording,
-		Filename:     "test-2026-03-04.ts",
-		BytesWritten: 1024,
-		DurationSecs: 10.5,
+		Active:         m.recording,
+		Filename:       "test-2026-03-04.ts",
+		BytesWritten:   1024,
+		DurationSecs:   10.5,
+		DroppedPackets: m.recDroppedPackets,
 	}
 }
 

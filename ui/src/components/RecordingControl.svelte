@@ -8,6 +8,7 @@
 
 	const isActive = $derived(crState.recording?.active ?? false);
 	const hasError = $derived(!isActive && !!crState.recording?.error);
+	const droppedPackets = $derived(crState.recording?.droppedPackets ?? 0);
 	let confirmingStop = $state(false);
 
 	const duration = $derived.by(() => {
@@ -40,6 +41,9 @@
 		<span class="rec-dot"></span>
 		<span class="rec-label">REC</span>
 		<span class="rec-duration">{duration}</span>
+		{#if droppedPackets > 0}
+			<span class="drop-warn" title="{droppedPackets} packets dropped">DROP</span>
+		{/if}
 		<button class="rec-stop" onclick={handleStop}>STOP</button>
 	</div>
 {:else if hasError}
@@ -157,5 +161,15 @@
 	.rec-error-text {
 		color: var(--tally-program);
 		font-size: 0.65rem;
+	}
+
+	.drop-warn {
+		color: var(--accent-amber, #f59e0b);
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		padding: 1px 4px;
+		border: 1px solid var(--accent-amber, #f59e0b);
+		border-radius: var(--radius-sm);
 	}
 </style>
