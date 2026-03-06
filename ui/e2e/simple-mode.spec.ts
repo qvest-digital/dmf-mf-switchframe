@@ -1,4 +1,11 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+/** Inject CSS to permanently hide overlays that block clicks when no backend is running. */
+async function dismissOverlays(page: Page) {
+	await page.addStyleTag({
+		content: '.loading-backdrop, .disconnect-overlay, .connection-banner { display: none !important; }'
+	});
+}
 
 test.describe('Simple Mode', () => {
 	test('/?mode=simple renders simplified layout', async ({ page }) => {
@@ -20,6 +27,7 @@ test.describe('Simple Mode', () => {
 	test('gear icon switches back to traditional mode', async ({ page }) => {
 		await page.goto('/?mode=simple');
 		await expect(page.locator('text=CUT')).toBeVisible();
+		await dismissOverlays(page);
 		// Click gear icon to switch to traditional
 		await page.locator('[title="Switch to traditional mode"]').click();
 		// Traditional mode elements should now be visible
@@ -48,6 +56,7 @@ test.describe('Simple Mode', () => {
 		await page.goto('/');
 		await page.evaluate(() => localStorage.clear());
 		await page.reload();
+		await dismissOverlays(page);
 		// Click MODE button
 		const modeBtn = page.locator('[title="Switch layout mode"]');
 		await expect(modeBtn).toBeVisible();

@@ -43,7 +43,7 @@
 	{/if}
 	<RecordingControl state={crState} />
 	<button
-		class="header-btn"
+		class="header-btn srt-btn"
 		class:srt-active={srtActive}
 		onclick={() => showSRTModal = !showSRTModal}
 	>SRT</button>

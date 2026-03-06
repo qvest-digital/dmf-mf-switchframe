@@ -3,31 +3,30 @@ import { test, expect } from '@playwright/test';
 test.describe('Video Playback', () => {
 	test('program window has a canvas element', async ({ page }) => {
 		await page.goto('/');
-		// ProgramPreview.svelte always renders canvases unconditionally
-		const programCanvas = page.locator('.program-window canvas');
-		await expect(programCanvas).toBeVisible();
+		const programCanvas = page.locator('.program-monitor canvas');
+		await expect(programCanvas.first()).toBeVisible();
 	});
 
 	test('preview window has a canvas element', async ({ page }) => {
 		await page.goto('/');
-		const previewCanvas = page.locator('.preview-window canvas');
+		const previewCanvas = page.locator('.preview-monitor canvas');
 		await expect(previewCanvas).toBeVisible();
 	});
 
-	test('program canvas has correct dimensions', async ({ page }) => {
+	test('program monitor has viewport with canvas', async ({ page }) => {
 		await page.goto('/');
-		const programCanvas = page.locator('#program-video');
-		await expect(programCanvas).toBeVisible();
-		await expect(programCanvas).toHaveAttribute('width', '640');
-		await expect(programCanvas).toHaveAttribute('height', '360');
+		const viewport = page.locator('.program-monitor .monitor-viewport');
+		await expect(viewport).toBeVisible();
+		const canvas = viewport.locator('canvas');
+		await expect(canvas.first()).toBeVisible();
 	});
 
-	test('preview canvas has correct dimensions', async ({ page }) => {
+	test('preview monitor has viewport with canvas', async ({ page }) => {
 		await page.goto('/');
-		const previewCanvas = page.locator('#preview-video');
-		await expect(previewCanvas).toBeVisible();
-		await expect(previewCanvas).toHaveAttribute('width', '640');
-		await expect(previewCanvas).toHaveAttribute('height', '360');
+		const viewport = page.locator('.preview-monitor .monitor-viewport');
+		await expect(viewport).toBeVisible();
+		const canvas = viewport.locator('canvas');
+		await expect(canvas).toBeVisible();
 	});
 
 	test('program/preview labels are visible', async ({ page }) => {

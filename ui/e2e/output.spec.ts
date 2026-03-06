@@ -1,4 +1,11 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+/** Inject CSS to permanently hide overlays that block clicks when no backend is running. */
+async function dismissOverlays(page: Page) {
+	await page.addStyleTag({
+		content: '.loading-backdrop, .disconnect-overlay, .connection-banner { display: none !important; }'
+	});
+}
 
 test.describe('Output Controls', () => {
 	test('renders REC button in header', async ({ page }) => {
@@ -17,6 +24,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT button opens modal', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		await expect(page.locator('.srt-modal')).toBeVisible();
 		// Default mode is "caller", so both radio options should be visible
@@ -26,6 +34,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal has port field', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		const portInput = page.locator('input[name="port"]');
 		await expect(portInput).toBeVisible();
@@ -35,6 +44,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal shows address field in caller mode', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		// Default mode is "caller" so address field should be visible
 		const addressInput = page.locator('input[name="address"]');
@@ -43,6 +53,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal shows latency field', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		const latencyInput = page.locator('input[name="latency"]');
 		await expect(latencyInput).toBeVisible();
@@ -51,6 +62,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal hides address field in listener mode', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		// Switch to listener mode
 		await page.locator('.mode-option').filter({ hasText: 'Listener' }).click();
@@ -63,6 +75,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal can be closed via close button', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		await expect(page.locator('.srt-modal')).toBeVisible();
 		await page.locator('.close-btn').click();
@@ -71,6 +84,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal can be closed via backdrop click', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		await expect(page.locator('.srt-modal')).toBeVisible();
 		// Click the backdrop (top-left corner, outside the modal)
@@ -80,6 +94,7 @@ test.describe('Output Controls', () => {
 
 	test('SRT modal has Start button', async ({ page }) => {
 		await page.goto('/');
+		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		const startBtn = page.locator('.start-btn');
 		await expect(startBtn).toBeVisible();
