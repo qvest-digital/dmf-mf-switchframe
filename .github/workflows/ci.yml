@@ -54,6 +54,8 @@ jobs:
           sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
       - name: Run tests with coverage
         run: cd server && go test ./... -race -coverprofile=coverage.out
+      - name: Transition benchmarks
+        run: cd server && go test ./transition/... -bench=. -benchmem -benchtime=3s
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:

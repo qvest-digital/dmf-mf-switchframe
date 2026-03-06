@@ -17,6 +17,7 @@ const (
 	TransitionFTB        TransitionType = "ftb"
 	TransitionFTBReverse TransitionType = "ftb_reverse"
 	TransitionWipe       TransitionType = "wipe"
+	TransitionStinger    TransitionType = "stinger"
 )
 
 // WipeDirection specifies the direction for a wipe transition.

@@ -48,6 +48,10 @@ func ProbeEncoders() (string, string) {
 			"decoder", selectedDecoder,
 			"hw_accel", hwDeviceCtxPtr != nil,
 		)
+
+		if selectedEncoder == "libx264" {
+			slog.Warn("software-only encoder detected — transitions above 720p may drop frames; hardware encoder recommended")
+		}
 	})
 	return selectedEncoder, selectedDecoder
 }

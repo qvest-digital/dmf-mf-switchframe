@@ -70,6 +70,7 @@ type SRTOutputStatus struct {
 	Connections    int    `json:"connections,omitempty"`
 	BytesWritten   int64  `json:"bytesWritten,omitempty"`
 	DroppedPackets int64  `json:"droppedPackets,omitempty"`
+	OverflowCount  int64  `json:"overflowCount,omitempty"`
 	Error          string `json:"error,omitempty"`
 }
 

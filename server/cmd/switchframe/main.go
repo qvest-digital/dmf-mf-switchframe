@@ -106,6 +106,7 @@ func run() error {
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
+	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
 	flag.Parse()
 
 	// Resolve API token: flag > env > auto-generate.
@@ -238,6 +239,11 @@ func run() error {
 	sw := switcher.New(programRelay)
 	sw.SetMetrics(appMetrics)
 	defer sw.Close()
+
+	// Enable frame sync if requested (aligns all sources to common frame boundary).
+	if *frameSyncFlag {
+		sw.SetFrameSync(true, 0) // 0 = default 30fps
+	}
 
 	// Now that both switcher and mixer are initialized, wire them into
 	// the stream callback router so future OnStreamRegistered /

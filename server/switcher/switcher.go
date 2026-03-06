@@ -133,6 +133,18 @@ type TransitionConfig struct {
 	EncoderFactory transition.EncoderFactory
 }
 
+// TransitionOption configures optional parameters for StartTransition.
+type TransitionOption func(*transitionOpts)
+
+type transitionOpts struct {
+	stingerData *transition.StingerData
+}
+
+// WithStingerData sets the stinger overlay data for a stinger transition.
+func WithStingerData(sd *transition.StingerData) TransitionOption {
+	return func(o *transitionOpts) { o.stingerData = sd }
+}
+
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
 	key        string
@@ -172,6 +184,8 @@ type Switcher struct {
 	audioTransition audioTransitionHandler
 	gopCache        *gopCache
 	delayBuffer     *DelayBuffer
+	frameSync       *FrameSynchronizer
+	frameSyncActive bool
 
 	// Optional video processor hook — called before BroadcastVideo to allow
 	// downstream keying (graphics overlay compositing) on every program frame.
@@ -229,10 +243,15 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.promMetrics = m
 }
 
-// Close stops the health monitor, delay buffer, and unregisters all sources.
+// Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
 func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
+	s.mu.Lock()
+	if s.frameSync != nil {
+		s.frameSync.Stop()
+	}
+	s.mu.Unlock()
 	s.mu.Lock()
 	keys := make([]string, 0, len(s.sources))
 	for k := range s.sources {
@@ -289,6 +308,62 @@ func (s *Switcher) SetVideoProcessor(proc func(*media.VideoFrame) *media.VideoFr
 	s.videoProcessor = proc
 }
 
+// SetFrameSync enables or disables the freerun frame synchronizer. When
+// enabled, all source video and audio frames are buffered and released at
+// a common tick rate (program frame rate) instead of flowing through the
+// per-source delay buffer. This ensures frame-aligned output across sources.
+//
+// The tickRate parameter sets the release interval (e.g., 33ms for 30fps).
+// Passing 0 uses the default of 33.333ms (30fps).
+//
+// When enabled, existing source viewers are re-wired to route through the
+// FrameSynchronizer. When disabled, they revert to the delay buffer.
+func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if enabled == s.frameSyncActive {
+		return
+	}
+
+	if enabled {
+		if tickRate <= 0 {
+			tickRate = 33333 * time.Microsecond // ~30fps default
+		}
+		fs := NewFrameSynchronizer(tickRate,
+			func(sourceKey string, frame media.VideoFrame) {
+				s.handleVideoFrame(sourceKey, &frame)
+			},
+			func(sourceKey string, frame media.AudioFrame) {
+				s.handleAudioFrame(sourceKey, &frame)
+			},
+		)
+		s.frameSync = fs
+
+		// Wire all existing source viewers to the frame sync.
+		for key, ss := range s.sources {
+			ss.viewer.frameSync = fs
+			ss.viewer.delayBuffer = nil // bypass delay buffer
+			fs.AddSource(key)
+		}
+		fs.Start()
+		slog.Info("switcher: frame sync enabled", "tick_rate", tickRate)
+	} else {
+		if s.frameSync != nil {
+			s.frameSync.Stop()
+		}
+		s.frameSync = nil
+
+		// Revert all source viewers to the delay buffer.
+		for _, ss := range s.sources {
+			ss.viewer.frameSync = nil
+			ss.viewer.delayBuffer = s.delayBuffer
+		}
+		slog.Info("switcher: frame sync disabled")
+	}
+	s.frameSyncActive = enabled
+}
+
 // broadcastVideo sends a video frame to the program relay, optionally
 // running it through the video processor first (for DSK compositing).
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
@@ -308,7 +383,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 // to the given target source. Frames from both sources are routed to the
 // TransitionEngine which produces blended output on the program relay.
 // wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
-func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string) error {
+func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string, opts ...TransitionOption) error {
 	// Phase 1: Validate and read state under write lock. Set state to
 	// StateTransitioning to prevent concurrent starts, then release the lock
 	// so warmup can proceed without blocking frame routing.
@@ -344,10 +419,21 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("source %q: %w", sourceKey, ErrAlreadyOnProgram)
 	}
 
+	// Apply options
+	var topts transitionOpts
+	for _, opt := range opts {
+		opt(&topts)
+	}
+
 	tt := transition.TransitionType(transType)
-	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe {
+	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe && tt != transition.TransitionStinger {
 		s.mu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+
+	if tt == transition.TransitionStinger && topts.stingerData == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("stinger transition requires stinger data")
 	}
 
 	// Validate wipe direction when type is wipe
@@ -391,6 +477,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		Bitrate:        bitrate,
 		FPS:            fps,
 		WipeDirection:  wipeDir,
+		Stinger:        topts.stingerData,
 		Output: func(data []byte, isKeyframe bool, pts int64) {
 			if isKeyframe {
 				transGroupID++
@@ -863,12 +950,18 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
 // created and attached to the source's Relay so that frames flow into the
 // Switcher's handleVideoFrame/handleAudioFrame methods tagged with the
-// source key. The delay buffer is attached so per-source lip-sync
-// compensation is available.
+// source key. When frame sync is active, frames route through the
+// FrameSynchronizer; otherwise the delay buffer is attached for per-source
+// lip-sync compensation.
 func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
 	viewer := newSourceViewer(key, s)
-	viewer.delayBuffer = s.delayBuffer
+	if s.frameSyncActive && s.frameSync != nil {
+		viewer.frameSync = s.frameSync
+		s.frameSync.AddSource(key)
+	} else {
+		viewer.delayBuffer = s.delayBuffer
+	}
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
 	s.health.registerSource(key)
@@ -892,6 +985,9 @@ func (s *Switcher) UnregisterSource(key string) {
 	s.health.removeSource(key)
 	s.gopCache.RemoveSource(key)
 	s.delayBuffer.RemoveSource(key)
+	if s.frameSync != nil {
+		s.frameSync.RemoveSource(key)
+	}
 	if s.programSource == key {
 		s.programSource = ""
 	}

@@ -36,6 +36,7 @@ export interface SRTOutputStatus {
 	connections?: number;
 	bytesWritten?: number;
 	droppedPackets?: number;
+	overflowCount?: number;
 	error?: string;
 }
 

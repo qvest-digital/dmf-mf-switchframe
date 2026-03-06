@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 
@@ -10,17 +10,32 @@
 	}
 	let { state, pendingConfirm = null }: Props = $props();
 
-	type TransType = 'mix' | 'dip' | 'wipe';
+	type TransType = 'mix' | 'dip' | 'wipe' | 'stinger';
 	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
 
 	let transType: TransType = 'mix';
 	let durationMs: number = 1000;
 	let wipeDirection: WipeDir = 'h-left';
+	let stingerName: string = '';
+	let stingerNames: string[] = [];
+
+	// Load stinger list on mount and when type changes to stinger
+	$effect(() => {
+		if (transType === 'stinger' && stingerNames.length === 0) {
+			listStingers().then(names => {
+				stingerNames = names;
+				if (names.length > 0 && !stingerName) {
+					stingerName = names[0];
+				}
+			}).catch(() => {});
+		}
+	});
 
 	const anim = new AutoAnimation();
 
 	const autoDisabled = $derived(
-		!state.previewSource || state.inTransition || state.ftbActive
+		!state.previewSource || state.inTransition || state.ftbActive ||
+		(transType === 'stinger' && !stingerName)
 	);
 
 	const ftbDisabled = $derived(
@@ -43,7 +58,8 @@
 		anim.start(durationMs);
 		apiCall(startTransition(
 			state.previewSource, transType, durationMs,
-			transType === 'wipe' ? wipeDirection : undefined
+			transType === 'wipe' ? wipeDirection : undefined,
+			transType === 'stinger' ? stingerName : undefined
 		), 'Transition failed');
 
 		// Safety timeout: cancel animation if server never confirms
@@ -69,7 +85,8 @@
 		if (!state.inTransition && value > 0 && state.previewSource) {
 			apiCall(startTransition(
 				state.previewSource, transType, durationMs,
-				transType === 'wipe' ? wipeDirection : undefined
+				transType === 'wipe' ? wipeDirection : undefined,
+				transType === 'stinger' ? stingerName : undefined
 			), 'Transition failed');
 		}
 		setPositionThrottled(value);
@@ -107,7 +124,22 @@
 					<input type="radio" name="transType" value="wipe" bind:group={transType} />
 					Wipe
 				</label>
+				<label class="type-option" class:selected={transType === 'stinger'}>
+					<input type="radio" name="transType" value="stinger" bind:group={transType} />
+					Sting
+				</label>
 			</div>
+
+			{#if transType === 'stinger'}
+				<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
+					{#each stingerNames as name}
+						<option value={name}>{name}</option>
+					{/each}
+					{#if stingerNames.length === 0}
+						<option value="" disabled>No stingers loaded</option>
+					{/if}
+				</select>
+			{/if}
 
 			{#if transType === 'wipe'}
 				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
@@ -313,6 +345,29 @@
 	.wipe-dir-btn.selected {
 		background: var(--bg-elevated);
 		color: var(--accent-yellow);
+	}
+
+	.stinger-select {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 500;
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		padding: 3px 6px;
+		cursor: pointer;
+		max-width: 120px;
+		transition: border-color var(--transition-fast);
+	}
+
+	.stinger-select:hover {
+		border-color: var(--border-strong);
+	}
+
+	.stinger-select:focus {
+		border-color: var(--accent-blue);
+		outline: none;
 	}
 
 	.duration-select {

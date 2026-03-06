@@ -390,6 +390,62 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 	c.Close()
 }
 
+func TestSRTCaller_OverflowCountTracked(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 256, // small buffer to force overflow
+	})
+
+	// Initially zero
+	snap := c.SRTStatusSnapshot()
+	require.Equal(t, int64(0), snap.OverflowCount)
+
+	// Simulate overflow reconnect
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(StateReconnecting)
+	c.ringBuf.Write(make([]byte, 512)) // overflow
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	go c.reconnectLoop()
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Overflow count should be 1
+	snap = c.SRTStatusSnapshot()
+	require.Equal(t, int64(1), snap.OverflowCount)
+
+	// Wait for first reconnect goroutine to fully exit
+	require.Eventually(t, func() bool {
+		return !c.reconnecting.Load()
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// Simulate a second overflow reconnect
+	c.state.Store(StateReconnecting)
+	c.mu.Lock()
+	c.ringBuf = newRingBuffer(256)
+	c.ringBuf.Write(make([]byte, 512)) // overflow again
+	c.mu.Unlock()
+	c.reconnecting.Store(true)
+
+	go c.reconnectLoop()
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Overflow count should be 2
+	snap = c.SRTStatusSnapshot()
+	require.Equal(t, int64(2), snap.OverflowCount)
+
+	c.Close()
+}
+
 func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{

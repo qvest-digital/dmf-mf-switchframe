@@ -18,6 +18,23 @@ const (
 // If no frames arrive from either source for this duration, the transition is aborted.
 const DefaultTimeout = 10 * time.Second
 
+// StingerData holds pre-decoded stinger overlay frames for use during a
+// stinger transition. Populated by the switcher from a StingerClip.
+type StingerData struct {
+	// Frames holds YUV420 + alpha data for each stinger frame.
+	Frames []StingerFrameData
+	// Width and Height of the stinger frames.
+	Width, Height int
+	// CutPoint is the position [0.0-1.0] where the underlying source switches from A to B.
+	CutPoint float64
+}
+
+// StingerFrameData is a single stinger overlay frame.
+type StingerFrameData struct {
+	YUV   []byte // YUV420 planar
+	Alpha []byte // per-luma-pixel alpha [0-255]
+}
+
 // EngineConfig configures the TransitionEngine.
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
@@ -28,6 +45,10 @@ type EngineConfig struct {
 	// WipeDirection specifies the wipe direction when TransitionType is "wipe".
 	// Ignored for other transition types.
 	WipeDirection WipeDirection
+
+	// Stinger holds the pre-decoded stinger overlay data. Required when
+	// TransitionType is "stinger", ignored for other types.
+	Stinger *StingerData
 
 	// Bitrate for the transition encoder in bits/sec. If zero, defaults
 	// to DefaultBitrate (4 Mbps). Derived from the program source's
@@ -73,6 +94,9 @@ type TransitionEngine struct {
 
 	// Reusable buffer for scaling mismatched-resolution frames
 	scaleBuf []byte
+
+	// Pre-scaled stinger frames (scaled to match video dimensions on first use)
+	stingerScaled []StingerFrameData
 
 	// Watchdog: aborts transition if no frames arrive within timeout
 	timeout      time.Duration // default 10s, configurable via SetTimeout()
@@ -395,6 +419,8 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		blended = e.blender.BlendFTB(e.latestYUVA, 1.0-pos)
 	case TransitionWipe:
 		blended = e.blender.BlendWipe(e.latestYUVA, e.latestYUVB, pos, e.wipeDirection)
+	case TransitionStinger:
+		blended = e.blendStinger(pos)
 	}
 
 	// Encode — force IDR on the very first encoded frame so downstream
@@ -505,6 +531,78 @@ func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration
 	}
 }
 
+// blendStinger composites the stinger overlay over source A (before cut point)
+// or source B (after cut point). Caller must hold e.mu.
+func (e *TransitionEngine) blendStinger(pos float64) []byte {
+	sd := e.config.Stinger
+	if sd == nil || len(sd.Frames) == 0 {
+		// Fallback: if no stinger data, do a hard cut at the cut point
+		if pos >= 0.5 {
+			return e.latestYUVB
+		}
+		return e.latestYUVA
+	}
+
+	// Lazy-scale stinger frames to match video dimensions on first use
+	if e.stingerScaled == nil {
+		e.stingerScaled = e.scaleStingerFrames(sd)
+	}
+
+	// Pick the stinger frame based on position
+	frameIdx := int(pos * float64(len(e.stingerScaled)))
+	if frameIdx >= len(e.stingerScaled) {
+		frameIdx = len(e.stingerScaled) - 1
+	}
+	if frameIdx < 0 {
+		frameIdx = 0
+	}
+	sf := &e.stingerScaled[frameIdx]
+
+	// Pick the base source: A before cut point, B after
+	base := e.latestYUVA
+	if pos >= sd.CutPoint && e.latestYUVB != nil {
+		base = e.latestYUVB
+	}
+
+	return e.blender.BlendStinger(base, sf.YUV, sf.Alpha)
+}
+
+// scaleStingerFrames scales stinger frames to match the engine's video dimensions.
+// If dimensions already match, returns the original frames. Caller must hold e.mu.
+func (e *TransitionEngine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
+	if sd.Width == e.width && sd.Height == e.height {
+		return sd.Frames
+	}
+
+	slog.Info("transition: scaling stinger frames",
+		"from", fmt.Sprintf("%dx%d", sd.Width, sd.Height),
+		"to", fmt.Sprintf("%dx%d", e.width, e.height))
+
+	scaled := make([]StingerFrameData, len(sd.Frames))
+	targetYSize := e.width * e.height
+	targetUVSize := (e.width / 2) * (e.height / 2)
+	targetYUVSize := targetYSize + 2*targetUVSize
+
+	for i, f := range sd.Frames {
+		// Scale YUV
+		scaledYUV := make([]byte, targetYUVSize)
+		ScaleYUV420(f.YUV, sd.Width, sd.Height, scaledYUV, e.width, e.height)
+
+		// Scale alpha using nearest-neighbor (luma resolution)
+		scaledAlpha := make([]byte, targetYSize)
+		for y := 0; y < e.height; y++ {
+			srcY := y * sd.Height / e.height
+			for x := 0; x < e.width; x++ {
+				srcX := x * sd.Width / e.width
+				scaledAlpha[y*e.width+x] = f.Alpha[srcY*sd.Width+srcX]
+			}
+		}
+
+		scaled[i] = StingerFrameData{YUV: scaledYUV, Alpha: scaledAlpha}
+	}
+	return scaled
+}
+
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
 func (e *TransitionEngine) cleanup() {
 	// Stop watchdog goroutine (idempotent via sync.Once)
@@ -535,4 +633,5 @@ func (e *TransitionEngine) cleanup() {
 	e.latestYUVB = nil
 	e.blender = nil
 	e.scaleBuf = nil
+	e.stingerScaled = nil
 }

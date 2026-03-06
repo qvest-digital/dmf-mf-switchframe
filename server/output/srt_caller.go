@@ -38,8 +38,9 @@ type SRTCaller struct {
 	ringBuf      *ringBuffer
 	backoff      time.Duration
 	reconnecting atomic.Bool  // guards against duplicate reconnect goroutines
-	pendingIDR   atomic.Bool  // when true, drop writes until a keyframe arrives
-	bytesWritten atomic.Int64
+	pendingIDR    atomic.Bool  // when true, drop writes until a keyframe arrives
+	bytesWritten  atomic.Int64
+	overflowCount atomic.Int64 // number of ring buffer overflow events
 	state        atomic.Value // AdapterState
 	lastError    atomic.Value // string
 	startedAt    time.Time
@@ -197,13 +198,14 @@ func (c *SRTCaller) Status() AdapterStatus {
 func (c *SRTCaller) SRTStatusSnapshot() SRTOutputStatus {
 	status := c.Status()
 	return SRTOutputStatus{
-		Active:       status.State == StateActive || status.State == StateReconnecting,
-		Mode:         "caller",
-		Address:      c.config.Address,
-		Port:         c.config.Port,
-		State:        string(status.State),
-		BytesWritten: status.BytesWritten,
-		Error:        status.Error,
+		Active:        status.State == StateActive || status.State == StateReconnecting,
+		Mode:          "caller",
+		Address:       c.config.Address,
+		Port:          c.config.Port,
+		State:         string(status.State),
+		BytesWritten:  status.BytesWritten,
+		OverflowCount: c.overflowCount.Load(),
+		Error:         status.Error,
 	}
 }
 
@@ -260,6 +262,7 @@ func (c *SRTCaller) reconnectLoop() {
 		// artifacts on the remote SRT receiver.
 		if overflowed {
 			c.pendingIDR.Store(true)
+			c.overflowCount.Add(1)
 		}
 
 		c.state.Store(StateActive)

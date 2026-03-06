@@ -19,6 +19,7 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
+	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -82,15 +83,21 @@ func WithCompositor(c *graphics.Compositor) APIOption {
 	return func(a *API) { a.compositor = c }
 }
 
+// WithStingerStore attaches a stinger clip store to the API.
+func WithStingerStore(s *stinger.StingerStore) APIOption {
+	return func(a *API) { a.stingerStore = s }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
-	switcher    *switcher.Switcher
-	mixer       AudioMixerAPI
-	outputMgr   OutputManagerAPI
-	debug       DebugAPI
-	presetStore *preset.PresetStore
-	compositor  *graphics.Compositor
-	mux         *http.ServeMux
+	switcher     *switcher.Switcher
+	mixer        AudioMixerAPI
+	outputMgr    OutputManagerAPI
+	debug        DebugAPI
+	presetStore  *preset.PresetStore
+	compositor   *graphics.Compositor
+	stingerStore *stinger.StingerStore
+	mux          *http.ServeMux
 }
 
 // NewAPI creates an API that delegates to sw.
@@ -141,6 +148,11 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/presets/{id}", a.handleUpdatePreset)
 		mux.HandleFunc("DELETE /api/presets/{id}", a.handleDeletePreset)
 		mux.HandleFunc("POST /api/presets/{id}/recall", a.handleRecallPreset)
+	}
+	if a.stingerStore != nil {
+		mux.HandleFunc("GET /api/stinger/list", a.handleStingerList)
+		mux.HandleFunc("DELETE /api/stinger/{name}", a.handleStingerDelete)
+		mux.HandleFunc("POST /api/stinger/{name}/cut-point", a.handleStingerCutPoint)
 	}
 	if a.compositor != nil {
 		mux.HandleFunc("POST /api/graphics/on", a.handleGraphicsOn)
@@ -210,17 +222,18 @@ type transitionRequest struct {
 	Type          string `json:"type"`
 	DurationMs    int    `json:"durationMs"`
 	WipeDirection string `json:"wipeDirection,omitempty"`
+	StingerName   string `json:"stingerName,omitempty"`
 }
 
-// handleTransition starts a mix, dip, or wipe transition to the specified source.
+// handleTransition starts a mix, dip, wipe, or stinger transition to the specified source.
 func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	var req transitionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Type != "mix" && req.Type != "dip" && req.Type != "wipe" {
-		http.Error(w, `{"error":"type must be 'mix', 'dip', or 'wipe'"}`, http.StatusBadRequest)
+	if req.Type != "mix" && req.Type != "dip" && req.Type != "wipe" && req.Type != "stinger" {
+		http.Error(w, `{"error":"type must be 'mix', 'dip', 'wipe', or 'stinger'"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Type == "wipe" {
@@ -230,11 +243,34 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.Type == "stinger" {
+		if a.stingerStore == nil {
+			http.Error(w, `{"error":"stinger store not configured"}`, http.StatusNotImplemented)
+			return
+		}
+		if req.StingerName == "" {
+			http.Error(w, `{"error":"stingerName required for stinger transition"}`, http.StatusBadRequest)
+			return
+		}
+	}
 	if req.DurationMs < 100 || req.DurationMs > 5000 {
 		http.Error(w, `{"error":"durationMs must be 100-5000"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs, req.WipeDirection); err != nil {
+
+	// Build transition options
+	var opts []switcher.TransitionOption
+	if req.Type == "stinger" {
+		clip, ok := a.stingerStore.Get(req.StingerName)
+		if !ok {
+			http.Error(w, `{"error":"stinger clip not found"}`, http.StatusNotFound)
+			return
+		}
+		sd := clipToStingerData(clip)
+		opts = append(opts, switcher.WithStingerData(sd))
+	}
+
+	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs, req.WipeDirection, opts...); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusInternalServerError
 		if errors.Is(err, switcher.ErrSourceNotFound) {
@@ -250,6 +286,23 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// clipToStingerData converts a stinger.StingerClip to transition.StingerData.
+func clipToStingerData(clip *stinger.StingerClip) *transition.StingerData {
+	frames := make([]transition.StingerFrameData, len(clip.Frames))
+	for i, f := range clip.Frames {
+		frames[i] = transition.StingerFrameData{
+			YUV:   f.YUV,
+			Alpha: f.Alpha,
+		}
+	}
+	return &transition.StingerData{
+		Frames:   frames,
+		Width:    clip.Width,
+		Height:   clip.Height,
+		CutPoint: clip.CutPoint,
+	}
 }
 
 // transitionPositionRequest is the JSON body for the transition position endpoint.
@@ -977,6 +1030,53 @@ func (a *API) handleGraphicsFrame(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// --- Stinger API ---
+
+// handleStingerList returns all loaded stinger clip names.
+func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.stingerStore.List())
+}
+
+// handleStingerDelete removes a stinger clip by name.
+func (a *API) handleStingerDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := a.stingerStore.Delete(name); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// stingerCutPointRequest is the JSON body for updating a stinger's cut point.
+type stingerCutPointRequest struct {
+	CutPoint float64 `json:"cutPoint"`
+}
+
+// handleStingerCutPoint updates the cut point for a stinger clip.
+func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var req stingerCutPointRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.stingerStore.SetCutPoint(name, req.CutPoint); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusBadRequest
+		if _, ok := a.stingerStore.Get(name); !ok {
+			status = http.StatusNotFound
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // stateToSnapshot converts a ControlRoomState to a ControlRoomSnapshot
