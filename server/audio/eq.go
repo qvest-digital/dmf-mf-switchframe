@@ -26,10 +26,10 @@ const (
 
 // EQ validation errors
 var (
-	ErrInvalidBand      = errors.New("band index must be 0, 1, or 2")
-	ErrInvalidFrequency = errors.New("frequency out of range for band")
-	ErrInvalidGain      = errors.New("gain must be between -12 and +12 dB")
-	ErrInvalidQ         = errors.New("q must be between 0.5 and 4.0")
+	ErrInvalidBand      = errors.New("audio: band index must be 0, 1, or 2")
+	ErrInvalidFrequency = errors.New("audio: frequency out of range for band")
+	ErrInvalidGain      = errors.New("audio: gain must be between -12 and +12 dB")
+	ErrInvalidQ         = errors.New("audio: q must be between 0.5 and 4.0")
 )
 
 // BiquadFilter implements a Direct Form II Transposed biquad filter

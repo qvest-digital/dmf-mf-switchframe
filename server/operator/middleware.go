@@ -1,36 +1,37 @@
 package operator
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
 // endpointSubsystemMap maps exact API paths to subsystems.
 var endpointSubsystemMap = map[string]Subsystem{
-	"/api/switch/cut":                SubsystemSwitching,
-	"/api/switch/preview":            SubsystemSwitching,
-	"/api/switch/transition":         SubsystemSwitching,
+	"/api/switch/cut":                 SubsystemSwitching,
+	"/api/switch/preview":             SubsystemSwitching,
+	"/api/switch/transition":          SubsystemSwitching,
 	"/api/switch/transition/position": SubsystemSwitching,
-	"/api/switch/ftb":                SubsystemSwitching,
-	"/api/audio/trim":                SubsystemAudio,
-	"/api/audio/level":               SubsystemAudio,
-	"/api/audio/mute":                SubsystemAudio,
-	"/api/audio/afv":                 SubsystemAudio,
-	"/api/audio/master":              SubsystemAudio,
-	"/api/recording/start":           SubsystemOutput,
-	"/api/recording/stop":            SubsystemOutput,
-	"/api/output/srt/start":          SubsystemOutput,
-	"/api/output/srt/stop":           SubsystemOutput,
-	"/api/replay/mark-in":            SubsystemReplay,
-	"/api/replay/mark-out":           SubsystemReplay,
-	"/api/replay/play":               SubsystemReplay,
-	"/api/replay/stop":               SubsystemReplay,
-	"/api/graphics/on":               SubsystemGraphics,
-	"/api/graphics/off":              SubsystemGraphics,
-	"/api/graphics/auto-on":          SubsystemGraphics,
-	"/api/graphics/auto-off":         SubsystemGraphics,
-	"/api/graphics/frame":            SubsystemGraphics,
+	"/api/switch/ftb":                 SubsystemSwitching,
+	"/api/audio/trim":                 SubsystemAudio,
+	"/api/audio/level":                SubsystemAudio,
+	"/api/audio/mute":                 SubsystemAudio,
+	"/api/audio/afv":                  SubsystemAudio,
+	"/api/audio/master":               SubsystemAudio,
+	"/api/recording/start":            SubsystemOutput,
+	"/api/recording/stop":             SubsystemOutput,
+	"/api/output/srt/start":           SubsystemOutput,
+	"/api/output/srt/stop":            SubsystemOutput,
+	"/api/replay/mark-in":             SubsystemReplay,
+	"/api/replay/mark-out":            SubsystemReplay,
+	"/api/replay/play":                SubsystemReplay,
+	"/api/replay/stop":                SubsystemReplay,
+	"/api/graphics/on":                SubsystemGraphics,
+	"/api/graphics/off":               SubsystemGraphics,
+	"/api/graphics/auto-on":           SubsystemGraphics,
+	"/api/graphics/auto-off":          SubsystemGraphics,
+	"/api/graphics/frame":             SubsystemGraphics,
 }
 
 // endpointPrefixSubsystemMap maps path prefixes to subsystems,
@@ -110,19 +111,19 @@ func NewMiddleware(store *Store, sm *SessionManager) func(http.Handler) http.Han
 			op, err := store.GetByToken(token)
 			if err != nil {
 				// Unknown token — reject as forbidden.
-				writeJSONError(w, http.StatusForbidden, "operator not identified")
+				httperr.Write(w, http.StatusForbidden, "operator not identified")
 				return
 			}
 
 			// 6. Role permission check.
 			if !CanCommand(op.Role, sub) {
-				writeJSONError(w, http.StatusForbidden, "role '"+string(op.Role)+"' cannot command '"+string(sub)+"'")
+				httperr.Write(w, http.StatusForbidden, "role '"+string(op.Role)+"' cannot command '"+string(sub)+"'")
 				return
 			}
 
 			// 7. Lock ownership check.
 			if err := sm.CheckLock(op.ID, sub); err != nil {
-				writeJSONError(w, http.StatusConflict, "subsystem '"+string(sub)+"' is locked by another operator")
+				httperr.Write(w, http.StatusConflict, "subsystem '"+string(sub)+"' is locked by another operator")
 				return
 			}
 
@@ -138,11 +139,4 @@ func ExtractBearerToken(r *http.Request) string {
 		return strings.TrimPrefix(auth, "Bearer ")
 	}
 	return ""
-}
-
-// writeJSONError writes a JSON error response.
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

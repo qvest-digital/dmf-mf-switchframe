@@ -14,10 +14,10 @@ import (
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive = errors.New("graphics overlay already active")
-	ErrNotActive     = errors.New("graphics overlay not active")
-	ErrNoOverlay     = errors.New("no overlay frame has been uploaded")
-	ErrFadeActive    = errors.New("fade transition in progress")
+	ErrAlreadyActive = errors.New("graphics: overlay already active")
+	ErrNotActive     = errors.New("graphics: overlay not active")
+	ErrNoOverlay     = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive    = errors.New("graphics: fade transition in progress")
 )
 
 // State represents the current graphics overlay state.

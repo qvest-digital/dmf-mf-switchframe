@@ -4,8 +4,8 @@ import "errors"
 
 // Sentinel errors for the transition package.
 var (
-	ErrTransitionActive = errors.New("transition already active")
-	ErrFTBActive        = errors.New("FTB is active")
+	ErrTransitionActive = errors.New("transition: already active")
+	ErrFTBActive        = errors.New("transition: FTB is active")
 )
 
 // TransitionType identifies the visual transition effect.

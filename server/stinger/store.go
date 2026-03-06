@@ -16,11 +16,11 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("stinger not found")
-	ErrInvalidName     = errors.New("invalid stinger name")
-	ErrInvalidCutPoint = errors.New("cut point must be between 0 and 1")
-	ErrAlreadyExists   = errors.New("stinger already exists")
-	ErrMaxClipsReached = errors.New("maximum stinger clips reached")
+	ErrNotFound        = errors.New("stinger: not found")
+	ErrInvalidName     = errors.New("stinger: invalid name")
+	ErrInvalidCutPoint = errors.New("stinger: cut point must be between 0 and 1")
+	ErrAlreadyExists   = errors.New("stinger: already exists")
+	ErrMaxClipsReached = errors.New("stinger: maximum clips reached")
 )
 
 // validateName rejects names that could cause path traversal or are otherwise invalid.

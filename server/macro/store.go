@@ -11,13 +11,13 @@ import (
 
 var (
 	// ErrNotFound is returned when a macro with the given name does not exist.
-	ErrNotFound = errors.New("macro not found")
+	ErrNotFound = errors.New("macro: not found")
 
 	// ErrEmptyName is returned when a macro name is empty.
-	ErrEmptyName = errors.New("macro name must not be empty")
+	ErrEmptyName = errors.New("macro: name must not be empty")
 
 	// ErrNoSteps is returned when a macro has no steps.
-	ErrNoSteps = errors.New("macro must have at least one step")
+	ErrNoSteps = errors.New("macro: must have at least one step")
 )
 
 // Store manages CRUD operations and file persistence for macros.

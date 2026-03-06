@@ -10,10 +10,10 @@ import (
 
 // Sentinel errors for the output package.
 var (
-	ErrRecorderActive    = errors.New("recorder already active")
-	ErrRecorderNotActive = errors.New("recorder not active")
-	ErrSRTActive         = errors.New("SRT output already active")
-	ErrSRTNotActive      = errors.New("SRT output not active")
+	ErrRecorderActive    = errors.New("output: recorder already active")
+	ErrRecorderNotActive = errors.New("output: recorder not active")
+	ErrSRTActive         = errors.New("output: SRT already active")
+	ErrSRTNotActive      = errors.New("output: SRT not active")
 )
 
 // AdapterState represents the lifecycle state of an output adapter.

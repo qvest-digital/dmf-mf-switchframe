@@ -2,9 +2,9 @@ package control
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
+	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/operator"
 )
 
@@ -26,15 +26,13 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 		Role operator.Role `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	op, err := a.operatorStore.Register(req.Name, req.Role)
 	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(operatorErrorCode(err))
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 
@@ -53,13 +51,13 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleOperatorReconnect(w http.ResponseWriter, r *http.Request) {
 	token := operator.ExtractBearerToken(r)
 	if token == "" {
-		writeJSONError(w, http.StatusUnauthorized, "missing bearer token")
+		httperr.Write(w, http.StatusUnauthorized, "missing bearer token")
 		return
 	}
 
 	op, err := a.operatorStore.GetByToken(token)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid token")
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -78,7 +76,7 @@ func (a *API) handleOperatorHeartbeat(w http.ResponseWriter, r *http.Request) {
 	token := operator.ExtractBearerToken(r)
 	op, err := a.operatorStore.GetByToken(token)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid token")
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -115,7 +113,7 @@ func (a *API) handleOperatorLock(w http.ResponseWriter, r *http.Request) {
 	token := operator.ExtractBearerToken(r)
 	op, err := a.operatorStore.GetByToken(token)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid token")
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -123,14 +121,12 @@ func (a *API) handleOperatorLock(w http.ResponseWriter, r *http.Request) {
 		Subsystem operator.Subsystem `json:"subsystem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	if err := a.sessionMgr.AcquireLock(op.ID, req.Subsystem); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(operatorErrorCode(err))
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 
@@ -142,7 +138,7 @@ func (a *API) handleOperatorUnlock(w http.ResponseWriter, r *http.Request) {
 	token := operator.ExtractBearerToken(r)
 	op, err := a.operatorStore.GetByToken(token)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid token")
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -150,14 +146,12 @@ func (a *API) handleOperatorUnlock(w http.ResponseWriter, r *http.Request) {
 		Subsystem operator.Subsystem `json:"subsystem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	if err := a.sessionMgr.ReleaseLock(op.ID, req.Subsystem); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(operatorErrorCode(err))
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 
@@ -169,7 +163,7 @@ func (a *API) handleOperatorForceUnlock(w http.ResponseWriter, r *http.Request) 
 	token := operator.ExtractBearerToken(r)
 	op, err := a.operatorStore.GetByToken(token)
 	if err != nil {
-		writeJSONError(w, http.StatusUnauthorized, "invalid token")
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
 
@@ -177,14 +171,12 @@ func (a *API) handleOperatorForceUnlock(w http.ResponseWriter, r *http.Request) 
 		Subsystem operator.Subsystem `json:"subsystem"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
 	if err := a.sessionMgr.ForceReleaseLock(op.ID, req.Subsystem); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(operatorErrorCode(err))
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 
@@ -195,7 +187,7 @@ func (a *API) handleOperatorForceUnlock(w http.ResponseWriter, r *http.Request) 
 func (a *API) handleOperatorDelete(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
-		writeJSONError(w, http.StatusBadRequest, "operator id required")
+		httperr.Write(w, http.StatusBadRequest, "operator id required")
 		return
 	}
 
@@ -204,17 +196,17 @@ func (a *API) handleOperatorDelete(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// No token or invalid — allow if no operators registered (backward compat).
 		if a.operatorStore.Count() > 0 {
-			writeJSONError(w, http.StatusUnauthorized, "invalid token")
+			httperr.Write(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 	} else if requester.ID != id && requester.Role != operator.RoleDirector {
-		writeJSONError(w, http.StatusForbidden, "only self or director can delete operators")
+		httperr.Write(w, http.StatusForbidden, "only self or director can delete operators")
 		return
 	}
 
 	// Delete from persistent store first — if this fails, session stays intact.
 	if err := a.operatorStore.Delete(id); err != nil {
-		writeJSONError(w, operatorErrorCode(err), err.Error())
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 	// Store succeeded — clean up in-memory session (cannot fail).
@@ -222,32 +214,4 @@ func (a *API) handleOperatorDelete(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
-// writeJSONError writes a JSON error response with proper Content-Type.
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-// operatorErrorCode maps operator errors to HTTP status codes.
-func operatorErrorCode(err error) int {
-	switch {
-	case errors.Is(err, operator.ErrNotFound), errors.Is(err, operator.ErrSessionNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, operator.ErrEmptyName), errors.Is(err, operator.ErrInvalidRole),
-		errors.Is(err, operator.ErrInvalidSubsystem):
-		return http.StatusBadRequest
-	case errors.Is(err, operator.ErrDuplicateName):
-		return http.StatusConflict
-	case errors.Is(err, operator.ErrNoPermission):
-		return http.StatusForbidden
-	case errors.Is(err, operator.ErrSubsystemLocked):
-		return http.StatusConflict
-	case errors.Is(err, operator.ErrNotLocked), errors.Is(err, operator.ErrLockNotOwned):
-		return http.StatusBadRequest
-	default:
-		return http.StatusInternalServerError
-	}
 }

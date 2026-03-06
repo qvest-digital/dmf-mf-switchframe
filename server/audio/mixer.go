@@ -24,7 +24,7 @@ import (
 const crossfadeTimeout = 25 * time.Millisecond
 
 // ErrChannelNotFound is returned when a referenced audio channel does not exist.
-var ErrChannelNotFound = errors.New("channel not found")
+var ErrChannelNotFound = errors.New("audio: channel not found")
 
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
@@ -342,7 +342,7 @@ func (m *AudioMixer) SetActive(sourceKey string, active bool) {
 }
 
 // ErrInvalidTrim is returned when trim is outside the valid range.
-var ErrInvalidTrim = errors.New("trim must be between -20 and +20 dB")
+var ErrInvalidTrim = errors.New("audio: trim must be between -20 and +20 dB")
 
 // SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
 // Trim is applied before the fader in the mix pipeline.
@@ -354,7 +354,7 @@ func (m *AudioMixer) SetTrim(sourceKey string, trimDB float64) error {
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.trim = trimDB
 	m.recalcPassthrough()
@@ -367,7 +367,7 @@ func (m *AudioMixer) SetLevel(sourceKey string, levelDB float64) error {
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.level = levelDB
 	m.recalcPassthrough()
@@ -380,7 +380,7 @@ func (m *AudioMixer) SetMuted(sourceKey string, muted bool) error {
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.muted = muted
 	m.recalcPassthrough()
@@ -403,7 +403,7 @@ func (m *AudioMixer) SetAFV(sourceKey string, afv bool) error {
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.afv = afv
 	return nil

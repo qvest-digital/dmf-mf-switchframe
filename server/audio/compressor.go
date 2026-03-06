@@ -22,11 +22,11 @@ const (
 
 // Compressor validation errors
 var (
-	ErrInvalidThreshold  = errors.New("threshold must be between -40 and 0 dBFS")
-	ErrInvalidRatio      = errors.New("ratio must be between 1.0 and 20.0")
-	ErrInvalidAttack     = errors.New("attack must be between 0.1 and 100 ms")
-	ErrInvalidRelease    = errors.New("release must be between 10 and 1000 ms")
-	ErrInvalidMakeupGain = errors.New("makeup gain must be between 0 and 24 dB")
+	ErrInvalidThreshold  = errors.New("audio: threshold must be between -40 and 0 dBFS")
+	ErrInvalidRatio      = errors.New("audio: ratio must be between 1.0 and 20.0")
+	ErrInvalidAttack     = errors.New("audio: attack must be between 0.1 and 100 ms")
+	ErrInvalidRelease    = errors.New("audio: release must be between 10 and 1000 ms")
+	ErrInvalidMakeupGain = errors.New("audio: makeup gain must be between 0 and 24 dB")
 )
 
 // Compressor is a single-band dynamics compressor with envelope follower.

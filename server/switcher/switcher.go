@@ -23,9 +23,10 @@ import (
 )
 
 // Sentinel errors for the switcher package.
-var ErrSourceNotFound = errors.New("source not found")
-var ErrAlreadyOnProgram = errors.New("already on program")
-var ErrInvalidDelay = errors.New("delay must be 0-500ms")
+var ErrSourceNotFound = errors.New("switcher: source not found")
+var ErrAlreadyOnProgram = errors.New("switcher: already on program")
+var ErrInvalidDelay = errors.New("switcher: delay must be 0-500ms")
+var ErrNoTransition = errors.New("switcher: no active transition")
 
 // SwitcherState represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
@@ -602,7 +603,7 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 	s.mu.RUnlock()
 
 	if !inTrans || engine == nil {
-		return fmt.Errorf("no active transition")
+		return ErrNoTransition
 	}
 
 	engine.SetPosition(position)

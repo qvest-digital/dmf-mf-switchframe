@@ -425,7 +425,7 @@ func (m *mockMixer) SetTrim(sourceKey string, trimDB float64) error {
 		return audio.ErrInvalidTrim
 	}
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
 	}
 	m.trimCalls = append(m.trimCalls, mockLevelCall{sourceKey, trimDB})
 	return nil
@@ -433,7 +433,7 @@ func (m *mockMixer) SetTrim(sourceKey string, trimDB float64) error {
 
 func (m *mockMixer) SetLevel(sourceKey string, levelDB float64) error {
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
 	}
 	m.levelCalls = append(m.levelCalls, mockLevelCall{sourceKey, levelDB})
 	return nil
@@ -441,7 +441,7 @@ func (m *mockMixer) SetLevel(sourceKey string, levelDB float64) error {
 
 func (m *mockMixer) SetMuted(sourceKey string, muted bool) error {
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
 	}
 	m.muteCalls = append(m.muteCalls, mockMuteCall{sourceKey, muted})
 	return nil
@@ -449,7 +449,7 @@ func (m *mockMixer) SetMuted(sourceKey string, muted bool) error {
 
 func (m *mockMixer) SetAFV(sourceKey string, afv bool) error {
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
 	}
 	m.afvCalls = append(m.afvCalls, mockAFVCall{sourceKey, afv})
 	return nil

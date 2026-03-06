@@ -2,7 +2,6 @@ package output
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -60,7 +59,7 @@ func (r *FileRecorder) Start(_ context.Context) error {
 	defer r.mu.Unlock()
 
 	if r.state == StateActive {
-		return errors.New("recorder already active")
+		return ErrRecorderActive
 	}
 
 	now := time.Now()
@@ -146,7 +145,7 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	defer r.mu.Unlock()
 
 	if r.state != StateActive || r.file == nil {
-		return 0, errors.New("recorder not active")
+		return 0, ErrRecorderNotActive
 	}
 
 	// Check if rotation is needed before writing.

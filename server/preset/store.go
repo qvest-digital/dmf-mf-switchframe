@@ -59,10 +59,10 @@ type PresetUpdate struct {
 
 var (
 	// ErrNotFound is returned when a preset with the given ID does not exist.
-	ErrNotFound = errors.New("preset not found")
+	ErrNotFound = errors.New("preset: not found")
 
 	// ErrEmptyName is returned when a preset name is empty.
-	ErrEmptyName = errors.New("preset name must not be empty")
+	ErrEmptyName = errors.New("preset: name must not be empty")
 )
 
 // PresetStore manages CRUD operations and file persistence for presets.
