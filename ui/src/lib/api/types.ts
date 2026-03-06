@@ -125,6 +125,43 @@ export interface KeyConfig {
 	fillSource?: string;
 }
 
+export type ReplayPlayerState = 'idle' | 'loading' | 'playing' | 'paused';
+
+export interface ReplayBufferInfo {
+	source: string;
+	frameCount: number;
+	gopCount: number;
+	durationSecs: number;
+	bytesUsed: number;
+}
+
+export interface ReplayState {
+	state: ReplayPlayerState;
+	source?: string;
+	speed?: number;
+	loop?: boolean;
+	position?: number;
+	markIn?: number;     // Unix ms
+	markOut?: number;    // Unix ms
+	markSource?: string;
+	buffers?: ReplayBufferInfo[];
+}
+
+export type OperatorRole = 'director' | 'audio' | 'graphics' | 'viewer';
+
+export interface OperatorInfo {
+	id: string;
+	name: string;
+	role: OperatorRole;
+	connected: boolean;
+}
+
+export interface LockInfo {
+	holderId: string;
+	holderName: string;
+	acquiredAt: number; // Unix ms
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -143,6 +180,10 @@ export interface ControlRoomState {
 	recording?: RecordingStatus;
 	srtOutput?: SRTOutputStatus;
 	graphics?: GraphicsState;
+	replay?: ReplayState;
+	operators?: OperatorInfo[];
+	locks?: Record<string, LockInfo>;
+	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
 }

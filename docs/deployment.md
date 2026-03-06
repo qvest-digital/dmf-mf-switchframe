@@ -173,6 +173,8 @@ volumes:
 | `--log-level <level>` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `--admin-addr <addr>` | `:9090` | Admin/metrics server listen address |
 | `--api-token <token>` | auto-generated | Bearer token for API authentication |
+| `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick boundary) |
+| `--replay-buffer-secs <n>` | `60` | Per-source replay buffer duration in seconds (0 to disable, max 300) |
 
 ### Environment Variables
 
@@ -766,7 +768,15 @@ chown 999:999 /data/recordings
 
 ### Preset Storage
 
-Presets are stored as a JSON file at `~/.switchframe/presets.json`. In Docker (non-root user with no home dir), this path resolves based on the `switchframe` user. Mount a volume if presets need to persist across container restarts:
+Persistent data is stored as JSON files in `~/.switchframe/`:
+
+| File | Contents |
+|------|----------|
+| `presets.json` | Saved switcher presets (program/preview/audio state) |
+| `macros.json` | Macro definitions (sequential action lists) |
+| `operators.json` | Registered operators (name, role, token) |
+
+In Docker (non-root user with no home dir), these paths resolve based on the `switchframe` user. Mount a volume if data needs to persist across container restarts:
 
 ```bash
 docker run -v switchframe-data:/home/switchframe/.switchframe switchframe
@@ -784,4 +794,6 @@ docker run -v switchframe-data:/home/switchframe/.switchframe switchframe
 - [ ] Configure Prometheus scraping on port 9090
 - [ ] Set up alerting on `switchframe_output_ringbuf_overflows_total` and `switchframe_output_srt_reconnects_total`
 - [ ] Test the readiness probe (`/ready`) in your orchestrator
+- [ ] Size replay buffer memory appropriately (`--replay-buffer-secs` × N sources × ~bitrate)
+- [ ] Configure operator tokens if using multi-operator mode (tokens persist in `operators.json`)
 - [ ] Plan for server restart every 14 days (TLS certificate renewal) or implement certificate rotation

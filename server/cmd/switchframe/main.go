@@ -29,8 +29,10 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
+	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -40,9 +42,10 @@ import (
 // distribution server that invokes these callbacks. Callers must call Init()
 // before any stream registrations that need forwarding.
 type streamCallbackRouter struct {
-	mu    sync.Mutex
-	sw    *switcher.Switcher
-	mixer *audio.AudioMixer
+	mu       sync.Mutex
+	sw       *switcher.Switcher
+	mixer    *audio.AudioMixer
+	replayMgr *replay.Manager
 }
 
 // Init sets the Switcher and AudioMixer targets. After Init returns, all
@@ -54,15 +57,21 @@ func (r *streamCallbackRouter) Init(sw *switcher.Switcher, mixer *audio.AudioMix
 	r.mixer = mixer
 }
 
-// OnRegistered handles a new stream. It skips the "program" stream (which is
-// an internal relay, not an external source) and guards against calls that
-// arrive before Init().
+// SetReplayManager adds replay manager to the router.
+func (r *streamCallbackRouter) SetReplayManager(rm *replay.Manager) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replayMgr = rm
+}
+
+// OnRegistered handles a new stream. It skips the "program" and "replay"
+// streams (internal relays) and guards against calls that arrive before Init().
 func (r *streamCallbackRouter) OnRegistered(key string, relay *distribution.Relay) {
-	if key == "program" {
+	if key == "program" || key == "replay" {
 		return
 	}
 	r.mu.Lock()
-	sw, mixer := r.sw, r.mixer
+	sw, mixer, rm := r.sw, r.mixer, r.replayMgr
 	r.mu.Unlock()
 
 	if sw == nil || mixer == nil {
@@ -73,16 +82,25 @@ func (r *streamCallbackRouter) OnRegistered(key string, relay *distribution.Rela
 	sw.RegisterSource(key, relay)
 	mixer.AddChannel(key)
 	_ = mixer.SetAFV(key, true) // cameras default to audio-follows-video
+
+	// Register replay viewer on the source relay.
+	if rm != nil {
+		if err := rm.AddSource(key); err != nil {
+			slog.Warn("replay: could not add source", "key", key, "err", err)
+		} else if v := rm.Viewer(key); v != nil {
+			relay.AddViewer(v)
+		}
+	}
 }
 
-// OnUnregistered handles a removed stream. It skips the "program" stream and
-// guards against calls that arrive before Init().
+// OnUnregistered handles a removed stream. It skips the "program" and "replay"
+// streams and guards against calls that arrive before Init().
 func (r *streamCallbackRouter) OnUnregistered(key string) {
-	if key == "program" {
+	if key == "program" || key == "replay" {
 		return
 	}
 	r.mu.Lock()
-	sw, mixer := r.sw, r.mixer
+	sw, mixer, rm := r.sw, r.mixer, r.replayMgr
 	r.mu.Unlock()
 
 	if sw == nil || mixer == nil {
@@ -92,6 +110,11 @@ func (r *streamCallbackRouter) OnUnregistered(key string) {
 	slog.Info("stream unregistered, removing source", "key", key)
 	sw.UnregisterSource(key)
 	mixer.RemoveChannel(key)
+
+	// Remove replay viewer from the source relay.
+	if rm != nil {
+		rm.RemoveSource(key)
+	}
 }
 
 func main() {
@@ -108,6 +131,7 @@ func run() error {
 	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
+	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	flag.Parse()
 
 	// Resolve API token: flag > env > auto-generate.
@@ -179,6 +203,9 @@ func run() error {
 	// Create REST API (captures sw pointer; called during server.Start()
 	// mux setup, after sw is initialized below).
 	var api *control.API
+	// Operator middleware is created after operator store/session manager
+	// but the closure captures this variable.
+	var operatorMW func(http.Handler) http.Handler
 
 	addr := ":8080"
 
@@ -192,12 +219,11 @@ func run() error {
 		Addr: addr,
 		Cert: cert,
 		ExtraRoutes: func(mux *http.ServeMux) {
-			// Register API routes on a sub-mux so we can wrap with auth.
+			// Register API routes on a sub-mux so we can wrap with auth + operator middleware.
 			apiSubMux := http.NewServeMux()
 			api.RegisterOnMux(apiSubMux)
-			// Wrap with auth middleware; Prism's own routes (MoQ, WebTransport)
-			// bypass this because they don't start with /api/.
-			authedAPI := authMW(apiSubMux)
+			// Chain: auth → operator (role/lock check) → handler
+			authedAPI := authMW(operatorMW(apiSubMux))
 			mux.Handle("/api/", authedAPI)
 			if h := uiHandler(); h != nil {
 				// Mount embedded UI as catch-all (after API routes)
@@ -307,6 +333,21 @@ func run() error {
 	}
 	slog.Info("macro store initialized", "path", macroPath)
 
+	// Create operator store for multi-operator management.
+	operatorPath := filepath.Join(homeDir, ".switchframe", "operators.json")
+	operatorStore, err := operator.NewStore(operatorPath)
+	if err != nil {
+		return fmt.Errorf("create operator store: %w", err)
+	}
+	slog.Info("operator store initialized", "path", operatorPath)
+
+	// Create session manager for operator session tracking and subsystem locks.
+	sessionMgr := operator.NewSessionManager()
+	defer sessionMgr.Close()
+
+	// Create operator middleware for role/lock enforcement.
+	operatorMW = operator.NewMiddleware(operatorStore, sessionMgr)
+
 	// Create graphics compositor for the downstream keyer (DSK).
 	// When active, it decodes program frames, composites RGBA overlay, and re-encodes.
 	compositor := graphics.NewCompositor()
@@ -367,13 +408,47 @@ func run() error {
 	sw.SetKeyBridgeProcessor(keyBridge.ProcessFrame)
 	defer keyBridge.Close()
 
+	// Create replay manager for instant replay / slow-motion.
+	var replayMgr *replay.Manager
+	replayRelay := server.RegisterStream("replay")
+	if *replayBufferSecs > 0 {
+		replayMgr = replay.NewManager(replayRelay, replay.Config{
+			BufferDurationSecs: *replayBufferSecs,
+		}, func() (transition.VideoDecoder, error) {
+			return codec.NewVideoDecoder()
+		}, func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return codec.NewVideoEncoder(w, h, bitrate, fps)
+		})
+		defer replayMgr.Close()
+		cbRouter.SetReplayManager(replayMgr)
+		debugCollector.Register("replay", replayMgr)
+		slog.Info("replay manager initialized", "bufferSecs", *replayBufferSecs)
+	}
+
 	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor), control.WithMacroStore(macroStore), control.WithKeyer(keyProcessor))
+	apiOpts := []control.APIOption{
+		control.WithMixer(mixer),
+		control.WithOutputManager(outputMgr),
+		control.WithDebugCollector(debugCollector),
+		control.WithPresetStore(presetStore),
+		control.WithCompositor(compositor),
+		control.WithMacroStore(macroStore),
+		control.WithKeyer(keyProcessor),
+		control.WithOperatorStore(operatorStore),
+		control.WithSessionManager(sessionMgr),
+	}
+	if replayMgr != nil {
+		apiOpts = append(apiOpts, control.WithReplayManager(replayMgr))
+	}
+	api = control.NewAPI(sw, apiOpts...)
 
 	// enrichState patches a ControlRoomState snapshot with output + graphics status.
 	// gfxOverride, if non-nil, is used instead of calling compositor.Status()
 	// (which would deadlock when called from the compositor's own callback).
 	enrichState := func(state internal.ControlRoomState, gfxOverride *graphics.State) internal.ControlRoomState {
+		if p := api.LastOperator(); p != nil {
+			state.LastChangedBy = *p
+		}
 		if recStatus := outputMgr.RecordingStatus(); recStatus.Active {
 			state.Recording = &recStatus
 		}
@@ -393,8 +468,78 @@ func run() error {
 				FadePosition: gfxStatus.FadePosition,
 			}
 		}
+		// Enrich with operator and lock state.
+		if operatorStore.Count() > 0 {
+			operators := operatorStore.List()
+			sessions := sessionMgr.ActiveSessions()
+			connectedSet := make(map[string]bool, len(sessions))
+			for _, s := range sessions {
+				connectedSet[s.OperatorID] = true
+			}
+			opInfos := make([]internal.OperatorInfo, len(operators))
+			for i, op := range operators {
+				opInfos[i] = internal.OperatorInfo{
+					ID:        op.ID,
+					Name:      op.Name,
+					Role:      string(op.Role),
+					Connected: connectedSet[op.ID],
+				}
+			}
+			state.Operators = opInfos
+
+			locks := sessionMgr.ActiveLocks()
+			if len(locks) > 0 {
+				lockMap := make(map[string]internal.LockInfo, len(locks))
+				for sub, info := range locks {
+					lockMap[string(sub)] = internal.LockInfo{
+						HolderID:   info.HolderID,
+						HolderName: info.HolderName,
+						AcquiredAt: info.AcquiredAt.UnixMilli(),
+					}
+				}
+				state.Locks = lockMap
+			}
+		}
+
+		if replayMgr != nil {
+			rs := replayMgr.Status()
+			if rs.State != "idle" || rs.MarkIn != nil || len(rs.Buffers) > 0 {
+				rState := &internal.ReplayState{
+					State:      string(rs.State),
+					Source:     rs.Source,
+					Speed:      rs.Speed,
+					Loop:       rs.Loop,
+					Position:   rs.Position,
+					MarkSource: rs.MarkSource,
+				}
+				if rs.MarkIn != nil {
+					ms := rs.MarkIn.UnixMilli()
+					rState.MarkIn = &ms
+				}
+				if rs.MarkOut != nil {
+					ms := rs.MarkOut.UnixMilli()
+					rState.MarkOut = &ms
+				}
+				for _, b := range rs.Buffers {
+					rState.Buffers = append(rState.Buffers, internal.ReplayBufferInfo{
+						Source:       b.Source,
+						FrameCount:   b.FrameCount,
+						GOPCount:     b.GOPCount,
+						DurationSecs: b.DurationSecs,
+						BytesUsed:    b.BytesUsed,
+					})
+				}
+				state.Replay = rState
+			}
+		}
 		return state
 	}
+
+	// Allow REST API handlers to return enriched state (with output, graphics,
+	// operator, and replay information) instead of the raw switcher state.
+	api.SetEnrichFunc(func(s internal.ControlRoomState) internal.ControlRoomState {
+		return enrichState(s, nil)
+	})
 
 	// Wire state publisher: enrich switcher state with output status before broadcast.
 	// Note: AFV program changes and crossfade are wired automatically via
@@ -406,6 +551,8 @@ func run() error {
 	// Output state changes (recording start/stop, SRT connect/disconnect)
 	// also trigger a full state broadcast.
 	outputMgr.OnStateChange(func() {
+		var empty string
+		api.SetLastOperator(&empty)
 		controlPub.Publish(enrichState(sw.State(), nil))
 	})
 
@@ -413,7 +560,25 @@ func run() error {
 	// directly (avoids deadlock — can't call compositor.Status() from inside
 	// the compositor's lock).
 	compositor.OnStateChange(func(gfxState graphics.State) {
+		var empty string
+		api.SetLastOperator(&empty)
 		controlPub.Publish(enrichState(sw.State(), &gfxState))
+	})
+
+	// Replay state changes trigger a full state broadcast.
+	if replayMgr != nil {
+		replayMgr.OnStateChange(func() {
+			var empty string
+			api.SetLastOperator(&empty)
+			controlPub.Publish(enrichState(sw.State(), nil))
+		})
+	}
+
+	// Operator session/lock changes trigger a full state broadcast.
+	sessionMgr.OnStateChange(func() {
+		var empty string
+		api.SetLastOperator(&empty)
+		controlPub.Publish(enrichState(sw.State(), nil))
 	})
 
 	sw.StartHealthMonitor(1 * time.Second)
@@ -472,6 +637,7 @@ func run() error {
 		})
 	})
 	var apiHandler http.Handler = apiMux
+	apiHandler = operatorMW(apiHandler)
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	apiHandler = authMW(apiHandler)

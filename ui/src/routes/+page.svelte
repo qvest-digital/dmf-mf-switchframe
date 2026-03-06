@@ -17,8 +17,13 @@
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import KeyPanel from '../components/KeyPanel.svelte';
+	import ReplayPanel from '../components/ReplayPanel.svelte';
+	import OperatorRegistration from '../components/OperatorRegistration.svelte';
+	import OperatorBadge from '../components/OperatorBadge.svelte';
+	import LockIndicator from '../components/LockIndicator.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
+	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
@@ -40,6 +45,7 @@
 	let connectionError: string | null = $state(null);
 	let tokenRequired = $state(false);
 	let tokenInput = $state('');
+	let showOperatorRegistration = $state(false);
 
 	// ARIA live region for screen reader announcements
 	let announcement = $state('');
@@ -349,6 +355,11 @@
 		// Load macro list for keyboard shortcuts
 		refreshMacros();
 
+		// Attempt operator reconnection from stored token
+		if (operatorState.hasStoredToken()) {
+			await operatorState.reconnect();
+		}
+
 		// Fetch initial state, start polling, and attempt WebTransport connection
 		await connectionManager.start();
 	});
@@ -361,6 +372,7 @@
 		pipelineManager.destroy();
 		connectionManager.stop();
 		pipeline.destroy();
+		operatorState.destroy();
 		mounted = false;
 	});
 </script>
@@ -382,6 +394,10 @@
 			</form>
 		</div>
 	</div>
+{/if}
+
+{#if showOperatorRegistration}
+	<OperatorRegistration onRegistered={() => { showOperatorRegistration = false; }} />
 {/if}
 
 <ProgramHealthBanner
@@ -413,7 +429,18 @@
 	{:else}
 		<div class="control-room">
 			<header class="header">
-				<OutputControls state={store.effectiveState} {connectionState} {switchLayout} />
+				<div class="header-row">
+					<OutputControls state={store.effectiveState} {connectionState} {switchLayout} />
+					<div class="header-right">
+						<LockIndicator state={store.effectiveState} subsystem="output" />
+						<OperatorBadge state={store.effectiveState} />
+						{#if !operatorState.isRegistered() && (store.effectiveState.operators?.length ?? 0) > 0}
+							<button class="register-btn" onclick={() => { showOperatorRegistration = true; }}>Register</button>
+						{:else if !operatorState.isRegistered()}
+							<button class="register-btn" onclick={() => { showOperatorRegistration = true; }}>Register Operator</button>
+						{/if}
+					</div>
+				</div>
 			</header>
 
 			<section class="monitors">
@@ -426,9 +453,15 @@
 
 			<section class="bottom-panel">
 				<div class="audio-section">
+					<div class="panel-header">
+						<LockIndicator state={store.effectiveState} subsystem="audio" />
+					</div>
 					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
 				</div>
 				<div class="control-section">
+					<div class="panel-header">
+						<LockIndicator state={store.effectiveState} subsystem="switching" />
+					</div>
 					<div class="buses">
 						<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
 						<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
@@ -436,6 +469,9 @@
 					<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} />
 				</div>
 				<div class="graphics-section">
+					<div class="panel-header">
+						<LockIndicator state={store.effectiveState} subsystem="graphics" />
+					</div>
 					<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
 				</div>
 				<div class="macro-section">
@@ -443,6 +479,12 @@
 				</div>
 				<div class="key-section">
 					<KeyPanel state={store.effectiveState} />
+				</div>
+				<div class="replay-section">
+					<div class="panel-header">
+						<LockIndicator state={store.effectiveState} subsystem="replay" />
+					</div>
+					<ReplayPanel state={store.effectiveState} />
 				</div>
 			</section>
 		</div>
@@ -523,10 +565,52 @@
 		border-left: 1px solid var(--border-subtle);
 	}
 
+	.replay-section {
+		width: 200px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border-subtle);
+	}
+
 	.buses {
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
+	}
+
+	.header-row {
+		display: flex;
+		align-items: center;
+	}
+
+	.header-right {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-left: auto;
+		padding: 0 12px;
+	}
+
+	.register-btn {
+		padding: 4px 10px;
+		border: 1px solid var(--border-subtle, #444);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text-secondary, #aaa);
+		font-size: 11px;
+		cursor: pointer;
+	}
+
+	.register-btn:hover {
+		border-color: var(--text-secondary, #888);
+		color: var(--text-primary, #eee);
+	}
+
+	.panel-header {
+		display: flex;
+		justify-content: flex-end;
+		padding: 2px 4px 0;
+		min-height: 0;
 	}
 
 	.token-prompt {

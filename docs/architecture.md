@@ -191,14 +191,17 @@ single AAC program output. It has two operating modes:
 flowchart TD
     input["Source AAC Frame"] --> check{"Passthrough check"}
 
-    check -->|"Single source @ 0dB<br/>Master @ 0dB<br/>Not muted"| pass["Passthrough Path<br/>(forward raw AAC, zero CPU)"]
-    check -->|"Multiple sources,<br/>gain ≠ 0dB, or<br/>program muted"| mix["Full Mix Path"]
+    check -->|"Single source @ 0dB<br/>Master @ 0dB<br/>EQ bypassed<br/>Compressor bypassed<br/>Not muted"| pass["Passthrough Path<br/>(forward raw AAC, zero CPU)"]
+    check -->|"Multiple sources,<br/>gain ≠ 0dB, EQ/comp active,<br/>or program muted"| mix["Full Mix Path"]
 
     pass --> broadcast["programRelay.BroadcastAudio()"]
 
     mix --> decode["FDK Decode → PCM"]
-    decode --> gain["Apply per-channel gain"]
-    gain --> accum["Accumulate in mix buffer<br/>(wait for all channels or 50ms deadline)"]
+    decode --> trim["Apply per-channel input trim<br/>(−20 to +20 dB)"]
+    trim --> eq["3-band Parametric EQ<br/>(RBJ peakingEQ biquad)"]
+    eq --> comp["Single-band Compressor<br/>(envelope follower)"]
+    comp --> fader["Apply per-channel fader gain"]
+    fader --> accum["Accumulate in mix buffer<br/>(wait for all channels or 50ms deadline)"]
     accum --> sum["Sum + master gain"]
     sum --> limiter["Brickwall limiter (−1 dBFS)"]
     limiter --> encode["FDK Encode → AAC"]
@@ -402,9 +405,13 @@ flowchart TD
     enrich --> rec["Merge RecordingStatus"]
     enrich --> srt["Merge SRTOutputStatus"]
     enrich --> gfx["Merge GraphicsState"]
+    enrich --> rpl["Merge ReplayState"]
+    enrich --> ops["Merge Operators + Locks"]
     rec --> pub["ChannelPublisher.Publish(enrichedState)"]
     srt --> pub
     gfx --> pub
+    rpl --> pub
+    ops --> pub
     pub --> json["JSON marshal → buffered channel (64 slots)"]
     json --> prism["Prism ControlCh → MoQ 'control' track"]
     prism --> wt["Browser WebTransport subscriber"]
@@ -416,11 +423,13 @@ flowchart TD
 -- a browser connecting mid-session receives the full current state in
 the first MoQ group.
 
-**Multiple producers.** Three subsystems trigger state broadcasts:
+**Multiple producers.** Five subsystems trigger state broadcasts:
 1. **Switcher** -- cut, preview, transition start/complete, health
 2. **OutputManager** -- recording start/stop, SRT connect/disconnect,
    ring buffer overflow
 3. **Compositor** -- graphics on/off, fade position
+4. **ReplayManager** -- mark-in/out, playback start/stop, progress
+5. **SessionManager** -- operator connect/disconnect, lock acquire/release
 
 The `ChannelPublisher` handles channel-full backpressure by dropping the
 oldest message. This is safe because every message is a full snapshot.
@@ -431,10 +440,386 @@ browser's `ControlRoomStore.applyUpdate` ignores updates with
 newer MoQ-delivered state.
 
 **State enrichment pipeline.** The `enrichState` function in `main.go`
-patches the base switcher state with recording, SRT, and graphics status
-from their respective managers before broadcast. The compositor uses a
-`gfxOverride` parameter to avoid calling `compositor.Status()` from
-within its own lock (which would deadlock).
+patches the base switcher state with recording, SRT, graphics, replay,
+and operator/lock status from their respective managers before broadcast.
+The compositor uses a `gfxOverride` parameter to avoid calling
+`compositor.Status()` from within its own lock (which would deadlock).
+Operator state includes a list of registered operators with connection
+status, plus a map of active subsystem locks (holder ID, holder name,
+acquired timestamp). Replay state includes player state, mark points,
+playback progress, and per-source buffer statistics.
+
+
+### 2.8 Stinger Transitions (`stinger/`)
+
+Stinger transitions overlay an animated graphic sequence (e.g. a logo
+wipe) on top of the source transition. The stinger store manages
+pre-decoded PNG sequences on disk, and the transition engine composites
+them with per-pixel alpha at blend time.
+
+```mermaid
+flowchart TD
+    upload["POST /api/stinger/{name}/upload<br/>(zip of PNG sequence)"] --> validate["validateName()<br/>(path traversal prevention)"]
+    validate --> extract["Extract PNGs from zip<br/>(base name only, no subdirs)"]
+    extract --> decode["loadPNGFrame(): PNG → RGBA → YUV420 + alpha<br/>(BT.709 colorspace)"]
+    decode --> store["StingerStore.clips[name]<br/>(pre-decoded StingerClip)"]
+    store --> limit{"maxClips<br/>reached?"}
+    limit -->|Yes| reject["ErrMaxClipsReached"]
+    limit -->|No| ready["Clip ready for use"]
+
+    ready --> play["StartTransition(type='stinger')"]
+    play --> engine["TransitionEngine.IngestFrame()"]
+    engine --> pos["currentPosition() → smoothstep"]
+    pos --> frame["clip.FrameAt(position)<br/>(index into frame array)"]
+    frame --> scale{"Stinger resolution<br/>matches video?"}
+    scale -->|No| resize["Bilinear YUV420 scaler"]
+    scale -->|Yes| blend
+    resize --> blend["BlendStinger(baseYUV, stingerYUV, alpha)<br/>(per-pixel alpha composite in YUV420)"]
+    blend --> cut{"position ≥ cutPoint?"}
+    cut -->|No| base["Base = source A"]
+    cut -->|Yes| base2["Base = source B"]
+```
+
+**Pre-decoded storage.** Each PNG frame is converted at upload time to a
+`StingerFrame` containing YUV420 planar data (BT.709) and a per-luma-pixel
+alpha map (`[]byte`, 0-255). This avoids per-frame RGBA-to-YUV conversion
+during live transitions.
+
+**Per-pixel alpha compositing.** `BlendStinger` composites the stinger
+overlay onto the base source in YUV420 domain. Each luma pixel is blended
+as `out = base*(1-a/255) + stinger*(a/255)`. Chroma planes are blended
+using the average alpha of the corresponding 2x2 luma block.
+
+**Cut point.** The configurable cut point (0.0-1.0, default 0.5)
+determines when the base source switches from A to B. Before the cut
+point, source A is the background; after, source B appears under the
+stinger overlay.
+
+**Path traversal prevention.** `validateName()` rejects empty strings,
+`.`, `..`, paths containing `/` or `\`, and any name where
+`filepath.Base(name) != name`. Zip extraction uses only the base name of
+each entry, ignoring directory components.
+
+**Memory limit.** The `maxClips` parameter (default 16) caps the number
+of loaded clips. A 1080p 30-frame stinger clip uses approximately 156 MB
+of memory (YUV420 + alpha planes).
+
+
+### 2.9 Frame Synchronizer (`switcher/frame_sync.go`)
+
+The optional `FrameSynchronizer` aligns frames from multiple sources to a
+common tick boundary, ensuring consistent timing in the program output.
+Without it, sources arrive at their own cadence and may drift relative to
+each other.
+
+```mermaid
+flowchart TD
+    subgraph ingest["Frame Ingestion (per source)"]
+        sv1["sourceViewer A<br/>SendVideo()"] --> iv1["IngestVideo('A', frame)"]
+        sv2["sourceViewer B<br/>SendVideo()"] --> iv2["IngestVideo('B', frame)"]
+        iv1 --> ring1["2-frame ring buffer A<br/>(newest-wins)"]
+        iv2 --> ring2["2-frame ring buffer B<br/>(newest-wins)"]
+    end
+
+    ticker["Background Ticker<br/>(program frame rate)"] --> tick["releaseTick()"]
+    tick --> pop1["popNewestVideo(A)"]
+    tick --> pop2["popNewestVideo(B)"]
+
+    pop1 --> check1{"New frame?"}
+    check1 -->|Yes| use1["Use new frame<br/>Update lastVideo"]
+    check1 -->|No| freeze1["Repeat lastVideo<br/>(freeze behavior)"]
+
+    pop2 --> check2{"New frame?"}
+    check2 -->|Yes| use2["Use new frame"]
+    check2 -->|No| freeze2["Repeat lastVideo"]
+
+    use1 --> rewrite["Rewrite PTS to<br/>monotonic 90 kHz clock"]
+    freeze1 --> rewrite
+    use2 --> rewrite
+    freeze2 --> rewrite
+
+    rewrite --> deliver["Deliver outside mutex<br/>(onVideo / onAudio callbacks)"]
+    deliver --> sw["Switcher.handleVideoFrame()"]
+```
+
+**Freerun sync.** The synchronizer runs as a freewheel ticker at the
+program frame rate. On each tick, it pops the newest buffered frame from
+each source's 2-slot ring buffer. If no new frame arrived since the last
+tick, the previous frame is repeated (freeze behavior).
+
+**PTS rewriting.** Frame PTS values are overwritten with a monotonic
+timestamp derived from the tick counter and tick rate, converted to 90 kHz
+MPEG-TS clock units: `tickNum * tickRate * 90000 / 1e9`. This ensures all
+sources share a common timebase in the output.
+
+**Audio freeze limit.** Repeating encoded AAC frames produces an audible
+stutter. After 2 consecutive ticks with no new audio frame from a source,
+the synchronizer stops emitting audio for that source and lets downstream
+handle silence. This prevents an AAC glitch loop that sounds worse than
+a brief dropout.
+
+**Lock-free delivery.** Frame releases are collected under the mutex, but
+the actual `onVideo`/`onAudio` callbacks are invoked after the mutex is
+released. This prevents deadlocks when downstream handlers (the switcher)
+acquire their own locks.
+
+**Activation.** The synchronizer is enabled via the `--frame-sync` flag
+at startup. When disabled, source frames flow directly from sourceViewers
+to the switcher without buffering or PTS rewriting.
+
+
+### 2.10 Advanced Audio Processing (`audio/eq.go`, `audio/compressor.go`)
+
+The audio pipeline includes per-channel parametric EQ and compression,
+inserted between the input trim and the fader in the processing chain:
+
+```
+Trim (−20 to +20 dB) → EQ (3-band) → Compressor → Fader → Mix → Master → Limiter → Encode
+```
+
+**3-band parametric EQ.** Each channel has three independent EQ bands
+(Low, Mid, High) implemented as RBJ Audio EQ Cookbook peakingEQ biquad
+filters, processed using Direct Form II Transposed for numerical
+stability.
+
+| Band | Frequency Range | Default Center | Gain | Q |
+|---|---|---|---|---|
+| Low | 80-1000 Hz | 250 Hz | +/-12 dB | 0.5-4.0 |
+| Mid | 200-8000 Hz | 1000 Hz | +/-12 dB | 0.5-4.0 |
+| High | 1000-16000 Hz | 4000 Hz | +/-12 dB | 0.5-4.0 |
+
+Biquad coefficients are recalculated only when EQ parameters change (via
+`SetBand`), not on every audio frame. Each band can be individually
+enabled/disabled. The `IsBypassed()` method returns true when all bands
+are at 0 dB gain, allowing the passthrough optimization to remain active.
+
+**Single-band compressor.** Each channel has a compressor with an
+exponential envelope follower (same pattern as `limiter.go`). Parameters:
+
+| Parameter | Range | Default |
+|---|---|---|
+| Threshold | -40 to 0 dBFS | 0 dBFS (off) |
+| Ratio | 1:1 to 20:1 | 1:1 (bypass) |
+| Attack | 0.1 to 100 ms | 5 ms |
+| Release | 10 to 1000 ms | 100 ms |
+| Makeup Gain | 0 to 24 dB | 0 dB |
+
+`GainReduction()` is exported for UI metering display. `IsBypassed()`
+returns true when ratio is 1:1 and makeup gain is 0 dB.
+
+**Passthrough preservation.** The passthrough optimization (zero-CPU
+audio when a single source is at unity gain) requires all channels to
+have EQ bypassed and compressor bypassed in addition to the existing 0 dB
+gain / unmuted checks.
+
+
+### 2.11 Instant Replay (`replay/`)
+
+The instant replay system maintains per-source circular buffers of
+encoded H.264 frames and can play back marked clips at configurable
+speeds (0.25x-1.0x) with frame duplication for slow motion.
+
+```mermaid
+flowchart TD
+    subgraph capture["Capture (per source)"]
+        relay1["Source Relay 'cam1'"] -->|AddViewer| rv1["replayViewer<br/>(distribution.Viewer)"]
+        relay2["Source Relay 'cam2'"] -->|AddViewer| rv2["replayViewer"]
+        rv1 -->|"SendVideo → deep copy"| buf1["replayBuffer<br/>(circular, GOP-aligned)"]
+        rv2 -->|"SendVideo → deep copy"| buf2["replayBuffer"]
+    end
+
+    subgraph playback["Playback"]
+        mark["POST /api/replay/mark-in<br/>POST /api/replay/mark-out"] --> extract["buf.ExtractClip(inTime, outTime)<br/>(GOP-aligned, deep copy)"]
+        extract --> play["POST /api/replay/play<br/>{source, speed, loop}"]
+        play --> player["replayPlayer"]
+
+        subgraph pipeline["Player Pipeline"]
+            player --> decode["Decode all clip frames<br/>(FFmpeg H.264 → YUV420)"]
+            decode --> sort["Sort by PTS<br/>(B-frame reorder)"]
+            sort --> fps["Estimate source FPS<br/>(from PTS span)"]
+            fps --> enc["Create encoder<br/>(bitrate from resolution)"]
+            enc --> dup["Output with frame duplication<br/>(dupCount = ceil(1/speed))"]
+            dup --> pace["Pace at source FPS<br/>(time.NewTimer per frame)"]
+        end
+
+        pace --> relay["Replay Relay<br/>(BroadcastVideo)"]
+        relay --> browser["Browser subscribes<br/>to 'replay' stream"]
+    end
+```
+
+**Per-source circular buffers.** Each source registered for replay gets a
+`replayBuffer` with configurable duration (1-300 seconds, default 60,
+set via `--replay-buffer-secs`). The buffer stores deep copies of encoded
+video frames (AVC1 wire data + SPS/PPS for keyframes).
+
+**GOP-aligned storage.** Keyframes start new `gopDescriptor` entries.
+When the buffer exceeds its maximum duration, the oldest complete GOP is
+removed. At least one GOP is always retained. After trimming, frame and
+GOP slices are compacted to release old backing array memory.
+
+**Wall-clock mark points.** Mark-in and mark-out use `time.Now()`, not
+source PTS values. This simplifies the operator workflow -- the operator
+presses mark-in/out based on real time, and `ExtractClip` finds the
+GOP-aligned frame range that spans the requested interval.
+
+**Player pipeline.** The `replayPlayer` is created per-Play and destroyed
+on completion. It:
+1. Decodes all clip frames via FFmpeg (full decode pass).
+2. Sorts decoded frames by PTS for display order (handles B-frame
+   reordering).
+3. Estimates source FPS from PTS span, clamped to 10-120 fps.
+4. Creates an encoder with resolution-appropriate bitrate (2/4/8 Mbps).
+5. Outputs frames with duplication for slow motion: `dupCount =
+   ceil(1/speed)`. At 0.5x, each frame is emitted twice; at 0.25x, four
+   times.
+6. Paces output at the source frame rate using a reusable `time.Timer`.
+
+**Replay relay.** The replay output is published to a dedicated relay
+registered as `server.RegisterStream("replay")`. Browsers subscribe to
+this MoQ stream to display the replay in the preview or program window.
+
+**Audio.** Audio is muted in v1. The `replayViewer.SendAudio` is a no-op
+that counts dropped frames for stats reporting.
+
+**Loop support.** When `loop` is true, the player restarts from the
+beginning of the clip after completing playback, continuing until
+`Stop()` is called.
+
+
+### 2.12 Multi-Operator System (`operator/`)
+
+The multi-operator system provides role-based access control and
+subsystem locking for environments with multiple operators (e.g. a
+director, audio engineer, and graphics operator working simultaneously).
+
+```mermaid
+flowchart TD
+    browser["Browser POST /api/switch/cut<br/>Authorization: Bearer {token}"] --> mw["Operator Middleware"]
+
+    mw --> check1{"Operators<br/>registered?"}
+    check1 -->|No| pass["Pass through<br/>(backward compatible)"]
+
+    check1 -->|Yes| check2{"GET request?"}
+    check2 -->|Yes| pass
+
+    check2 -->|No| check3{"/api/operator/*<br/>route?"}
+    check3 -->|Yes| pass
+
+    check3 -->|No| check4{"Endpoint mapped<br/>to subsystem?"}
+    check4 -->|No| pass
+
+    check4 -->|Yes| token["Extract bearer token<br/>from Authorization header"]
+    token --> identify["store.GetByToken(token)"]
+    identify -->|Not found| deny403["403 Forbidden<br/>'operator not identified'"]
+    identify -->|Found| role["CanCommand(role, subsystem)?"]
+    role -->|No| deny403b["403 Forbidden<br/>'role cannot command subsystem'"]
+    role -->|Yes| lock["sm.CheckLock(operatorID, subsystem)"]
+    lock -->|Locked by other| deny409["409 Conflict<br/>'subsystem locked by another operator'"]
+    lock -->|Unlocked or owned| handler["Handler executes"]
+```
+
+**Four roles.** Each operator is assigned a role at registration:
+
+| Role | Permitted Subsystems |
+|---|---|
+| Director | switching, audio, graphics, replay, output |
+| Audio | audio |
+| Graphics | graphics |
+| Viewer | (none -- read-only) |
+
+**Five lockable subsystems.** Operators can lock subsystems to prevent
+conflicting commands from other operators:
+
+| Subsystem | Affected Endpoints |
+|---|---|
+| `switching` | cut, preview, transition, FTB, macros, source config |
+| `audio` | level, mute, AFV, trim, EQ, compressor, master |
+| `graphics` | on, off, auto-on, auto-off, frame upload |
+| `replay` | mark-in, mark-out, play, stop |
+| `output` | recording start/stop, SRT start/stop |
+
+Locks are acquired via `POST /api/operator/{id}/lock` and released via
+`DELETE`. A director can force-release any operator's lock.
+
+**Per-operator bearer tokens.** Registration (`POST /api/operator/register`)
+generates a 64-character hex token (32 random bytes). Tokens are persisted
+in `~/.switchframe/operators.json` using the atomic temp-file + rename
+pattern (matching `macro/store.go` and `preset/store.go`).
+
+**Session management.** The `SessionManager` tracks active operator
+connections with heartbeats. Sessions become stale after 60 seconds
+without a heartbeat and are cleaned up every 15 seconds. When a session
+is removed (disconnect or stale timeout), all locks held by that
+operator are automatically released.
+
+**Backward compatibility.** When no operators are registered
+(`store.Count() == 0`), the middleware passes all requests through
+without any checks. This means the operator system is fully opt-in --
+existing single-operator deployments work unchanged.
+
+
+### 2.13 Macro System (`macro/`)
+
+The macro system automates sequences of switcher operations. Macros are
+stored on disk and executed sequentially with cancellation support.
+
+```mermaid
+flowchart TD
+    create["POST /api/macros<br/>{name, steps: [...]}"] --> store["macro.Store<br/>(~/.switchframe/macros.json)"]
+    store --> persist["Atomic write<br/>(temp file + rename)"]
+
+    trigger["Ctrl+1-9 in browser<br/>or POST /api/macros/{name}/run"] --> runner["macro.Run(ctx, macro, target)"]
+
+    runner --> loop["For each step"]
+    loop --> ctxcheck{"ctx.Done()?"}
+    ctxcheck -->|Yes| abort["Return ctx.Err()"]
+    ctxcheck -->|No| exec["executeStep()"]
+
+    exec --> action{"step.Action"}
+    action -->|cut| cut["target.Cut(source)"]
+    action -->|preview| preview["target.SetPreview(source)"]
+    action -->|transition| trans["target.StartTransition(source, type, durationMs)"]
+    action -->|wait| wait["time.After(ms) + ctx.Done select"]
+    action -->|set_audio| audio["target.SetLevel(source, level)"]
+
+    cut --> loop
+    preview --> loop
+    trans --> loop
+    wait --> loop
+    audio --> loop
+```
+
+**File-based storage.** Macros are persisted at
+`~/.switchframe/macros.json` using the same pattern as `preset/store.go`:
+RWMutex for concurrency, atomic temp-file + rename for crash safety.
+
+**MacroTarget interface.** The `MacroTarget` interface abstracts the
+switcher and mixer for testability:
+
+```go
+type MacroTarget interface {
+    Cut(ctx context.Context, source string) error
+    SetPreview(ctx context.Context, source string) error
+    StartTransition(ctx context.Context, source string, transType string, durationMs int) error
+    SetLevel(ctx context.Context, source string, level float64) error
+}
+```
+
+**Five action types:**
+- `cut` -- switch program to a source
+- `preview` -- set preview source
+- `transition` -- start a mix/dip/wipe transition (default 1000ms)
+- `wait` -- pause for N milliseconds (cancelable via context)
+- `set_audio` -- set audio level for a source channel
+
+**Sequential execution.** Steps run in order. The `wait` action uses
+`time.After` combined with a `ctx.Done` select, allowing cancellation
+to abort mid-wait. If any step returns an error, execution halts with
+the step index and error.
+
+**Keyboard triggers.** In the browser, `Ctrl+1` through `Ctrl+9` trigger
+macros by position via the `KeyboardHandler`. The REST API also supports
+`POST /api/macros/{name}/run` for programmatic invocation.
 
 
 ## 3. Frontend Architecture
@@ -575,6 +960,7 @@ layout-independent shortcuts:
 |---|---|
 | `1`-`9` | Set preview source (by position) |
 | `Shift+1`-`9` | Hot-punch (direct cut to source) |
+| `Ctrl+1`-`9` | Run macro (by position) |
 | `Space` | CUT (preview → program) |
 | `Enter` | AUTO transition (dissolve/dip) |
 | `F1` | Fade to black (toggle) |

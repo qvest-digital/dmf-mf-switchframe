@@ -127,6 +127,44 @@ type GraphicsState struct {
 	FadePosition float64 `json:"fadePosition,omitempty"`
 }
 
+// ReplayState is the JSON-serializable state for the instant replay system,
+// included in ControlRoomState for the browser.
+type ReplayState struct {
+	State      string             `json:"state"`
+	Source     string             `json:"source,omitempty"`
+	Speed      float64            `json:"speed,omitempty"`
+	Loop       bool               `json:"loop,omitempty"`
+	Position   float64            `json:"position,omitempty"`
+	MarkIn     *int64             `json:"markIn,omitempty"`     // Unix ms
+	MarkOut    *int64             `json:"markOut,omitempty"`    // Unix ms
+	MarkSource string             `json:"markSource,omitempty"`
+	Buffers    []ReplayBufferInfo `json:"buffers,omitempty"`
+}
+
+// ReplayBufferInfo describes the buffer state for a single replay source.
+type ReplayBufferInfo struct {
+	Source       string  `json:"source"`
+	FrameCount   int     `json:"frameCount"`
+	GOPCount     int     `json:"gopCount"`
+	DurationSecs float64 `json:"durationSecs"`
+	BytesUsed    int64   `json:"bytesUsed"`
+}
+
+// OperatorInfo describes a registered operator for ControlRoomState broadcast.
+type OperatorInfo struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	Connected bool   `json:"connected"`
+}
+
+// LockInfo describes an active subsystem lock for ControlRoomState broadcast.
+type LockInfo struct {
+	HolderID   string `json:"holderId"`
+	HolderName string `json:"holderName"`
+	AcquiredAt int64  `json:"acquiredAt"` // Unix ms
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -147,6 +185,10 @@ type ControlRoomState struct {
 	Sources              map[string]SourceInfo     `json:"sources"`
 	Presets              []PresetInfo              `json:"presets,omitempty"`
 	Graphics             *GraphicsState            `json:"graphics,omitempty"`
+	Replay               *ReplayState              `json:"replay,omitempty"`
+	Operators            []OperatorInfo            `json:"operators,omitempty"`
+	Locks                map[string]LockInfo       `json:"locks,omitempty"`
+	LastChangedBy        string                    `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                    `json:"seq"`
 	Timestamp            int64                     `json:"timestamp"`
 }

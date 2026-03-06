@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -13,11 +13,11 @@ export class SwitchApiError extends Error {
 
 function getAuthToken(): string | null {
 	if (typeof sessionStorage === 'undefined') return null;
-	return sessionStorage.getItem('switchframe_api_token');
+	return sessionStorage.getItem('switchframe_operator_token');
 }
 
 export function setAuthToken(token: string): void {
-	sessionStorage.setItem('switchframe_api_token', token);
+	sessionStorage.setItem('switchframe_operator_token', token);
 }
 
 function authHeaders(): Record<string, string> {
@@ -298,6 +298,73 @@ export function deleteSourceKey(source: string): Promise<void> {
 	return request(`/api/sources/${encodeURIComponent(source)}/key`, {
 		method: 'DELETE',
 	});
+}
+
+// --- Replay ---
+
+export function replayMarkIn(source: string): Promise<ControlRoomState> {
+	return post('/api/replay/mark-in', { source });
+}
+
+export function replayMarkOut(source: string): Promise<ControlRoomState> {
+	return post('/api/replay/mark-out', { source });
+}
+
+export function replayPlay(source: string, speed: number, loop: boolean): Promise<ControlRoomState> {
+	return post('/api/replay/play', { source, speed, loop });
+}
+
+export function replayStop(): Promise<ControlRoomState> {
+	return post('/api/replay/stop', {});
+}
+
+export function replayStatus(): Promise<ReplayState> {
+	return request('/api/replay/status');
+}
+
+export function replaySources(): Promise<ReplayBufferInfo[]> {
+	return request('/api/replay/sources');
+}
+
+// --- Operator API ---
+
+export interface OperatorRegistration {
+	id: string;
+	name: string;
+	role: OperatorRole;
+	token: string;
+}
+
+export function operatorRegister(name: string, role: OperatorRole): Promise<OperatorRegistration> {
+	return post('/api/operator/register', { name, role });
+}
+
+export function operatorReconnect(): Promise<{ id: string; name: string; role: OperatorRole }> {
+	return post('/api/operator/reconnect', {});
+}
+
+export function operatorHeartbeat(): Promise<{ ok: boolean }> {
+	return post('/api/operator/heartbeat', {});
+}
+
+export function operatorList(): Promise<OperatorInfo[]> {
+	return request('/api/operator/list');
+}
+
+export function operatorLock(subsystem: string): Promise<{ ok: boolean }> {
+	return post('/api/operator/lock', { subsystem });
+}
+
+export function operatorUnlock(subsystem: string): Promise<{ ok: boolean }> {
+	return post('/api/operator/unlock', { subsystem });
+}
+
+export function operatorForceUnlock(subsystem: string): Promise<{ ok: boolean }> {
+	return post('/api/operator/force-unlock', { subsystem });
+}
+
+export function operatorDelete(id: string): Promise<{ ok: boolean }> {
+	return request(`/api/operator/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 /** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */

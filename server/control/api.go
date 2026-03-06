@@ -12,14 +12,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
+	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
+	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -103,6 +106,21 @@ func WithKeyer(kp *graphics.KeyProcessor) APIOption {
 	return func(a *API) { a.keyer = kp }
 }
 
+// WithReplayManager attaches a replay manager to the API.
+func WithReplayManager(rm *replay.Manager) APIOption {
+	return func(a *API) { a.replayMgr = rm }
+}
+
+// WithOperatorStore attaches an operator store to the API.
+func WithOperatorStore(s *operator.Store) APIOption {
+	return func(a *API) { a.operatorStore = s }
+}
+
+// WithSessionManager attaches a session manager to the API.
+func WithSessionManager(sm *operator.SessionManager) APIOption {
+	return func(a *API) { a.sessionMgr = sm }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher     *switcher.Switcher
@@ -113,8 +131,13 @@ type API struct {
 	compositor   *graphics.Compositor
 	stingerStore *stinger.StingerStore
 	macroStore   *macro.Store
-	keyer        *graphics.KeyProcessor
-	mux          *http.ServeMux
+	keyer         *graphics.KeyProcessor
+	replayMgr     *replay.Manager
+	operatorStore *operator.Store
+	sessionMgr    *operator.SessionManager
+	mux           *http.ServeMux
+	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
+	lastOperator  atomic.Pointer[string]
 }
 
 // NewAPI creates an API that delegates to sw.
@@ -126,6 +149,43 @@ func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
 	a.registerRoutes()
 	return a
 }
+
+// SetEnrichFunc sets the function used to enrich switcher state with output,
+// graphics, operator, and replay information before returning it to API clients.
+func (a *API) SetEnrichFunc(fn func(internal.ControlRoomState) internal.ControlRoomState) {
+	a.enrichFn = fn
+}
+
+// enrichedState returns the current switcher state, enriched with output,
+// graphics, operator, and replay information if an enrich function is set.
+func (a *API) enrichedState() internal.ControlRoomState {
+	s := a.switcher.State()
+	if a.enrichFn != nil {
+		return a.enrichFn(s)
+	}
+	return s
+}
+
+// setLastOperator extracts the bearer token from the request and stores
+// the corresponding operator name as the last operator who made a change.
+func (a *API) setLastOperator(r *http.Request) {
+	if a.operatorStore == nil {
+		return
+	}
+	token := operator.ExtractBearerToken(r)
+	if op, err := a.operatorStore.GetByToken(token); err == nil {
+		a.lastOperator.Store(&op.Name)
+	}
+}
+
+// LastOperator returns the name of the last operator who made a state change,
+// or nil if no operator has been recorded.
+func (a *API) LastOperator() *string { return a.lastOperator.Load() }
+
+// SetLastOperator sets the last operator name directly. Used by non-handler
+// callbacks (output, compositor, replay, session) to clear the operator
+// since those changes aren't triggered by a user action.
+func (a *API) SetLastOperator(name *string) { a.lastOperator.Store(name) }
 
 // Mux returns the internal ServeMux with all routes registered.
 func (a *API) Mux() *http.ServeMux { return a.mux }
@@ -196,19 +256,31 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/sources/{source}/key", a.handleGetSourceKey)
 		mux.HandleFunc("DELETE /api/sources/{source}/key", a.handleDeleteSourceKey)
 	}
+	if a.operatorStore != nil && a.sessionMgr != nil {
+		a.registerOperatorRoutes(mux)
+	}
+	if a.replayMgr != nil {
+		mux.HandleFunc("POST /api/replay/mark-in", a.handleReplayMarkIn)
+		mux.HandleFunc("POST /api/replay/mark-out", a.handleReplayMarkOut)
+		mux.HandleFunc("POST /api/replay/play", a.handleReplayPlay)
+		mux.HandleFunc("POST /api/replay/stop", a.handleReplayStop)
+		mux.HandleFunc("GET /api/replay/status", a.handleReplayStatus)
+		mux.HandleFunc("GET /api/replay/sources", a.handleReplaySources)
+	}
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
 
 // handleCut performs a hard cut to the specified source.
 func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	var req switchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.switcher.Cut(r.Context(), req.Source); err != nil {
@@ -222,18 +294,19 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handlePreview sets the preview source without affecting the program output.
 func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	var req switchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.switcher.SetPreview(r.Context(), req.Source); err != nil {
@@ -247,7 +320,7 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // transitionRequest is the JSON body for transition commands.
@@ -261,34 +334,35 @@ type transitionRequest struct {
 
 // handleTransition starts a mix, dip, wipe, or stinger transition to the specified source.
 func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	var req transitionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Type != "mix" && req.Type != "dip" && req.Type != "wipe" && req.Type != "stinger" {
-		http.Error(w, `{"error":"type must be 'mix', 'dip', 'wipe', or 'stinger'"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "type must be 'mix', 'dip', 'wipe', or 'stinger'")
 		return
 	}
 	if req.Type == "wipe" {
 		wd := transition.WipeDirection(req.WipeDirection)
 		if !transition.ValidWipeDirections[wd] {
-			http.Error(w, `{"error":"wipeDirection must be one of: h-left, h-right, v-top, v-bottom, box-center-out, box-edges-in"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "wipeDirection must be one of: h-left, h-right, v-top, v-bottom, box-center-out, box-edges-in")
 			return
 		}
 	}
 	if req.Type == "stinger" {
 		if a.stingerStore == nil {
-			http.Error(w, `{"error":"stinger store not configured"}`, http.StatusNotImplemented)
+			writeJSONError(w, http.StatusNotImplemented, "stinger store not configured")
 			return
 		}
 		if req.StingerName == "" {
-			http.Error(w, `{"error":"stingerName required for stinger transition"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "stingerName required for stinger transition")
 			return
 		}
 	}
 	if req.DurationMs < 100 || req.DurationMs > 5000 {
-		http.Error(w, `{"error":"durationMs must be 100-5000"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "durationMs must be 100-5000")
 		return
 	}
 
@@ -297,7 +371,7 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "stinger" {
 		clip, ok := a.stingerStore.Get(req.StingerName)
 		if !ok {
-			http.Error(w, `{"error":"stinger clip not found"}`, http.StatusNotFound)
+			writeJSONError(w, http.StatusNotFound, "stinger clip not found")
 			return
 		}
 		sd := clipToStingerData(clip)
@@ -319,7 +393,7 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // clipToStingerData converts a stinger.StingerClip to transition.StingerData.
@@ -346,13 +420,14 @@ type transitionPositionRequest struct {
 
 // handleTransitionPosition sets the T-bar position during an active transition.
 func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	var req transitionPositionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Position < 0 || req.Position > 1 {
-		http.Error(w, `{"error":"position must be 0-1"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "position must be 0-1")
 		return
 	}
 	if err := a.switcher.SetTransitionPosition(r.Context(), req.Position); err != nil {
@@ -362,11 +437,12 @@ func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleFTB starts or toggles a Fade to Black transition.
 func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if err := a.switcher.FadeToBlack(r.Context()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusInternalServerError
@@ -378,13 +454,13 @@ func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleState returns the current ControlRoomState as JSON.
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // labelRequest is the JSON body for the set-label command.
@@ -394,10 +470,11 @@ type labelRequest struct {
 
 // handleSetLabel sets a human-readable label on a source.
 func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	key := r.PathValue("key")
 	var req labelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if err := a.switcher.SetLabel(r.Context(), key, req.Label); err != nil {
@@ -407,7 +484,7 @@ func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // delayRequest is the JSON body for the set-delay command.
@@ -417,10 +494,11 @@ type delayRequest struct {
 
 // handleSetDelay sets the input delay for a source (0-500ms).
 func (a *API) handleSetDelay(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	key := r.PathValue("key")
 	var req delayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if err := a.switcher.SetSourceDelay(key, req.DelayMs); err != nil {
@@ -436,12 +514,12 @@ func (a *API) handleSetDelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleSources returns the map of registered sources and their info.
 func (a *API) handleSources(w http.ResponseWriter, r *http.Request) {
-	state := a.switcher.State()
+	state := a.enrichedState()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(state.Sources)
 }
@@ -479,17 +557,18 @@ type audioTrimRequest struct {
 
 // handleAudioTrim sets the input trim for a source channel.
 func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioTrimRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.mixer.SetTrim(req.Source, req.Trim); err != nil {
@@ -503,22 +582,23 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleAudioLevel sets the audio level for a source channel.
 func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioLevelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.mixer.SetLevel(req.Source, req.Level); err != nil {
@@ -528,22 +608,23 @@ func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleAudioMute sets the mute state for a source channel.
 func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioMuteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.mixer.SetMuted(req.Source, req.Muted); err != nil {
@@ -553,22 +634,23 @@ func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleAudioAFV sets the audio-follow-video state for a source channel.
 func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioAFVRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	if err := a.mixer.SetAFV(req.Source, req.AFV); err != nil {
@@ -578,23 +660,24 @@ func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleAudioMaster sets the master output level.
 func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioMasterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	a.mixer.SetMasterLevel(req.Level)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // --- EQ & Compressor API ---
@@ -610,18 +693,19 @@ type eqRequest struct {
 
 // handleSetEQ sets a single EQ band for a source channel.
 func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	source := r.PathValue("source")
 	if source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	var req eqRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if err := a.mixer.SetEQ(source, req.Band, req.Frequency, req.Gain, req.Q, req.Enabled); err != nil {
@@ -638,18 +722,18 @@ func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleGetEQ returns the current EQ settings for a source channel.
 func (a *API) handleGetEQ(w http.ResponseWriter, r *http.Request) {
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	source := r.PathValue("source")
 	if source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	bands, err := a.mixer.GetEQ(source)
@@ -684,18 +768,19 @@ type compressorResponse struct {
 
 // handleSetCompressor sets the compressor parameters for a source channel.
 func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	source := r.PathValue("source")
 	if source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	var req compressorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if err := a.mixer.SetCompressor(source, req.Threshold, req.Ratio, req.Attack, req.Release, req.MakeupGain); err != nil {
@@ -713,18 +798,18 @@ func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleGetCompressor returns the current compressor settings and gain reduction for a source channel.
 func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 	if a.mixer == nil {
-		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	source := r.PathValue("source")
 	if source == "" {
-		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "source required")
 		return
 	}
 	threshold, ratio, attack, release, makeupGain, gainReduction, err := a.mixer.GetCompressor(source)
@@ -756,13 +841,14 @@ type recordingStartRequest struct {
 
 // handleRecordingStart begins recording program output to a file.
 func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	var req recordingStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
@@ -774,7 +860,7 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 	// Validate output directory: must be absolute and cleaned path
 	outDir := filepath.Clean(req.OutputDir)
 	if !filepath.IsAbs(outDir) {
-		http.Error(w, `{"error":"outputDir must be an absolute path"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "outputDir must be an absolute path")
 		return
 	}
 
@@ -805,8 +891,9 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 
 // handleRecordingStop stops the active recording.
 func (a *API) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	if err := a.outputMgr.StopRecording(); err != nil {
@@ -826,7 +913,7 @@ func (a *API) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
 // handleRecordingStatus returns the current recording status.
 func (a *API) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -835,25 +922,26 @@ func (a *API) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
 
 // handleSRTStart begins SRT output with the given configuration.
 func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	var config output.SRTOutputConfig
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if config.Mode != "caller" && config.Mode != "listener" {
-		http.Error(w, `{"error":"mode must be 'caller' or 'listener'"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "mode must be 'caller' or 'listener'")
 		return
 	}
 	if config.Port <= 0 {
-		http.Error(w, `{"error":"port is required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "port is required")
 		return
 	}
 	if config.Mode == "caller" && config.Address == "" {
-		http.Error(w, `{"error":"address is required for caller mode"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "address is required for caller mode")
 		return
 	}
 	if err := a.outputMgr.StartSRTOutput(config); err != nil {
@@ -872,8 +960,9 @@ func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
 
 // handleSRTStop stops the active SRT output.
 func (a *API) handleSRTStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	if err := a.outputMgr.StopSRTOutput(); err != nil {
@@ -893,7 +982,7 @@ func (a *API) handleSRTStop(w http.ResponseWriter, r *http.Request) {
 // handleSRTStatus returns the current SRT output status.
 func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
 	if a.outputMgr == nil {
-		http.Error(w, `{"error":"output manager not configured"}`, http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -904,7 +993,7 @@ func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
 // program output. Returns 204 No Content if no thumbnail is available.
 func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
 	if a.outputMgr == nil {
-		http.Error(w, "output not configured", http.StatusNotImplemented)
+		writeJSONError(w, http.StatusNotImplemented, "output not configured")
 		return
 	}
 	jpg := a.outputMgr.ConfidenceThumbnail()
@@ -943,17 +1032,18 @@ func (a *API) handleListPresets(w http.ResponseWriter, r *http.Request) {
 
 // handleCreatePreset creates a new preset from the current switcher state.
 func (a *API) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	var req createPresetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, `{"error":"name required"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "name required")
 		return
 	}
 
-	state := a.switcher.State()
+	state := a.enrichedState()
 	snapshot := stateToSnapshot(state)
 
 	p, err := a.presetStore.Create(req.Name, snapshot)
@@ -974,7 +1064,7 @@ func (a *API) handleGetPreset(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	p, ok := a.presetStore.Get(id)
 	if !ok {
-		http.Error(w, `{"error":"preset not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "preset not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -983,10 +1073,11 @@ func (a *API) handleGetPreset(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdatePreset updates a preset's name.
 func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	id := r.PathValue("id")
 	var req updatePresetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
@@ -1014,6 +1105,7 @@ func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 
 // handleDeletePreset deletes a preset by ID.
 func (a *API) handleDeletePreset(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	id := r.PathValue("id")
 	if err := a.presetStore.Delete(id); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -1031,10 +1123,11 @@ func (a *API) handleDeletePreset(w http.ResponseWriter, r *http.Request) {
 
 // handleRecallPreset applies a preset to the switcher and mixer.
 func (a *API) handleRecallPreset(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	id := r.PathValue("id")
 	p, ok := a.presetStore.Get(id)
 	if !ok {
-		http.Error(w, `{"error":"preset not found"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "preset not found")
 		return
 	}
 
@@ -1187,20 +1280,20 @@ func (a *API) handleGraphicsFrame(w http.ResponseWriter, r *http.Request) {
 
 	var req graphicsFrameRequest
 	if err := json.NewDecoder(body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if req.Width <= 0 || req.Height <= 0 {
-		http.Error(w, `{"error":"width and height must be positive"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "width and height must be positive")
 		return
 	}
 	if req.Width > 3840 || req.Height > 2160 {
-		http.Error(w, `{"error":"resolution exceeds 4K limit"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "resolution exceeds 4K limit")
 		return
 	}
 	expected := req.Width * req.Height * 4
 	if len(req.RGBA) != expected {
-		http.Error(w, `{"error":"rgba data size mismatch"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "rgba data size mismatch")
 		return
 	}
 
@@ -1250,7 +1343,7 @@ func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var req stingerCutPointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if err := a.stingerStore.SetCutPoint(name, req.CutPoint); err != nil {
@@ -1331,7 +1424,7 @@ func (a *API) handleSaveMacro(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var m macro.Macro
 	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	m.Name = name // path takes precedence
@@ -1430,11 +1523,11 @@ func (a *API) handleSetSourceKey(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	var cfg graphics.KeyConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if cfg.Type != graphics.KeyTypeChroma && cfg.Type != graphics.KeyTypeLuma {
-		http.Error(w, `{"error":"type must be 'chroma' or 'luma'"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "type must be 'chroma' or 'luma'")
 		return
 	}
 	a.keyer.SetKey(source, cfg)
@@ -1447,7 +1540,7 @@ func (a *API) handleGetSourceKey(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	cfg, ok := a.keyer.GetKey(source)
 	if !ok {
-		http.Error(w, `{"error":"no key configured for source"}`, http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "no key configured for source")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1479,5 +1572,142 @@ func stateToSnapshot(state internal.ControlRoomState) preset.ControlRoomSnapshot
 		TransitionDurationMs: state.TransitionDurationMs,
 		AudioChannels:        channels,
 		MasterLevel:          state.MasterLevel,
+	}
+}
+
+// --- Replay handlers ---
+
+func (a *API) handleReplayMarkIn(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req replay.MarkInRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Source == "" {
+		writeJSONError(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if err := a.replayMgr.MarkIn(req.Source); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(replayErrorCode(err))
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+func (a *API) handleReplayMarkOut(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req replay.MarkOutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Source == "" {
+		writeJSONError(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if err := a.replayMgr.MarkOut(req.Source); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(replayErrorCode(err))
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+func (a *API) handleReplayPlay(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req replay.PlayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Source == "" {
+		writeJSONError(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if req.Speed == 0 {
+		req.Speed = 1.0
+	}
+	if err := a.replayMgr.Play(req.Source, req.Speed, req.Loop); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(replayErrorCode(err))
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+func (a *API) handleReplayStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if err := a.replayMgr.Stop(); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(replayErrorCode(err))
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+func (a *API) handleReplayStatus(w http.ResponseWriter, _ *http.Request) {
+	rs := a.replayMgr.Status()
+	resp := struct {
+		State      string                  `json:"state"`
+		Source     string                  `json:"source,omitempty"`
+		Speed      float64                 `json:"speed,omitempty"`
+		Loop       bool                    `json:"loop,omitempty"`
+		Position   float64                 `json:"position,omitempty"`
+		MarkIn     *int64                  `json:"markIn,omitempty"`
+		MarkOut    *int64                  `json:"markOut,omitempty"`
+		MarkSource string                  `json:"markSource,omitempty"`
+		Buffers    []replay.SourceBufferInfo `json:"buffers,omitempty"`
+	}{
+		State:      string(rs.State),
+		Source:     rs.Source,
+		Speed:      rs.Speed,
+		Loop:       rs.Loop,
+		Position:   rs.Position,
+		MarkSource: rs.MarkSource,
+		Buffers:    rs.Buffers,
+	}
+	if rs.MarkIn != nil {
+		ms := rs.MarkIn.UnixMilli()
+		resp.MarkIn = &ms
+	}
+	if rs.MarkOut != nil {
+		ms := rs.MarkOut.UnixMilli()
+		resp.MarkOut = &ms
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (a *API) handleReplaySources(w http.ResponseWriter, _ *http.Request) {
+	status := a.replayMgr.Status()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status.Buffers)
+}
+
+// replayErrorCode maps replay errors to HTTP status codes.
+func replayErrorCode(err error) int {
+	switch {
+	case errors.Is(err, replay.ErrNoSource):
+		return http.StatusNotFound
+	case errors.Is(err, replay.ErrNoMarkIn), errors.Is(err, replay.ErrNoMarkOut),
+		errors.Is(err, replay.ErrInvalidMarks), errors.Is(err, replay.ErrInvalidSpeed),
+		errors.Is(err, replay.ErrEmptyClip):
+		return http.StatusBadRequest
+	case errors.Is(err, replay.ErrPlayerActive):
+		return http.StatusConflict
+	case errors.Is(err, replay.ErrNoPlayer):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
 	}
 }
