@@ -109,10 +109,10 @@ func SplitADTSFrames(data []byte) [][]byte {
 	var frames [][]byte
 	for len(data) >= 7 && IsADTS(data) {
 		frameLen := ADTSFrameLen(data)
-		if frameLen < 7 || frameLen > len(data) {
+		hdrLen := ADTSHeaderLen(data)
+		if frameLen < hdrLen || frameLen > len(data) {
 			break
 		}
-		hdrLen := ADTSHeaderLen(data)
 		payload := make([]byte, frameLen-hdrLen)
 		copy(payload, data[hdrLen:frameLen])
 		frames = append(frames, payload)
