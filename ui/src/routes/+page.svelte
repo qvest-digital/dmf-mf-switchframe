@@ -520,7 +520,7 @@
 		overflow: hidden;
 		background: var(--bg-base);
 		min-height: 0;
-		max-height: 100px;
+		max-height: clamp(100px, 15vh, 200px);
 	}
 
 	.control-strip {
