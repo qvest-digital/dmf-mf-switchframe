@@ -26,7 +26,6 @@ type mockOutputManager struct {
 	lastSRTConfig     output.SRTOutputConfig
 	thumbnail         []byte
 	recDroppedPackets int64
-	srtDroppedPackets int64
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
@@ -435,7 +434,7 @@ func TestConfidenceEndpoint_ReturnsThumbnail(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
-	require.Equal(t, "no-cache, max-age=1", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 	require.Equal(t, mock.thumbnail, rec.Body.Bytes())
 }
 

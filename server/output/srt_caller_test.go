@@ -125,7 +125,7 @@ func TestSRTCaller_BackoffProgression(t *testing.T) {
 	for _, expected := range levels {
 		got := c.nextBackoff()
 		lo := time.Duration(float64(expected) * 0.79)
-		hi := time.Duration(float64(expected) * 1.41)
+		hi := time.Duration(float64(expected) * 1.21)
 		require.True(t, got >= lo && got <= hi,
 			"expected backoff near %v (±20%%), got %v", expected, got)
 	}

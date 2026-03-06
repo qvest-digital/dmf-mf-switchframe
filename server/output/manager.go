@@ -343,8 +343,15 @@ func (m *OutputManager) Close() error {
 	wrappers := m.asyncWrappers
 	m.asyncWrappers = nil
 
+	cm := m.confidence
+	m.confidence = nil
 	m.stopMuxerLocked()
 	m.mu.Unlock()
+
+	// Close the confidence monitor's decoder.
+	if cm != nil {
+		cm.Close()
+	}
 
 	// Stop async wrappers first so no more writes reach inner adapters.
 	for _, w := range wrappers {
@@ -539,10 +546,14 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 
 // SetConfidenceMonitor attaches a confidence monitor to the output manager.
 // The monitor will receive video frames from the output viewer when active.
+// If a viewer is already running, it is wired immediately.
 func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confidence = cm
+	if m.viewer != nil && cm != nil {
+		m.viewer.onVideo = cm.IngestVideo
+	}
 }
 
 // ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence

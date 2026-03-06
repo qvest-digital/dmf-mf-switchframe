@@ -673,7 +673,7 @@ func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "no-cache, max-age=1")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Write(jpg)
 }
 

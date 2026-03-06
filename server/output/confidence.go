@@ -3,7 +3,6 @@ package output
 import (
 	"bytes"
 	"image"
-	"image/color"
 	"image/jpeg"
 	"log/slog"
 	"sync"
@@ -46,20 +45,18 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	if !frame.IsKeyframe {
 		return
 	}
+	if cm.decoderFactory == nil {
+		return
+	}
 
+	// Single critical section: rate-limit check + decoder init + stamp
+	// lastUpdate. This prevents TOCTOU where two goroutines both pass
+	// the rate-limit check and decode concurrently.
 	cm.mu.Lock()
 	if time.Since(cm.lastUpdate) < cm.minInterval {
 		cm.mu.Unlock()
 		return
 	}
-	cm.mu.Unlock()
-
-	if cm.decoderFactory == nil {
-		return
-	}
-
-	// Lazy-init decoder
-	cm.mu.Lock()
 	if cm.decoder == nil {
 		dec, err := cm.decoderFactory()
 		if err != nil {
@@ -70,9 +67,12 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		cm.decoder = dec
 	}
 	decoder := cm.decoder
+	// Stamp now to prevent re-entry while we decode outside the lock.
+	cm.lastUpdate = time.Now()
 	cm.mu.Unlock()
 
-	// Decode keyframe to YUV420
+	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
+	// the viewer goroutine or LatestThumbnail readers.
 	yuv, w, h, err := decoder.Decode(frame.WireData)
 	if err != nil {
 		slog.Debug("confidence monitor: decode error", "err", err)
@@ -89,22 +89,21 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		transition.ScaleYUV420(yuv, w, h, scaledYUV, dstW, dstH)
 	}
 
-	// Convert YUV420 to RGB
+	// Convert YUV420 to RGB and build RGBA image via direct Pix access
+	// (avoids per-pixel bounds checks from SetRGBA).
 	rgb := make([]byte, dstW*dstH*3)
 	transition.YUV420ToRGB(scaledYUV, dstW, dstH, rgb)
 
-	// Create image.RGBA from RGB
 	img := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	pix := img.Pix
 	for i := 0; i < dstW*dstH; i++ {
-		img.SetRGBA(i%dstW, i/dstW, color.RGBA{
-			R: rgb[i*3],
-			G: rgb[i*3+1],
-			B: rgb[i*3+2],
-			A: 255,
-		})
+		off := i * 4
+		pix[off+0] = rgb[i*3]
+		pix[off+1] = rgb[i*3+1]
+		pix[off+2] = rgb[i*3+2]
+		pix[off+3] = 255
 	}
 
-	// JPEG encode
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 70}); err != nil {
 		slog.Error("confidence monitor: JPEG encode error", "err", err)
@@ -113,7 +112,6 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 
 	cm.mu.Lock()
 	cm.latestJPEG = buf.Bytes()
-	cm.lastUpdate = time.Now()
 	cm.mu.Unlock()
 }
 
