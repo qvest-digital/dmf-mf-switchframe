@@ -6,6 +6,8 @@
 		setMute as apiSetMute,
 		setAFV as apiSetAFV,
 		setMasterLevel as apiSetMasterLevel,
+		setEQ as apiSetEQ,
+		setCompressor as apiSetCompressor,
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 
@@ -14,11 +16,13 @@
 		sourceLevels?: Record<string, { peakL: number; peakR: number }>;
 		programLevels?: { peakL: number; peakR: number };
 		pflActiveSource?: string | null;
+		expandedKeys?: Record<string, boolean>;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
+		onExpandToggle?: (sourceKey: string) => void;
 	}
 
-	let { state, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, onPFLToggle, onStateUpdate }: Props = $props();
+	let { state, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, expandedKeys = {}, onPFLToggle, onStateUpdate, onExpandToggle }: Props = $props();
 
 	/** Fire API call and apply the returned state for immediate UI feedback. */
 	function applyResult(promise: Promise<ControlRoomState>) {
@@ -56,6 +60,16 @@
 		setMasterLevelThrottled(level);
 	}
 
+	/** Throttled EQ API call -- max 20 calls/sec (50ms). */
+	const setEQThrottled = throttle((source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean) => {
+		applyResult(apiSetEQ(source, band, frequency, gain, q, enabled));
+	}, 50);
+
+	/** Throttled compressor API call -- max 20 calls/sec (50ms). */
+	const setCompressorThrottled = throttle((source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number) => {
+		applyResult(apiSetCompressor(source, threshold, ratio, attack, release, makeupGain));
+	}, 50);
+
 	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */
 	function linearToDb(linear: number): number {
 		if (linear <= 0) return -60;
@@ -88,6 +102,19 @@
 		return linearToDb(clientLinear ?? 0);
 	}
 
+	/** Map gain reduction (0..20+ dB) to a percentage (0..100) for GR meter. */
+	function grToPercent(gr: number): number {
+		if (gr <= 0) return 0;
+		if (gr >= 20) return 100;
+		return (gr / 20) * 100;
+	}
+
+	function toggleExpanded(key: string) {
+		onExpandToggle?.(key);
+	}
+
+	const EQ_BAND_NAMES = ['Low', 'Mid', 'High'];
+
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
 		state.audioChannels != null
@@ -103,7 +130,8 @@
 		{@const source = state.sources[key]}
 		{@const label = source?.label || key}
 		{@const tally = state.tallyState[key] ?? 'idle'}
-		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'}>
+		{@const isExpanded = expandedKeys[key] ?? false}
+		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:expanded={isExpanded}>
 			<span class="strip-label">{label}</span>
 
 			<div class="trim-control">
@@ -179,9 +207,197 @@
 				>
 					AFV
 				</button>
+				<button
+					class="strip-btn eq-toggle-btn"
+					class:active={isExpanded}
+					onclick={() => toggleExpanded(key)}
+					title="EQ & Dynamics"
+				>
+					EQ
+				</button>
 			</div>
 
 			<span class="strip-db">{channel.level.toFixed(1)}</span>
+
+			<!-- Expandable EQ & Compressor section -->
+			{#if isExpanded && channel.eq && channel.compressor}
+				<div class="eq-comp-section">
+					<div class="eq-section">
+						<span class="section-title">EQ</span>
+						{#each [0, 1, 2] as band}
+							{@const eqBand = channel.eq[band]}
+							<div class="eq-band">
+								<div class="eq-band-header">
+									<span class="eq-band-name">{EQ_BAND_NAMES[band]}</span>
+									<button
+										class="eq-enable-btn"
+										class:active={eqBand?.enabled}
+										onclick={() => {
+											if (eqBand) {
+												setEQThrottled(key, band, eqBand.frequency, eqBand.gain, eqBand.q, !eqBand.enabled);
+											}
+										}}
+										aria-label="Enable {EQ_BAND_NAMES[band]} EQ for {label}"
+									>
+										{eqBand?.enabled ? 'ON' : 'OFF'}
+									</button>
+								</div>
+								<label class="eq-param">
+									<span class="eq-param-label">Freq</span>
+									<input
+										type="range"
+										class="eq-slider"
+										min={band === 0 ? 80 : band === 1 ? 200 : 1000}
+										max={band === 0 ? 1000 : band === 1 ? 8000 : 16000}
+										step="1"
+										value={eqBand?.frequency ?? (band === 0 ? 250 : band === 1 ? 1000 : 4000)}
+										aria-label="{EQ_BAND_NAMES[band]} frequency for {label}"
+										oninput={(e) => {
+											if (eqBand) {
+												setEQThrottled(key, band, parseFloat((e.target as HTMLInputElement).value), eqBand.gain, eqBand.q, eqBand.enabled);
+											}
+										}}
+									/>
+									<span class="eq-param-value">{(eqBand?.frequency ?? 0).toFixed(0)}</span>
+								</label>
+								<label class="eq-param">
+									<span class="eq-param-label">Gain</span>
+									<input
+										type="range"
+										class="eq-slider"
+										min="-12"
+										max="12"
+										step="0.5"
+										value={eqBand?.gain ?? 0}
+										aria-label="{EQ_BAND_NAMES[band]} gain for {label}"
+										oninput={(e) => {
+											if (eqBand) {
+												setEQThrottled(key, band, eqBand.frequency, parseFloat((e.target as HTMLInputElement).value), eqBand.q, eqBand.enabled);
+											}
+										}}
+									/>
+									<span class="eq-param-value">{(eqBand?.gain ?? 0).toFixed(1)}</span>
+								</label>
+								<label class="eq-param">
+									<span class="eq-param-label">Q</span>
+									<input
+										type="range"
+										class="eq-slider"
+										min="0.5"
+										max="4.0"
+										step="0.1"
+										value={eqBand?.q ?? 1.0}
+										aria-label="{EQ_BAND_NAMES[band]} Q for {label}"
+										oninput={(e) => {
+											if (eqBand) {
+												setEQThrottled(key, band, eqBand.frequency, eqBand.gain, parseFloat((e.target as HTMLInputElement).value), eqBand.enabled);
+											}
+										}}
+									/>
+									<span class="eq-param-value">{(eqBand?.q ?? 1.0).toFixed(1)}</span>
+								</label>
+							</div>
+						{/each}
+					</div>
+
+					<div class="comp-section">
+						<span class="section-title">COMP</span>
+						<label class="eq-param">
+							<span class="eq-param-label">Thresh</span>
+							<input
+								type="range"
+								class="eq-slider"
+								min="-40"
+								max="0"
+								step="0.5"
+								value={channel.compressor.threshold}
+								aria-label="Compressor threshold for {label}"
+								oninput={(e) => {
+									const c = channel.compressor;
+									setCompressorThrottled(key, parseFloat((e.target as HTMLInputElement).value), c.ratio, c.attack, c.release, c.makeupGain);
+								}}
+							/>
+							<span class="eq-param-value">{channel.compressor.threshold.toFixed(1)}</span>
+						</label>
+						<label class="eq-param">
+							<span class="eq-param-label">Ratio</span>
+							<input
+								type="range"
+								class="eq-slider"
+								min="1"
+								max="20"
+								step="0.5"
+								value={channel.compressor.ratio}
+								aria-label="Compressor ratio for {label}"
+								oninput={(e) => {
+									const c = channel.compressor;
+									setCompressorThrottled(key, c.threshold, parseFloat((e.target as HTMLInputElement).value), c.attack, c.release, c.makeupGain);
+								}}
+							/>
+							<span class="eq-param-value">{channel.compressor.ratio.toFixed(1)}</span>
+						</label>
+						<label class="eq-param">
+							<span class="eq-param-label">Attack</span>
+							<input
+								type="range"
+								class="eq-slider"
+								min="0.1"
+								max="100"
+								step="0.1"
+								value={channel.compressor.attack}
+								aria-label="Compressor attack for {label}"
+								oninput={(e) => {
+									const c = channel.compressor;
+									setCompressorThrottled(key, c.threshold, c.ratio, parseFloat((e.target as HTMLInputElement).value), c.release, c.makeupGain);
+								}}
+							/>
+							<span class="eq-param-value">{channel.compressor.attack.toFixed(1)}ms</span>
+						</label>
+						<label class="eq-param">
+							<span class="eq-param-label">Release</span>
+							<input
+								type="range"
+								class="eq-slider"
+								min="10"
+								max="1000"
+								step="1"
+								value={channel.compressor.release}
+								aria-label="Compressor release for {label}"
+								oninput={(e) => {
+									const c = channel.compressor;
+									setCompressorThrottled(key, c.threshold, c.ratio, c.attack, parseFloat((e.target as HTMLInputElement).value), c.makeupGain);
+								}}
+							/>
+							<span class="eq-param-value">{channel.compressor.release.toFixed(0)}ms</span>
+						</label>
+						<label class="eq-param">
+							<span class="eq-param-label">Makeup</span>
+							<input
+								type="range"
+								class="eq-slider"
+								min="0"
+								max="24"
+								step="0.5"
+								value={channel.compressor.makeupGain}
+								aria-label="Compressor makeup gain for {label}"
+								oninput={(e) => {
+									const c = channel.compressor;
+									setCompressorThrottled(key, c.threshold, c.ratio, c.attack, c.release, parseFloat((e.target as HTMLInputElement).value));
+								}}
+							/>
+							<span class="eq-param-value">{channel.compressor.makeupGain.toFixed(1)}</span>
+						</label>
+						<!-- GR meter bar -->
+						<div class="gr-meter" aria-label="Gain reduction for {label}">
+							<span class="gr-label">GR</span>
+							<div class="gr-bar">
+								<div class="gr-fill" style="width: {grToPercent(channel.gainReduction ?? 0)}%"></div>
+							</div>
+							<span class="gr-value">{(channel.gainReduction ?? 0).toFixed(1)}</span>
+						</div>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/each}
 
@@ -251,6 +467,10 @@
 		transition:
 			border-color var(--transition-fast),
 			box-shadow var(--transition-normal);
+	}
+
+	.channel-strip.expanded {
+		min-width: 180px;
 	}
 
 	.channel-strip.program {
@@ -468,6 +688,12 @@
 		border-color: rgba(34, 197, 94, 0.4);
 	}
 
+	.eq-toggle-btn.active {
+		background: rgba(99, 102, 241, 0.15);
+		color: #818cf8;
+		border-color: rgba(99, 102, 241, 0.4);
+	}
+
 	/* Trim control */
 	.trim-control {
 		display: flex;
@@ -495,5 +721,134 @@
 		font-size: 0.7rem;
 		font-weight: 500;
 		color: var(--text-tertiary);
+	}
+
+	/* EQ & Compressor section */
+	.eq-comp-section {
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding-top: 4px;
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.section-title {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		color: var(--text-secondary);
+		text-transform: uppercase;
+	}
+
+	.eq-section,
+	.comp-section {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.eq-band {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding: 2px 0;
+	}
+
+	.eq-band-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.eq-band-name {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 600;
+		color: var(--text-tertiary);
+	}
+
+	.eq-enable-btn {
+		font-family: var(--font-ui);
+		font-size: 0.55rem;
+		font-weight: 600;
+		padding: 1px 4px;
+		border: 1px solid var(--border-default);
+		border-radius: 2px;
+		background: var(--bg-elevated);
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+
+	.eq-enable-btn.active {
+		background: rgba(99, 102, 241, 0.2);
+		color: #818cf8;
+		border-color: rgba(99, 102, 241, 0.4);
+	}
+
+	.eq-param {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.eq-param-label {
+		font-family: var(--font-mono);
+		font-size: 0.5rem;
+		color: var(--text-tertiary);
+		min-width: 28px;
+	}
+
+	.eq-slider {
+		flex: 1;
+		height: 10px;
+		accent-color: var(--text-secondary);
+	}
+
+	.eq-param-value {
+		font-family: var(--font-mono);
+		font-size: 0.5rem;
+		color: var(--text-tertiary);
+		min-width: 32px;
+		text-align: right;
+	}
+
+	/* GR meter */
+	.gr-meter {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		margin-top: 2px;
+	}
+
+	.gr-label {
+		font-family: var(--font-mono);
+		font-size: 0.5rem;
+		color: var(--text-tertiary);
+		min-width: 16px;
+	}
+
+	.gr-bar {
+		flex: 1;
+		height: 6px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.gr-fill {
+		height: 100%;
+		background: #f59e0b;
+		transition: width 0.06s linear;
+	}
+
+	.gr-value {
+		font-family: var(--font-mono);
+		font-size: 0.5rem;
+		color: var(--text-tertiary);
+		min-width: 24px;
+		text-align: right;
 	}
 </style>

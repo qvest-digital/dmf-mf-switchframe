@@ -9,6 +9,21 @@ export interface SourceInfo {
 	delayMs?: number;
 }
 
+export interface EQBand {
+	frequency: number;
+	gain: number;
+	q: number;
+	enabled: boolean;
+}
+
+export interface CompressorSettings {
+	threshold: number;
+	ratio: number;
+	attack: number;
+	release: number;
+	makeupGain: number;
+}
+
 export interface AudioChannel {
 	level: number;  // dB (-inf to +12)
 	trim: number;   // dB (-20 to +20), input gain
@@ -16,6 +31,9 @@ export interface AudioChannel {
 	afv: boolean;   // audio-follows-video
 	peakL: number;  // dBFS
 	peakR: number;  // dBFS
+	eq: [EQBand, EQBand, EQBand];
+	compressor: CompressorSettings;
+	gainReduction: number;  // compressor GR in dB
 }
 
 export interface RecordingStatus {

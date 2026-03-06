@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -198,6 +198,36 @@ export async function uploadStinger(name: string, file: File): Promise<void> {
 		const data = await response.json();
 		throw new Error(data.error || 'Upload failed');
 	}
+}
+
+// --- EQ & Compressor API ---
+
+export function setEQ(source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/eq`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ band, frequency, gain, q, enabled }),
+	});
+}
+
+export function getEQ(source: string): Promise<EQBand[]> {
+	return request(`/api/audio/${encodeURIComponent(source)}/eq`);
+}
+
+export function setCompressor(source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/compressor`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ threshold, ratio, attack, release, makeupGain }),
+	});
+}
+
+export interface CompressorResponse extends CompressorSettings {
+	gainReduction: number;
+}
+
+export function getCompressor(source: string): Promise<CompressorResponse> {
+	return request(`/api/audio/${encodeURIComponent(source)}/compressor`);
 }
 
 // --- Graphics Overlay API ---

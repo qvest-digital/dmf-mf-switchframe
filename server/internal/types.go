@@ -38,14 +38,34 @@ const (
 	AudioFadeIn                                  // FTB Reverse: silence→A
 )
 
+// EQBand describes the settings for a single EQ band.
+type EQBand struct {
+	Frequency float64 `json:"frequency"`
+	Gain      float64 `json:"gain"`
+	Q         float64 `json:"q"`
+	Enabled   bool    `json:"enabled"`
+}
+
+// CompressorSettings describes the settings for a channel compressor.
+type CompressorSettings struct {
+	Threshold  float64 `json:"threshold"`
+	Ratio      float64 `json:"ratio"`
+	Attack     float64 `json:"attack"`
+	Release    float64 `json:"release"`
+	MakeupGain float64 `json:"makeupGain"`
+}
+
 // AudioChannel describes the audio mixer state for a single source.
 type AudioChannel struct {
-	Level float64 `json:"level"` // dB (-inf to +12)
-	Trim  float64 `json:"trim"`  // dB (-20 to +20), input gain
-	Muted bool    `json:"muted"`
-	AFV   bool    `json:"afv"`   // audio-follows-video
-	PeakL float64 `json:"peakL"` // dBFS, updated per frame
-	PeakR float64 `json:"peakR"` // dBFS
+	Level         float64            `json:"level"` // dB (-inf to +12)
+	Trim          float64            `json:"trim"`  // dB (-20 to +20), input gain
+	Muted         bool               `json:"muted"`
+	AFV           bool               `json:"afv"`   // audio-follows-video
+	PeakL         float64            `json:"peakL"` // dBFS, updated per frame
+	PeakR         float64            `json:"peakR"` // dBFS
+	EQ            [3]EQBand          `json:"eq"`
+	Compressor    CompressorSettings `json:"compressor"`
+	GainReduction float64            `json:"gainReduction"` // compressor GR in dB
 }
 
 // RecordingStatus is the JSON-serializable status for recording output,

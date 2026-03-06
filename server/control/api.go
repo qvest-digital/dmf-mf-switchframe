@@ -36,6 +36,10 @@ type AudioMixerAPI interface {
 	SetMuted(sourceKey string, muted bool) error
 	SetAFV(sourceKey string, afv bool) error
 	SetMasterLevel(level float64)
+	SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error
+	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)
+	SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error
+	GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error)
 }
 
 // OutputManagerAPI is the interface for recording and SRT output operations
@@ -131,6 +135,10 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
 	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
+	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
+	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
+	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
+	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
 	mux.HandleFunc("POST /api/recording/start", a.handleRecordingStart)
 	mux.HandleFunc("POST /api/recording/stop", a.handleRecordingStop)
 	mux.HandleFunc("GET /api/recording/status", a.handleRecordingStatus)
@@ -562,6 +570,150 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 	a.mixer.SetMasterLevel(req.Level)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// --- EQ & Compressor API ---
+
+// eqRequest is the JSON body for the EQ endpoint.
+type eqRequest struct {
+	Band      int     `json:"band"`
+	Frequency float64 `json:"frequency"`
+	Gain      float64 `json:"gain"`
+	Q         float64 `json:"q"`
+	Enabled   bool    `json:"enabled"`
+}
+
+// handleSetEQ sets a single EQ band for a source channel.
+func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	var req eqRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetEQ(source, req.Band, req.Frequency, req.Gain, req.Q, req.Enabled); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusBadRequest
+		if errors.Is(err, audio.ErrInvalidBand) || errors.Is(err, audio.ErrInvalidFrequency) ||
+			errors.Is(err, audio.ErrInvalidGain) || errors.Is(err, audio.ErrInvalidQ) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// handleGetEQ returns the current EQ settings for a source channel.
+func (a *API) handleGetEQ(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	bands, err := a.mixer.GetEQ(source)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(bands)
+}
+
+// compressorRequest is the JSON body for the compressor endpoint.
+type compressorRequest struct {
+	Threshold  float64 `json:"threshold"`
+	Ratio      float64 `json:"ratio"`
+	Attack     float64 `json:"attack"`
+	Release    float64 `json:"release"`
+	MakeupGain float64 `json:"makeupGain"`
+}
+
+// compressorResponse is the JSON response for the compressor GET endpoint.
+type compressorResponse struct {
+	Threshold     float64 `json:"threshold"`
+	Ratio         float64 `json:"ratio"`
+	Attack        float64 `json:"attack"`
+	Release       float64 `json:"release"`
+	MakeupGain    float64 `json:"makeupGain"`
+	GainReduction float64 `json:"gainReduction"`
+}
+
+// handleSetCompressor sets the compressor parameters for a source channel.
+func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	var req compressorRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetCompressor(source, req.Threshold, req.Ratio, req.Attack, req.Release, req.MakeupGain); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusBadRequest
+		if errors.Is(err, audio.ErrInvalidThreshold) || errors.Is(err, audio.ErrInvalidRatio) ||
+			errors.Is(err, audio.ErrInvalidAttack) || errors.Is(err, audio.ErrInvalidRelease) ||
+			errors.Is(err, audio.ErrInvalidMakeupGain) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
+}
+
+// handleGetCompressor returns the current compressor settings and gain reduction for a source channel.
+func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	threshold, ratio, attack, release, makeupGain, gainReduction, err := a.mixer.GetCompressor(source)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(compressorResponse{
+		Threshold:     threshold,
+		Ratio:         ratio,
+		Attack:        attack,
+		Release:       release,
+		MakeupGain:    makeupGain,
+		GainReduction: gainReduction,
+	})
 }
 
 // --- Recording & SRT Output API ---

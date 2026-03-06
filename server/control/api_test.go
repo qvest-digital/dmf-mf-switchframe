@@ -459,6 +459,38 @@ func (m *mockMixer) SetMasterLevel(level float64) {
 	m.masterCalls = append(m.masterCalls, level)
 }
 
+func (m *mockMixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("channel %q not found", sourceKey)
+	}
+	return nil
+}
+
+func (m *mockMixer) GetEQ(sourceKey string) ([3]audio.EQBandSettings, error) {
+	if !m.knownKeys[sourceKey] {
+		return [3]audio.EQBandSettings{}, fmt.Errorf("channel %q not found", sourceKey)
+	}
+	return [3]audio.EQBandSettings{
+		{Frequency: 250, Gain: 0, Q: 1.0, Enabled: false},
+		{Frequency: 1000, Gain: 0, Q: 1.0, Enabled: false},
+		{Frequency: 4000, Gain: 0, Q: 1.0, Enabled: false},
+	}, nil
+}
+
+func (m *mockMixer) SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("channel %q not found", sourceKey)
+	}
+	return nil
+}
+
+func (m *mockMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error) {
+	if !m.knownKeys[sourceKey] {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("channel %q not found", sourceKey)
+	}
+	return 0, 1.0, 5.0, 100.0, 0, 0, nil
+}
+
 func setupAudioTestAPI(t *testing.T) (*API, *mockMixer) {
 	t.Helper()
 	programRelay := distribution.NewRelay()

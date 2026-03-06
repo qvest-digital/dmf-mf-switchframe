@@ -1,6 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import AudioMixer from './AudioMixer.svelte';
+import type { EQBand, CompressorSettings } from '$lib/api/types';
+
+const defaultEQ: [EQBand, EQBand, EQBand] = [
+	{ frequency: 250, gain: 0, q: 1.0, enabled: false },
+	{ frequency: 1000, gain: 0, q: 1.0, enabled: false },
+	{ frequency: 4000, gain: 0, q: 1.0, enabled: false },
+];
+
+const defaultCompressor: CompressorSettings = {
+	threshold: 0,
+	ratio: 1.0,
+	attack: 5.0,
+	release: 100.0,
+	makeupGain: 0,
+};
 
 describe('AudioMixer', () => {
 	const state = {
@@ -12,8 +27,8 @@ describe('AudioMixer', () => {
 		inTransition: false,
 		ftbActive: false,
 		audioChannels: {
-			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96 },
-			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96 },
+			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
+			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
 		},
 		masterLevel: 0,
 		programPeak: [-12, -14] as [number, number],
@@ -171,8 +186,8 @@ describe('AudioMixer', () => {
 		const stateWithPeaks = {
 			...state,
 			audioChannels: {
-				cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -12, peakR: -18 },
-				cam2: { level: -6, trim: 0, muted: true, afv: false, peakL: -96, peakR: -96 },
+				cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -12, peakR: -18, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
+				cam2: { level: -6, trim: 0, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
 			},
 		};
 		const { container } = render(AudioMixer, { props: { state: stateWithPeaks } });
@@ -187,6 +202,45 @@ describe('AudioMixer', () => {
 		const cam2Fills = strips[1].querySelectorAll('.peak-fill');
 		const cam2LHeight = parseFloat((cam2Fills[0] as HTMLElement).style.height);
 		expect(cam2LHeight).toBe(0);
+	});
+
+	it('should render EQ toggle button per channel strip', () => {
+		const { container } = render(AudioMixer, { props: { state } });
+		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
+		expect(eqButtons.length).toBe(2);
+	});
+
+	it('should show EQ section when expandedKeys has channel', () => {
+		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+
+		// eq-comp-section should be visible for cam1
+		const section = container.querySelector('.eq-comp-section');
+		expect(section).toBeTruthy();
+	});
+
+	it('should render 3 EQ bands in the expanded section', () => {
+		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+
+		const bands = container.querySelectorAll('.eq-band');
+		expect(bands.length).toBe(3);
+	});
+
+	it('should render compressor section with GR meter in expanded section', () => {
+		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+
+		const compSection = container.querySelector('.comp-section');
+		expect(compSection).toBeTruthy();
+
+		const grMeter = container.querySelector('.gr-meter');
+		expect(grMeter).toBeTruthy();
+	});
+
+	it('should call onExpandToggle when EQ button is clicked', async () => {
+		const onExpandToggle = vi.fn();
+		const { container } = render(AudioMixer, { props: { state, onExpandToggle } });
+		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
+		await fireEvent.click(eqButtons[0]);
+		expect(onExpandToggle).toHaveBeenCalledWith('cam1');
 	});
 
 	describe('ARIA labels', () => {
@@ -227,7 +281,7 @@ describe('AudioMixer', () => {
 					cam1: { key: 'cam1', label: '', status: 'healthy' as const, lastFrameTime: 0 },
 				},
 				audioChannels: {
-					cam1: { level: 0, trim: 0, muted: false, afv: false, peakL: -96, peakR: -96 },
+					cam1: { level: 0, trim: 0, muted: false, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
 				},
 				tallyState: { cam1: 'program' as const },
 			};
