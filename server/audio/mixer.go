@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -31,7 +32,8 @@ type MixerConfig struct {
 // Channel tracks per-source audio state.
 type Channel struct {
 	sourceKey   string
-	level       float64 // dB (-inf to +12)
+	level       float64 // dB (-inf to +12), fader level
+	trim        float64 // dB (-20 to +20), input gain/trim
 	muted       bool
 	afv         bool
 	active      bool
@@ -324,6 +326,26 @@ func (m *AudioMixer) SetActive(sourceKey string, active bool) {
 		ch.active = active
 		m.recalcPassthrough()
 	}
+}
+
+// ErrInvalidTrim is returned when trim is outside the valid range.
+var ErrInvalidTrim = errors.New("trim must be between -20 and +20 dB")
+
+// SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
+// Trim is applied before the fader in the mix pipeline.
+func (m *AudioMixer) SetTrim(sourceKey string, trimDB float64) error {
+	if trimDB < -20 || trimDB > 20 {
+		return ErrInvalidTrim
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return fmt.Errorf("channel %q not found", sourceKey)
+	}
+	ch.trim = trimDB
+	m.recalcPassthrough()
+	return nil
 }
 
 // SetLevel sets the gain in dB for a channel.
@@ -658,8 +680,9 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Store last decoded PCM for instant crossfade on future cuts
 	m.lastDecodedPCM[sourceKey] = pcm
 
-	// Apply per-channel gain with per-sample transition interpolation
-	channelGain := float32(DBToLinear(ch.level))
+	// Apply per-channel gain (trim before fader) with per-sample transition interpolation
+	trimGain := float32(DBToLinear(ch.trim))
+	channelGain := float32(DBToLinear(ch.level)) * trimGain
 	gainedPCM := make([]float32, len(pcm))
 
 	isTransParticipant := m.transCrossfadeActive &&
@@ -758,8 +781,8 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		return
 	}
 
-	// Apply per-channel gain
-	gain := float32(DBToLinear(ch.level))
+	// Apply per-channel gain (trim before fader)
+	gain := float32(DBToLinear(ch.level)) * float32(DBToLinear(ch.trim))
 	gainedPCM := make([]float32, len(pcm))
 	for i, s := range pcm {
 		gainedPCM[i] = s * gain
@@ -883,7 +906,7 @@ func (m *AudioMixer) recalcPassthrough() {
 
 	if activeCount == 1 && m.masterLevel == 0 {
 		ch := m.channels[activeKey]
-		m.passthrough = !ch.muted && ch.level == 0
+		m.passthrough = !ch.muted && ch.level == 0 && ch.trim == 0
 	} else {
 		m.passthrough = false
 	}
@@ -921,6 +944,7 @@ func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 	for key, ch := range m.channels {
 		result[key] = internal.AudioChannel{
 			Level: ch.level,
+			Trim:  ch.trim,
 			Muted: ch.muted,
 			AFV:   ch.afv,
 			PeakL: LinearToDBFS(ch.peakL),

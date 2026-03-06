@@ -41,6 +41,7 @@ const (
 // AudioChannel describes the audio mixer state for a single source.
 type AudioChannel struct {
 	Level float64 `json:"level"` // dB (-inf to +12)
+	Trim  float64 `json:"trim"`  // dB (-20 to +20), input gain
 	Muted bool    `json:"muted"`
 	AFV   bool    `json:"afv"`   // audio-follows-video
 	PeakL float64 `json:"peakL"` // dBFS, updated per frame

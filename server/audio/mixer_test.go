@@ -1158,6 +1158,72 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
+func TestMixerTrimAppliedBeforeFader(t *testing.T) {
+	var outputFrames []*media.AudioFrame
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(f *media.AudioFrame) {
+			outputFrames = append(outputFrames, f)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Set trim to -6dB
+	err := m.SetTrim("cam1", -6.0)
+	require.NoError(t, err)
+
+	// Verify trim is stored
+	states := m.ChannelStates()
+	require.InDelta(t, -6.0, states["cam1"].Trim, 0.01)
+}
+
+func TestMixerTrimBreaksPassthrough(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Initially passthrough (single source at 0dB)
+	require.True(t, m.IsPassthrough())
+
+	// Set non-zero trim
+	m.SetTrim("cam1", -3.0)
+
+	// Should break passthrough
+	require.False(t, m.IsPassthrough())
+}
+
+func TestMixerTrimRangeValidation(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+
+	require.Error(t, m.SetTrim("cam1", -25.0), "trim below -20 should error")
+	require.Error(t, m.SetTrim("cam1", 25.0), "trim above +20 should error")
+	require.NoError(t, m.SetTrim("cam1", -20.0), "trim at -20 should be OK")
+	require.NoError(t, m.SetTrim("cam1", 20.0), "trim at +20 should be OK")
+}
+
 func TestMixerPerChannelPeaks(t *testing.T) {
 	var outputFrames []*media.AudioFrame
 

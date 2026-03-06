@@ -389,6 +389,7 @@ func TestSourcesEndpoint(t *testing.T) {
 // mockMixer implements AudioMixerAPI for testing.
 type mockMixer struct {
 	levelCalls  []mockLevelCall
+	trimCalls   []mockLevelCall
 	muteCalls   []mockMuteCall
 	afvCalls    []mockAFVCall
 	masterCalls []float64
@@ -416,6 +417,14 @@ func newMockMixer(keys ...string) *mockMixer {
 		m.knownKeys[k] = true
 	}
 	return m
+}
+
+func (m *mockMixer) SetTrim(sourceKey string, trimDB float64) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("channel %q not found", sourceKey)
+	}
+	m.trimCalls = append(m.trimCalls, mockLevelCall{sourceKey, trimDB})
+	return nil
 }
 
 func (m *mockMixer) SetLevel(sourceKey string, levelDB float64) error {

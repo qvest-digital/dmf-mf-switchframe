@@ -30,6 +30,7 @@ type switchRequest struct {
 // AudioMixerAPI is the interface for audio mixer operations used by the REST API.
 type AudioMixerAPI interface {
 	SetLevel(sourceKey string, levelDB float64) error
+	SetTrim(sourceKey string, trimDB float64) error
 	SetMuted(sourceKey string, muted bool) error
 	SetAFV(sourceKey string, afv bool) error
 	SetMasterLevel(level float64)
@@ -116,6 +117,7 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
 	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
+	mux.HandleFunc("POST /api/audio/trim", a.handleAudioTrim)
 	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
@@ -377,6 +379,37 @@ type audioAFVRequest struct {
 // audioMasterRequest is the JSON body for the audio master level endpoint.
 type audioMasterRequest struct {
 	Level float64 `json:"level"`
+}
+
+// audioTrimRequest is the JSON body for the audio trim endpoint.
+type audioTrimRequest struct {
+	Source string  `json:"source"`
+	Level  float64 `json:"level"`
+}
+
+// handleAudioTrim sets the input trim for a source channel.
+func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		http.Error(w, `{"error":"audio mixer not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	var req audioTrimRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Source == "" {
+		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
+		return
+	}
+	if err := a.mixer.SetTrim(req.Source, req.Level); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioLevel sets the audio level for a source channel.

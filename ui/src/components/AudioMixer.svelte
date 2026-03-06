@@ -2,6 +2,7 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import {
 		setLevel as apiSetLevel,
+		setTrim as apiSetTrim,
 		setMute as apiSetMute,
 		setAFV as apiSetAFV,
 		setMasterLevel as apiSetMasterLevel,
@@ -32,6 +33,11 @@
 	function setLevel(source: string, level: number) {
 		setLevelThrottled(source, level);
 	}
+
+	/** Throttled trim API call -- max 20 calls/sec (50ms). */
+	const setTrimThrottled = throttle((source: string, level: number) => {
+		applyResult(apiSetTrim(source, level));
+	}, 50);
 
 	function setMute(source: string, muted: boolean) {
 		applyResult(apiSetMute(source, muted));
@@ -86,6 +92,20 @@
 		{@const tally = state.tallyState[key] ?? 'idle'}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'}>
 			<span class="strip-label">{label}</span>
+
+			<div class="trim-control">
+				<input
+					type="range"
+					class="trim-knob"
+					min="-20"
+					max="20"
+					step="0.5"
+					value={channel.trim ?? 0}
+					aria-label="Trim for {label}"
+					oninput={(e) => setTrimThrottled(key, parseFloat((e.target as HTMLInputElement).value))}
+				/>
+				<span class="trim-value">{(channel.trim ?? 0).toFixed(1)}</span>
+			</div>
 
 			<div class="meter-fader">
 				<!-- Stereo VU meter (pre-fader input level, L/R) -->
@@ -433,6 +453,28 @@
 		background: var(--tally-preview-dim);
 		color: #22c55e;
 		border-color: rgba(34, 197, 94, 0.4);
+	}
+
+	/* Trim control */
+	.trim-control {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		width: 100%;
+	}
+
+	.trim-knob {
+		flex: 1;
+		height: 12px;
+		accent-color: var(--text-secondary);
+	}
+
+	.trim-value {
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		color: var(--text-tertiary);
+		min-width: 28px;
+		text-align: right;
 	}
 
 	.strip-db {

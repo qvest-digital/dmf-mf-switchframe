@@ -11,6 +11,7 @@ export interface SourceInfo {
 
 export interface AudioChannel {
 	level: number;  // dB (-inf to +12)
+	trim: number;   // dB (-20 to +20), input gain
 	muted: boolean;
 	afv: boolean;   // audio-follows-video
 	peakL: number;  // dBFS
