@@ -75,6 +75,32 @@ func (kp *KeyProcessor) RemoveKey(source string) {
 	delete(kp.keys, source)
 }
 
+// HasEnabledKeys returns true if any keys are configured and enabled.
+// Used by the bridge for fast-path bypass when no keying is active.
+func (kp *KeyProcessor) HasEnabledKeys() bool {
+	kp.mu.RLock()
+	defer kp.mu.RUnlock()
+	for _, cfg := range kp.keys {
+		if cfg.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// EnabledSources returns the set of source keys that have enabled upstream keys.
+func (kp *KeyProcessor) EnabledSources() map[string]KeyConfig {
+	kp.mu.RLock()
+	defer kp.mu.RUnlock()
+	result := make(map[string]KeyConfig)
+	for source, cfg := range kp.keys {
+		if cfg.Enabled {
+			result[source] = cfg
+		}
+	}
+	return result
+}
+
 // Process applies all enabled upstream keys to the background frame.
 // fills maps source keys to their YUV420 fill data. The background frame
 // is modified in-place and returned.

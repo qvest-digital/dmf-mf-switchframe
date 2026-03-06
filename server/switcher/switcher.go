@@ -198,6 +198,14 @@ type Switcher struct {
 		Process(bg []byte, fills map[string][]byte, width, height int) []byte
 	}
 
+	// Fill frame ingestor for upstream keying. When set, source video frames
+	// are forwarded here so the bridge can decode and cache YUV for keyed sources.
+	keyFillIngestor func(sourceKey string, frame *media.VideoFrame)
+
+	// Bridge processor for upstream keying. Runs before videoProcessor (DSK)
+	// in broadcastVideo to apply chroma/luma keys on program frames.
+	keyBridgeProcessor func(*media.VideoFrame) *media.VideoFrame
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -326,6 +334,24 @@ func (s *Switcher) SetKeyProcessor(kp interface {
 	s.keyProcessor = kp
 }
 
+// SetKeyFillIngestor sets the function that receives source video frames
+// for upstream key fill decoding. Called from handleVideoFrame on every
+// source frame; the ingestor decides which sources to actually decode.
+func (s *Switcher) SetKeyFillIngestor(fn func(sourceKey string, frame *media.VideoFrame)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keyFillIngestor = fn
+}
+
+// SetKeyBridgeProcessor sets the video processor for upstream keying.
+// It runs before the downstream video processor (DSK compositor) in
+// broadcastVideo. Passing nil disables upstream key processing.
+func (s *Switcher) SetKeyBridgeProcessor(proc func(*media.VideoFrame) *media.VideoFrame) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keyBridgeProcessor = proc
+}
+
 // SetFrameSync enables or disables the freerun frame synchronizer. When
 // enabled, all source video and audio frames are buffered and released at
 // a common tick rate (program frame rate) instead of flowing through the
@@ -383,17 +409,29 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 }
 
 // broadcastVideo sends a video frame to the program relay, optionally
-// running it through the video processor first (for DSK compositing).
+// running it through upstream keying and/or the video processor (DSK compositing).
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	s.mu.RLock()
-	proc := s.videoProcessor
+	keyProc := s.keyBridgeProcessor
+	vidProc := s.videoProcessor
 	s.mu.RUnlock()
-	if proc != nil {
-		frame = proc(frame)
+
+	// Upstream keying runs first (before DSK compositor)
+	if keyProc != nil {
+		frame = keyProc(frame)
 		if frame == nil {
 			return
 		}
 	}
+
+	// Downstream keyer (DSK graphics compositor)
+	if vidProc != nil {
+		frame = vidProc(frame)
+		if frame == nil {
+			return
+		}
+	}
+
 	s.programRelay.BroadcastVideo(frame)
 }
 
@@ -1402,6 +1440,16 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 			audioHandler.OnTransitionPosition(engine.Position())
 		}
 		return
+	}
+
+	// Forward source frames to the key fill ingestor (if set).
+	// This must happen before the program source check because keyed
+	// sources may be non-program sources that need their fills cached.
+	s.mu.RLock()
+	fillIngestor := s.keyFillIngestor
+	s.mu.RUnlock()
+	if fillIngestor != nil {
+		fillIngestor(sourceKey, frame)
 	}
 
 	// Normal passthrough: RLock for steady-state (pendingIDR is false most of the time).

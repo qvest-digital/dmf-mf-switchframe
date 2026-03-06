@@ -337,8 +337,38 @@ func run() error {
 	sw.SetVideoProcessor(compositor.ProcessFrame)
 	defer compositor.Close()
 
+	// Create upstream key processor for chroma/luma keying on source frames.
+	// When active, keyed sources are decoded and composited onto the program
+	// frame before the DSK compositor runs.
+	keyProcessor := graphics.NewKeyProcessor()
+	keyBridge := graphics.NewKeyProcessorBridge(keyProcessor)
+	keyBridge.SetCodecFactories(
+		func() (transition.VideoDecoder, error) {
+			return codec.NewVideoDecoder()
+		},
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return codec.NewVideoEncoder(w, h, bitrate, fps)
+		},
+	)
+	keyBridge.OnVideoInfoChange(func(sps, pps []byte, width, height int) {
+		avcC := moq.BuildAVCDecoderConfig(sps, pps)
+		if avcC != nil {
+			programRelay.SetVideoInfo(distribution.VideoInfo{
+				Codec:         codec.ParseSPSCodecString(sps),
+				Width:         width,
+				Height:        height,
+				DecoderConfig: avcC,
+			})
+			slog.Info("keyer: updated program relay VideoInfo", "w", width, "h", height)
+		}
+	})
+	sw.SetKeyProcessor(keyProcessor)
+	sw.SetKeyFillIngestor(keyBridge.IngestFillFrame)
+	sw.SetKeyBridgeProcessor(keyBridge.ProcessFrame)
+	defer keyBridge.Close()
+
 	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor), control.WithMacroStore(macroStore))
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor), control.WithMacroStore(macroStore), control.WithKeyer(keyProcessor))
 
 	// enrichState patches a ControlRoomState snapshot with output + graphics status.
 	// gfxOverride, if non-nil, is used instead of calling compositor.Status()
