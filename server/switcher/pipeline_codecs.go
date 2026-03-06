@@ -29,15 +29,6 @@ type pipelineCodecs struct {
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
 }
-
-// GroupID returns the current group ID counter. Used by the switcher to
-// maintain monotonic GroupIDs when replaying cached GOP frames.
-func (pc *pipelineCodecs) GroupID() uint32 {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	return pc.groupID
-}
-
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
 // to raw YUV420. Lazy-initializes the decoder on the first keyframe.
 func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, error) {
