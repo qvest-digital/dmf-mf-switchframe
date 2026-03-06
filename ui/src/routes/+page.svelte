@@ -481,7 +481,7 @@
 					<div class="panel-header">
 						<LockIndicator state={store.effectiveState} subsystem="replay" />
 					</div>
-					<ReplayPanel state={store.effectiveState} />
+					<ReplayPanel state={store.effectiveState} {pipeline} />
 				</div>
 			</section>
 		</div>

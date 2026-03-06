@@ -1,26 +1,50 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
+	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import { replayMarkIn, replayMarkOut, replayPlay, replayStop, apiCall } from '$lib/api/switch-api';
+	import { onDestroy } from 'svelte';
 
 	interface Props {
 		state: ControlRoomState;
+		pipeline?: MediaPipeline | null;
 	}
 
-	let { state: crState }: Props = $props();
+	let { state: crState, pipeline = null }: Props = $props();
 
 	let selectedSource = $state('');
 	let selectedSpeed = $state(1.0);
 	let loopEnabled = $state(false);
+	let replayCanvas: HTMLCanvasElement | undefined = $state();
+	let replayCanvasAttached = $state(false);
 
 	const replay = $derived(crState.replay);
 	const isPlaying = $derived(replay?.state === 'playing' || replay?.state === 'loading');
-	const sources = $derived(Object.keys(crState.sources));
+	const sources = $derived(Object.keys(crState.sources).filter(k => !crState.sources[k]?.isVirtual));
 	const buffers = $derived(replay?.buffers ?? []);
 
 	// Auto-select first source if none selected.
 	$effect(() => {
 		if (!selectedSource && sources.length > 0) {
 			selectedSource = sources[0];
+		}
+	});
+
+	// Attach/detach replay monitor canvas based on playback state.
+	$effect(() => {
+		if (!pipeline) return;
+		if (isPlaying && replayCanvas && !replayCanvasAttached) {
+			pipeline.attachCanvas('replay', 'replay-monitor', replayCanvas);
+			replayCanvasAttached = true;
+		}
+		if (!isPlaying && replayCanvasAttached) {
+			pipeline.detachCanvas('replay', 'replay-monitor');
+			replayCanvasAttached = false;
+		}
+	});
+
+	onDestroy(() => {
+		if (replayCanvasAttached && pipeline) {
+			pipeline.detachCanvas('replay', 'replay-monitor');
 		}
 	});
 
@@ -97,6 +121,12 @@
 		</label>
 	</div>
 
+	{#if isPlaying}
+		<div class="replay-monitor">
+			<canvas bind:this={replayCanvas}></canvas>
+		</div>
+	{/if}
+
 	<div class="transport-row">
 		{#if isPlaying}
 			<button class="transport-btn stop-btn" onclick={handleStop}>STOP</button>
@@ -147,6 +177,21 @@
 		color: #888;
 		text-transform: uppercase;
 		letter-spacing: 1px;
+	}
+
+	.replay-monitor {
+		aspect-ratio: 16 / 9;
+		background: #050507;
+		border: 1px solid #333;
+		border-radius: 3px;
+		overflow: hidden;
+		position: relative;
+	}
+
+	.replay-monitor canvas {
+		width: 100%;
+		height: 100%;
+		display: block;
 	}
 
 	.source-row {
