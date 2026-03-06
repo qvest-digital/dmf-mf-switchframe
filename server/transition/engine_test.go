@@ -18,12 +18,11 @@ func newTestEngine(t *testing.T) (*TransitionEngine, *sync.Mutex, *[][]byte, *[]
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			mu.Lock()
-			outputs = append(outputs, data)
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
 		OnComplete: func(aborted bool) {
@@ -286,10 +285,7 @@ func TestEngineFTBReverseNoDecoderB(t *testing.T) {
 			decoderCount++
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
@@ -428,12 +424,11 @@ func TestEngineResolutionMismatchScales(t *testing.T) {
 			// Decoder B (cam2): 4x4 — different resolution, must be scaled
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			mu.Lock()
-			outputs = append(outputs, data)
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
 		OnComplete: func(aborted bool) {},
@@ -483,12 +478,11 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 			// Decoder B (cam2): 8x8 — will set the target resolution (decoded first here)
 			return &mockDecoder{width: 8, height: 8}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			mu.Lock()
-			outputs = append(outputs, data)
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
 		OnComplete: func(aborted bool) {},
@@ -512,38 +506,6 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "should produce output after scaling from-source")
 	mu.Unlock()
-
-	e.Stop()
-}
-
-func TestEngineUsesConfigBitrateFPS(t *testing.T) {
-	// Verify the encoder factory receives the config's Bitrate and FPS
-	// instead of hardcoded 4Mbps/30fps.
-	var capturedBitrate int
-	var capturedFPS float32
-
-	e := NewTransitionEngine(EngineConfig{
-		DecoderFactory: func() (VideoDecoder, error) {
-			return &mockDecoder{width: 4, height: 4}, nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			capturedBitrate = bitrate
-			capturedFPS = fps
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
-		OnComplete: func(aborted bool) {},
-		Bitrate:    8_000_000,
-		FPS:        60.0,
-	})
-
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
-
-	// First ingest triggers lazy encoder init
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-
-	require.Equal(t, 8_000_000, capturedBitrate, "encoder should receive config bitrate")
-	require.InDelta(t, 60.0, capturedFPS, 0.01, "encoder should receive config fps")
 
 	e.Stop()
 }
@@ -648,34 +610,6 @@ func TestCompletionThresholdBelowThreshold(t *testing.T) {
 	e.Stop()
 }
 
-func TestEngineDefaultBitrateFPSWhenZero(t *testing.T) {
-	// Verify that zero Bitrate/FPS falls back to defaults.
-	var capturedBitrate int
-	var capturedFPS float32
-
-	e := NewTransitionEngine(EngineConfig{
-		DecoderFactory: func() (VideoDecoder, error) {
-			return &mockDecoder{width: 4, height: 4}, nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			capturedBitrate = bitrate
-			capturedFPS = fps
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
-		OnComplete: func(aborted bool) {},
-		// Bitrate and FPS intentionally left at zero
-	})
-
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-
-	require.Equal(t, DefaultBitrate, capturedBitrate, "should fall back to default bitrate")
-	require.InDelta(t, DefaultFPS, capturedFPS, 0.01, "should fall back to default fps")
-
-	e.Stop()
-}
-
 func TestTransitionTimeoutAbort(t *testing.T) {
 	// Start a transition with a short timeout and send no frames.
 	// The watchdog should detect starvation and abort.
@@ -686,10 +620,7 @@ func TestTransitionTimeoutAbort(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {
 			mu.Lock()
 			completions = append(completions, !aborted)
@@ -723,10 +654,7 @@ func TestTransitionNoTimeoutWhenFramesArrive(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {
 			mu.Lock()
 			completions = append(completions, !aborted)
@@ -773,10 +701,7 @@ func TestTransitionWatchdogStopsOnComplete(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {
 			mu.Lock()
 			completions = append(completions, !aborted)
@@ -824,10 +749,7 @@ func TestTransitionWatchdogStopsOnAbort(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {
 			mu.Lock()
 			completions = append(completions, !aborted)
@@ -858,10 +780,7 @@ func TestTransitionDefaultTimeout(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
@@ -873,10 +792,7 @@ func TestTransitionSetTimeoutOverrides(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
@@ -911,12 +827,11 @@ func TestEngineStingerTransition(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: w, height: h}, nil
 		},
-		EncoderFactory: func(ew, eh, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			mu.Lock()
-			outputs = append(outputs, data)
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
 		OnComplete: func(aborted bool) {},
@@ -962,10 +877,7 @@ func TestEngineStingerCutPoint(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: w, height: h}, nil
 		},
-		EncoderFactory: func(ew, eh, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 		Stinger: &StingerData{
 			Frames:   frames,
@@ -996,12 +908,11 @@ func TestEngineStingerNoData(t *testing.T) {
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
-			return &mockEncoder{}, nil
-		},
-		Output: func(data []byte, isKeyframe bool, pts int64) {
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			mu.Lock()
-			outputs = append(outputs, data)
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
 		OnComplete: func(aborted bool) {},

@@ -38,8 +38,7 @@ type StingerFrameData struct {
 // EngineConfig configures the TransitionEngine.
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
-	EncoderFactory EncoderFactory
-	Output         func(data []byte, isKeyframe bool, pts int64)
+	Output         func(yuv []byte, width, height int, pts int64, isKeyframe bool)
 	OnComplete     func(aborted bool)
 
 	// WipeDirection specifies the wipe direction when TransitionType is "wipe".
@@ -49,15 +48,6 @@ type EngineConfig struct {
 	// Stinger holds the pre-decoded stinger overlay data. Required when
 	// TransitionType is "stinger", ignored for other types.
 	Stinger *StingerData
-
-	// Bitrate for the transition encoder in bits/sec. If zero, defaults
-	// to DefaultBitrate (4 Mbps). Derived from the program source's
-	// recent frame statistics by the switcher.
-	Bitrate int
-
-	// FPS for the transition encoder. If zero, defaults to DefaultFPS (30).
-	// Derived from the program source's recent PTS deltas by the switcher.
-	FPS float64
 }
 
 // TransitionEngine manages the dissolve pipeline lifecycle.
@@ -81,13 +71,12 @@ type TransitionEngine struct {
 	// Codec pipeline
 	decoderA VideoDecoder
 	decoderB VideoDecoder // nil for FTB
-	encoder  VideoEncoder
 	blender  *FrameBlender
 
 	// Latest decoded YUV420 frames (stored directly, no RGB conversion)
-	latestYUVA   []byte
-	latestYUVB   []byte
-	firstEncoded bool // true after the first frame has been encoded
+	latestYUVA  []byte
+	latestYUVB  []byte
+	firstOutput bool // true after the first frame has been output
 
 	// Frame dimensions (set on first decode)
 	width  int
@@ -199,8 +188,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.manualPosition = 0
 	e.decoderA = decA
 	e.decoderB = decB
-	e.encoder = nil  // lazy-init on first frame (need dimensions)
-	e.blender = nil  // lazy-init on first frame (need dimensions)
+	e.blender = nil // lazy-init on first frame (need dimensions)
 	e.latestYUVA = nil
 	e.latestYUVB = nil
 	e.width = 0
@@ -303,28 +291,11 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 	}
 	e.log.Debug("decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
 
-	// Lazy-init encoder and blender on first successful decode
+	// Lazy-init blender on first successful decode
 	if e.width == 0 {
 		e.width = w
 		e.height = h
 		e.blender = NewFrameBlender(w, h)
-
-		bitrate := e.config.Bitrate
-		if bitrate <= 0 {
-			bitrate = DefaultBitrate
-		}
-		fps := e.config.FPS
-		if fps <= 0 {
-			fps = DefaultFPS
-		}
-
-		enc, encErr := e.config.EncoderFactory(w, h, bitrate, float32(fps))
-		if encErr != nil {
-			e.log.Error("encoder init failed", "err", encErr, "w", w, "h", h)
-			return false
-		}
-		e.encoder = enc
-		e.log.Info("encoder initialized", "w", w, "h", h, "bitrate", bitrate, "fps", fps)
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
@@ -425,17 +396,11 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		blended = e.blendStinger(pos)
 	}
 
-	// Encode — force IDR on the very first encoded frame so downstream
-	// decoders always get a clean start, regardless of elapsed time.
-	forceIDR := !e.firstEncoded
-	e.firstEncoded = true
-	encoded, isKeyframe, encErr := e.encoder.Encode(blended, forceIDR)
-	if encErr != nil {
-		e.log.Warn("encode failed", "err", encErr, "pos", pos)
-		e.mu.Unlock()
-		return
-	}
-	e.log.Debug("blended+encoded", "pos", fmt.Sprintf("%.3f", pos), "isKeyframe", isKeyframe, "outBytes", len(encoded))
+	// Signal keyframe on the very first output frame so the pipeline
+	// coordinator can force an IDR for downstream decoders.
+	isKF := !e.firstOutput
+	e.firstOutput = true
+	e.log.Debug("blended", "pos", fmt.Sprintf("%.3f", pos), "w", e.width, "h", e.height)
 
 	// Check if auto-mode completed
 	var autoComplete bool
@@ -445,11 +410,12 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		e.cleanup()
 	}
 
+	w, h := e.width, e.height
 	e.mu.Unlock()
 
-	// Output and completion callbacks outside lock
+	// Output raw YUV and completion callbacks outside lock
 	if e.config.Output != nil {
-		e.config.Output(encoded, isKeyframe, pts)
+		e.config.Output(blended, w, h, pts, isKF)
 	}
 
 	if autoComplete && e.config.OnComplete != nil {
@@ -622,15 +588,11 @@ func (e *TransitionEngine) cleanup() {
 		e.decoderB.Close()
 		e.decoderB = nil
 	}
-	if e.encoder != nil {
-		e.encoder.Close()
-		e.encoder = nil
-	}
 	e.state = StateIdle
 	e.position = 0
 	e.manualPosition = 0
 	e.manualControl = false
-	e.firstEncoded = false
+	e.firstOutput = false
 	e.latestYUVA = nil
 	e.latestYUVB = nil
 	e.blender = nil
