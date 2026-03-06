@@ -2,7 +2,6 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import { replayMarkIn, replayMarkOut, replayPlay, replayStop, apiCall } from '$lib/api/switch-api';
-	import { onDestroy } from 'svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -15,7 +14,6 @@
 	let selectedSpeed = $state(1.0);
 	let loopEnabled = $state(false);
 	let replayCanvas: HTMLCanvasElement | undefined = $state();
-	let replayCanvasAttached = $state(false);
 
 	const replay = $derived(crState.replay);
 	const isPlaying = $derived(replay?.state === 'playing' || replay?.state === 'loading');
@@ -29,23 +27,13 @@
 		}
 	});
 
-	// Attach/detach replay monitor canvas based on playback state.
+	// Attach/detach replay monitor canvas. Return cleanup handles unmount + dep changes.
 	$effect(() => {
-		if (!pipeline) return;
-		if (isPlaying && replayCanvas && !replayCanvasAttached) {
-			pipeline.attachCanvas('replay', 'replay-monitor', replayCanvas);
-			replayCanvasAttached = true;
-		}
-		if (!isPlaying && replayCanvasAttached) {
+		if (!pipeline || !isPlaying || !replayCanvas) return;
+		pipeline.attachCanvas('replay', 'replay-monitor', replayCanvas);
+		return () => {
 			pipeline.detachCanvas('replay', 'replay-monitor');
-			replayCanvasAttached = false;
-		}
-	});
-
-	onDestroy(() => {
-		if (replayCanvasAttached && pipeline) {
-			pipeline.detachCanvas('replay', 'replay-monitor');
-		}
+		};
 	});
 
 	function handleMarkIn() {
