@@ -5,6 +5,15 @@ test('control room page loads', async ({ page }) => {
 	await expect(page.locator('body')).toBeVisible();
 });
 
+test('control strip contains buses and transitions', async ({ page }) => {
+	await page.goto('/');
+	const strip = page.locator('.control-strip');
+	await expect(strip).toBeVisible();
+	// Buses should be inside the control strip
+	await expect(strip.locator('.preview-bus')).toBeVisible();
+	await expect(strip.locator('.program-bus')).toBeVisible();
+});
+
 test('keyboard overlay opens on ? and closes on Escape', async ({ page }) => {
 	await page.goto('/');
 	// Ensure the page is focused and the keyboard handler has attached
