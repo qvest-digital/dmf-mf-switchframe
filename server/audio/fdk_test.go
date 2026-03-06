@@ -138,7 +138,9 @@ func TestFDKRoundTripWithSignal(t *testing.T) {
 		pcm, decErr := dec.Decode(aac)
 		require.NoError(t, decErr)
 		require.Equal(t, 1024*2, len(pcm))
-		lastPCM = pcm
+		// Copy to avoid aliasing — Decode() reuses its internal buffer,
+		// so pcm is only valid until the next Decode() call.
+		lastPCM = append([]float32{}, pcm...)
 	}
 
 	// After several frames, the decoded output should contain the signal.

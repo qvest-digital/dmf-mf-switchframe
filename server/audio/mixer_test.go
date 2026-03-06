@@ -1820,7 +1820,8 @@ func TestGrowBuf(t *testing.T) {
 
 func BenchmarkMixerMixingPath(b *testing.B) {
 	// Measures allocations per frame in the mixing hot path.
-	// Target: 0 allocs/op in steady state.
+	// Per-channel processing allocs (trim/gain/stored buffers) are 0 in steady state.
+	// Remaining allocs are unavoidable: output media.AudioFrame + encoded AAC data.
 	pcm := make([]float32, 2048)
 	for i := range pcm {
 		pcm[i] = 0.5
@@ -1857,6 +1858,73 @@ func BenchmarkMixerMixingPath(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		frame.PTS = int64(100000 + i*1920)
 		m.IngestFrame("cam1", frame)
+	}
+}
+
+func TestMixer_MonotonicPTS_ArrivalOrderIndependent(t *testing.T) {
+	// Swapping which channel delivers first should not affect the output PTS sequence.
+	for _, order := range []string{"cam1-first", "cam2-first"} {
+		t.Run(order, func(t *testing.T) {
+			var mu sync.Mutex
+			var outputFrames []*media.AudioFrame
+
+			cam1PCM := []float32{0.5, 0.5, 0.5, 0.5}
+			cam2PCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+			m := NewMixer(MixerConfig{
+				SampleRate: 48000,
+				Channels:   2,
+				Output: func(frame *media.AudioFrame) {
+					mu.Lock()
+					outputFrames = append(outputFrames, frame)
+					mu.Unlock()
+				},
+				DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+					return &mockDecoder{samples: nil}, nil
+				},
+				EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+					return &mockEncoder{data: []byte{0xFF}}, nil
+				},
+			})
+			defer func() { _ = m.Close() }()
+
+			m.AddChannel("cam1")
+			m.AddChannel("cam2")
+			m.SetActive("cam1", true)
+			m.SetActive("cam2", true)
+
+			m.mu.Lock()
+			m.channels["cam1"].decoder = &mockDecoder{samples: cam1PCM}
+			m.channels["cam2"].decoder = &mockDecoder{samples: cam2PCM}
+			m.mu.Unlock()
+
+			// Ingest 5 pairs, alternating which channel arrives first
+			for i := 0; i < 5; i++ {
+				f1 := &media.AudioFrame{PTS: int64(1000 + i*2000), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+				f2 := &media.AudioFrame{PTS: int64(1500 + i*2000), Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+				if order == "cam1-first" {
+					m.IngestFrame("cam1", f1)
+					m.IngestFrame("cam2", f2)
+				} else {
+					m.IngestFrame("cam2", f2)
+					m.IngestFrame("cam1", f1)
+				}
+			}
+
+			mu.Lock()
+			frames := append([]*media.AudioFrame{}, outputFrames...)
+			mu.Unlock()
+
+			require.GreaterOrEqual(t, len(frames), 2, "need at least 2 frames")
+
+			expectedDelta := int64(1024) * 90000 / int64(48000)
+			for i := 1; i < len(frames); i++ {
+				delta := frames[i].PTS - frames[i-1].PTS
+				require.Equal(t, expectedDelta, delta,
+					"frame %d PTS delta should be exactly frameDuration90k (%d), got %d (order=%s)",
+					i, expectedDelta, delta, order)
+			}
+		})
 	}
 }
 

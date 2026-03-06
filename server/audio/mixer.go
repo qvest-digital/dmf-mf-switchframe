@@ -356,9 +356,7 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 // resetMixCycleLocked clears the mix accumulation state for the next cycle.
 // Caller must hold m.mu write lock.
 func (m *AudioMixer) resetMixCycleLocked() {
-	for k := range m.mixBuffer {
-		delete(m.mixBuffer, k)
-	}
+	clear(m.mixBuffer)
 	m.mixStarted = false
 	m.mixDeadline = time.Time{}
 }
