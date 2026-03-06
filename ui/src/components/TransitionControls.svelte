@@ -81,22 +81,39 @@
 		apiCall(setTransitionPosition(value), 'T-bar failed');
 	}, 50);
 
-	function handleTbarInput(e: Event) {
+	function handleTbarPointerDown(e: PointerEvent) {
+		const target = e.currentTarget as HTMLElement;
+		target.setPointerCapture(e.pointerId);
+		updateTbarFromPointer(e);
+
+		const onMove = (ev: PointerEvent) => updateTbarFromPointer(ev);
+		const onUp = () => {
+			target.removeEventListener('pointermove', onMove);
+			target.removeEventListener('pointerup', onUp);
+		};
+		target.addEventListener('pointermove', onMove);
+		target.addEventListener('pointerup', onUp);
+	}
+
+	function updateTbarFromPointer(e: PointerEvent) {
+		const target = e.currentTarget as HTMLElement;
+		const rect = target.getBoundingClientRect();
+		const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
 		anim.active = false;
-		const value = parseFloat((e.target as HTMLInputElement).value);
-		if (!crState.inTransition && value > 0 && crState.previewSource) {
+
+		if (!crState.inTransition && y > 0 && crState.previewSource) {
 			apiCall(startTransition(
 				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
 				transType === 'stinger' ? stingerName : undefined
 			), 'Transition failed');
 		}
-		setPositionThrottled(value);
+		setPositionThrottled(y);
 	}
 </script>
 
 <div class="transition-controls">
-	<div class="transition-row">
+	<div class="transition-main">
 		<div class="transition-buttons">
 			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>
 				CUT
@@ -164,34 +181,37 @@
 		</div>
 	</div>
 
-	<div class="tbar-container">
-		<input
-			type="range"
-			class="tbar-slider"
-			min="0"
-			max="1"
-			step="0.01"
-			value={tbarValue}
-			aria-label="Transition position"
-			oninput={handleTbarInput}
-		/>
+	<div
+		class="tbar"
+		role="slider"
+		aria-label="Transition position"
+		aria-valuemin={0}
+		aria-valuemax={1}
+		aria-valuenow={tbarValue}
+		tabindex="0"
+		onpointerdown={handleTbarPointerDown}
+	>
+		<div class="tbar-track">
+			<div class="tbar-fill" style="height: {tbarValue * 100}%"></div>
+			<div class="tbar-thumb" style="top: {tbarValue * 100}%"></div>
+		</div>
 	</div>
 </div>
 
 <style>
 	.transition-controls {
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
+		gap: 10px;
 		padding: 6px 10px;
 		border-top: 1px solid var(--border-subtle);
+		align-items: stretch;
 	}
 
-	.transition-row {
+	.transition-main {
 		display: flex;
-		align-items: center;
-		gap: 12px;
-		flex-wrap: wrap;
+		flex-direction: column;
+		gap: 4px;
+		flex: 1;
 	}
 
 	.transition-buttons {
@@ -394,49 +414,47 @@
 		outline: none;
 	}
 
-	.tbar-container {
-		padding: 0;
+	.tbar {
+		width: 40px;
+		flex-shrink: 0;
+		cursor: grab;
+		touch-action: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 4px 0;
 	}
 
-	.tbar-slider {
-		width: 100%;
-		height: 16px;
-	}
+	.tbar:active { cursor: grabbing; }
 
-	.tbar-slider::-webkit-slider-runnable-track {
-		height: 4px;
+	.tbar-track {
+		width: 8px;
+		height: 100%;
 		background: var(--bg-control);
-		border-radius: 2px;
 		border: 1px solid var(--border-subtle);
+		border-radius: 4px;
+		position: relative;
 	}
 
-	.tbar-slider::-webkit-slider-thumb {
-		width: 14px;
-		height: 14px;
-		margin-top: -6px;
-		background: var(--text-primary);
-		border: 2px solid var(--bg-surface);
-		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-	}
-
-	.tbar-slider::-moz-range-track {
-		height: 4px;
-		background: var(--bg-control);
-		border-radius: 2px;
-		border: 1px solid var(--border-subtle);
-	}
-
-	.tbar-slider::-moz-range-progress {
+	.tbar-fill {
+		position: absolute;
+		top: 0;
+		left: 0;
+		right: 0;
 		background: var(--accent-yellow);
-		border-radius: 2px;
-		height: 4px;
+		border-radius: 4px 4px 0 0;
+		transition: none;
 	}
 
-	.tbar-slider::-moz-range-thumb {
-		width: 14px;
-		height: 14px;
+	.tbar-thumb {
+		position: absolute;
+		left: -8px;
+		width: 24px;
+		height: 6px;
 		background: var(--text-primary);
-		border: 2px solid var(--bg-surface);
+		border: 1px solid var(--bg-surface);
+		border-radius: 3px;
 		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+		transform: translateY(-50%);
 	}
 </style>

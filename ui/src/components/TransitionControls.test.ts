@@ -83,7 +83,7 @@ describe('TransitionControls', () => {
 
 	it('should render T-bar slider', () => {
 		const { container } = render(TransitionControls, { props: { state: baseState } });
-		const tbar = container.querySelector('.tbar-slider');
+		const tbar = container.querySelector('.tbar[role="slider"]');
 		expect(tbar).toBeTruthy();
 	});
 
@@ -102,16 +102,14 @@ describe('TransitionControls', () => {
 	it('should show T-bar position during transition', () => {
 		const state = { ...baseState, inTransition: true, transitionPosition: 0.5 };
 		const { container } = render(TransitionControls, { props: { state } });
-		const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
-		if (tbar) {
-			expect(parseFloat(tbar.value)).toBeCloseTo(0.5, 1);
-		}
+		const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
+		expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.5, 1);
 	});
 
 	describe('ARIA labels', () => {
 		it('should have aria-label on T-bar slider', () => {
 			const { container } = render(TransitionControls, { props: { state: baseState } });
-			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
+			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
 			expect(tbar.getAttribute('aria-label')).toBe('Transition position');
 		});
 
@@ -145,14 +143,14 @@ describe('TransitionControls', () => {
 			// When no auto animation is active, server position drives the T-bar
 			const state = { ...baseState, inTransition: true, transitionPosition: 0.75 };
 			const { container } = render(TransitionControls, { props: { state } });
-			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
-			expect(parseFloat(tbar.value)).toBeCloseTo(0.75, 1);
+			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
+			expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.75, 1);
 		});
 
 		it('should show T-bar at 0 when not in transition', () => {
 			const { container } = render(TransitionControls, { props: { state: baseState } });
-			const tbar = container.querySelector('.tbar-slider') as HTMLInputElement;
-			expect(parseFloat(tbar.value)).toBe(0);
+			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
+			expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBe(0);
 		});
 	});
 });
