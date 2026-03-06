@@ -2,8 +2,7 @@
 
 A browser-based live video switcher for multi-camera production. Cut, dissolve, and mix between sources in real time — all from a web browser. Built on [Prism](https://github.com/zsiec/prism) (MoQ/WebTransport media server).
 
-<!-- TODO: Add screenshot of the control room UI -->
-<!-- ![SwitchFrame control room](docs/images/control-room.png) -->
+![SwitchFrame control room](docs/switchframe-ui.png)
 
 ## Features
 
