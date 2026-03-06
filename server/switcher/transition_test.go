@@ -883,3 +883,87 @@ func TestFTBReverseWarmsDecodersOutsideLock(t *testing.T) {
 
 	require.NoError(t, <-errCh)
 }
+
+func TestTransitionGroupIDMonotonicity(t *testing.T) {
+	sw, viewer := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	cam1Relay := sw.sources["cam1"].relay
+	cam2Relay := sw.sources["cam2"].relay
+
+	// 1. Prime cam2 GOP cache with a keyframe + delta (LOW GroupID)
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 100, IsKeyframe: true, GroupID: 10,
+		WireData: makeAVC1Frame([]byte{0x65, 0xAA, 0xBB}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:    "h264",
+	})
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 200, IsKeyframe: false, GroupID: 10,
+		WireData: makeAVC1Frame([]byte{0x41, 0x01}),
+		Codec:    "h264",
+	})
+
+	// 2. Send passthrough from cam1 (HIGH GroupID)
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 300, IsKeyframe: true, GroupID: 50,
+		WireData: makeAVC1Frame([]byte{0x65, 0xCC}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:    "h264",
+	})
+	time.Sleep(10 * time.Millisecond)
+
+	// 3. Start transition
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 500, "")
+	require.NoError(t, err)
+
+	// 4. Feed both sources during transition so the engine can decode and blend
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 400, IsKeyframe: true, GroupID: 51,
+		WireData: makeAVC1Frame([]byte{0x65, 0xDD}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:    "h264",
+	})
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 400, IsKeyframe: true, GroupID: 11,
+		WireData: makeAVC1Frame([]byte{0x65, 0xEE}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:    "h264",
+	})
+
+	// 5. Complete transition via SetTransitionPosition(1.0)
+	time.Sleep(10 * time.Millisecond)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(30 * time.Millisecond)
+
+	// 6. Send passthrough from cam2 (new program, LOW GroupID — the old bug)
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 500, IsKeyframe: true, GroupID: 12,
+		WireData: makeAVC1Frame([]byte{0x65, 0xFF}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:    "h264",
+	})
+	time.Sleep(10 * time.Millisecond)
+
+	// 7. Verify GroupIDs are monotonically non-decreasing
+	viewer.mu.Lock()
+	frames := make([]*media.VideoFrame, len(viewer.videos))
+	copy(frames, viewer.videos)
+	viewer.mu.Unlock()
+
+	require.NotEmpty(t, frames)
+
+	var lastGID uint32
+	for i, f := range frames {
+		require.GreaterOrEqual(t, f.GroupID, lastGID,
+			"GroupID must be monotonically non-decreasing: frame %d has GroupID %d but previous was %d",
+			i, f.GroupID, lastGID)
+		lastGID = f.GroupID
+	}
+}
