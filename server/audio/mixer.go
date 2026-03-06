@@ -97,6 +97,11 @@ type AudioMixer struct {
 	// Program mute: true while FTB is held (screen is black, audio is silent).
 	programMuted bool
 
+	// Monotonic output PTS counter
+	outputPTS       int64
+	outputPTSInited bool
+	lastSeenMixPTS  int64 // tracks incoming PTS for gap detection
+
 	// Program bus limiter (always active)
 	limiter *Limiter
 
@@ -212,6 +217,11 @@ func (m *AudioMixer) mixDeadlineTicker() {
 	}
 }
 
+// frameDuration90k returns the duration of one AAC frame (1024 samples) in 90 kHz PTS ticks.
+func (m *AudioMixer) frameDuration90k() int64 {
+	return int64(1024) * 90000 / int64(m.sampleRate)
+}
+
 // collectMixCycleLocked sums the accumulated mix buffers, applies master gain,
 // program mute, metering, encodes to AAC, and returns the output frame.
 // Returns nil if there is nothing to output (empty buffer, encoder error, etc.).
@@ -289,7 +299,27 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		m.promMetrics.FramesMixedTotal.Inc()
 	}
 
-	pts := m.mixPTS
+	// Monotonic PTS: seed from first frame, then increment by frame duration.
+	// Gap detection: if incoming PTS jumps > 5 seconds, reseed.
+	const ptsGapThreshold = 5 * 90000 // 5 seconds in 90 kHz ticks
+	if !m.outputPTSInited {
+		m.outputPTS = m.mixPTS
+		m.outputPTSInited = true
+		m.lastSeenMixPTS = m.mixPTS
+	} else {
+		// Check for gap before incrementing
+		diff := m.mixPTS - m.lastSeenMixPTS
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > ptsGapThreshold {
+			m.outputPTS = m.mixPTS // reseed
+		} else {
+			m.outputPTS += m.frameDuration90k()
+		}
+		m.lastSeenMixPTS = m.mixPTS
+	}
+	pts := m.outputPTS
 
 	// Reset mix cycle for next round
 	m.resetMixCycleLocked()
@@ -958,9 +988,28 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	m.crossfadeActive = false
 	m.crossfadePCM = nil
 
+	// Monotonic PTS for crossfade output
+	const ptsGapThreshold = 5 * 90000
+	if !m.outputPTSInited {
+		m.outputPTS = frame.PTS
+		m.outputPTSInited = true
+		m.lastSeenMixPTS = frame.PTS
+	} else {
+		diff := frame.PTS - m.lastSeenMixPTS
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > ptsGapThreshold {
+			m.outputPTS = frame.PTS
+		} else {
+			m.outputPTS += m.frameDuration90k()
+		}
+		m.lastSeenMixPTS = frame.PTS
+	}
+
 	// Build output frame before releasing lock
 	outputFrame := &media.AudioFrame{
-		PTS:        frame.PTS,
+		PTS:        m.outputPTS,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,

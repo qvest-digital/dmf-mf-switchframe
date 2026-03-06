@@ -1736,3 +1736,120 @@ func TestMixer_SetProgramMute_ResetsEnvelopes(t *testing.T) {
 	require.InDelta(t, 0.0, ch.compressor.GainReduction(), 0.001,
 		"compressor GR should be 0 after mute/reset")
 }
+
+func TestMixer_MonotonicOutputPTS(t *testing.T) {
+	// Two channels with different PTS values. Verify consecutive output frames
+	// have PTS incrementing by exactly frameDuration90k().
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	cam1PCM := []float32{0.5, 0.5, 0.5, 0.5}
+	cam2PCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: cam1PCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: cam2PCM}
+	m.mu.Unlock()
+
+	// Ingest 5 pairs with non-monotonic PTS values
+	ptsValues := []int64{5000, 3000, 7000, 2000, 9000}
+	for _, pts := range ptsValues {
+		m.IngestFrame("cam1", &media.AudioFrame{PTS: pts, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+		m.IngestFrame("cam2", &media.AudioFrame{PTS: pts + 100, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+	}
+
+	mu.Lock()
+	frames := append([]*media.AudioFrame{}, outputFrames...)
+	mu.Unlock()
+
+	require.GreaterOrEqual(t, len(frames), 2, "need at least 2 frames")
+
+	expectedDelta := int64(1024) * 90000 / int64(48000) // frameDuration90k
+	for i := 1; i < len(frames); i++ {
+		delta := frames[i].PTS - frames[i-1].PTS
+		require.Equal(t, expectedDelta, delta,
+			"frame %d PTS delta should be exactly frameDuration90k (%d), got %d",
+			i, expectedDelta, delta)
+	}
+}
+
+func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+	_ = m.SetTrim("cam1", 1.0) // force mixing mode
+
+	// Ingest a few frames at PTS ~1000
+	for i := range 3 {
+		m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000 + int64(i)*1920, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	}
+
+	mu.Lock()
+	countBefore := len(outputFrames)
+	mu.Unlock()
+
+	// Now inject a PTS gap > 5 seconds
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 90000*6 + 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	// Then a normal follow-up
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 90000*6 + 2920, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	mu.Lock()
+	frames := append([]*media.AudioFrame{}, outputFrames...)
+	mu.Unlock()
+
+	require.Greater(t, len(frames), countBefore, "should produce frames after gap")
+
+	// The frame after the gap should have reseeded PTS (not necessarily
+	// continuous from before the gap)
+	lastIdx := len(frames) - 1
+	if lastIdx >= 1 {
+		delta := frames[lastIdx].PTS - frames[lastIdx-1].PTS
+		expectedDelta := int64(1024) * 90000 / int64(48000)
+		// After reseed, the next frame should still increment by frameDuration
+		require.Equal(t, expectedDelta, delta,
+			"frame after gap reseed should still have correct delta")
+	}
+}
