@@ -33,7 +33,7 @@ var ErrNoTransition = errors.New("switcher: no active transition")
 type SwitcherState int
 
 const (
-	StateIdle             SwitcherState = iota // No transition, normal passthrough
+	StateIdle             SwitcherState = iota // No transition, normal frame routing
 	StateTransitioning                         // Mix/dip/wipe in progress
 	StateFTBTransitioning                      // FTB forward in progress (transitioning to black)
 	StateFTB                                   // Faded to black (holding black)
@@ -450,11 +450,12 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	s.programRelay.BroadcastVideo(frame)
 }
 
-// broadcastVideo sends a video frame to the program relay. When YUV
-// processors (upstream keying, DSK compositor) are active, the frame is
-// decoded once, run through the YUV processor chain, and re-encoded once.
-// When no processors are active, the compressed frame passes through
-// untouched (zero CPU).
+// broadcastVideo sends a video frame to the program relay. Every frame is
+// decoded and re-encoded through the pipeline encoder so that the program
+// output always carries consistent SPS/PPS regardless of whether YUV
+// processors (upstream keying, DSK compositor) are active. This eliminates
+// browser-side VideoDecoder reconfigurations when transitioning between
+// passthrough and processed modes.
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	s.mu.RLock()
 	keyBridge := s.keyBridge
@@ -462,28 +463,26 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	pipeCodecs := s.pipeCodecs
 	s.mu.RUnlock()
 
-	// Fast path: no active processors → passthrough (zero CPU)
-	keyActive := keyBridge != nil && keyBridge.HasEnabledKeysWithFills()
-	vidActive := compositor != nil && compositor.IsActive()
-
-	if (!keyActive && !vidActive) || pipeCodecs == nil {
+	// Defensive: no pipeline → passthrough
+	if pipeCodecs == nil {
 		s.broadcastToProgram(frame)
 		return
 	}
 
-	// Slow path: decode once
+	// Always decode for consistent SPS/PPS
 	pf, err := pipeCodecs.decode(frame)
 	if err != nil {
-		// Can't decode → pass through compressed (graceful degradation)
-		s.log.Warn("pipeline decode failed, passthrough", "error", err)
+		// MUST NOT passthrough — would send source SPS/PPS, breaking consistency
+		s.log.Warn("pipeline decode failed, dropping frame", "error", err)
 		if s.promMetrics != nil {
 			s.promMetrics.PipelineDecodeErrorsTotal.Inc()
 		}
-		s.broadcastToProgram(frame)
 		return
 	}
 
-	// Chain YUV processors
+	// YUV processors still conditional
+	keyActive := keyBridge != nil && keyBridge.HasEnabledKeysWithFills()
+	vidActive := compositor != nil && compositor.IsActive()
 	if keyActive {
 		pf.YUV = keyBridge.ProcessYUV(pf.YUV, pf.Width, pf.Height)
 	}
@@ -491,7 +490,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 		pf.YUV = compositor.ProcessYUV(pf.YUV, pf.Width, pf.Height)
 	}
 
-	// Encode once
+	// Always encode
 	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
 	if err != nil {
 		s.log.Warn("pipeline encode failed, dropping frame", "error", err)
@@ -633,7 +632,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// Mark transition as starting to prevent concurrent StartTransition/FTB calls.
 	// handleVideoFrame checks transEngine != nil to route frames, so setting
 	// StateTransitioning without transEngine is safe — frames won't route to
-	// the engine and normal passthrough continues for the current program source.
+	// the engine and normal frame processing continues for the current program source.
 	s.transitionState(StateTransitioning)
 	s.mu.Unlock()
 
@@ -925,10 +924,10 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 			s.programSource = newProgram
 			s.previewSource = oldProgram
 			audioCut = s.audioCut
-			// Gate passthrough frames. The transition encoder's SPS/PPS
-			// differ from the source's, so delta frames would be
-			// undecodable. The gate is cleared below after GOP replay,
-			// or held until the next natural keyframe as fallback.
+			// Gate incoming source frames until GOP replay provides a
+			// keyframe through the pipeline. The gate is cleared below
+			// after GOP replay, or held until the next natural keyframe
+			// as fallback.
 			if ss, ok := s.sources[newProgram]; ok {
 				ss.pendingIDR = true
 				s.idrGateStartNano.Store(time.Now().UnixNano())
@@ -963,12 +962,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		s.log.Info("transition completed", "type", transType)
 	}
 
-	// Replay the source's cached GOP to bridge the transition→passthrough
-	// gap. pendingIDR=true prevents live passthrough from interleaving.
+	// Replay the source's cached GOP through the pipeline so output
+	// maintains consistent SPS/PPS from the pipeline encoder.
+	// pendingIDR=true prevents live frames from interleaving.
 	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.broadcastOwnedToProgram(f)
+			s.broadcastVideo(f)
 		}
 		// Clear the IDR gate — the replayed GOP provided a keyframe
 		s.mu.Lock()
@@ -1052,8 +1052,8 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.transitionState(StateFTB) // Aborted — screen stays black
 	} else {
 		s.transitionState(StateIdle) // Completed — screen is visible
-		// Gate passthrough until GOP replay provides a keyframe.
-		// The transition encoder's SPS/PPS differ from the source's.
+		// Gate incoming source frames until GOP replay provides a
+		// keyframe through the pipeline.
 		if ss, ok := s.sources[programSource]; ok {
 			ss.pendingIDR = true
 			s.idrGateStartNano.Store(time.Now().UnixNano())
@@ -1074,11 +1074,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Replay the source's cached GOP to bridge the gap.
+	// Replay the source's cached GOP through the pipeline so output
+	// maintains consistent SPS/PPS from the pipeline encoder.
 	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.broadcastOwnedToProgram(f)
+			s.broadcastVideo(f)
 		}
 		s.mu.Lock()
 		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
@@ -1233,7 +1234,29 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Unlock()
 
 	if changed {
+		replayFrames := s.gopCache.GetOriginalGOP(sourceKey)
+
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
+
+		// Replay cached GOP through pipeline for instant switch
+		if len(replayFrames) > 0 {
+			for _, f := range replayFrames {
+				s.broadcastVideo(f)
+			}
+			// Clear IDR gate — GOP provided keyframe
+			s.mu.Lock()
+			if ss, ok := s.sources[sourceKey]; ok && ss.pendingIDR {
+				ss.pendingIDR = false
+				if startNano := s.idrGateStartNano.Load(); startNano > 0 {
+					dur := time.Since(time.Unix(0, startNano))
+					s.lastIDRGateDurationMs.Store(dur.Milliseconds())
+					if s.promMetrics != nil {
+						s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
+					}
+				}
+			}
+			s.mu.Unlock()
+		}
 
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
 		if audioCut != nil {
@@ -1545,7 +1568,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		fillIngestor(sourceKey, frame)
 	}
 
-	// Normal passthrough: RLock for steady-state (pendingIDR is false most of the time).
+	// Normal frame routing: RLock for steady-state (pendingIDR is false most of the time).
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
 	if !ok || s.programSource != sourceKey || s.state.isFTBActive() {
