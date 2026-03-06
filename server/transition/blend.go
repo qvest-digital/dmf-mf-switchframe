@@ -232,6 +232,45 @@ func wipeAlpha(threshold, position, softEdge float64) float64 {
 	return (position + softEdge - threshold) / (2.0 * softEdge)
 }
 
+// BlendStinger composites a stinger frame (with alpha) over a base YUV420 source.
+// The stinger frame's YUV data is blended with the base using per-pixel alpha.
+// alpha is a per-luma-pixel alpha map [0-255], same dimensions as the Y plane.
+// stingerYUV is YUV420 planar format matching base dimensions.
+func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []byte) []byte {
+	w := fb.width
+	h := fb.height
+
+	// --- Y plane: per-pixel alpha blend ---
+	for i := 0; i < fb.ySize; i++ {
+		a := float64(alpha[i]) / 255.0
+		fb.yuvBufOut[i] = clampByte(float64(baseYUV[i])*(1.0-a) + float64(stingerYUV[i])*a)
+	}
+
+	// --- Cb and Cr planes: average alpha over corresponding 2x2 luma block ---
+	uvW := w / 2
+	cbOffset := fb.ySize
+	crOffset := fb.ySize + fb.uvSize
+
+	for py := 0; py < h/2; py++ {
+		for px := 0; px < uvW; px++ {
+			// Average the alpha of the 4 luma pixels in this 2x2 block
+			ly := py * 2
+			lx := px * 2
+			a00 := float64(alpha[ly*w+lx])
+			a01 := float64(alpha[ly*w+lx+1])
+			a10 := float64(alpha[(ly+1)*w+lx])
+			a11 := float64(alpha[(ly+1)*w+lx+1])
+			a := (a00 + a01 + a10 + a11) / (4.0 * 255.0)
+
+			idx := py*uvW + px
+			fb.yuvBufOut[cbOffset+idx] = clampByte(float64(baseYUV[cbOffset+idx])*(1.0-a) + float64(stingerYUV[cbOffset+idx])*a)
+			fb.yuvBufOut[crOffset+idx] = clampByte(float64(baseYUV[crOffset+idx])*(1.0-a) + float64(stingerYUV[crOffset+idx])*a)
+		}
+	}
+
+	return fb.yuvBufOut
+}
+
 // BlendFTB fades a single source to black in YUV420 space.
 // position 0.0 = full source, position 1.0 = fully black (Y=0, Cb=128, Cr=128).
 func (fb *FrameBlender) BlendFTB(yuvA []byte, position float64) []byte {

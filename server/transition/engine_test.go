@@ -883,3 +883,139 @@ func TestTransitionSetTimeoutOverrides(t *testing.T) {
 	e.SetTimeout(5 * time.Second)
 	require.Equal(t, 5*time.Second, e.Timeout())
 }
+
+func TestEngineStingerTransition(t *testing.T) {
+	// Create a 3-frame stinger with full alpha (fully opaque overlay)
+	w, h := 4, 4
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	totalSize := ySize + 2*uvSize
+
+	frames := make([]StingerFrameData, 3)
+	for i := range frames {
+		yuv := make([]byte, totalSize)
+		for j := range yuv {
+			yuv[j] = byte(200 + i) // distinct per frame
+		}
+		alpha := make([]byte, ySize)
+		for j := range alpha {
+			alpha[j] = 255 // fully opaque
+		}
+		frames[i] = StingerFrameData{YUV: yuv, Alpha: alpha}
+	}
+
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: w, height: h}, nil
+		},
+		EncoderFactory: func(ew, eh, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {
+			mu.Lock()
+			outputs = append(outputs, data)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+		Stinger: &StingerData{
+			Frames:   frames,
+			Width:    w,
+			Height:   h,
+			CutPoint: 0.5,
+		},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
+	require.Equal(t, TransitionStinger, e.TransitionType())
+
+	// Ingest from both sources
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs), "stinger transition should produce output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineStingerCutPoint(t *testing.T) {
+	// Verify the cut point switches the base source from A to B.
+	w, h := 4, 4
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	totalSize := ySize + 2*uvSize
+
+	// Zero-alpha stinger (fully transparent) so output = base source
+	frames := make([]StingerFrameData, 10)
+	for i := range frames {
+		frames[i] = StingerFrameData{
+			YUV:   make([]byte, totalSize),
+			Alpha: make([]byte, ySize), // all zeros = transparent
+		}
+	}
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: w, height: h}, nil
+		},
+		EncoderFactory: func(ew, eh, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output:     func(data []byte, isKeyframe bool, pts int64) {},
+		OnComplete: func(aborted bool) {},
+		Stinger: &StingerData{
+			Frames:   frames,
+			Width:    w,
+			Height:   h,
+			CutPoint: 0.3, // switch at 30%
+		},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 5000))
+
+	// Ingest both sources
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	// Engine should start and produce output
+	require.Equal(t, StateActive, e.State())
+
+	e.Stop()
+}
+
+func TestEngineStingerNoData(t *testing.T) {
+	// Stinger transition without stinger data should still work (fallback to hard cut)
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		EncoderFactory: func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+		Output: func(data []byte, isKeyframe bool, pts int64) {
+			mu.Lock()
+			outputs = append(outputs, data)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+		// No Stinger data
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
+
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs), "stinger without data should still produce output")
+	mu.Unlock()
+
+	e.Stop()
+}

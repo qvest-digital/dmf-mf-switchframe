@@ -94,10 +94,13 @@ export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }
 
-export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string): Promise<ControlRoomState> {
+export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string): Promise<ControlRoomState> {
 	const body: Record<string, unknown> = { source, type, durationMs };
 	if (wipeDirection) {
 		body.wipeDirection = wipeDirection;
+	}
+	if (stingerName) {
+		body.stingerName = stingerName;
 	}
 	return post('/api/switch/transition', body);
 }
@@ -168,6 +171,22 @@ export function deletePreset(id: string): Promise<void> {
 
 export function recallPreset(id: string): Promise<RecallPresetResponse> {
 	return post(`/api/presets/${encodeURIComponent(id)}/recall`, {});
+}
+
+// --- Stinger API ---
+
+export function listStingers(): Promise<string[]> {
+	return request('/api/stinger/list');
+}
+
+export function deleteStinger(name: string): Promise<void> {
+	return request(`/api/stinger/${encodeURIComponent(name)}`, {
+		method: 'DELETE',
+	});
+}
+
+export function setStingerCutPoint(name: string, cutPoint: number): Promise<void> {
+	return post(`/api/stinger/${encodeURIComponent(name)}/cut-point`, { cutPoint });
 }
 
 // --- Graphics Overlay API ---

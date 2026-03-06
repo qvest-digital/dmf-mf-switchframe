@@ -133,6 +133,18 @@ type TransitionConfig struct {
 	EncoderFactory transition.EncoderFactory
 }
 
+// TransitionOption configures optional parameters for StartTransition.
+type TransitionOption func(*transitionOpts)
+
+type transitionOpts struct {
+	stingerData *transition.StingerData
+}
+
+// WithStingerData sets the stinger overlay data for a stinger transition.
+func WithStingerData(sd *transition.StingerData) TransitionOption {
+	return func(o *transitionOpts) { o.stingerData = sd }
+}
+
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
 	key        string
@@ -308,7 +320,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 // to the given target source. Frames from both sources are routed to the
 // TransitionEngine which produces blended output on the program relay.
 // wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
-func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string) error {
+func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string, opts ...TransitionOption) error {
 	// Phase 1: Validate and read state under write lock. Set state to
 	// StateTransitioning to prevent concurrent starts, then release the lock
 	// so warmup can proceed without blocking frame routing.
@@ -344,10 +356,21 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("source %q: %w", sourceKey, ErrAlreadyOnProgram)
 	}
 
+	// Apply options
+	var topts transitionOpts
+	for _, opt := range opts {
+		opt(&topts)
+	}
+
 	tt := transition.TransitionType(transType)
-	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe {
+	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe && tt != transition.TransitionStinger {
 		s.mu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+
+	if tt == transition.TransitionStinger && topts.stingerData == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("stinger transition requires stinger data")
 	}
 
 	// Validate wipe direction when type is wipe
@@ -391,6 +414,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		Bitrate:        bitrate,
 		FPS:            fps,
 		WipeDirection:  wipeDir,
+		Stinger:        topts.stingerData,
 		Output: func(data []byte, isKeyframe bool, pts int64) {
 			if isKeyframe {
 				transGroupID++
