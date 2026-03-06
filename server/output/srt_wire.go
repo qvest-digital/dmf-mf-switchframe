@@ -28,6 +28,10 @@ func (c *srtgoConn) Close() {
 
 // SRTConnect creates a real SRT caller connection using zsiec/srtgo.
 // It dials the remote SRT endpoint with the given configuration.
+//
+// The ctx parameter is accepted for API compatibility but is not currently
+// passed to srt.Dial, which does not support context-based cancellation.
+// Connection timeout is controlled by srt.Config.ConnTimeout (default 5s).
 func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 	latency := config.Latency
 	if latency == 0 {

@@ -54,6 +54,10 @@ func (r *FileRecorder) ID() string {
 }
 
 // Start creates a new MPEG-TS file and begins accepting writes.
+//
+// The context parameter is accepted for API compatibility with the
+// OutputAdapter interface but is not currently checked; file creation
+// is a fast local operation.
 func (r *FileRecorder) Start(_ context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

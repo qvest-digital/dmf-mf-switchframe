@@ -441,10 +441,14 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	s.programRelay.BroadcastVideo(frame)
 }
 
-// StartTransition begins a mix/dip/wipe transition from the current program source
-// to the given target source. Frames from both sources are routed to the
-// TransitionEngine which produces blended output on the program relay.
-// wipeDirection is only used when transType is "wipe"; pass empty string otherwise.
+// StartTransition begins a mix/dip/wipe/stinger transition from the current
+// program source to the given target source. Frames from both sources are
+// routed to the TransitionEngine which produces blended output on the program
+// relay. wipeDirection is only used when transType is "wipe"; pass empty
+// string otherwise.
+//
+// The ctx parameter is checked before the expensive codec initialization phase;
+// a cancelled context will abort the transition early and roll back state.
 func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transType string, durationMs int, wipeDirection string, opts ...TransitionOption) error {
 	// Phase 1: Validate and read state under write lock. Set state to
 	// StateTransitioning to prevent concurrent starts, then release the lock
@@ -533,6 +537,15 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// GOP cache has its own mutex, so GetGOP is safe without s.mu.
 	// Decoder warmup can be slow (codec init + GOP feed), so releasing the
 	// lock here allows frame routing to continue for all sources.
+
+	// Check for cancellation before expensive codec initialization.
+	if err := ctx.Err(); err != nil {
+		s.mu.Lock()
+		s.transitionState(StateIdle)
+		s.mu.Unlock()
+		return fmt.Errorf("start transition: %w", err)
+	}
+
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		EncoderFactory: encoderFactory,
@@ -598,6 +611,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 }
 
 // SetTransitionPosition sets the T-bar position during an active transition.
+//
+// The ctx parameter is accepted for API compatibility and future use (e.g.
+// tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) error {
 	s.mu.RLock()
 	engine := s.transEngine
@@ -620,6 +636,9 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 // FadeToBlack starts or toggles a Fade to Black transition. If FTB is already
 // active and no transition is running, it toggles off (restores normal output).
 // If a non-FTB transition is active, FTB is rejected.
+//
+// The ctx parameter is accepted for API compatibility and future use (e.g.
+// tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.mu.Lock()
 
@@ -1097,6 +1116,9 @@ func (s *Switcher) UnregisterSource(key string) {
 // source is already on program, Cut is a no-op (Seq is not incremented).
 // When an audioCutHandler (mixer) is attached, Cut triggers an audio crossfade
 // and AFV program change automatically.
+//
+// The ctx parameter is accepted for API compatibility and future use (e.g.
+// tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var snapshot internal.ControlRoomState
 	var oldProgram string
@@ -1144,6 +1166,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 }
 
 // SetPreview sets the preview source. This does not affect the program output.
+//
+// The ctx parameter is accepted for API compatibility and future use (e.g.
+// tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	s.mu.Lock()
 	if _, ok := s.sources[sourceKey]; !ok {
@@ -1160,6 +1185,9 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 }
 
 // SetLabel sets a human-readable label for the given source.
+//
+// The ctx parameter is accepted for API compatibility and future use (e.g.
+// tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error {
 	s.mu.Lock()
 	ss, ok := s.sources[sourceKey]
