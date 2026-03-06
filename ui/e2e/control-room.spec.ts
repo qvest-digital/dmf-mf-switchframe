@@ -14,6 +14,16 @@ test('control strip contains buses and transitions', async ({ page }) => {
 	await expect(strip.locator('.program-bus')).toBeVisible();
 });
 
+test('replay panel has mark and transport controls', async ({ page }) => {
+	await page.goto('/');
+	const replayPanel = page.locator('.replay-panel');
+	await expect(replayPanel).toBeVisible();
+	await expect(replayPanel.locator('.mark-btn.mark-in')).toBeVisible();
+	await expect(replayPanel.locator('.mark-btn.mark-out')).toBeVisible();
+	// Transport button (play or stop) should be visible
+	await expect(replayPanel.locator('.transport-btn')).toBeVisible();
+});
+
 test('keyboard overlay opens on ? and closes on Escape', async ({ page }) => {
 	await page.goto('/');
 	// Ensure the page is focused and the keyboard handler has attached
