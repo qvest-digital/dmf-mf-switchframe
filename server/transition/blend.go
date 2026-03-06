@@ -20,8 +20,9 @@ package transition
 type FrameBlender struct {
 	width, height int
 	yuvBufOut     []byte
-	ySize         int // w*h (luma plane size)
-	uvSize        int // w/2 * h/2 (each chroma plane size)
+	ySize         int  // w*h (luma plane size)
+	uvSize        int  // w/2 * h/2 (each chroma plane size)
+	blackY        byte // Y value for black (0 = full-range, 16 = limited-range)
 }
 
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
@@ -35,6 +36,17 @@ func NewFrameBlender(width, height int) *FrameBlender {
 		yuvBufOut: make([]byte, ySize+2*uvSize),
 		ySize:     ySize,
 		uvSize:    uvSize,
+	}
+}
+
+// SetLimitedRange configures the blender for limited-range (broadcast) or
+// full-range YUV. Limited-range uses Y=16 for black; full-range uses Y=0.
+// The default (zero value) is full-range for backward compatibility.
+func (fb *FrameBlender) SetLimitedRange(limited bool) {
+	if limited {
+		fb.blackY = 16
+	} else {
+		fb.blackY = 0
 	}
 }
 
@@ -52,16 +64,19 @@ func (fb *FrameBlender) BlendMix(yuvA, yuvB []byte, position float64) []byte {
 // BlendDip performs a two-phase dip-to-black transition in YUV420 space.
 // Phase 1 (position 0.0–0.5): source A fades to black.
 // Phase 2 (position 0.5–1.0): source B fades up from black.
-// At position 0.5, the output is fully black (Y=0, Cb=128, Cr=128).
+// At position 0.5, the output is fully black.
+// Black level depends on SetLimitedRange: Y=0 (full-range) or Y=16 (limited-range).
 func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
+	blackY := float64(fb.blackY)
+
 	if position < 0.5 {
 		// Phase 1: fade A to black. gain goes from 1.0 at pos=0 to 0.0 at pos=0.5
 		gain := 1.0 - 2.0*position
 		invGain := 1.0 - gain // how much black to mix in
 
-		// Y plane: fade toward 0
+		// Y plane: fade toward blackY
 		for i := 0; i < fb.ySize; i++ {
-			fb.yuvBufOut[i] = clampByte(float64(yuvA[i]) * gain)
+			fb.yuvBufOut[i] = clampByte(float64(yuvA[i])*gain + blackY*invGain)
 		}
 		// Cb plane: fade toward 128
 		cbOffset := fb.ySize
@@ -78,9 +93,9 @@ func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
 		gain := 2.0*position - 1.0
 		invGain := 1.0 - gain
 
-		// Y plane: fade from 0
+		// Y plane: fade from blackY
 		for i := 0; i < fb.ySize; i++ {
-			fb.yuvBufOut[i] = clampByte(float64(yuvB[i]) * gain)
+			fb.yuvBufOut[i] = clampByte(float64(yuvB[i])*gain + blackY*invGain)
 		}
 		// Cb plane: fade from 128
 		cbOffset := fb.ySize
@@ -279,14 +294,17 @@ func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []
 }
 
 // BlendFTB fades a single source to black in YUV420 space.
-// position 0.0 = full source, position 1.0 = fully black (Y=0, Cb=128, Cr=128).
+// position 0.0 = full source, position 1.0 = fully black.
+// Black level depends on SetLimitedRange: Y=0 (full-range) or Y=16 (limited-range).
+// Chroma neutral is 128 in both ranges.
 func (fb *FrameBlender) BlendFTB(yuvA []byte, position float64) []byte {
 	gain := 1.0 - position
 	invGain := position
+	blackY := float64(fb.blackY)
 
-	// Y plane: fade toward 0
+	// Y plane: fade toward blackY
 	for i := 0; i < fb.ySize; i++ {
-		fb.yuvBufOut[i] = clampByte(float64(yuvA[i]) * gain)
+		fb.yuvBufOut[i] = clampByte(float64(yuvA[i])*gain + blackY*invGain)
 	}
 	// Cb plane: fade toward 128
 	cbOffset := fb.ySize

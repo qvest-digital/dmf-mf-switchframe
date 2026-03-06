@@ -432,3 +432,66 @@ func TestBlendStinger_BoundsCheck(t *testing.T) {
 	result = fb.BlendStinger(nil, validStinger, validAlpha)
 	require.Nil(t, result, "nil base should return nil")
 }
+
+// --- Limited-range YUV tests ---
+
+func TestBlendFTBFull_LimitedRange(t *testing.T) {
+	t.Parallel()
+	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(true)
+	a := makeYUVFrame(4, 4, 200, 200, 200)
+
+	out := fb.BlendFTB(a, 1.0)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+	// Limited-range black: Y=16, Cb=128, Cr=128
+	for i := 0; i < ySize; i++ {
+		require.Equal(t, byte(16), out[i], "Y byte %d should be 16 (limited-range black)", i)
+	}
+	for i := 0; i < uvSize; i++ {
+		require.Equal(t, byte(128), out[ySize+i], "Cb byte %d should be 128", i)
+		require.Equal(t, byte(128), out[ySize+uvSize+i], "Cr byte %d should be 128", i)
+	}
+}
+
+func TestBlendFTBHalf_LimitedRange(t *testing.T) {
+	t.Parallel()
+	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(true)
+	a := makeYUVFrame(4, 4, 200, 128, 128)
+
+	out := fb.BlendFTB(a, 0.5)
+	ySize := 4 * 4
+	// Y = 200*0.5 + 16*0.5 = 108
+	for i := 0; i < ySize; i++ {
+		require.InDelta(t, 108, int(out[i]), 1, "Y at pixel %d", i)
+	}
+}
+
+func TestBlendDipMidpoint_LimitedRange(t *testing.T) {
+	t.Parallel()
+	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(true)
+	a := makeYUVFrame(4, 4, 200, 128, 128)
+	b := makeYUVFrame(4, 4, 200, 128, 128)
+
+	out := fb.BlendDip(a, b, 0.5)
+	ySize := 4 * 4
+	// At midpoint, Y should be limited-range black (16)
+	for i := 0; i < ySize; i++ {
+		require.InDelta(t, 16, int(out[i]), 1, "Y at pixel %d should be 16 at dip midpoint", i)
+	}
+}
+
+func TestBlendFTB_DefaultIsFullRange(t *testing.T) {
+	t.Parallel()
+	fb := NewFrameBlender(4, 4)
+	// No SetLimitedRange call — should default to full-range (blackY=0)
+	a := makeYUVFrame(4, 4, 200, 200, 200)
+
+	out := fb.BlendFTB(a, 1.0)
+	ySize := 4 * 4
+	for i := 0; i < ySize; i++ {
+		require.Equal(t, byte(0), out[i], "Y byte %d should be 0 (full-range default)", i)
+	}
+}
