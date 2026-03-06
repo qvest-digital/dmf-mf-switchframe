@@ -1,6 +1,7 @@
 package stinger
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -10,6 +11,27 @@ import (
 	"strings"
 	"sync"
 )
+
+var (
+	ErrNotFound        = errors.New("stinger not found")
+	ErrInvalidName     = errors.New("invalid stinger name")
+	ErrInvalidCutPoint = errors.New("cut point must be between 0 and 1")
+)
+
+// validateName rejects names that could cause path traversal or are otherwise invalid.
+func validateName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return ErrInvalidName
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return ErrInvalidName
+	}
+	// Ensure the cleaned name matches the original (catches things like "a/../b")
+	if filepath.Base(name) != name {
+		return ErrInvalidName
+	}
+	return nil
+}
 
 // StingerFrame holds a pre-decoded frame with YUV420 data and a per-pixel alpha map.
 type StingerFrame struct {
@@ -90,6 +112,9 @@ func (s *StingerStore) List() []string {
 
 // Get returns a stinger clip by name.
 func (s *StingerStore) Get(name string) (*StingerClip, bool) {
+	if validateName(name) != nil {
+		return nil, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.clips[name]
@@ -98,10 +123,13 @@ func (s *StingerStore) Get(name string) (*StingerClip, bool) {
 
 // Delete removes a stinger clip and its directory.
 func (s *StingerStore) Delete(name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidName, name)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.clips[name]; !ok {
-		return fmt.Errorf("stinger %q not found", name)
+		return ErrNotFound
 	}
 	delete(s.clips, name)
 	return os.RemoveAll(filepath.Join(s.dir, name))
@@ -109,14 +137,17 @@ func (s *StingerStore) Delete(name string) error {
 
 // SetCutPoint updates the cut point for a stinger clip.
 func (s *StingerStore) SetCutPoint(name string, cutPoint float64) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidName, name)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.clips[name]
 	if !ok {
-		return fmt.Errorf("stinger %q not found", name)
+		return ErrNotFound
 	}
 	if cutPoint < 0 || cutPoint > 1 {
-		return fmt.Errorf("cut point must be between 0 and 1")
+		return ErrInvalidCutPoint
 	}
 	c.CutPoint = cutPoint
 	return nil
@@ -125,6 +156,9 @@ func (s *StingerStore) SetCutPoint(name string, cutPoint float64) error {
 // LoadFromDir loads a stinger from a directory of PNG files.
 // The directory must already exist under the store's base dir.
 func (s *StingerStore) LoadFromDir(name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidName, name)
+	}
 	clip, err := s.loadClip(name)
 	if err != nil {
 		return err

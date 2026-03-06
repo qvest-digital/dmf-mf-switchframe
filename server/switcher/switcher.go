@@ -342,8 +342,8 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 
 		// Wire all existing source viewers to the frame sync.
 		for key, ss := range s.sources {
-			ss.viewer.frameSync = fs
-			ss.viewer.delayBuffer = nil // bypass delay buffer
+			ss.viewer.frameSync.Store(fs)
+			ss.viewer.delayBuffer.Store(nil) // bypass delay buffer
 			fs.AddSource(key)
 		}
 		fs.Start()
@@ -356,8 +356,8 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 
 		// Revert all source viewers to the delay buffer.
 		for _, ss := range s.sources {
-			ss.viewer.frameSync = nil
-			ss.viewer.delayBuffer = s.delayBuffer
+			ss.viewer.frameSync.Store(nil)
+			ss.viewer.delayBuffer.Store(s.delayBuffer)
 		}
 		slog.Info("switcher: frame sync disabled")
 	}
@@ -957,10 +957,10 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
 	viewer := newSourceViewer(key, s)
 	if s.frameSyncActive && s.frameSync != nil {
-		viewer.frameSync = s.frameSync
+		viewer.frameSync.Store(s.frameSync)
 		s.frameSync.AddSource(key)
 	} else {
-		viewer.delayBuffer = s.delayBuffer
+		viewer.delayBuffer.Store(s.delayBuffer)
 	}
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}

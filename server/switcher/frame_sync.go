@@ -8,6 +8,9 @@ import (
 	"github.com/zsiec/prism/media"
 )
 
+// mpegtsClock is the MPEG-TS 90 kHz clock rate used for PTS values.
+const mpegtsClock = 90000
+
 const (
 	// syncRingSize is the number of slots in the per-source ring buffer.
 	// Two slots allows one frame to be consumed while the next arrives,
@@ -239,7 +242,9 @@ func (fs *FrameSynchronizer) tickLoop() {
 func (fs *FrameSynchronizer) releaseTick() {
 	fs.mu.Lock()
 	fs.tickNum++
-	tickPTS := fs.tickNum * int64(fs.tickRate)
+	// Convert tick number to 90 kHz PTS units.
+	// tickRate is a time.Duration (nanoseconds); multiply by 90000/1e9 to convert.
+	tickPTS := fs.tickNum * int64(fs.tickRate) * mpegtsClock / int64(time.Second)
 
 	// Collect frames to release outside the lock.
 	type pendingRelease struct {

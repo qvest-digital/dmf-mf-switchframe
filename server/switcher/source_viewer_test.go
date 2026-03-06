@@ -3,6 +3,7 @@ package switcher
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
@@ -98,4 +99,73 @@ func TestSourceViewerStats(t *testing.T) {
 	if stats.ID != "switchframe:camera1" {
 		t.Errorf("Stats().ID = %q, want %q", stats.ID, "switchframe:camera1")
 	}
+}
+
+// TestSourceViewer_ConcurrentFrameSyncToggle verifies that concurrently toggling
+// frameSync and delayBuffer while sending frames does not trigger the race detector.
+// This test exposes the data race that existed when these fields were bare pointers
+// accessed without synchronization.
+func TestSourceViewer_ConcurrentFrameSyncToggle(t *testing.T) {
+	handler := &mockFrameHandler{}
+	sv := newSourceViewer("camera1", handler)
+
+	// Build a minimal DelayBuffer and FrameSynchronizer to use as toggle targets.
+	db := NewDelayBuffer(handler)
+
+	videoOut := func(key string, f media.VideoFrame) {}
+	audioOut := func(key string, f media.AudioFrame) {}
+	fs := NewFrameSynchronizer(33333*time.Microsecond, videoOut, audioOut)
+	fs.AddSource("camera1")
+	fs.Start()
+	defer fs.Stop()
+
+	const numFrames = 2000
+	var wg sync.WaitGroup
+
+	// Goroutine 1: continuously send video frames.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		frame := &media.VideoFrame{PTS: 1000, IsKeyframe: true}
+		for i := 0; i < numFrames; i++ {
+			sv.SendVideo(frame)
+		}
+	}()
+
+	// Goroutine 2: continuously send audio frames.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		frame := &media.AudioFrame{PTS: 2000, Data: []byte{0x01}}
+		for i := 0; i < numFrames; i++ {
+			sv.SendAudio(frame)
+		}
+	}()
+
+	// Goroutine 3: continuously send caption frames.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		frame := &ccx.CaptionFrame{}
+		for i := 0; i < numFrames; i++ {
+			sv.SendCaptions(frame)
+		}
+	}()
+
+	// Goroutine 4: toggle frameSync on/off while frames are flowing.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				sv.frameSync.Store(fs)
+				sv.delayBuffer.Store(nil)
+			} else {
+				sv.frameSync.Store(nil)
+				sv.delayBuffer.Store(db)
+			}
+		}
+	}()
+
+	wg.Wait()
 }
