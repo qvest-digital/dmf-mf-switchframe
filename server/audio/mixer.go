@@ -15,6 +15,15 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
+// growBuf returns buf[:n] if cap(buf) >= n, otherwise allocates a new slice.
+// Used to eliminate per-frame allocations on the mixing hot path.
+func growBuf(buf []float32, n int) []float32 {
+	if cap(buf) >= n {
+		return buf[:n]
+	}
+	return make([]float32, n)
+}
+
 // crossfadeTimeout is the maximum time to wait for both sources to deliver
 // frames during a crossfade. If the outgoing source disconnects, the crossfade
 // completes with only the incoming source's audio after this deadline.
@@ -49,6 +58,11 @@ type Channel struct {
 	peakR       float64      // linear amplitude [0,1]
 	eq          *EQ          // 3-band parametric EQ (always initialized)
 	compressor  *Compressor  // single-band compressor (always initialized)
+
+	// Reusable work buffers (hot-path allocation elimination)
+	trimBuf   []float32
+	gainBuf   []float32
+	storedBuf []float32
 }
 
 // AudioMixer mixes audio from multiple sources.
@@ -67,6 +81,7 @@ type AudioMixer struct {
 	// Mix accumulation state: tracks which active unmuted channels
 	// have contributed to the current mix cycle.
 	mixBuffer   map[string][]float32 // sourceKey → decoded PCM for current cycle
+	mixAccum    []float32            // reusable accumulator for mix output
 	mixPTS      int64                // PTS of the current mix cycle
 	mixStarted  bool                 // true when at least one channel has contributed
 	mixDeadline time.Time            // deadline for current mix cycle
@@ -140,6 +155,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		stopTicker:     make(chan struct{}),
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
 		lastDecodedPCM: make(map[string][]float32),
+		mixBuffer:      make(map[string][]float32),
 	}
 	m.tickerWg.Add(1)
 	go m.mixDeadlineTicker()
@@ -234,19 +250,23 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		return nil
 	}
 
-	// Sum all channel PCM buffers
+	// Sum all channel PCM buffers using reusable accumulator
 	var mixLen int
 	for _, buf := range m.mixBuffer {
 		if len(buf) > mixLen {
 			mixLen = len(buf)
 		}
 	}
-	mixed := make([]float32, mixLen)
+	m.mixAccum = growBuf(m.mixAccum, mixLen)
+	for i := range m.mixAccum {
+		m.mixAccum[i] = 0
+	}
 	for _, buf := range m.mixBuffer {
 		for i := 0; i < len(buf) && i < mixLen; i++ {
-			mixed[i] += buf[i]
+			m.mixAccum[i] += buf[i]
 		}
 	}
+	mixed := m.mixAccum
 
 	// Apply master gain
 	masterGain := float32(DBToLinear(m.masterLevel))
@@ -336,7 +356,9 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 // resetMixCycleLocked clears the mix accumulation state for the next cycle.
 // Caller must hold m.mu write lock.
 func (m *AudioMixer) resetMixCycleLocked() {
-	m.mixBuffer = nil
+	for k := range m.mixBuffer {
+		delete(m.mixBuffer, k)
+	}
 	m.mixStarted = false
 	m.mixDeadline = time.Time{}
 }
@@ -721,10 +743,10 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				m.programPeakR = peakR
 				ch.peakL, ch.peakR = peakL, peakR
 				// Store a copy for crossfade pre-buffer even in passthrough.
-				// Copy to avoid aliasing if decoder reuses its internal buffer.
-				stored := make([]float32, len(pcm))
-				copy(stored, pcm)
-				m.lastDecodedPCM[sourceKey] = stored
+				// Copy to avoid aliasing since decoder reuses its internal buffer.
+				ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
+				copy(ch.storedBuf, pcm)
+				m.lastDecodedPCM[sourceKey] = ch.storedBuf
 			} else if err != nil {
 				m.decodeErrors.Add(1)
 				m.log.Warn("decode error", "source", sourceKey, "err", err)
@@ -769,15 +791,16 @@ mixing:
 
 	// Store a copy of last decoded PCM for instant crossfade on future cuts.
 	// Copy to avoid aliasing if decoder reuses its internal buffer.
-	storedPCM := make([]float32, len(pcm))
-	copy(storedPCM, pcm)
-	m.lastDecodedPCM[sourceKey] = storedPCM
+	ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
+	copy(ch.storedBuf, pcm)
+	m.lastDecodedPCM[sourceKey] = ch.storedBuf
 
 	// Pipeline order: Trim -> EQ -> Compressor -> Fader -> Mix -> Master -> Limiter -> Encode
 
 	// Apply trim (input gain)
 	trimGain := float32(DBToLinear(ch.trim))
-	trimmedPCM := make([]float32, len(pcm))
+	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
+	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
 		trimmedPCM[i] = s * trimGain
 	}
@@ -794,7 +817,8 @@ mixing:
 
 	// Apply fader level with per-sample transition interpolation
 	faderGain := float32(DBToLinear(ch.level))
-	gainedPCM := make([]float32, len(trimmedPCM))
+	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
+	gainedPCM := ch.gainBuf
 
 	isTransParticipant := m.transCrossfadeActive &&
 		(sourceKey == m.transCrossfadeFrom || sourceKey == m.transCrossfadeTo)
@@ -830,11 +854,6 @@ mixing:
 		if c.active && !c.muted {
 			activeUnmuted++
 		}
-	}
-
-	// Initialize mix buffer if needed (new cycle)
-	if m.mixBuffer == nil {
-		m.mixBuffer = make(map[string][]float32)
 	}
 
 	// Mix on frame arrival: each source contributes its latest frame.
@@ -892,9 +911,10 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		return
 	}
 
-	// Pipeline: Trim -> EQ -> Compressor -> Fader
+	// Pipeline: Trim -> EQ -> Compressor -> Fader (reuse channel work buffers)
 	trimGain := float32(DBToLinear(ch.trim))
-	trimmedPCM := make([]float32, len(pcm))
+	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
+	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
 		trimmedPCM[i] = s * trimGain
 	}
@@ -905,7 +925,8 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		ch.compressor.Process(trimmedPCM)
 	}
 	faderGain := float32(DBToLinear(ch.level))
-	gainedPCM := make([]float32, len(trimmedPCM))
+	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
+	gainedPCM := ch.gainBuf
 	for i, s := range trimmedPCM {
 		gainedPCM[i] = s * faderGain
 	}

@@ -1795,6 +1795,71 @@ func TestMixer_MonotonicOutputPTS(t *testing.T) {
 	}
 }
 
+func TestGrowBuf(t *testing.T) {
+	// nil input — should allocate new slice
+	buf := growBuf(nil, 10)
+	require.Equal(t, 10, len(buf))
+	require.GreaterOrEqual(t, cap(buf), 10)
+
+	// Reuse when capacity sufficient
+	original := buf
+	buf = growBuf(buf, 5)
+	require.Equal(t, 5, len(buf))
+	// Should be the same underlying array (reused)
+	require.Equal(t, cap(original), cap(buf), "should reuse existing capacity")
+
+	// New alloc when capacity insufficient
+	buf = growBuf(buf, 100)
+	require.Equal(t, 100, len(buf))
+	require.GreaterOrEqual(t, cap(buf), 100)
+
+	// Zero length
+	buf = growBuf(buf, 0)
+	require.Equal(t, 0, len(buf))
+}
+
+func BenchmarkMixerMixingPath(b *testing.B) {
+	// Measures allocations per frame in the mixing hot path.
+	// Target: 0 allocs/op in steady state.
+	pcm := make([]float32, 2048)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+	_ = m.SetTrim("cam1", 1.0) // force mixing path
+
+	// Warm up: run a few frames to initialize all buffers
+	for i := 0; i < 10; i++ {
+		m.IngestFrame("cam1", &media.AudioFrame{
+			PTS: int64(i * 1920), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2,
+		})
+	}
+
+	frame := &media.AudioFrame{PTS: 100000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		frame.PTS = int64(100000 + i*1920)
+		m.IngestFrame("cam1", frame)
+	}
+}
+
 func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
 	var mu sync.Mutex
 	var outputFrames []*media.AudioFrame

@@ -71,10 +71,15 @@ import (
 
 // FDKDecoder wraps the FDK AAC decoder (ADTS mode) and implements AudioDecoder.
 // It decodes ADTS-framed AAC data to interleaved float32 PCM.
+//
+// The decoder reuses internal buffers across calls. Callers must copy or
+// consume the returned []float32 before the next Decode() call.
 type FDKDecoder struct {
 	handle   C.aacdec_t
 	channels int
 	closed   bool
+	pcmBuf   []int16   // reusable C decode buffer
+	outBuf   []float32 // reusable float32 output buffer
 }
 
 // NewFDKDecoder creates a new FDK AAC decoder for the given sample rate and channel count.
@@ -86,7 +91,11 @@ func NewFDKDecoder(sampleRate, channels int) (*FDKDecoder, error) {
 		return nil, fmt.Errorf("invalid channel count: %d (must be 1-8)", channels)
 	}
 
-	d := &FDKDecoder{channels: channels}
+	const maxSamples = 2048 * 8
+	d := &FDKDecoder{
+		channels: channels,
+		pcmBuf:   make([]int16, maxSamples),
+	}
 	rc := C.aacdec_open(&d.handle, C.int(sampleRate), C.int(channels))
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to open FDK AAC decoder: code %d", int(rc))
@@ -103,18 +112,15 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		return nil, fmt.Errorf("empty AAC frame")
 	}
 
-	// Allocate enough space: AAC-LC produces 1024 samples/channel, but allocate
-	// extra for safety (2048 * 8 channels).
-	const maxSamples = 2048 * 8
-	pcmBuf := make([]int16, maxSamples)
+	// Reuse pre-allocated pcmBuf (sized for 2048*8 samples at construction).
 	var decodedSamples C.int
 
 	rc := C.aacdec_decode(
 		&d.handle,
 		(*C.uchar)(unsafe.Pointer(&aacFrame[0])),
 		C.int(len(aacFrame)),
-		(*C.INT_PCM)(unsafe.Pointer(&pcmBuf[0])),
-		C.int(maxSamples),
+		(*C.INT_PCM)(unsafe.Pointer(&d.pcmBuf[0])),
+		C.int(len(d.pcmBuf)),
 		&decodedSamples,
 	)
 	if rc != 0 {
@@ -126,12 +132,17 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		return nil, fmt.Errorf("decoder produced no samples")
 	}
 
-	// Convert int16 PCM to float32 [-1.0, 1.0].
-	out := make([]float32, n)
-	for i := 0; i < n; i++ {
-		out[i] = normalizeInt16(int16(pcmBuf[i]))
+	// Convert int16 PCM to float32 [-1.0, 1.0] using reusable output buffer.
+	// Callers must copy the result before the next Decode() call.
+	if cap(d.outBuf) >= n {
+		d.outBuf = d.outBuf[:n]
+	} else {
+		d.outBuf = make([]float32, n)
 	}
-	return out, nil
+	for i := 0; i < n; i++ {
+		d.outBuf[i] = normalizeInt16(int16(d.pcmBuf[i]))
+	}
+	return d.outBuf, nil
 }
 
 // Close releases the decoder resources. Safe to call multiple times.
