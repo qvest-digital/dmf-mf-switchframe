@@ -124,8 +124,11 @@ func (r *FileRecorder) shouldRotate() bool {
 // rotateLocked closes the current file and opens a new one with an
 // incremented index. Must be called with r.mu held.
 func (r *FileRecorder) rotateLocked() error {
-	// Close current file.
+	// Flush and close current file.
 	if r.file != nil {
+		if err := r.file.Sync(); err != nil {
+			slog.Error("error syncing rotated file", "file", r.filename, "err", err)
+		}
 		if err := r.file.Close(); err != nil {
 			slog.Error("error closing rotated file", "file", r.filename, "err", err)
 		}
@@ -178,10 +181,20 @@ func (r *FileRecorder) Close() error {
 		return nil
 	}
 
-	err := r.file.Close()
+	var syncErr error
+	if err := r.file.Sync(); err != nil {
+		syncErr = fmt.Errorf("sync: %w", err)
+	}
+	closeErr := r.file.Close()
 	r.file = nil
 	r.state = StateStopped
-	return err
+	if syncErr != nil {
+		if closeErr != nil {
+			return fmt.Errorf("%w; close: %v", syncErr, closeErr)
+		}
+		return syncErr
+	}
+	return closeErr
 }
 
 // Status returns the current adapter status.
