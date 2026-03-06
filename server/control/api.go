@@ -1100,6 +1100,7 @@ type graphicsFrameRequest struct {
 
 // handleGraphicsOn activates the overlay immediately (CUT ON).
 func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if err := a.compositor.On(); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -1110,6 +1111,7 @@ func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
 
 // handleGraphicsOff deactivates the overlay immediately (CUT OFF).
 func (a *API) handleGraphicsOff(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if err := a.compositor.Off(); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -1120,6 +1122,7 @@ func (a *API) handleGraphicsOff(w http.ResponseWriter, r *http.Request) {
 
 // handleGraphicsAutoOn starts a 500ms fade-in transition (AUTO ON).
 func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if err := a.compositor.AutoOn(500 * time.Millisecond); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -1130,6 +1133,7 @@ func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
 
 // handleGraphicsAutoOff starts a 500ms fade-out transition (AUTO OFF).
 func (a *API) handleGraphicsAutoOff(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
 	if err := a.compositor.AutoOff(500 * time.Millisecond); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
