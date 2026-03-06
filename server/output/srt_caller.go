@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -274,16 +275,20 @@ func (c *SRTCaller) reconnectLoop() {
 	}
 }
 
-// nextBackoff returns the current backoff duration and advances to the next.
-// The progression is: 1s → 2s → 4s → 8s → 16s → 30s (capped).
+// nextBackoff returns the current backoff duration with ±20% jitter and
+// advances to the next level. The progression is: 1s → 2s → 4s → 8s →
+// 16s → 30s (capped). Jitter prevents thundering herd on reconnect.
 func (c *SRTCaller) nextBackoff() time.Duration {
 	current := c.backoff
+	// Apply ±20% jitter
+	jitter := 0.8 + rand.Float64()*0.4
+	jittered := time.Duration(float64(current) * jitter)
 	next := c.backoff * 2
 	if next > maxBackoff {
 		next = maxBackoff
 	}
 	c.backoff = next
-	return current
+	return jittered
 }
 
 // resetBackoff returns the backoff duration to its initial value.
