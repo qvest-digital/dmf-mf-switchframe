@@ -962,12 +962,15 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		s.log.Info("transition completed", "type", transType)
 	}
 
+	// Flush the pipeline decoder's reference frames and reorder buffer.
+	// Unlike reset (close+recreate), flush avoids B-frame buffering delay.
+	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+		pipeCodecs.flushDecoder()
+	}
+
 	// Replay only the keyframe from the cached GOP through the pipeline.
 	// This gives the browser an immediate sync point with consistent
 	// SPS/PPS. Live delta frames from the source follow naturally.
-	// Note: the pipeline decoder is NOT reset — FFmpeg handles mid-stream
-	// SPS/PPS changes naturally. Resetting causes "no output frame yet"
-	// drops due to B-frame reordering delay.
 	if len(replayFrames) > 0 {
 		s.broadcastVideo(replayFrames[0]) // keyframe only
 		// Clear the IDR gate — the replayed keyframe seeds the decoder
@@ -1074,8 +1077,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	// Flush pipeline decoder — see handleTransitionComplete comment.
+	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+		pipeCodecs.flushDecoder()
+	}
+
 	// Replay only the keyframe from the cached GOP through the pipeline.
-	// See handleTransitionComplete comment for why decoder is NOT reset.
 	if len(replayFrames) > 0 {
 		s.broadcastVideo(replayFrames[0]) // keyframe only
 		s.mu.Lock()
@@ -1235,9 +1242,12 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
 
+		// Flush pipeline decoder — see handleTransitionComplete comment.
+		if s.pipeCodecs != nil {
+			s.pipeCodecs.flushDecoder()
+		}
+
 		// Replay only the keyframe from the cached GOP through the pipeline.
-		// This gives the browser an immediate sync point with consistent
-		// SPS/PPS. Live delta frames follow naturally from the source.
 		if len(replayFrames) > 0 {
 			s.broadcastVideo(replayFrames[0]) // keyframe only
 			// Clear IDR gate — the replayed keyframe seeds the decoder

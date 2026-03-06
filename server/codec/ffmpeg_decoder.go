@@ -173,6 +173,14 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 	return 0;
 }
 
+// ffdec_flush resets the decoder state, clearing reference frames and
+// internal buffers. The decoder remains usable for new input.
+static void ffdec_flush(ffdec_t* h) {
+	if (h->ctx) {
+		avcodec_flush_buffers(h->ctx);
+	}
+}
+
 // ffdec_close frees all decoder resources.
 static void ffdec_close(ffdec_t* h) {
 	if (h->pkt) {
@@ -257,6 +265,15 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	C.free(unsafe.Pointer(outBuf))
 
 	return result, int(outWidth), int(outHeight), nil
+}
+
+// Flush resets the decoder's internal state (reference frames, reorder buffer)
+// without destroying it. Use when the input source changes to prevent stale
+// reference frame warnings. The decoder can immediately accept new input.
+func (d *FFmpegDecoder) Flush() {
+	if !d.closed {
+		C.ffdec_flush(&d.handle)
+	}
 }
 
 // Close releases the decoder resources. Safe to call multiple times.

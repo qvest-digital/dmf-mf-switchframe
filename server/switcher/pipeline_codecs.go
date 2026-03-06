@@ -161,6 +161,22 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	return frame, nil
 }
 
+// flushDecoder resets the decoder's internal state (reference frames, reorder
+// buffer) without destroying it. Call this when the program source changes
+// to prevent stale reference frame warnings. Unlike resetDecoder (which
+// destroys and recreates), flush avoids B-frame buffering delay.
+func (pc *pipelineCodecs) flushDecoder() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.decoder == nil {
+		return
+	}
+	type flusher interface{ Flush() }
+	if f, ok := pc.decoder.(flusher); ok {
+		f.Flush()
+	}
+}
+
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
 func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64) {
