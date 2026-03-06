@@ -274,6 +274,25 @@ func (b *KeyProcessorBridge) RemoveFillSource(source string) {
 	delete(b.fillYUV, source)
 }
 
+// ProcessYUV applies upstream keys to a raw YUV420 buffer in-place.
+// This is the codec-free processor used by the pipeline coordinator.
+// When no keys are enabled or no fills are cached, returns yuv unchanged.
+func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
+	if !b.kp.HasEnabledKeys() {
+		return yuv
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.fillYUV) == 0 {
+		return yuv
+	}
+
+	b.kp.Process(yuv, b.fillYUV, width, height)
+	return yuv
+}
+
 // Close releases all codec resources.
 func (b *KeyProcessorBridge) Close() {
 	b.mu.Lock()
