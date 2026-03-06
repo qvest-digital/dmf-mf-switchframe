@@ -83,6 +83,7 @@
 	}
 	let transitionType: 'mix' | 'dip' = 'mix';
 	let transitionDuration = 1000;
+	let eqExpandedKeys: Record<string, boolean> = $state({});
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
@@ -463,7 +464,7 @@
 					<div class="panel-header">
 						<LockIndicator state={store.effectiveState} subsystem="audio" />
 					</div>
-					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
+					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} expandedKeys={eqExpandedKeys} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onExpandToggle={(key) => { eqExpandedKeys = { ...eqExpandedKeys, [key]: !eqExpandedKeys[key] }; }} />
 				</div>
 				<div class="graphics-section">
 					<div class="panel-header">
