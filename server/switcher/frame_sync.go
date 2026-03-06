@@ -111,6 +111,7 @@ type FrameSynchronizer struct {
 	onVideo  func(sourceKey string, frame media.VideoFrame)
 	onAudio  func(sourceKey string, frame media.AudioFrame)
 	done     chan struct{}
+	wg       sync.WaitGroup
 	started  bool
 	stopped  bool
 	tickNum  int64 // monotonic tick counter for PTS generation
@@ -196,22 +197,28 @@ func (fs *FrameSynchronizer) Start() {
 		return
 	}
 	fs.started = true
+	fs.wg.Add(1)
 	go fs.tickLoop()
 }
 
 // Stop halts the background ticker. Safe to call multiple times.
 func (fs *FrameSynchronizer) Stop() {
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	if fs.stopped {
+		fs.mu.Unlock()
 		return
 	}
 	fs.stopped = true
 	close(fs.done)
+	fs.mu.Unlock()
+
+	// Wait for the tickLoop goroutine to exit.
+	fs.wg.Wait()
 }
 
 // tickLoop is the background goroutine that runs the ticker.
 func (fs *FrameSynchronizer) tickLoop() {
+	defer fs.wg.Done()
 	fs.mu.Lock()
 	rate := fs.tickRate
 	fs.mu.Unlock()

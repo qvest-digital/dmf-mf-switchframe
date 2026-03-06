@@ -294,3 +294,21 @@ func TestDelayBuffer_Close(t *testing.T) {
 	// Calling Close again should not panic.
 	db.Close()
 }
+
+func TestDelayBuffer_CloseWaitsForGoroutine(t *testing.T) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+
+	// Close must block until the releaseTicker goroutine has exited.
+	// After Close returns, the done channel must be closed.
+	db.Close()
+
+	// If Close properly waited, the done channel is already closed,
+	// so this select must take the first case immediately.
+	select {
+	case <-db.done:
+		// success — goroutine has exited
+	default:
+		t.Fatal("Close returned before releaseTicker goroutine exited")
+	}
+}

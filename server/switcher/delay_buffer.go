@@ -47,6 +47,7 @@ type DelayBuffer struct {
 	sources  map[string]*sourceDelay
 	handler  frameHandler
 	stopCh   chan struct{}
+	done     chan struct{} // closed when releaseTicker goroutine exits
 	stopped  bool
 }
 
@@ -60,6 +61,7 @@ func NewDelayBuffer(handler frameHandler) *DelayBuffer {
 		sources: make(map[string]*sourceDelay),
 		handler: handler,
 		stopCh:  make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go db.releaseTicker()
 	return db
@@ -111,6 +113,9 @@ func (db *DelayBuffer) Close() {
 	// Discard all pending frames.
 	db.sources = make(map[string]*sourceDelay)
 	db.mu.Unlock()
+
+	// Wait for the releaseTicker goroutine to exit.
+	<-db.done
 }
 
 // handleVideoFrame implements frameHandler. If delay=0 for the source,
@@ -176,6 +181,7 @@ func (db *DelayBuffer) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFr
 // releaseTicker runs in a background goroutine, checking every 1ms for
 // frames whose delay has elapsed and forwarding them to the handler.
 func (db *DelayBuffer) releaseTicker() {
+	defer close(db.done)
 	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 

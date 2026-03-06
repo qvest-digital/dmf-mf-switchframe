@@ -242,6 +242,41 @@ func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
 	hm.stop()
 }
 
+func TestHealthMonitor_StopWaitsForGoroutine(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1")
+
+	published := make(chan struct{}, 100)
+	hm.start(10*time.Millisecond, func() {
+		published <- struct{}{}
+	})
+
+	// Let the goroutine run a few ticks.
+	time.Sleep(50 * time.Millisecond)
+
+	// stop() must block until the goroutine has exited.
+	hm.stop()
+
+	// After stop returns, the done channel must be closed.
+	hm.mu.RLock()
+	done := hm.done
+	hm.mu.RUnlock()
+
+	select {
+	case <-done:
+		// success — goroutine has exited
+	default:
+		t.Fatal("stop() returned before monitor goroutine exited")
+	}
+}
+
+func TestHealthMonitor_StopWithoutStart(t *testing.T) {
+	// stop() must not block or panic when the monitor was never started.
+	hm := newHealthMonitor()
+	hm.stop()
+}
+
 func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")

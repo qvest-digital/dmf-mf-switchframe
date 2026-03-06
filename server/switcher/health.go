@@ -40,6 +40,7 @@ type healthMonitor struct {
 	consecutiveCount map[string]int                         // consecutive checks at pending status
 	running          bool
 	stopCh           chan struct{}
+	done             chan struct{} // closed when the monitor goroutine exits; nil if never started
 }
 
 func newHealthMonitor() *healthMonitor {
@@ -131,9 +132,11 @@ func (hm *healthMonitor) start(interval time.Duration, publishFn func()) {
 		return
 	}
 	hm.running = true
+	hm.done = make(chan struct{})
 	hm.mu.Unlock()
 
 	go func() {
+		defer close(hm.done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -234,9 +237,18 @@ func (hm *healthMonitor) removeSource(sourceKey string) {
 }
 
 func (hm *healthMonitor) stop() {
+	hm.mu.Lock()
+	done := hm.done
+	hm.mu.Unlock()
+
 	select {
 	case <-hm.stopCh:
 	default:
 		close(hm.stopCh)
+	}
+
+	// Wait for the goroutine to exit if it was started.
+	if done != nil {
+		<-done
 	}
 }

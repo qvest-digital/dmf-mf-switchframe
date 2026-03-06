@@ -391,6 +391,39 @@ func TestFrameSync_StopCeasesTicking(t *testing.T) {
 	require.Equal(t, countAtStop, countAfter, "frames released after Stop")
 }
 
+func TestFrameSync_StopWaitsForGoroutine(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(10*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf)
+
+	fs.Start()
+
+	// Let the goroutine run a few ticks.
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop must block until the tickLoop goroutine has exited.
+	fs.Stop()
+
+	// After Stop returns, we can verify the goroutine exited by checking
+	// that no more frames are released. Record the count, wait, and verify
+	// it hasn't changed.
+	countAtStop := handler.videoCount()
+	time.Sleep(50 * time.Millisecond)
+	countAfter := handler.videoCount()
+	require.Equal(t, countAtStop, countAfter,
+		"frames released after Stop returned — goroutine still running")
+}
+
+func TestFrameSync_StopWithoutStart(t *testing.T) {
+	// Stop without Start must not block or panic.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.Stop()
+}
+
 func TestFrameSync_StopIdempotent(t *testing.T) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
