@@ -123,6 +123,50 @@
 			? Object.keys(crState.audioChannels).sort()
 			: [],
 	);
+
+	// Peak hold state: non-reactive maps to avoid $effect loops.
+	// Updated imperatively via getPeakHold() which is called during render.
+	const _peakHolds = new Map<string, { L: number; R: number; timeL: number; timeR: number }>();
+	const _clipIndicators = new Map<string, { L: number; R: number }>();
+
+	// Trigger re-render when peak holds change (bumped in getPeakHold)
+	let peakHoldTick = $state(0);
+
+	function getPeakHold(key: string, peakLDb: number, peakRDb: number): { L: number; R: number } {
+		const now = Date.now();
+		const hold = _peakHolds.get(key) ?? { L: -96, R: -96, timeL: 0, timeR: 0 };
+
+		let changed = false;
+		if (peakLDb > hold.L || now - hold.timeL > 2000) {
+			hold.L = peakLDb;
+			hold.timeL = now;
+			changed = true;
+		}
+		if (peakRDb > hold.R || now - hold.timeR > 2000) {
+			hold.R = peakRDb;
+			hold.timeR = now;
+			changed = true;
+		}
+		if (changed) _peakHolds.set(key, hold);
+
+		// Clip detection at -1 dBFS
+		const clip = _clipIndicators.get(key) ?? { L: 0, R: 0 };
+		if (peakLDb > -1) { clip.L = now; _clipIndicators.set(key, clip); }
+		if (peakRDb > -1) { clip.R = now; _clipIndicators.set(key, clip); }
+
+		return { L: hold.L, R: hold.R };
+	}
+
+	function isClipped(key: string, channel: 'L' | 'R'): boolean {
+		const clip = _clipIndicators.get(key);
+		if (!clip) return false;
+		return Date.now() - clip[channel] < 3000;
+	}
+
+	function clearClip(key: string) {
+		_clipIndicators.set(key, { L: 0, R: 0 });
+		peakHoldTick++;
+	}
 </script>
 
 <div class="audio-mixer" class:collapsed={ui.collapsed}>
@@ -138,6 +182,9 @@
 		{@const label = source?.label || key}
 		{@const tally = crState.tallyState[key] ?? 'idle'}
 		{@const isExpanded = expandedKeys[key] ?? false}
+		{@const peakLDb = channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL)}
+		{@const peakRDb = channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR)}
+		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:expanded={isExpanded}>
 			<span class="strip-label">{label}</span>
 
@@ -167,10 +214,18 @@
 					</div>
 					<div class="stereo-meter">
 						<div class="peak-bar left">
-							<div class="peak-fill" style="height: {dbToPercent(channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL))}%"></div>
+							<div class="peak-fill" style="height: {dbToPercent(peakLDb)}%"></div>
+							<div class="peak-hold-line" style="bottom: {dbToPercent(peakHold.L)}%"></div>
+							{#if isClipped(key, 'L')}
+								<button class="clip-dot" onclick={() => clearClip(key)} title="Click to clear clip indicator"></button>
+							{/if}
 						</div>
 						<div class="peak-bar right">
-							<div class="peak-fill" style="height: {dbToPercent(channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR))}%"></div>
+							<div class="peak-fill" style="height: {dbToPercent(peakRDb)}%"></div>
+							<div class="peak-hold-line" style="bottom: {dbToPercent(peakHold.R)}%"></div>
+							{#if isClipped(key, 'R')}
+								<button class="clip-dot" onclick={() => clearClip(key)} title="Click to clear clip indicator"></button>
+							{/if}
 						</div>
 					</div>
 				</div>
@@ -595,6 +650,30 @@
 			#ef4444 92%
 		);
 		transition: height 0.06s linear;
+	}
+
+	.peak-hold-line {
+		position: absolute;
+		left: 0;
+		right: 0;
+		height: 2px;
+		background: var(--text-primary);
+		pointer-events: none;
+	}
+
+	.clip-dot {
+		position: absolute;
+		top: 1px;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: #ff0000;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		z-index: 1;
 	}
 
 	/* Vertical fader */
