@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/output"
@@ -404,7 +405,11 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.mixer.SetTrim(req.Source, req.Level); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
+		status := http.StatusNotFound
+		if errors.Is(err, audio.ErrInvalidTrim) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}

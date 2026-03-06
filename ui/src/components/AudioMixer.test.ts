@@ -11,8 +11,8 @@ describe('AudioMixer', () => {
 		transitionPosition: 0,
 		inTransition: false,
 		audioChannels: {
-			cam1: { level: 0, muted: false, afv: true },
-			cam2: { level: -6, muted: true, afv: false },
+			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96 },
+			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96 },
 		},
 		masterLevel: 0,
 		programPeak: [-12, -14] as [number, number],
@@ -146,6 +146,48 @@ describe('AudioMixer', () => {
 		expect(peakBars[1].classList.contains('right')).toBe(true);
 	});
 
+	it('should render trim slider per channel strip', () => {
+		const { container } = render(AudioMixer, { props: { state } });
+		const trimKnobs = container.querySelectorAll('.channel-strip .trim-knob');
+		expect(trimKnobs.length).toBe(2);
+		// Verify trim knob attributes
+		const firstTrim = trimKnobs[0] as HTMLInputElement;
+		expect(firstTrim.min).toBe('-20');
+		expect(firstTrim.max).toBe('20');
+		expect(firstTrim.getAttribute('aria-label')).toBe('Trim for Camera 1');
+	});
+
+	it('should display trim value for each channel', () => {
+		const { container } = render(AudioMixer, { props: { state } });
+		const trimValues = container.querySelectorAll('.channel-strip .trim-value');
+		expect(trimValues.length).toBe(2);
+		// cam1 trim=0, cam2 trim=-3 (sorted order: cam1, cam2)
+		expect(trimValues[0].textContent).toBe('0.0');
+		expect(trimValues[1].textContent).toBe('-3.0');
+	});
+
+	it('should use server-side per-channel peaks when available', () => {
+		const stateWithPeaks = {
+			...state,
+			audioChannels: {
+				cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -12, peakR: -18 },
+				cam2: { level: -6, trim: 0, muted: true, afv: false, peakL: -96, peakR: -96 },
+			},
+		};
+		const { container } = render(AudioMixer, { props: { state: stateWithPeaks } });
+		const strips = container.querySelectorAll('.channel-strip');
+
+		// cam1 has server peaks > -96, so meter should use them (non-zero height)
+		const cam1Fills = strips[0].querySelectorAll('.peak-fill');
+		const lHeight = parseFloat((cam1Fills[0] as HTMLElement).style.height);
+		expect(lHeight).toBeGreaterThan(0);
+
+		// cam2 has peaks at -96 (floor), meter should fall back to client-side (0%)
+		const cam2Fills = strips[1].querySelectorAll('.peak-fill');
+		const cam2LHeight = parseFloat((cam2Fills[0] as HTMLElement).style.height);
+		expect(cam2LHeight).toBe(0);
+	});
+
 	describe('ARIA labels', () => {
 		it('should have aria-label on each channel fader with source label', () => {
 			const { container } = render(AudioMixer, { props: { state } });
@@ -184,7 +226,7 @@ describe('AudioMixer', () => {
 					cam1: { key: 'cam1', label: '', status: 'healthy' as const, lastFrameTime: 0 },
 				},
 				audioChannels: {
-					cam1: { level: 0, muted: false, afv: false },
+					cam1: { level: 0, trim: 0, muted: false, afv: false, peakL: -96, peakR: -96 },
 				},
 				tallyState: { cam1: 'program' as const },
 			};

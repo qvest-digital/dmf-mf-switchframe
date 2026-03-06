@@ -75,6 +75,16 @@
 		return ((db - min) / (max - min)) * 100;
 	}
 
+	/**
+	 * Compute the effective peak level in dBFS for a channel meter.
+	 * Prefers server-side per-channel peaks; falls back to client-side PFL levels.
+	 */
+	function channelPeakDb(serverPeak: number | undefined, clientLinear: number | undefined): number {
+		const sp = serverPeak ?? -96;
+		if (sp > -96) return sp;
+		return linearToDb(clientLinear ?? 0);
+	}
+
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
 		state.audioChannels != null
@@ -119,10 +129,10 @@
 					</div>
 					<div class="stereo-meter">
 						<div class="peak-bar left">
-							<div class="peak-fill" style="height: {dbToPercent((channel?.peakL ?? -96) > -96 ? (channel?.peakL ?? -96) : linearToDb(sourceLevels[key]?.peakL ?? 0))}%"></div>
+							<div class="peak-fill" style="height: {dbToPercent(channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL))}%"></div>
 						</div>
 						<div class="peak-bar right">
-							<div class="peak-fill" style="height: {dbToPercent((channel?.peakR ?? -96) > -96 ? (channel?.peakR ?? -96) : linearToDb(sourceLevels[key]?.peakR ?? 0))}%"></div>
+							<div class="peak-fill" style="height: {dbToPercent(channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR))}%"></div>
 						</div>
 					</div>
 				</div>

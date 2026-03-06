@@ -314,6 +314,7 @@ func (m *AudioMixer) RemoveChannel(sourceKey string) {
 			ch.decoder.Close()
 		}
 		delete(m.channels, sourceKey)
+		delete(m.lastDecodedPCM, sourceKey)
 	}
 	m.recalcPassthrough()
 }
@@ -432,10 +433,19 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.crossfadeTo = newSource
 	m.crossfadeActive = true
 	m.crossfadePCM = make(map[string][]float32)
-	// Pre-seed the old source's PCM from the buffer — no waiting needed
+	// Pre-seed the old source's PCM from the buffer — no waiting needed.
+	// Apply channel gain (trim * fader) to match what ingestCrossfadeFrame does
+	// for frames arriving from the decode path.
 	if lastPCM, ok := m.lastDecodedPCM[oldSource]; ok && len(lastPCM) > 0 {
 		cp := make([]float32, len(lastPCM))
-		copy(cp, lastPCM)
+		if ch, chOk := m.channels[oldSource]; chOk {
+			gain := float32(DBToLinear(ch.level)) * float32(DBToLinear(ch.trim))
+			for i, s := range lastPCM {
+				cp[i] = s * gain
+			}
+		} else {
+			copy(cp, lastPCM)
+		}
 		m.crossfadePCM[oldSource] = cp
 	}
 	m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)

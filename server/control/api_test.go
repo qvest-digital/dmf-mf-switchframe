@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -420,6 +421,9 @@ func newMockMixer(keys ...string) *mockMixer {
 }
 
 func (m *mockMixer) SetTrim(sourceKey string, trimDB float64) error {
+	if trimDB < -20 || trimDB > 20 {
+		return audio.ErrInvalidTrim
+	}
 	if !m.knownKeys[sourceKey] {
 		return fmt.Errorf("channel %q not found", sourceKey)
 	}
@@ -702,6 +706,98 @@ func TestAudioMasterNoMixer(t *testing.T) {
 
 	body := `{"level":-3.5}`
 	req := httptest.NewRequest("POST", "/api/audio/master", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+}
+
+// --- Audio Trim Endpoint ---
+
+func TestAudioTrimEndpoint(t *testing.T) {
+	api, mock := setupAudioTestAPI(t)
+
+	body := `{"source":"camera1","level":-6.0}`
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(mock.trimCalls) != 1 {
+		t.Fatalf("expected 1 SetTrim call, got %d", len(mock.trimCalls))
+	}
+	if mock.trimCalls[0].source != "camera1" || mock.trimCalls[0].level != -6.0 {
+		t.Errorf("SetTrim called with (%q, %f), want (%q, %f)",
+			mock.trimCalls[0].source, mock.trimCalls[0].level, "camera1", -6.0)
+	}
+}
+
+func TestAudioTrimUnknownSource(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"source":"nonexistent","level":-6.0}`
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestAudioTrimOutOfRange(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"source":"camera1","level":-25.0}`
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestAudioTrimInvalidJSON(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAudioTrimEmptySource(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"source":"","level":-6.0}`
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAudioTrimNoMixer(t *testing.T) {
+	api, _ := setupTestAPI(t) // no mixer attached
+
+	body := `{"source":"camera1","level":-6.0}`
+	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)

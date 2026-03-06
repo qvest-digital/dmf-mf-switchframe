@@ -1158,14 +1158,82 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
-func TestMixerTrimAppliedBeforeFader(t *testing.T) {
+func TestMixerCrossfadePreSeedAppliesGain(t *testing.T) {
+	// When OnCut pre-seeds old source PCM, it should apply the channel's
+	// gain (trim * fader) so the crossfade blends consistently with the
+	// new source's gained PCM from ingestCrossfadeFrame.
+	var allCapturedPCM [][]float32
 	var outputFrames []*media.AudioFrame
+
+	// Both sources produce 1.0 amplitude samples
+	oldPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	newPCM := []float32{1.0, 1.0, 1.0, 1.0}
+
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output: func(f *media.AudioFrame) {
-			outputFrames = append(outputFrames, f)
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
 		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			var captured []float32
+			allCapturedPCM = append(allCapturedPCM, captured)
+			idx := len(allCapturedPCM) - 1
+			return &mockEncoderCapture{pcmRef: &allCapturedPCM[idx]}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Set decoders
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: newPCM}
+	m.mu.Unlock()
+
+	// Set cam1 trim to -6dB — this should apply to the pre-seeded PCM
+	m.SetTrim("cam1", -6.0)
+
+	// Send frames from cam1 to populate lastDecodedPCM
+	for i := 0; i < 3; i++ {
+		m.IngestFrame("cam1", &media.AudioFrame{
+			PTS: int64(i * 1024), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2,
+		})
+	}
+	outputFrames = nil
+	allCapturedPCM = nil
+
+	// Trigger cut — cam1's pre-seeded PCM should have -6dB gain applied
+	m.OnCut("cam1", "cam2")
+
+	// Send one frame from cam2 (at 0dB trim, 0dB level → gain=1.0)
+	m.SetTrim("cam2", 0)
+	m.IngestFrame("cam2", &media.AudioFrame{
+		PTS: 3 * 1024, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2,
+	})
+
+	require.True(t, len(outputFrames) > 0, "crossfade should produce output")
+
+	// The pre-seeded old source PCM (1.0 * DBToLinear(-6) ≈ 0.501) should be
+	// blended with the new source PCM (1.0 * 1.0 = 1.0).
+	// At t=0: result ≈ old*cos(0) + new*sin(0) ≈ 0.501*1.0 + 1.0*0.0 = 0.501
+	lastPCM := allCapturedPCM[len(allCapturedPCM)-1]
+	require.InDelta(t, DBToLinear(-6.0), float64(lastPCM[0]), 0.05,
+		"first crossfade sample should reflect cam1's -6dB trim")
+}
+
+func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
 		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
@@ -1177,14 +1245,72 @@ func TestMixerTrimAppliedBeforeFader(t *testing.T) {
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
+	m.SetMasterLevel(-1.0) // force mixing path
 
-	// Set trim to -6dB
+	// Ingest a frame to populate lastDecodedPCM
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 0, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	m.mu.RLock()
+	_, hasPCM := m.lastDecodedPCM["cam1"]
+	m.mu.RUnlock()
+	require.True(t, hasPCM, "lastDecodedPCM should be populated after IngestFrame")
+
+	// Remove channel — should clean up the PCM buffer
+	m.RemoveChannel("cam1")
+
+	m.mu.RLock()
+	_, hasPCM = m.lastDecodedPCM["cam1"]
+	m.mu.RUnlock()
+	require.False(t, hasPCM, "lastDecodedPCM should be cleaned up after RemoveChannel")
+}
+
+func TestMixerTrimAppliedBeforeFader(t *testing.T) {
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(f *media.AudioFrame) {
+			outputFrames = append(outputFrames, f)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Set trim to -6dB (fader stays at 0dB)
 	err := m.SetTrim("cam1", -6.0)
 	require.NoError(t, err)
 
-	// Verify trim is stored
+	// Verify trim is stored in state
 	states := m.ChannelStates()
 	require.InDelta(t, -6.0, states["cam1"].Trim, 0.01)
+
+	// Verify passthrough is broken (trim != 0)
+	require.False(t, m.IsPassthrough())
+
+	// Ingest a frame — output PCM should be attenuated by trim
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames))
+	// Trim at -6dB: gain ≈ 0.501, fader at 0dB: gain = 1.0
+	// Combined: 1.0 * 0.501 * 1.0 ≈ 0.501
+	expectedGain := DBToLinear(-6.0)
+	require.Equal(t, 4, len(capturedPCM))
+	for i, s := range capturedPCM {
+		require.InDelta(t, expectedGain, s, 0.001,
+			"sample %d should have trim applied (expected %.3f, got %.3f)", i, expectedGain, s)
+	}
 }
 
 func TestMixerTrimBreaksPassthrough(t *testing.T) {
