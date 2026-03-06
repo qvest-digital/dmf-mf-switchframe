@@ -5,8 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/zsiec/switchframe/server/internal"
 )
 
 const (
@@ -20,16 +18,16 @@ const (
 	recoveryThreshold    = 1 // instant recovery to healthy
 )
 
-func healthStatusFromAge(age time.Duration) internal.SourceHealthStatus {
+func healthStatusFromAge(age time.Duration) SourceHealthStatus {
 	switch {
 	case age >= offlineThreshold:
-		return internal.SourceOffline
+		return SourceOffline
 	case age >= noSignalThreshold:
-		return internal.SourceNoSignal
+		return SourceNoSignal
 	case age >= staleThreshold:
-		return internal.SourceStale
+		return SourceStale
 	default:
-		return internal.SourceHealthy
+		return SourceHealthy
 	}
 }
 
@@ -37,8 +35,8 @@ type healthMonitor struct {
 	mu               sync.RWMutex
 	sources          map[string]bool                        // all registered source keys
 	lastFrame        sync.Map                               // map[string]*atomic.Int64 (UnixNano)
-	lastStatus       map[string]internal.SourceHealthStatus // last broadcast status per source
-	pendingStatus    map[string]internal.SourceHealthStatus // status awaiting hysteresis threshold
+	lastStatus       map[string]SourceHealthStatus // last broadcast status per source
+	pendingStatus    map[string]SourceHealthStatus // status awaiting hysteresis threshold
 	consecutiveCount map[string]int                         // consecutive checks at pending status
 	running          bool
 	stopCh           chan struct{}
@@ -47,8 +45,8 @@ type healthMonitor struct {
 func newHealthMonitor() *healthMonitor {
 	return &healthMonitor{
 		sources:          make(map[string]bool),
-		lastStatus:       make(map[string]internal.SourceHealthStatus),
-		pendingStatus:    make(map[string]internal.SourceHealthStatus),
+		lastStatus:       make(map[string]SourceHealthStatus),
+		pendingStatus:    make(map[string]SourceHealthStatus),
 		consecutiveCount: make(map[string]int),
 		stopCh:           make(chan struct{}),
 	}
@@ -82,7 +80,7 @@ func (hm *healthMonitor) recordFrame(sourceKey string) {
 // It reads from the committed lastStatus map (set by checkForChanges)
 // so that transient jitter does not appear in state broadcasts.
 // Falls back to raw computeStatus when no committed status exists yet.
-func (hm *healthMonitor) status(sourceKey string) internal.SourceHealthStatus {
+func (hm *healthMonitor) status(sourceKey string) SourceHealthStatus {
 	hm.mu.RLock()
 	if s, ok := hm.lastStatus[sourceKey]; ok {
 		hm.mu.RUnlock()
@@ -95,7 +93,7 @@ func (hm *healthMonitor) status(sourceKey string) internal.SourceHealthStatus {
 // rawStatus returns the instantaneous (non-hysteresis-filtered) health status.
 // Used for debug/diagnostic endpoints where the operator wants to see the
 // real-time computed status, not the committed broadcast status.
-func (hm *healthMonitor) rawStatus(sourceKey string) internal.SourceHealthStatus {
+func (hm *healthMonitor) rawStatus(sourceKey string) SourceHealthStatus {
 	return hm.computeStatus(sourceKey, time.Now())
 }
 
@@ -114,10 +112,10 @@ func (hm *healthMonitor) lastFrameAgoMs(sourceKey string) int64 {
 }
 
 // computeStatus computes the health status for a source at a given time.
-func (hm *healthMonitor) computeStatus(sourceKey string, now time.Time) internal.SourceHealthStatus {
+func (hm *healthMonitor) computeStatus(sourceKey string, now time.Time) SourceHealthStatus {
 	val, ok := hm.lastFrame.Load(sourceKey)
 	if !ok {
-		return internal.SourceOffline
+		return SourceOffline
 	}
 	ns := val.(*atomic.Int64).Load()
 	lastTime := time.Unix(0, ns)
@@ -154,8 +152,8 @@ func (hm *healthMonitor) start(interval time.Duration, publishFn func()) {
 // healthChange records a source health status transition for logging outside the lock.
 type healthChange struct {
 	source     string
-	fromStatus internal.SourceHealthStatus
-	toStatus   internal.SourceHealthStatus
+	fromStatus SourceHealthStatus
+	toStatus   SourceHealthStatus
 }
 
 // checkForChanges compares current health status of all registered sources
@@ -191,7 +189,7 @@ func (hm *healthMonitor) checkForChanges() bool {
 
 		// Status differs from committed status. Determine threshold.
 		threshold := degradationThreshold
-		if newStatus == internal.SourceHealthy {
+		if newStatus == SourceHealthy {
 			threshold = recoveryThreshold
 		}
 

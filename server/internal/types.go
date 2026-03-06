@@ -1,25 +1,6 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
-// TallyStatus represents the tally light state for a source.
-type TallyStatus string
-
-const (
-	TallyProgram TallyStatus = "program"
-	TallyPreview TallyStatus = "preview"
-	TallyIdle    TallyStatus = "idle"
-)
-
-// SourceHealthStatus represents the health/connectivity state of a video source.
-type SourceHealthStatus string
-
-const (
-	SourceHealthy  SourceHealthStatus = "healthy"
-	SourceStale    SourceHealthStatus = "stale"
-	SourceNoSignal SourceHealthStatus = "no_signal"
-	SourceOffline  SourceHealthStatus = "offline"
-)
-
 // SourceKeyConfig describes the upstream key configuration for a source,
 // included in SourceInfo so the browser knows the current key state.
 type SourceKeyConfig struct {
@@ -41,21 +22,11 @@ type SourceKeyConfig struct {
 type SourceInfo struct {
 	Key       string             `json:"key"`
 	Label     string             `json:"label,omitempty"`
-	Status    SourceHealthStatus `json:"status"`
+	Status    string             `json:"status"`
 	DelayMs   int                `json:"delayMs,omitempty"`
 	KeyConfig *SourceKeyConfig   `json:"keyConfig,omitempty"`
 	IsVirtual bool               `json:"isVirtual,omitempty"`
 }
-
-// AudioTransitionMode describes how audio should behave during a video transition.
-type AudioTransitionMode int
-
-const (
-	AudioCrossfade    AudioTransitionMode = iota // Mix: equal-power A→B
-	AudioDipToSilence                            // Dip: A→silence→B
-	AudioFadeOut                                 // FTB: A→silence
-	AudioFadeIn                                  // FTB Reverse: silence→A
-)
 
 // EQBand describes the settings for a single EQ band.
 type EQBand struct {
@@ -180,7 +151,7 @@ type ControlRoomState struct {
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`
 	GainReduction        float64                   `json:"gainReduction,omitempty"`
-	TallyState           map[string]TallyStatus    `json:"tallyState"`
+	TallyState           map[string]string          `json:"tallyState"`
 	Recording            *RecordingStatus           `json:"recording,omitempty"`
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`

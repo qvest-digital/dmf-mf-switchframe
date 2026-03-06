@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
-	"github.com/zsiec/switchframe/server/internal"
 )
 
 // mockEncoderCapture captures the PCM input passed to Encode.
@@ -602,7 +601,7 @@ func TestMixerOnTransitionStart(t *testing.T) {
 	require.False(t, m.IsInTransitionCrossfade())
 
 	// Start transition
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 
 	require.True(t, m.IsInTransitionCrossfade(), "transition crossfade should be active")
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should start at 0")
@@ -628,7 +627,7 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 
 	// Update position
 	m.OnTransitionPosition(0.25)
@@ -650,7 +649,7 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	require.True(t, m.IsInTransitionCrossfade())
 
@@ -672,7 +671,7 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 
 	// At position 0.0: old=1.0, new=0.0
 	m.OnTransitionPosition(0.0)
@@ -745,7 +744,7 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 
 	// Start transition at 50% — set position twice so prevPos and currentPos
 	// are both 0.5, ensuring a flat gain (no per-sample ramp).
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	m.OnTransitionPosition(0.5) // stabilize: prevPos = currentPos = 0.5
 
@@ -782,7 +781,7 @@ func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// FTB reverse: fade the "from" source IN from silence
-	m.OnTransitionStart("cam1", "", internal.AudioFadeIn, 1000)
+	m.OnTransitionStart("cam1", "", AudioFadeIn, 1000)
 
 	// At position 0.0: audio should be silent (starting from black)
 	m.OnTransitionPosition(0.0)
@@ -815,7 +814,7 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// FTB forward: fade the "from" source OUT to silence
-	m.OnTransitionStart("cam1", "", internal.AudioFadeOut, 1000)
+	m.OnTransitionStart("cam1", "", AudioFadeOut, 1000)
 
 	// At position 0.0: audio should be full
 	m.OnTransitionPosition(0.0)
@@ -907,7 +906,7 @@ func TestMixerTransitionDipGains(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", internal.AudioDipToSilence, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioDipToSilence, 1000)
 
 	// Position 0.0: fully source A
 	m.OnTransitionPosition(0.0)
@@ -974,7 +973,7 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 	m.mu.Unlock()
 
 	// Start dip at 0.5 (midpoint = silence), stabilize position
-	m.OnTransitionStart("cam1", "cam2", internal.AudioDipToSilence, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioDipToSilence, 1000)
 	m.OnTransitionPosition(0.5)
 	m.OnTransitionPosition(0.5)
 
@@ -1026,7 +1025,7 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 	m.mu.Unlock()
 
 	// FTB forward from position 0.0 to 0.5 — gain should ramp from 1.0 to 0.707
-	m.OnTransitionStart("cam1", "", internal.AudioFadeOut, 1000)
+	m.OnTransitionStart("cam1", "", AudioFadeOut, 1000)
 	m.OnTransitionPosition(0.0) // prevPos=0, currentPos=0
 	m.OnTransitionPosition(0.5) // prevPos=0, currentPos=0.5
 
@@ -1426,7 +1425,7 @@ func TestMixerTransitionCrossfadeWithTrim(t *testing.T) {
 	m.mu.Unlock()
 
 	// Start transition at 50% with stable position (no per-sample ramp)
-	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	m.OnTransitionPosition(0.5)
 

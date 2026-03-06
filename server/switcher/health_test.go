@@ -16,12 +16,12 @@ func TestHealthStatusFromAge(t *testing.T) {
 	tests := []struct {
 		name string
 		age  time.Duration
-		want internal.SourceHealthStatus
+		want SourceHealthStatus
 	}{
-		{"fresh", 500 * time.Millisecond, internal.SourceHealthy},
-		{"stale", 1500 * time.Millisecond, internal.SourceStale},
-		{"no_signal", 5 * time.Second, internal.SourceNoSignal},
-		{"offline", 15 * time.Second, internal.SourceOffline},
+		{"fresh", 500 * time.Millisecond, SourceHealthy},
+		{"stale", 1500 * time.Millisecond, SourceStale},
+		{"no_signal", 5 * time.Second, SourceNoSignal},
+		{"offline", 15 * time.Second, SourceOffline},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -37,8 +37,8 @@ func TestHealthMonitorRecordAndStatus(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.recordFrame("camera1")
 	status := hm.status("camera1")
-	if status != internal.SourceHealthy {
-		t.Errorf("status = %q, want %q", status, internal.SourceHealthy)
+	if status != SourceHealthy {
+		t.Errorf("status = %q, want %q", status, SourceHealthy)
 	}
 	hm.stop()
 }
@@ -49,8 +49,8 @@ func TestHealthMonitorStaleAfterNoFrames(t *testing.T) {
 	v.Store(time.Now().Add(-3 * time.Second).UnixNano())
 	hm.lastFrame.Store("camera1", v)
 	status := hm.status("camera1")
-	if status != internal.SourceNoSignal {
-		t.Errorf("status = %q, want %q", status, internal.SourceNoSignal)
+	if status != SourceNoSignal {
+		t.Errorf("status = %q, want %q", status, SourceNoSignal)
 	}
 	hm.stop()
 }
@@ -58,8 +58,8 @@ func TestHealthMonitorStaleAfterNoFrames(t *testing.T) {
 func TestHealthMonitorUnknownSource(t *testing.T) {
 	hm := newHealthMonitor()
 	status := hm.status("nonexistent")
-	if status != internal.SourceOffline {
-		t.Errorf("status = %q, want %q", status, internal.SourceOffline)
+	if status != SourceOffline {
+		t.Errorf("status = %q, want %q", status, SourceOffline)
 	}
 	hm.stop()
 }
@@ -101,7 +101,7 @@ func TestProactiveHealthBroadcast(t *testing.T) {
 	mu.Lock()
 	found := false
 	for _, s := range states {
-		if s.Sources["cam1"].Status == internal.SourceStale {
+		if s.Sources["cam1"].Status == string(SourceStale) {
 			found = true
 			break
 		}
@@ -119,7 +119,7 @@ func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
 	changed := hm.checkForChanges()
 	require.True(t, changed, "first-time source should apply status immediately")
 	hm.mu.RLock()
-	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"])
+	require.Equal(t, SourceHealthy, hm.lastStatus["cam1"])
 	hm.mu.RUnlock()
 
 	// Let the source become stale (wait past 1s stale threshold).
@@ -130,7 +130,7 @@ func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
 	require.False(t, changed, "first degradation check should not cause transition (count=1)")
 
 	hm.mu.RLock()
-	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"], "status should remain healthy after 1 check")
+	require.Equal(t, SourceHealthy, hm.lastStatus["cam1"], "status should remain healthy after 1 check")
 	hm.mu.RUnlock()
 
 	// Second check: should NOT transition yet (count = 2 of 3).
@@ -144,7 +144,7 @@ func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
 	hm.mu.RLock()
 	finalStatus := hm.lastStatus["cam1"]
 	hm.mu.RUnlock()
-	require.Equal(t, internal.SourceStale, finalStatus, "status should be stale after 3 consecutive checks")
+	require.Equal(t, SourceStale, finalStatus, "status should be stale after 3 consecutive checks")
 
 	hm.stop()
 }
@@ -167,7 +167,7 @@ func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
 	require.True(t, changed, "third check should trigger stale transition")
 
 	hm.mu.RLock()
-	require.Equal(t, internal.SourceStale, hm.lastStatus["cam1"])
+	require.Equal(t, SourceStale, hm.lastStatus["cam1"])
 	hm.mu.RUnlock()
 
 	// Now record a fresh frame to simulate recovery.
@@ -178,7 +178,7 @@ func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
 	require.True(t, changed, "recovery should be immediate (threshold=1)")
 
 	hm.mu.RLock()
-	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"], "status should be healthy after immediate recovery")
+	require.Equal(t, SourceHealthy, hm.lastStatus["cam1"], "status should be healthy after immediate recovery")
 	hm.mu.RUnlock()
 
 	hm.stop()
@@ -231,7 +231,7 @@ func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
 
 	// Establish initial healthy status.
 	hm.checkForChanges()
-	require.Equal(t, internal.SourceHealthy, hm.status("cam1"))
+	require.Equal(t, SourceHealthy, hm.status("cam1"))
 
 	// Let the source become stale (past 1s threshold).
 	time.Sleep(1100 * time.Millisecond)
@@ -240,11 +240,11 @@ func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
 	hm.checkForChanges()
 
 	// status() should return the committed status (healthy), not the raw (stale).
-	require.Equal(t, internal.SourceHealthy, hm.status("cam1"),
+	require.Equal(t, SourceHealthy, hm.status("cam1"),
 		"status() should return committed hysteresis-filtered status, not raw")
 
 	// rawStatus() should return the actual computed status (stale).
-	require.Equal(t, internal.SourceStale, hm.rawStatus("cam1"),
+	require.Equal(t, SourceStale, hm.rawStatus("cam1"),
 		"rawStatus() should return the instantaneous computed status")
 
 	hm.stop()
@@ -260,7 +260,7 @@ func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	require.True(t, changed, "first-time source should apply status immediately")
 
 	hm.mu.RLock()
-	require.Equal(t, internal.SourceHealthy, hm.lastStatus["cam1"])
+	require.Equal(t, SourceHealthy, hm.lastStatus["cam1"])
 	hm.mu.RUnlock()
 
 	hm.stop()

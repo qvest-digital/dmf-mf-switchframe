@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -67,11 +68,11 @@ type mockAudioTransHandler struct {
 type audioTransStartCall struct {
 	oldSrc     string
 	newSrc     string
-	mode       internal.AudioTransitionMode
+	mode       audio.AudioTransitionMode
 	durationMs int
 }
 
-func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int) {
+func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.AudioTransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalls = append(m.startCalls, audioTransStartCall{oldSource, newSource, mode, durationMs})

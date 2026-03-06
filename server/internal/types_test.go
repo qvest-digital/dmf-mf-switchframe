@@ -16,8 +16,8 @@ func TestControlRoomStateJSON(t *testing.T) {
 		TransitionDurationMs: 0,
 		TransitionPosition:   0.0,
 		InTransition:         false,
-		TallyState:           map[string]TallyStatus{"camera1": TallyProgram, "camera2": TallyPreview},
-		Sources:              map[string]SourceInfo{"camera1": {Key: "camera1", Status: SourceHealthy}},
+		TallyState:           map[string]string{"camera1": "program", "camera2": "preview"},
+		Sources:              map[string]SourceInfo{"camera1": {Key: "camera1", Status: "healthy"}},
 		Seq:                  1,
 		Timestamp:            1709500000000,
 	}
@@ -35,24 +35,24 @@ func TestControlRoomStateJSON(t *testing.T) {
 	if decoded.ProgramSource != "camera1" {
 		t.Errorf("ProgramSource = %q, want %q", decoded.ProgramSource, "camera1")
 	}
-	if decoded.TallyState["camera1"] != TallyProgram {
-		t.Errorf("TallyState[camera1] = %q, want %q", decoded.TallyState["camera1"], TallyProgram)
+	if decoded.TallyState["camera1"] != "program" {
+		t.Errorf("TallyState[camera1] = %q, want %q", decoded.TallyState["camera1"], "program")
 	}
-	if decoded.Sources["camera1"].Status != SourceHealthy {
-		t.Errorf("Sources[camera1].Status = %q, want %q", decoded.Sources["camera1"].Status, SourceHealthy)
+	if decoded.Sources["camera1"].Status != "healthy" {
+		t.Errorf("Sources[camera1].Status = %q, want %q", decoded.Sources["camera1"].Status, "healthy")
 	}
 }
 
 func TestSourceInfoHealthStatus(t *testing.T) {
 	tests := []struct {
 		name   string
-		status SourceHealthStatus
+		status string
 		want   string
 	}{
-		{"healthy", SourceHealthy, "healthy"},
-		{"stale", SourceStale, "stale"},
-		{"no_signal", SourceNoSignal, "no_signal"},
-		{"offline", SourceOffline, "offline"},
+		{"healthy", "healthy", "healthy"},
+		{"stale", "stale", "stale"},
+		{"no_signal", "no_signal", "no_signal"},
+		{"offline", "offline", "offline"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

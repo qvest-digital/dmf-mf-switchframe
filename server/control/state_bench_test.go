@@ -14,7 +14,7 @@ import (
 // state, recording/SRT status, presets, and graphics state.
 func buildRealisticState(n int) internal.ControlRoomState {
 	audioChannels := make(map[string]internal.AudioChannel, n)
-	tallyState := make(map[string]internal.TallyStatus, n)
+	tallyState := make(map[string]string, n)
 	sources := make(map[string]internal.SourceInfo, n)
 
 	for i := 0; i < n; i++ {
@@ -25,19 +25,19 @@ func buildRealisticState(n int) internal.ControlRoomState {
 			AFV:   i != 0,
 		}
 
-		status := internal.TallyIdle
+		status := "idle"
 		switch i {
 		case 0:
-			status = internal.TallyProgram
+			status = "program"
 		case 1:
-			status = internal.TallyPreview
+			status = "preview"
 		}
 		tallyState[key] = status
 
 		sources[key] = internal.SourceInfo{
 			Key:     key,
 			Label:   fmt.Sprintf("Camera %d", i+1),
-			Status:  internal.SourceHealthy,
+			Status:  "healthy",
 			DelayMs: i * 5,
 		}
 	}

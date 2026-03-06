@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -123,7 +124,7 @@ type audioCutHandler interface {
 // audioTransitionHandler is called during transitions to sync audio crossfade
 // with video dissolve progress.
 type audioTransitionHandler interface {
-	OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int)
+	OnTransitionStart(oldSource, newSource string, mode audio.AudioTransitionMode, durationMs int)
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
 	SetProgramMute(muted bool)
@@ -584,9 +585,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
 
 	if audioHandler != nil {
-		audioMode := internal.AudioCrossfade
+		audioMode := audio.AudioCrossfade
 		if tt == transition.TransitionDip {
-			audioMode = internal.AudioDipToSilence
+			audioMode = audio.AudioDipToSilence
 		}
 		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 	}
@@ -694,7 +695,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		if audioHandler != nil {
 			// Unmute program audio so the fade-in is audible
 			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", internal.AudioFadeIn, 1000)
+			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, 1000)
 		}
 		s.notifyStateChange(snapshot)
 		return nil
@@ -758,7 +759,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		"type", "ftb", "from", fromSource, "to", "", "duration_ms", 1000)
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", internal.AudioFadeOut, 1000)
+		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, 1000)
 	}
 	s.notifyStateChange(snapshot)
 	return nil
@@ -1269,23 +1270,23 @@ func (s *Switcher) SourceKeys() []string {
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
 // at least s.mu.RLock().
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
-	tally := make(map[string]internal.TallyStatus, len(s.sources))
+	tally := make(map[string]string, len(s.sources))
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
 	for key, ss := range s.sources {
-		tally[key] = internal.TallyIdle
+		tally[key] = string(TallyIdle)
 		sources[key] = internal.SourceInfo{
 			Key:       key,
 			Label:     ss.label,
-			Status:    s.health.status(key),
+			Status:    string(s.health.status(key)),
 			DelayMs:   int(s.delayBuffer.GetDelay(key) / time.Millisecond),
 			IsVirtual: ss.isVirtual,
 		}
 	}
 	if s.programSource != "" {
-		tally[s.programSource] = internal.TallyProgram
+		tally[s.programSource] = string(TallyProgram)
 	}
 	if s.previewSource != "" && s.previewSource != s.programSource {
-		tally[s.previewSource] = internal.TallyPreview
+		tally[s.previewSource] = string(TallyPreview)
 	}
 	transType := "cut"
 	if s.state.isInTransition() && s.transEngine != nil {

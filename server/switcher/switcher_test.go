@@ -88,8 +88,8 @@ func TestRegisterSource(t *testing.T) {
 		t.Fatal("Sources missing 'camera1'")
 	}
 	// Newly registered source with no frames yet shows as offline.
-	if src.Status != internal.SourceOffline {
-		t.Errorf("Source status = %q, want %q", src.Status, internal.SourceOffline)
+	if src.Status != string(SourceOffline) {
+		t.Errorf("Source status = %q, want %q", src.Status, SourceOffline)
 	}
 	if src.Key != "camera1" {
 		t.Errorf("Source key = %q, want %q", src.Key, "camera1")
@@ -137,7 +137,7 @@ func TestRegisterVirtualSource_CutToVirtual(t *testing.T) {
 
 	state := sw.State()
 	require.Equal(t, "replay", state.ProgramSource)
-	require.Equal(t, internal.TallyProgram, state.TallyState["replay"])
+	require.Equal(t, string(TallyProgram), state.TallyState["replay"])
 }
 
 func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
@@ -240,8 +240,8 @@ func TestCutToSource(t *testing.T) {
 	if state.ProgramSource != "camera1" {
 		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera1")
 	}
-	if state.TallyState["camera1"] != internal.TallyProgram {
-		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], internal.TallyProgram)
+	if state.TallyState["camera1"] != string(TallyProgram) {
+		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], TallyProgram)
 	}
 	if state.Seq != 1 {
 		t.Errorf("Seq = %d, want 1", state.Seq)
@@ -323,8 +323,8 @@ func TestSetPreview(t *testing.T) {
 	if state.PreviewSource != "camera1" {
 		t.Errorf("PreviewSource = %q, want %q", state.PreviewSource, "camera1")
 	}
-	if state.TallyState["camera1"] != internal.TallyPreview {
-		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], internal.TallyPreview)
+	if state.TallyState["camera1"] != string(TallyPreview) {
+		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], TallyPreview)
 	}
 }
 
@@ -506,8 +506,8 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 
 	// Before any frames: offline.
 	state := sw.State()
-	if state.Sources["camera1"].Status != internal.SourceOffline {
-		t.Errorf("before frames: status = %q, want %q", state.Sources["camera1"].Status, internal.SourceOffline)
+	if state.Sources["camera1"].Status != string(SourceOffline) {
+		t.Errorf("before frames: status = %q, want %q", state.Sources["camera1"].Status, SourceOffline)
 	}
 
 	// Send a frame (source must be on program for handleVideoFrame to record).
@@ -516,8 +516,8 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 
 	// After frame: healthy.
 	state = sw.State()
-	if state.Sources["camera1"].Status != internal.SourceHealthy {
-		t.Errorf("after frame: status = %q, want %q", state.Sources["camera1"].Status, internal.SourceHealthy)
+	if state.Sources["camera1"].Status != string(SourceHealthy) {
+		t.Errorf("after frame: status = %q, want %q", state.Sources["camera1"].Status, SourceHealthy)
 	}
 }
 
@@ -957,7 +957,7 @@ func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
 	snap := sw.DebugSnapshot()
 	sources := snap["sources"].(map[string]any)
 	cam1Info := sources["cam1"].(map[string]any)
-	require.Equal(t, string(internal.SourceOffline), cam1Info["health_status"])
+	require.Equal(t, string(SourceOffline), cam1Info["health_status"])
 	require.Equal(t, int64(-1), cam1Info["last_frame_ago_ms"])
 
 	// Send a frame (via cut + keyframe).
@@ -967,7 +967,7 @@ func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
 	snap = sw.DebugSnapshot()
 	sources = snap["sources"].(map[string]any)
 	cam1Info = sources["cam1"].(map[string]any)
-	require.Equal(t, string(internal.SourceHealthy), cam1Info["health_status"])
+	require.Equal(t, string(SourceHealthy), cam1Info["health_status"])
 	// last_frame_ago_ms should be small (just sent a frame).
 	agoMs := cam1Info["last_frame_ago_ms"].(int64)
 	require.GreaterOrEqual(t, agoMs, int64(0))

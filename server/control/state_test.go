@@ -20,12 +20,12 @@ func TestStatePublisherEncodesJSON(t *testing.T) {
 		PreviewSource: "camera2",
 		Seq:           1,
 		Timestamp:     1709500000000,
-		TallyState: map[string]internal.TallyStatus{
-			"camera1": internal.TallyProgram,
-			"camera2": internal.TallyPreview,
+		TallyState: map[string]string{
+			"camera1": "program",
+			"camera2": "preview",
 		},
 		Sources: map[string]internal.SourceInfo{
-			"camera1": {Key: "camera1", Status: internal.SourceHealthy},
+			"camera1": {Key: "camera1", Status: "healthy"},
 		},
 	}
 

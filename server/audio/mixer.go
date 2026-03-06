@@ -89,7 +89,7 @@ type AudioMixer struct {
 	transCrossfadeFrom     string                      // outgoing source key
 	transCrossfadeTo       string                      // incoming source key
 	transCrossfadePosition float64                     // 0.0 = fully old, 1.0 = fully new
-	transCrossfadeMode     internal.AudioTransitionMode // gain curve selection
+	transCrossfadeMode     AudioTransitionMode // gain curve selection
 	transCrossfadePrevPos  float64                     // previous position for per-sample interpolation
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
@@ -482,7 +482,7 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 //   - AudioFadeIn: silence→A (fade from black)
 //
 // The new source channel is activated so its audio frames are accepted.
-func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode internal.AudioTransitionMode, durationMs int) {
+func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transCrossfadeActive = true
@@ -568,19 +568,19 @@ func (m *AudioMixer) TransitionGains() (oldGain, newGain float64) {
 
 // transitionFromGain computes the gain for the outgoing ("from") source at the
 // given position and mode.
-func transitionFromGain(mode internal.AudioTransitionMode, pos float64) float64 {
+func transitionFromGain(mode AudioTransitionMode, pos float64) float64 {
 	switch mode {
-	case internal.AudioCrossfade:
+	case AudioCrossfade:
 		return math.Cos(pos * math.Pi / 2)
-	case internal.AudioDipToSilence:
+	case AudioDipToSilence:
 		if pos < 0.5 {
 			// Phase 1: fade out A (equal-power over the first half)
 			return math.Cos(pos * 2 * math.Pi / 2)
 		}
 		return 0
-	case internal.AudioFadeOut:
+	case AudioFadeOut:
 		return math.Cos(pos * math.Pi / 2)
-	case internal.AudioFadeIn:
+	case AudioFadeIn:
 		// FTB reverse: fade the "from" source IN from silence
 		return math.Sin(pos * math.Pi / 2)
 	}
@@ -589,17 +589,17 @@ func transitionFromGain(mode internal.AudioTransitionMode, pos float64) float64 
 
 // transitionToGain computes the gain for the incoming ("to") source at the
 // given position and mode.
-func transitionToGain(mode internal.AudioTransitionMode, pos float64) float64 {
+func transitionToGain(mode AudioTransitionMode, pos float64) float64 {
 	switch mode {
-	case internal.AudioCrossfade:
+	case AudioCrossfade:
 		return math.Sin(pos * math.Pi / 2)
-	case internal.AudioDipToSilence:
+	case AudioDipToSilence:
 		if pos >= 0.5 {
 			// Phase 2: fade in B (equal-power over the second half)
 			return math.Sin((pos*2 - 1) * math.Pi / 2)
 		}
 		return 0
-	case internal.AudioFadeOut, internal.AudioFadeIn:
+	case AudioFadeOut, AudioFadeIn:
 		// FTB has no "to" source
 		return 0
 	}
