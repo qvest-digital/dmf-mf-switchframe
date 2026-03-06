@@ -50,6 +50,14 @@ func (m *mockProgramViewer) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{ID: m.id}
 }
 
+func (m *mockProgramViewer) VideoFrames() []*media.VideoFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*media.VideoFrame, len(m.videos))
+	copy(out, m.videos)
+	return out
+}
+
 func TestNewSwitcher(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
@@ -809,4 +817,59 @@ func TestSeqConcurrentAccess(t *testing.T) {
 	// After all mutations, seq should be > 0.
 	finalState := sw.State()
 	require.Greater(t, finalState.Seq, uint64(0), "seq should have been incremented")
+}
+
+func TestCutGroupIDMonotonicity(t *testing.T) {
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test-viewer")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+
+	// Cut to cam1
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Send frames with HIGH GroupID
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 100, IsKeyframe: true, GroupID: 50,
+		WireData: makeAVC1Frame([]byte{0x65, 0xAA}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+	})
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 200, IsKeyframe: false, GroupID: 50,
+		WireData: makeAVC1Frame([]byte{0x41, 0x01}),
+	})
+
+	// Cut to cam2 — has LOWER GroupID
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+
+	// Keyframe with LOW GroupID
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 300, IsKeyframe: true, GroupID: 10,
+		WireData: makeAVC1Frame([]byte{0x65, 0xBB}),
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
+	})
+	cam2Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 400, IsKeyframe: false, GroupID: 10,
+		WireData: makeAVC1Frame([]byte{0x41, 0x02}),
+	})
+
+	time.Sleep(10 * time.Millisecond)
+
+	frames := viewer.VideoFrames()
+	require.NotEmpty(t, frames)
+
+	var lastGID uint32
+	for i, f := range frames {
+		require.GreaterOrEqual(t, f.GroupID, lastGID,
+			"GroupID must be monotonically increasing: frame %d has GroupID %d but previous was %d",
+			i, f.GroupID, lastGID)
+		lastGID = f.GroupID
+	}
 }
