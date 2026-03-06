@@ -411,7 +411,7 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	sw.AbortTransition()
 }
 
-func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
+func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -454,12 +454,12 @@ func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
 	require.False(t, state.InTransition)
 	require.Equal(t, "cam2", state.ProgramSource)
 
-	// Clear count and verify passthrough resumes
+	// Clear count and verify re-encode resumes (not passthrough)
 	capture.mu.Lock()
 	capture.videos = nil
 	capture.mu.Unlock()
 
-	// Now cam2 frames should pass through directly (no engine)
+	// After transition, cam2 frames are still re-encoded through the pipeline
 	originalFrame := &media.VideoFrame{PTS: 9999, IsKeyframe: true, WireData: []byte{0xFF, 0xFE}}
 	cam2Relay.BroadcastVideo(originalFrame)
 
@@ -467,9 +467,9 @@ func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
 
 	capture.mu.Lock()
 	require.Equal(t, 1, len(capture.videos))
-	// In passthrough, the exact frame object is forwarded
-	require.Equal(t, originalFrame.WireData, capture.videos[0].WireData,
-		"after transition, frames should pass through without re-encoding")
+	// Always re-encode: frame was received with correct PTS
+	require.Equal(t, originalFrame.PTS, capture.videos[0].PTS,
+		"after transition, frames should be re-encoded with preserved PTS")
 	capture.mu.Unlock()
 }
 

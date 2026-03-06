@@ -16,7 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-func TestPipeline_NoProcessorsPassthrough(t *testing.T) {
+func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -32,7 +32,7 @@ func TestPipeline_NoProcessorsPassthrough(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}}
+	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0xDE, 0xAD}}
 	cam1Relay.BroadcastVideo(frame)
 
 	time.Sleep(10 * time.Millisecond)
@@ -40,14 +40,11 @@ func TestPipeline_NoProcessorsPassthrough(t *testing.T) {
 	viewer.mu.Lock()
 	require.GreaterOrEqual(t, len(viewer.videos), 1)
 	got := viewer.videos[len(viewer.videos)-1]
-	// Passthrough: frame should be a shallow copy (broadcastToProgram stamps GroupID).
-	// Not pointer-identical because broadcastToProgram copies the struct to avoid
-	// mutating the shared source frame.
-	require.NotSame(t, frame, got)
+	// Always re-encode: PTS is preserved, but WireData differs because
+	// the frame was decoded then re-encoded through the pipeline.
 	require.Equal(t, frame.PTS, got.PTS)
-	require.Equal(t, frame.IsKeyframe, got.IsKeyframe)
-	require.Equal(t, frame.WireData, got.WireData)
-	require.Equal(t, uint32(1), got.GroupID) // keyframe increments programGroupID
+	require.NotEqual(t, frame.WireData, got.WireData, "WireData should differ after re-encode")
+	require.Greater(t, got.GroupID, uint32(0), "GroupID should be set (keyframe increments programGroupID)")
 	viewer.mu.Unlock()
 }
 
@@ -198,13 +195,20 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	// validates the recreation logic directly.
 }
 
-func TestPipeline_DecoderShortBufferGracefulDegradation(t *testing.T) {
-	// Validates Task 1: short buffer from decoder causes graceful passthrough.
+func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
+	// Validates that a decode error (short buffer) causes the frame to be
+	// dropped rather than passed through. The program output must never
+	// contain source SPS/PPS, so passthrough is not an option.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
+
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+	sw.SetMetrics(m)
+
 	// Use a decoder factory that returns a short buffer
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) {
@@ -214,22 +218,13 @@ func TestPipeline_DecoderShortBufferGracefulDegradation(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
-
-	comp := graphics.NewCompositor()
-	rgba := make([]byte, 4*4*4)
-	for i := 3; i < len(rgba); i += 4 {
-		rgba[i] = 255
-	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
-	sw.SetCompositor(comp)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Frame should fall back to passthrough (not panic)
+	// Frame should be dropped (decode error), not passed through
 	frame := &media.VideoFrame{
 		PTS: 100, IsKeyframe: true,
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
@@ -239,8 +234,12 @@ func TestPipeline_DecoderShortBufferGracefulDegradation(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	viewer.mu.Lock()
-	require.GreaterOrEqual(t, len(viewer.videos), 1, "should fall back to passthrough")
+	require.Equal(t, 0, len(viewer.videos), "frame should be dropped on decode error, not passed through")
 	viewer.mu.Unlock()
+
+	// Verify decode error metric was incremented
+	val := testutil.ToFloat64(m.PipelineDecodeErrorsTotal)
+	require.GreaterOrEqual(t, val, 1.0, "decode error metric should be incremented")
 }
 
 func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
