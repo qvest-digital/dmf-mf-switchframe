@@ -535,8 +535,7 @@
 		display: flex;
 		border-top: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
-		height: 200px;
-		min-height: 160px;
+		height: clamp(160px, 25vh, 200px);
 	}
 
 	.audio-section {
@@ -544,7 +543,7 @@
 		overflow-y: hidden;
 		border-right: 1px solid var(--border-subtle);
 		flex: 2;
-		min-width: 0;
+		min-width: 280px;
 	}
 
 	.graphics-section {
