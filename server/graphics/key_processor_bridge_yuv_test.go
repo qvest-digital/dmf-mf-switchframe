@@ -42,12 +42,9 @@ func TestBridgeProcessYUV_WithFill(t *testing.T) {
 	})
 
 	bridge := NewKeyProcessorBridge(kp)
-	bridge.SetCodecFactories(
+	bridge.SetDecoderFactory(
 		func() (transition.VideoDecoder, error) {
 			return &mockBridgeDecoder{yuv: fillYUV, w: w, h: h}, nil
-		},
-		func(ew, eh, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return &mockBridgeEncoder{}, nil
 		},
 	)
 

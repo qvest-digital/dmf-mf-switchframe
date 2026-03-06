@@ -9,36 +9,22 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-// KeyProcessorBridge wraps a KeyProcessor with H.264 decode/encode capability
-// so it can operate in the broadcastVideo pipeline on compressed frames.
+// KeyProcessorBridge wraps a KeyProcessor with fill-source decode capability.
 //
 // Fill sources (keyed inputs) are decoded and cached via IngestFillFrame.
-// When ProcessFrame is called with the program frame, it decodes the program,
-// applies all enabled keys via KeyProcessor.Process, and re-encodes.
+// The pipeline coordinator calls ProcessYUV on the raw YUV program frame
+// to apply all enabled keys via KeyProcessor.Process.
 //
-// When no keys are enabled, ProcessFrame returns the frame unchanged (zero overhead).
-// The bridge follows the same codec lifecycle pattern as Compositor.ProcessFrame.
+// When no keys are enabled, ProcessYUV returns the buffer unchanged (zero overhead).
 type KeyProcessorBridge struct {
 	mu sync.Mutex
 
 	kp             *KeyProcessor
 	decoderFactory transition.DecoderFactory
-	encoderFactory func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error)
 
 	// Per-source decoders and cached YUV for fill frames
 	fillDecoders map[string]transition.VideoDecoder
 	fillYUV      map[string][]byte
-
-	// Program frame codec pipeline
-	decoder   transition.VideoDecoder
-	encoder   transition.VideoEncoder
-	encWidth  int
-	encHeight int
-	yuvBuf    []byte // reusable buffer for decoded program YUV
-	groupID   uint32 // monotonic group ID for encoded frames
-
-	// Callback for VideoInfo changes (new SPS/PPS from encoder)
-	onVideoInfoChange func(sps, pps []byte, width, height int)
 }
 
 // NewKeyProcessorBridge creates a bridge wrapping the given KeyProcessor.
@@ -50,28 +36,16 @@ func NewKeyProcessorBridge(kp *KeyProcessor) *KeyProcessorBridge {
 	}
 }
 
-// SetCodecFactories configures decoder and encoder factories.
-// Must be called before ProcessFrame or IngestFillFrame.
-func (b *KeyProcessorBridge) SetCodecFactories(
-	dec transition.DecoderFactory,
-	enc func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error),
-) {
+// SetDecoderFactory configures the decoder factory used to decode fill source
+// frames in IngestFillFrame. Must be called before IngestFillFrame.
+func (b *KeyProcessorBridge) SetDecoderFactory(dec transition.DecoderFactory) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.decoderFactory = dec
-	b.encoderFactory = enc
-}
-
-// OnVideoInfoChange sets a callback for when the encoder produces a keyframe
-// with new SPS/PPS. Used to update the program relay's VideoInfo.
-func (b *KeyProcessorBridge) OnVideoInfoChange(fn func(sps, pps []byte, width, height int)) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.onVideoInfoChange = fn
 }
 
 // IngestFillFrame decodes a source frame and caches its YUV data for use
-// during ProcessFrame. Only frames from sources with enabled keys are
+// during ProcessYUV. Only frames from sources with enabled keys are
 // decoded; others are ignored.
 //
 // Called by the switcher on every source frame in handleVideoFrame.
@@ -134,134 +108,6 @@ func (b *KeyProcessorBridge) IngestFillFrame(sourceKey string, frame *media.Vide
 	b.fillYUV[sourceKey] = cached
 }
 
-// ProcessFrame is the video processor hook called by the switcher on every
-// program frame. When upstream keys are enabled and fill frames are cached,
-// it decodes the program frame, applies keying, and re-encodes.
-//
-// When no keys are enabled, returns the frame unchanged (zero overhead).
-// Follows the same codec lifecycle pattern as Compositor.ProcessFrame.
-func (b *KeyProcessorBridge) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
-	// Fast path: no enabled keys -> passthrough
-	if !b.kp.HasEnabledKeys() {
-		return frame
-	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	// Check if we have any cached fills
-	if len(b.fillYUV) == 0 {
-		return frame
-	}
-
-	if b.decoderFactory == nil || b.encoderFactory == nil {
-		return frame
-	}
-
-	// Lazy-init program decoder
-	if b.decoder == nil {
-		if !frame.IsKeyframe {
-			return frame // need keyframe to start
-		}
-		dec, err := b.decoderFactory()
-		if err != nil {
-			slog.Error("keyer: decoder init failed", "err", err)
-			return frame
-		}
-		b.decoder = dec
-	}
-
-	// Decode program frame: AVC1 -> Annex B -> YUV420
-	annexB := codec.AVC1ToAnnexB(frame.WireData)
-	if frame.IsKeyframe && len(frame.SPS) > 0 {
-		var buf []byte
-		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-		buf = append(buf, frame.SPS...)
-		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-		buf = append(buf, frame.PPS...)
-		buf = append(buf, annexB...)
-		annexB = buf
-	}
-
-	yuv, w, h, err := b.decoder.Decode(annexB)
-	if err != nil {
-		slog.Debug("keyer: decode failed", "err", err)
-		if b.encoder != nil {
-			return nil // codec mismatch, drop frame
-		}
-		return frame
-	}
-
-	// Lazy-init encoder (need dimensions from first decode)
-	if b.encoder == nil {
-		enc, err := b.encoderFactory(w, h, transition.DefaultBitrate, transition.DefaultFPS)
-		if err != nil {
-			slog.Error("keyer: encoder init failed", "err", err, "w", w, "h", h)
-			return frame
-		}
-		b.encoder = enc
-		b.encWidth = w
-		b.encHeight = h
-		slog.Info("keyer: codec pipeline initialized", "w", w, "h", h)
-	}
-
-	// Deep copy decoded YUV (decoder reuses internal buffer)
-	yuvSize := w * h * 3 / 2
-	if len(b.yuvBuf) != yuvSize {
-		b.yuvBuf = make([]byte, yuvSize)
-	}
-	copy(b.yuvBuf, yuv[:yuvSize])
-
-	// Apply upstream keys
-	b.kp.Process(b.yuvBuf, b.fillYUV, w, h)
-
-	// Encode: force IDR when source was keyframe to maintain GOP structure
-	forceIDR := frame.IsKeyframe
-	encoded, isKeyframe, err := b.encoder.Encode(b.yuvBuf, forceIDR)
-	if err != nil {
-		slog.Warn("keyer: encode failed", "err", err)
-		return nil
-	}
-
-	// Maintain monotonic group ID
-	if frame.GroupID > b.groupID {
-		b.groupID = frame.GroupID
-	}
-	if isKeyframe {
-		b.groupID++
-	}
-
-	// Build output VideoFrame (Annex B -> AVC1)
-	avc1 := codec.AnnexBToAVC1(encoded)
-	result := &media.VideoFrame{
-		PTS:        frame.PTS,
-		DTS:        frame.DTS,
-		IsKeyframe: isKeyframe,
-		WireData:   avc1,
-		Codec:      frame.Codec,
-		GroupID:    b.groupID,
-	}
-
-	if isKeyframe {
-		for _, nalu := range codec.ExtractNALUs(avc1) {
-			if len(nalu) == 0 {
-				continue
-			}
-			switch nalu[0] & 0x1F {
-			case 7:
-				result.SPS = nalu
-			case 8:
-				result.PPS = nalu
-			}
-		}
-		if result.SPS != nil && result.PPS != nil && b.onVideoInfoChange != nil {
-			b.onVideoInfoChange(result.SPS, result.PPS, b.encWidth, b.encHeight)
-		}
-	}
-
-	return result
-}
-
 // RemoveFillSource removes the cached fill data and decoder for a source.
 // Called when a source's key is removed or disabled.
 func (b *KeyProcessorBridge) RemoveFillSource(source string) {
@@ -272,6 +118,18 @@ func (b *KeyProcessorBridge) RemoveFillSource(source string) {
 		delete(b.fillDecoders, source)
 	}
 	delete(b.fillYUV, source)
+}
+
+// HasEnabledKeysWithFills returns true if there are enabled keys AND cached
+// fill frames. Used by the pipeline coordinator to decide whether to enter
+// the slow decode/process/encode path.
+func (b *KeyProcessorBridge) HasEnabledKeysWithFills() bool {
+	if !b.kp.HasEnabledKeys() {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.fillYUV) > 0
 }
 
 // ProcessYUV applies upstream keys to a raw YUV420 buffer in-place.
@@ -293,7 +151,7 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 	return yuv
 }
 
-// Close releases all codec resources.
+// Close releases all fill decoder resources.
 func (b *KeyProcessorBridge) Close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -302,12 +160,4 @@ func (b *KeyProcessorBridge) Close() {
 	}
 	b.fillDecoders = make(map[string]transition.VideoDecoder)
 	b.fillYUV = make(map[string][]byte)
-	if b.decoder != nil {
-		b.decoder.Close()
-		b.decoder = nil
-	}
-	if b.encoder != nil {
-		b.encoder.Close()
-		b.encoder = nil
-	}
 }

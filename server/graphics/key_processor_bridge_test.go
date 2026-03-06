@@ -21,63 +21,9 @@ func (d *mockBridgeDecoder) Decode(annexB []byte) ([]byte, int, int, error) {
 
 func (d *mockBridgeDecoder) Close() { d.closed = true }
 
-// mockBridgeEncoder implements transition.VideoEncoder for testing.
-type mockBridgeEncoder struct {
-	lastInput []byte
-	closed    bool
-}
-
-func (e *mockBridgeEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
-	e.lastInput = make([]byte, len(yuv))
-	copy(e.lastInput, yuv)
-	// Return minimal Annex B data: start code + SPS-like NALU
-	if forceIDR {
-		return []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x0a,
-			0x00, 0x00, 0x00, 0x01, 0x68, 0x42, 0x00,
-			0x00, 0x00, 0x00, 0x01, 0x65, 0x88}, true, nil
-	}
-	return []byte{0x00, 0x00, 0x00, 0x01, 0x41, 0x9a}, false, nil
-}
-
-func (e *mockBridgeEncoder) Close() { e.closed = true }
-
-func TestBridge_NoKeysPassthrough(t *testing.T) {
-	kp := NewKeyProcessor()
-	bridge := NewKeyProcessorBridge(kp)
-
-	frame := &media.VideoFrame{
-		PTS:        1000,
-		IsKeyframe: true,
-		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-	}
-
-	result := bridge.ProcessFrame(frame)
-	require.Same(t, frame, result, "expected passthrough when no keys configured")
-}
-
-func TestBridge_NoFillsPassthrough(t *testing.T) {
-	kp := NewKeyProcessor()
-	kp.SetKey("cam1", KeyConfig{Type: KeyTypeLuma, Enabled: true, LowClip: 0, HighClip: 1})
-
-	bridge := NewKeyProcessorBridge(kp)
-
-	frame := &media.VideoFrame{
-		PTS:        1000,
-		IsKeyframe: true,
-		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-	}
-
-	result := bridge.ProcessFrame(frame)
-	require.Same(t, frame, result, "expected passthrough when no fills cached")
-}
-
-func TestBridge_IngestAndProcess(t *testing.T) {
+func TestBridge_IngestFillFrame(t *testing.T) {
 	w, h := 8, 8
 	yuvSize := w * h * 3 / 2
-	bgYUV := make([]byte, yuvSize)
-	for i := range bgYUV {
-		bgYUV[i] = 100
-	}
 	fillYUV := make([]byte, yuvSize)
 	for i := range fillYUV {
 		fillYUV[i] = 200
@@ -94,23 +40,9 @@ func TestBridge_IngestAndProcess(t *testing.T) {
 
 	bridge := NewKeyProcessorBridge(kp)
 
-	var capturedEncoder *mockBridgeEncoder
-	decoderCount := 0
-
-	bridge.SetCodecFactories(
+	bridge.SetDecoderFactory(
 		func() (transition.VideoDecoder, error) {
-			decoderCount++
-			if decoderCount == 1 {
-				// First decoder is for fill
-				return &mockBridgeDecoder{yuv: fillYUV, w: w, h: h}, nil
-			}
-			// Second decoder is for program
-			return &mockBridgeDecoder{yuv: bgYUV, w: w, h: h}, nil
-		},
-		func(ew, eh, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			enc := &mockBridgeEncoder{}
-			capturedEncoder = enc
-			return enc, nil
+			return &mockBridgeDecoder{yuv: fillYUV, w: w, h: h}, nil
 		},
 	)
 
@@ -125,21 +57,11 @@ func TestBridge_IngestAndProcess(t *testing.T) {
 
 	bridge.IngestFillFrame("cam1", fillFrame)
 
-	// Now process a program frame
-	programFrame := &media.VideoFrame{
-		PTS:        2000,
-		IsKeyframe: true,
-		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:        []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:        []byte{0x68, 0x42, 0x00},
-	}
-
-	result := bridge.ProcessFrame(programFrame)
-	require.NotNil(t, result, "expected non-nil result")
-	require.NotSame(t, programFrame, result, "expected processed frame, not passthrough")
-	require.NotNil(t, capturedEncoder, "expected encoder to be initialized")
-	// Verify the encoder received YUV data (the process method was called)
-	require.NotNil(t, capturedEncoder.lastInput, "expected encoder to receive YUV data")
+	// Verify fill was cached
+	bridge.mu.Lock()
+	require.Contains(t, bridge.fillYUV, "cam1", "expected fill YUV to be cached for cam1")
+	require.Equal(t, yuvSize, len(bridge.fillYUV["cam1"]))
+	bridge.mu.Unlock()
 }
 
 func TestBridge_CleanupOnClose(t *testing.T) {
@@ -152,24 +74,12 @@ func TestBridge_CleanupOnClose(t *testing.T) {
 
 	bridge := NewKeyProcessorBridge(kp)
 
-	var fillDec, progDec *mockBridgeDecoder
-	var enc *mockBridgeEncoder
-	decCount := 0
+	var fillDec *mockBridgeDecoder
 
-	bridge.SetCodecFactories(
+	bridge.SetDecoderFactory(
 		func() (transition.VideoDecoder, error) {
-			decCount++
-			d := &mockBridgeDecoder{yuv: yuv, w: w, h: h}
-			if decCount == 1 {
-				fillDec = d
-			} else {
-				progDec = d
-			}
-			return d, nil
-		},
-		func(ew, eh, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			enc = &mockBridgeEncoder{}
-			return enc, nil
+			fillDec = &mockBridgeDecoder{yuv: yuv, w: w, h: h}
+			return fillDec, nil
 		},
 	)
 
@@ -182,17 +92,10 @@ func TestBridge_CleanupOnClose(t *testing.T) {
 	}
 
 	bridge.IngestFillFrame("cam1", frame)
-	bridge.ProcessFrame(frame)
 	bridge.Close()
 
 	if fillDec != nil {
 		require.True(t, fillDec.closed, "fill decoder not closed")
-	}
-	if progDec != nil {
-		require.True(t, progDec.closed, "program decoder not closed")
-	}
-	if enc != nil {
-		require.True(t, enc.closed, "encoder not closed")
 	}
 }
 
@@ -233,13 +136,10 @@ func TestBridge_RemoveFillSource(t *testing.T) {
 	bridge := NewKeyProcessorBridge(kp)
 
 	var fillDec *mockBridgeDecoder
-	bridge.SetCodecFactories(
+	bridge.SetDecoderFactory(
 		func() (transition.VideoDecoder, error) {
 			fillDec = &mockBridgeDecoder{yuv: yuv, w: w, h: h}
 			return fillDec, nil
-		},
-		func(ew, eh, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return &mockBridgeEncoder{}, nil
 		},
 	)
 
