@@ -101,7 +101,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 
 	c.conn = conn
 	c.state.Store(StateActive)
-	c.resetBackoff()
+	c.resetBackoffLocked()
 	return nil
 }
 
@@ -278,21 +278,38 @@ func (c *SRTCaller) reconnectLoop() {
 // nextBackoff returns the current backoff duration with ±20% jitter and
 // advances to the next level. The progression is: 1s → 2s → 4s → 8s →
 // 16s → 30s (capped). Jitter prevents thundering herd on reconnect.
+// Thread-safe: protects c.backoff with c.mu.
 func (c *SRTCaller) nextBackoff() time.Duration {
+	c.mu.Lock()
+	current := c.backoffLocked()
+	c.mu.Unlock()
+	return current
+}
+
+// backoffLocked returns the current jittered backoff and advances to the
+// next level. Must be called with c.mu held.
+func (c *SRTCaller) backoffLocked() time.Duration {
 	current := c.backoff
-	// Apply ±20% jitter
-	jitter := 0.8 + rand.Float64()*0.4
-	jittered := time.Duration(float64(current) * jitter)
-	next := c.backoff * 2
+	next := current * 2
 	if next > maxBackoff {
 		next = maxBackoff
 	}
 	c.backoff = next
-	return jittered
+	// Apply ±20% jitter
+	jitter := 0.8 + rand.Float64()*0.4
+	return time.Duration(float64(current) * jitter)
 }
 
 // resetBackoff returns the backoff duration to its initial value.
+// Thread-safe: protects c.backoff with c.mu.
 func (c *SRTCaller) resetBackoff() {
+	c.mu.Lock()
+	c.resetBackoffLocked()
+	c.mu.Unlock()
+}
+
+// resetBackoffLocked resets backoff. Must be called with c.mu held.
+func (c *SRTCaller) resetBackoffLocked() {
 	c.backoff = initialBackoff
 }
 

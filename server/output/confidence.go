@@ -123,7 +123,8 @@ func (cm *ConfidenceMonitor) LatestThumbnail() []byte {
 	return cm.latestJPEG
 }
 
-// Close releases decoder resources.
+// Close releases decoder resources. Safe to call multiple times.
+// After Close, IngestVideo becomes a no-op.
 func (cm *ConfidenceMonitor) Close() {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -131,4 +132,5 @@ func (cm *ConfidenceMonitor) Close() {
 		cm.decoder.Close()
 		cm.decoder = nil
 	}
+	cm.decoderFactory = nil // prevent re-creation after close
 }

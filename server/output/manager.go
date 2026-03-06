@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -445,10 +446,11 @@ func (m *OutputManager) ensureMuxerLocked() {
 		}
 	})
 
-	viewer := NewOutputViewer(muxer)
+	var onVideo func(*media.VideoFrame)
 	if m.confidence != nil {
-		viewer.onVideo = m.confidence.IngestVideo
+		onVideo = m.confidence.IngestVideo
 	}
+	viewer := NewOutputViewer(muxer, onVideo)
 	m.muxer = muxer
 	m.viewer = viewer
 
@@ -546,14 +548,12 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 
 // SetConfidenceMonitor attaches a confidence monitor to the output manager.
 // The monitor will receive video frames from the output viewer when active.
-// If a viewer is already running, it is wired immediately.
+// Must be called before any outputs are started (the callback is set at
+// viewer construction time for thread safety).
 func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confidence = cm
-	if m.viewer != nil && cm != nil {
-		m.viewer.onVideo = cm.IngestVideo
-	}
 }
 
 // ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence

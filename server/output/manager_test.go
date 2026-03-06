@@ -180,6 +180,32 @@ func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
 	require.Contains(t, viewerSnap, "caption_dropped")
 }
 
+func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer mgr.Close()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Access the async wrapper for the recorder via the manager's internals.
+	mgr.mu.Lock()
+	wrapper := mgr.asyncWrappers[mgr.recorder.ID()]
+	mgr.mu.Unlock()
+	require.NotNil(t, wrapper, "recorder should have async wrapper")
+
+	// Verify initially zero drops.
+	status := mgr.RecordingStatus()
+	require.Equal(t, int64(0), status.DroppedPackets)
+
+	// Simulate drops by directly incrementing the atomic counter on the wrapper.
+	// In production, drops happen when the channel buffer overflows.
+	wrapper.dropped.Add(5)
+
+	status = mgr.RecordingStatus()
+	require.Equal(t, int64(5), status.DroppedPackets)
+}
+
 func TestOutputManager_Close(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)

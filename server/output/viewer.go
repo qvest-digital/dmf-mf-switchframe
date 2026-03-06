@@ -44,13 +44,16 @@ type OutputViewer struct {
 }
 
 // NewOutputViewer creates an OutputViewer that feeds frames to the given
-// TSMuxer. Call Run() to start the drain goroutine and Stop() to shut it down.
-func NewOutputViewer(muxer *TSMuxer) *OutputViewer {
+// TSMuxer. The optional onVideo callback is invoked for each video frame
+// after muxing (used by the confidence monitor). It must be set at
+// construction time; it is read without synchronization in Run().
+func NewOutputViewer(muxer *TSMuxer, onVideo func(*media.VideoFrame)) *OutputViewer {
 	return &OutputViewer{
 		videoCh:   make(chan *media.VideoFrame, videoChSize),
 		audioCh:   make(chan *media.AudioFrame, audioChSize),
 		captionCh: make(chan *ccx.CaptionFrame, captionChSize),
 		muxer:     muxer,
+		onVideo:   onVideo,
 		stopCh:    make(chan struct{}),
 		done:      make(chan struct{}),
 	}

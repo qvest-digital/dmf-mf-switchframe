@@ -268,11 +268,11 @@ func run() error {
 	defer outputMgr.Close()
 
 	// Attach confidence monitor for 1fps program output thumbnail.
+	// Lifecycle is owned by outputMgr — its Close() closes the monitor.
 	confidenceMon := output.NewConfidenceMonitor(func() (transition.VideoDecoder, error) {
 		return codec.NewVideoDecoder()
 	})
 	outputMgr.SetConfidenceMonitor(confidenceMon)
-	defer confidenceMon.Close()
 
 	// Create debug collector for pipeline instrumentation.
 	debugCollector := debug.NewCollector()
