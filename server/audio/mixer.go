@@ -535,6 +535,12 @@ func (m *AudioMixer) SetProgramMute(muted bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.programMuted = muted
+	if muted {
+		m.limiter.Reset()
+		for _, ch := range m.channels {
+			ch.compressor.Reset()
+		}
+	}
 	m.recalcPassthrough()
 }
 

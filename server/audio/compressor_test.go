@@ -173,6 +173,27 @@ func TestCompressor_BypassedWhenDefault(t *testing.T) {
 	require.True(t, c.IsBypassed(), "default compressor should be bypassed")
 }
 
+func TestCompressor_Reset(t *testing.T) {
+	t.Parallel()
+	c := NewCompressor(48000)
+	// Threshold -6, ratio 4:1, fast attack
+	require.NoError(t, c.SetParams(-6, 4.0, 0.1, 100.0, 0))
+
+	// Process loud signal to build up envelope
+	loud := make([]float32, 4096)
+	for i := range loud {
+		loud[i] = 1.0
+	}
+	c.Process(loud)
+
+	require.Greater(t, c.GainReduction(), 0.0, "GR should be positive after compressing")
+
+	// Reset should clear the envelope state
+	c.Reset()
+
+	require.InDelta(t, 0.0, c.GainReduction(), 0.001, "GR should be 0 after Reset")
+}
+
 func TestCompressor_ParameterValidation(t *testing.T) {
 	t.Parallel()
 	c := NewCompressor(48000)

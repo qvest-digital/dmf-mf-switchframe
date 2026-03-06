@@ -140,6 +140,25 @@ func TestLimiter_Silence(t *testing.T) {
 	require.InDelta(t, 0.0, gr, 0.001, "GR should be 0 for silence")
 }
 
+func TestLimiter_Reset(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(48000)
+
+	// Process loud signal to build up envelope
+	loud := make([]float32, 1024)
+	for i := range loud {
+		loud[i] = 2.0 // well above threshold
+	}
+	lim.Process(loud)
+
+	require.Greater(t, lim.GainReduction(), 0.0, "GR should be positive after limiting")
+
+	// Reset should clear the envelope state
+	lim.Reset()
+
+	require.InDelta(t, 0.0, lim.GainReduction(), 0.001, "GR should be 0 after Reset")
+}
+
 func TestLimiter_ExactlyAtThreshold(t *testing.T) {
 	t.Parallel()
 	lim := NewLimiter(48000)

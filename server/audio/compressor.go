@@ -125,6 +125,16 @@ func (c *Compressor) IsBypassed() bool {
 	return c.ratio <= 1.0 && c.makeupGain == 0
 }
 
+// Reset clears the envelope and gain reduction state.
+// Called when the program bus transitions to mute (FTB) so that stale
+// envelope state does not briefly suppress audio on unmute.
+func (c *Compressor) Reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.envelope = 0
+	c.gainReduction = 0
+}
+
 // GainReduction returns the current gain reduction in dB.
 // 0 means no compression is active. Positive values indicate dB of reduction.
 func (c *Compressor) GainReduction() float64 {

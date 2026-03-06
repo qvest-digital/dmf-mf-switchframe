@@ -1699,3 +1699,40 @@ func TestMixerPassthroughRaceSafety(t *testing.T) {
 	// no data race.
 	require.Greater(t, outputCount.Load(), int64(0), "should have produced some output")
 }
+
+func TestMixer_SetProgramMute_ResetsEnvelopes(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Directly drive the limiter and compressor with loud signal
+	// to build up envelope state.
+	loudSamples := make([]float32, 2048)
+	for i := range loudSamples {
+		loudSamples[i] = 2.0
+	}
+	m.limiter.Process(loudSamples)
+	require.Greater(t, m.limiter.GainReduction(), 0.0, "limiter should have engaged")
+
+	// Also drive the per-channel compressor
+	m.mu.RLock()
+	ch := m.channels["cam1"]
+	m.mu.RUnlock()
+	require.NoError(t, ch.compressor.SetParams(-6, 4.0, 0.1, 100.0, 0))
+	ch.compressor.Process(loudSamples)
+	require.Greater(t, ch.compressor.GainReduction(), 0.0, "compressor should have engaged")
+
+	// Mute (FTB) should reset limiter and all compressor envelopes
+	m.SetProgramMute(true)
+
+	require.InDelta(t, 0.0, m.limiter.GainReduction(), 0.001,
+		"limiter GR should be 0 after mute/reset")
+	require.InDelta(t, 0.0, ch.compressor.GainReduction(), 0.001,
+		"compressor GR should be 0 after mute/reset")
+}

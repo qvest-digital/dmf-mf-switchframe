@@ -78,6 +78,16 @@ func (l *Limiter) Process(samples []float32) float64 {
 	return l.gainReduction
 }
 
+// Reset clears the envelope and gain reduction state.
+// Called when the program bus transitions to mute (FTB) so that stale
+// envelope state does not briefly suppress audio on unmute.
+func (l *Limiter) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.envelope = 0
+	l.gainReduction = 0
+}
+
 // GainReduction returns the current gain reduction in dB.
 // 0 means no limiting is active. Positive values indicate how many dB
 // the signal is being reduced.
