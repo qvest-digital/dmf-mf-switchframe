@@ -44,6 +44,7 @@ type SourceInfo struct {
 	Status    SourceHealthStatus `json:"status"`
 	DelayMs   int                `json:"delayMs,omitempty"`
 	KeyConfig *SourceKeyConfig   `json:"keyConfig,omitempty"`
+	IsVirtual bool               `json:"isVirtual,omitempty"`
 }
 
 // AudioTransitionMode describes how audio should behave during a video transition.

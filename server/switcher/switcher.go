@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -152,6 +153,7 @@ type sourceState struct {
 	relay      *distribution.Relay
 	viewer     *sourceViewer
 	pendingIDR bool // true after a cut until first keyframe from this source
+	isVirtual  bool // true for virtual sources (replay, etc.)
 
 	// Rolling frame statistics for dynamic encoder parameters.
 	// Updated on every video frame. Used to estimate bitrate/fps for
@@ -1026,6 +1028,24 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	slog.Info("switcher: source registered", "source_key", key)
 }
 
+// RegisterVirtualSource registers a transient internal source (e.g. replay).
+// Virtual sources skip delay buffer, frame sync, and replay buffering.
+func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) {
+	s.mu.Lock()
+	viewer := newSourceViewer(key, s)
+	relay.AddViewer(viewer)
+	s.sources[key] = &sourceState{
+		key:       key,
+		label:     strings.ToUpper(key),
+		relay:     relay,
+		viewer:    viewer,
+		isVirtual: true,
+	}
+	s.health.registerSource(key)
+	s.mu.Unlock()
+	slog.Info("switcher: virtual source registered", "source_key", key)
+}
+
 // UnregisterSource removes a source from the switcher and detaches its
 // viewer from the source Relay. If the removed source was on program or
 // preview, those fields are cleared.
@@ -1237,13 +1257,14 @@ func (s *Switcher) SourceKeys() []string {
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	tally := make(map[string]internal.TallyStatus, len(s.sources))
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
-	for key := range s.sources {
+	for key, ss := range s.sources {
 		tally[key] = internal.TallyIdle
 		sources[key] = internal.SourceInfo{
-			Key:     key,
-			Label:   s.sources[key].label,
-			Status:  s.health.status(key),
-			DelayMs: int(s.delayBuffer.GetDelay(key) / time.Millisecond),
+			Key:       key,
+			Label:     ss.label,
+			Status:    s.health.status(key),
+			DelayMs:   int(s.delayBuffer.GetDelay(key) / time.Millisecond),
+			IsVirtual: ss.isVirtual,
 		}
 	}
 	if s.programSource != "" {

@@ -110,6 +110,61 @@ func TestUnregisterSource(t *testing.T) {
 	}
 }
 
+func TestRegisterVirtualSource(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+
+	state := sw.State()
+	require.Len(t, state.Sources, 1)
+	src, ok := state.Sources["replay"]
+	require.True(t, ok, "Sources should contain 'replay'")
+	require.True(t, src.IsVirtual, "replay source should be virtual")
+	require.Equal(t, "REPLAY", src.Label, "virtual source label should be uppercased key")
+}
+
+func TestRegisterVirtualSource_CutToVirtual(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+
+	err := sw.Cut(context.Background(), "replay")
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.Equal(t, "replay", state.ProgramSource)
+	require.Equal(t, internal.TallyProgram, state.TallyState["replay"])
+}
+
+func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+	sw.UnregisterSource("replay")
+
+	state := sw.State()
+	require.Len(t, state.Sources, 0, "virtual source should be removed after UnregisterSource")
+}
+
+func TestRegisterVirtualSource_SkipsDelayAndFrameSync(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+
+	// Virtual source should have zero delay
+	state := sw.State()
+	src := state.Sources["replay"]
+	require.Equal(t, 0, src.DelayMs, "virtual source should have zero delay")
+}
+
 func TestCutToSource(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
