@@ -1,6 +1,7 @@
 package stinger
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -179,4 +180,55 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 	// Should not have loaded (no PNGs)
 	_, ok := store.Get("empty")
 	require.False(t, ok)
+}
+
+func TestStingerStore_PathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir)
+	require.NoError(t, err)
+
+	// These names should all be rejected
+	badNames := []string{
+		"../etc",
+		"../../etc/passwd",
+		"..",
+		".",
+		"a/b",
+		"a\\b",
+		"",
+	}
+	for _, name := range badNames {
+		name := name // capture range variable
+		t.Run("Delete_"+name, func(t *testing.T) {
+			err := store.Delete(name)
+			require.Error(t, err)
+			require.True(t, errors.Is(err, ErrInvalidName) || errors.Is(err, ErrNotFound),
+				"expected ErrInvalidName or ErrNotFound, got: %v", err)
+		})
+		t.Run("SetCutPoint_"+name, func(t *testing.T) {
+			err := store.SetCutPoint(name, 0.5)
+			require.Error(t, err)
+		})
+		t.Run("LoadFromDir_"+name, func(t *testing.T) {
+			err := store.LoadFromDir(name)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestStingerStore_SentinelErrors(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir)
+	require.NoError(t, err)
+
+	// Delete non-existent should return ErrNotFound
+	err = store.Delete("nonexistent")
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// SetCutPoint non-existent should return ErrNotFound
+	err = store.SetCutPoint("nonexistent", 0.5)
+	require.ErrorIs(t, err, ErrNotFound)
+
+	// SetCutPoint invalid range should return ErrInvalidCutPoint
+	// Need a clip first - we can't test this without a valid clip loaded
 }

@@ -290,9 +290,11 @@ func TestFrameSync_MultiSourceAlignment(t *testing.T) {
 		if ptsDiff < 0 {
 			ptsDiff = -ptsDiff
 		}
-		// Same tick should produce same PTS or very close (within one tick).
-		if ptsDiff > int64(20*time.Millisecond) {
-			t.Errorf("PTS difference between sources = %d, want <= tick duration", ptsDiff)
+		// Same tick should produce same PTS or very close (within one tick in 90 kHz units).
+		// 20ms tick at 90 kHz = 20_000_000 ns * 90000 / 1_000_000_000 = 1800 ticks.
+		const oneTick90kHz = int64(20*time.Millisecond) * 90000 / int64(time.Second)
+		if ptsDiff > oneTick90kHz {
+			t.Errorf("PTS difference between sources = %d, want <= %d (one tick at 90 kHz)", ptsDiff, oneTick90kHz)
 		}
 	}
 }

@@ -25,11 +25,16 @@ type frameHandler interface {
 // for configurable per-source lip-sync delay. If frameSync is set,
 // frames are routed through the FrameSynchronizer instead (bypassing
 // the delay buffer) for freerun frame alignment.
+//
+// delayBuffer and frameSync are atomic.Pointer fields so that the Switcher
+// can safely toggle them from SetFrameSync (which holds the write lock but
+// runs concurrently with frame-delivery goroutines that only hold the read
+// lock or no lock at all).
 type sourceViewer struct {
 	sourceKey   string
 	handler     frameHandler
-	delayBuffer *DelayBuffer
-	frameSync   *FrameSynchronizer
+	delayBuffer atomic.Pointer[DelayBuffer]
+	frameSync   atomic.Pointer[FrameSynchronizer]
 	videoSent   atomic.Int64
 	audioSent   atomic.Int64
 	captionSent atomic.Int64
@@ -58,12 +63,12 @@ func (sv *sourceViewer) ID() string {
 // frames route through it.
 func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 	sv.videoSent.Add(1)
-	if sv.frameSync != nil {
-		sv.frameSync.IngestVideo(sv.sourceKey, *frame)
+	if fs := sv.frameSync.Load(); fs != nil {
+		fs.IngestVideo(sv.sourceKey, *frame)
 		return
 	}
-	if sv.delayBuffer != nil {
-		sv.delayBuffer.handleVideoFrame(sv.sourceKey, frame)
+	if db := sv.delayBuffer.Load(); db != nil {
+		db.handleVideoFrame(sv.sourceKey, frame)
 		return
 	}
 	sv.handler.handleVideoFrame(sv.sourceKey, frame)
@@ -74,12 +79,12 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 // Otherwise, if a delay buffer is configured, frames route through it.
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
-	if sv.frameSync != nil {
-		sv.frameSync.IngestAudio(sv.sourceKey, *frame)
+	if fs := sv.frameSync.Load(); fs != nil {
+		fs.IngestAudio(sv.sourceKey, *frame)
 		return
 	}
-	if sv.delayBuffer != nil {
-		sv.delayBuffer.handleAudioFrame(sv.sourceKey, frame)
+	if db := sv.delayBuffer.Load(); db != nil {
+		db.handleAudioFrame(sv.sourceKey, frame)
 		return
 	}
 	sv.handler.handleAudioFrame(sv.sourceKey, frame)
@@ -90,8 +95,8 @@ func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 // Note: captions are not frame-synced — they pass through directly.
 func (sv *sourceViewer) SendCaptions(frame *ccx.CaptionFrame) {
 	sv.captionSent.Add(1)
-	if sv.delayBuffer != nil {
-		sv.delayBuffer.handleCaptionFrame(sv.sourceKey, frame)
+	if db := sv.delayBuffer.Load(); db != nil {
+		db.handleCaptionFrame(sv.sourceKey, frame)
 		return
 	}
 	sv.handler.handleCaptionFrame(sv.sourceKey, frame)

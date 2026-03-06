@@ -1045,7 +1045,13 @@ func (a *API) handleStingerDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := a.stingerStore.Delete(name); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
+		status := http.StatusInternalServerError
+		if errors.Is(err, stinger.ErrNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, stinger.ErrInvalidName) {
+			status = http.StatusBadRequest
+		}
+		w.WriteHeader(status)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
@@ -1068,7 +1074,7 @@ func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 	if err := a.stingerStore.SetCutPoint(name, req.CutPoint); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusBadRequest
-		if _, ok := a.stingerStore.Get(name); !ok {
+		if errors.Is(err, stinger.ErrNotFound) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
