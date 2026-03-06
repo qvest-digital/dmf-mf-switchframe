@@ -535,7 +535,7 @@
 		display: flex;
 		border-top: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
-		height: clamp(160px, 25vh, 200px);
+		height: clamp(160px, 25vh, 220px);
 	}
 
 	.audio-section {
