@@ -1,8 +1,3 @@
-// Package operator provides multi-operator support with role-based
-// subsystem locking for the Switchframe video switcher. Operators
-// register with a name and role, receive per-operator bearer tokens,
-// and can lock subsystems (switching, audio, graphics, replay, output)
-// to prevent conflicting commands from other operators.
 package operator
 
 import (

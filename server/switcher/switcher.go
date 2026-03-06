@@ -1,6 +1,3 @@
-// Package switcher implements the core video switching state machine.
-// It receives tagged frames from sourceViewer proxies and forwards only
-// the current program source's frames to the program Relay.
 package switcher
 
 import (

@@ -735,3 +735,50 @@ func TestSetCompressor_ChannelNotFound(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
+
+// --- API v1 alias tests ---
+
+func TestAPIv1AliasState(t *testing.T) {
+	api, sw := setupTestAPI(t)
+	_ = sw.Cut(context.Background(), "camera1")
+
+	// GET /api/v1/switch/state should return the same response as /api/switch/state.
+	req := httptest.NewRequest("GET", "/api/v1/switch/state", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "v1 state endpoint should return 200")
+	var state internal.ControlRoomState
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err)
+	require.Equal(t, "camera1", state.ProgramSource)
+}
+
+func TestAPIv1AliasCut(t *testing.T) {
+	api, sw := setupTestAPI(t)
+	_ = sw.Cut(context.Background(), "camera1")
+
+	body := `{"source":"camera2"}`
+	req := httptest.NewRequest("POST", "/api/v1/switch/cut", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "v1 cut endpoint should return 200")
+	state := sw.State()
+	require.Equal(t, "camera2", state.ProgramSource)
+}
+
+func TestAPIv1AliasSources(t *testing.T) {
+	api, _ := setupTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/v1/sources", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "v1 sources endpoint should return 200")
+	var sources map[string]internal.SourceInfo
+	err := json.NewDecoder(rec.Body).Decode(&sources)
+	require.NoError(t, err)
+	require.Len(t, sources, 2)
+}

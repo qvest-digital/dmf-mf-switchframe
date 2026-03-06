@@ -1,7 +1,3 @@
-// Package replay provides an instant replay system with variable-speed
-// playback for live video switching. It maintains per-source circular
-// buffers of encoded H.264 frames and can play back marked clips at
-// configurable speeds (0.25x–1x) with frame duplication for slow motion.
 package replay
 
 import (

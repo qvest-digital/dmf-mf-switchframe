@@ -1,6 +1,3 @@
-// Package codec provides shared video/audio codec utilities for
-// Switchframe's server-side pipeline, including AVC1/Annex B NALU
-// conversion and ADTS header helpers.
 package codec
 
 import (

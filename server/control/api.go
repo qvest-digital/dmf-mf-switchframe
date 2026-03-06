@@ -1,7 +1,3 @@
-// Package control provides the REST API for the Switchframe video switcher.
-// It exposes HTTP endpoints for cut, preview, transition, state retrieval,
-// and source listing. All commands are POST requests with JSON bodies;
-// state queries are GET requests returning JSON.
 package control
 
 import (
@@ -192,8 +188,27 @@ func (a *API) Mux() *http.ServeMux { return a.mux }
 
 // RegisterOnMux registers the API routes on an external ServeMux. This is
 // used to mount the control API onto the main Prism HTTP/3 mux via the
-// ExtraRoutes hook.
+// ExtraRoutes hook. Routes are registered at both /api/ and /api/v1/
+// prefixes for forward-compatible API versioning.
 func (a *API) RegisterOnMux(mux *http.ServeMux) {
+	a.registerAPIRoutes(mux)
+
+	// API v1 alias: rewrite /api/v1/* to /api/* and dispatch to a
+	// dedicated mux so there is no routing loop with the outer mux.
+	v1Mux := http.NewServeMux()
+	a.registerAPIRoutes(v1Mux)
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/api/" + r.URL.Path[len("/api/v1/"):]
+		if r.URL.RawPath != "" {
+			r2.URL.RawPath = "/api/" + r.URL.RawPath[len("/api/v1/"):]
+		}
+		v1Mux.ServeHTTP(w, r2)
+	})
+}
+
+// registerAPIRoutes registers all API route handlers on the given mux.
+func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/cut", a.handleCut)
 	mux.HandleFunc("POST /api/switch/preview", a.handlePreview)
 	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)

@@ -1,5 +1,3 @@
-// Package graphics provides the downstream keyer (DSK) compositor for
-// overlaying browser-rendered graphics onto the program video output.
 package graphics
 
 // AlphaBlendRGBA composites an RGBA overlay onto a YUV420 planar frame
