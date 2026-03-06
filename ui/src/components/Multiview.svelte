@@ -136,6 +136,31 @@
 		overflow-y: auto;
 	}
 
+	/* Responsive breakpoints for multiview grid */
+	@media (min-width: 1920px) {
+		.multiview {
+			grid-template-columns: repeat(4, 1fr);
+		}
+	}
+
+	@media (min-width: 1024px) and (max-width: 1919px) {
+		.multiview {
+			grid-template-columns: repeat(3, 1fr);
+		}
+	}
+
+	@media (min-width: 768px) and (max-width: 1023px) {
+		.multiview {
+			grid-template-columns: repeat(2, 1fr);
+		}
+	}
+
+	@media (max-width: 767px) {
+		.multiview {
+			grid-template-columns: 1fr;
+		}
+	}
+
 	.tile {
 		aspect-ratio: 16 / 9;
 		background: #050507;

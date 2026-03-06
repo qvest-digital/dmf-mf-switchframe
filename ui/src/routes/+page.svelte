@@ -452,6 +452,8 @@
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>
+	@import '$lib/layout/responsive.css';
+
 	.control-room {
 		display: grid;
 		grid-template-rows: auto auto 1fr auto;

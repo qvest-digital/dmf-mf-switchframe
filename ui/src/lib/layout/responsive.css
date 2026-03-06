@@ -1,0 +1,89 @@
+/*
+ * Responsive utilities for Switchframe operator interface.
+ *
+ * Breakpoints:
+ *   >= 1920px  — Full desktop (4-col multiview)
+ *   1024-1919  — Standard desktop (3-col multiview)
+ *   768-1023   — Tablet / narrow desktop (2-col multiview)
+ *   < 768      — Mobile / small tablet (1-col multiview)
+ *
+ * Touch: @media (pointer: coarse) — larger tap targets, no hover states
+ * Fluid sizing: min() / clamp() for responsive element sizing
+ */
+
+/* ---- Breakpoint: < 768px (mobile/small tablet) ---- */
+@media (max-width: 767px) {
+	.control-room {
+		grid-template-rows: auto auto 1fr auto;
+	}
+
+	.bottom-panel {
+		flex-direction: column;
+		max-height: none;
+	}
+
+	.audio-section {
+		border-right: none;
+		border-bottom: 1px solid var(--border-subtle);
+		max-height: 160px;
+	}
+
+	.graphics-section {
+		width: 100%;
+		border-left: none;
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.macro-section {
+		width: 100%;
+		border-left: none;
+		border-top: 1px solid var(--border-subtle);
+	}
+}
+
+/* ---- Breakpoint: 768-1023px (tablet) ---- */
+@media (min-width: 768px) and (max-width: 1023px) {
+	.bottom-panel {
+		max-height: 200px;
+	}
+
+	.graphics-section {
+		width: 200px;
+	}
+
+	.macro-section {
+		width: 150px;
+	}
+}
+
+/* ---- Touch devices ---- */
+@media (pointer: coarse) {
+	/* Ensure 44px minimum tap targets (WCAG 2.5.5 AAA) */
+	.source-btn,
+	.action-btn,
+	.strip-btn,
+	.macro-btn {
+		min-height: 44px;
+		min-width: 44px;
+	}
+
+	/* Disable hover effects on touch — prevents sticky hover */
+	.source-btn:hover,
+	.action-btn:hover,
+	.strip-btn:hover,
+	.macro-btn:hover,
+	.tile:hover {
+		/* Reset hover to default state on touch */
+	}
+
+	/* Larger fader thumb for finger control */
+	.fader::-webkit-slider-thumb {
+		width: 28px;
+		height: 14px;
+	}
+
+	.fader::-moz-range-thumb {
+		width: 28px;
+		height: 14px;
+	}
+}
