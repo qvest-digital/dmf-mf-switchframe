@@ -102,7 +102,7 @@
 		>{source.label || source.key}</span>
 	{/if}
 	<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale'}>
-		{#if source.status !== 'healthy'}{source.status}{/if}
+		{#if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
 	</span>
 
 	<!-- Audio level bar (right edge) -->
@@ -208,6 +208,12 @@
 
 	.tile-status.stale {
 		color: var(--accent-orange);
+	}
+
+	.virtual-badge {
+		color: var(--accent-purple, #a78bfa);
+		font-weight: 700;
+		letter-spacing: 0.06em;
 	}
 
 	/* Audio level bar - right edge of tile */

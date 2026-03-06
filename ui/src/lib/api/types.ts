@@ -7,6 +7,7 @@ export interface SourceInfo {
 	status: SourceHealthStatus;
 	lastFrameTime: number;
 	delayMs?: number;
+	isVirtual?: boolean;
 }
 
 export interface EQBand {
