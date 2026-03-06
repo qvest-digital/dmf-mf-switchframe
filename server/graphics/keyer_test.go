@@ -1,7 +1,6 @@
 package graphics
 
 import (
-	"math"
 	"testing"
 )
 
@@ -210,5 +209,17 @@ func TestLumaKey_SinglePixel(t *testing.T) {
 	}
 }
 
-// suppress unused import warning
-var _ = math.Abs
+func TestChromaKey_ZeroSimilarityZeroSmoothness(t *testing.T) {
+	frame := makeYUV420Frame(4, 4, 180, 50, 30)
+	// similarity=0, smoothness=0, spillSuppress=0.8 — should not panic or produce NaN
+	mask := ChromaKey(frame, 4, 4, greenYUV(), 0.0, 0.0, 0.8)
+	if len(mask) != 16 {
+		t.Fatalf("expected 16 pixels, got %d", len(mask))
+	}
+	// Verify all values are valid (not NaN converted)
+	for i, a := range mask {
+		if a > 255 {
+			t.Fatalf("pixel %d: invalid alpha %d", i, a)
+		}
+	}
+}

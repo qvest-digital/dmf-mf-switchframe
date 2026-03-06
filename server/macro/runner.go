@@ -11,16 +11,16 @@ import (
 // real hardware or relays.
 type MacroTarget interface {
 	// Cut switches the program source.
-	Cut(source string) error
+	Cut(ctx context.Context, source string) error
 
 	// SetPreview sets the preview source.
-	SetPreview(source string) error
+	SetPreview(ctx context.Context, source string) error
 
 	// StartTransition begins a mix/dip/wipe transition.
-	StartTransition(transType string, durationMs int) error
+	StartTransition(ctx context.Context, source string, transType string, durationMs int) error
 
 	// SetLevel sets the audio level for a source channel.
-	SetLevel(source string, level float64) error
+	SetLevel(ctx context.Context, source string, level float64) error
 }
 
 // Run executes a macro sequentially against the given target.
@@ -50,16 +50,20 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 		if source == "" {
 			return fmt.Errorf("cut requires 'source' param")
 		}
-		return target.Cut(source)
+		return target.Cut(ctx, source)
 
 	case ActionPreview:
 		source, _ := step.Params["source"].(string)
 		if source == "" {
 			return fmt.Errorf("preview requires 'source' param")
 		}
-		return target.SetPreview(source)
+		return target.SetPreview(ctx, source)
 
 	case ActionTransition:
+		source, _ := step.Params["source"].(string)
+		if source == "" {
+			return fmt.Errorf("transition requires 'source' param")
+		}
 		transType, _ := step.Params["type"].(string)
 		if transType == "" {
 			transType = "mix"
@@ -68,7 +72,7 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 		if d, ok := step.Params["durationMs"].(float64); ok {
 			durationMs = int(d)
 		}
-		return target.StartTransition(transType, durationMs)
+		return target.StartTransition(ctx, source, transType, durationMs)
 
 	case ActionWait:
 		ms := 0.0
@@ -96,7 +100,7 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 		if l, ok := step.Params["level"].(float64); ok {
 			level = l
 		}
-		return target.SetLevel(source, level)
+		return target.SetLevel(ctx, source, level)
 
 	default:
 		return fmt.Errorf("unknown action %q", step.Action)

@@ -117,11 +117,12 @@ func (c *Compressor) GetParams() (threshold, ratio, attackMs, releaseMs, makeupG
 	return c.threshold, c.ratio, c.attackMs, c.releaseMs, c.makeupGain
 }
 
-// IsBypassed returns true when the ratio is <= 1.0 (no compression).
+// IsBypassed returns true when the compressor has no audible effect:
+// ratio <= 1.0 (no compression) AND no makeup gain applied.
 func (c *Compressor) IsBypassed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.ratio <= 1.0
+	return c.ratio <= 1.0 && c.makeupGain == 0
 }
 
 // GainReduction returns the current gain reduction in dB.

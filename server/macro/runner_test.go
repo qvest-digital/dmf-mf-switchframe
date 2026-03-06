@@ -3,6 +3,7 @@ package macro
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ type mockTarget struct {
 	failOn  string // action name to fail on
 }
 
-func (m *mockTarget) Cut(source string) error {
+func (m *mockTarget) Cut(ctx context.Context, source string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "cut:"+source)
@@ -25,7 +26,7 @@ func (m *mockTarget) Cut(source string) error {
 	return nil
 }
 
-func (m *mockTarget) SetPreview(source string) error {
+func (m *mockTarget) SetPreview(ctx context.Context, source string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "preview:"+source)
@@ -35,17 +36,17 @@ func (m *mockTarget) SetPreview(source string) error {
 	return nil
 }
 
-func (m *mockTarget) StartTransition(transType string, durationMs int) error {
+func (m *mockTarget) StartTransition(ctx context.Context, source string, transType string, durationMs int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, "transition:"+transType)
+	m.calls = append(m.calls, "transition:"+source+":"+transType)
 	if m.failOn == "transition" {
 		return errors.New("transition failed")
 	}
 	return nil
 }
 
-func (m *mockTarget) SetLevel(source string, level float64) error {
+func (m *mockTarget) SetLevel(ctx context.Context, source string, level float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "set_audio:"+source)
@@ -176,7 +177,7 @@ func TestRunner_TransitionAction(t *testing.T) {
 	macro := Macro{
 		Name: "transition-test",
 		Steps: []MacroStep{
-			{Action: ActionTransition, Params: map[string]interface{}{"type": "mix", "durationMs": float64(500)}},
+			{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix", "durationMs": float64(500)}},
 		},
 	}
 
@@ -189,8 +190,86 @@ func TestRunner_TransitionAction(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(calls))
 	}
-	if calls[0] != "transition:mix" {
-		t.Fatalf("expected transition:mix, got %s", calls[0])
+	if calls[0] != "transition:cam1:mix" {
+		t.Fatalf("expected transition:cam1:mix, got %s", calls[0])
+	}
+}
+
+func TestRunner_TransitionWithSource(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "transition-source-test",
+		Steps: []MacroStep{
+			{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2", "type": "mix", "durationMs": float64(1000)}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := target.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0] != "transition:cam2:mix" {
+		t.Fatalf("expected transition:cam2:mix, got %s", calls[0])
+	}
+}
+
+func TestRunner_TransitionMissingSource(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "transition-no-source",
+		Steps: []MacroStep{
+			{Action: ActionTransition, Params: map[string]interface{}{"type": "mix"}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	if err == nil {
+		t.Fatal("expected error for transition without source")
+	}
+	if !strings.Contains(err.Error(), "source") {
+		t.Fatalf("error should mention 'source', got: %s", err.Error())
+	}
+}
+
+func TestRunner_ContextCancellationDuringWait(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "ctx-cancel-test",
+		Steps: []MacroStep{
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam2"}},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := Run(ctx, macro, target)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("should have cancelled quickly, took %v", elapsed)
+	}
+
+	calls := target.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call (first cut only), got %d: %v", len(calls), calls)
 	}
 }
 

@@ -74,8 +74,9 @@ func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoo
 			}
 
 			// Spill suppression: desaturate near-key pixels proportionally
-			if spillSuppress > 0 && dist < (simDist+smoothDist)*2 {
-				spillAmount := spillSuppress * (1.0 - dist/((simDist+smoothDist)*2))
+			totalDist := (simDist + smoothDist) * 2
+			if spillSuppress > 0 && totalDist > 0 && dist < totalDist {
+				spillAmount := spillSuppress * (1.0 - dist/totalDist)
 				if spillAmount > 0 {
 					// Pull chroma toward neutral (128)
 					newCb := cb + (128.0-cb)*spillAmount

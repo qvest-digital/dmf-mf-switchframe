@@ -23,6 +23,9 @@ import (
 // source needs to deliver a frame, so one AAC frame (~21.3ms) is sufficient.
 const crossfadeTimeout = 25 * time.Millisecond
 
+// ErrChannelNotFound is returned when a referenced audio channel does not exist.
+var ErrChannelNotFound = errors.New("channel not found")
+
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
 	SampleRate     int
@@ -1052,7 +1055,7 @@ func (m *AudioMixer) SetEQ(sourceKey string, band int, frequency, gain, q float6
 	ch, ok := m.channels[sourceKey]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
 	}
 	eq := ch.eq
 	m.mu.Unlock()
@@ -1071,7 +1074,7 @@ func (m *AudioMixer) GetEQ(sourceKey string) ([3]EQBandSettings, error) {
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return [3]EQBandSettings{}, fmt.Errorf("channel %q not found", sourceKey)
+		return [3]EQBandSettings{}, fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
 	}
 	return ch.eq.GetBands(), nil
 }
@@ -1082,7 +1085,7 @@ func (m *AudioMixer) SetCompressor(sourceKey string, threshold, ratio, attack, r
 	ch, ok := m.channels[sourceKey]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
 	}
 	comp := ch.compressor
 	m.mu.Unlock()
@@ -1101,7 +1104,7 @@ func (m *AudioMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, 
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("channel %q not found", sourceKey)
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
 	}
 	threshold, ratio, attack, release, makeupGain = ch.compressor.GetParams()
 	gainReduction = ch.compressor.GainReduction()

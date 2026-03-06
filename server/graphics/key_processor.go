@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"sort"
 	"sync"
 )
 
@@ -96,7 +97,15 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 	uvSize := uvWidth * (height / 2)
 	frameSize := ySize + 2*uvSize
 
-	for source, cfg := range kp.keys {
+	// Collect and sort source keys for deterministic compositing order.
+	sortedKeys := make([]string, 0, len(kp.keys))
+	for source := range kp.keys {
+		sortedKeys = append(sortedKeys, source)
+	}
+	sort.Strings(sortedKeys)
+
+	for _, source := range sortedKeys {
+		cfg := kp.keys[source]
 		if !cfg.Enabled {
 			continue
 		}
@@ -106,18 +115,25 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 			continue
 		}
 
-		// Make a working copy of fill for chroma key (spill suppression modifies it)
-		fillCopy := make([]byte, len(fill))
-		copy(fillCopy, fill)
+		// Only copy the fill when chroma key with spill suppression needs to modify it.
+		// Luma keys and chroma keys without spill work on the original, saving ~3MB per frame.
+		var workFill []byte
+		if cfg.Type == KeyTypeChroma && cfg.SpillSuppress > 0 {
+			fillCopy := make([]byte, len(fill))
+			copy(fillCopy, fill)
+			workFill = fillCopy
+		} else {
+			workFill = fill
+		}
 
 		// Generate alpha mask
 		var mask []byte
 		switch cfg.Type {
 		case KeyTypeChroma:
 			keyColor := YCbCr{Y: cfg.KeyColorY, Cb: cfg.KeyColorCb, Cr: cfg.KeyColorCr}
-			mask = ChromaKey(fillCopy, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress)
+			mask = ChromaKey(workFill, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress)
 		case KeyTypeLuma:
-			mask = LumaKey(fillCopy, width, height, cfg.LowClip, cfg.HighClip, cfg.Softness)
+			mask = LumaKey(workFill, width, height, cfg.LowClip, cfg.HighClip, cfg.Softness)
 		default:
 			continue
 		}
@@ -127,34 +143,45 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 		}
 
 		// Composite fill onto background using the generated mask.
-		// Alpha mask has one byte per pixel; blend in YUV420 space.
-		for row := 0; row < height; row++ {
-			for col := 0; col < width; col++ {
-				pixIdx := row*width + col
-				alpha := float32(mask[pixIdx]) / 255.0
+		// Y plane: per-pixel alpha blend at full resolution.
+		for i := 0; i < ySize; i++ {
+			alpha := float32(mask[i]) / 255.0
+			if alpha < 1.0/255.0 {
+				continue
+			}
+			invAlpha := 1.0 - alpha
+			bg[i] = uint8(clampFloat(float32(bg[i])*invAlpha+float32(workFill[i])*alpha, 0, 255))
+		}
 
-				// Skip fully transparent pixels (key area, don't composite)
+		// Cb and Cr planes: average alpha over corresponding 2x2 luma block.
+		// Each UV sample covers a 2x2 block of luma pixels. The alpha for the
+		// chroma blend is the average of the 4 luma alphas in that block.
+		// This matches the pattern in transition/blend.go BlendStinger.
+		for py := 0; py < height/2; py++ {
+			for px := 0; px < uvWidth; px++ {
+				ly := py * 2
+				lx := px * 2
+				a00 := float32(mask[ly*width+lx])
+				a01 := float32(mask[ly*width+lx+1])
+				a10 := float32(mask[(ly+1)*width+lx])
+				a11 := float32(mask[(ly+1)*width+lx+1])
+				alpha := (a00 + a01 + a10 + a11) / (4.0 * 255.0)
+
 				if alpha < 1.0/255.0 {
 					continue
 				}
-
 				invAlpha := 1.0 - alpha
 
-				// Blend Y (luma)
-				bgY := float32(bg[pixIdx])
-				fgY := float32(fillCopy[pixIdx])
-				bg[pixIdx] = uint8(clampFloat(bgY*invAlpha+fgY*alpha, 0, 255))
-
-				// Blend Cb, Cr (chroma) — at quarter resolution
-				uvIdx := (row/2)*uvWidth + (col / 2)
-				if ySize+uvIdx < frameSize && ySize+uvSize+uvIdx < frameSize {
-					bgCb := float32(bg[ySize+uvIdx])
-					fgCb := float32(fillCopy[ySize+uvIdx])
-					bg[ySize+uvIdx] = uint8(clampFloat(bgCb*invAlpha+fgCb*alpha, 0, 255))
-
-					bgCr := float32(bg[ySize+uvSize+uvIdx])
-					fgCr := float32(fillCopy[ySize+uvSize+uvIdx])
-					bg[ySize+uvSize+uvIdx] = uint8(clampFloat(bgCr*invAlpha+fgCr*alpha, 0, 255))
+				uvIdx := py*uvWidth + px
+				// Cb
+				if ySize+uvIdx < frameSize {
+					bg[ySize+uvIdx] = uint8(clampFloat(
+						float32(bg[ySize+uvIdx])*invAlpha+float32(workFill[ySize+uvIdx])*alpha, 0, 255))
+				}
+				// Cr
+				if ySize+uvSize+uvIdx < frameSize {
+					bg[ySize+uvSize+uvIdx] = uint8(clampFloat(
+						float32(bg[ySize+uvSize+uvIdx])*invAlpha+float32(workFill[ySize+uvSize+uvIdx])*alpha, 0, 255))
 				}
 			}
 		}

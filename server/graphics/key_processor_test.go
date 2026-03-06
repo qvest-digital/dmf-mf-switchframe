@@ -179,3 +179,100 @@ func TestKeyProcessor_GetKey(t *testing.T) {
 		t.Fatalf("expected similarity 0.5, got %f", cfg.Similarity)
 	}
 }
+
+func TestKeyProcessor_DeterministicOrder(t *testing.T) {
+	kp := NewKeyProcessor()
+	w, h := 8, 8
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	frameSize := ySize + 2*uvSize
+
+	// Configure 5 keys with different fills in non-alphabetical order
+	keys := []string{"echo", "alpha", "charlie", "bravo", "delta"}
+	for i, name := range keys {
+		kp.SetKey(name, KeyConfig{
+			Type:     KeyTypeLuma,
+			Enabled:  true,
+			LowClip:  float32(i) * 0.1,
+			HighClip: 1.0,
+		})
+	}
+
+	// Create background and fill frames
+	bg := make([]byte, frameSize)
+	for i := range bg {
+		bg[i] = 128
+	}
+	fills := make(map[string][]byte)
+	for i, name := range keys {
+		fill := make([]byte, frameSize)
+		for j := range fill {
+			fill[j] = byte(50 + i*30)
+		}
+		fills[name] = fill
+	}
+
+	// Run 100 times and verify identical results
+	var firstResult []byte
+	for iter := 0; iter < 100; iter++ {
+		bgCopy := make([]byte, len(bg))
+		copy(bgCopy, bg)
+		result := kp.Process(bgCopy, fills, w, h)
+		if firstResult == nil {
+			firstResult = make([]byte, len(result))
+			copy(firstResult, result)
+		} else {
+			for i := range result {
+				if result[i] != firstResult[i] {
+					t.Fatalf("iteration %d: byte %d differs: %d vs %d", iter, i, result[i], firstResult[i])
+				}
+			}
+		}
+	}
+}
+
+func TestKeyProcessor_UVBlendingAveraged(t *testing.T) {
+	kp := NewKeyProcessor()
+	w, h := 8, 8
+	ySize := w * h
+	uvWidth := w / 2
+	uvSize := uvWidth * (h / 2)
+	frameSize := ySize + 2*uvSize
+
+	// Configure a luma key that makes pixels with Y > 0.5 opaque
+	kp.SetKey("fill", KeyConfig{
+		Type:     KeyTypeLuma,
+		Enabled:  true,
+		LowClip:  0.0,
+		HighClip: 1.0,
+		Softness: 0.0,
+	})
+
+	// Background: all zeros
+	bg := make([]byte, frameSize)
+	// Fill: Y=200 everywhere, Cb=200, Cr=50
+	fill := make([]byte, frameSize)
+	for i := 0; i < ySize; i++ {
+		fill[i] = 200
+	}
+	for i := 0; i < uvSize; i++ {
+		fill[ySize+i] = 200       // Cb
+		fill[ySize+uvSize+i] = 50 // Cr
+	}
+	fills := map[string][]byte{"fill": fill}
+
+	result := kp.Process(bg, fills, w, h)
+
+	// With full alpha (luma key makes everything opaque since Y=200 is between 0 and 255),
+	// the UV values should be the fill's UV values (200 for Cb, 50 for Cr)
+	for i := 0; i < uvSize; i++ {
+		cb := result[ySize+i]
+		cr := result[ySize+uvSize+i]
+		if cb != 200 {
+			t.Errorf("Cb[%d]: expected 200, got %d", i, cb)
+		}
+		if cr != 50 {
+			t.Errorf("Cr[%d]: expected 50, got %d", i, cr)
+		}
+	}
+}

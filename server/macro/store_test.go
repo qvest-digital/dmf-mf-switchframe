@@ -1,6 +1,7 @@
 package macro
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -134,7 +135,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			name := "macro-" + string(rune('a'+n%10))
+			name := fmt.Sprintf("macro-%d", n)
 			_ = s.Save(Macro{Name: name, Steps: []MacroStep{{Action: ActionWait, Params: map[string]interface{}{"ms": float64(100)}}}})
 			_ = s.List()
 			_, _ = s.Get(name)

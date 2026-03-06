@@ -626,8 +626,10 @@ func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.mixer.SetEQ(source, req.Band, req.Frequency, req.Gain, req.Q, req.Enabled); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		status := http.StatusBadRequest
-		if errors.Is(err, audio.ErrInvalidBand) || errors.Is(err, audio.ErrInvalidFrequency) ||
+		status := http.StatusInternalServerError
+		if errors.Is(err, audio.ErrChannelNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, audio.ErrInvalidBand) || errors.Is(err, audio.ErrInvalidFrequency) ||
 			errors.Is(err, audio.ErrInvalidGain) || errors.Is(err, audio.ErrInvalidQ) {
 			status = http.StatusBadRequest
 		}
@@ -698,8 +700,10 @@ func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.mixer.SetCompressor(source, req.Threshold, req.Ratio, req.Attack, req.Release, req.MakeupGain); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		status := http.StatusBadRequest
-		if errors.Is(err, audio.ErrInvalidThreshold) || errors.Is(err, audio.ErrInvalidRatio) ||
+		status := http.StatusInternalServerError
+		if errors.Is(err, audio.ErrChannelNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, audio.ErrInvalidThreshold) || errors.Is(err, audio.ErrInvalidRatio) ||
 			errors.Is(err, audio.ErrInvalidAttack) || errors.Is(err, audio.ErrInvalidRelease) ||
 			errors.Is(err, audio.ErrInvalidMakeupGain) {
 			status = http.StatusBadRequest
@@ -1400,19 +1404,19 @@ type apiMacroTarget struct {
 	mixer    AudioMixerAPI
 }
 
-func (t *apiMacroTarget) Cut(source string) error {
-	return t.switcher.Cut(context.Background(), source)
+func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
+	return t.switcher.Cut(ctx, source)
 }
 
-func (t *apiMacroTarget) SetPreview(source string) error {
-	return t.switcher.SetPreview(context.Background(), source)
+func (t *apiMacroTarget) SetPreview(ctx context.Context, source string) error {
+	return t.switcher.SetPreview(ctx, source)
 }
 
-func (t *apiMacroTarget) StartTransition(transType string, durationMs int) error {
-	return t.switcher.StartTransition(context.Background(), "", transType, durationMs, "")
+func (t *apiMacroTarget) StartTransition(ctx context.Context, source string, transType string, durationMs int) error {
+	return t.switcher.StartTransition(ctx, source, transType, durationMs, "")
 }
 
-func (t *apiMacroTarget) SetLevel(source string, level float64) error {
+func (t *apiMacroTarget) SetLevel(ctx context.Context, source string, level float64) error {
 	if t.mixer == nil {
 		return nil
 	}

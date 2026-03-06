@@ -461,14 +461,14 @@ func (m *mockMixer) SetMasterLevel(level float64) {
 
 func (m *mockMixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error {
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
 	}
 	return nil
 }
 
 func (m *mockMixer) GetEQ(sourceKey string) ([3]audio.EQBandSettings, error) {
 	if !m.knownKeys[sourceKey] {
-		return [3]audio.EQBandSettings{}, fmt.Errorf("channel %q not found", sourceKey)
+		return [3]audio.EQBandSettings{}, fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
 	}
 	return [3]audio.EQBandSettings{
 		{Frequency: 250, Gain: 0, Q: 1.0, Enabled: false},
@@ -479,14 +479,14 @@ func (m *mockMixer) GetEQ(sourceKey string) ([3]audio.EQBandSettings, error) {
 
 func (m *mockMixer) SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error {
 	if !m.knownKeys[sourceKey] {
-		return fmt.Errorf("channel %q not found", sourceKey)
+		return fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
 	}
 	return nil
 }
 
 func (m *mockMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error) {
 	if !m.knownKeys[sourceKey] {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("channel %q not found", sourceKey)
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
 	}
 	return 0, 1.0, 5.0, 100.0, 0, 0, nil
 }
@@ -836,5 +836,33 @@ func TestAudioTrimNoMixer(t *testing.T) {
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+}
+
+func TestSetEQ_ChannelNotFound(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"band":0,"frequency":250,"gain":3.0,"q":1.0,"enabled":true}`
+	req := httptest.NewRequest("PUT", "/api/audio/unknown/eq", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestSetCompressor_ChannelNotFound(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"threshold":-10,"ratio":4.0,"attack":5.0,"release":100.0,"makeupGain":0}`
+	req := httptest.NewRequest("PUT", "/api/audio/unknown/compressor", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
