@@ -19,6 +19,7 @@
 				source={state.sources[key]}
 				tally={state.programSource === key ? 'program' : 'idle'}
 				index={i}
+				audioLevelDb={state.audioChannels?.[key] ? Math.max(state.audioChannels[key].peakL, state.audioChannels[key].peakR) : undefined}
 				onclick={() => onCut ? onCut(key) : apiCall(cut(key), 'Cut failed')}
 			/>
 		{/each}

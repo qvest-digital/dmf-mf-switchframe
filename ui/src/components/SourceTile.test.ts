@@ -137,6 +137,84 @@ describe('SourceTile', () => {
 	});
 });
 
+describe('SourceTile audio bar', () => {
+	it('should not show audio bar when audioLevelDb is not provided (defaults to -96)', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0 },
+		});
+		const audioBar = container.querySelector('.audio-bar');
+		expect(audioBar).toBeNull();
+	});
+
+	it('should not show audio bar when audioLevelDb is below -60', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -65 },
+		});
+		const audioBar = container.querySelector('.audio-bar');
+		expect(audioBar).toBeNull();
+	});
+
+	it('should show audio bar when audioLevelDb is above -60', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -30 },
+		});
+		const audioBar = container.querySelector('.audio-bar');
+		expect(audioBar).toBeTruthy();
+	});
+
+	it('should render audio bar fill with correct height for -30 dBFS', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -30 },
+		});
+		const fill = container.querySelector('.audio-bar-fill') as HTMLElement;
+		expect(fill).toBeTruthy();
+		// -30 dBFS: (-30 - (-60)) / (0 - (-60)) * 100 = 30/60*100 = 50%
+		expect(fill.style.height).toBe('50%');
+	});
+
+	it('should render audio bar fill with 100% height at 0 dBFS', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: 0 },
+		});
+		const fill = container.querySelector('.audio-bar-fill') as HTMLElement;
+		expect(fill).toBeTruthy();
+		expect(fill.style.height).toBe('100%');
+	});
+
+	it('should show green color for levels below -12 dBFS', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -20 },
+		});
+		const fill = container.querySelector('.audio-bar-fill') as HTMLElement;
+		// Browser normalizes hex to rgb()
+		expect(fill.style.background).toBe('rgb(34, 197, 94)');
+	});
+
+	it('should show yellow color for levels between -12 and -3 dBFS', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -6 },
+		});
+		const fill = container.querySelector('.audio-bar-fill') as HTMLElement;
+		expect(fill.style.background).toBe('rgb(234, 179, 8)');
+	});
+
+	it('should show red color for levels above -3 dBFS', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -1 },
+		});
+		const fill = container.querySelector('.audio-bar-fill') as HTMLElement;
+		expect(fill.style.background).toBe('rgb(239, 68, 68)');
+	});
+
+	it('should have aria-hidden on audio bar', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0, audioLevelDb: -20 },
+		});
+		const audioBar = container.querySelector('.audio-bar');
+		expect(audioBar?.getAttribute('aria-hidden')).toBe('true');
+	});
+});
+
 describe('SourceTile label editing', () => {
 	it('enters edit mode on double-click', async () => {
 		const onLabelChange = vi.fn();

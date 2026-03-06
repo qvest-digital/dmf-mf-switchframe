@@ -5,11 +5,12 @@
 		source: SourceInfo;
 		tally: TallyStatus;
 		index: number;
+		audioLevelDb?: number;
 		onclick?: () => void;
 		onLabelChange?: (key: string, label: string) => void;
 	}
 
-	let { source, tally, index, onclick, onLabelChange }: Props = $props();
+	let { source, tally, index, audioLevelDb = -96, onclick, onLabelChange }: Props = $props();
 
 	let editing = $state(false);
 	let editValue = $state('');
@@ -47,6 +48,32 @@
 			cancelEdit();
 		}
 	}
+
+	/**
+	 * Map a dBFS value to a percentage (0..100) for the audio bar.
+	 * Silence (-96 or below) maps to 0%, 0 dBFS maps to 100%.
+	 */
+	function dbToBarPercent(db: number): number {
+		const min = -60;
+		const max = 0;
+		if (db <= min) return 0;
+		if (db >= max) return 100;
+		return ((db - min) / (max - min)) * 100;
+	}
+
+	/**
+	 * Choose bar color based on dBFS level.
+	 * Green (< -12), Yellow (-12 to -3), Red (> -3).
+	 */
+	function barColor(db: number): string {
+		if (db > -3) return '#ef4444';
+		if (db > -12) return '#eab308';
+		return '#22c55e';
+	}
+
+	let barPercent = $derived(dbToBarPercent(audioLevelDb));
+	let barFill = $derived(barColor(audioLevelDb));
+	let showBar = $derived(audioLevelDb > -60);
 </script>
 
 <button
@@ -77,6 +104,13 @@
 	<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale'}>
 		{#if source.status !== 'healthy'}{source.status}{/if}
 	</span>
+
+	<!-- Audio level bar (right edge) -->
+	{#if showBar}
+		<div class="audio-bar" aria-hidden="true">
+			<div class="audio-bar-fill" style="height: {barPercent}%; background: {barFill}"></div>
+		</div>
+	{/if}
 </button>
 
 <style>
@@ -93,6 +127,7 @@
 		cursor: pointer;
 		font-family: var(--font-ui);
 		min-width: 72px;
+		position: relative;
 		transition:
 			border-color var(--transition-fast),
 			background var(--transition-fast),
@@ -173,5 +208,26 @@
 
 	.tile-status.stale {
 		color: var(--accent-orange);
+	}
+
+	/* Audio level bar - right edge of tile */
+	.audio-bar {
+		position: absolute;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		width: 4px;
+		border-radius: 0 var(--radius-md) var(--radius-md) 0;
+		overflow: hidden;
+		pointer-events: none;
+	}
+
+	.audio-bar-fill {
+		position: absolute;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		transition: height 0.06s linear;
+		border-radius: 0 0 var(--radius-md) 0;
 	}
 </style>

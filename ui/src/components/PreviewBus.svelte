@@ -19,6 +19,7 @@
 				source={state.sources[key]}
 				tally={state.previewSource === key ? 'preview' : 'idle'}
 				index={i}
+				audioLevelDb={state.audioChannels?.[key] ? Math.max(state.audioChannels[key].peakL, state.audioChannels[key].peakR) : undefined}
 				onclick={() => onPreview ? onPreview(key) : apiCall(setPreview(key), 'Preview failed')}
 			/>
 		{/each}
