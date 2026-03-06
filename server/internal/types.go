@@ -20,12 +20,30 @@ const (
 	SourceOffline  SourceHealthStatus = "offline"
 )
 
+// SourceKeyConfig describes the upstream key configuration for a source,
+// included in SourceInfo so the browser knows the current key state.
+type SourceKeyConfig struct {
+	Type          string  `json:"type"`                    // "chroma", "luma", or ""
+	Enabled       bool    `json:"enabled"`
+	KeyColorY     uint8   `json:"keyColorY,omitempty"`
+	KeyColorCb    uint8   `json:"keyColorCb,omitempty"`
+	KeyColorCr    uint8   `json:"keyColorCr,omitempty"`
+	Similarity    float32 `json:"similarity,omitempty"`
+	Smoothness    float32 `json:"smoothness,omitempty"`
+	SpillSuppress float32 `json:"spillSuppress,omitempty"`
+	LowClip       float32 `json:"lowClip,omitempty"`
+	HighClip      float32 `json:"highClip,omitempty"`
+	Softness      float32 `json:"softness,omitempty"`
+	FillSource    string  `json:"fillSource,omitempty"`
+}
+
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
-	Key     string             `json:"key"`
-	Label   string             `json:"label,omitempty"`
-	Status  SourceHealthStatus `json:"status"`
-	DelayMs int                `json:"delayMs,omitempty"`
+	Key       string             `json:"key"`
+	Label     string             `json:"label,omitempty"`
+	Status    SourceHealthStatus `json:"status"`
+	DelayMs   int                `json:"delayMs,omitempty"`
+	KeyConfig *SourceKeyConfig   `json:"keyConfig,omitempty"`
 }
 
 // AudioTransitionMode describes how audio should behave during a video transition.

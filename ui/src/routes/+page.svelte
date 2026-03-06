@@ -16,6 +16,7 @@
 	import Toast from '../components/Toast.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
+	import KeyPanel from '../components/KeyPanel.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -440,6 +441,9 @@
 				<div class="macro-section">
 					<MacroPanel />
 				</div>
+				<div class="key-section">
+					<KeyPanel state={store.effectiveState} />
+				</div>
 			</section>
 		</div>
 
@@ -507,6 +511,13 @@
 
 	.macro-section {
 		width: 180px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border-subtle);
+	}
+
+	.key-section {
+		width: 200px;
 		flex-shrink: 0;
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);

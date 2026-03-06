@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, Macro } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, Macro, KeyConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -248,6 +248,26 @@ export function deleteMacro(name: string): Promise<void> {
 
 export function runMacro(name: string): Promise<{ status: string }> {
 	return post(`/api/macros/${encodeURIComponent(name)}/run`, {});
+}
+
+// --- Upstream Key API ---
+
+export function setSourceKey(source: string, config: KeyConfig): Promise<KeyConfig> {
+	return request(`/api/sources/${encodeURIComponent(source)}/key`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
+}
+
+export function getSourceKey(source: string): Promise<KeyConfig> {
+	return request(`/api/sources/${encodeURIComponent(source)}/key`);
+}
+
+export function deleteSourceKey(source: string): Promise<void> {
+	return request(`/api/sources/${encodeURIComponent(source)}/key`, {
+		method: 'DELETE',
+	});
 }
 
 /** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */

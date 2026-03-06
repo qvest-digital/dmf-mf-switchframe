@@ -191,6 +191,13 @@ type Switcher struct {
 	// downstream keying (graphics overlay compositing) on every program frame.
 	videoProcessor func(*media.VideoFrame) *media.VideoFrame
 
+	// Optional upstream key processor — applied before the video processor.
+	// When configured, composites keyed sources onto the program frame.
+	// Nil check ensures zero overhead when not configured.
+	keyProcessor interface {
+		Process(bg []byte, fills map[string][]byte, width, height int) []byte
+	}
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -306,6 +313,17 @@ func (s *Switcher) SetVideoProcessor(proc func(*media.VideoFrame) *media.VideoFr
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.videoProcessor = proc
+}
+
+// SetKeyProcessor attaches an upstream key processor for chroma/luma keying.
+// When set, the key processor is applied to program frames before the
+// downstream video processor (DSK). Passing nil disables upstream keying.
+func (s *Switcher) SetKeyProcessor(kp interface {
+	Process(bg []byte, fills map[string][]byte, width, height int) []byte
+}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keyProcessor = kp
 }
 
 // SetFrameSync enables or disables the freerun frame synchronizer. When

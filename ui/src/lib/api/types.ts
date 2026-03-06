@@ -92,6 +92,21 @@ export interface Macro {
 	steps: MacroStep[];
 }
 
+export interface KeyConfig {
+	type: 'chroma' | 'luma';
+	enabled: boolean;
+	keyColorY?: number;
+	keyColorCb?: number;
+	keyColorCr?: number;
+	similarity?: number;
+	smoothness?: number;
+	spillSuppress?: number;
+	lowClip?: number;
+	highClip?: number;
+	softness?: number;
+	fillSource?: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
