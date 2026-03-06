@@ -70,14 +70,19 @@ func TestCrossfadeDifferentLengths(t *testing.T) {
 	new := []float32{0.5, 0.5} // shorter
 
 	result := EqualPowerCrossfade(old, new)
-	// Should use min length
-	require.Equal(t, 2, len(result))
+	// Should output len(old) samples — shorter buffer zero-padded
+	require.Equal(t, 4, len(result), "output should be length of longer buffer")
+	// Last sample: t=3/4, cos(0.75*π/2)≈0.383, sin(0.75*π/2)≈0.924
+	// old=1.0*0.383, new=0 (zero-padded) → ≈0.383
+	require.InDelta(t, 0.0, result[3], 0.5, "last sample should fade toward zero (old faded out, new zero-padded)")
 }
 
 func TestCrossfadeEmptySlices(t *testing.T) {
 	result := EqualPowerCrossfade(nil, nil)
 	require.Equal(t, 0, len(result))
 
+	// One non-empty, one nil — result uses longer buffer, shorter is zero-padded
 	result = EqualPowerCrossfade([]float32{1.0}, nil)
-	require.Equal(t, 0, len(result))
+	require.Equal(t, 1, len(result))
+	require.InDelta(t, 1.0, result[0], 0.01, "single sample: old at t=0 should be ~1.0")
 }

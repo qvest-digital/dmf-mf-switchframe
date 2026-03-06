@@ -1158,6 +1158,65 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
+func TestMixerCrossfadeUsesPreBufferedPCM(t *testing.T) {
+	// After sending frames from cam1, triggering a cut to cam2, and sending
+	// only ONE frame from cam2, the crossfade should complete immediately
+	// because cam1's last PCM is pre-buffered — no waiting needed.
+	var outputFrames []*media.AudioFrame
+
+	cam1PCM := []float32{0.8, 0.8, 0.8, 0.8}
+	cam2PCM := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Set up decoders with known PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: cam1PCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: cam2PCM}
+	m.mu.Unlock()
+
+	// Send several frames from cam1 to build up the pre-buffer
+	for i := 0; i < 3; i++ {
+		m.IngestFrame("cam1", &media.AudioFrame{
+			PTS: int64(i * 1024), Data: []byte{0xAA}, SampleRate: 48000, Channels: 2,
+		})
+	}
+
+	// Clear output from passthrough/mixing frames
+	outputFrames = nil
+
+	// Trigger cut from cam1 -> cam2
+	m.OnCut("cam1", "cam2")
+
+	// Send ONE frame from cam2 — crossfade should complete immediately
+	// because cam1's last PCM is already pre-buffered
+	m.IngestFrame("cam2", &media.AudioFrame{
+		PTS: 3 * 1024, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2,
+	})
+
+	// Should have output: the crossfade should have completed in one frame
+	require.True(t, len(outputFrames) > 0,
+		"crossfade should produce output immediately on first new-source frame")
+}
+
 func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 	// Verify sync.Once works for the crossfade path too.
 	var factoryCalls atomic.Int64

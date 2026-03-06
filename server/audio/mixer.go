@@ -17,7 +17,7 @@ import (
 // crossfadeTimeout is the maximum time to wait for both sources to deliver
 // frames during a crossfade. If the outgoing source disconnects, the crossfade
 // completes with only the incoming source's audio after this deadline.
-const crossfadeTimeout = 50 * time.Millisecond
+const crossfadeTimeout = 25 * time.Millisecond // ~1 AAC frame safety net
 
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
@@ -61,6 +61,9 @@ type AudioMixer struct {
 	// Background ticker for deadline enforcement
 	stopTicker chan struct{}
 	tickerWg   sync.WaitGroup
+
+	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
+	lastDecodedPCM map[string][]float32
 
 	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
 	crossfadeFrom     string               // outgoing source key
@@ -107,15 +110,16 @@ const mixCycleDeadline = 50 * time.Millisecond
 // NewMixer creates an AudioMixer.
 func NewMixer(config MixerConfig) *AudioMixer {
 	m := &AudioMixer{
-		channels:    make(map[string]*Channel),
-		masterLevel: 0.0,
-		sampleRate:  config.SampleRate,
-		numChannels: config.Channels,
-		output:      config.Output,
-		passthrough: true,
-		config:      config,
-		stopTicker:  make(chan struct{}),
-		limiter:     NewLimiter(config.SampleRate),
+		channels:       make(map[string]*Channel),
+		masterLevel:    0.0,
+		sampleRate:     config.SampleRate,
+		numChannels:    config.Channels,
+		output:         config.Output,
+		passthrough:    true,
+		config:         config,
+		stopTicker:     make(chan struct{}),
+		limiter:        NewLimiter(config.SampleRate),
+		lastDecodedPCM: make(map[string][]float32),
 	}
 	m.tickerWg.Add(1)
 	go m.mixDeadlineTicker()
@@ -404,6 +408,12 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	m.crossfadeTo = newSource
 	m.crossfadeActive = true
 	m.crossfadePCM = make(map[string][]float32)
+	// Pre-seed the old source's PCM from the buffer — no waiting needed
+	if lastPCM, ok := m.lastDecodedPCM[oldSource]; ok && len(lastPCM) > 0 {
+		cp := make([]float32, len(lastPCM))
+		copy(cp, lastPCM)
+		m.crossfadePCM[oldSource] = cp
+	}
 	m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
 	m.crossfadeCount.Add(1)
 }
@@ -599,6 +609,8 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				peakL, peakR := PeakLevel(pcm, m.numChannels)
 				m.programPeakL = peakL
 				m.programPeakR = peakR
+				// Store for crossfade pre-buffer even in passthrough
+				m.lastDecodedPCM[sourceKey] = pcm
 			} else if err != nil {
 				m.decodeErrors.Add(1)
 				slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
@@ -636,6 +648,9 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
 		return
 	}
+
+	// Store last decoded PCM for instant crossfade on future cuts
+	m.lastDecodedPCM[sourceKey] = pcm
 
 	// Apply per-channel gain with per-sample transition interpolation
 	channelGain := float32(DBToLinear(ch.level))
