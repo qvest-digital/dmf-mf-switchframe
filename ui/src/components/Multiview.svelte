@@ -127,39 +127,13 @@
 
 <style>
 	.multiview {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+		display: flex;
 		gap: 4px;
-		padding: 6px;
+		padding: 4px 6px;
 		background: var(--bg-base);
 		height: 100%;
-		align-content: start;
-		overflow-y: auto;
-	}
-
-	/* Responsive breakpoints for multiview grid */
-	@media (min-width: 1920px) {
-		.multiview {
-			grid-template-columns: repeat(4, 1fr);
-		}
-	}
-
-	@media (min-width: 1024px) and (max-width: 1919px) {
-		.multiview {
-			grid-template-columns: repeat(3, 1fr);
-		}
-	}
-
-	@media (min-width: 768px) and (max-width: 1023px) {
-		.multiview {
-			grid-template-columns: repeat(2, 1fr);
-		}
-	}
-
-	@media (max-width: 767px) {
-		.multiview {
-			grid-template-columns: 1fr;
-		}
+		overflow-x: auto;
+		overflow-y: hidden;
 	}
 
 	.tile {
@@ -171,6 +145,8 @@
 		position: relative;
 		overflow: hidden;
 		padding: 0;
+		height: 100%;
+		flex-shrink: 0;
 		transition:
 			border-color var(--transition-fast),
 			box-shadow var(--transition-normal);
@@ -202,21 +178,21 @@
 		left: 0;
 		right: 0;
 		background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
-		padding: 16px 8px 5px;
+		padding: 10px 6px 3px;
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: 0.6rem;
 		font-weight: 500;
 		color: var(--text-primary);
 	}
 
 	.tile-num {
 		background: var(--bg-control);
-		padding: 1px 5px;
+		padding: 1px 4px;
 		border-radius: var(--radius-sm);
-		font-size: 0.6rem;
+		font-size: 0.5rem;
 		font-family: var(--font-mono);
 		font-weight: 700;
 		color: var(--text-secondary);

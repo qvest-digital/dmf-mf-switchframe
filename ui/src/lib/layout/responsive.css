@@ -2,41 +2,38 @@
  * Responsive utilities for Switchframe operator interface.
  *
  * Breakpoints:
- *   >= 1920px  — Full desktop (4-col multiview)
- *   1024-1919  — Standard desktop (3-col multiview)
- *   768-1023   — Tablet / narrow desktop (2-col multiview)
- *   < 768      — Mobile / small tablet (1-col multiview)
+ *   >= 1920px  — Full desktop
+ *   1024-1919  — Standard desktop
+ *   768-1023   — Tablet / narrow desktop
+ *   < 768      — Mobile / small tablet
  *
  * Touch: @media (pointer: coarse) — larger tap targets, no hover states
- * Fluid sizing: min() / clamp() for responsive element sizing
  */
 
 /* ---- Breakpoint: < 768px (mobile/small tablet) ---- */
 @media (max-width: 767px) {
 	.control-room {
-		grid-template-rows: auto auto 1fr auto;
+		grid-template-rows: auto auto auto auto 1fr;
+	}
+
+	.control-strip {
+		flex-wrap: wrap;
 	}
 
 	.bottom-panel {
 		flex-direction: column;
-		max-height: none;
+		height: auto;
+		min-height: 0;
+		overflow-y: auto;
 	}
 
-	.audio-section {
+	.audio-section,
+	.graphics-section,
+	.macro-section,
+	.key-section,
+	.replay-section {
+		border-left: none;
 		border-right: none;
-		border-bottom: 1px solid var(--border-subtle);
-		max-height: 160px;
-	}
-
-	.graphics-section {
-		width: 100%;
-		border-left: none;
-		border-top: 1px solid var(--border-subtle);
-	}
-
-	.macro-section {
-		width: 100%;
-		border-left: none;
 		border-top: 1px solid var(--border-subtle);
 	}
 }
@@ -44,15 +41,11 @@
 /* ---- Breakpoint: 768-1023px (tablet) ---- */
 @media (min-width: 768px) and (max-width: 1023px) {
 	.bottom-panel {
-		max-height: 200px;
+		height: 180px;
 	}
 
-	.graphics-section {
-		width: 200px;
-	}
-
-	.macro-section {
-		width: 150px;
+	.multiview-section {
+		max-height: 70px;
 	}
 }
 

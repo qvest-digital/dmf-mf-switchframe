@@ -97,6 +97,7 @@
 		grid-template-columns: 1fr 1fr;
 		gap: 6px;
 		padding: 6px;
+		height: 100%;
 	}
 
 	.monitor {
@@ -107,6 +108,7 @@
 		position: relative;
 		border: 1px solid var(--border-subtle);
 		box-shadow: var(--shadow-inset);
+		max-height: 100%;
 	}
 
 	.monitor-label {

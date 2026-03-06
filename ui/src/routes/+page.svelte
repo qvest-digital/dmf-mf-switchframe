@@ -451,22 +451,19 @@
 				<Multiview state={store.effectiveState} onLabelChange={handleLabelChange} />
 			</section>
 
+			<section class="control-strip">
+				<LockIndicator state={store.effectiveState} subsystem="switching" />
+				<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
+				<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
+				<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} />
+			</section>
+
 			<section class="bottom-panel">
 				<div class="audio-section">
 					<div class="panel-header">
 						<LockIndicator state={store.effectiveState} subsystem="audio" />
 					</div>
 					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} />
-				</div>
-				<div class="control-section">
-					<div class="panel-header">
-						<LockIndicator state={store.effectiveState} subsystem="switching" />
-					</div>
-					<div class="buses">
-						<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
-						<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
-					</div>
-					<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} />
 				</div>
 				<div class="graphics-section">
 					<div class="panel-header">
@@ -502,7 +499,7 @@
 
 	.control-room {
 		display: grid;
-		grid-template-rows: auto auto 1fr auto;
+		grid-template-rows: auto 1fr auto auto auto;
 		height: 100vh;
 		background: var(--bg-base);
 	}
@@ -514,68 +511,69 @@
 
 	.monitors {
 		background: var(--bg-base);
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	.multiview-section {
 		overflow: hidden;
 		background: var(--bg-base);
 		min-height: 0;
+		max-height: 100px;
+	}
+
+	.control-strip {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 10px;
+		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-surface);
 	}
 
 	.bottom-panel {
 		display: flex;
 		border-top: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
-		max-height: 240px;
+		height: 200px;
+		min-height: 160px;
 	}
 
 	.audio-section {
 		overflow-x: auto;
 		overflow-y: hidden;
 		border-right: 1px solid var(--border-subtle);
-		flex-shrink: 0;
-	}
-
-	.control-section {
-		flex: 1;
+		flex: 2;
 		min-width: 0;
-		display: flex;
-		flex-direction: column;
 	}
 
 	.graphics-section {
-		width: 240px;
-		flex-shrink: 0;
+		flex: 1.5;
+		min-width: 0;
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);
 		padding: 4px;
 	}
 
 	.macro-section {
-		width: 180px;
-		flex-shrink: 0;
+		flex: 1;
+		min-width: 0;
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);
 	}
 
 	.key-section {
-		width: 200px;
-		flex-shrink: 0;
+		flex: 1.5;
+		min-width: 0;
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);
 	}
 
 	.replay-section {
-		width: 200px;
-		flex-shrink: 0;
+		flex: 1.5;
+		min-width: 0;
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);
-	}
-
-	.buses {
-		flex: 1;
-		min-height: 0;
-		overflow-y: auto;
 	}
 
 	.header-row {
