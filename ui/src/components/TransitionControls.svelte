@@ -21,13 +21,15 @@
 
 	// Load stinger list on mount and when type changes to stinger
 	$effect(() => {
-		if (transType === 'stinger' && stingerNames.length === 0) {
+		if (transType === 'stinger') {
 			listStingers().then(names => {
 				stingerNames = names;
 				if (names.length > 0 && !stingerName) {
 					stingerName = names[0];
 				}
-			}).catch(() => {});
+			}).catch(err => {
+				console.error('Failed to load stinger list:', err);
+			});
 		}
 	});
 

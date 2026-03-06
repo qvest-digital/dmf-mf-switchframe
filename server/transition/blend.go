@@ -237,6 +237,12 @@ func wipeAlpha(threshold, position, softEdge float64) float64 {
 // alpha is a per-luma-pixel alpha map [0-255], same dimensions as the Y plane.
 // stingerYUV is YUV420 planar format matching base dimensions.
 func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []byte) []byte {
+	// Bounds check: all inputs must be large enough for the configured resolution.
+	expected := fb.ySize + 2*fb.uvSize
+	if len(baseYUV) < expected || len(stingerYUV) < expected || len(alpha) < fb.ySize {
+		return nil
+	}
+
 	w := fb.width
 	h := fb.height
 

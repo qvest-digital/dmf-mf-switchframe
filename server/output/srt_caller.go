@@ -88,6 +88,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.startedAt = time.Now()
 	c.bytesWritten.Store(0)
+	c.overflowCount.Store(0)
 	c.state.Store(StateStarting)
 	c.lastError.Store("")
 

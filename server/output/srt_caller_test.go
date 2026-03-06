@@ -446,6 +446,29 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	c.Close()
 }
 
+func TestSRTCaller_OverflowCountResetOnStart(t *testing.T) {
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 256,
+	})
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	// Start, simulate overflow, stop.
+	require.NoError(t, c.Start(context.Background()))
+	c.overflowCount.Add(3)
+	require.Equal(t, int64(3), c.SRTStatusSnapshot().OverflowCount)
+	c.Close()
+
+	// Re-start: overflow count should be reset.
+	require.NoError(t, c.Start(context.Background()))
+	require.Equal(t, int64(0), c.SRTStatusSnapshot().OverflowCount)
+	c.Close()
+}
+
 func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
