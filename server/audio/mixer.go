@@ -133,7 +133,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		passthrough:    true,
 		config:         config,
 		stopTicker:     make(chan struct{}),
-		limiter:        NewLimiter(config.SampleRate),
+		limiter:        NewLimiter(config.SampleRate, config.Channels),
 		lastDecodedPCM: make(map[string][]float32),
 	}
 	m.tickerWg.Add(1)
@@ -318,7 +318,7 @@ func (m *AudioMixer) AddChannel(sourceKey string) {
 	m.channels[sourceKey] = &Channel{
 		sourceKey:  sourceKey,
 		eq:         NewEQ(m.sampleRate),
-		compressor: NewCompressor(m.sampleRate),
+		compressor: NewCompressor(m.sampleRate, m.numChannels),
 	}
 	m.recalcPassthrough()
 }

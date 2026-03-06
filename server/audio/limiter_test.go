@@ -9,7 +9,7 @@ import (
 
 func TestLimiter_BelowThreshold_Passthrough(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// -6 dBFS = ~0.5 linear, well below -1 dBFS threshold (~0.891)
 	samples := make([]float32, 1024)
@@ -32,7 +32,7 @@ func TestLimiter_BelowThreshold_Passthrough(t *testing.T) {
 
 func TestLimiter_AboveThreshold_Limiting(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// +6 dBFS = ~2.0 linear, well above -1 dBFS threshold
 	samples := make([]float32, 1024)
@@ -55,7 +55,7 @@ func TestLimiter_AboveThreshold_Limiting(t *testing.T) {
 
 func TestLimiter_AttackTime(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// Feed a burst of loud signal. At 48kHz, 0.1ms = ~4.8 samples.
 	// After processing a short burst, the envelope should have engaged quickly.
@@ -77,7 +77,7 @@ func TestLimiter_AttackTime(t *testing.T) {
 
 func TestLimiter_ReleaseTime(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// First: engage the limiter with a loud burst
 	loud := make([]float32, 480) // 10ms of loud signal
@@ -105,7 +105,7 @@ func TestLimiter_ReleaseTime(t *testing.T) {
 
 func TestLimiter_GainReductionReporting(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// Initially, GR should be 0
 	require.InDelta(t, 0.0, lim.GainReduction(), 0.001, "initial GR should be 0")
@@ -126,7 +126,7 @@ func TestLimiter_GainReductionReporting(t *testing.T) {
 
 func TestLimiter_Silence(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// Process silence
 	samples := make([]float32, 1024)
@@ -142,7 +142,7 @@ func TestLimiter_Silence(t *testing.T) {
 
 func TestLimiter_Reset(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// Process loud signal to build up envelope
 	loud := make([]float32, 1024)
@@ -161,7 +161,7 @@ func TestLimiter_Reset(t *testing.T) {
 
 func TestLimiter_ExactlyAtThreshold(t *testing.T) {
 	t.Parallel()
-	lim := NewLimiter(48000)
+	lim := NewLimiter(48000, 2)
 
 	// Samples exactly at -1 dBFS threshold
 	threshold := float32(math.Pow(10, -1.0/20.0)) // ~0.891
@@ -180,4 +180,47 @@ func TestLimiter_ExactlyAtThreshold(t *testing.T) {
 			"sample %d at threshold should pass through or be barely affected", i)
 	}
 	require.Less(t, gr, 0.5, "GR should be negligible at exactly threshold")
+}
+
+func TestLimiter_StereoLinkedEnvelope(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(48000, 2)
+
+	// Interleaved stereo: loud L, quiet R
+	samples := make([]float32, 2048)
+	for i := 0; i < len(samples); i += 2 {
+		samples[i] = 2.0   // L: above threshold
+		samples[i+1] = 0.1 // R: well below threshold
+	}
+
+	lim.Process(samples)
+
+	// Both channels should receive the same gain. Check the last 50 stereo pairs.
+	for i := len(samples) - 100; i < len(samples); i += 2 {
+		ratioL := float64(samples[i]) / 2.0
+		ratioR := float64(samples[i+1]) / 0.1
+		require.InDelta(t, ratioL, ratioR, 0.02,
+			"L and R at index %d should have same gain ratio", i)
+	}
+}
+
+func TestLimiter_MonoStillWorks(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(48000, 1)
+
+	// Mono signal above threshold
+	samples := make([]float32, 1024)
+	for i := range samples {
+		samples[i] = 2.0
+	}
+
+	gr := lim.Process(samples)
+
+	threshold := float32(math.Pow(10, -1.0/20.0))
+	for i := range samples {
+		absVal := float32(math.Abs(float64(samples[i])))
+		require.LessOrEqual(t, absVal, threshold+1e-6,
+			"mono sample %d should not exceed threshold", i)
+	}
+	require.Greater(t, gr, 0.0, "GR should be positive when limiting")
 }

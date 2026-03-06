@@ -9,7 +9,7 @@ import (
 
 func TestCompressor_BelowThreshold_Passthrough(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// Default threshold is 0 dBFS, ratio 1:1
 	// Set threshold to -10 dBFS, ratio 4:1
 	err := c.SetParams(-10, 4.0, 5.0, 100.0, 0)
@@ -35,7 +35,7 @@ func TestCompressor_BelowThreshold_Passthrough(t *testing.T) {
 
 func TestCompressor_AboveThreshold_Reduced(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// Threshold -6 dBFS, ratio 4:1, fast attack
 	err := c.SetParams(-6, 4.0, 0.1, 100.0, 0)
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestCompressor_AboveThreshold_Reduced(t *testing.T) {
 
 func TestCompressor_AttackReleaseTiming(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// 10ms attack, 100ms release
 	err := c.SetParams(-6, 4.0, 10.0, 100.0, 0)
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestCompressor_AttackReleaseTiming(t *testing.T) {
 
 func TestCompressor_MakeupGain(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// Threshold -6, ratio 4:1, fast attack, 6dB makeup
 	err := c.SetParams(-6, 4.0, 0.1, 100.0, 6.0)
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestCompressor_MakeupGain(t *testing.T) {
 
 func TestCompressor_IsBypassed(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	require.True(t, c.IsBypassed(), "new compressor with ratio 1.0 should be bypassed")
 
 	err := c.SetParams(-10, 4.0, 5.0, 100.0, 0)
@@ -140,7 +140,7 @@ func TestCompressor_IsBypassed(t *testing.T) {
 
 func TestCompressor_GainReduction_ReportsValue(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	require.InDelta(t, 0.0, c.GainReduction(), 0.01, "initial GR should be 0")
 
 	// Threshold -6, ratio 4:1, fast attack
@@ -160,7 +160,7 @@ func TestCompressor_GainReduction_ReportsValue(t *testing.T) {
 
 func TestCompressor_NotBypassedWithMakeupGain(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// ratio=1.0 (default), but set makeup gain
 	err := c.SetParams(0, 1.0, 10, 100, 6.0)
 	require.NoError(t, err)
@@ -169,13 +169,13 @@ func TestCompressor_NotBypassedWithMakeupGain(t *testing.T) {
 
 func TestCompressor_BypassedWhenDefault(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	require.True(t, c.IsBypassed(), "default compressor should be bypassed")
 }
 
 func TestCompressor_Reset(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 	// Threshold -6, ratio 4:1, fast attack
 	require.NoError(t, c.SetParams(-6, 4.0, 0.1, 100.0, 0))
 
@@ -196,7 +196,7 @@ func TestCompressor_Reset(t *testing.T) {
 
 func TestCompressor_ParameterValidation(t *testing.T) {
 	t.Parallel()
-	c := NewCompressor(48000)
+	c := NewCompressor(48000, 2)
 
 	// Threshold: -40 to 0
 	require.Error(t, c.SetParams(-41, 4.0, 5.0, 100.0, 0), "threshold below -40 should fail")
@@ -227,4 +227,50 @@ func TestCompressor_ParameterValidation(t *testing.T) {
 	require.Error(t, c.SetParams(-10, 4.0, 5.0, 100.0, 25), "makeup above 24 should fail")
 	require.NoError(t, c.SetParams(-10, 4.0, 5.0, 100.0, 0))
 	require.NoError(t, c.SetParams(-10, 4.0, 5.0, 100.0, 24))
+}
+
+func TestCompressor_StereoLinkedEnvelope(t *testing.T) {
+	t.Parallel()
+	c := NewCompressor(48000, 2)
+	require.NoError(t, c.SetParams(-6, 4.0, 0.1, 100.0, 0))
+
+	// Interleaved stereo: loud L, quiet R
+	samples := make([]float32, 2048)
+	for i := 0; i < len(samples); i += 2 {
+		samples[i] = 1.0   // L: loud (above threshold)
+		samples[i+1] = 0.1 // R: quiet (below threshold)
+	}
+
+	c.Process(samples)
+
+	// Both channels in each pair should receive identical gain reduction.
+	// Check the last 50 stereo pairs (after envelope settles).
+	for i := len(samples) - 100; i < len(samples); i += 2 {
+		ratioL := float64(samples[i]) / 1.0
+		ratioR := float64(samples[i+1]) / 0.1
+		require.InDelta(t, ratioL, ratioR, 0.02,
+			"L and R at index %d should have same gain ratio", i)
+	}
+}
+
+func TestCompressor_MonoStillWorks(t *testing.T) {
+	t.Parallel()
+	c := NewCompressor(48000, 1)
+	require.NoError(t, c.SetParams(-6, 4.0, 0.1, 100.0, 0))
+
+	samples := make([]float32, 4096)
+	for i := range samples {
+		samples[i] = 1.0
+	}
+	c.Process(samples)
+
+	// Should compress the loud signal
+	avgLast := float64(0)
+	n := 100
+	for i := len(samples) - n; i < len(samples); i++ {
+		avgLast += float64(samples[i])
+	}
+	avgLast /= float64(n)
+	require.Less(t, avgLast, 0.8, "mono compressor should reduce loud signal")
+	require.Greater(t, avgLast, 0.2, "mono compressor should not reduce to near-zero")
 }

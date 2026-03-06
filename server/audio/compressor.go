@@ -53,10 +53,15 @@ type Compressor struct {
 	gainReduction float64 // current GR in dB
 
 	sampleRate float64
+	channels   int // number of interleaved channels (for linked stereo)
 }
 
 // NewCompressor creates a new compressor with default parameters (bypassed: ratio 1:1).
-func NewCompressor(sampleRate int) *Compressor {
+// channels specifies the interleaved channel count for linked stereo envelope tracking.
+func NewCompressor(sampleRate, channels int) *Compressor {
+	if channels < 1 {
+		channels = 1
+	}
 	c := &Compressor{
 		threshold:  0,
 		ratio:      1.0,
@@ -64,6 +69,7 @@ func NewCompressor(sampleRate int) *Compressor {
 		releaseMs:  100.0,
 		makeupGain: 0,
 		sampleRate: float64(sampleRate),
+		channels:   channels,
 	}
 	c.recalcCoefficients()
 	return c
@@ -148,6 +154,10 @@ func (c *Compressor) GainReduction() float64 {
 // 1. Envelope follower tracks the signal level (fast attack, slow release)
 // 2. When envelope exceeds threshold, gain reduction is applied based on ratio
 // 3. Makeup gain is applied to the entire signal
+//
+// For multi-channel (stereo) audio, the envelope is linked: the peak across
+// all channels in each sample group drives a single envelope, and the same
+// gain reduction is applied to all channels. This prevents stereo image shift.
 func (c *Compressor) Process(samples []float32) []float32 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -158,30 +168,37 @@ func (c *Compressor) Process(samples []float32) []float32 {
 	makeupGain := float32(c.makeupLinear)
 	attackCoeff := c.attackCoeff
 	releaseCoeff := c.releaseCoeff
+	ch := c.channels
 
-	for i, s := range samples {
-		abs := math.Abs(float64(s))
+	for i := 0; i < len(samples); i += ch {
+		// Find peak across all channels in this group
+		var peak float64
+		for j := 0; j < ch && i+j < len(samples); j++ {
+			abs := math.Abs(float64(samples[i+j]))
+			if abs > peak {
+				peak = abs
+			}
+		}
 
 		// Peak-following envelope: fast attack, slow release
-		if abs > env {
-			env += attackCoeff * (abs - env)
+		if peak > env {
+			env += attackCoeff * (peak - env)
 		} else {
-			env += releaseCoeff * (abs - env)
+			env += releaseCoeff * (peak - env)
 		}
 
-		// Compute gain reduction when envelope exceeds threshold
+		// Compute gain for this group
+		var gain float32 = 1.0
 		if env > threshold && threshold > 0 {
-			// How many dB above threshold
 			overDB := 20 * math.Log10(env/threshold)
-			// Desired reduction: overDB - overDB/ratio = overDB * (1 - 1/ratio)
 			reductionDB := overDB * (1 - 1/ratio)
-			// Convert to linear gain
-			gain := float32(math.Pow(10, -reductionDB/20.0))
-			samples[i] = s * gain
+			gain = float32(math.Pow(10, -reductionDB/20.0))
 		}
 
-		// Apply makeup gain
-		samples[i] *= makeupGain
+		// Apply same gain + makeup to all channels
+		for j := 0; j < ch && i+j < len(samples); j++ {
+			samples[i+j] = samples[i+j] * gain * makeupGain
+		}
 	}
 
 	c.envelope = env
