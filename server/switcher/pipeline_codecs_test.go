@@ -156,6 +156,25 @@ func (d *shortBufferDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 func (d *shortBufferDecoder) Close() {}
 
+func TestPipelineCodecs_GroupID(t *testing.T) {
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	require.Equal(t, uint32(0), pc.GroupID(), "initial GroupID should be 0")
+
+	// Encode a keyframe — GroupID should increment
+	pf := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		PTS: 1000, IsKeyframe: true, Codec: "h264", GroupID: 5,
+	}
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.Equal(t, uint32(6), pc.GroupID(), "GroupID should be max(5,0)+1=6 after keyframe")
+}
+
 func TestPipelineCodecs_Close(t *testing.T) {
 	pc := &pipelineCodecs{
 		decoderFactory: func() (transition.VideoDecoder, error) {
