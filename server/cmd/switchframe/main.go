@@ -422,6 +422,15 @@ func run() error {
 		defer replayMgr.Close()
 		cbRouter.SetReplayManager(replayMgr)
 		debugCollector.Register("replay", replayMgr)
+
+		// Wire replay playback lifecycle: register/unregister replay as a
+		// virtual switcher source so it appears in multiview and can be cut
+		// to program like any camera.
+		replayMgr.OnPlaybackLifecycle(
+			func() { sw.RegisterVirtualSource("replay", replayRelay) },
+			func() { sw.UnregisterSource("replay") },
+		)
+
 		slog.Info("replay manager initialized", "bufferSecs", *replayBufferSecs)
 	}
 
