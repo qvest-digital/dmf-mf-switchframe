@@ -184,3 +184,26 @@ func TestCompositor_CutDuringFade(t *testing.T) {
 	status := c.Status()
 	require.False(t, status.Active, "expected inactive after CUT OFF during fade")
 }
+
+func TestCompositor_AutoOn_AlreadyActive_NoFlash(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+
+	overlay := makeTestOverlay(320, 240)
+	require.NoError(t, c.SetOverlay(overlay, 320, 240, "test"))
+
+	// Activate with CUT ON (fully active, fadePosition=1.0)
+	require.NoError(t, c.On())
+
+	status := c.Status()
+	require.True(t, status.Active)
+	require.Equal(t, 1.0, status.FadePosition)
+
+	// AutoOn while already fully active should be a no-op (no flash)
+	require.NoError(t, c.AutoOn(500*time.Millisecond))
+
+	// fadePosition should still be 1.0 — not reset to 0.0
+	status = c.Status()
+	require.True(t, status.Active)
+	require.Equal(t, 1.0, status.FadePosition, "AutoOn on fully active overlay should not reset fadePosition")
+}

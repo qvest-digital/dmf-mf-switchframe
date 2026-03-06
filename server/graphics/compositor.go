@@ -141,6 +141,9 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 	if c.fadeDone != nil {
 		return ErrFadeActive
 	}
+	if c.active && c.fadePosition >= 1.0 {
+		return nil
+	}
 
 	c.active = true
 	c.fadePosition = 0.0
