@@ -5,14 +5,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewMetrics_RegistersWithoutPanic(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
-	if m == nil {
-		t.Fatal("NewMetrics returned nil")
-	}
+	require.NotNil(t, m, "NewMetrics returned nil")
 }
 
 func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
@@ -21,9 +20,7 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 
 	// Gathering should succeed with all metrics registered.
 	families, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather failed: %v", err)
-	}
+	require.NoError(t, err, "Gather failed")
 
 	// We expect at least the number of distinct metric names we registered.
 	// CutsTotal, TransitionsTotal, IDRGateEventsTotal, IDRGateDuration,
@@ -52,9 +49,7 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 	}
 
 	for name, found := range wantNames {
-		if !found {
-			t.Errorf("expected metric %q not found in gathered families", name)
-		}
+		require.True(t, found, "expected metric %q not found in gathered families", name)
 	}
 }
 
@@ -63,12 +58,9 @@ func TestNewMetrics_DuplicateRegistrationPanics(t *testing.T) {
 	_ = NewMetrics(reg)
 
 	// Registering the same metrics again on the same registry should panic.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic on duplicate registration, got none")
-		}
-	}()
-	_ = NewMetrics(reg)
+	require.Panics(t, func() {
+		_ = NewMetrics(reg)
+	}, "expected panic on duplicate registration")
 }
 
 func TestNewMetrics_CounterIncrement(t *testing.T) {
@@ -80,9 +72,7 @@ func TestNewMetrics_CounterIncrement(t *testing.T) {
 	m.CutsTotal.Inc()
 
 	val := testutil.ToFloat64(m.CutsTotal)
-	if val != 3 {
-		t.Errorf("CutsTotal = %v, want 3", val)
-	}
+	require.Equal(t, float64(3), val, "CutsTotal")
 }
 
 func TestNewMetrics_CounterVecLabels(t *testing.T) {
@@ -96,12 +86,8 @@ func TestNewMetrics_CounterVecLabels(t *testing.T) {
 	mixVal := testutil.ToFloat64(m.TransitionsTotal.WithLabelValues("mix"))
 	dipVal := testutil.ToFloat64(m.TransitionsTotal.WithLabelValues("dip"))
 
-	if mixVal != 2 {
-		t.Errorf("TransitionsTotal{type=mix} = %v, want 2", mixVal)
-	}
-	if dipVal != 1 {
-		t.Errorf("TransitionsTotal{type=dip} = %v, want 1", dipVal)
-	}
+	require.Equal(t, float64(2), mixVal, "TransitionsTotal{type=mix}")
+	require.Equal(t, float64(1), dipVal, "TransitionsTotal{type=dip}")
 }
 
 func TestNewMetrics_SourceStatusChangesLabels(t *testing.T) {
@@ -113,9 +99,7 @@ func TestNewMetrics_SourceStatusChangesLabels(t *testing.T) {
 	m.SourceStatusChangesTotal.WithLabelValues("cam2", "healthy", "offline").Inc()
 
 	val := testutil.ToFloat64(m.SourceStatusChangesTotal.WithLabelValues("cam1", "healthy", "stale"))
-	if val != 1 {
-		t.Errorf("SourceStatusChanges{cam1,healthy,stale} = %v, want 1", val)
-	}
+	require.Equal(t, float64(1), val, "SourceStatusChanges{cam1,healthy,stale}")
 }
 
 func TestNewMetrics_IDRGateHistogram(t *testing.T) {
@@ -130,32 +114,22 @@ func TestNewMetrics_IDRGateHistogram(t *testing.T) {
 
 	// Gather and verify the histogram has the right bucket count.
 	families, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather failed: %v", err)
-	}
+	require.NoError(t, err, "Gather failed")
 
 	for _, fam := range families {
 		if fam.GetName() == "switchframe_idr_gate_duration_seconds" {
 			metric := fam.GetMetric()
-			if len(metric) == 0 {
-				t.Fatal("no metric data for IDRGateDuration")
-			}
+			require.NotEmpty(t, metric, "no metric data for IDRGateDuration")
 			hist := metric[0].GetHistogram()
-			if hist == nil {
-				t.Fatal("expected histogram, got nil")
-			}
+			require.NotNil(t, hist, "expected histogram, got nil")
 			// We specified 8 bucket boundaries: {5, 10, 25, 50, 100, 250, 500, 1000}
 			// Prometheus adds +Inf, so we get 8 explicit buckets.
-			if got := len(hist.GetBucket()); got != 8 {
-				t.Errorf("IDRGateDuration bucket count = %d, want 8", got)
-			}
-			if hist.GetSampleCount() != 4 {
-				t.Errorf("IDRGateDuration sample count = %d, want 4", hist.GetSampleCount())
-			}
+			require.Equal(t, 8, len(hist.GetBucket()), "IDRGateDuration bucket count")
+			require.Equal(t, uint64(4), hist.GetSampleCount(), "IDRGateDuration sample count")
 			return
 		}
 	}
-	t.Error("IDRGateDuration metric not found in gathered families")
+	require.Fail(t, "IDRGateDuration metric not found in gathered families")
 }
 
 func TestNewMetrics_SeparateRegistries(t *testing.T) {
@@ -168,7 +142,5 @@ func TestNewMetrics_SeparateRegistries(t *testing.T) {
 	m1.CutsTotal.Inc()
 	// m2 should be independent.
 	val := testutil.ToFloat64(m2.CutsTotal)
-	if val != 0 {
-		t.Errorf("m2.CutsTotal = %v after m1.CutsTotal.Inc(), want 0", val)
-	}
+	require.Equal(t, float64(0), val, "m2.CutsTotal after m1.CutsTotal.Inc()")
 }

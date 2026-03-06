@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -173,8 +174,8 @@ func TestConcurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			p, err := ps.Create("concurrent", testSnapshot())
+			assert.NoError(t, err, "Create")
 			if err != nil {
-				t.Errorf("Create: %v", err)
 				return
 			}
 			ps.Get(p.ID)

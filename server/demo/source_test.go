@@ -322,22 +322,12 @@ func TestDemoStats_DebugSnapshot(t *testing.T) {
 	src.LoopsCompleted.Add(1)
 
 	snap := stats.DebugSnapshot()
-	if snap["mode"] != "real_video" {
-		t.Errorf("expected real_video, got %v", snap["mode"])
-	}
-	if snap["video_frames_loaded"] != int64(100) {
-		t.Errorf("expected 100, got %v", snap["video_frames_loaded"])
-	}
+	require.Equal(t, "real_video", snap["mode"])
+	require.Equal(t, int64(100), snap["video_frames_loaded"])
 
 	perSource, ok := snap["per_source"].(map[string]any)
-	if !ok {
-		t.Fatal("expected per_source map")
-	}
+	require.True(t, ok, "expected per_source map")
 	cam1, ok := perSource["cam1"].(map[string]any)
-	if !ok {
-		t.Fatal("expected cam1 map")
-	}
-	if cam1["video_sent"] != int64(50) {
-		t.Errorf("expected 50, got %v", cam1["video_sent"])
-	}
+	require.True(t, ok, "expected cam1 map")
+	require.Equal(t, int64(50), cam1["video_sent"])
 }
