@@ -34,7 +34,9 @@ export function createControlRoomStore() {
 	function applyUpdate(update: ControlRoomState) {
 		// Server is alive — update heartbeat regardless of seq
 		lastServerUpdate = Date.now();
-		if (update.seq <= state.seq) return;
+		// Accept if seq advanced OR timestamp is newer (replay/graphics don't bump seq)
+		if (update.seq < state.seq) return;
+		if (update.seq === state.seq && update.timestamp <= state.timestamp) return;
 		state = update;
 		// Clear pending if server state matches the optimistic prediction or it expired
 		if (pendingAction) {
