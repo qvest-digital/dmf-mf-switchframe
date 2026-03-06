@@ -131,7 +131,7 @@ type audioTransitionHandler interface {
 // TransitionConfig holds the codec factories needed to create TransitionEngines.
 type TransitionConfig struct {
 	DecoderFactory transition.DecoderFactory
-	EncoderFactory transition.EncoderFactory // used by pipelineCodecs for re-encoding
+	EncoderFactory transition.EncoderFactory // convenience: passed to SetPipelineCodecs, not used by engine
 }
 
 // TransitionOption configures optional parameters for StartTransition.
@@ -1380,9 +1380,6 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 	}
 }
 
-// annexBToVideoFrame converts Annex B encoder output to a media.VideoFrame
-// with AVC1 WireData and extracted SPS/PPS for keyframes. PTS is passed
-// through from the source frame to maintain timestamp continuity.
 // updateFrameStats updates the rolling frame size and FPS estimates for a
 // source. Called on every video frame. Uses an exponential moving average
 // with alpha=0.1 for stability. Caller must hold s.mu (write lock).
