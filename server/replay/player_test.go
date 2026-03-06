@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
@@ -142,21 +143,16 @@ func TestReplayPlayer_PlayOnce(t *testing.T) {
 	defer mu.Unlock()
 
 	// At 1x speed, 5 input frames → 5 output frames.
-	if len(outputFrames) != 5 {
-		t.Errorf("expected 5 output frames at 1x, got %d", len(outputFrames))
-	}
+	require.Len(t, outputFrames, 5)
 
 	// First frame should be a keyframe.
-	if len(outputFrames) > 0 && !outputFrames[0].IsKeyframe {
-		t.Error("first output frame should be a keyframe")
-	}
+	require.True(t, outputFrames[0].IsKeyframe, "first output frame should be a keyframe")
 
 	// PTS should be monotonically increasing.
 	for i := 1; i < len(outputFrames); i++ {
-		if outputFrames[i].PTS <= outputFrames[i-1].PTS {
-			t.Errorf("output PTS not monotonic: frame %d PTS=%d <= frame %d PTS=%d",
-				i, outputFrames[i].PTS, i-1, outputFrames[i-1].PTS)
-		}
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS,
+			"output PTS not monotonic: frame %d PTS=%d <= frame %d PTS=%d",
+			i, outputFrames[i].PTS, i-1, outputFrames[i-1].PTS)
 	}
 }
 
@@ -189,9 +185,7 @@ func TestReplayPlayer_SlowMotion(t *testing.T) {
 	defer mu.Unlock()
 
 	// At 0.5x, 4 input frames → 8 output frames (each duplicated once).
-	if len(outputFrames) != 8 {
-		t.Errorf("expected 8 output frames at 0.5x, got %d", len(outputFrames))
-	}
+	require.Len(t, outputFrames, 8)
 }
 
 func TestReplayPlayer_QuarterSpeed(t *testing.T) {
@@ -223,9 +217,7 @@ func TestReplayPlayer_QuarterSpeed(t *testing.T) {
 	defer mu.Unlock()
 
 	// At 0.25x, 3 input frames → 12 output frames (each x4).
-	if len(outputFrames) != 12 {
-		t.Errorf("expected 12 output frames at 0.25x, got %d", len(outputFrames))
-	}
+	require.Len(t, outputFrames, 12)
 }
 
 func TestReplayPlayer_LoopMode(t *testing.T) {
@@ -261,9 +253,7 @@ func TestReplayPlayer_LoopMode(t *testing.T) {
 	defer mu.Unlock()
 
 	// Should have produced more than one loop (3 frames).
-	if outputCount < 4 {
-		t.Errorf("expected loop to produce >3 frames, got %d", outputCount)
-	}
+	require.Greater(t, outputCount, 3, "expected loop to produce >3 frames")
 }
 
 func TestReplayPlayer_StopDuringPlayback(t *testing.T) {
@@ -315,15 +305,12 @@ func TestReplayPlayer_MonotonicPTS(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(outputFrames) != 10 {
-		t.Errorf("expected 10 output frames, got %d", len(outputFrames))
-	}
+	require.Len(t, outputFrames, 10)
 
 	for i := 1; i < len(outputFrames); i++ {
-		if outputFrames[i].PTS <= outputFrames[i-1].PTS {
-			t.Errorf("non-monotonic PTS at frame %d: %d <= %d",
-				i, outputFrames[i].PTS, outputFrames[i-1].PTS)
-		}
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS,
+			"non-monotonic PTS at frame %d: %d <= %d",
+			i, outputFrames[i].PTS, outputFrames[i-1].PTS)
 	}
 }
 
@@ -357,12 +344,8 @@ func TestReplayPlayer_FirstFrameIsKeyframe(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if firstFrame == nil {
-		t.Fatal("expected at least one output frame")
-	}
-	if !firstFrame.IsKeyframe {
-		t.Error("first output frame should be forced IDR keyframe")
-	}
+	require.NotNil(t, firstFrame, "expected at least one output frame")
+	require.True(t, firstFrame.IsKeyframe, "first output frame should be forced IDR keyframe")
 }
 
 func TestReplayPlayer_EmptyClipReturnsImmediately(t *testing.T) {
@@ -409,9 +392,7 @@ func TestReplayPlayer_PTSSortingExtractsBFrames(t *testing.T) {
 
 	expectedPTS := []int64{0, 3003, 6006, 9009}
 	for i, df := range decoded {
-		if df.pts != expectedPTS[i] {
-			t.Errorf("frame %d: expected PTS %d, got %d", i, expectedPTS[i], df.pts)
-		}
+		require.Equal(t, expectedPTS[i], df.pts, "frame %d PTS mismatch", i)
 	}
 }
 
@@ -475,21 +456,16 @@ func TestReplayPlayer_MultiGOPClip(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(outputFrames) != 15 {
-		t.Errorf("expected 15 output frames from 3 GOPs, got %d", len(outputFrames))
-	}
+	require.Len(t, outputFrames, 15)
 
 	// First frame must be a keyframe.
-	if len(outputFrames) > 0 && !outputFrames[0].IsKeyframe {
-		t.Error("first output frame should be a keyframe")
-	}
+	require.True(t, outputFrames[0].IsKeyframe, "first output frame should be a keyframe")
 
 	// PTS should be monotonically increasing.
 	for i := 1; i < len(outputFrames); i++ {
-		if outputFrames[i].PTS <= outputFrames[i-1].PTS {
-			t.Errorf("non-monotonic PTS at frame %d: %d <= %d",
-				i, outputFrames[i].PTS, outputFrames[i-1].PTS)
-		}
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS,
+			"non-monotonic PTS at frame %d: %d <= %d",
+			i, outputFrames[i].PTS, i-1, outputFrames[i-1].PTS)
 	}
 }
 
@@ -527,11 +503,10 @@ func TestReplayPlayer_AnnexBConversion(t *testing.T) {
 	// Frames with AVC1 wire data should be converted to Annex B for decoder.
 	avc1Data := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}
 	annexB := codec.AVC1ToAnnexB(avc1Data)
-	if len(annexB) == 0 {
-		t.Fatal("AVC1ToAnnexB returned empty for valid input")
-	}
+	require.NotEmpty(t, annexB, "AVC1ToAnnexB returned empty for valid input")
 	// Verify start code is present.
-	if annexB[0] != 0x00 || annexB[1] != 0x00 || annexB[2] != 0x00 || annexB[3] != 0x01 {
-		t.Error("expected Annex B start code")
-	}
+	require.Equal(t, byte(0x00), annexB[0])
+	require.Equal(t, byte(0x00), annexB[1])
+	require.Equal(t, byte(0x00), annexB[2])
+	require.Equal(t, byte(0x01), annexB[3], "expected Annex B start code")
 }

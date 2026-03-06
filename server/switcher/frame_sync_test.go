@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 )
 
@@ -80,9 +81,7 @@ func TestFrameSync_IngestBuffersFrame(t *testing.T) {
 
 	// Without starting the ticker, nothing should be released.
 	time.Sleep(10 * time.Millisecond)
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count before Start = %d, want 0", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count before Start")
 }
 
 func TestFrameSync_IngestUnknownSourceIgnored(t *testing.T) {
@@ -97,12 +96,8 @@ func TestFrameSync_IngestUnknownSourceIgnored(t *testing.T) {
 	fs.IngestAudio("unknown", af)
 
 	// Nothing released.
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count = %d, want 0", got)
-	}
-	if got := handler.audioCount(); got != 0 {
-		t.Fatalf("audio count = %d, want 0", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count")
+	require.Equal(t, 0, handler.audioCount(), "audio count")
 }
 
 func TestFrameSync_RingBufferOverwrite(t *testing.T) {
@@ -125,14 +120,10 @@ func TestFrameSync_RingBufferOverwrite(t *testing.T) {
 
 	// Should release the most recent frame (vf3).
 	videos := handler.getVideos()
-	if len(videos) == 0 {
-		t.Fatal("expected at least 1 released video frame")
-	}
+	require.NotEmpty(t, videos, "expected at least 1 released video frame")
 	// The latest frame should be vf3 (PTS 3000) — oldest vf1 was overwritten.
 	last := videos[len(videos)-1]
-	if last.frame.WireData[0] != 0x03 {
-		t.Errorf("expected latest frame data 0x03, got 0x%02x", last.frame.WireData[0])
-	}
+	require.Equal(t, byte(0x03), last.frame.WireData[0], "expected latest frame data 0x03")
 }
 
 // --- Tick tests ---
@@ -150,9 +141,7 @@ func TestFrameSync_TickReleasesFrames(t *testing.T) {
 
 	// Wait for at least one tick cycle.
 	time.Sleep(50 * time.Millisecond)
-	if got := handler.videoCount(); got < 1 {
-		t.Fatalf("video count after tick = %d, want >= 1", got)
-	}
+	require.GreaterOrEqual(t, handler.videoCount(), 1, "video count after tick")
 }
 
 func TestFrameSync_TickReleasesAudio(t *testing.T) {
@@ -167,9 +156,7 @@ func TestFrameSync_TickReleasesAudio(t *testing.T) {
 	defer fs.Stop()
 
 	time.Sleep(50 * time.Millisecond)
-	if got := handler.audioCount(); got < 1 {
-		t.Fatalf("audio count after tick = %d, want >= 1", got)
-	}
+	require.GreaterOrEqual(t, handler.audioCount(), 1, "audio count after tick")
 }
 
 func TestFrameSync_PTSRewritten(t *testing.T) {
@@ -185,13 +172,9 @@ func TestFrameSync_PTSRewritten(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	videos := handler.getVideos()
-	if len(videos) == 0 {
-		t.Fatal("no video frames released")
-	}
+	require.NotEmpty(t, videos, "no video frames released")
 	// PTS should be rewritten to a tick-based timestamp (not the original 99999).
-	if videos[0].frame.PTS == 99999 {
-		t.Error("PTS was not rewritten — still original value 99999")
-	}
+	require.NotEqual(t, int64(99999), videos[0].frame.PTS, "PTS was not rewritten — still original value 99999")
 }
 
 func TestFrameSync_FreezeRepeatsLastFrame(t *testing.T) {
@@ -210,16 +193,12 @@ func TestFrameSync_FreezeRepeatsLastFrame(t *testing.T) {
 	// Wait for several ticks — frame should be repeated (freeze behavior).
 	time.Sleep(80 * time.Millisecond)
 	count := handler.videoCount()
-	if count < 3 {
-		t.Fatalf("video count after multiple ticks = %d, want >= 3 (freeze repeat)", count)
-	}
+	require.GreaterOrEqual(t, count, 3, "video count after multiple ticks (freeze repeat)")
 
 	// All repeated frames should have the same WireData.
 	videos := handler.getVideos()
 	for i, v := range videos {
-		if v.frame.WireData[0] != 0xAA {
-			t.Errorf("frame[%d] data = 0x%02x, want 0xAA", i, v.frame.WireData[0])
-		}
+		require.Equal(t, byte(0xAA), v.frame.WireData[0], "frame[%d] data", i)
 	}
 }
 
@@ -233,9 +212,7 @@ func TestFrameSync_NoFrameNoRelease(t *testing.T) {
 	defer fs.Stop()
 
 	time.Sleep(50 * time.Millisecond)
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count = %d, want 0 (no frame ingested)", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count (no frame ingested)")
 }
 
 // --- Multi-source alignment tests ---
@@ -267,12 +244,8 @@ func TestFrameSync_MultiSourceAlignment(t *testing.T) {
 			cam2Count++
 		}
 	}
-	if cam1Count < 1 {
-		t.Errorf("cam1 video count = %d, want >= 1", cam1Count)
-	}
-	if cam2Count < 1 {
-		t.Errorf("cam2 video count = %d, want >= 1", cam2Count)
-	}
+	require.GreaterOrEqual(t, cam1Count, 1, "cam1 video count")
+	require.GreaterOrEqual(t, cam2Count, 1, "cam2 video count")
 
 	// Frames from the same tick should have the same PTS (aligned).
 	// Find first cam1 and first cam2 frame.
@@ -293,9 +266,8 @@ func TestFrameSync_MultiSourceAlignment(t *testing.T) {
 		// Same tick should produce same PTS or very close (within one tick in 90 kHz units).
 		// 20ms tick at 90 kHz = 20_000_000 ns * 90000 / 1_000_000_000 = 1800 ticks.
 		const oneTick90kHz = int64(20*time.Millisecond) * 90000 / int64(time.Second)
-		if ptsDiff > oneTick90kHz {
-			t.Errorf("PTS difference between sources = %d, want <= %d (one tick at 90 kHz)", ptsDiff, oneTick90kHz)
-		}
+		require.LessOrEqual(t, ptsDiff, oneTick90kHz,
+			"PTS difference between sources = %d, want <= %d (one tick at 90 kHz)", ptsDiff, oneTick90kHz)
 	}
 }
 
@@ -326,9 +298,7 @@ func TestFrameSync_AddSourceDynamic(t *testing.T) {
 			break
 		}
 	}
-	if !cam2Found {
-		t.Error("cam2 frame not released after dynamic add")
-	}
+	require.True(t, cam2Found, "cam2 frame not released after dynamic add")
 }
 
 func TestFrameSync_RemoveSource(t *testing.T) {
@@ -362,9 +332,7 @@ func TestFrameSync_RemoveSource(t *testing.T) {
 
 	videos := handler.getVideos()
 	for _, v := range videos {
-		if v.sourceKey == "cam2" {
-			t.Error("cam2 frame released after RemoveSource")
-		}
+		require.NotEqual(t, "cam2", v.sourceKey, "cam2 frame released after RemoveSource")
 	}
 }
 
@@ -399,9 +367,7 @@ func TestFrameSync_SetTickRate(t *testing.T) {
 
 	// Should have more frames after speeding up.
 	gained := countAfter - countBefore
-	if gained < 3 {
-		t.Errorf("after SetTickRate(15ms), gained only %d frames in 80ms, want >= 3", gained)
-	}
+	require.GreaterOrEqual(t, gained, 3, "after SetTickRate(15ms), gained only %d frames in 80ms", gained)
 }
 
 // --- Stop tests ---
@@ -422,9 +388,7 @@ func TestFrameSync_StopCeasesTicking(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	countAfter := handler.videoCount()
 
-	if countAfter != countAtStop {
-		t.Errorf("frames released after Stop: before=%d, after=%d", countAtStop, countAfter)
-	}
+	require.Equal(t, countAtStop, countAfter, "frames released after Stop")
 }
 
 func TestFrameSync_StopIdempotent(t *testing.T) {
@@ -472,9 +436,7 @@ func TestFrameSync_ConcurrentIngest(t *testing.T) {
 
 	time.Sleep(30 * time.Millisecond)
 	// Should not panic; just verify we got some frames.
-	if got := handler.videoCount(); got == 0 {
-		t.Error("no frames released during concurrent ingest")
-	}
+	require.Greater(t, handler.videoCount(), 0, "no frames released during concurrent ingest")
 }
 
 func TestFrameSync_ConcurrentAddRemove(t *testing.T) {
@@ -519,12 +481,8 @@ func TestFrameSync_PairedAudioVideoRelease(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	if handler.videoCount() < 1 {
-		t.Error("no video frames released")
-	}
-	if handler.audioCount() < 1 {
-		t.Error("no audio frames released")
-	}
+	require.GreaterOrEqual(t, handler.videoCount(), 1, "no video frames released")
+	require.GreaterOrEqual(t, handler.audioCount(), 1, "no audio frames released")
 }
 
 func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
@@ -540,14 +498,10 @@ func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 	count := handler.audioCount()
-	if count < 2 {
-		t.Fatalf("audio count = %d, want >= 2 (freeze repeat)", count)
-	}
+	require.GreaterOrEqual(t, count, 2, "audio count (freeze repeat)")
 	audios := handler.getAudios()
 	for i, a := range audios {
-		if a.frame.Data[0] != 0xBB {
-			t.Errorf("audio[%d] data = 0x%02x, want 0xBB", i, a.frame.Data[0])
-		}
+		require.Equal(t, byte(0xBB), a.frame.Data[0], "audio[%d] data", i)
 	}
 }
 
@@ -568,12 +522,8 @@ func TestFrameSync_AudioFreezeLimit(t *testing.T) {
 
 	count := handler.audioCount()
 	// Must have received the original + at most 2 repeats = 3 audio frames.
-	if count > 4 {
-		t.Errorf("audio should stop repeating after 2 misses, got %d frames (want <= 4)", count)
-	}
-	if count < 2 {
-		t.Errorf("should have received at least 2 audio frames, got %d", count)
-	}
+	require.LessOrEqual(t, count, 4, "audio should stop repeating after 2 misses, got %d frames", count)
+	require.GreaterOrEqual(t, count, 2, "should have received at least 2 audio frames")
 }
 
 // --- Frame preservation tests ---
@@ -591,12 +541,8 @@ func TestFrameSync_PreservesKeyframeFlag(t *testing.T) {
 
 	time.Sleep(40 * time.Millisecond)
 	videos := handler.getVideos()
-	if len(videos) == 0 {
-		t.Fatal("no video frames released")
-	}
-	if !videos[0].frame.IsKeyframe {
-		t.Error("IsKeyframe flag was not preserved")
-	}
+	require.NotEmpty(t, videos, "no video frames released")
+	require.True(t, videos[0].frame.IsKeyframe, "IsKeyframe flag was not preserved")
 }
 
 func TestFrameSync_PreservesWireData(t *testing.T) {
@@ -613,16 +559,6 @@ func TestFrameSync_PreservesWireData(t *testing.T) {
 
 	time.Sleep(40 * time.Millisecond)
 	videos := handler.getVideos()
-	if len(videos) == 0 {
-		t.Fatal("no video frames released")
-	}
-	got := videos[0].frame.WireData
-	if len(got) != len(data) {
-		t.Fatalf("WireData length = %d, want %d", len(got), len(data))
-	}
-	for i := range data {
-		if got[i] != data[i] {
-			t.Errorf("WireData[%d] = 0x%02x, want 0x%02x", i, got[i], data[i])
-		}
-	}
+	require.NotEmpty(t, videos, "no video frames released")
+	require.Equal(t, data, videos[0].frame.WireData, "WireData not preserved")
 }

@@ -23,24 +23,14 @@ func TestControlRoomStateJSON(t *testing.T) {
 	}
 
 	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 
 	var decoded ControlRoomState
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &decoded), "unmarshal")
 
-	if decoded.ProgramSource != "camera1" {
-		t.Errorf("ProgramSource = %q, want %q", decoded.ProgramSource, "camera1")
-	}
-	if decoded.TallyState["camera1"] != "program" {
-		t.Errorf("TallyState[camera1] = %q, want %q", decoded.TallyState["camera1"], "program")
-	}
-	if decoded.Sources["camera1"].Status != "healthy" {
-		t.Errorf("Sources[camera1].Status = %q, want %q", decoded.Sources["camera1"].Status, "healthy")
-	}
+	require.Equal(t, "camera1", decoded.ProgramSource)
+	require.Equal(t, "program", decoded.TallyState["camera1"])
+	require.Equal(t, "healthy", decoded.Sources["camera1"].Status)
 }
 
 func TestSourceInfoHealthStatus(t *testing.T) {
@@ -57,12 +47,11 @@ func TestSourceInfoHealthStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			si := SourceInfo{Key: "cam1", Status: tt.status}
-			data, _ := json.Marshal(si)
+			data, err := json.Marshal(si)
+			require.NoError(t, err)
 			var decoded SourceInfo
-			_ = json.Unmarshal(data, &decoded)
-			if decoded.Status != tt.status {
-				t.Errorf("got %q, want %q", decoded.Status, tt.status)
-			}
+			require.NoError(t, json.Unmarshal(data, &decoded))
+			require.Equal(t, tt.status, decoded.Status)
 		})
 	}
 }

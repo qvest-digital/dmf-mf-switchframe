@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 )
 
@@ -18,9 +19,7 @@ func TestIntegration_FullReplayWorkflow(t *testing.T) {
 
 	// Simulate a live feed: record frames into the buffer via the viewer.
 	v := m.Viewer("cam1")
-	if v == nil {
-		t.Fatal("expected viewer for cam1")
-	}
+	require.NotNil(t, v, "expected viewer for cam1")
 
 	// Send a few GOPs through the viewer.
 	pts := int64(0)
@@ -43,9 +42,7 @@ func TestIntegration_FullReplayWorkflow(t *testing.T) {
 	}
 
 	// Mark in/out spanning the middle GOP.
-	if err := m.MarkIn("cam1"); err != nil {
-		t.Fatalf("MarkIn: %v", err)
-	}
+	require.NoError(t, m.MarkIn("cam1"), "MarkIn")
 	time.Sleep(5 * time.Millisecond)
 
 	// Record a few more frames after mark-in.
@@ -65,39 +62,22 @@ func TestIntegration_FullReplayWorkflow(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 	}
 
-	if err := m.MarkOut("cam1"); err != nil {
-		t.Fatalf("MarkOut: %v", err)
-	}
+	require.NoError(t, m.MarkOut("cam1"), "MarkOut")
 
 	// Play at 1x.
-	if err := m.Play("cam1", 1.0, false); err != nil {
-		t.Fatalf("Play: %v", err)
-	}
+	require.NoError(t, m.Play("cam1", 1.0, false), "Play")
 
 	// Wait for playback to complete.
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("playback did not complete within timeout")
-		default:
-			status := m.Status()
-			if status.State == PlayerIdle {
-				goto done
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-done:
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 10*time.Second, 50*time.Millisecond, "playback did not complete within timeout")
 
 	// Verify frames were output to the relay.
 	relay.mu.Lock()
 	videoCount := len(relay.videos)
 	relay.mu.Unlock()
 
-	if videoCount == 0 {
-		t.Error("expected output frames on replay relay")
-	}
+	require.Greater(t, videoCount, 0, "expected output frames on replay relay")
 	t.Logf("replay output %d frames to relay", videoCount)
 }
 
@@ -134,12 +114,8 @@ func TestIntegration_MultiSourceBuffering(t *testing.T) {
 	wg.Wait()
 
 	status := m.Status()
-	if len(status.Buffers) != 3 {
-		t.Errorf("expected 3 source buffers, got %d", len(status.Buffers))
-	}
+	require.Len(t, status.Buffers, 3, "expected 3 source buffers")
 	for _, buf := range status.Buffers {
-		if buf.FrameCount == 0 {
-			t.Errorf("source %s has 0 frames", buf.Source)
-		}
+		require.Greater(t, buf.FrameCount, 0, "source %s has 0 frames", buf.Source)
 	}
 }

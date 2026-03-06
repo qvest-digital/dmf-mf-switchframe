@@ -42,9 +42,7 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1.
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut(camera1): %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 
 	// Send video frames from both cameras.
 	cam1Frame := &media.VideoFrame{PTS: 1000, IsKeyframe: true, WireData: []byte{0x01}}
@@ -55,18 +53,12 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 
 	// Only camera1 frame should arrive at program (path is synchronous).
 	capture.mu.Lock()
-	if len(capture.videos) != 1 {
-		t.Fatalf("got %d program frames, want 1", len(capture.videos))
-	}
-	if capture.videos[0].PTS != 1000 {
-		t.Errorf("program frame PTS = %d, want 1000", capture.videos[0].PTS)
-	}
+	require.Equal(t, 1, len(capture.videos), "program frame count")
+	require.Equal(t, int64(1000), capture.videos[0].PTS)
 	capture.mu.Unlock()
 
 	// Now cut to camera2.
-	if err := sw.Cut(context.Background(), "camera2"); err != nil {
-		t.Fatalf("Cut(camera2): %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera2"))
 
 	// Send another frame from camera2 (now on program).
 	cam2Frame2 := &media.VideoFrame{PTS: 3000, IsKeyframe: true, WireData: []byte{0x03}}
@@ -77,19 +69,13 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	cam1Relay.BroadcastVideo(cam1Frame2)
 
 	capture.mu.Lock()
-	if len(capture.videos) != 2 {
-		t.Fatalf("got %d program frames after cut, want 2", len(capture.videos))
-	}
-	if capture.videos[1].PTS != 3000 {
-		t.Errorf("second program frame PTS = %d, want 3000", capture.videos[1].PTS)
-	}
+	require.Equal(t, 2, len(capture.videos), "program frame count after cut")
+	require.Equal(t, int64(3000), capture.videos[1].PTS)
 	capture.mu.Unlock()
 
 	// Verify state changes were published (at least 2: Cut(camera1) + Cut(camera2)).
 	statesMu.Lock()
-	if len(states) < 2 {
-		t.Errorf("got %d state changes, want at least 2", len(states))
-	}
+	require.GreaterOrEqual(t, len(states), 2, "state change count")
 	statesMu.Unlock()
 }
 
@@ -105,9 +91,7 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut(camera1): %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 
 	// Send a keyframe to clear the IDR gate.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
@@ -121,12 +105,8 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	cam2Relay.BroadcastAudio(audio2)
 
 	capture.mu.Lock()
-	if len(capture.audios) != 1 {
-		t.Fatalf("got %d audio frames, want 1", len(capture.audios))
-	}
-	if capture.audios[0].PTS != 100 {
-		t.Errorf("audio PTS = %d, want 100", capture.audios[0].PTS)
-	}
+	require.Equal(t, 1, len(capture.audios), "audio frame count")
+	require.Equal(t, int64(100), capture.audios[0].PTS)
 	capture.mu.Unlock()
 }
 
@@ -162,9 +142,7 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut(camera1): %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 
 	// Unregister camera1.
 	sw.UnregisterSource("camera1")
@@ -173,14 +151,10 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 5000, IsKeyframe: true})
 
 	state := sw.State()
-	if state.ProgramSource != "" {
-		t.Errorf("ProgramSource = %q after unregister, want empty", state.ProgramSource)
-	}
+	require.Equal(t, "", state.ProgramSource, "ProgramSource after unregister")
 
 	capture.mu.Lock()
-	if len(capture.videos) != 0 {
-		t.Errorf("got %d frames after unregister, want 0", len(capture.videos))
-	}
+	require.Equal(t, 0, len(capture.videos), "frame count after unregister")
 	capture.mu.Unlock()
 }
 

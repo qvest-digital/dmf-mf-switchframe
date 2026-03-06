@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -20,9 +21,7 @@ func setupOperatorTestAPI(t *testing.T) (*API, *http.ServeMux) {
 
 	storePath := filepath.Join(t.TempDir(), "operators.json")
 	store, err := operator.NewStore(storePath)
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	sm := operator.NewSessionManager()
 	t.Cleanup(sm.Close)
@@ -46,9 +45,7 @@ func registerOperatorHelper(t *testing.T, mux *http.ServeMux, name string, role 
 	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("register %s: expected 200, got %d: %s", name, rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "register %s: %s", name, rec.Body.String())
 	var resp map[string]any
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	return resp
@@ -77,18 +74,10 @@ func TestOperatorRegister_Success(t *testing.T) {
 	resp := registerOperatorHelper(t, mux, "Alice", "director")
 
 	// Verify required fields are present.
-	if _, ok := resp["id"]; !ok {
-		t.Error("response missing 'id' field")
-	}
-	if name, _ := resp["name"].(string); name != "Alice" {
-		t.Errorf("name = %q, want %q", name, "Alice")
-	}
-	if role, _ := resp["role"].(string); role != "director" {
-		t.Errorf("role = %q, want %q", role, "director")
-	}
-	if _, ok := resp["token"]; !ok {
-		t.Error("response missing 'token' field")
-	}
+	require.Contains(t, resp, "id")
+	require.Equal(t, "Alice", resp["name"])
+	require.Equal(t, "director", resp["role"])
+	require.Contains(t, resp, "token")
 }
 
 func TestOperatorRegister_EmptyName(t *testing.T) {
@@ -100,17 +89,11 @@ func TestOperatorRegister_EmptyName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 func TestOperatorRegister_InvalidRole(t *testing.T) {
@@ -122,17 +105,11 @@ func TestOperatorRegister_InvalidRole(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 // --- Reconnect tests ---
@@ -149,18 +126,12 @@ func TestOperatorReconnect_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp map[string]any
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if name, _ := resp["name"].(string); name != "Alice" {
-		t.Errorf("name = %q, want %q", name, "Alice")
-	}
-	if role, _ := resp["role"].(string); role != "director" {
-		t.Errorf("role = %q, want %q", role, "director")
-	}
+	require.Equal(t, "Alice", resp["name"])
+	require.Equal(t, "director", resp["role"])
 }
 
 func TestOperatorReconnect_InvalidToken(t *testing.T) {
@@ -170,17 +141,11 @@ func TestOperatorReconnect_InvalidToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 // --- Heartbeat tests ---
@@ -195,15 +160,11 @@ func TestOperatorHeartbeat_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp map[string]bool
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if !resp["ok"] {
-		t.Error("expected ok=true in response")
-	}
+	require.True(t, resp["ok"], "expected ok=true in response")
 }
 
 func TestOperatorHeartbeat_InvalidToken(t *testing.T) {
@@ -213,17 +174,11 @@ func TestOperatorHeartbeat_InvalidToken(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 // --- List tests ---
@@ -239,23 +194,16 @@ func TestOperatorList(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var result []operator.OperatorInfo
-	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(result) != 2 {
-		t.Fatalf("got %d operators, want 2", len(result))
-	}
+	err := json.NewDecoder(rec.Body).Decode(&result)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
 
 	// Both should be connected since register auto-connects.
 	for _, op := range result {
-		if !op.Connected {
-			t.Errorf("operator %q: expected connected=true", op.Name)
-		}
+		require.True(t, op.Connected, "operator %q: expected connected=true", op.Name)
 	}
 }
 
@@ -272,15 +220,11 @@ func TestOperatorLock_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp map[string]bool
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if !resp["ok"] {
-		t.Error("expected ok=true in response")
-	}
+	require.True(t, resp["ok"], "expected ok=true in response")
 }
 
 func TestOperatorLock_Conflict(t *testing.T) {
@@ -298,9 +242,7 @@ func TestOperatorLock_Conflict(t *testing.T) {
 		map[string]string{"subsystem": "audio"}, audioToken)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("first lock: status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "first lock: body: %s", rec.Body.String())
 
 	// Director tries to lock the same subsystem — should get 409 conflict.
 	req = bearerRequest("POST", "/api/operator/lock",
@@ -308,17 +250,11 @@ func TestOperatorLock_Conflict(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 // --- Unlock tests ---
@@ -334,9 +270,7 @@ func TestOperatorUnlock_Success(t *testing.T) {
 		map[string]string{"subsystem": "audio"}, token)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("lock: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "lock: body: %s", rec.Body.String())
 
 	// Unlock.
 	req = bearerRequest("POST", "/api/operator/unlock",
@@ -344,15 +278,11 @@ func TestOperatorUnlock_Success(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp map[string]bool
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if !resp["ok"] {
-		t.Error("expected ok=true in response")
-	}
+	require.True(t, resp["ok"], "expected ok=true in response")
 }
 
 // --- Force-unlock tests ---
@@ -372,9 +302,7 @@ func TestOperatorForceUnlock_DirectorOnly(t *testing.T) {
 		map[string]string{"subsystem": "audio"}, audioToken)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("lock: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "lock: body: %s", rec.Body.String())
 
 	// Non-director (audio operator) tries to force-unlock — should fail 403.
 	req = bearerRequest("POST", "/api/operator/force-unlock",
@@ -382,18 +310,11 @@ func TestOperatorForceUnlock_DirectorOnly(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("non-director force-unlock: status = %d, want %d; body: %s",
-			rec.Code, http.StatusForbidden, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusForbidden, rec.Code, "non-director force-unlock: body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var errResp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&errResp)
-	if _, ok := errResp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, errResp, "error")
 
 	// Director force-unlocks — should succeed.
 	req = bearerRequest("POST", "/api/operator/force-unlock",
@@ -401,10 +322,7 @@ func TestOperatorForceUnlock_DirectorOnly(t *testing.T) {
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("director force-unlock: status = %d, want %d; body: %s",
-			rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "director force-unlock: body: %s", rec.Body.String())
 }
 
 // --- Delete tests ---
@@ -421,15 +339,11 @@ func TestOperatorDelete_SelfAllowed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp map[string]bool
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if !resp["ok"] {
-		t.Error("expected ok=true in response")
-	}
+	require.True(t, resp["ok"], "expected ok=true in response")
 }
 
 func TestOperatorDelete_DirectorAllowed(t *testing.T) {
@@ -446,9 +360,7 @@ func TestOperatorDelete_DirectorAllowed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestOperatorDelete_Forbidden(t *testing.T) {
@@ -465,17 +377,11 @@ func TestOperatorDelete_Forbidden(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }
 
 func TestOperatorDelete_NoAuth(t *testing.T) {
@@ -490,15 +396,9 @@ func TestOperatorDelete_NoAuth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
-	}
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["error"]; !ok {
-		t.Error("response missing 'error' field")
-	}
+	require.Contains(t, resp, "error")
 }

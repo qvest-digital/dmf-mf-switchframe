@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -22,13 +22,9 @@ func TestRequestIDGenerated(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	rid := rec.Header().Get("X-Request-ID")
-	if rid == "" {
-		t.Fatal("X-Request-ID response header not set")
-	}
+	require.NotEmpty(t, rid, "X-Request-ID response header not set")
 	// 8 random bytes = 16 hex chars
-	if len(rid) != 16 {
-		t.Errorf("X-Request-ID length = %d, want 16 hex chars; got %q", len(rid), rid)
-	}
+	require.Len(t, rid, 16, "X-Request-ID should be 16 hex chars; got %q", rid)
 }
 
 func TestRequestIDPreserved(t *testing.T) {
@@ -42,9 +38,7 @@ func TestRequestIDPreserved(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	rid := rec.Header().Get("X-Request-ID")
-	if rid != "incoming-id-1234" {
-		t.Errorf("X-Request-ID = %q, want %q", rid, "incoming-id-1234")
-	}
+	require.Equal(t, "incoming-id-1234", rid)
 }
 
 func TestStatusRecorderCapturesStatus(t *testing.T) {
@@ -61,9 +55,7 @@ func TestStatusRecorderCapturesStatus(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	capturedStatus = rec.Code
-	if capturedStatus != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", capturedStatus, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, capturedStatus)
 }
 
 func TestStatusRecorderCapturesBytes(t *testing.T) {
@@ -80,9 +72,7 @@ func TestStatusRecorderCapturesBytes(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "bytes=11") {
-		t.Errorf("log output does not contain bytes=11: %s", logOutput)
-	}
+	require.Contains(t, logOutput, "bytes=11")
 }
 
 func TestStatusRecorderDefaultStatus(t *testing.T) {
@@ -99,9 +89,7 @@ func TestStatusRecorderDefaultStatus(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "status=200") {
-		t.Errorf("log output does not contain status=200: %s", logOutput)
-	}
+	require.Contains(t, logOutput, "status=200")
 }
 
 func TestLogFromCtxReturnsLoggerWhenSet(t *testing.T) {
@@ -115,20 +103,16 @@ func TestLogFromCtxReturnsLoggerWhenSet(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if capturedLogger == nil {
-		t.Fatal("LogFromCtx returned nil")
-	}
+	require.NotNil(t, capturedLogger, "LogFromCtx returned nil")
 	// Should not be the default logger — it should be a child with request attrs.
-	if capturedLogger == slog.Default() {
-		t.Error("LogFromCtx returned slog.Default(), want child logger with request attrs")
-	}
+	require.NotEqual(t, slog.Default(), capturedLogger,
+		"LogFromCtx returned slog.Default(), want child logger with request attrs")
 }
 
 func TestLogFromCtxFallsBackToDefault(t *testing.T) {
 	logger := LogFromCtx(context.Background())
-	if logger != slog.Default() {
-		t.Error("LogFromCtx without middleware should return slog.Default()")
-	}
+	require.Equal(t, slog.Default(), logger,
+		"LogFromCtx without middleware should return slog.Default()")
 }
 
 func TestNoisyPathLoggedAtDebug(t *testing.T) {
@@ -144,9 +128,8 @@ func TestNoisyPathLoggedAtDebug(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if buf.Len() != 0 {
-		t.Errorf("noisy path /api/switch/state should be logged at DEBUG, not visible at INFO level; got: %s", buf.String())
-	}
+	require.Empty(t, buf.String(),
+		"noisy path /api/switch/state should be logged at DEBUG, not visible at INFO level")
 }
 
 func TestNoisyPathVisibleAtDebugLevel(t *testing.T) {
@@ -161,9 +144,7 @@ func TestNoisyPathVisibleAtDebugLevel(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if buf.Len() == 0 {
-		t.Error("noisy path /api/switch/state should be visible at DEBUG level")
-	}
+	require.NotEmpty(t, buf.String(), "noisy path /api/switch/state should be visible at DEBUG level")
 }
 
 func TestNonNoisyPathLoggedAtInfo(t *testing.T) {
@@ -178,9 +159,7 @@ func TestNonNoisyPathLoggedAtInfo(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if buf.Len() == 0 {
-		t.Error("/api/switch/cut should be logged at INFO level")
-	}
+	require.NotEmpty(t, buf.String(), "/api/switch/cut should be logged at INFO level")
 }
 
 func TestMetricsMiddlewareIncrementsCounter(t *testing.T) {
@@ -199,9 +178,7 @@ func TestMetricsMiddlewareIncrementsCounter(t *testing.T) {
 	// Verify production-level metrics were incremented.
 	// Gather from the production registry.
 	families, err := metrics.Registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	found := false
 	for _, f := range families {
 		if f.GetName() == "switchframe_http_requests_total" {
@@ -209,9 +186,7 @@ func TestMetricsMiddlewareIncrementsCounter(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Error("switchframe_http_requests_total metric not found in registry after request")
-	}
+	require.True(t, found, "switchframe_http_requests_total metric not found in registry after request")
 }
 
 func TestMetricsMiddlewareRecordsDuration(t *testing.T) {
@@ -226,9 +201,7 @@ func TestMetricsMiddlewareRecordsDuration(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	families, err := metrics.Registry.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	found := false
 	for _, f := range families {
 		if f.GetName() == "switchframe_http_request_duration_seconds" {
@@ -236,9 +209,7 @@ func TestMetricsMiddlewareRecordsDuration(t *testing.T) {
 			break
 		}
 	}
-	if !found {
-		t.Error("switchframe_http_request_duration_seconds metric not found in registry after request")
-	}
+	require.True(t, found, "switchframe_http_request_duration_seconds metric not found in registry after request")
 }
 
 func TestLoggerMiddlewareLogFields(t *testing.T) {
@@ -257,8 +228,6 @@ func TestLoggerMiddlewareLogFields(t *testing.T) {
 
 	logOutput := buf.String()
 	for _, field := range []string{"request_id=", "method=POST", "path=/api/switch/cut", "status=201", "latency=", "bytes=7"} {
-		if !strings.Contains(logOutput, field) {
-			t.Errorf("log output missing field %q: %s", field, logOutput)
-		}
+		require.Contains(t, logOutput, field, "log output missing field %q", field)
 	}
 }

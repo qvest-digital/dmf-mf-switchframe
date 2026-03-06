@@ -2,6 +2,8 @@ package graphics
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // makeYUV420Frame creates a solid-color YUV420 frame.
@@ -34,15 +36,12 @@ func TestChromaKey_GreenPixelsTransparent(t *testing.T) {
 
 	mask := ChromaKey(frame, 4, 4, greenYUV(), 0.4, 0.0, 0.0)
 
-	if len(mask) != 16 {
-		t.Fatalf("expected mask length 16, got %d", len(mask))
-	}
+	require.Len(t, mask, 16)
 
 	// All pixels should be transparent (alpha ≈ 0)
 	for i, a := range mask {
-		if a > 30 { // allow some tolerance
-			t.Fatalf("pixel %d: expected transparent (≤30), got %d", i, a)
-		}
+		require.LessOrEqual(t, a, byte(30),
+			"pixel %d: expected transparent (<=30), got %d", i, a)
 	}
 }
 
@@ -54,9 +53,8 @@ func TestChromaKey_NonGreenStaysOpaque(t *testing.T) {
 
 	// All pixels should be opaque (alpha ≈ 255)
 	for i, a := range mask {
-		if a < 225 {
-			t.Fatalf("pixel %d: expected opaque (≥225), got %d", i, a)
-		}
+		require.GreaterOrEqual(t, a, byte(225),
+			"pixel %d: expected opaque (>=225), got %d", i, a)
 	}
 }
 
@@ -91,9 +89,7 @@ func TestChromaKey_SpillSuppression(t *testing.T) {
 	mask := ChromaKey(frame, 4, 4, greenYUV(), 0.4, 0.1, 0.8)
 
 	// Mask should be computed without errors (spill suppression modifies the frame, not the mask)
-	if len(mask) != 16 {
-		t.Fatalf("expected mask length 16, got %d", len(mask))
-	}
+	require.Len(t, mask, 16)
 }
 
 func TestLumaKey_BrightPixelsTransparent(t *testing.T) {
@@ -104,9 +100,8 @@ func TestLumaKey_BrightPixelsTransparent(t *testing.T) {
 
 	// Y=240/255 ≈ 0.94, highClip=0.8 → should be transparent
 	for i, a := range mask {
-		if a > 30 {
-			t.Fatalf("pixel %d: expected transparent (≤30) for bright pixel above highClip, got %d", i, a)
-		}
+		require.LessOrEqual(t, a, byte(30),
+			"pixel %d: expected transparent (<=30) for bright pixel above highClip, got %d", i, a)
 	}
 }
 
@@ -118,9 +113,8 @@ func TestLumaKey_DarkPixelsTransparent(t *testing.T) {
 
 	// Y=10/255 ≈ 0.04, lowClip=0.2 → should be transparent
 	for i, a := range mask {
-		if a > 30 {
-			t.Fatalf("pixel %d: expected transparent (≤30) for dark pixel below lowClip, got %d", i, a)
-		}
+		require.LessOrEqual(t, a, byte(30),
+			"pixel %d: expected transparent (<=30) for dark pixel below lowClip, got %d", i, a)
 	}
 }
 
@@ -132,9 +126,8 @@ func TestLumaKey_MidRangeOpaque(t *testing.T) {
 
 	// Y=128/255 ≈ 0.50 → between 0.1 and 0.9, should be opaque
 	for i, a := range mask {
-		if a < 225 {
-			t.Fatalf("pixel %d: expected opaque (≥225) for mid-range pixel, got %d", i, a)
-		}
+		require.GreaterOrEqual(t, a, byte(225),
+			"pixel %d: expected opaque (>=225) for mid-range pixel, got %d", i, a)
 	}
 }
 
@@ -159,9 +152,7 @@ func TestLumaKey_SoftnessCreatesGradualTransitions(t *testing.T) {
 	// Luma key with softness: lowClip=0.3, highClip=1.0, softness=0.2
 	mask := LumaKey(frame, w, h, 0.3, 1.0, 0.2)
 
-	if len(mask) != ySize {
-		t.Fatalf("expected mask length %d, got %d", ySize, len(mask))
-	}
+	require.Len(t, mask, ySize)
 
 	// Pixels near the lowClip boundary should have intermediate alpha values
 	// Pixel at col=2 (Y=64, luma=0.25) is near lowClip=0.3
@@ -180,42 +171,32 @@ func TestLumaKey_SoftnessCreatesGradualTransitions(t *testing.T) {
 
 func TestChromaKey_ZeroSizeFrame(t *testing.T) {
 	mask := ChromaKey(nil, 0, 0, greenYUV(), 0.4, 0.0, 0.0)
-	if len(mask) != 0 {
-		t.Fatalf("expected empty mask for zero-size frame, got %d", len(mask))
-	}
+	require.Empty(t, mask)
 }
 
 func TestLumaKey_ZeroSizeFrame(t *testing.T) {
 	mask := LumaKey(nil, 0, 0, 0.2, 0.8, 0.0)
-	if len(mask) != 0 {
-		t.Fatalf("expected empty mask for zero-size frame, got %d", len(mask))
-	}
+	require.Empty(t, mask)
 }
 
 func TestChromaKey_SinglePixel(t *testing.T) {
 	// 2x2 is minimum for YUV420 (chroma subsampling)
 	frame := makeYUV420Frame(2, 2, 182, 30, 12) // green
 	mask := ChromaKey(frame, 2, 2, greenYUV(), 0.4, 0.0, 0.0)
-	if len(mask) != 4 {
-		t.Fatalf("expected 4 pixels, got %d", len(mask))
-	}
+	require.Len(t, mask, 4)
 }
 
 func TestLumaKey_SinglePixel(t *testing.T) {
 	frame := makeYUV420Frame(2, 2, 128, 128, 128)
 	mask := LumaKey(frame, 2, 2, 0.2, 0.8, 0.0)
-	if len(mask) != 4 {
-		t.Fatalf("expected 4 pixels, got %d", len(mask))
-	}
+	require.Len(t, mask, 4)
 }
 
 func TestChromaKey_ZeroSimilarityZeroSmoothness(t *testing.T) {
 	frame := makeYUV420Frame(4, 4, 180, 50, 30)
 	// similarity=0, smoothness=0, spillSuppress=0.8 — should not panic or produce NaN
 	mask := ChromaKey(frame, 4, 4, greenYUV(), 0.0, 0.0, 0.8)
-	if len(mask) != 16 {
-		t.Fatalf("expected 16 pixels, got %d", len(mask))
-	}
+	require.Len(t, mask, 16)
 	// Verify all values are valid bytes
 	for i, a := range mask {
 		_ = a // byte is always 0-255; verify no panics during iteration

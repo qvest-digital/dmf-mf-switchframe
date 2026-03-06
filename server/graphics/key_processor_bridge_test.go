@@ -3,6 +3,7 @@ package graphics
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -51,9 +52,7 @@ func TestBridge_NoKeysPassthrough(t *testing.T) {
 	}
 
 	result := bridge.ProcessFrame(frame)
-	if result != frame {
-		t.Fatal("expected passthrough when no keys configured")
-	}
+	require.Same(t, frame, result, "expected passthrough when no keys configured")
 }
 
 func TestBridge_NoFillsPassthrough(t *testing.T) {
@@ -69,9 +68,7 @@ func TestBridge_NoFillsPassthrough(t *testing.T) {
 	}
 
 	result := bridge.ProcessFrame(frame)
-	if result != frame {
-		t.Fatal("expected passthrough when no fills cached")
-	}
+	require.Same(t, frame, result, "expected passthrough when no fills cached")
 }
 
 func TestBridge_IngestAndProcess(t *testing.T) {
@@ -138,19 +135,11 @@ func TestBridge_IngestAndProcess(t *testing.T) {
 	}
 
 	result := bridge.ProcessFrame(programFrame)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if result == programFrame {
-		t.Fatal("expected processed frame, not passthrough")
-	}
-	if capturedEncoder == nil {
-		t.Fatal("expected encoder to be initialized")
-	}
+	require.NotNil(t, result, "expected non-nil result")
+	require.NotSame(t, programFrame, result, "expected processed frame, not passthrough")
+	require.NotNil(t, capturedEncoder, "expected encoder to be initialized")
 	// Verify the encoder received YUV data (the process method was called)
-	if capturedEncoder.lastInput == nil {
-		t.Fatal("expected encoder to receive YUV data")
-	}
+	require.NotNil(t, capturedEncoder.lastInput, "expected encoder to receive YUV data")
 }
 
 func TestBridge_CleanupOnClose(t *testing.T) {
@@ -196,33 +185,27 @@ func TestBridge_CleanupOnClose(t *testing.T) {
 	bridge.ProcessFrame(frame)
 	bridge.Close()
 
-	if fillDec != nil && !fillDec.closed {
-		t.Error("fill decoder not closed")
+	if fillDec != nil {
+		require.True(t, fillDec.closed, "fill decoder not closed")
 	}
-	if progDec != nil && !progDec.closed {
-		t.Error("program decoder not closed")
+	if progDec != nil {
+		require.True(t, progDec.closed, "program decoder not closed")
 	}
-	if enc != nil && !enc.closed {
-		t.Error("encoder not closed")
+	if enc != nil {
+		require.True(t, enc.closed, "encoder not closed")
 	}
 }
 
 func TestBridge_HasEnabledKeys(t *testing.T) {
 	kp := NewKeyProcessor()
 
-	if kp.HasEnabledKeys() {
-		t.Fatal("expected no enabled keys on empty processor")
-	}
+	require.False(t, kp.HasEnabledKeys(), "expected no enabled keys on empty processor")
 
 	kp.SetKey("cam1", KeyConfig{Type: KeyTypeLuma, Enabled: false})
-	if kp.HasEnabledKeys() {
-		t.Fatal("expected no enabled keys when all disabled")
-	}
+	require.False(t, kp.HasEnabledKeys(), "expected no enabled keys when all disabled")
 
 	kp.SetKey("cam1", KeyConfig{Type: KeyTypeLuma, Enabled: true})
-	if !kp.HasEnabledKeys() {
-		t.Fatal("expected enabled keys")
-	}
+	require.True(t, kp.HasEnabledKeys(), "expected enabled keys")
 }
 
 func TestBridge_EnabledSources(t *testing.T) {
@@ -233,18 +216,10 @@ func TestBridge_EnabledSources(t *testing.T) {
 	kp.SetKey("cam3", KeyConfig{Type: KeyTypeChroma, Enabled: true, Similarity: 0.5})
 
 	enabled := kp.EnabledSources()
-	if len(enabled) != 2 {
-		t.Fatalf("expected 2 enabled sources, got %d", len(enabled))
-	}
-	if _, ok := enabled["cam1"]; !ok {
-		t.Error("expected cam1 in enabled sources")
-	}
-	if _, ok := enabled["cam3"]; !ok {
-		t.Error("expected cam3 in enabled sources")
-	}
-	if _, ok := enabled["cam2"]; ok {
-		t.Error("cam2 should not be in enabled sources")
-	}
+	require.Len(t, enabled, 2)
+	require.Contains(t, enabled, "cam1")
+	require.Contains(t, enabled, "cam3")
+	require.NotContains(t, enabled, "cam2")
 }
 
 func TestBridge_RemoveFillSource(t *testing.T) {
@@ -280,24 +255,18 @@ func TestBridge_RemoveFillSource(t *testing.T) {
 
 	// Verify fill was cached
 	bridge.mu.Lock()
-	if _, ok := bridge.fillYUV["cam1"]; !ok {
-		t.Fatal("expected fill YUV to be cached for cam1")
-	}
+	require.Contains(t, bridge.fillYUV, "cam1", "expected fill YUV to be cached for cam1")
 	bridge.mu.Unlock()
 
 	bridge.RemoveFillSource("cam1")
 
 	// Verify fill was removed
 	bridge.mu.Lock()
-	if _, ok := bridge.fillYUV["cam1"]; ok {
-		t.Fatal("expected fill YUV to be removed for cam1")
-	}
-	if _, ok := bridge.fillDecoders["cam1"]; ok {
-		t.Fatal("expected fill decoder to be removed for cam1")
-	}
+	require.NotContains(t, bridge.fillYUV, "cam1", "expected fill YUV to be removed for cam1")
+	require.NotContains(t, bridge.fillDecoders, "cam1", "expected fill decoder to be removed for cam1")
 	bridge.mu.Unlock()
 
-	if fillDec != nil && !fillDec.closed {
-		t.Error("fill decoder should be closed after RemoveFillSource")
+	if fillDec != nil {
+		require.True(t, fillDec.closed, "fill decoder should be closed after RemoveFillSource")
 	}
 }

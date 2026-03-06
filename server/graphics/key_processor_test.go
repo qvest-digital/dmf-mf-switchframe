@@ -2,6 +2,8 @@ package graphics
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestKeyProcessor_NoKeyPassthrough(t *testing.T) {
@@ -14,11 +16,7 @@ func TestKeyProcessor_NoKeyPassthrough(t *testing.T) {
 	result := kp.Process(bg, nil, 4, 4)
 
 	// Should return bg unchanged
-	for i := range result {
-		if result[i] != original[i] {
-			t.Fatalf("byte %d: expected %d, got %d", i, original[i], result[i])
-		}
-	}
+	require.Equal(t, original, result)
 }
 
 func TestKeyProcessor_ChromaKeyComposites(t *testing.T) {
@@ -37,16 +35,11 @@ func TestKeyProcessor_ChromaKeyComposites(t *testing.T) {
 	// Background: mid-gray
 	bg := makeYUV420Frame(4, 4, 128, 128, 128)
 
-	bgCopy := make([]byte, len(bg))
-	copy(bgCopy, bg)
-
 	result := kp.Process(bg, map[string][]byte{"cam1": fg}, 4, 4)
 
 	// Since fg is all green and keyed out, result should be close to bg
 	// (the transparent foreground reveals the background)
-	if len(result) != len(bg) {
-		t.Fatalf("expected result length %d, got %d", len(bg), len(result))
-	}
+	require.Len(t, result, len(bg))
 
 	// Y channel of result should be similar to bg (128)
 	allBg := true
@@ -76,9 +69,7 @@ func TestKeyProcessor_LumaKeyComposites(t *testing.T) {
 
 	result := kp.Process(bg, map[string][]byte{"cam1": fg}, 4, 4)
 
-	if len(result) != len(bg) {
-		t.Fatalf("expected result length %d, got %d", len(bg), len(result))
-	}
+	require.Len(t, result, len(bg))
 }
 
 func TestKeyProcessor_DisabledKeySkipped(t *testing.T) {
@@ -100,11 +91,7 @@ func TestKeyProcessor_DisabledKeySkipped(t *testing.T) {
 	result := kp.Process(bg, map[string][]byte{"cam1": fg}, 4, 4)
 
 	// Disabled key should pass through bg unchanged
-	for i := range result {
-		if result[i] != original[i] {
-			t.Fatalf("byte %d: expected %d (passthrough), got %d", i, original[i], result[i])
-		}
-	}
+	require.Equal(t, original, result)
 }
 
 func TestKeyProcessor_MultipleKeysApplied(t *testing.T) {
@@ -126,8 +113,8 @@ func TestKeyProcessor_MultipleKeysApplied(t *testing.T) {
 		LowClip:  0.0,
 	})
 
-	fg1 := makeYUV420Frame(4, 4, 182, 30, 12)   // green
-	fg2 := makeYUV420Frame(4, 4, 240, 128, 128)  // bright
+	fg1 := makeYUV420Frame(4, 4, 182, 30, 12)  // green
+	fg2 := makeYUV420Frame(4, 4, 240, 128, 128) // bright
 	bg := makeYUV420Frame(4, 4, 100, 128, 128)
 
 	fills := map[string][]byte{
@@ -137,9 +124,7 @@ func TestKeyProcessor_MultipleKeysApplied(t *testing.T) {
 
 	result := kp.Process(bg, fills, 4, 4)
 
-	if len(result) != len(bg) {
-		t.Fatalf("expected result length %d, got %d", len(bg), len(result))
-	}
+	require.Len(t, result, len(bg))
 }
 
 func TestKeyProcessor_RemoveKey(t *testing.T) {
@@ -151,19 +136,15 @@ func TestKeyProcessor_RemoveKey(t *testing.T) {
 
 	kp.RemoveKey("cam1")
 
-	cfg, ok := kp.GetKey("cam1")
-	if ok {
-		t.Fatalf("expected key to be removed, got %+v", cfg)
-	}
+	_, ok := kp.GetKey("cam1")
+	require.False(t, ok, "expected key to be removed")
 }
 
 func TestKeyProcessor_GetKey(t *testing.T) {
 	kp := NewKeyProcessor()
 
 	_, ok := kp.GetKey("cam1")
-	if ok {
-		t.Fatal("expected no key")
-	}
+	require.False(t, ok, "expected no key")
 
 	kp.SetKey("cam1", KeyConfig{
 		Type:       KeyTypeChroma,
@@ -172,12 +153,8 @@ func TestKeyProcessor_GetKey(t *testing.T) {
 	})
 
 	cfg, ok := kp.GetKey("cam1")
-	if !ok {
-		t.Fatal("expected key to exist")
-	}
-	if cfg.Similarity != 0.5 {
-		t.Fatalf("expected similarity 0.5, got %f", cfg.Similarity)
-	}
+	require.True(t, ok, "expected key to exist")
+	require.Equal(t, float32(0.5), cfg.Similarity)
 }
 
 func TestKeyProcessor_DeterministicOrder(t *testing.T) {
@@ -222,11 +199,8 @@ func TestKeyProcessor_DeterministicOrder(t *testing.T) {
 			firstResult = make([]byte, len(result))
 			copy(firstResult, result)
 		} else {
-			for i := range result {
-				if result[i] != firstResult[i] {
-					t.Fatalf("iteration %d: byte %d differs: %d vs %d", iter, i, result[i], firstResult[i])
-				}
-			}
+			require.Equal(t, firstResult, result,
+				"iteration %d: result differs from first iteration", iter)
 		}
 	}
 }
@@ -268,11 +242,7 @@ func TestKeyProcessor_UVBlendingAveraged(t *testing.T) {
 	for i := 0; i < uvSize; i++ {
 		cb := result[ySize+i]
 		cr := result[ySize+uvSize+i]
-		if cb != 200 {
-			t.Errorf("Cb[%d]: expected 200, got %d", i, cb)
-		}
-		if cr != 50 {
-			t.Errorf("Cr[%d]: expected 50, got %d", i, cr)
-		}
+		require.Equal(t, byte(200), cb, "Cb[%d] should be 200", i)
+		require.Equal(t, byte(50), cr, "Cr[%d] should be 50", i)
 	}
 }

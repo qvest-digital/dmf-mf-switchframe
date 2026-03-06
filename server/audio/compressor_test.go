@@ -156,19 +156,13 @@ func TestCompressor_NotBypassedWithMakeupGain(t *testing.T) {
 	c := NewCompressor(48000)
 	// ratio=1.0 (default), but set makeup gain
 	err := c.SetParams(0, 1.0, 10, 100, 6.0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.IsBypassed() {
-		t.Fatal("compressor with makeup gain should not be bypassed")
-	}
+	require.NoError(t, err)
+	require.False(t, c.IsBypassed(), "compressor with makeup gain should not be bypassed")
 }
 
 func TestCompressor_BypassedWhenDefault(t *testing.T) {
 	c := NewCompressor(48000)
-	if !c.IsBypassed() {
-		t.Fatal("default compressor should be bypassed")
-	}
+	require.True(t, c.IsBypassed(), "default compressor should be bypassed")
 }
 
 func TestCompressor_ParameterValidation(t *testing.T) {

@@ -108,15 +108,9 @@ func TestMixer_DebugSnapshot(t *testing.T) {
 	defer func() { _ = m.Close() }()
 
 	snap := m.DebugSnapshot()
-	if snap["mode"] != "passthrough" {
-		t.Errorf("expected passthrough, got %v", snap["mode"])
-	}
-	if snap["frames_passthrough"] != int64(0) {
-		t.Errorf("expected 0, got %v", snap["frames_passthrough"])
-	}
-	if snap["decode_errors"] != int64(0) {
-		t.Errorf("expected 0, got %v", snap["decode_errors"])
-	}
+	require.Equal(t, "passthrough", snap["mode"])
+	require.Equal(t, int64(0), snap["frames_passthrough"])
+	require.Equal(t, int64(0), snap["decode_errors"])
 }
 
 func TestMixerMasterLevelGetter(t *testing.T) {

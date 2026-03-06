@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -27,9 +28,7 @@ func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.PresetS
 
 	dir := t.TempDir()
 	ps, err := preset.NewPresetStore(filepath.Join(dir, "presets.json"))
-	if err != nil {
-		t.Fatalf("NewPresetStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	mock := newMockMixer("camera1", "camera2")
 	api := NewAPI(sw, WithMixer(mock), WithPresetStore(ps))
@@ -43,17 +42,12 @@ func TestListPresetsEmpty(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var presets []preset.Preset
-	if err := json.NewDecoder(rec.Body).Decode(&presets); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(presets) != 0 {
-		t.Errorf("expected 0 presets, got %d", len(presets))
-	}
+	err := json.NewDecoder(rec.Body).Decode(&presets)
+	require.NoError(t, err)
+	require.Empty(t, presets)
 }
 
 func TestCreatePresetEndpoint(t *testing.T) {
@@ -65,26 +59,15 @@ func TestCreatePresetEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 
 	var p preset.Preset
-	if err := json.NewDecoder(rec.Body).Decode(&p); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if p.Name != "Morning Service" {
-		t.Errorf("Name = %q, want %q", p.Name, "Morning Service")
-	}
-	if p.ProgramSource != "camera1" {
-		t.Errorf("ProgramSource = %q, want %q", p.ProgramSource, "camera1")
-	}
-	if p.PreviewSource != "camera2" {
-		t.Errorf("PreviewSource = %q, want %q", p.PreviewSource, "camera2")
-	}
-	if p.ID == "" {
-		t.Error("expected non-empty ID")
-	}
+	err := json.NewDecoder(rec.Body).Decode(&p)
+	require.NoError(t, err)
+	require.Equal(t, "Morning Service", p.Name)
+	require.Equal(t, "camera1", p.ProgramSource)
+	require.Equal(t, "camera2", p.PreviewSource)
+	require.NotEmpty(t, p.ID)
 }
 
 func TestCreatePresetEmptyName(t *testing.T) {
@@ -96,9 +79,7 @@ func TestCreatePresetEmptyName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestCreatePresetInvalidJSON(t *testing.T) {
@@ -109,9 +90,7 @@ func TestCreatePresetInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestGetPresetEndpoint(t *testing.T) {
@@ -123,15 +102,11 @@ func TestGetPresetEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var p preset.Preset
 	_ = json.NewDecoder(rec.Body).Decode(&p)
-	if p.Name != "Test" {
-		t.Errorf("Name = %q, want %q", p.Name, "Test")
-	}
+	require.Equal(t, "Test", p.Name)
 }
 
 func TestGetPresetNotFound(t *testing.T) {
@@ -141,9 +116,7 @@ func TestGetPresetNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestUpdatePresetEndpoint(t *testing.T) {
@@ -157,15 +130,11 @@ func TestUpdatePresetEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var p preset.Preset
 	_ = json.NewDecoder(rec.Body).Decode(&p)
-	if p.Name != "Updated" {
-		t.Errorf("Name = %q, want %q", p.Name, "Updated")
-	}
+	require.Equal(t, "Updated", p.Name)
 }
 
 func TestUpdatePresetNotFound(t *testing.T) {
@@ -177,9 +146,7 @@ func TestUpdatePresetNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestDeletePresetEndpoint(t *testing.T) {
@@ -191,14 +158,10 @@ func TestDeletePresetEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNoContent, rec.Code, "body: %s", rec.Body.String())
 
 	// Verify deleted
-	if presets := ps.List(); len(presets) != 0 {
-		t.Errorf("expected 0 presets after delete, got %d", len(presets))
-	}
+	require.Empty(t, ps.List(), "expected 0 presets after delete")
 }
 
 func TestDeletePresetNotFound(t *testing.T) {
@@ -208,9 +171,7 @@ func TestDeletePresetNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestRecallPresetEndpoint(t *testing.T) {
@@ -228,26 +189,17 @@ func TestRecallPresetEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp recallPresetResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Warnings) != 0 {
-		t.Errorf("expected no warnings, got %v", resp.Warnings)
-	}
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
 
 	// Verify program source was changed
 	state := sw.State()
-	if state.ProgramSource != "camera2" {
-		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera2")
-	}
-	if state.PreviewSource != "camera1" {
-		t.Errorf("PreviewSource = %q, want %q", state.PreviewSource, "camera1")
-	}
+	require.Equal(t, "camera2", state.ProgramSource)
+	require.Equal(t, "camera1", state.PreviewSource)
 }
 
 func TestRecallPresetNotFound(t *testing.T) {
@@ -257,9 +209,7 @@ func TestRecallPresetNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestRecallPresetWithWarnings(t *testing.T) {
@@ -277,15 +227,11 @@ func TestRecallPresetWithWarnings(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var resp recallPresetResponse
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
-	if len(resp.Warnings) == 0 {
-		t.Error("expected at least 1 warning for missing source")
-	}
+	require.NotEmpty(t, resp.Warnings, "expected at least 1 warning for missing source")
 }
 
 func TestListPresetsAfterCreate(t *testing.T) {
@@ -297,18 +243,14 @@ func TestListPresetsAfterCreate(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create A: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, rec.Code, "create A: body: %s", rec.Body.String())
 
 	body = `{"name":"Preset B"}`
 	req = httptest.NewRequest("POST", "/api/presets", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create B: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusCreated, rec.Code, "create B: body: %s", rec.Body.String())
 
 	// List
 	req = httptest.NewRequest("GET", "/api/presets", nil)
@@ -317,7 +259,5 @@ func TestListPresetsAfterCreate(t *testing.T) {
 
 	var presets []preset.Preset
 	_ = json.NewDecoder(rec.Body).Decode(&presets)
-	if len(presets) != 2 {
-		t.Errorf("expected 2 presets, got %d", len(presets))
-	}
+	require.Len(t, presets, 2)
 }

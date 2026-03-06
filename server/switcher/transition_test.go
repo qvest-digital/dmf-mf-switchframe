@@ -748,7 +748,7 @@ func TestStartTransitionWarmsDecodersOutsideLock(t *testing.T) {
 	case <-frameDone:
 		// Good — frame was not blocked by warmup.
 	case <-time.After(2 * time.Second):
-		t.Fatal("handleVideoFrame blocked during transition warmup — lock not released")
+		require.Fail(t, "handleVideoFrame blocked during transition warmup — lock not released")
 	}
 
 	// Wait for StartTransition to complete.
@@ -807,7 +807,7 @@ func TestFadeToBlackWarmsDecodersOutsideLock(t *testing.T) {
 	case <-frameDone:
 		// Good — not blocked.
 	case <-time.After(2 * time.Second):
-		t.Fatal("handleVideoFrame blocked during FTB warmup — lock not released")
+		require.Fail(t, "handleVideoFrame blocked during FTB warmup — lock not released")
 	}
 
 	require.NoError(t, <-errCh)
@@ -876,7 +876,7 @@ func TestFTBReverseWarmsDecodersOutsideLock(t *testing.T) {
 	case <-frameDone:
 		// Good — not blocked.
 	case <-time.After(2 * time.Second):
-		t.Fatal("handleVideoFrame blocked during FTB reverse warmup — lock not released")
+		require.Fail(t, "handleVideoFrame blocked during FTB reverse warmup — lock not released")
 	}
 
 	require.NoError(t, <-errCh)

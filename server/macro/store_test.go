@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func tempStorePath(t *testing.T) string {
@@ -15,9 +17,7 @@ func tempStorePath(t *testing.T) string {
 
 func TestStore_SaveAndGet(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	m := Macro{
 		Name: "my-macro",
@@ -25,110 +25,72 @@ func TestStore_SaveAndGet(t *testing.T) {
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		},
 	}
-	if err := s.Save(m); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Save(m))
 
 	got, err := s.Get("my-macro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Name != "my-macro" {
-		t.Fatalf("got name %q, want %q", got.Name, "my-macro")
-	}
-	if len(got.Steps) != 1 {
-		t.Fatalf("got %d steps, want 1", len(got.Steps))
-	}
-	if got.Steps[0].Action != ActionCut {
-		t.Fatalf("got action %q, want %q", got.Steps[0].Action, ActionCut)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "my-macro", got.Name)
+	require.Len(t, got.Steps, 1)
+	require.Equal(t, ActionCut, got.Steps[0].Action)
 }
 
 func TestStore_List(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Empty store
-	if list := s.List(); len(list) != 0 {
-		t.Fatalf("expected empty list, got %d", len(list))
-	}
+	require.Empty(t, s.List())
 
 	// Add two macros
 	_ = s.Save(Macro{Name: "alpha", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
 	_ = s.Save(Macro{Name: "beta", Steps: []MacroStep{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}})
 
 	list := s.List()
-	if len(list) != 2 {
-		t.Fatalf("expected 2 macros, got %d", len(list))
-	}
+	require.Len(t, list, 2)
 }
 
 func TestStore_Delete(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_ = s.Save(Macro{Name: "to-delete", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
 
-	if err := s.Delete("to-delete"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, s.Delete("to-delete"))
 
 	_, err = s.Get("to-delete")
-	if err == nil {
-		t.Fatal("expected error after delete, got nil")
-	}
+	require.Error(t, err, "expected error after delete")
 }
 
 func TestStore_GetNonexistent(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_, err = s.Get("does-not-exist")
-	if err == nil {
-		t.Fatal("expected error for nonexistent macro")
-	}
+	require.Error(t, err, "expected error for nonexistent macro")
 }
 
 func TestStore_SaveEmptyName(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = s.Save(Macro{Name: "", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
-	if err == nil {
-		t.Fatal("expected error for empty name")
-	}
+	require.Error(t, err, "expected error for empty name")
 }
 
 func TestStore_SaveNoSteps(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = s.Save(Macro{Name: "empty-steps", Steps: nil})
-	if err == nil {
-		t.Fatal("expected error for no steps")
-	}
+	require.Error(t, err, "expected error for no steps")
 
 	err = s.Save(Macro{Name: "empty-steps", Steps: []MacroStep{}})
-	if err == nil {
-		t.Fatal("expected error for empty steps slice")
-	}
+	require.Error(t, err, "expected error for empty steps slice")
 }
 
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -146,61 +108,41 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 
 func TestStore_DeleteNonexistent(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = s.Delete("nope")
-	if err == nil {
-		t.Fatal("expected error deleting nonexistent macro")
-	}
+	require.Error(t, err, "expected error deleting nonexistent macro")
 }
 
 func TestStore_Persistence(t *testing.T) {
 	path := tempStorePath(t)
 
 	s1, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	_ = s1.Save(Macro{Name: "persist-test", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
 
 	// Re-open store from same file
 	s2, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	got, err := s2.Get("persist-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Name != "persist-test" {
-		t.Fatalf("expected persist-test, got %s", got.Name)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "persist-test", got.Name)
 }
 
 func TestStore_SaveOverwrite(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_ = s.Save(Macro{Name: "overwrite", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
 	_ = s.Save(Macro{Name: "overwrite", Steps: []MacroStep{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}})
 
 	got, err := s.Get("overwrite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Steps[0].Action != ActionPreview {
-		t.Fatalf("expected overwritten action %q, got %q", ActionPreview, got.Steps[0].Action)
-	}
+	require.NoError(t, err)
+	require.Equal(t, ActionPreview, got.Steps[0].Action)
 
 	// Should still be 1 macro total
-	if list := s.List(); len(list) != 1 {
-		t.Fatalf("expected 1 macro after overwrite, got %d", len(list))
-	}
+	require.Len(t, s.List(), 1)
 }
 
 func TestStore_NewStoreCreatesDir(t *testing.T) {
@@ -208,13 +150,10 @@ func TestStore_NewStoreCreatesDir(t *testing.T) {
 	path := filepath.Join(dir, "sub", "dir", "macros.json")
 
 	s, err := NewStore(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_ = s.Save(Macro{Name: "dir-test", Steps: []MacroStep{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Fatal("expected file to exist after save")
-	}
+	_, err = os.Stat(path)
+	require.False(t, os.IsNotExist(err), "expected file to exist after save")
 }

@@ -5,18 +5,20 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockTarget records calls to RecallTarget methods for testing.
 type mockTarget struct {
-	cutCalls       []string
-	previewCalls   []string
-	levelCalls     []levelCall
-	muteCalls      []muteCall
-	afvCalls       []afvCall
-	masterCalls    []float64
-	knownSources   map[string]bool
-	knownChannels  map[string]bool
+	cutCalls      []string
+	previewCalls  []string
+	levelCalls    []levelCall
+	muteCalls     []muteCall
+	afvCalls      []afvCall
+	masterCalls   []float64
+	knownSources  map[string]bool
+	knownChannels map[string]bool
 }
 
 type levelCall struct {
@@ -106,12 +108,8 @@ func TestRecallSetsProgramSource(t *testing.T) {
 
 	warnings := Recall(context.Background(), p, target)
 
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings, got %v", warnings)
-	}
-	if len(target.cutCalls) != 1 || target.cutCalls[0] != "cam1" {
-		t.Errorf("Cut calls = %v, want [cam1]", target.cutCalls)
-	}
+	require.Empty(t, warnings)
+	require.Equal(t, []string{"cam1"}, target.cutCalls)
 }
 
 func TestRecallSetsPreviewSource(t *testing.T) {
@@ -128,9 +126,7 @@ func TestRecallSetsPreviewSource(t *testing.T) {
 
 	Recall(context.Background(), p, target)
 
-	if len(target.previewCalls) != 1 || target.previewCalls[0] != "cam2" {
-		t.Errorf("SetPreview calls = %v, want [cam2]", target.previewCalls)
-	}
+	require.Equal(t, []string{"cam2"}, target.previewCalls)
 }
 
 func TestRecallAppliesAudioChannels(t *testing.T) {
@@ -150,25 +146,16 @@ func TestRecallAppliesAudioChannels(t *testing.T) {
 
 	warnings := Recall(context.Background(), p, target)
 
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings, got %v", warnings)
-	}
-
-	if len(target.levelCalls) != 2 {
-		t.Fatalf("expected 2 level calls, got %d", len(target.levelCalls))
-	}
+	require.Empty(t, warnings)
+	require.Len(t, target.levelCalls, 2)
 
 	// Check that both channels got level calls (order may vary due to map iteration)
 	levelsByKey := make(map[string]float64)
 	for _, c := range target.levelCalls {
 		levelsByKey[c.key] = c.level
 	}
-	if levelsByKey["cam1"] != -6 {
-		t.Errorf("cam1 level = %f, want %f", levelsByKey["cam1"], -6.0)
-	}
-	if levelsByKey["cam2"] != 0 {
-		t.Errorf("cam2 level = %f, want %f", levelsByKey["cam2"], 0.0)
-	}
+	require.Equal(t, float64(-6), levelsByKey["cam1"])
+	require.Equal(t, float64(0), levelsByKey["cam2"])
 }
 
 func TestRecallSetsMasterLevel(t *testing.T) {
@@ -184,9 +171,7 @@ func TestRecallSetsMasterLevel(t *testing.T) {
 
 	Recall(context.Background(), p, target)
 
-	if len(target.masterCalls) != 1 || target.masterCalls[0] != -12.5 {
-		t.Errorf("SetMasterLevel calls = %v, want [-12.5]", target.masterCalls)
-	}
+	require.Equal(t, []float64{-12.5}, target.masterCalls)
 }
 
 func TestRecallMissingSourceWarning(t *testing.T) {
@@ -204,16 +189,10 @@ func TestRecallMissingSourceWarning(t *testing.T) {
 
 	warnings := Recall(context.Background(), p, target)
 
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
-	}
-	if len(target.previewCalls) != 0 {
-		t.Errorf("expected no successful preview calls, got %v", target.previewCalls)
-	}
+	require.Len(t, warnings, 1)
+	require.Empty(t, target.previewCalls)
 	// Program should still have been set
-	if len(target.cutCalls) != 1 || target.cutCalls[0] != "cam1" {
-		t.Errorf("Cut should still succeed: %v", target.cutCalls)
-	}
+	require.Equal(t, []string{"cam1"}, target.cutCalls)
 }
 
 func TestRecallMissingAudioChannelWarning(t *testing.T) {
@@ -234,16 +213,12 @@ func TestRecallMissingAudioChannelWarning(t *testing.T) {
 
 	warnings := Recall(context.Background(), p, target)
 
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning for missing channel, got %d: %v", len(warnings), warnings)
-	}
+	require.Len(t, warnings, 1)
 
 	// cam1 should still be applied
 	levelsByKey := make(map[string]float64)
 	for _, c := range target.levelCalls {
 		levelsByKey[c.key] = c.level
 	}
-	if _, ok := levelsByKey["cam1"]; !ok {
-		t.Error("cam1 level should have been set despite cam2 missing")
-	}
+	require.Contains(t, levelsByKey, "cam1", "cam1 level should have been set despite cam2 missing")
 }

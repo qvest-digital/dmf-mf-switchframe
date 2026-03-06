@@ -31,20 +31,13 @@ func TestStatePublisherEncodesJSON(t *testing.T) {
 
 	pub.Publish(state)
 
-	if published == nil {
-		t.Fatal("nothing published")
-	}
+	require.NotNil(t, published, "nothing published")
 
 	var decoded internal.ControlRoomState
-	if err := json.Unmarshal(published, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if decoded.ProgramSource != "camera1" {
-		t.Errorf("ProgramSource = %q, want %q", decoded.ProgramSource, "camera1")
-	}
-	if decoded.Seq != 1 {
-		t.Errorf("Seq = %d, want 1", decoded.Seq)
-	}
+	err := json.Unmarshal(published, &decoded)
+	require.NoError(t, err)
+	require.Equal(t, "camera1", decoded.ProgramSource)
+	require.Equal(t, uint64(1), decoded.Seq)
 }
 
 func TestStatePublisherSequentialPublishes(t *testing.T) {
@@ -55,9 +48,7 @@ func TestStatePublisherSequentialPublishes(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		pub.Publish(internal.ControlRoomState{Seq: uint64(i)})
 	}
-	if count != 5 {
-		t.Errorf("published %d times, want 5", count)
-	}
+	require.Equal(t, 5, count)
 }
 
 func TestChannelPublisher(t *testing.T) {
@@ -74,7 +65,7 @@ func TestChannelPublisher(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &got))
 		require.Equal(t, "cam1", got.ProgramSource)
 	default:
-		t.Fatal("expected data on channel")
+		require.Fail(t, "expected data on channel")
 	}
 
 	// Test overflow: fill buffer, then publish one more
@@ -94,7 +85,7 @@ func TestChannelPublisherEmptyBuffer(t *testing.T) {
 	// Channel should be empty initially
 	select {
 	case <-pub.Ch():
-		t.Fatal("expected empty channel")
+		require.Fail(t, "expected empty channel")
 	default:
 		// expected
 	}
@@ -126,7 +117,7 @@ func TestChannelPublisherMultipleReads(t *testing.T) {
 			require.NoError(t, json.Unmarshal(data, &got))
 			require.Equal(t, i, got.Seq)
 		default:
-			t.Fatalf("expected data for seq %d", i)
+			require.Failf(t, "expected data", "for seq %d", i)
 		}
 	}
 }

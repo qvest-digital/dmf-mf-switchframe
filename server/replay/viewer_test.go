@@ -3,6 +3,7 @@ package replay
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/media"
 )
@@ -10,9 +11,7 @@ import (
 func TestReplayViewer_ID(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
-	if v.ID() != "replay:cam1" {
-		t.Errorf("expected ID 'replay:cam1', got %q", v.ID())
-	}
+	require.Equal(t, "replay:cam1", v.ID())
 }
 
 func TestReplayViewer_SendVideo_RecordsToBuffer(t *testing.T) {
@@ -23,9 +22,7 @@ func TestReplayViewer_SendVideo_RecordsToBuffer(t *testing.T) {
 	v.SendVideo(frame)
 
 	info := buf.Status()
-	if info.FrameCount != 1 {
-		t.Errorf("expected 1 frame in buffer, got %d", info.FrameCount)
-	}
+	require.Equal(t, 1, info.FrameCount)
 }
 
 func TestReplayViewer_SendVideo_MultipleFrames(t *testing.T) {
@@ -37,9 +34,7 @@ func TestReplayViewer_SendVideo_MultipleFrames(t *testing.T) {
 	v.SendVideo(makeVideoFrame(6006, false, 500))
 
 	info := buf.Status()
-	if info.FrameCount != 3 {
-		t.Errorf("expected 3 frames, got %d", info.FrameCount)
-	}
+	require.Equal(t, 3, info.FrameCount)
 }
 
 func TestReplayViewer_SendAudio_Ignored(t *testing.T) {
@@ -53,9 +48,7 @@ func TestReplayViewer_SendAudio_Ignored(t *testing.T) {
 	})
 
 	info := buf.Status()
-	if info.FrameCount != 0 {
-		t.Errorf("expected 0 frames (audio ignored), got %d", info.FrameCount)
-	}
+	require.Equal(t, 0, info.FrameCount, "expected 0 frames (audio ignored)")
 }
 
 func TestReplayViewer_SendCaptions_Ignored(t *testing.T) {
@@ -67,9 +60,7 @@ func TestReplayViewer_SendCaptions_Ignored(t *testing.T) {
 	})
 
 	info := buf.Status()
-	if info.FrameCount != 0 {
-		t.Errorf("expected 0 frames (captions ignored), got %d", info.FrameCount)
-	}
+	require.Equal(t, 0, info.FrameCount, "expected 0 frames (captions ignored)")
 }
 
 func TestReplayViewer_Stats(t *testing.T) {
@@ -81,15 +72,9 @@ func TestReplayViewer_Stats(t *testing.T) {
 	v.SendAudio(&media.AudioFrame{PTS: 0, Data: make([]byte, 100)})
 
 	stats := v.Stats()
-	if stats.ID != "replay:cam1" {
-		t.Errorf("expected stats ID 'replay:cam1', got %q", stats.ID)
-	}
-	if stats.VideoSent != 2 {
-		t.Errorf("expected VideoSent=2, got %d", stats.VideoSent)
-	}
-	if stats.AudioSent != 1 {
-		t.Errorf("expected AudioSent=1, got %d", stats.AudioSent)
-	}
+	require.Equal(t, "replay:cam1", stats.ID)
+	require.Equal(t, int64(2), stats.VideoSent)
+	require.Equal(t, int64(1), stats.AudioSent)
 }
 
 func TestReplayViewer_InterfaceCompliance(t *testing.T) {

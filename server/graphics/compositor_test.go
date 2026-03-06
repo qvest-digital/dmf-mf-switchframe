@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func makeTestOverlay(w, h int) []byte {
@@ -16,20 +18,13 @@ func TestCompositor_Passthrough(t *testing.T) {
 
 	// Without overlay set, Overlay() returns nil.
 	rgba, w, h, alpha := c.Overlay()
-	if rgba != nil {
-		t.Errorf("expected nil overlay when inactive, got %d bytes", len(rgba))
-	}
-	if w != 0 || h != 0 {
-		t.Errorf("expected 0x0 dimensions, got %dx%d", w, h)
-	}
-	if alpha != 0 {
-		t.Errorf("expected alpha 0, got %f", alpha)
-	}
+	require.Nil(t, rgba, "expected nil overlay when inactive")
+	require.Equal(t, 0, w)
+	require.Equal(t, 0, h)
+	require.Equal(t, float64(0), alpha)
 
 	status := c.Status()
-	if status.Active {
-		t.Error("expected inactive status")
-	}
+	require.False(t, status.Active, "expected inactive status")
 }
 
 func TestCompositor_ActiveBlend(t *testing.T) {
@@ -45,35 +40,19 @@ func TestCompositor_ActiveBlend(t *testing.T) {
 		overlay[i+3] = 128 // A (50%)
 	}
 
-	if err := c.SetOverlay(overlay, 320, 240, "lower-third"); err != nil {
-		t.Fatalf("SetOverlay: %v", err)
-	}
-
-	if err := c.On(); err != nil {
-		t.Fatalf("On: %v", err)
-	}
+	require.NoError(t, c.SetOverlay(overlay, 320, 240, "lower-third"))
+	require.NoError(t, c.On())
 
 	rgba, w, h, alpha := c.Overlay()
-	if rgba == nil {
-		t.Fatal("expected overlay data when active")
-	}
-	if w != 320 || h != 240 {
-		t.Errorf("dimensions = %dx%d, want 320x240", w, h)
-	}
-	if alpha != 1.0 {
-		t.Errorf("alpha = %f, want 1.0", alpha)
-	}
+	require.NotNil(t, rgba, "expected overlay data when active")
+	require.Equal(t, 320, w)
+	require.Equal(t, 240, h)
+	require.Equal(t, float64(1.0), alpha)
 
 	status := c.Status()
-	if !status.Active {
-		t.Error("expected active status after On()")
-	}
-	if status.Template != "lower-third" {
-		t.Errorf("template = %q, want %q", status.Template, "lower-third")
-	}
-	if status.FadePosition != 1.0 {
-		t.Errorf("fadePosition = %f, want 1.0", status.FadePosition)
-	}
+	require.True(t, status.Active, "expected active status after On()")
+	require.Equal(t, "lower-third", status.Template)
+	require.Equal(t, float64(1.0), status.FadePosition)
 }
 
 func TestCompositor_Toggle(t *testing.T) {
@@ -84,34 +63,20 @@ func TestCompositor_Toggle(t *testing.T) {
 	_ = c.SetOverlay(overlay, 320, 240, "full-screen")
 
 	// CUT ON
-	if err := c.On(); err != nil {
-		t.Fatalf("On: %v", err)
-	}
-	if !c.Status().Active {
-		t.Error("expected active after On")
-	}
+	require.NoError(t, c.On())
+	require.True(t, c.Status().Active, "expected active after On")
 
 	// CUT OFF
-	if err := c.Off(); err != nil {
-		t.Fatalf("Off: %v", err)
-	}
-	if c.Status().Active {
-		t.Error("expected inactive after Off")
-	}
+	require.NoError(t, c.Off())
+	require.False(t, c.Status().Active, "expected inactive after Off")
 
 	// CUT ON again
-	if err := c.On(); err != nil {
-		t.Fatalf("On (second): %v", err)
-	}
-	if !c.Status().Active {
-		t.Error("expected active after second On")
-	}
+	require.NoError(t, c.On())
+	require.True(t, c.Status().Active, "expected active after second On")
 
 	// Verify overlay data is accessible
 	rgba, _, _, _ := c.Overlay()
-	if rgba == nil {
-		t.Error("expected overlay after re-enable")
-	}
+	require.NotNil(t, rgba, "expected overlay after re-enable")
 }
 
 func TestCompositor_OnWithoutOverlayReturnsError(t *testing.T) {
@@ -119,9 +84,7 @@ func TestCompositor_OnWithoutOverlayReturnsError(t *testing.T) {
 	defer c.Close()
 
 	err := c.On()
-	if err != ErrNoOverlay {
-		t.Errorf("On without overlay: err = %v, want %v", err, ErrNoOverlay)
-	}
+	require.ErrorIs(t, err, ErrNoOverlay)
 }
 
 func TestCompositor_AutoOnAutoOff(t *testing.T) {
@@ -137,48 +100,32 @@ func TestCompositor_AutoOnAutoOff(t *testing.T) {
 	_ = c.SetOverlay(overlay, 320, 240, "ticker")
 
 	// AUTO ON with short duration for testing
-	if err := c.AutoOn(50 * time.Millisecond); err != nil {
-		t.Fatalf("AutoOn: %v", err)
-	}
+	require.NoError(t, c.AutoOn(50*time.Millisecond))
 
 	// Should be active immediately, but fading in
 	status := c.Status()
-	if !status.Active {
-		t.Error("expected active immediately after AutoOn")
-	}
+	require.True(t, status.Active, "expected active immediately after AutoOn")
 
 	// Wait for fade to complete
 	time.Sleep(100 * time.Millisecond)
 
 	status = c.Status()
-	if !status.Active {
-		t.Error("expected still active after fade-in completes")
-	}
-	if status.FadePosition != 1.0 {
-		t.Errorf("fadePosition = %f, want 1.0 after fade-in", status.FadePosition)
-	}
+	require.True(t, status.Active, "expected still active after fade-in completes")
+	require.Equal(t, float64(1.0), status.FadePosition, "fadePosition should be 1.0 after fade-in")
 
 	// AUTO OFF
-	if err := c.AutoOff(50 * time.Millisecond); err != nil {
-		t.Fatalf("AutoOff: %v", err)
-	}
+	require.NoError(t, c.AutoOff(50*time.Millisecond))
 
 	// Wait for fade to complete
 	time.Sleep(100 * time.Millisecond)
 
 	status = c.Status()
-	if status.Active {
-		t.Error("expected inactive after fade-out completes")
-	}
-	if status.FadePosition != 0.0 {
-		t.Errorf("fadePosition = %f, want 0.0 after fade-out", status.FadePosition)
-	}
+	require.False(t, status.Active, "expected inactive after fade-out completes")
+	require.Equal(t, float64(0.0), status.FadePosition, "fadePosition should be 0.0 after fade-out")
 
 	// State change callback should have been called multiple times.
 	changes := atomic.LoadInt32(&stateChanges)
-	if changes < 2 {
-		t.Errorf("expected >= 2 state changes, got %d", changes)
-	}
+	require.GreaterOrEqual(t, changes, int32(2), "expected >= 2 state changes")
 }
 
 func TestCompositor_Close(t *testing.T) {
@@ -191,14 +138,10 @@ func TestCompositor_Close(t *testing.T) {
 
 	// After close, operations should fail.
 	err := c.On()
-	if err == nil {
-		t.Error("expected error after Close, got nil")
-	}
+	require.Error(t, err, "expected error after Close")
 
 	err = c.Off()
-	if err == nil {
-		t.Error("expected error after Close, got nil")
-	}
+	require.Error(t, err, "expected error after Close")
 }
 
 func TestCompositor_SetOverlaySizeMismatch(t *testing.T) {
@@ -207,9 +150,7 @@ func TestCompositor_SetOverlaySizeMismatch(t *testing.T) {
 
 	// Wrong size: 10 bytes for a 320x240 overlay
 	err := c.SetOverlay(make([]byte, 10), 320, 240, "test")
-	if err == nil {
-		t.Error("expected error for size mismatch")
-	}
+	require.Error(t, err, "expected error for size mismatch")
 }
 
 func TestCompositor_FadeActiveError(t *testing.T) {
@@ -220,15 +161,11 @@ func TestCompositor_FadeActiveError(t *testing.T) {
 	_ = c.SetOverlay(overlay, 320, 240, "test")
 
 	// Start a long fade
-	if err := c.AutoOn(5 * time.Second); err != nil {
-		t.Fatalf("AutoOn: %v", err)
-	}
+	require.NoError(t, c.AutoOn(5*time.Second))
 
 	// Starting another fade should fail
 	err := c.AutoOn(500 * time.Millisecond)
-	if err != ErrFadeActive {
-		t.Errorf("expected ErrFadeActive, got %v", err)
-	}
+	require.ErrorIs(t, err, ErrFadeActive)
 }
 
 func TestCompositor_CutDuringFade(t *testing.T) {
@@ -239,17 +176,11 @@ func TestCompositor_CutDuringFade(t *testing.T) {
 	_ = c.SetOverlay(overlay, 320, 240, "test")
 
 	// Start a long fade
-	if err := c.AutoOn(5 * time.Second); err != nil {
-		t.Fatalf("AutoOn: %v", err)
-	}
+	require.NoError(t, c.AutoOn(5*time.Second))
 
 	// CUT OFF should cancel the fade
-	if err := c.Off(); err != nil {
-		t.Fatalf("Off during fade: %v", err)
-	}
+	require.NoError(t, c.Off())
 
 	status := c.Status()
-	if status.Active {
-		t.Error("expected inactive after CUT OFF during fade")
-	}
+	require.False(t, status.Active, "expected inactive after CUT OFF during fade")
 }

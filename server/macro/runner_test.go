@@ -7,13 +7,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockTarget records calls made during macro execution.
 type mockTarget struct {
-	mu      sync.Mutex
-	calls   []string
-	failOn  string // action name to fail on
+	mu     sync.Mutex
+	calls  []string
+	failOn string // action name to fail on
 }
 
 func (m *mockTarget) Cut(ctx context.Context, source string) error {
@@ -76,23 +78,13 @@ func TestRunner_ExecutesStepsInOrder(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	calls := target.getCalls()
-	if len(calls) != 3 {
-		t.Fatalf("expected 3 calls, got %d: %v", len(calls), calls)
-	}
-	if calls[0] != "preview:cam1" {
-		t.Fatalf("expected preview:cam1, got %s", calls[0])
-	}
-	if calls[1] != "cut:cam1" {
-		t.Fatalf("expected cut:cam1, got %s", calls[1])
-	}
-	if calls[2] != "set_audio:cam1" {
-		t.Fatalf("expected set_audio:cam1, got %s", calls[2])
-	}
+	require.Len(t, calls, 3)
+	require.Equal(t, "preview:cam1", calls[0])
+	require.Equal(t, "cut:cam1", calls[1])
+	require.Equal(t, "set_audio:cam1", calls[2])
 }
 
 func TestRunner_WaitAction(t *testing.T) {
@@ -110,17 +102,11 @@ func TestRunner_WaitAction(t *testing.T) {
 	err := Run(context.Background(), macro, target)
 	elapsed := time.Since(start)
 
-	if err != nil {
-		t.Fatal(err)
-	}
-	if elapsed < 40*time.Millisecond {
-		t.Fatalf("wait should have delayed at least 40ms, got %v", elapsed)
-	}
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, elapsed, 40*time.Millisecond, "wait should have delayed at least 40ms")
 
 	calls := target.getCalls()
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls (cuts), got %d: %v", len(calls), calls)
-	}
+	require.Len(t, calls, 2)
 }
 
 func TestRunner_ContextCancellation(t *testing.T) {
@@ -143,18 +129,12 @@ func TestRunner_ContextCancellation(t *testing.T) {
 	}()
 
 	err := Run(ctx, macro, target)
-	if err == nil {
-		t.Fatal("expected context cancellation error")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
+	require.Error(t, err, "expected context cancellation error")
+	require.ErrorIs(t, err, context.Canceled)
 
 	calls := target.getCalls()
 	// Should have executed the first cut but not the second (cancelled during wait)
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call (first cut), got %d: %v", len(calls), calls)
-	}
+	require.Len(t, calls, 1)
 }
 
 func TestRunner_UnknownAction(t *testing.T) {
@@ -167,9 +147,7 @@ func TestRunner_UnknownAction(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err == nil {
-		t.Fatal("expected error for unknown action")
-	}
+	require.Error(t, err, "expected error for unknown action")
 }
 
 func TestRunner_TransitionAction(t *testing.T) {
@@ -182,17 +160,11 @@ func TestRunner_TransitionAction(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	calls := target.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(calls))
-	}
-	if calls[0] != "transition:cam1:mix" {
-		t.Fatalf("expected transition:cam1:mix, got %s", calls[0])
-	}
+	require.Len(t, calls, 1)
+	require.Equal(t, "transition:cam1:mix", calls[0])
 }
 
 func TestRunner_TransitionWithSource(t *testing.T) {
@@ -205,17 +177,11 @@ func TestRunner_TransitionWithSource(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	calls := target.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(calls))
-	}
-	if calls[0] != "transition:cam2:mix" {
-		t.Fatalf("expected transition:cam2:mix, got %s", calls[0])
-	}
+	require.Len(t, calls, 1)
+	require.Equal(t, "transition:cam2:mix", calls[0])
 }
 
 func TestRunner_TransitionMissingSource(t *testing.T) {
@@ -228,12 +194,9 @@ func TestRunner_TransitionMissingSource(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err == nil {
-		t.Fatal("expected error for transition without source")
-	}
-	if !strings.Contains(err.Error(), "source") {
-		t.Fatalf("error should mention 'source', got: %s", err.Error())
-	}
+	require.Error(t, err, "expected error for transition without source")
+	require.True(t, strings.Contains(err.Error(), "source"),
+		"error should mention 'source', got: %s", err.Error())
 }
 
 func TestRunner_ContextCancellationDuringWait(t *testing.T) {
@@ -257,20 +220,12 @@ func TestRunner_ContextCancellationDuringWait(t *testing.T) {
 	err := Run(ctx, macro, target)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected context cancellation error")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", err)
-	}
-	if elapsed > 1*time.Second {
-		t.Fatalf("should have cancelled quickly, took %v", elapsed)
-	}
+	require.Error(t, err, "expected context cancellation error")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Less(t, elapsed, 1*time.Second, "should have cancelled quickly")
 
 	calls := target.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call (first cut only), got %d: %v", len(calls), calls)
-	}
+	require.Len(t, calls, 1)
 }
 
 func TestRunner_ActionError(t *testing.T) {
@@ -284,13 +239,9 @@ func TestRunner_ActionError(t *testing.T) {
 	}
 
 	err := Run(context.Background(), macro, target)
-	if err == nil {
-		t.Fatal("expected error from failed cut")
-	}
+	require.Error(t, err, "expected error from failed cut")
 
 	// Second step should not have been called
 	calls := target.getCalls()
-	if len(calls) != 1 {
-		t.Fatalf("expected 1 call (failed cut only), got %d: %v", len(calls), calls)
-	}
+	require.Len(t, calls, 1)
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/media"
 )
@@ -104,26 +105,14 @@ func TestDelayBuffer_ZeroDelayPassthrough(t *testing.T) {
 	db.handleCaptionFrame("cam1", cf)
 
 	// All frames should be delivered immediately (no ticker needed).
-	if got := handler.videoCount(); got != 1 {
-		t.Fatalf("video count = %d, want 1", got)
-	}
-	if got := handler.audioCount(); got != 1 {
-		t.Fatalf("audio count = %d, want 1", got)
-	}
-	if got := handler.captionCount(); got != 1 {
-		t.Fatalf("caption count = %d, want 1", got)
-	}
+	require.Equal(t, 1, handler.videoCount(), "video count")
+	require.Equal(t, 1, handler.audioCount(), "audio count")
+	require.Equal(t, 1, handler.captionCount(), "caption count")
 
 	videos := handler.getVideos()
-	if videos[0].sourceKey != "cam1" {
-		t.Errorf("source = %q, want %q", videos[0].sourceKey, "cam1")
-	}
-	if videos[0].frame != vf {
-		t.Error("video frame pointer mismatch")
-	}
-	if videos[0].recvTime.Before(before) {
-		t.Error("video received before push time")
-	}
+	require.Equal(t, "cam1", videos[0].sourceKey)
+	require.Equal(t, vf, videos[0].frame, "video frame pointer mismatch")
+	require.False(t, videos[0].recvTime.Before(before), "video received before push time")
 }
 
 func TestDelayBuffer_100msDelay(t *testing.T) {
@@ -139,24 +128,16 @@ func TestDelayBuffer_100msDelay(t *testing.T) {
 
 	// Frame should NOT be delivered immediately.
 	time.Sleep(10 * time.Millisecond)
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count after 10ms = %d, want 0", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count after 10ms")
 
 	// Wait for the delay to elapse (100ms + some margin for ticker).
 	time.Sleep(150 * time.Millisecond)
-	if got := handler.videoCount(); got != 1 {
-		t.Fatalf("video count after 160ms = %d, want 1", got)
-	}
+	require.Equal(t, 1, handler.videoCount(), "video count after 160ms")
 
 	videos := handler.getVideos()
 	elapsed := videos[0].recvTime.Sub(pushTime)
-	if elapsed < 90*time.Millisecond {
-		t.Errorf("frame delivered too early: %v, want >= 90ms", elapsed)
-	}
-	if elapsed > 200*time.Millisecond {
-		t.Errorf("frame delivered too late: %v, want <= 200ms", elapsed)
-	}
+	require.GreaterOrEqual(t, elapsed, 90*time.Millisecond, "frame delivered too early: %v", elapsed)
+	require.LessOrEqual(t, elapsed, 200*time.Millisecond, "frame delivered too late: %v", elapsed)
 }
 
 func TestDelayBuffer_PairedVideoAndAudio(t *testing.T) {
@@ -175,18 +156,13 @@ func TestDelayBuffer_PairedVideoAndAudio(t *testing.T) {
 
 	// Neither should be delivered immediately.
 	time.Sleep(10 * time.Millisecond)
-	if handler.videoCount() != 0 || handler.audioCount() != 0 {
-		t.Fatal("frames delivered before delay elapsed")
-	}
+	require.Equal(t, 0, handler.videoCount(), "video delivered before delay elapsed")
+	require.Equal(t, 0, handler.audioCount(), "audio delivered before delay elapsed")
 
 	// Wait for delay to elapse.
 	time.Sleep(130 * time.Millisecond)
-	if got := handler.videoCount(); got != 1 {
-		t.Fatalf("video count = %d, want 1", got)
-	}
-	if got := handler.audioCount(); got != 1 {
-		t.Fatalf("audio count = %d, want 1", got)
-	}
+	require.Equal(t, 1, handler.videoCount(), "video count")
+	require.Equal(t, 1, handler.audioCount(), "audio count")
 
 	// Both should arrive at approximately the same time.
 	videos := handler.getVideos()
@@ -195,19 +171,13 @@ func TestDelayBuffer_PairedVideoAndAudio(t *testing.T) {
 	if diff < 0 {
 		diff = -diff
 	}
-	if diff > 10*time.Millisecond {
-		t.Errorf("video/audio delivery difference = %v, want < 10ms", diff)
-	}
+	require.Less(t, diff, 10*time.Millisecond, "video/audio delivery difference = %v, want < 10ms", diff)
 
 	// Both should have correct delay from push time.
 	vElapsed := videos[0].recvTime.Sub(pushTime)
 	aElapsed := audios[0].recvTime.Sub(pushTime)
-	if vElapsed < 70*time.Millisecond {
-		t.Errorf("video delivered too early: %v", vElapsed)
-	}
-	if aElapsed < 70*time.Millisecond {
-		t.Errorf("audio delivered too early: %v", aElapsed)
-	}
+	require.GreaterOrEqual(t, vElapsed, 70*time.Millisecond, "video delivered too early: %v", vElapsed)
+	require.GreaterOrEqual(t, aElapsed, 70*time.Millisecond, "audio delivered too early: %v", aElapsed)
 }
 
 func TestDelayBuffer_IndependentSources(t *testing.T) {
@@ -238,12 +208,8 @@ func TestDelayBuffer_IndependentSources(t *testing.T) {
 			cam2Count++
 		}
 	}
-	if cam1Count != 1 {
-		t.Errorf("cam1 video count at 100ms = %d, want 1", cam1Count)
-	}
-	if cam2Count != 0 {
-		t.Errorf("cam2 video count at 100ms = %d, want 0", cam2Count)
-	}
+	require.Equal(t, 1, cam1Count, "cam1 video count at 100ms")
+	require.Equal(t, 0, cam2Count, "cam2 video count at 100ms")
 
 	// After another 100ms (total ~200ms), cam2 should also be delivered.
 	time.Sleep(100 * time.Millisecond)
@@ -254,9 +220,7 @@ func TestDelayBuffer_IndependentSources(t *testing.T) {
 			cam2Count++
 		}
 	}
-	if cam2Count != 1 {
-		t.Errorf("cam2 video count at 200ms = %d, want 1", cam2Count)
-	}
+	require.Equal(t, 1, cam2Count, "cam2 video count at 200ms")
 }
 
 func TestDelayBuffer_MidStreamDelayChange(t *testing.T) {
@@ -281,18 +245,12 @@ func TestDelayBuffer_MidStreamDelayChange(t *testing.T) {
 	// After ~80ms, vf2 (50ms delay) should be delivered, but vf1 (200ms delay) not yet.
 	time.Sleep(80 * time.Millisecond)
 	videos := handler.getVideos()
-	if len(videos) != 1 {
-		t.Fatalf("video count at 90ms = %d, want 1", len(videos))
-	}
-	if videos[0].frame != vf2 {
-		t.Error("expected vf2 to be delivered first (shorter delay)")
-	}
+	require.Equal(t, 1, len(videos), "video count at 90ms")
+	require.Equal(t, vf2, videos[0].frame, "expected vf2 to be delivered first (shorter delay)")
 
 	// After the original 200ms, vf1 should also be delivered.
 	time.Sleep(150 * time.Millisecond)
-	if got := handler.videoCount(); got != 2 {
-		t.Fatalf("video count at 240ms = %d, want 2", got)
-	}
+	require.Equal(t, 2, handler.videoCount(), "video count at 240ms")
 }
 
 func TestDelayBuffer_RemoveSource(t *testing.T) {
@@ -311,14 +269,10 @@ func TestDelayBuffer_RemoveSource(t *testing.T) {
 
 	// The queued frame should be discarded (not delivered).
 	time.Sleep(300 * time.Millisecond)
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count after remove = %d, want 0 (frame should be discarded)", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count after remove (frame should be discarded)")
 
 	// Verify the source delay is gone.
-	if got := db.GetDelay("cam1"); got != 0 {
-		t.Errorf("delay after remove = %v, want 0", got)
-	}
+	require.Equal(t, time.Duration(0), db.GetDelay("cam1"), "delay after remove")
 }
 
 func TestDelayBuffer_Close(t *testing.T) {
@@ -335,9 +289,7 @@ func TestDelayBuffer_Close(t *testing.T) {
 
 	// After close, queued frames are discarded.
 	time.Sleep(50 * time.Millisecond)
-	if got := handler.videoCount(); got != 0 {
-		t.Fatalf("video count after close = %d, want 0", got)
-	}
+	require.Equal(t, 0, handler.videoCount(), "video count after close")
 
 	// Calling Close again should not panic.
 	db.Close()

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type mockProvider struct{}
@@ -20,19 +22,11 @@ func TestCollector_Snapshot(t *testing.T) {
 
 	snap := c.Snapshot()
 
-	if snap["test"] == nil {
-		t.Fatal("expected test provider in snapshot")
-	}
+	require.NotNil(t, snap["test"], "expected test provider in snapshot")
 	provider := snap["test"].(map[string]any)
-	if provider["frames"] != 42 {
-		t.Errorf("expected frames=42, got %v", provider["frames"])
-	}
-	if snap["uptime_ms"] == nil {
-		t.Error("expected uptime_ms in snapshot")
-	}
-	if snap["events"] == nil {
-		t.Error("expected events in snapshot")
-	}
+	require.Equal(t, 42, provider["frames"])
+	require.NotNil(t, snap["uptime_ms"], "expected uptime_ms in snapshot")
+	require.NotNil(t, snap["events"], "expected events in snapshot")
 }
 
 func TestCollector_HandleSnapshot(t *testing.T) {
@@ -43,18 +37,11 @@ func TestCollector_HandleSnapshot(t *testing.T) {
 	w := httptest.NewRecorder()
 	c.HandleSnapshot(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	if w.Header().Get("Content-Type") != "application/json" {
-		t.Errorf("expected application/json, got %s", w.Header().Get("Content-Type"))
-	}
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 
 	var result map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	if result["test"] == nil {
-		t.Error("expected test in response")
-	}
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err, "invalid JSON")
+	require.NotNil(t, result["test"], "expected test in response")
 }

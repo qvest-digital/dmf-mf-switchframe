@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestEndpointSubsystem(t *testing.T) {
@@ -37,19 +39,17 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/output/srt/stop", SubsystemOutput, true},
 		{"/api/presets/abc/recall", SubsystemSwitching, true}, // preset recall
 		{"/api/presets/abc", SubsystemSwitching, true},        // preset mutation (update/delete)
-		{"/api/switch/state", "", false},       // GET endpoint
-		{"/api/operator/register", "", false},   // operator management
-		{"/api/presets", "", false},              // list endpoint (no trailing slash)
+		{"/api/switch/state", "", false},                      // GET endpoint
+		{"/api/operator/register", "", false},                 // operator management
+		{"/api/presets", "", false},                            // list endpoint (no trailing slash)
 		{"/api/unknown", "", false},
 	}
 
 	for _, tc := range tests {
 		sub, ok := EndpointSubsystem(tc.path)
-		if ok != tc.ok {
-			t.Errorf("EndpointSubsystem(%q): ok=%v, want %v", tc.path, ok, tc.ok)
-		}
-		if ok && sub != tc.sub {
-			t.Errorf("EndpointSubsystem(%q): sub=%v, want %v", tc.path, sub, tc.sub)
+		require.Equal(t, tc.ok, ok, "EndpointSubsystem(%q): ok mismatch", tc.path)
+		if ok {
+			require.Equal(t, tc.sub, sub, "EndpointSubsystem(%q): subsystem mismatch", tc.path)
 		}
 	}
 }
@@ -70,9 +70,7 @@ func TestMiddleware_NoOperatorsPassesThrough(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 with no operators, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 with no operators")
 }
 
 func TestMiddleware_GETPassesThrough(t *testing.T) {
@@ -94,9 +92,7 @@ func TestMiddleware_GETPassesThrough(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 for GET, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for GET")
 }
 
 func TestMiddleware_OperatorEndpointsExempt(t *testing.T) {
@@ -117,9 +113,7 @@ func TestMiddleware_OperatorEndpointsExempt(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 for operator endpoint, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for operator endpoint")
 }
 
 func TestMiddleware_RoleForbidden(t *testing.T) {
@@ -142,9 +136,7 @@ func TestMiddleware_RoleForbidden(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("expected 403 for audio role on switching, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusForbidden, rr.Code, "expected 403 for audio role on switching")
 }
 
 func TestMiddleware_LockConflict(t *testing.T) {
@@ -173,9 +165,7 @@ func TestMiddleware_LockConflict(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusConflict {
-		t.Errorf("expected 409 for locked subsystem, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusConflict, rr.Code, "expected 409 for locked subsystem")
 }
 
 func TestMiddleware_LockOwnerAllowed(t *testing.T) {
@@ -200,9 +190,7 @@ func TestMiddleware_LockOwnerAllowed(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 for lock owner, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for lock owner")
 }
 
 func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
@@ -226,7 +214,5 @@ func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
 	rr := httptest.NewRecorder()
 	wrapped.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200 for unknown endpoint, got %d", rr.Code)
-	}
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for unknown endpoint")
 }

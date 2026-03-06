@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -26,9 +27,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 	// Create temp dir with a test stinger
 	dir := t.TempDir()
 	stingerDir := filepath.Join(dir, "test-wipe")
-	if err := os.MkdirAll(stingerDir, 0755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 
 	// Create 3 small test PNG frames (4x4 pixels, even dimensions for YUV420)
 	for i := 0; i < 3; i++ {
@@ -40,20 +39,14 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 		}
 		fname := fmt.Sprintf("frame_%03d.png", i)
 		f, err := os.Create(filepath.Join(stingerDir, fname))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := png.Encode(f, img); err != nil {
-			_ = f.Close()
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
+		err = png.Encode(f, img)
 		_ = f.Close()
+		require.NoError(t, err)
 	}
 
 	store, err := stinger.NewStingerStore(dir, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()
 	sw := switcher.New(programRelay)
@@ -84,17 +77,12 @@ func TestStingerListEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	var names []string
-	if err := json.NewDecoder(rec.Body).Decode(&names); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(names) != 1 || names[0] != "test-wipe" {
-		t.Errorf("got names %v, want [test-wipe]", names)
-	}
+	err := json.NewDecoder(rec.Body).Decode(&names)
+	require.NoError(t, err)
+	require.Equal(t, []string{"test-wipe"}, names)
 }
 
 func TestStingerDeleteEndpoint(t *testing.T) {
@@ -104,13 +92,8 @@ func TestStingerDeleteEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
-	}
-
-	if names := store.List(); len(names) != 0 {
-		t.Errorf("expected empty list after delete, got %v", names)
-	}
+	require.Equal(t, http.StatusNoContent, rec.Code, "body: %s", rec.Body.String())
+	require.Empty(t, store.List(), "expected empty list after delete")
 }
 
 func TestStingerDeleteNotFound(t *testing.T) {
@@ -120,9 +103,7 @@ func TestStingerDeleteNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestStingerCutPointEndpoint(t *testing.T) {
@@ -134,17 +115,11 @@ func TestStingerCutPointEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	clip, ok := store.Get("test-wipe")
-	if !ok {
-		t.Fatal("stinger not found after cut point update")
-	}
-	if clip.CutPoint != 0.3 {
-		t.Errorf("CutPoint = %f, want 0.3", clip.CutPoint)
-	}
+	require.True(t, ok, "stinger not found after cut point update")
+	require.Equal(t, 0.3, clip.CutPoint)
 }
 
 func TestStingerCutPointInvalid(t *testing.T) {
@@ -156,9 +131,7 @@ func TestStingerCutPointInvalid(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestStingerCutPointNotFound(t *testing.T) {
@@ -170,9 +143,7 @@ func TestStingerCutPointNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestTransitionStingerTypeAccepted(t *testing.T) {
@@ -184,9 +155,7 @@ func TestTransitionStingerTypeAccepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestTransitionStingerMissingName(t *testing.T) {
@@ -198,9 +167,7 @@ func TestTransitionStingerMissingName(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestTransitionStingerClipNotFound(t *testing.T) {
@@ -212,9 +179,7 @@ func TestTransitionStingerClipNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestTransitionStingerNoStore(t *testing.T) {
@@ -227,7 +192,5 @@ func TestTransitionStingerNoStore(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotImplemented, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotImplemented, rec.Code, "body: %s", rec.Body.String())
 }

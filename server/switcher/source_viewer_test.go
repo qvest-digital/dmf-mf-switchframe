@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
@@ -54,9 +55,7 @@ func TestSourceViewerImplementsViewer(t *testing.T) {
 	handler := &mockFrameHandler{}
 	sv := newSourceViewer("camera1", handler)
 	var _ distribution.Viewer = sv
-	if sv.ID() != "switchframe:camera1" {
-		t.Errorf("ID() = %q, want %q", sv.ID(), "switchframe:camera1")
-	}
+	require.Equal(t, "switchframe:camera1", sv.ID())
 }
 
 func TestSourceViewerForwardsVideo(t *testing.T) {
@@ -66,15 +65,9 @@ func TestSourceViewerForwardsVideo(t *testing.T) {
 	sv.SendVideo(frame)
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
-	if len(handler.videos) != 1 {
-		t.Fatalf("got %d video frames, want 1", len(handler.videos))
-	}
-	if handler.videos[0].sourceKey != "camera1" {
-		t.Errorf("sourceKey = %q, want %q", handler.videos[0].sourceKey, "camera1")
-	}
-	if handler.videos[0].frame != frame {
-		t.Error("frame pointer mismatch")
-	}
+	require.Equal(t, 1, len(handler.videos), "video frame count")
+	require.Equal(t, "camera1", handler.videos[0].sourceKey)
+	require.Equal(t, frame, handler.videos[0].frame, "frame pointer mismatch")
 }
 
 func TestSourceViewerForwardsAudio(t *testing.T) {
@@ -84,21 +77,15 @@ func TestSourceViewerForwardsAudio(t *testing.T) {
 	sv.SendAudio(frame)
 	handler.mu.Lock()
 	defer handler.mu.Unlock()
-	if len(handler.audios) != 1 {
-		t.Fatalf("got %d audio frames, want 1", len(handler.audios))
-	}
-	if handler.audios[0].sourceKey != "camera1" {
-		t.Errorf("sourceKey = %q, want %q", handler.audios[0].sourceKey, "camera1")
-	}
+	require.Equal(t, 1, len(handler.audios), "audio frame count")
+	require.Equal(t, "camera1", handler.audios[0].sourceKey)
 }
 
 func TestSourceViewerStats(t *testing.T) {
 	handler := &mockFrameHandler{}
 	sv := newSourceViewer("camera1", handler)
 	stats := sv.Stats()
-	if stats.ID != "switchframe:camera1" {
-		t.Errorf("Stats().ID = %q, want %q", stats.ID, "switchframe:camera1")
-	}
+	require.Equal(t, "switchframe:camera1", stats.ID)
 }
 
 // TestSourceViewer_ConcurrentFrameSyncToggle verifies that concurrently toggling

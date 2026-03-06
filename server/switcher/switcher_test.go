@@ -54,22 +54,12 @@ func (m *mockProgramViewer) Stats() distribution.ViewerStats {
 func TestNewSwitcher(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
-	if sw == nil {
-		t.Fatal("New() returned nil")
-	}
+	require.NotNil(t, sw)
 	state := sw.State()
-	if state.ProgramSource != "" {
-		t.Errorf("ProgramSource = %q, want empty", state.ProgramSource)
-	}
-	if state.PreviewSource != "" {
-		t.Errorf("PreviewSource = %q, want empty", state.PreviewSource)
-	}
-	if state.TransitionType != "cut" {
-		t.Errorf("TransitionType = %q, want %q", state.TransitionType, "cut")
-	}
-	if len(state.Sources) != 0 {
-		t.Errorf("Sources has %d entries, want 0", len(state.Sources))
-	}
+	require.Equal(t, "", state.ProgramSource)
+	require.Equal(t, "", state.PreviewSource)
+	require.Equal(t, "cut", state.TransitionType)
+	require.Empty(t, state.Sources)
 }
 
 func TestRegisterSource(t *testing.T) {
@@ -80,20 +70,12 @@ func TestRegisterSource(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 
 	state := sw.State()
-	if len(state.Sources) != 1 {
-		t.Fatalf("Sources has %d entries, want 1", len(state.Sources))
-	}
+	require.Len(t, state.Sources, 1)
 	src, ok := state.Sources["camera1"]
-	if !ok {
-		t.Fatal("Sources missing 'camera1'")
-	}
+	require.True(t, ok, "Sources missing 'camera1'")
 	// Newly registered source with no frames yet shows as offline.
-	if src.Status != string(SourceOffline) {
-		t.Errorf("Source status = %q, want %q", src.Status, SourceOffline)
-	}
-	if src.Key != "camera1" {
-		t.Errorf("Source key = %q, want %q", src.Key, "camera1")
-	}
+	require.Equal(t, string(SourceOffline), src.Status)
+	require.Equal(t, "camera1", src.Key)
 }
 
 func TestUnregisterSource(t *testing.T) {
@@ -105,9 +87,7 @@ func TestUnregisterSource(t *testing.T) {
 	sw.UnregisterSource("camera1")
 
 	state := sw.State()
-	if len(state.Sources) != 0 {
-		t.Errorf("Sources has %d entries, want 0", len(state.Sources))
-	}
+	require.Empty(t, state.Sources)
 }
 
 func TestRegisterVirtualSource(t *testing.T) {
@@ -199,7 +179,7 @@ func TestUnregisterSource_BroadcastsState(t *testing.T) {
 	select {
 	case <-stateCh:
 	case <-time.After(1 * time.Second):
-		t.Fatal("no state broadcast on RegisterVirtualSource")
+		require.Fail(t, "no state broadcast on RegisterVirtualSource")
 	}
 
 	sw.UnregisterSource("replay")
@@ -208,7 +188,7 @@ func TestUnregisterSource_BroadcastsState(t *testing.T) {
 	case s := <-stateCh:
 		require.Empty(t, s.Sources, "broadcast should show source removed")
 	case <-time.After(1 * time.Second):
-		t.Fatal("no state broadcast on UnregisterSource")
+		require.Fail(t, "no state broadcast on UnregisterSource")
 	}
 }
 
@@ -232,20 +212,12 @@ func TestCutToSource(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 
 	err := sw.Cut(context.Background(), "camera1")
-	if err != nil {
-		t.Fatalf("Cut() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	state := sw.State()
-	if state.ProgramSource != "camera1" {
-		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera1")
-	}
-	if state.TallyState["camera1"] != string(TallyProgram) {
-		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], TallyProgram)
-	}
-	if state.Seq != 1 {
-		t.Errorf("Seq = %d, want 1", state.Seq)
-	}
+	require.Equal(t, "camera1", state.ProgramSource)
+	require.Equal(t, string(TallyProgram), state.TallyState["camera1"])
+	require.Equal(t, uint64(1), state.Seq)
 }
 
 func TestCutSwapsPreview(t *testing.T) {
@@ -257,23 +229,13 @@ func TestCutSwapsPreview(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1, set preview to camera2, then cut to camera2.
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut(camera1) error: %v", err)
-	}
-	if err := sw.SetPreview(context.Background(), "camera2"); err != nil {
-		t.Fatalf("SetPreview(camera2) error: %v", err)
-	}
-	if err := sw.Cut(context.Background(), "camera2"); err != nil {
-		t.Fatalf("Cut(camera2) error: %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
+	require.NoError(t, sw.SetPreview(context.Background(), "camera2"))
+	require.NoError(t, sw.Cut(context.Background(), "camera2"))
 
 	state := sw.State()
-	if state.ProgramSource != "camera2" {
-		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera2")
-	}
-	if state.PreviewSource != "camera1" {
-		t.Errorf("PreviewSource = %q, want %q", state.PreviewSource, "camera1")
-	}
+	require.Equal(t, "camera2", state.ProgramSource)
+	require.Equal(t, "camera1", state.PreviewSource)
 }
 
 func TestCutToMissingSourceErrors(t *testing.T) {
@@ -281,9 +243,7 @@ func TestCutToMissingSourceErrors(t *testing.T) {
 	sw := New(programRelay)
 
 	err := sw.Cut(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("Cut(nonexistent) should return error")
-	}
+	require.Error(t, err)
 }
 
 func TestCutToCurrentProgramIsNoop(t *testing.T) {
@@ -292,20 +252,14 @@ func TestCutToCurrentProgramIsNoop(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut() error: %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 	seqAfterFirst := sw.State().Seq
 
 	// Second cut to the same source should be a no-op.
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut() error: %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 	seqAfterSecond := sw.State().Seq
 
-	if seqAfterSecond != seqAfterFirst {
-		t.Errorf("Seq changed from %d to %d; want no change", seqAfterFirst, seqAfterSecond)
-	}
+	require.Equal(t, seqAfterFirst, seqAfterSecond, "Seq should not change on no-op cut")
 }
 
 func TestSetPreview(t *testing.T) {
@@ -315,17 +269,11 @@ func TestSetPreview(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 
 	err := sw.SetPreview(context.Background(), "camera1")
-	if err != nil {
-		t.Fatalf("SetPreview() error: %v", err)
-	}
+	require.NoError(t, err)
 
 	state := sw.State()
-	if state.PreviewSource != "camera1" {
-		t.Errorf("PreviewSource = %q, want %q", state.PreviewSource, "camera1")
-	}
-	if state.TallyState["camera1"] != string(TallyPreview) {
-		t.Errorf("tally[camera1] = %q, want %q", state.TallyState["camera1"], TallyPreview)
-	}
+	require.Equal(t, "camera1", state.PreviewSource)
+	require.Equal(t, string(TallyPreview), state.TallyState["camera1"])
 }
 
 func TestSetPreviewMissingSourceErrors(t *testing.T) {
@@ -333,9 +281,7 @@ func TestSetPreviewMissingSourceErrors(t *testing.T) {
 	sw := New(programRelay)
 
 	err := sw.SetPreview(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("SetPreview(nonexistent) should return error")
-	}
+	require.Error(t, err)
 }
 
 func TestFrameForwarding(t *testing.T) {
@@ -352,9 +298,7 @@ func TestFrameForwarding(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1.
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut() error: %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 
 	// Broadcast a video frame on camera1's relay -- should reach the viewer.
 	cam1Frame := &media.VideoFrame{PTS: 1000, IsKeyframe: true}
@@ -367,12 +311,8 @@ func TestFrameForwarding(t *testing.T) {
 	viewer.mu.Lock()
 	defer viewer.mu.Unlock()
 
-	if len(viewer.videos) != 1 {
-		t.Fatalf("got %d video frames, want 1", len(viewer.videos))
-	}
-	if viewer.videos[0].PTS != 1000 {
-		t.Errorf("forwarded frame PTS = %d, want 1000", viewer.videos[0].PTS)
-	}
+	require.Equal(t, 1, len(viewer.videos), "video frame count")
+	require.Equal(t, int64(1000), viewer.videos[0].PTS)
 }
 
 func TestAudioFrameForwarding(t *testing.T) {
@@ -387,9 +327,7 @@ func TestAudioFrameForwarding(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	if err := sw.Cut(context.Background(), "camera1"); err != nil {
-		t.Fatalf("Cut() error: %v", err)
-	}
+	require.NoError(t, sw.Cut(context.Background(), "camera1"))
 
 	// Send a keyframe to clear the IDR gate.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
@@ -405,12 +343,8 @@ func TestAudioFrameForwarding(t *testing.T) {
 	viewer.mu.Lock()
 	defer viewer.mu.Unlock()
 
-	if len(viewer.audios) != 1 {
-		t.Fatalf("got %d audio frames, want 1", len(viewer.audios))
-	}
-	if viewer.audios[0].PTS != 500 {
-		t.Errorf("forwarded audio PTS = %d, want 500", viewer.audios[0].PTS)
-	}
+	require.Equal(t, 1, len(viewer.audios), "audio frame count")
+	require.Equal(t, int64(500), viewer.audios[0].PTS)
 }
 
 func TestCutGatesUntilKeyframe(t *testing.T) {
@@ -445,18 +379,10 @@ func TestCutGatesUntilKeyframe(t *testing.T) {
 	defer viewer.mu.Unlock()
 
 	// Should have: cam1 keyframe(100) + cam2 keyframe(300) + cam2 P-frame(400) = 3
-	if len(viewer.videos) != 3 {
-		t.Fatalf("got %d video frames, want 3", len(viewer.videos))
-	}
-	if viewer.videos[0].PTS != 100 {
-		t.Errorf("frame[0] PTS = %d, want 100", viewer.videos[0].PTS)
-	}
-	if viewer.videos[1].PTS != 300 {
-		t.Errorf("frame[1] PTS = %d, want 300", viewer.videos[1].PTS)
-	}
-	if viewer.videos[2].PTS != 400 {
-		t.Errorf("frame[2] PTS = %d, want 400", viewer.videos[2].PTS)
-	}
+	require.Equal(t, 3, len(viewer.videos), "video frame count")
+	require.Equal(t, int64(100), viewer.videos[0].PTS)
+	require.Equal(t, int64(300), viewer.videos[1].PTS)
+	require.Equal(t, int64(400), viewer.videos[2].PTS)
 }
 
 func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
@@ -489,12 +415,8 @@ func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
 	viewer.mu.Lock()
 	defer viewer.mu.Unlock()
 
-	if len(viewer.audios) != 1 {
-		t.Fatalf("got %d audio frames, want 1", len(viewer.audios))
-	}
-	if viewer.audios[0].PTS != 400 {
-		t.Errorf("audio PTS = %d, want 400", viewer.audios[0].PTS)
-	}
+	require.Equal(t, 1, len(viewer.audios), "audio frame count")
+	require.Equal(t, int64(400), viewer.audios[0].PTS)
 }
 
 func TestHealthStatusUpdatesOnFrames(t *testing.T) {
@@ -506,9 +428,7 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 
 	// Before any frames: offline.
 	state := sw.State()
-	if state.Sources["camera1"].Status != string(SourceOffline) {
-		t.Errorf("before frames: status = %q, want %q", state.Sources["camera1"].Status, SourceOffline)
-	}
+	require.Equal(t, string(SourceOffline), state.Sources["camera1"].Status, "before frames")
 
 	// Send a frame (source must be on program for handleVideoFrame to record).
 	_ = sw.Cut(context.Background(), "camera1")
@@ -516,9 +436,7 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 
 	// After frame: healthy.
 	state = sw.State()
-	if state.Sources["camera1"].Status != string(SourceHealthy) {
-		t.Errorf("after frame: status = %q, want %q", state.Sources["camera1"].Status, SourceHealthy)
-	}
+	require.Equal(t, string(SourceHealthy), state.Sources["camera1"].Status, "after frame")
 }
 
 func TestMultipleStateCallbacks(t *testing.T) {
@@ -658,17 +576,9 @@ func TestSourceKeys(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	keys := sw.SourceKeys()
-	if len(keys) != 2 {
-		t.Fatalf("SourceKeys() returned %d keys, want 2", len(keys))
-	}
-
-	keySet := make(map[string]bool)
-	for _, k := range keys {
-		keySet[k] = true
-	}
-	if !keySet["camera1"] || !keySet["camera2"] {
-		t.Errorf("SourceKeys() = %v, want [camera1, camera2]", keys)
-	}
+	require.Len(t, keys, 2)
+	require.Contains(t, keys, "camera1")
+	require.Contains(t, keys, "camera2")
 }
 
 func TestAllAudioRoutedToMixer(t *testing.T) {

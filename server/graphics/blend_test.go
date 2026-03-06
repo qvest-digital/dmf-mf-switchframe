@@ -2,6 +2,8 @@ package graphics
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // makeYUV420 creates a YUV420 planar buffer filled with the given Y, Cb, Cr values.
@@ -44,9 +46,7 @@ func TestAlphaBlendRGBA_TransparentPassthrough(t *testing.T) {
 
 	// YUV should be unchanged because overlay is fully transparent.
 	for i := 0; i < width*height; i++ {
-		if yuv[i] != origY[i] {
-			t.Errorf("Y[%d] = %d, want %d", i, yuv[i], origY[i])
-		}
+		require.Equal(t, origY[i], yuv[i], "Y[%d] should be unchanged", i)
 	}
 }
 
@@ -65,18 +65,12 @@ func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
 	// Cr = 0.5*255 - 0.4542*255 - 0.0458*255 + 128 = 128
 	ySize := width * height
 	for i := 0; i < ySize; i++ {
-		if yuv[i] != 255 {
-			t.Errorf("Y[%d] = %d, want 255 (white)", i, yuv[i])
-		}
+		require.Equal(t, byte(255), yuv[i], "Y[%d] should be 255 (white)", i)
 	}
 	uvSize := (width / 2) * (height / 2)
 	for i := 0; i < uvSize; i++ {
-		if yuv[ySize+i] != 128 {
-			t.Errorf("Cb[%d] = %d, want 128", i, yuv[ySize+i])
-		}
-		if yuv[ySize+uvSize+i] != 128 {
-			t.Errorf("Cr[%d] = %d, want 128", i, yuv[ySize+uvSize+i])
-		}
+		require.Equal(t, byte(128), yuv[ySize+i], "Cb[%d] should be 128", i)
+		require.Equal(t, byte(128), yuv[ySize+uvSize+i], "Cr[%d] should be 128", i)
 	}
 }
 
@@ -96,9 +90,8 @@ func TestAlphaBlendRGBA_HalfAlpha(t *testing.T) {
 	ySize := width * height
 	for i := 0; i < ySize; i++ {
 		diff := int(yuv[i]) - int(expected)
-		if diff < -2 || diff > 2 {
-			t.Errorf("Y[%d] = %d, want ~%d (50%% alpha blend)", i, yuv[i], expected)
-		}
+		require.True(t, diff >= -2 && diff <= 2,
+			"Y[%d] = %d, want ~%d (50%% alpha blend)", i, yuv[i], expected)
 	}
 }
 
@@ -130,9 +123,8 @@ func TestAlphaBlendRGBA_LowerStrip(t *testing.T) {
 	for row := 0; row < 6; row++ {
 		for col := 0; col < width; col++ {
 			idx := row*width + col
-			if yuv[idx] != 149 {
-				t.Errorf("Y[%d,%d] = %d, want 149 (unchanged green)", row, col, yuv[idx])
-			}
+			require.Equal(t, byte(149), yuv[idx],
+				"Y[%d,%d] should be 149 (unchanged green)", row, col)
 		}
 	}
 
@@ -140,9 +132,8 @@ func TestAlphaBlendRGBA_LowerStrip(t *testing.T) {
 	for row := 6; row < 8; row++ {
 		for col := 0; col < width; col++ {
 			idx := row*width + col
-			if yuv[idx] != 255 {
-				t.Errorf("Y[%d,%d] = %d, want 255 (white overlay)", row, col, yuv[idx])
-			}
+			require.Equal(t, byte(255), yuv[idx],
+				"Y[%d,%d] should be 255 (white overlay)", row, col)
 		}
 	}
 }
@@ -160,9 +151,8 @@ func TestAlphaBlendRGBA_AlphaScale(t *testing.T) {
 	// Frame should be unchanged (alphaScale = 0 means skip all pixels)
 	ySize := width * height
 	for i := 0; i < ySize; i++ {
-		if yuv[i] != 0 {
-			t.Errorf("Y[%d] = %d, want 0 (unchanged, alphaScale=0)", i, yuv[i])
-		}
+		require.Equal(t, byte(0), yuv[i],
+			"Y[%d] should be 0 (unchanged, alphaScale=0)", i)
 	}
 }
 

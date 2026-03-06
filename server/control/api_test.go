@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
@@ -36,13 +37,9 @@ func TestCutEndpoint(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	state := sw.State()
-	if state.ProgramSource != "camera2" {
-		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera2")
-	}
+	require.Equal(t, "camera2", state.ProgramSource)
 }
 
 func TestCutToMissingSourceReturns404(t *testing.T) {
@@ -52,9 +49,7 @@ func TestCutToMissingSourceReturns404(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestPreviewEndpoint(t *testing.T) {
@@ -64,13 +59,9 @@ func TestPreviewEndpoint(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
 	state := sw.State()
-	if state.PreviewSource != "camera1" {
-		t.Errorf("PreviewSource = %q, want %q", state.PreviewSource, "camera1")
-	}
+	require.Equal(t, "camera1", state.PreviewSource)
 }
 
 func TestStateEndpoint(t *testing.T) {
@@ -79,16 +70,11 @@ func TestStateEndpoint(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/switch/state", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
 	var state internal.ControlRoomState
-	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if state.ProgramSource != "camera1" {
-		t.Errorf("ProgramSource = %q, want %q", state.ProgramSource, "camera1")
-	}
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err)
+	require.Equal(t, "camera1", state.ProgramSource)
 }
 
 func TestHandleSetLabel(t *testing.T) {
@@ -100,9 +86,7 @@ func TestHandleSetLabel(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/sources/camera1/label", body)
 	w := httptest.NewRecorder()
 	api.Mux().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
-	}
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	// Verify in state
 	req = httptest.NewRequest("GET", "/api/switch/state", nil)
@@ -110,18 +94,14 @@ func TestHandleSetLabel(t *testing.T) {
 	api.Mux().ServeHTTP(w, req)
 	var state internal.ControlRoomState
 	_ = json.NewDecoder(w.Body).Decode(&state)
-	if state.Sources["camera1"].Label != "Camera 1" {
-		t.Errorf("Label = %q, want %q", state.Sources["camera1"].Label, "Camera 1")
-	}
+	require.Equal(t, "Camera 1", state.Sources["camera1"].Label)
 
 	// Unknown source
 	body = strings.NewReader(`{"label":"Nope"}`)
 	req = httptest.NewRequest("POST", "/api/sources/nonexistent/label", body)
 	w = httptest.NewRecorder()
 	api.Mux().ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestCutInvalidJSON(t *testing.T) {
@@ -130,9 +110,7 @@ func TestCutInvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestCutEmptySource(t *testing.T) {
@@ -141,9 +119,7 @@ func TestCutEmptySource(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestPreviewInvalidJSON(t *testing.T) {
@@ -152,9 +128,7 @@ func TestPreviewInvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestPreviewEmptySource(t *testing.T) {
@@ -163,9 +137,7 @@ func TestPreviewEmptySource(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestSetLabelInvalidJSON(t *testing.T) {
@@ -174,9 +146,7 @@ func TestSetLabelInvalidJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 // setupTransitionTestAPI creates a test API with transition support configured.
@@ -212,16 +182,11 @@ func TestHandleTransition(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	var state internal.ControlRoomState
-	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if !state.InTransition {
-		t.Error("expected InTransition=true")
-	}
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err)
+	require.True(t, state.InTransition, "expected InTransition=true")
 }
 
 func TestHandleTransitionBadType(t *testing.T) {
@@ -234,9 +199,7 @@ func TestHandleTransitionBadType(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestHandleTransitionBadDuration(t *testing.T) {
@@ -250,9 +213,7 @@ func TestHandleTransitionBadDuration(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 
 	// Too long
 	body = `{"source":"camera2","type":"mix","durationMs":6000}`
@@ -261,9 +222,7 @@ func TestHandleTransitionBadDuration(t *testing.T) {
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("too long: status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "too long: body: %s", rec.Body.String())
 }
 
 func TestHandleTransitionAlreadyOnProgram(t *testing.T) {
@@ -277,9 +236,7 @@ func TestHandleTransitionAlreadyOnProgram(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestHandleTransitionPosition(t *testing.T) {
@@ -292,9 +249,7 @@ func TestHandleTransitionPosition(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start transition: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "start transition: body: %s", rec.Body.String())
 
 	// Set position
 	body = `{"position":0.5}`
@@ -303,9 +258,7 @@ func TestHandleTransitionPosition(t *testing.T) {
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestHandleTransitionPositionNoTransition(t *testing.T) {
@@ -319,9 +272,7 @@ func TestHandleTransitionPositionNoTransition(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
-	}
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestHandleFTB(t *testing.T) {
@@ -332,16 +283,11 @@ func TestHandleFTB(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	var state internal.ControlRoomState
-	if err := json.NewDecoder(rec.Body).Decode(&state); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if !state.FTBActive {
-		t.Error("expected FTBActive=true")
-	}
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err)
+	require.True(t, state.FTBActive, "expected FTBActive=true")
 }
 
 func TestHandleFTBDuringMix(t *testing.T) {
@@ -354,18 +300,14 @@ func TestHandleFTBDuringMix(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start transition: status = %d; body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "start transition: body: %s", rec.Body.String())
 
 	// FTB during active mix should fail with 409
 	req = httptest.NewRequest("POST", "/api/switch/ftb", nil)
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusConflict, rec.Body.String())
-	}
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestSourcesEndpoint(t *testing.T) {
@@ -373,16 +315,11 @@ func TestSourcesEndpoint(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/sources", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
 	var sources map[string]internal.SourceInfo
-	if err := json.NewDecoder(rec.Body).Decode(&sources); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(sources) != 2 {
-		t.Errorf("got %d sources, want 2", len(sources))
-	}
+	err := json.NewDecoder(rec.Body).Decode(&sources)
+	require.NoError(t, err)
+	require.Len(t, sources, 2)
 }
 
 // --- Audio API tests ---
@@ -509,16 +446,10 @@ func TestAudioLevelEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(mock.levelCalls) != 1 {
-		t.Fatalf("expected 1 SetLevel call, got %d", len(mock.levelCalls))
-	}
-	if mock.levelCalls[0].source != "camera1" || mock.levelCalls[0].level != -6.0 {
-		t.Errorf("SetLevel called with (%q, %f), want (%q, %f)",
-			mock.levelCalls[0].source, mock.levelCalls[0].level, "camera1", -6.0)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.levelCalls, 1)
+	require.Equal(t, "camera1", mock.levelCalls[0].source)
+	require.Equal(t, -6.0, mock.levelCalls[0].level)
 }
 
 func TestAudioLevelUnknownSource(t *testing.T) {
@@ -530,9 +461,7 @@ func TestAudioLevelUnknownSource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestAudioLevelInvalidJSON(t *testing.T) {
@@ -543,9 +472,7 @@ func TestAudioLevelInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioLevelEmptySource(t *testing.T) {
@@ -557,9 +484,7 @@ func TestAudioLevelEmptySource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioLevelNoMixer(t *testing.T) {
@@ -571,9 +496,7 @@ func TestAudioLevelNoMixer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
-	}
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 func TestAudioMuteEndpoint(t *testing.T) {
@@ -585,16 +508,10 @@ func TestAudioMuteEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(mock.muteCalls) != 1 {
-		t.Fatalf("expected 1 SetMuted call, got %d", len(mock.muteCalls))
-	}
-	if mock.muteCalls[0].source != "camera1" || mock.muteCalls[0].muted != true {
-		t.Errorf("SetMuted called with (%q, %v), want (%q, %v)",
-			mock.muteCalls[0].source, mock.muteCalls[0].muted, "camera1", true)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.muteCalls, 1)
+	require.Equal(t, "camera1", mock.muteCalls[0].source)
+	require.True(t, mock.muteCalls[0].muted)
 }
 
 func TestAudioMuteUnknownSource(t *testing.T) {
@@ -606,9 +523,7 @@ func TestAudioMuteUnknownSource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestAudioMuteInvalidJSON(t *testing.T) {
@@ -619,9 +534,7 @@ func TestAudioMuteInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioMuteEmptySource(t *testing.T) {
@@ -633,9 +546,7 @@ func TestAudioMuteEmptySource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioAFVEndpoint(t *testing.T) {
@@ -647,16 +558,10 @@ func TestAudioAFVEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(mock.afvCalls) != 1 {
-		t.Fatalf("expected 1 SetAFV call, got %d", len(mock.afvCalls))
-	}
-	if mock.afvCalls[0].source != "camera2" || mock.afvCalls[0].afv != true {
-		t.Errorf("SetAFV called with (%q, %v), want (%q, %v)",
-			mock.afvCalls[0].source, mock.afvCalls[0].afv, "camera2", true)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.afvCalls, 1)
+	require.Equal(t, "camera2", mock.afvCalls[0].source)
+	require.True(t, mock.afvCalls[0].afv)
 }
 
 func TestAudioAFVUnknownSource(t *testing.T) {
@@ -668,9 +573,7 @@ func TestAudioAFVUnknownSource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestAudioAFVInvalidJSON(t *testing.T) {
@@ -681,9 +584,7 @@ func TestAudioAFVInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioAFVEmptySource(t *testing.T) {
@@ -695,9 +596,7 @@ func TestAudioAFVEmptySource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioMasterEndpoint(t *testing.T) {
@@ -709,15 +608,9 @@ func TestAudioMasterEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(mock.masterCalls) != 1 {
-		t.Fatalf("expected 1 SetMasterLevel call, got %d", len(mock.masterCalls))
-	}
-	if mock.masterCalls[0] != -3.5 {
-		t.Errorf("SetMasterLevel called with %f, want %f", mock.masterCalls[0], -3.5)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.masterCalls, 1)
+	require.Equal(t, -3.5, mock.masterCalls[0])
 }
 
 func TestAudioMasterInvalidJSON(t *testing.T) {
@@ -728,9 +621,7 @@ func TestAudioMasterInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioMasterNoMixer(t *testing.T) {
@@ -742,9 +633,7 @@ func TestAudioMasterNoMixer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
-	}
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 // --- Audio Trim Endpoint ---
@@ -758,16 +647,10 @@ func TestAudioTrimEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if len(mock.trimCalls) != 1 {
-		t.Fatalf("expected 1 SetTrim call, got %d", len(mock.trimCalls))
-	}
-	if mock.trimCalls[0].source != "camera1" || mock.trimCalls[0].level != -6.0 {
-		t.Errorf("SetTrim called with (%q, %f), want (%q, %f)",
-			mock.trimCalls[0].source, mock.trimCalls[0].level, "camera1", -6.0)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.trimCalls, 1)
+	require.Equal(t, "camera1", mock.trimCalls[0].source)
+	require.Equal(t, -6.0, mock.trimCalls[0].level)
 }
 
 func TestAudioTrimUnknownSource(t *testing.T) {
@@ -779,9 +662,7 @@ func TestAudioTrimUnknownSource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestAudioTrimOutOfRange(t *testing.T) {
@@ -793,9 +674,7 @@ func TestAudioTrimOutOfRange(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestAudioTrimInvalidJSON(t *testing.T) {
@@ -806,9 +685,7 @@ func TestAudioTrimInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioTrimEmptySource(t *testing.T) {
@@ -820,9 +697,7 @@ func TestAudioTrimEmptySource(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestAudioTrimNoMixer(t *testing.T) {
@@ -834,9 +709,7 @@ func TestAudioTrimNoMixer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
-	}
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 func TestSetEQ_ChannelNotFound(t *testing.T) {
@@ -848,9 +721,7 @@ func TestSetEQ_ChannelNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }
 
 func TestSetCompressor_ChannelNotFound(t *testing.T) {
@@ -862,7 +733,5 @@ func TestSetCompressor_ChannelNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-	}
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }

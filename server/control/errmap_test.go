@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/macro"
@@ -103,28 +104,20 @@ func TestErrorStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.err.Error(), func(t *testing.T) {
 			got := errorStatus(tt.err)
-			if got != tt.status {
-				t.Errorf("errorStatus(%v) = %d, want %d", tt.err, got, tt.status)
-			}
+			require.Equal(t, tt.status, got, "errorStatus(%v)", tt.err)
 		})
 	}
 }
 
 func TestErrorStatus_WrappedErrors(t *testing.T) {
 	wrapped := fmt.Errorf("context: %w", switcher.ErrSourceNotFound)
-	if got := errorStatus(wrapped); got != http.StatusNotFound {
-		t.Errorf("errorStatus(wrapped ErrSourceNotFound) = %d, want %d", got, http.StatusNotFound)
-	}
+	require.Equal(t, http.StatusNotFound, errorStatus(wrapped))
 
 	doubleWrapped := fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", replay.ErrPlayerActive))
-	if got := errorStatus(doubleWrapped); got != http.StatusConflict {
-		t.Errorf("errorStatus(double-wrapped ErrPlayerActive) = %d, want %d", got, http.StatusConflict)
-	}
+	require.Equal(t, http.StatusConflict, errorStatus(doubleWrapped))
 }
 
 func TestErrorStatus_UnknownError(t *testing.T) {
 	unknown := errors.New("some random error")
-	if got := errorStatus(unknown); got != http.StatusInternalServerError {
-		t.Errorf("errorStatus(unknown) = %d, want %d", got, http.StatusInternalServerError)
-	}
+	require.Equal(t, http.StatusInternalServerError, errorStatus(unknown))
 }

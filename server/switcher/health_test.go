@@ -26,9 +26,7 @@ func TestHealthStatusFromAge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := healthStatusFromAge(tt.age)
-			if got != tt.want {
-				t.Errorf("healthStatusFromAge(%v) = %q, want %q", tt.age, got, tt.want)
-			}
+			require.Equal(t, tt.want, got, "healthStatusFromAge(%v)", tt.age)
 		})
 	}
 }
@@ -37,9 +35,7 @@ func TestHealthMonitorRecordAndStatus(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.recordFrame("camera1")
 	status := hm.status("camera1")
-	if status != SourceHealthy {
-		t.Errorf("status = %q, want %q", status, SourceHealthy)
-	}
+	require.Equal(t, SourceHealthy, status)
 	hm.stop()
 }
 
@@ -49,18 +45,14 @@ func TestHealthMonitorStaleAfterNoFrames(t *testing.T) {
 	v.Store(time.Now().Add(-3 * time.Second).UnixNano())
 	hm.lastFrame.Store("camera1", v)
 	status := hm.status("camera1")
-	if status != SourceNoSignal {
-		t.Errorf("status = %q, want %q", status, SourceNoSignal)
-	}
+	require.Equal(t, SourceNoSignal, status)
 	hm.stop()
 }
 
 func TestHealthMonitorUnknownSource(t *testing.T) {
 	hm := newHealthMonitor()
 	status := hm.status("nonexistent")
-	if status != SourceOffline {
-		t.Errorf("status = %q, want %q", status, SourceOffline)
-	}
+	require.Equal(t, SourceOffline, status)
 	hm.stop()
 }
 

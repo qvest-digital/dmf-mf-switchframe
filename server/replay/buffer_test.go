@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 )
 
@@ -27,12 +28,8 @@ func makeVideoFrame(pts int64, keyframe bool, dataSize int) *media.VideoFrame {
 
 func TestNewReplayBuffer(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
-	if buf == nil {
-		t.Fatal("expected non-nil buffer")
-	}
-	if buf.maxDuration != 60*time.Second {
-		t.Errorf("expected maxDuration 60s, got %v", buf.maxDuration)
-	}
+	require.NotNil(t, buf)
+	require.Equal(t, 60*time.Second, buf.maxDuration)
 }
 
 func TestReplayBuffer_RecordFrame_KeyframeStartsGOP(t *testing.T) {
@@ -41,12 +38,8 @@ func TestReplayBuffer_RecordFrame_KeyframeStartsGOP(t *testing.T) {
 	buf.RecordFrame(frame)
 
 	info := buf.Status()
-	if info.FrameCount != 1 {
-		t.Errorf("expected 1 frame, got %d", info.FrameCount)
-	}
-	if info.GOPCount != 1 {
-		t.Errorf("expected 1 GOP, got %d", info.GOPCount)
-	}
+	require.Equal(t, 1, info.FrameCount)
+	require.Equal(t, 1, info.GOPCount)
 }
 
 func TestReplayBuffer_RecordFrame_DeltaAppendsToCurrentGOP(t *testing.T) {
@@ -56,12 +49,8 @@ func TestReplayBuffer_RecordFrame_DeltaAppendsToCurrentGOP(t *testing.T) {
 	buf.RecordFrame(makeVideoFrame(6006, false, 500))
 
 	info := buf.Status()
-	if info.FrameCount != 3 {
-		t.Errorf("expected 3 frames, got %d", info.FrameCount)
-	}
-	if info.GOPCount != 1 {
-		t.Errorf("expected 1 GOP, got %d", info.GOPCount)
-	}
+	require.Equal(t, 3, info.FrameCount)
+	require.Equal(t, 1, info.GOPCount)
 }
 
 func TestReplayBuffer_RecordFrame_MultipleGOPs(t *testing.T) {
@@ -75,12 +64,8 @@ func TestReplayBuffer_RecordFrame_MultipleGOPs(t *testing.T) {
 	buf.RecordFrame(makeVideoFrame(12012, false, 500))
 
 	info := buf.Status()
-	if info.FrameCount != 5 {
-		t.Errorf("expected 5 frames, got %d", info.FrameCount)
-	}
-	if info.GOPCount != 2 {
-		t.Errorf("expected 2 GOPs, got %d", info.GOPCount)
-	}
+	require.Equal(t, 5, info.FrameCount)
+	require.Equal(t, 2, info.GOPCount)
 }
 
 func TestReplayBuffer_RecordFrame_DeepCopiesData(t *testing.T) {
@@ -96,9 +81,8 @@ func TestReplayBuffer_RecordFrame_DeepCopiesData(t *testing.T) {
 
 	// Buffer's copy should be unaffected
 	buf.mu.RLock()
-	if buf.frames[0].wireData[0] == 0xFF {
-		t.Error("buffer should hold a deep copy, not a reference")
-	}
+	require.NotEqual(t, byte(0xFF), buf.frames[0].wireData[0],
+		"buffer should hold a deep copy, not a reference")
 	buf.mu.RUnlock()
 }
 
@@ -108,9 +92,7 @@ func TestReplayBuffer_RecordFrame_DeltaBeforeKeyframeDropped(t *testing.T) {
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
 
 	info := buf.Status()
-	if info.FrameCount != 0 {
-		t.Errorf("expected 0 frames (delta before keyframe), got %d", info.FrameCount)
-	}
+	require.Equal(t, 0, info.FrameCount, "expected 0 frames (delta before keyframe)")
 }
 
 func TestReplayBuffer_GOPAlignedTrimming(t *testing.T) {
@@ -129,13 +111,11 @@ func TestReplayBuffer_GOPAlignedTrimming(t *testing.T) {
 
 	info := buf.Status()
 	// Oldest GOP(s) should have been trimmed
-	if info.GOPCount >= 3 {
-		t.Errorf("expected fewer than 3 GOPs after trimming, got %d", info.GOPCount)
-	}
+	require.Less(t, info.GOPCount, 3, "expected fewer than 3 GOPs after trimming")
 	// First frame should be a keyframe (GOP-aligned)
 	buf.mu.RLock()
-	if len(buf.frames) > 0 && !buf.frames[0].isKeyframe {
-		t.Error("first frame after trim should be a keyframe")
+	if len(buf.frames) > 0 {
+		require.True(t, buf.frames[0].isKeyframe, "first frame after trim should be a keyframe")
 	}
 	buf.mu.RUnlock()
 }
@@ -153,27 +133,19 @@ func TestReplayBuffer_ExtractClip(t *testing.T) {
 
 	// Extract clip spanning the first GOP
 	clip, err := buf.ExtractClip(now.Add(-1*time.Millisecond), now.Add(99*time.Millisecond))
-	if err != nil {
-		t.Fatalf("ExtractClip: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Should include GOP starting before or at the mark-in time
-	if len(clip) == 0 {
-		t.Fatal("expected non-empty clip")
-	}
+	require.NotEmpty(t, clip)
 	// First frame should be a keyframe
-	if !clip[0].isKeyframe {
-		t.Error("first frame of clip should be a keyframe")
-	}
+	require.True(t, clip[0].isKeyframe, "first frame of clip should be a keyframe")
 }
 
 func TestReplayBuffer_ExtractClip_EmptyBuffer(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 	_, err := buf.ExtractClip(now.Add(-1*time.Second), now)
-	if err != ErrEmptyClip {
-		t.Errorf("expected ErrEmptyClip, got %v", err)
-	}
+	require.ErrorIs(t, err, ErrEmptyClip)
 }
 
 func TestReplayBuffer_ExtractClip_NoFramesInRange(t *testing.T) {
@@ -183,9 +155,7 @@ func TestReplayBuffer_ExtractClip_NoFramesInRange(t *testing.T) {
 
 	// Query a time range that doesn't overlap
 	_, err := buf.ExtractClip(now.Add(10*time.Second), now.Add(20*time.Second))
-	if err != ErrEmptyClip {
-		t.Errorf("expected ErrEmptyClip, got %v", err)
-	}
+	require.ErrorIs(t, err, ErrEmptyClip)
 }
 
 func TestReplayBuffer_ExtractClip_DeepCopies(t *testing.T) {
@@ -194,16 +164,13 @@ func TestReplayBuffer_ExtractClip_DeepCopies(t *testing.T) {
 	buf.recordFrameAt(makeVideoFrame(0, true, 100), now)
 
 	clip, err := buf.ExtractClip(now.Add(-1*time.Second), now.Add(1*time.Second))
-	if err != nil {
-		t.Fatalf("ExtractClip: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Mutate clip data — buffer should be unaffected
 	clip[0].wireData[0] = 0xFF
 	buf.mu.RLock()
-	if buf.frames[0].wireData[0] == 0xFF {
-		t.Error("ExtractClip should return deep copies")
-	}
+	require.NotEqual(t, byte(0xFF), buf.frames[0].wireData[0],
+		"ExtractClip should return deep copies")
 	buf.mu.RUnlock()
 }
 
@@ -213,9 +180,7 @@ func TestReplayBuffer_BytesUsed(t *testing.T) {
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
 
 	info := buf.Status()
-	if info.BytesUsed <= 0 {
-		t.Error("expected positive BytesUsed")
-	}
+	require.Greater(t, info.BytesUsed, int64(0), "expected positive BytesUsed")
 }
 
 func TestReplayBuffer_DurationSecs(t *testing.T) {
@@ -227,9 +192,7 @@ func TestReplayBuffer_DurationSecs(t *testing.T) {
 	buf.recordFrameAt(makeVideoFrame(90000, true, 1000), now.Add(1*time.Second))
 
 	info := buf.Status()
-	if info.DurationSecs < 0.9 || info.DurationSecs > 1.1 {
-		t.Errorf("expected ~1.0s duration, got %f", info.DurationSecs)
-	}
+	require.InDelta(t, 1.0, info.DurationSecs, 0.1)
 }
 
 func TestReplayBuffer_ByteLimit(t *testing.T) {
@@ -250,20 +213,15 @@ func TestReplayBuffer_ByteLimit(t *testing.T) {
 
 	info := buf.Status()
 	// With a 5KB byte limit, not all 3 GOPs should fit.
-	if info.BytesUsed > 5000 {
-		t.Errorf("expected bytesUsed <= 5000, got %d", info.BytesUsed)
-	}
-	if info.GOPCount >= 3 {
-		t.Errorf("expected fewer than 3 GOPs after byte-limit trimming, got %d", info.GOPCount)
-	}
+	require.LessOrEqual(t, info.BytesUsed, int64(5000))
+	require.Less(t, info.GOPCount, 3, "expected fewer than 3 GOPs after byte-limit trimming")
 	// Buffer should still have at least 1 GOP.
-	if info.GOPCount < 1 {
-		t.Errorf("expected at least 1 GOP, got %d", info.GOPCount)
-	}
+	require.GreaterOrEqual(t, info.GOPCount, 1)
 	// First frame should be a keyframe.
 	buf.mu.RLock()
-	if len(buf.frames) > 0 && !buf.frames[0].isKeyframe {
-		t.Error("first frame after byte-limit trim should be a keyframe")
+	if len(buf.frames) > 0 {
+		require.True(t, buf.frames[0].isKeyframe,
+			"first frame after byte-limit trim should be a keyframe")
 	}
 	buf.mu.RUnlock()
 }

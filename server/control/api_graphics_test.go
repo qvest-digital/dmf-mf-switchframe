@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -30,9 +31,7 @@ func TestGraphicsOn_NoOverlay(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestGraphicsFrame_UploadAndOn(t *testing.T) {
@@ -59,26 +58,18 @@ func TestGraphicsFrame_UploadAndOn(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("frame upload: status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "frame upload: body: %s", rec.Body.String())
 
 	// Now activate
 	req = httptest.NewRequest("POST", "/api/graphics/on", nil)
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("on: status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "on: body: %s", rec.Body.String())
 
 	status := comp.Status()
-	if !status.Active {
-		t.Error("expected active after ON")
-	}
-	if status.Template != "lower-third" {
-		t.Errorf("template = %q, want %q", status.Template, "lower-third")
-	}
+	require.True(t, status.Active, "expected active after ON")
+	require.Equal(t, "lower-third", status.Template)
 }
 
 func TestGraphicsOff(t *testing.T) {
@@ -93,13 +84,8 @@ func TestGraphicsOff(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("off: status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	if comp.Status().Active {
-		t.Error("expected inactive after OFF")
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "off: body: %s", rec.Body.String())
+	require.False(t, comp.Status().Active, "expected inactive after OFF")
 }
 
 func TestGraphicsAutoOn(t *testing.T) {
@@ -113,13 +99,8 @@ func TestGraphicsAutoOn(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("auto-on: status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-
-	if !comp.Status().Active {
-		t.Error("expected active after AUTO ON")
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "auto-on: body: %s", rec.Body.String())
+	require.True(t, comp.Status().Active, "expected active after AUTO ON")
 }
 
 func TestGraphicsStatus(t *testing.T) {
@@ -129,17 +110,12 @@ func TestGraphicsStatus(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: status = %d, want %d", rec.Code, http.StatusOK)
-	}
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	var status graphics.State
-	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
-		t.Fatalf("decode status: %v", err)
-	}
-	if status.Active {
-		t.Error("expected inactive initially")
-	}
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.False(t, status.Active, "expected inactive initially")
 }
 
 func TestGraphicsFrame_InvalidSize(t *testing.T) {
@@ -159,9 +135,7 @@ func TestGraphicsFrame_InvalidSize(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
@@ -179,9 +153,7 @@ func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
-	}
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestGraphicsNotConfigured(t *testing.T) {
@@ -195,9 +167,8 @@ func TestGraphicsNotConfigured(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	// Should get 404 since routes weren't registered
-	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 404 or 405 (route not registered)", rec.Code)
-	}
+	require.True(t, rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed,
+		"status = %d, want 404 or 405 (route not registered)", rec.Code)
 }
 
 // uploadOverlay is a test helper that uploads an RGBA overlay frame.
@@ -213,9 +184,7 @@ func uploadOverlay(t *testing.T, api *API, w, h int, template string) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("upload overlay: status = %d, body: %s", rec.Code, rec.Body.String())
-	}
+	require.Equal(t, http.StatusOK, rec.Code, "upload overlay: body: %s", rec.Body.String())
 }
 
 func itoa(n int) string {

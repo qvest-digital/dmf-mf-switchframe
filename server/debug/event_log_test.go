@@ -2,6 +2,8 @@ package debug
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestEventLog_AddAndSnapshot(t *testing.T) {
@@ -11,18 +13,10 @@ func TestEventLog_AddAndSnapshot(t *testing.T) {
 	log.Add("test_event", map[string]any{"key": "val2"})
 
 	events := log.Snapshot()
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-	if events[0].Type != "test_event" {
-		t.Errorf("expected type test_event, got %s", events[0].Type)
-	}
-	if events[0].Detail["key"] != "val1" {
-		t.Errorf("expected val1, got %v", events[0].Detail["key"])
-	}
-	if events[0].Timestamp.IsZero() {
-		t.Error("expected non-zero timestamp")
-	}
+	require.Len(t, events, 2)
+	require.Equal(t, "test_event", events[0].Type)
+	require.Equal(t, "val1", events[0].Detail["key"])
+	require.False(t, events[0].Timestamp.IsZero(), "expected non-zero timestamp")
 }
 
 func TestEventLog_Wraparound(t *testing.T) {
@@ -34,16 +28,10 @@ func TestEventLog_Wraparound(t *testing.T) {
 	log.Add("d", nil) // overwrites "a"
 
 	events := log.Snapshot()
-	if len(events) != 3 {
-		t.Fatalf("expected 3 events, got %d", len(events))
-	}
+	require.Len(t, events, 3)
 	// Should be in chronological order: b, c, d
-	if events[0].Type != "b" {
-		t.Errorf("expected b, got %s", events[0].Type)
-	}
-	if events[2].Type != "d" {
-		t.Errorf("expected d, got %s", events[2].Type)
-	}
+	require.Equal(t, "b", events[0].Type)
+	require.Equal(t, "d", events[2].Type)
 }
 
 func TestEventLog_ConcurrentAccess(t *testing.T) {
