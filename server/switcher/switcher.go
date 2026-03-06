@@ -962,15 +962,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		s.log.Info("transition completed", "type", transType)
 	}
 
-	// Replay the source's cached GOP through the pipeline so output
-	// maintains consistent SPS/PPS from the pipeline encoder.
-	// pendingIDR=true prevents live frames from interleaving.
-	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
+	// Replay only the keyframe from the cached GOP through the pipeline.
+	// This gives the browser an immediate sync point with consistent
+	// SPS/PPS. Live delta frames from the source follow naturally.
+	// Only the keyframe is replayed to avoid burst overhead and PTS jumps.
 	if len(replayFrames) > 0 {
-		for _, f := range replayFrames {
-			s.broadcastVideo(f)
-		}
-		// Clear the IDR gate — the replayed GOP provided a keyframe
+		s.broadcastVideo(replayFrames[0]) // keyframe only
+		// Clear the IDR gate — the replayed keyframe seeds the decoder
 		s.mu.Lock()
 		if ss, ok := s.sources[newProgram]; ok && ss.pendingIDR {
 			ss.pendingIDR = false
@@ -1074,13 +1072,11 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Replay the source's cached GOP through the pipeline so output
-	// maintains consistent SPS/PPS from the pipeline encoder.
-	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
+	// Replay only the keyframe from the cached GOP through the pipeline.
+	// This gives the browser an immediate sync point with consistent
+	// SPS/PPS. Live delta frames follow naturally from the source.
 	if len(replayFrames) > 0 {
-		for _, f := range replayFrames {
-			s.broadcastVideo(f)
-		}
+		s.broadcastVideo(replayFrames[0]) // keyframe only
 		s.mu.Lock()
 		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
 			ss.pendingIDR = false
@@ -1238,12 +1234,12 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
 
-		// Replay cached GOP through pipeline for instant switch
+		// Replay only the keyframe from the cached GOP through the pipeline.
+		// This gives the browser an immediate sync point with consistent
+		// SPS/PPS. Live delta frames follow naturally from the source.
 		if len(replayFrames) > 0 {
-			for _, f := range replayFrames {
-				s.broadcastVideo(f)
-			}
-			// Clear IDR gate — GOP provided keyframe
+			s.broadcastVideo(replayFrames[0]) // keyframe only
+			// Clear IDR gate — the replayed keyframe seeds the decoder
 			s.mu.Lock()
 			if ss, ok := s.sources[sourceKey]; ok && ss.pendingIDR {
 				ss.pendingIDR = false
