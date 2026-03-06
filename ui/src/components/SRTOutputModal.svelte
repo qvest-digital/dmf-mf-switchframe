@@ -152,6 +152,12 @@
 							<span class="status-value drop-warn-value">{crState.srtOutput?.droppedPackets}</span>
 						</div>
 					{/if}
+					{#if (crState.srtOutput?.overflowCount ?? 0) > 0}
+						<div class="status-row drop-warn-row">
+							<span class="status-label">Overflows</span>
+							<span class="status-value drop-warn-value">{crState.srtOutput?.overflowCount}</span>
+						</div>
+					{/if}
 					<button class="modal-btn stop-btn" onclick={handleStop}>Stop</button>
 				</div>
 			{:else}
