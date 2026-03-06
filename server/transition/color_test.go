@@ -1,12 +1,14 @@
-package transition
+package transition_test
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func TestYUV420ToRGBBlack(t *testing.T) {
+	t.Parallel()
 	// Black in YUV: Y=16, U=128, V=128 (studio range)
 	// But OpenH264 outputs full-range: Y=0, U=128, V=128
 	w, h := 4, 4
@@ -22,7 +24,7 @@ func TestYUV420ToRGBBlack(t *testing.T) {
 	}
 
 	rgb := make([]byte, w*h*3)
-	YUV420ToRGB(yuv, w, h, rgb)
+	transition.YUV420ToRGB(yuv, w, h, rgb)
 
 	// All RGB values should be 0 (black)
 	for i := 0; i < len(rgb); i++ {
@@ -31,6 +33,7 @@ func TestYUV420ToRGBBlack(t *testing.T) {
 }
 
 func TestYUV420ToRGBWhite(t *testing.T) {
+	t.Parallel()
 	w, h := 4, 4
 	yuv := make([]byte, w*h*3/2)
 	// Y plane = 255 (full-range white)
@@ -43,7 +46,7 @@ func TestYUV420ToRGBWhite(t *testing.T) {
 	}
 
 	rgb := make([]byte, w*h*3)
-	YUV420ToRGB(yuv, w, h, rgb)
+	transition.YUV420ToRGB(yuv, w, h, rgb)
 
 	// All RGB values should be 255 (white)
 	for i := 0; i < len(rgb); i++ {
@@ -52,6 +55,7 @@ func TestYUV420ToRGBWhite(t *testing.T) {
 }
 
 func TestRoundTripYUVRGBYUV(t *testing.T) {
+	t.Parallel()
 	w, h := 8, 8
 	// Create a gradient in YUV
 	original := make([]byte, w*h*3/2)
@@ -63,12 +67,12 @@ func TestRoundTripYUVRGBYUV(t *testing.T) {
 	}
 
 	rgb := make([]byte, w*h*3)
-	YUV420ToRGB(original, w, h, rgb)
+	transition.YUV420ToRGB(original, w, h, rgb)
 
 	roundtrip := make([]byte, w*h*3/2)
-	RGBToYUV420(rgb, w, h, roundtrip)
+	transition.RGBToYUV420(rgb, w, h, roundtrip)
 
-	// Y plane should round-trip within ±1 (quantization error)
+	// Y plane should round-trip within +/-1 (quantization error)
 	for i := 0; i < w*h; i++ {
 		diff := int(original[i]) - int(roundtrip[i])
 		if diff < 0 {
@@ -79,6 +83,7 @@ func TestRoundTripYUVRGBYUV(t *testing.T) {
 }
 
 func TestYUV420ToRGBKnownColor(t *testing.T) {
+	t.Parallel()
 	// Pure red in full-range YUV (BT.709): Y~54, U~99, V~255
 	w, h := 2, 2
 	yuv := make([]byte, w*h*3/2)
@@ -89,7 +94,7 @@ func TestYUV420ToRGBKnownColor(t *testing.T) {
 	yuv[w*h+1] = 255 // V (Cr)
 
 	rgb := make([]byte, w*h*3)
-	YUV420ToRGB(yuv, w, h, rgb)
+	transition.YUV420ToRGB(yuv, w, h, rgb)
 
 	// Red channel should be high (~255), green and blue low (~0)
 	require.InDelta(t, 255, int(rgb[0]), 10, "R should be ~255")
@@ -98,11 +103,12 @@ func TestYUV420ToRGBKnownColor(t *testing.T) {
 }
 
 func TestBufferSizes(t *testing.T) {
+	t.Parallel()
 	w, h := 1920, 1080
 	yuv := make([]byte, w*h*3/2)
 	rgb := make([]byte, w*h*3)
 
 	// Should not panic with correct buffer sizes
-	YUV420ToRGB(yuv, w, h, rgb)
-	RGBToYUV420(rgb, w, h, yuv)
+	transition.YUV420ToRGB(yuv, w, h, rgb)
+	transition.RGBToYUV420(rgb, w, h, yuv)
 }

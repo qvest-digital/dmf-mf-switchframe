@@ -22,7 +22,9 @@ func TestSwitcherStateString(t *testing.T) {
 		{SwitcherState(99), "unknown(99)"},
 	}
 	for _, tt := range tests {
-		require.Equal(t, tt.want, tt.state.String())
+		t.Run(tt.want, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.state.String())
+		})
 	}
 }
 
@@ -38,7 +40,9 @@ func TestSwitcherStateIsInTransition(t *testing.T) {
 		{StateFTBReversing, true},
 	}
 	for _, tt := range tests {
-		require.Equal(t, tt.want, tt.state.isInTransition(), "state=%s", tt.state)
+		t.Run(tt.state.String(), func(t *testing.T) {
+			require.Equal(t, tt.want, tt.state.isInTransition(), "state=%s", tt.state)
+		})
 	}
 }
 
@@ -54,7 +58,9 @@ func TestSwitcherStateIsFTBActive(t *testing.T) {
 		{StateFTBReversing, true},
 	}
 	for _, tt := range tests {
-		require.Equal(t, tt.want, tt.state.isFTBActive(), "state=%s", tt.state)
+		t.Run(tt.state.String(), func(t *testing.T) {
+			require.Equal(t, tt.want, tt.state.isFTBActive(), "state=%s", tt.state)
+		})
 	}
 }
 

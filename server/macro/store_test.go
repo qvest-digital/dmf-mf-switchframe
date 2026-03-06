@@ -16,6 +16,7 @@ func tempStorePath(t *testing.T) string {
 }
 
 func TestStore_SaveAndGet(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -35,6 +36,7 @@ func TestStore_SaveAndGet(t *testing.T) {
 }
 
 func TestStore_List(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -50,6 +52,7 @@ func TestStore_List(t *testing.T) {
 }
 
 func TestStore_Delete(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -62,6 +65,7 @@ func TestStore_Delete(t *testing.T) {
 }
 
 func TestStore_GetNonexistent(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -70,6 +74,7 @@ func TestStore_GetNonexistent(t *testing.T) {
 }
 
 func TestStore_SaveEmptyName(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -78,6 +83,7 @@ func TestStore_SaveEmptyName(t *testing.T) {
 }
 
 func TestStore_SaveNoSteps(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -89,6 +95,7 @@ func TestStore_SaveNoSteps(t *testing.T) {
 }
 
 func TestStore_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -107,6 +114,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 }
 
 func TestStore_DeleteNonexistent(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -115,6 +123,7 @@ func TestStore_DeleteNonexistent(t *testing.T) {
 }
 
 func TestStore_Persistence(t *testing.T) {
+	t.Parallel()
 	path := tempStorePath(t)
 
 	s1, err := NewStore(path)
@@ -131,6 +140,7 @@ func TestStore_Persistence(t *testing.T) {
 }
 
 func TestStore_SaveOverwrite(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
@@ -146,6 +156,7 @@ func TestStore_SaveOverwrite(t *testing.T) {
 }
 
 func TestStore_NewStoreCreatesDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "dir", "macros.json")
 

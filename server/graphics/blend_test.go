@@ -34,6 +34,7 @@ func makeRGBA(width, height int, r, g, b, a byte) []byte {
 }
 
 func TestAlphaBlendRGBA_TransparentPassthrough(t *testing.T) {
+	t.Parallel()
 	width, height := 4, 4
 	yuv := makeYUV420(width, height, 128, 128, 128)
 	// Save original Y values
@@ -51,6 +52,7 @@ func TestAlphaBlendRGBA_TransparentPassthrough(t *testing.T) {
 }
 
 func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
+	t.Parallel()
 	width, height := 4, 4
 	// Start with black frame: Y=0, Cb=128, Cr=128
 	yuv := makeYUV420(width, height, 0, 128, 128)
@@ -75,6 +77,7 @@ func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
 }
 
 func TestAlphaBlendRGBA_HalfAlpha(t *testing.T) {
+	t.Parallel()
 	width, height := 4, 4
 	// Start with black frame: Y=0, Cb=128, Cr=128
 	yuv := makeYUV420(width, height, 0, 128, 128)
@@ -96,6 +99,7 @@ func TestAlphaBlendRGBA_HalfAlpha(t *testing.T) {
 }
 
 func TestAlphaBlendRGBA_LowerStrip(t *testing.T) {
+	t.Parallel()
 	width, height := 8, 8
 	// Start with green frame: Y=149, Cb=43, Cr=21 (BT.709 for pure green)
 	yuv := makeYUV420(width, height, 149, 43, 21)
@@ -139,6 +143,7 @@ func TestAlphaBlendRGBA_LowerStrip(t *testing.T) {
 }
 
 func TestAlphaBlendRGBA_AlphaScale(t *testing.T) {
+	t.Parallel()
 	width, height := 4, 4
 	// Start with black frame
 	yuv := makeYUV420(width, height, 0, 128, 128)

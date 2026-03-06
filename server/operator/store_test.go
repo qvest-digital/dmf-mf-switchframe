@@ -14,12 +14,14 @@ func tempStorePath(t *testing.T) string {
 }
 
 func TestNewStore_EmptyFile(t *testing.T) {
+	t.Parallel()
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 	require.Empty(t, s.List())
 }
 
 func TestStore_Register(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 
 	op, err := s.Register("Alice", RoleDirector)
@@ -32,18 +34,21 @@ func TestStore_Register(t *testing.T) {
 }
 
 func TestStore_Register_EmptyName(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, err := s.Register("", RoleDirector)
 	require.ErrorIs(t, err, ErrEmptyName)
 }
 
 func TestStore_Register_InvalidRole(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, err := s.Register("Alice", Role("admin"))
 	require.ErrorIs(t, err, ErrInvalidRole)
 }
 
 func TestStore_Register_DuplicateName(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, _ = s.Register("Alice", RoleDirector)
 	_, err := s.Register("Alice", RoleAudio)
@@ -51,6 +56,7 @@ func TestStore_Register_DuplicateName(t *testing.T) {
 }
 
 func TestStore_Get(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	op, _ := s.Register("Alice", RoleDirector)
 
@@ -60,12 +66,14 @@ func TestStore_Get(t *testing.T) {
 }
 
 func TestStore_Get_NotFound(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, err := s.Get("nonexistent")
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestStore_GetByToken(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	op, _ := s.Register("Alice", RoleDirector)
 
@@ -75,12 +83,14 @@ func TestStore_GetByToken(t *testing.T) {
 }
 
 func TestStore_GetByToken_NotFound(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, err := s.GetByToken("deadbeef")
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestStore_Delete(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	op, _ := s.Register("Alice", RoleDirector)
 
@@ -92,12 +102,14 @@ func TestStore_Delete(t *testing.T) {
 }
 
 func TestStore_Delete_NotFound(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	err := s.Delete("nonexistent")
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestStore_List(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 	_, _ = s.Register("Alice", RoleDirector)
 	_, _ = s.Register("Bob", RoleAudio)
@@ -107,6 +119,7 @@ func TestStore_List(t *testing.T) {
 }
 
 func TestStore_Persistence(t *testing.T) {
+	t.Parallel()
 	path := tempStorePath(t)
 
 	// Create store and register operators.
@@ -114,13 +127,14 @@ func TestStore_Persistence(t *testing.T) {
 	_, _ = s1.Register("Alice", RoleDirector)
 	_, _ = s1.Register("Bob", RoleAudio)
 
-	// Create new store from same file — should reload operators.
+	// Create new store from same file -- should reload operators.
 	s2, err := NewStore(path)
 	require.NoError(t, err)
 	require.Len(t, s2.List(), 2)
 }
 
 func TestStore_Persistence_DeleteAndReload(t *testing.T) {
+	t.Parallel()
 	path := tempStorePath(t)
 
 	s1, _ := NewStore(path)
@@ -132,6 +146,7 @@ func TestStore_Persistence_DeleteAndReload(t *testing.T) {
 }
 
 func TestStore_FileCreatesDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "subdir", "operators.json")
 
@@ -146,6 +161,7 @@ func TestStore_FileCreatesDirectory(t *testing.T) {
 }
 
 func TestStore_GetByToken_AfterDelete(t *testing.T) {
+	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))
 
 	// Register three operators.

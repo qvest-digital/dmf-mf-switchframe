@@ -8,6 +8,7 @@ import (
 )
 
 func TestEQ_FlatPassesSignalUnchanged(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 
 	// Generate a 1kHz sine wave
@@ -28,11 +29,13 @@ func TestEQ_FlatPassesSignalUnchanged(t *testing.T) {
 }
 
 func TestEQ_IsBypassed_FlatGain(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	require.True(t, eq.IsBypassed(), "new EQ with 0dB gains should be bypassed")
 }
 
 func TestEQ_IsBypassed_AllDisabled(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	// Set a non-zero gain but disable the band
 	err := eq.SetBand(0, 500, 6.0, 1.0, false)
@@ -41,6 +44,7 @@ func TestEQ_IsBypassed_AllDisabled(t *testing.T) {
 }
 
 func TestEQ_IsBypassed_NonZeroGain(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	err := eq.SetBand(0, 500, 6.0, 1.0, true)
 	require.NoError(t, err)
@@ -48,6 +52,7 @@ func TestEQ_IsBypassed_NonZeroGain(t *testing.T) {
 }
 
 func TestEQ_SingleBandBoost(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	// Boost band 0 at 200Hz by +12dB
 	err := eq.SetBand(0, 200, 12.0, 1.0, true)
@@ -75,6 +80,7 @@ func TestEQ_SingleBandBoost(t *testing.T) {
 }
 
 func TestEQ_SingleBandCut(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	// Cut band 1 at 1kHz by -12dB
 	err := eq.SetBand(1, 1000, -12.0, 1.0, true)
@@ -99,6 +105,7 @@ func TestEQ_SingleBandCut(t *testing.T) {
 }
 
 func TestEQ_ParameterValidation_FrequencyRanges(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 
 	// Band 0 (Low): 80-1000Hz
@@ -121,6 +128,7 @@ func TestEQ_ParameterValidation_FrequencyRanges(t *testing.T) {
 }
 
 func TestEQ_ParameterValidation_GainLimits(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	require.Error(t, eq.SetBand(0, 500, -13, 1.0, true), "gain below -12 should fail")
 	require.Error(t, eq.SetBand(0, 500, 13, 1.0, true), "gain above +12 should fail")
@@ -129,6 +137,7 @@ func TestEQ_ParameterValidation_GainLimits(t *testing.T) {
 }
 
 func TestEQ_ParameterValidation_QLimits(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	require.Error(t, eq.SetBand(0, 500, 0, 0.4, true), "Q below 0.5 should fail")
 	require.Error(t, eq.SetBand(0, 500, 0, 4.1, true), "Q above 4.0 should fail")
@@ -137,12 +146,14 @@ func TestEQ_ParameterValidation_QLimits(t *testing.T) {
 }
 
 func TestEQ_ParameterValidation_InvalidBand(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	require.Error(t, eq.SetBand(-1, 500, 0, 1.0, true), "band -1 should fail")
 	require.Error(t, eq.SetBand(3, 500, 0, 1.0, true), "band 3 should fail")
 }
 
 func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 
 	// Process a signal
@@ -156,7 +167,7 @@ func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
 	err := eq.SetBand(1, 1000, 6.0, 1.0, true)
 	require.NoError(t, err)
 
-	// Process same signal — result should differ
+	// Process same signal -- result should differ
 	samples2 := make([]float32, 1024)
 	for i := range samples2 {
 		samples2[i] = float32(math.Sin(2 * math.Pi * 1000.0 * float64(i) / 48000.0))
@@ -180,6 +191,7 @@ func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
 }
 
 func TestEQ_GetBands(t *testing.T) {
+	t.Parallel()
 	eq := NewEQ(48000)
 	err := eq.SetBand(0, 200, 3.0, 1.5, true)
 	require.NoError(t, err)

@@ -8,6 +8,7 @@ import (
 )
 
 func TestCompressor_BelowThreshold_Passthrough(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	// Default threshold is 0 dBFS, ratio 1:1
 	// Set threshold to -10 dBFS, ratio 4:1
@@ -33,6 +34,7 @@ func TestCompressor_BelowThreshold_Passthrough(t *testing.T) {
 }
 
 func TestCompressor_AboveThreshold_Reduced(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	// Threshold -6 dBFS, ratio 4:1, fast attack
 	err := c.SetParams(-6, 4.0, 0.1, 100.0, 0)
@@ -48,7 +50,7 @@ func TestCompressor_AboveThreshold_Reduced(t *testing.T) {
 
 	// After sufficient attack time, the signal should be reduced
 	// 6dB above threshold at 4:1 ratio = 6/4 = 1.5dB above threshold
-	// So output should be around -4.5 dBFS = 10^(-4.5/20) ≈ 0.596
+	// So output should be around -4.5 dBFS = 10^(-4.5/20) ~ 0.596
 	// Check the last samples (after attack has settled)
 	avgLast := float64(0)
 	n := 100
@@ -63,6 +65,7 @@ func TestCompressor_AboveThreshold_Reduced(t *testing.T) {
 }
 
 func TestCompressor_AttackReleaseTiming(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	// 10ms attack, 100ms release
 	err := c.SetParams(-6, 4.0, 10.0, 100.0, 0)
@@ -92,12 +95,13 @@ func TestCompressor_AttackReleaseTiming(t *testing.T) {
 }
 
 func TestCompressor_MakeupGain(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	// Threshold -6, ratio 4:1, fast attack, 6dB makeup
 	err := c.SetParams(-6, 4.0, 0.1, 100.0, 6.0)
 	require.NoError(t, err)
 
-	// Signal at -20 dBFS (below threshold — no compression applied)
+	// Signal at -20 dBFS (below threshold -- no compression applied)
 	level := float32(math.Pow(10, -20.0/20.0)) // ~0.1
 	samples := make([]float32, 4096)
 	for i := range samples {
@@ -121,6 +125,7 @@ func TestCompressor_MakeupGain(t *testing.T) {
 }
 
 func TestCompressor_IsBypassed(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	require.True(t, c.IsBypassed(), "new compressor with ratio 1.0 should be bypassed")
 
@@ -134,6 +139,7 @@ func TestCompressor_IsBypassed(t *testing.T) {
 }
 
 func TestCompressor_GainReduction_ReportsValue(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	require.InDelta(t, 0.0, c.GainReduction(), 0.01, "initial GR should be 0")
 
@@ -153,6 +159,7 @@ func TestCompressor_GainReduction_ReportsValue(t *testing.T) {
 }
 
 func TestCompressor_NotBypassedWithMakeupGain(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	// ratio=1.0 (default), but set makeup gain
 	err := c.SetParams(0, 1.0, 10, 100, 6.0)
@@ -161,11 +168,13 @@ func TestCompressor_NotBypassedWithMakeupGain(t *testing.T) {
 }
 
 func TestCompressor_BypassedWhenDefault(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 	require.True(t, c.IsBypassed(), "default compressor should be bypassed")
 }
 
 func TestCompressor_ParameterValidation(t *testing.T) {
+	t.Parallel()
 	c := NewCompressor(48000)
 
 	// Threshold: -40 to 0

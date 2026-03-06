@@ -7,6 +7,7 @@ import (
 )
 
 func TestAVC1ToAnnexB_SingleNALU(t *testing.T) {
+	t.Parallel()
 	avc1 := []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x01, 0x02, 0x03, 0x04}
 	annexB := AVC1ToAnnexB(avc1)
 	expected := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02, 0x03, 0x04}
@@ -14,6 +15,7 @@ func TestAVC1ToAnnexB_SingleNALU(t *testing.T) {
 }
 
 func TestAVC1ToAnnexB_MultipleNALUs(t *testing.T) {
+	t.Parallel()
 	avc1 := []byte{
 		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
@@ -27,6 +29,7 @@ func TestAVC1ToAnnexB_MultipleNALUs(t *testing.T) {
 }
 
 func TestAVC1ToAnnexB_EmptyInput(t *testing.T) {
+	t.Parallel()
 	annexB := AVC1ToAnnexB(nil)
 	require.Nil(t, annexB)
 	annexB = AVC1ToAnnexB([]byte{})
@@ -34,6 +37,7 @@ func TestAVC1ToAnnexB_EmptyInput(t *testing.T) {
 }
 
 func TestAnnexBToAVC1_SingleNALU(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02, 0x03, 0x04}
 	avc1 := AnnexBToAVC1(annexB)
 	expected := []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x01, 0x02, 0x03, 0x04}
@@ -41,6 +45,7 @@ func TestAnnexBToAVC1_SingleNALU(t *testing.T) {
 }
 
 func TestAnnexBToAVC1_MultipleNALUs(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{
 		0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x01, 0x65, 0xCC,
@@ -54,6 +59,7 @@ func TestAnnexBToAVC1_MultipleNALUs(t *testing.T) {
 }
 
 func TestAnnexBToAVC1_ThreeByteStartCode(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{0x00, 0x00, 0x01, 0x65, 0x01, 0x02}
 	avc1 := AnnexBToAVC1(annexB)
 	expected := []byte{0x00, 0x00, 0x00, 0x03, 0x65, 0x01, 0x02}
@@ -61,11 +67,13 @@ func TestAnnexBToAVC1_ThreeByteStartCode(t *testing.T) {
 }
 
 func TestAnnexBToAVC1_EmptyInput(t *testing.T) {
+	t.Parallel()
 	avc1 := AnnexBToAVC1(nil)
 	require.Nil(t, avc1)
 }
 
 func TestRoundTrip_AVC1_AnnexB_AVC1(t *testing.T) {
+	t.Parallel()
 	original := []byte{
 		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x05, 0x68, 0x01, 0x02, 0x03, 0x04,
@@ -77,6 +85,7 @@ func TestRoundTrip_AVC1_AnnexB_AVC1(t *testing.T) {
 }
 
 func TestExtractNALUs(t *testing.T) {
+	t.Parallel()
 	avc1 := []byte{
 		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
@@ -88,6 +97,7 @@ func TestExtractNALUs(t *testing.T) {
 }
 
 func TestExtractNALUs_EmptyInput(t *testing.T) {
+	t.Parallel()
 	nalus := ExtractNALUs(nil)
 	require.Nil(t, nalus)
 	nalus = ExtractNALUs([]byte{})
@@ -95,6 +105,7 @@ func TestExtractNALUs_EmptyInput(t *testing.T) {
 }
 
 func TestSplitAnnexBNALUs(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{
 		0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x01, 0x65, 0xCC,
@@ -106,6 +117,7 @@ func TestSplitAnnexBNALUs(t *testing.T) {
 }
 
 func TestSplitAnnexBNALUs_ThreeByteStartCodes(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{
 		0x00, 0x00, 0x01, 0x67, 0xAA,
 		0x00, 0x00, 0x01, 0x65, 0xBB,
@@ -117,6 +129,7 @@ func TestSplitAnnexBNALUs_ThreeByteStartCodes(t *testing.T) {
 }
 
 func TestSplitAnnexBNALUs_MixedStartCodes(t *testing.T) {
+	t.Parallel()
 	annexB := []byte{
 		0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, // 4-byte start code
 		0x00, 0x00, 0x01, 0x65, 0xBB, // 3-byte start code
@@ -128,6 +141,7 @@ func TestSplitAnnexBNALUs_MixedStartCodes(t *testing.T) {
 }
 
 func TestParseSPSCodecString_HighProfile(t *testing.T) {
+	t.Parallel()
 	// SPS: nalu_type=0x67, profile_idc=0x64 (High), constraint=0x00, level=0x28 (4.0)
 	sps := []byte{0x67, 0x64, 0x00, 0x28, 0xAC, 0xD9}
 	result := ParseSPSCodecString(sps)
@@ -135,6 +149,7 @@ func TestParseSPSCodecString_HighProfile(t *testing.T) {
 }
 
 func TestParseSPSCodecString_BaselineProfile(t *testing.T) {
+	t.Parallel()
 	// SPS: nalu_type=0x67, profile_idc=0x42 (Baseline), constraint=0xC0, level=0x1E (3.0)
 	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00}
 	result := ParseSPSCodecString(sps)
@@ -142,6 +157,7 @@ func TestParseSPSCodecString_BaselineProfile(t *testing.T) {
 }
 
 func TestParseSPSCodecString_MainProfile(t *testing.T) {
+	t.Parallel()
 	// SPS: nalu_type=0x67, profile_idc=0x4D (Main), constraint=0x40, level=0x1F (3.1)
 	sps := []byte{0x67, 0x4D, 0x40, 0x1F, 0xEC, 0xA0}
 	result := ParseSPSCodecString(sps)
@@ -149,6 +165,7 @@ func TestParseSPSCodecString_MainProfile(t *testing.T) {
 }
 
 func TestParseSPSCodecString_TooShort(t *testing.T) {
+	t.Parallel()
 	// Fallback for short SPS
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString(nil))
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{}))

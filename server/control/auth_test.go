@@ -10,6 +10,7 @@ import (
 )
 
 func TestAuthMiddleware_RejectsUnauthenticated(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -25,6 +26,7 @@ func TestAuthMiddleware_RejectsUnauthenticated(t *testing.T) {
 }
 
 func TestAuthMiddleware_AcceptsValidBearer(t *testing.T) {
+	t.Parallel()
 	token := "my-valid-token-abc"
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -42,6 +44,7 @@ func TestAuthMiddleware_AcceptsValidBearer(t *testing.T) {
 }
 
 func TestAuthMiddleware_RejectsInvalidToken(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -58,6 +61,7 @@ func TestAuthMiddleware_RejectsInvalidToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_RejectsMalformedHeader(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -75,6 +79,7 @@ func TestAuthMiddleware_RejectsMalformedHeader(t *testing.T) {
 }
 
 func TestAuthMiddleware_ExemptPaths(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("passed"))
@@ -84,6 +89,7 @@ func TestAuthMiddleware_ExemptPaths(t *testing.T) {
 	exemptPaths := []string{"/api/cert-hash", "/health", "/metrics"}
 	for _, path := range exemptPaths {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
 			req := httptest.NewRequest("GET", path, nil)
 			// No Authorization header
 			rec := httptest.NewRecorder()
@@ -96,6 +102,7 @@ func TestAuthMiddleware_ExemptPaths(t *testing.T) {
 }
 
 func TestAuthMiddleware_ExemptPathsWithQueryParams(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -109,6 +116,7 @@ func TestAuthMiddleware_ExemptPathsWithQueryParams(t *testing.T) {
 }
 
 func TestGenerateToken_Returns64CharHex(t *testing.T) {
+	t.Parallel()
 	token, err := GenerateToken()
 	require.NoError(t, err)
 	require.Len(t, token, 64, "token should be 64 hex characters (32 bytes)")
@@ -119,6 +127,7 @@ func TestGenerateToken_Returns64CharHex(t *testing.T) {
 }
 
 func TestNoopAuthMiddleware_PassesAllRequests(t *testing.T) {
+	t.Parallel()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -135,6 +144,7 @@ func TestNoopAuthMiddleware_PassesAllRequests(t *testing.T) {
 }
 
 func TestGenerateToken_Unique(t *testing.T) {
+	t.Parallel()
 	token1, err := GenerateToken()
 	require.NoError(t, err)
 	token2, err := GenerateToken()

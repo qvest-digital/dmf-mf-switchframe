@@ -1,13 +1,15 @@
-package audio
+package audio_test
 
 import (
 	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/audio"
 )
 
 func TestEqualPowerCrossfade(t *testing.T) {
+	t.Parallel()
 	n := 1024
 	old := make([]float32, n)
 	new := make([]float32, n)
@@ -16,24 +18,25 @@ func TestEqualPowerCrossfade(t *testing.T) {
 		new[i] = 0.0
 	}
 
-	result := EqualPowerCrossfade(old, new)
+	result := audio.EqualPowerCrossfade(old, new)
 	require.Equal(t, n, len(result))
 
-	// At t=0: result ≈ old (cos(0)=1, sin(0)=0)
+	// At t=0: result ~ old (cos(0)=1, sin(0)=0)
 	require.InDelta(t, 1.0, result[0], 0.01, "start should be ~old")
 
-	// At t=1 (last sample): result ≈ new (cos(π/2)≈0, sin(π/2)≈1)
+	// At t=1 (last sample): result ~ new (cos(pi/2)~0, sin(pi/2)~1)
 	require.InDelta(t, 0.0, result[n-1], 0.01, "end should be ~new")
 
 	// Midpoint: both contribute equally
 	mid := n / 2
-	// cos(0.5·π/2) = cos(π/4) ≈ 0.707
-	// sin(0.5·π/2) = sin(π/4) ≈ 0.707
-	// old=1.0, new=0.0 → result ≈ 0.707
-	require.InDelta(t, 0.707, result[mid], 0.02, "midpoint should be ~cos(π/4)")
+	// cos(0.5*pi/2) = cos(pi/4) ~ 0.707
+	// sin(0.5*pi/2) = sin(pi/4) ~ 0.707
+	// old=1.0, new=0.0 -> result ~ 0.707
+	require.InDelta(t, 0.707, result[mid], 0.02, "midpoint should be ~cos(pi/4)")
 }
 
 func TestEqualPowerCrossfadeBothSignals(t *testing.T) {
+	t.Parallel()
 	n := 1024
 	old := make([]float32, n)
 	new := make([]float32, n)
@@ -42,7 +45,7 @@ func TestEqualPowerCrossfadeBothSignals(t *testing.T) {
 		new[i] = 0.6
 	}
 
-	result := EqualPowerCrossfade(old, new)
+	result := audio.EqualPowerCrossfade(old, new)
 
 	// At start: mostly old
 	require.InDelta(t, 0.8, result[0], 0.01)
@@ -52,7 +55,8 @@ func TestEqualPowerCrossfadeBothSignals(t *testing.T) {
 }
 
 func TestCrossfadeEqualPowerProperty(t *testing.T) {
-	// Equal power property: cos²(t·π/2) + sin²(t·π/2) = 1 for all t
+	t.Parallel()
+	// Equal power property: cos^2(t*pi/2) + sin^2(t*pi/2) = 1 for all t
 	// This means if old and new are both unit signals, total power is constant
 	n := 1024
 	for i := 0; i < n; i++ {
@@ -66,24 +70,26 @@ func TestCrossfadeEqualPowerProperty(t *testing.T) {
 }
 
 func TestCrossfadeDifferentLengths(t *testing.T) {
+	t.Parallel()
 	old := []float32{1.0, 1.0, 1.0, 1.0}
 	new := []float32{0.5, 0.5} // shorter
 
-	result := EqualPowerCrossfade(old, new)
-	// Should output len(old) samples — shorter buffer zero-padded
+	result := audio.EqualPowerCrossfade(old, new)
+	// Should output len(old) samples -- shorter buffer zero-padded
 	require.Equal(t, 4, len(result), "output should be length of longer buffer")
-	// Last sample: t=3/4, cos(0.75*π/2)≈0.383, sin(0.75*π/2)≈0.924
-	// old=1.0*0.383, new=0 (zero-padded) → ≈0.383
+	// Last sample: t=3/4, cos(0.75*pi/2)~0.383, sin(0.75*pi/2)~0.924
+	// old=1.0*0.383, new=0 (zero-padded) -> ~0.383
 	expected := float32(math.Cos(3.0 / 4.0 * math.Pi / 2))
-	require.InDelta(t, expected, result[3], 0.01, "last sample should be cos(3π/8)≈0.383")
+	require.InDelta(t, expected, result[3], 0.01, "last sample should be cos(3pi/8)~0.383")
 }
 
 func TestCrossfadeEmptySlices(t *testing.T) {
-	result := EqualPowerCrossfade(nil, nil)
+	t.Parallel()
+	result := audio.EqualPowerCrossfade(nil, nil)
 	require.Equal(t, 0, len(result))
 
-	// One non-empty, one nil — result uses longer buffer, shorter is zero-padded
-	result = EqualPowerCrossfade([]float32{1.0}, nil)
+	// One non-empty, one nil -- result uses longer buffer, shorter is zero-padded
+	result = audio.EqualPowerCrossfade([]float32{1.0}, nil)
 	require.Equal(t, 1, len(result))
 	require.InDelta(t, 1.0, result[0], 0.01, "single sample: old at t=0 should be ~1.0")
 }

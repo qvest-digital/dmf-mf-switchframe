@@ -7,6 +7,7 @@ import (
 )
 
 func TestRingBuffer_NewBuffer(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(1024)
 	require.NotNil(t, buf)
 	require.Equal(t, 0, buf.Len())
@@ -14,6 +15,7 @@ func TestRingBuffer_NewBuffer(t *testing.T) {
 }
 
 func TestRingBuffer_WriteAndRead(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(1024)
 	data := []byte("hello world")
 	n, err := buf.Write(data)
@@ -26,6 +28,7 @@ func TestRingBuffer_WriteAndRead(t *testing.T) {
 }
 
 func TestRingBuffer_MultipleWrites(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(1024)
 	_, _ = buf.Write([]byte("hello "))
 	_, _ = buf.Write([]byte("world"))
@@ -34,6 +37,7 @@ func TestRingBuffer_MultipleWrites(t *testing.T) {
 }
 
 func TestRingBuffer_Overflow(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(10)
 	data := []byte("1234567890abcdef") // 16 > 10
 	_, _ = buf.Write(data)
@@ -43,6 +47,7 @@ func TestRingBuffer_Overflow(t *testing.T) {
 }
 
 func TestRingBuffer_Reset(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(1024)
 	_, _ = buf.Write([]byte("data"))
 	buf.Reset()
@@ -51,6 +56,7 @@ func TestRingBuffer_Reset(t *testing.T) {
 }
 
 func TestRingBuffer_ReadAllClearsOverflow(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(10)
 	_, _ = buf.Write([]byte("1234567890abcdef"))
 	require.True(t, buf.Overflowed())
@@ -59,12 +65,14 @@ func TestRingBuffer_ReadAllClearsOverflow(t *testing.T) {
 }
 
 func TestRingBuffer_EmptyRead(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(1024)
 	out := buf.ReadAll()
 	require.Nil(t, out)
 }
 
 func TestRingBuffer_ExactCapacity(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(5)
 	_, _ = buf.Write([]byte("12345"))
 	require.False(t, buf.Overflowed())
@@ -74,6 +82,7 @@ func TestRingBuffer_ExactCapacity(t *testing.T) {
 }
 
 func TestRingBuffer_WrapAround(t *testing.T) {
+	t.Parallel()
 	buf := newRingBuffer(8)
 	_, _ = buf.Write([]byte("AAAAA"))
 	buf.ReadAll()

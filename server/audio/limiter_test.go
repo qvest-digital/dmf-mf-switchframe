@@ -8,6 +8,7 @@ import (
 )
 
 func TestLimiter_BelowThreshold_Passthrough(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// -6 dBFS = ~0.5 linear, well below -1 dBFS threshold (~0.891)
@@ -30,6 +31,7 @@ func TestLimiter_BelowThreshold_Passthrough(t *testing.T) {
 }
 
 func TestLimiter_AboveThreshold_Limiting(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// +6 dBFS = ~2.0 linear, well above -1 dBFS threshold
@@ -52,6 +54,7 @@ func TestLimiter_AboveThreshold_Limiting(t *testing.T) {
 }
 
 func TestLimiter_AttackTime(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// Feed a burst of loud signal. At 48kHz, 0.1ms = ~4.8 samples.
@@ -67,12 +70,13 @@ func TestLimiter_AttackTime(t *testing.T) {
 
 	// After 1ms (10x the 0.1ms attack time), the envelope should have mostly
 	// caught up to the 2.0 input level. GR should be near the theoretical
-	// maximum of 20*log10(2.0/0.891) ≈ 7.0 dB.
+	// maximum of 20*log10(2.0/0.891) ~ 7.0 dB.
 	require.Greater(t, gr, 5.0,
 		"GR should be > 5 dB after 1ms of +6 dBFS signal (fast 0.1ms attack)")
 }
 
 func TestLimiter_ReleaseTime(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// First: engage the limiter with a loud burst
@@ -100,6 +104,7 @@ func TestLimiter_ReleaseTime(t *testing.T) {
 }
 
 func TestLimiter_GainReductionReporting(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// Initially, GR should be 0
@@ -120,6 +125,7 @@ func TestLimiter_GainReductionReporting(t *testing.T) {
 }
 
 func TestLimiter_Silence(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// Process silence
@@ -135,6 +141,7 @@ func TestLimiter_Silence(t *testing.T) {
 }
 
 func TestLimiter_ExactlyAtThreshold(t *testing.T) {
+	t.Parallel()
 	lim := NewLimiter(48000)
 
 	// Samples exactly at -1 dBFS threshold

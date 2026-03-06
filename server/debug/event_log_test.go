@@ -7,6 +7,7 @@ import (
 )
 
 func TestEventLog_AddAndSnapshot(t *testing.T) {
+	t.Parallel()
 	log := NewEventLog(3) // capacity 3
 
 	log.Add("test_event", map[string]any{"key": "val1"})
@@ -20,6 +21,7 @@ func TestEventLog_AddAndSnapshot(t *testing.T) {
 }
 
 func TestEventLog_Wraparound(t *testing.T) {
+	t.Parallel()
 	log := NewEventLog(3)
 
 	log.Add("a", nil)
@@ -35,6 +37,7 @@ func TestEventLog_Wraparound(t *testing.T) {
 }
 
 func TestEventLog_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	log := NewEventLog(100)
 	done := make(chan struct{})
 

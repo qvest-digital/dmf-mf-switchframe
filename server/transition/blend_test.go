@@ -25,6 +25,7 @@ func makeYUVFrame(w, h int, y, cb, cr byte) []byte {
 }
 
 func TestBlenderNew(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(1920, 1080)
 	require.NotNil(t, fb)
 	require.Equal(t, 1920, fb.width)
@@ -32,6 +33,7 @@ func TestBlenderNew(t *testing.T) {
 }
 
 func TestBlendMixPosition0(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 90, 240) // bright reddish
 	b := makeYUVFrame(4, 4, 50, 200, 60)  // dark bluish
@@ -49,6 +51,7 @@ func TestBlendMixPosition0(t *testing.T) {
 }
 
 func TestBlendMixPosition1(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 90, 240)
 	b := makeYUVFrame(4, 4, 50, 200, 60)
@@ -66,6 +69,7 @@ func TestBlendMixPosition1(t *testing.T) {
 }
 
 func TestBlendMixPosition05(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 	b := makeYUVFrame(4, 4, 100, 200, 100)
@@ -83,6 +87,7 @@ func TestBlendMixPosition05(t *testing.T) {
 }
 
 func TestBlendDipPhase1(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 	b := makeYUVFrame(4, 4, 100, 200, 100)
@@ -106,6 +111,7 @@ func TestBlendDipPhase1(t *testing.T) {
 }
 
 func TestBlendDipMidpoint(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 255, 200, 200)
 	b := makeYUVFrame(4, 4, 255, 200, 200)
@@ -124,6 +130,7 @@ func TestBlendDipMidpoint(t *testing.T) {
 }
 
 func TestBlendDipPhase2(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 100, 100, 100)
 	b := makeYUVFrame(4, 4, 200, 160, 200)
@@ -147,6 +154,7 @@ func TestBlendDipPhase2(t *testing.T) {
 }
 
 func TestBlendFTBHalf(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 
@@ -169,6 +177,7 @@ func TestBlendFTBHalf(t *testing.T) {
 }
 
 func TestBlendFTBFull(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 200, 200)
 
@@ -186,6 +195,7 @@ func TestBlendFTBFull(t *testing.T) {
 }
 
 func TestBlendFTBZero(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 
@@ -202,6 +212,7 @@ func TestBlendFTBZero(t *testing.T) {
 }
 
 func TestBlenderReusesBuffer(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 	a := makeYUVFrame(4, 4, 100, 128, 128)
 	b := makeYUVFrame(4, 4, 200, 128, 128)
@@ -215,6 +226,7 @@ func TestBlenderReusesBuffer(t *testing.T) {
 }
 
 func TestBlenderYUVBufferSize(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(1920, 1080)
 	// YUV420: Y=1920*1080 + Cb=960*540 + Cr=960*540 = 3110400
 	expected := 1920*1080 + 2*(960*540)
@@ -224,6 +236,7 @@ func TestBlenderYUVBufferSize(t *testing.T) {
 // --- Wipe transition tests ---
 
 func TestBlendWipePosition0AllA(t *testing.T) {
+	t.Parallel()
 	// At position 0.0, the entire frame should be source A regardless of direction.
 	fb := NewFrameBlender(8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
@@ -244,6 +257,7 @@ func TestBlendWipePosition0AllA(t *testing.T) {
 }
 
 func TestBlendWipePosition1AllB(t *testing.T) {
+	t.Parallel()
 	// At position 1.0, the entire frame should be source B regardless of direction.
 	fb := NewFrameBlender(8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
@@ -264,6 +278,7 @@ func TestBlendWipePosition1AllB(t *testing.T) {
 }
 
 func TestBlendWipeHLeftHalfway(t *testing.T) {
+	t.Parallel()
 	// At position 0.5 with h-left: threshold = x/width.
 	// Pixels with x/width < 0.5 (i.e., x < 4) should be B.
 	// Pixels with x/width > 0.5 (i.e., x >= 4) should be A.
@@ -273,14 +288,14 @@ func TestBlendWipeHLeftHalfway(t *testing.T) {
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
 	out := fb.BlendWipe(a, b, 0.5, WipeHLeft)
-	// Check left side (x=0,1) — should be fully B
+	// Check left side (x=0,1) -- should be fully B
 	for y := 0; y < 8; y++ {
 		for x := 0; x < 2; x++ {
 			idx := y*8 + x
 			require.Equal(t, byte(50), out[idx], "Y at (%d,%d) should be B (left side)", x, y)
 		}
 	}
-	// Check right side (x=6,7) — should be fully A
+	// Check right side (x=6,7) -- should be fully A
 	for y := 0; y < 8; y++ {
 		for x := 6; x < 8; x++ {
 			idx := y*8 + x
@@ -290,6 +305,7 @@ func TestBlendWipeHLeftHalfway(t *testing.T) {
 }
 
 func TestBlendWipeVTopHalfway(t *testing.T) {
+	t.Parallel()
 	// At position 0.5 with v-top: threshold = y/height.
 	// Pixels with y/height < 0.5 (y < 4) should be B.
 	// Pixels with y/height > 0.5 (y >= 4) should be A.
@@ -298,14 +314,14 @@ func TestBlendWipeVTopHalfway(t *testing.T) {
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
 	out := fb.BlendWipe(a, b, 0.5, WipeVTop)
-	// Check top rows (y=0,1) — should be fully B
+	// Check top rows (y=0,1) -- should be fully B
 	for y := 0; y < 2; y++ {
 		for x := 0; x < 8; x++ {
 			idx := y*8 + x
 			require.Equal(t, byte(50), out[idx], "Y at (%d,%d) should be B (top side)", x, y)
 		}
 	}
-	// Check bottom rows (y=6,7) — should be fully A
+	// Check bottom rows (y=6,7) -- should be fully A
 	for y := 6; y < 8; y++ {
 		for x := 0; x < 8; x++ {
 			idx := y*8 + x
@@ -315,25 +331,27 @@ func TestBlendWipeVTopHalfway(t *testing.T) {
 }
 
 func TestBlendWipeBoxCenterOut(t *testing.T) {
+	t.Parallel()
 	// At position 0.5 with box-center-out: threshold = max(|x-cx|/cx, |y-cy|/cy).
-	// Center pixels have low threshold (< 0.5) → B. Edge pixels have high threshold → A.
+	// Center pixels have low threshold (< 0.5) -> B. Edge pixels have high threshold -> A.
 	fb := NewFrameBlender(8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
 	out := fb.BlendWipe(a, b, 0.5, WipeBoxCenterOut)
-	// Center pixel (3,3) or (4,4): threshold should be low → B
-	// For 8x8: cx=3.5, cy=3.5. At (3,3): max(|3-3.5|/3.5, |3-3.5|/3.5) = max(0.143, 0.143) = 0.143 < 0.5 → B
+	// Center pixel (3,3) or (4,4): threshold should be low -> B
+	// For 8x8: cx=3.5, cy=3.5. At (3,3): max(|3-3.5|/3.5, |3-3.5|/3.5) = max(0.143, 0.143) = 0.143 < 0.5 -> B
 	require.Equal(t, byte(50), out[3*8+3], "center pixel should be B")
 	require.Equal(t, byte(50), out[4*8+4], "near-center pixel should be B")
 
-	// Corner pixel (0,0): max(|0-3.5|/3.5, |0-3.5|/3.5) = 1.0 > 0.5 → A
+	// Corner pixel (0,0): max(|0-3.5|/3.5, |0-3.5|/3.5) = 1.0 > 0.5 -> A
 	require.Equal(t, byte(200), out[0*8+0], "corner pixel should be A")
-	// Corner pixel (7,7): max(|7-3.5|/3.5, |7-3.5|/3.5) = 1.0 > 0.5 → A
+	// Corner pixel (7,7): max(|7-3.5|/3.5, |7-3.5|/3.5) = 1.0 > 0.5 -> A
 	require.Equal(t, byte(200), out[7*8+7], "corner pixel should be A")
 }
 
 func TestBlendWipeSoftEdge(t *testing.T) {
+	t.Parallel()
 	// Verify that pixels at the wipe boundary have blended (intermediate) values.
 	// Use a wider frame so the 4px soft edge is visible.
 	fb := NewFrameBlender(32, 8)
@@ -343,21 +361,22 @@ func TestBlendWipeSoftEdge(t *testing.T) {
 	out := fb.BlendWipe(a, b, 0.5, WipeHLeft)
 	// At x=16 (threshold = 16/32 = 0.5 = position), this is exactly on the boundary.
 	// With 4px soft edge, pixels within +/-2px of the boundary should be blended.
-	// x=14: threshold = 14/32 = 0.4375, well below 0.5 → fully B (50)
-	// x=18: threshold = 18/32 = 0.5625, well above 0.5 → fully A (200)
-	// x=15 or x=16: near boundary → intermediate value
+	// x=14: threshold = 14/32 = 0.4375, well below 0.5 -> fully B (50)
+	// x=18: threshold = 18/32 = 0.5625, well above 0.5 -> fully A (200)
+	// x=15 or x=16: near boundary -> intermediate value
 	yRow0_x14 := out[14]
 	yRow0_x18 := out[18]
 	require.Equal(t, byte(50), yRow0_x14, "x=14 should be fully B")
 	require.Equal(t, byte(200), yRow0_x18, "x=18 should be fully A")
 
-	// x=16 is at threshold=0.5 = position → should be 50% blend
+	// x=16 is at threshold=0.5 = position -> should be 50% blend
 	yRow0_x16 := out[16]
 	require.Greater(t, int(yRow0_x16), 50, "x=16 should be blended (not fully B)")
 	require.Less(t, int(yRow0_x16), 200, "x=16 should be blended (not fully A)")
 }
 
 func TestBlendWipeAllDirectionsValid(t *testing.T) {
+	t.Parallel()
 	// Ensure all 6 directions produce valid output of the correct size.
 	fb := NewFrameBlender(8, 8)
 	a := makeYUVFrame(8, 8, 100, 128, 128)
@@ -383,6 +402,7 @@ func TestBlendWipeAllDirectionsValid(t *testing.T) {
 }
 
 func TestBlendStinger_BoundsCheck(t *testing.T) {
+	t.Parallel()
 	fb := NewFrameBlender(4, 4)
 
 	validBase := makeYUVFrame(4, 4, 128, 128, 128)

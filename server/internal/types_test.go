@@ -1,15 +1,17 @@
 // server/internal/types_test.go
-package internal
+package internal_test
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 func TestControlRoomStateJSON(t *testing.T) {
-	state := ControlRoomState{
+	t.Parallel()
+	state := internal.ControlRoomState{
 		ProgramSource:        "camera1",
 		PreviewSource:        "camera2",
 		TransitionType:       "cut",
@@ -17,7 +19,7 @@ func TestControlRoomStateJSON(t *testing.T) {
 		TransitionPosition:   0.0,
 		InTransition:         false,
 		TallyState:           map[string]string{"camera1": "program", "camera2": "preview"},
-		Sources:              map[string]SourceInfo{"camera1": {Key: "camera1", Status: "healthy"}},
+		Sources:              map[string]internal.SourceInfo{"camera1": {Key: "camera1", Status: "healthy"}},
 		Seq:                  1,
 		Timestamp:            1709500000000,
 	}
@@ -25,7 +27,7 @@ func TestControlRoomStateJSON(t *testing.T) {
 	data, err := json.Marshal(state)
 	require.NoError(t, err, "marshal")
 
-	var decoded ControlRoomState
+	var decoded internal.ControlRoomState
 	require.NoError(t, json.Unmarshal(data, &decoded), "unmarshal")
 
 	require.Equal(t, "camera1", decoded.ProgramSource)
@@ -34,6 +36,7 @@ func TestControlRoomStateJSON(t *testing.T) {
 }
 
 func TestSourceInfoHealthStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status string
@@ -46,10 +49,11 @@ func TestSourceInfoHealthStatus(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			si := SourceInfo{Key: "cam1", Status: tt.status}
+			t.Parallel()
+			si := internal.SourceInfo{Key: "cam1", Status: tt.status}
 			data, err := json.Marshal(si)
 			require.NoError(t, err)
-			var decoded SourceInfo
+			var decoded internal.SourceInfo
 			require.NoError(t, json.Unmarshal(data, &decoded))
 			require.Equal(t, tt.status, decoded.Status)
 		})
@@ -57,7 +61,8 @@ func TestSourceInfoHealthStatus(t *testing.T) {
 }
 
 func TestAudioChannelJSON(t *testing.T) {
-	ch := AudioChannel{
+	t.Parallel()
+	ch := internal.AudioChannel{
 		Level: -6.0,
 		Muted: false,
 		AFV:   true,
@@ -66,15 +71,16 @@ func TestAudioChannelJSON(t *testing.T) {
 	data, err := json.Marshal(ch)
 	require.NoError(t, err)
 
-	var decoded AudioChannel
+	var decoded internal.AudioChannel
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	require.Equal(t, ch, decoded)
 }
 
 func TestControlRoomStateAudioFields(t *testing.T) {
-	state := ControlRoomState{
+	t.Parallel()
+	state := internal.ControlRoomState{
 		ProgramSource: "cam1",
-		AudioChannels: map[string]AudioChannel{
+		AudioChannels: map[string]internal.AudioChannel{
 			"cam1": {Level: 0, Muted: false, AFV: true},
 			"cam2": {Level: -12, Muted: true, AFV: false},
 		},
@@ -85,7 +91,7 @@ func TestControlRoomStateAudioFields(t *testing.T) {
 	data, err := json.Marshal(state)
 	require.NoError(t, err)
 
-	var decoded ControlRoomState
+	var decoded internal.ControlRoomState
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	require.Equal(t, state.AudioChannels, decoded.AudioChannels)
 	require.Equal(t, state.MasterLevel, decoded.MasterLevel)

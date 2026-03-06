@@ -7,6 +7,7 @@ import (
 )
 
 func TestScalePlane_Identity(t *testing.T) {
+	t.Parallel()
 	// Same resolution = exact copy
 	src := []byte{10, 20, 30, 40, 50, 60, 70, 80, 90}
 	dst := make([]byte, 9)
@@ -15,6 +16,7 @@ func TestScalePlane_Identity(t *testing.T) {
 }
 
 func TestScalePlane_Upscale2x(t *testing.T) {
+	t.Parallel()
 	// 2x2 -> 4x4
 	// src:
 	//   0  100
@@ -36,12 +38,8 @@ func TestScalePlane_Upscale2x(t *testing.T) {
 }
 
 func TestScalePlane_Downscale(t *testing.T) {
+	t.Parallel()
 	// 4x4 -> 2x2
-	// src:
-	//   0   33   66  100
-	//   66  77   88  100
-	//   133 122  111 100
-	//   200 166  133 50
 	src := []byte{
 		0, 33, 66, 100,
 		66, 77, 88, 100,
@@ -59,9 +57,10 @@ func TestScalePlane_Downscale(t *testing.T) {
 }
 
 func TestScaleYUV420_MatchedResolution(t *testing.T) {
+	t.Parallel()
 	// Same size = exact copy for full YUV420 frame
 	w, h := 4, 4
-	ySize := w * h         // 16
+	ySize := w * h              // 16
 	uvSize := (w / 2) * (h / 2) // 4
 	totalSize := ySize + 2*uvSize // 24
 
@@ -76,6 +75,7 @@ func TestScaleYUV420_MatchedResolution(t *testing.T) {
 }
 
 func TestScaleYUV420_DifferentResolutions(t *testing.T) {
+	t.Parallel()
 	// 8x8 -> 16x16, verify non-zero output
 	srcW, srcH := 8, 8
 	dstW, dstH := 16, 16
@@ -94,7 +94,7 @@ func TestScaleYUV420_DifferentResolutions(t *testing.T) {
 		src[i] = 128 // Y
 	}
 	for i := 0; i < srcUVSize; i++ {
-		src[srcYSize+i] = 100       // Cb
+		src[srcYSize+i] = 100          // Cb
 		src[srcYSize+srcUVSize+i] = 200 // Cr
 	}
 
@@ -128,6 +128,7 @@ func TestScaleYUV420_DifferentResolutions(t *testing.T) {
 }
 
 func TestScaleYUV420_CornerPreservation(t *testing.T) {
+	t.Parallel()
 	// Scale 4x4 -> 8x8 and verify Y plane corners match
 	srcW, srcH := 4, 4
 	dstW, dstH := 8, 8
@@ -142,9 +143,9 @@ func TestScaleYUV420_CornerPreservation(t *testing.T) {
 
 	src := make([]byte, srcTotal)
 	// Set Y plane corners to distinct values
-	src[0] = 10                     // top-left
-	src[srcW-1] = 50               // top-right
-	src[(srcH-1)*srcW] = 150       // bottom-left
+	src[0] = 10                      // top-left
+	src[srcW-1] = 50                // top-right
+	src[(srcH-1)*srcW] = 150        // bottom-left
 	src[(srcH-1)*srcW+srcW-1] = 200 // bottom-right
 	// Fill chroma with neutral values
 	for i := 0; i < srcUVSize; i++ {
@@ -163,6 +164,7 @@ func TestScaleYUV420_CornerPreservation(t *testing.T) {
 }
 
 func TestScalePlane_1x1(t *testing.T) {
+	t.Parallel()
 	// Edge case: 1x1 source
 	src := []byte{42}
 	dst := make([]byte, 1)
@@ -171,6 +173,7 @@ func TestScalePlane_1x1(t *testing.T) {
 }
 
 func TestScalePlane_1x1_Upscale(t *testing.T) {
+	t.Parallel()
 	// 1x1 -> 4x4: all destination pixels should equal the source pixel
 	src := []byte{99}
 	dst := make([]byte, 16)
@@ -184,8 +187,8 @@ func BenchmarkScaleYUV420_720pTo1080p(b *testing.B) {
 	srcW, srcH := 1280, 720
 	dstW, dstH := 1920, 1080
 
-	srcSize := srcW*srcH*3/2
-	dstSize := dstW*dstH*3/2
+	srcSize := srcW * srcH * 3 / 2
+	dstSize := dstW * dstH * 3 / 2
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
@@ -204,8 +207,8 @@ func BenchmarkScaleYUV420_1080pTo720p(b *testing.B) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 1280, 720
 
-	srcSize := srcW*srcH*3/2
-	dstSize := dstW*dstH*3/2
+	srcSize := srcW * srcH * 3 / 2
+	dstSize := dstW * dstH * 3 / 2
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)

@@ -34,6 +34,7 @@ func newTestStore(t *testing.T) *PresetStore {
 }
 
 func TestCreatePreset(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	p, err := ps.Create("Morning Service", testSnapshot())
@@ -50,6 +51,7 @@ func TestCreatePreset(t *testing.T) {
 }
 
 func TestCreatePresetEmptyName(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	_, err := ps.Create("", testSnapshot())
@@ -57,6 +59,7 @@ func TestCreatePresetEmptyName(t *testing.T) {
 }
 
 func TestListPresets(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	require.Empty(t, ps.List())
@@ -71,6 +74,7 @@ func TestListPresets(t *testing.T) {
 }
 
 func TestGetPreset(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	created, _ := ps.Create("Test", testSnapshot())
@@ -84,6 +88,7 @@ func TestGetPreset(t *testing.T) {
 }
 
 func TestUpdatePreset(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	created, _ := ps.Create("Original", testSnapshot())
@@ -109,6 +114,7 @@ func TestUpdatePreset(t *testing.T) {
 }
 
 func TestDeletePreset(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	created, _ := ps.Create("ToDelete", testSnapshot())
@@ -125,6 +131,7 @@ func TestDeletePreset(t *testing.T) {
 }
 
 func TestPersistenceRoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "presets.json")
 
@@ -152,6 +159,7 @@ func TestPersistenceRoundTrip(t *testing.T) {
 }
 
 func TestUniqueIDs(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	ids := make(map[string]bool)
@@ -164,6 +172,7 @@ func TestUniqueIDs(t *testing.T) {
 }
 
 func TestConcurrency(t *testing.T) {
+	t.Parallel()
 	ps := newTestStore(t)
 
 	const goroutines = 20
@@ -189,6 +198,7 @@ func TestConcurrency(t *testing.T) {
 }
 
 func TestNewPresetStoreNonexistentFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "subdir", "presets.json")
 
