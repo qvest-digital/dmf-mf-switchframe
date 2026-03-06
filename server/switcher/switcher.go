@@ -100,7 +100,7 @@ func (s *Switcher) transitionState(to SwitcherState) {
 		}
 	}
 	if !valid {
-		slog.Warn("switcher: invalid state transition",
+		s.log.Warn("invalid state transition",
 			"from", from.String(), "to", to.String())
 	}
 	s.state = to
@@ -171,6 +171,7 @@ type sourceState struct {
 // on-program (live output) and which is on-preview, maintains tally state,
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
+	log            *slog.Logger
 	mu             sync.RWMutex
 	sources        map[string]*sourceState
 	programSource  string
@@ -227,6 +228,7 @@ var _ frameHandler = (*Switcher)(nil)
 // New creates a Switcher that forwards program frames to programRelay.
 func New(programRelay *distribution.Relay) *Switcher {
 	s := &Switcher{
+		log:          slog.With("component", "switcher"),
 		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
@@ -395,7 +397,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 			fs.AddSource(key)
 		}
 		fs.Start()
-		slog.Info("switcher: frame sync enabled", "tick_rate", tickRate)
+		s.log.Info("frame sync enabled", "tick_rate", tickRate)
 	} else {
 		if s.frameSync != nil {
 			s.frameSync.Stop()
@@ -407,7 +409,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 			ss.viewer.frameSync.Store(nil)
 			ss.viewer.delayBuffer.Store(s.delayBuffer)
 		}
-		slog.Info("switcher: frame sync disabled")
+		s.log.Info("frame sync disabled")
 	}
 	s.frameSyncActive = enabled
 }
@@ -581,7 +583,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	slog.Info("switcher: transition started",
+	s.log.Info("transition started",
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
 
 	if audioHandler != nil {
@@ -689,7 +691,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		snapshot := s.buildStateLocked()
 		s.mu.Unlock()
 
-		slog.Info("switcher: transition started",
+		s.log.Info("transition started",
 			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", 1000)
 
 		if audioHandler != nil {
@@ -755,7 +757,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	slog.Info("switcher: transition started",
+	s.log.Info("transition started",
 		"type", "ftb", "from", fromSource, "to", "", "duration_ms", 1000)
 
 	if audioHandler != nil {
@@ -794,7 +796,7 @@ func (s *Switcher) AbortTransition() {
 		engine.Stop()
 	}
 	if wasActive {
-		slog.Warn("switcher: transition aborted", "type", transType, "reason", "manual abort")
+		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
 		if audioHandler != nil {
 			audioHandler.OnTransitionComplete()
@@ -857,9 +859,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.mu.Unlock()
 
 	if aborted {
-		slog.Warn("switcher: transition aborted", "type", transType, "reason", "engine aborted")
+		s.log.Warn("transition aborted", "type", transType, "reason", "engine aborted")
 	} else {
-		slog.Info("switcher: transition completed", "type", transType)
+		s.log.Info("transition completed", "type", transType)
 	}
 
 	// Replay the source's cached GOP to bridge the transition→passthrough
@@ -917,9 +919,9 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.mu.Unlock()
 
 	if aborted {
-		slog.Warn("switcher: transition aborted", "type", "ftb", "reason", "engine aborted")
+		s.log.Warn("transition aborted", "type", "ftb", "reason", "engine aborted")
 	} else {
-		slog.Info("switcher: FTB activated")
+		s.log.Info("FTB activated")
 	}
 
 	if audioHandler != nil {
@@ -992,9 +994,9 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	}
 
 	if aborted {
-		slog.Warn("switcher: transition aborted", "type", "ftb_reverse", "reason", "engine aborted")
+		s.log.Warn("transition aborted", "type", "ftb_reverse", "reason", "engine aborted")
 	} else {
-		slog.Info("switcher: FTB deactivated")
+		s.log.Info("FTB deactivated")
 	}
 
 	if audioHandler != nil {
@@ -1027,7 +1029,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.health.registerSource(key)
 	s.mu.Unlock()
 
-	slog.Info("switcher: source registered", "source_key", key)
+	s.log.Info("source registered", "source_key", key)
 }
 
 // RegisterVirtualSource registers a transient internal source (e.g. replay).
@@ -1054,7 +1056,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
-	slog.Info("switcher: virtual source registered", "source_key", key)
+	s.log.Info("virtual source registered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
 
@@ -1086,7 +1088,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	slog.Info("switcher: source unregistered", "source_key", key)
+	s.log.Info("source unregistered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
 
@@ -1127,7 +1129,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Unlock()
 
 	if changed {
-		slog.Info("switcher: cut executed", "source", sourceKey, "previous_source", oldProgram)
+		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
 
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
 		if audioCut != nil {
@@ -1191,7 +1193,7 @@ func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
 
 	s.delayBuffer.SetDelay(sourceKey, time.Duration(delayMs)*time.Millisecond)
 
-	slog.Info("switcher: source delay set", "source_key", sourceKey, "delay_ms", delayMs)
+	s.log.Info("source delay set", "source_key", sourceKey, "delay_ms", delayMs)
 
 	s.mu.Lock()
 	atomic.AddUint64(&s.seq, 1)
@@ -1523,7 +1525,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	}
 	s.mu.Unlock()
 
-	slog.Debug("switcher: IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
+	s.log.Debug("IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
 	s.broadcastVideo(frame)
 }
 

@@ -63,6 +63,7 @@ type EngineConfig struct {
 // TransitionEngine manages the dissolve pipeline lifecycle.
 // Created when a transition starts, destroyed when it completes or aborts.
 type TransitionEngine struct {
+	log            *slog.Logger
 	mu             sync.RWMutex
 	state          TransitionState
 	transitionType TransitionType
@@ -110,6 +111,7 @@ type TransitionEngine struct {
 // NewTransitionEngine creates a new engine with the given configuration.
 func NewTransitionEngine(config EngineConfig) *TransitionEngine {
 	return &TransitionEngine{
+		log:     slog.With("component", "transition"),
 		state:   StateIdle,
 		timeout: DefaultTimeout,
 		config:  config,
@@ -209,7 +211,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.watchdogStop = make(chan struct{})
 	e.watchdogOnce = sync.Once{}
 
-	slog.Info("transition: engine started", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
+	e.log.Info("engine started", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
 
 	// Start watchdog goroutine
 	go e.runWatchdog(e.watchdogStop, e.timeout)
@@ -296,10 +298,10 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 
 	yuv, w, h, err := decoder.Decode(wireData)
 	if err != nil {
-		slog.Debug("transition: decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
+		e.log.Debug("decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
 		return false
 	}
-	slog.Debug("transition: decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
+	e.log.Debug("decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
 
 	// Lazy-init encoder and blender on first successful decode
 	if e.width == 0 {
@@ -318,17 +320,17 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 
 		enc, encErr := e.config.EncoderFactory(w, h, bitrate, float32(fps))
 		if encErr != nil {
-			slog.Error("transition: encoder init failed", "err", encErr, "w", w, "h", h)
+			e.log.Error("encoder init failed", "err", encErr, "w", w, "h", h)
 			return false
 		}
 		e.encoder = enc
-		slog.Info("transition: encoder initialized", "w", w, "h", h, "bitrate", bitrate, "fps", fps)
+		e.log.Info("encoder initialized", "w", w, "h", h, "bitrate", bitrate, "fps", fps)
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
 	// Common in mixed-resolution setups (e.g. 1080p cameras + 720p ProPresenter).
 	if w != e.width || h != e.height {
-		slog.Debug("transition: scaling frame", "source", sourceKey,
+		e.log.Debug("scaling frame", "source", sourceKey,
 			"from_w", w, "from_h", h, "to_w", e.width, "to_h", e.height)
 		targetSize := e.width * e.height * 3 / 2
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
@@ -429,17 +431,17 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	e.firstEncoded = true
 	encoded, isKeyframe, encErr := e.encoder.Encode(blended, forceIDR)
 	if encErr != nil {
-		slog.Warn("transition: encode failed", "err", encErr, "pos", pos)
+		e.log.Warn("encode failed", "err", encErr, "pos", pos)
 		e.mu.Unlock()
 		return
 	}
-	slog.Debug("transition: blended+encoded", "pos", fmt.Sprintf("%.3f", pos), "isKeyframe", isKeyframe, "outBytes", len(encoded))
+	e.log.Debug("blended+encoded", "pos", fmt.Sprintf("%.3f", pos), "isKeyframe", isKeyframe, "outBytes", len(encoded))
 
 	// Check if auto-mode completed
 	var autoComplete bool
 	if !e.manualControl && pos >= 1.0 {
 		autoComplete = true
-		slog.Info("transition: auto-complete", "type", e.transitionType)
+		e.log.Info("auto-complete", "type", e.transitionType)
 		e.cleanup()
 	}
 
@@ -484,7 +486,7 @@ func (e *TransitionEngine) Abort() {
 		e.mu.Unlock()
 		return
 	}
-	slog.Warn("transition: aborted", "type", e.transitionType, "from", e.fromSource, "to", e.toSource)
+	e.log.Warn("aborted", "type", e.transitionType, "from", e.fromSource, "to", e.toSource)
 	e.cleanup()
 	e.mu.Unlock()
 
@@ -522,7 +524,7 @@ func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration
 			e.mu.RUnlock()
 
 			if active && elapsed > timeout {
-				slog.Warn("transition: watchdog timeout — no frames received",
+				e.log.Warn("watchdog timeout — no frames received",
 					"timeout", timeout, "elapsed", elapsed)
 				e.Abort()
 				return
@@ -574,7 +576,7 @@ func (e *TransitionEngine) scaleStingerFrames(sd *StingerData) []StingerFrameDat
 		return sd.Frames
 	}
 
-	slog.Info("transition: scaling stinger frames",
+	e.log.Info("scaling stinger frames",
 		"from", fmt.Sprintf("%dx%d", sd.Width, sd.Height),
 		"to", fmt.Sprintf("%dx%d", e.width, e.height))
 

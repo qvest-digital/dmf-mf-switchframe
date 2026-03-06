@@ -22,6 +22,7 @@ const asyncAdapterBufSize = 256
 // output is enabled and removes it when the last output is disabled, ensuring
 // zero CPU overhead when no outputs are active.
 type OutputManager struct {
+	log   *slog.Logger
 	relay *distribution.Relay
 
 	mu       sync.Mutex
@@ -53,7 +54,10 @@ type OutputManager struct {
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
 func NewOutputManager(relay *distribution.Relay) *OutputManager {
-	return &OutputManager{relay: relay}
+	return &OutputManager{
+		log:   slog.With("component", "output"),
+		relay: relay,
+	}
 }
 
 // SetSRTWiring injects real SRT connection functions. Called from main.go
@@ -115,7 +119,7 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 		fn()
 	}
 
-	slog.Info("recording started", "dir", config.Dir, "file", rec.Filename())
+	m.log.Info("recording started", "dir", config.Dir, "file", rec.Filename())
 	return nil
 }
 
@@ -142,7 +146,7 @@ func (m *OutputManager) StopRecording() error {
 
 	// Close the recorder outside the lock.
 	if err := rec.Close(); err != nil {
-		slog.Error("error closing recorder", "err", err)
+		m.log.Error("error closing recorder", "err", err)
 	}
 
 	// Notify outside lock.
@@ -150,7 +154,7 @@ func (m *OutputManager) StopRecording() error {
 		fn()
 	}
 
-	slog.Info("recording stopped")
+	m.log.Info("recording stopped")
 	return nil
 }
 
@@ -177,7 +181,7 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 		}
 		caller.onReconnect = func(overflowed bool) {
 			if overflowed {
-				slog.Warn("SRT ring buffer overflowed during reconnect, data was lost",
+				m.log.Warn("SRT ring buffer overflowed during reconnect, data was lost",
 					"address", config.Address, "port", config.Port)
 			}
 			m.mu.Lock()
@@ -234,7 +238,7 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 		fn()
 	}
 
-	slog.Info("SRT output started", "mode", config.Mode, "port", config.Port)
+	m.log.Info("SRT output started", "mode", config.Mode, "port", config.Port)
 	return nil
 }
 
@@ -261,7 +265,7 @@ func (m *OutputManager) StopSRTOutput() error {
 
 	// Close the adapter outside the lock.
 	if err := adapter.Close(); err != nil {
-		slog.Error("error closing SRT output", "err", err)
+		m.log.Error("error closing SRT output", "err", err)
 	}
 
 	// Notify outside lock.
@@ -269,7 +273,7 @@ func (m *OutputManager) StopSRTOutput() error {
 		fn()
 	}
 
-	slog.Info("SRT output stopped")
+	m.log.Info("SRT output stopped")
 	return nil
 }
 
@@ -362,12 +366,12 @@ func (m *OutputManager) Close() error {
 	// Close adapters outside the lock.
 	if rec != nil {
 		if err := rec.Close(); err != nil {
-			slog.Error("error closing recorder on shutdown", "err", err)
+			m.log.Error("error closing recorder on shutdown", "err", err)
 		}
 	}
 	if srt != nil {
 		if err := srt.Close(); err != nil {
-			slog.Error("error closing SRT output on shutdown", "err", err)
+			m.log.Error("error closing SRT output on shutdown", "err", err)
 		}
 	}
 
@@ -441,7 +445,7 @@ func (m *OutputManager) ensureMuxerLocked() {
 
 		for _, a := range snapshot {
 			if _, err := a.Write(tsData); err != nil {
-				slog.Error("adapter write error", "adapter", a.ID(), "err", err)
+				m.log.Error("adapter write error", "adapter", a.ID(), "err", err)
 			}
 		}
 	})
@@ -464,7 +468,7 @@ func (m *OutputManager) ensureMuxerLocked() {
 	// Register viewer on the relay so it receives program frames.
 	m.relay.AddViewer(viewer)
 
-	slog.Info("output pipeline started")
+	m.log.Info("output pipeline started")
 }
 
 // stopMuxerIfNoAdaptersLocked tears down the muxer and viewer if no
@@ -506,13 +510,13 @@ func (m *OutputManager) stopMuxerLocked() {
 
 	// Close the muxer.
 	if err := muxer.Close(); err != nil {
-		slog.Error("error closing muxer", "err", err)
+		m.log.Error("error closing muxer", "err", err)
 	}
 
 	// Re-acquire the lock (callers expect it held on return).
 	m.mu.Lock()
 
-	slog.Info("output pipeline stopped")
+	m.log.Info("output pipeline stopped")
 }
 
 // Status returns a summary of all active outputs. This is a convenience

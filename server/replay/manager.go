@@ -20,6 +20,7 @@ type ReplayRelay interface {
 // Manager orchestrates the replay system: per-source buffers, viewers,
 // mark-in/out points, and the active player.
 type Manager struct {
+	log            *slog.Logger
 	mu             sync.Mutex
 	relay          ReplayRelay
 	config         Config
@@ -58,6 +59,7 @@ func NewManager(relay ReplayRelay, cfg Config, decoderFactory transition.Decoder
 		cfg.MaxBufferBytes = 200 * 1024 * 1024 // 200MB default
 	}
 	return &Manager{
+		log:            slog.With("component", "replay"),
 		relay:          relay,
 		config:         cfg,
 		decoderFactory: decoderFactory,
@@ -87,7 +89,7 @@ func (m *Manager) AddSource(key string) error {
 	m.buffers[key] = buf
 	m.viewers[key] = v
 
-	slog.Info("replay: added source", "key", key, "bufferSecs", m.config.BufferDurationSecs)
+	m.log.Info("added source", "key", key, "bufferSecs", m.config.BufferDurationSecs)
 	return nil
 }
 
@@ -99,7 +101,7 @@ func (m *Manager) RemoveSource(key string) {
 	delete(m.buffers, key)
 	delete(m.viewers, key)
 
-	slog.Info("replay: removed source", "key", key)
+	m.log.Info("removed source", "key", key)
 }
 
 // Viewer returns the replay viewer for the given source, or nil if
@@ -138,7 +140,7 @@ func (m *Manager) MarkIn(source string) error {
 	m.markIn = &now
 	m.markOut = nil
 
-	slog.Info("replay: mark-in set", "source", source, "time", now)
+	m.log.Info("mark-in set", "source", source, "time", now)
 	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
@@ -168,7 +170,7 @@ func (m *Manager) MarkOut(source string) error {
 	}
 	m.markOut = &now
 
-	slog.Info("replay: mark-out set", "source", source, "time", now)
+	m.log.Info("mark-out set", "source", source, "time", now)
 	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
@@ -247,7 +249,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 
 		m.player.Start(ctx)
 
-		slog.Info("replay: playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
+		m.log.Info("playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
 		return nil
 	}()
 	if err != nil {

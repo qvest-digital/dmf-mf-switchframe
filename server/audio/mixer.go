@@ -53,6 +53,7 @@ type Channel struct {
 
 // AudioMixer mixes audio from multiple sources.
 type AudioMixer struct {
+	log         *slog.Logger
 	mu          sync.RWMutex
 	channels    map[string]*Channel
 	masterLevel float64 // dB, default 0.0
@@ -122,6 +123,7 @@ const mixCycleDeadline = 50 * time.Millisecond
 // NewMixer creates an AudioMixer.
 func NewMixer(config MixerConfig) *AudioMixer {
 	m := &AudioMixer{
+		log:            slog.With("component", "audio"),
 		channels:       make(map[string]*Channel),
 		masterLevel:    0.0,
 		sampleRate:     config.SampleRate,
@@ -174,7 +176,7 @@ func (m *AudioMixer) initChannelDecoder(ch *Channel) {
 	ch.decoderOnce.Do(func() {
 		dec, err := m.config.DecoderFactory(m.sampleRate, m.numChannels)
 		if err != nil {
-			slog.Warn("mixer: decoder factory error", "source", ch.sourceKey, "err", err)
+			m.log.Warn("decoder factory error", "source", ch.sourceKey, "err", err)
 			return
 		}
 		ch.decoder = dec
@@ -275,7 +277,7 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 			m.promMetrics.EncodeErrorsTotal.Inc()
 		}
 		m.resetMixCycleLocked()
-		slog.Warn("mixer: encode error", "err", err)
+		m.log.Warn("encode error", "err", err)
 		return nil
 	}
 	m.framesMixed.Add(1)
@@ -675,7 +677,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				m.lastDecodedPCM[sourceKey] = stored
 			} else if err != nil {
 				m.decodeErrors.Add(1)
-				slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
+				m.log.Warn("decode error", "source", sourceKey, "err", err)
 			}
 		}
 		m.mu.Unlock()
@@ -707,7 +709,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
-		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
+		m.log.Warn("decode error", "source", sourceKey, "err", err)
 		return
 	}
 
@@ -835,7 +837,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	if err != nil {
 		m.decodeErrors.Add(1)
 		m.mu.Unlock()
-		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
+		m.log.Warn("decode error", "source", sourceKey, "err", err)
 		return
 	}
 
@@ -879,7 +881,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		if hasFrom {
 			missingSrc = m.crossfadeTo
 		}
-		slog.Warn("mixer: crossfade timeout",
+		m.log.Warn("crossfade timeout",
 			"source", missingSrc,
 			"deadline_ms", crossfadeTimeout.Milliseconds())
 	}
@@ -927,7 +929,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		}
 		m.crossfadeActive = false
 		m.mu.Unlock()
-		slog.Warn("mixer: encode error", "err", err)
+		m.log.Warn("encode error", "err", err)
 		return
 	}
 
@@ -957,7 +959,7 @@ func (m *AudioMixer) recalcPassthrough() {
 	if m.programMuted || m.transCrossfadeActive {
 		m.passthrough = false
 		if prev != m.passthrough {
-			slog.Info("mixer: passthrough mode changed",
+			m.log.Info("passthrough mode changed",
 				slog.Bool("passthrough", false),
 				slog.String("reason", "program muted or transition crossfade active"))
 		}
@@ -992,7 +994,7 @@ func (m *AudioMixer) recalcPassthrough() {
 		} else {
 			reason = "multiple active sources or master gain"
 		}
-		slog.Info("mixer: passthrough mode changed",
+		m.log.Info("passthrough mode changed",
 			slog.Bool("passthrough", m.passthrough),
 			slog.String("reason", reason))
 	}

@@ -36,7 +36,8 @@ type State struct {
 //
 // The compositor is safe for concurrent use from multiple goroutines.
 type Compositor struct {
-	mu sync.RWMutex
+	log *slog.Logger
+	mu  sync.RWMutex
 
 	// Overlay RGBA pixel data (width * height * 4 bytes).
 	overlay       []byte
@@ -79,7 +80,9 @@ type Compositor struct {
 
 // NewCompositor creates a new graphics overlay compositor.
 func NewCompositor() *Compositor {
-	return &Compositor{}
+	return &Compositor{
+		log: slog.With("component", "graphics"),
+	}
 }
 
 // SetOverlay stores the RGBA overlay frame data. The overlay must be
@@ -122,7 +125,7 @@ func (c *Compositor) On() error {
 	c.active = true
 	c.fadePosition = 1.0
 	c.needsIDR = true
-	slog.Debug("graphics overlay CUT ON")
+	c.log.Debug("overlay CUT ON")
 	c.notifyStateChange()
 	return nil
 }
@@ -142,7 +145,7 @@ func (c *Compositor) Off() error {
 	c.active = false
 	c.fadePosition = 0.0
 	c.destroyCodecs()
-	slog.Debug("graphics overlay CUT OFF")
+	c.log.Debug("overlay CUT OFF")
 	c.notifyStateChange()
 	return nil
 }
@@ -300,7 +303,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 		}
 		dec, err := c.decoderFactory()
 		if err != nil {
-			slog.Error("graphics: decoder init failed", "err", err)
+			c.log.Error("decoder init failed", "err", err)
 			return frame
 		}
 		c.decoder = dec
@@ -319,7 +322,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	}
 	yuv, w, h, err := c.decoder.Decode(annexB)
 	if err != nil {
-		slog.Debug("graphics: decode failed", "err", err)
+		c.log.Debug("decode failed", "err", err)
 		// Once the encoder has produced frames, we must NOT pass through
 		// source frames — they have different SPS/PPS and would break
 		// the browser's decoder. Drop the frame instead (nil = skip).
@@ -332,7 +335,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	// If overlay resolution doesn't match video, pass through unchanged
 	// (only safe before the encoder starts producing frames).
 	if overlayW != w || overlayH != h {
-		slog.Debug("graphics: overlay resolution mismatch, passthrough",
+		c.log.Debug("overlay resolution mismatch, passthrough",
 			"overlay", fmt.Sprintf("%dx%d", overlayW, overlayH),
 			"frame", fmt.Sprintf("%dx%d", w, h))
 		if c.encoder != nil {
@@ -345,13 +348,13 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 	if c.encoder == nil {
 		enc, err := c.encoderFactory(w, h, transition.DefaultBitrate, transition.DefaultFPS)
 		if err != nil {
-			slog.Error("graphics: encoder init failed", "err", err, "w", w, "h", h)
+			c.log.Error("encoder init failed", "err", err, "w", w, "h", h)
 			return frame
 		}
 		c.encoder = enc
 		c.encWidth = w
 		c.encHeight = h
-		slog.Info("graphics: codec pipeline initialized", "w", w, "h", h)
+		c.log.Info("codec pipeline initialized", "w", w, "h", h)
 	}
 
 	// Deep-copy decoded YUV (decoder reuses internal buffer)
@@ -373,7 +376,7 @@ func (c *Compositor) ProcessFrame(frame *media.VideoFrame) *media.VideoFrame {
 
 	encoded, isKeyframe, err := c.encoder.Encode(c.yuvBuf, forceIDR)
 	if err != nil {
-		slog.Warn("graphics: encode failed", "err", err)
+		c.log.Warn("encode failed", "err", err)
 		return nil // don't pass through source frame — codec mismatch
 	}
 

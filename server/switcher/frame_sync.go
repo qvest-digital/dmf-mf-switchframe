@@ -104,6 +104,7 @@ func (ss *syncSource) popNewestAudio() *media.AudioFrame {
 // Frame PTS values are rewritten to the tick timestamp to ensure consistent
 // timing across all sources in the output.
 type FrameSynchronizer struct {
+	log      *slog.Logger
 	mu       sync.Mutex
 	sources  map[string]*syncSource
 	tickRate time.Duration
@@ -124,6 +125,7 @@ func NewFrameSynchronizer(
 	onAudio func(sourceKey string, frame media.AudioFrame),
 ) *FrameSynchronizer {
 	return &FrameSynchronizer{
+		log:      slog.With("component", "framesync"),
 		sources:  make(map[string]*syncSource),
 		tickRate: tickRate,
 		onVideo:  onVideo,
@@ -141,7 +143,7 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 		return
 	}
 	fs.sources[key] = &syncSource{}
-	slog.Debug("frame_sync: source added", "key", key)
+	fs.log.Debug("source added", "key", key)
 }
 
 // RemoveSource unregisters a source and discards any buffered frames.
@@ -149,7 +151,7 @@ func (fs *FrameSynchronizer) RemoveSource(key string) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	delete(fs.sources, key)
-	slog.Debug("frame_sync: source removed", "key", key)
+	fs.log.Debug("source removed", "key", key)
 }
 
 // IngestVideo buffers an incoming video frame for the specified source.
@@ -181,7 +183,7 @@ func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.tickRate = d
-	slog.Debug("frame_sync: tick rate updated", "rate", d)
+	fs.log.Debug("tick rate updated", "rate", d)
 }
 
 // Start begins the background ticker goroutine that releases frames at

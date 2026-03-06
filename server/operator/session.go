@@ -19,6 +19,7 @@ const (
 // All lock operations are serialized through a single mutex to prevent
 // race conditions between lock acquisition and release.
 type SessionManager struct {
+	log           *slog.Logger
 	mu            sync.Mutex
 	sessions      map[string]*Session       // operator ID → session
 	locks         map[Subsystem]*LockInfo   // subsystem → lock
@@ -32,6 +33,7 @@ type SessionManager struct {
 func NewSessionManager() *SessionManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	sm := &SessionManager{
+		log:      slog.With("component", "operator"),
 		sessions: make(map[string]*Session),
 		locks:    make(map[Subsystem]*LockInfo),
 		cancel:   cancel,
@@ -107,7 +109,7 @@ func (sm *SessionManager) AcquireLock(operatorID string, sub Subsystem) error {
 	name := session.Name
 	sm.mu.Unlock()
 
-	slog.Info("operator lock acquired", "operator", name, "subsystem", sub)
+	sm.log.Info("lock acquired", "operator", name, "subsystem", sub)
 	sm.notifyStateChange()
 	return nil
 }
@@ -130,7 +132,7 @@ func (sm *SessionManager) ReleaseLock(operatorID string, sub Subsystem) error {
 	delete(sm.locks, sub)
 	sm.mu.Unlock()
 
-	slog.Info("operator lock released", "operator", holderName, "subsystem", sub)
+	sm.log.Info("lock released", "operator", holderName, "subsystem", sub)
 	sm.notifyStateChange()
 	return nil
 }
@@ -160,7 +162,7 @@ func (sm *SessionManager) ForceReleaseLock(requestorID string, sub Subsystem) er
 	delete(sm.locks, sub)
 	sm.mu.Unlock()
 
-	slog.Info("operator lock force-released", "director", directorName, "holder", holderName, "subsystem", sub)
+	sm.log.Info("lock force-released", "director", directorName, "holder", holderName, "subsystem", sub)
 	sm.notifyStateChange()
 	return nil
 }
@@ -225,7 +227,7 @@ func (sm *SessionManager) releaseAllLocks(operatorID string) {
 	for sub, info := range sm.locks {
 		if info.HolderID == operatorID {
 			delete(sm.locks, sub)
-			slog.Info("operator lock auto-released", "operator", info.HolderName, "subsystem", sub)
+			sm.log.Info("lock auto-released", "operator", info.HolderName, "subsystem", sub)
 		}
 	}
 }
@@ -263,7 +265,7 @@ func (sm *SessionManager) cleanupStaleSessions() {
 	sm.mu.Unlock()
 
 	for _, s := range stale {
-		slog.Info("operator session stale, removed", "operator", s.name, "id", s.id)
+		sm.log.Info("session stale, removed", "operator", s.name, "id", s.id)
 	}
 	if len(stale) > 0 {
 		sm.notifyStateChange()
