@@ -385,7 +385,7 @@ type audioMasterRequest struct {
 // audioTrimRequest is the JSON body for the audio trim endpoint.
 type audioTrimRequest struct {
 	Source string  `json:"source"`
-	Level  float64 `json:"level"`
+	Trim   float64 `json:"trim"`
 }
 
 // handleAudioTrim sets the input trim for a source channel.
@@ -403,7 +403,7 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"source required"}`, http.StatusBadRequest)
 		return
 	}
-	if err := a.mixer.SetTrim(req.Source, req.Level); err != nil {
+	if err := a.mixer.SetTrim(req.Source, req.Trim); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		status := http.StatusNotFound
 		if errors.Is(err, audio.ErrInvalidTrim) {

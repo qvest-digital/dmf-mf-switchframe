@@ -74,8 +74,8 @@ export function getSources(): Promise<Record<string, SourceInfo>> {
 	return request('/api/sources');
 }
 
-export function setTrim(source: string, level: number): Promise<ControlRoomState> {
-	return post('/api/audio/trim', { source, level });
+export function setTrim(source: string, trim: number): Promise<ControlRoomState> {
+	return post('/api/audio/trim', { source, trim });
 }
 
 export function setLevel(source: string, level: number): Promise<ControlRoomState> {

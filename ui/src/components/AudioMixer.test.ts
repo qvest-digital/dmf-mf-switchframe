@@ -10,6 +10,7 @@ describe('AudioMixer', () => {
 		transitionDurationMs: 0,
 		transitionPosition: 0,
 		inTransition: false,
+		ftbActive: false,
 		audioChannels: {
 			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96 },
 			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96 },

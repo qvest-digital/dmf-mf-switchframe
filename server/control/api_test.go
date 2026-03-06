@@ -720,7 +720,7 @@ func TestAudioMasterNoMixer(t *testing.T) {
 func TestAudioTrimEndpoint(t *testing.T) {
 	api, mock := setupAudioTestAPI(t)
 
-	body := `{"source":"camera1","level":-6.0}`
+	body := `{"source":"camera1","trim":-6.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -741,7 +741,7 @@ func TestAudioTrimEndpoint(t *testing.T) {
 func TestAudioTrimUnknownSource(t *testing.T) {
 	api, _ := setupAudioTestAPI(t)
 
-	body := `{"source":"nonexistent","level":-6.0}`
+	body := `{"source":"nonexistent","trim":-6.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -755,7 +755,7 @@ func TestAudioTrimUnknownSource(t *testing.T) {
 func TestAudioTrimOutOfRange(t *testing.T) {
 	api, _ := setupAudioTestAPI(t)
 
-	body := `{"source":"camera1","level":-25.0}`
+	body := `{"source":"camera1","trim":-25.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -782,7 +782,7 @@ func TestAudioTrimInvalidJSON(t *testing.T) {
 func TestAudioTrimEmptySource(t *testing.T) {
 	api, _ := setupAudioTestAPI(t)
 
-	body := `{"source":"","level":-6.0}`
+	body := `{"source":"","trim":-6.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -796,7 +796,7 @@ func TestAudioTrimEmptySource(t *testing.T) {
 func TestAudioTrimNoMixer(t *testing.T) {
 	api, _ := setupTestAPI(t) // no mixer attached
 
-	body := `{"source":"camera1","level":-6.0}`
+	body := `{"source":"camera1","trim":-6.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

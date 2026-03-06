@@ -77,7 +77,10 @@
 
 	/**
 	 * Compute the effective peak level in dBFS for a channel meter.
-	 * Prefers server-side per-channel peaks; falls back to client-side PFL levels.
+	 * Prefers server-side per-channel peaks (dBFS, floor -96); falls back to
+	 * client-side PFL levels (linear amplitude, converted via linearToDb which
+	 * floors at -60 dB). The different floors are both below the meter's visible
+	 * range so the visual result is identical.
 	 */
 	function channelPeakDb(serverPeak: number | undefined, clientLinear: number | undefined): number {
 		const sp = serverPeak ?? -96;

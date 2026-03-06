@@ -18,7 +18,10 @@ import (
 // crossfadeTimeout is the maximum time to wait for both sources to deliver
 // frames during a crossfade. If the outgoing source disconnects, the crossfade
 // completes with only the incoming source's audio after this deadline.
-const crossfadeTimeout = 25 * time.Millisecond // ~1 AAC frame safety net
+// crossfadeTimeout is reduced from 50ms to 25ms because PCM pre-buffering
+// eliminates the need to wait for the outgoing source. Only the incoming
+// source needs to deliver a frame, so one AAC frame (~21.3ms) is sufficient.
+const crossfadeTimeout = 25 * time.Millisecond
 
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
@@ -641,11 +644,16 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 			adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 			if pcm, err := ch.decoder.Decode(adtsFrame); err == nil && len(pcm) > 0 {
 				peakL, peakR := PeakLevel(pcm, m.numChannels)
+				// In passthrough mode, channel peak and program peak are identical
+				// (no fader/trim applied since passthrough requires 0dB on everything).
 				m.programPeakL = peakL
 				m.programPeakR = peakR
 				ch.peakL, ch.peakR = peakL, peakR
-				// Store for crossfade pre-buffer even in passthrough
-				m.lastDecodedPCM[sourceKey] = pcm
+				// Store a copy for crossfade pre-buffer even in passthrough.
+				// Copy to avoid aliasing if decoder reuses its internal buffer.
+				stored := make([]float32, len(pcm))
+				copy(stored, pcm)
+				m.lastDecodedPCM[sourceKey] = stored
 			} else if err != nil {
 				m.decodeErrors.Add(1)
 				slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
@@ -687,8 +695,11 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Update per-channel peaks (pre-fader, pre-gain)
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
-	// Store last decoded PCM for instant crossfade on future cuts
-	m.lastDecodedPCM[sourceKey] = pcm
+	// Store a copy of last decoded PCM for instant crossfade on future cuts.
+	// Copy to avoid aliasing if decoder reuses its internal buffer.
+	storedPCM := make([]float32, len(pcm))
+	copy(storedPCM, pcm)
+	m.lastDecodedPCM[sourceKey] = storedPCM
 
 	// Apply per-channel gain (trim before fader) with per-sample transition interpolation
 	trimGain := float32(DBToLinear(ch.trim))

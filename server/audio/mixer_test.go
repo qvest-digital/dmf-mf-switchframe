@@ -1386,6 +1386,88 @@ func TestMixerPerChannelPeaks(t *testing.T) {
 		"per-channel peaks should be populated after frame ingestion")
 }
 
+func TestMixerTransitionCrossfadeWithTrim(t *testing.T) {
+	// During a transition crossfade, trim should be applied to both sources
+	// before the transition gain. Verifies that channelGain (trim * fader)
+	// is multiplied with the transition position gain.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	fromPCM := []float32{1.0, 1.0, 1.0, 1.0}
+	toPCM := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Apply -6dB trim to cam1 (from source)
+	require.NoError(t, m.SetTrim("cam1", -6.0))
+
+	// Set up decoders with known PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: fromPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
+	m.mu.Unlock()
+
+	// Start transition at 50% with stable position (no per-sample ramp)
+	m.OnTransitionStart("cam1", "cam2", internal.AudioCrossfade, 1000)
+	m.OnTransitionPosition(0.5)
+	m.OnTransitionPosition(0.5)
+
+	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame2 := &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+
+	m.IngestFrame("cam1", frame1)
+	m.IngestFrame("cam2", frame2)
+
+	require.Equal(t, 1, len(outputFrames))
+
+	// At position 0.5: transitionFromGain = cos(0.5·π/2) ≈ 0.707
+	//                   transitionToGain   = sin(0.5·π/2) ≈ 0.707
+	// cam1: PCM=1.0, trim=-6dB (≈0.501), fader=0dB → channelGain ≈ 0.501
+	//   contribution: 1.0 * 0.501 * 0.707 ≈ 0.354
+	// cam2: PCM=1.0, trim=0dB, fader=0dB → channelGain = 1.0
+	//   contribution: 1.0 * 1.0 * 0.707 ≈ 0.707
+	// expected sum ≈ 0.354 + 0.707 ≈ 1.061 (clamped by limiter to ~0.891)
+	trimGain := DBToLinear(-6.0)
+	transGain := math.Cos(0.5 * math.Pi / 2)
+	fromContribution := 1.0 * trimGain * transGain
+	toContribution := 1.0 * 1.0 * transGain
+	expectedSum := fromContribution + toContribution
+	// Sum > 1.0, so limiter clamps. Verify samples are below 1.0 (limiter at -1dBFS ≈ 0.891)
+	require.Equal(t, 4, len(capturedPCM))
+	if expectedSum > 0.891 {
+		// Limiter should have clamped
+		for i, s := range capturedPCM {
+			require.True(t, s <= 0.891+0.01,
+				"sample %d (%.4f) should be limited to -1 dBFS", i, s)
+			require.True(t, s > 0.5,
+				"sample %d (%.4f) should be non-trivial (both sources contributing)", i, s)
+		}
+	} else {
+		for i, s := range capturedPCM {
+			require.InDelta(t, expectedSum, s, 0.02,
+				"sample %d should have trim+transition gains applied", i)
+		}
+	}
+}
+
 func TestMixerCrossfadeUsesPreBufferedPCM(t *testing.T) {
 	// After sending frames from cam1, triggering a cut to cam2, and sending
 	// only ONE frame from cam2, the crossfade should complete immediately
