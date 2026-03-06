@@ -45,6 +45,9 @@ type OutputManager struct {
 	// SRT wiring functions injected from main.go.
 	srtConnectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
 	srtAcceptFn  func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error
+
+	// Confidence monitor for program output thumbnails.
+	confidence *ConfidenceMonitor
 }
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
@@ -419,6 +422,9 @@ func (m *OutputManager) ensureMuxerLocked() {
 	})
 
 	viewer := NewOutputViewer(muxer)
+	if m.confidence != nil {
+		viewer.onVideo = m.confidence.IngestVideo
+	}
 	m.muxer = muxer
 	m.viewer = viewer
 
@@ -512,6 +518,26 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 		"recording": m.RecordingStatus(),
 		"srt":       m.SRTOutputStatus(),
 	}
+}
+
+// SetConfidenceMonitor attaches a confidence monitor to the output manager.
+// The monitor will receive video frames from the output viewer when active.
+func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.confidence = cm
+}
+
+// ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence
+// monitor, or nil if unavailable.
+func (m *OutputManager) ConfidenceThumbnail() []byte {
+	m.mu.Lock()
+	cm := m.confidence
+	m.mu.Unlock()
+	if cm == nil {
+		return nil
+	}
+	return cm.LatestThumbnail()
 }
 
 // HasActiveOutputs returns true if at least one output is active.

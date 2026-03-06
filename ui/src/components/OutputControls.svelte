@@ -11,13 +11,36 @@
 	let { state: crState, connectionState = 'disconnected', switchLayout }: Props = $props();
 
 	let showSRTModal = $state(false);
+	let thumbKey = $state(0);
+	let thumbInterval: ReturnType<typeof setInterval> | undefined;
 
 	const srtActive = $derived(crState.srtOutput?.active ?? false);
+	const recActive = $derived(crState.recording?.active ?? false);
+	const showConfidence = $derived(recActive || srtActive);
+
+	$effect(() => {
+		if (showConfidence) {
+			thumbInterval = setInterval(() => { thumbKey++; }, 1000);
+		} else {
+			if (thumbInterval) clearInterval(thumbInterval);
+			thumbInterval = undefined;
+		}
+		return () => { if (thumbInterval) clearInterval(thumbInterval); };
+	});
 </script>
 
 <div class="output-controls">
 	<Clock />
 	<ConnectionStatus state={connectionState} />
+	{#if showConfidence}
+		<img
+			class="confidence-thumb"
+			src="/api/output/confidence?t={thumbKey}"
+			alt="Program output"
+			width="80"
+			height="45"
+		/>
+	{/if}
 	<RecordingControl state={crState} />
 	<button
 		class="header-btn"
@@ -71,5 +94,11 @@
 
 	.mode-btn {
 		margin-left: auto;
+	}
+
+	.confidence-thumb {
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		object-fit: cover;
 	}
 </style>
