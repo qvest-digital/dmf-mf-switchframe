@@ -262,6 +262,7 @@ func TestStress_SimultaneousOutputs(t *testing.T) {
 		go func() {
 			defer frameWg.Done()
 			pts := int64(0)
+			frame := 0
 			for {
 				select {
 				case <-ctx.Done():
@@ -269,10 +270,11 @@ func TestStress_SimultaneousOutputs(t *testing.T) {
 				default:
 					relay.BroadcastVideo(&media.VideoFrame{
 						PTS:        pts,
-						IsKeyframe: pts%100000 == 0,
+						IsKeyframe: frame%30 == 0,
 						WireData:   []byte{0x01},
 					})
 					pts += 33333
+					frame++
 					time.Sleep(time.Millisecond)
 				}
 			}
