@@ -74,13 +74,8 @@ jobs:
           cache-dependency-path: ui/package-lock.json
       - name: Install deps
         run: cd ui && npm ci
-      - name: Unit tests with coverage
-        run: cd ui && npx vitest run --coverage
-      - name: Upload UI coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: ui-coverage
-          path: ui/coverage/
+      - name: Unit tests
+        run: cd ui && npx vitest run
       - name: Install Playwright
         run: cd ui && npx playwright install --with-deps chromium
       - name: E2E tests
