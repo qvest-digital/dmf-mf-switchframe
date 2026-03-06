@@ -471,7 +471,7 @@
 		background: var(--bg-panel);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
-		min-width: 66px;
+		min-width: 90px;
 		transition:
 			border-color var(--transition-fast),
 			box-shadow var(--transition-normal);

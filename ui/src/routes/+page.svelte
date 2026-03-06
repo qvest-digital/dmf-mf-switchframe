@@ -21,6 +21,7 @@
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
+	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -460,30 +461,40 @@
 			</section>
 
 			<section class="bottom-panel">
-				<div class="audio-section">
-					<div class="panel-header">
-						<LockIndicator state={store.effectiveState} subsystem="audio" />
-					</div>
-					<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} expandedKeys={eqExpandedKeys} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onExpandToggle={(key) => { eqExpandedKeys = { ...eqExpandedKeys, [key]: !eqExpandedKeys[key] }; }} />
-				</div>
-				<div class="graphics-section">
-					<div class="panel-header">
-						<LockIndicator state={store.effectiveState} subsystem="graphics" />
-					</div>
-					<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
-				</div>
-				<div class="macro-section">
-					<MacroPanel />
-				</div>
-				<div class="key-section">
-					<KeyPanel state={store.effectiveState} />
-				</div>
-				<div class="replay-section">
-					<div class="panel-header">
-						<LockIndicator state={store.effectiveState} subsystem="replay" />
-					</div>
-					<ReplayPanel state={store.effectiveState} {pipeline} />
-				</div>
+				<BottomTabs>
+					{#snippet children(activeTab)}
+						{#if activeTab === 'Audio'}
+							<div class="tab-panel audio-tab">
+								<div class="panel-header">
+									<LockIndicator state={store.effectiveState} subsystem="audio" />
+								</div>
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} expandedKeys={eqExpandedKeys} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onExpandToggle={(key) => { eqExpandedKeys = { ...eqExpandedKeys, [key]: !eqExpandedKeys[key] }; }} />
+							</div>
+						{:else if activeTab === 'Graphics'}
+							<div class="tab-panel">
+								<div class="panel-header">
+									<LockIndicator state={store.effectiveState} subsystem="graphics" />
+								</div>
+								<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
+							</div>
+						{:else if activeTab === 'Macros'}
+							<div class="tab-panel">
+								<MacroPanel />
+							</div>
+						{:else if activeTab === 'Keys'}
+							<div class="tab-panel">
+								<KeyPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Replay'}
+							<div class="tab-panel">
+								<div class="panel-header">
+									<LockIndicator state={store.effectiveState} subsystem="replay" />
+								</div>
+								<ReplayPanel state={store.effectiveState} {pipeline} />
+							</div>
+						{/if}
+					{/snippet}
+				</BottomTabs>
 			</section>
 		</div>
 
@@ -533,47 +544,19 @@
 	}
 
 	.bottom-panel {
-		display: flex;
 		border-top: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
-		height: clamp(160px, 25vh, 220px);
+		height: clamp(200px, 30vh, 320px);
 	}
 
-	.audio-section {
+	.tab-panel {
+		height: 100%;
+		overflow-y: auto;
+	}
+
+	.tab-panel.audio-tab {
 		overflow-x: auto;
 		overflow-y: hidden;
-		border-right: 1px solid var(--border-subtle);
-		flex: 2;
-		min-width: 280px;
-	}
-
-	.graphics-section {
-		flex: 1.5;
-		min-width: 0;
-		overflow-y: auto;
-		border-left: 1px solid var(--border-subtle);
-		padding: 4px;
-	}
-
-	.macro-section {
-		flex: 1;
-		min-width: 0;
-		overflow-y: auto;
-		border-left: 1px solid var(--border-subtle);
-	}
-
-	.key-section {
-		flex: 1.5;
-		min-width: 0;
-		overflow-y: auto;
-		border-left: 1px solid var(--border-subtle);
-	}
-
-	.replay-section {
-		flex: 1.5;
-		min-width: 0;
-		overflow-y: auto;
-		border-left: 1px solid var(--border-subtle);
 	}
 
 	.header-row {
