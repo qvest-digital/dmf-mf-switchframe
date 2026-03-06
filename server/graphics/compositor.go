@@ -521,6 +521,40 @@ func (c *Compositor) cancelFadeLocked() {
 	}
 }
 
+// ProcessYUV applies the overlay to a raw YUV420 buffer in-place.
+// This is the codec-free processor used by the pipeline coordinator.
+// When inactive or when the overlay resolution doesn't match, returns yuv unchanged.
+func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
+	c.mu.RLock()
+	active := c.active
+	alphaScale := c.fadePosition
+	overlayW := c.overlayWidth
+	overlayH := c.overlayHeight
+	hasOverlay := c.overlay != nil
+	c.mu.RUnlock()
+
+	if !active || alphaScale < 1.0/255.0 || !hasOverlay {
+		return yuv
+	}
+
+	if overlayW != width || overlayH != height {
+		return yuv
+	}
+
+	c.mu.RLock()
+	AlphaBlendRGBA(yuv, c.overlay, width, height, c.fadePosition)
+	c.mu.RUnlock()
+
+	return yuv
+}
+
+// IsActive returns whether the overlay is currently active.
+func (c *Compositor) IsActive() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.active
+}
+
 // notifyStateChange invokes the state change callback if set.
 // Must be called with mu held (read or write). Builds a state snapshot
 // under the lock and passes it to the callback so the callback never
