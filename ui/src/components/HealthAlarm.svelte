@@ -4,9 +4,11 @@
 	interface Props {
 		health: SourceHealthStatus | string;
 		sourceLabel: string;
+		variant?: 'critical' | 'warning';
+		label?: string;
 	}
 
-	let { health, sourceLabel }: Props = $props();
+	let { health, sourceLabel, variant = 'critical', label = 'PROGRAM' }: Props = $props();
 
 	const statusLabels: Record<string, string> = {
 		stale: 'STALE',
@@ -18,8 +20,8 @@
 </script>
 
 {#if health !== 'healthy'}
-	<div class="health-alarm" role="alert" aria-live="assertive">
-		<span class="alarm-text">PROGRAM: {sourceLabel} — {displayStatus}</span>
+	<div class="health-alarm" class:warning={variant === 'warning'} role="alert" aria-live="assertive">
+		<span class="alarm-text">{label}: {sourceLabel} — {displayStatus}</span>
 	</div>
 {/if}
 
@@ -45,6 +47,21 @@
 		border-radius: var(--radius-md);
 		animation: alarm-flash 1s ease-in-out infinite;
 		pointer-events: none;
+	}
+
+	@keyframes alarm-flash-warning {
+		0%, 100% {
+			border-color: rgba(204, 136, 0, 1);
+		}
+		50% {
+			border-color: rgba(204, 136, 0, 0.3);
+		}
+	}
+
+	.health-alarm.warning {
+		background: rgba(204, 136, 0, 0.85);
+		border-color: rgba(204, 136, 0, 1);
+		animation: alarm-flash-warning 1s ease-in-out infinite;
 	}
 
 	.alarm-text {

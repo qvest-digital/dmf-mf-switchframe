@@ -19,6 +19,9 @@
 	let programSource = $derived(state.sources[state.programSource]);
 	let programHealth = $derived(programSource?.status ?? 'healthy');
 	let programLabel = $derived(programSource?.label || state.programSource || '—');
+	let previewSource = $derived(state.sources[state.previewSource]);
+	let previewHealth = $derived(previewSource?.status ?? 'healthy');
+	let previewLabel = $derived(previewSource?.label || state.previewSource || '—');
 	let graphicsActive = $derived(state.graphics?.active ?? false);
 
 	$effect(() => {
@@ -77,7 +80,8 @@
 		<div class="monitor-label preview-label">PREVIEW</div>
 		<div class="monitor-viewport">
 			<canvas bind:this={previewCanvas}></canvas>
-			<div class="source-label">{state.sources[state.previewSource]?.label || state.previewSource || '—'}</div>
+			<div class="source-label">{previewLabel}</div>
+			<HealthAlarm health={previewHealth} sourceLabel={previewLabel} variant="warning" label="PREVIEW" />
 		</div>
 	</div>
 	<div class="monitor program-monitor">
@@ -86,7 +90,7 @@
 			<canvas bind:this={programCanvas}></canvas>
 			<canvas bind:this={overlayCanvas} class="graphics-overlay"></canvas>
 			<div class="source-label">{programLabel}</div>
-			<HealthAlarm health={programHealth} sourceLabel={programLabel} />
+			<HealthAlarm health={programHealth} sourceLabel={programLabel} variant="critical" label="PROGRAM" />
 		</div>
 	</div>
 </div>
