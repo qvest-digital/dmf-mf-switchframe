@@ -443,6 +443,10 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	pf, err := pipeCodecs.decode(frame)
 	if err != nil {
 		// Can't decode → pass through compressed (graceful degradation)
+		s.log.Warn("pipeline decode failed, passthrough", "error", err)
+		if s.promMetrics != nil {
+			s.promMetrics.PipelineDecodeErrorsTotal.Inc()
+		}
 		s.programRelay.BroadcastVideo(frame)
 		return
 	}
@@ -458,9 +462,16 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	// Encode once
 	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
 	if err != nil {
+		s.log.Warn("pipeline encode failed, dropping frame", "error", err)
+		if s.promMetrics != nil {
+			s.promMetrics.PipelineEncodeErrorsTotal.Inc()
+		}
 		return
 	}
 
+	if s.promMetrics != nil {
+		s.promMetrics.PipelineFramesProcessed.Inc()
+	}
 	s.programRelay.BroadcastVideo(out)
 }
 
@@ -471,6 +482,10 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	keyBridge := s.keyBridge
 	compositor := s.compositorRef
 	pipeCodecs := s.pipeCodecs
+	var groupID uint32
+	if ss, ok := s.sources[s.programSource]; ok {
+		groupID = ss.lastGroupID
+	}
 	s.mu.RUnlock()
 
 	if pipeCodecs == nil {
@@ -489,13 +504,21 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	pf := &ProcessingFrame{
 		YUV: yuv, Width: width, Height: height,
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-		Codec: "h264",
+		Codec:   "h264", // only codec supported today
+		GroupID: groupID,
 	}
 	frame, err := pipeCodecs.encode(pf, isKeyframe)
 	if err != nil {
+		s.log.Warn("pipeline encode failed, dropping frame", "error", err, "path", "transition")
+		if s.promMetrics != nil {
+			s.promMetrics.PipelineEncodeErrorsTotal.Inc()
+		}
 		return
 	}
 
+	if s.promMetrics != nil {
+		s.promMetrics.PipelineFramesProcessed.Inc()
+	}
 	s.programRelay.BroadcastVideo(frame)
 }
 
@@ -1434,6 +1457,10 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.Lock()
 	if ss, ok := s.sources[sourceKey]; ok {
 		s.updateFrameStats(ss, frame)
+		// Propagate program source stats to pipeline encoder
+		if sourceKey == s.programSource && s.pipeCodecs != nil {
+			s.pipeCodecs.updateSourceStats(ss.avgFrameSize, ss.avgFPS)
+		}
 	}
 	s.mu.Unlock()
 

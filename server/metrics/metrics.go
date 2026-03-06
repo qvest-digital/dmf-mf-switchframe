@@ -73,6 +73,11 @@ type Metrics struct {
 	RecordingBytesTotal   prometheus.Counter
 	SRTBytesTotal         prometheus.Counter
 
+	// Pipeline
+	PipelineDecodeErrorsTotal prometheus.Counter
+	PipelineEncodeErrorsTotal prometheus.Counter
+	PipelineFramesProcessed   prometheus.Counter
+
 	// Health
 	SourceStatusChangesTotal *prometheus.CounterVec // labels: source, from_status, to_status
 }
@@ -151,6 +156,26 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Total bytes sent over SRT connections.",
 		}),
 
+		// Pipeline
+		PipelineDecodeErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "decode_errors_total",
+			Help:      "Total video pipeline decode errors (fallback to passthrough).",
+		}),
+		PipelineEncodeErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "encode_errors_total",
+			Help:      "Total video pipeline encode errors (frame dropped).",
+		}),
+		PipelineFramesProcessed: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "frames_processed_total",
+			Help:      "Total video frames processed through the YUV pipeline.",
+		}),
+
 		// Health
 		SourceStatusChangesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "switchframe",
@@ -171,6 +196,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.SRTReconnectsTotal,
 		m.RecordingBytesTotal,
 		m.SRTBytesTotal,
+		m.PipelineDecodeErrorsTotal,
+		m.PipelineEncodeErrorsTotal,
+		m.PipelineFramesProcessed,
 		m.SourceStatusChangesTotal,
 	)
 

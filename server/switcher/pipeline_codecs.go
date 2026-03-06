@@ -22,6 +22,10 @@ type pipelineCodecs struct {
 	encHeight      int
 	groupID        uint32
 
+	// Source-derived encoder parameters (updated via updateSourceStats).
+	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
+	sourceFPS     float32 // estimated FPS from program source
+
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
 }
@@ -90,7 +94,15 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	}
 
 	if pc.encoder == nil {
-		enc, err := pc.encoderFactory(pf.Width, pf.Height, transition.DefaultBitrate, float32(transition.DefaultFPS))
+		bitrate := transition.DefaultBitrate
+		fps := float32(transition.DefaultFPS)
+		if pc.sourceBitrate > 0 {
+			bitrate = pc.sourceBitrate
+		}
+		if pc.sourceFPS > 0 {
+			fps = pc.sourceFPS
+		}
+		enc, err := pc.encoderFactory(pf.Width, pf.Height, bitrate, fps)
 		if err != nil {
 			return nil, fmt.Errorf("pipeline: encoder init: %w", err)
 		}
@@ -139,6 +151,17 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	}
 
 	return frame, nil
+}
+
+// updateSourceStats propagates the program source's estimated bitrate and FPS
+// to the encoder. These are used when the encoder is (re)created.
+func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if avgFPS > 0 {
+		pc.sourceBitrate = int(avgFrameSize * avgFPS * 8)
+		pc.sourceFPS = float32(avgFPS)
+	}
 }
 
 // close releases decoder and encoder resources.
