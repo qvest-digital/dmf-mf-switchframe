@@ -66,7 +66,6 @@ import "C"
 
 import (
 	"fmt"
-	"math"
 	"unsafe"
 )
 
@@ -130,7 +129,7 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	// Convert int16 PCM to float32 [-1.0, 1.0].
 	out := make([]float32, n)
 	for i := 0; i < n; i++ {
-		out[i] = float32(pcmBuf[i]) / float32(math.MaxInt16)
+		out[i] = normalizeInt16(int16(pcmBuf[i]))
 	}
 	return out, nil
 }
