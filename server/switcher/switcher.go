@@ -1030,8 +1030,15 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 
 // RegisterVirtualSource registers a transient internal source (e.g. replay).
 // Virtual sources skip delay buffer, frame sync, and replay buffering.
+// Safe to call if the key already exists — cleans up the old viewer first.
 func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
+	// Clean up existing registration to prevent viewer leak on rapid re-register.
+	if old, exists := s.sources[key]; exists {
+		old.relay.RemoveViewer(old.viewer.ID())
+		delete(s.sources, key)
+		s.health.removeSource(key)
+	}
 	viewer := newSourceViewer(key, s)
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{
@@ -1042,8 +1049,11 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 		isVirtual: true,
 	}
 	s.health.registerSource(key)
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 	slog.Info("switcher: virtual source registered", "source_key", key)
+	s.notifyStateChange(snapshot)
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -1070,9 +1080,12 @@ func (s *Switcher) UnregisterSource(key string) {
 	if s.previewSource == key {
 		s.previewSource = ""
 	}
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
 	slog.Info("switcher: source unregistered", "source_key", key)
+	s.notifyStateChange(snapshot)
 }
 
 // Cut performs a hard cut to the named source, making it the program output.

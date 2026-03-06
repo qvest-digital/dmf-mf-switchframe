@@ -91,6 +91,8 @@
 	--accent-blue-dim: rgba(59, 130, 246, 0.12);
 	--accent-orange: #f59e0b;
 	--accent-orange-dim: rgba(245, 158, 11, 0.12);
+	--accent-purple: #a78bfa;
+	--accent-purple-dim: rgba(167, 139, 250, 0.12);
 
 	/* ─ Typography ─ */
 	--font-ui: 'Sora', system-ui, -apple-system, sans-serif;

@@ -152,6 +152,66 @@ func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
 	require.Len(t, state.Sources, 0, "virtual source should be removed after UnregisterSource")
 }
 
+func TestRegisterVirtualSource_UnregisterClearsProgram(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+	cam1Relay := newTestRelay()
+
+	sw.RegisterSource("camera1", cam1Relay)
+	sw.RegisterVirtualSource("replay", replayRelay)
+	_ = sw.Cut(context.Background(), "replay")
+	require.Equal(t, "replay", sw.State().ProgramSource)
+
+	sw.UnregisterSource("replay")
+
+	state := sw.State()
+	require.Equal(t, "", state.ProgramSource, "program should be cleared when virtual source is unregistered")
+	require.NotContains(t, state.TallyState, "replay", "tally should not contain removed source")
+}
+
+func TestRegisterVirtualSource_DoubleRegisterCleansUp(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+	// Double-register should not panic or leak
+	sw.RegisterVirtualSource("replay", replayRelay)
+
+	state := sw.State()
+	require.Len(t, state.Sources, 1, "should still have exactly one replay source")
+	require.True(t, state.Sources["replay"].IsVirtual)
+}
+
+func TestUnregisterSource_BroadcastsState(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	replayRelay := newTestRelay()
+
+	stateCh := make(chan internal.ControlRoomState, 10)
+	sw.OnStateChange(func(s internal.ControlRoomState) {
+		stateCh <- s
+	})
+
+	sw.RegisterVirtualSource("replay", replayRelay)
+	// Drain the registration broadcast
+	select {
+	case <-stateCh:
+	case <-time.After(1 * time.Second):
+		t.Fatal("no state broadcast on RegisterVirtualSource")
+	}
+
+	sw.UnregisterSource("replay")
+
+	select {
+	case s := <-stateCh:
+		require.Empty(t, s.Sources, "broadcast should show source removed")
+	case <-time.After(1 * time.Second):
+		t.Fatal("no state broadcast on UnregisterSource")
+	}
+}
+
 func TestRegisterVirtualSource_SkipsDelayAndFrameSync(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)
