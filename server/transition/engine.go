@@ -394,6 +394,9 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		blended = e.blender.BlendWipe(e.latestYUVA, e.latestYUVB, pos, e.wipeDirection)
 	case TransitionStinger:
 		blended = e.blendStinger(pos)
+	default:
+		// Unknown transition type — pass through source A
+		blended = e.latestYUVA
 	}
 
 	// Signal keyframe on the very first output frame so the pipeline
@@ -414,7 +417,7 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	e.mu.Unlock()
 
 	// Output raw YUV and completion callbacks outside lock
-	if e.config.Output != nil {
+	if e.config.Output != nil && blended != nil {
 		e.config.Output(blended, w, h, pts, isKF)
 	}
 
@@ -504,11 +507,16 @@ func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration
 func (e *TransitionEngine) blendStinger(pos float64) []byte {
 	sd := e.config.Stinger
 	if sd == nil || len(sd.Frames) == 0 {
-		// Fallback: if no stinger data, do a hard cut at the cut point
+		// Fallback: if no stinger data, do a hard cut at the cut point.
+		// Deep-copy because the caller releases the lock before using the result.
 		if pos >= 0.5 {
-			return e.latestYUVB
+			cp := make([]byte, len(e.latestYUVB))
+			copy(cp, e.latestYUVB)
+			return cp
 		}
-		return e.latestYUVA
+		cp := make([]byte, len(e.latestYUVA))
+		copy(cp, e.latestYUVA)
+		return cp
 	}
 
 	// Lazy-scale stinger frames to match video dimensions on first use

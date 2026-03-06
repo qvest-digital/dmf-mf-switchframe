@@ -60,6 +60,9 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 	}
 
 	yuvSize := w * h * 3 / 2
+	if len(yuv) < yuvSize {
+		return nil, fmt.Errorf("pipeline: decoder buffer too small: got %d, need %d", len(yuv), yuvSize)
+	}
 	yuvCopy := make([]byte, yuvSize)
 	copy(yuvCopy, yuv[:yuvSize])
 
@@ -80,6 +83,11 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
+	if pc.encoder != nil && (pf.Width != pc.encWidth || pf.Height != pc.encHeight) {
+		pc.encoder.Close()
+		pc.encoder = nil
+	}
 
 	if pc.encoder == nil {
 		enc, err := pc.encoderFactory(pf.Width, pf.Height, transition.DefaultBitrate, float32(transition.DefaultFPS))

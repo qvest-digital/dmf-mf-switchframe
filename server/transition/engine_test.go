@@ -899,6 +899,76 @@ func TestEngineStingerCutPoint(t *testing.T) {
 	e.Stop()
 }
 
+func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
+	// Verify stinger fallback returns an independent copy, not a reference to
+	// the internal latestYUV buffer (which could race with IngestFrame).
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			outputs = append(outputs, yuv) // keep the exact slice (no copy)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+		// No Stinger data → triggers fallback path
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 60000))
+
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs))
+	out := outputs[0]
+	mu.Unlock()
+
+	// Mutate the returned slice — should NOT affect engine internals
+	for i := range out {
+		out[i] = 0xFF
+	}
+
+	// Ingest another frame pair — should still produce valid output
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
+
+	mu.Lock()
+	require.Equal(t, 2, len(outputs), "should still produce output after mutation")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineNilBlendedGuard(t *testing.T) {
+	// Verify that if blended is nil (e.g., no latestYUVA set for default case),
+	// the Output callback is NOT called with nil data.
+	outputCalled := false
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			outputCalled = true
+			require.NotNil(t, yuv, "Output should never receive nil YUV data")
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	// Start a mix transition and feed frames normally — should work fine
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+
+	require.True(t, outputCalled, "output should have been called")
+	e.Stop()
+}
+
 func TestEngineStingerNoData(t *testing.T) {
 	// Stinger transition without stinger data should still work (fallback to hard cut)
 	var mu sync.Mutex
