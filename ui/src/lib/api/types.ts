@@ -100,6 +100,31 @@ export interface RecallPresetResponse {
 	warnings?: string[];
 }
 
+export interface MacroStep {
+	action: 'cut' | 'preview' | 'transition' | 'wait' | 'set_audio';
+	params: Record<string, unknown>;
+}
+
+export interface Macro {
+	name: string;
+	steps: MacroStep[];
+}
+
+export interface KeyConfig {
+	type: 'chroma' | 'luma';
+	enabled: boolean;
+	keyColorY?: number;
+	keyColorCb?: number;
+	keyColorCr?: number;
+	similarity?: number;
+	smoothness?: number;
+	spillSuppress?: number;
+	lowClip?: number;
+	highClip?: number;
+	softness?: number;
+	fillSource?: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;

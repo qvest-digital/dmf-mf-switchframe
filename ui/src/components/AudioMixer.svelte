@@ -24,6 +24,10 @@
 
 	let { state, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, expandedKeys = {}, onPFLToggle, onStateUpdate, onExpandToggle }: Props = $props();
 
+	// Use object wrapper to work around $state rune conflict with "state" prop name.
+	// Svelte 5 interprets $state() as a store subscription when a local "state" binding exists.
+	let ui = { collapsed: false };
+
 	/** Fire API call and apply the returned state for immediate UI feedback. */
 	function applyResult(promise: Promise<ControlRoomState>) {
 		promise.then(s => onStateUpdate?.(s)).catch(err => console.warn('API call failed:', err));
@@ -123,7 +127,12 @@
 	);
 </script>
 
-<div class="audio-mixer">
+<div class="audio-mixer" class:collapsed={ui.collapsed}>
+	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
+		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
+		<span class="toggle-label">AUDIO</span>
+	</button>
+	{#if !ui.collapsed}
 	<!-- Channel strips -->
 	{#each sortedKeys as key (key)}
 		{@const channel = state.audioChannels?.[key]!}
@@ -441,6 +450,7 @@
 
 		<span class="strip-db">{state.masterLevel.toFixed(1)}</span>
 	</div>
+	{/if}
 </div>
 
 <style>
@@ -850,5 +860,42 @@
 		color: var(--text-tertiary);
 		min-width: 24px;
 		text-align: right;
+	}
+
+	/* Collapse toggle (visible at narrow viewports) */
+	.collapse-toggle {
+		display: none;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 8px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.collapse-toggle:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.toggle-arrow {
+		font-size: 0.6rem;
+	}
+
+	@media (max-width: 1023px) {
+		.collapse-toggle {
+			display: flex;
+		}
+	}
+
+	.audio-mixer.collapsed {
+		gap: 0;
+		padding: 4px;
 	}
 </style>

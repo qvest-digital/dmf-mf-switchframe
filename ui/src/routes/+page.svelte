@@ -15,8 +15,10 @@
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
+	import MacroPanel from '../components/MacroPanel.svelte';
+	import KeyPanel from '../components/KeyPanel.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
@@ -26,7 +28,7 @@
 	import { createPFLManager } from '$lib/audio/pfl';
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
-	import type { ControlRoomState } from '$lib/api/types';
+	import type { ControlRoomState, Macro } from '$lib/api/types';
 	import type { GraphicsTemplate } from '$lib/graphics/templates';
 
 	const store = createControlRoomStore();
@@ -119,6 +121,11 @@
 				transitionType = type;
 			}
 		},
+		onRunMacro: (slotIndex) => {
+			if (slotIndex < macroList.length) {
+				apiCall(runMacro(macroList[slotIndex].name), 'Macro failed');
+			}
+		},
 		getSourceKeys: () => store.sourceKeys,
 	});
 
@@ -133,6 +140,12 @@
 	const pflManager = createPFLManager();
 	let pflActiveSource = $state<string | null>(null);
 	const pflToggle = createPFLToggle({ pflManager, pipeline });
+
+	// Macro list for keyboard trigger (Ctrl+1-9)
+	let macroList = $state<Macro[]>([]);
+	async function refreshMacros() {
+		try { macroList = await listMacros(); } catch { /* ignore */ }
+	}
 
 	// Graphics overlay template/values for rendering on program monitor
 	let gfxTemplate = $state<GraphicsTemplate | null>(null);
@@ -333,6 +346,9 @@
 		// Start audio metering rAF loop
 		pipelineManager.startMetering();
 
+		// Load macro list for keyboard shortcuts
+		refreshMacros();
+
 		// Fetch initial state, start polling, and attempt WebTransport connection
 		await connectionManager.start();
 	});
@@ -422,6 +438,12 @@
 				<div class="graphics-section">
 					<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
 				</div>
+				<div class="macro-section">
+					<MacroPanel />
+				</div>
+				<div class="key-section">
+					<KeyPanel state={store.effectiveState} />
+				</div>
 			</section>
 		</div>
 
@@ -434,6 +456,8 @@
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>
+	@import '$lib/layout/responsive.css';
+
 	.control-room {
 		display: grid;
 		grid-template-rows: auto auto 1fr auto;
@@ -483,6 +507,20 @@
 		overflow-y: auto;
 		border-left: 1px solid var(--border-subtle);
 		padding: 4px;
+	}
+
+	.macro-section {
+		width: 180px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border-subtle);
+	}
+
+	.key-section {
+		width: 200px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border-subtle);
 	}
 
 	.buses {

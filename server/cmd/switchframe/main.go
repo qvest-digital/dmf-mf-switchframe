@@ -27,6 +27,7 @@ import (
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
@@ -298,6 +299,14 @@ func run() error {
 	}
 	slog.Info("preset store initialized", "path", presetPath)
 
+	// Create macro store for automating sequences of switcher operations.
+	macroPath := filepath.Join(homeDir, ".switchframe", "macros.json")
+	macroStore, err := macro.NewStore(macroPath)
+	if err != nil {
+		return fmt.Errorf("create macro store: %w", err)
+	}
+	slog.Info("macro store initialized", "path", macroPath)
+
 	// Create graphics compositor for the downstream keyer (DSK).
 	// When active, it decodes program frames, composites RGBA overlay, and re-encodes.
 	compositor := graphics.NewCompositor()
@@ -329,7 +338,7 @@ func run() error {
 	defer compositor.Close()
 
 	// Create REST API now that switcher, mixer, and output manager exist.
-	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor))
+	api = control.NewAPI(sw, control.WithMixer(mixer), control.WithOutputManager(outputMgr), control.WithDebugCollector(debugCollector), control.WithPresetStore(presetStore), control.WithCompositor(compositor), control.WithMacroStore(macroStore))
 
 	// enrichState patches a ControlRoomState snapshot with output + graphics status.
 	// gfxOverride, if non-nil, is used instead of calling compositor.Status()

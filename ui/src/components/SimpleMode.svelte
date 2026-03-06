@@ -270,6 +270,7 @@
 	.source-btn {
 		flex: 1;
 		min-width: 100px;
+		min-height: 44px;
 		padding: 10px 12px;
 		background: var(--bg-elevated);
 		color: var(--text-primary);
@@ -324,9 +325,10 @@
 	}
 
 	.action-btn {
-		padding: 14px;
+		padding: clamp(12px, 3vw, 20px);
+		min-height: 44px;
 		font-family: var(--font-ui);
-		font-size: 1rem;
+		font-size: clamp(0.85rem, 2.5vw, 1.1rem);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		border: 1.5px solid;
@@ -367,5 +369,42 @@
 	.dissolve-btn:hover:not(:disabled) {
 		background: rgba(59, 130, 246, 0.3);
 		box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
+	}
+
+	/* Stack monitors vertically on narrow viewports */
+	@media (max-width: 767px) {
+		.monitors {
+			grid-template-columns: 1fr;
+			gap: 4px;
+			padding: 6px;
+		}
+
+		.source-buttons {
+			gap: 4px;
+			padding: 6px;
+		}
+
+		.action-buttons {
+			gap: 6px;
+			padding: 6px 8px 10px;
+		}
+	}
+
+	/* Touch: disable hover states on touch devices */
+	@media (pointer: coarse) {
+		.source-btn:hover {
+			border-color: var(--border-default);
+			background: var(--bg-elevated);
+		}
+
+		.tally-preview:hover {
+			border-color: var(--tally-preview);
+			background: var(--tally-preview-dim);
+		}
+
+		.tally-program:hover {
+			border-color: var(--tally-program);
+			background: var(--tally-program-dim);
+		}
 	}
 </style>
