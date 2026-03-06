@@ -266,7 +266,11 @@ func (s *Switcher) Close() {
 	if s.frameSync != nil {
 		s.frameSync.Stop()
 	}
+	pipeCodecs := s.pipeCodecs
 	s.mu.Unlock()
+	if pipeCodecs != nil {
+		pipeCodecs.close()
+	}
 	s.mu.Lock()
 	keys := make([]string, 0, len(s.sources))
 	for k := range s.sources {
@@ -484,7 +488,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	// Encode once
 	pf := &ProcessingFrame{
 		YUV: yuv, Width: width, Height: height,
-		PTS: pts, IsKeyframe: isKeyframe,
+		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
 		Codec: "h264",
 	}
 	frame, err := pipeCodecs.encode(pf, isKeyframe)

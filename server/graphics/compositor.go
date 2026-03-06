@@ -307,25 +307,17 @@ func (c *Compositor) cancelFadeLocked() {
 // When inactive or when the overlay resolution doesn't match, returns yuv unchanged.
 func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
 	c.mu.RLock()
-	active := c.active
-	alphaScale := c.fadePosition
-	overlayW := c.overlayWidth
-	overlayH := c.overlayHeight
-	hasOverlay := c.overlay != nil
-	c.mu.RUnlock()
+	defer c.mu.RUnlock()
 
-	if !active || alphaScale < 1.0/255.0 || !hasOverlay {
+	if !c.active || c.fadePosition < 1.0/255.0 || c.overlay == nil {
 		return yuv
 	}
 
-	if overlayW != width || overlayH != height {
+	if c.overlayWidth != width || c.overlayHeight != height {
 		return yuv
 	}
 
-	c.mu.RLock()
 	AlphaBlendRGBA(yuv, c.overlay, width, height, c.fadePosition)
-	c.mu.RUnlock()
-
 	return yuv
 }
 
