@@ -1,7 +1,10 @@
 package stinger
 
 import (
+	"archive/zip"
+	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -36,7 +39,7 @@ func TestStingerStore_LoadAndList(t *testing.T) {
 	createTestPNG(t, stingerDir, "002.png", 8, 8, color.NRGBA{R: 255, A: 255})
 	createTestPNG(t, stingerDir, "003.png", 8, 8, color.NRGBA{R: 255, A: 0})
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 
 	names := store.List()
@@ -57,7 +60,7 @@ func TestStingerStore_Delete(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(store.List()))
 
@@ -69,7 +72,7 @@ func TestStingerStore_Delete(t *testing.T) {
 
 func TestStingerStore_DeleteNotFound(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 
 	err = store.Delete("nonexistent")
@@ -82,7 +85,7 @@ func TestStingerStore_SetCutPoint(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 
 	err = store.SetCutPoint("wipe1", 0.75)
@@ -150,7 +153,7 @@ func TestStingerStore_MismatchedDimensions(t *testing.T) {
 	createTestPNG(t, stingerDir, "001.png", 8, 8, color.NRGBA{A: 255})
 	createTestPNG(t, stingerDir, "002.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded the bad stinger
 	_, ok := store.Get("bad")
@@ -163,7 +166,7 @@ func TestStingerStore_OddDimensions(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 3, 3, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded (odd dimensions)
 	_, ok := store.Get("odd")
@@ -175,7 +178,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 	stingerDir := filepath.Join(dir, "empty")
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded (no PNGs)
 	_, ok := store.Get("empty")
@@ -184,7 +187,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 
 func TestStingerStore_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 
 	// These names should all be rejected
@@ -218,7 +221,7 @@ func TestStingerStore_PathTraversal(t *testing.T) {
 
 func TestStingerStore_SentinelErrors(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir)
+	store, err := NewStingerStore(dir, 0)
 	require.NoError(t, err)
 
 	// Delete non-existent should return ErrNotFound
@@ -231,4 +234,110 @@ func TestStingerStore_SentinelErrors(t *testing.T) {
 
 	// SetCutPoint invalid range should return ErrInvalidCutPoint
 	// Need a clip first - we can't test this without a valid clip loaded
+}
+
+func TestStingerStore_Upload(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	// Create a zip with a small 2x2 PNG
+	zipData := createTestZip(t, 2, 2, 3) // 3 frames
+
+	err = store.Upload("test-stinger", zipData)
+	require.NoError(t, err)
+
+	// Verify clip was loaded
+	clip, ok := store.Get("test-stinger")
+	require.True(t, ok)
+	require.Equal(t, 3, len(clip.Frames))
+	require.Equal(t, 2, clip.Width)
+	require.Equal(t, 2, clip.Height)
+
+	// Double upload should fail
+	err = store.Upload("test-stinger", zipData)
+	require.ErrorIs(t, err, ErrAlreadyExists)
+
+	// Invalid name should fail
+	err = store.Upload("../bad", zipData)
+	require.Error(t, err)
+}
+
+// createTestZip creates a zip file containing numFrames PNG images of the given dimensions.
+func createTestZip(t *testing.T, width, height, numFrames int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	for i := 0; i < numFrames; i++ {
+		img := image.NewRGBA(image.Rect(0, 0, width, height))
+		// Fill with a color
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				img.SetRGBA(x, y, color.RGBA{R: uint8(i * 50), G: 128, B: 128, A: 255})
+			}
+		}
+
+		name := fmt.Sprintf("frame_%03d.png", i)
+		fw, err := zw.Create(name)
+		require.NoError(t, err)
+		require.NoError(t, png.Encode(fw, img))
+	}
+
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+func TestStingerStore_MaxClipsLimit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir, 2) // limit to 2 clips
+	require.NoError(t, err)
+
+	// Create 3 stinger directories with small even-dimension PNGs
+	for i := 0; i < 3; i++ {
+		name := fmt.Sprintf("clip%d", i)
+		clipDir := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(clipDir, 0755))
+		createTestPNG(t, clipDir, "frame_000.png", 2, 2, color.NRGBA{R: 128, A: 255})
+	}
+
+	// First two loads should succeed
+	require.NoError(t, store.LoadFromDir("clip0"))
+	require.NoError(t, store.LoadFromDir("clip1"))
+
+	// Third should fail with ErrMaxClipsReached
+	err = store.LoadFromDir("clip2")
+	require.ErrorIs(t, err, ErrMaxClipsReached)
+
+	// Reloading an existing clip (replacement) should succeed even at limit
+	require.NoError(t, store.LoadFromDir("clip0"))
+
+	// Verify we still have exactly 2 clips
+	require.Equal(t, 2, len(store.List()))
+}
+
+func TestStingerStore_MaxClipsLimitUpload(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir, 2) // limit to 2 clips
+	require.NoError(t, err)
+
+	zipData := createTestZip(t, 2, 2, 1) // 1 frame
+
+	require.NoError(t, store.Upload("clip0", zipData))
+	require.NoError(t, store.Upload("clip1", zipData))
+
+	// Third upload should fail with ErrMaxClipsReached
+	err = store.Upload("clip2", zipData)
+	require.ErrorIs(t, err, ErrMaxClipsReached)
+
+	// Verify we still have exactly 2 clips
+	require.Equal(t, 2, len(store.List()))
+}
+
+func TestStingerStore_DefaultMaxClips(t *testing.T) {
+	dir := t.TempDir()
+	// maxClips <= 0 should default to 16
+	store, err := NewStingerStore(dir, 0)
+	require.NoError(t, err)
+	require.Equal(t, 16, store.maxClips)
 }
