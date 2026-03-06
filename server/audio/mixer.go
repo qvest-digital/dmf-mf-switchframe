@@ -660,8 +660,18 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	if m.passthrough {
 		m.mu.RUnlock()
 
-		// Decode for peak metering even in passthrough (skip encode).
+		// Upgrade to write lock for metering. Re-check passthrough after
+		// acquiring — between RUnlock and Lock another goroutine may have
+		// changed it to false, which would cause both a passthrough frame
+		// and a mixed frame for the same audio tick.
 		m.mu.Lock()
+		if !m.passthrough {
+			// Passthrough was disabled while we waited for the write lock.
+			// Fall through to the mixing path (we already hold m.mu.Lock).
+			goto mixing
+		}
+
+		// Decode for peak metering even in passthrough (skip encode).
 		m.initChannelDecoder(ch)
 		if ch.decoder != nil {
 			adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
@@ -695,6 +705,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	// Multi-channel mixing: decode, gain, accumulate, sum, encode
 	m.mu.Lock()
+mixing:
 
 	// Lazy-init decoder for this channel
 	m.initChannelDecoder(ch)

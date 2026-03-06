@@ -1578,3 +1578,59 @@ func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 	require.Equal(t, int64(2), factoryCalls.Load(),
 		"decoder factory should not be called again on subsequent crossfades, got %d", factoryCalls.Load())
 }
+
+// TestMixerPassthroughRaceSafety exercises the RLock-to-Lock upgrade in
+// IngestFrame. One goroutine ingests frames while another toggles passthrough
+// by activating a second channel. With -race this detects the TOCTOU bug
+// where passthrough is checked under RLock then re-acquired under Lock.
+func TestMixerPassthroughRaceSafety(t *testing.T) {
+	t.Parallel()
+
+	var outputCount atomic.Int64
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(_ *media.AudioFrame) { outputCount.Add(1) },
+	})
+	t.Cleanup(func() { _ = m.Close() })
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	const iterations = 1000
+	var wg sync.WaitGroup
+
+	// Goroutine 1: rapidly ingest frames on cam1
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			m.IngestFrame("cam1", &media.AudioFrame{
+				PTS:        int64(i),
+				Data:       []byte{0xAA, 0xBB},
+				SampleRate: 48000,
+				Channels:   2,
+			})
+		}
+	}()
+
+	// Goroutine 2: toggle passthrough by activating/deactivating cam2
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			m.SetActive("cam2", true)  // passthrough → false
+			m.SetActive("cam2", false) // passthrough → true
+		}
+	}()
+
+	wg.Wait()
+
+	// If the race detector didn't fire, we're good. The output count
+	// doesn't matter — some frames are passthrough, some go through
+	// mixing (which has no encoder, so they're dropped). The key is
+	// no data race.
+	require.Greater(t, outputCount.Load(), int64(0), "should have produced some output")
+}
