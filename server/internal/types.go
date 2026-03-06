@@ -51,24 +51,26 @@ type AudioChannel struct {
 // RecordingStatus is the JSON-serializable status for recording output,
 // included in ControlRoomState for the browser.
 type RecordingStatus struct {
-	Active       bool    `json:"active"`
-	Filename     string  `json:"filename,omitempty"`
-	BytesWritten int64   `json:"bytesWritten,omitempty"`
-	DurationSecs float64 `json:"durationSecs,omitempty"`
-	Error        string  `json:"error,omitempty"`
+	Active         bool    `json:"active"`
+	Filename       string  `json:"filename,omitempty"`
+	BytesWritten   int64   `json:"bytesWritten,omitempty"`
+	DurationSecs   float64 `json:"durationSecs,omitempty"`
+	DroppedPackets int64   `json:"droppedPackets,omitempty"`
+	Error          string  `json:"error,omitempty"`
 }
 
 // SRTOutputStatus is the JSON-serializable status for SRT output,
 // included in ControlRoomState for the browser.
 type SRTOutputStatus struct {
-	Active       bool   `json:"active"`
-	Mode         string `json:"mode,omitempty"`
-	Address      string `json:"address,omitempty"`
-	Port         int    `json:"port,omitempty"`
-	State        string `json:"state,omitempty"`
-	Connections  int    `json:"connections,omitempty"`
-	BytesWritten int64  `json:"bytesWritten,omitempty"`
-	Error        string `json:"error,omitempty"`
+	Active         bool   `json:"active"`
+	Mode           string `json:"mode,omitempty"`
+	Address        string `json:"address,omitempty"`
+	Port           int    `json:"port,omitempty"`
+	State          string `json:"state,omitempty"`
+	Connections    int    `json:"connections,omitempty"`
+	BytesWritten   int64  `json:"bytesWritten,omitempty"`
+	DroppedPackets int64  `json:"droppedPackets,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // PresetInfo is a summary of a saved preset, included in ControlRoomState

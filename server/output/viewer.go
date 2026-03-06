@@ -37,9 +37,10 @@ type OutputViewer struct {
 	audioDropped   atomic.Int64
 	captionDropped atomic.Int64
 
-	muxer  *TSMuxer
-	stopCh chan struct{}
-	done   chan struct{}
+	muxer    *TSMuxer
+	onVideo  func(*media.VideoFrame) // optional callback for confidence monitor
+	stopCh   chan struct{}
+	done     chan struct{}
 }
 
 // NewOutputViewer creates an OutputViewer that feeds frames to the given
@@ -124,6 +125,9 @@ func (v *OutputViewer) Run() {
 		case frame := <-v.videoCh:
 			if err := v.muxer.WriteVideo(frame); err != nil {
 				slog.Error("output viewer: mux video error", "err", err)
+			}
+			if v.onVideo != nil {
+				v.onVideo(frame)
 			}
 
 		case frame := <-v.audioCh:

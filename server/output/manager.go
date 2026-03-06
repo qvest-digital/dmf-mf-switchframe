@@ -45,6 +45,9 @@ type OutputManager struct {
 	// SRT wiring functions injected from main.go.
 	srtConnectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
 	srtAcceptFn  func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error
+
+	// Confidence monitor for program output thumbnails.
+	confidence *ConfidenceMonitor
 }
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
@@ -274,12 +277,20 @@ func (m *OutputManager) StopSRTOutput() error {
 func (m *OutputManager) RecordingStatus() RecordingStatus {
 	m.mu.Lock()
 	rec := m.recorder
+	var wrapper *AsyncAdapter
+	if rec != nil && m.asyncWrappers != nil {
+		wrapper = m.asyncWrappers[rec.ID()]
+	}
 	m.mu.Unlock()
 
 	if rec == nil {
 		return RecordingStatus{Active: false}
 	}
-	return rec.RecordingStatusSnapshot()
+	status := rec.RecordingStatusSnapshot()
+	if wrapper != nil {
+		status.DroppedPackets = wrapper.Dropped()
+	}
+	return status
 }
 
 // SRTOutputStatus returns the current SRT output status for inclusion in
@@ -287,20 +298,29 @@ func (m *OutputManager) RecordingStatus() RecordingStatus {
 func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
 	m.mu.Lock()
 	adapter := m.srtOutput
+	var wrapper *AsyncAdapter
+	if adapter != nil && m.asyncWrappers != nil {
+		wrapper = m.asyncWrappers[adapter.ID()]
+	}
 	m.mu.Unlock()
 
 	if adapter == nil {
 		return SRTOutputStatus{Active: false}
 	}
 
+	var status SRTOutputStatus
 	switch a := adapter.(type) {
 	case *SRTCaller:
-		return a.SRTStatusSnapshot()
+		status = a.SRTStatusSnapshot()
 	case *SRTListener:
-		return a.SRTStatusSnapshot()
+		status = a.SRTStatusSnapshot()
 	default:
 		return SRTOutputStatus{Active: false}
 	}
+	if wrapper != nil {
+		status.DroppedPackets = wrapper.Dropped()
+	}
+	return status
 }
 
 // Close stops all outputs, the muxer, and the viewer. Safe to call
@@ -323,8 +343,15 @@ func (m *OutputManager) Close() error {
 	wrappers := m.asyncWrappers
 	m.asyncWrappers = nil
 
+	cm := m.confidence
+	m.confidence = nil
 	m.stopMuxerLocked()
 	m.mu.Unlock()
+
+	// Close the confidence monitor's decoder.
+	if cm != nil {
+		cm.Close()
+	}
 
 	// Stop async wrappers first so no more writes reach inner adapters.
 	for _, w := range wrappers {
@@ -419,6 +446,9 @@ func (m *OutputManager) ensureMuxerLocked() {
 	})
 
 	viewer := NewOutputViewer(muxer)
+	if m.confidence != nil {
+		viewer.onVideo = m.confidence.IngestVideo
+	}
 	m.muxer = muxer
 	m.viewer = viewer
 
@@ -512,6 +542,30 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 		"recording": m.RecordingStatus(),
 		"srt":       m.SRTOutputStatus(),
 	}
+}
+
+// SetConfidenceMonitor attaches a confidence monitor to the output manager.
+// The monitor will receive video frames from the output viewer when active.
+// If a viewer is already running, it is wired immediately.
+func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.confidence = cm
+	if m.viewer != nil && cm != nil {
+		m.viewer.onVideo = cm.IngestVideo
+	}
+}
+
+// ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence
+// monitor, or nil if unavailable.
+func (m *OutputManager) ConfidenceThumbnail() []byte {
+	m.mu.Lock()
+	cm := m.confidence
+	m.mu.Unlock()
+	if cm == nil {
+		return nil
+	}
+	return cm.LatestThumbnail()
 }
 
 // HasActiveOutputs returns true if at least one output is active.

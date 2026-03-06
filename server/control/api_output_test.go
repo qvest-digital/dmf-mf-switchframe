@@ -16,14 +16,16 @@ import (
 
 // mockOutputManager implements OutputManagerAPI for testing.
 type mockOutputManager struct {
-	recording      bool
-	srtActive      bool
-	startRecErr    error
-	stopRecErr     error
-	startSRTErr    error
-	stopSRTErr     error
-	lastRecConfig  output.RecorderConfig
-	lastSRTConfig  output.SRTOutputConfig
+	recording         bool
+	srtActive         bool
+	startRecErr       error
+	stopRecErr        error
+	startSRTErr       error
+	stopSRTErr        error
+	lastRecConfig     output.RecorderConfig
+	lastSRTConfig     output.SRTOutputConfig
+	thumbnail         []byte
+	recDroppedPackets int64
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
@@ -45,10 +47,11 @@ func (m *mockOutputManager) StopRecording() error {
 
 func (m *mockOutputManager) RecordingStatus() output.RecordingStatus {
 	return output.RecordingStatus{
-		Active:       m.recording,
-		Filename:     "test-2026-03-04.ts",
-		BytesWritten: 1024,
-		DurationSecs: 10.5,
+		Active:         m.recording,
+		Filename:       "test-2026-03-04.ts",
+		BytesWritten:   1024,
+		DurationSecs:   10.5,
+		DroppedPackets: m.recDroppedPackets,
 	}
 }
 
@@ -76,6 +79,10 @@ func (m *mockOutputManager) SRTOutputStatus() output.SRTOutputStatus {
 		Address: "192.168.1.100",
 		Port:    9000,
 	}
+}
+
+func (m *mockOutputManager) ConfidenceThumbnail() []byte {
+	return m.thumbnail
 }
 
 func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
@@ -412,6 +419,43 @@ func TestSRTStartListenerMode(t *testing.T) {
 	require.Equal(t, "listener", mock.lastSRTConfig.Mode)
 	require.Equal(t, 9000, mock.lastSRTConfig.Port)
 	require.Equal(t, 125, mock.lastSRTConfig.Latency)
+}
+
+// --- Confidence thumbnail tests ---
+
+func TestConfidenceEndpoint_ReturnsThumbnail(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	// Set a fake JPEG (SOI marker)
+	mock.thumbnail = []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+
+	req := httptest.NewRequest("GET", "/api/output/confidence", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "image/jpeg", rec.Header().Get("Content-Type"))
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	require.Equal(t, mock.thumbnail, rec.Body.Bytes())
+}
+
+func TestConfidenceEndpoint_NoContent(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/output/confidence", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestConfidenceEndpoint_NoManager(t *testing.T) {
+	api := setupOutputTestAPINoManager(t)
+
+	req := httptest.NewRequest("GET", "/api/output/confidence", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 func TestSRTStartCallerMissingAddress(t *testing.T) {

@@ -46,6 +46,7 @@ type OutputManagerAPI interface {
 	StartSRTOutput(config output.SRTOutputConfig) error
 	StopSRTOutput() error
 	SRTOutputStatus() output.SRTOutputStatus
+	ConfidenceThumbnail() []byte
 }
 
 // DebugAPI is the interface for the debug snapshot endpoint.
@@ -129,6 +130,7 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/output/srt/start", a.handleSRTStart)
 	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
 	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
+	mux.HandleFunc("GET /api/output/confidence", a.handleConfidence)
 	if a.debug != nil {
 		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
 	}
@@ -661,6 +663,23 @@ func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
+}
+
+// handleConfidence returns the latest JPEG confidence thumbnail from the
+// program output. Returns 204 No Content if no thumbnail is available.
+func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		http.Error(w, "output not configured", http.StatusNotImplemented)
+		return
+	}
+	jpg := a.outputMgr.ConfidenceThumbnail()
+	if jpg == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(jpg)
 }
 
 // --- Preset API ---

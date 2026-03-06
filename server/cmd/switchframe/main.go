@@ -267,6 +267,13 @@ func run() error {
 	outputMgr.SetMetrics(appMetrics)
 	defer outputMgr.Close()
 
+	// Attach confidence monitor for 1fps program output thumbnail.
+	confidenceMon := output.NewConfidenceMonitor(func() (transition.VideoDecoder, error) {
+		return codec.NewVideoDecoder()
+	})
+	outputMgr.SetConfidenceMonitor(confidenceMon)
+	defer confidenceMon.Close()
+
 	// Create debug collector for pipeline instrumentation.
 	debugCollector := debug.NewCollector()
 	debugCollector.Register("switcher", sw)

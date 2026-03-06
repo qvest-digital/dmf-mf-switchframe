@@ -111,13 +111,40 @@ func TestSRTCaller_BackoffProgression(t *testing.T) {
 		Port:    9998,
 	})
 
-	require.Equal(t, time.Second, c.nextBackoff())
-	require.Equal(t, 2*time.Second, c.nextBackoff())
-	require.Equal(t, 4*time.Second, c.nextBackoff())
-	require.Equal(t, 8*time.Second, c.nextBackoff())
-	require.Equal(t, 16*time.Second, c.nextBackoff())
-	require.Equal(t, 30*time.Second, c.nextBackoff()) // cap
-	require.Equal(t, 30*time.Second, c.nextBackoff()) // stays at cap
+	// With jitter, values won't be exact. Check that they're in
+	// the expected ±20% range for each level.
+	levels := []time.Duration{
+		1 * time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		16 * time.Second,
+		30 * time.Second,  // cap
+		30 * time.Second,  // stays at cap
+	}
+	for _, expected := range levels {
+		got := c.nextBackoff()
+		lo := time.Duration(float64(expected) * 0.79)
+		hi := time.Duration(float64(expected) * 1.21)
+		require.True(t, got >= lo && got <= hi,
+			"expected backoff near %v (±20%%), got %v", expected, got)
+	}
+}
+
+func TestSRTCaller_BackoffHasJitter(t *testing.T) {
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	// Collect 100 backoff values at the same level
+	// They should NOT all be identical (jitter)
+	seen := make(map[time.Duration]bool)
+	for i := 0; i < 100; i++ {
+		c.backoff = 1 * time.Second // reset to same starting point
+		d := c.nextBackoff()
+		seen[d] = true
+	}
+	require.True(t, len(seen) > 1, "backoff should have jitter (got %d unique values)", len(seen))
 }
 
 func TestSRTCaller_ResetBackoff(t *testing.T) {
@@ -126,10 +153,13 @@ func TestSRTCaller_ResetBackoff(t *testing.T) {
 		Port:    9998,
 	})
 
-	c.nextBackoff() // 1s
-	c.nextBackoff() // 2s
+	c.nextBackoff() // ~1s
+	c.nextBackoff() // ~2s
 	c.resetBackoff()
-	require.Equal(t, time.Second, c.nextBackoff()) // back to 1s
+	got := c.nextBackoff() // should be back near 1s
+	// With ±20% jitter: 800ms - 1200ms
+	require.True(t, got >= 800*time.Millisecond && got <= 1200*time.Millisecond,
+		"after reset, backoff should be near 1s, got %v", got)
 }
 
 func TestSRTCaller_StartWithMockConnect(t *testing.T) {
