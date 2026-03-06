@@ -161,18 +161,6 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	return frame, nil
 }
 
-// resetDecoder closes the current decoder so it is recreated fresh on the
-// next keyframe. Call this when the program source changes to avoid stale
-// reference frames from the old source causing H.264 decode warnings.
-func (pc *pipelineCodecs) resetDecoder() {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.decoder != nil {
-		pc.decoder.Close()
-		pc.decoder = nil
-	}
-}
-
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
 func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64) {

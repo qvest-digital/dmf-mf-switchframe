@@ -962,15 +962,12 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		s.log.Info("transition completed", "type", transType)
 	}
 
-	// Reset the pipeline decoder to flush stale reference frames from
-	// the old source — prevents H.264 "co located POCs unavailable" warnings.
-	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-		pipeCodecs.resetDecoder()
-	}
-
 	// Replay only the keyframe from the cached GOP through the pipeline.
 	// This gives the browser an immediate sync point with consistent
 	// SPS/PPS. Live delta frames from the source follow naturally.
+	// Note: the pipeline decoder is NOT reset — FFmpeg handles mid-stream
+	// SPS/PPS changes naturally. Resetting causes "no output frame yet"
+	// drops due to B-frame reordering delay.
 	if len(replayFrames) > 0 {
 		s.broadcastVideo(replayFrames[0]) // keyframe only
 		// Clear the IDR gate — the replayed keyframe seeds the decoder
@@ -1077,14 +1074,8 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Reset the pipeline decoder to flush stale reference frames.
-	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-		pipeCodecs.resetDecoder()
-	}
-
 	// Replay only the keyframe from the cached GOP through the pipeline.
-	// This gives the browser an immediate sync point with consistent
-	// SPS/PPS. Live delta frames follow naturally from the source.
+	// See handleTransitionComplete comment for why decoder is NOT reset.
 	if len(replayFrames) > 0 {
 		s.broadcastVideo(replayFrames[0]) // keyframe only
 		s.mu.Lock()
@@ -1243,11 +1234,6 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		replayFrames := s.gopCache.GetOriginalGOP(sourceKey)
 
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
-
-		// Reset the pipeline decoder to flush stale reference frames.
-		if s.pipeCodecs != nil {
-			s.pipeCodecs.resetDecoder()
-		}
 
 		// Replay only the keyframe from the cached GOP through the pipeline.
 		// This gives the browser an immediate sync point with consistent
