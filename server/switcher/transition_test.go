@@ -905,7 +905,7 @@ func TestTransitionGroupIDMonotonicity(t *testing.T) {
 		Codec:    "h264",
 	})
 
-	// 2. Send passthrough from cam1 (HIGH GroupID)
+	// 2. Send frame from cam1 (HIGH GroupID)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{
 		PTS: 300, IsKeyframe: true, GroupID: 50,
 		WireData: makeAVC1Frame([]byte{0x65, 0xCC}),
@@ -941,7 +941,7 @@ func TestTransitionGroupIDMonotonicity(t *testing.T) {
 	require.NoError(t, err)
 	time.Sleep(30 * time.Millisecond)
 
-	// 6. Send passthrough from cam2 (new program, LOW GroupID — the old bug)
+	// 6. Send frame from cam2 (new program, LOW GroupID — the old bug)
 	cam2Relay.BroadcastVideo(&media.VideoFrame{
 		PTS: 500, IsKeyframe: true, GroupID: 12,
 		WireData: makeAVC1Frame([]byte{0x65, 0xFF}),

@@ -67,6 +67,7 @@ func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
 	// Deep-copy the original frame for program relay replay
 	orig := &media.VideoFrame{
 		PTS:        frame.PTS,
+		DTS:        frame.DTS,
 		IsKeyframe: frame.IsKeyframe,
 		Codec:      frame.Codec,
 		GroupID:     frame.GroupID,
