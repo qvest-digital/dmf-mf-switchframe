@@ -42,7 +42,9 @@ const (
 type AudioChannel struct {
 	Level float64 `json:"level"` // dB (-inf to +12)
 	Muted bool    `json:"muted"`
-	AFV   bool    `json:"afv"` // audio-follows-video
+	AFV   bool    `json:"afv"`   // audio-follows-video
+	PeakL float64 `json:"peakL"` // dBFS, updated per frame
+	PeakR float64 `json:"peakR"` // dBFS
 }
 
 // RecordingStatus is the JSON-serializable status for recording output,

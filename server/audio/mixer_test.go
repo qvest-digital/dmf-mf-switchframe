@@ -1158,6 +1158,42 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
+func TestMixerPerChannelPeaks(t *testing.T) {
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.3, 0.5, 0.3} // L=0.5, R=0.3 interleaved stereo
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Force non-passthrough so the mixing path runs
+	m.SetMasterLevel(-1.0)
+
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 0, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	// Channel peaks should be populated
+	states := m.ChannelStates()
+	ch, ok := states["cam1"]
+	require.True(t, ok)
+	require.True(t, ch.PeakL > -96 || ch.PeakR > -96,
+		"per-channel peaks should be populated after frame ingestion")
+}
+
 func TestMixerCrossfadeUsesPreBufferedPCM(t *testing.T) {
 	// After sending frames from cam1, triggering a cut to cam2, and sending
 	// only ONE frame from cam2, the crossfade should complete immediately

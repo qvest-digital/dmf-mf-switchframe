@@ -37,6 +37,8 @@ type Channel struct {
 	active      bool
 	decoder     AudioDecoder // lazy init, nil in passthrough
 	decoderOnce sync.Once    // ensures decoder factory is called at most once
+	peakL       float64      // linear amplitude [0,1] — updated on every decoded frame
+	peakR       float64      // linear amplitude [0,1]
 }
 
 // AudioMixer mixes audio from multiple sources.
@@ -609,6 +611,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				peakL, peakR := PeakLevel(pcm, m.numChannels)
 				m.programPeakL = peakL
 				m.programPeakR = peakR
+				ch.peakL, ch.peakR = peakL, peakR
 				// Store for crossfade pre-buffer even in passthrough
 				m.lastDecodedPCM[sourceKey] = pcm
 			} else if err != nil {
@@ -648,6 +651,9 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		slog.Warn("mixer: decode error", "source", sourceKey, "err", err)
 		return
 	}
+
+	// Update per-channel peaks (pre-fader, pre-gain)
+	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
 	// Store last decoded PCM for instant crossfade on future cuts
 	m.lastDecodedPCM[sourceKey] = pcm
@@ -913,7 +919,13 @@ func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 	defer m.mu.RUnlock()
 	result := make(map[string]internal.AudioChannel, len(m.channels))
 	for key, ch := range m.channels {
-		result[key] = internal.AudioChannel{Level: ch.level, Muted: ch.muted, AFV: ch.afv}
+		result[key] = internal.AudioChannel{
+			Level: ch.level,
+			Muted: ch.muted,
+			AFV:   ch.afv,
+			PeakL: LinearToDBFS(ch.peakL),
+			PeakR: LinearToDBFS(ch.peakR),
+		}
 	}
 	return result
 }

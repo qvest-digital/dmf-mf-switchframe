@@ -13,6 +13,8 @@ export interface AudioChannel {
 	level: number;  // dB (-inf to +12)
 	muted: boolean;
 	afv: boolean;   // audio-follows-video
+	peakL: number;  // dBFS
+	peakR: number;  // dBFS
 }
 
 export interface RecordingStatus {
