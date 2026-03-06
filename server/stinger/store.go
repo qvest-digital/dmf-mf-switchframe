@@ -1,10 +1,13 @@
 package stinger
 
 import (
+	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +19,8 @@ var (
 	ErrNotFound        = errors.New("stinger not found")
 	ErrInvalidName     = errors.New("invalid stinger name")
 	ErrInvalidCutPoint = errors.New("cut point must be between 0 and 1")
+	ErrAlreadyExists   = errors.New("stinger already exists")
+	ErrMaxClipsReached = errors.New("maximum stinger clips reached")
 )
 
 // validateName rejects names that could cause path traversal or are otherwise invalid.
@@ -65,20 +70,26 @@ func (c *StingerClip) FrameAt(position float64) *StingerFrame {
 
 // StingerStore manages stinger clips stored as PNG sequences on disk.
 type StingerStore struct {
-	dir   string
-	mu    sync.RWMutex
-	clips map[string]*StingerClip
+	dir      string
+	mu       sync.RWMutex
+	clips    map[string]*StingerClip
+	maxClips int
 }
 
 // NewStingerStore creates a store backed by the given directory.
 // Pre-loads any existing stinger directories.
-func NewStingerStore(dir string) (*StingerStore, error) {
+// maxClips limits the number of clips that can be loaded; <= 0 defaults to 16.
+func NewStingerStore(dir string, maxClips int) (*StingerStore, error) {
+	if maxClips <= 0 {
+		maxClips = 16
+	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create stinger dir: %w", err)
 	}
 	s := &StingerStore{
-		dir:   dir,
-		clips: make(map[string]*StingerClip),
+		dir:      dir,
+		clips:    make(map[string]*StingerClip),
+		maxClips: maxClips,
 	}
 	// Pre-load existing stingers
 	entries, err := os.ReadDir(dir)
@@ -88,6 +99,9 @@ func NewStingerStore(dir string) (*StingerStore, error) {
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
+		}
+		if len(s.clips) >= s.maxClips {
+			break // stop loading when limit reached
 		}
 		clip, err := s.loadClip(e.Name())
 		if err != nil {
@@ -164,8 +178,98 @@ func (s *StingerStore) LoadFromDir(name string) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Allow replacing an existing clip without counting against the limit.
+	if _, exists := s.clips[name]; !exists && len(s.clips) >= s.maxClips {
+		return ErrMaxClipsReached
+	}
+	s.clips[name] = clip
+	return nil
+}
+
+// Upload extracts a zip of PNG files into the store directory and loads the clip.
+// The zip must contain PNG files at the root level (no subdirectories).
+func (s *StingerStore) Upload(name string, zipData []byte) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidName, name)
+	}
+
+	s.mu.Lock()
+	if _, exists := s.clips[name]; exists {
+		s.mu.Unlock()
+		return ErrAlreadyExists
+	}
+	if len(s.clips) >= s.maxClips {
+		s.mu.Unlock()
+		return ErrMaxClipsReached
+	}
+	s.mu.Unlock()
+
+	// Create the directory
+	dir := filepath.Join(s.dir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create stinger dir: %w", err)
+	}
+
+	// Extract PNGs from zip
+	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		os.RemoveAll(dir) // clean up on failure
+		return fmt.Errorf("open zip: %w", err)
+	}
+
+	pngCount := 0
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		lower := strings.ToLower(f.Name)
+		if !strings.HasSuffix(lower, ".png") {
+			continue
+		}
+		// Use only the base name to prevent zip path traversal
+		baseName := filepath.Base(f.Name)
+
+		rc, err := f.Open()
+		if err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+		}
+
+		outPath := filepath.Join(dir, baseName)
+		outFile, err := os.Create(outPath)
+		if err != nil {
+			rc.Close()
+			os.RemoveAll(dir)
+			return fmt.Errorf("create file %s: %w", baseName, err)
+		}
+
+		_, err = io.Copy(outFile, rc)
+		rc.Close()
+		outFile.Close()
+		if err != nil {
+			os.RemoveAll(dir)
+			return fmt.Errorf("write file %s: %w", baseName, err)
+		}
+		pngCount++
+	}
+
+	if pngCount == 0 {
+		os.RemoveAll(dir)
+		return fmt.Errorf("zip contains no PNG files")
+	}
+
+	// Load the clip
+	clip, err := s.loadClip(name)
+	if err != nil {
+		os.RemoveAll(dir)
+		return fmt.Errorf("load clip: %w", err)
+	}
+
+	s.mu.Lock()
 	s.clips[name] = clip
 	s.mu.Unlock()
+
 	return nil
 }
 

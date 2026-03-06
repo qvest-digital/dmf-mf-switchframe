@@ -551,6 +551,31 @@ func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
 	}
 }
 
+func TestFrameSync_AudioFreezeLimit(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(10*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Send one audio frame, then never send another.
+	fs.IngestAudio("cam1", media.AudioFrame{PTS: 1000, Data: []byte{0x01}})
+
+	// Wait for several ticks (more than 3).
+	// With 10ms ticks over 80ms we'd get ~8 ticks, but audio should stop after 3
+	// (1 original emission + 2 repeats = 3 total).
+	time.Sleep(80 * time.Millisecond)
+
+	count := handler.audioCount()
+	// Must have received the original + at most 2 repeats = 3 audio frames.
+	if count > 4 {
+		t.Errorf("audio should stop repeating after 2 misses, got %d frames (want <= 4)", count)
+	}
+	if count < 2 {
+		t.Errorf("should have received at least 2 audio frames, got %d", count)
+	}
+}
+
 // --- Frame preservation tests ---
 
 func TestFrameSync_PreservesKeyframeFlag(t *testing.T) {

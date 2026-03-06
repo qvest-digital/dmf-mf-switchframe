@@ -153,6 +153,7 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/stinger/list", a.handleStingerList)
 		mux.HandleFunc("DELETE /api/stinger/{name}", a.handleStingerDelete)
 		mux.HandleFunc("POST /api/stinger/{name}/cut-point", a.handleStingerCutPoint)
+		mux.HandleFunc("POST /api/stinger/{name}/upload", a.handleStingerUpload)
 	}
 	if a.compositor != nil {
 		mux.HandleFunc("POST /api/graphics/on", a.handleGraphicsOn)
@@ -1082,6 +1083,39 @@ func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleStingerUpload accepts a zip file upload containing PNG frames for a stinger.
+func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	// Limit upload size to 256MB
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<20)
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		json.NewEncoder(w).Encode(map[string]string{"error": "upload too large (max 256MB)"})
+		return
+	}
+
+	if err := a.stingerStore.Upload(name, data); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		status := http.StatusInternalServerError
+		if errors.Is(err, stinger.ErrInvalidName) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, stinger.ErrAlreadyExists) {
+			status = http.StatusConflict
+		}
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 

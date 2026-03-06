@@ -189,6 +189,17 @@ export function setStingerCutPoint(name: string, cutPoint: number): Promise<void
 	return post(`/api/stinger/${encodeURIComponent(name)}/cut-point`, { cutPoint });
 }
 
+export async function uploadStinger(name: string, file: File): Promise<void> {
+	const response = await fetch(`/api/stinger/${encodeURIComponent(name)}/upload`, {
+		method: 'POST',
+		body: await file.arrayBuffer(),
+	});
+	if (!response.ok) {
+		const data = await response.json();
+		throw new Error(data.error || 'Upload failed');
+	}
+}
+
 // --- Graphics Overlay API ---
 
 export function graphicsOn(): Promise<GraphicsState> {

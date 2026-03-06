@@ -50,7 +50,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 		f.Close()
 	}
 
-	store, err := stinger.NewStingerStore(dir)
+	store, err := stinger.NewStingerStore(dir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

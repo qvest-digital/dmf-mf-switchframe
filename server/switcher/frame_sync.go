@@ -35,6 +35,11 @@ type syncSource struct {
 	// the last frame is repeated to maintain continuous output.
 	lastVideo *media.VideoFrame
 	lastAudio *media.AudioFrame
+
+	// audioMissCount tracks consecutive ticks with no new audio frame.
+	// After 2 repeated frames, audio emission stops to prevent a glitch loop
+	// with encoded AAC (which sounds worse than silence).
+	audioMissCount int
 }
 
 // pushVideo adds a video frame to the ring buffer, overwriting the oldest
@@ -266,12 +271,19 @@ func (fs *FrameSynchronizer) releaseTick() {
 			releaseVideo = ss.lastVideo
 		}
 
-		// Audio: pop newest from ring, or repeat last.
+		// Audio: pop newest from ring, or repeat last (max 2 repeats to avoid glitch loop).
+		// Repeating encoded AAC frames produces an audible stutter; after 2 repeats
+		// we stop emitting and let downstream handle silence instead.
 		if newest := ss.popNewestAudio(); newest != nil {
 			ss.lastAudio = newest
+			ss.audioMissCount = 0
 			releaseAudio = newest
 		} else if ss.lastAudio != nil {
-			releaseAudio = ss.lastAudio
+			ss.audioMissCount++
+			if ss.audioMissCount <= 2 {
+				releaseAudio = ss.lastAudio
+			}
+			// After 2 repeats, stop emitting — downstream handles silence.
 		}
 
 		if releaseVideo != nil || releaseAudio != nil {
