@@ -472,6 +472,10 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	// Always decode for consistent SPS/PPS
 	pf, err := pipeCodecs.decode(frame)
 	if err != nil {
+		if err == errDecoderBuffering {
+			// Normal B-frame reordering delay — frame is buffered, not lost.
+			return
+		}
 		// MUST NOT passthrough — would send source SPS/PPS, breaking consistency
 		s.log.Warn("pipeline decode failed, dropping frame", "error", err)
 		if s.promMetrics != nil {

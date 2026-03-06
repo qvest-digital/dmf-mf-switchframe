@@ -2,13 +2,20 @@ package switcher
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// errDecoderBuffering is returned when the decoder needs more input frames
+// before it can produce output (H.264 B-frame reordering). This is normal
+// startup behavior, not an error — the frame is buffered internally.
+var errDecoderBuffering = errors.New("pipeline: decoder buffering")
 
 // pipelineCodecs manages a shared decoder/encoder pair for the video processing
 // pipeline. Instead of each processor (compositor, key bridge) owning its own
@@ -64,6 +71,9 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 
 	yuv, w, h, err := pc.decoder.Decode(annexB)
 	if err != nil {
+		if strings.Contains(err.Error(), "buffering") {
+			return nil, errDecoderBuffering
+		}
 		return nil, fmt.Errorf("pipeline: decode: %w", err)
 	}
 
