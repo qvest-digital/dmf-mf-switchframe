@@ -14,13 +14,16 @@ type replayBuffer struct {
 	frames      []bufferedFrame
 	gops        []gopDescriptor
 	maxDuration time.Duration
+	maxBytes    int64
 	bytesUsed   int64
 }
 
-// newReplayBuffer creates a replay buffer with the given maximum duration in seconds.
-func newReplayBuffer(durationSecs int) *replayBuffer {
+// newReplayBuffer creates a replay buffer with the given maximum duration in seconds
+// and optional byte limit. A maxBytes of 0 disables the byte limit.
+func newReplayBuffer(durationSecs int, maxBytes int64) *replayBuffer {
 	return &replayBuffer{
 		maxDuration: time.Duration(durationSecs) * time.Second,
+		maxBytes:    maxBytes,
 	}
 }
 
@@ -96,7 +99,9 @@ func (b *replayBuffer) trimLocked() {
 		// Use actual frame wall times for accurate duration measurement.
 		newest := b.frames[len(b.frames)-1].wallTime
 		oldest := b.frames[0].wallTime
-		if newest.Sub(oldest) <= b.maxDuration {
+		overTime := newest.Sub(oldest) > b.maxDuration
+		overBytes := b.maxBytes > 0 && b.bytesUsed > b.maxBytes
+		if !overTime && !overBytes {
 			break
 		}
 		// Remove oldest GOP.

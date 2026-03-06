@@ -26,7 +26,7 @@ func makeVideoFrame(pts int64, keyframe bool, dataSize int) *media.VideoFrame {
 }
 
 func TestNewReplayBuffer(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	if buf == nil {
 		t.Fatal("expected non-nil buffer")
 	}
@@ -36,7 +36,7 @@ func TestNewReplayBuffer(t *testing.T) {
 }
 
 func TestReplayBuffer_RecordFrame_KeyframeStartsGOP(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	frame := makeVideoFrame(0, true, 1000)
 	buf.RecordFrame(frame)
 
@@ -50,7 +50,7 @@ func TestReplayBuffer_RecordFrame_KeyframeStartsGOP(t *testing.T) {
 }
 
 func TestReplayBuffer_RecordFrame_DeltaAppendsToCurrentGOP(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	buf.RecordFrame(makeVideoFrame(0, true, 1000))
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
 	buf.RecordFrame(makeVideoFrame(6006, false, 500))
@@ -65,7 +65,7 @@ func TestReplayBuffer_RecordFrame_DeltaAppendsToCurrentGOP(t *testing.T) {
 }
 
 func TestReplayBuffer_RecordFrame_MultipleGOPs(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	// GOP 1: keyframe + 2 deltas
 	buf.RecordFrame(makeVideoFrame(0, true, 1000))
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
@@ -84,7 +84,7 @@ func TestReplayBuffer_RecordFrame_MultipleGOPs(t *testing.T) {
 }
 
 func TestReplayBuffer_RecordFrame_DeepCopiesData(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	frame := makeVideoFrame(0, true, 100)
 	original := make([]byte, len(frame.WireData))
 	copy(original, frame.WireData)
@@ -103,7 +103,7 @@ func TestReplayBuffer_RecordFrame_DeepCopiesData(t *testing.T) {
 }
 
 func TestReplayBuffer_RecordFrame_DeltaBeforeKeyframeDropped(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	// Delta without a preceding keyframe should be dropped
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
 
@@ -114,7 +114,7 @@ func TestReplayBuffer_RecordFrame_DeltaBeforeKeyframeDropped(t *testing.T) {
 }
 
 func TestReplayBuffer_GOPAlignedTrimming(t *testing.T) {
-	buf := newReplayBuffer(1) // 1 second buffer — very small
+	buf := newReplayBuffer(1, 0) // 1 second buffer — very small
 
 	now := time.Now()
 	// Fill with GOPs spaced 500ms apart (2 GOPs should exceed 1s)
@@ -141,7 +141,7 @@ func TestReplayBuffer_GOPAlignedTrimming(t *testing.T) {
 }
 
 func TestReplayBuffer_ExtractClip(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 
 	// Record frames with known wall times
@@ -168,7 +168,7 @@ func TestReplayBuffer_ExtractClip(t *testing.T) {
 }
 
 func TestReplayBuffer_ExtractClip_EmptyBuffer(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 	_, err := buf.ExtractClip(now.Add(-1*time.Second), now)
 	if err != ErrEmptyClip {
@@ -177,7 +177,7 @@ func TestReplayBuffer_ExtractClip_EmptyBuffer(t *testing.T) {
 }
 
 func TestReplayBuffer_ExtractClip_NoFramesInRange(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 	buf.recordFrameAt(makeVideoFrame(0, true, 1000), now)
 
@@ -189,7 +189,7 @@ func TestReplayBuffer_ExtractClip_NoFramesInRange(t *testing.T) {
 }
 
 func TestReplayBuffer_ExtractClip_DeepCopies(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 	buf.recordFrameAt(makeVideoFrame(0, true, 100), now)
 
@@ -208,7 +208,7 @@ func TestReplayBuffer_ExtractClip_DeepCopies(t *testing.T) {
 }
 
 func TestReplayBuffer_BytesUsed(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	buf.RecordFrame(makeVideoFrame(0, true, 1000))
 	buf.RecordFrame(makeVideoFrame(3003, false, 500))
 
@@ -219,7 +219,7 @@ func TestReplayBuffer_BytesUsed(t *testing.T) {
 }
 
 func TestReplayBuffer_DurationSecs(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 
 	buf.recordFrameAt(makeVideoFrame(0, true, 1000), now)
@@ -232,8 +232,44 @@ func TestReplayBuffer_DurationSecs(t *testing.T) {
 	}
 }
 
+func TestReplayBuffer_ByteLimit(t *testing.T) {
+	// Set a very low byte limit (5KB) — recording large frames should trigger trimming.
+	buf := newReplayBuffer(60, 5000)
+	now := time.Now()
+
+	// Record 3 GOPs, each with 1000-byte keyframes and 500-byte deltas.
+	// Each GOP ≈ 1000 + 2×500 = 2000 bytes of wire data (plus SPS/PPS).
+	for g := 0; g < 3; g++ {
+		kf := makeVideoFrame(int64(g)*90000, true, 1000)
+		buf.recordFrameAt(kf, now.Add(time.Duration(g)*time.Second))
+		for j := 1; j <= 2; j++ {
+			df := makeVideoFrame(int64(g)*90000+int64(j)*3003, false, 500)
+			buf.recordFrameAt(df, now.Add(time.Duration(g)*time.Second+time.Duration(j)*33*time.Millisecond))
+		}
+	}
+
+	info := buf.Status()
+	// With a 5KB byte limit, not all 3 GOPs should fit.
+	if info.BytesUsed > 5000 {
+		t.Errorf("expected bytesUsed <= 5000, got %d", info.BytesUsed)
+	}
+	if info.GOPCount >= 3 {
+		t.Errorf("expected fewer than 3 GOPs after byte-limit trimming, got %d", info.GOPCount)
+	}
+	// Buffer should still have at least 1 GOP.
+	if info.GOPCount < 1 {
+		t.Errorf("expected at least 1 GOP, got %d", info.GOPCount)
+	}
+	// First frame should be a keyframe.
+	buf.mu.RLock()
+	if len(buf.frames) > 0 && !buf.frames[0].isKeyframe {
+		t.Error("first frame after byte-limit trim should be a keyframe")
+	}
+	buf.mu.RUnlock()
+}
+
 func TestReplayBuffer_ConcurrentAccess(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	done := make(chan struct{})
 
 	// Writer goroutine

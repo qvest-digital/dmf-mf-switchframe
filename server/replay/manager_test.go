@@ -215,6 +215,52 @@ func TestReplayManager_Play_Success(t *testing.T) {
 	}
 }
 
+func TestReplayManager_Play_LoadingThenPlaying(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	_ = m.AddSource("cam1")
+
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	if err != nil {
+		t.Fatalf("Play: %v", err)
+	}
+
+	// Immediately after Play(), state should be loading (may race to playing
+	// if the player goroutine's OnReady fires before we check).
+	status := m.Status()
+	if status.State != PlayerLoading && status.State != PlayerPlaying {
+		t.Errorf("expected loading or playing state immediately after Play(), got %v", status.State)
+	}
+
+	// Wait for playback to complete — should transition through playing to idle.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("playback did not complete within timeout")
+		default:
+			status = m.Status()
+			if status.State == PlayerIdle {
+				return // success
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+}
+
 func TestReplayManager_Play_AlreadyActive(t *testing.T) {
 	relay := &mockRelay{}
 	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)

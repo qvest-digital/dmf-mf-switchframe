@@ -23,6 +23,7 @@ type PlayerConfig struct {
 	EncoderFactory transition.EncoderFactory
 	Output         func(frame *media.VideoFrame)
 	OnDone         func()
+	OnReady        func() // Called when first GOP decoded and encoder created.
 }
 
 // decodedFrame is a decoded YUV frame with original PTS for display ordering.
@@ -85,27 +86,33 @@ func (p *replayPlayer) run(ctx context.Context) {
 		return
 	}
 
-	// Phase 1: Decode all clip frames.
-	decoded, err := p.decodeClip(clip)
-	if err != nil {
-		slog.Error("replay player: decode failed", "err", err)
-		return
-	}
-	if len(decoded) == 0 {
+	// Split clip into GOPs for batch decoding.
+	gops := splitIntoGOPs(clip)
+	if len(gops) == 0 {
 		return
 	}
 
-	// Sort by PTS for display order (B-frame extraction).
-	sort.Slice(decoded, func(i, j int) bool {
-		return decoded[i].pts < decoded[j].pts
+	// Decode first GOP to determine dimensions and FPS.
+	firstDecoded, err := decodeGOP(gops[0], p.config.DecoderFactory)
+	if err != nil {
+		slog.Error("replay player: decode first GOP failed", "err", err)
+		return
+	}
+	if len(firstDecoded) == 0 {
+		return
+	}
+
+	// Sort within GOP for B-frame display order.
+	sort.Slice(firstDecoded, func(i, j int) bool {
+		return firstDecoded[i].pts < firstDecoded[j].pts
 	})
 
-	// Estimate source FPS from PTS span.
-	sourceFPS := estimateFPS(decoded)
+	// Estimate source FPS from all clip frames' PTS values.
+	sourceFPS := estimateFPSFromClip(clip)
 	ptsPerFrame := int64(90000 / sourceFPS)
 
-	// Phase 2: Create encoder.
-	w, h := decoded[0].width, decoded[0].height
+	// Create encoder from first decoded frame dimensions.
+	w, h := firstDecoded[0].width, firstDecoded[0].height
 	bitrate := estimateBitrate(w, h)
 	encoder, err := p.config.EncoderFactory(w, h, bitrate, float32(sourceFPS))
 	if err != nil {
@@ -114,15 +121,22 @@ func (p *replayPlayer) run(ctx context.Context) {
 	}
 	defer encoder.Close()
 
-	// Phase 3: Output frames with duplication for slow-motion.
-	dupCount := int(math.Ceil(1.0 / p.config.Speed))
-	frameDuration := time.Duration(float64(time.Second) / sourceFPS)
-	totalFrames := len(decoded) * dupCount
+	// Signal that decoding is ready and playback is about to begin.
+	if p.config.OnReady != nil {
+		p.config.OnReady()
+	}
 
-	// Reuse a single timer for pacing output (R1.9).
+	// Count total frames for progress tracking.
+	totalClipFrames := len(clip)
+	dupCount := int(math.Ceil(1.0 / p.config.Speed))
+	totalFrames := totalClipFrames * dupCount
+	frameDuration := time.Duration(float64(time.Second) / sourceFPS)
+
+	// Create timer once for frame pacing. Immediately Stop+drain because
+	// NewTimer fires immediately on creation, and we need a clean state
+	// for the first Reset() call in the output loop.
 	timer := time.NewTimer(frameDuration)
 	defer timer.Stop()
-	// Drain the initial fire so we can Reset on first use.
 	if !timer.Stop() {
 		<-timer.C
 	}
@@ -132,54 +146,30 @@ func (p *replayPlayer) run(ctx context.Context) {
 		firstFrame := true
 		outputIdx := 0
 
-		for _, df := range decoded {
-			for dup := 0; dup < dupCount; dup++ {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				forceIDR := firstFrame
-				firstFrame = false
-
-				encoded, isKeyframe, encErr := encoder.Encode(df.yuv, forceIDR)
-				if encErr != nil {
-					slog.Error("replay player: encode failed", "err", encErr)
+		for gopIdx, gop := range gops {
+			// Decode this GOP (reuse firstDecoded for GOP 0 on first iteration).
+			var decoded []decodedFrame
+			if gopIdx == 0 && firstDecoded != nil {
+				decoded = firstDecoded
+			} else {
+				var decErr error
+				decoded, decErr = decodeGOP(gop, p.config.DecoderFactory)
+				if decErr != nil {
+					slog.Error("replay player: decode GOP failed", "gop", gopIdx, "err", decErr)
 					return
 				}
+				// Sort within GOP for B-frame display order.
+				sort.Slice(decoded, func(i, j int) bool {
+					return decoded[i].pts < decoded[j].pts
+				})
+			}
 
-				// Convert Annex B encoder output to AVC1 for relay.
-				avc1 := codec.AnnexBToAVC1(encoded)
-				if len(avc1) == 0 {
-					avc1 = encoded // Fallback if already AVC1
-				}
-
-				frame := &media.VideoFrame{
-					PTS:        outputPTS,
-					IsKeyframe: isKeyframe,
-					WireData:   avc1,
-					Codec:      "avc1.42C01E",
-				}
-
-				p.config.Output(frame)
-				outputPTS += ptsPerFrame
-				outputIdx++
-
-				// Update progress (R1.4).
-				if totalFrames > 0 {
-					p.progress.Store(int64(outputIdx * 1000 / totalFrames))
-				}
-
-				// Pace output at source FPS.
-				timer.Reset(frameDuration)
-				select {
-				case <-ctx.Done():
-					return
-				case <-timer.C:
-				}
+			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames) {
+				return
 			}
 		}
+		// Clear firstDecoded after first full pass so re-decode on loop.
+		firstDecoded = nil
 
 		if !p.config.Loop {
 			return
@@ -187,16 +177,96 @@ func (p *replayPlayer) run(ctx context.Context) {
 	}
 }
 
-// decodeClip decodes all frames in the clip and returns decoded YUV frames.
-func (p *replayPlayer) decodeClip(clip []bufferedFrame) ([]decodedFrame, error) {
-	decoder, err := p.config.DecoderFactory()
+// outputGOP encodes and outputs decoded frames with pacing and slow-motion
+// duplication. Returns true if context was cancelled and caller should return.
+func (p *replayPlayer) outputGOP(
+	ctx context.Context,
+	decoded []decodedFrame,
+	encoder transition.VideoEncoder,
+	dupCount int,
+	ptsPerFrame int64,
+	frameDuration time.Duration,
+	timer *time.Timer,
+	outputPTS *int64,
+	firstFrame *bool,
+	outputIdx *int,
+	totalFrames int,
+) bool {
+	for _, df := range decoded {
+		for dup := 0; dup < dupCount; dup++ {
+			select {
+			case <-ctx.Done():
+				return true
+			default:
+			}
+
+			forceIDR := *firstFrame
+			*firstFrame = false
+
+			encoded, isKeyframe, encErr := encoder.Encode(df.yuv, forceIDR)
+			if encErr != nil {
+				slog.Error("replay player: encode failed", "err", encErr)
+				return true
+			}
+
+			// Convert Annex B encoder output to AVC1 for relay.
+			avc1 := codec.AnnexBToAVC1(encoded)
+			if len(avc1) == 0 {
+				avc1 = encoded // Fallback if already AVC1
+			}
+
+			frame := &media.VideoFrame{
+				PTS:        *outputPTS,
+				IsKeyframe: isKeyframe,
+				WireData:   avc1,
+				Codec:      "avc1.42C01E",
+			}
+
+			p.config.Output(frame)
+			*outputPTS += ptsPerFrame
+			*outputIdx++
+
+			if totalFrames > 0 {
+				p.progress.Store(int64(*outputIdx * 1000 / totalFrames))
+			}
+
+			// Pace output at source FPS.
+			timer.Reset(frameDuration)
+			select {
+			case <-ctx.Done():
+				return true
+			case <-timer.C:
+			}
+		}
+	}
+	return false
+}
+
+// splitIntoGOPs splits a clip into groups of pictures, where each group starts
+// with a keyframe. Frames before the first keyframe are dropped.
+func splitIntoGOPs(clip []bufferedFrame) [][]bufferedFrame {
+	var gops [][]bufferedFrame
+	for _, f := range clip {
+		if f.isKeyframe {
+			gops = append(gops, []bufferedFrame{f})
+		} else if len(gops) > 0 {
+			gops[len(gops)-1] = append(gops[len(gops)-1], f)
+		}
+	}
+	return gops
+}
+
+// decodeGOP decodes a single GOP and returns decoded YUV frames. A fresh
+// decoder is created per GOP to avoid cross-GOP state artifacts.
+func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decodedFrame, error) {
+	decoder, err := factory()
 	if err != nil {
 		return nil, err
 	}
 	defer decoder.Close()
 
 	var decoded []decodedFrame
-	for _, bf := range clip {
+	for _, bf := range gop {
 		// Convert AVC1 to Annex B for decoder, prepending SPS/PPS for keyframes.
 		annexB := codec.AVC1ToAnnexB(bf.wireData)
 		if len(annexB) == 0 {
@@ -234,17 +304,16 @@ func (p *replayPlayer) decodeClip(clip []bufferedFrame) ([]decodedFrame, error) 
 	return decoded, nil
 }
 
-// estimateFPS estimates the source FPS from decoded frame PTS values.
-func estimateFPS(frames []decodedFrame) float64 {
-	if len(frames) < 2 {
-		return 30.0 // Default assumption.
+// estimateFPSFromClip estimates the source FPS from buffered frame PTS values.
+func estimateFPSFromClip(clip []bufferedFrame) float64 {
+	if len(clip) < 2 {
+		return 30.0
 	}
-	ptsSpan := frames[len(frames)-1].pts - frames[0].pts
+	ptsSpan := clip[len(clip)-1].pts - clip[0].pts
 	if ptsSpan <= 0 {
 		return 30.0
 	}
-	fps := float64(len(frames)-1) * 90000.0 / float64(ptsSpan)
-	// Clamp to reasonable range.
+	fps := float64(len(clip)-1) * 90000.0 / float64(ptsSpan)
 	if fps < 10 {
 		fps = 10
 	}

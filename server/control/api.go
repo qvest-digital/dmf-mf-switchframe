@@ -1578,6 +1578,10 @@ func stateToSnapshot(state internal.ControlRoomState) preset.ControlRoomSnapshot
 // --- Replay handlers ---
 
 func (a *API) handleReplayMarkIn(w http.ResponseWriter, r *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	a.setLastOperator(r)
 	var req replay.MarkInRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1599,6 +1603,10 @@ func (a *API) handleReplayMarkIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleReplayMarkOut(w http.ResponseWriter, r *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	a.setLastOperator(r)
 	var req replay.MarkOutRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1620,6 +1628,10 @@ func (a *API) handleReplayMarkOut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleReplayPlay(w http.ResponseWriter, r *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	a.setLastOperator(r)
 	var req replay.PlayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1644,6 +1656,10 @@ func (a *API) handleReplayPlay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleReplayStop(w http.ResponseWriter, r *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	a.setLastOperator(r)
 	if err := a.replayMgr.Stop(); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -1656,6 +1672,10 @@ func (a *API) handleReplayStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) handleReplayStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	rs := a.replayMgr.Status()
 	resp := struct {
 		State      string                  `json:"state"`
@@ -1673,22 +1693,20 @@ func (a *API) handleReplayStatus(w http.ResponseWriter, _ *http.Request) {
 		Speed:      rs.Speed,
 		Loop:       rs.Loop,
 		Position:   rs.Position,
+		MarkIn:     rs.MarkInUnixMs(),
+		MarkOut:    rs.MarkOutUnixMs(),
 		MarkSource: rs.MarkSource,
 		Buffers:    rs.Buffers,
-	}
-	if rs.MarkIn != nil {
-		ms := rs.MarkIn.UnixMilli()
-		resp.MarkIn = &ms
-	}
-	if rs.MarkOut != nil {
-		ms := rs.MarkOut.UnixMilli()
-		resp.MarkOut = &ms
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (a *API) handleReplaySources(w http.ResponseWriter, _ *http.Request) {
+	if a.replayMgr == nil {
+		writeJSONError(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
 	status := a.replayMgr.Status()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status.Buffers)

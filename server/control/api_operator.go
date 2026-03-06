@@ -212,11 +212,13 @@ func (a *API) handleOperatorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.sessionMgr.Disconnect(id)
+	// Delete from persistent store first — if this fails, session stays intact.
 	if err := a.operatorStore.Delete(id); err != nil {
 		writeJSONError(w, operatorErrorCode(err), err.Error())
 		return
 	}
+	// Store succeeded — clean up in-memory session (cannot fail).
+	a.sessionMgr.Disconnect(id)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})

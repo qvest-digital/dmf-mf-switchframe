@@ -10,7 +10,7 @@ import (
 
 // TestStress_ConcurrentRecordAndExtract tests concurrent frame recording and clip extraction.
 func TestStress_ConcurrentRecordAndExtract(t *testing.T) {
-	buf := newReplayBuffer(10)
+	buf := newReplayBuffer(10, 0)
 	const nWriters = 4
 	const framesPerWriter = 500
 

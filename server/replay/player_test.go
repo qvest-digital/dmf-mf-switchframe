@@ -442,6 +442,87 @@ func TestReplayPlayer_OnDoneCalled(t *testing.T) {
 	}
 }
 
+func TestReplayPlayer_MultiGOPClip(t *testing.T) {
+	// 3 GOPs, 5 frames each = 15 frames total. Verifies correct output
+	// across GOP boundaries with per-GOP decode.
+	clip := buildTestClip(3, 5)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{
+				PTS:        frame.PTS,
+				IsKeyframe: frame.IsKeyframe,
+			})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(outputFrames) != 15 {
+		t.Errorf("expected 15 output frames from 3 GOPs, got %d", len(outputFrames))
+	}
+
+	// First frame must be a keyframe.
+	if len(outputFrames) > 0 && !outputFrames[0].IsKeyframe {
+		t.Error("first output frame should be a keyframe")
+	}
+
+	// PTS should be monotonically increasing.
+	for i := 1; i < len(outputFrames); i++ {
+		if outputFrames[i].PTS <= outputFrames[i-1].PTS {
+			t.Errorf("non-monotonic PTS at frame %d: %d <= %d",
+				i, outputFrames[i].PTS, outputFrames[i-1].PTS)
+		}
+	}
+}
+
+func TestReplayPlayer_OnReadyCalled(t *testing.T) {
+	clip := buildTestClip(1, 3)
+	readyCh := make(chan struct{})
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output:         func(frame *media.VideoFrame) {},
+		OnDone:         func() {},
+		OnReady:        func() { close(readyCh) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+
+	select {
+	case <-readyCh:
+		// OK — OnReady was called
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnReady not called within timeout")
+	}
+
+	p.Wait()
+}
+
 func TestReplayPlayer_AnnexBConversion(t *testing.T) {
 	// Frames with AVC1 wire data should be converted to Annex B for decoder.
 	avc1Data := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x84, 0x00}

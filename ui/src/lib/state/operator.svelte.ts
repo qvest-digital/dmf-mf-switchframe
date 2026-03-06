@@ -19,10 +19,6 @@ function getStoredToken(): string | null {
 	return sessionStorage.getItem(STORAGE_KEY);
 }
 
-function storeToken(token: string): void {
-	sessionStorage.setItem(STORAGE_KEY, token);
-}
-
 function clearStoredToken(): void {
 	sessionStorage.removeItem(STORAGE_KEY);
 }
@@ -51,7 +47,6 @@ export async function register(name: string, role: OperatorRole): Promise<void> 
 		role: result.role,
 		token: result.token,
 	};
-	// setAuthToken now writes to the same key as storeToken (switchframe_operator_token)
 	setAuthToken(result.token);
 	startHeartbeat();
 }

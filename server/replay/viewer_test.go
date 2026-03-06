@@ -8,7 +8,7 @@ import (
 )
 
 func TestReplayViewer_ID(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 	if v.ID() != "replay:cam1" {
 		t.Errorf("expected ID 'replay:cam1', got %q", v.ID())
@@ -16,7 +16,7 @@ func TestReplayViewer_ID(t *testing.T) {
 }
 
 func TestReplayViewer_SendVideo_RecordsToBuffer(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
 	frame := makeVideoFrame(0, true, 1000)
@@ -29,7 +29,7 @@ func TestReplayViewer_SendVideo_RecordsToBuffer(t *testing.T) {
 }
 
 func TestReplayViewer_SendVideo_MultipleFrames(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
 	v.SendVideo(makeVideoFrame(0, true, 1000))
@@ -43,7 +43,7 @@ func TestReplayViewer_SendVideo_MultipleFrames(t *testing.T) {
 }
 
 func TestReplayViewer_SendAudio_Ignored(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
 	// Audio should be silently ignored (not recorded).
@@ -59,7 +59,7 @@ func TestReplayViewer_SendAudio_Ignored(t *testing.T) {
 }
 
 func TestReplayViewer_SendCaptions_Ignored(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
 	v.SendCaptions(&ccx.CaptionFrame{
@@ -73,7 +73,7 @@ func TestReplayViewer_SendCaptions_Ignored(t *testing.T) {
 }
 
 func TestReplayViewer_Stats(t *testing.T) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
 	v.SendVideo(makeVideoFrame(0, true, 1000))
@@ -94,7 +94,7 @@ func TestReplayViewer_Stats(t *testing.T) {
 
 func TestReplayViewer_InterfaceCompliance(t *testing.T) {
 	// Compile-time check is in viewer.go; this is a runtime sanity check.
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 	_ = v.ID()
 	_ = v.Stats()

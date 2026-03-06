@@ -42,6 +42,10 @@ type Config struct {
 	// MaxSources is the maximum number of sources to buffer simultaneously.
 	// Default 8.
 	MaxSources int
+
+	// MaxBufferBytes is the per-source byte limit for the replay buffer.
+	// When exceeded, oldest GOPs are trimmed. Default 200MB. 0 disables.
+	MaxBufferBytes int64
 }
 
 // DefaultConfig returns the default replay configuration.
@@ -49,6 +53,7 @@ func DefaultConfig() Config {
 	return Config{
 		BufferDurationSecs: 60,
 		MaxSources:         8,
+		MaxBufferBytes:     200 * 1024 * 1024, // 200MB
 	}
 }
 
@@ -69,21 +74,6 @@ type gopDescriptor struct {
 	wallTime time.Time // Wall time of the keyframe
 }
 
-// clipFrame is a decoded frame ready for playback.
-type clipFrame struct {
-	yuv    []byte // YUV420 decoded pixel data
-	width  int
-	height int
-	pts    int64 // Original PTS for ordering
-}
-
-// MarkPoints holds the in/out points for a replay clip.
-type MarkPoints struct {
-	Source  string    `json:"source"`
-	InTime time.Time `json:"inTime"`
-	OutTime time.Time `json:"outTime,omitempty"`
-}
-
 // ReplayStatus is the JSON-serializable status for the replay system,
 // included in ControlRoomState for the browser.
 type ReplayStatus struct {
@@ -96,6 +86,24 @@ type ReplayStatus struct {
 	MarkOut     *time.Time         `json:"markOut,omitempty"`
 	MarkSource  string             `json:"markSource,omitempty"`
 	Buffers     []SourceBufferInfo `json:"buffers,omitempty"`
+}
+
+// MarkInUnixMs returns the mark-in time as Unix milliseconds, or nil if not set.
+func (rs ReplayStatus) MarkInUnixMs() *int64 {
+	if rs.MarkIn == nil {
+		return nil
+	}
+	ms := rs.MarkIn.UnixMilli()
+	return &ms
+}
+
+// MarkOutUnixMs returns the mark-out time as Unix milliseconds, or nil if not set.
+func (rs ReplayStatus) MarkOutUnixMs() *int64 {
+	if rs.MarkOut == nil {
+		return nil
+	}
+	ms := rs.MarkOut.UnixMilli()
+	return &ms
 }
 
 // SourceBufferInfo describes the buffer state for a single source.

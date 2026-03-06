@@ -8,7 +8,7 @@ import (
 )
 
 func BenchmarkReplayBuffer_RecordFrame(b *testing.B) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	frame := &media.VideoFrame{
 		PTS:        0,
 		IsKeyframe: true,
@@ -18,6 +18,8 @@ func BenchmarkReplayBuffer_RecordFrame(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	// Reuse frame object — RecordFrame deep-copies all data,
+	// so mutating PTS/IsKeyframe between iterations is safe.
 	for i := 0; i < b.N; i++ {
 		frame.PTS = int64(i) * 3003
 		frame.IsKeyframe = i%30 == 0
@@ -26,7 +28,7 @@ func BenchmarkReplayBuffer_RecordFrame(b *testing.B) {
 }
 
 func BenchmarkReplayBuffer_ExtractClip(b *testing.B) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	now := time.Now()
 
 	// Pre-fill buffer with 1800 frames (~60s at 30fps).
@@ -53,7 +55,7 @@ func BenchmarkReplayBuffer_ExtractClip(b *testing.B) {
 }
 
 func BenchmarkReplayViewer_SendVideo(b *testing.B) {
-	buf := newReplayBuffer(60)
+	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("bench", buf)
 	frame := &media.VideoFrame{
 		PTS:        0,
@@ -64,6 +66,8 @@ func BenchmarkReplayViewer_SendVideo(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	// Reuse frame object — SendVideo deep-copies all data,
+	// so mutating PTS/IsKeyframe between iterations is safe.
 	for i := 0; i < b.N; i++ {
 		frame.PTS = int64(i) * 3003
 		frame.IsKeyframe = i%30 == 0

@@ -510,15 +510,9 @@ func run() error {
 					Speed:      rs.Speed,
 					Loop:       rs.Loop,
 					Position:   rs.Position,
+					MarkIn:     rs.MarkInUnixMs(),
+					MarkOut:    rs.MarkOutUnixMs(),
 					MarkSource: rs.MarkSource,
-				}
-				if rs.MarkIn != nil {
-					ms := rs.MarkIn.UnixMilli()
-					rState.MarkIn = &ms
-				}
-				if rs.MarkOut != nil {
-					ms := rs.MarkOut.UnixMilli()
-					rState.MarkOut = &ms
 				}
 				for _, b := range rs.Buffers {
 					rState.Buffers = append(rState.Buffers, internal.ReplayBufferInfo{

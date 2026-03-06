@@ -75,23 +75,27 @@ func (sm *SessionManager) Heartbeat(operatorID string) {
 // AcquireLock locks a subsystem for the given operator.
 func (sm *SessionManager) AcquireLock(operatorID string, sub Subsystem) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	session, ok := sm.sessions[operatorID]
 	if !ok {
+		sm.mu.Unlock()
 		return ErrSessionNotFound
 	}
 	if !ValidSubsystems[sub] {
+		sm.mu.Unlock()
 		return ErrInvalidSubsystem
 	}
 	if !CanLock(session.Role, sub) {
+		sm.mu.Unlock()
 		return ErrNoPermission
 	}
 
 	if existing, locked := sm.locks[sub]; locked {
 		if existing.HolderID == operatorID {
+			sm.mu.Unlock()
 			return nil // Idempotent re-lock.
 		}
+		sm.mu.Unlock()
 		return ErrSubsystemLocked
 	}
 
@@ -100,52 +104,64 @@ func (sm *SessionManager) AcquireLock(operatorID string, sub Subsystem) error {
 		HolderName: session.Name,
 		AcquiredAt: time.Now(),
 	}
+	name := session.Name
+	sm.mu.Unlock()
 
-	slog.Info("operator lock acquired", "operator", session.Name, "subsystem", sub)
-	go sm.notifyStateChange()
+	slog.Info("operator lock acquired", "operator", name, "subsystem", sub)
+	sm.notifyStateChange()
 	return nil
 }
 
 // ReleaseLock releases a lock held by the given operator.
 func (sm *SessionManager) ReleaseLock(operatorID string, sub Subsystem) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	existing, locked := sm.locks[sub]
 	if !locked {
+		sm.mu.Unlock()
 		return ErrNotLocked
 	}
 	if existing.HolderID != operatorID {
+		sm.mu.Unlock()
 		return ErrLockNotOwned
 	}
 
+	holderName := existing.HolderName
 	delete(sm.locks, sub)
-	slog.Info("operator lock released", "operator", existing.HolderName, "subsystem", sub)
-	go sm.notifyStateChange()
+	sm.mu.Unlock()
+
+	slog.Info("operator lock released", "operator", holderName, "subsystem", sub)
+	sm.notifyStateChange()
 	return nil
 }
 
 // ForceReleaseLock allows a director to release any operator's lock.
 func (sm *SessionManager) ForceReleaseLock(requestorID string, sub Subsystem) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	session, ok := sm.sessions[requestorID]
 	if !ok {
+		sm.mu.Unlock()
 		return ErrSessionNotFound
 	}
 	if session.Role != RoleDirector {
+		sm.mu.Unlock()
 		return ErrNoPermission
 	}
 
 	existing, locked := sm.locks[sub]
 	if !locked {
+		sm.mu.Unlock()
 		return ErrNotLocked
 	}
 
+	directorName := session.Name
+	holderName := existing.HolderName
 	delete(sm.locks, sub)
-	slog.Info("operator lock force-released", "director", session.Name, "holder", existing.HolderName, "subsystem", sub)
-	go sm.notifyStateChange()
+	sm.mu.Unlock()
+
+	slog.Info("operator lock force-released", "director", directorName, "holder", holderName, "subsystem", sub)
+	sm.notifyStateChange()
 	return nil
 }
 
@@ -234,19 +250,21 @@ func (sm *SessionManager) cleanupLoop(ctx context.Context) {
 func (sm *SessionManager) cleanupStaleSessions() {
 	sm.mu.Lock()
 	now := time.Now()
-	var stale []string
+	var stale []struct{ id, name string }
 	for id, s := range sm.sessions {
 		if now.Sub(s.LastSeen) > staleTimeout {
-			stale = append(stale, id)
+			stale = append(stale, struct{ id, name string }{id, s.Name})
 		}
 	}
-	for _, id := range stale {
-		slog.Info("operator session stale, removing", "operator", sm.sessions[id].Name, "id", id)
-		sm.releaseAllLocks(id)
-		delete(sm.sessions, id)
+	for _, s := range stale {
+		sm.releaseAllLocks(s.id)
+		delete(sm.sessions, s.id)
 	}
 	sm.mu.Unlock()
 
+	for _, s := range stale {
+		slog.Info("operator session stale, removed", "operator", s.name, "id", s.id)
+	}
 	if len(stale) > 0 {
 		sm.notifyStateChange()
 	}

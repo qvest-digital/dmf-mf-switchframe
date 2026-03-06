@@ -52,6 +52,9 @@ func NewManager(relay ReplayRelay, cfg Config, decoderFactory transition.Decoder
 	if cfg.BufferDurationSecs > 300 {
 		cfg.BufferDurationSecs = 300
 	}
+	if cfg.MaxBufferBytes == 0 {
+		cfg.MaxBufferBytes = 200 * 1024 * 1024 // 200MB default
+	}
 	return &Manager{
 		relay:          relay,
 		config:         cfg,
@@ -77,7 +80,7 @@ func (m *Manager) AddSource(key string) error {
 		return ErrMaxSources
 	}
 
-	buf := newReplayBuffer(m.config.BufferDurationSecs)
+	buf := newReplayBuffer(m.config.BufferDurationSecs, m.config.MaxBufferBytes)
 	v := newReplayViewer(key, buf)
 	m.buffers[key] = buf
 	m.viewers[key] = v
@@ -171,69 +174,75 @@ func (m *Manager) MarkOut(source string) error {
 
 // Play starts playback of the marked clip at the given speed.
 func (m *Manager) Play(source string, speed float64, loop bool) error {
-	m.mu.Lock()
+	err := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	if _, ok := m.buffers[source]; !ok {
-		m.mu.Unlock()
-		return ErrNoSource
-	}
-	if m.markIn == nil {
-		m.mu.Unlock()
-		return ErrNoMarkIn
-	}
-	if m.markOut == nil {
-		m.mu.Unlock()
-		return ErrNoMarkOut
-	}
-	if speed < 0.25 || speed > 1.0 {
-		m.mu.Unlock()
-		return ErrInvalidSpeed
-	}
-	if m.player != nil {
-		m.mu.Unlock()
-		return ErrPlayerActive
-	}
+		if _, ok := m.buffers[source]; !ok {
+			return ErrNoSource
+		}
+		if m.markIn == nil {
+			return ErrNoMarkIn
+		}
+		if m.markOut == nil {
+			return ErrNoMarkOut
+		}
+		if speed < 0.25 || speed > 1.0 {
+			return ErrInvalidSpeed
+		}
+		if m.player != nil {
+			return ErrPlayerActive
+		}
 
-	// Extract clip from buffer.
-	buf := m.buffers[source]
-	clip, err := buf.ExtractClip(*m.markIn, *m.markOut)
+		// Extract clip from buffer.
+		buf := m.buffers[source]
+		clip, err := buf.ExtractClip(*m.markIn, *m.markOut)
+		if err != nil {
+			return err
+		}
+
+		m.playerState = PlayerLoading
+		m.playerSource = source
+		m.playerSpeed = speed
+		m.playerLoop = loop
+
+		ctx, cancel := context.WithCancel(context.Background())
+		m.playerCtx = ctx
+		m.playerCancel = cancel
+
+		m.player = newReplayPlayer(PlayerConfig{
+			Clip:           clip,
+			Speed:          speed,
+			Loop:           loop,
+			DecoderFactory: m.decoderFactory,
+			EncoderFactory: m.encoderFactory,
+			Output: func(frame *media.VideoFrame) {
+				m.relay.BroadcastVideo(frame)
+			},
+			OnDone: func() {
+				m.mu.Lock()
+				m.player = nil
+				m.playerState = PlayerIdle
+				m.playerCancel = nil
+				m.mu.Unlock()
+				m.notifyStateChange()
+			},
+			OnReady: func() {
+				m.mu.Lock()
+				m.playerState = PlayerPlaying
+				m.mu.Unlock()
+				m.notifyStateChange()
+			},
+		})
+
+		m.player.Start(ctx)
+
+		slog.Info("replay: playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
+		return nil
+	}()
 	if err != nil {
-		m.mu.Unlock()
 		return err
 	}
-
-	m.playerState = PlayerPlaying
-	m.playerSource = source
-	m.playerSpeed = speed
-	m.playerLoop = loop
-
-	ctx, cancel := context.WithCancel(context.Background())
-	m.playerCtx = ctx
-	m.playerCancel = cancel
-
-	m.player = newReplayPlayer(PlayerConfig{
-		Clip:           clip,
-		Speed:          speed,
-		Loop:           loop,
-		DecoderFactory: m.decoderFactory,
-		EncoderFactory: m.encoderFactory,
-		Output: func(frame *media.VideoFrame) {
-			m.relay.BroadcastVideo(frame)
-		},
-		OnDone: func() {
-			m.mu.Lock()
-			m.player = nil
-			m.playerState = PlayerIdle
-			m.playerCancel = nil
-			m.mu.Unlock()
-			m.notifyStateChange()
-		},
-	})
-
-	m.player.Start(ctx)
-
-	slog.Info("replay: playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
-	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
 }
@@ -334,7 +343,7 @@ func (m *Manager) DebugSnapshot() map[string]any {
 }
 
 // notifyStateChange safely reads the callback under lock, releases the lock,
-// then invokes the callback. Safe to call with or without the lock held.
+// then invokes the callback. Must be called without m.mu held.
 func (m *Manager) notifyStateChange() {
 	m.mu.Lock()
 	fn := m.onStateChange

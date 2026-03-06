@@ -198,3 +198,40 @@ func TestStore_FileCreatesDirectory(t *testing.T) {
 		t.Error("expected operators.json to be created")
 	}
 }
+
+func TestStore_GetByToken_AfterDelete(t *testing.T) {
+	s, _ := NewStore(tempStorePath(t))
+
+	// Register three operators.
+	alice, _ := s.Register("Alice", RoleDirector)
+	bob, _ := s.Register("Bob", RoleAudio)
+	carol, _ := s.Register("Carol", RoleGraphics)
+
+	// Delete the middle operator (Bob) to shift indices.
+	if err := s.Delete(bob.ID); err != nil {
+		t.Fatalf("Delete Bob: %v", err)
+	}
+
+	// Bob's token should no longer resolve.
+	_, err := s.GetByToken(bob.Token)
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound for deleted Bob, got %v", err)
+	}
+
+	// Alice and Carol should still resolve correctly.
+	gotAlice, err := s.GetByToken(alice.Token)
+	if err != nil {
+		t.Fatalf("GetByToken Alice: %v", err)
+	}
+	if gotAlice.ID != alice.ID {
+		t.Errorf("Alice ID = %q, want %q", gotAlice.ID, alice.ID)
+	}
+
+	gotCarol, err := s.GetByToken(carol.Token)
+	if err != nil {
+		t.Fatalf("GetByToken Carol: %v", err)
+	}
+	if gotCarol.ID != carol.ID {
+		t.Errorf("Carol ID = %q, want %q", gotCarol.ID, carol.ID)
+	}
+}

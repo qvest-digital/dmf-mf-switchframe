@@ -15,6 +15,7 @@ import (
 type Store struct {
 	mu        sync.RWMutex
 	operators []Operator
+	tokenIdx  map[string]int // token → index in operators slice
 	filePath  string
 }
 
@@ -25,6 +26,7 @@ func NewStore(filePath string) (*Store, error) {
 	s := &Store{
 		filePath:  filePath,
 		operators: []Operator{},
+		tokenIdx:  make(map[string]int),
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -42,7 +44,17 @@ func NewStore(filePath string) (*Store, error) {
 		s.operators = []Operator{}
 	}
 
+	s.rebuildTokenIndex()
 	return s, nil
+}
+
+// rebuildTokenIndex reconstructs the token→index map from the operators slice.
+// Must be called with s.mu held.
+func (s *Store) rebuildTokenIndex() {
+	s.tokenIdx = make(map[string]int, len(s.operators))
+	for i, op := range s.operators {
+		s.tokenIdx[op.Token] = i
+	}
 }
 
 // Register creates a new operator with a per-operator bearer token.
@@ -80,6 +92,7 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 		Token: token,
 	}
 	s.operators = append(s.operators, op)
+	s.tokenIdx[op.Token] = len(s.operators) - 1
 
 	if err := s.save(); err != nil {
 		return Operator{}, err
@@ -111,14 +124,14 @@ func (s *Store) Get(id string) (Operator, error) {
 }
 
 // GetByToken returns an operator by their bearer token.
+// Uses a token index map for O(1) lookup.
 func (s *Store) GetByToken(token string) (Operator, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, op := range s.operators {
-		if op.Token == token {
-			return op, nil
-		}
+	idx, ok := s.tokenIdx[token]
+	if ok && idx < len(s.operators) {
+		return s.operators[idx], nil
 	}
 	return Operator{}, ErrNotFound
 }
@@ -131,6 +144,7 @@ func (s *Store) Delete(id string) error {
 	for i, op := range s.operators {
 		if op.ID == id {
 			s.operators = append(s.operators[:i], s.operators[i+1:]...)
+			s.rebuildTokenIndex()
 			return s.save()
 		}
 	}

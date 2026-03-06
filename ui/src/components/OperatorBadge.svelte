@@ -5,6 +5,7 @@
 	let { state: crState }: { state: ControlRoomState } = $props();
 
 	let expanded = $state(false);
+	let wrapperEl = $state<HTMLDivElement>();
 
 	const session = $derived(getSession());
 	const operators = $derived(crState.operators ?? []);
@@ -26,13 +27,13 @@
 </script>
 
 <svelte:window onclick={(e) => {
-	if (expanded && !(e.target instanceof Node && document.querySelector('.badge-wrapper')?.contains(e.target))) {
+	if (expanded && wrapperEl && !(e.target instanceof Node && wrapperEl.contains(e.target))) {
 		expanded = false;
 	}
 }} />
 
 {#if session}
-	<div class="badge-wrapper">
+	<div class="badge-wrapper" bind:this={wrapperEl}>
 		<button
 			class="badge"
 			onclick={() => { expanded = !expanded; }}

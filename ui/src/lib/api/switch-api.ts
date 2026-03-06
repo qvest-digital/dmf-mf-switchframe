@@ -367,7 +367,11 @@ export function operatorDelete(id: string): Promise<{ ok: boolean }> {
 	return request(`/api/operator/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-/** Fire-and-forget with error surfacing: catches errors and shows a toast notification. */
+/**
+ * Fire-and-forget API call with toast notification on error.
+ * Callers needing programmatic error handling should await the promise
+ * directly instead of using this wrapper.
+ */
 export function apiCall(promise: Promise<unknown>, context?: string): void {
 	promise.catch((err) => {
 		const msg = err instanceof SwitchApiError ? err.message : 'Network error';
