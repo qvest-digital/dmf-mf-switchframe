@@ -184,6 +184,8 @@ type Switcher struct {
 	audioTransition audioTransitionHandler
 	gopCache        *gopCache
 	delayBuffer     *DelayBuffer
+	frameSync       *FrameSynchronizer
+	frameSyncActive bool
 
 	// Optional video processor hook — called before BroadcastVideo to allow
 	// downstream keying (graphics overlay compositing) on every program frame.
@@ -241,10 +243,15 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.promMetrics = m
 }
 
-// Close stops the health monitor, delay buffer, and unregisters all sources.
+// Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
 func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
+	s.mu.Lock()
+	if s.frameSync != nil {
+		s.frameSync.Stop()
+	}
+	s.mu.Unlock()
 	s.mu.Lock()
 	keys := make([]string, 0, len(s.sources))
 	for k := range s.sources {
@@ -299,6 +306,62 @@ func (s *Switcher) SetVideoProcessor(proc func(*media.VideoFrame) *media.VideoFr
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.videoProcessor = proc
+}
+
+// SetFrameSync enables or disables the freerun frame synchronizer. When
+// enabled, all source video and audio frames are buffered and released at
+// a common tick rate (program frame rate) instead of flowing through the
+// per-source delay buffer. This ensures frame-aligned output across sources.
+//
+// The tickRate parameter sets the release interval (e.g., 33ms for 30fps).
+// Passing 0 uses the default of 33.333ms (30fps).
+//
+// When enabled, existing source viewers are re-wired to route through the
+// FrameSynchronizer. When disabled, they revert to the delay buffer.
+func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if enabled == s.frameSyncActive {
+		return
+	}
+
+	if enabled {
+		if tickRate <= 0 {
+			tickRate = 33333 * time.Microsecond // ~30fps default
+		}
+		fs := NewFrameSynchronizer(tickRate,
+			func(sourceKey string, frame media.VideoFrame) {
+				s.handleVideoFrame(sourceKey, &frame)
+			},
+			func(sourceKey string, frame media.AudioFrame) {
+				s.handleAudioFrame(sourceKey, &frame)
+			},
+		)
+		s.frameSync = fs
+
+		// Wire all existing source viewers to the frame sync.
+		for key, ss := range s.sources {
+			ss.viewer.frameSync = fs
+			ss.viewer.delayBuffer = nil // bypass delay buffer
+			fs.AddSource(key)
+		}
+		fs.Start()
+		slog.Info("switcher: frame sync enabled", "tick_rate", tickRate)
+	} else {
+		if s.frameSync != nil {
+			s.frameSync.Stop()
+		}
+		s.frameSync = nil
+
+		// Revert all source viewers to the delay buffer.
+		for _, ss := range s.sources {
+			ss.viewer.frameSync = nil
+			ss.viewer.delayBuffer = s.delayBuffer
+		}
+		slog.Info("switcher: frame sync disabled")
+	}
+	s.frameSyncActive = enabled
 }
 
 // broadcastVideo sends a video frame to the program relay, optionally
@@ -887,12 +950,18 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 // RegisterSource adds a source to the switcher. A sourceViewer proxy is
 // created and attached to the source's Relay so that frames flow into the
 // Switcher's handleVideoFrame/handleAudioFrame methods tagged with the
-// source key. The delay buffer is attached so per-source lip-sync
-// compensation is available.
+// source key. When frame sync is active, frames route through the
+// FrameSynchronizer; otherwise the delay buffer is attached for per-source
+// lip-sync compensation.
 func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	s.mu.Lock()
 	viewer := newSourceViewer(key, s)
-	viewer.delayBuffer = s.delayBuffer
+	if s.frameSyncActive && s.frameSync != nil {
+		viewer.frameSync = s.frameSync
+		s.frameSync.AddSource(key)
+	} else {
+		viewer.delayBuffer = s.delayBuffer
+	}
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
 	s.health.registerSource(key)
@@ -916,6 +985,9 @@ func (s *Switcher) UnregisterSource(key string) {
 	s.health.removeSource(key)
 	s.gopCache.RemoveSource(key)
 	s.delayBuffer.RemoveSource(key)
+	if s.frameSync != nil {
+		s.frameSync.RemoveSource(key)
+	}
 	if s.programSource == key {
 		s.programSource = ""
 	}
