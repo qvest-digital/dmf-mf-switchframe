@@ -207,6 +207,12 @@ type Switcher struct {
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
+	// programGroupID tracks the last GroupID broadcast to the program relay.
+	// Ensures monotonically increasing GroupIDs across source switches and
+	// transition boundaries. Atomic for lock-free access from broadcastToProgram
+	// (which may be called while s.mu is held as RLock by broadcastVideo).
+	programGroupID atomic.Uint32
+
 	// Debug instrumentation counters (atomic, lock-free)
 	idrGateEvents         atomic.Int64 // number of cuts (pendingIDR set)
 	idrGateStartNano      atomic.Int64 // when current IDR gate started (UnixNano)
@@ -417,6 +423,33 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// broadcastToProgram sends a video frame to the program relay with a
+// monotonically increasing GroupID. Uses a shallow struct copy to avoid
+// mutating the caller's frame (which may be shared with other viewers).
+// Uses atomic operations for programGroupID so it can be called while
+// s.mu is held (e.g., from broadcastVideo's RLock path).
+func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
+	f := *frame // shallow struct copy — avoids mutating shared frame
+	if f.IsKeyframe {
+		f.GroupID = s.programGroupID.Add(1)
+	} else {
+		f.GroupID = s.programGroupID.Load()
+	}
+	s.programRelay.BroadcastVideo(&f)
+}
+
+// broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
+// program relay with a monotonically increasing GroupID. Use for frames
+// from pipelineCodecs.encode() or GOP replay deep copies.
+func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
+	if frame.IsKeyframe {
+		frame.GroupID = s.programGroupID.Add(1)
+	} else {
+		frame.GroupID = s.programGroupID.Load()
+	}
+	s.programRelay.BroadcastVideo(frame)
+}
+
 // broadcastVideo sends a video frame to the program relay. When YUV
 // processors (upstream keying, DSK compositor) are active, the frame is
 // decoded once, run through the YUV processor chain, and re-encoded once.
@@ -434,7 +467,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	vidActive := compositor != nil && compositor.IsActive()
 
 	if (!keyActive && !vidActive) || pipeCodecs == nil {
-		s.programRelay.BroadcastVideo(frame)
+		s.broadcastToProgram(frame)
 		return
 	}
 
@@ -446,7 +479,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 		if s.promMetrics != nil {
 			s.promMetrics.PipelineDecodeErrorsTotal.Inc()
 		}
-		s.programRelay.BroadcastVideo(frame)
+		s.broadcastToProgram(frame)
 		return
 	}
 
@@ -471,7 +504,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	if s.promMetrics != nil {
 		s.promMetrics.PipelineFramesProcessed.Inc()
 	}
-	s.programRelay.BroadcastVideo(out)
+	s.broadcastOwnedToProgram(out)
 }
 
 // broadcastProcessed handles frames that are already decoded to YUV
@@ -518,7 +551,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	if s.promMetrics != nil {
 		s.promMetrics.PipelineFramesProcessed.Inc()
 	}
-	s.programRelay.BroadcastVideo(frame)
+	s.broadcastOwnedToProgram(frame)
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current
@@ -932,9 +965,10 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	// Replay the source's cached GOP to bridge the transition→passthrough
 	// gap. pendingIDR=true prevents live passthrough from interleaving.
+	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.broadcastVideo(f)
+			s.broadcastOwnedToProgram(f)
 		}
 		// Clear the IDR gate — the replayed GOP provided a keyframe
 		s.mu.Lock()
@@ -1040,10 +1074,11 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Replay the source's cached GOP to bridge the gap
+	// Replay the source's cached GOP to bridge the gap.
+	// GOP frames are deep copies from GetOriginalGOP — safe to mutate.
 	if len(replayFrames) > 0 {
 		for _, f := range replayFrames {
-			s.broadcastVideo(f)
+			s.broadcastOwnedToProgram(f)
 		}
 		s.mu.Lock()
 		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {

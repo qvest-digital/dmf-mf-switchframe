@@ -39,8 +39,15 @@ func TestPipeline_NoProcessorsPassthrough(t *testing.T) {
 
 	viewer.mu.Lock()
 	require.GreaterOrEqual(t, len(viewer.videos), 1)
-	// Passthrough: frame should be the exact same object (no decode/encode)
-	require.Same(t, frame, viewer.videos[len(viewer.videos)-1])
+	got := viewer.videos[len(viewer.videos)-1]
+	// Passthrough: frame should be a shallow copy (broadcastToProgram stamps GroupID).
+	// Not pointer-identical because broadcastToProgram copies the struct to avoid
+	// mutating the shared source frame.
+	require.NotSame(t, frame, got)
+	require.Equal(t, frame.PTS, got.PTS)
+	require.Equal(t, frame.IsKeyframe, got.IsKeyframe)
+	require.Equal(t, frame.WireData, got.WireData)
+	require.Equal(t, uint32(1), got.GroupID) // keyframe increments programGroupID
 	viewer.mu.Unlock()
 }
 
