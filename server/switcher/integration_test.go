@@ -378,14 +378,9 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	sw := New(programRelay)
 	defer sw.Close()
 
-	sw.SetTransitionConfig(TransitionConfig{
-		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return transition.NewMockDecoder(4, 4), nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	})
+	codecs := mockTransitionCodecs()
+	sw.SetTransitionConfig(codecs)
+	sw.SetPipelineCodecs(codecs.DecoderFactory, codecs.EncoderFactory)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()

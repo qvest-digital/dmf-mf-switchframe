@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
@@ -130,7 +131,7 @@ type audioTransitionHandler interface {
 // TransitionConfig holds the codec factories needed to create TransitionEngines.
 type TransitionConfig struct {
 	DecoderFactory transition.DecoderFactory
-	EncoderFactory transition.EncoderFactory
+	EncoderFactory transition.EncoderFactory // convenience: passed to SetPipelineCodecs, not used by engine
 }
 
 // TransitionOption configures optional parameters for StartTransition.
@@ -189,24 +190,20 @@ type Switcher struct {
 	frameSync       *FrameSynchronizer
 	frameSyncActive bool
 
-	// Optional video processor hook — called before BroadcastVideo to allow
-	// downstream keying (graphics overlay compositing) on every program frame.
-	videoProcessor func(*media.VideoFrame) *media.VideoFrame
+	// DSK graphics compositor — applies overlay in YUV420 domain.
+	compositorRef *graphics.Compositor
 
-	// Optional upstream key processor — applied before the video processor.
-	// When configured, composites keyed sources onto the program frame.
-	// Nil check ensures zero overhead when not configured.
-	keyProcessor interface {
-		Process(bg []byte, fills map[string][]byte, width, height int) []byte
-	}
+	// Upstream key bridge — applies chroma/luma keys in YUV420 domain.
+	keyBridge *graphics.KeyProcessorBridge
 
 	// Fill frame ingestor for upstream keying. When set, source video frames
 	// are forwarded here so the bridge can decode and cache YUV for keyed sources.
 	keyFillIngestor func(sourceKey string, frame *media.VideoFrame)
 
-	// Bridge processor for upstream keying. Runs before videoProcessor (DSK)
-	// in broadcastVideo to apply chroma/luma keys on program frames.
-	keyBridgeProcessor func(*media.VideoFrame) *media.VideoFrame
+	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
+	// Used when any YUV processor (compositor, key bridge) is active or when
+	// the transition engine outputs raw YUV.
+	pipeCodecs *pipelineCodecs
 
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
@@ -315,26 +312,20 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.audioTransition = handler
 }
 
-// SetVideoProcessor attaches a video frame processor that is called on every
-// program frame before it is broadcast to viewers. Used by the graphics
-// compositor to overlay lower-thirds / DSK onto the program output.
-// The processor receives a frame and returns the (possibly modified) frame.
-// Return nil to drop the frame. Passing nil disables processing.
-func (s *Switcher) SetVideoProcessor(proc func(*media.VideoFrame) *media.VideoFrame) {
+// SetCompositor attaches the DSK graphics compositor. The compositor's
+// ProcessYUV method is called in the video processing pipeline when active.
+func (s *Switcher) SetCompositor(c *graphics.Compositor) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.videoProcessor = proc
+	s.compositorRef = c
 }
 
-// SetKeyProcessor attaches an upstream key processor for chroma/luma keying.
-// When set, the key processor is applied to program frames before the
-// downstream video processor (DSK). Passing nil disables upstream keying.
-func (s *Switcher) SetKeyProcessor(kp interface {
-	Process(bg []byte, fills map[string][]byte, width, height int) []byte
-}) {
+// SetKeyBridge attaches the upstream key bridge for chroma/luma keying.
+// The bridge's ProcessYUV method is called in the video processing pipeline.
+func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.keyProcessor = kp
+	s.keyBridge = kb
 }
 
 // SetKeyFillIngestor sets the function that receives source video frames
@@ -346,13 +337,25 @@ func (s *Switcher) SetKeyFillIngestor(fn func(sourceKey string, frame *media.Vid
 	s.keyFillIngestor = fn
 }
 
-// SetKeyBridgeProcessor sets the video processor for upstream keying.
-// It runs before the downstream video processor (DSK compositor) in
-// broadcastVideo. Passing nil disables upstream key processing.
-func (s *Switcher) SetKeyBridgeProcessor(proc func(*media.VideoFrame) *media.VideoFrame) {
+// SetPipelineCodecs creates the shared pipeline codec pool for the video
+// processing chain. Called from app.go during initialization.
+func (s *Switcher) SetPipelineCodecs(decoderFactory transition.DecoderFactory, encoderFactory transition.EncoderFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.keyBridgeProcessor = proc
+	s.pipeCodecs = &pipelineCodecs{
+		decoderFactory: decoderFactory,
+		encoderFactory: encoderFactory,
+	}
+}
+
+// SetPipelineVideoInfoCallback sets the callback invoked when the pipeline
+// encoder produces a keyframe with new SPS/PPS parameters.
+func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, height int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pipeCodecs != nil {
+		s.pipeCodecs.onVideoInfoChange = cb
+	}
 }
 
 // SetFrameSync enables or disables the freerun frame synchronizer. When
@@ -411,28 +414,82 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
-// broadcastVideo sends a video frame to the program relay, optionally
-// running it through upstream keying and/or the video processor (DSK compositing).
+// broadcastVideo sends a video frame to the program relay. When YUV
+// processors (upstream keying, DSK compositor) are active, the frame is
+// decoded once, run through the YUV processor chain, and re-encoded once.
+// When no processors are active, the compressed frame passes through
+// untouched (zero CPU).
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 	s.mu.RLock()
-	keyProc := s.keyBridgeProcessor
-	vidProc := s.videoProcessor
+	keyBridge := s.keyBridge
+	compositor := s.compositorRef
+	pipeCodecs := s.pipeCodecs
 	s.mu.RUnlock()
 
-	// Upstream keying runs first (before DSK compositor)
-	if keyProc != nil {
-		frame = keyProc(frame)
-		if frame == nil {
-			return
-		}
+	// Fast path: no active processors → passthrough (zero CPU)
+	keyActive := keyBridge != nil && keyBridge.HasEnabledKeysWithFills()
+	vidActive := compositor != nil && compositor.IsActive()
+
+	if (!keyActive && !vidActive) || pipeCodecs == nil {
+		s.programRelay.BroadcastVideo(frame)
+		return
 	}
 
-	// Downstream keyer (DSK graphics compositor)
-	if vidProc != nil {
-		frame = vidProc(frame)
-		if frame == nil {
-			return
-		}
+	// Slow path: decode once
+	pf, err := pipeCodecs.decode(frame)
+	if err != nil {
+		// Can't decode → pass through compressed (graceful degradation)
+		s.programRelay.BroadcastVideo(frame)
+		return
+	}
+
+	// Chain YUV processors
+	if keyActive {
+		pf.YUV = keyBridge.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+	}
+	if vidActive {
+		pf.YUV = compositor.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+	}
+
+	// Encode once
+	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
+	if err != nil {
+		return
+	}
+
+	s.programRelay.BroadcastVideo(out)
+}
+
+// broadcastProcessed handles frames that are already decoded to YUV
+// (e.g., from the transition engine). Runs YUV processors, then encodes once.
+func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+	s.mu.RLock()
+	keyBridge := s.keyBridge
+	compositor := s.compositorRef
+	pipeCodecs := s.pipeCodecs
+	s.mu.RUnlock()
+
+	if pipeCodecs == nil {
+		return
+	}
+
+	// Run YUV processors
+	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
+		yuv = keyBridge.ProcessYUV(yuv, width, height)
+	}
+	if compositor != nil && compositor.IsActive() {
+		yuv = compositor.ProcessYUV(yuv, width, height)
+	}
+
+	// Encode once
+	pf := &ProcessingFrame{
+		YUV: yuv, Width: width, Height: height,
+		PTS: pts, IsKeyframe: isKeyframe,
+		Codec: "h264",
+	}
+	frame, err := pipeCodecs.encode(pf, isKeyframe)
+	if err != nil {
+		return
 	}
 
 	s.programRelay.BroadcastVideo(frame)
@@ -511,17 +568,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	fromSource := s.programSource
 
-	// Estimate encoder parameters from the program source's recent frames.
-	bitrate, fps := s.estimateEncoderParams(fromSource)
-
-	// Initialize GroupID from the program source's last GroupID so transition
-	// output continues monotonically on the program relay. Starting from 0
-	// would cause non-monotonic GroupIDs that break MoQ subscriber state.
-	transGroupID := s.sources[fromSource].lastGroupID
-
 	// Capture codec factories before releasing lock.
 	decoderFactory := s.transConfig.DecoderFactory
-	encoderFactory := s.transConfig.EncoderFactory
 
 	// Mark transition as starting to prevent concurrent StartTransition/FTB calls.
 	// handleVideoFrame checks transEngine != nil to route frames, so setting
@@ -545,16 +593,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
-		EncoderFactory: encoderFactory,
-		Bitrate:        bitrate,
-		FPS:            fps,
 		WipeDirection:  wipeDir,
 		Stinger:        topts.stingerData,
-		Output: func(data []byte, isKeyframe bool, pts int64) {
-			if isKeyframe {
-				transGroupID++
-			}
-			s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, transGroupID, pts))
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 		},
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -659,10 +701,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		}
 
 		fromSource := s.programSource
-		bitrate, fps := s.estimateEncoderParams(fromSource)
-		revGroupID := s.sources[fromSource].lastGroupID
 		decoderFactory := s.transConfig.DecoderFactory
-		encoderFactory := s.transConfig.EncoderFactory
 
 		// Mark transition as starting, then release lock for warmup.
 		s.transitionState(StateFTBReversing)
@@ -670,14 +709,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
 			DecoderFactory: decoderFactory,
-			EncoderFactory: encoderFactory,
-			Bitrate:        bitrate,
-			FPS:            fps,
-			Output: func(data []byte, isKeyframe bool, pts int64) {
-				if isKeyframe {
-					revGroupID++
-				}
-				s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, revGroupID, pts))
+			Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+				s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 			},
 			OnComplete: func(aborted bool) {
 				s.handleFTBReverseComplete(aborted)
@@ -725,10 +758,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	fromSource := s.programSource
-	bitrate, fps := s.estimateEncoderParams(fromSource)
-	ftbGroupID := s.sources[fromSource].lastGroupID
 	decoderFactory := s.transConfig.DecoderFactory
-	encoderFactory := s.transConfig.EncoderFactory
 
 	// Mark transition as starting, then release lock for warmup.
 	s.transitionState(StateFTBTransitioning)
@@ -736,14 +766,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
-		EncoderFactory: encoderFactory,
-		Bitrate:        bitrate,
-		FPS:            fps,
-		Output: func(data []byte, isKeyframe bool, pts int64) {
-			if isKeyframe {
-				ftbGroupID++
-			}
-			s.broadcastVideo(annexBToVideoFrame(data, isKeyframe, ftbGroupID, pts))
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 		},
 		OnComplete: func(aborted bool) {
 			s.handleFTBComplete(aborted)
@@ -1356,34 +1380,6 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 	}
 }
 
-// annexBToVideoFrame converts Annex B encoder output to a media.VideoFrame
-// with AVC1 WireData and extracted SPS/PPS for keyframes. PTS is passed
-// through from the source frame to maintain timestamp continuity.
-func annexBToVideoFrame(annexBData []byte, isKeyframe bool, groupID uint32, pts int64) *media.VideoFrame {
-	avc1 := codec.AnnexBToAVC1(annexBData)
-	frame := &media.VideoFrame{
-		PTS:        pts,
-		IsKeyframe: isKeyframe,
-		WireData:   avc1,
-		Codec:      "h264",
-		GroupID:    groupID,
-	}
-	if isKeyframe {
-		for _, nalu := range codec.ExtractNALUs(avc1) {
-			if len(nalu) == 0 {
-				continue
-			}
-			switch nalu[0] & 0x1F {
-			case 7:
-				frame.SPS = nalu
-			case 8:
-				frame.PPS = nalu
-			}
-		}
-	}
-	return frame
-}
-
 // updateFrameStats updates the rolling frame size and FPS estimates for a
 // source. Called on every video frame. Uses an exponential moving average
 // with alpha=0.1 for stability. Caller must hold s.mu (write lock).
@@ -1421,37 +1417,6 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	if frame.GroupID > ss.lastGroupID {
 		ss.lastGroupID = frame.GroupID
 	}
-}
-
-// estimateEncoderParams returns the estimated bitrate (bps) and FPS for the
-// given source key, clamped to safe ranges. Returns defaults if no frames
-// have been received or the source is not found. Caller must hold s.mu (write lock).
-func (s *Switcher) estimateEncoderParams(sourceKey string) (bitrate int, fps float64) {
-	ss, ok := s.sources[sourceKey]
-	if !ok || ss.frameCount < 2 || ss.avgFPS == 0 {
-		return transition.DefaultBitrate, transition.DefaultFPS
-	}
-
-	fps = ss.avgFPS
-	// Clamp FPS to 15-60 range
-	if fps < 15 {
-		fps = 15
-	} else if fps > 60 {
-		fps = 60
-	}
-
-	// bitrate = avgFrameSize * fps * 8
-	bitrateF := ss.avgFrameSize * fps * 8
-	bitrate = int(bitrateF)
-
-	// Clamp bitrate to 1-20 Mbps range
-	if bitrate < 1_000_000 {
-		bitrate = 1_000_000
-	} else if bitrate > 20_000_000 {
-		bitrate = 20_000_000
-	}
-
-	return bitrate, fps
 }
 
 // handleVideoFrame implements frameHandler. It is called by sourceViewers

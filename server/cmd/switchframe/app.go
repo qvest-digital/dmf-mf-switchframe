@@ -258,22 +258,22 @@ func (a *App) initSubsystems() error {
 
 	// Graphics compositor (DSK).
 	a.compositor = graphics.NewCompositor()
-	a.compositor.SetCodecFactories(decoderFactory(), encoderFactory())
 	a.compositor.SetResolutionProvider(func() (int, int) {
 		vi := a.programRelay.VideoInfo()
 		return vi.Width, vi.Height
 	})
-	a.compositor.OnVideoInfoChange(a.videoInfoCallback("graphics"))
-	a.sw.SetVideoProcessor(a.compositor.ProcessFrame)
+	a.sw.SetCompositor(a.compositor)
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
 	a.keyBridge = graphics.NewKeyProcessorBridge(a.keyProcessor)
-	a.keyBridge.SetCodecFactories(decoderFactory(), encoderFactory())
-	a.keyBridge.OnVideoInfoChange(a.videoInfoCallback("keyer"))
-	a.sw.SetKeyProcessor(a.keyProcessor)
+	a.keyBridge.SetDecoderFactory(decoderFactory())
+	a.sw.SetKeyBridge(a.keyBridge)
 	a.sw.SetKeyFillIngestor(a.keyBridge.IngestFillFrame)
-	a.sw.SetKeyBridgeProcessor(a.keyBridge.ProcessFrame)
+
+	// Pipeline codec pool: single decode/encode cycle for the video processing chain.
+	a.sw.SetPipelineCodecs(decoderFactory(), encoderFactory())
+	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 
 	// Replay manager.
 	a.replayRelay = a.server.RegisterStream("replay")

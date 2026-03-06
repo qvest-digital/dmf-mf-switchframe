@@ -107,6 +107,7 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 
 	sw := New(programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
+	sw.SetPipelineCodecs(mockTransitionCodecs().DecoderFactory, mockTransitionCodecs().EncoderFactory)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -170,7 +171,9 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	sw.SetTransitionConfig(mockTransitionCodecs())
+	codecs := mockTransitionCodecs()
+	sw.SetTransitionConfig(codecs)
+	sw.SetPipelineCodecs(codecs.DecoderFactory, codecs.EncoderFactory)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
