@@ -3,8 +3,10 @@ import { render } from '@testing-library/svelte';
 import Multiview from './Multiview.svelte';
 import { setSourceError, clearAllErrors } from '$lib/transport/source-errors.svelte';
 
-function makeState(overrides: Record<string, { status: string }> = {}) {
-	const sources: Record<string, { key: string; label: string; status: string; lastFrameTime: number }> = {
+import type { ControlRoomState, SourceHealthStatus, SourceInfo } from '$lib/api/types';
+
+function makeState(overrides: Record<string, { status: SourceHealthStatus }> = {}) {
+	const sources: Record<string, SourceInfo> = {
 		cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy', lastFrameTime: 0 },
 		cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy', lastFrameTime: 0 },
 	};
@@ -22,6 +24,7 @@ function makeState(overrides: Record<string, { status: string }> = {}) {
 		transitionDurationMs: 0,
 		transitionPosition: 0,
 		inTransition: false,
+		ftbActive: false,
 		audioChannels: undefined,
 		masterLevel: 0,
 		programPeak: [0, 0] as [number, number],

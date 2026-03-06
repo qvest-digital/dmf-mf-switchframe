@@ -4,7 +4,6 @@ package codec
 
 import (
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,6 +127,6 @@ func TestNewVideoEncoder_InvalidParams(t *testing.T) {
 
 func TestHWDeviceCtx_Type(t *testing.T) {
 	// Verify that HWDeviceCtx returns an unsafe.Pointer (type check at compile time).
-	var ptr unsafe.Pointer = HWDeviceCtx()
+	ptr := HWDeviceCtx()
 	_ = ptr // compile-time type assertion
 }

@@ -23,7 +23,6 @@ func (d *mockBridgeDecoder) Close() { d.closed = true }
 // mockBridgeEncoder implements transition.VideoEncoder for testing.
 type mockBridgeEncoder struct {
 	lastInput []byte
-	encoded   []byte
 	closed    bool
 }
 

@@ -29,7 +29,7 @@ var (
 	ErrInvalidBand      = errors.New("band index must be 0, 1, or 2")
 	ErrInvalidFrequency = errors.New("frequency out of range for band")
 	ErrInvalidGain      = errors.New("gain must be between -12 and +12 dB")
-	ErrInvalidQ         = errors.New("Q must be between 0.5 and 4.0")
+	ErrInvalidQ         = errors.New("q must be between 0.5 and 4.0")
 )
 
 // BiquadFilter implements a Direct Form II Transposed biquad filter

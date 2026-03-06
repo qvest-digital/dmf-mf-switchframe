@@ -54,7 +54,7 @@ func makeAudioFrame(pts int64) *media.AudioFrame {
 func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -118,7 +118,7 @@ func TestIntegration_OutputManagerLifecycle(t *testing.T) {
 func TestIntegration_MultipleAdapters(t *testing.T) {
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -195,7 +195,7 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 func TestIntegration_PreKeyframeDropped(t *testing.T) {
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))

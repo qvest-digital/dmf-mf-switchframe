@@ -22,8 +22,8 @@ func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.PresetS
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
 	sw.RegisterSource("camera2", r2)
-	sw.Cut(context.Background(), "camera1")
-	sw.SetPreview(context.Background(), "camera2")
+	_ = sw.Cut(context.Background(), "camera1")
+	_ = sw.SetPreview(context.Background(), "camera2")
 
 	dir := t.TempDir()
 	ps, err := preset.NewPresetStore(filepath.Join(dir, "presets.json"))
@@ -128,7 +128,7 @@ func TestGetPresetEndpoint(t *testing.T) {
 	}
 
 	var p preset.Preset
-	json.NewDecoder(rec.Body).Decode(&p)
+	_ = json.NewDecoder(rec.Body).Decode(&p)
 	if p.Name != "Test" {
 		t.Errorf("Name = %q, want %q", p.Name, "Test")
 	}
@@ -162,7 +162,7 @@ func TestUpdatePresetEndpoint(t *testing.T) {
 	}
 
 	var p preset.Preset
-	json.NewDecoder(rec.Body).Decode(&p)
+	_ = json.NewDecoder(rec.Body).Decode(&p)
 	if p.Name != "Updated" {
 		t.Errorf("Name = %q, want %q", p.Name, "Updated")
 	}
@@ -282,7 +282,7 @@ func TestRecallPresetWithWarnings(t *testing.T) {
 	}
 
 	var resp recallPresetResponse
-	json.NewDecoder(rec.Body).Decode(&resp)
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if len(resp.Warnings) == 0 {
 		t.Error("expected at least 1 warning for missing source")
 	}
@@ -316,7 +316,7 @@ func TestListPresetsAfterCreate(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	var presets []preset.Preset
-	json.NewDecoder(rec.Body).Decode(&presets)
+	_ = json.NewDecoder(rec.Body).Decode(&presets)
 	if len(presets) != 2 {
 		t.Errorf("expected 2 presets, got %d", len(presets))
 	}

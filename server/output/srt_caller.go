@@ -140,7 +140,7 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 			c.state.Store(StateReconnecting)
 			c.lastError.Store(err.Error())
 			c.mu.Lock()
-			c.ringBuf.Write(tsData)
+			_, _ = c.ringBuf.Write(tsData)
 			c.mu.Unlock()
 			// CAS guard prevents duplicate reconnect goroutines.
 			if c.reconnecting.CompareAndSwap(false, true) {
@@ -154,7 +154,7 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 
 	case StateReconnecting:
 		c.mu.Lock()
-		c.ringBuf.Write(tsData)
+		_, _ = c.ringBuf.Write(tsData)
 		c.mu.Unlock()
 		return len(tsData), nil
 

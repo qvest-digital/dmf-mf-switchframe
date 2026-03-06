@@ -86,7 +86,7 @@ func TestGraphicsOff(t *testing.T) {
 
 	// Upload and activate
 	uploadOverlay(t, api, 4, 4, "test")
-	comp.On()
+	_ = comp.On()
 
 	// Turn off
 	req := httptest.NewRequest("POST", "/api/graphics/off", nil)

@@ -22,11 +22,9 @@
 		onExpandToggle?: (sourceKey: string) => void;
 	}
 
-	let { state, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, expandedKeys = {}, onPFLToggle, onStateUpdate, onExpandToggle }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, expandedKeys = {}, onPFLToggle, onStateUpdate, onExpandToggle }: Props = $props();
 
-	// Use object wrapper to work around $state rune conflict with "state" prop name.
-	// Svelte 5 interprets $state() as a store subscription when a local "state" binding exists.
-	let ui = { collapsed: false };
+	let ui = $state({ collapsed: false });
 
 	/** Fire API call and apply the returned state for immediate UI feedback. */
 	function applyResult(promise: Promise<ControlRoomState>) {
@@ -121,8 +119,8 @@
 
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
-		state.audioChannels != null
-			? Object.keys(state.audioChannels).sort()
+		crState.audioChannels != null
+			? Object.keys(crState.audioChannels).sort()
 			: [],
 	);
 </script>
@@ -135,10 +133,10 @@
 	{#if !ui.collapsed}
 	<!-- Channel strips -->
 	{#each sortedKeys as key (key)}
-		{@const channel = state.audioChannels?.[key]!}
-		{@const source = state.sources[key]}
+		{@const channel = crState.audioChannels?.[key]!}
+		{@const source = crState.sources[key]}
 		{@const label = source?.label || key}
-		{@const tally = state.tallyState[key] ?? 'idle'}
+		{@const tally = crState.tallyState[key] ?? 'idle'}
 		{@const isExpanded = expandedKeys[key] ?? false}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:expanded={isExpanded}>
 			<span class="strip-label">{label}</span>
@@ -185,7 +183,7 @@
 					max="12"
 					step="0.5"
 					value={channel.level}
-					orient="vertical"
+					{...{orient: "vertical"}}
 					aria-label="Volume for {label}"
 					oninput={(e) => setLevel(key, parseFloat((e.target as HTMLInputElement).value))}
 				/>
@@ -441,14 +439,14 @@
 				min="-60"
 				max="12"
 				step="0.5"
-				value={state.masterLevel}
-				orient="vertical"
+				value={crState.masterLevel}
+				{...{orient: "vertical"}}
 				aria-label="Master volume"
 				oninput={(e) => setMasterLevel(parseFloat((e.target as HTMLInputElement).value))}
 			/>
 		</div>
 
-		<span class="strip-db">{state.masterLevel.toFixed(1)}</span>
+		<span class="strip-db">{crState.masterLevel.toFixed(1)}</span>
 	</div>
 	{/if}
 </div>

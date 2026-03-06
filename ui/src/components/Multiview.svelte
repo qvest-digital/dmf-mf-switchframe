@@ -113,6 +113,7 @@
 				{:else}
 					<span
 						class="tile-name"
+						role={onLabelChange ? "button" : undefined}
 						ondblclick={onLabelChange ? (e: MouseEvent) => startEditing(key, e) : undefined}
 					>{crState.sources[key].label || key}</span>
 				{/if}

@@ -118,9 +118,10 @@ func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction
 	// for horizontal wipes and height for vertical; for box wipes use the
 	// larger dimension. The divisor is always the relevant axis dimension.
 	softEdge := 2.0 / float64(w)
-	if direction == WipeVTop || direction == WipeVBottom {
+	switch direction {
+	case WipeVTop, WipeVBottom:
 		softEdge = 2.0 / float64(h)
-	} else if direction == WipeBoxCenterOut || direction == WipeBoxEdgesIn {
+	case WipeBoxCenterOut, WipeBoxEdgesIn:
 		dim := w
 		if h > w {
 			dim = h

@@ -59,30 +59,30 @@
 /* ---- Touch devices ---- */
 @media (pointer: coarse) {
 	/* Ensure 44px minimum tap targets (WCAG 2.5.5 AAA) */
-	.source-btn,
-	.action-btn,
-	.strip-btn,
-	.macro-btn {
+	:global(.source-btn),
+	:global(.action-btn),
+	:global(.strip-btn),
+	:global(.macro-btn) {
 		min-height: 44px;
 		min-width: 44px;
 	}
 
 	/* Disable hover effects on touch — prevents sticky hover */
-	.source-btn:hover,
-	.action-btn:hover,
-	.strip-btn:hover,
-	.macro-btn:hover,
-	.tile:hover {
+	:global(.source-btn:hover),
+	:global(.action-btn:hover),
+	:global(.strip-btn:hover),
+	:global(.macro-btn:hover),
+	:global(.tile:hover) {
 		/* Reset hover to default state on touch */
 	}
 
 	/* Larger fader thumb for finger control */
-	.fader::-webkit-slider-thumb {
+	:global(.fader::-webkit-slider-thumb) {
 		width: 28px;
 		height: 14px;
 	}
 
-	.fader::-moz-range-thumb {
+	:global(.fader::-moz-range-thumb) {
 		width: 28px;
 		height: 14px;
 	}

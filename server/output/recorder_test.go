@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,9 +18,9 @@ func TestFileRecorder_ID(t *testing.T) {
 func TestFileRecorder_StartCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	err := r.Start(nil)
+	err := r.Start(context.TODO())
 	require.NoError(t, err)
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	status := r.Status()
 	require.Equal(t, StateActive, status.State)
 	require.NotEmpty(t, r.Filename())
@@ -31,7 +32,7 @@ func TestFileRecorder_StartCreatesFile(t *testing.T) {
 func TestFileRecorder_WriteBytes(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	data := make([]byte, 188*7)
 	n, err := r.Write(data)
 	require.NoError(t, err)
@@ -47,7 +48,7 @@ func TestFileRecorder_WriteBytes(t *testing.T) {
 func TestFileRecorder_Close(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	require.NoError(t, r.Close())
 	status := r.Status()
 	require.Equal(t, StateStopped, status.State)
@@ -56,7 +57,7 @@ func TestFileRecorder_Close(t *testing.T) {
 func TestFileRecorder_WriteAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	require.NoError(t, r.Close())
 	_, err := r.Write([]byte{0x47})
 	require.Error(t, err)
@@ -65,7 +66,7 @@ func TestFileRecorder_WriteAfterClose(t *testing.T) {
 func TestFileRecorder_StatusDuration(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	time.Sleep(10 * time.Millisecond)
 	status := r.Status()
 	require.Equal(t, StateActive, status.State)
@@ -75,16 +76,16 @@ func TestFileRecorder_StatusDuration(t *testing.T) {
 func TestFileRecorder_DoubleStart(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
-	err := r.Start(nil)
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+	err := r.Start(context.TODO())
 	require.Error(t, err)
 }
 
 func TestFileRecorder_DoubleClose(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	require.NoError(t, r.Close())
 	// Second close should be a no-op, not an error.
 	require.NoError(t, r.Close())
@@ -93,8 +94,8 @@ func TestFileRecorder_DoubleClose(t *testing.T) {
 func TestFileRecorder_FilenameFormat(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 	name := r.Filename()
 	// Without rotation, first file gets _001 suffix.
 	require.Regexp(t, `^program_\d{8}_\d{6}_001\.ts$`, name)
@@ -110,7 +111,7 @@ func TestFileRecorder_RecordingStatusSnapshot(t *testing.T) {
 	require.Empty(t, snap.Filename)
 
 	// After start: active.
-	require.NoError(t, r.Start(nil))
+	require.NoError(t, r.Start(context.TODO()))
 	data := make([]byte, 188)
 	_, _ = r.Write(data)
 	snap = r.RecordingStatusSnapshot()
@@ -139,8 +140,8 @@ func TestFileRecorder_RotateAfterDuration(t *testing.T) {
 		Dir:         dir,
 		RotateAfter: 50 * time.Millisecond,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	firstFile := r.Filename()
 
@@ -174,8 +175,8 @@ func TestFileRecorder_RotateAfterFileSize(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: maxSize,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	firstFile := r.Filename()
 	data := make([]byte, 188)
@@ -207,8 +208,8 @@ func TestFileRecorder_SequentialNaming(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: 188, // Rotate after every packet.
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	data := make([]byte, 188)
 	files := []string{r.Filename()}
@@ -241,8 +242,8 @@ func TestFileRecorder_NoRotationWhenDisabled(t *testing.T) {
 		Dir: dir,
 		// RotateAfter: 0 (disabled), MaxFileSize: 0 (unlimited)
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	firstFile := r.Filename()
 	data := make([]byte, 188)
@@ -262,8 +263,8 @@ func TestFileRecorder_RotationProducesValidFilenameFormat(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: 188, // Rotate after every packet.
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	data := make([]byte, 188)
 
@@ -289,8 +290,8 @@ func TestFileRecorder_RotationResetsFileBytes(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: maxSize,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	data := make([]byte, 188)
 
@@ -320,8 +321,8 @@ func TestFileRecorder_TotalBytesAcrossRotations(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: 188,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	data := make([]byte, 188)
 	for i := 0; i < 5; i++ {

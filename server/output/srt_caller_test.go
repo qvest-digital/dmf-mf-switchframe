@@ -175,7 +175,7 @@ func TestSRTCaller_StartWithMockConnect(t *testing.T) {
 
 	err := c.Start(context.Background())
 	require.NoError(t, err)
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	status := c.Status()
 	require.Equal(t, StateActive, status.State)
@@ -200,7 +200,7 @@ func TestSRTCaller_StartFailsEntersReconnect(t *testing.T) {
 
 	err := c.Start(context.Background())
 	require.NoError(t, err) // start itself doesn't fail
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Should be in reconnecting state initially
 	status := c.Status()
@@ -254,7 +254,7 @@ func TestSRTCaller_WriteErrorTriggersReconnect(t *testing.T) {
 		return c.Status().State == StateActive
 	}, 5*time.Second, 50*time.Millisecond)
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_SRTStatusSnapshot(t *testing.T) {
@@ -329,7 +329,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
 	c.state.Store(StateReconnecting)
 
 	// Write small data (no overflow)
-	c.ringBuf.Write(make([]byte, 188))
+	_, _ = c.ringBuf.Write(make([]byte, 188))
 
 	var callbackOverflowed atomic.Bool
 	callbackOverflowed.Store(true) // default to true so we can verify it was set to false
@@ -350,7 +350,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	require.False(t, callbackOverflowed.Load())
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
@@ -367,7 +367,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 	c.state.Store(StateReconnecting)
 
 	// Write more data than the buffer can hold to trigger overflow
-	c.ringBuf.Write(make([]byte, 512))
+	_, _ = c.ringBuf.Write(make([]byte, 512))
 
 	var callbackOverflowed atomic.Bool
 	var callbackCalled atomic.Bool
@@ -387,7 +387,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	require.True(t, callbackOverflowed.Load())
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_OverflowCountTracked(t *testing.T) {
@@ -407,7 +407,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	c.ctx = ctx
 	c.cancel = cancel
 	c.state.Store(StateReconnecting)
-	c.ringBuf.Write(make([]byte, 512)) // overflow
+	_, _ = c.ringBuf.Write(make([]byte, 512)) // overflow
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return mock, nil
 	}
@@ -430,7 +430,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	c.state.Store(StateReconnecting)
 	c.mu.Lock()
 	c.ringBuf = newRingBuffer(256)
-	c.ringBuf.Write(make([]byte, 512)) // overflow again
+	_, _ = c.ringBuf.Write(make([]byte, 512)) // overflow again
 	c.mu.Unlock()
 	c.reconnecting.Store(true)
 
@@ -443,7 +443,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	snap = c.SRTStatusSnapshot()
 	require.Equal(t, int64(2), snap.OverflowCount)
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_OverflowCountResetOnStart(t *testing.T) {
@@ -461,12 +461,12 @@ func TestSRTCaller_OverflowCountResetOnStart(t *testing.T) {
 	require.NoError(t, c.Start(context.Background()))
 	c.overflowCount.Add(3)
 	require.Equal(t, int64(3), c.SRTStatusSnapshot().OverflowCount)
-	c.Close()
+	_ = c.Close()
 
 	// Re-start: overflow count should be reset.
 	require.NoError(t, c.Start(context.Background()))
 	require.Equal(t, int64(0), c.SRTStatusSnapshot().OverflowCount)
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
@@ -494,7 +494,7 @@ func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 
 	// No panic — nil callback is safe
-	c.Close()
+	_ = c.Close()
 }
 
 // makeTSPacket creates a 188-byte MPEG-TS packet with specified PID.
@@ -581,7 +581,7 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 	c.state.Store(StateReconnecting)
 
 	// Write more data than the buffer can hold to trigger overflow
-	c.ringBuf.Write(make([]byte, 512))
+	_, _ = c.ringBuf.Write(make([]byte, 512))
 
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return mock, nil
@@ -630,7 +630,7 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 	require.Equal(t, int64(len(keyframePkt)+len(deltaPkt2)), mock.written.Load(),
 		"delta packet should pass through after IDR gate is cleared")
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
@@ -647,7 +647,7 @@ func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
 	c.state.Store(StateReconnecting)
 
 	// Write small data (no overflow)
-	c.ringBuf.Write(make([]byte, 188))
+	_, _ = c.ringBuf.Write(make([]byte, 188))
 
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return mock, nil
@@ -676,7 +676,7 @@ func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
 	require.Equal(t, int64(188+188), mock.written.Load(),
 		"delta should pass through when no IDR gate is active")
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
@@ -697,7 +697,7 @@ func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 	for i := range testData {
 		testData[i] = byte(i % 256)
 	}
-	c.ringBuf.Write(testData)
+	_, _ = c.ringBuf.Write(testData)
 
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return mock, nil
@@ -714,5 +714,5 @@ func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 	// Buffer data should have been flushed to the mock connection
 	require.Equal(t, int64(len(testData)), mock.written.Load())
 
-	c.Close()
+	_ = c.Close()
 }

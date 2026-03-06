@@ -60,7 +60,7 @@ func TestSoak(t *testing.T) {
 			programRelay.BroadcastAudio(frame)
 		},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 		mixer.IngestFrame(sourceKey, frame)

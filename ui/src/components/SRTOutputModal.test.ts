@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import SRTOutputModal from './SRTOutputModal.svelte';
@@ -189,11 +187,8 @@ describe('SRTOutputModal', () => {
 		expect(backdrop?.getAttribute('role')).toBe('presentation');
 	});
 
-	it('should not contain svelte-ignore a11y comments in source', () => {
-		const source = fs.readFileSync(
-			path.resolve(__dirname, 'SRTOutputModal.svelte'),
-			'utf-8',
-		);
-		expect(source).not.toContain('svelte-ignore a11y');
+	it('should not contain svelte-ignore a11y comments in source', async () => {
+		const source = await import('./SRTOutputModal.svelte?raw');
+		expect(source.default).not.toContain('svelte-ignore a11y');
 	});
 });

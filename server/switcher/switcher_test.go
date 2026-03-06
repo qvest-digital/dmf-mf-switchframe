@@ -311,11 +311,11 @@ func TestCutGatesUntilKeyframe(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	// Cut to camera1, send a keyframe to establish it.
-	sw.Cut(context.Background(), "camera1")
+	_ = sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// Cut to camera2.
-	sw.Cut(context.Background(), "camera2")
+	_ = sw.Cut(context.Background(), "camera2")
 
 	// Send P-frame from camera2 — should be DROPPED (no keyframe yet).
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 200, IsKeyframe: false})
@@ -356,11 +356,11 @@ func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	sw.Cut(context.Background(), "camera1")
+	_ = sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// Cut to camera2.
-	sw.Cut(context.Background(), "camera2")
+	_ = sw.Cut(context.Background(), "camera2")
 
 	// Audio from camera2 before video keyframe — should be DROPPED.
 	cam2Relay.BroadcastAudio(&media.AudioFrame{PTS: 200, Data: []byte{0xAA}})
@@ -396,7 +396,7 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 	}
 
 	// Send a frame (source must be on program for handleVideoFrame to record).
-	sw.Cut(context.Background(), "camera1")
+	_ = sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// After frame: healthy.

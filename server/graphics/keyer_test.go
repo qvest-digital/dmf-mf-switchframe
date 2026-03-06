@@ -216,10 +216,9 @@ func TestChromaKey_ZeroSimilarityZeroSmoothness(t *testing.T) {
 	if len(mask) != 16 {
 		t.Fatalf("expected 16 pixels, got %d", len(mask))
 	}
-	// Verify all values are valid (not NaN converted)
+	// Verify all values are valid bytes
 	for i, a := range mask {
-		if a > 255 {
-			t.Fatalf("pixel %d: invalid alpha %d", i, a)
-		}
+		_ = a // byte is always 0-255; verify no panics during iteration
+		_ = i
 	}
 }

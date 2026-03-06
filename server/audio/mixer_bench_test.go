@@ -17,7 +17,7 @@ func BenchmarkMixerPassthrough(b *testing.B) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { outputCount++ },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	mixer.AddChannel("cam1")
 	_ = mixer.SetAFV("cam1", true)

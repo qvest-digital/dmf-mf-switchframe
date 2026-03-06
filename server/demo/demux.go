@@ -25,7 +25,7 @@ func demuxTSFile(path string) (*demuxResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	return demuxTS(f)
 }
@@ -309,9 +309,10 @@ func decodeSPSResolution(sps []byte) (width, height int, ok bool) {
 	bits.readExpGolomb() // log2_max_frame_num_minus4
 
 	picOrderCntType := bits.readExpGolomb() // pic_order_cnt_type
-	if picOrderCntType == 0 {
+	switch picOrderCntType {
+	case 0:
 		bits.readExpGolomb() // log2_max_pic_order_cnt_lsb_minus4
-	} else if picOrderCntType == 1 {
+	case 1:
 		bits.skip(1)         // delta_pic_order_always_zero_flag
 		bits.readSignedExpGolomb() // offset_for_non_ref_pic
 		bits.readSignedExpGolomb() // offset_for_top_to_bottom_field

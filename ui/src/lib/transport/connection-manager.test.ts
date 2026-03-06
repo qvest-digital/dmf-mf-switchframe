@@ -64,7 +64,7 @@ function setupMocks(): {
 
 function createMockConnection() {
 	return {
-		state: 'disconnected' as string,
+		state: 'disconnected' as const,
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		_handleControlData: vi.fn(),

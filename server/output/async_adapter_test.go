@@ -126,7 +126,7 @@ func TestAsyncAdapter_DropsOnFullBuffer(t *testing.T) {
 	require.NoError(t, async.Start(context.Background()))
 
 	for i := 0; i < 5; i++ {
-		async.Write([]byte{byte(i)})
+		_, _ = async.Write([]byte{byte(i)})
 	}
 
 	// Give a moment for the channel sends to settle.
@@ -180,7 +180,7 @@ func TestAsyncAdapter_CopiesData(t *testing.T) {
 	require.NoError(t, async.Start(context.Background()))
 
 	buf := []byte{0x01, 0x02, 0x03}
-	async.Write(buf)
+	_, _ = async.Write(buf)
 	// Mutate the original buffer immediately after write.
 	buf[0] = 0xFF
 
@@ -204,7 +204,7 @@ func TestAsyncAdapter_StopDrainsRemaining(t *testing.T) {
 
 	// Send 10 packets.
 	for i := 0; i < 10; i++ {
-		async.Write([]byte{byte(i)})
+		_, _ = async.Write([]byte{byte(i)})
 	}
 
 	// Stop should block until all buffered items are drained.
@@ -243,8 +243,8 @@ func TestSlowAdapterDoesntBlockFastAdapter(t *testing.T) {
 	start := time.Now()
 	for i := 0; i < packetCount; i++ {
 		data := []byte{byte(i), 0x47, 0xDA}
-		fastAsync.Write(data)
-		slowAsync.Write(data)
+		_, _ = fastAsync.Write(data)
+		_, _ = slowAsync.Write(data)
 	}
 	elapsed := time.Since(start)
 

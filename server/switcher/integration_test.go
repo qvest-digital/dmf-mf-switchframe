@@ -224,7 +224,7 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 			programRelay.BroadcastAudio(frame)
 		},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	// Wire mixer to switcher.
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -271,7 +271,7 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 			programRelay.BroadcastAudio(frame)
 		},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 		mixer.IngestFrame(sourceKey, frame)
@@ -320,7 +320,7 @@ func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 
@@ -359,7 +359,7 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 
@@ -378,8 +378,8 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	mixer.AddChannel("cam1")
 	mixer.AddChannel("cam2")
-	mixer.SetAFV("cam1", true)
-	mixer.SetAFV("cam2", true)
+	_ = mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam2", true)
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
@@ -388,7 +388,7 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 	require.True(t, mixer.IsInTransitionCrossfade())
 
 	// Set position — audio should track
-	sw.SetTransitionPosition(context.Background(), 0.5)
+	_ = sw.SetTransitionPosition(context.Background(), 0.5)
 	require.InDelta(t, 0.5, mixer.TransitionPosition(), 0.01)
 
 	// Abort — audio should exit crossfade
@@ -528,11 +528,11 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 5000, ""))
 
 	// Move T-bar partway
-	sw.SetTransitionPosition(context.Background(), 0.5)
+	_ = sw.SetTransitionPosition(context.Background(), 0.5)
 	require.True(t, sw.State().InTransition)
 
 	// Move back to 0 → abort
-	sw.SetTransitionPosition(context.Background(), 0.0)
+	_ = sw.SetTransitionPosition(context.Background(), 0.0)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -593,7 +593,7 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -611,7 +611,7 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	mixer.AddChannel("cam1")
-	mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam1", true)
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
@@ -627,7 +627,7 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 133, IsKeyframe: false, WireData: []byte{0x01}})
 	time.Sleep(10 * time.Millisecond)
-	sw.SetTransitionPosition(context.Background(), 1.0) // triggers completion
+	_ = sw.SetTransitionPosition(context.Background(), 1.0) // triggers completion
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 166, IsKeyframe: false, WireData: []byte{0x01}})
 	time.Sleep(30 * time.Millisecond)
 
@@ -647,7 +647,7 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -665,7 +665,7 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	mixer.AddChannel("cam1")
-	mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam1", true)
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
@@ -675,7 +675,7 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 133, IsKeyframe: false, WireData: []byte{0x01}})
 	time.Sleep(10 * time.Millisecond)
-	sw.SetTransitionPosition(context.Background(), 1.0)
+	_ = sw.SetTransitionPosition(context.Background(), 1.0)
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 166, IsKeyframe: false, WireData: []byte{0x01}})
 	time.Sleep(30 * time.Millisecond)
 	require.True(t, mixer.IsProgramMuted(), "audio should be muted after FTB")

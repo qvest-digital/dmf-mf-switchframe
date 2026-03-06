@@ -22,7 +22,7 @@ func TestOutputManager_New(t *testing.T) {
 func TestOutputManager_StartRecording(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	err := mgr.StartRecording(RecorderConfig{Dir: dir})
@@ -36,7 +36,7 @@ func TestOutputManager_StartRecording(t *testing.T) {
 func TestOutputManager_StopRecording(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -49,7 +49,7 @@ func TestOutputManager_StopRecording(t *testing.T) {
 func TestOutputManager_DoubleStartRecording(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -60,7 +60,7 @@ func TestOutputManager_DoubleStartRecording(t *testing.T) {
 func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	err := mgr.StopRecording()
 	require.Error(t, err)
@@ -69,7 +69,7 @@ func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
 func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	require.Nil(t, mgr.viewer)
 
@@ -83,7 +83,7 @@ func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
 func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -97,7 +97,7 @@ func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
 func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -122,7 +122,7 @@ func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 func TestOutputManager_StateCallback(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
 	mgr.OnStateChange(func() {
@@ -130,18 +130,18 @@ func TestOutputManager_StateCallback(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	mgr.StartRecording(RecorderConfig{Dir: dir})
+	_ = mgr.StartRecording(RecorderConfig{Dir: dir})
 	require.Greater(t, callCount, 0)
 
 	prevCount := callCount
-	mgr.StopRecording()
+	_ = mgr.StopRecording()
 	require.Greater(t, callCount, prevCount)
 }
 
 func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	status := mgr.SRTOutputStatus()
 	require.False(t, status.Active)
@@ -150,7 +150,7 @@ func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 func TestOutputManager_DebugSnapshot(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	snap := mgr.DebugSnapshot()
 	require.NotNil(t, snap["recording"], "expected recording in snapshot")
@@ -162,7 +162,7 @@ func TestOutputManager_DebugSnapshot(t *testing.T) {
 func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -183,7 +183,7 @@ func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
 func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -211,7 +211,7 @@ func TestOutputManager_Close(t *testing.T) {
 	mgr := NewOutputManager(relay)
 
 	dir := t.TempDir()
-	mgr.StartRecording(RecorderConfig{Dir: dir})
+	_ = mgr.StartRecording(RecorderConfig{Dir: dir})
 	err := mgr.Close()
 	require.NoError(t, err)
 }

@@ -26,9 +26,10 @@ func buildRealisticState(n int) internal.ControlRoomState {
 		}
 
 		status := internal.TallyIdle
-		if i == 0 {
+		switch i {
+		case 0:
 			status = internal.TallyProgram
-		} else if i == 1 {
+		case 1:
 			status = internal.TallyPreview
 		}
 		tallyState[key] = status

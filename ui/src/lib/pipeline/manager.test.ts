@@ -3,7 +3,7 @@ import { PipelineManager } from './manager';
 import type { MediaPipeline } from '$lib/transport/media-pipeline';
 
 /** Create a mock MediaPipeline with all methods stubbed. */
-function createMockPipeline(): MediaPipeline & { [K in keyof MediaPipeline]: ReturnType<typeof vi.fn> } {
+function createMockPipeline() {
 	return {
 		addSource: vi.fn(),
 		removeSource: vi.fn(),
@@ -19,7 +19,7 @@ function createMockPipeline(): MediaPipeline & { [K in keyof MediaPipeline]: Ret
 		setSourceMuted: vi.fn(),
 		resumeAllAudio: vi.fn().mockResolvedValue(undefined),
 		getAllDiagnostics: vi.fn().mockResolvedValue({}),
-	};
+	} satisfies MediaPipeline;
 }
 
 /** Create a minimal sources record for testing. */

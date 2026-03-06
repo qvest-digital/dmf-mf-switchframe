@@ -36,12 +36,12 @@ globalThis.OffscreenCanvas = MockOffscreenCanvas;
 
 // Also mock HTMLCanvasElement.prototype.getContext for preview canvas
 const origGetContext = HTMLCanvasElement.prototype.getContext;
-// @ts-expect-error - mock
-HTMLCanvasElement.prototype.getContext = function(type: string) {
+HTMLCanvasElement.prototype.getContext = function(type: string, ...args: unknown[]) {
 	if (type === '2d') {
 		return mockCtx2d;
 	}
-	return origGetContext.call(this, type);
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	return (origGetContext as any).call(this, type, ...args);
 };
 
 const baseState = {

@@ -153,13 +153,13 @@ func TestSRTListener_SlowClientDrops(t *testing.T) {
 
 	// Fill the channel buffer
 	for i := 0; i < 100; i++ {
-		l.Write([]byte("data"))
+		_, _ = l.Write([]byte("data"))
 	}
 
 	// Should not block — slow client drops are non-blocking
 	done := make(chan struct{})
 	go func() {
-		l.Write([]byte("final"))
+		_, _ = l.Write([]byte("final"))
 		close(done)
 	}()
 
@@ -191,7 +191,7 @@ func TestSRTListener_WriteErrorRemovesClient(t *testing.T) {
 	require.Equal(t, 1, l.ConnectionCount())
 
 	// Send data — the writer goroutine should detect the error and remove
-	l.Write([]byte("trigger-error"))
+	_, _ = l.Write([]byte("trigger-error"))
 
 	// Wait for the writer goroutine to detect the error
 	time.Sleep(50 * time.Millisecond)
@@ -224,7 +224,7 @@ func TestSRTListener_SRTStatusSnapshot(t *testing.T) {
 	l.state.Store(StateActive)
 
 	require.NoError(t, l.AddConnection("c1", &mockListenerConn{id: "c1"}))
-	l.Write([]byte("data"))
+	_, _ = l.Write([]byte("data"))
 
 	snap := l.SRTStatusSnapshot()
 	require.True(t, snap.Active)
@@ -273,7 +273,7 @@ func TestSRTListener_ConcurrentFanOut(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			l.Write([]byte(fmt.Sprintf("data-%d", idx)))
+			_, _ = fmt.Fprintf(l, "data-%d", idx)
 		}(i)
 	}
 	wg.Wait()

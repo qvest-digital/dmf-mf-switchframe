@@ -13,7 +13,7 @@ func TestFDKDecoderCreation(t *testing.T) {
 	dec, err := NewFDKDecoder(48000, 2)
 	require.NoError(t, err)
 	require.NotNil(t, dec)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	// Verify it implements AudioDecoder.
 	var _ AudioDecoder = dec
@@ -23,7 +23,7 @@ func TestFDKDecoderCreationMono(t *testing.T) {
 	dec, err := NewFDKDecoder(48000, 1)
 	require.NoError(t, err)
 	require.NotNil(t, dec)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 }
 
 func TestFDKDecoderInvalidParams(t *testing.T) {
@@ -41,7 +41,7 @@ func TestFDKEncoderCreation(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	// Verify it implements AudioEncoder.
 	var _ AudioEncoder = enc
@@ -51,7 +51,7 @@ func TestFDKEncoderCreationMono(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 1)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 }
 
 func TestFDKEncoderInvalidParams(t *testing.T) {
@@ -68,11 +68,11 @@ func TestFDKEncoderInvalidParams(t *testing.T) {
 func TestFDKRoundTrip(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	dec, err := NewFDKDecoder(48000, 2)
 	require.NoError(t, err)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	// Generate a frame of silence (1024 stereo samples).
 	silence := make([]float32, 1024*2)
@@ -94,11 +94,11 @@ func TestFDKRoundTrip(t *testing.T) {
 func TestFDKRoundTripMono(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 1)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	dec, err := NewFDKDecoder(48000, 1)
 	require.NoError(t, err)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	silence := make([]float32, 1024)
 	aac, err := enc.Encode(silence)
@@ -113,11 +113,11 @@ func TestFDKRoundTripMono(t *testing.T) {
 func TestFDKRoundTripWithSignal(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	dec, err := NewFDKDecoder(48000, 2)
 	require.NoError(t, err)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	// Generate a 1kHz sine wave (1024 stereo samples).
 	input := make([]float32, 1024*2)
@@ -154,7 +154,7 @@ func TestFDKRoundTripWithSignal(t *testing.T) {
 func TestFDKEncoderWrongFrameSize(t *testing.T) {
 	enc, err := NewFDKEncoder(48000, 2)
 	require.NoError(t, err)
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	// Wrong number of samples: should be 1024*2=2048 for stereo.
 	_, err = enc.Encode(make([]float32, 100))
@@ -164,7 +164,7 @@ func TestFDKEncoderWrongFrameSize(t *testing.T) {
 func TestFDKDecoderInvalidData(t *testing.T) {
 	dec, err := NewFDKDecoder(48000, 2)
 	require.NoError(t, err)
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	// Garbage data should fail.
 	_, err = dec.Decode([]byte{0xFF, 0xFF, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04})

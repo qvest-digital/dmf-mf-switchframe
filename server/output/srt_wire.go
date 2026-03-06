@@ -23,7 +23,7 @@ func (c *srtgoConn) Write(data []byte) (int, error) {
 }
 
 func (c *srtgoConn) Close() {
-	c.conn.Close()
+	_ = c.conn.Close()
 }
 
 // SRTConnect creates a real SRT caller connection using zsiec/srtgo.
@@ -71,7 +71,7 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 	// Close the listener when context is cancelled.
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		_ = ln.Close()
 	}()
 
 	for {
@@ -88,7 +88,7 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 		id := fmt.Sprintf("srt-%d", srtConnCounter.Add(1))
 		if err := listener.AddConnection(id, &chunkedConn{inner: &srtgoConn{conn: conn}}); err != nil {
 			slog.Warn("SRT reject connection (max reached)", "error", err)
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
 }

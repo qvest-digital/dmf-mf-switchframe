@@ -94,7 +94,7 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 	}
 
 	rec := NewFileRecorder(config)
-	if err := rec.Start(nil); err != nil {
+	if err := rec.Start(context.TODO()); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start recorder: %w", err)
 	}

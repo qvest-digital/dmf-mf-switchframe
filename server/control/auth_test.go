@@ -28,7 +28,7 @@ func TestAuthMiddleware_AcceptsValidBearer(t *testing.T) {
 	token := "my-valid-token-abc"
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	handler := AuthMiddleware(token)(inner)
 
@@ -77,7 +77,7 @@ func TestAuthMiddleware_RejectsMalformedHeader(t *testing.T) {
 func TestAuthMiddleware_ExemptPaths(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("passed"))
+		_, _ = w.Write([]byte("passed"))
 	})
 	handler := AuthMiddleware("secret")(inner)
 
@@ -121,7 +121,7 @@ func TestGenerateToken_Returns64CharHex(t *testing.T) {
 func TestNoopAuthMiddleware_PassesAllRequests(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	handler := NoopAuthMiddleware()(inner)
 

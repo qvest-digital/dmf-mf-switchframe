@@ -8,16 +8,16 @@
 		state: ControlRoomState;
 		pendingConfirm?: string | null;
 	}
-	let { state, pendingConfirm = null }: Props = $props();
+	let { state: crState, pendingConfirm = null }: Props = $props();
 
 	type TransType = 'mix' | 'dip' | 'wipe' | 'stinger';
 	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
 
-	let transType: TransType = 'mix';
-	let durationMs: number = 1000;
-	let wipeDirection: WipeDir = 'h-left';
-	let stingerName: string = '';
-	let stingerNames: string[] = [];
+	let transType = $state<TransType>('mix');
+	let durationMs = $state(1000);
+	let wipeDirection = $state<WipeDir>('h-left');
+	let stingerName = $state('');
+	let stingerNames = $state<string[]>([]);
 
 	// Load stinger list on mount and when type changes to stinger
 	$effect(() => {
@@ -36,21 +36,21 @@
 	const anim = new AutoAnimation();
 
 	const autoDisabled = $derived(
-		!state.previewSource || state.inTransition || state.ftbActive ||
+		!crState.previewSource || crState.inTransition || crState.ftbActive ||
 		(transType === 'stinger' && !stingerName)
 	);
 
 	const ftbDisabled = $derived(
-		state.inTransition && !state.ftbActive
+		crState.inTransition && !crState.ftbActive
 	);
 
 	const tbarValue = $derived(
-		anim.active ? anim.position : (state.inTransition ? state.transitionPosition : 0)
+		anim.active ? anim.position : (crState.inTransition ? crState.transitionPosition : 0)
 	);
 
 	// Stop animation when server reports transition ended
 	$effect(() => {
-		if (!state.inTransition && anim.active) {
+		if (!crState.inTransition && anim.active) {
 			anim.stop();
 		}
 	});
@@ -59,7 +59,7 @@
 		if (autoDisabled) return;
 		anim.start(durationMs);
 		apiCall(startTransition(
-			state.previewSource, transType, durationMs,
+			crState.previewSource, transType, durationMs,
 			transType === 'wipe' ? wipeDirection : undefined,
 			transType === 'stinger' ? stingerName : undefined
 		), 'Transition failed');
@@ -84,9 +84,9 @@
 	function handleTbarInput(e: Event) {
 		anim.active = false;
 		const value = parseFloat((e.target as HTMLInputElement).value);
-		if (!state.inTransition && value > 0 && state.previewSource) {
+		if (!crState.inTransition && value > 0 && crState.previewSource) {
 			apiCall(startTransition(
-				state.previewSource, transType, durationMs,
+				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
 				transType === 'stinger' ? stingerName : undefined
 			), 'Transition failed');
@@ -98,7 +98,7 @@
 <div class="transition-controls">
 	<div class="transition-row">
 		<div class="transition-buttons">
-			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(state.previewSource), 'Cut failed')} disabled={!state.previewSource}>
+			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>
 				CUT
 				<span class="shortcut">Space</span>
 			</button>
@@ -106,7 +106,7 @@
 				AUTO
 				<span class="shortcut">Enter</span>
 			</button>
-			<button class="btn ftb" class:active={state.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
+			<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
 				FTB
 				<span class="shortcut">F1</span>
 			</button>

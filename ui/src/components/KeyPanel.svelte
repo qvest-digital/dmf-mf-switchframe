@@ -10,24 +10,31 @@
 	let { state: crState }: Props = $props();
 
 	let selectedSource = $derived(Object.keys(crState.sources).sort()[0] ?? '');
-	let keyType: 'none' | 'chroma' | 'luma' = 'none';
-	let enabled = true;
+	let keyType = $state<'none' | 'chroma' | 'luma'>('none');
+	let enabled = $state(true);
 
 	// Chroma params
-	let keyColorY = 182;
-	let keyColorCb = 30;
-	let keyColorCr = 12;
-	let similarity = 0.4;
-	let smoothness = 0.1;
-	let spillSuppress = 0.5;
+	let keyColorY = $state(182);
+	let keyColorCb = $state(30);
+	let keyColorCr = $state(12);
+	let similarity = $state(0.4);
+	let smoothness = $state(0.1);
+	let spillSuppress = $state(0.5);
 
 	// Luma params
-	let lowClip = 0.0;
-	let highClip = 0.8;
-	let softness = 0.1;
+	let lowClip = $state(0.0);
+	let highClip = $state(0.8);
+	let softness = $state(0.1);
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
-	let activeSource = selectedSource;
+	let activeSource = $state('');
+
+	// Initialize activeSource when sources become available
+	$effect(() => {
+		if (!activeSource && selectedSource) {
+			activeSource = selectedSource;
+		}
+	});
 
 	function selectSource(key: string) {
 		activeSource = key;
@@ -67,7 +74,7 @@
 	</div>
 
 	<div class="source-select">
-		<label class="field-label">Source</label>
+		<label class="field-label">Source
 		<select
 			class="key-select"
 			value={activeSource}
@@ -77,10 +84,11 @@
 				<option value={key}>{crState.sources[key]?.label || key}</option>
 			{/each}
 		</select>
+		</label>
 	</div>
 
 	<div class="key-type-select">
-		<label class="field-label">Type</label>
+		<span class="field-label">Type</span>
 		<div class="type-buttons">
 			<button class="type-btn" class:active={keyType === 'none'} onclick={() => keyType = 'none'}>None</button>
 			<button class="type-btn" class:active={keyType === 'chroma'} onclick={() => keyType = 'chroma'}>Chroma</button>
@@ -98,19 +106,22 @@
 	{#if keyType === 'chroma'}
 		<div class="key-controls">
 			<div class="slider-group">
-				<label class="slider-label">Similarity: {similarity.toFixed(2)}</label>
+				<label class="slider-label">Similarity: {similarity.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={similarity} class="slider" />
+				</label>
 			</div>
 			<div class="slider-group">
-				<label class="slider-label">Smoothness: {smoothness.toFixed(2)}</label>
+				<label class="slider-label">Smoothness: {smoothness.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={smoothness} class="slider" />
+				</label>
 			</div>
 			<div class="slider-group">
-				<label class="slider-label">Spill: {spillSuppress.toFixed(2)}</label>
+				<label class="slider-label">Spill: {spillSuppress.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={spillSuppress} class="slider" />
+				</label>
 			</div>
 			<div class="color-group">
-				<label class="slider-label">Key Color (Y/Cb/Cr)</label>
+				<span class="slider-label">Key Color (Y/Cb/Cr)</span>
 				<div class="color-inputs">
 					<input type="number" min="0" max="255" bind:value={keyColorY} class="num-input" />
 					<input type="number" min="0" max="255" bind:value={keyColorCb} class="num-input" />
@@ -123,16 +134,19 @@
 	{#if keyType === 'luma'}
 		<div class="key-controls">
 			<div class="slider-group">
-				<label class="slider-label">Low Clip: {lowClip.toFixed(2)}</label>
+				<label class="slider-label">Low Clip: {lowClip.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={lowClip} class="slider" />
+				</label>
 			</div>
 			<div class="slider-group">
-				<label class="slider-label">High Clip: {highClip.toFixed(2)}</label>
+				<label class="slider-label">High Clip: {highClip.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={highClip} class="slider" />
+				</label>
 			</div>
 			<div class="slider-group">
-				<label class="slider-label">Softness: {softness.toFixed(2)}</label>
+				<label class="slider-label">Softness: {softness.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={softness} class="slider" />
+				</label>
 			</div>
 		</div>
 	{/if}

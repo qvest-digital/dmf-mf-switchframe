@@ -218,11 +218,11 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handlePreview sets the preview source without affecting the program output.
@@ -243,11 +243,11 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // transitionRequest is the JSON body for transition commands.
@@ -315,11 +315,11 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // clipToStingerData converts a stinger.StingerClip to transition.StingerData.
@@ -358,11 +358,11 @@ func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
 	if err := a.switcher.SetTransitionPosition(r.Context(), req.Position); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleFTB starts or toggles a Fade to Black transition.
@@ -374,17 +374,17 @@ func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleState returns the current ControlRoomState as JSON.
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // labelRequest is the JSON body for the set-label command.
@@ -403,11 +403,11 @@ func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 	if err := a.switcher.SetLabel(r.Context(), key, req.Label); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // delayRequest is the JSON body for the set-delay command.
@@ -432,18 +432,18 @@ func (a *API) handleSetDelay(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleSources returns the map of registered sources and their info.
 func (a *API) handleSources(w http.ResponseWriter, r *http.Request) {
 	state := a.switcher.State()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state.Sources)
+	_ = json.NewEncoder(w).Encode(state.Sources)
 }
 
 // --- Audio API ---
@@ -499,11 +499,11 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioLevel sets the audio level for a source channel.
@@ -524,11 +524,11 @@ func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
 	if err := a.mixer.SetLevel(req.Source, req.Level); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioMute sets the mute state for a source channel.
@@ -549,11 +549,11 @@ func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
 	if err := a.mixer.SetMuted(req.Source, req.Muted); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioAFV sets the audio-follow-video state for a source channel.
@@ -574,11 +574,11 @@ func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
 	if err := a.mixer.SetAFV(req.Source, req.AFV); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleAudioMaster sets the master output level.
@@ -594,7 +594,7 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mixer.SetMasterLevel(req.Level)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // --- EQ & Compressor API ---
@@ -634,11 +634,11 @@ func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleGetEQ returns the current EQ settings for a source channel.
@@ -656,11 +656,11 @@ func (a *API) handleGetEQ(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(bands)
+	_ = json.NewEncoder(w).Encode(bands)
 }
 
 // compressorRequest is the JSON body for the compressor endpoint.
@@ -709,11 +709,11 @@ func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.switcher.State())
+	_ = json.NewEncoder(w).Encode(a.switcher.State())
 }
 
 // handleGetCompressor returns the current compressor settings and gain reduction for a source channel.
@@ -731,11 +731,11 @@ func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(compressorResponse{
+	_ = json.NewEncoder(w).Encode(compressorResponse{
 		Threshold:     threshold,
 		Ratio:         ratio,
 		Attack:        attack,
@@ -796,11 +796,11 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }
 
 // handleRecordingStop stops the active recording.
@@ -816,11 +816,11 @@ func (a *API) handleRecordingStop(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }
 
 // handleRecordingStatus returns the current recording status.
@@ -830,7 +830,7 @@ func (a *API) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }
 
 // handleSRTStart begins SRT output with the given configuration.
@@ -863,11 +863,11 @@ func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }
 
 // handleSRTStop stops the active SRT output.
@@ -883,11 +883,11 @@ func (a *API) handleSRTStop(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }
 
 // handleSRTStatus returns the current SRT output status.
@@ -897,7 +897,7 @@ func (a *API) handleSRTStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
+	_ = json.NewEncoder(w).Encode(a.outputMgr.SRTOutputStatus())
 }
 
 // handleConfidence returns the latest JPEG confidence thumbnail from the
@@ -914,7 +914,7 @@ func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Write(jpg)
+	_, _ = w.Write(jpg)
 }
 
 // --- Preset API ---
@@ -938,7 +938,7 @@ type recallPresetResponse struct {
 // handleListPresets returns all presets.
 func (a *API) handleListPresets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.presetStore.List())
+	_ = json.NewEncoder(w).Encode(a.presetStore.List())
 }
 
 // handleCreatePreset creates a new preset from the current switcher state.
@@ -960,13 +960,13 @@ func (a *API) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // handleGetPreset returns a single preset by ID.
@@ -978,7 +978,7 @@ func (a *API) handleGetPreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // handleUpdatePreset updates a preset's name.
@@ -1005,11 +1005,11 @@ func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // handleDeletePreset deletes a preset by ID.
@@ -1022,7 +1022,7 @@ func (a *API) handleDeletePreset(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1046,7 +1046,7 @@ func (a *API) handleRecallPreset(w http.ResponseWriter, r *http.Request) {
 	warnings := preset.Recall(r.Context(), p, target)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(recallPresetResponse{
+	_ = json.NewEncoder(w).Encode(recallPresetResponse{
 		Preset:   p,
 		Warnings: warnings,
 	})
@@ -1116,11 +1116,11 @@ func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // handleGraphicsOff deactivates the overlay immediately (CUT OFF).
@@ -1132,11 +1132,11 @@ func (a *API) handleGraphicsOff(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // handleGraphicsAutoOn starts a 500ms fade-in transition (AUTO ON).
@@ -1150,11 +1150,11 @@ func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // handleGraphicsAutoOff starts a 500ms fade-out transition (AUTO OFF).
@@ -1166,17 +1166,17 @@ func (a *API) handleGraphicsAutoOff(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // handleGraphicsStatus returns the current graphics overlay state.
 func (a *API) handleGraphicsStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // handleGraphicsFrame receives an RGBA overlay frame from the browser.
@@ -1207,11 +1207,11 @@ func (a *API) handleGraphicsFrame(w http.ResponseWriter, r *http.Request) {
 	if err := a.compositor.SetOverlay(req.RGBA, req.Width, req.Height, req.Template); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.compositor.Status())
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // --- Stinger API ---
@@ -1219,7 +1219,7 @@ func (a *API) handleGraphicsFrame(w http.ResponseWriter, r *http.Request) {
 // handleStingerList returns all loaded stinger clip names.
 func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.stingerStore.List())
+	_ = json.NewEncoder(w).Encode(a.stingerStore.List())
 }
 
 // handleStingerDelete removes a stinger clip by name.
@@ -1234,7 +1234,7 @@ func (a *API) handleStingerDelete(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusBadRequest
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1260,11 +1260,11 @@ func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // handleStingerUpload accepts a zip file upload containing PNG frames for a stinger.
@@ -1278,7 +1278,7 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		json.NewEncoder(w).Encode(map[string]string{"error": "upload too large (max 256MB)"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "upload too large (max 256MB)"})
 		return
 	}
 
@@ -1291,13 +1291,13 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // --- Macro API ---
@@ -1305,7 +1305,7 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 // handleListMacros returns all macros.
 func (a *API) handleListMacros(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.macroStore.List())
+	_ = json.NewEncoder(w).Encode(a.macroStore.List())
 }
 
 // handleGetMacro returns a single macro by name.
@@ -1319,11 +1319,11 @@ func (a *API) handleGetMacro(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(m)
+	_ = json.NewEncoder(w).Encode(m)
 }
 
 // handleSaveMacro creates or updates a macro.
@@ -1343,11 +1343,11 @@ func (a *API) handleSaveMacro(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusInternalServerError
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(m)
+	_ = json.NewEncoder(w).Encode(m)
 }
 
 // handleDeleteMacro deletes a macro by name.
@@ -1360,7 +1360,7 @@ func (a *API) handleDeleteMacro(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1377,7 +1377,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -1389,12 +1389,12 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	if err := macro.Run(r.Context(), m, target); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // apiMacroTarget adapts the API's switcher and mixer to the macro.MacroTarget
@@ -1439,7 +1439,7 @@ func (a *API) handleSetSourceKey(w http.ResponseWriter, r *http.Request) {
 	}
 	a.keyer.SetKey(source, cfg)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cfg)
+	_ = json.NewEncoder(w).Encode(cfg)
 }
 
 // handleGetSourceKey returns the current key configuration for a source.
@@ -1451,7 +1451,7 @@ func (a *API) handleGetSourceKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cfg)
+	_ = json.NewEncoder(w).Encode(cfg)
 }
 
 // handleDeleteSourceKey removes the key configuration for a source.

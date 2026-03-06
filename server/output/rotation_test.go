@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,8 +21,8 @@ func TestRotation_TimeBasedCreatesMultipleFiles(t *testing.T) {
 		Dir:         dir,
 		RotateAfter: 50 * time.Millisecond,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	// Write TS-aligned data for ~200ms to trigger multiple rotations.
 	packet := make([]byte, 188)
@@ -59,8 +60,8 @@ func TestRotation_SizeBasedCreatesMultipleFiles(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: maxSize,
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	// Write 30 TS packets. With maxSize=188*10, after 10 packets the file
 	// is at the limit, and the 11th write triggers rotation.
@@ -103,8 +104,8 @@ func TestRotation_SequentialNamingAcrossThreeRotations(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: 188, // rotate after every packet
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	packet := make([]byte, 188)
 	packet[0] = 0x47
@@ -157,8 +158,8 @@ func TestRotation_NewFileContainsParsableTS(t *testing.T) {
 		Dir:         dir,
 		MaxFileSize: 188 * 3, // rotate after 3 packets
 	})
-	require.NoError(t, r.Start(nil))
-	defer r.Close()
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
 
 	// Write valid TS packets with different PIDs to differentiate them.
 	for i := 0; i < 10; i++ {

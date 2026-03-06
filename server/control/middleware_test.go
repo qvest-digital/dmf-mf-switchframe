@@ -51,7 +51,7 @@ func TestStatusRecorderCapturesStatus(t *testing.T) {
 	var capturedStatus int
 	handler := LoggerMiddleware(slog.Default())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("not found"))
+		_, _ = w.Write([]byte("not found"))
 	}))
 
 	// We need a way to observe the captured status. We'll verify via the log
@@ -72,7 +72,7 @@ func TestStatusRecorderCapturesBytes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello world")) // 11 bytes
+		_, _ = w.Write([]byte("hello world")) // 11 bytes
 	}))
 
 	req := httptest.NewRequest("GET", "/api/sources", nil)
@@ -91,7 +91,7 @@ func TestStatusRecorderDefaultStatus(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	}))
 
 	req := httptest.NewRequest("GET", "/api/sources", nil)
@@ -247,7 +247,7 @@ func TestLoggerMiddlewareLogFields(t *testing.T) {
 
 	handler := LoggerMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("created"))
+		_, _ = w.Write([]byte("created"))
 	}))
 
 	req := httptest.NewRequest("POST", "/api/switch/cut", nil)

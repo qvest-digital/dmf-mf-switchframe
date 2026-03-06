@@ -37,7 +37,7 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"missing or invalid authorization header"}`))
+				_, _ = w.Write([]byte(`{"error":"missing or invalid authorization header"}`))
 				return
 			}
 
@@ -46,7 +46,7 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
 				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"invalid token"}`))
+				_, _ = w.Write([]byte(`{"error":"invalid token"}`))
 				return
 			}
 

@@ -82,7 +82,7 @@ func TestReconnect_RingBufferPreservesData(t *testing.T) {
 	require.Equal(t, int64(188*4), mock2.written.Load(),
 		"new write should go directly to the reconnected connection")
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestReconnect_ResumesFromKeyframe(t *testing.T) {
@@ -99,7 +99,7 @@ func TestReconnect_ResumesFromKeyframe(t *testing.T) {
 
 	// Write enough data to overflow the ring buffer.
 	bigData := make([]byte, 512)
-	c.ringBuf.Write(bigData)
+	_, _ = c.ringBuf.Write(bigData)
 	require.True(t, c.ringBuf.Overflowed(), "ring buffer should have overflowed")
 
 	// Reconnect with a fresh mock.
@@ -159,7 +159,7 @@ func TestReconnect_ResumesFromKeyframe(t *testing.T) {
 	require.Equal(t, int64(188*2), mock.written.Load(),
 		"delta frame should pass through after IDR gate is cleared")
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestReconnect_OverflowCallback(t *testing.T) {
@@ -175,7 +175,7 @@ func TestReconnect_OverflowCallback(t *testing.T) {
 	c.state.Store(StateReconnecting)
 
 	// Overflow the ring buffer.
-	c.ringBuf.Write(make([]byte, 256))
+	_, _ = c.ringBuf.Write(make([]byte, 256))
 	require.True(t, c.ringBuf.Overflowed())
 
 	// Track the callback.
@@ -209,7 +209,7 @@ func TestReconnect_OverflowCallback(t *testing.T) {
 		"onReconnect callback should report overflowed=true")
 	mu.Unlock()
 
-	c.Close()
+	_ = c.Close()
 }
 
 func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
@@ -226,7 +226,7 @@ func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
 
 	// Write exactly 3 TS packets — well within the buffer capacity.
 	for i := 0; i < 3; i++ {
-		c.ringBuf.Write(makeTSPacket(0x100, i == 0))
+		_, _ = c.ringBuf.Write(makeTSPacket(0x100, i == 0))
 	}
 	require.False(t, c.ringBuf.Overflowed(), "ring buffer should not overflow")
 	require.Equal(t, 188*3, c.ringBuf.Len())
@@ -276,5 +276,5 @@ func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
 	require.Equal(t, int64(188*4), mock.written.Load(),
 		"delta frame should pass through without IDR gate")
 
-	c.Close()
+	_ = c.Close()
 }

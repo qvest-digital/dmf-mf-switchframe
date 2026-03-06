@@ -30,7 +30,7 @@ func StartAdminServer(ctx context.Context, addr string) (stop func()) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
 	// Readiness probe — 503 until readyFlag is set, then 200.
@@ -38,11 +38,11 @@ func StartAdminServer(ctx context.Context, addr string) (stop func()) {
 		w.Header().Set("Content-Type", "application/json")
 		if !readyFlag.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "not_ready"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "not_ready"})
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	})
 
 	// Go pprof — net/http/pprof registers on http.DefaultServeMux via init().

@@ -25,7 +25,7 @@ func createTestPNG(t *testing.T, dir, name string, w, h int, c color.NRGBA) {
 	}
 	f, err := os.Create(filepath.Join(dir, name))
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	require.NoError(t, png.Encode(f, img))
 }
 

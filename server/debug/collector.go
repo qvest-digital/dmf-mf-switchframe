@@ -53,5 +53,7 @@ func (c *Collector) Snapshot() map[string]any {
 // HandleSnapshot is the HTTP handler for GET /api/debug/snapshot.
 func (c *Collector) HandleSnapshot(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(c.Snapshot())
+	if err := json.NewEncoder(w).Encode(c.Snapshot()); err != nil {
+		http.Error(w, "failed to encode snapshot", http.StatusInternalServerError)
+	}
 }

@@ -153,11 +153,11 @@ func (m *AudioMixer) Close() error {
 	defer m.mu.Unlock()
 	for _, ch := range m.channels {
 		if ch.decoder != nil {
-			ch.decoder.Close()
+			_ = ch.decoder.Close()
 		}
 	}
 	if m.encoder != nil {
-		m.encoder.Close()
+		_ = m.encoder.Close()
 	}
 	return nil
 }
@@ -213,7 +213,7 @@ func (m *AudioMixer) mixDeadlineTicker() {
 // Caller must hold m.mu write lock. The lock is held for the entire call.
 // Callers are responsible for calling m.output() after releasing the lock.
 func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
-	if m.mixBuffer == nil || len(m.mixBuffer) == 0 {
+	if len(m.mixBuffer) == 0 {
 		m.resetMixCycleLocked()
 		return nil
 	}
@@ -323,7 +323,7 @@ func (m *AudioMixer) RemoveChannel(sourceKey string) {
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
 		if ch.decoder != nil {
-			ch.decoder.Close()
+			_ = ch.decoder.Close()
 		}
 		delete(m.channels, sourceKey)
 		delete(m.lastDecodedPCM, sourceKey)

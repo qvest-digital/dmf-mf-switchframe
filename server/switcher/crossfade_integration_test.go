@@ -31,7 +31,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -53,8 +53,8 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	mixer.AddChannel("cam1")
 	mixer.AddChannel("cam2")
-	mixer.SetAFV("cam1", true)
-	mixer.SetAFV("cam2", true)
+	_ = mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam2", true)
 
 	// Cut to cam1 to establish the program source.
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
@@ -72,7 +72,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 		"audio transition position should start at 0.0")
 
 	// Advance the T-bar position to 0.3.
-	sw.SetTransitionPosition(context.Background(), 0.3)
+	_ = sw.SetTransitionPosition(context.Background(), 0.3)
 	require.InDelta(t, 0.3, mixer.TransitionPosition(), 0.01,
 		"audio transition position should track video at 0.3")
 
@@ -84,7 +84,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 		"at 0.3, old source should be louder than new source")
 
 	// Advance to 0.5 (midpoint).
-	sw.SetTransitionPosition(context.Background(), 0.5)
+	_ = sw.SetTransitionPosition(context.Background(), 0.5)
 	require.InDelta(t, 0.5, mixer.TransitionPosition(), 0.01,
 		"audio transition position should track video at 0.5")
 	oldGain, newGain = mixer.TransitionGains()
@@ -93,7 +93,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 		"at midpoint, old and new gains should be approximately equal")
 
 	// Advance to 0.8.
-	sw.SetTransitionPosition(context.Background(), 0.8)
+	_ = sw.SetTransitionPosition(context.Background(), 0.8)
 	require.InDelta(t, 0.8, mixer.TransitionPosition(), 0.01,
 		"audio transition position should track video at 0.8")
 	oldGain, newGain = mixer.TransitionGains()
@@ -128,7 +128,7 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 			programRelay.BroadcastAudio(frame)
 		},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -147,8 +147,8 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	mixer.AddChannel("cam1")
 	mixer.AddChannel("cam2")
-	mixer.SetAFV("cam1", true)
-	mixer.SetAFV("cam2", true)
+	_ = mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam2", true)
 
 	// Cut to cam1.
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
@@ -191,7 +191,7 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { programRelay.BroadcastAudio(frame) },
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -212,8 +212,8 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	mixer.AddChannel("cam1")
 	mixer.AddChannel("cam2")
-	mixer.SetAFV("cam1", true)
-	mixer.SetAFV("cam2", true)
+	_ = mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam2", true)
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
@@ -264,7 +264,7 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	sw.SetMixer(mixer)
 	sw.SetTransitionConfig(TransitionConfig{
@@ -282,8 +282,8 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	mixer.AddChannel("cam1")
 	mixer.AddChannel("cam2")
-	mixer.SetAFV("cam1", true)
-	mixer.SetAFV("cam2", true)
+	_ = mixer.SetAFV("cam1", true)
+	_ = mixer.SetAFV("cam2", true)
 
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
@@ -293,7 +293,7 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	positions := []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9}
 	prevPos := 0.0
 	for _, pos := range positions {
-		sw.SetTransitionPosition(context.Background(), pos)
+		_ = sw.SetTransitionPosition(context.Background(), pos)
 		currentPos := mixer.TransitionPosition()
 		require.GreaterOrEqual(t, currentPos, prevPos,
 			"audio position should increase monotonically: prev=%f current=%f", prevPos, currentPos)

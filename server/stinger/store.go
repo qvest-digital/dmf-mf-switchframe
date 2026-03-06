@@ -214,7 +214,7 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 	// Extract PNGs from zip
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
-		os.RemoveAll(dir) // clean up on failure
+		_ = os.RemoveAll(dir) // clean up on failure
 		return fmt.Errorf("open zip: %w", err)
 	}
 
@@ -232,37 +232,37 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 
 		rc, err := f.Open()
 		if err != nil {
-			os.RemoveAll(dir)
+			_ = os.RemoveAll(dir)
 			return fmt.Errorf("open zip entry %s: %w", f.Name, err)
 		}
 
 		outPath := filepath.Join(dir, baseName)
 		outFile, err := os.Create(outPath)
 		if err != nil {
-			rc.Close()
-			os.RemoveAll(dir)
+			_ = rc.Close()
+			_ = os.RemoveAll(dir)
 			return fmt.Errorf("create file %s: %w", baseName, err)
 		}
 
 		_, err = io.Copy(outFile, rc)
-		rc.Close()
-		outFile.Close()
+		_ = rc.Close()
+		_ = outFile.Close()
 		if err != nil {
-			os.RemoveAll(dir)
+			_ = os.RemoveAll(dir)
 			return fmt.Errorf("write file %s: %w", baseName, err)
 		}
 		pngCount++
 	}
 
 	if pngCount == 0 {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return fmt.Errorf("zip contains no PNG files")
 	}
 
 	// Load the clip
 	clip, err := s.loadClip(name)
 	if err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return fmt.Errorf("load clip: %w", err)
 	}
 
@@ -325,7 +325,7 @@ func loadPNGFrame(path string) (*StingerFrame, int, int, error) {
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	img, err := png.Decode(f)
 	if err != nil {

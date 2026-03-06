@@ -84,8 +84,8 @@ func TestListPresets(t *testing.T) {
 		t.Fatalf("expected empty list, got %d", len(presets))
 	}
 
-	ps.Create("Preset A", testSnapshot())
-	ps.Create("Preset B", testSnapshot())
+	_, _ = ps.Create("Preset A", testSnapshot())
+	_, _ = ps.Create("Preset B", testSnapshot())
 
 	presets := ps.List()
 	if len(presets) != 2 {
@@ -188,8 +188,8 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPresetStore: %v", err)
 	}
-	ps1.Create("Preset 1", testSnapshot())
-	ps1.Create("Preset 2", testSnapshot())
+	_, _ = ps1.Create("Preset 1", testSnapshot())
+	_, _ = ps1.Create("Preset 2", testSnapshot())
 
 	// Load from same file in a new store
 	ps2, err := NewPresetStore(fp)

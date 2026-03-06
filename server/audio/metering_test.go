@@ -71,7 +71,7 @@ func TestMixerProgramPeak(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	// Before any metering, peaks should be -96 dBFS (silence floor)
 	peak := m.ProgramPeak()
@@ -85,12 +85,12 @@ func TestMixerChannelStates(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
-	m.SetLevel("cam1", -6.0)
-	m.SetMuted("cam2", true)
+	_ = m.SetLevel("cam1", -6.0)
+	_ = m.SetMuted("cam2", true)
 
 	states := m.ChannelStates()
 	require.Len(t, states, 2)
@@ -105,7 +105,7 @@ func TestMixer_DebugSnapshot(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	snap := m.DebugSnapshot()
 	if snap["mode"] != "passthrough" {
@@ -125,7 +125,7 @@ func TestMixerMasterLevelGetter(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	require.Equal(t, 0.0, m.MasterLevel())
 

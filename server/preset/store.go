@@ -131,11 +131,7 @@ func (ps *PresetStore) Create(name string, state ControlRoomSnapshot) (Preset, e
 
 	channels := make(map[string]AudioChannelPreset, len(state.AudioChannels))
 	for k, ch := range state.AudioChannels {
-		channels[k] = AudioChannelPreset{
-			Level: ch.Level,
-			Muted: ch.Muted,
-			AFV:   ch.AFV,
-		}
+		channels[k] = AudioChannelPreset(ch)
 	}
 
 	p := Preset{
@@ -220,17 +216,17 @@ func (ps *PresetStore) save() error {
 	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp file: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, ps.filePath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 

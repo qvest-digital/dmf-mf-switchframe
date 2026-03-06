@@ -59,7 +59,7 @@ func TestSourceInfoHealthStatus(t *testing.T) {
 			si := SourceInfo{Key: "cam1", Status: tt.status}
 			data, _ := json.Marshal(si)
 			var decoded SourceInfo
-			json.Unmarshal(data, &decoded)
+			_ = json.Unmarshal(data, &decoded)
 			if decoded.Status != tt.status {
 				t.Errorf("got %q, want %q", decoded.Status, tt.status)
 			}

@@ -44,10 +44,10 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 			t.Fatal(err)
 		}
 		if err := png.Encode(f, img); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatal(err)
 		}
-		f.Close()
+		_ = f.Close()
 	}
 
 	store, err := stinger.NewStingerStore(dir, 0)
@@ -69,7 +69,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 			return transition.NewMockEncoder(), nil
 		},
 	})
-	sw.Cut(context.Background(), "camera1")
+	_ = sw.Cut(context.Background(), "camera1")
 
 	api := NewAPI(sw, WithStingerStore(store))
 	t.Cleanup(func() { sw.Close() })

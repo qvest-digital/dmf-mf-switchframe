@@ -39,7 +39,7 @@ func TestMixerPassthrough(t *testing.T) {
 			mu.Unlock()
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -63,7 +63,7 @@ func TestMixerIgnoresInactiveChannel(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { output = append(output, frame) },
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	// cam1 is inactive (not activated) — frames should be dropped
@@ -81,11 +81,11 @@ func TestMixerMutedChannelSilent(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) { output = append(output, frame) },
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
-	m.SetMuted("cam1", true)
+	_ = m.SetMuted("cam1", true)
 
 	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
 	m.IngestFrame("cam1", frame)
@@ -100,7 +100,7 @@ func TestMixerPassthroughFlag(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -118,11 +118,11 @@ func TestMixerPassthroughFlag(t *testing.T) {
 	require.True(t, m.IsPassthrough())
 
 	// One active but non-zero level → not passthrough
-	m.SetLevel("cam1", -6.0)
+	_ = m.SetLevel("cam1", -6.0)
 	require.False(t, m.IsPassthrough())
 
 	// Reset level
-	m.SetLevel("cam1", 0.0)
+	_ = m.SetLevel("cam1", 0.0)
 	require.True(t, m.IsPassthrough())
 }
 
@@ -157,7 +157,7 @@ func TestMixerMultiChannelMixing(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -209,7 +209,7 @@ func TestMixerMasterLevel(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -236,7 +236,7 @@ func TestMixerSetMasterLevel(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -269,11 +269,11 @@ func TestMixerChannelGainApplied(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
-	m.SetLevel("cam1", -6.0)
+	_ = m.SetLevel("cam1", -6.0)
 	require.False(t, m.IsPassthrough())
 
 	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
@@ -305,13 +305,13 @@ func TestMixerMutedChannelInMixMode(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 	m.SetActive("cam2", true)
-	m.SetMuted("cam2", true) // cam2 muted — still two active channels, but muted frames are dropped
+	_ = m.SetMuted("cam2", true) // cam2 muted — still two active channels, but muted frames are dropped
 
 	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
 	m.IngestFrame("cam1", frame)
@@ -348,7 +348,7 @@ func TestMixerOnCutCrossfade(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &allCapturedPCM[idx]}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -403,7 +403,7 @@ func TestMixerCrossfadeClears(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -445,7 +445,7 @@ func TestMixerCrossfadeTimeout(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -475,7 +475,7 @@ func TestMixerSetAFV(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 
@@ -492,14 +492,14 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 
 	// Both channels have AFV enabled
-	m.SetAFV("cam1", true)
-	m.SetAFV("cam2", true)
+	_ = m.SetAFV("cam1", true)
+	_ = m.SetAFV("cam2", true)
 
 	// Initially neither is active (no program source set yet)
 	require.False(t, m.IsChannelActive("cam1"))
@@ -522,13 +522,13 @@ func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("music")
 
 	// cam1 has AFV, music does not
-	m.SetAFV("cam1", true)
+	_ = m.SetAFV("cam1", true)
 	// music is manually activated and stays on regardless of program changes
 	m.SetActive("music", true)
 
@@ -550,17 +550,17 @@ func TestMixerAFVToggledOff(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
-	m.SetAFV("cam1", true)
+	_ = m.SetAFV("cam1", true)
 
 	// Activate via program change
 	m.OnProgramChange("cam1")
 	require.True(t, m.IsChannelActive("cam1"))
 
 	// Turn off AFV — channel stays active (was already active)
-	m.SetAFV("cam1", false)
+	_ = m.SetAFV("cam1", false)
 	require.True(t, m.IsChannelActive("cam1"), "turning off AFV should not deactivate")
 
 	// Now program changes should not affect cam1
@@ -574,7 +574,7 @@ func TestMixerIsChannelActive(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	// Unknown channel returns false
 	require.False(t, m.IsChannelActive("unknown"))
@@ -592,7 +592,7 @@ func TestMixerOnTransitionStart(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -622,7 +622,7 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -644,7 +644,7 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -666,7 +666,7 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -700,7 +700,7 @@ func TestMixerTransitionGainsNotActive(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	oldGain, newGain := m.TransitionGains()
 	require.InDelta(t, 1.0, oldGain, 0.001, "old gain when inactive")
@@ -730,7 +730,7 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -776,7 +776,7 @@ func TestMixerTransitionFTBReverseGains(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -809,7 +809,7 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -854,7 +854,7 @@ func TestMixerProgramMute(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -901,7 +901,7 @@ func TestMixerTransitionDipGains(t *testing.T) {
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -961,7 +961,7 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -1016,7 +1016,7 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1075,7 +1075,7 @@ func TestMixerDeadlockPrevention(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -1123,7 +1123,7 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1185,7 +1185,7 @@ func TestMixerCrossfadePreSeedAppliesGain(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &allCapturedPCM[idx]}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -1199,7 +1199,7 @@ func TestMixerCrossfadePreSeedAppliesGain(t *testing.T) {
 	m.mu.Unlock()
 
 	// Set cam1 trim to -6dB — this should apply to the pre-seeded PCM
-	m.SetTrim("cam1", -6.0)
+	_ = m.SetTrim("cam1", -6.0)
 
 	// Send frames from cam1 to populate lastDecodedPCM
 	for i := 0; i < 3; i++ {
@@ -1214,7 +1214,7 @@ func TestMixerCrossfadePreSeedAppliesGain(t *testing.T) {
 	m.OnCut("cam1", "cam2")
 
 	// Send one frame from cam2 (at 0dB trim, 0dB level → gain=1.0)
-	m.SetTrim("cam2", 0)
+	_ = m.SetTrim("cam2", 0)
 	m.IngestFrame("cam2", &media.AudioFrame{
 		PTS: 3 * 1024, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2,
 	})
@@ -1241,7 +1241,7 @@ func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1283,7 +1283,7 @@ func TestMixerTrimAppliedBeforeFader(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1319,7 +1319,7 @@ func TestMixerTrimBreaksPassthrough(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1328,7 +1328,7 @@ func TestMixerTrimBreaksPassthrough(t *testing.T) {
 	require.True(t, m.IsPassthrough())
 
 	// Set non-zero trim
-	m.SetTrim("cam1", -3.0)
+	_ = m.SetTrim("cam1", -3.0)
 
 	// Should break passthrough
 	require.False(t, m.IsPassthrough())
@@ -1340,7 +1340,7 @@ func TestMixerTrimRangeValidation(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 
@@ -1368,7 +1368,7 @@ func TestMixerPerChannelPeaks(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
@@ -1409,7 +1409,7 @@ func TestMixerTransitionCrossfadeWithTrim(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -1490,7 +1490,7 @@ func TestMixerCrossfadeUsesPreBufferedPCM(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -1543,7 +1543,7 @@ func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")

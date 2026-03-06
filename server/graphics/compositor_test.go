@@ -81,7 +81,7 @@ func TestCompositor_Toggle(t *testing.T) {
 	defer c.Close()
 
 	overlay := makeTestOverlay(320, 240)
-	c.SetOverlay(overlay, 320, 240, "full-screen")
+	_ = c.SetOverlay(overlay, 320, 240, "full-screen")
 
 	// CUT ON
 	if err := c.On(); err != nil {
@@ -134,7 +134,7 @@ func TestCompositor_AutoOnAutoOff(t *testing.T) {
 	})
 
 	overlay := makeTestOverlay(320, 240)
-	c.SetOverlay(overlay, 320, 240, "ticker")
+	_ = c.SetOverlay(overlay, 320, 240, "ticker")
 
 	// AUTO ON with short duration for testing
 	if err := c.AutoOn(50 * time.Millisecond); err != nil {
@@ -184,8 +184,8 @@ func TestCompositor_AutoOnAutoOff(t *testing.T) {
 func TestCompositor_Close(t *testing.T) {
 	c := NewCompositor()
 	overlay := makeTestOverlay(320, 240)
-	c.SetOverlay(overlay, 320, 240, "test")
-	c.On()
+	_ = c.SetOverlay(overlay, 320, 240, "test")
+	_ = c.On()
 
 	c.Close()
 
@@ -217,7 +217,7 @@ func TestCompositor_FadeActiveError(t *testing.T) {
 	defer c.Close()
 
 	overlay := makeTestOverlay(320, 240)
-	c.SetOverlay(overlay, 320, 240, "test")
+	_ = c.SetOverlay(overlay, 320, 240, "test")
 
 	// Start a long fade
 	if err := c.AutoOn(5 * time.Second); err != nil {
@@ -236,7 +236,7 @@ func TestCompositor_CutDuringFade(t *testing.T) {
 	defer c.Close()
 
 	overlay := makeTestOverlay(320, 240)
-	c.SetOverlay(overlay, 320, 240, "test")
+	_ = c.SetOverlay(overlay, 320, 240, "test")
 
 	// Start a long fade
 	if err := c.AutoOn(5 * time.Second); err != nil {

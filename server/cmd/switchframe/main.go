@@ -72,7 +72,7 @@ func (r *streamCallbackRouter) OnRegistered(key string, relay *distribution.Rela
 	slog.Info("stream registered, adding source", "key", key)
 	sw.RegisterSource(key, relay)
 	mixer.AddChannel(key)
-	mixer.SetAFV(key, true) // cameras default to audio-follows-video
+	_ = mixer.SetAFV(key, true) // cameras default to audio-follows-video
 }
 
 // OnUnregistered handles a removed stream. It skips the "program" stream and
@@ -156,7 +156,7 @@ func run() error {
 		slog.Info("API authentication enabled", "token_prefix", apiToken[:8]+"...")
 		// Print full token to stdout (not stderr) so operators can capture it
 		// without it leaking into log files routed from stderr.
-		fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", apiToken)
+		_, _ = fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", apiToken)
 	}
 
 	// Generate self-signed TLS certificate for WebTransport (≤14 days validity).
@@ -234,7 +234,7 @@ func run() error {
 		},
 	})
 	mixer.SetMetrics(appMetrics)
-	defer mixer.Close()
+	defer func() { _ = mixer.Close() }()
 
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	sw := switcher.New(programRelay)
@@ -272,7 +272,7 @@ func run() error {
 	outputMgr := output.NewOutputManager(programRelay)
 	outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	outputMgr.SetMetrics(appMetrics)
-	defer outputMgr.Close()
+	defer func() { _ = outputMgr.Close() }()
 
 	// Attach confidence monitor for 1fps program output thumbnail.
 	// Lifecycle is owned by outputMgr — its Close() closes the monitor.
@@ -466,7 +466,7 @@ func run() error {
 	apiMux.HandleFunc("GET /api/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"hash": cert.FingerprintBase64(),
 			"addr": addr,
 		})

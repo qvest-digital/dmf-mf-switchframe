@@ -422,15 +422,15 @@ export function createMediaPipeline(): MediaPipeline {
 			// Get diagnostics from first renderer (tile renderer)
 			let rendererDiag: Record<string, unknown> | null = null;
 			for (const renderer of source.renderers.values()) {
-				rendererDiag = renderer.getDiagnostics();
+				rendererDiag = renderer.getDiagnostics() as unknown as Record<string, unknown>;
 				break;
 			}
 
 			result[key] = {
 				renderer: rendererDiag,
-				videoDecoder: await source.videoDecoder.getDiagnostics(),
-				audio: source.audioDecoder?.getDiagnostics() ?? null,
-				transport: source.transport?.getDiagnostics() ?? null,
+				videoDecoder: await source.videoDecoder.getDiagnostics() as unknown as Record<string, unknown>,
+				audio: (source.audioDecoder?.getDiagnostics() ?? null) as Record<string, unknown> | null,
+				transport: (source.transport?.getDiagnostics() ?? null) as Record<string, unknown> | null,
 			};
 		}
 		return result;
