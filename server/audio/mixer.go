@@ -74,6 +74,7 @@ type AudioMixer struct {
 	// Background ticker for deadline enforcement
 	stopTicker chan struct{}
 	tickerWg   sync.WaitGroup
+	closeOnce  sync.Once
 
 	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
 	lastDecodedPCM map[string][]float32
@@ -148,8 +149,9 @@ func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
 }
 
 // Close releases all codec resources and stops the background ticker.
+// It is safe to call multiple times.
 func (m *AudioMixer) Close() error {
-	close(m.stopTicker)
+	m.closeOnce.Do(func() { close(m.stopTicker) })
 	m.tickerWg.Wait()
 	m.mu.Lock()
 	defer m.mu.Unlock()

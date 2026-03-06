@@ -2,6 +2,7 @@ package output
 
 import (
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"github.com/zsiec/ccx"
@@ -40,6 +41,7 @@ type OutputViewer struct {
 	muxer    *TSMuxer
 	onVideo  func(*media.VideoFrame) // optional callback for confidence monitor
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	done     chan struct{}
 }
 
@@ -147,8 +149,9 @@ func (v *OutputViewer) Run() {
 }
 
 // Stop signals the drain goroutine to exit and waits for it to finish.
+// It is safe to call multiple times.
 func (v *OutputViewer) Stop() {
-	close(v.stopCh)
+	v.stopOnce.Do(func() { close(v.stopCh) })
 	<-v.done
 }
 

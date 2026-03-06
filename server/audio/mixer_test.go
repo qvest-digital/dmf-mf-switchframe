@@ -54,6 +54,17 @@ func TestMixerPassthrough(t *testing.T) {
 	mu.Unlock()
 }
 
+func TestMixerCloseIdempotent(t *testing.T) {
+	t.Parallel()
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(_ *media.AudioFrame) {},
+	})
+	require.NoError(t, m.Close())
+	require.NoError(t, m.Close(), "second Close must not panic")
+}
+
 func TestMixerIgnoresInactiveChannel(t *testing.T) {
 	var output []*media.AudioFrame
 
