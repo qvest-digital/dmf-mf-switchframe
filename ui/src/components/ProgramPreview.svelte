@@ -77,7 +77,7 @@
 		<div class="monitor-label preview-label">PREVIEW</div>
 		<div class="monitor-viewport">
 			<canvas bind:this={previewCanvas}></canvas>
-			<span class="source-name">{state.sources[state.previewSource]?.label || state.previewSource || '—'}</span>
+			<div class="source-label">{state.sources[state.previewSource]?.label || state.previewSource || '—'}</div>
 		</div>
 	</div>
 	<div class="monitor program-monitor">
@@ -85,7 +85,7 @@
 		<div class="monitor-viewport">
 			<canvas bind:this={programCanvas}></canvas>
 			<canvas bind:this={overlayCanvas} class="graphics-overlay"></canvas>
-			<span class="source-name">{programLabel}</span>
+			<div class="source-label">{programLabel}</div>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} />
 		</div>
 	</div>
@@ -173,14 +173,19 @@
 		z-index: 1;
 	}
 
-	.source-name {
+	.source-label {
+		position: absolute;
+		bottom: 8px;
+		left: 8px;
 		font-family: var(--font-mono);
-		font-size: 1.25rem;
+		font-size: 0.75rem;
 		font-weight: 500;
-		color: var(--text-tertiary);
-		position: relative;
-		z-index: 1;
+		color: #fff;
+		background: rgba(0, 0, 0, 0.6);
+		padding: 2px 8px;
+		border-radius: var(--radius-sm);
 		pointer-events: none;
+		z-index: 2;
 		letter-spacing: 0.02em;
 	}
 </style>
