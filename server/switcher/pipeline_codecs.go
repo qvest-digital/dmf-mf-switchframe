@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 
@@ -28,6 +29,10 @@ type pipelineCodecs struct {
 
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
+
+	// Last-known SPS/PPS for deduplication — only fire callback on change.
+	lastSPS []byte
+	lastPPS []byte
 }
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
 // to raw YUV420. Lazy-initializes the decoder on the first keyframe.
@@ -145,11 +150,27 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 		}
 		if frame.SPS != nil && frame.PPS != nil && pc.onVideoInfoChange != nil {
-			pc.onVideoInfoChange(frame.SPS, frame.PPS, pc.encWidth, pc.encHeight)
+			if !bytes.Equal(frame.SPS, pc.lastSPS) || !bytes.Equal(frame.PPS, pc.lastPPS) {
+				pc.lastSPS = append(pc.lastSPS[:0], frame.SPS...)
+				pc.lastPPS = append(pc.lastPPS[:0], frame.PPS...)
+				pc.onVideoInfoChange(frame.SPS, frame.PPS, pc.encWidth, pc.encHeight)
+			}
 		}
 	}
 
 	return frame, nil
+}
+
+// resetDecoder closes the current decoder so it is recreated fresh on the
+// next keyframe. Call this when the program source changes to avoid stale
+// reference frames from the old source causing H.264 decode warnings.
+func (pc *pipelineCodecs) resetDecoder() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.decoder != nil {
+		pc.decoder.Close()
+		pc.decoder = nil
+	}
 }
 
 // updateSourceStats propagates the program source's estimated bitrate and FPS
