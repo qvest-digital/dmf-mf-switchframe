@@ -381,3 +381,34 @@ func TestBlendWipeAllDirectionsValid(t *testing.T) {
 		require.True(t, hasA || hasB, "dir=%s should produce non-zero output", dir)
 	}
 }
+
+func TestBlendStinger_BoundsCheck(t *testing.T) {
+	fb := NewFrameBlender(4, 4)
+
+	validBase := makeYUVFrame(4, 4, 128, 128, 128)
+	validStinger := makeYUVFrame(4, 4, 200, 128, 128)
+	validAlpha := make([]byte, 4*4)
+	for i := range validAlpha {
+		validAlpha[i] = 128
+	}
+
+	// Valid inputs should produce output.
+	result := fb.BlendStinger(validBase, validStinger, validAlpha)
+	require.NotNil(t, result, "valid inputs should produce output")
+
+	// Undersized base should return nil.
+	result = fb.BlendStinger(validBase[:5], validStinger, validAlpha)
+	require.Nil(t, result, "undersized base should return nil")
+
+	// Undersized stinger should return nil.
+	result = fb.BlendStinger(validBase, validStinger[:5], validAlpha)
+	require.Nil(t, result, "undersized stinger should return nil")
+
+	// Undersized alpha should return nil.
+	result = fb.BlendStinger(validBase, validStinger, validAlpha[:5])
+	require.Nil(t, result, "undersized alpha should return nil")
+
+	// Empty slices should return nil.
+	result = fb.BlendStinger(nil, validStinger, validAlpha)
+	require.Nil(t, result, "nil base should return nil")
+}
