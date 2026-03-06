@@ -194,7 +194,6 @@ func (a *App) initCoreEngine() error {
 	// Configure transition engine with auto-detected video codec.
 	a.sw.SetTransitionConfig(switcher.TransitionConfig{
 		DecoderFactory: decoderFactory(),
-		EncoderFactory: encoderFactory(),
 	})
 
 	return nil

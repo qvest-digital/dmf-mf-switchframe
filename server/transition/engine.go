@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Default encoder parameters used when Bitrate/FPS are not set.
+// Default encoder parameters for the pipeline codec pool.
 const (
 	DefaultBitrate = 4_000_000 // 4 Mbps
 	DefaultFPS     = 30.0
@@ -151,8 +151,8 @@ func (e *TransitionEngine) ToSource() string {
 	return e.toSource
 }
 
-// Start initializes the transition pipeline. Creates decoders, encoder,
-// and blender. Returns error if already active.
+// Start initializes the transition pipeline. Creates decoders and blender.
+// Returns error if already active.
 func (e *TransitionEngine) Start(from, to string, ttype TransitionType, durationMs int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -464,7 +464,7 @@ func (e *TransitionEngine) Abort() {
 	}
 }
 
-// Stop tears down decoders/encoder and resets state.
+// Stop tears down decoders and resets state.
 func (e *TransitionEngine) Stop() {
 	e.mu.Lock()
 	e.cleanup()

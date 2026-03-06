@@ -41,9 +41,6 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 
 	// Register two sources with AFV.
@@ -201,9 +198,6 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 
 	cam1Relay := newTestRelay()
@@ -270,9 +264,6 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	sw.SetTransitionConfig(TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	})
 

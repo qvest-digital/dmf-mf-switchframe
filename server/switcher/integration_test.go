@@ -341,9 +341,6 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 
 	cam1Relay := newTestRelay()
@@ -378,9 +375,11 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	sw := New(programRelay)
 	defer sw.Close()
 
-	codecs := mockTransitionCodecs()
-	sw.SetTransitionConfig(codecs)
-	sw.SetPipelineCodecs(codecs.DecoderFactory, codecs.EncoderFactory)
+	sw.SetTransitionConfig(mockTransitionCodecs())
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -423,9 +422,6 @@ func TestIntegrationDissolveCompletesAndResumesPassthrough(t *testing.T) {
 	sw.SetTransitionConfig(TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	})
 	sw.SetPipelineCodecs(
@@ -486,9 +482,6 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
@@ -530,9 +523,6 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 	sw.SetTransitionConfig(TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	})
 	sw.SetPipelineCodecs(
@@ -584,9 +574,6 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 
 	cam1Relay := newTestRelay()
@@ -637,9 +624,6 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 	sw.SetTransitionConfig(TransitionConfig{
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	})
 

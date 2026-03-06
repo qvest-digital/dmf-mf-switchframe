@@ -58,6 +58,33 @@ func TestCompositorProcessYUV_ResolutionMismatch(t *testing.T) {
 	require.Equal(t, yuv, result)
 }
 
+func TestCompositorProcessYUV_OddDimensions(t *testing.T) {
+	c := NewCompositor()
+	rgba := make([]byte, 4*4*4)
+	for i := 3; i < len(rgba); i += 4 {
+		rgba[i] = 255
+	}
+	require.NoError(t, c.SetOverlay(rgba, 4, 4, "test"))
+	require.NoError(t, c.On())
+
+	// Odd width
+	yuv := []byte{1, 2, 3}
+	result := c.ProcessYUV(yuv, 3, 4)
+	require.Equal(t, yuv, result, "odd width should return input unchanged")
+
+	// Odd height
+	result = c.ProcessYUV(yuv, 4, 3)
+	require.Equal(t, yuv, result, "odd height should return input unchanged")
+
+	// Zero dimensions
+	result = c.ProcessYUV(yuv, 0, 4)
+	require.Equal(t, yuv, result, "zero width should return input unchanged")
+
+	// Negative dimensions
+	result = c.ProcessYUV(yuv, -2, 4)
+	require.Equal(t, yuv, result, "negative width should return input unchanged")
+}
+
 func TestCompositorProcessYUV_FadePosition(t *testing.T) {
 	c := NewCompositor()
 

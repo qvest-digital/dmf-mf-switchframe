@@ -306,6 +306,10 @@ func (c *Compositor) cancelFadeLocked() {
 // This is the codec-free processor used by the pipeline coordinator.
 // When inactive or when the overlay resolution doesn't match, returns yuv unchanged.
 func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
+	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
+		return yuv // YUV420 requires even positive dimensions
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

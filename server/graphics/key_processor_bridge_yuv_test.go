@@ -64,6 +64,26 @@ func TestBridgeProcessYUV_WithFill(t *testing.T) {
 	require.Equal(t, yuvSize, len(result))
 }
 
+func TestBridgeProcessYUV_OddDimensions(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{Type: KeyTypeLuma, Enabled: true})
+	bridge := NewKeyProcessorBridge(kp)
+
+	yuv := []byte{1, 2, 3}
+
+	// Odd width
+	result := bridge.ProcessYUV(yuv, 3, 4)
+	require.Equal(t, yuv, result, "odd width should return input unchanged")
+
+	// Odd height
+	result = bridge.ProcessYUV(yuv, 4, 3)
+	require.Equal(t, yuv, result, "odd height should return input unchanged")
+
+	// Zero dimensions
+	result = bridge.ProcessYUV(yuv, 0, 4)
+	require.Equal(t, yuv, result, "zero width should return input unchanged")
+}
+
 func TestBridgeProcessYUV_NoFills(t *testing.T) {
 	kp := NewKeyProcessor()
 	kp.SetKey("cam1", KeyConfig{Type: KeyTypeLuma, Enabled: true})

@@ -110,9 +110,6 @@ func TestStress_CutDuringTransition(t *testing.T) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 
 	cam1Relay := newTestRelay()

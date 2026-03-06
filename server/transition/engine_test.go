@@ -301,7 +301,7 @@ func TestEngineFTBReverseBlendInvertsPosition(t *testing.T) {
 	// This is the opposite of regular FTB.
 	//
 	// We test this by using a very short duration (1ms) and a very long duration (60s)
-	// to control position, then checking the blended output via the mock encoder.
+	// to control position, then checking the blended output via the raw YUV output callback.
 
 	// We'll use a custom approach: create an engine with a custom decoder that produces
 	// known YUV data, then verify the output differs from regular FTB.

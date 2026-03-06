@@ -58,9 +58,6 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(320, 240), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	})
 	_ = sw.Cut(context.Background(), "camera1")
 

@@ -19,9 +19,6 @@ func mockTransitionCodecs() TransitionConfig {
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return transition.NewMockDecoder(4, 4), nil
 		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
 	}
 }
 
@@ -49,9 +46,6 @@ func slowTransitionCodecs(decodeDelay time.Duration) TransitionConfig {
 				inner: transition.NewMockDecoder(4, 4),
 				delay: decodeDelay,
 			}, nil
-		},
-		EncoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	}
 }
@@ -107,7 +101,10 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 
 	sw := New(programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
-	sw.SetPipelineCodecs(mockTransitionCodecs().DecoderFactory, mockTransitionCodecs().EncoderFactory)
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -171,9 +168,11 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	codecs := mockTransitionCodecs()
-	sw.SetTransitionConfig(codecs)
-	sw.SetPipelineCodecs(codecs.DecoderFactory, codecs.EncoderFactory)
+	sw.SetTransitionConfig(mockTransitionCodecs())
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+	)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()

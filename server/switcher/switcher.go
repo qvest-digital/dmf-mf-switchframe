@@ -131,7 +131,6 @@ type audioTransitionHandler interface {
 // TransitionConfig holds the codec factories needed to create TransitionEngines.
 type TransitionConfig struct {
 	DecoderFactory transition.DecoderFactory
-	EncoderFactory transition.EncoderFactory // convenience: passed to SetPipelineCodecs, not used by engine
 }
 
 // TransitionOption configures optional parameters for StartTransition.

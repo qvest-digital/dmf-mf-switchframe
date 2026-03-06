@@ -136,6 +136,10 @@ func (b *KeyProcessorBridge) HasEnabledKeysWithFills() bool {
 // This is the codec-free processor used by the pipeline coordinator.
 // When no keys are enabled or no fills are cached, returns yuv unchanged.
 func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
+	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
+		return yuv // YUV420 requires even positive dimensions
+	}
+
 	if !b.kp.HasEnabledKeys() {
 		return yuv
 	}
