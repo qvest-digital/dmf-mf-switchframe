@@ -74,6 +74,17 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 	h->ctx->thread_count = 4;
 
+	// Set explicit H.264 level for downstream decoder compatibility.
+	// Level 3.1 for ≤720p, 4.0 for ≤1080p30, 4.2 for higher.
+	int level;
+	if (width <= 1280 && height <= 720) {
+		level = 31; // Level 3.1
+	} else if (width <= 1920 && height <= 1080 && fps <= 30.5f) {
+		level = 40; // Level 4.0
+	} else {
+		level = 42; // Level 4.2
+	}
+
 	// Codec-specific options for low-latency encoding.
 	if (strcmp(codec_name, "libx264") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "veryfast", 0);
@@ -82,6 +93,10 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
+		// Set explicit level (libx264 takes string).
+		char level_str[4];
+		snprintf(level_str, sizeof(level_str), "%d", level);
+		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
@@ -92,9 +107,11 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// causing downstream decoders to reset and producing visual glitches.
 		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
 		// Note: VA-API does not expose a scene-change detection toggle.
+		h->ctx->level = level;
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
@@ -102,6 +119,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// B-frames break reference chains at transition boundaries.
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
 		// Note: VideoToolbox does not expose a scene-change detection toggle.
+		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	}
 
 	int rc = avcodec_open2(h->ctx, codec, NULL);

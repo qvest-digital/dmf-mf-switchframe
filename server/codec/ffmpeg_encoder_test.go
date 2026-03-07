@@ -250,6 +250,61 @@ func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 	require.GreaterOrEqual(t, keyframeCount, 1, "should have at least 1 keyframe")
 }
 
+func TestFFmpegEncoderSetsLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		width    int
+		height   int
+		fps      float32
+		wantLvl  byte
+		levelStr string
+	}{
+		{"720p30 -> Level 3.1", 1280, 720, 30.0, 31, "3.1"},
+		{"480p30 -> Level 3.1", 640, 480, 30.0, 31, "3.1"},
+		{"1080p30 -> Level 4.0", 1920, 1080, 30.0, 40, "4.0"},
+		{"1080p60 -> Level 4.2", 1920, 1080, 60.0, 42, "4.2"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enc, err := NewFFmpegEncoder("libx264", tc.width, tc.height, 4_000_000, tc.fps, nil)
+			require.NoError(t, err)
+			defer enc.Close()
+
+			yuv := make([]byte, tc.width*tc.height*3/2)
+			for i := range yuv {
+				yuv[i] = 128
+			}
+
+			// Feed enough frames to get output (pipeline delay from threading)
+			var data []byte
+			var isKey bool
+			for i := 0; i < 30; i++ {
+				data, isKey, err = enc.Encode(yuv, i == 0)
+				require.NoError(t, err)
+				if data != nil && isKey {
+					break
+				}
+			}
+			require.NotNil(t, data, "encoder should produce output")
+			require.True(t, isKey, "should be a keyframe")
+
+			// Find SPS NALU (type 7) in the Annex B output
+			avc1 := AnnexBToAVC1(data)
+			for _, nalu := range ExtractNALUs(avc1) {
+				if len(nalu) > 0 && nalu[0]&0x1F == 7 && len(nalu) >= 4 {
+					levelIdc := nalu[3]
+					require.Equal(t, tc.wantLvl, levelIdc,
+						"%s encoder should produce Level %s SPS, got level_idc=%d",
+						tc.name, tc.levelStr, levelIdc)
+					return
+				}
+			}
+			t.Fatal("no SPS NALU found in encoder output")
+		})
+	}
+}
+
 func TestFFmpegEncoderInterface(t *testing.T) {
 	// Verify FFmpegEncoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder
