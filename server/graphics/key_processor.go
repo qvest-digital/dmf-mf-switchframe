@@ -24,7 +24,9 @@ type KeyConfig struct {
 	KeyColorCr    uint8   `json:"keyColorCr"`
 	Similarity    float32 `json:"similarity"`
 	Smoothness    float32 `json:"smoothness"`
-	SpillSuppress float32 `json:"spillSuppress"`
+	SpillSuppress  float32 `json:"spillSuppress"`
+	SpillReplaceCb uint8   `json:"spillReplaceCb,omitempty"`
+	SpillReplaceCr uint8   `json:"spillReplaceCr,omitempty"`
 
 	// Luma key params
 	LowClip  float32 `json:"lowClip"`
@@ -157,7 +159,11 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 		switch cfg.Type {
 		case KeyTypeChroma:
 			keyColor := YCbCr{Y: cfg.KeyColorY, Cb: cfg.KeyColorCb, Cr: cfg.KeyColorCr}
-			mask = ChromaKey(workFill, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress)
+			spillCb, spillCr := cfg.SpillReplaceCb, cfg.SpillReplaceCr
+			if spillCb == 0 && spillCr == 0 {
+				spillCb, spillCr = 128, 128 // default to neutral
+			}
+			mask = ChromaKeyWithSpillColor(workFill, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress, spillCb, spillCr)
 		case KeyTypeLuma:
 			mask = LumaKey(workFill, width, height, cfg.LowClip, cfg.HighClip, cfg.Softness)
 		default:

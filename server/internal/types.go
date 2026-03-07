@@ -11,8 +11,10 @@ type SourceKeyConfig struct {
 	KeyColorCr    uint8   `json:"keyColorCr,omitempty"`
 	Similarity    float32 `json:"similarity,omitempty"`
 	Smoothness    float32 `json:"smoothness,omitempty"`
-	SpillSuppress float32 `json:"spillSuppress,omitempty"`
-	LowClip       float32 `json:"lowClip,omitempty"`
+	SpillSuppress  float32 `json:"spillSuppress,omitempty"`
+	SpillReplaceCb uint8   `json:"spillReplaceCb,omitempty"`
+	SpillReplaceCr uint8   `json:"spillReplaceCr,omitempty"`
+	LowClip        float32 `json:"lowClip,omitempty"`
 	HighClip      float32 `json:"highClip,omitempty"`
 	Softness      float32 `json:"softness,omitempty"`
 	FillSource    string  `json:"fillSource,omitempty"`

@@ -13,6 +13,15 @@ type YCbCr struct {
 
 // ChromaKey generates an alpha mask for chroma keying in YUV420 space.
 // Pixels close to keyColor in Cb/Cr space become transparent.
+// Spill suppression pulls chroma toward neutral (128, 128).
+//
+// This is a backward-compatible wrapper around ChromaKeyWithSpillColor.
+func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32) []byte {
+	return ChromaKeyWithSpillColor(frame, width, height, keyColor, similarity, smoothness, spillSuppress, 128, 128)
+}
+
+// ChromaKeyWithSpillColor generates an alpha mask for chroma keying in YUV420 space.
+// Pixels close to keyColor in Cb/Cr space become transparent.
 //
 // Parameters:
 //   - frame: YUV420 planar data (Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2])
@@ -21,9 +30,14 @@ type YCbCr struct {
 //   - similarity: Cb/Cr distance threshold (0-1). Higher = more keyed.
 //   - smoothness: soft edge feathering beyond the similarity boundary (0-1).
 //   - spillSuppress: desaturate near-key pixels (0-1). Modifies the frame in-place.
+//   - spillReplaceCb, spillReplaceCr: chroma values to pull spill toward (128,128 = neutral).
+//
+// Uses squared distance comparisons to avoid per-pixel sqrt for the majority of
+// pixels. Only the smoothness transition zone requires the actual Euclidean distance
+// for linear interpolation.
 //
 // Returns an alpha mask with one byte per pixel (0 = transparent, 255 = opaque).
-func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32) []byte {
+func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32, spillReplaceCb, spillReplaceCr uint8) []byte {
 	pixelCount := width * height
 	if pixelCount == 0 {
 		return nil
@@ -42,6 +56,18 @@ func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoo
 	simDist := similarity * 181.0
 	smoothDist := smoothness * 181.0
 
+	// Precompute squared thresholds for fast comparison.
+	simDistSq := simDist * simDist
+	totalDist := simDist + smoothDist
+	totalDistSq := totalDist * totalDist
+
+	// Spill suppression thresholds (squared).
+	spillDist := (simDist + smoothDist) * 2
+	spillDistSq := spillDist * spillDist
+
+	replaceCb := float32(spillReplaceCb)
+	replaceCr := float32(spillReplaceCr)
+
 	for row := 0; row < height; row++ {
 		for col := 0; col < width; col++ {
 			pixIdx := row*width + col
@@ -56,31 +82,33 @@ func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoo
 			cb := float32(frame[ySize+uvIdx])
 			cr := float32(frame[ySize+uvSize+uvIdx])
 
-			// Euclidean distance in Cb/Cr space
+			// Squared distance in Cb/Cr space (avoids sqrt for majority of pixels).
 			dCb := cb - keyCb
 			dCr := cr - keyCr
-			dist := float32(math.Sqrt(float64(dCb*dCb + dCr*dCr)))
+			distSq := dCb*dCb + dCr*dCr
 
 			var alpha float32
-			if dist < simDist {
-				// Inside similarity threshold: fully transparent
+			if distSq < simDistSq {
+				// Inside similarity threshold: fully transparent (no sqrt needed).
 				alpha = 0.0
-			} else if smoothDist > 0 && dist < simDist+smoothDist {
-				// In smoothness zone: gradual transition
+			} else if smoothDist > 0 && distSq < totalDistSq {
+				// In smoothness zone: need actual distance for linear interpolation.
+				dist := float32(math.Sqrt(float64(distSq)))
 				alpha = (dist - simDist) / smoothDist
 			} else {
-				// Outside both: fully opaque
+				// Outside both: fully opaque (no sqrt needed).
 				alpha = 1.0
 			}
 
-			// Spill suppression: desaturate near-key pixels proportionally
-			totalDist := (simDist + smoothDist) * 2
-			if spillSuppress > 0 && totalDist > 0 && dist < totalDist {
-				spillAmount := spillSuppress * (1.0 - dist/totalDist)
+			// Spill suppression: desaturate near-key pixels proportionally.
+			if spillSuppress > 0 && spillDist > 0 && distSq < spillDistSq {
+				// Only compute sqrt when inside the spill zone.
+				dist := float32(math.Sqrt(float64(distSq)))
+				spillAmount := spillSuppress * (1.0 - dist/spillDist)
 				if spillAmount > 0 {
-					// Pull chroma toward neutral (128)
-					newCb := cb + (128.0-cb)*spillAmount
-					newCr := cr + (128.0-cr)*spillAmount
+					// Pull chroma toward the replacement color.
+					newCb := cb + (replaceCb-cb)*spillAmount
+					newCr := cr + (replaceCr-cr)*spillAmount
 					frame[ySize+uvIdx] = uint8(clampFloat(newCb, 0, 255))
 					frame[ySize+uvSize+uvIdx] = uint8(clampFloat(newCr, 0, 255))
 				}

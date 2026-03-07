@@ -216,3 +216,94 @@ func TestChromaKey_ZeroSimilarityZeroSmoothness(t *testing.T) {
 		_ = i
 	}
 }
+
+func TestChromaKeyWithSpillColor_IdenticalToChromaKeyWithNeutral(t *testing.T) {
+	t.Parallel()
+	// The optimized ChromaKeyWithSpillColor with (128,128) should produce
+	// identical results to the ChromaKey wrapper.
+	w, h := 8, 8
+	frameA := makeYUV420Frame(w, h, 180, 50, 30) // near-green
+	frameB := make([]byte, len(frameA))
+	copy(frameB, frameA)
+
+	maskA := ChromaKey(frameA, w, h, greenYUV(), 0.3, 0.15, 0.5)
+	maskB := ChromaKeyWithSpillColor(frameB, w, h, greenYUV(), 0.3, 0.15, 0.5, 128, 128)
+
+	require.Equal(t, maskA, maskB, "ChromaKey wrapper and ChromaKeyWithSpillColor(128,128) must produce identical masks")
+	// Frame modifications (spill suppression) should also be identical.
+	require.Equal(t, frameA, frameB, "Spill suppression frame modifications must be identical")
+}
+
+func TestChromaKeyWithSpillColor_PullsTowardConfiguredColor(t *testing.T) {
+	t.Parallel()
+	// Verify spill replacement with a non-neutral color pulls chroma
+	// toward that color instead of toward 128.
+	w, h := 4, 4
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+
+	// Near-green pixel: Cb=50, Cr=30 (close to green key color Cb=30, Cr=12).
+	// With spill suppression, chroma should be pulled toward the replacement color.
+	frameNeutral := makeYUV420Frame(w, h, 180, 50, 30)
+	frameCustom := make([]byte, len(frameNeutral))
+	copy(frameCustom, frameNeutral)
+
+	// Spill toward neutral (128, 128)
+	ChromaKeyWithSpillColor(frameNeutral, w, h, greenYUV(), 0.3, 0.15, 0.8, 128, 128)
+	// Spill toward warm tone (140, 160)
+	ChromaKeyWithSpillColor(frameCustom, w, h, greenYUV(), 0.3, 0.15, 0.8, 140, 160)
+
+	// The Cb/Cr planes should differ between neutral and custom spill replacement.
+	cbNeutral := frameNeutral[ySize]
+	cbCustom := frameCustom[ySize]
+	crNeutral := frameNeutral[ySize+uvSize]
+	crCustom := frameCustom[ySize+uvSize]
+
+	// Custom spill should pull Cb toward 140 (higher than 128), so cbCustom > cbNeutral.
+	require.Greater(t, cbCustom, cbNeutral,
+		"custom spill Cb should be pulled higher toward 140 vs neutral 128")
+	// Custom spill should pull Cr toward 160 (higher than 128), so crCustom > crNeutral.
+	require.Greater(t, crCustom, crNeutral,
+		"custom spill Cr should be pulled higher toward 160 vs neutral 128")
+}
+
+func TestChromaKeyWithSpillColor_SquaredDistOptimizationCorrectness(t *testing.T) {
+	t.Parallel()
+	// Test with a variety of pixel colors that exercise all three branches:
+	// 1) fully transparent (inside simDist)
+	// 2) smoothness zone (between simDist and simDist+smoothDist)
+	// 3) fully opaque (outside both)
+	w, h := 4, 4
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+
+	// Build a frame with chroma values at known distances from green key (Cb=30, Cr=12).
+	colors := []struct {
+		cb, cr byte
+	}{
+		{30, 12},   // exact match: dist=0 -> transparent
+		{35, 15},   // close: dist~6 -> transparent (within sim)
+		{60, 30},   // medium: dist~35 -> smoothness zone or opaque
+		{200, 180}, // far: dist~239 -> fully opaque
+	}
+
+	for _, c := range colors {
+		frame := make([]byte, ySize+2*uvSize)
+		for i := 0; i < ySize; i++ {
+			frame[i] = 180
+		}
+		for i := 0; i < uvSize; i++ {
+			frame[ySize+i] = c.cb
+			frame[ySize+uvSize+i] = c.cr
+		}
+
+		mask := ChromaKeyWithSpillColor(frame, w, h, greenYUV(), 0.2, 0.1, 0.0, 128, 128)
+		require.Len(t, mask, ySize)
+
+		// All pixels in a solid-color frame should have the same alpha.
+		for i := 1; i < len(mask); i++ {
+			require.Equal(t, mask[0], mask[i],
+				"all pixels in solid-color frame should have same alpha, pixel %d differs", i)
+		}
+	}
+}
