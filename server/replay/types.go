@@ -63,6 +63,15 @@ type bufferedFrame struct {
 	wallTime   time.Time // Wall-clock time for IN/OUT matching
 }
 
+// bufferedAudioFrame stores a single encoded audio frame with wall-clock timestamp.
+type bufferedAudioFrame struct {
+	data       []byte    // AAC frame data (deep-copied)
+	pts        int64     // 90kHz PTS
+	sampleRate int
+	channels   int
+	wallTime   time.Time
+}
+
 // gopDescriptor tracks a group of pictures within the buffer.
 type gopDescriptor struct {
 	startIdx int       // Index of keyframe in frames slice

@@ -37,18 +37,32 @@ func TestReplayViewer_SendVideo_MultipleFrames(t *testing.T) {
 	require.Equal(t, 3, info.FrameCount)
 }
 
-func TestReplayViewer_SendAudio_Ignored(t *testing.T) {
+func TestReplayViewer_SendAudio_Recorded(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	v := newReplayViewer("cam1", buf)
 
-	// Audio should be silently ignored (not recorded).
+	// Audio before any video GOP is dropped (no wall-clock reference).
 	v.SendAudio(&media.AudioFrame{
 		PTS:  0,
 		Data: make([]byte, 100),
 	})
+	buf.mu.RLock()
+	require.Equal(t, 0, len(buf.audioFrames), "audio before first video GOP should be dropped")
+	buf.mu.RUnlock()
 
-	info := buf.Status()
-	require.Equal(t, 0, info.FrameCount, "expected 0 frames (audio ignored)")
+	// Record a video keyframe to establish a GOP.
+	v.SendVideo(makeVideoFrame(0, true, 1000))
+
+	// Now audio should be recorded.
+	v.SendAudio(&media.AudioFrame{
+		PTS:        1000,
+		Data:       make([]byte, 100),
+		SampleRate: 48000,
+		Channels:   2,
+	})
+	buf.mu.RLock()
+	require.Equal(t, 1, len(buf.audioFrames), "audio after video GOP should be recorded")
+	buf.mu.RUnlock()
 }
 
 func TestReplayViewer_SendCaptions_Ignored(t *testing.T) {

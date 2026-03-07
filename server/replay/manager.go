@@ -200,7 +200,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 
 		// Extract clip from buffer.
 		buf := m.buffers[source]
-		clip, err := buf.ExtractClip(*m.markIn, *m.markOut)
+		clip, audioClip, err := buf.ExtractClip(*m.markIn, *m.markOut)
 		if err != nil {
 			return err
 		}
@@ -216,6 +216,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 
 		m.player = newReplayPlayer(PlayerConfig{
 			Clip:           clip,
+			AudioClip:      audioClip,
 			Speed:          speed,
 			Loop:           loop,
 			Interpolation:  InterpolationBlend,
@@ -223,6 +224,9 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 			EncoderFactory: m.encoderFactory,
 			Output: func(frame *media.VideoFrame) {
 				m.relay.BroadcastVideo(frame)
+			},
+			AudioOutput: func(frame *media.AudioFrame) {
+				m.relay.BroadcastAudio(frame)
 			},
 			OnDone: func() {
 				m.mu.Lock()

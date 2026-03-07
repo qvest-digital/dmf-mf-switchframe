@@ -132,7 +132,7 @@ func TestReplayBuffer_ExtractClip(t *testing.T) {
 	buf.recordFrameAt(makeVideoFrame(12012, false, 500), now.Add(133*time.Millisecond))
 
 	// Extract clip spanning the first GOP
-	clip, err := buf.ExtractClip(now.Add(-1*time.Millisecond), now.Add(99*time.Millisecond))
+	clip, _, err := buf.ExtractClip(now.Add(-1*time.Millisecond), now.Add(99*time.Millisecond))
 	require.NoError(t, err)
 
 	// Should include GOP starting before or at the mark-in time
@@ -144,7 +144,7 @@ func TestReplayBuffer_ExtractClip(t *testing.T) {
 func TestReplayBuffer_ExtractClip_EmptyBuffer(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	now := time.Now()
-	_, err := buf.ExtractClip(now.Add(-1*time.Second), now)
+	_, _, err := buf.ExtractClip(now.Add(-1*time.Second), now)
 	require.ErrorIs(t, err, ErrEmptyClip)
 }
 
@@ -154,7 +154,7 @@ func TestReplayBuffer_ExtractClip_NoFramesInRange(t *testing.T) {
 	buf.recordFrameAt(makeVideoFrame(0, true, 1000), now)
 
 	// Query a time range that doesn't overlap
-	_, err := buf.ExtractClip(now.Add(10*time.Second), now.Add(20*time.Second))
+	_, _, err := buf.ExtractClip(now.Add(10*time.Second), now.Add(20*time.Second))
 	require.ErrorIs(t, err, ErrEmptyClip)
 }
 
@@ -163,7 +163,7 @@ func TestReplayBuffer_ExtractClip_DeepCopies(t *testing.T) {
 	now := time.Now()
 	buf.recordFrameAt(makeVideoFrame(0, true, 100), now)
 
-	clip, err := buf.ExtractClip(now.Add(-1*time.Second), now.Add(1*time.Second))
+	clip, _, err := buf.ExtractClip(now.Add(-1*time.Second), now.Add(1*time.Second))
 	require.NoError(t, err)
 
 	// Mutate clip data — buffer should be unaffected

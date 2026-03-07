@@ -10,15 +10,14 @@ import (
 
 // replayViewer implements distribution.Viewer and records video frames
 // into a replayBuffer. Registered on each source relay alongside the
-// switcher's sourceViewer. Audio and captions are silently ignored
-// (replay audio is muted in v1).
+// switcher's sourceViewer. Audio frames are recorded for replay audio output.
 type replayViewer struct {
 	sourceKey string
 	buffer    *replayBuffer
 
-	videoSent    atomic.Int64
-	audioDropped atomic.Int64
-	captionSent  atomic.Int64
+	videoSent   atomic.Int64
+	audioSent   atomic.Int64
+	captionSent atomic.Int64
 }
 
 // newReplayViewer creates a viewer that feeds frames into the given buffer.
@@ -41,9 +40,10 @@ func (v *replayViewer) SendVideo(frame *media.VideoFrame) {
 	v.buffer.RecordFrame(frame)
 }
 
-// SendAudio is a no-op. Replay audio is muted at <1x speed.
-func (v *replayViewer) SendAudio(_ *media.AudioFrame) {
-	v.audioDropped.Add(1)
+// SendAudio records the audio frame into the replay buffer for audio playback.
+func (v *replayViewer) SendAudio(frame *media.AudioFrame) {
+	v.audioSent.Add(1)
+	v.buffer.RecordAudioFrame(frame)
 }
 
 // SendCaptions is a no-op.
@@ -56,8 +56,7 @@ func (v *replayViewer) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{
 		ID:        v.ID(),
 		VideoSent: v.videoSent.Load(),
-		// AudioSent reports dropped audio frames (replay discards all audio).
-		AudioSent: v.audioDropped.Load(),
+		AudioSent: v.audioSent.Load(),
 	}
 }
 

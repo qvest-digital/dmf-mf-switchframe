@@ -42,7 +42,7 @@ func TestStress_ConcurrentRecordAndExtract(t *testing.T) {
 		defer close(extractDone)
 		now := time.Now()
 		for i := 0; i < 100; i++ {
-			_, _ = buf.ExtractClip(now.Add(-10*time.Second), now.Add(10*time.Second))
+			_, _, _ = buf.ExtractClip(now.Add(-10*time.Second), now.Add(10*time.Second))
 			_ = buf.Status()
 		}
 	}()

@@ -10,12 +10,14 @@ import (
 // replayBuffer stores encoded H.264 frames in a circular, GOP-aligned buffer.
 // When capacity is exceeded, the oldest complete GOP is removed.
 type replayBuffer struct {
-	mu          sync.RWMutex
-	frames      []bufferedFrame
-	gops        []gopDescriptor
-	maxDuration time.Duration
-	maxBytes    int64
-	bytesUsed   int64
+	mu             sync.RWMutex
+	frames         []bufferedFrame
+	gops           []gopDescriptor
+	maxDuration    time.Duration
+	maxBytes       int64
+	bytesUsed      int64
+	audioFrames    []bufferedAudioFrame
+	audioBytesUsed int64
 }
 
 // newReplayBuffer creates a replay buffer with the given maximum duration in seconds
@@ -87,6 +89,38 @@ func (b *replayBuffer) recordFrameAt(frame *media.VideoFrame, wallTime time.Time
 	b.trimLocked()
 }
 
+// RecordAudioFrame records an encoded audio frame into the buffer.
+// Audio frames are stored alongside video, trimmed by the same wall-clock window.
+// All data is deep-copied; the caller's buffers are not retained.
+func (b *replayBuffer) RecordAudioFrame(frame *media.AudioFrame) {
+	b.recordAudioFrameAt(frame, time.Now())
+}
+
+// recordAudioFrameAt records an audio frame with a specific wall-clock time (for testing).
+func (b *replayBuffer) recordAudioFrameAt(frame *media.AudioFrame, wallTime time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	// Only record audio if we have at least one video GOP (need wall-clock reference).
+	if len(b.gops) == 0 {
+		return
+	}
+
+	af := bufferedAudioFrame{
+		pts:        frame.PTS,
+		sampleRate: frame.SampleRate,
+		channels:   frame.Channels,
+		wallTime:   wallTime,
+	}
+	if len(frame.Data) > 0 {
+		af.data = make([]byte, len(frame.Data))
+		copy(af.data, frame.Data)
+		b.audioBytesUsed += int64(len(frame.Data))
+	}
+
+	b.audioFrames = append(b.audioFrames, af)
+}
+
 // trimLocked removes the oldest complete GOPs until the buffer duration
 // fits within maxDuration. Must be called with mu held.
 func (b *replayBuffer) trimLocked() {
@@ -122,6 +156,19 @@ func (b *replayBuffer) trimLocked() {
 		}
 	}
 
+	// Trim audio frames whose wall time falls before the oldest remaining video frame.
+	if trimmed && len(b.frames) > 0 && len(b.audioFrames) > 0 {
+		cutoff := b.frames[0].wallTime
+		trimIdx := 0
+		for trimIdx < len(b.audioFrames) && b.audioFrames[trimIdx].wallTime.Before(cutoff) {
+			b.audioBytesUsed -= int64(len(b.audioFrames[trimIdx].data))
+			trimIdx++
+		}
+		if trimIdx > 0 {
+			b.audioFrames = b.audioFrames[trimIdx:]
+		}
+	}
+
 	// Compact slices to release old backing array memory.
 	if trimmed {
 		newFrames := make([]bufferedFrame, len(b.frames))
@@ -131,18 +178,24 @@ func (b *replayBuffer) trimLocked() {
 		newGops := make([]gopDescriptor, len(b.gops))
 		copy(newGops, b.gops)
 		b.gops = newGops
+
+		if len(b.audioFrames) > 0 {
+			newAudio := make([]bufferedAudioFrame, len(b.audioFrames))
+			copy(newAudio, b.audioFrames)
+			b.audioFrames = newAudio
+		}
 	}
 }
 
-// ExtractClip extracts deep copies of buffered frames between inTime and outTime.
+// ExtractClip extracts deep copies of buffered video and audio frames between inTime and outTime.
 // The clip is GOP-aligned: it starts from the keyframe of the GOP that contains
 // or precedes inTime. Returns ErrEmptyClip if no frames fall in the range.
-func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, error) {
+func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, []bufferedAudioFrame, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	if len(b.frames) == 0 {
-		return nil, ErrEmptyClip
+		return nil, nil, ErrEmptyClip
 	}
 
 	// Find the GOP whose keyframe is at or before inTime.
@@ -159,14 +212,14 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		if len(b.gops) > 0 && !b.gops[0].wallTime.After(outTime) {
 			gopIdx = 0
 		} else {
-			return nil, ErrEmptyClip
+			return nil, nil, ErrEmptyClip
 		}
 	}
 
 	// Verify the GOP's frames actually overlap with the requested range.
 	// The GOP keyframe must start before or at outTime.
 	if b.gops[gopIdx].wallTime.After(outTime) {
-		return nil, ErrEmptyClip
+		return nil, nil, ErrEmptyClip
 	}
 
 	startIdx := b.gops[gopIdx].startIdx
@@ -180,7 +233,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		}
 	}
 	if endIdx < startIdx {
-		return nil, ErrEmptyClip
+		return nil, nil, ErrEmptyClip
 	}
 
 	// Verify at least one frame in the range falls at or after inTime,
@@ -188,7 +241,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 	lastFrameTime := b.frames[endIdx].wallTime
 	if lastFrameTime.Before(inTime) && gopIdx == len(b.gops)-1 {
 		// All frames are before inTime and there's no later GOP
-		return nil, ErrEmptyClip
+		return nil, nil, ErrEmptyClip
 	}
 	// If there's a later GOP whose keyframe is still before inTime,
 	// use that one instead for a tighter clip.
@@ -197,7 +250,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		startIdx = b.gops[gopIdx].startIdx
 	}
 
-	// Deep-copy the clip frames.
+	// Deep-copy the video clip frames.
 	clip := make([]bufferedFrame, endIdx-startIdx+1)
 	for i := startIdx; i <= endIdx; i++ {
 		src := &b.frames[i]
@@ -219,7 +272,34 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		}
 	}
 
-	return clip, nil
+	// Determine the wall-clock range of the video clip for audio extraction.
+	clipStartTime := clip[0].wallTime
+	clipEndTime := clip[len(clip)-1].wallTime
+
+	// Deep-copy audio frames that fall within the video clip's time range.
+	var audioClip []bufferedAudioFrame
+	for i := range b.audioFrames {
+		af := &b.audioFrames[i]
+		if af.wallTime.Before(clipStartTime) {
+			continue
+		}
+		if af.wallTime.After(clipEndTime) {
+			break
+		}
+		dst := bufferedAudioFrame{
+			pts:        af.pts,
+			sampleRate: af.sampleRate,
+			channels:   af.channels,
+			wallTime:   af.wallTime,
+		}
+		if len(af.data) > 0 {
+			dst.data = make([]byte, len(af.data))
+			copy(dst.data, af.data)
+		}
+		audioClip = append(audioClip, dst)
+	}
+
+	return clip, audioClip, nil
 }
 
 // Status returns the current buffer status.

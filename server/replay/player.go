@@ -17,12 +17,14 @@ import (
 // PlayerConfig configures a replay player instance.
 type PlayerConfig struct {
 	Clip           []bufferedFrame
+	AudioClip      []bufferedAudioFrame
 	Speed          float64
 	Loop           bool
 	Interpolation  InterpolationMode
 	DecoderFactory transition.DecoderFactory
 	EncoderFactory transition.EncoderFactory
 	Output         func(frame *media.VideoFrame)
+	AudioOutput    func(frame *media.AudioFrame)
 	OnDone         func()
 	OnReady        func() // Called when first GOP decoded and encoder created.
 }
@@ -43,6 +45,9 @@ type replayPlayer struct {
 	done     chan struct{}
 	once     sync.Once
 	progress atomic.Int64 // 0–1000 representing 0.0–1.0 playback progress
+
+	// Audio tracking: index into AudioClip for interleaved output.
+	audioIdx int
 }
 
 // newReplayPlayer creates a player for the given clip and configuration.
@@ -150,6 +155,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 		outputPTS := int64(0)
 		firstFrame := true
 		outputIdx := 0
+		p.audioIdx = 0
 
 		for gopIdx, gop := range gops {
 			// Decode this GOP (reuse firstDecoded for GOP 0 on first iteration).
@@ -169,7 +175,14 @@ func (p *replayPlayer) run(ctx context.Context) {
 				})
 			}
 
-			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, interpolator) {
+			// Build a PTS → wallTime map from the original gop frames
+			// so we can emit audio frames interleaved with video.
+			ptsToWall := make(map[int64]time.Time, len(gop))
+			for _, bf := range gop {
+				ptsToWall[bf.pts] = bf.wallTime
+			}
+
+			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, interpolator, ptsToWall) {
 				return
 			}
 		}
@@ -198,6 +211,7 @@ func (p *replayPlayer) outputGOP(
 	totalFrames int,
 	codecStr *string,
 	interpolator FrameInterpolator,
+	ptsToWall map[int64]time.Time,
 ) bool {
 	for di, df := range decoded {
 		for dup := 0; dup < dupCount; dup++ {
@@ -261,6 +275,10 @@ func (p *replayPlayer) outputGOP(
 			}
 
 			p.config.Output(frame)
+
+			// Emit audio frames that fall within this video frame's time window.
+			p.emitAudioForFrame(df, dup, dupCount, ptsToWall, *outputPTS)
+
 			*outputPTS += ptsPerFrame
 			*outputIdx++
 
@@ -278,6 +296,66 @@ func (p *replayPlayer) outputGOP(
 		}
 	}
 	return false
+}
+
+// emitAudioForFrame emits audio frames from the audio clip that correspond
+// to the current video frame's wall-time position. Audio frames are output
+// with PTS adjusted for the current output position.
+func (p *replayPlayer) emitAudioForFrame(df decodedFrame, dup, dupCount int, ptsToWall map[int64]time.Time, outputPTS int64) {
+	audioClip := p.config.AudioClip
+	if len(audioClip) == 0 || p.config.AudioOutput == nil {
+		return
+	}
+
+	// Only emit audio on the first duplicate of each source frame to
+	// avoid repeating audio frames during slow-motion duplication.
+	if dup != 0 {
+		return
+	}
+
+	// Look up this decoded frame's wall time from the PTS→wallTime map.
+	frameWall, ok := ptsToWall[df.pts]
+	if !ok {
+		return
+	}
+
+	// Determine the next video frame's wall time for the time window.
+	// Use the frame duration as the window size.
+	var nextWall time.Time
+	found := false
+	for pts, wall := range ptsToWall {
+		if pts > df.pts && (!found || wall.Before(nextWall)) {
+			nextWall = wall
+			found = true
+		}
+	}
+	if !found {
+		// Last frame in GOP: use a generous window.
+		nextWall = frameWall.Add(100 * time.Millisecond)
+	}
+
+	// Emit all audio frames whose wall time falls within [frameWall, nextWall).
+	for p.audioIdx < len(audioClip) {
+		af := &audioClip[p.audioIdx]
+		if af.wallTime.Before(frameWall) {
+			// Audio frame precedes this video frame — skip it.
+			p.audioIdx++
+			continue
+		}
+		if !af.wallTime.Before(nextWall) {
+			// Audio frame is at or after the next video frame — stop.
+			break
+		}
+
+		outFrame := &media.AudioFrame{
+			PTS:        outputPTS,
+			Data:       af.data,
+			SampleRate: af.sampleRate,
+			Channels:   af.channels,
+		}
+		p.config.AudioOutput(outFrame)
+		p.audioIdx++
+	}
 }
 
 // splitIntoGOPs splits a clip into groups of pictures, where each group starts
