@@ -286,10 +286,20 @@ func (a *App) initSubsystems() error {
 		a.debugCollector.Register("replay", a.replayMgr)
 
 		// Wire replay playback lifecycle: register/unregister replay as a
-		// virtual switcher source.
+		// virtual switcher source + mixer channel.
 		a.replayMgr.OnPlaybackLifecycle(
-			func() { a.sw.RegisterVirtualSource("replay", a.replayRelay) },
-			func() { a.sw.UnregisterSource("replay") },
+			func() {
+				a.sw.RegisterVirtualSource("replay", a.replayRelay)
+				a.mixer.AddChannel("replay")
+				_ = a.mixer.SetAFV("replay", true)
+				// If program is already "replay" (user cut before OnReady),
+				// re-trigger AFV activation so the new channel becomes active.
+				a.mixer.OnProgramChange(a.sw.ProgramSource())
+			},
+			func() {
+				a.sw.UnregisterSource("replay")
+				a.mixer.RemoveChannel("replay")
+			},
 		)
 
 		// Wire replay VideoInfo so MoQ subscribers can discover tracks.

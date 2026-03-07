@@ -50,7 +50,13 @@ type replayPlayer struct {
 	videoInfoSent bool         // true after OnVideoInfo callback has been called
 
 	// Audio tracking: index into AudioClip for interleaved output.
-	audioIdx int
+	audioIdx       int
+	outputAudioPTS int64 // Separate monotonic PTS for audio frames.
+
+	// Absolute-time pacing: playbackStart anchors the output timeline so
+	// frame N's deadline is playbackStart + N*frameDuration, preventing
+	// per-frame drift from encode overhead accumulation.
+	playbackStart time.Time
 }
 
 // newReplayPlayer creates a player for the given clip and configuration.
@@ -101,27 +107,31 @@ func (p *replayPlayer) run(ctx context.Context) {
 		return
 	}
 
-	// Decode first GOP to determine dimensions and FPS.
-	firstDecoded, err := decodeGOP(gops[0], p.config.DecoderFactory)
-	if err != nil {
-		slog.Error("replay player: decode first GOP failed", "err", err)
+	// Pre-decode ALL GOPs upfront to eliminate inline decode delays
+	// that cause jitter at GOP boundaries during playback.
+	var allDecoded [][]decodedFrame
+	for gopIdx, gop := range gops {
+		decoded, err := decodeGOP(gop, p.config.DecoderFactory)
+		if err != nil {
+			slog.Error("replay player: decode GOP failed", "gop", gopIdx, "err", err)
+			return
+		}
+		// Sort within GOP for B-frame display order.
+		sort.Slice(decoded, func(i, j int) bool {
+			return decoded[i].pts < decoded[j].pts
+		})
+		allDecoded = append(allDecoded, decoded)
+	}
+	if len(allDecoded) == 0 || len(allDecoded[0]) == 0 {
 		return
 	}
-	if len(firstDecoded) == 0 {
-		return
-	}
-
-	// Sort within GOP for B-frame display order.
-	sort.Slice(firstDecoded, func(i, j int) bool {
-		return firstDecoded[i].pts < firstDecoded[j].pts
-	})
 
 	// Estimate source FPS from all clip frames' PTS values.
 	sourceFPS := estimateFPSFromClip(clip)
 	ptsPerFrame := int64(90000 / sourceFPS)
 
 	// Create encoder from first decoded frame dimensions.
-	w, h := firstDecoded[0].width, firstDecoded[0].height
+	w, h := allDecoded[0][0].width, allDecoded[0][0].height
 	bitrate := estimateBitrate(w, h)
 	encoder, err := p.config.EncoderFactory(w, h, bitrate, float32(sourceFPS))
 	if err != nil {
@@ -151,46 +161,24 @@ func (p *replayPlayer) run(ctx context.Context) {
 	}
 
 	codecStr := "avc1.42C01E" // Fallback; overwritten on first keyframe from encoder SPS.
+	var groupID uint32        // MoQ group ID — incremented on each keyframe.
 
 	interpolator := newInterpolator(p.config.Interpolation)
 
 	outputPTS := p.config.InitialPTS
+	p.outputAudioPTS = p.config.InitialPTS
+	p.playbackStart = time.Now()
+	var pacingIdx int // Monotonic frame counter for absolute-time pacing (never resets).
 	for {
 		firstFrame := true
 		outputIdx := 0
 		p.audioIdx = 0
 
-		for gopIdx, gop := range gops {
-			// Decode this GOP (reuse firstDecoded for GOP 0 on first iteration).
-			var decoded []decodedFrame
-			if gopIdx == 0 && firstDecoded != nil {
-				decoded = firstDecoded
-			} else {
-				var decErr error
-				decoded, decErr = decodeGOP(gop, p.config.DecoderFactory)
-				if decErr != nil {
-					slog.Error("replay player: decode GOP failed", "gop", gopIdx, "err", decErr)
-					return
-				}
-				// Sort within GOP for B-frame display order.
-				sort.Slice(decoded, func(i, j int) bool {
-					return decoded[i].pts < decoded[j].pts
-				})
-			}
-
-			// Build a PTS → wallTime map from the original gop frames
-			// so we can emit audio frames interleaved with video.
-			ptsToWall := make(map[int64]time.Time, len(gop))
-			for _, bf := range gop {
-				ptsToWall[bf.pts] = bf.wallTime
-			}
-
-			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, interpolator, ptsToWall) {
+		for _, decoded := range allDecoded {
+			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, &groupID, interpolator, &pacingIdx) {
 				return
 			}
 		}
-		// Clear firstDecoded after first full pass so re-decode on loop.
-		firstDecoded = nil
 
 		if !p.config.Loop {
 			return
@@ -213,8 +201,9 @@ func (p *replayPlayer) outputGOP(
 	outputIdx *int,
 	totalFrames int,
 	codecStr *string,
+	groupID *uint32,
 	interpolator FrameInterpolator,
-	ptsToWall map[int64]time.Time,
+	pacingIdx *int,
 ) bool {
 	for di, df := range decoded {
 		for dup := 0; dup < dupCount; dup++ {
@@ -224,7 +213,9 @@ func (p *replayPlayer) outputGOP(
 			default:
 			}
 
-			forceIDR := *firstFrame
+			// Force IDR on: (1) very first frame of playback,
+			// (2) first frame of each GOP (di==0, dup==0) for MoQ group boundaries.
+			forceIDR := *firstFrame || (di == 0 && dup == 0)
 			*firstFrame = false
 
 			// Determine which YUV data to encode. When an interpolator is
@@ -251,7 +242,7 @@ func (p *replayPlayer) outputGOP(
 			}
 			// Multi-threaded encoders may return nil during pipeline warmup (EAGAIN).
 			if encoded == nil {
-				return false
+				continue
 			}
 
 			// Convert Annex B encoder output to AVC1 for relay.
@@ -262,8 +253,8 @@ func (p *replayPlayer) outputGOP(
 
 			// Derive codec string from encoder's SPS on keyframes,
 			// and fire OnVideoInfo callback once with SPS/PPS.
+			var spsNALU, ppsNALU []byte
 			if isKeyframe {
-				var spsNALU, ppsNALU []byte
 				for _, nalu := range codec.ExtractNALUs(avc1) {
 					if len(nalu) == 0 {
 						continue
@@ -282,41 +273,65 @@ func (p *replayPlayer) outputGOP(
 				}
 			}
 
+			if isKeyframe {
+				*groupID++
+			}
+
 			frame := &media.VideoFrame{
 				PTS:        *outputPTS,
 				IsKeyframe: isKeyframe,
 				WireData:   avc1,
 				Codec:      *codecStr,
+				GroupID:    *groupID,
+				SPS:        spsNALU,
+				PPS:        ppsNALU,
 			}
 
 			p.config.Output(frame)
 
-			// Emit audio frames that fall within this video frame's time window.
-			p.emitAudioForFrame(df, dup, dupCount, ptsToWall, *outputPTS)
+			// Emit audio frames whose source PTS falls within this video
+			// frame's source PTS range. Uses source PTS (not wall time)
+			// to correctly handle B-frame reordering.
+			var nextSourcePTS int64
+			if di+1 < len(decoded) {
+				nextSourcePTS = decoded[di+1].pts
+			} else {
+				nextSourcePTS = df.pts + ptsPerFrame
+			}
+			p.emitAudioForFrame(df.pts, nextSourcePTS, dup)
 
 			*outputPTS += ptsPerFrame
 			*outputIdx++
+			*pacingIdx++
 
 			if totalFrames > 0 {
 				p.progress.Store(int64(*outputIdx * 1000 / totalFrames))
 			}
 
-			// Pace output at source FPS.
-			timer.Reset(frameDuration)
-			select {
-			case <-ctx.Done():
-				return true
-			case <-timer.C:
+			// Pace output using absolute time deadlines to prevent
+			// per-frame drift from encode overhead accumulation.
+			// pacingIdx never resets across loops, so deadlines are
+			// always in the future relative to playbackStart.
+			deadline := p.playbackStart.Add(time.Duration(*pacingIdx) * frameDuration)
+			wait := time.Until(deadline)
+			if wait > 0 {
+				timer.Reset(wait)
+				select {
+				case <-ctx.Done():
+					return true
+				case <-timer.C:
+				}
 			}
 		}
 	}
 	return false
 }
 
-// emitAudioForFrame emits audio frames from the audio clip that correspond
-// to the current video frame's wall-time position. Audio frames are output
-// with PTS adjusted for the current output position.
-func (p *replayPlayer) emitAudioForFrame(df decodedFrame, dup, dupCount int, ptsToWall map[int64]time.Time, outputPTS int64) {
+// emitAudioForFrame emits audio frames from the audio clip whose source PTS
+// falls within [sourcePTS, nextSourcePTS). Uses source PTS matching instead
+// of wall time to correctly handle B-frame reordering (where PTS display
+// order differs from wall-time arrival order).
+func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int) {
 	audioClip := p.config.AudioClip
 	if len(audioClip) == 0 || p.config.AudioOutput == nil {
 		return
@@ -328,47 +343,31 @@ func (p *replayPlayer) emitAudioForFrame(df decodedFrame, dup, dupCount int, pts
 		return
 	}
 
-	// Look up this decoded frame's wall time from the PTS→wallTime map.
-	frameWall, ok := ptsToWall[df.pts]
-	if !ok {
-		return
-	}
-
-	// Determine the next video frame's wall time for the time window.
-	// Use the frame duration as the window size.
-	var nextWall time.Time
-	found := false
-	for pts, wall := range ptsToWall {
-		if pts > df.pts && (!found || wall.Before(nextWall)) {
-			nextWall = wall
-			found = true
-		}
-	}
-	if !found {
-		// Last frame in GOP: use a generous window.
-		nextWall = frameWall.Add(100 * time.Millisecond)
-	}
-
-	// Emit all audio frames whose wall time falls within [frameWall, nextWall).
+	// Emit all audio frames whose source PTS falls within [sourcePTS, nextSourcePTS).
 	for p.audioIdx < len(audioClip) {
 		af := &audioClip[p.audioIdx]
-		if af.wallTime.Before(frameWall) {
+		if af.pts < sourcePTS {
 			// Audio frame precedes this video frame — skip it.
 			p.audioIdx++
 			continue
 		}
-		if !af.wallTime.Before(nextWall) {
+		if af.pts >= nextSourcePTS {
 			// Audio frame is at or after the next video frame — stop.
 			break
 		}
 
+		// Each audio frame gets its own monotonically advancing PTS.
+		// AAC frames are 1024 samples; PTS increment = 1024 * 90000 / sampleRate.
 		outFrame := &media.AudioFrame{
-			PTS:        outputPTS,
+			PTS:        p.outputAudioPTS,
 			Data:       af.data,
 			SampleRate: af.sampleRate,
 			Channels:   af.channels,
 		}
 		p.config.AudioOutput(outFrame)
+		if af.sampleRate > 0 {
+			p.outputAudioPTS += int64(1024) * 90000 / int64(af.sampleRate)
+		}
 		p.audioIdx++
 	}
 }

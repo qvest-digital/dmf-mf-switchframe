@@ -573,6 +573,109 @@ func TestReplayPlayer_CodecStringFromSPS(t *testing.T) {
 	}
 }
 
+func TestReplayPlayer_KeyframeHasSPSPPS(t *testing.T) {
+	clip := buildTestClip(2, 5)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{
+				PTS:        frame.PTS,
+				IsKeyframe: frame.IsKeyframe,
+				SPS:        frame.SPS,
+				PPS:        frame.PPS,
+			})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, outputFrames, 10)
+
+	for i, f := range outputFrames {
+		if f.IsKeyframe {
+			require.NotNil(t, f.SPS, "keyframe %d should have SPS", i)
+			require.NotNil(t, f.PPS, "keyframe %d should have PPS", i)
+			require.Equal(t, byte(7), f.SPS[0]&0x1F, "SPS NALU type should be 7")
+			require.Equal(t, byte(8), f.PPS[0]&0x1F, "PPS NALU type should be 8")
+		} else {
+			require.Nil(t, f.SPS, "non-keyframe %d should not have SPS", i)
+			require.Nil(t, f.PPS, "non-keyframe %d should not have PPS", i)
+		}
+	}
+}
+
+func TestReplayPlayer_GroupIDIncrementsOnKeyframe(t *testing.T) {
+	clip := buildTestClip(3, 4) // 3 GOPs, 4 frames each = 12 frames
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{
+				PTS:        frame.PTS,
+				IsKeyframe: frame.IsKeyframe,
+				GroupID:    frame.GroupID,
+			})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, outputFrames, 12)
+
+	// GroupID should start at 1 (first keyframe) and increment on each keyframe.
+	// Non-keyframes within a GOP share the same GroupID.
+	var lastGroupID uint32
+	keyframeGroups := 0
+	for i, f := range outputFrames {
+		require.Greater(t, f.GroupID, uint32(0), "frame %d GroupID should be > 0", i)
+		if f.IsKeyframe {
+			keyframeGroups++
+			require.Greater(t, f.GroupID, lastGroupID,
+				"keyframe %d GroupID should increment: got %d, last was %d",
+				i, f.GroupID, lastGroupID)
+		} else {
+			require.Equal(t, lastGroupID, f.GroupID,
+				"non-keyframe %d GroupID should equal previous keyframe: got %d, expected %d",
+				i, f.GroupID, lastGroupID)
+		}
+		lastGroupID = f.GroupID
+	}
+	require.Equal(t, 3, keyframeGroups, "expected 3 keyframe groups for 3 GOPs")
+}
+
 func TestBlendInterpolator(t *testing.T) {
 	interp := &blendInterpolator{}
 
@@ -842,6 +945,80 @@ func TestReplayPlayer_InitialPTS(t *testing.T) {
 	// PTS should be monotonically increasing from InitialPTS.
 	for i := 1; i < len(outputFrames); i++ {
 		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS)
+	}
+}
+
+func TestReplayPlayer_AudioPTSMonotonic(t *testing.T) {
+	// Verify that audio frames get monotonically increasing PTS values,
+	// not the same PTS as the video frame they're associated with.
+	clip := buildTestClip(1, 5) // 1 GOP, 5 frames
+
+	// Build audio frames that interleave with video frames.
+	// At 48kHz, AAC frame = 1024 samples = ~21.3ms.
+	// Video at 30fps = ~33.3ms per frame, so ~1.5 audio frames per video frame.
+	// We'll create 8 audio frames spanning 5 video frames.
+	now := time.Now()
+	var audioClip []bufferedAudioFrame
+	for i := 0; i < 8; i++ {
+		audioClip = append(audioClip, bufferedAudioFrame{
+			data:       make([]byte, 100),
+			pts:        int64(i) * 1920, // 1024 * 90000 / 48000 = 1920
+			sampleRate: 48000,
+			channels:   2,
+			wallTime:   now.Add(time.Duration(i) * 21333 * time.Microsecond),
+		})
+	}
+
+	var audioFrames []*media.AudioFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		AudioClip:      audioClip,
+		Speed:          1.0,
+		Loop:           false,
+		InitialPTS:     100_000,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output:         func(frame *media.VideoFrame) {},
+		AudioOutput: func(frame *media.AudioFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			audioFrames = append(audioFrames, &media.AudioFrame{
+				PTS:        frame.PTS,
+				SampleRate: frame.SampleRate,
+			})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Greater(t, len(audioFrames), 1, "expected multiple audio frames")
+
+	// Audio PTS should be monotonically increasing.
+	for i := 1; i < len(audioFrames); i++ {
+		require.Greater(t, audioFrames[i].PTS, audioFrames[i-1].PTS,
+			"audio PTS not monotonic at frame %d: %d <= %d",
+			i, audioFrames[i].PTS, audioFrames[i-1].PTS)
+	}
+
+	// First audio frame should start at InitialPTS.
+	require.Equal(t, int64(100_000), audioFrames[0].PTS,
+		"first audio frame should start at InitialPTS")
+
+	// Each step should be exactly 1920 ticks (1024 samples at 48kHz in 90kHz clock).
+	for i := 1; i < len(audioFrames); i++ {
+		delta := audioFrames[i].PTS - audioFrames[i-1].PTS
+		require.Equal(t, int64(1920), delta,
+			"audio PTS step at frame %d should be 1920, got %d", i, delta)
 	}
 }
 

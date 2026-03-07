@@ -486,6 +486,13 @@ func (s *Switcher) LastBroadcastVideoPTS() int64 {
 	return s.lastBroadcastPTS.Load()
 }
 
+// ProgramSource returns the key of the current program source.
+func (s *Switcher) ProgramSource() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.programSource
+}
+
 // trackBroadcastInterval records the time gap since the last program broadcast
 // and logs a warning when the gap exceeds 200ms, helping diagnose fps drops.
 func (s *Switcher) trackBroadcastInterval() {
@@ -1867,11 +1874,21 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		return
 	}
 	if !ss.pendingIDR {
+		isVirtual := ss.isVirtual
 		s.mu.RUnlock()
 		s.routeToPipeline.Add(1)
-		s.broadcastVideo(frame)
+		if isVirtual {
+			// Virtual sources (replay) already produce properly encoded
+			// output with consistent SPS/PPS. Skip the decode→encode
+			// pipeline to avoid double processing, B-frame reordering
+			// confusion, and frame drops from async channel overflow.
+			s.broadcastToProgram(frame)
+		} else {
+			s.broadcastVideo(frame)
+		}
 		return
 	}
+	isVirtual := ss.isVirtual
 	s.mu.RUnlock()
 
 	// Slow path: pendingIDR is true. Need write lock to clear it.
@@ -1898,7 +1915,11 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 
 	s.log.Debug("IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
 	s.routeToPipeline.Add(1)
-	s.broadcastVideo(frame)
+	if isVirtual {
+		s.broadcastToProgram(frame)
+	} else {
+		s.broadcastVideo(frame)
+	}
 }
 
 // handleAudioFrame implements frameHandler. It is called by sourceViewers
