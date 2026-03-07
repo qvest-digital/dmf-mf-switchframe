@@ -578,6 +578,25 @@ func (e *bufferingEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, erro
 
 func (e *bufferingEncoder) Close() { e.inner.Close() }
 
+func TestPipelineCodecs_ClampsBitrate(t *testing.T) {
+	pc := &pipelineCodecs{}
+
+	// Simulate a source sending at 50 Mbps (absurdly high CRF source)
+	// avgFrameSize=200KB, avgFPS=30 -> 200000 * 30 * 8 = 48Mbps
+	pc.updateSourceStats(200000, 30)
+	pc.mu.Lock()
+	require.LessOrEqual(t, pc.sourceBitrate, 20_000_000,
+		"source bitrate should be clamped to sane maximum")
+	pc.mu.Unlock()
+
+	// Simulate very low bitrate source (300bps - broken source)
+	pc.updateSourceStats(10, 30)
+	pc.mu.Lock()
+	require.GreaterOrEqual(t, pc.sourceBitrate, 500_000,
+		"source bitrate should be clamped to minimum floor")
+	pc.mu.Unlock()
+}
+
 // failingEncoder always returns an error from Encode.
 type failingEncoder struct{}
 

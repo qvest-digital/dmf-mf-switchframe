@@ -197,7 +197,21 @@ func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64
 	}
 	defer pc.mu.Unlock()
 	if avgFPS > 0 {
-		pc.sourceBitrate = int(avgFrameSize * avgFPS * 8)
+		raw := int(avgFrameSize * avgFPS * 8)
+		// Clamp to sane bounds: 500 Kbps floor, 20 Mbps ceiling.
+		// Resolution-aware clamping happens at encoder creation time
+		// via the factory, but we prevent garbage values here.
+		const (
+			minBitrate = 500_000    // 500 Kbps
+			maxBitrate = 20_000_000 // 20 Mbps
+		)
+		if raw < minBitrate {
+			raw = minBitrate
+		}
+		if raw > maxBitrate {
+			raw = maxBitrate
+		}
+		pc.sourceBitrate = raw
 		pc.sourceFPS = float32(avgFPS)
 	}
 }
