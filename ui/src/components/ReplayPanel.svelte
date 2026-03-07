@@ -2,6 +2,7 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import { replayMarkIn, replayMarkOut, replayPlay, replayStop, apiCall } from '$lib/api/switch-api';
+	import { formatTimecode, formatClipDuration } from '$lib/util/timecode';
 
 	interface Props {
 		state: ControlRoomState;
@@ -89,10 +90,14 @@
 
 	{#if replay?.markIn}
 		<div class="mark-info">
-			{replay.markSource}: IN set
-			{#if replay.markOut}
-				/ OUT set
-			{/if}
+			<span class="mark-source">{crState.sources[replay.markSource ?? '']?.label || replay.markSource}</span>
+			<span class="mark-times">
+				IN {formatTimecode(replay.markIn)}
+				{#if replay.markOut}
+					&nbsp;/ OUT {formatTimecode(replay.markOut)}
+					<span class="clip-duration">({formatClipDuration((replay.markOut ?? 0) - (replay.markIn ?? 0))})</span>
+				{/if}
+			</span>
 		</div>
 	{/if}
 
@@ -330,5 +335,20 @@
 
 	.buf-duration, .buf-size {
 		margin-left: 8px;
+	}
+
+	.mark-source {
+		font-weight: 600;
+		color: var(--text-primary, #eee);
+	}
+
+	.mark-times {
+		font-family: var(--font-mono, monospace);
+		font-size: 10px;
+	}
+
+	.clip-duration {
+		color: var(--accent-blue, #8af);
+		margin-left: 4px;
 	}
 </style>
