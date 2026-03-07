@@ -82,7 +82,7 @@ func parseConfig() (AppConfig, error) {
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 
 	// MXL integration flags.
-	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL flow UUIDs to subscribe as sources (env: SWITCHFRAME_MXL_SOURCES)")
+	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")

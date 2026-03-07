@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -378,8 +379,16 @@ func (a *App) initMXL() error {
 	a.mxlInstance = inst
 
 	// Register MXL sources.
-	for _, flowID := range a.cfg.MXLSources {
-		flowName := "mxl:" + flowID
+	// Each spec is "videoUUID" or "videoUUID:audioUUID".
+	for _, spec := range a.cfg.MXLSources {
+		parts := strings.SplitN(spec, ":", 2)
+		videoFlowID := parts[0]
+		var audioFlowID string
+		if len(parts) > 1 {
+			audioFlowID = parts[1]
+		}
+
+		flowName := "mxl:" + videoFlowID
 
 		// Register with switcher and mixer.
 		a.sw.RegisterMXLSource(flowName)
@@ -389,18 +398,28 @@ func (a *App) initMXL() error {
 		// Register relay for browser delivery + replay.
 		relay := a.server.RegisterStream(flowName)
 
-		// Open MXL flows.
-		videoFlow, err := inst.OpenReader(flowID)
+		// Open MXL video flow.
+		videoFlow, err := inst.OpenReader(videoFlowID)
 		if err != nil {
-			slog.Warn("mxl: could not open video flow", "flowID", flowID, "error", err)
+			slog.Warn("mxl: could not open video flow", "flowID", videoFlowID, "error", err)
 		}
-		// Audio flow would use a separate flow UUID; for now video-only.
+
+		// Open MXL audio flow if specified.
+		var audioFlow mxl.ContinuousReader
+		if audioFlowID != "" {
+			af, err := inst.OpenAudioReader(audioFlowID)
+			if err != nil {
+				slog.Warn("mxl: could not open audio flow", "flowID", audioFlowID, "error", err)
+			} else {
+				audioFlow = af
+			}
+		}
 
 		// Capture relay for OnVideoInfo closure.
 		sourceRelay := relay
 		src := mxl.NewSource(mxl.SourceConfig{
 			FlowName:            flowName,
-			VideoFlowID:         flowID,
+			VideoFlowID:         videoFlowID,
 			Width:               1920,
 			Height:              1080,
 			EncoderFactory:      encoderFactory(),
@@ -434,7 +453,7 @@ func (a *App) initMXL() error {
 			},
 		})
 
-		src.Start(context.Background(), videoFlow, nil)
+		src.Start(context.Background(), videoFlow, audioFlow)
 		a.mxlSources = append(a.mxlSources, src)
 
 		// Register replay viewer.
@@ -444,7 +463,10 @@ func (a *App) initMXL() error {
 			}
 		}
 
-		slog.Info("MXL source registered", "flowID", flowID, "key", flowName)
+		slog.Info("MXL source registered",
+			"videoFlowID", videoFlowID,
+			"audioFlowID", audioFlowID,
+			"key", flowName)
 	}
 
 	// Configure MXL output.

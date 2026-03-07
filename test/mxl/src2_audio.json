@@ -1,0 +1,18 @@
+{
+  "description": "Switchframe demo source 2 - stereo audio",
+  "id": "a0000002-0000-0000-0000-000000000002",
+  "tags": {
+    "urn:x-nmos:tag:grouphint/v1.0": [
+      "switchframe-src2:audio"
+    ]
+  },
+  "format": "urn:x-nmos:format:audio",
+  "label": "Switchframe Src2 Audio",
+  "parents": [],
+  "media_type": "audio/float32",
+  "sample_rate": {
+    "numerator": 48000
+  },
+  "channel_count": 2,
+  "bit_depth": 32
+}

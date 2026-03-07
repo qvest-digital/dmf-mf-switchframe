@@ -1,4 +1,4 @@
-.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format
+.PHONY: build build-server build-server-mxl dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -58,6 +58,16 @@ demo: build-server node_modules_check
 		fi; \
 		cd ui && npm run dev & \
 		wait
+
+# Build with MXL SDK support (requires MXL_ROOT env var)
+build-server-mxl:
+	@test -n "$${MXL_ROOT}" || { echo "ERROR: MXL_ROOT not set. Export it to your MXL SDK install directory."; exit 1; }
+	cd server && PKG_CONFIG_PATH="$${MXL_ROOT}/lib/pkgconfig$${PKG_CONFIG_PATH:+:$$PKG_CONFIG_PATH}" \
+		go build -tags "cgo mxl" -o ../bin/switchframe ./cmd/switchframe
+
+# MXL demo: real MXL SDK + GStreamer test sources through shared memory
+mxl-demo: node_modules_check
+	@bash scripts/mxl-demo.sh
 
 # MXL pipeline integration tests
 test-mxl:
