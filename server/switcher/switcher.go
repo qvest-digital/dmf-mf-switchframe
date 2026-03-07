@@ -132,6 +132,11 @@ type audioTransitionHandler interface {
 	SetProgramMute(muted bool)
 }
 
+// RawVideoSink receives a deep copy of the processed YUV420p frame
+// after all video processing (keying, compositor) but before H.264 encode.
+// Used by MXL output to write raw video to shared memory.
+type RawVideoSink func(pf *ProcessingFrame)
+
 // TransitionConfig holds the codec factories needed to create TransitionEngines.
 type TransitionConfig struct {
 	DecoderFactory transition.DecoderFactory
@@ -254,6 +259,10 @@ type Switcher struct {
 	routeToPipeline atomic.Int64 // frames routed to normal pipeline
 	routeFiltered   atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
+	// Raw video output tap — receives deep copy of YUV after processing,
+	// before encode. Used by MXL output to write raw video to shared memory.
+	rawVideoSink atomic.Pointer[RawVideoSink]
+
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
@@ -314,6 +323,18 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.promMetrics = m
+}
+
+// SetRawVideoSink sets or clears the raw video output tap.
+// The sink receives a deep copy of each processed YUV420p frame after all
+// video processing (keying, compositor) but before H.264 encode. This is
+// used by MXL output to write raw video to shared memory. Pass nil to disable.
+func (s *Switcher) SetRawVideoSink(sink RawVideoSink) {
+	if sink != nil {
+		s.rawVideoSink.Store(&sink)
+	} else {
+		s.rawVideoSink.Store(nil)
+	}
 }
 
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
@@ -672,6 +693,12 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 		pf.YUV = compositor.ProcessYUV(pf.YUV, pf.Width, pf.Height)
 	}
 
+	// MXL output tap — deep copy YUV after all processing, before encode
+	if sinkPtr := s.rawVideoSink.Load(); sinkPtr != nil {
+		cp := pf.DeepCopy()
+		(*sinkPtr)(cp)
+	}
+
 	// Always encode
 	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
 	pf.ReleaseYUV() // return pooled buffer after encode copies it
@@ -758,6 +785,12 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 
 	if pipeCodecs == nil {
 		return
+	}
+
+	// MXL output tap — deep copy YUV after all processing, before encode
+	if sinkPtr := s.rawVideoSink.Load(); sinkPtr != nil {
+		cp := pf.DeepCopy()
+		(*sinkPtr)(cp)
 	}
 
 	frame, err := pipeCodecs.encode(pf, pf.IsKeyframe)
@@ -1935,9 +1968,16 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		if isVirtual {
 			// Virtual sources (replay) already produce properly encoded
 			// output with consistent SPS/PPS. Skip the decode→encode
-			// pipeline to avoid double processing, B-frame reordering
-			// confusion, and frame drops from async channel overflow.
-			s.broadcastToProgram(frame)
+			// pipeline to avoid double processing.
+			// Keep all virtual-source frames in the same MoQ group
+			// (QUIC stream) to guarantee in-order delivery. The initial
+			// group was created when the IDR gate cleared (slow path).
+			f := *frame
+			f.GroupID = s.programGroupID.Load()
+			s.lastBroadcastPTS.Store(f.PTS)
+			s.trackBroadcastInterval()
+			s.videoBroadcastCount.Add(1)
+			s.programRelay.BroadcastVideo(&f)
 		} else {
 			s.broadcastVideo(frame)
 		}
