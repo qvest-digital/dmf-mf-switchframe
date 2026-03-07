@@ -9,9 +9,14 @@
 	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay'] as const;
 	type TabId = typeof tabs[number];
 
-	let activeTab = $state<TabId>(
-		(typeof localStorage !== 'undefined' && localStorage.getItem('sf-active-tab') as TabId) || 'Audio'
-	);
+	function loadSavedTab(): TabId {
+		if (typeof localStorage === 'undefined') return 'Audio';
+		const saved = localStorage.getItem('sf-active-tab');
+		if (saved && (tabs as readonly string[]).includes(saved)) return saved as TabId;
+		return 'Audio';
+	}
+
+	let activeTab = $state<TabId>(loadSavedTab());
 
 	function setTab(tab: TabId) {
 		activeTab = tab;
@@ -37,13 +42,15 @@
 </script>
 
 <div class="bottom-tabs">
-	<div class="tab-bar" role="tablist">
+	<div class="tab-bar" role="tablist" aria-label="Bottom panel">
 		{#each tabs as tab, i}
 			<button
+				id="tab-{tab.toLowerCase()}"
 				class="tab"
 				class:active={activeTab === tab}
 				role="tab"
 				aria-selected={activeTab === tab}
+				aria-controls="tabpanel-{tab.toLowerCase()}"
 				onclick={() => setTab(tab)}
 			>
 				{tab}
@@ -51,7 +58,12 @@
 			</button>
 		{/each}
 	</div>
-	<div class="tab-content" role="tabpanel">
+	<div
+		class="tab-content"
+		role="tabpanel"
+		id="tabpanel-{activeTab.toLowerCase()}"
+		aria-labelledby="tab-{activeTab.toLowerCase()}"
+	>
 		{@render children(activeTab)}
 	</div>
 </div>
