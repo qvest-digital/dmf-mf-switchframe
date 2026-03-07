@@ -87,14 +87,21 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
 		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
+		// Disable scene-change detection: transitions ARE the content change.
+		// Without this, NVENC inserts extra IDRs during dissolves/wipes,
+		// causing downstream decoders to reset and producing visual glitches.
+		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
+		// Note: VA-API does not expose a scene-change detection toggle.
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
 		// VT ignores AVCodecContext.max_b_frames — must use its own option.
 		// B-frames break reference chains at transition boundaries.
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
+		// Note: VideoToolbox does not expose a scene-change detection toggle.
 	}
 
 	int rc = avcodec_open2(h->ctx, codec, NULL);
