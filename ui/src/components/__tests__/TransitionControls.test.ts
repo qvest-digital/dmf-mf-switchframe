@@ -25,3 +25,51 @@ describe('T-bar position calculation', () => {
 		expect(tbarPosition(400, 100, 200)).toBe(1);
 	});
 });
+
+describe('T-bar keyboard step calculation', () => {
+	function applyKeyStep(currentValue: number, key: string, shiftKey: boolean): number {
+		const step = shiftKey ? 0.1 : 0.01;
+		if (key === 'ArrowDown' || key === 'ArrowRight') {
+			return Math.min(1, currentValue + step);
+		} else if (key === 'ArrowUp' || key === 'ArrowLeft') {
+			return Math.max(0, currentValue - step);
+		} else if (key === 'Home') {
+			return 0;
+		} else if (key === 'End') {
+			return 1;
+		}
+		return currentValue;
+	}
+
+	it('ArrowDown increments by 0.01', () => {
+		expect(applyKeyStep(0.5, 'ArrowDown', false)).toBeCloseTo(0.51);
+	});
+
+	it('ArrowUp decrements by 0.01', () => {
+		expect(applyKeyStep(0.5, 'ArrowUp', false)).toBeCloseTo(0.49);
+	});
+
+	it('Shift+ArrowDown increments by 0.1', () => {
+		expect(applyKeyStep(0.5, 'ArrowDown', true)).toBeCloseTo(0.6);
+	});
+
+	it('Shift+ArrowUp decrements by 0.1', () => {
+		expect(applyKeyStep(0.5, 'ArrowUp', true)).toBeCloseTo(0.4);
+	});
+
+	it('Home sets to 0', () => {
+		expect(applyKeyStep(0.7, 'Home', false)).toBe(0);
+	});
+
+	it('End sets to 1', () => {
+		expect(applyKeyStep(0.3, 'End', false)).toBe(1);
+	});
+
+	it('clamps at 0', () => {
+		expect(applyKeyStep(0.005, 'ArrowUp', false)).toBe(0);
+	});
+
+	it('clamps at 1', () => {
+		expect(applyKeyStep(0.995, 'ArrowDown', false)).toBe(1);
+	});
+});

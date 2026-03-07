@@ -110,6 +110,35 @@
 		}
 		setPositionThrottled(y);
 	}
+
+	function handleTbarKeydown(e: KeyboardEvent) {
+		const step = e.shiftKey ? 0.1 : 0.01;
+		let newValue = tbarValue;
+		if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+			newValue = Math.min(1, tbarValue + step);
+		} else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+			newValue = Math.max(0, tbarValue - step);
+		} else if (e.key === 'Home') {
+			newValue = 0;
+		} else if (e.key === 'End') {
+			newValue = 1;
+		} else {
+			return;
+		}
+		e.preventDefault();
+		anim.active = false;
+
+		if (!crState.inTransition && newValue > 0 && crState.previewSource) {
+			apiCall(startTransition(
+				crState.previewSource, transType, durationMs,
+				transType === 'wipe' ? wipeDirection : undefined,
+				transType === 'stinger' ? stingerName : undefined
+			), 'Transition failed');
+		}
+		if (newValue > 0) {
+			setPositionThrottled(newValue);
+		}
+	}
 </script>
 
 <div class="transition-controls">
@@ -190,6 +219,7 @@
 		aria-valuenow={tbarValue}
 		tabindex="0"
 		onpointerdown={handleTbarPointerDown}
+		onkeydown={handleTbarKeydown}
 	>
 		<div class="tbar-track">
 			<div class="tbar-fill" style="height: {tbarValue * 100}%"></div>
