@@ -186,6 +186,7 @@
 		{@const peakLDb = channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL)}
 		{@const peakRDb = channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR)}
 		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
+		{@const _tick = peakHoldTick}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:expanded={isExpanded}>
 			<span class="strip-label">{label}</span>
 
