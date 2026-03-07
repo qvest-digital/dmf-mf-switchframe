@@ -78,18 +78,7 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 
 	// On keyframes, prepend SPS + PPS as Annex B NALUs.
 	if frame.IsKeyframe {
-		var prefix []byte
-		if len(frame.SPS) > 0 {
-			prefix = append(prefix, 0x00, 0x00, 0x00, 0x01)
-			prefix = append(prefix, frame.SPS...)
-		}
-		if len(frame.PPS) > 0 {
-			prefix = append(prefix, 0x00, 0x00, 0x00, 0x01)
-			prefix = append(prefix, frame.PPS...)
-		}
-		if len(prefix) > 0 {
-			annexB = append(prefix, annexB...)
-		}
+		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 	}
 
 	// Build PES data for video.

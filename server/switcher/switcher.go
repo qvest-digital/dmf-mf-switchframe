@@ -1723,15 +1723,8 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	if inTrans && engine != nil {
 		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
 		annexB := codec.AVC1ToAnnexB(frame.WireData)
-		if frame.IsKeyframe && len(frame.SPS) > 0 {
-			// Prepend SPS/PPS as Annex B NALUs so decoder can (re)configure.
-			var buf []byte
-			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-			buf = append(buf, frame.SPS...)
-			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-			buf = append(buf, frame.PPS...)
-			buf = append(buf, annexB...)
-			annexB = buf
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 		}
 		engine.IngestFrame(sourceKey, annexB, frame.PTS)
 

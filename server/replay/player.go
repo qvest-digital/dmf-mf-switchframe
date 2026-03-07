@@ -273,14 +273,8 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 			continue
 		}
 
-		if bf.isKeyframe && len(bf.sps) > 0 {
-			var buf []byte
-			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-			buf = append(buf, bf.sps...)
-			buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-			buf = append(buf, bf.pps...)
-			buf = append(buf, annexB...)
-			annexB = buf
+		if bf.isKeyframe {
+			annexB = codec.PrependSPSPPS(bf.sps, bf.pps, annexB)
 		}
 
 		yuv, w, h, decErr := decoder.Decode(annexB)

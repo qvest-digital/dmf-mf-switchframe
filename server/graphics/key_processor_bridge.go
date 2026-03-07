@@ -83,14 +83,8 @@ func (b *KeyProcessorBridge) IngestFillFrame(sourceKey string, frame *media.Vide
 
 	// Decode fill frame
 	annexB := codec.AVC1ToAnnexB(frame.WireData)
-	if frame.IsKeyframe && len(frame.SPS) > 0 {
-		var buf []byte
-		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-		buf = append(buf, frame.SPS...)
-		buf = append(buf, 0x00, 0x00, 0x00, 0x01)
-		buf = append(buf, frame.PPS...)
-		buf = append(buf, annexB...)
-		annexB = buf
+	if frame.IsKeyframe {
+		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 	}
 
 	yuv, w, h, err := dec.Decode(annexB)
