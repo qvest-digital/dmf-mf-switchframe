@@ -158,4 +158,76 @@ describe('SimpleMode', () => {
 		const btn = screen.getByText('FADE TO BLACK');
 		expect(btn.classList.contains('ftb-active')).toBe(true);
 	});
+
+	// --- Source health indicators ---
+
+	it('source button gets class source-stale when source status is stale', () => {
+		const state = makeState({
+			sources: {
+				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', status: 'stale' },
+				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+			},
+		});
+		render(SimpleMode, { props: { state } });
+		const buttons = screen.getAllByText(/Camera 2/);
+		const cam2btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
+		expect(cam2btn?.classList.contains('source-stale')).toBe(true);
+	});
+
+	it('source button gets class source-stale when source status is no_signal', () => {
+		const state = makeState({
+			sources: {
+				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', status: 'no_signal' },
+				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+			},
+		});
+		render(SimpleMode, { props: { state } });
+		const buttons = screen.getAllByText(/Camera 2/);
+		const cam2btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
+		expect(cam2btn?.classList.contains('source-stale')).toBe(true);
+	});
+
+	it('source button is disabled and shows OFFLINE text when status is offline', () => {
+		const state = makeState({
+			sources: {
+				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', status: 'offline' },
+				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+			},
+		});
+		render(SimpleMode, { props: { state } });
+		// The button should have the source-offline class
+		const offlineOverlays = screen.getAllByText('OFFLINE');
+		expect(offlineOverlays.length).toBeGreaterThanOrEqual(1);
+		// The overlay should be inside a source-btn
+		const offlineBtn = offlineOverlays.find((el) => el.closest('.source-btn'))?.closest('button');
+		expect(offlineBtn).toBeTruthy();
+		expect(offlineBtn?.classList.contains('source-offline')).toBe(true);
+		expect(offlineBtn?.hasAttribute('disabled')).toBe(true);
+	});
+
+	it('source button shows warning indicator when stale', () => {
+		const state = makeState({
+			sources: {
+				cam1: { key: 'cam1', label: 'Camera 1', status: 'stale' },
+				cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' },
+				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+			},
+		});
+		render(SimpleMode, { props: { state } });
+		const warnings = screen.getAllByText('!');
+		const cam1warning = warnings.find((el) => el.closest('.source-btn'));
+		expect(cam1warning).toBeTruthy();
+		expect(cam1warning?.classList.contains('health-warning')).toBe(true);
+	});
+
+	it('healthy source button does not get stale or offline classes', () => {
+		render(SimpleMode, { props: { state: makeState() } });
+		const buttons = screen.getAllByText(/Camera 1/);
+		const cam1btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
+		expect(cam1btn?.classList.contains('source-stale')).toBe(false);
+		expect(cam1btn?.classList.contains('source-offline')).toBe(false);
+	});
 });

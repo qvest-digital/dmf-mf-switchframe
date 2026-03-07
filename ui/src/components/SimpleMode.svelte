@@ -135,12 +135,23 @@
 
 	<section class="source-buttons">
 		{#each sourceKeys as key, i}
+			{@const health = state.sources[key]?.status}
 			<button
 				class="source-btn {tallyClass(key)}"
+				class:source-stale={health === 'stale' || health === 'no_signal'}
+				class:source-offline={health === 'offline'}
+				disabled={health === 'offline'}
 				onclick={() => handleSourceClick(key)}
 			>
 				<span class="source-number">{i + 1}</span>
-				{state.sources[key].label || key}
+				{#if health === 'offline'}
+					OFFLINE
+				{:else}
+					{state.sources[key].label || key}
+				{/if}
+				{#if health === 'stale' || health === 'no_signal'}
+					<span class="health-warning">!</span>
+				{/if}
 			</button>
 		{/each}
 	</section>
@@ -281,6 +292,7 @@
 	}
 
 	.source-btn {
+		position: relative;
 		flex: 1;
 		min-width: 100px;
 		min-height: 44px;
@@ -314,6 +326,25 @@
 		margin-right: 6px;
 		color: var(--text-tertiary);
 		font-family: var(--font-mono);
+	}
+
+	.source-stale {
+		opacity: 0.6;
+	}
+
+	.source-offline {
+		opacity: 0.3;
+		pointer-events: none;
+	}
+
+	.health-warning {
+		position: absolute;
+		top: 4px;
+		right: 6px;
+		font-size: 0.7rem;
+		font-weight: 700;
+		color: var(--accent-orange, #f59e0b);
+		line-height: 1;
 	}
 
 	.tally-preview {
