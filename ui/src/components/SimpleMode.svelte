@@ -167,7 +167,7 @@
 		>
 			DISSOLVE
 		</button>
-		<button class="action-btn ftb-btn" class:ftb-active={state.ftbActive} onclick={handleFTB}>
+		<button class="action-btn ftb-btn" class:ftb-active={state.ftbActive} onclick={handleFTB} disabled={state.inTransition && !state.ftbActive}>
 			FADE TO BLACK
 		</button>
 	</section>

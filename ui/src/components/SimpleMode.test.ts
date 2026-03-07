@@ -159,6 +159,18 @@ describe('SimpleMode', () => {
 		expect(btn.classList.contains('ftb-active')).toBe(true);
 	});
 
+	it('FADE TO BLACK button disabled during transition', () => {
+		render(SimpleMode, { props: { state: makeState({ inTransition: true }) } });
+		const btn = screen.getByText('FADE TO BLACK');
+		expect(btn.closest('button')?.disabled ?? (btn as HTMLButtonElement).disabled).toBe(true);
+	});
+
+	it('FADE TO BLACK button enabled during FTB release (inTransition + ftbActive)', () => {
+		render(SimpleMode, { props: { state: makeState({ inTransition: true, ftbActive: true }) } });
+		const btn = screen.getByText('FADE TO BLACK');
+		expect(btn.closest('button')?.disabled ?? (btn as HTMLButtonElement).disabled).toBe(false);
+	});
+
 	// --- Source health indicators ---
 
 	it('source button gets class source-stale when source status is stale', () => {
