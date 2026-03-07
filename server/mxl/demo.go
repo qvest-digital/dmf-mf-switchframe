@@ -141,6 +141,10 @@ func (d *DemoAudioReader) ConfigInfo() FlowConfig {
 	}
 }
 
+func (d *DemoAudioReader) HeadIndex() (uint64, error) {
+	return d.index.Load(), nil
+}
+
 func (d *DemoAudioReader) Close() error {
 	d.closed.Store(true)
 	return nil

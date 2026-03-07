@@ -3,6 +3,7 @@ package mxl
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -209,8 +210,14 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	channels := int(config.ChannelCount)
 	samplesPerRead := r.config.SamplesPerRead
 
-	// Read position: start from current MXL time (wall-clock for stubs).
-	index := CurrentIndex(config.GrainRate)
+	// Read position: start from the ring buffer's current write head so we
+	// don't read stale samples that have already been overwritten.
+	index, err := flow.HeadIndex()
+	if err != nil {
+		// Fallback to wall-clock approximation.
+		index = CurrentIndex(config.GrainRate)
+		log.Warn("mxl audio reader: HeadIndex unavailable, using wall-clock", "error", err)
+	}
 	// PTS counter: monotonic from 0, independent of read position.
 	// This ensures audio PTS aligns with video PTS (both start near 0).
 	var ptsCounter int64
@@ -228,6 +235,17 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		pcm, err := flow.ReadSamples(index, samplesPerRead, timeoutNs)
 		if err != nil {
 			consecutiveErrors++
+
+			// On "too late" errors, re-sync to the current write head
+			// instead of dying. The ring buffer moved past our position.
+			if strings.Contains(err.Error(), "too late") {
+				if head, hErr := flow.HeadIndex(); hErr == nil {
+					index = head
+					consecutiveErrors = 0
+					continue
+				}
+			}
+
 			if consecutiveErrors >= maxConsecutiveErrors {
 				log.Error("mxl audio reader: too many consecutive errors, stopping",
 					"errors", consecutiveErrors, "last_error", err)

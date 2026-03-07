@@ -365,6 +365,15 @@ func (r *continuousFlowReader) ConfigInfo() FlowConfig {
 	return r.config
 }
 
+func (r *continuousFlowReader) HeadIndex() (uint64, error) {
+	var info C.mxlFlowRuntimeInfo
+	status := C.mxlFlowReaderGetRuntimeInfo(r.reader, &info)
+	if err := statusError(status, "audio head index"); err != nil {
+		return 0, err
+	}
+	return uint64(info.headIndex), nil
+}
+
 func (r *continuousFlowReader) Close() error {
 	status := C.mxlReleaseFlowReader(r.instance, r.reader)
 	return statusError(status, "release audio reader")

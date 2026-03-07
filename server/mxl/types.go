@@ -127,6 +127,9 @@ type ContinuousReader interface {
 	// ConfigInfo returns the flow configuration.
 	ConfigInfo() FlowConfig
 
+	// HeadIndex returns the current write-head position in the ring buffer.
+	HeadIndex() (uint64, error)
+
 	// Close releases the reader.
 	Close() error
 }

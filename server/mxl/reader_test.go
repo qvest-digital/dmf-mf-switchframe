@@ -99,6 +99,8 @@ func (m *mockContinuousReader) ReadSamples(_ uint64, _ int, _ uint64) ([][]float
 
 func (m *mockContinuousReader) ConfigInfo() FlowConfig { return m.config }
 
+func (m *mockContinuousReader) HeadIndex() (uint64, error) { return 0, nil }
+
 func (m *mockContinuousReader) Close() error { return nil }
 
 // --- Tests ---
