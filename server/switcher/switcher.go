@@ -457,8 +457,10 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 
 		// Wire all existing source viewers to the frame sync.
 		for key, ss := range s.sources {
-			ss.viewer.frameSync.Store(fs)
-			ss.viewer.delayBuffer.Store(nil) // bypass delay buffer
+			if ss.viewer != nil {
+				ss.viewer.frameSync.Store(fs)
+				ss.viewer.delayBuffer.Store(nil) // bypass delay buffer
+			}
 			fs.AddSource(key)
 		}
 		fs.Start()
@@ -471,8 +473,10 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 
 		// Revert all source viewers to the delay buffer.
 		for _, ss := range s.sources {
-			ss.viewer.frameSync.Store(nil)
-			ss.viewer.delayBuffer.Store(s.delayBuffer)
+			if ss.viewer != nil {
+				ss.viewer.frameSync.Store(nil)
+				ss.viewer.delayBuffer.Store(s.delayBuffer)
+			}
 		}
 		s.log.Info("frame sync disabled")
 	}
@@ -1399,6 +1403,45 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 	s.notifyStateChange(snapshot)
 }
 
+// RegisterMXLSource registers a source that provides raw YUV420p frames
+// directly (no Prism relay/viewer). Used for MXL shared-memory sources.
+func (s *Switcher) RegisterMXLSource(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sources[key] = &sourceState{
+		key:      key,
+		position: len(s.sources) + 1,
+	}
+	s.health.registerSource(key)
+}
+
+// IngestRawVideo accepts a raw YUV420p frame from an MXL source.
+// Skips H.264 decode — feeds directly into the YUV processing pipeline
+// (keying -> compositor -> encode -> program relay).
+func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
+	s.health.recordFrame(sourceKey)
+
+	s.mu.RLock()
+	ss, ok := s.sources[sourceKey]
+	programSource := s.programSource
+	fTBActive := s.state.isFTBActive()
+	s.mu.RUnlock()
+
+	if !ok || sourceKey != programSource || fTBActive {
+		s.routeFiltered.Add(1)
+		return
+	}
+
+	// Update stats for encoder parameter derivation.
+	ss.statsMu.Lock()
+	ss.lastGroupID = pf.GroupID
+	ss.statsMu.Unlock()
+
+	// Enqueue as yuvFrame — goes through encodeAndBroadcastTransition
+	// which handles encode and broadcast to program relay.
+	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+}
+
 // UnregisterSource removes a source from the switcher and detaches its
 // viewer from the source Relay. If the removed source was on program or
 // preview, those fields are cleared.
@@ -1409,7 +1452,9 @@ func (s *Switcher) UnregisterSource(key string) {
 		s.mu.Unlock()
 		return
 	}
-	ss.relay.RemoveViewer(ss.viewer.ID())
+	if ss.relay != nil && ss.viewer != nil {
+		ss.relay.RemoveViewer(ss.viewer.ID())
+	}
 	delete(s.sources, key)
 	s.health.removeSource(key)
 	s.gopCache.RemoveSource(key)
@@ -1634,9 +1679,14 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 
 	sources := make(map[string]any, len(s.sources))
 	for key, ss := range s.sources {
+		var videoIn, audioIn int64
+		if ss.viewer != nil {
+			videoIn = ss.viewer.videoSent.Load()
+			audioIn = ss.viewer.audioSent.Load()
+		}
 		sources[key] = map[string]any{
-			"video_frames_in":   ss.viewer.videoSent.Load(),
-			"audio_frames_in":   ss.viewer.audioSent.Load(),
+			"video_frames_in":   videoIn,
+			"audio_frames_in":   audioIn,
 			"health_status":     string(s.health.rawStatus(key)),
 			"last_frame_ago_ms": s.health.lastFrameAgoMs(key),
 			"pending_idr":       ss.pendingIDR,
