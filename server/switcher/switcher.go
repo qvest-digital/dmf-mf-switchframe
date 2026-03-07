@@ -25,6 +25,7 @@ import (
 var ErrSourceNotFound = errors.New("switcher: source not found")
 var ErrAlreadyOnProgram = errors.New("switcher: already on program")
 var ErrInvalidDelay = errors.New("switcher: delay must be 0-500ms")
+var ErrInvalidPosition = errors.New("switcher: position must be >= 1")
 var ErrNoTransition = errors.New("switcher: no active transition")
 
 // SwitcherState represents the global state of the switching engine.
@@ -1326,6 +1327,9 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 // ordered by position in the UI. If another source already occupies the
 // target position, they swap positions.
 func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
+	if position < 1 {
+		return fmt.Errorf("position %d: %w", position, ErrInvalidPosition)
+	}
 	s.mu.Lock()
 	ss, ok := s.sources[sourceKey]
 	if !ok {

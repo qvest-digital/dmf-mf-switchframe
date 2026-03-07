@@ -28,6 +28,7 @@ func TestErrorStatus(t *testing.T) {
 		{switcher.ErrSourceNotFound, http.StatusNotFound},
 		{switcher.ErrAlreadyOnProgram, http.StatusBadRequest},
 		{switcher.ErrInvalidDelay, http.StatusBadRequest},
+		{switcher.ErrInvalidPosition, http.StatusBadRequest},
 		{switcher.ErrNoTransition, http.StatusConflict},
 
 		// transition
