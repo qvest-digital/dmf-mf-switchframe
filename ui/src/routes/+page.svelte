@@ -14,6 +14,7 @@
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
+	import ServerPipelineOverlay from '../components/ServerPipelineOverlay.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import KeyPanel from '../components/KeyPanel.svelte';
@@ -499,6 +500,7 @@
 	{/if}
 </ErrorBoundary>
 
+<ServerPipelineOverlay />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>

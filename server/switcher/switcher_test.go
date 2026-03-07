@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func newTestRelay() *distribution.Relay {
@@ -757,6 +759,102 @@ func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
 	agoMs := cam1Info["last_frame_ago_ms"].(int64)
 	require.GreaterOrEqual(t, agoMs, int64(0))
 	require.Less(t, agoMs, int64(1000), "should be less than 1s since we just sent a frame")
+}
+
+func TestUpdateAtomicMax(t *testing.T) {
+	var field atomic.Int64
+
+	// Zero → positive updates.
+	updateAtomicMax(&field, 100)
+	require.Equal(t, int64(100), field.Load())
+
+	// Larger value replaces.
+	updateAtomicMax(&field, 200)
+	require.Equal(t, int64(200), field.Load())
+
+	// Smaller value is a no-op.
+	updateAtomicMax(&field, 50)
+	require.Equal(t, int64(200), field.Load())
+
+	// Equal value is a no-op.
+	updateAtomicMax(&field, 200)
+	require.Equal(t, int64(200), field.Load())
+}
+
+func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Send a keyframe through the pipeline.
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0xDE, 0xAD},
+	})
+
+	// Wait for async video processing to complete.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
+
+	snap := sw.DebugSnapshot()
+	pipeline := snap["video_pipeline"].(map[string]any)
+
+	// Decode and encode stages should have non-zero timing.
+	decLast := pipeline["decode_last_ms"].(float64)
+	decMax := pipeline["decode_max_ms"].(float64)
+	encLast := pipeline["encode_last_ms"].(float64)
+	encMax := pipeline["encode_max_ms"].(float64)
+
+	require.Greater(t, decLast, 0.0, "decode_last_ms should be > 0 after processing a frame")
+	require.Greater(t, decMax, 0.0, "decode_max_ms should be > 0 after processing a frame")
+	require.Greater(t, encLast, 0.0, "encode_last_ms should be > 0 after processing a frame")
+	require.Greater(t, encMax, 0.0, "encode_max_ms should be > 0 after processing a frame")
+
+	// Key and composite should be zero when not active.
+	keyLast := pipeline["key_last_ms"].(float64)
+	compLast := pipeline["composite_last_ms"].(float64)
+	require.Equal(t, 0.0, keyLast, "key_last_ms should be 0 when keying is inactive")
+	require.Equal(t, 0.0, compLast, "composite_last_ms should be 0 when compositing is inactive")
+}
+
+func TestOutputFPSTracking(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Simulate ~30 frames in rapid succession to fill one second window
+	for i := 0; i < 30; i++ {
+		sw.trackOutputFPS()
+	}
+
+	// The first call sets the window start, subsequent 29 increment the count.
+	// FPS won't be published until the window rolls over.
+	snap := sw.DebugSnapshot()
+	pipeline := snap["video_pipeline"].(map[string]any)
+	// output_fps reflects the PREVIOUS window, which hasn't rolled yet.
+	// Just verify the field exists and is a valid int64.
+	_, ok := pipeline["output_fps"]
+	require.True(t, ok, "output_fps should be present in debug snapshot")
 }
 
 // TestSeqConcurrentAccess exercises concurrent reads and writes of the seq

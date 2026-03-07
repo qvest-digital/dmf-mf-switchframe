@@ -28,6 +28,19 @@ var ErrInvalidDelay = errors.New("switcher: delay must be 0-500ms")
 var ErrInvalidPosition = errors.New("switcher: position must be >= 1")
 var ErrNoTransition = errors.New("switcher: no active transition")
 
+// updateAtomicMax atomically updates field to val if val > current.
+func updateAtomicMax(field *atomic.Int64, val int64) {
+	for {
+		cur := field.Load()
+		if val <= cur {
+			return
+		}
+		if field.CompareAndSwap(cur, val) {
+			return
+		}
+	}
+}
+
 // SwitcherState represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
 // explicit enum that makes every valid state and transition auditable.
@@ -240,6 +253,21 @@ type Switcher struct {
 	videoProcLastNano   atomic.Int64 // last broadcastVideo processing time (ns)
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
+
+	// Per-stage pipeline timing (nanoseconds, atomic, lock-free)
+	pipeDecodeLastNano    atomic.Int64
+	pipeDecodeMaxNano     atomic.Int64
+	pipeKeyLastNano       atomic.Int64
+	pipeKeyMaxNano        atomic.Int64
+	pipeCompositeLastNano atomic.Int64
+	pipeCompositeMaxNano  atomic.Int64
+	pipeEncodeLastNano    atomic.Int64
+	pipeEncodeMaxNano     atomic.Int64
+
+	// Output FPS tracking (atomic, lock-free)
+	outputFPSCount       atomic.Int64 // frames in current 1-second window
+	outputFPSLastSecond  atomic.Int64 // FPS computed from previous second
+	outputFPSWindowStart atomic.Int64 // UnixNano start of current window
 
 	// Frame loss diagnostic counters (atomic, lock-free).
 	pipeDecodeErrors    atomic.Int64 // decode failures (non-buffering)
@@ -528,22 +556,32 @@ func (s *Switcher) trackBroadcastInterval() {
 		return // first broadcast
 	}
 	gap := now - prev
-	// Update max broadcast interval (atomic CAS loop)
-	for {
-		cur := s.maxBroadcastIntervalNano.Load()
-		if gap <= cur {
-			break
-		}
-		if s.maxBroadcastIntervalNano.CompareAndSwap(cur, gap) {
-			break
-		}
-	}
+	updateAtomicMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 200ms to pinpoint the stall
 	if gap > 200_000_000 { // 200ms in nanoseconds
 		s.log.Warn("program broadcast gap",
 			"gap_ms", float64(gap)/1e6,
 			"state", s.state.String(),
 		)
+	}
+}
+
+// trackOutputFPS maintains a 1-second sliding window to compute output FPS.
+func (s *Switcher) trackOutputFPS() {
+	now := time.Now().UnixNano()
+	windowStart := s.outputFPSWindowStart.Load()
+	if windowStart == 0 {
+		s.outputFPSWindowStart.Store(now)
+		s.outputFPSCount.Store(1)
+		return
+	}
+	elapsed := now - windowStart
+	if elapsed >= 1_000_000_000 { // 1 second
+		count := s.outputFPSCount.Swap(1)
+		s.outputFPSLastSecond.Store(count)
+		s.outputFPSWindowStart.Store(now)
+	} else {
+		s.outputFPSCount.Add(1)
 	}
 }
 
@@ -561,6 +599,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	}
 	s.lastBroadcastPTS.Store(f.PTS)
 	s.trackBroadcastInterval()
+	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(&f)
 }
@@ -576,6 +615,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	}
 	s.lastBroadcastPTS.Store(frame.PTS)
 	s.trackBroadcastInterval()
+	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(frame)
 }
@@ -643,16 +683,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 		dur := time.Since(start).Nanoseconds()
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
-		// Update max processing time (atomic CAS loop)
-		for {
-			cur := s.videoProcMaxNano.Load()
-			if dur <= cur {
-				break
-			}
-			if s.videoProcMaxNano.CompareAndSwap(cur, dur) {
-				break
-			}
-		}
+		updateAtomicMax(&s.videoProcMaxNano, dur)
 	}()
 
 	s.mu.RLock()
@@ -668,7 +699,14 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	}
 
 	// Always decode for consistent SPS/PPS
+	decStart := time.Now()
 	pf, err := pipeCodecs.decode(frame)
+	decDur := time.Since(decStart).Nanoseconds()
+	s.pipeDecodeLastNano.Store(decDur)
+	updateAtomicMax(&s.pipeDecodeMaxNano, decDur)
+	if s.promMetrics != nil {
+		s.promMetrics.PipelineDecodeDuration.Observe(float64(decDur) / 1e9)
+	}
 	if err != nil {
 		if err == errDecoderBuffering {
 			// Normal B-frame reordering delay — frame is buffered, not lost.
@@ -688,10 +726,18 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	keyActive := keyBridge != nil && keyBridge.HasEnabledKeysWithFills()
 	vidActive := compositor != nil && compositor.IsActive()
 	if keyActive {
+		keyStart := time.Now()
 		pf.YUV = keyBridge.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+		keyDur := time.Since(keyStart).Nanoseconds()
+		s.pipeKeyLastNano.Store(keyDur)
+		updateAtomicMax(&s.pipeKeyMaxNano, keyDur)
 	}
 	if vidActive {
+		compStart := time.Now()
 		pf.YUV = compositor.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+		compDur := time.Since(compStart).Nanoseconds()
+		s.pipeCompositeLastNano.Store(compDur)
+		updateAtomicMax(&s.pipeCompositeMaxNano, compDur)
 	}
 
 	// MXL output tap — deep copy YUV after all processing, before encode
@@ -701,7 +747,14 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	}
 
 	// Always encode
+	encStart := time.Now()
 	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
+	encDur := time.Since(encStart).Nanoseconds()
+	s.pipeEncodeLastNano.Store(encDur)
+	updateAtomicMax(&s.pipeEncodeMaxNano, encDur)
+	if s.promMetrics != nil {
+		s.promMetrics.PipelineEncodeDuration.Observe(float64(encDur) / 1e9)
+	}
 	pf.ReleaseYUV() // return pooled buffer after encode copies it
 	if err != nil {
 		s.log.Warn("pipeline encode failed, dropping frame", "error", err)
@@ -769,15 +822,7 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		dur := time.Since(start).Nanoseconds()
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
-		for {
-			cur := s.videoProcMaxNano.Load()
-			if dur <= cur {
-				break
-			}
-			if s.videoProcMaxNano.CompareAndSwap(cur, dur) {
-				break
-			}
-		}
+		updateAtomicMax(&s.videoProcMaxNano, dur)
 	}()
 
 	s.mu.RLock()
@@ -794,7 +839,14 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		(*sinkPtr)(cp)
 	}
 
+	encStart := time.Now()
 	frame, err := pipeCodecs.encode(pf, pf.IsKeyframe)
+	encDur := time.Since(encStart).Nanoseconds()
+	s.pipeEncodeLastNano.Store(encDur)
+	updateAtomicMax(&s.pipeEncodeMaxNano, encDur)
+	if s.promMetrics != nil {
+		s.promMetrics.PipelineEncodeDuration.Observe(float64(encDur) / 1e9)
+	}
 	if err != nil {
 		s.log.Warn("pipeline encode failed, dropping frame", "error", err, "path", "transition")
 		if s.promMetrics != nil {
@@ -1760,7 +1812,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		}
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"program_source":            s.programSource,
 		"preview_source":            s.previewSource,
 		"state":                     s.state.String(),
@@ -1788,8 +1840,24 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"route_to_pipeline":        s.routeToPipeline.Load(),
 			"route_filtered":           s.routeFiltered.Load(),
 			"queue_len":                len(s.videoProcCh),
+			"output_fps":               s.outputFPSLastSecond.Load(),
+			"decode_last_ms":           float64(s.pipeDecodeLastNano.Load()) / 1e6,
+			"decode_max_ms":            float64(s.pipeDecodeMaxNano.Load()) / 1e6,
+			"key_last_ms":              float64(s.pipeKeyLastNano.Load()) / 1e6,
+			"key_max_ms":               float64(s.pipeKeyMaxNano.Load()) / 1e6,
+			"composite_last_ms":        float64(s.pipeCompositeLastNano.Load()) / 1e6,
+			"composite_max_ms":         float64(s.pipeCompositeMaxNano.Load()) / 1e6,
+			"encode_last_ms":           float64(s.pipeEncodeLastNano.Load()) / 1e6,
+			"encode_max_ms":            float64(s.pipeEncodeMaxNano.Load()) / 1e6,
 		},
 	}
+
+	// Include transition engine timing when active
+	if s.state.isInTransition() && s.transEngine != nil {
+		result["transition_engine"] = s.transEngine.Timing()
+	}
+
+	return result
 }
 
 // SourceKeys returns the keys of all registered sources.

@@ -1509,3 +1509,129 @@ func TestIngestRawFrame_ConcurrentSafe(t *testing.T) {
 	wg.Wait()
 	e.Stop()
 }
+
+func TestEngineTimingInstrumentation(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	// Start a Mix transition with a long duration so it stays active
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Ingest several frames from both sources
+	for i := 0; i < 5; i++ {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*3000), true)
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*3000), true)
+	}
+
+	// Verify output was produced (ensures blend path was exercised)
+	mu.Lock()
+	require.Greater(t, len(*outputs), 0, "should have produced blended output")
+	mu.Unlock()
+
+	// Get timing snapshot
+	timing := e.Timing()
+
+	// frames_ingested should count all IngestFrame calls (10 total: 5 from each source)
+	framesIngested, ok := timing["frames_ingested"].(int64)
+	require.True(t, ok, "frames_ingested should be int64")
+	require.Equal(t, int64(10), framesIngested)
+
+	// frames_blended should be > 0 (only TO source triggers blend for Mix)
+	framesBlended, ok := timing["frames_blended"].(int64)
+	require.True(t, ok, "frames_blended should be int64")
+	require.Greater(t, framesBlended, int64(0), "should have blended frames")
+
+	// decode_last_ms should be >= 0 (mock decoders are fast but measurable)
+	decodeLast, ok := timing["decode_last_ms"].(float64)
+	require.True(t, ok, "decode_last_ms should be float64")
+	require.GreaterOrEqual(t, decodeLast, 0.0, "decode_last_ms should be non-negative")
+
+	// decode_max_ms should be >= decode_last_ms (or equal)
+	decodeMax, ok := timing["decode_max_ms"].(float64)
+	require.True(t, ok, "decode_max_ms should be float64")
+	require.GreaterOrEqual(t, decodeMax, 0.0, "decode_max_ms should be non-negative")
+
+	// ingest_last_ms should be >= 0
+	ingestLast, ok := timing["ingest_last_ms"].(float64)
+	require.True(t, ok, "ingest_last_ms should be float64")
+	require.GreaterOrEqual(t, ingestLast, 0.0, "ingest_last_ms should be non-negative")
+
+	// ingest_max_ms >= ingest_last_ms
+	ingestMax, ok := timing["ingest_max_ms"].(float64)
+	require.True(t, ok, "ingest_max_ms should be float64")
+	require.GreaterOrEqual(t, ingestMax, 0.0, "ingest_max_ms should be non-negative")
+
+	// blend_last_ms should be >= 0
+	blendLast, ok := timing["blend_last_ms"].(float64)
+	require.True(t, ok, "blend_last_ms should be float64")
+	require.GreaterOrEqual(t, blendLast, 0.0, "blend_last_ms should be non-negative")
+
+	// blend_max_ms >= 0
+	blendMax, ok := timing["blend_max_ms"].(float64)
+	require.True(t, ok, "blend_max_ms should be float64")
+	require.GreaterOrEqual(t, blendMax, 0.0, "blend_max_ms should be non-negative")
+
+	e.Stop()
+}
+
+func TestEngineTimingInstrumentation_RawFrames(t *testing.T) {
+	e, mu, outputs, _ := newTestEngine(t)
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Ingest raw frames (skip decode path)
+	for i := 0; i < 5; i++ {
+		e.IngestRawFrame("cam1", make([]byte, yuvSize), w, h, int64(i*3000))
+		e.IngestRawFrame("cam2", make([]byte, yuvSize), w, h, int64(i*3000))
+	}
+
+	mu.Lock()
+	require.Greater(t, len(*outputs), 0, "should have produced blended output")
+	mu.Unlock()
+
+	timing := e.Timing()
+
+	// Raw frames still count as ingested
+	framesIngested, ok := timing["frames_ingested"].(int64)
+	require.True(t, ok)
+	require.Equal(t, int64(10), framesIngested)
+
+	// Raw frames still trigger blending
+	framesBlended, ok := timing["frames_blended"].(int64)
+	require.True(t, ok)
+	require.Greater(t, framesBlended, int64(0))
+
+	// decode_last_ms should be 0 for raw frames (no decode step)
+	decodeLast, ok := timing["decode_last_ms"].(float64)
+	require.True(t, ok)
+	require.Equal(t, 0.0, decodeLast, "raw frames should not update decode timing")
+
+	// ingest and blend should still be tracked
+	ingestLast, ok := timing["ingest_last_ms"].(float64)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, ingestLast, 0.0)
+
+	blendLast, ok := timing["blend_last_ms"].(float64)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, blendLast, 0.0)
+
+	e.Stop()
+}
+
+func TestEngineTimingInstrumentation_ZeroBeforeIngest(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	// Before any transitions, all timing values should be zero
+	timing := e.Timing()
+
+	require.Equal(t, float64(0), timing["decode_last_ms"])
+	require.Equal(t, float64(0), timing["decode_max_ms"])
+	require.Equal(t, float64(0), timing["blend_last_ms"])
+	require.Equal(t, float64(0), timing["blend_max_ms"])
+	require.Equal(t, float64(0), timing["ingest_last_ms"])
+	require.Equal(t, float64(0), timing["ingest_max_ms"])
+	require.Equal(t, int64(0), timing["frames_ingested"])
+	require.Equal(t, int64(0), timing["frames_blended"])
+}

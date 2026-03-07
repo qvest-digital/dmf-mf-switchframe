@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -112,6 +113,16 @@ type TransitionEngine struct {
 	watchdogStop chan struct{} // closed in cleanup() to stop watchdog goroutine
 	watchdogOnce sync.Once    // prevents double-close of watchdogStop
 
+	// Timing instrumentation (atomic, lock-free — safe to read from any goroutine)
+	decodeLastNano atomic.Int64
+	decodeMaxNano  atomic.Int64
+	blendLastNano  atomic.Int64
+	blendMaxNano   atomic.Int64
+	ingestLastNano atomic.Int64
+	ingestMaxNano  atomic.Int64
+	framesIngested atomic.Int64
+	framesBlended  atomic.Int64
+
 	config EngineConfig
 }
 
@@ -122,6 +133,35 @@ func NewTransitionEngine(config EngineConfig) *TransitionEngine {
 		state:   StateIdle,
 		timeout: DefaultTimeout,
 		config:  config,
+	}
+}
+
+// updateAtomicMax atomically updates field to val if val > current value.
+// Uses CAS loop for lock-free thread safety.
+func updateAtomicMax(field *atomic.Int64, val int64) {
+	for {
+		cur := field.Load()
+		if val <= cur {
+			return
+		}
+		if field.CompareAndSwap(cur, val) {
+			return
+		}
+	}
+}
+
+// Timing returns a snapshot of the engine's timing instrumentation.
+// Safe to call from any goroutine (all fields are atomic).
+func (e *TransitionEngine) Timing() map[string]any {
+	return map[string]any{
+		"decode_last_ms":  float64(e.decodeLastNano.Load()) / 1e6,
+		"decode_max_ms":   float64(e.decodeMaxNano.Load()) / 1e6,
+		"blend_last_ms":   float64(e.blendLastNano.Load()) / 1e6,
+		"blend_max_ms":    float64(e.blendMaxNano.Load()) / 1e6,
+		"ingest_last_ms":  float64(e.ingestLastNano.Load()) / 1e6,
+		"ingest_max_ms":   float64(e.ingestMaxNano.Load()) / 1e6,
+		"frames_ingested": e.framesIngested.Load(),
+		"frames_blended":  e.framesBlended.Load(),
 	}
 }
 
@@ -313,7 +353,11 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 		return false
 	}
 
+	decStart := time.Now()
 	yuv, w, h, err := decoder.Decode(wireData)
+	decDur := time.Since(decStart).Nanoseconds()
+	e.decodeLastNano.Store(decDur)
+	updateAtomicMax(&e.decodeMaxNano, decDur)
 	if err != nil {
 		e.log.Debug("decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
 		return false
@@ -366,6 +410,14 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 // to maintain timestamp continuity on the program stream.
 // For FTB, the fromSource triggers blend (no toSource).
 func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
+	ingestStart := time.Now()
+	defer func() {
+		dur := time.Since(ingestStart).Nanoseconds()
+		e.ingestLastNano.Store(dur)
+		updateAtomicMax(&e.ingestMaxNano, dur)
+	}()
+	e.framesIngested.Add(1)
+
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -451,6 +503,7 @@ blend:
 
 	// Blend directly in YUV420 space — no colorspace conversion needed.
 	// The blender's output buffer is pre-allocated and reused across frames.
+	blendStart := time.Now()
 	var blended []byte
 	switch e.transitionType {
 	case TransitionMix:
@@ -470,6 +523,10 @@ blend:
 		// Unknown transition type — pass through source A
 		blended = yuvA
 	}
+	blendDur := time.Since(blendStart).Nanoseconds()
+	e.blendLastNano.Store(blendDur)
+	updateAtomicMax(&e.blendMaxNano, blendDur)
+	e.framesBlended.Add(1)
 
 	// Signal keyframe on the very first output frame so the pipeline
 	// coordinator can force an IDR for downstream decoders.
@@ -502,6 +559,14 @@ blend:
 // Skips H.264 decode — stores YUV directly and triggers blend. The frame is
 // scaled to the engine's resolution if dimensions don't match.
 func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
+	ingestStart := time.Now()
+	defer func() {
+		dur := time.Since(ingestStart).Nanoseconds()
+		e.ingestLastNano.Store(dur)
+		updateAtomicMax(&e.ingestMaxNano, dur)
+	}()
+	e.framesIngested.Add(1)
+
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -575,6 +640,7 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 
 	pos := e.currentPosition()
 
+	blendStart := time.Now()
 	var blended []byte
 	switch e.transitionType {
 	case TransitionMix:
@@ -592,6 +658,10 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 	default:
 		blended = yuvA
 	}
+	blendDur := time.Since(blendStart).Nanoseconds()
+	e.blendLastNano.Store(blendDur)
+	updateAtomicMax(&e.blendMaxNano, blendDur)
+	e.framesBlended.Add(1)
 
 	isKF := !e.firstOutput
 	e.firstOutput = true

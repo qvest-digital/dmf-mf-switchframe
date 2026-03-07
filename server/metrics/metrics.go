@@ -77,6 +77,9 @@ type Metrics struct {
 	PipelineDecodeErrorsTotal prometheus.Counter
 	PipelineEncodeErrorsTotal prometheus.Counter
 	PipelineFramesProcessed   prometheus.Counter
+	PipelineDecodeDuration    prometheus.Histogram
+	PipelineEncodeDuration    prometheus.Histogram
+	PipelineBlendDuration     prometheus.Histogram
 
 	// Health
 	SourceStatusChangesTotal *prometheus.CounterVec // labels: source, from_status, to_status
@@ -175,6 +178,27 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "frames_processed_total",
 			Help:      "Total video frames processed through the YUV pipeline.",
 		}),
+		PipelineDecodeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "decode_duration_seconds",
+			Help:      "Video pipeline decode latency.",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1},
+		}),
+		PipelineEncodeDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "encode_duration_seconds",
+			Help:      "Video pipeline encode latency.",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.02, 0.033, 0.05, 0.1},
+		}),
+		PipelineBlendDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "blend_duration_seconds",
+			Help:      "Transition blend latency.",
+			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01},
+		}),
 
 		// Health
 		SourceStatusChangesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -199,6 +223,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.PipelineDecodeErrorsTotal,
 		m.PipelineEncodeErrorsTotal,
 		m.PipelineFramesProcessed,
+		m.PipelineDecodeDuration,
+		m.PipelineEncodeDuration,
+		m.PipelineBlendDuration,
 		m.SourceStatusChangesTotal,
 	)
 

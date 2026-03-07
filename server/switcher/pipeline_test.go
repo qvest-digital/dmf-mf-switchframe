@@ -688,3 +688,401 @@ func TestPipelineCodecs_ForceNextIDRConsumedByEncode(t *testing.T) {
 	// MockEncoder always returns keyframe, but the flag should be cleared.
 	require.False(t, pc.forceNextIDR, "forceNextIDR should remain cleared")
 }
+
+func TestReplayGOP_BlocksDecodeForEntireGOP(t *testing.T) {
+	// This test proves the root cause of the observed 536ms broadcast gap:
+	// replayGOP() holds pc.mu for the entire GOP decode sequence, which
+	// blocks decode() (called by videoProcessingLoop) from acquiring the lock.
+	//
+	// With 60 frames at 8ms/frame decode, the lock is held for ~480ms,
+	// during which no frames can be processed or broadcast.
+	const (
+		gopSize        = 60
+		decodeDelay    = 8 * time.Millisecond
+		expectedBlock  = time.Duration(gopSize) * decodeDelay // ~480ms
+	)
+
+	slowDec := &slowDecoder{
+		inner: transition.NewMockDecoder(4, 4),
+		delay: decodeDelay,
+	}
+
+	// No decoderFactory → falls back to replayGOPInPlace (old behavior)
+	pc := &pipelineCodecs{
+		decoder: slowDec,
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	// Build a GOP with 60 frames (keyframe + 59 P-frames)
+	frames := make([]*media.VideoFrame, gopSize)
+	frames[0] = &media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0x42, 0x00},
+	}
+	for i := 1; i < gopSize; i++ {
+		frames[i] = &media.VideoFrame{
+			PTS:        int64(100 + i*33333),
+			IsKeyframe: false,
+			WireData:   []byte{0x02},
+		}
+	}
+
+	// Start replayGOP in a goroutine (simulates handleTransitionComplete)
+	replayStarted := make(chan struct{})
+	replayDone := make(chan struct{})
+	go func() {
+		close(replayStarted)
+		pc.replayGOP(frames)
+		close(replayDone)
+	}()
+	<-replayStarted
+
+	// Give replayGOP a moment to acquire the lock
+	time.Sleep(5 * time.Millisecond)
+
+	// Now try to decode a frame (simulates videoProcessingLoop)
+	// This should block until replayGOP releases the lock
+	decodeStart := time.Now()
+	liveFrame := &media.VideoFrame{
+		PTS: 99999, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0x42, 0x00},
+	}
+	_, _ = pc.decode(liveFrame)
+	decodeBlocked := time.Since(decodeStart)
+
+	// Wait for replay to finish
+	<-replayDone
+
+	// The decode call should have been blocked for approximately the
+	// duration of the entire GOP replay (minus the 5ms head start).
+	// We use a generous lower bound to avoid flaky timing.
+	minExpected := expectedBlock * 60 / 100 // at least 60% of expected
+	t.Logf("replayGOP with %d frames at %v/frame: decode() blocked for %v (expected ~%v)",
+		gopSize, decodeDelay, decodeBlocked, expectedBlock)
+
+	require.Greater(t, decodeBlocked, minExpected,
+		"decode() should be blocked for most of the GOP replay duration (%v), "+
+			"proving lock contention. Blocked for only %v", expectedBlock, decodeBlocked)
+
+	// Also verify that the total block time is proportional to GOP size.
+	// This confirms the O(N) lock hold time.
+	require.Less(t, decodeBlocked, expectedBlock+200*time.Millisecond,
+		"decode() should not be blocked for much longer than the GOP replay")
+}
+
+func TestReplayGOP_BlocksEncode(t *testing.T) {
+	// Same contention applies to encode(): if videoProcessingLoop is in the
+	// middle of encoding (which acquires pc.mu briefly for config checks),
+	// replayGOP blocks it.
+	const (
+		gopSize     = 30
+		decodeDelay = 5 * time.Millisecond
+	)
+
+	slowDec := &slowDecoder{
+		inner: transition.NewMockDecoder(4, 4),
+		delay: decodeDelay,
+	}
+
+	pc := &pipelineCodecs{
+		decoder: slowDec,
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	frames := make([]*media.VideoFrame, gopSize)
+	frames[0] = &media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67}, PPS: []byte{0x68},
+	}
+	for i := 1; i < gopSize; i++ {
+		frames[i] = &media.VideoFrame{
+			PTS: int64(100 + i*33333), WireData: []byte{0x02},
+		}
+	}
+
+	replayStarted := make(chan struct{})
+	replayDone := make(chan struct{})
+	go func() {
+		close(replayStarted)
+		pc.replayGOP(frames)
+		close(replayDone)
+	}()
+	<-replayStarted
+	time.Sleep(5 * time.Millisecond)
+
+	// Try to encode — this also needs pc.mu
+	encodeStart := time.Now()
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 4*4*3/2),
+		Width:  4,
+		Height: 4,
+		PTS:    99999,
+	}
+	_, _ = pc.encode(pf, true)
+	encodeBlocked := time.Since(encodeStart)
+	<-replayDone
+
+	expectedBlock := time.Duration(gopSize) * decodeDelay
+	minExpected := expectedBlock * 50 / 100
+
+	t.Logf("replayGOP with %d frames at %v/frame: encode() blocked for %v (expected ~%v)",
+		gopSize, decodeDelay, encodeBlocked, expectedBlock)
+
+	require.Greater(t, encodeBlocked, minExpected,
+		"encode() should be blocked during GOP replay, proving contention")
+}
+
+func TestReplayGOP_LockHoldTimeScalesWithGOPSize(t *testing.T) {
+	// Proves that the lock hold time is O(N) — proportional to GOP size.
+	// This directly explains why larger GOPs cause longer broadcast gaps.
+	const decodeDelay = 2 * time.Millisecond
+
+	measureReplayTime := func(gopSize int) time.Duration {
+		slowDec := &slowDecoder{
+			inner: transition.NewMockDecoder(4, 4),
+			delay: decodeDelay,
+		}
+		pc := &pipelineCodecs{decoder: slowDec}
+
+		frames := make([]*media.VideoFrame, gopSize)
+		frames[0] = &media.VideoFrame{
+			PTS: 100, IsKeyframe: true,
+			WireData: []byte{0x01},
+			SPS:      []byte{0x67}, PPS: []byte{0x68},
+		}
+		for i := 1; i < gopSize; i++ {
+			frames[i] = &media.VideoFrame{
+				PTS: int64(100 + i*33333), WireData: []byte{0x02},
+			}
+		}
+
+		start := time.Now()
+		pc.replayGOP(frames)
+		return time.Since(start)
+	}
+
+	small := measureReplayTime(10)  // 10 frames → ~20ms
+	large := measureReplayTime(60)  // 60 frames → ~120ms
+
+	t.Logf("10-frame GOP: %v", small)
+	t.Logf("60-frame GOP: %v", large)
+
+	// The large GOP should take roughly 6x longer (±tolerance for scheduling)
+	ratio := float64(large) / float64(small)
+	t.Logf("Ratio (expected ~6.0): %.1f", ratio)
+
+	require.Greater(t, ratio, 3.0,
+		"lock hold time should scale with GOP size (O(N)): 60-frame took %v, 10-frame took %v, ratio %.1f",
+		large, small, ratio)
+	require.Less(t, ratio, 12.0,
+		"ratio should be reasonable (expected ~6x)")
+}
+
+func TestReplayGOP_SimulatedBroadcastGap_Old(t *testing.T) {
+	// This test proves that the OLD replayGOPInPlace (no factory) causes
+	// the observed 536ms broadcast gap. It uses the in-place fallback path
+	// (no decoderFactory) to demonstrate the problem.
+	const (
+		gopSize     = 50 // Typical GOP at 24fps × 2sec
+		decodeDelay = 8 * time.Millisecond // Realistic FFmpeg decode time
+	)
+
+	var lastBroadcast atomic.Int64
+	var maxGap atomic.Int64
+
+	slowDec := &slowDecoder{
+		inner: transition.NewMockDecoder(4, 4),
+		delay: decodeDelay,
+	}
+
+	// No decoderFactory → falls back to replayGOPInPlace (old behavior)
+	pc := &pipelineCodecs{
+		decoder: slowDec,
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	processingDone := make(chan struct{})
+	go func() {
+		defer close(processingDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			// Simulate encode-only path (transition tail frames)
+			pf := &ProcessingFrame{
+				YUV:    make([]byte, 4*4*3/2),
+				Width:  4,
+				Height: 4,
+				PTS:    time.Now().UnixNano() / 1000,
+			}
+			_, err := pc.encode(pf, false)
+			if err != nil {
+				continue
+			}
+
+			now := time.Now().UnixNano()
+			prev := lastBroadcast.Swap(now)
+			if prev > 0 {
+				gap := now - prev
+				for {
+					cur := maxGap.Load()
+					if gap <= cur {
+						break
+					}
+					if maxGap.CompareAndSwap(cur, gap) {
+						break
+					}
+				}
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	maxGap.Store(0)
+
+	gopFrames := make([]*media.VideoFrame, gopSize)
+	gopFrames[0] = &media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67}, PPS: []byte{0x68},
+	}
+	for i := 1; i < gopSize; i++ {
+		gopFrames[i] = &media.VideoFrame{
+			PTS: int64(100 + i*33333), WireData: []byte{0x02},
+		}
+	}
+
+	pc.replayGOP(gopFrames) // Uses in-place fallback → holds lock
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-processingDone
+
+	observedGap := time.Duration(maxGap.Load())
+	expectedMinGap := time.Duration(gopSize) * decodeDelay * 50 / 100
+
+	t.Logf("OLD path (in-place): broadcast gap %v (GOP: %d frames × %v = %v expected)",
+		observedGap, gopSize, decodeDelay, time.Duration(gopSize)*decodeDelay)
+
+	require.Greater(t, observedGap, expectedMinGap,
+		"OLD replayGOPInPlace should cause significant broadcast gap (>%v), was %v",
+		expectedMinGap, observedGap)
+}
+
+func TestReplayGOP_FixEliminatesContention(t *testing.T) {
+	// This test proves the fix works: with a decoderFactory, replayGOP
+	// creates a fresh decoder outside the lock, so videoProcessingLoop
+	// is NOT blocked during the GOP replay.
+	const (
+		gopSize     = 50
+		decodeDelay = 8 * time.Millisecond
+	)
+
+	var lastBroadcast atomic.Int64
+	var maxGap atomic.Int64
+
+	pc := &pipelineCodecs{
+		decoder: transition.NewMockDecoder(4, 4), // existing decoder
+		decoderFactory: func() (transition.VideoDecoder, error) {
+			// Replay decoder is slow (simulating real FFmpeg)
+			return &slowDecoder{
+				inner: transition.NewMockDecoder(4, 4),
+				delay: decodeDelay,
+			}, nil
+		},
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	processingDone := make(chan struct{})
+	go func() {
+		defer close(processingDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			pf := &ProcessingFrame{
+				YUV:    make([]byte, 4*4*3/2),
+				Width:  4,
+				Height: 4,
+				PTS:    time.Now().UnixNano() / 1000,
+			}
+			_, err := pc.encode(pf, false)
+			if err != nil {
+				continue
+			}
+
+			now := time.Now().UnixNano()
+			prev := lastBroadcast.Swap(now)
+			if prev > 0 {
+				gap := now - prev
+				for {
+					cur := maxGap.Load()
+					if gap <= cur {
+						break
+					}
+					if maxGap.CompareAndSwap(cur, gap) {
+						break
+					}
+				}
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	maxGap.Store(0)
+
+	gopFrames := make([]*media.VideoFrame, gopSize)
+	gopFrames[0] = &media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67}, PPS: []byte{0x68},
+	}
+	for i := 1; i < gopSize; i++ {
+		gopFrames[i] = &media.VideoFrame{
+			PTS: int64(100 + i*33333), WireData: []byte{0x02},
+		}
+	}
+
+	pc.replayGOP(gopFrames) // Uses new path → creates fresh decoder outside lock
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-processingDone
+
+	observedGap := time.Duration(maxGap.Load())
+	totalReplayTime := time.Duration(gopSize) * decodeDelay
+	maxAcceptableGap := 50 * time.Millisecond // should be < 50ms, not 400ms+
+
+	t.Logf("NEW path (async decoder): broadcast gap %v (GOP replay took ~%v)",
+		observedGap, totalReplayTime)
+
+	require.Less(t, observedGap, maxAcceptableGap,
+		"FIXED replayGOP should NOT block videoProcessingLoop. "+
+			"Max gap should be <50ms, was %v (old behavior would be >%v)",
+		observedGap, totalReplayTime)
+}

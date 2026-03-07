@@ -208,18 +208,83 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	return frame, nil
 }
 
-// replayGOP feeds all cached GOP frames through the pipeline decoder to build
-// its reference frame chain, then sets forceNextIDR so the first live frame
-// through the pipeline produces a keyframe for browser sync.
+// replayGOP feeds all cached GOP frames through a fresh decoder to build
+// its reference frame chain, then swaps the warmed-up decoder into the
+// pipeline and sets forceNextIDR so the first live frame produces a keyframe
+// for browser sync.
 //
 // This approach avoids encoding during replay (which failed 7/10 times with
 // VT hardware encoder) and avoids re-decoding the keyframe through the async
 // pipeline (which would clear the reference chain via H.264 IDR semantics).
 //
-// The lock is held for the entire decode phase to prevent live frames from
-// interleaving and finding incomplete references. Lock duration is proportional
-// to GOP size (~1ms/frame decode), typically 20-30ms for a 24fps source.
+// The decoder is created and warmed up OUTSIDE the lock, eliminating the
+// O(N × decode_time) lock hold that previously blocked videoProcessingLoop
+// for 400-600ms on large GOPs. The lock is only held briefly for the swap.
 func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
+	if len(frames) == 0 {
+		return
+	}
+
+	pc.mu.Lock()
+	if pc.decoder == nil {
+		pc.mu.Unlock()
+		return
+	}
+	factory := pc.decoderFactory
+	pc.mu.Unlock()
+
+	if factory == nil {
+		// No factory available — fall back to in-place replay under lock.
+		// This path is only hit in tests that set decoder directly.
+		pc.replayGOPInPlace(frames)
+		return
+	}
+
+	// Create a fresh decoder outside the lock. The entire GOP decode
+	// happens without holding pc.mu, so videoProcessingLoop can continue
+	// processing and broadcasting frames concurrently.
+	replayDec, err := factory()
+	if err != nil {
+		return
+	}
+
+	decoded := false
+	for _, frame := range frames {
+		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
+		if _, _, _, err := replayDec.Decode(annexB); err == nil {
+			decoded = true
+		}
+	}
+
+	if !decoded {
+		replayDec.Close()
+		return
+	}
+
+	// Atomic swap: replace the flushed decoder with the warmed-up one.
+	// Brief lock (~microseconds) instead of the old O(N × decode_time) hold.
+	pc.mu.Lock()
+	oldDec := pc.decoder
+	pc.decoder = replayDec
+	pc.forceNextIDR = true
+	pc.mu.Unlock()
+
+	// Close the old (flushed) decoder. Safe because:
+	// 1. flushDecoder() was called before replayGOP, clearing its state.
+	// 2. The IDR gate prevents new raw frames from entering videoProcCh
+	//    during replay, so no concurrent decode() should be in progress.
+	// 3. Tail transition frames use encode() (not decode()).
+	if oldDec != nil {
+		oldDec.Close()
+	}
+}
+
+// replayGOPInPlace is the fallback path when no decoder factory is available.
+// Holds the lock for the entire decode sequence (used only in tests).
+func (pc *pipelineCodecs) replayGOPInPlace(frames []*media.VideoFrame) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 
@@ -227,8 +292,6 @@ func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
 		return
 	}
 
-	// Decode all frames to build the decoder's reference chain.
-	// YUV output is discarded — we only need the reference frames.
 	decoded := false
 	for _, frame := range frames {
 		annexB := codec.AVC1ToAnnexB(frame.WireData)
@@ -240,9 +303,6 @@ func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
 		}
 	}
 
-	// Signal the encoder to produce a keyframe on the next live frame.
-	// This gives the browser a sync point without needing to encode
-	// during replay (which is unreliable with hardware encoders).
 	if decoded {
 		pc.forceNextIDR = true
 	}
