@@ -3,6 +3,16 @@ import { render, fireEvent } from '@testing-library/svelte';
 import AudioMixer from './AudioMixer.svelte';
 import type { EQBand, CompressorSettings } from '$lib/api/types';
 
+vi.mock('$lib/api/switch-api', () => ({
+	setLevel: vi.fn().mockResolvedValue({}),
+	setTrim: vi.fn().mockResolvedValue({}),
+	setMute: vi.fn().mockResolvedValue({}),
+	setAFV: vi.fn().mockResolvedValue({}),
+	setMasterLevel: vi.fn().mockResolvedValue({}),
+	setEQ: vi.fn().mockResolvedValue({}),
+	setCompressor: vi.fn().mockResolvedValue({}),
+}));
+
 const defaultEQ: [EQBand, EQBand, EQBand] = [
 	{ frequency: 250, gain: 0, q: 1.0, enabled: false },
 	{ frequency: 1000, gain: 0, q: 1.0, enabled: false },
@@ -241,6 +251,37 @@ describe('AudioMixer', () => {
 		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
 		await fireEvent.click(eqButtons[0]);
 		expect(onExpandToggle).toHaveBeenCalledWith('cam1');
+	});
+
+	it('renders compressor ON toggle when expanded', () => {
+		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+
+		const compSection = container.querySelector('.comp-section');
+		expect(compSection).toBeTruthy();
+
+		const bypassBtn = compSection!.querySelector('button[aria-label]');
+		expect(bypassBtn).toBeTruthy();
+		const label = bypassBtn!.getAttribute('aria-label')!.toLowerCase();
+		expect(label).toContain('compressor');
+		expect(label).toMatch(/on|off/);
+	});
+
+	it('dims compressor controls when bypassed', async () => {
+		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+
+		const compSection = container.querySelector('.comp-section');
+		expect(compSection).toBeTruthy();
+
+		// Should not start bypassed
+		expect(compSection!.classList.contains('comp-bypassed')).toBe(false);
+
+		// Click the bypass toggle
+		const bypassBtn = compSection!.querySelector('button[aria-label]') as HTMLElement;
+		expect(bypassBtn).toBeTruthy();
+		await fireEvent.click(bypassBtn);
+
+		// After click, comp-section should have comp-bypassed class
+		expect(compSection!.classList.contains('comp-bypassed')).toBe(true);
 	});
 
 	describe('ARIA labels', () => {

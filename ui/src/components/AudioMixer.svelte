@@ -117,6 +117,35 @@
 		onExpandToggle?.(key);
 	}
 
+	/** Per-source compressor bypass state (true = bypassed). */
+	let compBypass: Record<string, boolean> = $state({});
+
+	/** Saved compressor settings before bypass, so we can restore on re-enable. */
+	let compSaved: Record<string, { threshold: number; ratio: number; attack: number; release: number; makeupGain: number }> = $state({});
+
+	function toggleCompBypass(source: string, channel: { compressor: { threshold: number; ratio: number; attack: number; release: number; makeupGain: number } }) {
+		const isBypassed = compBypass[source] ?? false;
+		if (!isBypassed) {
+			// Save current values and send bypassed params (ratio=1, makeupGain=0)
+			compSaved[source] = {
+				threshold: channel.compressor.threshold,
+				ratio: channel.compressor.ratio,
+				attack: channel.compressor.attack,
+				release: channel.compressor.release,
+				makeupGain: channel.compressor.makeupGain,
+			};
+			compBypass[source] = true;
+			applyResult(apiSetCompressor(source, channel.compressor.threshold, 1.0, channel.compressor.attack, channel.compressor.release, 0));
+		} else {
+			// Restore saved values
+			const saved = compSaved[source];
+			if (saved) {
+				applyResult(apiSetCompressor(source, saved.threshold, saved.ratio, saved.attack, saved.release, saved.makeupGain));
+			}
+			compBypass[source] = false;
+		}
+	}
+
 	const EQ_BAND_NAMES = ['Low', 'Mid', 'High'];
 
 	/** Sorted source keys for consistent channel strip order. */
@@ -357,8 +386,16 @@
 						{/each}
 					</div>
 
-					<div class="comp-section">
-						<span class="section-title">COMP</span>
+					<div class="comp-section" class:comp-bypassed={compBypass[key]}>
+						<div class="section-header">
+							<span class="section-title">COMP</span>
+							<button
+								class="bypass-toggle"
+								class:bypass-active={!compBypass[key]}
+								onclick={() => toggleCompBypass(key, channel)}
+								aria-label="Compressor {compBypass[key] ? 'off' : 'on'}"
+							>ON</button>
+						</div>
 						<label class="eq-param">
 							<span class="eq-param-label">Thresh</span>
 							<input
@@ -894,6 +931,37 @@
 		color: var(--text-tertiary);
 		min-width: 32px;
 		text-align: right;
+	}
+
+	/* Compressor bypass */
+	.comp-bypassed .eq-param {
+		opacity: 0.4;
+		pointer-events: none;
+	}
+
+	.section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.bypass-toggle {
+		font-size: 0.55rem;
+		padding: 1px 5px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-control);
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		font-weight: 600;
+		letter-spacing: 0.06em;
+	}
+
+	.bypass-active {
+		background: color-mix(in srgb, var(--accent-green, #4caf50) 20%, transparent);
+		color: var(--accent-green, #4caf50);
+		border-color: var(--accent-green, #4caf50);
 	}
 
 	/* GR meter */
