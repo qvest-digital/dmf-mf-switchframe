@@ -40,6 +40,8 @@ type AudioMixerAPI interface {
 	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)
 	SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error
 	GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error)
+	SetAudioDelay(sourceKey string, delayMs int) error
+	AudioDelayMs(sourceKey string) int
 }
 
 // OutputManagerAPI is the interface for recording and SRT output operations
@@ -228,6 +230,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
 	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
 	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
+	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
 	mux.HandleFunc("POST /api/recording/start", a.handleRecordingStart)
 	mux.HandleFunc("POST /api/recording/stop", a.handleRecordingStop)
 	mux.HandleFunc("GET /api/recording/status", a.handleRecordingStatus)
@@ -791,6 +794,36 @@ func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 		MakeupGain:    makeupGain,
 		GainReduction: gainReduction,
 	})
+}
+
+// audioDelayRequest is the JSON body for the audio delay endpoint.
+type audioDelayRequest struct {
+	DelayMs int `json:"delayMs"`
+}
+
+// handleSetAudioDelay sets the audio delay in milliseconds for a source channel.
+func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	var req audioDelayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.mixer.SetAudioDelay(source, req.DelayMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // --- Recording & SRT Output API ---

@@ -9,6 +9,7 @@
 		setEQ as apiSetEQ,
 		setCompressor as apiSetCompressor,
 		setSourceDelay,
+		setAudioDelay as apiSetAudioDelay,
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
@@ -78,6 +79,11 @@
 	/** Throttled source delay API call -- max 20 calls/sec (50ms). */
 	const setDelayThrottled = throttle((source: string, delayMs: number) => {
 		applyResult(setSourceDelay(source, delayMs));
+	}, 50);
+
+	/** Throttled audio delay API call -- max 20 calls/sec (50ms). */
+	const setAudioDelayThrottled = throttle((source: string, delayMs: number) => {
+		applyResult(apiSetAudioDelay(source, delayMs));
 	}, 50);
 
 	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */
@@ -512,6 +518,24 @@
 							value={crState.sources?.[key]?.delayMs ?? 0}
 							oninput={(e) => setDelayThrottled(key, parseInt(e.currentTarget.value))}
 							aria-label="Source delay"
+						/>
+					</div>
+
+					<!-- Audio Delay (Lip Sync) -->
+					<div class="delay-section">
+						<div class="section-header">
+							<span class="section-title">LIP SYNC</span>
+							<span class="param-value">{channel.audioDelayMs ?? 0}ms</span>
+						</div>
+						<input
+							type="range"
+							class="eq-slider"
+							min="0"
+							max="500"
+							step="1"
+							value={channel.audioDelayMs ?? 0}
+							oninput={(e) => setAudioDelayThrottled(key, parseInt(e.currentTarget.value))}
+							aria-label="Audio delay for lip-sync correction"
 						/>
 					</div>
 				</div>

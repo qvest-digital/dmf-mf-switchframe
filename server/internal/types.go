@@ -58,7 +58,8 @@ type AudioChannel struct {
 	PeakR         float64            `json:"peakR"` // dBFS
 	EQ            [3]EQBand          `json:"eq"`
 	Compressor    CompressorSettings `json:"compressor"`
-	GainReduction float64            `json:"gainReduction"` // compressor GR in dB
+	GainReduction float64            `json:"gainReduction"`          // compressor GR in dB
+	AudioDelayMs  int                `json:"audioDelayMs,omitempty"` // lip-sync delay (0-500ms)
 }
 
 // RecordingStatus is the JSON-serializable status for recording output,

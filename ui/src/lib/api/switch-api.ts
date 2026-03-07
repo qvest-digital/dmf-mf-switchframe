@@ -66,6 +66,14 @@ export function setSourceDelay(key: string, delayMs: number): Promise<ControlRoo
 	return post(`/api/sources/${encodeURIComponent(key)}/delay`, { delayMs });
 }
 
+export function setAudioDelay(source: string, delayMs: number): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/audio-delay`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ delayMs }),
+	});
+}
+
 export function getState(): Promise<ControlRoomState> {
 	return request('/api/switch/state');
 }

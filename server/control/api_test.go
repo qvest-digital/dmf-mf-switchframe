@@ -425,6 +425,17 @@ func (m *mockMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, r
 	return 0, 1.0, 5.0, 100.0, 0, 0, nil
 }
 
+func (m *mockMixer) SetAudioDelay(sourceKey string, delayMs int) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
+	}
+	return nil
+}
+
+func (m *mockMixer) AudioDelayMs(sourceKey string) int {
+	return 0
+}
+
 func setupAudioTestAPI(t *testing.T) (*API, *mockMixer) {
 	t.Helper()
 	programRelay := distribution.NewRelay()

@@ -58,6 +58,7 @@ type Channel struct {
 	peakR       float64      // linear amplitude [0,1]
 	eq          *EQ          // 3-band parametric EQ (always initialized)
 	compressor  *Compressor  // single-band compressor (always initialized)
+	audioDelay  *AudioDelayBuffer // per-source audio delay for lip-sync correction
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -385,6 +386,7 @@ func (m *AudioMixer) AddChannel(sourceKey string) {
 		sourceKey:  sourceKey,
 		eq:         NewEQ(m.sampleRate, m.numChannels),
 		compressor: NewCompressor(m.sampleRate, m.numChannels),
+		audioDelay: NewAudioDelayBuffer(0),
 	}
 	m.recalcPassthrough()
 }
@@ -705,6 +707,19 @@ func (m *AudioMixer) IsPassthrough() bool {
 
 // IngestFrame processes an audio frame from a source.
 func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
+	// Apply per-source audio delay for lip-sync correction.
+	// Done before all processing so PFL monitoring reflects corrected timing.
+	m.mu.RLock()
+	if ch, ok := m.channels[sourceKey]; ok && ch.audioDelay != nil && ch.audioDelay.DelayMs() > 0 {
+		m.mu.RUnlock()
+		frame = ch.audioDelay.Ingest(frame)
+		if frame == nil {
+			return // still filling delay buffer
+		}
+	} else {
+		m.mu.RUnlock()
+	}
+
 	m.mu.RLock()
 	crossfadeActive := m.crossfadeActive
 	crossfadeFrom := m.crossfadeFrom
@@ -1141,12 +1156,13 @@ func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 	result := make(map[string]internal.AudioChannel, len(m.channels))
 	for key, ch := range m.channels {
 		ac := internal.AudioChannel{
-			Level: ch.level,
-			Trim:  ch.trim,
-			Muted: ch.muted,
-			AFV:   ch.afv,
-			PeakL: LinearToDBFS(ch.peakL),
-			PeakR: LinearToDBFS(ch.peakR),
+			Level:        ch.level,
+			Trim:         ch.trim,
+			Muted:        ch.muted,
+			AFV:          ch.afv,
+			PeakL:        LinearToDBFS(ch.peakL),
+			PeakR:        LinearToDBFS(ch.peakR),
+			AudioDelayMs: ch.audioDelay.DelayMs(),
 		}
 		// Include EQ band settings
 		if ch.eq != nil {
@@ -1237,6 +1253,30 @@ func (m *AudioMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, 
 	threshold, ratio, attack, release, makeupGain = ch.compressor.GetParams()
 	gainReduction = ch.compressor.GainReduction()
 	return
+}
+
+// SetAudioDelay sets the audio delay in milliseconds for a source channel.
+// Used for lip-sync correction in multi-camera setups.
+func (m *AudioMixer) SetAudioDelay(sourceKey string, delayMs int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
+	}
+	ch.audioDelay.SetDelayMs(delayMs)
+	return nil
+}
+
+// AudioDelayMs returns the current audio delay in milliseconds for a source channel.
+func (m *AudioMixer) AudioDelayMs(sourceKey string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return 0
+	}
+	return ch.audioDelay.DelayMs()
 }
 
 // GainReduction returns the current limiter gain reduction in dB.

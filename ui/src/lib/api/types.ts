@@ -36,6 +36,7 @@ export interface AudioChannel {
 	eq: [EQBand, EQBand, EQBand];
 	compressor: CompressorSettings;
 	gainReduction: number;  // compressor GR in dB
+	audioDelayMs?: number;  // lip-sync delay (0-500ms)
 }
 
 export interface RecordingStatus {
