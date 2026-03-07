@@ -498,6 +498,122 @@ blend:
 	}
 }
 
+// IngestRawFrame accepts a pre-decoded YUV420 frame (e.g., from MXL sources).
+// Skips H.264 decode — stores YUV directly and triggers blend. The frame is
+// scaled to the engine's resolution if dimensions don't match.
+func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
+	e.mu.Lock()
+	if e.state != StateActive {
+		e.mu.Unlock()
+		return
+	}
+
+	isFrom := sourceKey == e.fromSource
+	isTo := sourceKey == e.toSource
+	if !isFrom && !isTo {
+		e.mu.Unlock()
+		return
+	}
+
+	e.lastFrameAt = time.Now()
+
+	// Lazy-init blender from this frame's dimensions if not yet set.
+	if e.width == 0 {
+		e.width = width
+		e.height = height
+		e.blender = NewFrameBlender(width, height)
+	}
+
+	// Scale to engine resolution if needed (e.g., 360x240 MXL → 1080p camera).
+	src := yuv
+	if width != e.width || height != e.height {
+		targetSize := e.width * e.height * 3 / 2
+		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
+			e.scaleBuf = make([]byte, targetSize)
+		}
+		ScaleYUV420WithQuality(yuv, width, height, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+		src = e.scaleBuf[:targetSize]
+	}
+
+	// Store directly — no decode needed. Deep-copy since caller may reuse buffer.
+	yuvSize := e.width * e.height * 3 / 2
+	if isFrom {
+		if len(e.latestYUVA) != yuvSize {
+			e.latestYUVA = make([]byte, yuvSize)
+		}
+		copy(e.latestYUVA, src)
+		e.needsKeyframeA = false // Raw YUV needs no keyframe gating
+	} else {
+		if len(e.latestYUVB) != yuvSize {
+			e.latestYUVB = make([]byte, yuvSize)
+		}
+		copy(e.latestYUVB, src)
+		e.needsKeyframeB = false
+	}
+
+	// Same blend triggering logic as IngestFrame.
+	shouldBlend := false
+	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+		shouldBlend = true
+	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
+		shouldBlend = true
+	}
+
+	if !shouldBlend || e.blender == nil {
+		e.mu.Unlock()
+		return
+	}
+
+	yuvA := e.latestYUVA
+	yuvB := e.latestYUVB
+	if yuvA == nil {
+		yuvA = e.getBlackFrame()
+	}
+	if yuvB == nil {
+		yuvB = e.getBlackFrame()
+	}
+
+	pos := e.currentPosition()
+
+	var blended []byte
+	switch e.transitionType {
+	case TransitionMix:
+		blended = e.blender.BlendMix(yuvA, yuvB, pos)
+	case TransitionDip:
+		blended = e.blender.BlendDip(yuvA, yuvB, pos)
+	case TransitionFTB:
+		blended = e.blender.BlendFTB(yuvA, pos)
+	case TransitionFTBReverse:
+		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
+	case TransitionWipe:
+		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
+	case TransitionStinger:
+		blended = e.blendStinger(pos)
+	default:
+		blended = yuvA
+	}
+
+	isKF := !e.firstOutput
+	e.firstOutput = true
+
+	var autoComplete bool
+	if !e.manualControl && pos >= 1.0 {
+		autoComplete = true
+		e.log.Info("auto-complete", "type", e.transitionType)
+		e.cleanup()
+	}
+
+	w, h := e.width, e.height
+	e.mu.Unlock()
+
+	if e.config.Output != nil && blended != nil {
+		e.config.Output(blended, w, h, pts, isKF)
+	}
+	if autoComplete && e.config.OnComplete != nil {
+		e.config.OnComplete(false)
+	}
+}
+
 // WarmupDecode feeds a frame to the decoder for the given source side,
 // populating latestYUVA/latestYUVB so the first live IngestFrame can
 // produce blended output immediately. Produces no output callbacks.

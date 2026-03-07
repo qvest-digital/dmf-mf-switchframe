@@ -162,6 +162,7 @@ type sourceState struct {
 	viewer     *sourceViewer
 	pendingIDR bool // true after a cut until first keyframe from this source
 	isVirtual  bool // true for virtual sources (replay, etc.)
+	isMXL      bool // true for MXL raw YUV sources (no H.264 decode/IDR gating)
 	position   int  // display order in the UI (1-based)
 
 	// Rolling frame statistics for dynamic encoder parameters.
@@ -1199,8 +1200,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 			// Gate incoming source frames until GOP replay provides a
 			// keyframe through the pipeline. The gate is cleared below
 			// after GOP replay, or held until the next natural keyframe
-			// as fallback.
-			if ss, ok := s.sources[newProgram]; ok {
+			// as fallback. MXL sources provide raw YUV (no H.264), so
+			// IDR gating is not applicable.
+			if ss, ok := s.sources[newProgram]; ok && !ss.isMXL {
 				ss.pendingIDR = true
 				s.idrGateStartNano.Store(time.Now().UnixNano())
 			}
@@ -1444,6 +1446,7 @@ func (s *Switcher) RegisterMXLSource(key string) {
 		key:      key,
 		label:    strings.ToUpper(key),
 		position: len(s.sources) + 1,
+		isMXL:    true,
 	}
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
@@ -1455,7 +1458,8 @@ func (s *Switcher) RegisterMXLSource(key string) {
 
 // IngestRawVideo accepts a raw YUV420p frame from an MXL source.
 // Skips H.264 decode — feeds directly into the YUV processing pipeline
-// (keying -> compositor -> encode -> program relay).
+// (keying -> compositor -> encode -> program relay). During active
+// transitions, routes to the transition engine for blending.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey)
 
@@ -1463,9 +1467,29 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	ss, ok := s.sources[sourceKey]
 	programSource := s.programSource
 	fTBActive := s.state.isFTBActive()
+	inTrans := s.state.isInTransition()
+	engine := s.transEngine
+	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 
-	if !ok || sourceKey != programSource || fTBActive {
+	if !ok || fTBActive {
+		s.routeFiltered.Add(1)
+		return
+	}
+
+	// During transition: route to engine for blending (same as handleVideoFrame).
+	// The engine needs frames from BOTH from/to sources to produce blended output.
+	if inTrans && engine != nil {
+		s.routeToEngine.Add(1)
+		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		if audioHandler != nil {
+			audioHandler.OnTransitionPosition(engine.Position())
+		}
+		return
+	}
+
+	// Normal: only program source passes through.
+	if sourceKey != programSource {
 		s.routeFiltered.Add(1)
 		return
 	}
@@ -1536,12 +1560,17 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	if s.programSource != sourceKey {
 		oldProgram = s.programSource
 		s.programSource = sourceKey
-		s.sources[sourceKey].pendingIDR = true
+		// MXL sources provide raw YUV — no IDR gating needed.
+		if !s.sources[sourceKey].isMXL {
+			s.sources[sourceKey].pendingIDR = true
+			s.idrGateStartNano.Store(time.Now().UnixNano())
+			if s.promMetrics != nil {
+				s.promMetrics.IDRGateEventsTotal.Inc()
+			}
+		}
 		s.idrGateEvents.Add(1)
-		s.idrGateStartNano.Store(time.Now().UnixNano())
 		if s.promMetrics != nil {
 			s.promMetrics.CutsTotal.Inc()
-			s.promMetrics.IDRGateEventsTotal.Inc()
 		}
 		if oldProgram != "" {
 			s.previewSource = oldProgram

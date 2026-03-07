@@ -209,8 +209,11 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	channels := int(config.ChannelCount)
 	samplesPerRead := r.config.SamplesPerRead
 
-	// Start from current time index.
+	// Read position: start from current MXL time (wall-clock for stubs).
 	index := CurrentIndex(config.GrainRate)
+	// PTS counter: monotonic from 0, independent of read position.
+	// This ensures audio PTS aligns with video PTS (both start near 0).
+	var ptsCounter int64
 
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
@@ -239,7 +242,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			PCM:        pcm,
 			SampleRate: sampleRate,
 			Channels:   channels,
-			PTS:        int64(index),
+			PTS:        ptsCounter,
 		}
 
 		select {
@@ -249,5 +252,6 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		}
 
 		index += uint64(samplesPerRead)
+		ptsCounter += int64(samplesPerRead)
 	}
 }

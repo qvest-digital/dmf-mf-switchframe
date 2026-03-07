@@ -191,14 +191,21 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 		return
 	}
 
+	// Convert frame-index PTS to 90kHz MPEG-TS time base.
+	fps := float64(s.config.FPS)
+	if fps == 0 {
+		fps = 30
+	}
+	pts := int64(float64(grain.PTS) * 90000.0 / fps)
+
 	// 2. Deliver raw YUV to switcher pipeline.
 	if s.config.OnRawVideo != nil {
-		s.config.OnRawVideo(s.config.FlowName, yuv, grain.Width, grain.Height, grain.PTS)
+		s.config.OnRawVideo(s.config.FlowName, yuv, grain.Width, grain.Height, pts)
 	}
 
 	// 3. Encode YUV→H.264 and broadcast to relay for browsers + replay.
 	if s.config.Relay != nil && s.config.EncoderFactory != nil {
-		s.encodeAndBroadcastVideo(yuv, grain.Width, grain.Height, grain.PTS)
+		s.encodeAndBroadcastVideo(yuv, grain.Width, grain.Height, pts)
 	}
 }
 
@@ -295,14 +302,17 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 	// MXL audio is de-interleaved. Convert to interleaved for mixer.
 	interleaved := interleaveChannels(grain.PCM)
 
+	// Convert sample-count PTS to 90kHz MPEG-TS time base.
+	pts := grain.PTS * 90000 / int64(grain.SampleRate)
+
 	// 1. Deliver raw PCM to mixer.
 	if s.config.OnRawAudio != nil {
-		s.config.OnRawAudio(s.config.FlowName, interleaved, grain.PTS)
+		s.config.OnRawAudio(s.config.FlowName, interleaved, pts)
 	}
 
 	// 2. Encode PCM→AAC and broadcast to relay.
 	if s.config.Relay != nil && s.config.AudioEncoderFactory != nil {
-		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, grain.Channels, grain.PTS)
+		s.encodeAndBroadcastAudio(interleaved, grain.SampleRate, grain.Channels, pts)
 	}
 }
 

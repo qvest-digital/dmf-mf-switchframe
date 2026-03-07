@@ -1207,3 +1207,305 @@ func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
 
 	e.Stop()
 }
+
+// --- IngestRawFrame tests ---
+
+func TestIngestRawFrame_ProducesOutput(t *testing.T) {
+	// IngestRawFrame bypasses H.264 decode — stores YUV directly.
+	// Output triggered when TO source provides raw YUV.
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	// FROM source raw YUV (stored, no output)
+	yuvA := make([]byte, yuvSize)
+	for i := range yuvA {
+		yuvA[i] = 100
+	}
+	e.IngestRawFrame("cam1", yuvA, w, h, 0)
+
+	mu.Lock()
+	require.Equal(t, 0, len(outputs), "FROM source alone should not produce output")
+	mu.Unlock()
+
+	// TO source raw YUV (triggers blend)
+	yuvB := make([]byte, yuvSize)
+	for i := range yuvB {
+		yuvB[i] = 200
+	}
+	e.IngestRawFrame("cam2", yuvB, w, h, 3000)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs), "TO source should trigger blended output")
+	require.Equal(t, yuvSize, len(outputs[0]))
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_IgnoresNonParticipants(t *testing.T) {
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			outputs = append(outputs, yuv)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	yuv := make([]byte, 4*4*3/2)
+	e.IngestRawFrame("cam3", yuv, 4, 4, 0)
+
+	mu.Lock()
+	require.Equal(t, 0, len(outputs), "non-participant should be ignored")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_WhileIdle(t *testing.T) {
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			outputs = append(outputs, yuv)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	e.IngestRawFrame("cam1", make([]byte, 24), 4, 4, 0)
+
+	mu.Lock()
+	require.Equal(t, 0, len(outputs))
+	mu.Unlock()
+}
+
+func TestIngestRawFrame_ResolutionMismatchScales(t *testing.T) {
+	var mu sync.Mutex
+	var outputs [][]byte
+	var outWidths []int
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 8, height: 8}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			outWidths = append(outWidths, width)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// FROM at 8x8 sets engine resolution
+	e.IngestRawFrame("cam1", make([]byte, 8*8*3/2), 8, 8, 0)
+
+	// TO at 4x4 must be scaled to 8x8
+	e.IngestRawFrame("cam2", make([]byte, 4*4*3/2), 4, 4, 3000)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs), "should produce output after scaling")
+	require.Equal(t, 8, outWidths[0], "output should be at engine resolution")
+	require.Equal(t, 8*8*3/2, len(outputs[0]))
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_AutoCompletes(t *testing.T) {
+	var mu sync.Mutex
+	var completions []bool
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50)) // 50ms
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	for i := 0; i < 20; i++ {
+		e.IngestRawFrame("cam1", make([]byte, yuvSize), w, h, int64(i*3000))
+		e.IngestRawFrame("cam2", make([]byte, yuvSize), w, h, int64(i*3000))
+		time.Sleep(10 * time.Millisecond)
+		if e.State() == StateIdle {
+			break
+		}
+	}
+
+	mu.Lock()
+	require.GreaterOrEqual(t, len(completions), 1, "should have auto-completed")
+	require.True(t, completions[0])
+	mu.Unlock()
+}
+
+func TestIngestRawFrame_MixedWithIngestFrame(t *testing.T) {
+	// Transition between H.264 source (cam1) and raw MXL source (cam2).
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// FROM via encoded H.264
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+
+	mu.Lock()
+	require.Equal(t, 0, len(outputs))
+	mu.Unlock()
+
+	// TO via raw YUV (MXL source)
+	yuvB := make([]byte, 4*4*3/2)
+	for i := range yuvB {
+		yuvB[i] = 128
+	}
+	e.IngestRawFrame("cam2", yuvB, 4, 4, 3000)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs), "mixed H.264+raw should produce blended output")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_DeepCopiesInput(t *testing.T) {
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	buf := make([]byte, yuvSize)
+	for i := range buf {
+		buf[i] = 100
+	}
+	e.IngestRawFrame("cam1", buf, w, h, 0)
+
+	// Overwrite before second call
+	for i := range buf {
+		buf[i] = 200
+	}
+	e.IngestRawFrame("cam2", buf, w, h, 3000)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs))
+	out := outputs[0]
+	mu.Unlock()
+
+	// At position ~0 the blend is mostly source A (100). If deep copy failed,
+	// source A buffer would also be 200 and output ~200 everywhere.
+	hasNon200 := false
+	for _, b := range out {
+		if b != 200 {
+			hasNon200 = true
+			break
+		}
+	}
+	require.True(t, hasNon200, "should reflect deep-copied source A, not overwritten buffer")
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_ConcurrentSafe(t *testing.T) {
+	e, _, _, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			e.IngestRawFrame("cam1", make([]byte, yuvSize), w, h, int64(i*3000))
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			e.IngestRawFrame("cam2", make([]byte, yuvSize), w, h, int64(i*3000))
+		}
+	}()
+
+	wg.Wait()
+	e.Stop()
+}
