@@ -6,7 +6,8 @@ import "golang.org/x/sys/cpu"
 
 // avx2Available is set at init time if the CPU supports AVX2.
 // Assembly routines branch to AVX2 or SSE2 path based on this flag.
-var avx2Available = cpu.X86.HasAVX2
+// Referenced from assembly via ·avx2Available(SB).
+var avx2Available = cpu.X86.HasAVX2 //nolint:unused // used in v210_kernels_amd64.s
 
 // chromaVAvg computes dst[i] = (top[i] + bot[i] + 1) >> 1 for n bytes.
 // AVX2 path uses VPAVGB (32 bytes/iter), SSE2 uses PAVGB (16 bytes/iter).

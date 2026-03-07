@@ -6,7 +6,8 @@ import "golang.org/x/sys/cpu"
 
 // avx2Available is set at init time if the CPU supports AVX2.
 // Assembly routines branch to AVX2 or SSE2 path based on this flag.
-var avx2Available = cpu.X86.HasAVX2
+// Referenced from assembly via ·avx2Available(SB).
+var avx2Available = cpu.X86.HasAVX2 //nolint:unused // used in blend_kernels_amd64.s
 
 // blendUniform computes dst[i] = (a[i]*inv + b[i]*pos) >> 8 for n bytes.
 // AVX2 path processes 32 bytes/iteration, SSE2 fallback processes 16.

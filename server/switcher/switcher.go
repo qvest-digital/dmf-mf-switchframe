@@ -1811,9 +1811,8 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 
 		// Replay full GOP — see handleTransitionComplete for explanation.
 		replayCount := len(replayFrames)
-		replayKeyPTS := int64(-1)
 		if replayCount > 0 {
-			replayKeyPTS = replayFrames[0].PTS
+			replayKeyPTS := replayFrames[0].PTS
 			if s.pipeCodecs != nil {
 				s.pipeCodecs.replayGOP(replayFrames)
 

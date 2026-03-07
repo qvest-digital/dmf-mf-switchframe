@@ -411,7 +411,7 @@ func (pc *pipelineCodecs) feedDeltaFrames(frames []*media.VideoFrame) {
 		if frame.IsKeyframe {
 			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 		}
-		decoder.Decode(annexB) // output discarded — only building reference chain
+		_, _, _, _ = decoder.Decode(annexB) // output discarded — only building reference chain
 	}
 }
 
