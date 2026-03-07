@@ -3,6 +3,7 @@
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
+	import { tbarPosition } from '$lib/util/tbar';
 
 	interface Props {
 		state: ControlRoomState;
@@ -98,7 +99,7 @@
 	function updateTbarFromPointer(e: PointerEvent) {
 		const target = e.currentTarget as HTMLElement;
 		const rect = target.getBoundingClientRect();
-		const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+		const y = tbarPosition(e.clientY, rect.top, rect.height);
 		anim.active = false;
 
 		if (!crState.inTransition && y > 0 && crState.previewSource) {

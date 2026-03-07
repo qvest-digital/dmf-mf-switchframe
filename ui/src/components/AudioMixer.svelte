@@ -11,6 +11,7 @@
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
+	import { updatePeakHold as _updatePeakHold, CLIP_THRESHOLD_DB, CLIP_DISPLAY_MS } from '$lib/audio/peak-hold';
 
 	interface Props {
 		state: ControlRoomState;
@@ -137,23 +138,15 @@
 		const now = Date.now();
 		const hold = _peakHolds.get(key) ?? { L: -96, R: -96, timeL: 0, timeR: 0 };
 
-		let changed = false;
-		if (peakLDb > hold.L || now - hold.timeL > 2000) {
-			hold.L = peakLDb;
-			hold.timeL = now;
-			changed = true;
+		const updated = _updatePeakHold(hold, peakLDb, peakRDb, now);
+		if (updated.L !== hold.L || updated.R !== hold.R || updated.timeL !== hold.timeL || updated.timeR !== hold.timeR) {
+			_peakHolds.set(key, updated);
 		}
-		if (peakRDb > hold.R || now - hold.timeR > 2000) {
-			hold.R = peakRDb;
-			hold.timeR = now;
-			changed = true;
-		}
-		if (changed) _peakHolds.set(key, hold);
 
 		// Clip detection at -1 dBFS
 		const clip = _clipIndicators.get(key) ?? { L: 0, R: 0 };
-		if (peakLDb > -1) { clip.L = now; _clipIndicators.set(key, clip); }
-		if (peakRDb > -1) { clip.R = now; _clipIndicators.set(key, clip); }
+		if (peakLDb > CLIP_THRESHOLD_DB) { clip.L = now; _clipIndicators.set(key, clip); }
+		if (peakRDb > CLIP_THRESHOLD_DB) { clip.R = now; _clipIndicators.set(key, clip); }
 
 		return { L: hold.L, R: hold.R };
 	}
@@ -161,7 +154,7 @@
 	function isClipped(key: string, channel: 'L' | 'R'): boolean {
 		const clip = _clipIndicators.get(key);
 		if (!clip) return false;
-		return Date.now() - clip[channel] < 3000;
+		return Date.now() - clip[channel] < CLIP_DISPLAY_MS;
 	}
 
 	function clearClip(key: string) {

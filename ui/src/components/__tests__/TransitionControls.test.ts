@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
 
 describe('T-bar position calculation', () => {
-	function tbarPosition(clientY: number, rectTop: number, rectHeight: number): number {
-		return Math.max(0, Math.min(1, (clientY - rectTop) / rectHeight));
-	}
-
 	it('maps Y coordinate to 0-1 range', () => {
 		expect(tbarPosition(200, 100, 200)).toBe(0.5);
 	});
@@ -27,20 +24,6 @@ describe('T-bar position calculation', () => {
 });
 
 describe('T-bar keyboard step calculation', () => {
-	function applyKeyStep(currentValue: number, key: string, shiftKey: boolean): number {
-		const step = shiftKey ? 0.1 : 0.01;
-		if (key === 'ArrowDown' || key === 'ArrowRight') {
-			return Math.min(1, currentValue + step);
-		} else if (key === 'ArrowUp' || key === 'ArrowLeft') {
-			return Math.max(0, currentValue - step);
-		} else if (key === 'Home') {
-			return 0;
-		} else if (key === 'End') {
-			return 1;
-		}
-		return currentValue;
-	}
-
 	it('ArrowDown increments by 0.01', () => {
 		expect(applyKeyStep(0.5, 'ArrowDown', false)).toBeCloseTo(0.51);
 	});
