@@ -172,3 +172,45 @@ func TestParseSPSCodecString_TooShort(t *testing.T) {
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67}))
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67, 0x42, 0xC0}))
 }
+
+func TestPrependSPSPPS(t *testing.T) {
+	t.Parallel()
+	sps := []byte{0x67, 0x64, 0x00, 0x28}
+	pps := []byte{0x68, 0xEE, 0x3C, 0x80}
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+
+	result := PrependSPSPPS(sps, pps, annexB)
+
+	expected := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x28,
+		0x00, 0x00, 0x00, 0x01, 0x68, 0xEE, 0x3C, 0x80,
+		0x00, 0x00, 0x00, 0x01, 0x65, 0x88,
+	}
+	require.Equal(t, expected, result)
+}
+
+func TestPrependSPSPPS_NilSPS(t *testing.T) {
+	t.Parallel()
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65}
+	result := PrependSPSPPS(nil, nil, annexB)
+	require.Equal(t, annexB, result)
+}
+
+func TestPrependSPSPPS_EmptySPS(t *testing.T) {
+	t.Parallel()
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65}
+	result := PrependSPSPPS([]byte{}, []byte{}, annexB)
+	require.Equal(t, annexB, result)
+}
+
+func TestPrependSPSPPS_OnlySPS(t *testing.T) {
+	t.Parallel()
+	sps := []byte{0x67, 0x64}
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65}
+	result := PrependSPSPPS(sps, nil, annexB)
+	expected := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x64,
+		0x00, 0x00, 0x00, 0x01, 0x65,
+	}
+	require.Equal(t, expected, result)
+}

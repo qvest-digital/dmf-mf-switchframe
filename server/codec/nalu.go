@@ -149,6 +149,24 @@ func splitAnnexBNALUs(data []byte) [][]byte {
 	return nalus
 }
 
+// PrependSPSPPS prepends SPS and PPS NALUs with Annex B start codes
+// to the given Annex B data. Safely handles nil/empty SPS or PPS.
+func PrependSPSPPS(sps, pps, annexBData []byte) []byte {
+	if len(sps) == 0 && len(pps) == 0 {
+		return annexBData
+	}
+	var buf []byte
+	if len(sps) > 0 {
+		buf = append(buf, annexBStartCode...)
+		buf = append(buf, sps...)
+	}
+	if len(pps) > 0 {
+		buf = append(buf, annexBStartCode...)
+		buf = append(buf, pps...)
+	}
+	return append(buf, annexBData...)
+}
+
 // ParseSPSCodecString returns a WebCodecs-compatible codec string from SPS NALU bytes.
 // The SPS NALU format is: [nalu_type_byte] [profile_idc] [constraint_flags] [level_idc] ...
 // Example: "avc1.640028" for High profile Level 4.0.
