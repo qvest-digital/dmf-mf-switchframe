@@ -82,6 +82,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
+		// VT ignores AVCodecContext.max_b_frames — must use its own option.
+		// B-frames break reference chains at transition boundaries.
+		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
 	}
 
 	int rc = avcodec_open2(h->ctx, codec, NULL);
