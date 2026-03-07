@@ -15,13 +15,14 @@ import (
 // Parameters match transition.EncoderFactory signature.
 func NewVideoEncoder(width, height, bitrate int, fps float32) (transition.VideoEncoder, error) {
 	enc, _ := ProbeEncoders()
+	gopSecs := transition.DefaultGOPSecs
 	switch enc {
 	case "openh264":
 		return NewOpenH264Encoder(width, height, bitrate, fps)
 	case "none":
 		return nil, fmt.Errorf("no H.264 encoder available")
 	default:
-		return NewFFmpegEncoder(enc, width, height, bitrate, fps, HWDeviceCtx())
+		return NewFFmpegEncoder(enc, width, height, bitrate, fps, gopSecs, HWDeviceCtx())
 	}
 }
 

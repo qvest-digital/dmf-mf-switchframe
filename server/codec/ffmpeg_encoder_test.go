@@ -10,14 +10,14 @@ import (
 )
 
 func TestFFmpegEncoderCreate(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30.0, 2, nil)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	enc.Close()
 }
 
 func TestFFmpegEncoderDoubleClose(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30.0, 2, nil)
 	require.NoError(t, err)
 	enc.Close()
 	enc.Close() // should not panic
@@ -25,35 +25,35 @@ func TestFFmpegEncoderDoubleClose(t *testing.T) {
 
 func TestFFmpegEncoderInvalidParams(t *testing.T) {
 	// 0 width
-	_, err := NewFFmpegEncoder("libx264", 0, 480, 1000000, 30.0, nil)
+	_, err := NewFFmpegEncoder("libx264", 0, 480, 1000000, 30.0, 2, nil)
 	require.Error(t, err)
 
 	// 0 height
-	_, err = NewFFmpegEncoder("libx264", 640, 0, 1000000, 30.0, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 0, 1000000, 30.0, 2, nil)
 	require.Error(t, err)
 
 	// 0 bitrate
-	_, err = NewFFmpegEncoder("libx264", 640, 480, 0, 30.0, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 480, 0, 30.0, 2, nil)
 	require.Error(t, err)
 
 	// 0 fps
-	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 0, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 0, 2, nil)
 	require.Error(t, err)
 
 	// Negative dimensions
-	_, err = NewFFmpegEncoder("libx264", -1, 480, 1000000, 30.0, nil)
+	_, err = NewFFmpegEncoder("libx264", -1, 480, 1000000, 30.0, 2, nil)
 	require.Error(t, err)
 }
 
 func TestFFmpegEncoderInvalidCodec(t *testing.T) {
-	_, err := NewFFmpegEncoder("nonexistent_codec", 640, 480, 1000000, 30.0, nil)
+	_, err := NewFFmpegEncoder("nonexistent_codec", 640, 480, 1000000, 30.0, 2, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nonexistent_codec")
 }
 
 func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 	w, h := 320, 240
-	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -95,7 +95,7 @@ func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 
 func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -131,7 +131,7 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 
 func TestFFmpegEncoderForceIDR(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -165,7 +165,7 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 }
 
 func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -176,7 +176,7 @@ func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
 }
 
 func TestFFmpegEncoderClosedEncode(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	enc.Close()
 
@@ -189,7 +189,7 @@ func TestFFmpegEncoderClosedEncode(t *testing.T) {
 func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 	w, h := 320, 240
 	bitrate := 500000 // 500kbps
-	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -224,7 +224,7 @@ func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 	// Encode 30 frames at 360p to exercise the encoder under realistic load.
 	w, h := 640, 360
-	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -267,7 +267,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			enc, err := NewFFmpegEncoder("libx264", tc.width, tc.height, 4_000_000, tc.fps, nil)
+			enc, err := NewFFmpegEncoder("libx264", tc.width, tc.height, 4_000_000, tc.fps, 2, nil)
 			require.NoError(t, err)
 			defer enc.Close()
 
@@ -306,7 +306,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 }
 
 func TestFFmpegEncoderIncludesAUD(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -341,7 +341,7 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 func TestFFmpegEncoderInterface(t *testing.T) {
 	// Verify FFmpegEncoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder
-	e, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, nil)
+	e, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, 2, nil)
 	require.NoError(t, err)
 	enc = e
 	require.NotNil(t, enc)

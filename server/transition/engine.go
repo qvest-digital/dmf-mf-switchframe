@@ -12,6 +12,7 @@ import (
 const (
 	DefaultBitrate = 4_000_000 // 4 Mbps
 	DefaultFPS     = 30.0
+	DefaultGOPSecs = 2 // IDR interval in seconds
 )
 
 // DefaultTimeout is the default watchdog timeout for transition frame starvation.

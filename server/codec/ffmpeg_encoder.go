@@ -37,7 +37,7 @@ typedef struct {
 // Returns 0 on success, negative on error.
 static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int width, int height, int bitrate, float fps,
-                      void* hwDeviceCtx) {
+                      int gop_secs, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
 	// Suppress FFmpeg logging — only show fatal errors. Non-fatal decoder
@@ -69,7 +69,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->rc_max_rate = bitrate;
 	h->ctx->rc_buffer_size = bitrate / 2;
 
-	h->ctx->gop_size = (int)(fps + 0.5f) * 2; // IDR every 2 seconds
+	h->ctx->gop_size = (int)(fps + 0.5f) * gop_secs;
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 	h->ctx->thread_count = 4;
@@ -276,8 +276,9 @@ type FFmpegEncoder struct {
 //
 // codecName is the FFmpeg encoder name (e.g. "libx264", "h264_videotoolbox").
 // width, height, bitrate, and fps configure the output stream.
+// gopSecs sets the IDR keyframe interval in seconds.
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
-func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
 	}
@@ -291,10 +292,14 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32,
 	cName := C.CString(codecName)
 	defer C.free(unsafe.Pointer(cName))
 
+	if gopSecs <= 0 {
+		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	}
+
 	e := &FFmpegEncoder{}
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate), C.float(fps),
-		hwDeviceCtx)
+		C.int(gopSecs), hwDeviceCtx)
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: code %d", codecName, int(rc))
 	}

@@ -20,7 +20,7 @@ func init() {
 type FFmpegEncoder struct{}
 
 // NewFFmpegEncoder returns an error when FFmpeg is not available.
-func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
