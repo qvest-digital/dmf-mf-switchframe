@@ -124,6 +124,6 @@ func (o *Output) Stop() {
 	if o.cancel != nil {
 		o.cancel()
 	}
-	o.writer.Close()
+	_ = o.writer.Close()
 	o.log.Info("MXL output stopped", "flow", o.config.FlowName)
 }

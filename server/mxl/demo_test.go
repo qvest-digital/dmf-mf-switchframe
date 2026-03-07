@@ -7,7 +7,7 @@ import (
 func TestDemoVideoReader_GeneratesValidV210(t *testing.T) {
 	// 360x240 is the resolution used in demo mode.
 	reader := NewDemoVideoReader(360, 240, 30, 0)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	data, info, err := reader.ReadGrain(0, 0)
 	if err != nil {
@@ -39,8 +39,8 @@ func TestDemoVideoReader_DifferentColors(t *testing.T) {
 	// Verify different colorIdx produces different patterns.
 	reader0 := NewDemoVideoReader(12, 2, 30, 0)
 	reader1 := NewDemoVideoReader(12, 2, 30, 1)
-	defer reader0.Close()
-	defer reader1.Close()
+	defer func() { _ = reader0.Close() }()
+	defer func() { _ = reader1.Close() }()
 
 	data0, _, _ := reader0.ReadGrain(0, 0)
 	data1, _, _ := reader1.ReadGrain(0, 0)
@@ -71,7 +71,7 @@ func TestDemoVideoReader_Closes(t *testing.T) {
 		t.Fatalf("ReadGrain before close: %v", err)
 	}
 
-	reader.Close()
+	_ = reader.Close()
 
 	// After close, should error.
 	_, _, err = reader.ReadGrain(0, 0)
@@ -82,7 +82,7 @@ func TestDemoVideoReader_Closes(t *testing.T) {
 
 func TestDemoAudioReader_GeneratesTone(t *testing.T) {
 	reader := NewDemoAudioReader(48000, 2)
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	channels, err := reader.ReadSamples(0, 1024, 0)
 	if err != nil {
@@ -124,7 +124,7 @@ func TestDemoAudioReader_Closes(t *testing.T) {
 		t.Fatalf("ReadSamples before close: %v", err)
 	}
 
-	reader.Close()
+	_ = reader.Close()
 
 	_, err = reader.ReadSamples(0, 1024, 0)
 	if err == nil {

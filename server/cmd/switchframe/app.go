@@ -607,7 +607,7 @@ func (a *App) Close() {
 		src.Stop()
 	}
 	if a.mxlInstance != nil {
-		a.mxlInstance.Close()
+		_ = a.mxlInstance.Close()
 	}
 
 	if a.keyBridge != nil {

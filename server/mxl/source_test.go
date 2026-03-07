@@ -5,41 +5,7 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/zsiec/prism/media"
 )
-
-// --- Mock relay ---
-
-type mockRelay struct {
-	mu     sync.Mutex
-	videos []*media.VideoFrame
-	audios []*media.AudioFrame
-}
-
-func (m *mockRelay) BroadcastVideo(frame *media.VideoFrame) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.videos = append(m.videos, frame)
-}
-
-func (m *mockRelay) BroadcastAudio(frame *media.AudioFrame) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.audios = append(m.audios, frame)
-}
-
-func (m *mockRelay) getVideos() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.videos)
-}
-
-func (m *mockRelay) getAudios() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.audios)
-}
 
 // --- Test helpers ---
 

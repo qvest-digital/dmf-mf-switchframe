@@ -171,6 +171,6 @@ func (w *Writer) Close() error {
 func (w *Writer) Start(ctx context.Context) {
 	go func() {
 		<-ctx.Done()
-		w.Close()
+		_ = w.Close()
 	}()
 }

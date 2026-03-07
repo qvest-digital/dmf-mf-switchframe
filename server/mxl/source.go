@@ -157,7 +157,7 @@ func (s *Source) Stop() {
 		s.videoEncoder.Close()
 	}
 	if s.audioEncoder != nil {
-		s.audioEncoder.Close()
+		_ = s.audioEncoder.Close()
 	}
 }
 
