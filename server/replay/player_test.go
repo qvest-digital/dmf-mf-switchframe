@@ -673,7 +673,10 @@ func TestReplayPlayer_GroupIDIncrementsOnKeyframe(t *testing.T) {
 		}
 		lastGroupID = f.GroupID
 	}
-	require.Equal(t, 3, keyframeGroups, "expected 3 keyframe groups for 3 GOPs")
+	// With forceIDR only on the first frame, the mock encoder (which only
+	// produces keyframes when forceIDR=true) will generate exactly 1 keyframe.
+	// Real encoders produce additional natural keyframes at their GOP interval.
+	require.Equal(t, 1, keyframeGroups, "expected 1 keyframe group (forceIDR on first frame only)")
 }
 
 func TestBlendInterpolator(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -213,9 +214,12 @@ func (p *replayPlayer) outputGOP(
 			default:
 			}
 
-			// Force IDR on: (1) very first frame of playback,
-			// (2) first frame of each GOP (di==0, dup==0) for MoQ group boundaries.
-			forceIDR := *firstFrame || (di == 0 && dup == 0)
+			// Force IDR only on the very first frame of playback.
+			// Subsequent keyframes come from the encoder's natural GOP
+			// interval. Forcing IDR at every source GOP boundary created
+			// excessive MoQ groups (separate QUIC streams), causing
+			// inter-stream frame reordering in the browser.
+			forceIDR := *firstFrame
 			*firstFrame = false
 
 			// Determine which YUV data to encode. When an interpolator is
@@ -273,7 +277,11 @@ func (p *replayPlayer) outputGOP(
 				}
 			}
 
-			if isKeyframe {
+			// Only start a new MoQ group on the very first keyframe.
+			// Keeping all replay frames in a single group ensures they
+			// travel on one QUIC stream with guaranteed in-order delivery.
+			// Multiple groups cause inter-stream reordering at the browser.
+			if isKeyframe && *groupID == 0 {
 				*groupID++
 			}
 
@@ -285,6 +293,20 @@ func (p *replayPlayer) outputGOP(
 				GroupID:    *groupID,
 				SPS:        spsNALU,
 				PPS:        ppsNALU,
+			}
+
+			// Pace BEFORE output: wait until the deadline, then emit
+			// the frame right at the target time. This ensures uniform
+			// output intervals regardless of variable encode durations.
+			deadline := p.playbackStart.Add(time.Duration(*pacingIdx) * frameDuration)
+			wait := time.Until(deadline)
+			if wait > 0 {
+				timer.Reset(wait)
+				select {
+				case <-ctx.Done():
+					return true
+				case <-timer.C:
+				}
 			}
 
 			p.config.Output(frame)
@@ -306,21 +328,6 @@ func (p *replayPlayer) outputGOP(
 
 			if totalFrames > 0 {
 				p.progress.Store(int64(*outputIdx * 1000 / totalFrames))
-			}
-
-			// Pace output using absolute time deadlines to prevent
-			// per-frame drift from encode overhead accumulation.
-			// pacingIdx never resets across loops, so deadlines are
-			// always in the future relative to playbackStart.
-			deadline := p.playbackStart.Add(time.Duration(*pacingIdx) * frameDuration)
-			wait := time.Until(deadline)
-			if wait > 0 {
-				timer.Reset(wait)
-				select {
-				case <-ctx.Done():
-					return true
-				case <-timer.C:
-				}
 			}
 		}
 	}
@@ -386,8 +393,20 @@ func splitIntoGOPs(clip []bufferedFrame) [][]bufferedFrame {
 	return gops
 }
 
+// frameDrainer is implemented by decoders that buffer frames internally
+// (e.g., for B-frame reordering) and need explicit draining.
+type frameDrainer interface {
+	SendEOS() error
+	ReceiveFrame() ([]byte, int, int, error)
+}
+
 // decodeGOP decodes a single GOP and returns decoded YUV frames. A fresh
 // decoder is created per GOP to avoid cross-GOP state artifacts.
+//
+// The FFmpeg decoder buffers frames for B-frame reordering, so:
+//   - EAGAIN ("buffering") is expected and not an error
+//   - After feeding all input, we drain remaining buffered frames via SendEOS/ReceiveFrame
+//   - The decoder outputs in display order; we assign sorted source PTS
 func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decodedFrame, error) {
 	decoder, err := factory()
 	if err != nil {
@@ -395,7 +414,34 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 	}
 	defer decoder.Close()
 
+	// Collect source PTS sorted into display order for assignment to
+	// decoded frames (decoder outputs in display order, not decode order).
+	sortedPTS := make([]int64, len(gop))
+	for i, bf := range gop {
+		sortedPTS[i] = bf.pts
+	}
+	sort.Slice(sortedPTS, func(i, j int) bool { return sortedPTS[i] < sortedPTS[j] })
+
 	var decoded []decodedFrame
+	collectFrame := func(yuv []byte, w, h int) {
+		yuvCopy := make([]byte, len(yuv))
+		copy(yuvCopy, yuv)
+		// Assign PTS from sorted source PTS (display order).
+		pts := int64(0)
+		if len(decoded) < len(sortedPTS) {
+			pts = sortedPTS[len(decoded)]
+		}
+		decoded = append(decoded, decodedFrame{
+			yuv:    yuvCopy,
+			width:  w,
+			height: h,
+			pts:    pts,
+		})
+	}
+
+	// Check if this decoder supports draining (FFmpeg does, mocks don't).
+	drainer, canDrain := decoder.(frameDrainer)
+
 	for _, bf := range gop {
 		// Convert AVC1 to Annex B for decoder, prepending SPS/PPS for keyframes.
 		annexB := codec.AVC1ToAnnexB(bf.wireData)
@@ -409,20 +455,39 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 
 		yuv, w, h, decErr := decoder.Decode(annexB)
 		if decErr != nil {
-			slog.Warn("replay player: decode frame failed", "pts", bf.pts, "err", decErr)
+			// EAGAIN ("buffering") is expected for B-frame reordering.
+			// The frame is consumed by the decoder and will be output later.
+			if !strings.Contains(decErr.Error(), "buffering") {
+				slog.Warn("replay player: decode frame failed", "pts", bf.pts, "err", decErr)
+			}
 			continue
 		}
+		collectFrame(yuv, w, h)
 
-		// Deep-copy YUV (decoder may reuse its buffer).
-		yuvCopy := make([]byte, len(yuv))
-		copy(yuvCopy, yuv)
+		// Try to receive additional frames — the decoder may have
+		// multiple frames ready after resolving B-frame dependencies.
+		if canDrain {
+			for {
+				yuv2, w2, h2, err2 := drainer.ReceiveFrame()
+				if err2 != nil {
+					break
+				}
+				collectFrame(yuv2, w2, h2)
+			}
+		}
+	}
 
-		decoded = append(decoded, decodedFrame{
-			yuv:    yuvCopy,
-			width:  w,
-			height: h,
-			pts:    bf.pts,
-		})
+	// Drain remaining buffered frames (B-frame reordering tail).
+	if canDrain {
+		if err := drainer.SendEOS(); err == nil {
+			for {
+				yuv, w, h, err := drainer.ReceiveFrame()
+				if err != nil {
+					break
+				}
+				collectFrame(yuv, w, h)
+			}
+		}
 	}
 
 	return decoded, nil

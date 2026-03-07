@@ -194,6 +194,95 @@ static void ffdec_flush(ffdec_t* h) {
 	}
 }
 
+// ffdec_send_eos signals end-of-stream so remaining buffered frames can be drained.
+static int ffdec_send_eos(ffdec_t* h) {
+	return avcodec_send_packet(h->ctx, NULL);
+}
+
+// ffdec_receive_only receives a decoded frame without sending new input.
+// Used to drain remaining frames after all input has been sent or after EOS.
+// Returns 0 on success, 1 if no more frames (EAGAIN/EOF), negative on error.
+static int ffdec_receive_only(ffdec_t* h, unsigned char** out_buf, int* out_len,
+                              int* out_width, int* out_height) {
+	*out_buf = NULL;
+	*out_len = 0;
+	*out_width = 0;
+	*out_height = 0;
+
+	int rc = avcodec_receive_frame(h->ctx, h->frame);
+	if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) {
+		return 1;
+	}
+	if (rc < 0) {
+		return -2;
+	}
+
+	AVFrame* src_frame = h->frame;
+
+	if (h->frame->format != AV_PIX_FMT_YUV420P &&
+	    h->frame->format != AV_PIX_FMT_YUVJ420P) {
+		if (h->frame->hw_frames_ctx) {
+			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
+			if (rc < 0) {
+				av_frame_unref(h->frame);
+				return -3;
+			}
+			src_frame = h->sw_frame;
+			if (src_frame->format != AV_PIX_FMT_YUV420P &&
+			    src_frame->format != AV_PIX_FMT_YUVJ420P) {
+				av_frame_unref(h->frame);
+				av_frame_unref(h->sw_frame);
+				return -4;
+			}
+		} else {
+			av_frame_unref(h->frame);
+			return -4;
+		}
+	}
+
+	int w = src_frame->width;
+	int h_val = src_frame->height;
+	int uv_w = w / 2;
+	int uv_h = h_val / 2;
+	int y_size = w * h_val;
+	int uv_size = uv_w * uv_h;
+	int total = y_size + 2 * uv_size;
+
+	unsigned char* buf = (unsigned char*)malloc(total);
+	if (!buf) {
+		av_frame_unref(h->frame);
+		if (src_frame == h->sw_frame) {
+			av_frame_unref(h->sw_frame);
+		}
+		return -5;
+	}
+
+	for (int row = 0; row < h_val; row++) {
+		memcpy(buf + row * w,
+		       src_frame->data[0] + row * src_frame->linesize[0], w);
+	}
+	for (int row = 0; row < uv_h; row++) {
+		memcpy(buf + y_size + row * uv_w,
+		       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
+	}
+	for (int row = 0; row < uv_h; row++) {
+		memcpy(buf + y_size + uv_size + row * uv_w,
+		       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
+	}
+
+	*out_buf = buf;
+	*out_len = total;
+	*out_width = w;
+	*out_height = h_val;
+
+	av_frame_unref(h->frame);
+	if (src_frame == h->sw_frame) {
+		av_frame_unref(h->sw_frame);
+	}
+
+	return 0;
+}
+
 // ffdec_close frees all decoder resources.
 static void ffdec_close(ffdec_t* h) {
 	if (h->pkt) {
@@ -287,6 +376,52 @@ func (d *FFmpegDecoder) Flush() {
 	if !d.closed {
 		C.ffdec_flush(&d.handle)
 	}
+}
+
+// SendEOS signals end-of-stream to the decoder so buffered frames
+// (from B-frame reordering) can be drained via ReceiveFrame().
+func (d *FFmpegDecoder) SendEOS() error {
+	if d.closed {
+		return fmt.Errorf("decoder is closed")
+	}
+	rc := C.ffdec_send_eos(&d.handle)
+	if rc < 0 {
+		return fmt.Errorf("send EOS failed: code %d", int(rc))
+	}
+	return nil
+}
+
+// ReceiveFrame receives a decoded frame without sending new input.
+// Returns the YUV buffer, width, height, and any error.
+// Returns an error when no more frames are available (EAGAIN/EOF).
+func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	if d.closed {
+		return nil, 0, 0, fmt.Errorf("decoder is closed")
+	}
+
+	var outBuf *C.uchar
+	var outLen, outWidth, outHeight C.int
+
+	rc := C.ffdec_receive_only(
+		&d.handle,
+		&outBuf, &outLen, &outWidth, &outHeight,
+	)
+	if rc == 1 {
+		return nil, 0, 0, fmt.Errorf("no more frames")
+	}
+	if rc < 0 {
+		return nil, 0, 0, fmt.Errorf("receive frame error: code %d", int(rc))
+	}
+
+	n := int(outLen)
+	if n == 0 || outBuf == nil {
+		return nil, 0, 0, fmt.Errorf("decoder produced no output")
+	}
+
+	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
+	C.free(unsafe.Pointer(outBuf))
+
+	return result, int(outWidth), int(outHeight), nil
 }
 
 // Close releases the decoder resources. Safe to call multiple times.
