@@ -161,6 +161,41 @@ func TestFFmpegEncoderClosedEncode(t *testing.T) {
 	require.Contains(t, err.Error(), "closed")
 }
 
+func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
+	w, h := 320, 240
+	bitrate := 500000 // 500kbps
+	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30.0, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	var maxSize int
+
+	for i := 0; i < 60; i++ {
+		// Create varying content to stress rate control
+		for j := 0; j < w*h; j++ {
+			yuv[j] = byte((j*7 + i*37) % 256)
+		}
+		for j := w * h; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		forceIDR := i%30 == 0
+		data, _, err := enc.Encode(yuv, forceIDR)
+		require.NoError(t, err)
+		if len(data) > maxSize {
+			maxSize = len(data)
+		}
+	}
+
+	// With VBV, max frame size should be bounded.
+	// At 500kbps / 30fps, average frame ~2KB. VBV buffer = 250KB (500ms).
+	// Max single frame should not exceed VBV buffer size.
+	vbvBufferBytes := bitrate / 8 / 2 // 500ms buffer in bytes
+	require.Less(t, maxSize, vbvBufferBytes,
+		"max frame size %d should be less than VBV buffer %d bytes", maxSize, vbvBufferBytes)
+}
+
 func TestFFmpegEncoderInterface(t *testing.T) {
 	// Verify FFmpegEncoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder

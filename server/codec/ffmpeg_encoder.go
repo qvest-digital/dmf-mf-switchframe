@@ -62,6 +62,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->time_base = (AVRational){1, (int)(fps + 0.5f)};
 	h->ctx->framerate = (AVRational){(int)(fps + 0.5f), 1};
 	h->ctx->bit_rate = bitrate;
+
+	// VBV buffer model for transport stream compliance.
+	// rc_max_rate = bit_rate for CBR-like ceiling (no spikes above target).
+	// rc_buffer_size = 500ms of data (broadcast standard buffer duration).
+	h->ctx->rc_max_rate = bitrate;
+	h->ctx->rc_buffer_size = bitrate / 2;
+
 	h->ctx->gop_size = (int)(fps + 0.5f) * 2; // IDR every 2 seconds
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
@@ -77,7 +84,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
-		av_opt_set(h->ctx->priv_data, "rc", "vbr", 0);
+		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
