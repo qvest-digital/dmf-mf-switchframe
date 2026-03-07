@@ -19,6 +19,7 @@ function createMockPipeline() {
 		setSourceMuted: vi.fn(),
 		resumeAllAudio: vi.fn().mockResolvedValue(undefined),
 		getAllDiagnostics: vi.fn().mockResolvedValue({}),
+		resetRendererSync: vi.fn(),
 	} satisfies MediaPipeline;
 }
 

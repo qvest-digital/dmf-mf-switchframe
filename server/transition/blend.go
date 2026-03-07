@@ -72,9 +72,7 @@ func (fb *FrameBlender) BlendMix(yuvA, yuvB []byte, position float64) []byte {
 	}
 	inv := 256 - pos
 	totalSize := fb.ySize + 2*fb.uvSize
-	for i := 0; i < totalSize; i++ {
-		fb.yuvBufOut[i] = byte((int(yuvA[i])*inv + int(yuvB[i])*pos) >> 8)
-	}
+	blendUniform(&fb.yuvBufOut[0], &yuvA[0], &yuvB[0], totalSize, pos, inv)
 	return fb.yuvBufOut
 }
 
@@ -100,19 +98,13 @@ func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
 		invGain256 := 256 - gain256
 
 		// Y plane: fade toward blackY
-		for i := 0; i < fb.ySize; i++ {
-			fb.yuvBufOut[i] = byte((int(yuvA[i])*gain256 + blackYi*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[0], &yuvA[0], fb.ySize, gain256, blackYi*invGain256)
 		// Cb plane: fade toward 128
 		cbOffset := fb.ySize
-		for i := 0; i < fb.uvSize; i++ {
-			fb.yuvBufOut[cbOffset+i] = byte((int(yuvA[cbOffset+i])*gain256 + 128*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[cbOffset], &yuvA[cbOffset], fb.uvSize, gain256, 128*invGain256)
 		// Cr plane: fade toward 128
 		crOffset := fb.ySize + fb.uvSize
-		for i := 0; i < fb.uvSize; i++ {
-			fb.yuvBufOut[crOffset+i] = byte((int(yuvA[crOffset+i])*gain256 + 128*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[crOffset], &yuvA[crOffset], fb.uvSize, gain256, 128*invGain256)
 	} else {
 		// Phase 2: fade B from black. gain goes from 0.0 at pos=0.5 to 1.0 at pos=1.0
 		gainF := 2.0*position - 1.0
@@ -126,19 +118,13 @@ func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
 		invGain256 := 256 - gain256
 
 		// Y plane: fade from blackY
-		for i := 0; i < fb.ySize; i++ {
-			fb.yuvBufOut[i] = byte((int(yuvB[i])*gain256 + blackYi*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[0], &yuvB[0], fb.ySize, gain256, blackYi*invGain256)
 		// Cb plane: fade from 128
 		cbOffset := fb.ySize
-		for i := 0; i < fb.uvSize; i++ {
-			fb.yuvBufOut[cbOffset+i] = byte((int(yuvB[cbOffset+i])*gain256 + 128*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[cbOffset], &yuvB[cbOffset], fb.uvSize, gain256, 128*invGain256)
 		// Cr plane: fade from 128
 		crOffset := fb.ySize + fb.uvSize
-		for i := 0; i < fb.uvSize; i++ {
-			fb.yuvBufOut[crOffset+i] = byte((int(yuvB[crOffset+i])*gain256 + 128*invGain256) >> 8)
-		}
+		blendFadeConst(&fb.yuvBufOut[crOffset], &yuvB[crOffset], fb.uvSize, gain256, 128*invGain256)
 	}
 	return fb.yuvBufOut
 }
@@ -164,14 +150,9 @@ func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction
 	fb.generateWipeAlpha(position, direction)
 
 	// --- Y plane: blend using precomputed alpha map ---
-	// Alpha map values are 0-255. Convert to 0-256 weight for exact pass-through
-	// at both extremes: a + (a >> 7) maps 0->0, 255->256.
-	for i := 0; i < fb.ySize; i++ {
-		a := int(fb.wipeAlphaMap[i])
-		w256 := a + (a >> 7) // 0-255 -> 0-256
-		inv := 256 - w256
-		fb.yuvBufOut[i] = byte((int(yuvA[i])*inv + int(yuvB[i])*w256) >> 8)
-	}
+	// Alpha map values are 0-255. The kernel converts to 0-256 weight for exact
+	// pass-through at both extremes: a + (a >> 7) maps 0->0, 255->256.
+	blendAlpha(&fb.yuvBufOut[0], &yuvA[0], &yuvB[0], &fb.wipeAlphaMap[0], fb.ySize)
 
 	// --- Cb and Cr planes: subsample alpha by reading every other row/column ---
 	uvW := w / 2
@@ -355,14 +336,9 @@ func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []
 	h := fb.height
 
 	// --- Y plane: per-pixel alpha blend ---
-	// Alpha values are 0-255. Convert to 0-256 weight for exact pass-through
+	// The kernel converts alpha 0-255 to 0-256 weight for exact pass-through
 	// at both extremes: a + (a >> 7) maps 0->0, 255->256.
-	for i := 0; i < fb.ySize; i++ {
-		a := int(alpha[i])
-		w256 := a + (a >> 7) // 0-255 -> 0-256
-		inv := 256 - w256
-		fb.yuvBufOut[i] = byte((int(baseYUV[i])*inv + int(stingerYUV[i])*w256) >> 8)
-	}
+	blendAlpha(&fb.yuvBufOut[0], &baseYUV[0], &stingerYUV[0], &alpha[0], fb.ySize)
 
 	// --- Cb and Cr planes: average alpha over corresponding 2x2 luma block ---
 	uvW := w / 2
@@ -404,18 +380,12 @@ func (fb *FrameBlender) BlendFTB(yuvA []byte, position float64) []byte {
 	blackYi := int(fb.blackY)
 
 	// Y plane: fade toward blackY
-	for i := 0; i < fb.ySize; i++ {
-		fb.yuvBufOut[i] = byte((int(yuvA[i])*gain256 + blackYi*invGain256) >> 8)
-	}
+	blendFadeConst(&fb.yuvBufOut[0], &yuvA[0], fb.ySize, gain256, blackYi*invGain256)
 	// Cb plane: fade toward 128
 	cbOffset := fb.ySize
-	for i := 0; i < fb.uvSize; i++ {
-		fb.yuvBufOut[cbOffset+i] = byte((int(yuvA[cbOffset+i])*gain256 + 128*invGain256) >> 8)
-	}
+	blendFadeConst(&fb.yuvBufOut[cbOffset], &yuvA[cbOffset], fb.uvSize, gain256, 128*invGain256)
 	// Cr plane: fade toward 128
 	crOffset := fb.ySize + fb.uvSize
-	for i := 0; i < fb.uvSize; i++ {
-		fb.yuvBufOut[crOffset+i] = byte((int(yuvA[crOffset+i])*gain256 + 128*invGain256) >> 8)
-	}
+	blendFadeConst(&fb.yuvBufOut[crOffset], &yuvA[crOffset], fb.uvSize, gain256, 128*invGain256)
 	return fb.yuvBufOut
 }

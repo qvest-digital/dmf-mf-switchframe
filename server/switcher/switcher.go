@@ -1304,6 +1304,12 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	// frame after routing switches references missing frames → macroblock
 	// corruption. Use count-based comparison (not PTS) because B-frames
 	// have non-monotonic PTS in decode order.
+	//
+	// feedDeltaFrames returns the last successfully decoded frame. We
+	// immediately enqueue it for encode+broadcast to fill the gap between
+	// the last transition frame and the first live post-transition frame.
+	// Without this, there's a ~60-100ms gap (replayGOP + frame arrival
+	// wait + decode) that causes visible stutter on every transition.
 	if replayOK && newProgram != "" {
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
 			currentGOP := s.gopCache.GetOriginalGOP(newProgram)
@@ -1318,9 +1324,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 				delta = currentGOP
 			}
 			if len(delta) > 0 {
-				pipeCodecs.feedDeltaFrames(delta)
+				lastPF := pipeCodecs.feedDeltaFrames(delta)
 				s.log.Info("fed delta frames after replayGOP",
-					"count", len(delta), "replay_count", replayCount)
+					"count", len(delta), "replay_count", replayCount,
+					"gap_fill", lastPF != nil)
+				if lastPF != nil {
+					s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
+				}
 			}
 		}
 	}
@@ -1475,9 +1485,13 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 				delta = currentGOP
 			}
 			if len(delta) > 0 {
-				pipeCodecs.feedDeltaFrames(delta)
+				lastPF := pipeCodecs.feedDeltaFrames(delta)
 				s.log.Info("fed delta frames after replayGOP (FTB reverse)",
-					"count", len(delta), "replay_count", replayCount)
+					"count", len(delta), "replay_count", replayCount,
+					"gap_fill", lastPF != nil)
+				if lastPF != nil {
+					s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
+				}
 			}
 		}
 	}
@@ -1756,9 +1770,13 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 					delta = currentGOP
 				}
 				if len(delta) > 0 {
-					s.pipeCodecs.feedDeltaFrames(delta)
+					lastPF := s.pipeCodecs.feedDeltaFrames(delta)
 					s.log.Info("fed delta frames after replayGOP (cut)",
-						"count", len(delta), "replay_count", replayCount)
+						"count", len(delta), "replay_count", replayCount,
+						"gap_fill", lastPF != nil)
+					if lastPF != nil {
+						s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
+					}
 				}
 			}
 			// Clear IDR gate — the replayed GOP seeds the decoder

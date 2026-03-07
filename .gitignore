@@ -1,6 +1,7 @@
 # Build artifacts
 bin/
 dist/
+*.o
 server/switchframe
 node_modules/
 
