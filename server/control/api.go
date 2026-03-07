@@ -54,6 +54,12 @@ type OutputManagerAPI interface {
 	StopSRTOutput() error
 	SRTOutputStatus() output.SRTOutputStatus
 	ConfidenceThumbnail() []byte
+	AddDestination(config output.DestinationConfig) (string, error)
+	RemoveDestination(id string) error
+	StartDestination(id string) error
+	StopDestination(id string) error
+	ListDestinations() []output.DestinationStatus
+	GetDestination(id string) (output.DestinationStatus, error)
 }
 
 // DebugAPI is the interface for the debug snapshot endpoint.
@@ -238,6 +244,12 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
 	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
 	mux.HandleFunc("GET /api/output/confidence", a.handleConfidence)
+	mux.HandleFunc("POST /api/output/destinations", a.handleAddDestination)
+	mux.HandleFunc("GET /api/output/destinations", a.handleListDestinations)
+	mux.HandleFunc("GET /api/output/destinations/{id}", a.handleGetDestination)
+	mux.HandleFunc("DELETE /api/output/destinations/{id}", a.handleRemoveDestination)
+	mux.HandleFunc("POST /api/output/destinations/{id}/start", a.handleStartDestination)
+	mux.HandleFunc("POST /api/output/destinations/{id}/stop", a.handleStopDestination)
 	if a.debug != nil {
 		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
 	}
@@ -976,6 +988,119 @@ func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(jpg)
+}
+
+// --- Multi-Destination API ---
+
+// handleAddDestination creates a new output destination.
+func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	var config output.DestinationConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if config.Type != "srt-caller" && config.Type != "srt-listener" {
+		httperr.Write(w, http.StatusBadRequest, "type must be 'srt-caller' or 'srt-listener'")
+		return
+	}
+	if config.Port <= 0 {
+		httperr.Write(w, http.StatusBadRequest, "port is required")
+		return
+	}
+	if config.Type == "srt-caller" && config.Address == "" {
+		httperr.Write(w, http.StatusBadRequest, "address is required for srt-caller")
+		return
+	}
+	id, err := a.outputMgr.AddDestination(config)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	status, _ := a.outputMgr.GetDestination(id)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleListDestinations returns all configured output destinations.
+func (a *API) handleListDestinations(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	dests := a.outputMgr.ListDestinations()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(dests)
+}
+
+// handleGetDestination returns a single destination by ID.
+func (a *API) handleGetDestination(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	id := r.PathValue("id")
+	status, err := a.outputMgr.GetDestination(id)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleRemoveDestination deletes a destination by ID.
+func (a *API) handleRemoveDestination(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.outputMgr.RemoveDestination(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleStartDestination starts a destination's adapter.
+func (a *API) handleStartDestination(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.outputMgr.StartDestination(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	status, _ := a.outputMgr.GetDestination(id)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleStopDestination stops a destination's adapter.
+func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.outputMgr.StopDestination(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	status, _ := a.outputMgr.GetDestination(id)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 // --- Preset API ---

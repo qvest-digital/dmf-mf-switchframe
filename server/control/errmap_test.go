@@ -53,6 +53,9 @@ func TestErrorStatus(t *testing.T) {
 		{output.ErrRecorderNotActive, http.StatusConflict},
 		{output.ErrSRTActive, http.StatusConflict},
 		{output.ErrSRTNotActive, http.StatusConflict},
+		{output.ErrDestinationNotFound, http.StatusNotFound},
+		{output.ErrDestinationActive, http.StatusConflict},
+		{output.ErrDestinationStopped, http.StatusConflict},
 
 		// preset
 		{preset.ErrNotFound, http.StatusNotFound},

@@ -21,6 +21,24 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	if srtStatus := a.outputMgr.SRTOutputStatus(); srtStatus.Active {
 		state.SRTOutput = &srtStatus
 	}
+	if dests := a.outputMgr.ListDestinations(); len(dests) > 0 {
+		destInfos := make([]internal.DestinationInfo, len(dests))
+		for i, d := range dests {
+			destInfos[i] = internal.DestinationInfo{
+				ID:             d.ID,
+				Name:           d.Config.Name,
+				Type:           d.Config.Type,
+				Address:        d.Config.Address,
+				Port:           d.Config.Port,
+				State:          d.State,
+				BytesWritten:   d.BytesWritten,
+				DroppedPackets: d.DroppedPackets,
+				Connections:    d.Connections,
+				Error:          d.Error,
+			}
+		}
+		state.Destinations = destInfos
+	}
 	var gfxStatus graphics.State
 	if gfxOverride != nil {
 		gfxStatus = *gfxOverride

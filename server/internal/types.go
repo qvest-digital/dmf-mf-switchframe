@@ -126,6 +126,20 @@ type ReplayBufferInfo struct {
 	BytesUsed    int64   `json:"bytesUsed"`
 }
 
+// DestinationInfo describes an output destination for ControlRoomState broadcast.
+type DestinationInfo struct {
+	ID             string `json:"id"`
+	Name           string `json:"name,omitempty"`
+	Type           string `json:"type"`
+	Address        string `json:"address,omitempty"`
+	Port           int    `json:"port"`
+	State          string `json:"state"`
+	BytesWritten   int64  `json:"bytesWritten,omitempty"`
+	DroppedPackets int64  `json:"droppedPackets,omitempty"`
+	Connections    int    `json:"connections,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
 // OperatorInfo describes a registered operator for ControlRoomState broadcast.
 type OperatorInfo struct {
 	ID        string `json:"id"`
@@ -161,6 +175,7 @@ type ControlRoomState struct {
 	TallyState           map[string]string          `json:"tallyState"`
 	Recording            *RecordingStatus           `json:"recording,omitempty"`
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
+	Destinations         []DestinationInfo         `json:"destinations,omitempty"`
 	Sources              map[string]SourceInfo     `json:"sources"`
 	Presets              []PresetInfo              `json:"presets,omitempty"`
 	Graphics             *GraphicsState            `json:"graphics,omitempty"`

@@ -69,6 +69,45 @@ export interface SRTOutputConfig {
 	streamID?: string;
 }
 
+export interface DestinationConfig {
+	type: 'srt-caller' | 'srt-listener';
+	address?: string;
+	port: number;
+	latency?: number;
+	streamID?: string;
+	encryption?: string;
+	passphrase?: string;
+	maxBandwidth?: number;
+	maxConns?: number;
+	name?: string;
+}
+
+export interface DestinationInfo {
+	id: string;
+	name?: string;
+	type: string;
+	address?: string;
+	port: number;
+	state: string;
+	bytesWritten?: number;
+	droppedPackets?: number;
+	connections?: number;
+	error?: string;
+}
+
+export interface DestinationStatus {
+	id: string;
+	config: DestinationConfig;
+	state: string;
+	bytesWritten: number;
+	droppedPackets: number;
+	overflowCount?: number;
+	connections?: number;
+	error?: string;
+	createdAt: string;
+	startedAt?: string;
+}
+
 export interface GraphicsState {
 	active: boolean;
 	template?: string;
@@ -185,6 +224,7 @@ export interface ControlRoomState {
 	presets?: PresetInfo[];
 	recording?: RecordingStatus;
 	srtOutput?: SRTOutputStatus;
+	destinations?: DestinationInfo[];
 	graphics?: GraphicsState;
 	replay?: ReplayState;
 	operators?: OperatorInfo[];

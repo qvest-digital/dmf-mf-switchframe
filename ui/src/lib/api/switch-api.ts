@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -147,6 +147,38 @@ export function stopSRTOutput(): Promise<SRTOutputStatus> {
 
 export function getSRTOutputStatus(): Promise<SRTOutputStatus> {
 	return request('/api/output/srt/status');
+}
+
+// --- Multi-Destination API ---
+
+export function addDestination(config: DestinationConfig): Promise<DestinationStatus> {
+	return request('/api/output/destinations', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
+}
+
+export function listDestinations(): Promise<DestinationStatus[]> {
+	return request('/api/output/destinations');
+}
+
+export function getDestination(id: string): Promise<DestinationStatus> {
+	return request(`/api/output/destinations/${encodeURIComponent(id)}`);
+}
+
+export function removeDestination(id: string): Promise<void> {
+	return request(`/api/output/destinations/${encodeURIComponent(id)}`, {
+		method: 'DELETE',
+	});
+}
+
+export function startDestination(id: string): Promise<DestinationStatus> {
+	return post(`/api/output/destinations/${encodeURIComponent(id)}/start`, {});
+}
+
+export function stopDestination(id: string): Promise<DestinationStatus> {
+	return post(`/api/output/destinations/${encodeURIComponent(id)}/stop`, {});
 }
 
 // --- Preset API ---

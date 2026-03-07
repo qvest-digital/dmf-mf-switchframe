@@ -30,9 +30,10 @@ type OutputManager struct {
 	muxer    *TSMuxer
 	viewerWg sync.WaitGroup // tracks the viewer Run goroutine
 
-	recorder  *FileRecorder
-	srtOutput OutputAdapter // SRTCaller or SRTListener
-	adapters  []OutputAdapter
+	recorder     *FileRecorder
+	srtOutput    OutputAdapter // SRTCaller or SRTListener (legacy single output)
+	destinations map[string]*OutputDestination
+	adapters     []OutputAdapter
 
 	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
 	// so they can be stopped when adapters are removed.
@@ -55,8 +56,9 @@ type OutputManager struct {
 // NewOutputManager creates an OutputManager bound to the given program relay.
 func NewOutputManager(relay *distribution.Relay) *OutputManager {
 	return &OutputManager{
-		log:   slog.With("component", "output"),
-		relay: relay,
+		log:          slog.With("component", "output"),
+		relay:        relay,
+		destinations: make(map[string]*OutputDestination),
 	}
 }
 
@@ -277,6 +279,272 @@ func (m *OutputManager) StopSRTOutput() error {
 	return nil
 }
 
+// --- Multi-destination management ---
+
+// AddDestination creates a new output destination with the given config.
+// The destination is created in stopped state and must be started explicitly.
+// Returns the generated destination ID.
+func (m *OutputManager) AddDestination(config DestinationConfig) (string, error) {
+	// Validate config.
+	switch config.Type {
+	case "srt-caller":
+		if config.Address == "" {
+			return "", fmt.Errorf("address is required for srt-caller")
+		}
+	case "srt-listener":
+		// No address needed.
+	default:
+		return "", fmt.Errorf("unsupported destination type: %s", config.Type)
+	}
+	if config.Port <= 0 {
+		return "", fmt.Errorf("port is required")
+	}
+
+	id := generateDestinationID()
+	dest := &OutputDestination{
+		id:        id,
+		config:    config,
+		createdAt: time.Now(),
+	}
+
+	m.mu.Lock()
+	m.destinations[id] = dest
+	m.mu.Unlock()
+
+	m.log.Info("destination added", "id", id, "type", config.Type, "name", config.Name)
+	return id, nil
+}
+
+// RemoveDestination removes a destination by ID. If the destination is active,
+// it is stopped first. Returns ErrDestinationNotFound if the ID doesn't exist.
+func (m *OutputManager) RemoveDestination(id string) error {
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrDestinationNotFound
+	}
+
+	// If active, stop it.
+	var adapterToClose OutputAdapter
+	var stale []*AsyncAdapter
+	if dest.active {
+		dest.mu.Lock()
+		adapterToClose = dest.adapter
+		dest.adapter = nil
+		dest.async = nil
+		dest.active = false
+		dest.mu.Unlock()
+
+		stale = m.rebuildAdaptersLocked()
+		m.stopMuxerIfNoAdaptersLocked()
+	}
+
+	delete(m.destinations, id)
+	fn := m.onState
+	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
+
+	// Close adapter outside lock.
+	if adapterToClose != nil {
+		if err := adapterToClose.Close(); err != nil {
+			m.log.Error("error closing destination adapter on remove", "id", id, "err", err)
+		}
+	}
+
+	if fn != nil && dest.active {
+		fn()
+	}
+
+	m.log.Info("destination removed", "id", id)
+	return nil
+}
+
+// StartDestination starts the adapter for the given destination ID.
+// Returns ErrDestinationNotFound if the ID doesn't exist, or
+// ErrDestinationActive if already running.
+func (m *OutputManager) StartDestination(id string) error {
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrDestinationNotFound
+	}
+
+	dest.mu.Lock()
+	if dest.active {
+		dest.mu.Unlock()
+		m.mu.Unlock()
+		return ErrDestinationActive
+	}
+
+	// Create adapter based on config type.
+	var adapter OutputAdapter
+	switch dest.config.Type {
+	case "srt-caller":
+		caller := NewSRTCaller(SRTCallerConfig{
+			Address:  dest.config.Address,
+			Port:     dest.config.Port,
+			Latency:  dest.config.Latency,
+			StreamID: dest.config.StreamID,
+		})
+		if m.srtConnectFn != nil {
+			caller.connectFn = m.srtConnectFn
+		}
+		caller.onReconnect = func(overflowed bool) {
+			if overflowed {
+				m.log.Warn("SRT ring buffer overflowed during reconnect",
+					"id", id, "address", dest.config.Address, "port", dest.config.Port)
+			}
+			m.mu.Lock()
+			fn := m.onState
+			pm := m.promMetrics
+			m.mu.Unlock()
+			if pm != nil {
+				pm.SRTReconnectsTotal.Inc()
+				if overflowed {
+					pm.RingbufOverflowsTotal.Inc()
+				}
+			}
+			if fn != nil {
+				fn()
+			}
+		}
+		adapter = caller
+
+	case "srt-listener":
+		maxConns := dest.config.MaxConns
+		if maxConns == 0 {
+			maxConns = defaultMaxConns
+		}
+		listener := NewSRTListener(SRTListenerConfig{
+			Port:     dest.config.Port,
+			Latency:  dest.config.Latency,
+			MaxConns: maxConns,
+		})
+		if m.srtAcceptFn != nil {
+			lCfg := listener.config
+			listener.acceptFn = func(ctx context.Context, _ SRTListenerConfig) error {
+				return m.srtAcceptFn(ctx, lCfg, listener)
+			}
+		}
+		adapter = listener
+	}
+
+	ctx := context.Background()
+	if err := adapter.Start(ctx); err != nil {
+		dest.mu.Unlock()
+		m.mu.Unlock()
+		return fmt.Errorf("start destination %s: %w", id, err)
+	}
+
+	now := time.Now()
+	dest.adapter = adapter
+	dest.active = true
+	dest.startedAt = &now
+	dest.mu.Unlock()
+
+	stale := m.rebuildAdaptersLocked()
+	m.ensureMuxerLocked()
+	fn := m.onState
+	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
+
+	if fn != nil {
+		fn()
+	}
+
+	m.log.Info("destination started", "id", id, "type", dest.config.Type)
+	return nil
+}
+
+// StopDestination stops the adapter for the given destination ID.
+// The destination remains in the list and can be restarted.
+// Returns ErrDestinationNotFound if the ID doesn't exist, or
+// ErrDestinationStopped if not currently active.
+func (m *OutputManager) StopDestination(id string) error {
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrDestinationNotFound
+	}
+
+	dest.mu.Lock()
+	if !dest.active {
+		dest.mu.Unlock()
+		m.mu.Unlock()
+		return ErrDestinationStopped
+	}
+
+	adapter := dest.adapter
+	dest.adapter = nil
+	dest.async = nil
+	dest.active = false
+	dest.mu.Unlock()
+
+	stale := m.rebuildAdaptersLocked()
+	m.stopMuxerIfNoAdaptersLocked()
+	fn := m.onState
+	m.mu.Unlock()
+
+	// Stop stale wrappers outside the lock.
+	for _, w := range stale {
+		w.Stop()
+	}
+
+	// Close adapter outside the lock.
+	if adapter != nil {
+		if err := adapter.Close(); err != nil {
+			m.log.Error("error closing destination adapter on stop", "id", id, "err", err)
+		}
+	}
+
+	if fn != nil {
+		fn()
+	}
+
+	m.log.Info("destination stopped", "id", id)
+	return nil
+}
+
+// ListDestinations returns the status of all configured destinations.
+func (m *OutputManager) ListDestinations() []DestinationStatus {
+	m.mu.Lock()
+	dests := make([]*OutputDestination, 0, len(m.destinations))
+	for _, d := range m.destinations {
+		dests = append(dests, d)
+	}
+	m.mu.Unlock()
+
+	result := make([]DestinationStatus, 0, len(dests))
+	for _, d := range dests {
+		result = append(result, d.status())
+	}
+	return result
+}
+
+// GetDestination returns the status of a single destination by ID.
+// Returns ErrDestinationNotFound if the ID doesn't exist.
+func (m *OutputManager) GetDestination(id string) (DestinationStatus, error) {
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	m.mu.Unlock()
+
+	if !ok {
+		return DestinationStatus{}, ErrDestinationNotFound
+	}
+	return dest.status(), nil
+}
+
 // RecordingStatus returns the current recording status for inclusion in
 // ControlRoomState. Safe to call at any time.
 func (m *OutputManager) RecordingStatus() RecordingStatus {
@@ -344,6 +612,20 @@ func (m *OutputManager) Close() error {
 	m.srtOutput = nil
 	m.adapters = nil
 
+	// Snapshot active destinations and clear them.
+	var destAdapters []OutputAdapter
+	for _, dest := range m.destinations {
+		dest.mu.Lock()
+		if dest.active && dest.adapter != nil {
+			destAdapters = append(destAdapters, dest.adapter)
+			dest.adapter = nil
+			dest.async = nil
+			dest.active = false
+		}
+		dest.mu.Unlock()
+	}
+	m.destinations = make(map[string]*OutputDestination)
+
 	// Snapshot and clear async wrappers so we can stop them outside the lock.
 	wrappers := m.asyncWrappers
 	m.asyncWrappers = nil
@@ -374,6 +656,11 @@ func (m *OutputManager) Close() error {
 			m.log.Error("error closing SRT output on shutdown", "err", err)
 		}
 	}
+	for _, a := range destAdapters {
+		if err := a.Close(); err != nil {
+			m.log.Error("error closing destination on shutdown", "err", err)
+		}
+	}
 
 	return nil
 }
@@ -393,6 +680,15 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 	}
 	if m.srtOutput != nil {
 		raw[m.srtOutput.ID()] = m.srtOutput
+	}
+	// Include active destination adapters.
+	for id, dest := range m.destinations {
+		dest.mu.Lock()
+		if dest.active && dest.adapter != nil {
+			// Use destination ID as key to avoid collisions with legacy adapter IDs.
+			raw["dest:"+id] = dest.adapter
+		}
+		dest.mu.Unlock()
 	}
 
 	if m.asyncWrappers == nil {

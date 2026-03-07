@@ -26,6 +26,15 @@ type mockOutputManager struct {
 	lastSRTConfig     output.SRTOutputConfig
 	thumbnail         []byte
 	recDroppedPackets int64
+
+	// Multi-destination fields.
+	destinations       map[string]output.DestinationStatus
+	addDestErr         error
+	removeDestErr      error
+	startDestErr       error
+	stopDestErr        error
+	lastDestConfig     output.DestinationConfig
+	lastDestID         string
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
@@ -83,6 +92,71 @@ func (m *mockOutputManager) SRTOutputStatus() output.SRTOutputStatus {
 
 func (m *mockOutputManager) ConfidenceThumbnail() []byte {
 	return m.thumbnail
+}
+
+func (m *mockOutputManager) AddDestination(config output.DestinationConfig) (string, error) {
+	if m.addDestErr != nil {
+		return "", m.addDestErr
+	}
+	m.lastDestConfig = config
+	id := "test-dest-1"
+	if m.destinations == nil {
+		m.destinations = make(map[string]output.DestinationStatus)
+	}
+	m.destinations[id] = output.DestinationStatus{
+		ID:     id,
+		Config: config,
+		State:  "stopped",
+	}
+	return id, nil
+}
+
+func (m *mockOutputManager) RemoveDestination(id string) error {
+	if m.removeDestErr != nil {
+		return m.removeDestErr
+	}
+	m.lastDestID = id
+	delete(m.destinations, id)
+	return nil
+}
+
+func (m *mockOutputManager) StartDestination(id string) error {
+	if m.startDestErr != nil {
+		return m.startDestErr
+	}
+	m.lastDestID = id
+	if d, ok := m.destinations[id]; ok {
+		d.State = "active"
+		m.destinations[id] = d
+	}
+	return nil
+}
+
+func (m *mockOutputManager) StopDestination(id string) error {
+	if m.stopDestErr != nil {
+		return m.stopDestErr
+	}
+	m.lastDestID = id
+	if d, ok := m.destinations[id]; ok {
+		d.State = "stopped"
+		m.destinations[id] = d
+	}
+	return nil
+}
+
+func (m *mockOutputManager) ListDestinations() []output.DestinationStatus {
+	result := make([]output.DestinationStatus, 0, len(m.destinations))
+	for _, d := range m.destinations {
+		result = append(result, d)
+	}
+	return result
+}
+
+func (m *mockOutputManager) GetDestination(id string) (output.DestinationStatus, error) {
+	if d, ok := m.destinations[id]; ok {
+		return d, nil
+	}
+	return output.DestinationStatus{}, output.ErrDestinationNotFound
 }
 
 func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
@@ -456,6 +530,281 @@ func TestConfidenceEndpoint_NoManager(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+// --- Multi-Destination tests ---
+
+func TestAddDestination(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"type":"srt-caller","address":"192.168.1.100","port":9000,"name":"YouTube"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "srt-caller", mock.lastDestConfig.Type)
+	require.Equal(t, "192.168.1.100", mock.lastDestConfig.Address)
+	require.Equal(t, 9000, mock.lastDestConfig.Port)
+	require.Equal(t, "YouTube", mock.lastDestConfig.Name)
+
+	var status output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Equal(t, "test-dest-1", status.ID)
+	require.Equal(t, "stopped", status.State)
+}
+
+func TestAddDestination_InvalidType(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"type":"rtmp","port":9000}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAddDestination_MissingPort(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"type":"srt-caller","address":"192.168.1.100"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAddDestination_CallerMissingAddress(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"type":"srt-caller","port":9000}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAddDestination_InvalidJSON(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestListDestinations(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"d1": {ID: "d1", Config: output.DestinationConfig{Type: "srt-caller", Name: "YouTube"}, State: "active"},
+		"d2": {ID: "d2", Config: output.DestinationConfig{Type: "srt-listener", Name: "CDN"}, State: "stopped"},
+	}
+
+	req := httptest.NewRequest("GET", "/api/output/destinations", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dests []output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&dests)
+	require.NoError(t, err)
+	require.Len(t, dests, 2)
+}
+
+func TestListDestinations_Empty(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/output/destinations", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var dests []output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&dests)
+	require.NoError(t, err)
+	require.Empty(t, dests)
+}
+
+func TestGetDestination(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"d1": {ID: "d1", Config: output.DestinationConfig{Type: "srt-caller", Name: "YouTube"}, State: "active"},
+	}
+
+	req := httptest.NewRequest("GET", "/api/output/destinations/d1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var status output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Equal(t, "d1", status.ID)
+	require.Equal(t, "YouTube", status.Config.Name)
+}
+
+func TestGetDestination_NotFound(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/output/destinations/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRemoveDestination(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"d1": {ID: "d1", Config: output.DestinationConfig{Type: "srt-caller"}, State: "stopped"},
+	}
+
+	req := httptest.NewRequest("DELETE", "/api/output/destinations/d1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Equal(t, "d1", mock.lastDestID)
+}
+
+func TestRemoveDestination_NotFound(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.removeDestErr = output.ErrDestinationNotFound
+
+	req := httptest.NewRequest("DELETE", "/api/output/destinations/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestStartDestination(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"d1": {ID: "d1", Config: output.DestinationConfig{Type: "srt-caller"}, State: "stopped"},
+	}
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/d1/start", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "d1", mock.lastDestID)
+
+	var status output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Equal(t, "active", status.State)
+}
+
+func TestStartDestination_NotFound(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.startDestErr = output.ErrDestinationNotFound
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/nonexistent/start", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestStartDestination_AlreadyActive(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.startDestErr = output.ErrDestinationActive
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/d1/start", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestStopDestination(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"d1": {ID: "d1", Config: output.DestinationConfig{Type: "srt-caller"}, State: "active"},
+	}
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/d1/stop", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "d1", mock.lastDestID)
+
+	var status output.DestinationStatus
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Equal(t, "stopped", status.State)
+}
+
+func TestStopDestination_NotFound(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.stopDestErr = output.ErrDestinationNotFound
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/nonexistent/stop", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestStopDestination_NotActive(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.stopDestErr = output.ErrDestinationStopped
+
+	req := httptest.NewRequest("POST", "/api/output/destinations/d1/stop", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestDestinationEndpointsNoManager(t *testing.T) {
+	api := setupOutputTestAPINoManager(t)
+
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{"POST", "/api/output/destinations", `{"type":"srt-caller","address":"192.168.1.100","port":9000}`},
+		{"GET", "/api/output/destinations", ""},
+		{"GET", "/api/output/destinations/d1", ""},
+		{"DELETE", "/api/output/destinations/d1", ""},
+		{"POST", "/api/output/destinations/d1/start", ""},
+		{"POST", "/api/output/destinations/d1/stop", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			var req *http.Request
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			} else {
+				req = httptest.NewRequest(tt.method, tt.path, nil)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			api.Mux().ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusNotImplemented, rec.Code,
+				"path=%s body=%s", tt.path, rec.Body.String())
+		})
+	}
 }
 
 func TestSRTStartCallerMissingAddress(t *testing.T) {
