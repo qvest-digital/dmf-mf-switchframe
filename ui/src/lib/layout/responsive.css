@@ -27,14 +27,9 @@
 		overflow-y: auto;
 	}
 
-	.audio-section,
-	.graphics-section,
-	.macro-section,
-	.key-section,
-	.replay-section {
-		border-left: none;
-		border-right: none;
-		border-top: 1px solid var(--border-subtle);
+	.tab-bar {
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
 	}
 }
 
@@ -45,7 +40,7 @@
 	}
 
 	.multiview-section {
-		max-height: 70px;
+		max-height: clamp(70px, 12vh, 140px);
 	}
 }
 
