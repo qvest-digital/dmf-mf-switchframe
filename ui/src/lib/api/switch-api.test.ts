@@ -73,7 +73,7 @@ describe('switch-api', () => {
 			ok: true,
 			json: () =>
 				Promise.resolve({
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 100 },
+					cam1: { key: 'cam1', status: 'healthy' },
 				}),
 		});
 		vi.stubGlobal('fetch', mockFetch);

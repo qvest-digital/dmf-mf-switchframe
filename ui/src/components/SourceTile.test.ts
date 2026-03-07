@@ -8,8 +8,7 @@ function makeSource(overrides: Partial<SourceInfo> = {}): SourceInfo {
 		key: 'cam1',
 		label: 'Camera 1',
 		status: 'healthy',
-		lastFrameTime: Date.now(),
-		...overrides,
+...overrides,
 	};
 }
 

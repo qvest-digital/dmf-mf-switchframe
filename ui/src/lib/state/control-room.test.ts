@@ -37,8 +37,8 @@ describe('control-room store', () => {
 			previewSource: 'cam2',
 			tallyState: { cam1: 'program', cam2: 'preview' },
 			sources: {
-				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy', lastFrameTime: 0 },
-				cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
+				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
+				cam2: { key: 'cam2', status: 'healthy' },
 			},
 			seq: 1,
 			timestamp: Date.now(),
@@ -67,8 +67,8 @@ describe('control-room store', () => {
 		const store = createControlRoomStore();
 		store.applyUpdate(makeState({
 			sources: {
-				cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
-				cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
+				cam2: { key: 'cam2', status: 'healthy' },
+				cam1: { key: 'cam1', status: 'healthy' },
 			},
 			seq: 1,
 		}));
@@ -81,7 +81,7 @@ describe('control-room store', () => {
 			programSource: 'cam1',
 			tallyState: { cam1: 'program' },
 			sources: {
-				cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
+				cam1: { key: 'cam1', status: 'healthy' },
 			},
 			seq: 1,
 			timestamp: Date.now(),
@@ -185,8 +185,8 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
 				},
 				seq: 1,
 			}));
@@ -211,9 +211,9 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
-					cam3: { key: 'cam3', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
+					cam3: { key: 'cam3', status: 'healthy' },
 				},
 				seq: 1,
 			}));
@@ -236,8 +236,8 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
 				},
 				seq: 1,
 			}));
@@ -251,8 +251,8 @@ describe('control-room store', () => {
 				previewSource: 'cam1',
 				tallyState: { cam2: 'program', cam1: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
 				},
 				seq: 2,
 			}));
@@ -269,9 +269,9 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
-					cam3: { key: 'cam3', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
+					cam3: { key: 'cam3', status: 'healthy' },
 				},
 				seq: 1,
 			}));
@@ -285,9 +285,9 @@ describe('control-room store', () => {
 				previewSource: 'cam3',
 				tallyState: { cam1: 'program', cam3: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
-					cam3: { key: 'cam3', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
+					cam3: { key: 'cam3', status: 'healthy' },
 				},
 				seq: 2,
 			}));
@@ -319,9 +319,9 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
-					cam3: { key: 'cam3', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
+					cam3: { key: 'cam3', status: 'healthy' },
 				},
 				seq: 1,
 			}));
@@ -344,8 +344,8 @@ describe('control-room store', () => {
 				previewSource: 'cam2',
 				tallyState: { cam1: 'program', cam2: 'preview' },
 				sources: {
-					cam1: { key: 'cam1', status: 'healthy', lastFrameTime: 0 },
-					cam2: { key: 'cam2', status: 'healthy', lastFrameTime: 0 },
+					cam1: { key: 'cam1', status: 'healthy' },
+					cam2: { key: 'cam2', status: 'healthy' },
 				},
 				seq: 1,
 			}));

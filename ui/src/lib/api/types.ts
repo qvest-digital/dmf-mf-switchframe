@@ -5,7 +5,7 @@ export interface SourceInfo {
 	key: string;
 	label?: string;
 	status: SourceHealthStatus;
-	lastFrameTime: number;
+
 	position?: number;
 	delayMs?: number;
 	isVirtual?: boolean;

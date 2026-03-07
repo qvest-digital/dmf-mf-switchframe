@@ -23,9 +23,9 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 		programPeak: [0, 0] as [number, number],
 		tallyState: { cam1: 'program' as const, cam2: 'preview' as const, cam3: 'idle' as const },
 		sources: {
-			cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy', lastFrameTime: 0 },
-			cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy', lastFrameTime: 0 },
-			cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy', lastFrameTime: 0 },
+			cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
+			cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' },
+			cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
 		},
 		seq: 1,
 		timestamp: Date.now(),

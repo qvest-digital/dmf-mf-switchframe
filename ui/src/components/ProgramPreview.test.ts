@@ -16,8 +16,8 @@ describe('ProgramPreview with video', () => {
 		programPeak: [0, 0] as [number, number],
 		tallyState: { cam1: 'program' as const, cam2: 'preview' as const },
 		sources: {
-			cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' as const, lastFrameTime: 0 },
-			cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' as const, lastFrameTime: 0 },
+			cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' as const },
+			cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' as const },
 		},
 		seq: 1,
 		timestamp: Date.now(),
