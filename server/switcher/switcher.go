@@ -1295,7 +1295,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	// the reference chain via H.264 IDR semantics).
 	if len(replayFrames) > 0 {
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-			pipeCodecs.flushDecoder()
+			// replayGOP creates a fresh decoder with the GOP's reference
+			// chain, then swaps it in. No need to flush the old decoder
+			// first — the old one is replaced atomically.
 			pipeCodecs.replayGOP(replayFrames)
 		}
 		// Clear the IDR gate — the replayed GOP seeds the decoder
@@ -1405,7 +1407,6 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	// Replay full GOP — see handleTransitionComplete for explanation.
 	if len(replayFrames) > 0 {
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-			pipeCodecs.flushDecoder()
 			pipeCodecs.replayGOP(replayFrames)
 		}
 		s.mu.Lock()
@@ -1642,7 +1643,6 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		// Replay full GOP — see handleTransitionComplete for explanation.
 		if len(replayFrames) > 0 {
 			if s.pipeCodecs != nil {
-				s.pipeCodecs.flushDecoder()
 				s.pipeCodecs.replayGOP(replayFrames)
 			}
 			// Clear IDR gate — the replayed GOP seeds the decoder
