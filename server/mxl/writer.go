@@ -32,6 +32,9 @@ type Writer struct {
 	videoRate   Rational
 	audioRate   Rational
 	closed      bool
+
+	// Reusable de-interleave buffers to avoid per-frame allocation.
+	deinterleaveBuf [][]float32
 }
 
 // NewWriter creates an MXL writer.
@@ -97,6 +100,7 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 
 // WriteAudio converts interleaved float32 PCM to de-interleaved and writes samples.
 // Intended to be used as an audio.RawAudioSink callback.
+// Called from a single goroutine (mixer output), so deinterleaveBuf reuse is safe.
 func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) {
 	w.mu.Lock()
 	if w.closed || w.audioWriter == nil {
@@ -112,10 +116,18 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	}
 
 	// De-interleave: MXL audio is de-interleaved (one buffer per channel).
+	// Reuse buffers across calls to avoid hot-path allocation.
 	samplesPerCh := len(pcm) / channels
-	deinterleaved := make([][]float32, channels)
+	if len(w.deinterleaveBuf) < channels {
+		w.deinterleaveBuf = make([][]float32, channels)
+	}
+	deinterleaved := w.deinterleaveBuf[:channels]
 	for ch := 0; ch < channels; ch++ {
-		deinterleaved[ch] = make([]float32, samplesPerCh)
+		if cap(deinterleaved[ch]) < samplesPerCh {
+			deinterleaved[ch] = make([]float32, samplesPerCh)
+		} else {
+			deinterleaved[ch] = deinterleaved[ch][:samplesPerCh]
+		}
 		for i := 0; i < samplesPerCh; i++ {
 			deinterleaved[ch][i] = pcm[i*channels+ch]
 		}

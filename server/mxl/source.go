@@ -44,6 +44,11 @@ type SourceConfig struct {
 	SampleRate int
 	Channels   int
 
+	// Bitrate for H.264 encoding (relay path). Default: 6 Mbps.
+	Bitrate int
+	// FPS for H.264 encoding (relay path). Default: 30.
+	FPS float32
+
 	// OnRawVideo delivers raw YUV420p to the switcher pipeline.
 	OnRawVideo SourceVideoSink
 
@@ -191,10 +196,19 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	}
 }
 
+// encodeAndBroadcastVideo encodes a YUV420p frame to H.264 and broadcasts it.
+// Called only from the single videoFanOut goroutine, so lazy-init is safe.
 func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int64) {
-	// Lazy-init encoder.
 	if s.videoEncoder == nil {
-		enc, err := s.config.EncoderFactory(width, height, 4_000_000, 30)
+		bitrate := s.config.Bitrate
+		if bitrate == 0 {
+			bitrate = 6_000_000
+		}
+		fps := s.config.FPS
+		if fps == 0 {
+			fps = 30
+		}
+		enc, err := s.config.EncoderFactory(width, height, bitrate, fps)
 		if err != nil {
 			s.log.Error("mxl source: failed to create video encoder", "error", err)
 			return
@@ -279,6 +293,8 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 	}
 }
 
+// encodeAndBroadcastAudio encodes PCM to AAC and broadcasts it.
+// Called only from the single audioFanOut goroutine, so lazy-init is safe.
 func (s *Source) encodeAndBroadcastAudio(pcm []float32, sampleRate, channels int, pts int64) {
 	if s.audioEncoder == nil {
 		enc, err := s.config.AudioEncoderFactory(sampleRate, channels)

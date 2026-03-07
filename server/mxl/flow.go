@@ -355,6 +355,10 @@ type discreteFlowWriter struct {
 }
 
 func (w *discreteFlowWriter) WriteGrain(index uint64, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
 	var grain C.mxlGrainInfo
 	var payload *C.uint8_t
 

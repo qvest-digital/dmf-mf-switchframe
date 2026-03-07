@@ -11,13 +11,13 @@ func init() {
 	slog.Debug("mxl: MXL not available (built without mxl tag)")
 
 	// Provide a stub CurrentIndex using monotonic clock.
+	// Uses float64 to avoid uint64 overflow with large denominators.
 	CurrentIndex = func(rate Rational) uint64 {
 		if rate.Denominator == 0 || rate.Numerator == 0 {
 			return 0
 		}
-		ns := uint64(time.Now().UnixNano())
-		// index = ns * numerator / (denominator * 1e9)
-		return ns / (uint64(rate.Denominator) * 1_000_000_000 / uint64(rate.Numerator))
+		ns := float64(time.Now().UnixNano())
+		return uint64(ns * float64(rate.Numerator) / (float64(rate.Denominator) * 1e9))
 	}
 }
 

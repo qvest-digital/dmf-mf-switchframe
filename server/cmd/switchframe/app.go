@@ -66,6 +66,7 @@ type App struct {
 	replayMgr      *replay.Manager
 
 	// MXL integration
+	mxlInstance *mxl.Instance
 	mxlSources []*mxl.Source
 	mxlOutput  *mxl.Output
 
@@ -365,6 +366,7 @@ func (a *App) initMXL() error {
 	if err != nil {
 		return fmt.Errorf("mxl: %w", err)
 	}
+	a.mxlInstance = inst
 
 	// Register MXL sources.
 	for _, flowID := range a.cfg.MXLSources {
@@ -374,6 +376,9 @@ func (a *App) initMXL() error {
 		a.sw.RegisterMXLSource(flowName)
 		a.mixer.AddChannel(flowName)
 		_ = a.mixer.SetAFV(flowName, true)
+
+		// Register relay for browser delivery + replay.
+		relay := a.server.RegisterStream(flowName)
 
 		// Open MXL flows.
 		videoFlow, err := inst.OpenReader(flowID)
@@ -385,7 +390,10 @@ func (a *App) initMXL() error {
 		src := mxl.NewSource(mxl.SourceConfig{
 			FlowName:       flowName,
 			VideoFlowID:    flowID,
+			Width:          1920,
+			Height:         1080,
 			EncoderFactory: encoderFactory(),
+			Relay:          relay,
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
 					YUV:    yuv,
@@ -402,11 +410,7 @@ func (a *App) initMXL() error {
 			},
 		})
 
-		// Register relay for browser delivery + replay.
-		relay := a.server.RegisterStream(flowName)
 		src.Start(context.Background(), videoFlow, nil)
-		_ = relay // Relay wired via onStreamRegistered skip for mxl: prefix
-
 		a.mxlSources = append(a.mxlSources, src)
 
 		// Register replay viewer.
@@ -430,9 +434,6 @@ func (a *App) initMXL() error {
 		})
 
 		// Open MXL flow for writing.
-		// In a real deployment, this would use a flow definition JSON.
-		// For now, we create dummy writers that will be replaced when
-		// the MXL SDK is available.
 		videoWriter, err := inst.OpenWriter("{}")
 		if err != nil {
 			slog.Warn("mxl: could not open output video flow", "error", err)
@@ -442,9 +443,8 @@ func (a *App) initMXL() error {
 			slog.Warn("mxl: could not open output audio flow", "error", err)
 		}
 
-		// The output needs to adapt between the switcher's RawVideoSink
-		// (which uses *ProcessingFrame) and the writer's WriteVideo.
-		// We set the sink directly on the switcher with an adapter.
+		// Adapt between switcher's RawVideoSink (*ProcessingFrame) and
+		// the MXL writer's WriteVideo (flat YUV params).
 		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
 			out.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
 		}))
@@ -559,6 +559,9 @@ func (a *App) Close() {
 	}
 	for _, src := range a.mxlSources {
 		src.Stop()
+	}
+	if a.mxlInstance != nil {
+		a.mxlInstance.Close()
 	}
 
 	if a.keyBridge != nil {
