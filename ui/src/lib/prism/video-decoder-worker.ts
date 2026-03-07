@@ -271,6 +271,15 @@ self.onmessage = async (e: MessageEvent) => {
 				lifetimeConfigGuardDrops,
 			},
 		});
+	} else if (msg.type === "flush") {
+		waitForKeyframe = true;
+		// Reset the decoder's internal state so stale reference frames
+		// from before the pause don't cause artifacts.
+		if (videoDecoder && videoDecoder.state === "configured") {
+			try {
+				videoDecoder.flush();
+			} catch { /* ignore */ }
+		}
 	} else if (msg.type === "stop") {
 		if (videoDecoder) {
 			try {

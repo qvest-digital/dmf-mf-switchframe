@@ -44,6 +44,7 @@ export class PrismVideoDecoder {
 	private _lastDiag: VideoDecoderDiagnostics | null = null;
 	private _diagResolve: ((d: VideoDecoderDiagnostics) => void) | null = null;
 	private _bufferDropped = 0;
+	private _paused = false;
 
 	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
@@ -86,8 +87,22 @@ export class PrismVideoDecoder {
 		this.configured = true;
 	}
 
+	pause(): void {
+		this._paused = true;
+	}
+
+	resume(): void {
+		this._paused = false;
+		// Tell worker to wait for next keyframe
+		if (this.worker) {
+			this.worker.postMessage({ type: "flush" });
+		}
+		// Clear stale frames from all buffers
+		this.renderBuffer.clear();
+	}
+
 	decode(data: Uint8Array, isKeyframe: boolean, timestamp: number, isDisco: boolean): void {
-		if (!this.worker || !this.configured) return;
+		if (!this.worker || !this.configured || this._paused) return;
 
 		this.worker.postMessage(
 			{

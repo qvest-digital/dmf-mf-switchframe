@@ -2060,6 +2060,51 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		result["transition_engine"] = s.transEngine.Timing()
 	}
 
+	// Program relay viewer stats — reveals MoQ channel drops.
+	programViewers := s.programRelay.ViewerStatsAll()
+	if len(programViewers) > 0 {
+		pvs := make([]map[string]any, len(programViewers))
+		for i, vs := range programViewers {
+			pvs[i] = map[string]any{
+				"id":              vs.ID,
+				"video_sent":      vs.VideoSent,
+				"video_dropped":   vs.VideoDropped,
+				"audio_sent":      vs.AudioSent,
+				"audio_dropped":   vs.AudioDropped,
+				"bytes_sent":      vs.BytesSent,
+				"last_video_ts_ms": vs.LastVideoTsMS,
+			}
+		}
+		result["program_relay_viewers"] = pvs
+	}
+
+	// Per-source relay viewer stats for the same purpose.
+	sourceViewers := make(map[string]any)
+	for key, ss := range s.sources {
+		if ss.relay == nil {
+			continue
+		}
+		svs := ss.relay.ViewerStatsAll()
+		if len(svs) == 0 {
+			continue
+		}
+		viewers := make([]map[string]any, len(svs))
+		for i, vs := range svs {
+			viewers[i] = map[string]any{
+				"id":            vs.ID,
+				"video_sent":    vs.VideoSent,
+				"video_dropped": vs.VideoDropped,
+				"audio_sent":    vs.AudioSent,
+				"audio_dropped": vs.AudioDropped,
+				"bytes_sent":    vs.BytesSent,
+			}
+		}
+		sourceViewers[key] = viewers
+	}
+	if len(sourceViewers) > 0 {
+		result["source_relay_viewers"] = sourceViewers
+	}
+
 	return result
 }
 

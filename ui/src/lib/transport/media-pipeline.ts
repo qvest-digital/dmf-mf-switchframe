@@ -388,10 +388,32 @@ export function createMediaPipeline(): MediaPipeline {
 	}
 
 	function destroy(): void {
+		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
 	}
+
+	function handleVisibilityChange(): void {
+		const hidden = document.hidden;
+		for (const source of sources.values()) {
+			if (hidden) {
+				source.videoDecoder.pause();
+			} else {
+				source.videoDecoder.resume();
+				// Clear secondary buffers (program/preview canvases)
+				for (const buf of source.secondaryBuffers.values()) {
+					buf.clear();
+				}
+				// Reset renderer sync so stale PTS doesn't corrupt timing
+				for (const renderer of source.renderers.values()) {
+					renderer.resetSync();
+				}
+			}
+		}
+	}
+
+	document.addEventListener("visibilitychange", handleVisibilityChange);
 
 	/** Track which sources should be unmuted (set before audio decoder is ready). */
 	const unmutedSources = new Set<string>();

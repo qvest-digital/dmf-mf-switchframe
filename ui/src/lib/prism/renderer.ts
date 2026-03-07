@@ -358,6 +358,11 @@ export class PrismRenderer {
 		this._diagAvSyncMin = Infinity;
 		this._diagAvSyncMax = -Infinity;
 		this._diagLastAvSync = 0;
+		// Reset RAF timing stats so the background gap doesn't pollute them
+		this._diagLastRafTime = 0;
+		this._diagRafIntervalMax = 0;
+		this._diagLastFrameDrawTime = 0;
+		this._diagFrameIntervalMax = 0;
 	}
 
 	getDiagnostics(): RendererDiagnostics {
