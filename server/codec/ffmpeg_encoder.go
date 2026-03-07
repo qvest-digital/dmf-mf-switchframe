@@ -72,12 +72,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->gop_size = (int)(fps + 0.5f) * 2; // IDR every 2 seconds
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-	h->ctx->thread_count = 1;
+	h->ctx->thread_count = 4;
 
 	// Codec-specific options for low-latency encoding.
 	if (strcmp(codec_name, "libx264") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "medium", 0);
-		av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
+		av_opt_set(h->ctx->priv_data, "preset", "veryfast", 0);
+		// No tune: veryfast without zerolatency gives 1-frame lookahead
+		// for significantly better quality at lower CPU than medium+zerolatency.
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
@@ -85,6 +86,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {

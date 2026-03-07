@@ -64,18 +64,18 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 	}
 
 	var gotOutput bool
-	for i := range 8 {
+	for i := range 30 {
 		data, isKey, err := enc.Encode(yuv, i == 0)
 		require.NoError(t, err)
 		if len(data) > 0 {
-			if i == 0 || !gotOutput {
+			if !gotOutput {
 				require.True(t, isKey, "first output frame should be a keyframe")
 			}
 			gotOutput = true
 			break
 		}
 	}
-	require.True(t, gotOutput, "encoder should produce output within 8 frames")
+	require.True(t, gotOutput, "encoder should produce output within 30 frames")
 }
 
 func TestNewVideoDecoder_Works(t *testing.T) {
@@ -107,23 +107,40 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Encode frames until we get output. Hardware encoders (e.g.
-	// VideoToolbox) may buffer the first few frames (EAGAIN).
+	// Encode frames until we get output. Without zerolatency and with
+	// multi-threaded encoding, the pipeline may buffer ~15 frames.
 	var encoded []byte
-	for i := range 8 {
-		data, isKey, err := enc.Encode(yuv, i == 0)
+	for i := range 30 {
+		data, _, err := enc.Encode(yuv, i == 0)
 		require.NoError(t, err)
 		if len(data) > 0 {
 			encoded = data
-			_ = isKey
 			break
 		}
 	}
-	require.NotEmpty(t, encoded, "encoder should produce output within 8 frames")
+	require.NotEmpty(t, encoded, "encoder should produce output within 30 frames")
 
-	// Decode it back.
-	decoded, dw, dh, err := dec.Decode(encoded)
-	require.NoError(t, err)
+	// Decode it back. With multi-threaded decode, the decoder may also
+	// need a few packets before producing output.
+	var decoded []byte
+	var dw, dh int
+	decoded, dw, dh, err = dec.Decode(encoded)
+	if err != nil {
+		// Decoder is buffering — feed more frames to flush it.
+		for i := 0; i < 30; i++ {
+			var moreEncoded []byte
+			moreEncoded, _, err = enc.Encode(yuv, false)
+			require.NoError(t, err)
+			if moreEncoded == nil {
+				continue
+			}
+			decoded, dw, dh, err = dec.Decode(moreEncoded)
+			if err == nil {
+				break
+			}
+		}
+	}
+	require.NoError(t, err, "decoder should produce output")
 	require.Equal(t, w, dw)
 	require.Equal(t, h, dh)
 	require.Equal(t, ySize+2*uvSize, len(decoded))

@@ -46,7 +46,7 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	// FF_EC_GUESS_MVS uses surrounding motion vectors to conceal damaged
 	// macroblocks, producing fewer visible glitches than simple frame copy.
 	h->ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
-	h->ctx->thread_count = 1;
+	h->ctx->thread_count = 4;
 
 	if (hwDeviceCtx) {
 		h->ctx->hw_device_ctx = av_buffer_ref((AVBufferRef*)hwDeviceCtx);

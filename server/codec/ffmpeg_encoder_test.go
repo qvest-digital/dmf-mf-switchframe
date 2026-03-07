@@ -69,11 +69,21 @@ func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// First frame with forceIDR=true should produce a keyframe.
-	encoded, isKeyframe, err := enc.Encode(yuv, true)
-	require.NoError(t, err)
-	require.True(t, isKeyframe)
-	require.NotEmpty(t, encoded)
+	// Without zerolatency tune, the encoder may buffer initial frames
+	// (frame-level threading fills the pipeline before producing output).
+	// Feed frames until we get a keyframe output.
+	var encoded []byte
+	var isKeyframe bool
+	for i := 0; i < 30; i++ {
+		forceIDR := i == 0
+		encoded, isKeyframe, err = enc.Encode(yuv, forceIDR)
+		require.NoError(t, err)
+		if encoded != nil {
+			break
+		}
+	}
+	require.NotEmpty(t, encoded, "encoder should produce output within 30 frames")
+	require.True(t, isKeyframe, "first output should be a keyframe")
 
 	// Verify Annex B start code prefix.
 	require.True(t, len(encoded) >= 4)
@@ -93,7 +103,9 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 	uvSize := (w / 2) * (h / 2)
 	yuv := make([]byte, ySize+2*uvSize)
 
-	for i := 0; i < 10; i++ {
+	outputCount := 0
+	firstOutputIsKey := false
+	for i := 0; i < 30; i++ {
 		// Vary the Y pattern each frame.
 		for j := 0; j < ySize; j++ {
 			yuv[j] = byte((j*7 + i*13) % 256)
@@ -105,11 +117,16 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 		forceIDR := i == 0
 		data, isKey, err := enc.Encode(yuv, forceIDR)
 		require.NoError(t, err, "frame %d", i)
-		require.NotEmpty(t, data, "frame %d", i)
-		if i == 0 {
-			require.True(t, isKey, "first frame should be keyframe")
+		// Without zerolatency, initial frames may return nil (EAGAIN).
+		if data != nil {
+			outputCount++
+			if outputCount == 1 {
+				firstOutputIsKey = isKey
+			}
 		}
 	}
+	require.Greater(t, outputCount, 0, "should produce at least one output frame")
+	require.True(t, firstOutputIsKey, "first output frame should be keyframe")
 }
 
 func TestFFmpegEncoderForceIDR(t *testing.T) {
@@ -125,18 +142,26 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Encode 5 frames without forcing IDR (except first).
-	for i := 0; i < 5; i++ {
+	// Encode frames to fill the pipeline and produce output.
+	for i := 0; i < 30; i++ {
 		forceIDR := i == 0
 		_, _, err := enc.Encode(yuv, forceIDR)
 		require.NoError(t, err, "frame %d", i)
 	}
 
-	// Force IDR on 6th frame.
-	data, isKeyframe, err := enc.Encode(yuv, true)
-	require.NoError(t, err)
-	require.True(t, isKeyframe, "forced IDR frame should be a keyframe")
-	require.NotEmpty(t, data)
+	// Force IDR. With multi-threaded encoding, output lags input by ~15 frames,
+	// so we need to feed enough additional frames for the IDR to appear.
+	foundIDR := false
+	for i := 0; i < 30; i++ {
+		forceOnFirst := i == 0
+		data, isKeyframe, err := enc.Encode(yuv, forceOnFirst)
+		require.NoError(t, err)
+		if data != nil && isKeyframe {
+			foundIDR = true
+			break
+		}
+	}
+	require.True(t, foundIDR, "forced IDR should produce a keyframe within pipeline delay")
 }
 
 func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
@@ -194,6 +219,35 @@ func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 	vbvBufferBytes := bitrate / 8 / 2 // 500ms buffer in bytes
 	require.Less(t, maxSize, vbvBufferBytes,
 		"max frame size %d should be less than VBV buffer %d bytes", maxSize, vbvBufferBytes)
+}
+
+func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
+	// Encode 30 frames at 360p to exercise the encoder under realistic load.
+	w, h := 640, 360
+	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30.0, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	keyframeCount := 0
+	for i := 0; i < 30; i++ {
+		for j := 0; j < w*h; j++ {
+			yuv[j] = byte((j + i*w) % 256)
+		}
+		for j := w * h; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		forceIDR := i == 0
+		data, isKey, err := enc.Encode(yuv, forceIDR)
+		require.NoError(t, err, "frame %d", i)
+		// With threading/lookahead, initial frames may return nil (EAGAIN).
+		// After pipeline fills, frames should produce output.
+		if data != nil && isKey {
+			keyframeCount++
+		}
+	}
+	require.GreaterOrEqual(t, keyframeCount, 1, "should have at least 1 keyframe")
 }
 
 func TestFFmpegEncoderInterface(t *testing.T) {

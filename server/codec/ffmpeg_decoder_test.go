@@ -95,15 +95,41 @@ func TestFFmpegEncodeDecodeRoundTrip(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Encode a keyframe.
-	encoded, isKey, err := enc.Encode(yuv, true)
-	require.NoError(t, err)
-	require.True(t, isKey)
-	require.NotEmpty(t, encoded)
+	// Without zerolatency, the encoder may buffer initial frames
+	// (frame-level threading fills the pipeline before producing output).
+	// Feed frames until we get encoded output.
+	var encoded []byte
+	for i := 0; i < 30; i++ {
+		forceIDR := i == 0
+		encoded, _, err = enc.Encode(yuv, forceIDR)
+		require.NoError(t, err)
+		if encoded != nil {
+			break
+		}
+	}
+	require.NotEmpty(t, encoded, "encoder should produce output within 30 frames")
 
-	// Decode it back.
-	decoded, dw, dh, err := dec.Decode(encoded)
-	require.NoError(t, err)
+	// Decode it back. With multi-threaded decode, the decoder may need
+	// a few packets before producing output. Feed remaining encoded frames.
+	var decoded []byte
+	var dw, dh int
+	decoded, dw, dh, err = dec.Decode(encoded)
+	if err != nil {
+		// Decoder is buffering — feed more frames to flush it.
+		for i := 0; i < 30; i++ {
+			var moreEncoded []byte
+			moreEncoded, _, err = enc.Encode(yuv, false)
+			require.NoError(t, err)
+			if moreEncoded == nil {
+				continue
+			}
+			decoded, dw, dh, err = dec.Decode(moreEncoded)
+			if err == nil {
+				break
+			}
+		}
+	}
+	require.NoError(t, err, "decoder should produce output")
 	require.Equal(t, w, dw)
 	require.Equal(t, h, dh)
 	require.Equal(t, ySize+2*uvSize, len(decoded))
@@ -125,7 +151,7 @@ func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 	yuv := make([]byte, ySize+2*uvSize)
 
 	successCount := 0
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		// Vary Y plane each frame.
 		for j := 0; j < ySize; j++ {
 			yuv[j] = byte((j*7 + i*13) % 256)
@@ -137,7 +163,10 @@ func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 		forceIDR := i == 0
 		encoded, _, err := enc.Encode(yuv, forceIDR)
 		require.NoError(t, err, "encode frame %d", i)
-		require.NotEmpty(t, encoded, "encode frame %d", i)
+		// Without zerolatency, initial frames may return nil (EAGAIN).
+		if encoded == nil {
+			continue
+		}
 
 		decoded, dw, dh, err := dec.Decode(encoded)
 		if err == nil {
