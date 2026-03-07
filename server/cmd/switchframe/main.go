@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/zsiec/switchframe/server/control"
 )
@@ -20,6 +21,12 @@ type AppConfig struct {
 	APIToken         string
 	ReplayBufferSecs int
 	Addr             string
+
+	// MXL integration.
+	MXLSources  []string // Flow UUIDs to subscribe as sources
+	MXLOutput   string   // Flow name for program output (empty = disabled)
+	MXLDomain   string   // MXL shared memory domain path
+	MXLDiscover bool     // List available MXL flows and exit
 }
 
 func main() {
@@ -53,6 +60,9 @@ func run() error {
 	if err := app.initSubsystems(); err != nil {
 		return err
 	}
+	if err := app.initMXL(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -70,7 +80,24 @@ func parseConfig() (AppConfig, error) {
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
+
+	// MXL integration flags.
+	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
+	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
+	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
+
 	flag.Parse()
+
+	// Collect --mxl-source flags (flag package doesn't support repeated flags,
+	// so use remaining args or environment variable).
+	var mxlSources []string
+	if envSources := os.Getenv("SWITCHFRAME_MXL_SOURCES"); envSources != "" {
+		for _, s := range splitAndTrim(envSources) {
+			if s != "" {
+				mxlSources = append(mxlSources, s)
+			}
+		}
+	}
 
 	// Resolve API token: flag > env > auto-generate.
 	apiToken := *apiTokenFlag
@@ -94,5 +121,21 @@ func parseConfig() (AppConfig, error) {
 		APIToken:         apiToken,
 		ReplayBufferSecs: *replayBufferSecs,
 		Addr:             ":8080",
+		MXLSources:       mxlSources,
+		MXLOutput:        *mxlOutput,
+		MXLDomain:        *mxlDomain,
+		MXLDiscover:      *mxlDiscover,
 	}, nil
+}
+
+// splitAndTrim splits a comma-separated string and trims whitespace.
+func splitAndTrim(s string) []string {
+	var result []string
+	for _, part := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }

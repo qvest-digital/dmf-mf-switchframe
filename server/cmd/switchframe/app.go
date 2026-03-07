@@ -23,6 +23,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
@@ -63,6 +64,10 @@ type App struct {
 	keyProcessor   *graphics.KeyProcessor
 	keyBridge      *graphics.KeyProcessorBridge
 	replayMgr      *replay.Manager
+
+	// MXL integration
+	mxlSources []*mxl.Source
+	mxlOutput  *mxl.Output
 
 	// API + middleware
 	api        *control.API
@@ -320,6 +325,140 @@ func (a *App) initSubsystems() error {
 	return nil
 }
 
+// initMXL handles MXL discovery, source registration, and output wiring.
+// Called between initSubsystems and initAPI.
+func (a *App) initMXL() error {
+	// Handle --mxl-discover: list flows and exit.
+	if a.cfg.MXLDiscover {
+		flows, err := mxl.Discover(a.cfg.MXLDomain)
+		if err != nil {
+			return fmt.Errorf("mxl discover: %w", err)
+		}
+		fmt.Println("Available MXL flows:")
+		for _, f := range flows {
+			active := ""
+			if f.Active {
+				active = " [active]"
+			}
+			switch f.Format {
+			case mxl.DataFormatVideo:
+				fmt.Printf("  %s (%s, %dx%d, %s)%s\n",
+					f.ID, f.MediaType, f.Width, f.Height, f.Name, active)
+			case mxl.DataFormatAudio:
+				fmt.Printf("  %s (%s, %dHz %dch, %s)%s\n",
+					f.ID, f.MediaType, f.SampleRate, f.Channels, f.Name, active)
+			default:
+				fmt.Printf("  %s (%s, %s)%s\n",
+					f.ID, f.MediaType, f.Name, active)
+			}
+		}
+		os.Exit(0)
+	}
+
+	// No MXL sources or output configured — skip.
+	if len(a.cfg.MXLSources) == 0 && a.cfg.MXLOutput == "" {
+		return nil
+	}
+
+	// Create MXL instance.
+	inst, err := mxl.NewInstance(a.cfg.MXLDomain)
+	if err != nil {
+		return fmt.Errorf("mxl: %w", err)
+	}
+
+	// Register MXL sources.
+	for _, flowID := range a.cfg.MXLSources {
+		flowName := "mxl:" + flowID
+
+		// Register with switcher and mixer.
+		a.sw.RegisterMXLSource(flowName)
+		a.mixer.AddChannel(flowName)
+		_ = a.mixer.SetAFV(flowName, true)
+
+		// Open MXL flows.
+		videoFlow, err := inst.OpenReader(flowID)
+		if err != nil {
+			slog.Warn("mxl: could not open video flow", "flowID", flowID, "error", err)
+		}
+		// Audio flow would use a separate flow UUID; for now video-only.
+
+		src := mxl.NewSource(mxl.SourceConfig{
+			FlowName:       flowName,
+			VideoFlowID:    flowID,
+			EncoderFactory: encoderFactory(),
+			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
+				pf := &switcher.ProcessingFrame{
+					YUV:    yuv,
+					Width:  w,
+					Height: h,
+					PTS:    pts,
+					DTS:    pts,
+					Codec:  "h264",
+				}
+				a.sw.IngestRawVideo(key, pf)
+			},
+			OnRawAudio: func(key string, pcm []float32, pts int64) {
+				a.mixer.IngestPCM(key, pcm, pts)
+			},
+		})
+
+		// Register relay for browser delivery + replay.
+		relay := a.server.RegisterStream(flowName)
+		src.Start(context.Background(), videoFlow, nil)
+		_ = relay // Relay wired via onStreamRegistered skip for mxl: prefix
+
+		a.mxlSources = append(a.mxlSources, src)
+
+		// Register replay viewer.
+		if a.replayMgr != nil {
+			if err := a.replayMgr.AddSource(flowName); err != nil {
+				slog.Warn("mxl: could not add replay source", "key", flowName, "err", err)
+			}
+		}
+
+		slog.Info("MXL source registered", "flowID", flowID, "key", flowName)
+	}
+
+	// Configure MXL output.
+	if a.cfg.MXLOutput != "" {
+		out := mxl.NewOutput(mxl.OutputConfig{
+			FlowName:   a.cfg.MXLOutput,
+			Width:      1920,
+			Height:     1080,
+			SampleRate: 48000,
+			Channels:   2,
+		})
+
+		// Open MXL flow for writing.
+		// In a real deployment, this would use a flow definition JSON.
+		// For now, we create dummy writers that will be replaced when
+		// the MXL SDK is available.
+		videoWriter, err := inst.OpenWriter("{}")
+		if err != nil {
+			slog.Warn("mxl: could not open output video flow", "error", err)
+		}
+		audioWriter, err := inst.OpenAudioWriter("{}")
+		if err != nil {
+			slog.Warn("mxl: could not open output audio flow", "error", err)
+		}
+
+		// The output needs to adapt between the switcher's RawVideoSink
+		// (which uses *ProcessingFrame) and the writer's WriteVideo.
+		// We set the sink directly on the switcher with an adapter.
+		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
+			out.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
+		}))
+		a.mixer.SetRawAudioSink(audio.RawAudioSink(out.Writer().WriteAudio))
+
+		out.StartLifecycle(context.Background(), videoWriter, audioWriter)
+		a.mxlOutput = out
+
+		slog.Info("MXL output started", "flow", a.cfg.MXLOutput)
+	}
+
+	return nil
+}
+
 // initAPI creates the REST API and wires state callbacks.
 func (a *App) initAPI() error {
 	apiOpts := []control.APIOption{
@@ -414,6 +553,14 @@ func (a *App) Run(ctx context.Context) error {
 
 // Close cleans up all subsystems in reverse initialization order.
 func (a *App) Close() {
+	// MXL cleanup first (before core engine).
+	if a.mxlOutput != nil {
+		a.mxlOutput.Stop()
+	}
+	for _, src := range a.mxlSources {
+		src.Stop()
+	}
+
 	if a.keyBridge != nil {
 		a.keyBridge.Close()
 	}

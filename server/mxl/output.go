@@ -93,6 +93,32 @@ func (o *Output) Start(ctx context.Context, videoWriter DiscreteWriter, audioWri
 		"video", videoWriter != nil, "audio", audioWriter != nil)
 }
 
+// Writer returns the underlying MXL writer for direct sink wiring.
+// Use this when the sink callback signatures don't match the interface
+// (e.g., switcher.RawVideoSink uses *ProcessingFrame).
+func (o *Output) Writer() *Writer {
+	return o.writer
+}
+
+// StartLifecycle sets up the MXL flows and context lifecycle without
+// registering sink callbacks. Use this when sinks are wired externally
+// (e.g., via app.go adapters that bridge type mismatches).
+func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter, audioWriter ContinuousWriter) {
+	ctx, o.cancel = context.WithCancel(ctx)
+
+	if videoWriter != nil {
+		o.writer.SetVideoWriter(videoWriter, Rational{30000, 1001})
+	}
+	if audioWriter != nil {
+		o.writer.SetAudioWriter(audioWriter, Rational{int64(o.config.SampleRate), 1})
+	}
+
+	o.writer.Start(ctx)
+
+	o.log.Info("MXL output started", "flow", o.config.FlowName,
+		"video", videoWriter != nil, "audio", audioWriter != nil)
+}
+
 // Stop disconnects sinks and closes the MXL writer.
 func (o *Output) Stop() {
 	if o.cancel != nil {

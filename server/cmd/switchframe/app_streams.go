@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 
 	"github.com/zsiec/prism/distribution"
 )
@@ -13,6 +14,9 @@ import (
 func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if key == "program" || key == "replay" {
 		return
+	}
+	if strings.HasPrefix(key, "mxl:") {
+		return // MXL sources are manually wired in initMXL()
 	}
 
 	if a.sw == nil || a.mixer == nil {
