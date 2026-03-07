@@ -229,6 +229,22 @@ type Switcher struct {
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
 
+	// Frame loss diagnostic counters (atomic, lock-free).
+	pipeDecodeErrors    atomic.Int64 // decode failures (non-buffering)
+	pipeDecodeBuffering atomic.Int64 // decoder EAGAIN (B-frame reorder)
+	pipeEncodeNil       atomic.Int64 // encoder returned nil (HW warmup)
+	transOutputCount    atomic.Int64 // frames output by transition engine
+	idrGateDrops        atomic.Int64 // non-keyframes dropped by pendingIDR gate
+
+	// Broadcast interval diagnostics (atomic, lock-free).
+	lastBroadcastNano        atomic.Int64 // UnixNano of last program broadcast
+	maxBroadcastIntervalNano atomic.Int64 // max gap between consecutive broadcasts (ns)
+
+	// Frame routing counters (atomic, lock-free).
+	routeToEngine   atomic.Int64 // frames routed to transition engine
+	routeToPipeline atomic.Int64 // frames routed to normal pipeline
+	routeFiltered   atomic.Int64 // frames filtered (non-program, FTB, etc.)
+
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
@@ -454,6 +470,34 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// trackBroadcastInterval records the time gap since the last program broadcast
+// and logs a warning when the gap exceeds 200ms, helping diagnose fps drops.
+func (s *Switcher) trackBroadcastInterval() {
+	now := time.Now().UnixNano()
+	prev := s.lastBroadcastNano.Swap(now)
+	if prev == 0 {
+		return // first broadcast
+	}
+	gap := now - prev
+	// Update max broadcast interval (atomic CAS loop)
+	for {
+		cur := s.maxBroadcastIntervalNano.Load()
+		if gap <= cur {
+			break
+		}
+		if s.maxBroadcastIntervalNano.CompareAndSwap(cur, gap) {
+			break
+		}
+	}
+	// Log when gap exceeds 200ms to pinpoint the stall
+	if gap > 200_000_000 { // 200ms in nanoseconds
+		s.log.Warn("program broadcast gap",
+			"gap_ms", float64(gap)/1e6,
+			"state", s.state.String(),
+		)
+	}
+}
+
 // broadcastToProgram sends a video frame to the program relay with a
 // monotonically increasing GroupID. Uses a shallow struct copy to avoid
 // mutating the caller's frame (which may be shared with other viewers).
@@ -466,6 +510,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	} else {
 		f.GroupID = s.programGroupID.Load()
 	}
+	s.trackBroadcastInterval()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(&f)
 }
@@ -479,6 +524,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	} else {
 		frame.GroupID = s.programGroupID.Load()
 	}
+	s.trackBroadcastInterval()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(frame)
 }
@@ -575,10 +621,12 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	if err != nil {
 		if err == errDecoderBuffering {
 			// Normal B-frame reordering delay — frame is buffered, not lost.
+			s.pipeDecodeBuffering.Add(1)
 			return
 		}
 		// MUST NOT passthrough — would send source SPS/PPS, breaking consistency
 		s.log.Warn("pipeline decode failed, dropping frame", "error", err)
+		s.pipeDecodeErrors.Add(1)
 		if s.promMetrics != nil {
 			s.promMetrics.PipelineDecodeErrorsTotal.Inc()
 		}
@@ -606,6 +654,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	}
 	if out == nil {
 		// Encoder buffering (e.g. VideoToolbox warmup) — no output yet.
+		s.pipeEncodeNil.Add(1)
 		return
 	}
 
@@ -618,6 +667,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 // broadcastProcessed handles frames that are already decoded to YUV
 // (e.g., from the transition engine). Runs YUV processors, then encodes once.
 func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+	s.transOutputCount.Add(1)
 	s.mu.RLock()
 	keyBridge := s.keyBridge
 	compositor := s.compositorRef
@@ -688,6 +738,7 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 	}
 	if frame == nil {
 		// Encoder buffering (e.g. VideoToolbox warmup) — no output yet.
+		s.pipeEncodeNil.Add(1)
 		return
 	}
 
@@ -770,8 +821,9 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	fromSource := s.programSource
 
-	// Capture codec factories before releasing lock.
+	// Capture codec factories and pipeline dimensions before releasing lock.
 	decoderFactory := s.transConfig.DecoderFactory
+	hintW, hintH := s.pipeCodecs.dimensions()
 
 	// Mark transition as starting to prevent concurrent StartTransition/FTB calls.
 	// handleVideoFrame checks transEngine != nil to route frames, so setting
@@ -797,6 +849,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
 		Stinger:        topts.stingerData,
+		HintWidth:      hintW,
+		HintHeight:     hintH,
 		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 		},
@@ -905,6 +959,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		fromSource := s.programSource
 		decoderFactory := s.transConfig.DecoderFactory
+		ftbHintW, ftbHintH := s.pipeCodecs.dimensions()
 
 		// Mark transition as starting, then release lock for warmup.
 		s.transitionState(StateFTBReversing)
@@ -912,6 +967,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		engine := transition.NewTransitionEngine(transition.EngineConfig{
 			DecoderFactory: decoderFactory,
+			HintWidth:      ftbHintW,
+			HintHeight:     ftbHintH,
 			Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 				s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 			},
@@ -963,6 +1020,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	fromSource := s.programSource
 	decoderFactory := s.transConfig.DecoderFactory
+	ftbFwdHintW, ftbFwdHintH := s.pipeCodecs.dimensions()
 
 	// Mark transition as starting, then release lock for warmup.
 	s.transitionState(StateFTBTransitioning)
@@ -970,6 +1028,8 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	engine := transition.NewTransitionEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
+		HintWidth:      ftbFwdHintW,
+		HintHeight:     ftbFwdHintH,
 		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 		},
@@ -1568,12 +1628,21 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"transitions_started":       s.transitionsStarted.Load(),
 		"transitions_completed":     s.transitionsCompleted.Load(),
 		"video_pipeline": map[string]any{
-			"frames_processed":  s.videoProcCount.Load(),
-			"frames_broadcast":  s.videoBroadcastCount.Load(),
-			"frames_dropped":    s.videoProcDropped.Load(),
-			"last_proc_time_ms": float64(s.videoProcLastNano.Load()) / 1e6,
-			"max_proc_time_ms":  float64(s.videoProcMaxNano.Load()) / 1e6,
-			"queue_len":         len(s.videoProcCh),
+			"frames_processed":         s.videoProcCount.Load(),
+			"frames_broadcast":         s.videoBroadcastCount.Load(),
+			"frames_dropped":           s.videoProcDropped.Load(),
+			"decode_errors":            s.pipeDecodeErrors.Load(),
+			"decode_buffering":         s.pipeDecodeBuffering.Load(),
+			"encode_nil":               s.pipeEncodeNil.Load(),
+			"trans_output":             s.transOutputCount.Load(),
+			"idr_gate_drops":           s.idrGateDrops.Load(),
+			"last_proc_time_ms":        float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":         float64(s.videoProcMaxNano.Load()) / 1e6,
+			"max_broadcast_gap_ms":     float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
+			"route_to_engine":          s.routeToEngine.Load(),
+			"route_to_pipeline":        s.routeToPipeline.Load(),
+			"route_filtered":           s.routeFiltered.Load(),
+			"queue_len":                len(s.videoProcCh),
 		},
 	}
 }
@@ -1719,6 +1788,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.RUnlock()
 
 	if inTrans && engine != nil {
+		s.routeToEngine.Add(1)
 		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
 		annexB := codec.AVC1ToAnnexB(frame.WireData)
 		if frame.IsKeyframe {
@@ -1754,10 +1824,12 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	ss, ok := s.sources[sourceKey]
 	if !ok || s.programSource != sourceKey || s.state.isFTBActive() {
 		s.mu.RUnlock()
+		s.routeFiltered.Add(1)
 		return
 	}
 	if !ss.pendingIDR {
 		s.mu.RUnlock()
+		s.routeToPipeline.Add(1)
 		s.broadcastVideo(frame)
 		return
 	}
@@ -1765,6 +1837,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 
 	// Slow path: pendingIDR is true. Need write lock to clear it.
 	if !frame.IsKeyframe {
+		s.idrGateDrops.Add(1)
 		return
 	}
 	s.mu.Lock()
@@ -1785,6 +1858,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.Unlock()
 
 	s.log.Debug("IDR gate cleared", "source", sourceKey, "gate_duration_ms", gateDurationMs)
+	s.routeToPipeline.Add(1)
 	s.broadcastVideo(frame)
 }
 

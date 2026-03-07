@@ -271,6 +271,17 @@ func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64
 	}
 }
 
+// dimensions returns the current encoder width and height.
+// Returns (0, 0) if no frame has been encoded yet or if pc is nil.
+func (pc *pipelineCodecs) dimensions() (int, int) {
+	if pc == nil {
+		return 0, 0
+	}
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	return pc.encWidth, pc.encHeight
+}
+
 // close releases decoder and encoder resources.
 func (pc *pipelineCodecs) close() {
 	pc.mu.Lock()

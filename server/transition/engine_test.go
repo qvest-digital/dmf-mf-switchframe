@@ -339,6 +339,58 @@ func TestEngineFTBNoPanicWhenBlenderNil(t *testing.T) {
 	e.Stop()
 }
 
+func TestEngineBlackFrameFallbackWhenLatestYUVBNil(t *testing.T) {
+	// When the TO source's decoder hasn't produced output yet (B-frame
+	// reorder EAGAIN during warmup), the engine should still produce blended
+	// output using a black frame as placeholder for the missing source.
+	// This prevents ~0.5s output gaps at transition start.
+	for _, tt := range []TransitionType{TransitionMix, TransitionWipe, TransitionDip} {
+		t.Run(string(tt), func(t *testing.T) {
+			e, mu, outputs, _ := newTestEngine(t)
+
+			require.NoError(t, e.Start("cam1", "cam2", tt, 60000))
+
+			// Warm up only the FROM source — simulates TO source EAGAIN.
+			e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+			e.WarmupComplete()
+
+			// TO P-frame should NOT panic and SHOULD produce output
+			// (blending FROM's warmup frame with a black placeholder).
+			require.NotPanics(t, func() {
+				e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, false)
+			})
+
+			mu.Lock()
+			require.Equal(t, 1, len(*outputs), "should produce output with black fallback")
+			mu.Unlock()
+
+			e.Stop()
+		})
+	}
+}
+
+func TestEngineBlackFrameFallbackWhenLatestYUVANil(t *testing.T) {
+	// Same test but FROM source didn't decode during warmup.
+	e, mu, outputs, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	// Warm up only the TO source.
+	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupComplete()
+
+	// TO P-frame should produce output (black placeholder for FROM).
+	require.NotPanics(t, func() {
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, false)
+	})
+
+	mu.Lock()
+	require.Equal(t, 1, len(*outputs), "should produce output with black A fallback")
+	mu.Unlock()
+
+	e.Stop()
+}
+
 func TestEngineWarmupPopulatesState(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
@@ -507,11 +559,12 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
 
-	// Ingest cam2 first — sets target to 8x8
+	// Ingest cam2 first — sets target to 8x8.
+	// With black frame fallback, this produces output (A=black, B=cam2).
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 0, len(outputs), "cam2 alone (no cam1 yet) should not produce output")
+	require.Equal(t, 1, len(outputs), "cam2 alone should produce output with black fallback for cam1")
 	mu.Unlock()
 
 	// Ingest cam1 (4x4) — should be scaled to 8x8
@@ -521,7 +574,7 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs), "should produce output after scaling from-source")
+	require.Equal(t, 2, len(outputs), "should produce output after scaling from-source")
 	mu.Unlock()
 
 	e.Stop()
@@ -1014,6 +1067,143 @@ func TestEngineStingerNoData(t *testing.T) {
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "stinger without data should still produce output")
 	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {
+	// Scenario: warmup decode succeeds (blender initialized), but the first
+	// live IngestFrame decode returns EAGAIN (B-frame reorder). The engine
+	// should still produce output using the black frame fallback instead of
+	// bailing out when decodeAndStore returns false.
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	decoderCount := 0
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			decoderCount++
+			if decoderCount == 2 {
+				// Decoder B: first decode returns EAGAIN, then succeeds
+				return &bufferingMockDecoder{width: 4, height: 4, bufferLeft: 1}, nil
+			}
+			// Decoder A: always succeeds
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Warmup: decode both sources to initialize blender and latestYUVA.
+	// Decoder A succeeds immediately. Decoder B gets EAGAIN on first call.
+	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01}) // EAGAIN: latestYUVB stays nil
+	e.WarmupComplete()
+
+	// Live frame from TO source (cam2). The decoder's second call would also
+	// fail with EAGAIN (bufferLeft was 1, spent on warmup... actually it was
+	// decremented in warmup). After warmup, needsKeyframeB=true so this
+	// keyframe clears it and calls decodeAndStore. Decoder B now succeeds
+	// (bufferLeft=0). But let's test the case where decode still fails.
+
+	// Actually, let me restructure: make decoder B buffer 2 calls.
+	e.Stop()
+
+	// Reset with a decoder that buffers 2 calls (1 warmup + 1 live)
+	decoderCount = 0
+	outputs = nil
+	e = NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			decoderCount++
+			if decoderCount == 2 {
+				// Decoder B: first 2 decodes EAGAIN, then succeeds
+				return &bufferingMockDecoder{width: 4, height: 4, bufferLeft: 2}, nil
+			}
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Warmup: A succeeds (sets blender), B gets EAGAIN #1
+	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupComplete()
+
+	// Live keyframe from cam2 (TO). needsKeyframeB cleared, calls
+	// decodeAndStore which gets EAGAIN #2. Currently bails out.
+	// With fix: should fall through to blend using black frame for B.
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs),
+		"decode EAGAIN on live frame should still produce output via black fallback")
+	mu.Unlock()
+
+	e.Stop()
+}
+
+func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
+	// Scenario: ALL warmup decodes return EAGAIN (both decoders buffer
+	// every frame). Without hint dimensions, e.blender stays nil and the
+	// engine can't produce any output until the first successful decode.
+	// With HintWidth/HintHeight, the blender is pre-initialized at Start()
+	// so the black frame fallback works immediately.
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			// Both decoders: first 3 decodes return EAGAIN
+			return &bufferingMockDecoder{width: 4, height: 4, bufferLeft: 3}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete:  func(aborted bool) {},
+		HintWidth:   4,
+		HintHeight:  4,
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	// Warmup: both return EAGAIN. Without hint, blender stays nil.
+	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01})
+	e.WarmupComplete()
+
+	// Live keyframe from TO source — decode returns EAGAIN again.
+	// With hint dimensions: blender pre-initialized, black fallback works.
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+
+	mu.Lock()
+	require.Equal(t, 1, len(outputs),
+		"hint dimensions should allow output even when all decodes return EAGAIN")
+	mu.Unlock()
+
+	// Verify output dimensions match hint
+	expectedSize := 4 * 4 * 3 / 2
+	require.Equal(t, expectedSize, len(outputs[0]), "output should match hint dimensions")
 
 	e.Stop()
 }

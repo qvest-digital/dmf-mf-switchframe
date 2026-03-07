@@ -49,6 +49,13 @@ type EngineConfig struct {
 	// Stinger holds the pre-decoded stinger overlay data. Required when
 	// TransitionType is "stinger", ignored for other types.
 	Stinger *StingerData
+
+	// HintWidth/HintHeight pre-initialize the blender at Start() time.
+	// When set, the engine can produce output (via black frame fallback)
+	// even before any decode succeeds. Set from the pipeline's known
+	// resolution to eliminate output gaps during B-frame reorder warmup.
+	HintWidth  int
+	HintHeight int
 }
 
 // TransitionEngine manages the dissolve pipeline lifecycle.
@@ -88,6 +95,10 @@ type TransitionEngine struct {
 	// publication. Cleared when the first live keyframe arrives.
 	needsKeyframeA bool
 	needsKeyframeB bool
+
+	// Reusable black frame for blend fallback when a source hasn't decoded yet
+	// (B-frame reorder EAGAIN during warmup). BT.709 limited-range black.
+	blackBuf []byte
 
 	// Reusable buffer for scaling mismatched-resolution frames
 	scaleBuf []byte
@@ -195,11 +206,22 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.manualPosition = 0
 	e.decoderA = decA
 	e.decoderB = decB
-	e.blender = nil // lazy-init on first frame (need dimensions)
 	e.latestYUVA = nil
 	e.latestYUVB = nil
-	e.width = 0
-	e.height = 0
+
+	// Pre-initialize blender from hint dimensions if available.
+	// This eliminates output gaps when ALL warmup decodes return EAGAIN
+	// (B-frame reorder). Without hints, blender stays nil until first
+	// successful decode.
+	if e.config.HintWidth > 0 && e.config.HintHeight > 0 {
+		e.width = e.config.HintWidth
+		e.height = e.config.HintHeight
+		e.blender = NewFrameBlender(e.width, e.height)
+	} else {
+		e.blender = nil
+		e.width = 0
+		e.height = 0
+	}
 
 	// Initialize watchdog state
 	e.lastFrameAt = time.Now()
@@ -391,26 +413,37 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		}
 	}
 
-	if !e.decodeAndStore(sourceKey, wireData, isFrom) {
-		e.mu.Unlock()
-		return
-	}
+	// decodeAndStore may fail (EAGAIN from B-frame reorder). Fall through
+	// to blend regardless — the black frame fallback handles nil sources.
+	e.decodeAndStore(sourceKey, wireData, isFrom)
 
 blend:
 
-	// Determine if we should trigger blend+output
-	// For Mix/Dip: triggered by incoming source (toSource) frame
-	// For FTB/FTBReverse: triggered by fromSource frame (no toSource)
+	// Determine if we should trigger blend+output.
+	// For Mix/Dip/Wipe: triggered by incoming TO source frame.
+	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
+	// When a source's YUV is nil (B-frame reorder EAGAIN during warmup),
+	// we substitute a black frame to maintain continuous output at source fps.
 	shouldBlend := false
-	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom && e.latestYUVA != nil {
+	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo && e.latestYUVA != nil {
+	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
 		shouldBlend = true
 	}
 
 	if !shouldBlend || e.blender == nil {
 		e.mu.Unlock()
 		return
+	}
+
+	// Resolve source frames, substituting black for nil sources.
+	yuvA := e.latestYUVA
+	yuvB := e.latestYUVB
+	if yuvA == nil {
+		yuvA = e.getBlackFrame()
+	}
+	if yuvB == nil {
+		yuvB = e.getBlackFrame()
 	}
 
 	// Calculate position
@@ -421,21 +454,21 @@ blend:
 	var blended []byte
 	switch e.transitionType {
 	case TransitionMix:
-		blended = e.blender.BlendMix(e.latestYUVA, e.latestYUVB, pos)
+		blended = e.blender.BlendMix(yuvA, yuvB, pos)
 	case TransitionDip:
-		blended = e.blender.BlendDip(e.latestYUVA, e.latestYUVB, pos)
+		blended = e.blender.BlendDip(yuvA, yuvB, pos)
 	case TransitionFTB:
-		blended = e.blender.BlendFTB(e.latestYUVA, pos)
+		blended = e.blender.BlendFTB(yuvA, pos)
 	case TransitionFTBReverse:
 		// Inverted: position 0→1 fades from black to fully visible
-		blended = e.blender.BlendFTB(e.latestYUVA, 1.0-pos)
+		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
 	case TransitionWipe:
-		blended = e.blender.BlendWipe(e.latestYUVA, e.latestYUVB, pos, e.wipeDirection)
+		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
 	case TransitionStinger:
 		blended = e.blendStinger(pos)
 	default:
 		// Unknown transition type — pass through source A
-		blended = e.latestYUVA
+		blended = yuvA
 	}
 
 	// Signal keyframe on the very first output frame so the pipeline
@@ -495,6 +528,28 @@ func (e *TransitionEngine) WarmupComplete() {
 	defer e.mu.Unlock()
 	e.needsKeyframeA = true
 	e.needsKeyframeB = true
+}
+
+// getBlackFrame returns a reusable YUV420 black frame matching the engine's
+// dimensions. Used as a placeholder when a source hasn't produced decoded
+// output yet (e.g., B-frame reorder EAGAIN during warmup). BT.709 limited
+// range: Y=16, U=V=128. Caller must hold e.mu.
+func (e *TransitionEngine) getBlackFrame() []byte {
+	ySize := e.width * e.height
+	uvSize := (e.width / 2) * (e.height / 2)
+	total := ySize + 2*uvSize
+	if len(e.blackBuf) != total {
+		e.blackBuf = make([]byte, total)
+		// Y plane: 16 (BT.709 limited-range black)
+		for i := 0; i < ySize; i++ {
+			e.blackBuf[i] = 16
+		}
+		// U and V planes: 128 (neutral chroma)
+		for i := ySize; i < total; i++ {
+			e.blackBuf[i] = 128
+		}
+	}
+	return e.blackBuf
 }
 
 // Abort cancels the active transition and invokes OnComplete(aborted=true).

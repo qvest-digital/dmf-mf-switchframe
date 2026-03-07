@@ -1,5 +1,7 @@
 package transition
 
+import "fmt"
+
 // VideoDecoder decodes AVC1/Annex B wire data into YUV420 planar buffers.
 // Implementations: codec.FFmpegDecoder (cgo), codec.OpenH264Decoder (cgo+openh264), mockDecoder (tests).
 type VideoDecoder interface {
@@ -66,6 +68,25 @@ func (e *mockEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
 }
 
 func (e *mockEncoder) Close() {}
+
+// bufferingMockDecoder returns EAGAIN ("buffering") for the first N decode
+// calls, then succeeds. Simulates H.264 B-frame reorder delay during warmup.
+type bufferingMockDecoder struct {
+	width      int
+	height     int
+	bufferLeft int // remaining EAGAIN responses
+}
+
+func (d *bufferingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	if d.bufferLeft > 0 {
+		d.bufferLeft--
+		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+	}
+	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+}
+
+func (d *bufferingMockDecoder) Close() {}
+func (d *bufferingMockDecoder) Flush()  {}
 
 // NewMockDecoder creates a mock decoder for cross-package testing.
 func NewMockDecoder(width, height int) VideoDecoder {
