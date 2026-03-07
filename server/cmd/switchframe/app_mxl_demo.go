@@ -1,0 +1,113 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"sync/atomic"
+	"time"
+
+	"github.com/zsiec/switchframe/server/mxl"
+	"github.com/zsiec/switchframe/server/switcher"
+)
+
+// startMXLDemo creates synthetic raw YUV420p + PCM sources that exercise
+// the MXL pipeline path (IngestRawVideo, IngestPCM) under --demo mode.
+// Returns a stop function that halts all demo sources.
+//
+// This proves the raw media path works end-to-end: V210→YUV420p→switcher
+// pipeline→encode→program relay (browser), and optionally the output sink
+// path: RawVideoSink→YUV420p→V210.
+func (a *App) startMXLDemo(ctx context.Context) func() {
+	const (
+		// 360 is divisible by 6 (V210 requirement), 240 is even (YUV420p requirement).
+		width  = 360
+		height = 240
+		fps    = 29.97
+	)
+
+	names := []string{"raw1", "raw2"}
+
+	for i, name := range names {
+		key := "mxl:" + name
+
+		// Register as MXL source (uses IngestRawVideo path, not relay viewer).
+		a.sw.RegisterMXLSource(key)
+		a.mixer.AddChannel(key)
+		_ = a.mixer.SetAFV(key, true)
+
+		// Relay for browser viewing (H.264 encoded by Source orchestrator).
+		relay := a.server.RegisterStream(key)
+
+		// Create demo flow readers.
+		videoReader := mxl.NewDemoVideoReader(width, height, fps, i)
+		audioReader := mxl.NewDemoAudioReader(48000, 2)
+
+		src := mxl.NewSource(mxl.SourceConfig{
+			FlowName:       key,
+			Width:          width,
+			Height:         height,
+			SampleRate:     48000,
+			Channels:       2,
+			Relay:          relay,
+			EncoderFactory: encoderFactory(),
+			OnRawVideo: func(sourceKey string, yuv []byte, w, h int, pts int64) {
+				pf := &switcher.ProcessingFrame{
+					YUV:    yuv,
+					Width:  w,
+					Height: h,
+					PTS:    pts,
+					DTS:    pts,
+					Codec:  "h264",
+				}
+				a.sw.IngestRawVideo(sourceKey, pf)
+			},
+			OnRawAudio: func(sourceKey string, pcm []float32, pts int64) {
+				a.mixer.IngestPCM(sourceKey, pcm, pts)
+			},
+		})
+
+		src.Start(ctx, videoReader, audioReader)
+		a.mxlSources = append(a.mxlSources, src)
+
+		slog.Info("MXL demo source started", "key", key, "resolution", [2]int{width, height})
+	}
+
+	// Wire output sink logging (proves the output tap path works).
+	var sinkFrameCount atomic.Int64
+	a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
+		count := sinkFrameCount.Add(1)
+		// Log every 150 frames (~5 seconds at 30fps).
+		if count%150 == 1 {
+			slog.Info("MXL output sink active",
+				"frames", count,
+				"width", pf.Width,
+				"height", pf.Height,
+				"pts", pf.PTS,
+			)
+		}
+	}))
+
+	// Periodic stats logger.
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				slog.Info("MXL demo stats",
+					"raw_sources", len(names),
+					"output_sink_frames", sinkFrameCount.Load(),
+				)
+			}
+		}
+	}()
+
+	return func() {
+		for _, src := range a.mxlSources {
+			src.Stop()
+		}
+		slog.Info("MXL demo sources stopped", "total_output_frames", sinkFrameCount.Load())
+	}
+}

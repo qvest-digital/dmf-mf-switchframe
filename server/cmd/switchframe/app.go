@@ -530,6 +530,10 @@ func (a *App) Run(ctx context.Context) error {
 		if len(relays) > 0 {
 			a.programRelay.SetVideoInfo(relays[0].VideoInfo())
 		}
+
+		// Add raw MXL demo sources (exercises IngestRawVideo/IngestPCM path).
+		stopMXLDemo := a.startMXLDemo(ctx)
+		defer stopMXLDemo()
 	}
 	a.debugCollector.Register("demo", demoStats)
 

@@ -1,4 +1,4 @@
-.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-all docker clean sync-prism-ts lint format
+.PHONY: build build-server dev demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -42,11 +42,12 @@ dev: build-server node_modules_check
 		cd ui && npm run dev & \
 		wait
 
-# Demo mode: start with 4 simulated cameras (real video if clips exist)
+# Demo mode: 4 H.264 cameras + 2 raw MXL sources (exercises full pipeline)
 demo: build-server node_modules_check
 	@echo ""
 	@echo "  SwitchFrame Demo"
 	@echo "  Open http://localhost:5173 in your browser"
+	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV pipeline)"
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
@@ -57,6 +58,10 @@ demo: build-server node_modules_check
 		fi; \
 		cd ui && npm run dev & \
 		wait
+
+# MXL pipeline integration tests
+test-mxl:
+	cd server && go test ./mxl/ -v -race -run "TestPipeline|TestV210RoundTrip"
 
 # All tests
 test-all: test ui-test ui-e2e
