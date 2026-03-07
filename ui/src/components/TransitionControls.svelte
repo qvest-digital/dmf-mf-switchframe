@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
@@ -19,6 +19,9 @@
 	let wipeDirection = $state<WipeDir>('h-left');
 	let stingerName = $state('');
 	let stingerNames = $state<string[]>([]);
+	let uploading = $state(false);
+	let fileInput: HTMLInputElement;
+	let showDeleteConfirm = $state('');
 
 	// Load stinger list on mount and when type changes to stinger
 	$effect(() => {
@@ -75,6 +78,35 @@
 	function handleFTB() {
 		if (ftbDisabled) return;
 		apiCall(fadeToBlack(), 'FTB failed');
+	}
+
+	async function handleUpload() {
+		const file = fileInput?.files?.[0];
+		if (!file) return;
+		const name = file.name.replace(/\.zip$/i, '');
+		uploading = true;
+		try {
+			await uploadStinger(name, file);
+			const names = await listStingers();
+			stingerNames = names;
+			if (!stingerName && names.length > 0) stingerName = names[0];
+		} catch (err) {
+			apiCall(Promise.reject(err), 'Upload stinger');
+		} finally {
+			uploading = false;
+			if (fileInput) fileInput.value = '';
+		}
+	}
+
+	async function handleDeleteStinger(name: string) {
+		try {
+			await deleteStinger(name);
+			stingerNames = stingerNames.filter(n => n !== name);
+			if (stingerName === name) stingerName = stingerNames[0] ?? '';
+		} catch (err) {
+			apiCall(Promise.reject(err), 'Delete stinger');
+		}
+		showDeleteConfirm = '';
 	}
 
 	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly. */
@@ -169,14 +201,45 @@
 			</div>
 
 			{#if transType === 'stinger'}
-				<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
-					{#each stingerNames as name}
-						<option value={name}>{name}</option>
-					{/each}
-					{#if stingerNames.length === 0}
-						<option value="" disabled>No stingers loaded</option>
+				<div class="stinger-controls">
+					<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
+						{#each stingerNames as name}
+							<option value={name}>{name}</option>
+						{/each}
+						{#if stingerNames.length === 0}
+							<option value="" disabled>No stingers loaded</option>
+						{/if}
+					</select>
+					<button
+						class="stinger-action-btn"
+						onclick={() => fileInput.click()}
+						disabled={uploading}
+						title="Upload stinger (.zip)"
+						aria-label="Upload stinger"
+					>{uploading ? '...' : '\u2191'}</button>
+					{#if stingerName}
+						<button
+							class="stinger-action-btn stinger-delete-btn"
+							onclick={() => showDeleteConfirm = stingerName}
+							title="Delete {stingerName}"
+							aria-label="Delete stinger"
+						>{'\u2715'}</button>
 					{/if}
-				</select>
+					<input
+						bind:this={fileInput}
+						type="file"
+						accept=".zip"
+						onchange={handleUpload}
+						style="display:none"
+					/>
+				</div>
+				{#if showDeleteConfirm}
+					<div class="delete-confirm">
+						<span>Delete "{showDeleteConfirm}"?</span>
+						<button class="confirm-yes" onclick={() => handleDeleteStinger(showDeleteConfirm)}>Yes</button>
+						<button class="confirm-no" onclick={() => showDeleteConfirm = ''}>No</button>
+					</div>
+				{/if}
 			{/if}
 
 			{#if transType === 'wipe'}
@@ -410,6 +473,88 @@
 	.stinger-select:focus {
 		border-color: var(--accent-blue);
 		outline: none;
+	}
+
+	.stinger-controls {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.stinger-action-btn {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 600;
+		line-height: 1;
+		padding: 3px 6px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition:
+			border-color var(--transition-fast),
+			color var(--transition-fast);
+	}
+
+	.stinger-action-btn:hover:not(:disabled) {
+		border-color: var(--border-strong);
+		color: var(--text-primary);
+	}
+
+	.stinger-action-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.stinger-delete-btn:hover:not(:disabled) {
+		border-color: var(--tally-program);
+		color: var(--tally-program);
+	}
+
+	.delete-confirm {
+		display: flex;
+		gap: 6px;
+		align-items: center;
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		color: var(--text-secondary);
+		padding: 2px 0;
+	}
+
+	.confirm-yes {
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		font-weight: 600;
+		padding: 2px 8px;
+		border: 1px solid var(--tally-program);
+		border-radius: var(--radius-sm);
+		background: var(--tally-program-dim);
+		color: var(--tally-program);
+		cursor: pointer;
+		transition: background var(--transition-fast);
+	}
+
+	.confirm-yes:hover {
+		background: var(--tally-program);
+		color: #fff;
+	}
+
+	.confirm-no {
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		font-weight: 500;
+		padding: 2px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: border-color var(--transition-fast);
+	}
+
+	.confirm-no:hover {
+		border-color: var(--border-strong);
 	}
 
 	.duration-select {

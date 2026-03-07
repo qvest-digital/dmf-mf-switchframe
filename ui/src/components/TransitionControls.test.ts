@@ -8,6 +8,9 @@ vi.mock('$lib/api/switch-api', () => ({
 	startTransition: vi.fn().mockResolvedValue({}),
 	setTransitionPosition: vi.fn().mockResolvedValue(undefined),
 	fadeToBlack: vi.fn().mockResolvedValue({}),
+	listStingers: vi.fn().mockResolvedValue(['intro', 'outro']),
+	uploadStinger: vi.fn().mockResolvedValue(undefined),
+	deleteStinger: vi.fn().mockResolvedValue(undefined),
 	apiCall: (p: Promise<unknown>) => p?.catch?.(() => {}),
 }));
 
@@ -151,6 +154,33 @@ describe('TransitionControls', () => {
 			const { container } = render(TransitionControls, { props: { state: baseState } });
 			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
 			expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBe(0);
+		});
+	});
+
+	describe('Stinger upload and delete', () => {
+		async function selectStingerType(container: HTMLElement) {
+			const stingerRadio = container.querySelector('input[value="stinger"]') as HTMLInputElement;
+			stingerRadio.click();
+			await tick();
+			// Wait for the listStingers promise to resolve
+			await new Promise(r => setTimeout(r, 0));
+			await tick();
+		}
+
+		it('renders upload button when stinger type selected', async () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			await selectStingerType(container);
+
+			const uploadBtn = container.querySelector('[aria-label="Upload stinger"]');
+			expect(uploadBtn).toBeTruthy();
+		});
+
+		it('renders delete button when stinger is selected', async () => {
+			const { container } = render(TransitionControls, { props: { state: baseState } });
+			await selectStingerType(container);
+
+			const deleteBtn = container.querySelector('[aria-label="Delete stinger"]');
+			expect(deleteBtn).toBeTruthy();
 		});
 	});
 });
