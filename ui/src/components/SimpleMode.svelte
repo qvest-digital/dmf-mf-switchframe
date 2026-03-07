@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { setPreview, cut, startTransition, apiCall } from '$lib/api/switch-api';
+	import { setPreview, cut, startTransition, fadeToBlack, apiCall } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
@@ -11,9 +11,10 @@
 		onPreview?: (key: string) => void;
 		onCut?: () => void;
 		onDissolve?: () => void;
+		onFTB?: () => void;
 	}
 
-	let { state, onSwitchLayout, onCanvasReady, onPreview, onCut, onDissolve }: Props = $props();
+	let { state, onSwitchLayout, onCanvasReady, onPreview, onCut, onDissolve, onFTB }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -95,6 +96,14 @@
 		}
 	}
 
+	function handleFTB() {
+		if (onFTB) {
+			onFTB();
+		} else {
+			apiCall(fadeToBlack(), 'FTB failed');
+		}
+	}
+
 	function tallyClass(key: string): string {
 		const tally = state.tallyState[key];
 		if (tally === 'program') return 'tally-program';
@@ -146,6 +155,9 @@
 			disabled={!canTransition}
 		>
 			DISSOLVE
+		</button>
+		<button class="action-btn ftb-btn" class:ftb-active={state.ftbActive} onclick={handleFTB}>
+			FADE TO BLACK
 		</button>
 	</section>
 </div>
@@ -318,7 +330,7 @@
 
 	.action-buttons {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: 1fr 1fr 1fr;
 		gap: 8px;
 		padding: 10px 12px 14px;
 		border-top: 1px solid var(--border-subtle);
@@ -370,6 +382,30 @@
 	.dissolve-btn:hover:not(:disabled) {
 		background: rgba(59, 130, 246, 0.3);
 		box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
+	}
+
+	.ftb-btn {
+		background: var(--accent-orange-dim);
+		color: var(--text-on-color);
+		border-color: var(--accent-orange);
+	}
+
+	.ftb-btn:hover {
+		background: color-mix(in srgb, var(--accent-orange) 30%, transparent);
+		box-shadow: 0 0 16px rgba(245, 158, 11, 0.25);
+	}
+
+	.ftb-active {
+		background: var(--accent-orange);
+		color: #000;
+		border-color: var(--accent-orange);
+		box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+		animation: ftb-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes ftb-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.7; }
 	}
 
 	/* Stack monitors vertically on narrow viewports */

@@ -7,6 +7,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setPreview: vi.fn(() => Promise.resolve({})),
 	cut: vi.fn(() => Promise.resolve({})),
 	startTransition: vi.fn(() => Promise.resolve({})),
+	fadeToBlack: vi.fn(() => Promise.resolve({})),
 	apiCall: vi.fn((p: Promise<unknown>) => p.catch(() => {})),
 }));
 
@@ -131,5 +132,30 @@ describe('SimpleMode', () => {
 	it('displays SwitchFrame brand', () => {
 		render(SimpleMode, { props: { state: makeState() } });
 		expect(screen.getByText('SwitchFrame')).toBeTruthy();
+	});
+
+	it('renders a FADE TO BLACK button', () => {
+		render(SimpleMode, { props: { state: makeState() } });
+		expect(screen.getByText('FADE TO BLACK')).toBeTruthy();
+	});
+
+	it('FADE TO BLACK button calls onFTB callback when clicked', async () => {
+		const ftbFn = vi.fn();
+		render(SimpleMode, { props: { state: makeState(), onFTB: ftbFn } });
+		await fireEvent.click(screen.getByText('FADE TO BLACK'));
+		expect(ftbFn).toHaveBeenCalled();
+	});
+
+	it('FADE TO BLACK button calls fadeToBlack API when no callback provided', async () => {
+		const { fadeToBlack } = await import('$lib/api/switch-api');
+		render(SimpleMode, { props: { state: makeState() } });
+		await fireEvent.click(screen.getByText('FADE TO BLACK'));
+		expect(fadeToBlack).toHaveBeenCalled();
+	});
+
+	it('FADE TO BLACK button shows ftb-active class when ftbActive is true', () => {
+		render(SimpleMode, { props: { state: makeState({ ftbActive: true }) } });
+		const btn = screen.getByText('FADE TO BLACK');
+		expect(btn.classList.contains('ftb-active')).toBe(true);
 	});
 });
