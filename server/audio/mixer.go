@@ -35,6 +35,11 @@ const crossfadeTimeout = 25 * time.Millisecond
 // ErrChannelNotFound is returned when a referenced audio channel does not exist.
 var ErrChannelNotFound = errors.New("audio: channel not found")
 
+// RawAudioSink receives a copy of the mixed PCM after master processing
+// (fader + limiter) but before AAC encode. Used by MXL output to write
+// raw audio to shared memory.
+type RawAudioSink func(pcm []float32, pts int64, sampleRate, channels int)
+
 // MixerConfig configures the AudioMixer.
 type MixerConfig struct {
 	SampleRate     int
@@ -132,6 +137,9 @@ type AudioMixer struct {
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
+	// Raw audio output tap for MXL (atomic, lock-free read)
+	rawAudioSink atomic.Pointer[RawAudioSink]
+
 	// Debug counters (atomic, no lock needed)
 	framesPassthrough atomic.Int64
 	framesMixed       atomic.Int64
@@ -181,6 +189,18 @@ func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
+}
+
+// SetRawAudioSink sets or clears the raw audio output tap.
+// The sink receives a copy of the mixed PCM after master processing
+// (fader + limiter) but before AAC encode. This is used by MXL output
+// to write raw audio to shared memory. Pass nil to disable.
+func (m *AudioMixer) SetRawAudioSink(sink RawAudioSink) {
+	if sink != nil {
+		m.rawAudioSink.Store(&sink)
+	} else {
+		m.rawAudioSink.Store(nil)
+	}
 }
 
 // Close releases all codec resources and stops the background ticker.
@@ -295,6 +315,36 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	// Apply brickwall limiter at -1 dBFS (always active)
 	m.limiter.Process(mixed)
 
+	// Monotonic PTS: seed from first frame, then increment by frame duration.
+	// Gap detection: if incoming PTS jumps > 5 seconds, reseed.
+	// Computed before MXL tap and encode so both receive the correct PTS.
+	const ptsGapThreshold = 5 * 90000 // 5 seconds in 90 kHz ticks
+	if !m.outputPTSInited {
+		m.outputPTS = m.mixPTS
+		m.outputPTSInited = true
+		m.lastSeenMixPTS = m.mixPTS
+	} else {
+		// Check for gap before incrementing
+		diff := m.mixPTS - m.lastSeenMixPTS
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > ptsGapThreshold {
+			m.outputPTS = m.mixPTS // reseed
+		} else {
+			m.outputPTS += m.frameDuration90k()
+		}
+		m.lastSeenMixPTS = m.mixPTS
+	}
+	pts := m.outputPTS
+
+	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
+	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
+		cp := make([]float32, len(mixed))
+		copy(cp, mixed)
+		(*sinkPtr)(cp, pts, m.sampleRate, m.numChannels)
+	}
+
 	// Apply program mute (FTB held): zero the buffer so output is silent
 	if m.programMuted {
 		for i := range mixed {
@@ -336,28 +386,6 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	if m.promMetrics != nil {
 		m.promMetrics.FramesMixedTotal.Inc()
 	}
-
-	// Monotonic PTS: seed from first frame, then increment by frame duration.
-	// Gap detection: if incoming PTS jumps > 5 seconds, reseed.
-	const ptsGapThreshold = 5 * 90000 // 5 seconds in 90 kHz ticks
-	if !m.outputPTSInited {
-		m.outputPTS = m.mixPTS
-		m.outputPTSInited = true
-		m.lastSeenMixPTS = m.mixPTS
-	} else {
-		// Check for gap before incrementing
-		diff := m.mixPTS - m.lastSeenMixPTS
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > ptsGapThreshold {
-			m.outputPTS = m.mixPTS // reseed
-		} else {
-			m.outputPTS += m.frameDuration90k()
-		}
-		m.lastSeenMixPTS = m.mixPTS
-	}
-	pts := m.outputPTS
 
 	// Advance audio position tracking so the next cycle's start gain
 	// matches this cycle's end gain (continuous gain envelope).
