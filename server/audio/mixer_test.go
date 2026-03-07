@@ -818,11 +818,13 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
 	m.mu.Unlock()
 
-	// Start transition at 50% — set position twice so prevPos and currentPos
-	// are both 0.5, ensuring a flat gain (no per-sample ramp).
+	// Start transition at 50% with audio position pre-set to 0.5 so both
+	// audioPos and cyclePos are at 0.5, giving flat gain (no per-sample ramp).
 	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 	m.OnTransitionPosition(0.5)
-	m.OnTransitionPosition(0.5) // stabilize: prevPos = currentPos = 0.5
+	m.mu.Lock()
+	m.transCrossfadeAudioPos = 0.5 // simulate audio already advanced to 0.5
+	m.mu.Unlock()
 
 	// Ingest from both sources — the mixer is in mixing mode (2 active channels)
 	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
@@ -836,12 +838,170 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	// At position 0.5: oldGain = cos(0.5·π/2) ≈ 0.707, newGain = sin(0.5·π/2) ≈ 0.707
 	// Both sources have 0.5 PCM at 0dB channel gain
 	// Expected mixed sample: 0.5*0.707 + 0.5*0.707 ≈ 0.707
-	expectedSum := 0.5*(math.Cos(0.5*math.Pi/2) + math.Sin(0.5*math.Pi/2))
+	expectedSum := 0.5 * (math.Cos(0.5*math.Pi/2) + math.Sin(0.5*math.Pi/2))
 	require.Equal(t, 4, len(capturedPCM))
 	for i, s := range capturedPCM {
 		require.InDelta(t, expectedSum, s, 0.01, "sample %d should have transition gains applied", i)
 	}
 }
+
+// --- Bug: Audio gain discontinuity when video position updates skip between audio frames ---
+
+func TestMixerTransitionGainContinuityAcrossFrames(t *testing.T) {
+	// This test verifies that audio gain is continuous across mix cycles even
+	// when multiple video position updates happen between audio frames.
+	// Bug: transCrossfadePrevPos was updated by video goroutine, so if 3 video
+	// position updates happen between 2 audio frames, the audio gain jumps.
+	//
+	// Scenario: Audio frame 1 at position 0.1, then video updates to 0.2, 0.3,
+	// then audio frame 2. Frame 2's start gain should match frame 1's end gain
+	// (both at position 0.1), NOT jump to 0.2 from the video-driven prevPos.
+
+	var capturedPCMs [][]float32
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.5, 0.5, 0.5} // 2 stereo samples
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Use a capturing encoder that records each call's PCM
+	var encodeCalls [][]float32
+	m.mu.Lock()
+	m.encoder = &mockEncoderMultiCapture{calls: &encodeCalls}
+	m.mu.Unlock()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: pcm}
+	m.channels["cam2"].decoder = &mockDecoder{samples: pcm}
+	m.mu.Unlock()
+
+	// Start transition
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+
+	// === Audio frame 1: position at 0.1 ===
+	m.OnTransitionPosition(0.1)
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+	require.Equal(t, 1, len(outputFrames), "should have 1 output after first mix cycle")
+
+	// Record end gain of frame 1 — the last sample's gain for the "from" source
+	require.True(t, len(encodeCalls) >= 1, "encoder should have been called")
+	frame1PCM := encodeCalls[0]
+	frame1LastSample := frame1PCM[len(frame1PCM)-1]
+
+	// === Simulate video position updates WITHOUT audio frames (video is faster) ===
+	m.OnTransitionPosition(0.15)
+	m.OnTransitionPosition(0.2)
+	m.OnTransitionPosition(0.3) // video jumped ahead
+
+	// === Audio frame 2: position now at 0.3 ===
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+	require.Equal(t, 2, len(outputFrames), "should have 2 outputs")
+
+	frame2PCM := encodeCalls[1]
+	frame2FirstSample := frame2PCM[0]
+
+	// KEY ASSERTION: The first sample of frame 2 should be close to the last
+	// sample of frame 1 (continuous gain). The difference should be small —
+	// certainly less than 10% of the signal amplitude.
+	discontinuity := math.Abs(float64(frame2FirstSample - frame1LastSample))
+	maxAllowedDiscontinuity := 0.05 // 5% of 0.5 amplitude = 0.025, be generous
+	require.Less(t, discontinuity, maxAllowedDiscontinuity,
+		"gain discontinuity between frames: frame1 last=%.4f, frame2 first=%.4f, diff=%.4f",
+		frame1LastSample, frame2FirstSample, discontinuity)
+
+	_ = capturedPCMs
+}
+
+// TestMixerTransitionCompleteFlushes verifies that OnTransitionComplete flushes
+// any pending mix cycle before re-enabling passthrough, preventing frame drops.
+func TestMixerTransitionCompleteFlushes(t *testing.T) {
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: pcm}
+	m.channels["cam2"].decoder = &mockDecoder{samples: pcm}
+	m.mu.Unlock()
+
+	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionPosition(0.5)
+
+	// Ingest one frame from cam1 only — starts a mix cycle but doesn't flush
+	// (needs both sources for eager flush)
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	mu.Lock()
+	countBefore := len(outputFrames)
+	mu.Unlock()
+
+	// Complete the transition — this should flush the pending mix cycle
+	m.OnTransitionComplete()
+
+	mu.Lock()
+	countAfter := len(outputFrames)
+	mu.Unlock()
+
+	require.Greater(t, countAfter, countBefore,
+		"OnTransitionComplete should flush pending mix cycle (had %d frames before, %d after)",
+		countBefore, countAfter)
+}
+
+// mockEncoderMultiCapture captures PCM from each Encode call separately.
+type mockEncoderMultiCapture struct {
+	calls *[][]float32
+}
+
+func (m *mockEncoderMultiCapture) Encode(pcm []float32) ([]byte, error) {
+	cp := make([]float32, len(pcm))
+	copy(cp, pcm)
+	*m.calls = append(*m.calls, cp)
+	return []byte{0xFF}, nil
+}
+func (m *mockEncoderMultiCapture) Close() error { return nil }
 
 // --- Bug 1: FTB Reverse audio should fade IN (not out) ---
 
@@ -1048,10 +1208,12 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
 	m.mu.Unlock()
 
-	// Start dip at 0.5 (midpoint = silence), stabilize position
+	// Start dip at 0.5 (midpoint = silence), set audio position to match
 	m.OnTransitionStart("cam1", "cam2", AudioDipToSilence, 1000)
 	m.OnTransitionPosition(0.5)
-	m.OnTransitionPosition(0.5)
+	m.mu.Lock()
+	m.transCrossfadeAudioPos = 0.5 // simulate audio already advanced to 0.5
+	m.mu.Unlock()
 
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
@@ -1102,16 +1264,15 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 
 	// FTB forward from position 0.0 to 0.5 — gain should ramp from 1.0 to 0.707
 	m.OnTransitionStart("cam1", "", AudioFadeOut, 1000)
-	m.OnTransitionPosition(0.0) // prevPos=0, currentPos=0
-	m.OnTransitionPosition(0.5) // prevPos=0, currentPos=0.5
+	m.OnTransitionPosition(0.5) // audioPos=0.0 (from start), cyclePos will snapshot 0.5
 
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
 	require.Equal(t, 1, len(outputFrames))
 	require.Equal(t, 8, len(capturedPCM))
 
-	// First sample should be at prevPos gain: 0.5 * cos(0 * π/2) = 0.5
-	// Last sample should approach currentPos gain: 0.5 * cos(0.5 * π/2) ≈ 0.354
+	// First sample should be at audioPos gain: 0.5 * cos(0 * π/2) = 0.5
+	// Last sample should approach cyclePos gain: 0.5 * cos(0.5 * π/2) ≈ 0.354
 	// Intermediate samples should be between these values (monotonically decreasing)
 	require.InDelta(t, 0.5, capturedPCM[0], 0.01, "first sample at prevPos gain")
 	require.True(t, capturedPCM[7] < capturedPCM[0], "last sample should be less than first (fading out)")

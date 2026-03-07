@@ -23,7 +23,7 @@ test.describe('Transition Controls', () => {
 
 	test('T-bar slider is rendered', async ({ page }) => {
 		await page.goto('/');
-		const tbar = page.locator('.tbar-slider');
+		const tbar = page.locator('.tbar');
 		await expect(tbar).toBeVisible();
 	});
 

@@ -103,11 +103,12 @@ type AudioMixer struct {
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
 	transCrossfadeActive   bool
-	transCrossfadeFrom     string                      // outgoing source key
-	transCrossfadeTo       string                      // incoming source key
-	transCrossfadePosition float64                     // 0.0 = fully old, 1.0 = fully new
+	transCrossfadeFrom     string              // outgoing source key
+	transCrossfadeTo       string              // incoming source key
+	transCrossfadePosition float64             // 0.0 = fully old, 1.0 = fully new
 	transCrossfadeMode     AudioTransitionMode // gain curve selection
-	transCrossfadePrevPos  float64                     // previous position for per-sample interpolation
+	transCrossfadeAudioPos float64             // position at end of last audio output (for smooth interpolation)
+	mixCycleTransPos       float64             // snapshotted transition position for current mix cycle
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
 	programMuted bool
@@ -134,6 +135,14 @@ type AudioMixer struct {
 	crossfadeTimeouts atomic.Int64
 	decodeErrors      atomic.Int64
 	encodeErrors      atomic.Int64
+
+	// Audio timing diagnostics (atomic, lock-free)
+	outputFrameCount  atomic.Int64 // total frames output (passthrough + mixed)
+	deadlineFlushes   atomic.Int64 // mix cycles flushed by deadline timeout
+	lastOutputNano    atomic.Int64 // UnixNano of last output frame
+	maxInterFrameNano atomic.Int64 // max gap between consecutive output frames (ns)
+	modeTransitions   atomic.Int64 // number of passthrough↔mixing mode changes
+	transCrossfades   atomic.Int64 // transition crossfade start count
 }
 
 // mixCycleDeadline is the maximum time to wait for all active channels to
@@ -224,10 +233,11 @@ func (m *AudioMixer) mixDeadlineTicker() {
 			var outputFrame *media.AudioFrame
 			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
 				outputFrame = m.collectMixCycleLocked()
+				m.deadlineFlushes.Add(1)
 			}
 			m.mu.Unlock()
 			if outputFrame != nil {
-				m.output(outputFrame)
+				m.recordAndOutput(outputFrame)
 			}
 		}
 	}
@@ -340,6 +350,12 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		m.lastSeenMixPTS = m.mixPTS
 	}
 	pts := m.outputPTS
+
+	// Advance audio position tracking so the next cycle's start gain
+	// matches this cycle's end gain (continuous gain envelope).
+	if m.transCrossfadeActive {
+		m.transCrossfadeAudioPos = m.mixCycleTransPos
+	}
 
 	// Reset mix cycle for next round
 	m.resetMixCycleLocked()
@@ -542,11 +558,13 @@ func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transCrossfadeActive = true
+	m.transCrossfades.Add(1)
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadePosition = 0.0
 	m.transCrossfadeMode = mode
-	m.transCrossfadePrevPos = 0.0
+	m.transCrossfadeAudioPos = 0.0
+	m.mixCycleTransPos = 0.0
 
 	// Ensure the incoming source's channel is active so frames are accepted
 	if ch, ok := m.channels[newSource]; ok {
@@ -561,7 +579,6 @@ func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTr
 func (m *AudioMixer) OnTransitionPosition(position float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.transCrossfadePrevPos = m.transCrossfadePosition
 	m.transCrossfadePosition = position
 }
 
@@ -569,14 +586,25 @@ func (m *AudioMixer) OnTransitionPosition(position float64) {
 // Called by the switcher when the video transition finishes.
 func (m *AudioMixer) OnTransitionComplete() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Flush any pending mix cycle before switching modes.
+	// Without this, partially-accumulated frames are abandoned when
+	// passthrough re-enables, causing an audible gap at the boundary.
+	var outputFrame *media.AudioFrame
+	if m.mixStarted {
+		outputFrame = m.collectMixCycleLocked()
+	}
 	m.transCrossfadeActive = false
 	m.transCrossfadeFrom = ""
 	m.transCrossfadeTo = ""
 	m.transCrossfadePosition = 0.0
 	m.transCrossfadeMode = 0
-	m.transCrossfadePrevPos = 0.0
+	m.transCrossfadeAudioPos = 0.0
+	m.mixCycleTransPos = 0.0
 	m.recalcPassthrough()
+	m.mu.Unlock()
+	if outputFrame != nil {
+		m.recordAndOutput(outputFrame)
+	}
 }
 
 // SetProgramMute sets the program output mute state. When muted, the mixer
@@ -752,7 +780,7 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		}
 		m.mu.Unlock()
 
-		m.output(frame)
+		m.recordAndOutput(frame)
 		m.framesPassthrough.Add(1)
 		if m.promMetrics != nil {
 			m.promMetrics.PassthroughBypassTotal.Inc()
@@ -813,6 +841,18 @@ mixing:
 		ch.compressor.Process(trimmedPCM)
 	}
 
+	// Start the per-cycle deadline on first contribution.
+	// Must happen before gain computation so mixCycleTransPos is snapshotted.
+	if !m.mixStarted {
+		m.mixStarted = true
+		m.mixDeadline = time.Now().Add(mixCycleDeadline)
+		// Snapshot transition position for this mix cycle so both participants
+		// use the same target position and no video-driven updates cause jumps.
+		if m.transCrossfadeActive {
+			m.mixCycleTransPos = m.transCrossfadePosition
+		}
+	}
+
 	// Apply fader level with per-sample transition interpolation
 	faderGain := float32(DBToLinear(ch.level))
 	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
@@ -822,18 +862,18 @@ mixing:
 		(sourceKey == m.transCrossfadeFrom || sourceKey == m.transCrossfadeTo)
 
 	if isTransParticipant {
-		// Per-sample interpolation: ramp gain smoothly from prevPos to currentPos
-		// across the frame to eliminate zipper noise.
-		var gainStartFn, gainEndFn func(float64) float64
+		// Per-sample interpolation: ramp gain smoothly from the audio-tracked
+		// position (end of previous mix cycle) to the snapshotted position for
+		// this cycle. This eliminates gain discontinuities when multiple video
+		// position updates happen between audio frames.
+		var gainFn func(float64) float64
 		if sourceKey == m.transCrossfadeFrom {
-			gainStartFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
-			gainEndFn = gainStartFn
+			gainFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
 		} else {
-			gainStartFn = func(p float64) float64 { return transitionToGain(m.transCrossfadeMode, p) }
-			gainEndFn = gainStartFn
+			gainFn = func(p float64) float64 { return transitionToGain(m.transCrossfadeMode, p) }
 		}
-		gStart := float32(gainStartFn(m.transCrossfadePrevPos))
-		gEnd := float32(gainEndFn(m.transCrossfadePosition))
+		gStart := float32(gainFn(m.transCrossfadeAudioPos))
+		gEnd := float32(gainFn(m.mixCycleTransPos))
 		n := float32(len(trimmedPCM))
 		for i, s := range trimmedPCM {
 			t := float32(i) / n
@@ -858,12 +898,6 @@ mixing:
 	m.mixBuffer[sourceKey] = gainedPCM
 	m.mixPTS = frame.PTS
 
-	// Start the per-cycle deadline on first contribution
-	if !m.mixStarted {
-		m.mixStarted = true
-		m.mixDeadline = time.Now().Add(mixCycleDeadline)
-	}
-
 	// Flush when all active unmuted channels have contributed OR deadline exceeded
 	var outputFrame *media.AudioFrame
 	if len(m.mixBuffer) >= activeUnmuted {
@@ -871,7 +905,7 @@ mixing:
 	}
 	m.mu.Unlock()
 	if outputFrame != nil {
-		m.output(outputFrame)
+		m.recordAndOutput(outputFrame)
 	}
 }
 
@@ -1036,7 +1070,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	m.mu.Unlock()
 
 	// Output outside the lock to avoid blocking other goroutines
-	m.output(outputFrame)
+	m.recordAndOutput(outputFrame)
 }
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
@@ -1048,6 +1082,7 @@ func (m *AudioMixer) recalcPassthrough() {
 	if m.programMuted || m.transCrossfadeActive {
 		m.passthrough = false
 		if prev != m.passthrough {
+			m.modeTransitions.Add(1)
 			m.log.Info("passthrough mode changed",
 				slog.Bool("passthrough", false),
 				slog.String("reason", "program muted or transition crossfade active"))
@@ -1073,6 +1108,7 @@ func (m *AudioMixer) recalcPassthrough() {
 	}
 
 	if prev != m.passthrough {
+		m.modeTransitions.Add(1)
 		var reason string
 		if m.passthrough {
 			reason = "single active source at 0dB"
@@ -1085,7 +1121,8 @@ func (m *AudioMixer) recalcPassthrough() {
 		}
 		m.log.Info("passthrough mode changed",
 			slog.Bool("passthrough", m.passthrough),
-			slog.String("reason", reason))
+			slog.String("reason", reason),
+			slog.Int("active_count", activeCount))
 	}
 }
 
@@ -1215,6 +1252,33 @@ func (m *AudioMixer) MasterLevel() float64 {
 	return m.masterLevel
 }
 
+// recordAndOutput tracks output timing diagnostics and delivers the frame.
+func (m *AudioMixer) recordAndOutput(frame *media.AudioFrame) {
+	now := time.Now().UnixNano()
+	prev := m.lastOutputNano.Swap(now)
+	m.outputFrameCount.Add(1)
+	if prev > 0 {
+		gap := now - prev
+		// Update max inter-frame gap (atomic CAS loop)
+		for {
+			cur := m.maxInterFrameNano.Load()
+			if gap <= cur {
+				break
+			}
+			if m.maxInterFrameNano.CompareAndSwap(cur, gap) {
+				break
+			}
+		}
+	}
+	m.output(frame)
+}
+
+// ResetMaxInterFrameGap resets the max inter-frame gap counter, allowing
+// fresh measurement after a transition or other event.
+func (m *AudioMixer) ResetMaxInterFrameGap() {
+	m.maxInterFrameNano.Store(0)
+}
+
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *AudioMixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
@@ -1224,28 +1288,52 @@ func (m *AudioMixer) DebugSnapshot() map[string]any {
 	}
 	activeCount := 0
 	mutedCount := 0
-	for _, ch := range m.channels {
+	channelDetails := make(map[string]any, len(m.channels))
+	for key, ch := range m.channels {
 		if ch.active {
 			activeCount++
 		}
 		if ch.muted {
 			mutedCount++
 		}
+		channelDetails[key] = map[string]any{
+			"active": ch.active,
+			"muted":  ch.muted,
+			"afv":    ch.afv,
+			"level":  ch.level,
+			"trim":   ch.trim,
+		}
 	}
+	transCrossfadeActive := m.transCrossfadeActive
+	transCrossfadePos := m.transCrossfadePosition
+	transCrossfadeFrom := m.transCrossfadeFrom
+	transCrossfadeTo := m.transCrossfadeTo
 	peak := [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
 	m.mu.RUnlock()
 
+	maxGapMs := m.maxInterFrameNano.Load() / 1e6
+
 	return map[string]any{
-		"mode":                mode,
-		"program_peak_dbfs":  peak,
-		"channels_active":    activeCount,
-		"channels_muted":     mutedCount,
-		"frames_passthrough": m.framesPassthrough.Load(),
-		"frames_mixed":       m.framesMixed.Load(),
-		"crossfade_count":    m.crossfadeCount.Load(),
-		"crossfade_timeouts": m.crossfadeTimeouts.Load(),
-		"decode_errors":      m.decodeErrors.Load(),
-		"encode_errors":      m.encodeErrors.Load(),
+		"mode":                    mode,
+		"program_peak_dbfs":      peak,
+		"channels_active":        activeCount,
+		"channels_muted":         mutedCount,
+		"channels":               channelDetails,
+		"frames_passthrough":     m.framesPassthrough.Load(),
+		"frames_mixed":           m.framesMixed.Load(),
+		"frames_output_total":    m.outputFrameCount.Load(),
+		"crossfade_count":        m.crossfadeCount.Load(),
+		"crossfade_timeouts":     m.crossfadeTimeouts.Load(),
+		"trans_crossfade_active": transCrossfadeActive,
+		"trans_crossfade_pos":    transCrossfadePos,
+		"trans_crossfade_from":   transCrossfadeFrom,
+		"trans_crossfade_to":     transCrossfadeTo,
+		"trans_crossfade_count":  m.transCrossfades.Load(),
+		"decode_errors":          m.decodeErrors.Load(),
+		"encode_errors":          m.encodeErrors.Load(),
+		"deadline_flushes":       m.deadlineFlushes.Load(),
+		"max_inter_frame_gap_ms": maxGapMs,
+		"mode_transitions":       m.modeTransitions.Load(),
 	}
 }
 

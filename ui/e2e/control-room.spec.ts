@@ -16,6 +16,9 @@ test('control strip contains buses and transitions', async ({ page }) => {
 
 test('replay panel has mark and transport controls', async ({ page }) => {
 	await page.goto('/');
+	// Replay is behind the "Replay" tab in BottomTabs — dispatchEvent
+	// bypasses loading/disconnect overlays that block pointer events
+	await page.getByRole('tab', { name: 'Replay' }).dispatchEvent('click');
 	const replayPanel = page.locator('.replay-panel');
 	await expect(replayPanel).toBeVisible();
 	await expect(replayPanel.locator('.mark-btn.mark-in')).toBeVisible();

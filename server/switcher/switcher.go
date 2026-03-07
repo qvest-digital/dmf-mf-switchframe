@@ -221,6 +221,12 @@ type Switcher struct {
 	lastIDRGateDurationMs atomic.Int64 // duration of last IDR gate
 	transitionsStarted    atomic.Int64
 	transitionsCompleted  atomic.Int64
+
+	// Video pipeline timing diagnostics (atomic, lock-free)
+	videoProcCount       atomic.Int64 // total frames processed through pipeline
+	videoProcMaxNano     atomic.Int64 // max broadcastVideo processing time (ns)
+	videoProcLastNano    atomic.Int64 // last broadcastVideo processing time (ns)
+	videoBroadcastCount  atomic.Int64 // frames sent to program relay
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -437,6 +443,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	} else {
 		f.GroupID = s.programGroupID.Load()
 	}
+	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(&f)
 }
 
@@ -449,6 +456,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	} else {
 		frame.GroupID = s.programGroupID.Load()
 	}
+	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(frame)
 }
 
@@ -459,6 +467,23 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 // browser-side VideoDecoder reconfigurations when transitioning between
 // passthrough and processed modes.
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
+	start := time.Now()
+	defer func() {
+		dur := time.Since(start).Nanoseconds()
+		s.videoProcLastNano.Store(dur)
+		s.videoProcCount.Add(1)
+		// Update max processing time (atomic CAS loop)
+		for {
+			cur := s.videoProcMaxNano.Load()
+			if dur <= cur {
+				break
+			}
+			if s.videoProcMaxNano.CompareAndSwap(cur, dur) {
+				break
+			}
+		}
+	}()
+
 	s.mu.RLock()
 	keyBridge := s.keyBridge
 	compositor := s.compositorRef
@@ -1431,6 +1456,12 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"last_idr_gate_duration_ms": s.lastIDRGateDurationMs.Load(),
 		"transitions_started":       s.transitionsStarted.Load(),
 		"transitions_completed":     s.transitionsCompleted.Load(),
+		"video_pipeline": map[string]any{
+			"frames_processed":     s.videoProcCount.Load(),
+			"frames_broadcast":     s.videoBroadcastCount.Load(),
+			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":     float64(s.videoProcMaxNano.Load()) / 1e6,
+		},
 	}
 }
 
