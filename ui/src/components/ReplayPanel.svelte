@@ -172,23 +172,24 @@
 		flex-direction: column;
 		gap: 6px;
 		padding: 8px;
-		background: #1a1a1a;
-		border-radius: 4px;
+		background: var(--bg-elevated);
+		border-radius: var(--radius-sm);
 	}
 
 	h3 {
 		margin: 0;
 		font-size: 11px;
-		color: #888;
+		color: var(--text-secondary);
+		font-family: var(--font-ui);
 		text-transform: uppercase;
 		letter-spacing: 1px;
 	}
 
 	.replay-monitor {
 		aspect-ratio: 16 / 9;
-		background: #050507;
-		border: 1px solid #333;
-		border-radius: 3px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
 		overflow: hidden;
 		position: relative;
 	}
@@ -204,11 +205,12 @@
 	}
 
 	.source-select, .speed-select {
-		background: #2a2a2a;
-		color: #eee;
-		border: 1px solid #444;
-		border-radius: 3px;
+		background: var(--bg-base);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
 		padding: 4px 6px;
+		font-family: var(--font-ui);
 		font-size: 12px;
 		flex: 1;
 	}
@@ -222,7 +224,8 @@
 		flex: 1;
 		padding: 6px 8px;
 		border: none;
-		border-radius: 3px;
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
 		font-size: 11px;
 		font-weight: bold;
 		cursor: pointer;
@@ -235,26 +238,27 @@
 	}
 
 	.mark-in {
-		background: #2a5a2a;
-		color: #8f8;
+		background: rgba(22, 163, 74, 0.2);
+		color: var(--tally-preview);
 	}
 
 	.mark-in:hover:not(:disabled) {
-		background: #3a7a3a;
+		background: rgba(22, 163, 74, 0.3);
 	}
 
 	.mark-out {
-		background: #5a2a2a;
-		color: #f88;
+		background: rgba(220, 38, 38, 0.2);
+		color: var(--tally-program);
 	}
 
 	.mark-out:hover:not(:disabled) {
-		background: #7a3a3a;
+		background: rgba(220, 38, 38, 0.3);
 	}
 
 	.mark-info {
+		font-family: var(--font-ui);
 		font-size: 10px;
-		color: #aaa;
+		color: var(--text-tertiary);
 		text-align: center;
 	}
 
@@ -265,8 +269,9 @@
 	}
 
 	.speed-label, .loop-label {
+		font-family: var(--font-ui);
 		font-size: 11px;
-		color: #aaa;
+		color: var(--text-tertiary);
 	}
 
 	.loop-label {
@@ -284,7 +289,8 @@
 		flex: 1;
 		padding: 8px;
 		border: none;
-		border-radius: 3px;
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
 		font-size: 13px;
 		font-weight: bold;
 		cursor: pointer;
@@ -292,12 +298,12 @@
 	}
 
 	.play-btn {
-		background: #2a4a6a;
-		color: #8af;
+		background: rgba(59, 130, 246, 0.2);
+		color: var(--accent-blue);
 	}
 
 	.play-btn:hover:not(:disabled) {
-		background: #3a5a7a;
+		background: rgba(59, 130, 246, 0.3);
 	}
 
 	.play-btn:disabled {
@@ -306,17 +312,18 @@
 	}
 
 	.stop-btn {
-		background: #6a2a2a;
-		color: #f88;
+		background: rgba(220, 38, 38, 0.25);
+		color: var(--tally-program);
 	}
 
 	.stop-btn:hover {
-		background: #8a3a3a;
+		background: rgba(220, 38, 38, 0.35);
 	}
 
 	.playback-info {
+		font-family: var(--font-mono);
 		font-size: 10px;
-		color: #8af;
+		color: var(--accent-blue);
 		text-align: center;
 	}
 
@@ -331,14 +338,15 @@
 		display: flex;
 		justify-content: space-between;
 		padding: 2px 4px;
+		font-family: var(--font-mono);
 		font-size: 10px;
-		color: #888;
-		border-radius: 2px;
+		color: var(--text-secondary);
+		border-radius: var(--radius-sm);
 	}
 
 	.buffer-item.active {
-		background: #2a2a3a;
-		color: #aaa;
+		background: var(--accent-blue-dim);
+		color: var(--text-tertiary);
 	}
 
 	.buf-source {
@@ -351,16 +359,16 @@
 
 	.mark-source {
 		font-weight: 600;
-		color: var(--text-primary, #eee);
+		color: var(--text-primary);
 	}
 
 	.mark-times {
-		font-family: var(--font-mono, monospace);
+		font-family: var(--font-mono);
 		font-size: 10px;
 	}
 
 	.clip-duration {
-		color: var(--accent-blue, #8af);
+		color: var(--accent-blue);
 		margin-left: 4px;
 	}
 </style>
