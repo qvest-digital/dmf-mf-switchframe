@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
-	import type { ControlRoomState, SRTOutputConfig } from '$lib/api/types';
-	import { startSRTOutput, stopSRTOutput, apiCall } from '$lib/api/switch-api';
+	import type { ControlRoomState, SRTOutputConfig, DestinationConfig, DestinationInfo } from '$lib/api/types';
+	import { startSRTOutput, stopSRTOutput, addDestination, removeDestination, startDestination, stopDestination, apiCall } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	interface Props {
@@ -19,10 +19,24 @@
 		latency: 200,
 	});
 
+	// New destination form
+	let destForm = $state({
+		type: 'srt-caller' as 'srt-caller' | 'srt-listener',
+		address: '',
+		port: 9000,
+		streamID: '',
+		latency: 200,
+		name: '',
+	});
+	let showAddDest = $state(false);
+
 	const isActive = $derived(crState.srtOutput?.active ?? false);
+	const destinations = $derived(crState.destinations ?? []);
 	let confirmingStop = $state(false);
+	let confirmingRemoveId = $state<string | null>(null);
 
 	const isCallerAddressEmpty = $derived(form.mode === 'caller' && !form.address.trim());
+	const isDestCallerAddressEmpty = $derived(destForm.type === 'srt-caller' && !destForm.address.trim());
 
 	let modalElement: HTMLDivElement | undefined = $state();
 
@@ -103,6 +117,66 @@
 	function handleClose() {
 		onclose?.();
 	}
+
+	// --- Destination handlers ---
+
+	function handleAddDestination() {
+		if (isDestCallerAddressEmpty) return;
+		const config: DestinationConfig = {
+			type: destForm.type,
+			port: destForm.port,
+			name: destForm.name || undefined,
+		};
+		if (destForm.type === 'srt-caller') {
+			config.address = destForm.address;
+			if (destForm.streamID) config.streamID = destForm.streamID;
+		}
+		if (destForm.latency > 0) config.latency = destForm.latency;
+		apiCall(addDestination(config), 'Add destination failed');
+		showAddDest = false;
+		// Reset form
+		destForm.address = '';
+		destForm.name = '';
+		destForm.streamID = '';
+	}
+
+	function handleStartDestination(id: string) {
+		apiCall(startDestination(id), 'Start destination failed');
+	}
+
+	function handleStopDestination(id: string) {
+		apiCall(stopDestination(id), 'Stop destination failed');
+	}
+
+	function handleRemoveDestination(id: string) {
+		confirmingRemoveId = id;
+	}
+
+	function confirmRemove() {
+		if (confirmingRemoveId) {
+			apiCall(removeDestination(confirmingRemoveId), 'Remove destination failed');
+			confirmingRemoveId = null;
+		}
+	}
+
+	function cancelRemove() {
+		confirmingRemoveId = null;
+	}
+
+	function destStateColor(state: string): string {
+		switch (state) {
+			case 'active': return 'var(--tally-preview, #22c55e)';
+			case 'reconnecting': return 'var(--accent-amber, #f59e0b)';
+			case 'error': return 'var(--tally-program, #ef4444)';
+			default: return 'var(--text-tertiary)';
+		}
+	}
+
+	function destLabel(d: DestinationInfo): string {
+		if (d.name) return d.name;
+		if (d.address) return `${d.address}:${d.port}`;
+		return `:${d.port}`;
+	}
 </script>
 
 {#if visible}
@@ -122,8 +196,10 @@
 				<button class="close-btn" onclick={handleClose}>&#x2715;</button>
 			</div>
 
+			<!-- Legacy single SRT output -->
 			{#if isActive}
 				<div class="srt-status">
+					<div class="section-label">Legacy Output</div>
 					<div class="status-row">
 						<span class="status-label">Mode</span>
 						<span class="status-value">{crState.srtOutput?.mode ?? ''}</span>
@@ -160,7 +236,7 @@
 					{/if}
 					<button class="modal-btn stop-btn" onclick={handleStop}>Stop</button>
 				</div>
-			{:else}
+			{:else if destinations.length === 0}
 				<div class="srt-form">
 					<div class="mode-selector">
 						<label class="mode-option" class:selected={form.mode === 'caller'}>
@@ -200,6 +276,89 @@
 					<button class="modal-btn start-btn" onclick={handleStart} disabled={isCallerAddressEmpty}>Start</button>
 				</div>
 			{/if}
+
+			<!-- Multi-destination list -->
+			{#if destinations.length > 0 || !isActive}
+				<div class="dest-section">
+					<div class="dest-header">
+						<span class="section-label">Destinations</span>
+						<button class="add-dest-btn" onclick={() => showAddDest = !showAddDest}>
+							{showAddDest ? 'Cancel' : '+ Add'}
+						</button>
+					</div>
+
+					{#if showAddDest}
+						<div class="dest-add-form">
+							<div class="form-field">
+								<label for="dest-name">Name</label>
+								<input id="dest-name" type="text" bind:value={destForm.name} placeholder="YouTube, Twitch, etc." />
+							</div>
+							<div class="mode-selector">
+								<label class="mode-option" class:selected={destForm.type === 'srt-caller'}>
+									<input type="radio" value="srt-caller" bind:group={destForm.type} />
+									Caller
+								</label>
+								<label class="mode-option" class:selected={destForm.type === 'srt-listener'}>
+									<input type="radio" value="srt-listener" bind:group={destForm.type} />
+									Listener
+								</label>
+							</div>
+							{#if destForm.type === 'srt-caller'}
+								<div class="form-field">
+									<label for="dest-address">Address</label>
+									<input id="dest-address" type="text" bind:value={destForm.address} placeholder="192.168.1.100" />
+								</div>
+							{/if}
+							<div class="form-field">
+								<label for="dest-port">Port</label>
+								<input id="dest-port" type="number" bind:value={destForm.port} min="1" max="65535" />
+							</div>
+							{#if destForm.type === 'srt-caller'}
+								<div class="form-field">
+									<label for="dest-stream-id">Stream ID</label>
+									<input id="dest-stream-id" type="text" bind:value={destForm.streamID} placeholder="(optional)" />
+								</div>
+							{/if}
+							<div class="form-field">
+								<label for="dest-latency">Latency (ms)</label>
+								<input id="dest-latency" type="number" bind:value={destForm.latency} min="0" step="50" />
+							</div>
+							<button class="modal-btn start-btn" onclick={handleAddDestination} disabled={isDestCallerAddressEmpty}>
+								Add Destination
+							</button>
+						</div>
+					{/if}
+
+					{#each destinations as dest (dest.id)}
+						<div class="dest-item">
+							<div class="dest-item-header">
+								<span class="dest-name">{destLabel(dest)}</span>
+								<span class="dest-state" style="color: {destStateColor(dest.state)}">{dest.state}</span>
+							</div>
+							<div class="dest-item-meta">
+								<span class="dest-type">{dest.type}</span>
+								{#if dest.connections && dest.connections > 0}
+									<span class="dest-conns">{dest.connections} conn</span>
+								{/if}
+								{#if (dest.droppedPackets ?? 0) > 0}
+									<span class="dest-drops">{dest.droppedPackets} dropped</span>
+								{/if}
+							</div>
+							{#if dest.error}
+								<div class="dest-error">{dest.error}</div>
+							{/if}
+							<div class="dest-actions">
+								{#if dest.state === 'stopped'}
+									<button class="dest-action-btn start-action" onclick={() => handleStartDestination(dest.id)}>Start</button>
+								{:else}
+									<button class="dest-action-btn stop-action" onclick={() => handleStopDestination(dest.id)}>Stop</button>
+								{/if}
+								<button class="dest-action-btn delete-action" onclick={() => handleRemoveDestination(dest.id)}>Delete</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	</div>
 {/if}
@@ -211,6 +370,15 @@
 	confirmLabel="Disconnect"
 	onconfirm={confirmStop}
 	oncancel={cancelStop}
+/>
+
+<ConfirmDialog
+	open={confirmingRemoveId !== null}
+	title="Remove Destination"
+	message="Remove this output destination? If active, it will be disconnected."
+	confirmLabel="Remove"
+	onconfirm={confirmRemove}
+	oncancel={cancelRemove}
 />
 
 <style>
@@ -232,7 +400,9 @@
 		border-radius: var(--radius-lg);
 		padding: 20px;
 		min-width: 320px;
-		max-width: 400px;
+		max-width: 440px;
+		max-height: 80vh;
+		overflow-y: auto;
 		font-family: var(--font-ui);
 		color: var(--text-primary);
 		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
@@ -265,6 +435,15 @@
 
 	.close-btn:hover {
 		color: var(--text-primary);
+	}
+
+	.section-label {
+		font-size: 0.65rem;
+		font-weight: 600;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		margin-bottom: 8px;
 	}
 
 	.mode-selector {
@@ -413,5 +592,148 @@
 	.drop-warn-value {
 		color: var(--accent-amber, #f59e0b);
 		font-weight: 600;
+	}
+
+	/* Destination section */
+	.dest-section {
+		margin-top: 16px;
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 12px;
+	}
+
+	.dest-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 8px;
+	}
+
+	.dest-header .section-label {
+		margin-bottom: 0;
+	}
+
+	.add-dest-btn {
+		background: none;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		color: var(--accent-blue);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 600;
+		padding: 3px 10px;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.add-dest-btn:hover {
+		border-color: var(--accent-blue);
+		background: var(--accent-blue-dim);
+	}
+
+	.dest-add-form {
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: 12px;
+		margin-bottom: 12px;
+	}
+
+	.dest-item {
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		padding: 10px 12px;
+		margin-bottom: 6px;
+	}
+
+	.dest-item-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 4px;
+	}
+
+	.dest-name {
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.dest-state {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.dest-item-meta {
+		display: flex;
+		gap: 10px;
+		font-size: 0.7rem;
+		color: var(--text-tertiary);
+		margin-bottom: 6px;
+	}
+
+	.dest-type {
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+	}
+
+	.dest-drops {
+		color: var(--accent-amber, #f59e0b);
+	}
+
+	.dest-error {
+		font-size: 0.7rem;
+		color: var(--tally-program);
+		margin-bottom: 6px;
+	}
+
+	.dest-actions {
+		display: flex;
+		gap: 6px;
+	}
+
+	.dest-action-btn {
+		flex: 1;
+		padding: 4px 10px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 600;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.start-action:hover {
+		border-color: var(--tally-preview, #22c55e);
+		background: rgba(34, 197, 94, 0.1);
+	}
+
+	.stop-action {
+		border-color: rgba(220, 38, 38, 0.3);
+		color: var(--tally-program);
+	}
+
+	.stop-action:hover {
+		background: var(--tally-program-dim);
+	}
+
+	.delete-action {
+		flex: 0;
+		padding: 4px 8px;
+		color: var(--text-tertiary);
+	}
+
+	.delete-action:hover {
+		color: var(--tally-program);
+		border-color: rgba(220, 38, 38, 0.3);
 	}
 </style>

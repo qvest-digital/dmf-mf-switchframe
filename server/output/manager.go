@@ -839,11 +839,17 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 	}
 	m.mu.Unlock()
 
-	return map[string]any{
+	snap := map[string]any{
 		"viewer":    viewerSnap,
 		"recording": m.RecordingStatus(),
 		"srt":       m.SRTOutputStatus(),
 	}
+
+	if dests := m.ListDestinations(); len(dests) > 0 {
+		snap["destinations"] = dests
+	}
+
+	return snap
 }
 
 // SetConfidenceMonitor attaches a confidence monitor to the output manager.
