@@ -19,6 +19,7 @@ type PlayerConfig struct {
 	Clip           []bufferedFrame
 	Speed          float64
 	Loop           bool
+	Interpolation  InterpolationMode
 	DecoderFactory transition.DecoderFactory
 	EncoderFactory transition.EncoderFactory
 	Output         func(frame *media.VideoFrame)
@@ -143,6 +144,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	codecStr := "avc1.42C01E" // Fallback; overwritten on first keyframe from encoder SPS.
 
+	interpolator := newInterpolator(p.config.Interpolation)
+
 	for {
 		outputPTS := int64(0)
 		firstFrame := true
@@ -166,7 +169,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 				})
 			}
 
-			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr) {
+			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, interpolator) {
 				return
 			}
 		}
@@ -180,7 +183,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 }
 
 // outputGOP encodes and outputs decoded frames with pacing and slow-motion
-// duplication. Returns true if context was cancelled and caller should return.
+// duplication or blending. Returns true if context was cancelled and caller should return.
 func (p *replayPlayer) outputGOP(
 	ctx context.Context,
 	decoded []decodedFrame,
@@ -194,8 +197,9 @@ func (p *replayPlayer) outputGOP(
 	outputIdx *int,
 	totalFrames int,
 	codecStr *string,
+	interpolator FrameInterpolator,
 ) bool {
-	for _, df := range decoded {
+	for di, df := range decoded {
 		for dup := 0; dup < dupCount; dup++ {
 			select {
 			case <-ctx.Done():
@@ -206,7 +210,24 @@ func (p *replayPlayer) outputGOP(
 			forceIDR := *firstFrame
 			*firstFrame = false
 
-			encoded, isKeyframe, encErr := encoder.Encode(df.yuv, forceIDR)
+			// Determine which YUV data to encode. When an interpolator is
+			// available, dupCount > 1, and this is not the first copy (dup 0),
+			// blend between the current frame and the next frame.
+			yuvToEncode := df.yuv
+			if interpolator != nil && dupCount > 1 && dup > 0 {
+				nextIdx := di + 1
+				if nextIdx < len(decoded) {
+					next := decoded[nextIdx]
+					// Only blend if dimensions match.
+					if next.width == df.width && next.height == df.height {
+						alpha := float64(dup) / float64(dupCount)
+						yuvToEncode = interpolator.Interpolate(df.yuv, next.yuv, df.width, df.height, alpha)
+					}
+				}
+				// If no next frame or dimension mismatch, fall back to duplication (yuvToEncode stays as df.yuv).
+			}
+
+			encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, forceIDR)
 			if encErr != nil {
 				slog.Error("replay player: encode failed", "err", encErr)
 				return true

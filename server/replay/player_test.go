@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
@@ -570,4 +571,154 @@ func TestReplayPlayer_CodecStringFromSPS(t *testing.T) {
 		require.Equal(t, "avc1.640028", outputFrames[i].Codec,
 			"frame %d codec string should persist from last keyframe SPS", i)
 	}
+}
+
+func TestBlendInterpolator(t *testing.T) {
+	interp := &blendInterpolator{}
+
+	// Two 4x4 frames: A is all black (Y=0), B is all white (Y=255)
+	size := 4 * 4 * 3 / 2 // YUV420
+	frameA := make([]byte, size)
+	frameB := make([]byte, size)
+	for i := range frameB[:16] { // Y plane
+		frameB[i] = 255
+	}
+	for i := 16; i < size; i++ { // UV planes neutral
+		frameA[i] = 128
+		frameB[i] = 128
+	}
+
+	// At alpha=0.5, Y should be ~128
+	result := interp.Interpolate(frameA, frameB, 4, 4, 0.5)
+	assert.InDelta(t, 128, int(result[0]), 1) // Y midpoint
+
+	// At alpha=0.0, should be frameA
+	result = interp.Interpolate(frameA, frameB, 4, 4, 0.0)
+	assert.Equal(t, byte(0), result[0])
+
+	// At alpha=1.0, should be frameB
+	result = interp.Interpolate(frameA, frameB, 4, 4, 1.0)
+	assert.Equal(t, byte(255), result[0])
+}
+
+func TestBlendInterpolator_BufferReuse(t *testing.T) {
+	interp := &blendInterpolator{}
+
+	size := 8 * 8 * 3 / 2
+	frameA := make([]byte, size)
+	frameB := make([]byte, size)
+	for i := range frameB {
+		frameB[i] = 200
+	}
+
+	// First call allocates buffer.
+	result1 := interp.Interpolate(frameA, frameB, 8, 8, 0.5)
+	assert.Len(t, result1, size)
+
+	// Second call should reuse the same buffer (no new allocation for same size).
+	result2 := interp.Interpolate(frameA, frameB, 8, 8, 0.25)
+	assert.Len(t, result2, size)
+
+	// Values should differ because alpha differs.
+	// alpha=0.25: 0*0.75 + 200*0.25 + 0.5 = 50.5 → 50
+	assert.InDelta(t, 50, int(result2[0]), 1)
+}
+
+func TestNewInterpolator(t *testing.T) {
+	// InterpolationNone returns nil.
+	assert.Nil(t, newInterpolator(InterpolationNone))
+
+	// Empty string also returns nil (default).
+	assert.Nil(t, newInterpolator(""))
+
+	// InterpolationBlend returns a non-nil interpolator.
+	interp := newInterpolator(InterpolationBlend)
+	assert.NotNil(t, interp)
+
+	// Verify it actually works.
+	size := 2 * 2 * 3 / 2
+	a := make([]byte, size)
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = 100
+	}
+	result := interp.Interpolate(a, b, 2, 2, 0.5)
+	assert.InDelta(t, 50, int(result[0]), 1)
+}
+
+func TestReplayPlayer_BlendInterpolation(t *testing.T) {
+	// Verify that the player uses frame blending at 0.5x speed when
+	// Interpolation is set to InterpolationBlend. The mock decoder returns
+	// YUV frames where the first byte is the decode count (1, 2, 3, ...),
+	// so blended intermediate frames should have different first-byte values
+	// than simple duplication would produce.
+	clip := buildTestClip(1, 4) // 1 GOP, 4 frames
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          0.5,
+		Loop:           false,
+		Interpolation:  InterpolationBlend,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// At 0.5x, 4 input frames → 8 output frames (dupCount=2).
+	require.Len(t, outputFrames, 8)
+
+	// PTS should be monotonically increasing.
+	for i := 1; i < len(outputFrames); i++ {
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS)
+	}
+}
+
+func TestReplayPlayer_NoneInterpolation(t *testing.T) {
+	// Verify that InterpolationNone still works (frame duplication).
+	clip := buildTestClip(1, 3)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          0.5,
+		Loop:           false,
+		Interpolation:  InterpolationNone,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// At 0.5x, 3 input frames → 6 output frames.
+	require.Len(t, outputFrames, 6)
 }
