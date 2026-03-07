@@ -40,14 +40,25 @@ func (e *mockReplayEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, err
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.encodeCount++
-	// Return minimal AVC1 data.
-	out := make([]byte, 8)
-	out[3] = 4 // length
-	out[4] = 0x65
+
 	if forceIDR {
-		out[4] = 0x65 // IDR slice
+		// Return Annex B with SPS (High profile, Level 4.0) + PPS + IDR.
+		// SPS NALU type = 0x67, profile_idc=0x64, constraint=0x00, level=0x28
+		var out []byte
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x67, 0x64, 0x00, 0x28, 0xAC, 0xD1, 0x00) // SPS (type 7, High L4.0)
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x68, 0xCE, 0x38, 0x80) // PPS (type 8)
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x65, 0x88, 0x84, 0x00) // IDR slice (type 5)
+		return out, true, nil
 	}
-	return out, forceIDR, nil
+
+	// Non-keyframe: Annex B with a single non-IDR slice.
+	var out []byte
+	out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+	out = append(out, 0x41, 0x9A, 0x00, 0x00) // non-IDR slice (type 1)
+	return out, false, nil
 }
 
 func (e *mockReplayEncoder) Close() {
@@ -509,4 +520,54 @@ func TestReplayPlayer_AnnexBConversion(t *testing.T) {
 	require.Equal(t, byte(0x00), annexB[1])
 	require.Equal(t, byte(0x00), annexB[2])
 	require.Equal(t, byte(0x01), annexB[3], "expected Annex B start code")
+}
+
+func TestReplayPlayer_CodecStringFromSPS(t *testing.T) {
+	// Verify the codec string on output frames is derived from the encoder's
+	// SPS output (High profile Level 4.0 = "avc1.640028") rather than
+	// hardcoded to Baseline ("avc1.42C01E").
+	clip := buildTestClip(1, 3)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{
+				PTS:        frame.PTS,
+				IsKeyframe: frame.IsKeyframe,
+				Codec:      frame.Codec,
+			})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.GreaterOrEqual(t, len(outputFrames), 3)
+
+	// First frame (keyframe) should have codec string derived from SPS.
+	// Mock encoder emits SPS with profile_idc=0x64, constraint=0x00, level=0x28
+	// → "avc1.640028" (High profile, Level 4.0).
+	require.Equal(t, "avc1.640028", outputFrames[0].Codec,
+		"keyframe codec string should be derived from encoder SPS")
+
+	// Non-keyframes should also carry the derived codec string.
+	for i := 1; i < len(outputFrames); i++ {
+		require.Equal(t, "avc1.640028", outputFrames[i].Codec,
+			"frame %d codec string should persist from last keyframe SPS", i)
+	}
 }

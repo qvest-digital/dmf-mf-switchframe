@@ -141,6 +141,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 		<-timer.C
 	}
 
+	codecStr := "avc1.42C01E" // Fallback; overwritten on first keyframe from encoder SPS.
+
 	for {
 		outputPTS := int64(0)
 		firstFrame := true
@@ -164,7 +166,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 				})
 			}
 
-			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames) {
+			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr) {
 				return
 			}
 		}
@@ -191,6 +193,7 @@ func (p *replayPlayer) outputGOP(
 	firstFrame *bool,
 	outputIdx *int,
 	totalFrames int,
+	codecStr *string,
 ) bool {
 	for _, df := range decoded {
 		for dup := 0; dup < dupCount; dup++ {
@@ -215,11 +218,21 @@ func (p *replayPlayer) outputGOP(
 				avc1 = encoded // Fallback if already AVC1
 			}
 
+			// Derive codec string from encoder's SPS on keyframes.
+			if isKeyframe {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) > 0 && nalu[0]&0x1F == 7 {
+						*codecStr = codec.ParseSPSCodecString(nalu)
+						break
+					}
+				}
+			}
+
 			frame := &media.VideoFrame{
 				PTS:        *outputPTS,
 				IsKeyframe: isKeyframe,
 				WireData:   avc1,
-				Codec:      "avc1.42C01E",
+				Codec:      *codecStr,
 			}
 
 			p.config.Output(frame)
