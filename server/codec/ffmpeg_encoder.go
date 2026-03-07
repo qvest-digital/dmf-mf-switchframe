@@ -40,8 +40,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
                       void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
-	// Suppress verbose FFmpeg/x264 logging (only show errors).
-	av_log_set_level(AV_LOG_ERROR);
+	// Suppress FFmpeg logging — only show fatal errors. Non-fatal decoder
+	// messages (missing references during transitions) are expected.
+	av_log_set_level(AV_LOG_FATAL);
 
 	const AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
 	if (!codec) {

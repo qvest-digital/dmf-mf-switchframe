@@ -24,8 +24,12 @@ typedef struct {
 static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffdec_t));
 
-	// Suppress verbose FFmpeg logging (only show errors).
-	av_log_set_level(AV_LOG_ERROR);
+	// Suppress FFmpeg logging for non-fatal decoder issues. During live
+	// transitions, mid-GOP decoder starts produce "reference picture missing"
+	// and "co located POCs unavailable" errors that are expected and non-fatal
+	// (the decoder recovers via error concealment). AV_LOG_FATAL keeps only
+	// truly fatal messages.
+	av_log_set_level(AV_LOG_FATAL);
 
 	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
 	if (!codec) {
@@ -37,7 +41,11 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 		return -2; // alloc failed
 	}
 
-	h->ctx->err_recognition = AV_EF_CAREFUL;
+	// No AV_EF_CAREFUL: allow best-effort error concealment for frames with
+	// missing references (expected during transition warmup and source changes).
+	// FF_EC_GUESS_MVS uses surrounding motion vectors to conceal damaged
+	// macroblocks, producing fewer visible glitches than simple frame copy.
+	h->ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
 	h->ctx->thread_count = 1;
 
 	if (hwDeviceCtx) {
