@@ -3,6 +3,7 @@
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import { replayMarkIn, replayMarkOut, replayPlay, replayStop, apiCall } from '$lib/api/switch-api';
 	import { formatTimecode, formatClipDuration } from '$lib/util/timecode';
+	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 
 	interface Props {
 		state: ControlRoomState;
@@ -35,6 +36,17 @@
 		return () => {
 			pipeline.detachCanvas('replay', 'replay-monitor');
 		};
+	});
+
+	// HiDPI canvas sizing for replay monitor
+	$effect(() => {
+		if (!replayCanvas?.parentElement) return;
+		const obs = new ResizeObserver(([entry]) => {
+			const { width, height } = entry.contentRect;
+			if (width > 0 && height > 0) setupHiDPICanvas(replayCanvas!, width, height);
+		});
+		obs.observe(replayCanvas.parentElement);
+		return () => obs.disconnect();
 	});
 
 	function handleMarkIn() {
