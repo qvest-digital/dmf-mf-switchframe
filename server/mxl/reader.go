@@ -200,8 +200,14 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	defer close(r.audioCh)
 
 	log := r.config.Logger
-	timeoutNs := uint64(r.config.TimeoutMs) * 1_000_000
 	config := flow.ConfigInfo()
+
+	// Use a short timeout for audio reads (5ms). The MXL SDK may use a coarse
+	// internal polling interval; a long timeout (100ms) causes the SDK to hold
+	// the cgo thread for extended periods, starving other flow readers and
+	// reducing audio throughput to ~60% of expected. With a short timeout we
+	// release the SDK quickly and retry from Go-land with fine-grained control.
+	const audioTimeoutNs = 5_000_000 // 5ms
 
 	sampleRate := int(config.GrainRate.Numerator)
 	if config.GrainRate.Denominator > 1 {
@@ -222,8 +228,8 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 	// This ensures audio PTS aligns with video PTS (both start near 0).
 	var ptsCounter int64
 
-	consecutiveErrors := 0
-	const maxConsecutiveErrors = 50
+	fatalErrors := 0
+	const maxFatalErrors = 50
 
 	for {
 		select {
@@ -232,29 +238,39 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 		default:
 		}
 
-		pcm, err := flow.ReadSamples(index, samplesPerRead, timeoutNs)
+		pcm, err := flow.ReadSamples(index, samplesPerRead, audioTimeoutNs)
 		if err != nil {
-			consecutiveErrors++
+			errStr := err.Error()
 
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
-			if strings.Contains(err.Error(), "too late") {
+			if strings.Contains(errStr, "too late") {
 				if head, hErr := flow.HeadIndex(); hErr == nil {
 					index = head
-					consecutiveErrors = 0
+					fatalErrors = 0
 					continue
 				}
 			}
 
-			if consecutiveErrors >= maxConsecutiveErrors {
+			// Timeout and too-early are normal waiting conditions —
+			// the writer hasn't produced samples at our position yet.
+			// Don't count these as errors; just retry after a brief yield.
+			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+				time.Sleep(500 * time.Microsecond)
+				continue
+			}
+
+			// Actual errors (flow invalid, permission denied, etc.)
+			fatalErrors++
+			if fatalErrors >= maxFatalErrors {
 				log.Error("mxl audio reader: too many consecutive errors, stopping",
-					"errors", consecutiveErrors, "last_error", err)
+					"errors", fatalErrors, "last_error", err)
 				return
 			}
 			time.Sleep(time.Millisecond)
 			continue
 		}
-		consecutiveErrors = 0
+		fatalErrors = 0
 
 		grain := AudioGrain{
 			PCM:        pcm,
