@@ -28,20 +28,32 @@ graph TD
         relay1 --> sv1["sourceViewer"]
         relay2 --> sv2["sourceViewer"]
         relayN --> svN["sourceViewer"]
+        relay1 --> rv1["replayViewer"]
+        relay2 --> rv2["replayViewer"]
+        rv1 --> rb["Replay Buffers<br/>(per-source, GOP-aligned)"]
+        rv2 --> rb
 
         subgraph engine["SwitchFrame Switching Engine"]
-            sv1 --> delay["delayBuffer"]
-            sv2 --> delay
-            svN --> delay
-            delay --> hvf["handleVideoFrame"]
-            hvf --> idr["IDR Gate"]
-            hvf --> te["Transition Engine"]
-            hvf --> gc["GOP Cache"]
-            hvf --> am["Audio Mixer"]
-            idr --> vp["videoProcessor<br/>(DSK Compositor)"]
-            te --> bv["programRelay.BroadcastVideo()"]
-            vp --> bv
-            am --> ba["programRelay.BroadcastAudio()"]
+            sv1 --> fs["FrameSynchronizer<br/>(optional)"]
+            sv2 --> fs
+            svN --> fs
+            fs --> delay["delayBuffer"]
+
+            subgraph video["Video Path"]
+                delay --> hvf["handleVideoFrame"]
+                hvf --> gc["GOP Cache"]
+                hvf --> te["Transition Engine<br/>(raw YUV output)"]
+                hvf --> idr["IDR Gate"]
+                te --> pipeline["pipelineCodecs<br/>decode → key → DSK → encode"]
+                idr --> pipeline
+                pipeline --> bv["programRelay.BroadcastVideo()"]
+            end
+
+            subgraph audio["Audio Path"]
+                delay --> haf["handleAudioFrame"]
+                haf --> am["Audio Mixer<br/>trim → EQ → comp → fader<br/>→ mix → master → limiter"]
+                am --> ba["programRelay.BroadcastAudio()"]
+            end
         end
 
         bv --> pr["Program Relay"]
@@ -52,10 +64,10 @@ graph TD
         pr --> browser2["MoQ Viewer<br/>(Browser)"]
     end
 
-    om --> mux1["MPEG-TS Muxer"]
-    om --> mux2["MPEG-TS Muxer"]
-    mux1 --> rec["FileRecorder<br/>(.ts files)"]
-    mux2 --> srt["SRT Caller/Listener<br/>(push/pull)"]
+    om --> conf["Confidence Monitor<br/>(1fps JPEG thumbnail)"]
+    om --> mux["MPEG-TS Muxer"]
+    mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts files)"]
+    mux --> aa2["AsyncAdapter"] --> srt["SRT Caller/Listener<br/>(push/pull)"]
 ```
 
 ### Browser Architecture
@@ -263,22 +275,23 @@ flowchart TD
     active --> ingest["IngestFrame(sourceKey, annexB, pts)"]
     ingest --> decode["decoder.Decode(annexB) → YUV420"]
     decode --> init{"First frame?"}
-    init -->|Yes| lazy["Lazy-init encoder + blender<br/>(dimensions from first decoded frame)"]
+    init -->|Yes| lazy["Lazy-init blender<br/>(dimensions from first decoded frame)"]
     init -->|No| scale
     lazy --> scale{"Resolution mismatch?"}
     scale -->|Yes| scaler["Bilinear YUV420 scaler"]
     scale -->|No| store["Store in latestYUVA or latestYUVB"]
     scaler --> store
 
-    store --> trigger{"Trigger source?"}
+    store --> trigger{"Trigger source?<br/>(TO for mix/dip/wipe/stinger,<br/>FROM for FTB)"}
     trigger -->|No| wait["Wait for next frame"]
     trigger -->|Yes| pos["currentPosition() → smoothstep easing"]
-    pos --> blend["BlendMix / BlendDip / BlendFTB / BlendWipe<br/>(YUV420 domain, no colorspace conversion)"]
-    blend --> enc["encoder.Encode(blended, forceIDR)"]
-    enc --> out["config.Output(encoded, isKeyframe, pts)"]
+    pos --> blend["BlendMix / BlendDip / BlendFTB /<br/>BlendWipe / BlendStinger<br/>(YUV420 domain, no colorspace conversion)"]
+    blend --> out["config.Output(rawYUV, width, height, pts, isKeyframe)"]
     out --> done{"pos ≥ 1.0?"}
     done -->|No| wait
     done -->|Yes| cleanup["cleanup() + OnComplete(false)"]
+
+    out -.->|"Switcher receives raw YUV"| proc["broadcastProcessed() →<br/>upstream key → DSK compositor →<br/>pipelineCodecs.encode() → H.264 →<br/>programRelay.BroadcastVideo()"]
 ```
 
 **Wall-clock frame pairing.** The engine stores the latest decoded YUV
@@ -301,10 +314,12 @@ frames.
 mismatched sources to the program resolution (set by the first decoded
 frame) during transitions. No additional cgo dependencies.
 
-**Encoder configuration.** Bitrate and FPS are derived from rolling
-statistics of the program source's recent frames (exponential moving
-average of frame size and PTS deltas), so the transition encoder matches
-source quality. Falls back to 4 Mbps / 30fps if stats are unavailable.
+**Raw YUV output.** The transition engine does not encode. It outputs
+raw YUV420 via `config.Output()` to the switcher's `broadcastProcessed`
+callback, which runs YUV processors (upstream keyer, DSK compositor)
+and enqueues the frame for encoding in the shared `pipelineCodecs`
+encoder. This ensures consistent SPS/PPS across normal and transition
+frames.
 
 **T-bar manual control.** `SetPosition(pos)` overrides automatic timing
 for manual T-bar operation. Throttled to 50ms/20Hz from the browser.
@@ -324,9 +339,11 @@ output. It is completely dormant when no outputs are active.
 flowchart TD
     pr["Program Relay"] -->|"AddViewer()<br/>(only when first output starts)"| ov["OutputViewer<br/>(distribution.Viewer)"]
     ov -->|"Run() goroutine<br/>drains video+audio"| mux["TSMuxer (MPEG-TS)"]
+    ov -->|"onVideo callback<br/>(keyframes only, ≤1fps)"| conf["ConfidenceMonitor<br/>decode → scale 320×180 →<br/>YUV→RGB → JPEG"]
     mux -->|"SetOutput callback"| fanout["Fan-out to adapters"]
     fanout --> aa1["AsyncAdapter"] --> rec["FileRecorder (.ts files)"]
     fanout --> aa2["AsyncAdapter"] --> srt["SRTCaller (push)<br/>or SRTListener (pull)"]
+    conf --> thumb["GET /api/output/confidence<br/>(latest JPEG, no-store)"]
 ```
 
 **Lazy viewer lifecycle.** `OutputManager.ensureMuxerLocked()` creates
@@ -334,6 +351,13 @@ the `OutputViewer`, `TSMuxer`, and registers the viewer on the program
 relay only when the first output adapter starts. When the last adapter
 stops, `stopMuxerIfNoAdaptersLocked()` tears everything down. This
 ensures zero overhead when recording and SRT are both inactive.
+
+**Confidence monitor.** The `ConfidenceMonitor` is wired as a parallel
+`onVideo` callback on the `OutputViewer`, not as an adapter in the mux
+chain. It receives raw `VideoFrame` objects (not TS packets), decodes
+keyframes only at ≤1fps, scales to 320x180, and stores the latest JPEG
+behind an `RWMutex`. Exposed via `GET /api/output/confidence` with
+`no-store` cache header.
 
 **MPEG-TS muxing.** The TSMuxer uses `go-astits` to mux H.264 video and
 AAC audio into MPEG-TS format. This format is crash-resilient (no moov
@@ -368,30 +392,26 @@ hook, called on every program frame in `broadcastVideo()`.
 ```mermaid
 flowchart TD
     upload["Browser uploads RGBA overlay<br/>(SetOverlay)"] --> activate["Compositor.On() / AutoOn(duration)"]
-    activate --> pf["ProcessFrame(frame)<br/>(called per program frame)"]
 
-    pf --> check{"Active?"}
-    check -->|No| pass["Return frame unchanged<br/>(zero overhead)"]
-    check -->|Yes| dec["Decode H.264 → YUV420<br/>(lazy-init FFmpeg decoder)"]
-    dec --> blend["AlphaBlendRGBA(yuv, overlay, w, h, fadePosition)<br/>(RGBA composited in YUV space)"]
-    blend --> enc["Encode YUV420 → H.264<br/>(lazy-init FFmpeg encoder)<br/>Force IDR on first frame"]
-    enc --> convert["Convert Annex B → AVC1 VideoFrame<br/>Update SPS/PPS → program relay VideoInfo"]
-    convert --> ret["Return composited frame"]
+    subgraph pipeline["Called from pipelineCodecs processing loop"]
+        yuvin["ProcessYUV(yuv, width, height)<br/>(called per program frame)"] --> check{"Active?"}
+        check -->|No| pass["Return YUV unchanged<br/>(zero overhead)"]
+        check -->|Yes| blend["AlphaBlendRGBA(yuv, overlay, w, h, fadePosition)<br/>(in-place compositing in YUV space)"]
+        blend --> ret["Return composited YUV"]
+    end
 ```
+
+**Raw YUV processing.** The compositor no longer has its own
+decoder/encoder. It operates on raw YUV420 buffers passed from the
+shared `pipelineCodecs` processing loop. Decoding and encoding are
+handled by `pipelineCodecs` — the compositor just performs in-place
+alpha blending on the YUV buffer between decode and encode.
 
 **Fade transitions.** `AutoOn` and `AutoOff` drive a fade from 0.0 to
 1.0 (or reverse) over a configurable duration at ~60fps. The
 `fadePosition` scales the overlay alpha during compositing. `On` / `Off`
-provide instant cut transitions.
-
-**Codec lifecycle.** The decoder and encoder are created lazily on the
-first active keyframe and destroyed on deactivation. When inactive,
-`ProcessFrame` returns the frame unchanged with zero overhead.
-
-**VideoInfo propagation.** When the compositor produces its first
-keyframe (with new SPS/PPS from re-encoding), it notifies the program
-relay via `onVideoInfoChange` so new MoQ subscribers receive the correct
-avcC decoder configuration in the catalog.
+provide instant cut transitions. When inactive, `ProcessYUV` returns
+the YUV buffer unchanged with zero overhead.
 
 
 ### 2.7 State Broadcast
@@ -822,6 +842,67 @@ macros by position via the `KeyboardHandler`. The REST API also supports
 `POST /api/macros/{name}/run` for programmatic invocation.
 
 
+### 2.14 Raw YUV Pipeline (`switcher/pipeline_codecs.go`)
+
+The video processing chain operates on raw YUV420 with a single decode
+at ingest and a single encode at output. This eliminates multi-encode
+generation loss and ensures consistent SPS/PPS across all program
+frames (normal, transition, and DSK).
+
+```mermaid
+flowchart TD
+    subgraph normal["Normal Program Frame"]
+        frame["H.264 AVC1 frame"] --> avc["AVC1 → Annex B<br/>+ prepend SPS/PPS"]
+        avc --> dec["pipeCodecs.decode()<br/>(FFmpeg H.264 → YUV420)"]
+        dec --> pf["ProcessingFrame<br/>(raw YUV + PTS + keyframe flag)"]
+    end
+
+    subgraph transition["Transition Frame"]
+        te["TransitionEngine"] -->|"raw YUV callback"| bp["broadcastProcessed()"]
+        bp --> pf2["ProcessingFrame<br/>(pre-decoded YUV)"]
+    end
+
+    pf --> proc["Async videoProcessingLoop goroutine"]
+    pf2 --> proc
+
+    proc --> key["keyBridge.ProcessYUV()<br/>(upstream chroma/luma key, in-place)"]
+    key --> dsk["compositor.ProcessYUV()<br/>(DSK graphics overlay, in-place)"]
+    dsk --> enc["pipeCodecs.encode()<br/>(YUV420 → H.264 AVC1)"]
+    enc --> out["broadcastOwnedToProgram()<br/>→ programRelay.BroadcastVideo()"]
+```
+
+**Always-on re-encode.** Every program frame flows through
+decode→process→encode, even when no transition or graphics are active.
+This guarantees consistent SPS/PPS parameters in the output stream,
+eliminating browser `VideoDecoder` reconfigurations at transition
+boundaries that would otherwise cause visual glitches.
+
+**Shared codec pool.** The `pipelineCodecs` struct holds one decoder and
+one encoder, lazily initialized on the first keyframe. The encoder's
+bitrate and FPS are derived from rolling statistics of the program
+source's recent frames (exponential moving average). Falls back to
+4 Mbps / 30fps if stats are unavailable.
+
+**Async processing.** Video frames are enqueued into a buffered
+`videoProcCh` channel and processed in a dedicated
+`videoProcessingLoop` goroutine. This prevents the source delivery
+goroutine from blocking on 30-100ms decode/encode overhead. If the
+queue is full, the oldest work item is dropped (newest-wins policy)
+to prevent runaway latency.
+
+**B-frame handling.** The decoder may return `EAGAIN` for B-frames
+(reorder buffering). The pipeline drops these frames gracefully —
+the next reference frame will flush the decoder and produce output.
+Transition output during B-frame gaps uses black-frame substitution
+to maintain smooth blending.
+
+**Force-IDR propagation.** When the source frame is a keyframe or the
+`forceNextIDR` flag is set (after a cut or transition start), the
+encoder forces an IDR. The resulting frame gets a new monotonic
+`GroupID`, and if the SPS/PPS changed, an `onVideoInfoChange` callback
+fires to update the program relay's MoQ catalog.
+
+
 ## 3. Frontend Architecture
 
 ### 3.1 SvelteKit SPA with Svelte 5 Runes
@@ -965,8 +1046,11 @@ layout-independent shortcuts:
 | `Enter` | AUTO transition (dissolve/dip) |
 | `F1` | Fade to black (toggle) |
 | `F2` | Toggle DSK graphics |
+| `Alt+1` | Set transition type to mix |
+| `Alt+2` | Set transition type to dip |
 | `` ` `` | Toggle fullscreen |
 | `?` | Toggle keyboard overlay |
+| `Ctrl+Shift+1`–`6` | Switch bottom panel tab (Audio/Graphics/Macros/Keys/Replay/Presets) |
 
 
 ## 4. Data Flow Diagrams
@@ -977,23 +1061,32 @@ layout-independent shortcuts:
 flowchart TD
     pub["Camera publishes MoQ stream"] --> relay["Prism: distribution.Relay for 'cam1'"]
     relay -->|AddViewer| sv["sourceViewer{sourceKey: 'cam1'}"]
-    sv -->|SendVideo| delay["DelayBuffer (0-500ms)"]
+    relay -->|AddViewer| rv["replayViewer → circular buffer"]
+    sv -->|SendVideo| fs["FrameSynchronizer (optional)"]
+    fs --> delay["DelayBuffer (0-500ms)"]
     delay -->|"handleVideoFrame('cam1', frame)"| hvf["Switcher.handleVideoFrame()"]
 
     hvf --> health["health.recordFrame('cam1')"]
     hvf --> stats["updateFrameStats (EMA bitrate/fps)"]
     hvf --> gop["gopCache.RecordFrame('cam1', frame)"]
+    hvf --> fill["fillIngestor → keyBridge<br/>(decode for upstream keying)"]
 
-    hvf --> pgm{"Program source?"}
+    hvf --> trans{"Transition active?"}
+    trans -->|Yes| te["TransitionEngine.IngestFrame()<br/>(raw YUV blend → callback)"]
+    trans -->|No| pgm{"Program source?"}
     pgm -->|No| discard["Return (frame discarded)"]
     pgm -->|Yes| idr{"pendingIDR?"}
-    idr -->|No| bv["broadcastVideo(frame)"]
+    idr -->|No| bv["enqueueVideoWork(frame)"]
     idr -->|Yes| kf{"Keyframe?"}
     kf -->|No| gate["Return (gated)"]
     kf -->|Yes| clear["Clear pendingIDR"] --> bv
 
-    bv --> vp["videoProcessor(frame)<br/>(DSK compositor if active)"]
-    vp --> broadcast["programRelay.BroadcastVideo(frame)"]
+    te -->|"raw YUV callback"| proc["broadcastProcessed()"]
+    proc --> keycomp["keyBridge.ProcessYUV() →<br/>compositor.ProcessYUV()"]
+    keycomp --> bv
+
+    bv --> pipeline["pipelineCodecs<br/>decode → upstream key → DSK → encode"]
+    pipeline --> broadcast["programRelay.BroadcastVideo(frame)"]
     broadcast --> browsers["MoQ viewers (browsers)"]
     broadcast --> output["OutputViewer (if recording/SRT active)"]
 ```
@@ -1038,6 +1131,7 @@ sequenceDiagram
     participant Browser
     participant SW as Switcher
     participant TE as TransitionEngine
+    participant PC as pipelineCodecs
     participant Mixer as Audio Mixer
 
     Browser->>SW: StartTransition("cam2", "mix", 1000ms)
@@ -1058,12 +1152,15 @@ sequenceDiagram
         SW->>TE: IngestFrame("cam2", annexB, pts)
         Note over TE: decode → latestYUVB (trigger source)
         Note over TE: pos = smoothstep(elapsed / 1000ms)
-        Note over TE: BlendMix(yuvA, yuvB, pos)<br/>encoder.Encode(blended) → H.264
-        TE->>SW: Output callback → broadcastVideo()
+        Note over TE: BlendMix(yuvA, yuvB, pos) → raw YUV
+        TE->>SW: Output callback(rawYUV, w, h, pts)
+        Note over SW: broadcastProcessed():<br/>upstream key → DSK compositor
+        SW->>PC: enqueue → encode(yuv) → H.264
+        PC->>SW: broadcastOwnedToProgram(frame)
     end
 
     Note over TE: pos ≥ 1.0
-    TE->>TE: cleanup() → close decoders + encoder
+    TE->>TE: cleanup() → close decoders (no encoder)
     TE->>SW: OnComplete(aborted=false)
 
     Note over SW: Lock<br/>programSource = "cam2"<br/>previewSource = "cam1"<br/>StateIdle, transEngine = nil

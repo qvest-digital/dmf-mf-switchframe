@@ -24,6 +24,7 @@ Base URL: `http://localhost:8081` (TCP) or `https://localhost:8080` (HTTP/3)
   - [GET /api/sources](#get-apisources)
   - [POST /api/sources/{key}/label](#post-apisourceskeylabel)
   - [POST /api/sources/{key}/delay](#post-apisourceskeydelay)
+  - [PUT /api/sources/{key}/position](#put-apisourceskeyposition)
   - [PUT /api/sources/{key}/key](#put-apisourceskeykey)
   - [GET /api/sources/{key}/key](#get-apisourceskeykey)
   - [DELETE /api/sources/{key}/key](#delete-apisourceskeykey)
@@ -286,7 +287,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 |-------|------|-------------|
 | `programSource` | `string` | Key of the source currently on program (live) output |
 | `previewSource` | `string` | Key of the source currently on preview |
-| `transitionType` | `string` | Default transition type: `"mix"`, `"dip"`, or `"wipe"` |
+| `transitionType` | `string` | Default transition type: `"mix"`, `"dip"`, `"wipe"`, or `"stinger"` |
 | `transitionDurationMs` | `int` | Default transition duration in milliseconds |
 | `transitionPosition` | `float` | Current T-bar position during a transition (`0.0` to `1.0`). Omitted when `0`. |
 | `inTransition` | `bool` | `true` while a dissolve/dip/wipe transition is in progress. Omitted when `false`. |
@@ -485,9 +486,10 @@ Start a dissolve, dip-to-black, or wipe transition to the specified source. The 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `source` | `string` | Yes | Key of the source to transition to |
-| `type` | `string` | Yes | Transition type: `"mix"`, `"dip"`, or `"wipe"` |
+| `type` | `string` | Yes | Transition type: `"mix"`, `"dip"`, `"wipe"`, or `"stinger"` |
 | `durationMs` | `int` | Yes | Duration in milliseconds. Must be `100`-`5000`. |
 | `wipeDirection` | `string` | Wipe only | Direction for wipe transitions. Required when `type` is `"wipe"`. |
+| `stingerName` | `string` | Stinger only | Name of the loaded stinger clip. Required when `type` is `"stinger"`. |
 
 **Valid `wipeDirection` values:**
 
@@ -730,6 +732,48 @@ curl -X POST http://localhost:8081/api/sources/cam1/delay \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"delayMs": 100}'
+```
+
+---
+
+### PUT /api/sources/{key}/position
+
+Set the display position (sort order) for a source in the multiview and source bus. Lower positions appear first.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `cam1`) |
+
+**Request Body:**
+
+```json
+{
+  "position": 2
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `int` | Yes | Display position index (0-based) |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON |
+| `404` | Source not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/sources/cam1/position \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"position": 2}'
 ```
 
 ---

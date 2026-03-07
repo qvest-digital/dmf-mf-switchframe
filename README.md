@@ -134,6 +134,9 @@ Open **http://localhost:5173**. Four simulated cameras will appear.
 | Manual transition | Drag **T-bar** | — |
 | Hot-punch to program | — | `Shift+1`–`9` |
 | Run macro | — | `Ctrl+1`–`9` |
+| Transition type: mix | — | `Alt+1` |
+| Transition type: dip | — | `Alt+2` |
+| Switch bottom panel | — | `Ctrl+Shift+1`–`6` |
 | Audio faders | Drag fader | — |
 | Toggle mute/AFV | Click button | — |
 | Record | Click **REC** | — |
@@ -168,7 +171,7 @@ cd ui && npx vitest run
 cd ui && npx playwright test
 ```
 
-~800 Go tests, 495 Vitest tests, and 45 Playwright E2E tests — all passing with `-race`.
+~1000 Go tests, 562 Vitest tests, and 45 Playwright E2E tests — all passing with `-race`.
 
 ### Project Structure
 
@@ -316,6 +319,7 @@ All endpoints require `Authorization: Bearer <token>` (except in demo mode). Whe
 | `GET` | `/api/sources` | List sources with health, tally, delay |
 | `POST` | `/api/sources/{key}/label` | Set source display label |
 | `POST` | `/api/sources/{key}/delay` | Set source delay (0–500ms) |
+| `PUT` | `/api/sources/{key}/position` | Set source display position |
 | `PUT` | `/api/sources/{key}/key` | Configure upstream chroma/luma key |
 | `GET` | `/api/sources/{key}/key` | Get upstream key config |
 | `DELETE` | `/api/sources/{key}/key` | Remove upstream key |
