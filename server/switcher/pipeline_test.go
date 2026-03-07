@@ -4,6 +4,7 @@ package switcher
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,15 +56,15 @@ func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
 
 	sw := New(programRelay)
 
-	decodeCount := 0
-	encodeCount := 0
+	var decodeCount atomic.Int32
+	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) {
-			decodeCount++
+			decodeCount.Add(1)
 			return transition.NewMockDecoder(4, 4), nil
 		},
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			encodeCount++
+			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -89,11 +90,14 @@ func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
 		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	})
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for async video processing to complete
+	require.Eventually(t, func() bool {
+		return encodeCount.Load() >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
 
 	// Should have created exactly 1 decoder and 1 encoder
-	require.Equal(t, 1, decodeCount, "should decode exactly once")
-	require.Equal(t, 1, encodeCount, "should encode exactly once")
+	require.Equal(t, int32(1), decodeCount.Load(), "should decode exactly once")
+	require.Equal(t, int32(1), encodeCount.Load(), "should encode exactly once")
 }
 
 func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
@@ -108,11 +112,11 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 		},
 	})
 
-	encodeCount := 0
+	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			encodeCount++
+			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -143,12 +147,15 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
 
-	time.Sleep(20 * time.Millisecond)
+	// Wait for async video processing to complete
+	require.Eventually(t, func() bool {
+		return encodeCount.Load() >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
 
 	// The transition engine decoded both sources internally (2 decoders).
 	// The pipeline coordinator should encode exactly once (not 2 or 3 times).
 	// encodeCount tracks encoder FACTORY calls, not Encode() calls.
-	require.Equal(t, 1, encodeCount, "should create only one encoder for the pipeline")
+	require.Equal(t, int32(1), encodeCount.Load(), "should create only one encoder for the pipeline")
 }
 
 func TestPipeline_ResolutionChange(t *testing.T) {
@@ -158,11 +165,11 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	encoderCreateCount := 0
+	var encoderCreateCount atomic.Int32
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			encoderCreateCount++
+			encoderCreateCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -187,8 +194,12 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
 		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	})
-	time.Sleep(10 * time.Millisecond)
-	require.Equal(t, 1, encoderCreateCount)
+
+	// Wait for async video processing to complete
+	require.Eventually(t, func() bool {
+		return encoderCreateCount.Load() >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
+	require.Equal(t, int32(1), encoderCreateCount.Load())
 
 	// The mock decoder always returns 4x4, so the encoder won't be recreated
 	// through the full pipeline. The unit test in pipeline_codecs_test.go
@@ -381,6 +392,54 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 
 	_ = lastBitrate
 	_ = lastFPS
+}
+
+func TestPipeline_AsyncVideoProcessing(t *testing.T) {
+	// Verify that handleVideoFrame does NOT block the caller for the
+	// duration of decode+encode. This is critical because the source relay's
+	// delivery goroutine calls handleVideoFrame synchronously — if it blocks
+	// for 30-100ms on decode+encode, audio delivery from the same goroutine
+	// gets starved, causing permanent audio choppiness.
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) {
+			return &slowDecoder{
+				inner: transition.NewMockDecoder(4, 4),
+				delay: 30 * time.Millisecond,
+			}, nil
+		},
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0xDE, 0xAD}}
+
+	// handleVideoFrame should return quickly (< 5ms), NOT block for 30ms decode
+	start := time.Now()
+	sw.handleVideoFrame("cam1", frame)
+	elapsed := time.Since(start)
+
+	require.Less(t, elapsed, 5*time.Millisecond,
+		"handleVideoFrame should return immediately, not block for decode+encode (took %v)", elapsed)
+
+	// But the frame should still be processed asynchronously
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond,
+		"frame should be processed asynchronously and reach viewer")
 }
 
 // failingEncoder always returns an error from Encode.

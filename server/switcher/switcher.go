@@ -223,10 +223,18 @@ type Switcher struct {
 	transitionsCompleted  atomic.Int64
 
 	// Video pipeline timing diagnostics (atomic, lock-free)
-	videoProcCount       atomic.Int64 // total frames processed through pipeline
-	videoProcMaxNano     atomic.Int64 // max broadcastVideo processing time (ns)
-	videoProcLastNano    atomic.Int64 // last broadcastVideo processing time (ns)
-	videoBroadcastCount  atomic.Int64 // frames sent to program relay
+	videoProcCount      atomic.Int64 // total frames processed through pipeline
+	videoProcMaxNano    atomic.Int64 // max broadcastVideo processing time (ns)
+	videoProcLastNano   atomic.Int64 // last broadcastVideo processing time (ns)
+	videoBroadcastCount atomic.Int64 // frames sent to program relay
+	videoProcDropped    atomic.Int64 // frames dropped due to full channel
+
+	// Async video processing: frames are sent to videoProcCh and processed
+	// in a dedicated goroutine, decoupling the source relay's delivery
+	// goroutine from the 30-100ms decode+encode overhead. Without this,
+	// audio delivery from the same goroutine gets starved.
+	videoProcCh   chan *media.VideoFrame
+	videoProcDone chan struct{}
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -235,13 +243,16 @@ var _ frameHandler = (*Switcher)(nil)
 // New creates a Switcher that forwards program frames to programRelay.
 func New(programRelay *distribution.Relay) *Switcher {
 	s := &Switcher{
-		log:          slog.With("component", "switcher"),
-		sources:      make(map[string]*sourceState),
-		programRelay: programRelay,
-		health:       newHealthMonitor(),
-		gopCache:     newGOPCache(),
+		log:           slog.With("component", "switcher"),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		gopCache:      newGOPCache(),
+		videoProcCh:   make(chan *media.VideoFrame, 2),
+		videoProcDone: make(chan struct{}),
 	}
 	s.delayBuffer = NewDelayBuffer(s)
+	go s.videoProcessingLoop()
 	return s
 }
 
@@ -275,6 +286,9 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
+	// Shut down async video processing goroutine.
+	close(s.videoProcCh)
+	<-s.videoProcDone
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -460,13 +474,54 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	s.programRelay.BroadcastVideo(frame)
 }
 
-// broadcastVideo sends a video frame to the program relay. Every frame is
-// decoded and re-encoded through the pipeline encoder so that the program
-// output always carries consistent SPS/PPS regardless of whether YUV
-// processors (upstream keying, DSK compositor) are active. This eliminates
-// browser-side VideoDecoder reconfigurations when transitioning between
-// passthrough and processed modes.
+// broadcastVideo sends a video frame for processing and broadcast to the
+// program relay. When pipeline codecs are configured, the frame is enqueued
+// for async processing in a dedicated goroutine, decoupling the source
+// relay's delivery goroutine from the 30-100ms decode+encode overhead.
+// Without pipeline codecs, passthrough is synchronous (fast).
 func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
+	s.mu.RLock()
+	hasPipeline := s.pipeCodecs != nil
+	s.mu.RUnlock()
+
+	if !hasPipeline {
+		s.broadcastToProgram(frame)
+		return
+	}
+
+	select {
+	case s.videoProcCh <- frame:
+	default:
+		// Channel full — drop oldest, enqueue new (newest-wins).
+		select {
+		case <-s.videoProcCh:
+		default:
+		}
+		select {
+		case s.videoProcCh <- frame:
+		default:
+		}
+		s.videoProcDropped.Add(1)
+	}
+}
+
+// videoProcessingLoop runs in a dedicated goroutine, draining videoProcCh
+// and running each frame through the decode+encode pipeline. This prevents
+// the source relay's delivery goroutine from blocking on video processing,
+// which would starve audio delivery.
+func (s *Switcher) videoProcessingLoop() {
+	defer close(s.videoProcDone)
+	for frame := range s.videoProcCh {
+		s.processAndBroadcastVideo(frame)
+	}
+}
+
+// processAndBroadcastVideo decodes and re-encodes a video frame through the
+// pipeline so that the program output always carries consistent SPS/PPS
+// regardless of whether YUV processors (upstream keying, DSK compositor) are
+// active. This eliminates browser-side VideoDecoder reconfigurations when
+// transitioning between passthrough and processed modes.
+func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 	start := time.Now()
 	defer func() {
 		dur := time.Since(start).Nanoseconds()
@@ -1457,10 +1512,12 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"transitions_started":       s.transitionsStarted.Load(),
 		"transitions_completed":     s.transitionsCompleted.Load(),
 		"video_pipeline": map[string]any{
-			"frames_processed":     s.videoProcCount.Load(),
-			"frames_broadcast":     s.videoBroadcastCount.Load(),
-			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
-			"max_proc_time_ms":     float64(s.videoProcMaxNano.Load()) / 1e6,
+			"frames_processed":  s.videoProcCount.Load(),
+			"frames_broadcast":  s.videoBroadcastCount.Load(),
+			"frames_dropped":    s.videoProcDropped.Load(),
+			"last_proc_time_ms": float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":  float64(s.videoProcMaxNano.Load()) / 1e6,
+			"queue_len":         len(s.videoProcCh),
 		},
 	}
 }
