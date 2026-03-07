@@ -20,7 +20,7 @@
 	let stingerName = $state('');
 	let stingerNames = $state<string[]>([]);
 	let uploading = $state(false);
-	let fileInput: HTMLInputElement;
+	let fileInput = $state<HTMLInputElement>();
 	let showDeleteConfirm = $state('');
 
 	// Load stinger list on mount and when type changes to stinger
@@ -212,7 +212,7 @@
 					</select>
 					<button
 						class="stinger-action-btn"
-						onclick={() => fileInput.click()}
+						onclick={() => fileInput?.click()}
 						disabled={uploading}
 						title="Upload stinger (.zip)"
 						aria-label="Upload stinger"

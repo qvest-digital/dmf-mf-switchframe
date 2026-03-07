@@ -26,11 +26,6 @@
 		min-height: 0;
 		overflow-y: auto;
 	}
-
-	.tab-bar {
-		overflow-x: auto;
-		-webkit-overflow-scrolling: touch;
-	}
 }
 
 /* ---- Breakpoint: 768-1023px (tablet) ---- */
