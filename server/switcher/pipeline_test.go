@@ -442,6 +442,77 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 		"frame should be processed asynchronously and reach viewer")
 }
 
+func TestPipeline_AsyncTransitionOutput(t *testing.T) {
+	// Verify that broadcastProcessed (transition engine output) does NOT
+	// block the caller for the duration of encoding. During transitions,
+	// the transition engine callback runs inside IngestFrame, which is called
+	// from handleVideoFrame on the source relay's delivery goroutine. If
+	// encoding blocks that goroutine, audio delivery is starved.
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetTransitionConfig(TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+	})
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return &slowEncoder{
+				inner: transition.NewMockEncoder(),
+				delay: 30 * time.Millisecond,
+			}, nil
+		},
+	)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
+
+	// Start transition — broadcastProcessed will be called with slow encoder
+	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
+
+	// Feed frames from both sources; handleVideoFrame should return quickly
+	start := time.Now()
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
+	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
+	elapsed := time.Since(start)
+
+	require.Less(t, elapsed, 10*time.Millisecond,
+		"handleVideoFrame during transition should not block for encode (took %v)", elapsed)
+
+	// Transition output should still reach viewer asynchronously
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond,
+		"transition output should reach viewer asynchronously")
+
+	sw.AbortTransition()
+}
+
+// slowEncoder wraps a mock encoder and adds a delay to each Encode() call.
+type slowEncoder struct {
+	inner transition.VideoEncoder
+	delay time.Duration
+}
+
+func (e *slowEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+	time.Sleep(e.delay)
+	return e.inner.Encode(yuv, forceIDR)
+}
+
+func (e *slowEncoder) Close() { e.inner.Close() }
+
 // failingEncoder always returns an error from Encode.
 type failingEncoder struct{}
 

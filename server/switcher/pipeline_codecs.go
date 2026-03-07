@@ -189,8 +189,13 @@ func (pc *pipelineCodecs) flushDecoder() {
 
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
+// Uses TryLock to avoid blocking the source delivery goroutine when the
+// encoder is actively encoding (which holds pc.mu for 30-100ms). Stats are
+// approximate and will be picked up on the next available frame.
 func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64) {
-	pc.mu.Lock()
+	if !pc.mu.TryLock() {
+		return
+	}
 	defer pc.mu.Unlock()
 	if avgFPS > 0 {
 		pc.sourceBitrate = int(avgFrameSize * avgFPS * 8)

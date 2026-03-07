@@ -233,8 +233,17 @@ type Switcher struct {
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
 	// audio delivery from the same goroutine gets starved.
-	videoProcCh   chan *media.VideoFrame
+	videoProcCh   chan videoProcWork
 	videoProcDone chan struct{}
+}
+
+// videoProcWork represents a unit of work for the async video processing
+// goroutine. Exactly one of rawFrame or yuvFrame will be set.
+type videoProcWork struct {
+	// rawFrame: source video frame needing full decode → YUV proc → encode
+	rawFrame *media.VideoFrame
+	// yuvFrame: pre-decoded YUV from transition engine, needing encode only
+	yuvFrame *ProcessingFrame
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -248,7 +257,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		gopCache:      newGOPCache(),
-		videoProcCh:   make(chan *media.VideoFrame, 2),
+		videoProcCh:   make(chan videoProcWork, 2),
 		videoProcDone: make(chan struct{}),
 	}
 	s.delayBuffer = NewDelayBuffer(s)
@@ -489,8 +498,14 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 		return
 	}
 
+	s.enqueueVideoWork(videoProcWork{rawFrame: frame})
+}
+
+// enqueueVideoWork sends a work item to the async video processing goroutine
+// with newest-wins drop policy when the channel is full.
+func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 	select {
-	case s.videoProcCh <- frame:
+	case s.videoProcCh <- work:
 	default:
 		// Channel full — drop oldest, enqueue new (newest-wins).
 		select {
@@ -498,7 +513,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 		default:
 		}
 		select {
-		case s.videoProcCh <- frame:
+		case s.videoProcCh <- work:
 		default:
 		}
 		s.videoProcDropped.Add(1)
@@ -506,13 +521,17 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 }
 
 // videoProcessingLoop runs in a dedicated goroutine, draining videoProcCh
-// and running each frame through the decode+encode pipeline. This prevents
+// and running each frame through the appropriate pipeline. This prevents
 // the source relay's delivery goroutine from blocking on video processing,
 // which would starve audio delivery.
 func (s *Switcher) videoProcessingLoop() {
 	defer close(s.videoProcDone)
-	for frame := range s.videoProcCh {
-		s.processAndBroadcastVideo(frame)
+	for work := range s.videoProcCh {
+		if work.rawFrame != nil {
+			s.processAndBroadcastVideo(work.rawFrame)
+		} else if work.yuvFrame != nil {
+			s.encodeAndBroadcastTransition(work.yuvFrame)
+		}
 	}
 }
 
@@ -598,18 +617,18 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	s.mu.RLock()
 	keyBridge := s.keyBridge
 	compositor := s.compositorRef
-	pipeCodecs := s.pipeCodecs
+	hasPipeline := s.pipeCodecs != nil
 	var groupID uint32
 	if ss, ok := s.sources[s.programSource]; ok {
 		groupID = ss.lastGroupID
 	}
 	s.mu.RUnlock()
 
-	if pipeCodecs == nil {
+	if !hasPipeline {
 		return
 	}
 
-	// Run YUV processors
+	// Run YUV processors synchronously (fast, sub-millisecond).
 	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
 		yuv = keyBridge.ProcessYUV(yuv, width, height)
 	}
@@ -617,14 +636,45 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		yuv = compositor.ProcessYUV(yuv, width, height)
 	}
 
-	// Encode once
+	// Enqueue for async encode — avoid blocking the source delivery goroutine.
 	pf := &ProcessingFrame{
 		YUV: yuv, Width: width, Height: height,
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
 		Codec:   "h264", // only codec supported today
 		GroupID: groupID,
 	}
-	frame, err := pipeCodecs.encode(pf, isKeyframe)
+	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+}
+
+// encodeAndBroadcastTransition encodes a pre-decoded YUV frame from the
+// transition engine and broadcasts it to the program relay. Called from
+// the videoProcessingLoop goroutine.
+func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
+	start := time.Now()
+	defer func() {
+		dur := time.Since(start).Nanoseconds()
+		s.videoProcLastNano.Store(dur)
+		s.videoProcCount.Add(1)
+		for {
+			cur := s.videoProcMaxNano.Load()
+			if dur <= cur {
+				break
+			}
+			if s.videoProcMaxNano.CompareAndSwap(cur, dur) {
+				break
+			}
+		}
+	}()
+
+	s.mu.RLock()
+	pipeCodecs := s.pipeCodecs
+	s.mu.RUnlock()
+
+	if pipeCodecs == nil {
+		return
+	}
+
+	frame, err := pipeCodecs.encode(pf, pf.IsKeyframe)
 	if err != nil {
 		s.log.Warn("pipeline encode failed, dropping frame", "error", err, "path", "transition")
 		if s.promMetrics != nil {
