@@ -105,6 +105,10 @@
 		{#if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
 	</span>
 
+	{#if source.delayMs && source.delayMs > 0}
+		<span class="delay-badge">D:{source.delayMs}ms</span>
+	{/if}
+
 	<!-- Audio level bar (right edge) -->
 	{#if showBar}
 		<div class="audio-bar" aria-hidden="true">
@@ -214,6 +218,18 @@
 		color: var(--accent-purple, #a78bfa);
 		font-weight: 700;
 		letter-spacing: 0.06em;
+	}
+
+	.delay-badge {
+		position: absolute;
+		bottom: 2px;
+		left: 3px;
+		font-size: 0.5rem;
+		font-family: var(--font-mono);
+		color: var(--accent-orange);
+		background: rgba(0, 0, 0, 0.6);
+		padding: 0 2px;
+		border-radius: 2px;
 	}
 
 	/* Audio level bar - right edge of tile */

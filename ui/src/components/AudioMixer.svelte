@@ -8,6 +8,7 @@
 		setMasterLevel as apiSetMasterLevel,
 		setEQ as apiSetEQ,
 		setCompressor as apiSetCompressor,
+		setSourceDelay,
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
@@ -72,6 +73,11 @@
 	/** Throttled compressor API call -- max 20 calls/sec (50ms). */
 	const setCompressorThrottled = throttle((source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number) => {
 		applyResult(apiSetCompressor(source, threshold, ratio, attack, release, makeupGain));
+	}, 50);
+
+	/** Throttled source delay API call -- max 20 calls/sec (50ms). */
+	const setDelayThrottled = throttle((source: string, delayMs: number) => {
+		applyResult(setSourceDelay(source, delayMs));
 	}, 50);
 
 	/** Convert linear amplitude (0..1) to dBFS, clamped to -60. */
@@ -489,6 +495,24 @@
 							</div>
 							<span class="gr-value">{(channel.gainReduction ?? 0).toFixed(1)}</span>
 						</div>
+					</div>
+
+					<!-- Source Delay -->
+					<div class="delay-section">
+						<div class="section-header">
+							<span class="section-title">DELAY</span>
+							<span class="param-value">{crState.sources?.[key]?.delayMs ?? 0}ms</span>
+						</div>
+						<input
+							type="range"
+							class="eq-slider"
+							min="0"
+							max="500"
+							step="1"
+							value={crState.sources?.[key]?.delayMs ?? 0}
+							oninput={(e) => setDelayThrottled(key, parseInt(e.currentTarget.value))}
+							aria-label="Source delay"
+						/>
 					</div>
 				</div>
 			{/if}
@@ -1000,6 +1024,22 @@
 		color: var(--text-tertiary);
 		min-width: 24px;
 		text-align: right;
+	}
+
+	/* Source delay section */
+	.delay-section {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		border-top: 1px solid var(--border-subtle);
+		padding-top: 6px;
+		margin-top: 3px;
+	}
+
+	.param-value {
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		color: var(--text-tertiary);
 	}
 
 	/* Collapse toggle (visible at narrow viewports) */

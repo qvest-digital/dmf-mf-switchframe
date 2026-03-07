@@ -11,6 +11,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setMasterLevel: vi.fn().mockResolvedValue({}),
 	setEQ: vi.fn().mockResolvedValue({}),
 	setCompressor: vi.fn().mockResolvedValue({}),
+	setSourceDelay: vi.fn().mockResolvedValue({}),
 }));
 
 const defaultEQ: [EQBand, EQBand, EQBand] = [
@@ -264,6 +265,39 @@ describe('AudioMixer', () => {
 		const label = bypassBtn!.getAttribute('aria-label')!.toLowerCase();
 		expect(label).toContain('compressor');
 		expect(label).toMatch(/on|off/);
+	});
+
+	it('renders delay slider when expanded', () => {
+		const stateWithDelay = {
+			...state,
+			sources: {
+				...state.sources,
+				cam1: { ...state.sources.cam1, delayMs: 100 },
+			},
+		};
+		const { container } = render(AudioMixer, { props: { state: stateWithDelay, expandedKeys: { cam1: true } } });
+
+		const delaySlider = container.querySelector('input[aria-label="Source delay"]') as HTMLInputElement;
+		expect(delaySlider).toBeTruthy();
+		expect(delaySlider.type).toBe('range');
+		expect(delaySlider.min).toBe('0');
+		expect(delaySlider.max).toBe('500');
+		expect(delaySlider.value).toBe('100');
+	});
+
+	it('shows delay value text when expanded', () => {
+		const stateWithDelay = {
+			...state,
+			sources: {
+				...state.sources,
+				cam1: { ...state.sources.cam1, delayMs: 42 },
+			},
+		};
+		const { container } = render(AudioMixer, { props: { state: stateWithDelay, expandedKeys: { cam1: true } } });
+
+		const delaySection = container.querySelector('.delay-section');
+		expect(delaySection).toBeTruthy();
+		expect(delaySection!.textContent).toContain('42ms');
 	});
 
 	it('dims compressor controls when bypassed', async () => {

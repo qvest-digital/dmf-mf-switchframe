@@ -214,6 +214,33 @@ describe('SourceTile audio bar', () => {
 	});
 });
 
+describe('SourceTile delay badge', () => {
+	it('shows delay badge when delayMs > 0', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ delayMs: 40 }), tally: 'idle', index: 0 },
+		});
+		const badge = container.querySelector('.delay-badge');
+		expect(badge).toBeTruthy();
+		expect(badge!.textContent).toBe('D:40ms');
+	});
+
+	it('hides delay badge when delayMs is 0', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ delayMs: 0 }), tally: 'idle', index: 0 },
+		});
+		const badge = container.querySelector('.delay-badge');
+		expect(badge).toBeNull();
+	});
+
+	it('hides delay badge when delayMs is undefined', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'idle', index: 0 },
+		});
+		const badge = container.querySelector('.delay-badge');
+		expect(badge).toBeNull();
+	});
+});
+
 describe('SourceTile label editing', () => {
 	it('enters edit mode on double-click', async () => {
 		const onLabelChange = vi.fn();
