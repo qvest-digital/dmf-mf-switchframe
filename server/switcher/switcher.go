@@ -1407,12 +1407,17 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 // directly (no Prism relay/viewer). Used for MXL shared-memory sources.
 func (s *Switcher) RegisterMXLSource(key string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.sources[key] = &sourceState{
 		key:      key,
+		label:    strings.ToUpper(key),
 		position: len(s.sources) + 1,
 	}
 	s.health.registerSource(key)
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+	s.log.Info("MXL source registered", "source_key", key)
+	s.notifyStateChange(snapshot)
 }
 
 // IngestRawVideo accepts a raw YUV420p frame from an MXL source.
