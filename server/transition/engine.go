@@ -336,7 +336,7 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
 		}
-		ScaleYUV420(yuv, w, h, e.scaleBuf, e.width, e.height)
+		ScaleYUV420WithQuality(yuv, w, h, e.scaleBuf, e.width, e.height, ScaleQualityHigh)
 		yuv = e.scaleBuf[:targetSize]
 		w = e.width
 		h = e.height
@@ -667,7 +667,7 @@ func (e *TransitionEngine) scaleStingerFrames(sd *StingerData) []StingerFrameDat
 	for i, f := range sd.Frames {
 		// Scale YUV
 		scaledYUV := make([]byte, targetYUVSize)
-		ScaleYUV420(f.YUV, sd.Width, sd.Height, scaledYUV, e.width, e.height)
+		ScaleYUV420WithQuality(f.YUV, sd.Width, sd.Height, scaledYUV, e.width, e.height, ScaleQualityHigh)
 
 		// Scale alpha using nearest-neighbor (luma resolution)
 		scaledAlpha := make([]byte, targetYSize)

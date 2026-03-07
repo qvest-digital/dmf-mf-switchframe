@@ -183,6 +183,184 @@ func TestScalePlane_1x1_Upscale(t *testing.T) {
 	}
 }
 
+// --- Lanczos-3 tests ---
+
+func TestScaleYUV420Lanczos_SameDimensions(t *testing.T) {
+	t.Parallel()
+	w, h := 8, 8
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	totalSize := ySize + 2*uvSize
+
+	src := make([]byte, totalSize)
+	for i := range src {
+		src[i] = byte(i*13%256 + 17)
+	}
+	dst := make([]byte, totalSize)
+
+	ScaleYUV420Lanczos(src, w, h, dst, w, h)
+	require.Equal(t, src, dst, "same dimensions should produce exact copy")
+}
+
+func TestScaleYUV420Lanczos_Downscale(t *testing.T) {
+	t.Parallel()
+	// 16x16 solid color -> 8x8, output should be very close to original value
+	srcW, srcH := 16, 16
+	dstW, dstH := 8, 8
+
+	srcYSize := srcW * srcH
+	srcUVSize := (srcW / 2) * (srcH / 2)
+	srcTotal := srcYSize + 2*srcUVSize
+
+	dstYSize := dstW * dstH
+	dstUVSize := (dstW / 2) * (dstH / 2)
+	dstTotal := dstYSize + 2*dstUVSize
+
+	src := make([]byte, srcTotal)
+	// Fill Y with 180, Cb with 90, Cr with 210
+	for i := 0; i < srcYSize; i++ {
+		src[i] = 180
+	}
+	for i := 0; i < srcUVSize; i++ {
+		src[srcYSize+i] = 90
+		src[srcYSize+srcUVSize+i] = 210
+	}
+
+	dst := make([]byte, dstTotal)
+	ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
+
+	// Uniform input should produce uniform output (within rounding tolerance)
+	for i := 0; i < dstYSize; i++ {
+		diff := int(dst[i]) - 180
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 1, "Y pixel %d: expected ~180, got %d", i, dst[i])
+	}
+	for i := 0; i < dstUVSize; i++ {
+		diffCb := int(dst[dstYSize+i]) - 90
+		if diffCb < 0 {
+			diffCb = -diffCb
+		}
+		require.LessOrEqual(t, diffCb, 1, "Cb pixel %d: expected ~90, got %d", i, dst[dstYSize+i])
+
+		diffCr := int(dst[dstYSize+dstUVSize+i]) - 210
+		if diffCr < 0 {
+			diffCr = -diffCr
+		}
+		require.LessOrEqual(t, diffCr, 1, "Cr pixel %d: expected ~210, got %d", i, dst[dstYSize+dstUVSize+i])
+	}
+}
+
+func TestScaleYUV420Lanczos_Upscale(t *testing.T) {
+	t.Parallel()
+	// 4x4 -> 8x8, verify no crashes and non-zero output
+	srcW, srcH := 4, 4
+	dstW, dstH := 8, 8
+
+	srcYSize := srcW * srcH
+	srcUVSize := (srcW / 2) * (srcH / 2)
+	srcTotal := srcYSize + 2*srcUVSize
+
+	dstYSize := dstW * dstH
+	dstUVSize := (dstW / 2) * (dstH / 2)
+	dstTotal := dstYSize + 2*dstUVSize
+
+	src := make([]byte, srcTotal)
+	// Set non-trivial pattern
+	for i := 0; i < srcYSize; i++ {
+		src[i] = byte(40 + i*12)
+	}
+	for i := 0; i < srcUVSize; i++ {
+		src[srcYSize+i] = 128
+		src[srcYSize+srcUVSize+i] = 128
+	}
+
+	dst := make([]byte, dstTotal)
+	ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
+
+	// Should have non-zero Y values
+	hasNonZero := false
+	for i := 0; i < dstYSize; i++ {
+		if dst[i] != 0 {
+			hasNonZero = true
+			break
+		}
+	}
+	require.True(t, hasNonZero, "upscaled Y plane should have non-zero values")
+
+	// All values should be in valid range [0, 255] (implicit from byte type,
+	// but ensures the clamping logic works — no overflows)
+}
+
+func TestScaleYUV420WithQuality(t *testing.T) {
+	t.Parallel()
+	srcW, srcH := 8, 8
+	dstW, dstH := 16, 16
+
+	srcYSize := srcW * srcH
+	srcUVSize := (srcW / 2) * (srcH / 2)
+	srcTotal := srcYSize + 2*srcUVSize
+
+	dstYSize := dstW * dstH
+	dstUVSize := (dstW / 2) * (dstH / 2)
+	dstTotal := dstYSize + 2*dstUVSize
+
+	src := make([]byte, srcTotal)
+	for i := 0; i < srcYSize; i++ {
+		src[i] = 100
+	}
+	for i := 0; i < srcUVSize; i++ {
+		src[srcYSize+i] = 128
+		src[srcYSize+srcUVSize+i] = 128
+	}
+
+	// Test High quality (Lanczos)
+	dstHigh := make([]byte, dstTotal)
+	ScaleYUV420WithQuality(src, srcW, srcH, dstHigh, dstW, dstH, ScaleQualityHigh)
+
+	// Verify Y plane has valid output
+	for i := 0; i < dstYSize; i++ {
+		diff := int(dstHigh[i]) - 100
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 1, "High quality Y pixel %d: expected ~100, got %d", i, dstHigh[i])
+	}
+
+	// Test Fast quality (bilinear)
+	dstFast := make([]byte, dstTotal)
+	ScaleYUV420WithQuality(src, srcW, srcH, dstFast, dstW, dstH, ScaleQualityFast)
+
+	// Verify Y plane has valid output
+	for i := 0; i < dstYSize; i++ {
+		require.Equal(t, byte(100), dstFast[i], "Fast quality Y pixel %d should be 100", i)
+	}
+
+	// Test same dimensions — both modes should copy
+	dstSame := make([]byte, srcTotal)
+	ScaleYUV420WithQuality(src, srcW, srcH, dstSame, srcW, srcH, ScaleQualityHigh)
+	require.Equal(t, src, dstSame, "same dimensions should produce exact copy regardless of quality")
+}
+
+func TestScaleYUV420WithQuality_SameDimsCopy(t *testing.T) {
+	t.Parallel()
+	w, h := 4, 4
+	total := w * h * 3 / 2
+	src := make([]byte, total)
+	for i := range src {
+		src[i] = byte(i*7 + 3)
+	}
+
+	dst := make([]byte, total)
+	ScaleYUV420WithQuality(src, w, h, dst, w, h, ScaleQualityHigh)
+	require.Equal(t, src, dst, "ScaleYUV420WithQuality same-dims fast path")
+
+	dst2 := make([]byte, total)
+	ScaleYUV420WithQuality(src, w, h, dst2, w, h, ScaleQualityFast)
+	require.Equal(t, src, dst2, "ScaleYUV420WithQuality same-dims fast path (fast mode)")
+}
+
 func BenchmarkScaleYUV420_720pTo1080p(b *testing.B) {
 	srcW, srcH := 1280, 720
 	dstW, dstH := 1920, 1080
@@ -220,5 +398,43 @@ func BenchmarkScaleYUV420_1080pTo720p(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420(src, srcW, srcH, dst, dstW, dstH)
+	}
+}
+
+func BenchmarkScaleLanczos_1080to720(b *testing.B) {
+	srcW, srcH := 1920, 1080
+	dstW, dstH := 1280, 720
+
+	srcSize := srcW * srcH * 3 / 2
+	dstSize := dstW * dstH * 3 / 2
+
+	src := make([]byte, srcSize)
+	dst := make([]byte, dstSize)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
+	}
+}
+
+func BenchmarkScaleLanczos_720to1080(b *testing.B) {
+	srcW, srcH := 1280, 720
+	dstW, dstH := 1920, 1080
+
+	srcSize := srcW * srcH * 3 / 2
+	dstSize := dstW * dstH * 3 / 2
+
+	src := make([]byte, srcSize)
+	dst := make([]byte, dstSize)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
