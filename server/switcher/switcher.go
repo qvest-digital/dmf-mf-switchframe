@@ -283,6 +283,13 @@ type Switcher struct {
 	lastBroadcastNano        atomic.Int64 // UnixNano of last program broadcast
 	maxBroadcastIntervalNano atomic.Int64 // max gap between consecutive broadcasts (ns)
 
+	// Per-transition gap tracking: measures gap between last transition
+	// frame and first post-transition frame (the "transition seam").
+	transSeamStartNano atomic.Int64 // set when transition completes (last engine output time)
+	transSeamMaxNano   atomic.Int64 // max transition seam gap seen
+	transSeamLastNano  atomic.Int64 // most recent transition seam gap
+	transSeamCount     atomic.Int64 // number of transition seams measured
+
 	// Frame routing counters (atomic, lock-free).
 	routeToEngine     atomic.Int64 // frames routed to transition engine
 	routeToIdleEngine atomic.Int64 // frames routed to engine but engine was idle (dropped)
@@ -595,6 +602,21 @@ func (s *Switcher) trackOutputFPS() {
 	}
 }
 
+// measureTransSeam checks if a transition seam measurement is pending and
+// records the gap. Called on every program broadcast to capture the time
+// between transition completion and first post-transition frame output.
+func (s *Switcher) measureTransSeam() {
+	start := s.transSeamStartNano.Swap(0)
+	if start == 0 {
+		return
+	}
+	gap := time.Now().UnixNano() - start
+	s.transSeamLastNano.Store(gap)
+	updateAtomicMax(&s.transSeamMaxNano, gap)
+	s.transSeamCount.Add(1)
+	s.log.Info("transition seam measured", "gap_ms", float64(gap)/1e6)
+}
+
 // broadcastToProgram sends a video frame to the program relay with a
 // monotonically increasing GroupID. Uses a shallow struct copy to avoid
 // mutating the caller's frame (which may be shared with other viewers).
@@ -608,6 +630,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 		f.GroupID = s.programGroupID.Load()
 	}
 	s.lastBroadcastPTS.Store(f.PTS)
+	s.measureTransSeam()
 	s.trackBroadcastInterval()
 	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
@@ -624,6 +647,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 		frame.GroupID = s.programGroupID.Load()
 	}
 	s.lastBroadcastPTS.Store(frame.PTS)
+	s.measureTransSeam()
 	s.trackBroadcastInterval()
 	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
@@ -1007,6 +1031,26 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	for _, cf := range toGOP {
 		engine.WarmupDecode(sourceKey, cf.annexB)
 	}
+
+	// Feed delta frames that arrived during warmup (~10-35ms window).
+	// Without this, the engine decoders miss 0-1 frames, breaking the
+	// reference chain and causing macroblocking artifacts.
+	fromGOP2 := s.gopCache.GetGOP(fromSource)
+	if len(fromGOP2) > len(fromGOP) {
+		// More frames in cache than we warmed — feed the delta.
+		// If a new keyframe reset the GOP during warmup, fromGOP2 would
+		// be shorter (reset to 1 frame), so this only fires for same-GOP.
+		for _, cf := range fromGOP2[len(fromGOP):] {
+			engine.WarmupDecode(fromSource, cf.annexB)
+		}
+	}
+	toGOP2 := s.gopCache.GetGOP(sourceKey)
+	if len(toGOP2) > len(toGOP) {
+		for _, cf := range toGOP2[len(toGOP):] {
+			engine.WarmupDecode(sourceKey, cf.annexB)
+		}
+	}
+
 	engine.WarmupComplete()
 
 	// Phase 3: Publish the warmed engine under write lock (fast).
@@ -1118,6 +1162,15 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		for _, cf := range fromGOP {
 			engine.WarmupDecode(fromSource, cf.annexB)
 		}
+
+		// Feed delta frames that arrived during warmup.
+		fromGOP2 := s.gopCache.GetGOP(fromSource)
+		if len(fromGOP2) > len(fromGOP) {
+			for _, cf := range fromGOP2[len(fromGOP):] {
+				engine.WarmupDecode(fromSource, cf.annexB)
+			}
+		}
+
 		engine.WarmupComplete()
 
 		// Publish the warmed engine under write lock.
@@ -1179,6 +1232,15 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	for _, cf := range fromGOP {
 		engine.WarmupDecode(fromSource, cf.annexB)
 	}
+
+	// Feed delta frames that arrived during warmup.
+	fromGOP2 := s.gopCache.GetGOP(fromSource)
+	if len(fromGOP2) > len(fromGOP) {
+		for _, cf := range fromGOP2[len(fromGOP):] {
+			engine.WarmupDecode(fromSource, cf.annexB)
+		}
+	}
+
 	engine.WarmupComplete()
 
 	// Publish the warmed engine under write lock.
@@ -1305,11 +1367,8 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	// corruption. Use count-based comparison (not PTS) because B-frames
 	// have non-monotonic PTS in decode order.
 	//
-	// feedDeltaFrames returns the last successfully decoded frame. We
-	// immediately enqueue it for encode+broadcast to fill the gap between
-	// the last transition frame and the first live post-transition frame.
-	// Without this, there's a ~60-100ms gap (replayGOP + frame arrival
-	// wait + decode) that causes visible stutter on every transition.
+	// feedDeltaFrames discards decoded output — it only builds the decoder's
+	// internal reference chain so the first live frame decodes correctly.
 	if replayOK && newProgram != "" {
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
 			currentGOP := s.gopCache.GetOriginalGOP(newProgram)
@@ -1324,13 +1383,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 				delta = currentGOP
 			}
 			if len(delta) > 0 {
-				lastPF := pipeCodecs.feedDeltaFrames(delta)
+				pipeCodecs.feedDeltaFrames(delta)
 				s.log.Info("fed delta frames after replayGOP",
-					"count", len(delta), "replay_count", replayCount,
-					"gap_fill", lastPF != nil)
-				if lastPF != nil {
-					s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
-				}
+					"count", len(delta), "replay_count", replayCount)
 			}
 		}
 	}
@@ -1363,6 +1418,12 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		// source's reference chain. forceNextIDR (set by replayGOP) ensures
 		// the encoder produces a keyframe on the first live frame. No IDR
 		// gate needed — frames flow through immediately.
+	}
+
+	// Record transition seam start — the gap from now until the first
+	// post-transition frame reaches broadcastToProgram.
+	if !aborted {
+		s.transSeamStartNano.Store(time.Now().UnixNano())
 	}
 
 	s.transitionState(StateIdle)
@@ -1485,13 +1546,9 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 				delta = currentGOP
 			}
 			if len(delta) > 0 {
-				lastPF := pipeCodecs.feedDeltaFrames(delta)
+				pipeCodecs.feedDeltaFrames(delta)
 				s.log.Info("fed delta frames after replayGOP (FTB reverse)",
-					"count", len(delta), "replay_count", replayCount,
-					"gap_fill", lastPF != nil)
-				if lastPF != nil {
-					s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
-				}
+					"count", len(delta), "replay_count", replayCount)
 			}
 		}
 	}
@@ -1506,6 +1563,8 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	if aborted {
 		s.transitionState(StateFTB) // Aborted — screen stays black
 	} else {
+		// Record transition seam start for FTB reverse.
+		s.transSeamStartNano.Store(time.Now().UnixNano())
 		s.transitionState(StateIdle) // Completed — screen is visible
 		if !replayOK {
 			// No GOP replay — fall back to IDR gate.
@@ -1770,15 +1829,13 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 					delta = currentGOP
 				}
 				if len(delta) > 0 {
-					lastPF := s.pipeCodecs.feedDeltaFrames(delta)
+					s.pipeCodecs.feedDeltaFrames(delta)
 					s.log.Info("fed delta frames after replayGOP (cut)",
-						"count", len(delta), "replay_count", replayCount,
-						"gap_fill", lastPF != nil)
-					if lastPF != nil {
-						s.enqueueVideoWork(videoProcWork{yuvFrame: lastPF})
-					}
+						"count", len(delta), "replay_count", replayCount)
 				}
 			}
+			// Record transition seam start for cut.
+			s.transSeamStartNano.Store(time.Now().UnixNano())
 			// Clear IDR gate — the replayed GOP seeds the decoder
 			s.mu.Lock()
 			if ss, ok := s.sources[sourceKey]; ok && ss.pendingIDR {
@@ -1985,6 +2042,9 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"composite_max_ms":         float64(s.pipeCompositeMaxNano.Load()) / 1e6,
 			"encode_last_ms":           float64(s.pipeEncodeLastNano.Load()) / 1e6,
 			"encode_max_ms":            float64(s.pipeEncodeMaxNano.Load()) / 1e6,
+			"trans_seam_last_ms":       float64(s.transSeamLastNano.Load()) / 1e6,
+			"trans_seam_max_ms":        float64(s.transSeamMaxNano.Load()) / 1e6,
+			"trans_seam_count":         s.transSeamCount.Load(),
 		},
 	}
 

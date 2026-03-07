@@ -91,11 +91,11 @@ type TransitionEngine struct {
 	width  int
 	height int
 
-	// After warmup, skip non-keyframe decodes to avoid reference chain
-	// corruption from frames missed between GOP cache snapshot and engine
-	// publication. Cleared when the first live keyframe arrives.
-	needsKeyframeA bool
-	needsKeyframeB bool
+	// Set by WarmupComplete(), cleared on first live IngestFrame.
+	// When set and a keyframe arrives, the decoder is flushed to reset
+	// stale warmup references before decoding the fresh IDR.
+	needsFlushA bool
+	needsFlushB bool
 
 	// Reusable black frame for blend fallback when a source hasn't decoded yet
 	// (B-frame reorder EAGAIN during warmup). BT.709 limited-range black.
@@ -435,41 +435,35 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	// Reset watchdog timer on every valid frame
 	e.lastFrameAt = time.Now()
 
-	// After warmup, skip non-keyframe decodes to avoid reference chain
-	// corruption. The warmup's latestYUV is used for blending until a
-	// live keyframe re-establishes proper reference state.
-	if isFrom && e.needsKeyframeA {
+	// After warmup, the decoder's reference chain matches the live stream
+	// (warmup fed the full GOP). Live frames continue the chain — decode
+	// them immediately instead of waiting for the next keyframe (which could
+	// be up to 1 GOP interval away, causing visible freeze-frames).
+	//
+	// If a keyframe arrives, flush the decoder to reset stale warmup
+	// references and decode cleanly from the new IDR.
+	if isFrom && e.needsFlushA {
 		if isKeyframe {
-			e.needsKeyframeA = false
-			// Flush decoder to clear stale warmup references before
-			// decoding the fresh keyframe.
 			type flusher interface{ Flush() }
 			if f, ok := e.decoderA.(flusher); ok {
 				f.Flush()
 			}
-		} else {
-			// Skip decode — keep warmup frame for blending.
-			// Still allow blend to proceed (latestYUVA from warmup).
-			goto blend
 		}
+		e.needsFlushA = false
 	}
-	if isTo && e.needsKeyframeB {
+	if isTo && e.needsFlushB {
 		if isKeyframe {
-			e.needsKeyframeB = false
 			type flusher interface{ Flush() }
 			if f, ok := e.decoderB.(flusher); ok {
 				f.Flush()
 			}
-		} else {
-			goto blend
 		}
+		e.needsFlushB = false
 	}
 
 	// decodeAndStore may fail (EAGAIN from B-frame reorder). Fall through
 	// to blend regardless — the black frame fallback handles nil sources.
 	e.decodeAndStore(sourceKey, wireData, isFrom)
-
-blend:
 
 	// Determine if we should trigger blend+output.
 	// For Mix/Dip/Wipe: triggered by incoming TO source frame.
@@ -607,13 +601,13 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 			e.latestYUVA = make([]byte, yuvSize)
 		}
 		copy(e.latestYUVA, src)
-		e.needsKeyframeA = false // Raw YUV needs no keyframe gating
+		e.needsFlushA = false // Raw YUV — no decoder to flush
 	} else {
 		if len(e.latestYUVB) != yuvSize {
 			e.latestYUVB = make([]byte, yuvSize)
 		}
 		copy(e.latestYUVB, src)
-		e.needsKeyframeB = false
+		e.needsFlushB = false
 	}
 
 	// Same blend triggering logic as IngestFrame.
@@ -705,15 +699,14 @@ func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
 	e.decodeAndStore(sourceKey, wireData, isFrom)
 }
 
-// WarmupComplete marks the end of warmup. After this call, IngestFrame will
-// skip non-keyframe decodes until the first live keyframe arrives for each
-// source. This prevents reference chain corruption from frames that were
-// sent between the GOP cache snapshot and engine publication.
+// WarmupComplete marks the end of warmup. Sets flush flags so that if the
+// first live frame from either source is a keyframe, the decoder is flushed
+// to discard stale warmup references before decoding the fresh IDR.
 func (e *TransitionEngine) WarmupComplete() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.needsKeyframeA = true
-	e.needsKeyframeB = true
+	e.needsFlushA = true
+	e.needsFlushB = true
 }
 
 // getBlackFrame returns a reusable YUV420 black frame matching the engine's

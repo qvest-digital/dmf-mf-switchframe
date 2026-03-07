@@ -398,7 +398,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 
 ### POST /api/switch/cut
 
-Perform a hard cut to the specified source. The source immediately becomes the program output with no transition effect. After a cut, video and audio are gated until the first IDR keyframe arrives from the new source to prevent decoder artifacts.
+Perform a hard cut to the specified source. The source immediately becomes the program output with no transition effect. The pipeline decoder is warmed via GOP replay for instant output — no keyframe wait required.
 
 **Request Body:**
 

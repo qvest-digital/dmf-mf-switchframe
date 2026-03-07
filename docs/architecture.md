@@ -194,13 +194,18 @@ processor (DSK compositor), then calls `programRelay.BroadcastVideo()`.
 **Cut operation.** `Cut(sourceKey)`:
 1. Under write lock: set `programSource`, set `pendingIDR = true` on the
    new source, swap old program to preview, increment `seq`.
-2. Outside lock: notify audio mixer (`OnCut` for crossfade,
-   `OnProgramChange` for AFV), fire state callbacks.
+2. Outside lock: replay the new source's cached GOP to warm the pipeline
+   decoder (`replayGOP`), feed delta frames that arrived during replay
+   (`feedDeltaFrames`), clear `pendingIDR`, notify audio mixer (`OnCut`
+   for crossfade, `OnProgramChange` for AFV), fire state callbacks.
 
-**Keyframe gating.** The `pendingIDR` flag prevents forwarding frames
-from the new source until its first IDR (keyframe) arrives. This avoids
-decoder artifacts from starting mid-GOP. Audio is gated the same way.
-The GOP cache stores recent keyframes so the gate clears quickly.
+**GOP replay on cut.** The GOP cache stores the most recent GOP for each
+source. On cut, `replayGOP` feeds these frames to a pre-warmed decoder
+from the pool, then pointer-swaps it into the pipeline. This eliminates
+the keyframe wait entirely. `feedDeltaFrames` then feeds any frames that
+arrived during the replay window (~10-35ms) to maintain the decoder's
+reference chain. The `pendingIDR` flag is only used as a fallback when
+no GOP replay is available.
 
 **Delay buffer.** Per-source configurable delay (0-500ms) for lip-sync
 correction. Frames pass through the delay buffer before reaching the
@@ -1133,8 +1138,7 @@ sequenceDiagram
     SW->>MoQ: notifyStateChange(snapshot)
     Note over MoQ: enrichState → ChannelPublisher → browsers
 
-    Note over SW: Meanwhile, in handleVideoFrame:
-    Note over SW: Frames from "cam2" arrive<br/>pendingIDR=true → drop non-keyframes<br/>First keyframe → clear pendingIDR<br/>→ broadcastVideo(frame)<br/>→ browsers get clean IDR start
+    Note over SW: GOP replay warms decoder<br/>replayGOP() + feedDeltaFrames()<br/>→ clear pendingIDR<br/>Frames from "cam2" decode immediately<br/>→ broadcastVideo(frame)<br/>→ browsers get clean IDR start
 ```
 
 ### 4.3 Dissolve Transition
@@ -1151,11 +1155,12 @@ sequenceDiagram
 
     Note over SW: Phase 1: Lock<br/>Validate, StateTransitioning, seq++
 
-    Note over SW: Phase 2: Create TransitionEngine
+    Note over SW: Phase 2: Create + Warm TransitionEngine
     SW->>TE: Start("cam1", "cam2", Mix, 1000)
     Note over TE: Create decoderA + decoderB (FFmpeg)
+    Note over SW: Warmup: feed GOP cache frames to both decoders<br/>Feed delta frames from warmup window<br/>WarmupComplete()
 
-    Note over SW: Phase 3: Lock<br/>Warmup with GOP cache frames
+    Note over SW: Phase 3: Lock, publish engine
     SW->>Mixer: OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 
     loop Each frame from both sources
@@ -1347,13 +1352,22 @@ frames. This reduces audio CPU to near zero during normal operation.
 The mixer recalculates passthrough eligibility on every state change
 (cut, mute toggle, gain change).
 
-### Keyframe Gating
+### GOP Replay and IDR Gating
 
-After a cut, the switcher gates all frames from the new source until its
-first IDR keyframe arrives. This prevents decoder artifacts from
-mid-GOP starts. Combined with the GOP cache (which stores recent
-keyframes per source), the gate typically clears within one GOP interval
-(~1-2 seconds at most, often faster).
+On cuts and transition completions, the switcher replays the new source's
+cached GOP to warm the pipeline decoder, avoiding a keyframe wait. The
+`replayGOP` method feeds GOP frames to a pre-warmed decoder from the pool,
+then pointer-swaps it into the pipeline. `feedDeltaFrames` closes the
+timing window by feeding frames that arrived during replay (~10-35ms).
+
+For transitions, the engine's decoders are warmed with GOP frames before
+publication, and delta frames from the warmup window are fed to maintain
+reference chain continuity. Live frames decode immediately — no keyframe
+gate.
+
+The `pendingIDR` fallback is only used when no GOP replay is available
+(e.g., no cached GOP for the source). In that case, non-keyframes are
+dropped until the first IDR arrives.
 
 ### REST Commands over HTTP/3
 

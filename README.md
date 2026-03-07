@@ -14,7 +14,7 @@ The server produces the authoritative program output — the browser is a contro
 
 ### Video
 
-- Hard cut with keyframe gating (waits for IDR before forwarding)
+- Hard cut with GOP replay (instant decoder warmup, no keyframe wait)
 - Mix, dip-to-black, and wipe transitions (100–5000ms)
 - 6 wipe directions: horizontal L/R, vertical T/B, box center-out, box edges-in
 - Stinger transitions from PNG sequences with per-pixel alpha

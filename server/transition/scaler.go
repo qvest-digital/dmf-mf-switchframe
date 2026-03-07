@@ -102,49 +102,6 @@ func scalePlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 			iy1 = srcH - 1
 		}
 
-		row0 := iy * srcW
-		row1 := iy1 * srcW
-		dstRow := dy * dstW
-		invFy := 65536 - fy
-
-		for dx := 0; dx < dstW; dx++ {
-			srcX := xCoords[dx]
-			ix := int(srcX >> 16)
-			fx := int(srcX & 0xFFFF)
-
-			// Clamp ix to ensure ix+1 is within bounds
-			ix1 := ix + 1
-			if ix1 >= srcW {
-				ix1 = srcW - 1
-			}
-
-			// Sample 4 neighbors
-			p00 := int(src[row0+ix])
-			p10 := int(src[row0+ix1])
-			p01 := int(src[row1+ix])
-			p11 := int(src[row1+ix1])
-
-			// Bilinear interpolation using fixed-point:
-			// Horizontal lerp for top row:    top = p00*(1-fx) + p10*fx
-			// Horizontal lerp for bottom row: bot = p01*(1-fx) + p11*fx
-			// Vertical lerp:                  out = top*(1-fy) + bot*fy
-			//
-			// In 16.16 fixed-point, (1-fx) = (65536-fx), and we shift
-			// right by 16 after each multiply to stay in range.
-			invFx := 65536 - fx
-			top := (p00*invFx + p10*fx) >> 16
-			bot := (p01*invFx + p11*fx) >> 16
-
-			val := (top*invFy + bot*fy) >> 16
-
-			// Clamp to 0-255 (guards against fixed-point rounding edge cases)
-			if val < 0 {
-				val = 0
-			} else if val > 255 {
-				val = 255
-			}
-
-			dst[dstRow+dx] = byte(val)
-		}
+		scaleBilinearRow(&dst[dy*dstW], &src[iy*srcW], &src[iy1*srcW], srcW, dstW, &xCoords[0], fy)
 	}
 }

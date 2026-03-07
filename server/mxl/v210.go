@@ -1,7 +1,6 @@
 package mxl
 
 import (
-	"encoding/binary"
 	"fmt"
 )
 
@@ -43,6 +42,7 @@ func V210ToYUV420p(v210 []byte, width, height int) ([]byte, error) {
 		return nil, fmt.Errorf("v210: buffer size %d too small, need %d for %dx%d", len(v210), requiredSize, width, height)
 	}
 
+	groups := width / 6
 	ySize := width * height
 	chromaW := width / 2
 	chromaH := height / 2
@@ -59,67 +59,24 @@ func V210ToYUV420p(v210 []byte, width, height int) ([]byte, error) {
 
 	// Unpack V210 to extract Y (full resolution) and Cb/Cr (4:2:2)
 	for row := 0; row < height; row++ {
-		rowBase := row * stride
-		yRow := row * width
-		cRow := row * chromaW
-
-		for group := 0; group < width/6; group++ {
-			offset := rowBase + group*16
-
-			w0 := binary.LittleEndian.Uint32(v210[offset:])
-			w1 := binary.LittleEndian.Uint32(v210[offset+4:])
-			w2 := binary.LittleEndian.Uint32(v210[offset+8:])
-			w3 := binary.LittleEndian.Uint32(v210[offset+12:])
-
-			// Extract 10-bit values from each word
-			cb0 := w0 & 0x3FF
-			y0 := (w0 >> 10) & 0x3FF
-			cr0 := (w0 >> 20) & 0x3FF
-
-			y1 := w1 & 0x3FF
-			cb2 := (w1 >> 10) & 0x3FF
-			y2 := (w1 >> 20) & 0x3FF
-
-			cr2 := w2 & 0x3FF
-			y3 := (w2 >> 10) & 0x3FF
-			cb4 := (w2 >> 20) & 0x3FF
-
-			y4 := w3 & 0x3FF
-			cr4 := (w3 >> 10) & 0x3FF
-			y5 := (w3 >> 20) & 0x3FF
-
-			// Store Y (10-bit >> 2 = 8-bit)
-			px := yRow + group*6
-			yPlane[px+0] = byte(y0 >> 2)
-			yPlane[px+1] = byte(y1 >> 2)
-			yPlane[px+2] = byte(y2 >> 2)
-			yPlane[px+3] = byte(y3 >> 2)
-			yPlane[px+4] = byte(y4 >> 2)
-			yPlane[px+5] = byte(y5 >> 2)
-
-			// Store 4:2:2 chroma (3 Cb/Cr samples per 6-pixel group)
-			cx := cRow + group*3
-			cb422[cx+0] = byte(cb0 >> 2)
-			cb422[cx+1] = byte(cb2 >> 2)
-			cb422[cx+2] = byte(cb4 >> 2)
-			cr422[cx+0] = byte(cr0 >> 2)
-			cr422[cx+1] = byte(cr2 >> 2)
-			cr422[cx+2] = byte(cr4 >> 2)
-		}
+		v210Row := v210[row*stride:]
+		yRow := yPlane[row*width:]
+		cbRow := cb422[row*chromaW:]
+		crRow := cr422[row*chromaW:]
+		v210UnpackRow(&yRow[0], &cbRow[0], &crRow[0], &v210Row[0], groups)
 	}
 
 	// Downsample chroma from 4:2:2 to 4:2:0: average pairs of adjacent rows
 	for row := 0; row < chromaH; row++ {
-		topRow := row * 2
-		botRow := topRow + 1
-		topBase := topRow * chromaW
-		botBase := botRow * chromaW
-		outBase := row * chromaW
+		topCb := cb422[(row*2)*chromaW:]
+		botCb := cb422[(row*2+1)*chromaW:]
+		dstCb := cbPlane[row*chromaW:]
+		chromaVAvg(&dstCb[0], &topCb[0], &botCb[0], chromaW)
 
-		for x := 0; x < chromaW; x++ {
-			cbPlane[outBase+x] = byte((uint16(cb422[topBase+x]) + uint16(cb422[botBase+x]) + 1) >> 1)
-			crPlane[outBase+x] = byte((uint16(cr422[topBase+x]) + uint16(cr422[botBase+x]) + 1) >> 1)
-		}
+		topCr := cr422[(row*2)*chromaW:]
+		botCr := cr422[(row*2+1)*chromaW:]
+		dstCr := crPlane[row*chromaW:]
+		chromaVAvg(&dstCr[0], &topCr[0], &botCr[0], chromaW)
 	}
 
 	return out, nil
@@ -151,52 +108,17 @@ func YUV420pToV210(yuv []byte, width, height int) ([]byte, error) {
 	cbPlane := yuv[ySize : ySize+cSize]
 	crPlane := yuv[ySize+cSize:]
 
+	groups := width / 6
 	stride := V210LineStride(width)
 	out := make([]byte, stride*height)
 
 	for row := 0; row < height; row++ {
-		rowBase := row * stride
-		yRow := row * width
+		yRow := yPlane[row*width:]
 		// 4:2:0 chroma row index: row/2
-		cRow := (row / 2) * chromaW
-
-		for group := 0; group < width/6; group++ {
-			px := yRow + group*6
-			cx := cRow + group*3
-
-			// Read Y values and convert 8-bit to 10-bit
-			y0 := uint32(yPlane[px+0]) << 2
-			y1 := uint32(yPlane[px+1]) << 2
-			y2 := uint32(yPlane[px+2]) << 2
-			y3 := uint32(yPlane[px+3]) << 2
-			y4 := uint32(yPlane[px+4]) << 2
-			y5 := uint32(yPlane[px+5]) << 2
-
-			// Read chroma values (upsampled: duplicate 4:2:0 row for both even/odd rows)
-			// and convert 8-bit to 10-bit
-			cb0 := uint32(cbPlane[cx+0]) << 2
-			cb2 := uint32(cbPlane[cx+1]) << 2
-			cb4 := uint32(cbPlane[cx+2]) << 2
-			cr0 := uint32(crPlane[cx+0]) << 2
-			cr2 := uint32(crPlane[cx+1]) << 2
-			cr4 := uint32(crPlane[cx+2]) << 2
-
-			// Pack into V210 words
-			// Word 0: Cb0, Y0, Cr0
-			w0 := (cb0 & 0x3FF) | ((y0 & 0x3FF) << 10) | ((cr0 & 0x3FF) << 20)
-			// Word 1: Y1, Cb2, Y2
-			w1 := (y1 & 0x3FF) | ((cb2 & 0x3FF) << 10) | ((y2 & 0x3FF) << 20)
-			// Word 2: Cr2, Y3, Cb4
-			w2 := (cr2 & 0x3FF) | ((y3 & 0x3FF) << 10) | ((cb4 & 0x3FF) << 20)
-			// Word 3: Y4, Cr4, Y5
-			w3 := (y4 & 0x3FF) | ((cr4 & 0x3FF) << 10) | ((y5 & 0x3FF) << 20)
-
-			offset := rowBase + group*16
-			binary.LittleEndian.PutUint32(out[offset:], w0)
-			binary.LittleEndian.PutUint32(out[offset+4:], w1)
-			binary.LittleEndian.PutUint32(out[offset+8:], w2)
-			binary.LittleEndian.PutUint32(out[offset+12:], w3)
-		}
+		cbRow := cbPlane[(row/2)*chromaW:]
+		crRow := crPlane[(row/2)*chromaW:]
+		v210Row := out[row*stride:]
+		v210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
 	}
 
 	return out, nil

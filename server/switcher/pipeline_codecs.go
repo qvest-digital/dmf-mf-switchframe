@@ -391,13 +391,11 @@ func (pc *pipelineCodecs) replayGOPInPlace(frames []*media.VideoFrame) {
 // pipeline decoder, the first P-frame after routing switches references
 // frames the decoder hasn't seen, causing macroblock corruption.
 //
-// Must be called after replayGOP and before the routing switch. Returns
-// the last successfully decoded ProcessingFrame (if any) so the caller can
-// immediately encode+broadcast it to fill the gap between the last
-// transition frame and the first live post-transition frame.
-func (pc *pipelineCodecs) feedDeltaFrames(frames []*media.VideoFrame) *ProcessingFrame {
+// Must be called after replayGOP and before the routing switch. The output
+// is discarded — we only need the decoder to build its reference chain.
+func (pc *pipelineCodecs) feedDeltaFrames(frames []*media.VideoFrame) {
 	if len(frames) == 0 {
-		return nil
+		return
 	}
 
 	pc.mu.Lock()
@@ -405,35 +403,16 @@ func (pc *pipelineCodecs) feedDeltaFrames(frames []*media.VideoFrame) *Processin
 	pc.mu.Unlock()
 
 	if decoder == nil {
-		return nil
+		return
 	}
 
-	var lastPF *ProcessingFrame
 	for _, frame := range frames {
 		annexB := codec.AVC1ToAnnexB(frame.WireData)
 		if frame.IsKeyframe {
 			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 		}
-		yuv, w, h, err := decoder.Decode(annexB)
-		if err == nil && len(yuv) > 0 {
-			yuvSize := w * h * 3 / 2
-			if len(yuv) >= yuvSize {
-				yuvCopy := getYUVBuffer(yuvSize)
-				copy(yuvCopy, yuv[:yuvSize])
-				lastPF = &ProcessingFrame{
-					YUV:        yuvCopy,
-					Width:      w,
-					Height:     h,
-					PTS:        frame.PTS,
-					DTS:        frame.DTS,
-					IsKeyframe: frame.IsKeyframe,
-					GroupID:     frame.GroupID,
-					Codec:      frame.Codec,
-				}
-			}
-		}
+		decoder.Decode(annexB) // output discarded — only building reference chain
 	}
-	return lastPF
 }
 
 // updateSourceStats propagates the program source's estimated bitrate and FPS
