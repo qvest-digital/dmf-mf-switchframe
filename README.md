@@ -278,23 +278,28 @@ graph TD
 
     subgraph server["Server (Go)"]
         prism["Prism<br/>MoQ/WebTransport :8080 · REST :8081"]
-        mxlIn["MXL Sources<br/>(V210 shared memory)"] --> switcher
-        mxlIn --> mixer
-        prism --> switcher["Switcher<br/>cut / fade / dissolve / wipe / stinger"]
+        mxlIn["MXL Sources<br/>(V210 shared memory)"] --> pipeline
+        prism --> pipeline
         prism --> api["Control API<br/>REST + MoQ state"]
-        switcher --> keyer["Upstream Keyer<br/>chroma / luma"]
-        keyer --> mixer["Audio Mixer<br/>trim · EQ · compressor · fader · limiter"]
-        switcher --> relay["Program Relay"]
-        mixer --> relay
-        relay --> dsk["DSK Graphics<br/>compositor"]
-        dsk --> rec["Recording<br/>MPEG-TS rotation"]
-        dsk --> srt["SRT Output<br/>push / pull"]
-        dsk --> conf["Confidence<br/>1fps JPEG"]
+
+        subgraph pipeline["Video/Audio Pipeline"]
+            switcher["Switcher<br/>cut / fade / dissolve / wipe / stinger"]
+            switcher --> keyer["Upstream Keyer<br/>chroma / luma"]
+            keyer --> dsk["DSK Graphics<br/>compositor"]
+            dsk --> mxlOut["MXL Output<br/>(raw YUV420p → V210)"]
+            dsk --> encode["H.264 Encode"]
+            encode --> relay["Program Relay"]
+            mixer["Audio Mixer<br/>trim · EQ · compressor · fader · limiter"]
+            mixer --> relay
+        end
+
+        relay --> rec["Recording<br/>MPEG-TS rotation"]
+        relay --> srt["SRT Output<br/>push / pull"]
+        relay --> conf["Confidence<br/>1fps JPEG"]
         switcher --> replay["Instant Replay<br/>per-source buffers"]
         replay --> replayRelay["Replay Relay"]
         api --> operators["Operator Manager<br/>roles · locks · sessions"]
         api --> macros["Macro Runner<br/>sequential execution"]
-        relay --> mxlOut["MXL Output<br/>(V210 shared memory)"]
         admin["Admin :9090<br/>/metrics · /health · /pprof"]
     end
 ```
@@ -531,7 +536,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [go-astits](https://github.com/asticode/go-astits) — MPEG-TS muxer
 - [srtgo](https://github.com/zsiec/srtgo) — Pure Go SRT
 - [Prometheus](https://prometheus.io/) — Metrics
-- [MXL](https://mxl.media/) — EBU/Linux Foundation shared-memory media transport SDK (optional, build tag `mxl`)
+- [MXL](https://tech.ebu.ch/dmf/mxl) — EBU/Linux Foundation shared-memory media transport SDK (optional, build tag `mxl`)
 
 ## Documentation
 

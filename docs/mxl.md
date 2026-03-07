@@ -1,6 +1,6 @@
 # MXL Integration Guide
 
-SwitchFrame supports [MXL](https://mxl.media/) (Media eXchange Layer) for shared-memory media I/O. MXL is the EBU/Linux Foundation open-source SDK for zero-copy, real-time media exchange between software processes on the same host.
+SwitchFrame supports [MXL](https://tech.ebu.ch/dmf/mxl) (Media eXchange Layer) for shared-memory media I/O. MXL is the EBU/Linux Foundation open-source SDK for zero-copy, real-time media exchange between software processes on the same host.
 
 This enables SwitchFrame to interoperate with MXL-compatible broadcast tools — receiving uncompressed V210 video and float32 audio as sources, and publishing the program output back to MXL shared memory for downstream consumers.
 

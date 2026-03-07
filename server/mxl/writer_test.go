@@ -178,10 +178,7 @@ func TestWriter_StopsOnContextCancel(t *testing.T) {
 	w.WriteVideo(yuv, 12, 2, 0)
 
 	deadline := time.After(200 * time.Millisecond)
-	for {
-		if len(vMock.getGrains()) >= 1 {
-			break
-		}
+	for len(vMock.getGrains()) < 1 {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for grain before cancel")

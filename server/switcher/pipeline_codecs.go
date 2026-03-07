@@ -384,22 +384,6 @@ func (pc *pipelineCodecs) replayGOPInPlace(frames []*media.VideoFrame) {
 	}
 }
 
-// flushDecoder resets the decoder's internal state (reference frames, reorder
-// buffer) without destroying it. Call this when the program source changes
-// to prevent stale reference frame warnings. Unlike resetDecoder (which
-// destroys and recreates), flush avoids B-frame buffering delay.
-func (pc *pipelineCodecs) flushDecoder() {
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.decoder == nil {
-		return
-	}
-	type flusher interface{ Flush() }
-	if f, ok := pc.decoder.(flusher); ok {
-		f.Flush()
-	}
-}
-
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
 // Uses TryLock to avoid blocking the source delivery goroutine on the rare

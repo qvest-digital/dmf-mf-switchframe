@@ -51,20 +51,26 @@ graph TD
                 hvf --> gc["GOP Cache"]
                 hvf --> te["Transition Engine<br/>(raw YUV output)"]
                 hvf --> idr["IDR Gate"]
-                te --> pipeline["pipelineCodecs<br/>decode → key → DSK → encode"]
+                te --> pipeline["pipelineCodecs<br/>decode → key → DSK"]
                 idr --> pipeline
-                pipeline --> bv["programRelay.BroadcastVideo()"]
+                pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p → V210)"]
+                pipeline --> enc["H.264 Encode"]
+                enc --> bv["programRelay.BroadcastVideo()"]
             end
 
             subgraph audio["Audio Path"]
                 delay --> haf["handleAudioFrame"]
                 haf --> am["Audio Mixer<br/>trim → EQ → comp → fader<br/>→ mix → master → limiter"]
                 am --> ba["programRelay.BroadcastAudio()"]
+                am --> mxlAudioOut["MXL Audio Sink<br/>(float32 PCM)"]
             end
         end
 
         bv --> pr["Program Relay"]
         ba --> pr
+
+        mxlOut --> mxlShm["MXL Shared Memory<br/>(program output)"]
+        mxlAudioOut --> mxlShm
 
         pr --> browser1["MoQ Viewer<br/>(Browser)"]
         pr --> om["Output Manager"]
@@ -75,9 +81,6 @@ graph TD
     om --> mux["MPEG-TS Muxer"]
     mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts files)"]
     mux --> aa2["AsyncAdapter"] --> srt["SRT Caller/Listener<br/>(push/pull)"]
-
-    pr --> mxlOut["mxl.Output<br/>YUV420p→V210"]
-    mxlOut --> mxlShm["MXL Shared Memory<br/>(program output)"]
 ```
 
 ### Browser Architecture
