@@ -14,6 +14,7 @@ import "C"
 
 import (
 	"fmt"
+	"time"
 	"unsafe"
 )
 
@@ -61,6 +62,7 @@ func statusError(status C.mxlStatus, context string) error {
 // Instance wraps an MXL SDK instance handle.
 type Instance struct {
 	handle C.mxlInstance
+	stopGC chan struct{} // signals the GC goroutine to stop
 }
 
 // NewInstance creates an MXL instance for the given domain path
@@ -73,7 +75,25 @@ func NewInstance(domain string) (*Instance, error) {
 	if handle == nil {
 		return nil, fmt.Errorf("mxl: failed to create instance for domain %q", domain)
 	}
-	return &Instance{handle: handle}, nil
+	inst := &Instance{handle: handle, stopGC: make(chan struct{})}
+	go inst.gcLoop()
+	return inst, nil
+}
+
+// gcLoop periodically calls mxlGarbageCollectFlows to clean up stale flows
+// from crashed writers. The SDK runs GC once at instance creation, but the
+// docs say it "should be called periodically on a long running application."
+func (inst *Instance) gcLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-inst.stopGC:
+			return
+		case <-ticker.C:
+			C.mxlGarbageCollectFlows(inst.handle)
+		}
+	}
 }
 
 // OpenReader opens a discrete (video/data) flow for reading.
@@ -198,9 +218,10 @@ func (inst *Instance) IsFlowActive(flowID string) (bool, error) {
 	return bool(active), nil
 }
 
-// Close releases the MXL instance.
+// Close releases the MXL instance and stops the GC goroutine.
 func (inst *Instance) Close() error {
 	if inst.handle != nil {
+		close(inst.stopGC)
 		status := C.mxlDestroyInstance(inst.handle)
 		inst.handle = nil
 		return statusError(status, "destroy instance")
@@ -324,8 +345,10 @@ func (r *continuousFlowReader) ReadSamples(index uint64, count int, timeoutNs ui
 				continue
 			}
 			// Adjust pointer for this channel's offset within the fragment.
+			// Each channel has its own ring buffer; stride is the byte offset
+			// between channels. fragSize is bytes for ONE channel's region.
 			chPtr := unsafe.Add(fragPtr, offset)
-			samplesInFrag := fragSize / (4 * channels) // float32 = 4 bytes
+			samplesInFrag := fragSize / 4 // float32 = 4 bytes per sample
 			if copied+samplesInFrag > count {
 				samplesInFrag = count - copied
 			}
@@ -413,8 +436,10 @@ func (w *continuousFlowWriter) WriteSamples(index uint64, channels [][]float32) 
 			if fragPtr == nil || fragSize == 0 {
 				continue
 			}
+			// Each channel has its own ring buffer; stride is the byte offset
+			// between channels. fragSize is bytes for ONE channel's region.
 			chPtr := unsafe.Add(fragPtr, offset)
-			samplesInFrag := fragSize / (4 * len(channels))
+			samplesInFrag := fragSize / 4 // float32 = 4 bytes per sample
 			if copied+samplesInFrag > count {
 				samplesInFrag = count - copied
 			}
