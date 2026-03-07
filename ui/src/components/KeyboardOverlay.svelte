@@ -5,11 +5,19 @@
 	let { onclose }: Props = $props();
 
 	const shortcuts = [
+		// Switching
 		{ key: '1-9', action: 'Select preview source' },
 		{ key: 'Shift + 1-9', action: 'Hot-punch to program' },
 		{ key: 'Space', action: 'Cut (swap preview → program)' },
+		// Transitions
 		{ key: 'Enter', action: 'Auto transition (mix/dip)' },
 		{ key: 'F1', action: 'Fade to black' },
+		{ key: 'F2', action: 'Toggle DSK' },
+		// Macros
+		{ key: 'Ctrl + 1-9', action: 'Run macro' },
+		// Tabs
+		{ key: 'Ctrl+Shift + 1-6', action: 'Switch bottom tab' },
+		// Misc
 		{ key: '` (backtick)', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },
 		{ key: 'Esc', action: 'Close overlay' },
