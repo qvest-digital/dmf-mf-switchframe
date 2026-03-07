@@ -148,7 +148,14 @@ func (m *LoudnessMeter) emitBlock() {
 		m.shortTermFull = true
 	}
 
-	// Store for integrated measurement
+	// Store for integrated measurement (capped at 10 hours = 360,000 blocks).
+	// When full, drop the oldest half to bound memory while preserving gating accuracy.
+	const maxIntegratedBlocks = 360_000
+	if len(m.integratedBlocks) >= maxIntegratedBlocks {
+		half := maxIntegratedBlocks / 2
+		copy(m.integratedBlocks, m.integratedBlocks[half:])
+		m.integratedBlocks = m.integratedBlocks[:half]
+	}
 	m.integratedBlocks = append(m.integratedBlocks, energy)
 
 	// Reset accumulator for next block
