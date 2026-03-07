@@ -6,6 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/moq"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -42,14 +45,30 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		videoReader := mxl.NewDemoVideoReader(width, height, fps, i)
 		audioReader := mxl.NewDemoAudioReader(48000, 2)
 
+		// Capture relay in closure for OnVideoInfo callback.
+		sourceRelay := relay
 		src := mxl.NewSource(mxl.SourceConfig{
-			FlowName:       key,
-			Width:          width,
-			Height:         height,
-			SampleRate:     48000,
-			Channels:       2,
-			Relay:          relay,
-			EncoderFactory: encoderFactory(),
+			FlowName:            key,
+			Width:               width,
+			Height:              height,
+			SampleRate:          48000,
+			Channels:            2,
+			Relay:               relay,
+			EncoderFactory:      encoderFactory(),
+			AudioEncoderFactory: audioEncoderFactoryForMXL(),
+			OnVideoInfo: func(sps, pps []byte, w, h int) {
+				// Set VideoInfo on the relay so browsers can init their decoder.
+				avcC := moq.BuildAVCDecoderConfig(sps, pps)
+				if avcC != nil {
+					sourceRelay.SetVideoInfo(distribution.VideoInfo{
+						Codec:         codec.ParseSPSCodecString(sps),
+						Width:         w,
+						Height:        h,
+						DecoderConfig: avcC,
+					})
+					slog.Info("MXL demo: relay VideoInfo set", "key", key, "w", w, "h", h)
+				}
+			},
 			OnRawVideo: func(sourceKey string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
 					YUV:    yuv,

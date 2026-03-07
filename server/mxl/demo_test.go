@@ -80,7 +80,7 @@ func TestDemoVideoReader_Closes(t *testing.T) {
 	}
 }
 
-func TestDemoAudioReader_GeneratesSilence(t *testing.T) {
+func TestDemoAudioReader_GeneratesTone(t *testing.T) {
 	reader := NewDemoAudioReader(48000, 2)
 	defer reader.Close()
 
@@ -96,12 +96,22 @@ func TestDemoAudioReader_GeneratesSilence(t *testing.T) {
 		t.Fatalf("expected 1024 samples, got %d", len(channels[0]))
 	}
 
-	// Verify silence (all zeros).
-	for ch := 0; ch < 2; ch++ {
-		for i, v := range channels[ch] {
-			if v != 0 {
-				t.Fatalf("channel %d sample %d = %f, want 0", ch, i, v)
-			}
+	// Verify tone is present (has non-zero samples).
+	hasNonZero := false
+	for _, v := range channels[0] {
+		if v != 0 {
+			hasNonZero = true
+			break
+		}
+	}
+	if !hasNonZero {
+		t.Fatal("expected non-zero samples (440 Hz tone), got silence")
+	}
+
+	// Both channels should be identical (mono tone on both).
+	for i := range channels[0] {
+		if channels[0][i] != channels[1][i] {
+			t.Fatalf("channels differ at sample %d: L=%f R=%f", i, channels[0][i], channels[1][i])
 		}
 	}
 }

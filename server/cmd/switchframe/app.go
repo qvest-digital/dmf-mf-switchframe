@@ -387,13 +387,28 @@ func (a *App) initMXL() error {
 		}
 		// Audio flow would use a separate flow UUID; for now video-only.
 
+		// Capture relay for OnVideoInfo closure.
+		sourceRelay := relay
 		src := mxl.NewSource(mxl.SourceConfig{
-			FlowName:       flowName,
-			VideoFlowID:    flowID,
-			Width:          1920,
-			Height:         1080,
-			EncoderFactory: encoderFactory(),
-			Relay:          relay,
+			FlowName:            flowName,
+			VideoFlowID:         flowID,
+			Width:               1920,
+			Height:              1080,
+			EncoderFactory:      encoderFactory(),
+			AudioEncoderFactory: audioEncoderFactoryForMXL(),
+			Relay:               relay,
+			OnVideoInfo: func(sps, pps []byte, w, h int) {
+				avcC := moq.BuildAVCDecoderConfig(sps, pps)
+				if avcC != nil {
+					sourceRelay.SetVideoInfo(distribution.VideoInfo{
+						Codec:         codec.ParseSPSCodecString(sps),
+						Width:         w,
+						Height:        h,
+						DecoderConfig: avcC,
+					})
+					slog.Info("MXL source: relay VideoInfo set", "key", flowName, "w", w, "h", h)
+				}
+			},
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
 					YUV:    yuv,

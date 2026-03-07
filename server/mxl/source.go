@@ -65,6 +65,11 @@ type SourceConfig struct {
 	// If nil, audio is not encoded for relay.
 	AudioEncoderFactory func(sampleRate, channels int) (AudioEnc, error)
 
+	// OnVideoInfo is called once after the first keyframe is encoded,
+	// providing SPS/PPS so the caller can set VideoInfo on the relay
+	// (required for browser decoder initialization).
+	OnVideoInfo func(sps, pps []byte, width, height int)
+
 	Logger *slog.Logger
 }
 
@@ -86,9 +91,10 @@ type Source struct {
 	wg     sync.WaitGroup
 
 	// Running encoder for video relay path.
-	videoEncoder transition.VideoEncoder
-	audioEncoder AudioEnc
-	groupID      atomic.Uint32
+	videoEncoder  transition.VideoEncoder
+	audioEncoder  AudioEnc
+	groupID       atomic.Uint32
+	videoInfoSent bool
 }
 
 // NewSource creates an MXL source.
@@ -251,6 +257,13 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 			case 8:
 				frame.PPS = nalu
 			}
+		}
+
+		// Notify caller on first keyframe so it can set VideoInfo on the relay.
+		// Browsers need this to initialize their VideoDecoder.
+		if !s.videoInfoSent && s.config.OnVideoInfo != nil && frame.SPS != nil && frame.PPS != nil {
+			s.videoInfoSent = true
+			s.config.OnVideoInfo(frame.SPS, frame.PPS, width, height)
 		}
 	}
 

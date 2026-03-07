@@ -82,7 +82,7 @@ func (d *DemoVideoReader) Close() error {
 	return nil
 }
 
-// DemoAudioReader generates silent (zero-filled) stereo PCM audio.
+// DemoAudioReader generates a stereo test tone (440 Hz sine wave at -20 dBFS).
 // Implements ContinuousReader.
 type DemoAudioReader struct {
 	sampleRate int
@@ -93,8 +93,9 @@ type DemoAudioReader struct {
 	closed atomic.Bool
 }
 
-// NewDemoAudioReader creates an audio reader that generates silence at
-// the given sample rate and channel count.
+// NewDemoAudioReader creates an audio reader that generates a 440 Hz sine tone at
+// the given sample rate and channel count. The tone is at -20 dBFS so it's
+// audible but not obnoxiously loud.
 func NewDemoAudioReader(sampleRate, channels int) *DemoAudioReader {
 	// ~23ms per read (1024 samples at 48kHz), matching AAC frame size.
 	return &DemoAudioReader{
@@ -111,12 +112,23 @@ func (d *DemoAudioReader) ReadSamples(_ uint64, count int, _ uint64) ([][]float3
 		return nil, fmt.Errorf("mxl: demo audio reader closed")
 	}
 
-	d.index.Add(uint64(count))
+	sampleOffset := d.index.Add(uint64(count)) - uint64(count)
 
-	// Generate silence (de-interleaved).
+	// Generate 440 Hz sine tone at -20 dBFS (de-interleaved).
+	const (
+		freq      = 440.0
+		amplitude = 0.1 // -20 dBFS
+	)
 	channels := make([][]float32, d.channels)
 	for ch := range channels {
 		channels[ch] = make([]float32, count)
+	}
+	for i := 0; i < count; i++ {
+		t := float64(sampleOffset+uint64(i)) / float64(d.sampleRate)
+		sample := float32(amplitude * math.Sin(2*math.Pi*freq*t))
+		for ch := range channels {
+			channels[ch][i] = sample
+		}
 	}
 	return channels, nil
 }

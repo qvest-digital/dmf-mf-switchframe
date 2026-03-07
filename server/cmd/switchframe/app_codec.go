@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -32,6 +33,14 @@ func audioDecoderFactory() func(sampleRate, channels int) (audio.AudioDecoder, e
 // audioEncoderFactory returns a factory that creates FDK AAC encoders.
 func audioEncoderFactory() func(sampleRate, channels int) (audio.AudioEncoder, error) {
 	return func(sampleRate, channels int) (audio.AudioEncoder, error) {
+		return audio.NewFDKEncoder(sampleRate, channels)
+	}
+}
+
+// audioEncoderFactoryForMXL returns a factory compatible with mxl.AudioEnc.
+// audio.AudioEncoder satisfies mxl.AudioEnc (same Encode/Close methods).
+func audioEncoderFactoryForMXL() func(sampleRate, channels int) (mxl.AudioEnc, error) {
+	return func(sampleRate, channels int) (mxl.AudioEnc, error) {
 		return audio.NewFDKEncoder(sampleRate, channels)
 	}
 }
