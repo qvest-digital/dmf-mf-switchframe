@@ -273,7 +273,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		gopCache:      newGOPCache(),
-		videoProcCh:   make(chan videoProcWork, 2),
+		videoProcCh:   make(chan videoProcWork, 4),
 		videoProcDone: make(chan struct{}),
 	}
 	s.delayBuffer = NewDelayBuffer(s)
