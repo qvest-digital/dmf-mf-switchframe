@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, KeyConfig } from '$lib/api/types';
-	import { setSourceKey, deleteSourceKey, apiCall } from '$lib/api/switch-api';
+	import { setSourceKey, deleteSourceKey, getSourceKey, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { rgbToYCbCr, ycbcrToHex, hexToRgb, KEY_PRESETS } from '$lib/util/color';
 
@@ -54,6 +54,42 @@
 		if (!activeSource && selectedSource) {
 			activeSource = selectedSource;
 		}
+	});
+
+	// Load existing key config when source changes
+	$effect(() => {
+		const source = activeSource;
+		if (!source) return;
+
+		getSourceKey(source).then((config) => {
+			keyType = config.type ?? 'none';
+			enabled = config.enabled ?? true;
+			if (config.type === 'chroma') {
+				keyColorY = config.keyColorY ?? 182;
+				keyColorCb = config.keyColorCb ?? 30;
+				keyColorCr = config.keyColorCr ?? 12;
+				similarity = config.similarity ?? 0.4;
+				smoothness = config.smoothness ?? 0.1;
+				spillSuppress = config.spillSuppress ?? 0.5;
+			} else if (config.type === 'luma') {
+				lowClip = config.lowClip ?? 0.0;
+				highClip = config.highClip ?? 0.8;
+				softness = config.softness ?? 0.1;
+			}
+		}).catch(() => {
+			// No key config for this source — reset to defaults
+			keyType = 'none';
+			enabled = true;
+			keyColorY = 182;
+			keyColorCb = 30;
+			keyColorCr = 12;
+			similarity = 0.4;
+			smoothness = 0.1;
+			spillSuppress = 0.5;
+			lowClip = 0.0;
+			highClip = 0.8;
+			softness = 0.1;
+		});
 	});
 
 	function selectSource(key: string) {
