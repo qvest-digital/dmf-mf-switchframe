@@ -23,6 +23,16 @@
 	let fileInput = $state<HTMLInputElement>();
 	let showDeleteConfirm = $state('');
 
+	/** Local guard: prevents duplicate startTransition() calls while awaiting server confirmation. */
+	let tbarStarting = $state(false);
+
+	// Clear guard once server confirms the transition is active
+	$effect(() => {
+		if (crState.inTransition) {
+			tbarStarting = false;
+		}
+	});
+
 	// Load stinger list on mount and when type changes to stinger
 	$effect(() => {
 		if (transType === 'stinger') {
@@ -109,9 +119,13 @@
 		showDeleteConfirm = '';
 	}
 
-	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly. */
+	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly.
+	 *  Silently drops errors from trailing-edge calls that arrive after transition completes. */
 	const setPositionThrottled = throttle((value: number) => {
-		apiCall(setTransitionPosition(value), 'T-bar failed');
+		if (!crState.inTransition) return;
+		setTransitionPosition(value).catch(() => {
+			// Trailing-edge throttle fire after transition completed -- benign, ignore.
+		});
 	}, 50);
 
 	function handleTbarPointerDown(e: PointerEvent) {
@@ -134,12 +148,15 @@
 		const y = tbarPosition(e.clientY, rect.top, rect.height);
 		anim.active = false;
 
-		if (!crState.inTransition && y > 0 && crState.previewSource) {
-			apiCall(startTransition(
+		if (!crState.inTransition && !tbarStarting && y > 0 && crState.previewSource) {
+			tbarStarting = true;
+			const p = startTransition(
 				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
 				transType === 'stinger' ? stingerName : undefined
-			), 'Transition failed');
+			);
+			p.catch(() => { tbarStarting = false; });
+			apiCall(p, 'Transition failed');
 		}
 		setPositionThrottled(y);
 	}
@@ -150,12 +167,15 @@
 		e.preventDefault();
 		anim.active = false;
 
-		if (!crState.inTransition && newValue > 0 && crState.previewSource) {
-			apiCall(startTransition(
+		if (!crState.inTransition && !tbarStarting && newValue > 0 && crState.previewSource) {
+			tbarStarting = true;
+			const p = startTransition(
 				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
 				transType === 'stinger' ? stingerName : undefined
-			), 'Transition failed');
+			);
+			p.catch(() => { tbarStarting = false; });
+			apiCall(p, 'Transition failed');
 		}
 		if (newValue > 0) {
 			setPositionThrottled(newValue);

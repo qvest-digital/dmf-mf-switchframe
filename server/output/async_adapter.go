@@ -8,7 +8,10 @@ import (
 )
 
 var tsPacketPool = sync.Pool{
-	New: func() any { return make([]byte, 0, 4096) },
+	New: func() any {
+		b := make([]byte, 0, 4096)
+		return &b
+	},
 }
 
 // AsyncAdapter wraps an OutputAdapter with a buffered channel for non-blocking writes.
@@ -17,7 +20,7 @@ var tsPacketPool = sync.Pool{
 // adapters in the fan-out loop.
 type AsyncAdapter struct {
 	inner    OutputAdapter
-	buffer   chan []byte
+	buffer   chan *[]byte
 	dropped  atomic.Int64
 	stopCh   chan struct{}
 	doneCh   chan struct{}
@@ -29,7 +32,7 @@ type AsyncAdapter struct {
 func NewAsyncAdapter(inner OutputAdapter, bufSize int) *AsyncAdapter {
 	return &AsyncAdapter{
 		inner:  inner,
-		buffer: make(chan []byte, bufSize),
+		buffer: make(chan *[]byte, bufSize),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -59,15 +62,15 @@ func (a *AsyncAdapter) startDrain() {
 // is full, the packet is dropped and the drop counter is incremented.
 // Write never blocks.
 func (a *AsyncAdapter) Write(tsData []byte) (int, error) {
-	cp := tsPacketPool.Get().([]byte)
-	cp = append(cp[:0], tsData...)
+	bp := tsPacketPool.Get().(*[]byte)
+	*bp = append((*bp)[:0], tsData...)
 
 	select {
-	case a.buffer <- cp:
+	case a.buffer <- bp:
 		// Sent successfully.
 	default:
 		// Buffer full, drop the packet.
-		tsPacketPool.Put(cp)
+		tsPacketPool.Put(bp)
 		a.dropped.Add(1)
 		slog.Warn("async adapter dropped packet",
 			"adapter", a.inner.ID(),
@@ -108,31 +111,31 @@ func (a *AsyncAdapter) drain() {
 
 	for {
 		select {
-		case data := <-a.buffer:
-			if data == nil {
+		case bp := <-a.buffer:
+			if bp == nil {
 				// Channel closed or nil data; skip.
 				continue
 			}
-			if _, err := a.inner.Write(data); err != nil {
+			if _, err := a.inner.Write(*bp); err != nil {
 				slog.Error("async adapter inner write error",
 					"adapter", a.inner.ID(),
 					"err", err)
 			}
-			tsPacketPool.Put(data)
+			tsPacketPool.Put(bp)
 		case <-a.stopCh:
 			// Drain remaining items in the buffer before exiting.
 			for {
 				select {
-				case data := <-a.buffer:
-					if data == nil {
+				case bp := <-a.buffer:
+					if bp == nil {
 						continue
 					}
-					if _, err := a.inner.Write(data); err != nil {
+					if _, err := a.inner.Write(*bp); err != nil {
 						slog.Error("async adapter inner write error during drain",
 							"adapter", a.inner.ID(),
 							"err", err)
 					}
-					tsPacketPool.Put(data)
+					tsPacketPool.Put(bp)
 				default:
 					return
 				}

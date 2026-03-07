@@ -53,7 +53,6 @@ type OutputDestination struct {
 	active    bool
 	createdAt time.Time
 	startedAt *time.Time
-	lastErr   string
 }
 
 // generateDestinationID creates a random 8-character hex ID.
