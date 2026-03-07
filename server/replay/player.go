@@ -20,6 +20,7 @@ type PlayerConfig struct {
 	AudioClip      []bufferedAudioFrame
 	Speed          float64
 	Loop           bool
+	InitialPTS     int64 // Starting PTS for output (anchors to program timeline).
 	Interpolation  InterpolationMode
 	DecoderFactory transition.DecoderFactory
 	EncoderFactory transition.EncoderFactory
@@ -27,6 +28,7 @@ type PlayerConfig struct {
 	AudioOutput    func(frame *media.AudioFrame)
 	OnDone         func()
 	OnReady        func() // Called when first GOP decoded and encoder created.
+	OnVideoInfo    func(sps, pps []byte, width, height int) // Called once on first encoded keyframe.
 }
 
 // decodedFrame is a decoded YUV frame with original PTS for display ordering.
@@ -40,11 +42,12 @@ type decodedFrame struct {
 // replayPlayer decodes a clip, optionally duplicates frames for slow-motion,
 // re-encodes, and outputs to a relay. Created per-Play, destroyed on complete.
 type replayPlayer struct {
-	config   PlayerConfig
-	cancel   context.CancelFunc
-	done     chan struct{}
-	once     sync.Once
-	progress atomic.Int64 // 0–1000 representing 0.0–1.0 playback progress
+	config        PlayerConfig
+	cancel        context.CancelFunc
+	done          chan struct{}
+	once          sync.Once
+	progress      atomic.Int64 // 0–1000 representing 0.0–1.0 playback progress
+	videoInfoSent bool         // true after OnVideoInfo callback has been called
 
 	// Audio tracking: index into AudioClip for interleaved output.
 	audioIdx int
@@ -151,8 +154,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	interpolator := newInterpolator(p.config.Interpolation)
 
+	outputPTS := p.config.InitialPTS
 	for {
-		outputPTS := int64(0)
 		firstFrame := true
 		outputIdx := 0
 		p.audioIdx = 0
@@ -257,13 +260,25 @@ func (p *replayPlayer) outputGOP(
 				avc1 = encoded // Fallback if already AVC1
 			}
 
-			// Derive codec string from encoder's SPS on keyframes.
+			// Derive codec string from encoder's SPS on keyframes,
+			// and fire OnVideoInfo callback once with SPS/PPS.
 			if isKeyframe {
+				var spsNALU, ppsNALU []byte
 				for _, nalu := range codec.ExtractNALUs(avc1) {
-					if len(nalu) > 0 && nalu[0]&0x1F == 7 {
-						*codecStr = codec.ParseSPSCodecString(nalu)
-						break
+					if len(nalu) == 0 {
+						continue
 					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						spsNALU = nalu
+						*codecStr = codec.ParseSPSCodecString(nalu)
+					case 8:
+						ppsNALU = nalu
+					}
+				}
+				if !p.videoInfoSent && p.config.OnVideoInfo != nil && spsNALU != nil && ppsNALU != nil {
+					p.videoInfoSent = true
+					p.config.OnVideoInfo(spsNALU, ppsNALU, df.width, df.height)
 				}
 			}
 

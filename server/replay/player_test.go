@@ -722,3 +722,167 @@ func TestReplayPlayer_NoneInterpolation(t *testing.T) {
 	// At 0.5x, 3 input frames → 6 output frames.
 	require.Len(t, outputFrames, 6)
 }
+
+func TestReplayPlayer_OnVideoInfoCallback(t *testing.T) {
+	clip := buildTestClip(1, 3)
+	var gotSPS, gotPPS []byte
+	var gotW, gotH int
+	infoCh := make(chan struct{}, 1)
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output:         func(frame *media.VideoFrame) {},
+		OnDone:         func() {},
+		OnVideoInfo: func(sps, pps []byte, width, height int) {
+			gotSPS = sps
+			gotPPS = pps
+			gotW = width
+			gotH = height
+			select {
+			case infoCh <- struct{}{}:
+			default:
+			}
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+
+	select {
+	case <-infoCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnVideoInfo not called within timeout")
+	}
+
+	p.Wait()
+
+	// Mock encoder emits SPS type 0x67 and PPS type 0x68.
+	require.NotEmpty(t, gotSPS, "expected SPS")
+	require.NotEmpty(t, gotPPS, "expected PPS")
+	require.Equal(t, byte(7), gotSPS[0]&0x1F, "SPS NALU type should be 7")
+	require.Equal(t, byte(8), gotPPS[0]&0x1F, "PPS NALU type should be 8")
+	require.Equal(t, 320, gotW)
+	require.Equal(t, 240, gotH)
+}
+
+func TestReplayPlayer_OnVideoInfoCalledOnce(t *testing.T) {
+	// With 2 GOPs, each starts with a keyframe. OnVideoInfo should only be
+	// called once (on the very first keyframe).
+	clip := buildTestClip(2, 5)
+	var callCount int
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output:         func(frame *media.VideoFrame) {},
+		OnDone:         func() {},
+		OnVideoInfo: func(sps, pps []byte, width, height int) {
+			mu.Lock()
+			callCount++
+			mu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, callCount, "OnVideoInfo should be called exactly once")
+}
+
+func TestReplayPlayer_InitialPTS(t *testing.T) {
+	clip := buildTestClip(1, 5)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	initialPTS := int64(1_000_000)
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		InitialPTS:     initialPTS,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, outputFrames, 5)
+	// First frame should start at initialPTS, not 0.
+	require.Equal(t, initialPTS, outputFrames[0].PTS,
+		"first frame PTS should be InitialPTS")
+
+	// PTS should be monotonically increasing from InitialPTS.
+	for i := 1; i < len(outputFrames); i++ {
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS)
+	}
+}
+
+func TestReplayPlayer_LoopDoesNotResetPTS(t *testing.T) {
+	clip := buildTestClip(1, 3) // 3 frames
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           true,
+		InitialPTS:     500_000,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	time.Sleep(500 * time.Millisecond) // Let it loop at least once
+	p.Stop()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Greater(t, len(outputFrames), 3, "expected loop to produce >3 frames")
+
+	// PTS should be strictly monotonically increasing across loops —
+	// no reset to 0 or to InitialPTS on loop boundary.
+	for i := 1; i < len(outputFrames); i++ {
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS,
+			"PTS not monotonic at frame %d: %d <= %d (loop boundary PTS reset?)",
+			i, outputFrames[i].PTS, outputFrames[i-1].PTS)
+	}
+}

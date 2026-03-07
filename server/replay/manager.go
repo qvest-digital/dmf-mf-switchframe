@@ -42,9 +42,11 @@ type Manager struct {
 	playerCtx    context.Context
 	playerCancel context.CancelFunc
 
-	onStateChange   func()
-	onPlaybackStart func() // called when player transitions to playing
-	onPlaybackStop  func() // called when player finishes or is stopped
+	onStateChange     func()
+	onPlaybackStart   func() // called when player transitions to playing
+	onPlaybackStop    func() // called when player finishes or is stopped
+	onVideoInfoChange func(sps, pps []byte, width, height int)
+	ptsProvider       func() int64
 }
 
 // NewManager creates a replay manager.
@@ -210,15 +212,27 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 		m.playerSpeed = speed
 		m.playerLoop = loop
 
+		// Anchor replay PTS to program timeline to prevent backward jumps.
+		var initialPTS int64
+		if m.ptsProvider != nil {
+			initialPTS = m.ptsProvider()
+			if initialPTS > 0 {
+				initialPTS += 3003 // one frame ahead at 30fps to avoid exact duplicate
+			}
+		}
+
 		ctx, cancel := context.WithCancel(context.Background())
 		m.playerCtx = ctx
 		m.playerCancel = cancel
+
+		videoInfoCb := m.onVideoInfoChange
 
 		m.player = newReplayPlayer(PlayerConfig{
 			Clip:           clip,
 			AudioClip:      audioClip,
 			Speed:          speed,
 			Loop:           loop,
+			InitialPTS:     initialPTS,
 			Interpolation:  InterpolationBlend,
 			DecoderFactory: m.decoderFactory,
 			EncoderFactory: m.encoderFactory,
@@ -250,6 +264,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 				}
 				m.notifyStateChange()
 			},
+			OnVideoInfo: videoInfoCb,
 		})
 
 		m.player.Start(ctx)
@@ -326,6 +341,24 @@ func (m *Manager) OnStateChange(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onStateChange = fn
+}
+
+// OnVideoInfoChange registers a callback invoked when the replay player
+// produces its first keyframe with SPS/PPS. Used to set VideoInfo on the
+// replay relay so MoQ subscribers can discover tracks.
+func (m *Manager) OnVideoInfoChange(fn func(sps, pps []byte, width, height int)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onVideoInfoChange = fn
+}
+
+// SetPTSProvider registers a function that returns the current program PTS.
+// The replay player uses this to anchor its output PTS to the program
+// timeline, preventing backward PTS jumps when cut to program.
+func (m *Manager) SetPTSProvider(fn func() int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ptsProvider = fn
 }
 
 // Close stops any active player and releases resources.

@@ -292,6 +292,18 @@ func (a *App) initSubsystems() error {
 			func() { a.sw.UnregisterSource("replay") },
 		)
 
+		// Wire replay VideoInfo so MoQ subscribers can discover tracks.
+		a.replayMgr.OnVideoInfoChange(func(sps, pps []byte, w, h int) {
+			avcC := a.buildAVCConfig(sps, pps)
+			if avcC != nil {
+				a.replayRelay.SetVideoInfo(a.buildVideoInfo(sps, avcC, w, h))
+				slog.Info("replay: updated replay relay VideoInfo", "w", w, "h", h)
+			}
+		})
+
+		// Anchor replay PTS to program timeline to prevent backward jumps.
+		a.replayMgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
+
 		slog.Info("replay manager initialized", "bufferSecs", a.cfg.ReplayBufferSecs)
 	}
 

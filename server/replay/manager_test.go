@@ -451,6 +451,87 @@ func TestReplayManager_PlaybackLifecycleCallbacks_ManualStop(t *testing.T) {
 	}
 }
 
+func TestReplayManager_OnVideoInfoChange(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	var gotSPS, gotPPS []byte
+	var gotW, gotH int
+	infoCh := make(chan struct{}, 1)
+	m.OnVideoInfoChange(func(sps, pps []byte, width, height int) {
+		gotSPS = sps
+		gotPPS = pps
+		gotW = width
+		gotH = height
+		select {
+		case infoCh <- struct{}{}:
+		default:
+		}
+	})
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	select {
+	case <-infoCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnVideoInfoChange callback not called during playback")
+	}
+
+	require.NotEmpty(t, gotSPS)
+	require.NotEmpty(t, gotPPS)
+	require.Equal(t, 320, gotW)
+	require.Equal(t, 240, gotH)
+
+	// Wait for playback to complete.
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestReplayManager_SetPTSProvider(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	programPTS := int64(500_000)
+	m.SetPTSProvider(func() int64 { return programPTS })
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	// Wait for playback to complete.
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Verify output frames started from around programPTS (not from 0).
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	require.NotEmpty(t, relay.videos)
+	require.Greater(t, relay.videos[0].PTS, programPTS-1,
+		"first frame PTS should be >= programPTS, got %d", relay.videos[0].PTS)
+}
+
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {
 	f := makeVideoFrame(pts, keyframe, size)
 	// Override wireData with valid AVC1 format.

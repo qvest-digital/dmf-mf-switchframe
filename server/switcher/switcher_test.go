@@ -887,3 +887,38 @@ func TestCutGroupIDMonotonicity(t *testing.T) {
 		lastGID = f.GroupID
 	}
 }
+
+func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+
+	// Initially 0 — no frames broadcast yet.
+	require.Equal(t, int64(0), sw.LastBroadcastVideoPTS())
+
+	// Cut to cam1 and send frames.
+	_ = sw.Cut(context.Background(), "cam1")
+	viewer := sw.sources["cam1"].viewer
+
+	// Send a keyframe, then non-keyframe with known PTS values.
+	viewer.SendVideo(&media.VideoFrame{
+		PTS:        100_000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+	})
+	time.Sleep(50 * time.Millisecond) // Allow async processing
+
+	pts := sw.LastBroadcastVideoPTS()
+	require.Equal(t, int64(100_000), pts, "expected PTS to track broadcast")
+
+	viewer.SendVideo(&media.VideoFrame{
+		PTS:        103_003,
+		IsKeyframe: false,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x41, 0x9A},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pts = sw.LastBroadcastVideoPTS()
+	require.Equal(t, int64(103_003), pts, "expected PTS to update on each broadcast")
+}

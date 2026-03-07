@@ -242,6 +242,9 @@ type Switcher struct {
 	transOutputCount    atomic.Int64 // frames output by transition engine
 	idrGateDrops        atomic.Int64 // non-keyframes dropped by pendingIDR gate
 
+	// Last broadcast PTS for replay PTS anchoring (atomic, lock-free).
+	lastBroadcastPTS atomic.Int64
+
 	// Broadcast interval diagnostics (atomic, lock-free).
 	lastBroadcastNano        atomic.Int64 // UnixNano of last program broadcast
 	maxBroadcastIntervalNano atomic.Int64 // max gap between consecutive broadcasts (ns)
@@ -476,6 +479,13 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// LastBroadcastVideoPTS returns the PTS of the most recently broadcast video
+// frame to the program relay. Used by the replay system to anchor its output
+// PTS to the program timeline.
+func (s *Switcher) LastBroadcastVideoPTS() int64 {
+	return s.lastBroadcastPTS.Load()
+}
+
 // trackBroadcastInterval records the time gap since the last program broadcast
 // and logs a warning when the gap exceeds 200ms, helping diagnose fps drops.
 func (s *Switcher) trackBroadcastInterval() {
@@ -516,6 +526,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	} else {
 		f.GroupID = s.programGroupID.Load()
 	}
+	s.lastBroadcastPTS.Store(f.PTS)
 	s.trackBroadcastInterval()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(&f)
@@ -530,6 +541,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	} else {
 		frame.GroupID = s.programGroupID.Load()
 	}
+	s.lastBroadcastPTS.Store(frame.PTS)
 	s.trackBroadcastInterval()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(frame)
