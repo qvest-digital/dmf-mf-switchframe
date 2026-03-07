@@ -97,6 +97,10 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		char level_str[4];
 		snprintf(level_str, sizeof(level_str), "%d", level);
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
+		// Enable Access Unit Delimiters for MPEG-TS compliance.
+		// AUD NALUs mark AU boundaries, required by ISO 13818-1 for
+		// correct demuxing in hardware decoders and broadcast chains.
+		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);

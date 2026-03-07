@@ -305,6 +305,39 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 	}
 }
 
+func TestFFmpegEncoderIncludesAUD(t *testing.T) {
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30.0, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, 320*240*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	// Feed enough frames to get output
+	var data []byte
+	for i := 0; i < 30; i++ {
+		data, _, err = enc.Encode(yuv, i == 0)
+		require.NoError(t, err)
+		if data != nil {
+			break
+		}
+	}
+	require.NotNil(t, data, "encoder should produce output")
+
+	// Find AUD NALU (type 9) in Annex B output
+	avc1 := AnnexBToAVC1(data)
+	foundAUD := false
+	for _, nalu := range ExtractNALUs(avc1) {
+		if len(nalu) > 0 && nalu[0]&0x1F == 9 {
+			foundAUD = true
+			break
+		}
+	}
+	require.True(t, foundAUD, "encoder output should contain AUD NALU for TS compliance")
+}
+
 func TestFFmpegEncoderInterface(t *testing.T) {
 	// Verify FFmpegEncoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder
