@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -73,7 +74,11 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 
 	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
 	// the viewer goroutine or LatestThumbnail readers.
-	yuv, w, h, err := decoder.Decode(frame.WireData)
+	annexB := codec.AVC1ToAnnexB(frame.WireData)
+	if frame.IsKeyframe {
+		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+	}
+	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
 		slog.Debug("confidence monitor: decode error", "err", err)
 		return

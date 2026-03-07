@@ -128,6 +128,54 @@ func TestConfidenceMonitor_ScalesToThumbnailSize(t *testing.T) {
 	require.Equal(t, byte(0xD8), jpg[1])
 }
 
+func TestConfidenceMonitor_ConvertsAVC1ToAnnexB(t *testing.T) {
+	var receivedData []byte
+	decoderFactory := func() (transition.VideoDecoder, error) {
+		return &recordingDecoder{received: &receivedData}, nil
+	}
+
+	cm := NewConfidenceMonitor(decoderFactory)
+	defer cm.Close()
+
+	// Feed AVC1-format wire data (4-byte length prefix)
+	avc1Data := []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}
+	sps := []byte{0x67, 0x64, 0x00, 0x28}
+	pps := []byte{0x68, 0xEE, 0x3C, 0x80}
+
+	frame := &media.VideoFrame{
+		PTS:        1000,
+		IsKeyframe: true,
+		WireData:   avc1Data,
+		SPS:        sps,
+		PPS:        pps,
+	}
+
+	cm.IngestVideo(frame)
+
+	require.NotNil(t, receivedData)
+	// Should start with Annex B start code (0x00 0x00 0x00 0x01), not AVC1 length prefix
+	require.True(t, len(receivedData) >= 4)
+	require.Equal(t, byte(0x00), receivedData[0])
+	require.Equal(t, byte(0x00), receivedData[1])
+	require.Equal(t, byte(0x00), receivedData[2])
+	require.Equal(t, byte(0x01), receivedData[3])
+}
+
+// recordingDecoder captures the data passed to Decode for assertion.
+type recordingDecoder struct {
+	received *[]byte
+}
+
+func (d *recordingDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	*d.received = cp
+	w, h := 320, 180
+	return make([]byte, w*h*3/2), w, h, nil
+}
+
+func (d *recordingDecoder) Close() {}
+
 // countingDecoder tracks decode calls and returns a fixed-size YUV buffer.
 type countingDecoder struct {
 	count *int
