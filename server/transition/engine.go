@@ -402,13 +402,13 @@ blend:
 	// For Mix/Dip: triggered by incoming source (toSource) frame
 	// For FTB/FTBReverse: triggered by fromSource frame (no toSource)
 	shouldBlend := false
-	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom && e.latestYUVA != nil {
 		shouldBlend = true
 	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo && e.latestYUVA != nil {
 		shouldBlend = true
 	}
 
-	if !shouldBlend {
+	if !shouldBlend || e.blender == nil {
 		e.mu.Unlock()
 		return
 	}

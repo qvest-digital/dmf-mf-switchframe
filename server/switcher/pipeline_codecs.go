@@ -34,6 +34,11 @@ type pipelineCodecs struct {
 	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
 	sourceFPS     float32 // estimated FPS from program source
 
+	// forceNextIDR causes the next encode call to produce a keyframe.
+	// Set by replayGOP after building decoder references so the first
+	// live frame through the pipeline produces a browser sync point.
+	forceNextIDR bool
+
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
 
@@ -41,6 +46,7 @@ type pipelineCodecs struct {
 	lastSPS []byte
 	lastPPS []byte
 }
+
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
 // to raw YUV420. Lazy-initializes the decoder on the first keyframe.
 func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, error) {
@@ -95,6 +101,14 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+
+	// Check forceNextIDR flag (set by replayGOP after building decoder
+	// references). This ensures the first live frame after a transition
+	// produces a keyframe for browser sync.
+	if pc.forceNextIDR {
+		forceIDR = true
+		pc.forceNextIDR = false
+	}
 
 	if pc.encoder != nil && (pf.Width != pc.encWidth || pf.Height != pc.encHeight) {
 		pc.encoder.Close()
@@ -170,6 +184,46 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	return frame, nil
 }
 
+// replayGOP feeds all cached GOP frames through the pipeline decoder to build
+// its reference frame chain, then sets forceNextIDR so the first live frame
+// through the pipeline produces a keyframe for browser sync.
+//
+// This approach avoids encoding during replay (which failed 7/10 times with
+// VT hardware encoder) and avoids re-decoding the keyframe through the async
+// pipeline (which would clear the reference chain via H.264 IDR semantics).
+//
+// The lock is held for the entire decode phase to prevent live frames from
+// interleaving and finding incomplete references. Lock duration is proportional
+// to GOP size (~1ms/frame decode), typically 20-30ms for a 24fps source.
+func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.decoder == nil || len(frames) == 0 {
+		return
+	}
+
+	// Decode all frames to build the decoder's reference chain.
+	// YUV output is discarded — we only need the reference frames.
+	decoded := false
+	for _, frame := range frames {
+		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
+		if _, _, _, err := pc.decoder.Decode(annexB); err == nil {
+			decoded = true
+		}
+	}
+
+	// Signal the encoder to produce a keyframe on the next live frame.
+	// This gives the browser a sync point without needing to encode
+	// during replay (which is unreliable with hardware encoders).
+	if decoded {
+		pc.forceNextIDR = true
+	}
+}
+
 // flushDecoder resets the decoder's internal state (reference frames, reorder
 // buffer) without destroying it. Call this when the program source changes
 // to prevent stale reference frame warnings. Unlike resetDecoder (which
@@ -198,12 +252,13 @@ func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64
 	defer pc.mu.Unlock()
 	if avgFPS > 0 {
 		raw := int(avgFrameSize * avgFPS * 8)
-		// Clamp to sane bounds: 500 Kbps floor, 20 Mbps ceiling.
+		// Clamp to sane bounds: 500 Kbps floor, 50 Mbps ceiling.
+		// The ceiling accommodates 4K sources (~25-40 Mbps typical).
 		// Resolution-aware clamping happens at encoder creation time
 		// via the factory, but we prevent garbage values here.
 		const (
 			minBitrate = 500_000    // 500 Kbps
-			maxBitrate = 20_000_000 // 20 Mbps
+			maxBitrate = 50_000_000 // 50 Mbps
 		)
 		if raw < minBitrate {
 			raw = minBitrate

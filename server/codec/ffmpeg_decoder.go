@@ -9,6 +9,7 @@ package codec
 #include <libavutil/hwcontext.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ffdec_t wraps an FFmpeg decoder context with its associated frames and packet.
 typedef struct {
@@ -46,7 +47,11 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	// FF_EC_GUESS_MVS uses surrounding motion vectors to conceal damaged
 	// macroblocks, producing fewer visible glitches than simple frame copy.
 	h->ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
-	h->ctx->thread_count = 4;
+
+	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpu < 2) ncpu = 2;
+	if (ncpu > 8) ncpu = 8;
+	h->ctx->thread_count = ncpu;
 
 	if (hwDeviceCtx) {
 		h->ctx->hw_device_ctx = av_buffer_ref((AVBufferRef*)hwDeviceCtx);

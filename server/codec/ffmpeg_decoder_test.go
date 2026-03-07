@@ -151,7 +151,7 @@ func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 	yuv := make([]byte, ySize+2*uvSize)
 
 	successCount := 0
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 60; i++ {
 		// Vary Y plane each frame.
 		for j := 0; j < ySize; j++ {
 			yuv[j] = byte((j*7 + i*13) % 256)

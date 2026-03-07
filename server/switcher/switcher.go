@@ -1109,18 +1109,17 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		s.log.Info("transition completed", "type", transType)
 	}
 
-	// Flush the pipeline decoder's reference frames and reorder buffer.
-	// Unlike reset (close+recreate), flush avoids B-frame buffering delay.
-	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-		pipeCodecs.flushDecoder()
-	}
-
-	// Replay only the keyframe from the cached GOP through the pipeline.
-	// This gives the browser an immediate sync point with consistent
-	// SPS/PPS. Live delta frames from the source follow naturally.
+	// Replay the full GOP through the pipeline decoder to build its reference
+	// chain, then set forceNextIDR so the first live frame produces a keyframe.
+	// This avoids encoding during replay (unreliable with HW encoders) and
+	// avoids re-decoding the IDR through the async pipeline (which would clear
+	// the reference chain via H.264 IDR semantics).
 	if len(replayFrames) > 0 {
-		s.broadcastVideo(replayFrames[0]) // keyframe only
-		// Clear the IDR gate — the replayed keyframe seeds the decoder
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			pipeCodecs.flushDecoder()
+			pipeCodecs.replayGOP(replayFrames)
+		}
+		// Clear the IDR gate — the replayed GOP seeds the decoder
 		s.mu.Lock()
 		if ss, ok := s.sources[newProgram]; ok && ss.pendingIDR {
 			ss.pendingIDR = false
@@ -1224,14 +1223,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Flush pipeline decoder — see handleTransitionComplete comment.
-	if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-		pipeCodecs.flushDecoder()
-	}
-
-	// Replay only the keyframe from the cached GOP through the pipeline.
+	// Replay full GOP — see handleTransitionComplete for explanation.
 	if len(replayFrames) > 0 {
-		s.broadcastVideo(replayFrames[0]) // keyframe only
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			pipeCodecs.flushDecoder()
+			pipeCodecs.replayGOP(replayFrames)
+		}
 		s.mu.Lock()
 		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
 			ss.pendingIDR = false
@@ -1390,15 +1387,13 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
 
-		// Flush pipeline decoder — see handleTransitionComplete comment.
-		if s.pipeCodecs != nil {
-			s.pipeCodecs.flushDecoder()
-		}
-
-		// Replay only the keyframe from the cached GOP through the pipeline.
+		// Replay full GOP — see handleTransitionComplete for explanation.
 		if len(replayFrames) > 0 {
-			s.broadcastVideo(replayFrames[0]) // keyframe only
-			// Clear IDR gate — the replayed keyframe seeds the decoder
+			if s.pipeCodecs != nil {
+				s.pipeCodecs.flushDecoder()
+				s.pipeCodecs.replayGOP(replayFrames)
+			}
+			// Clear IDR gate — the replayed GOP seeds the decoder
 			s.mu.Lock()
 			if ss, ok := s.sources[sourceKey]; ok && ss.pendingIDR {
 				ss.pendingIDR = false

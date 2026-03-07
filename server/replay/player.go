@@ -211,6 +211,10 @@ func (p *replayPlayer) outputGOP(
 				slog.Error("replay player: encode failed", "err", encErr)
 				return true
 			}
+			// Multi-threaded encoders may return nil during pipeline warmup (EAGAIN).
+			if encoded == nil {
+				return false
+			}
 
 			// Convert Annex B encoder output to AVC1 for relay.
 			avc1 := codec.AnnexBToAVC1(encoded)

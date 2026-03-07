@@ -10,6 +10,7 @@ package codec
 #include <libavutil/version.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // AV_FRAME_FLAG_KEY was added in FFmpeg 6.1 (libavutil 58.29).
 // For older versions (e.g. Debian Bookworm's FFmpeg 5.1), use key_frame field.
@@ -72,7 +73,14 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->gop_size = (int)(fps + 0.5f) * gop_secs;
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-	h->ctx->thread_count = 4;
+
+	// Derive thread count from CPU cores, clamped to [2, 8].
+	// More than 8 threads adds pipeline latency without meaningful
+	// throughput gain for real-time encoding at broadcast bitrates.
+	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpu < 2) ncpu = 2;
+	if (ncpu > 8) ncpu = 8;
+	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
 	// Level 3.1 for ≤720p, 4.0 for ≤1080p30, 4.2 for higher.
@@ -94,7 +102,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
 		// Set explicit level (libx264 takes string).
-		char level_str[4];
+		char level_str[8];
 		snprintf(level_str, sizeof(level_str), "%d", level);
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.

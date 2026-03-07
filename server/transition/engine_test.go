@@ -322,6 +322,23 @@ func TestEngineFTBReverseBlendInvertsPosition(t *testing.T) {
 	e.Stop()
 }
 
+func TestEngineFTBNoPanicWhenBlenderNil(t *testing.T) {
+	// Regression: FTB after WarmupComplete could panic when the first frame
+	// is a P-frame (needsKeyframeA=true → goto blend). The blender is nil
+	// because no successful decode has occurred yet.
+	e, _, _, _ := newTestEngine(t)
+
+	require.NoError(t, e.Start("cam1", "", TransitionFTB, 1000))
+	e.WarmupComplete()
+
+	// Send a P-frame (not keyframe). This should NOT panic.
+	require.NotPanics(t, func() {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, false)
+	})
+
+	e.Stop()
+}
+
 func TestEngineWarmupPopulatesState(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
