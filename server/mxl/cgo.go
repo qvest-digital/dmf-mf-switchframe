@@ -3,7 +3,7 @@
 package mxl
 
 /*
-#cgo pkg-config: mxl
+#cgo pkg-config: libmxl
 #include <mxl/mxl.h>
 #include <mxl/flow.h>
 #include <mxl/flowinfo.h>
