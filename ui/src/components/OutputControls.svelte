@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
+	import { getConfirmMode, setConfirmMode } from '$lib/state/preferences.svelte';
 	import Clock from './Clock.svelte';
 	import RecordingControl from './RecordingControl.svelte';
 	import SRTOutputModal from './SRTOutputModal.svelte';
@@ -47,6 +48,12 @@
 		class:srt-active={srtActive}
 		onclick={() => showSRTModal = !showSRTModal}
 	>SRT</button>
+	<button
+		class="header-btn confirm-btn"
+		class:confirm-active={getConfirmMode()}
+		onclick={() => setConfirmMode(!getConfirmMode())}
+		title="Require double-press of Space or Shift+number for hot punches"
+	>CONFIRM</button>
 	{#if switchLayout}
 		<button class="header-btn mode-btn" onclick={switchLayout} title="Switch layout mode">MODE</button>
 	{/if}
@@ -90,6 +97,16 @@
 		border-color: var(--accent-blue);
 		background: var(--accent-blue-dim);
 		color: var(--accent-blue);
+	}
+
+	.confirm-btn {
+		font-size: 0.65rem;
+	}
+
+	.confirm-active {
+		border-color: var(--accent-orange);
+		background: var(--accent-orange-dim);
+		color: var(--accent-orange);
 	}
 
 	.mode-btn {
