@@ -6,7 +6,7 @@
 	}
 	let { children }: Props = $props();
 
-	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay'] as const;
+	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets'] as const;
 	type TabId = typeof tabs[number];
 
 	function loadSavedTab(): TabId {
@@ -23,10 +23,10 @@
 		localStorage.setItem('sf-active-tab', tab);
 	}
 
-	// Keyboard shortcut: Ctrl+Shift+1-5
+	// Keyboard shortcut: Ctrl+Shift+1-6
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
-			const match = e.code.match(/^Digit([1-5])$/);
+			const match = e.code.match(/^Digit([1-6])$/);
 			if (match) {
 				e.preventDefault();
 				e.stopPropagation();
@@ -64,7 +64,7 @@
 		id="tabpanel-{activeTab.toLowerCase()}"
 		aria-labelledby="tab-{activeTab.toLowerCase()}"
 	>
-		{@render children(activeTab)}
+		{@render children?.(activeTab)}
 	</div>
 </div>
 

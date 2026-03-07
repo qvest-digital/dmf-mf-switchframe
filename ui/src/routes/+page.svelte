@@ -18,6 +18,7 @@
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import KeyPanel from '../components/KeyPanel.svelte';
 	import ReplayPanel from '../components/ReplayPanel.svelte';
+	import PresetPanel from '../components/PresetPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
@@ -491,6 +492,10 @@
 									<LockIndicator state={store.effectiveState} subsystem="replay" />
 								</div>
 								<ReplayPanel state={store.effectiveState} {pipeline} />
+							</div>
+						{:else if activeTab === 'Presets'}
+							<div class="tab-panel">
+								<PresetPanel />
 							</div>
 						{/if}
 					{/snippet}
