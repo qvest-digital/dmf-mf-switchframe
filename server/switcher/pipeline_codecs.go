@@ -384,6 +384,37 @@ func (pc *pipelineCodecs) replayGOPInPlace(frames []*media.VideoFrame) {
 	}
 }
 
+// feedDeltaFrames decodes additional frames through the pipeline decoder to
+// close the timing window between replayGOP's GOP snapshot and the routing
+// switch. During replayGOP (~8-30ms), 1-2 P-frames may arrive that the
+// transition engine drops (it's already idle). Without feeding them to the
+// pipeline decoder, the first P-frame after routing switches references
+// frames the decoder hasn't seen, causing macroblock corruption.
+//
+// Must be called after replayGOP and before the routing switch. The output
+// is discarded — we only need the decoder to build its reference chain.
+func (pc *pipelineCodecs) feedDeltaFrames(frames []*media.VideoFrame) {
+	if len(frames) == 0 {
+		return
+	}
+
+	pc.mu.Lock()
+	decoder := pc.decoder
+	pc.mu.Unlock()
+
+	if decoder == nil {
+		return
+	}
+
+	for _, frame := range frames {
+		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
+		decoder.Decode(annexB) // output discarded — only building reference chain
+	}
+}
+
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
 // Uses TryLock to avoid blocking the source delivery goroutine on the rare

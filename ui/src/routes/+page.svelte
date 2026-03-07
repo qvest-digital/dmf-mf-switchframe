@@ -214,12 +214,22 @@
 	});
 
 	// React to program/preview changes and canvas ref updates
+	let prevProgramSource: string | undefined;
 	$effect(() => {
 		const _program = store.state.programSource;
 		const _preview = store.state.previewSource;
 		const _pgmCanvas = programCanvas;
 		const _pvwCanvas = previewCanvas;
 		if (!mounted) return;
+
+		// Reset A/V sync tracking on program renderer when source changes
+		// (transition completed). Prevents stale PTS from old source causing
+		// transient sync swings with the new source's PTS.
+		if (prevProgramSource !== undefined && _program !== prevProgramSource) {
+			pipelineManager.notifyProgramSourceChange();
+		}
+		prevProgramSource = _program;
+
 		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 	});
 

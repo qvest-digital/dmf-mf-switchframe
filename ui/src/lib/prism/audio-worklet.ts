@@ -25,16 +25,20 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 // Below LOW, slow down consumption; above HIGH, speed up. Drift is
 // compensated by skipping or repeating ~13 samples per 128-sample quantum
 // (~270µs, inaudible) — no resampling or interpolation is used.
-const TARGET_BUFFER_MS = 200;
-const LOW_WATER_MS = 100;
-const HIGH_WATER_MS = 400;
+//
+// Buffer depth directly determines A/V sync offset: video displays immediately
+// but audio plays through the buffer, so avSyncMs ≈ buffer depth. Targets are
+// set to keep steady-state depth at ~80-120ms for <150ms A/V sync.
+const TARGET_BUFFER_MS = 100;
+const LOW_WATER_MS = 50;
+const HIGH_WATER_MS = 200;
 const MAX_SPEED_RATIO = 1.10;
-const MIN_SPEED_RATIO = 0.95;
+const MIN_SPEED_RATIO = 0.90;
 // Above this threshold, hard-flush the ring buffer to TARGET_BUFFER_MS.
 // Set to HIGH_WATER_MS + TARGET_BUFFER_MS so any buffer level clearly
 // caused by a delivery stall (not normal jitter) is flushed instantly
 // rather than spending seconds on gradual drain at 1.10x.
-const HARD_FLUSH_MS = 600;
+const HARD_FLUSH_MS = 300;
 
 function writePTS(states: Int32Array, pts: number): void {
 	const intPart = Math.trunc(pts);

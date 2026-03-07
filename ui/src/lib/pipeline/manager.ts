@@ -133,6 +133,15 @@ export class PipelineManager {
 	}
 
 	/**
+	 * Notify that the program source has changed (transition completed).
+	 * Resets A/V sync tracking on the program renderer so stale PTS from
+	 * the previous source doesn't produce transient sync swings.
+	 */
+	notifyProgramSourceChange(): void {
+		this.pipeline.resetRendererSync('program');
+	}
+
+	/**
 	 * Detach all canvases. Called before DOM replacement (e.g. layout mode
 	 * switch) so renderers don't reference destroyed canvas elements.
 	 */

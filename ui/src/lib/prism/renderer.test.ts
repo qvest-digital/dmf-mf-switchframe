@@ -43,10 +43,26 @@ describe('PrismRenderer', () => {
 	});
 
 	describe('look-ahead tolerance for video-ahead-of-audio', () => {
-		it('draws frame when video is 200ms ahead of audio', () => {
+		it('draws frame when video is 150ms ahead of audio', () => {
 			// Audio PTS is at 1,000,000 (1 second)
-			// Video frame PTS is at 1,200,000 (1.2 seconds) — 200ms ahead
-			// Within the 300ms look-ahead tolerance
+			// Video frame PTS is at 1,150,000 (1.15 seconds) — 150ms ahead
+			// Well within the 250ms look-ahead tolerance
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_150_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('draws frame when video is 200ms ahead of audio', () => {
+			// 200ms ahead — within the 250ms tolerance (covers audio buffer
+			// HIGH_WATER_MS = 200ms)
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -60,30 +76,15 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(0);
 		});
 
-		it('draws frame when video is 250ms ahead of audio', () => {
-			// Just within the 300ms tolerance
+		it('skips frame when video is 300ms+ ahead of audio', () => {
+			// 300ms exceeds the 250ms look-ahead tolerance — should NOT draw.
+			// With reduced audio buffer (HIGH_WATER = 200ms), 300ms ahead
+			// indicates a PTS discontinuity, not normal pipeline latency.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			buffer.addFrame(new MockVideoFrame(1_250_000) as unknown as VideoFrame);
-
-			renderer.renderOnce();
-
-			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(1);
-			expect(diag.framesSkipped).toBe(0);
-		});
-
-		it('skips frame when video is 400ms+ ahead of audio', () => {
-			// 400ms exceeds the 300ms look-ahead tolerance — should NOT draw.
-			// With reduced audio buffer (~100ms), 400ms ahead indicates a
-			// PTS discontinuity, not normal pipeline latency.
-			const audioClock = { getPlaybackPTS: () => 1_000_000 };
-			const renderer = new PrismRenderer(canvas, buffer, audioClock);
-			renderer.externallyDriven = true;
-
-			buffer.addFrame(new MockVideoFrame(1_400_000) as unknown as VideoFrame);
+			buffer.addFrame(new MockVideoFrame(1_300_000) as unknown as VideoFrame);
 
 			renderer.renderOnce();
 
@@ -166,6 +167,61 @@ describe('PrismRenderer', () => {
 			const diag = renderer.getDiagnostics();
 			expect(diag.emptyBufferHits).toBe(3);
 			expect(diag.framesDrawn).toBe(0);
+		});
+	});
+
+	describe('resetSync', () => {
+		it('clears AV sync tracking so new source starts fresh', () => {
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// Draw a frame to establish sync tracking
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			let diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.currentVideoPTS).toBe(1_000_000);
+			expect(diag.currentAudioPTS).toBe(1_000_000);
+
+			// Reset sync — simulates program source change
+			renderer.resetSync();
+
+			diag = renderer.getDiagnostics();
+			expect(diag.currentVideoPTS).toBe(-1);
+			expect(diag.currentAudioPTS).toBe(-1);
+			expect(diag.avSyncMs).toBe(0);
+			expect(diag.avSyncMin).toBe(0);
+			expect(diag.avSyncMax).toBe(0);
+			expect(diag.avSyncAvg).toBe(0);
+			// framesDrawn should NOT be reset (cumulative diagnostic)
+			expect(diag.framesDrawn).toBe(1);
+		});
+
+		it('allows new source PTS to be tracked without old source interference', () => {
+			let audioPTS = 1_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// Draw from old source at PTS 1s
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Simulate transition: reset sync, then new source at PTS 5s
+			renderer.resetSync();
+			audioPTS = 5_000_000;
+
+			buffer.addFrame(new MockVideoFrame(5_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(2);
+			expect(diag.currentVideoPTS).toBe(5_000_000);
+			expect(diag.currentAudioPTS).toBe(5_000_000);
+			// AV sync should reflect only the new source (0ms delta)
+			expect(diag.avSyncMs).toBe(0);
 		});
 	});
 

@@ -284,9 +284,10 @@ type Switcher struct {
 	maxBroadcastIntervalNano atomic.Int64 // max gap between consecutive broadcasts (ns)
 
 	// Frame routing counters (atomic, lock-free).
-	routeToEngine   atomic.Int64 // frames routed to transition engine
-	routeToPipeline atomic.Int64 // frames routed to normal pipeline
-	routeFiltered   atomic.Int64 // frames filtered (non-program, FTB, etc.)
+	routeToEngine     atomic.Int64 // frames routed to transition engine
+	routeToIdleEngine atomic.Int64 // frames routed to engine but engine was idle (dropped)
+	routeToPipeline   atomic.Int64 // frames routed to normal pipeline
+	routeFiltered     atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
 	// Raw video output tap — receives deep copy of YUV after processing,
 	// before encode. Used by MXL output to write raw video to shared memory.
@@ -548,7 +549,7 @@ func (s *Switcher) ProgramSource() string {
 }
 
 // trackBroadcastInterval records the time gap since the last program broadcast
-// and logs a warning when the gap exceeds 200ms, helping diagnose fps drops.
+// and logs a warning when the gap exceeds 100ms, helping diagnose fps drops.
 func (s *Switcher) trackBroadcastInterval() {
 	now := time.Now().UnixNano()
 	prev := s.lastBroadcastNano.Swap(now)
@@ -557,11 +558,20 @@ func (s *Switcher) trackBroadcastInterval() {
 	}
 	gap := now - prev
 	updateAtomicMax(&s.maxBroadcastIntervalNano, gap)
-	// Log when gap exceeds 200ms to pinpoint the stall
-	if gap > 200_000_000 { // 200ms in nanoseconds
+	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
+	if gap > 100_000_000 { // 100ms in nanoseconds
+		s.mu.RLock()
+		programSrc := s.programSource
+		hasEngine := s.transEngine != nil
+		state := s.state
+		s.mu.RUnlock()
 		s.log.Warn("program broadcast gap",
 			"gap_ms", float64(gap)/1e6,
-			"state", s.state.String(),
+			"state", state.String(),
+			"program_source", programSrc,
+			"has_engine", hasEngine,
+			"idle_engine_drops", s.routeToIdleEngine.Load(),
+			"decode_buffering", s.pipeDecodeBuffering.Load(),
 		)
 	}
 }
@@ -1010,6 +1020,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	s.syncGOPCacheActiveSources()
 	s.log.Info("transition started",
 		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
 
@@ -1232,6 +1243,8 @@ func (s *Switcher) AbortTransition() {
 // transition finishes. If completed (not aborted), it swaps program/preview
 // sources and replays the new source's cached GOP to avoid a keyframe gap.
 func (s *Switcher) handleTransitionComplete(aborted bool) {
+	completeStart := time.Now()
+
 	// Phase 1: Read transition state under lock. Identify the new program
 	// source and capture GOP replay frames, but DON'T change routing yet.
 	// The transition engine has already output its last blended frame (at
@@ -1268,19 +1281,47 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.mu.Unlock()
 
 	// Phase 2: Warm the pipeline decoder BEFORE switching routing. While
-	// this runs (~50-300ms), frames still route to the transition engine
+	// this runs (~8-30ms), frames still route to the transition engine
 	// (which silently drops them since it's internally completed). This is
 	// unavoidable but far better than the old approach where replayGOP ran
 	// AFTER routing switched, causing the IDR gate to drop all frames
 	// (including the gap for replayGOP + potential keyframe wait).
 	replayOK := false
-	if len(replayFrames) > 0 {
+	replayCount := len(replayFrames)
+	replayKeyPTS := int64(-1)
+	if replayCount > 0 {
+		replayKeyPTS = replayFrames[0].PTS
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-			// replayGOP creates a fresh decoder with the GOP's reference
-			// chain, then swaps it in atomically. The pipeline decoder is
-			// fully warm for the new source when this returns.
 			pipeCodecs.replayGOP(replayFrames)
 			replayOK = true
+		}
+	}
+
+	// Phase 2.5: Close the timing window. During replayGOP (~8-30ms),
+	// 1-2 frames arrive from the new source, get recorded in the GOP
+	// cache, but get dropped by the (now idle) transition engine. The
+	// pipeline decoder hasn't seen them — without feeding them, the first
+	// frame after routing switches references missing frames → macroblock
+	// corruption. Use count-based comparison (not PTS) because B-frames
+	// have non-monotonic PTS in decode order.
+	if replayOK && newProgram != "" {
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			currentGOP := s.gopCache.GetOriginalGOP(newProgram)
+			var delta []*media.VideoFrame
+			if len(currentGOP) > 0 && currentGOP[0].PTS == replayKeyPTS {
+				// Same GOP — feed only frames that arrived during replay
+				if len(currentGOP) > replayCount {
+					delta = currentGOP[replayCount:]
+				}
+			} else if len(currentGOP) > 0 {
+				// GOP was reset by a new keyframe during replay — feed all
+				delta = currentGOP
+			}
+			if len(delta) > 0 {
+				pipeCodecs.feedDeltaFrames(delta)
+				s.log.Info("fed delta frames after replayGOP",
+					"count", len(delta), "replay_count", replayCount)
+			}
 		}
 	}
 
@@ -1324,10 +1365,17 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	s.syncGOPCacheActiveSources()
+
+	completeDur := time.Since(completeStart)
 	if aborted {
-		s.log.Warn("transition aborted", "type", transType, "reason", "engine aborted")
+		s.log.Warn("transition aborted", "type", transType, "reason", "engine aborted",
+			"complete_ms", completeDur.Milliseconds())
 	} else {
-		s.log.Info("transition completed", "type", transType, "replay_ok", replayOK)
+		s.log.Info("transition completed", "type", transType, "replay_ok", replayOK,
+			"complete_ms", completeDur.Milliseconds(),
+			"replay_count", replayCount,
+			"idle_engine_drops", s.routeToIdleEngine.Load())
 	}
 
 	if audioHandler != nil {
@@ -1403,10 +1451,34 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	// Phase 2: Warm pipeline decoder BEFORE switching routing.
 	// Same pattern as handleTransitionComplete — see comments there.
 	replayOK := false
-	if len(replayFrames) > 0 {
+	replayCount := len(replayFrames)
+	replayKeyPTS := int64(-1)
+	if replayCount > 0 {
+		replayKeyPTS = replayFrames[0].PTS
 		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
 			pipeCodecs.replayGOP(replayFrames)
 			replayOK = true
+		}
+	}
+
+	// Phase 2.5: Feed delta frames — count-based, not PTS-based (B-frame safe).
+	// See handleTransitionComplete Phase 2.5 for detailed explanation.
+	if replayOK && programSource != "" {
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			currentGOP := s.gopCache.GetOriginalGOP(programSource)
+			var delta []*media.VideoFrame
+			if len(currentGOP) > 0 && currentGOP[0].PTS == replayKeyPTS {
+				if len(currentGOP) > replayCount {
+					delta = currentGOP[replayCount:]
+				}
+			} else if len(currentGOP) > 0 {
+				delta = currentGOP
+			}
+			if len(delta) > 0 {
+				pipeCodecs.feedDeltaFrames(delta)
+				s.log.Info("fed delta frames after replayGOP (FTB reverse)",
+					"count", len(delta), "replay_count", replayCount)
+			}
 		}
 	}
 
@@ -1549,6 +1621,10 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	// During transition: route to engine for blending (same as handleVideoFrame).
 	// The engine needs frames from BOTH from/to sources to produce blended output.
 	if inTrans && engine != nil {
+		if engine.State() != transition.StateActive {
+			s.routeToIdleEngine.Add(1)
+			return
+		}
 		s.routeToEngine.Add(1)
 		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
 		if audioHandler != nil {
@@ -1603,6 +1679,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	s.syncGOPCacheActiveSources()
 	s.log.Info("source unregistered", "source_key", key)
 	s.notifyStateChange(snapshot)
 }
@@ -1652,14 +1729,37 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	s.mu.Unlock()
 
 	if changed {
+		// Update GOP cache active sources before reading from it.
+		s.syncGOPCacheActiveSources()
+
 		replayFrames := s.gopCache.GetOriginalGOP(sourceKey)
 
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)
 
 		// Replay full GOP — see handleTransitionComplete for explanation.
-		if len(replayFrames) > 0 {
+		replayCount := len(replayFrames)
+		replayKeyPTS := int64(-1)
+		if replayCount > 0 {
+			replayKeyPTS = replayFrames[0].PTS
 			if s.pipeCodecs != nil {
 				s.pipeCodecs.replayGOP(replayFrames)
+
+				// Feed delta frames — count-based, not PTS-based (B-frame safe).
+				// See handleTransitionComplete Phase 2.5 for detailed explanation.
+				currentGOP := s.gopCache.GetOriginalGOP(sourceKey)
+				var delta []*media.VideoFrame
+				if len(currentGOP) > 0 && currentGOP[0].PTS == replayKeyPTS {
+					if len(currentGOP) > replayCount {
+						delta = currentGOP[replayCount:]
+					}
+				} else if len(currentGOP) > 0 {
+					delta = currentGOP
+				}
+				if len(delta) > 0 {
+					s.pipeCodecs.feedDeltaFrames(delta)
+					s.log.Info("fed delta frames after replayGOP (cut)",
+						"count", len(delta), "replay_count", replayCount)
+				}
 			}
 			// Clear IDR gate — the replayed GOP seeds the decoder
 			s.mu.Lock()
@@ -1703,6 +1803,7 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
+	s.syncGOPCacheActiveSources()
 	s.notifyStateChange(snapshot)
 	return nil
 }
@@ -1853,6 +1954,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"max_proc_time_ms":         float64(s.videoProcMaxNano.Load()) / 1e6,
 			"max_broadcast_gap_ms":     float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
 			"route_to_engine":          s.routeToEngine.Load(),
+			"route_to_idle_engine":     s.routeToIdleEngine.Load(),
 			"route_to_pipeline":        s.routeToPipeline.Load(),
 			"route_filtered":           s.routeFiltered.Load(),
 			"queue_len":                len(s.videoProcCh),
@@ -1950,6 +2052,15 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	return state
 }
 
+// syncGOPCacheActiveSources updates the GOP cache to only record the current
+// program and preview sources. Must be called WITHOUT holding s.mu.
+func (s *Switcher) syncGOPCacheActiveSources() {
+	s.mu.RLock()
+	prog, prev := s.programSource, s.previewSource
+	s.mu.RUnlock()
+	s.gopCache.SetActiveSources(prog, prev)
+}
+
 // notifyStateChange calls all registered state callbacks.
 // Must be called WITHOUT holding s.mu to avoid blocking frame handlers.
 func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
@@ -2041,6 +2152,13 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.mu.RUnlock()
 
 	if inTrans && engine != nil {
+		// Check if engine is still active before routing. After auto-complete,
+		// the engine is idle but routing hasn't switched yet — detect and count
+		// these dropped frames for diagnostics.
+		if engine.State() != transition.StateActive {
+			s.routeToIdleEngine.Add(1)
+			return
+		}
 		s.routeToEngine.Add(1)
 		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
 		if annexB == nil {

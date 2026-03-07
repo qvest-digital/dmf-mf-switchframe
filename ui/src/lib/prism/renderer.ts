@@ -245,14 +245,14 @@ export class PrismRenderer {
 			}
 
 			// Look-ahead for video-ahead-of-audio: the client-side audio
-			// ring buffer (~100ms schedule-ahead) adds latency relative to
-			// video. Draw the earliest frame if it's within tolerance to
-			// keep the display responsive. 300ms tolerance accommodates
-			// the audio pipeline latency while rejecting PTS discontinuities.
+			// ring buffer adds latency relative to video. Draw the earliest
+			// frame if it's within tolerance to keep the display responsive.
+			// 250ms tolerance covers the audio buffer max depth (HIGH_WATER
+			// = 200ms) with margin, while rejecting PTS discontinuities.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS &&
-					peek.timestamp - targetPTS < 300_000) {
+					peek.timestamp - targetPTS < 250_000) {
 					frame = this.videoBuffer.takeNextFrame();
 				}
 			}
@@ -338,6 +338,26 @@ export class PrismRenderer {
 			videoQueueLengthMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
 		});
+	}
+
+	/**
+	 * Reset A/V sync tracking state. Call when the underlying source changes
+	 * (e.g. program source switch after a transition) so the renderer doesn't
+	 * carry stale PTS references from the old source into the new one.
+	 */
+	resetSync(): void {
+		this.currentVideoPTS = -1;
+		this.currentAudioPTS = -1;
+		this.freeRunStart = -1;
+		this.freeRunBasePTS = -1;
+		this.lastAudioAdvanceTime = 0;
+		this.audioStallFreeRunStart = -1;
+		this.audioStallFreeRunBasePTS = -1;
+		this._diagAvSyncSum = 0;
+		this._diagAvSyncCount = 0;
+		this._diagAvSyncMin = Infinity;
+		this._diagAvSyncMax = -Infinity;
+		this._diagLastAvSync = 0;
 	}
 
 	getDiagnostics(): RendererDiagnostics {

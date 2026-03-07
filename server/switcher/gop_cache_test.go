@@ -449,3 +449,283 @@ func TestGOPCacheDefaultMaxFrames(t *testing.T) {
 	gc := newGOPCache()
 	require.Equal(t, 120, gc.maxFrames, "default maxFrames should be 120")
 }
+
+func TestGOPCacheSetActiveSources(t *testing.T) {
+	gc := newGOPCache()
+
+	sps := []byte{0x67, 0x42, 0x00, 0x0a}
+	pps := []byte{0x68, 0xce, 0x38, 0x80}
+
+	// Record frames for 4 sources (no active filter yet — all recorded)
+	for _, src := range []string{"cam1", "cam2", "cam3", "cam4"} {
+		gc.RecordFrame(src, &media.VideoFrame{
+			WireData:   makeAVC1Frame([]byte{0x65, 0xAA}),
+			IsKeyframe: true,
+			SPS:        sps,
+			PPS:        pps,
+		})
+	}
+	require.NotNil(t, gc.GetGOP("cam1"))
+	require.NotNil(t, gc.GetGOP("cam2"))
+	require.NotNil(t, gc.GetGOP("cam3"))
+	require.NotNil(t, gc.GetGOP("cam4"))
+
+	// Set active sources — caches for cam3 and cam4 should be cleared
+	gc.SetActiveSources("cam1", "cam2")
+	require.NotNil(t, gc.GetGOP("cam1"), "program source cache should be kept")
+	require.NotNil(t, gc.GetGOP("cam2"), "preview source cache should be kept")
+	require.Nil(t, gc.GetGOP("cam3"), "non-active source cache should be cleared")
+	require.Nil(t, gc.GetGOP("cam4"), "non-active source cache should be cleared")
+
+	// New frames for non-active sources should be skipped
+	gc.RecordFrame("cam3", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xBB}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+	require.Nil(t, gc.GetGOP("cam3"), "non-active source should not be recorded")
+
+	// Active sources should still record
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
+		IsKeyframe: false,
+	})
+	gop := gc.GetGOP("cam1")
+	require.Equal(t, 2, len(gop), "active source should record new frames")
+}
+
+func TestGOPCacheSetActiveSourcesSameSource(t *testing.T) {
+	gc := newGOPCache()
+
+	sps := []byte{0x67, 0x42}
+	pps := []byte{0x68, 0xce}
+
+	// Program and preview can be the same source
+	gc.SetActiveSources("cam1", "cam1")
+
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xAA}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+	require.NotNil(t, gc.GetGOP("cam1"))
+}
+
+func TestGOPCacheSetActiveSourcesEmptyStrings(t *testing.T) {
+	gc := newGOPCache()
+
+	sps := []byte{0x67, 0x42}
+	pps := []byte{0x68, 0xce}
+
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xAA}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+
+	// Empty strings should be ignored — results in empty active set
+	gc.SetActiveSources("", "")
+	require.Nil(t, gc.GetGOP("cam1"), "all caches cleared when no active sources")
+
+	// Nothing should be recorded
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xBB}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+	require.Nil(t, gc.GetGOP("cam1"), "nothing recorded with empty active set")
+}
+
+func TestGOPCacheSetActiveSourcesTransition(t *testing.T) {
+	gc := newGOPCache()
+
+	sps := []byte{0x67, 0x42}
+	pps := []byte{0x68, 0xce}
+
+	// Simulate cut: cam1 program, cam2 preview
+	gc.SetActiveSources("cam1", "cam2")
+
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xAA}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+	gc.RecordFrame("cam2", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xBB}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+
+	// Cut to cam2: now cam2 is program, cam3 is preview
+	gc.SetActiveSources("cam2", "cam3")
+
+	require.Nil(t, gc.GetGOP("cam1"), "old program cache should be cleared after cut")
+	require.NotNil(t, gc.GetGOP("cam2"), "new program cache should be kept")
+
+	// cam3 should now accept frames
+	gc.RecordFrame("cam3", &media.VideoFrame{
+		WireData:   makeAVC1Frame([]byte{0x65, 0xCC}),
+		IsKeyframe: true,
+		SPS:        sps,
+		PPS:        pps,
+	})
+	require.NotNil(t, gc.GetGOP("cam3"), "new preview should accept frames")
+}
+
+func TestGOPCacheNilActiveSourcesRecordsAll(t *testing.T) {
+	// Backward compat: nil activeSources means record everything
+	gc := newGOPCache()
+	require.Nil(t, gc.activeSources, "new cache should have nil activeSources")
+
+	sps := []byte{0x67, 0x42}
+	pps := []byte{0x68, 0xce}
+
+	for _, src := range []string{"cam1", "cam2", "cam3"} {
+		gc.RecordFrame(src, &media.VideoFrame{
+			WireData:   makeAVC1Frame([]byte{0x65, 0xAA}),
+			IsKeyframe: true,
+			SPS:        sps,
+			PPS:        pps,
+		})
+	}
+
+	require.NotNil(t, gc.GetGOP("cam1"))
+	require.NotNil(t, gc.GetGOP("cam2"))
+	require.NotNil(t, gc.GetGOP("cam3"))
+}
+
+func TestGOPCacheSetActiveSourcesConcurrent(t *testing.T) {
+	gc := newGOPCache()
+
+	sps := []byte{0x67, 0x42}
+	pps := []byte{0x68, 0xce}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Writer: records frames to multiple sources
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			src := []string{"cam1", "cam2", "cam3", "cam4"}[i%4]
+			gc.RecordFrame(src, &media.VideoFrame{
+				WireData:   makeAVC1Frame([]byte{0x65, byte(i)}),
+				IsKeyframe: i%10 == 0,
+				SPS:        sps,
+				PPS:        pps,
+			})
+		}
+	}()
+
+	// Active source updater: simulates cuts
+	go func() {
+		defer wg.Done()
+		pairs := [][2]string{
+			{"cam1", "cam2"},
+			{"cam2", "cam3"},
+			{"cam3", "cam4"},
+			{"cam4", "cam1"},
+		}
+		for i := 0; i < 100; i++ {
+			p := pairs[i%len(pairs)]
+			gc.SetActiveSources(p[0], p[1])
+		}
+	}()
+
+	// Reader
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			src := []string{"cam1", "cam2", "cam3", "cam4"}[i%4]
+			gc.GetGOP(src)
+		}
+	}()
+
+	wg.Wait()
+}
+
+func BenchmarkGOPCacheRecordFrame(b *testing.B) {
+	sps := []byte{0x67, 0x42, 0x00, 0x0a, 0xe9, 0x40, 0x40, 0x04}
+	pps := []byte{0x68, 0xce, 0x38, 0x80}
+	wireData := makeAVC1Frame(make([]byte, 4096)) // Realistic ~4KB NALU
+
+	b.Run("active_source", func(b *testing.B) {
+		gc := newGOPCache()
+		gc.SetActiveSources("cam1", "cam2")
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   wireData,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if i%30 == 0 {
+				// Keyframe every 30 frames
+				gc.RecordFrame("cam1", &media.VideoFrame{
+					PTS:        int64(i * 3000),
+					WireData:   wireData,
+					IsKeyframe: true,
+					SPS:        sps,
+					PPS:        pps,
+					Codec:      "h264",
+				})
+			} else {
+				frame.PTS = int64(i * 3000)
+				gc.RecordFrame("cam1", frame)
+			}
+		}
+	})
+
+	b.Run("skipped_source", func(b *testing.B) {
+		gc := newGOPCache()
+		gc.SetActiveSources("cam1", "cam2")
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   wireData,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			frame.PTS = int64(i * 3000)
+			gc.RecordFrame("cam3", frame) // cam3 is NOT active
+		}
+	})
+
+	b.Run("no_filter_all_recorded", func(b *testing.B) {
+		gc := newGOPCache()
+		// No SetActiveSources — backward compat, records all
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   wireData,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if i%30 == 0 {
+				gc.RecordFrame("cam1", &media.VideoFrame{
+					PTS:        int64(i * 3000),
+					WireData:   wireData,
+					IsKeyframe: true,
+					SPS:        sps,
+					PPS:        pps,
+					Codec:      "h264",
+				})
+			} else {
+				frame.PTS = int64(i * 3000)
+				gc.RecordFrame("cam1", frame)
+			}
+		}
+	})
+}

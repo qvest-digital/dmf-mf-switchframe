@@ -18,6 +18,7 @@ func BenchmarkReplayBuffer_RecordFrame(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	b.ReportAllocs()
 	// Reuse frame object — RecordFrame deep-copies all data,
 	// so mutating PTS/IsKeyframe between iterations is safe.
 	for i := 0; i < b.N; i++ {
@@ -49,6 +50,7 @@ func BenchmarkReplayBuffer_ExtractClip(b *testing.B) {
 	outTime := now.Add(30 * time.Second)
 
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, _, _ = buf.ExtractClip(inTime, outTime)
 	}
@@ -66,6 +68,7 @@ func BenchmarkReplayViewer_SendVideo(b *testing.B) {
 	}
 
 	b.ResetTimer()
+	b.ReportAllocs()
 	// Reuse frame object — SendVideo deep-copies all data,
 	// so mutating PTS/IsKeyframe between iterations is safe.
 	for i := 0; i < b.N; i++ {

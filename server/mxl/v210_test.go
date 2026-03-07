@@ -427,6 +427,58 @@ func TestYUV420pToV210_BufferTooSmall(t *testing.T) {
 	}
 }
 
+func BenchmarkV210ToYUV420p_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	stride := V210LineStride(width)
+	v210 := make([]byte, stride*height)
+	// Fill with mid-gray pattern (Y=128→512, Cb=Cr=128→512)
+	for i := range v210 {
+		v210[i] = byte(i % 256)
+	}
+
+	b.SetBytes(int64(len(v210)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = V210ToYUV420p(v210, width, height)
+	}
+}
+
+func BenchmarkYUV420pToV210_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	ySize := width * height
+	cSize := (width / 2) * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := range yuv {
+		yuv[i] = byte(i % 256)
+	}
+
+	b.SetBytes(int64(len(yuv)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = YUV420pToV210(yuv, width, height)
+	}
+}
+
+func BenchmarkV210RoundTrip_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	ySize := width * height
+	cSize := (width / 2) * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := range yuv {
+		yuv[i] = byte(i % 256)
+	}
+
+	b.SetBytes(int64(len(yuv)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		v210, _ := YUV420pToV210(yuv, width, height)
+		_, _ = V210ToYUV420p(v210, width, height)
+	}
+}
+
 func TestPackV210Word(t *testing.T) {
 	// Verify the test helper itself
 	word := packV210Word(0x3FF, 0x000, 0x3FF)

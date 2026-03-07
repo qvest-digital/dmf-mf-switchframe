@@ -22,10 +22,16 @@ const defaultMaxFrames = 120
 // gopCache maintains a per-source cache of the current GOP (keyframe +
 // subsequent delta frames). Used to warm up transition decoders so the
 // first blended frame appears immediately without waiting for a keyframe.
+//
+// Only frames from "active" sources (program + preview) are recorded.
+// This avoids expensive deep-copy allocations for sources that are never
+// consumed. When no active sources are set (zero-value), all sources are
+// recorded for backward compatibility.
 type gopCache struct {
-	mu        sync.Mutex
-	caches    map[string][]cachedFrame
-	maxFrames int
+	mu            sync.Mutex
+	caches        map[string][]cachedFrame
+	maxFrames     int
+	activeSources map[string]bool // nil = record all (backward compat)
 }
 
 func newGOPCache() *gopCache {
@@ -42,11 +48,48 @@ func newGOPCacheWithMax(maxFrames int) *gopCache {
 	}
 }
 
+// SetActiveSources updates which sources should be recorded. Only the
+// program and preview sources need caching — all others are skipped.
+// When a source is removed from the active set, its cache is cleared to
+// free memory. Passing empty strings is safe (they are ignored).
+func (g *gopCache) SetActiveSources(program, preview string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	active := make(map[string]bool, 2)
+	if program != "" {
+		active[program] = true
+	}
+	if preview != "" {
+		active[preview] = true
+	}
+
+	// Clear caches for sources no longer active.
+	for key := range g.caches {
+		if !active[key] {
+			delete(g.caches, key)
+		}
+	}
+
+	g.activeSources = active
+}
+
 // RecordFrame records a video frame into the cache for the given source.
 // On keyframe: resets the cache and stores the keyframe with SPS/PPS prepended.
 // On delta: appends to the existing cache.
 // All data is deep-copied; the caller's buffers are not retained.
+//
+// Frames from sources not in the active set are skipped to avoid unnecessary
+// deep-copy allocations on the hot path.
 func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
+	// Fast path: skip sources that aren't active. Check under lock since
+	// activeSources can be updated from Cut/SetPreview.
+	g.mu.Lock()
+	if g.activeSources != nil && !g.activeSources[sourceKey] {
+		g.mu.Unlock()
+		return
+	}
+	g.mu.Unlock()
 	// Convert AVC1 WireData to Annex B (deep copy)
 	annexB := codec.AVC1ToAnnexB(frame.WireData)
 	if len(annexB) == 0 {

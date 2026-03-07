@@ -370,12 +370,13 @@ func BenchmarkScaleYUV420_720pTo1080p(b *testing.B) {
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
-	// Fill with test data
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(dstSize))
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420(src, srcW, srcH, dst, dstW, dstH)
 	}
@@ -390,12 +391,13 @@ func BenchmarkScaleYUV420_1080pTo720p(b *testing.B) {
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
-	// Fill with test data
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(dstSize))
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420(src, srcW, srcH, dst, dstW, dstH)
 	}
@@ -414,7 +416,9 @@ func BenchmarkScaleLanczos_1080to720(b *testing.B) {
 		src[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(dstSize))
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}
@@ -433,7 +437,9 @@ func BenchmarkScaleLanczos_720to1080(b *testing.B) {
 		src[i] = byte(i % 256)
 	}
 
+	b.SetBytes(int64(dstSize))
 	b.ResetTimer()
+	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}

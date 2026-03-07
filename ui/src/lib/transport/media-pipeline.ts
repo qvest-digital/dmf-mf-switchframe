@@ -78,6 +78,8 @@ export interface MediaPipeline {
 	setSourceMuted(sourceKey: string, muted: boolean): void;
 	/** Resume all AudioContexts. Must be called from a user gesture handler. */
 	resumeAllAudio(): Promise<void>;
+	/** Reset A/V sync tracking on all renderers for a source (e.g. after program source change). */
+	resetRendererSync(sourceKey: string): void;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
 }
@@ -416,6 +418,14 @@ export function createMediaPipeline(): MediaPipeline {
 		await Promise.all(promises);
 	}
 
+	function resetRendererSync(sourceKey: string): void {
+		const source = sources.get(sourceKey);
+		if (!source) return;
+		for (const renderer of source.renderers.values()) {
+			renderer.resetSync();
+		}
+	}
+
 	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
 		const result: Record<string, SourceDiagnostics> = {};
 		for (const [key, source] of sources) {
@@ -450,6 +460,7 @@ export function createMediaPipeline(): MediaPipeline {
 		destroy,
 		feedVideoFrame,
 		feedAudioFrame,
+		resetRendererSync,
 		getAllDiagnostics,
 	};
 }
