@@ -931,6 +931,123 @@ mixing:
 	}
 }
 
+// IngestPCM processes raw interleaved float32 PCM from a source (e.g. MXL).
+// Unlike IngestFrame, this skips ADTS parsing and AAC decoding — the PCM is
+// already in float32 format. The processing pipeline is identical:
+//
+//	Peak metering → Store for crossfade → Trim → EQ → Compressor → Fader → Mix → collectMixCycle
+//
+// PCM input is interleaved float32 (e.g. 1024 samples * 2 channels = 2048 values for stereo).
+// The pts parameter is the presentation timestamp in 90 kHz clock units.
+func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
+	m.mu.Lock()
+
+	ch, ok := m.channels[sourceKey]
+	if !ok || !ch.active {
+		m.mu.Unlock()
+		return
+	}
+
+	if ch.muted {
+		m.mu.Unlock()
+		return
+	}
+
+	// Raw PCM cannot use passthrough (passthrough forwards raw AAC bytes).
+	// Force mixing mode if currently in passthrough.
+	if m.passthrough {
+		m.passthrough = false
+	}
+
+	// Update per-channel peaks (pre-fader, pre-gain)
+	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
+
+	// Store a copy of PCM for instant crossfade on future cuts.
+	ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
+	copy(ch.storedBuf, pcm)
+	m.lastDecodedPCM[sourceKey] = ch.storedBuf
+
+	// Pipeline order: Trim -> EQ -> Compressor -> Fader -> Mix -> Master -> Limiter -> Encode
+
+	// Apply trim (input gain)
+	trimGain := float32(DBToLinear(ch.trim))
+	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
+	trimmedPCM := ch.trimBuf
+	for i, s := range pcm {
+		trimmedPCM[i] = s * trimGain
+	}
+
+	// Apply EQ (3-band parametric)
+	if !ch.eq.IsBypassed() {
+		ch.eq.Process(trimmedPCM, m.numChannels)
+	}
+
+	// Apply compressor
+	if !ch.compressor.IsBypassed() {
+		ch.compressor.Process(trimmedPCM)
+	}
+
+	// Start the per-cycle deadline on first contribution.
+	if !m.mixStarted {
+		m.mixStarted = true
+		m.mixDeadline = time.Now().Add(mixCycleDeadline)
+		if m.transCrossfadeActive {
+			m.mixCycleTransPos = m.transCrossfadePosition
+		}
+	}
+
+	// Apply fader level with per-sample transition interpolation
+	faderGain := float32(DBToLinear(ch.level))
+	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
+	gainedPCM := ch.gainBuf
+
+	isTransParticipant := m.transCrossfadeActive &&
+		(sourceKey == m.transCrossfadeFrom || sourceKey == m.transCrossfadeTo)
+
+	if isTransParticipant {
+		var gainFn func(float64) float64
+		if sourceKey == m.transCrossfadeFrom {
+			gainFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
+		} else {
+			gainFn = func(p float64) float64 { return transitionToGain(m.transCrossfadeMode, p) }
+		}
+		gStart := float32(gainFn(m.transCrossfadeAudioPos))
+		gEnd := float32(gainFn(m.mixCycleTransPos))
+		n := float32(len(trimmedPCM))
+		for i, s := range trimmedPCM {
+			t := float32(i) / n
+			transGain := gStart + (gEnd-gStart)*t
+			gainedPCM[i] = s * faderGain * transGain
+		}
+	} else {
+		for i, s := range trimmedPCM {
+			gainedPCM[i] = s * faderGain
+		}
+	}
+
+	// Count active unmuted channels for this cycle
+	activeUnmuted := 0
+	for _, c := range m.channels {
+		if c.active && !c.muted {
+			activeUnmuted++
+		}
+	}
+
+	// Mix on frame arrival: each source contributes its latest frame.
+	m.mixBuffer[sourceKey] = gainedPCM
+	m.mixPTS = pts
+
+	// Flush when all active unmuted channels have contributed OR deadline exceeded
+	var outputFrame *media.AudioFrame
+	if len(m.mixBuffer) >= activeUnmuted {
+		outputFrame = m.collectMixCycleLocked()
+	}
+	m.mu.Unlock()
+	if outputFrame != nil {
+		m.recordAndOutput(outputFrame)
+	}
+}
+
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
 // It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
 func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
