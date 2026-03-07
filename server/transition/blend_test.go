@@ -89,6 +89,7 @@ func TestBlendMixPosition05(t *testing.T) {
 func TestBlendDipPhase1(t *testing.T) {
 	t.Parallel()
 	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 	b := makeYUVFrame(4, 4, 100, 200, 100)
 
@@ -96,7 +97,7 @@ func TestBlendDipPhase1(t *testing.T) {
 	ySize := 4 * 4
 	uvSize := 2 * 2
 	// gain = 1.0 - 2*0.25 = 0.5, invGain = 0.5
-	// Y: 200*0.5 = 100
+	// Y: 200*0.5 + 0*0.5 = 100
 	for i := 0; i < ySize; i++ {
 		require.InDelta(t, 100, int(out[i]), 1, "Y at pixel %d", i)
 	}
@@ -113,13 +114,14 @@ func TestBlendDipPhase1(t *testing.T) {
 func TestBlendDipMidpoint(t *testing.T) {
 	t.Parallel()
 	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 255, 200, 200)
 	b := makeYUVFrame(4, 4, 255, 200, 200)
 
 	out := fb.BlendDip(a, b, 0.5)
 	ySize := 4 * 4
 	uvSize := 2 * 2
-	// At midpoint: black = Y=0, Cb=128, Cr=128
+	// At midpoint: full-range black = Y=0, Cb=128, Cr=128
 	for i := 0; i < ySize; i++ {
 		require.Equal(t, byte(0), out[i], "Y at pixel %d should be 0 at midpoint", i)
 	}
@@ -132,6 +134,7 @@ func TestBlendDipMidpoint(t *testing.T) {
 func TestBlendDipPhase2(t *testing.T) {
 	t.Parallel()
 	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 100, 100, 100)
 	b := makeYUVFrame(4, 4, 200, 160, 200)
 
@@ -139,7 +142,7 @@ func TestBlendDipPhase2(t *testing.T) {
 	ySize := 4 * 4
 	uvSize := 2 * 2
 	// gain = 2*0.75 - 1 = 0.5, invGain = 0.5
-	// Y: 200*0.5 = 100
+	// Y: 200*0.5 + 0*0.5 = 100
 	for i := 0; i < ySize; i++ {
 		require.InDelta(t, 100, int(out[i]), 1, "Y at pixel %d", i)
 	}
@@ -156,13 +159,14 @@ func TestBlendDipPhase2(t *testing.T) {
 func TestBlendFTBHalf(t *testing.T) {
 	t.Parallel()
 	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 
 	out := fb.BlendFTB(a, 0.5)
 	ySize := 4 * 4
 	uvSize := 2 * 2
 	// gain=0.5, invGain=0.5
-	// Y: 200*0.5 = 100
+	// Y: 200*0.5 + 0*0.5 = 100
 	for i := 0; i < ySize; i++ {
 		require.InDelta(t, 100, int(out[i]), 1, "Y at pixel %d", i)
 	}
@@ -179,12 +183,13 @@ func TestBlendFTBHalf(t *testing.T) {
 func TestBlendFTBFull(t *testing.T) {
 	t.Parallel()
 	fb := NewFrameBlender(4, 4)
+	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 200, 200)
 
 	out := fb.BlendFTB(a, 1.0)
 	ySize := 4 * 4
 	uvSize := 2 * 2
-	// Fully black: Y=0, Cb=128, Cr=128
+	// Full-range black: Y=0, Cb=128, Cr=128
 	for i := 0; i < ySize; i++ {
 		require.Equal(t, byte(0), out[i], "Y byte %d should be 0", i)
 	}
@@ -483,15 +488,8 @@ func TestBlendDipMidpoint_LimitedRange(t *testing.T) {
 	}
 }
 
-func TestBlendFTB_DefaultIsFullRange(t *testing.T) {
+func TestNewFrameBlenderDefaultsToLimitedRange(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
-	// No SetLimitedRange call — should default to full-range (blackY=0)
-	a := makeYUVFrame(4, 4, 200, 200, 200)
-
-	out := fb.BlendFTB(a, 1.0)
-	ySize := 4 * 4
-	for i := 0; i < ySize; i++ {
-		require.Equal(t, byte(0), out[i], "Y byte %d should be 0 (full-range default)", i)
-	}
+	fb := NewFrameBlender(16, 16)
+	require.Equal(t, byte(16), fb.blackY)
 }

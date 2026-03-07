@@ -36,12 +36,13 @@ func NewFrameBlender(width, height int) *FrameBlender {
 		yuvBufOut: make([]byte, ySize+2*uvSize),
 		ySize:     ySize,
 		uvSize:    uvSize,
+		blackY:    16, // BT.709 limited-range black
 	}
 }
 
 // SetLimitedRange configures the blender for limited-range (broadcast) or
 // full-range YUV. Limited-range uses Y=16 for black; full-range uses Y=0.
-// The default (zero value) is full-range for backward compatibility.
+// The default is limited-range (Y=16) to match BT.709 broadcast standard.
 func (fb *FrameBlender) SetLimitedRange(limited bool) {
 	if limited {
 		fb.blackY = 16
