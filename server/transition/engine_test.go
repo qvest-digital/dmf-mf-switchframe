@@ -158,14 +158,14 @@ func TestEngineIngestProducesOutput(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
 
 	// Ingest from source A (stored but doesn't trigger output)
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 0, len(*outputs), "source A alone should not produce output")
 	mu.Unlock()
 
 	// Ingest from source B (triggers blend+output)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "source B should trigger output")
@@ -179,9 +179,9 @@ func TestEngineIngestOnlyFromParticipants(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
 
-	e.IngestFrame("cam3", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam3", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "only cam1+cam2 should produce output")
@@ -193,7 +193,7 @@ func TestEngineIngestOnlyFromParticipants(t *testing.T) {
 func TestEngineIngestWhileIdle(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 0, len(*outputs))
@@ -205,7 +205,7 @@ func TestEngineFTBIngestTriggersOnFromSource(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "", TransitionFTB, 1000))
 
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "FTB: source A should trigger output")
@@ -220,8 +220,8 @@ func TestEngineMultipleFrames(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
 
 	for i := 0; i < 5; i++ {
-		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	}
 
 	mu.Lock()
@@ -237,8 +237,8 @@ func TestEngineAutoCompletes(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50)) // 50ms
 
 	for i := 0; i < 20; i++ {
-		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 		time.Sleep(10 * time.Millisecond)
 		if e.State() == StateIdle {
 			break
@@ -268,7 +268,7 @@ func TestEngineFTBReverseIngestTriggersOnFromSource(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 1000))
 
 	// FTBReverse triggers on fromSource (same as FTB)
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "FTBReverse: source A should trigger output")
@@ -313,7 +313,7 @@ func TestEngineFTBReverseBlendInvertsPosition(t *testing.T) {
 	// Long duration so position stays near 0.0
 	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 60000))
 
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "FTBReverse should produce output")
@@ -337,7 +337,7 @@ func TestEngineWarmupPopulatesState(t *testing.T) {
 
 	// First live IngestFrame from toSource should produce output immediately
 	// because latestYUVA is already populated from warmup.
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "first live ingest after warmup should produce output")
@@ -396,8 +396,8 @@ func TestEngineWarmupConcurrentWithIngest(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
-			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 		}
 	}()
 
@@ -437,22 +437,22 @@ func TestEngineResolutionMismatchScales(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
 
 	// Ingest from cam1 (8x8) — sets target resolution
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 0, len(outputs), "source A alone should not produce output")
 	mu.Unlock()
 
 	// Ingest from cam2 (4x4) — should be scaled to 8x8 and trigger blend+output
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "mismatched resolution should produce output after scaling")
 	mu.Unlock()
 
 	// Subsequent frames should also work
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
 	require.Equal(t, 2, len(outputs), "multiple frames with scaling should keep producing output")
@@ -491,17 +491,17 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
 
 	// Ingest cam2 first — sets target to 8x8
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 0, len(outputs), "cam2 alone (no cam1 yet) should not produce output")
 	mu.Unlock()
 
 	// Ingest cam1 (4x4) — should be scaled to 8x8
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	// Now ingest cam2 again — should trigger blend (cam1 is available)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "should produce output after scaling from-source")
@@ -529,14 +529,14 @@ func TestEngineWipeIngestProducesOutput(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionWipe, 5000))
 
 	// Ingest from source A (stored but doesn't trigger output)
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 0, len(*outputs), "source A alone should not produce output")
 	mu.Unlock()
 
 	// Ingest from source B (triggers wipe blend+output)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(*outputs), "source B should trigger wipe output")
@@ -672,8 +672,8 @@ func TestTransitionNoTimeoutWhenFramesArrive(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 8; i++ {
-			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
-			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
+			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
@@ -716,8 +716,8 @@ func TestTransitionWatchdogStopsOnComplete(t *testing.T) {
 
 	// Feed frames until auto-complete
 	for i := 0; i < 30; i++ {
-		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
-		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000))
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
 		time.Sleep(10 * time.Millisecond)
 		if e.State() == StateIdle {
 			break
@@ -847,8 +847,8 @@ func TestEngineStingerTransition(t *testing.T) {
 	require.Equal(t, TransitionStinger, e.TransitionType())
 
 	// Ingest from both sources
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "stinger transition should produce output")
@@ -890,8 +890,8 @@ func TestEngineStingerCutPoint(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 5000))
 
 	// Ingest both sources
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	// Engine should start and produce output
 	require.Equal(t, StateActive, e.State())
@@ -920,8 +920,8 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 60000))
 
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs))
@@ -934,8 +934,8 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 	}
 
 	// Ingest another frame pair — should still produce valid output
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
 	require.Equal(t, 2, len(outputs), "should still produce output after mutation")
@@ -962,8 +962,8 @@ func TestEngineNilBlendedGuard(t *testing.T) {
 
 	// Start a mix transition and feed frames normally — should work fine
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	require.True(t, outputCalled, "output should have been called")
 	e.Stop()
@@ -991,8 +991,8 @@ func TestEngineStingerNoData(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
 
-	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0)
-	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0)
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "stinger without data should still produce output")

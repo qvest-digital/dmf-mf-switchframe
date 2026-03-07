@@ -825,6 +825,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	for _, cf := range toGOP {
 		engine.WarmupDecode(sourceKey, cf.annexB)
 	}
+	engine.WarmupComplete()
 
 	// Phase 3: Publish the warmed engine under write lock (fast).
 	s.mu.Lock()
@@ -931,6 +932,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		for _, cf := range fromGOP {
 			engine.WarmupDecode(fromSource, cf.annexB)
 		}
+		engine.WarmupComplete()
 
 		// Publish the warmed engine under write lock.
 		s.mu.Lock()
@@ -988,6 +990,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	for _, cf := range fromGOP {
 		engine.WarmupDecode(fromSource, cf.annexB)
 	}
+	engine.WarmupComplete()
 
 	// Publish the warmed engine under write lock.
 	s.mu.Lock()
@@ -1726,7 +1729,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		if frame.IsKeyframe {
 			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 		}
-		engine.IngestFrame(sourceKey, annexB, frame.PTS)
+		engine.IngestFrame(sourceKey, annexB, frame.PTS, frame.IsKeyframe)
 
 		// Sync audio crossfade position with video on every frame.
 		// Without this, auto-timed transitions only update audio at

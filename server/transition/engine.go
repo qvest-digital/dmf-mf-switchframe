@@ -82,6 +82,12 @@ type TransitionEngine struct {
 	width  int
 	height int
 
+	// After warmup, skip non-keyframe decodes to avoid reference chain
+	// corruption from frames missed between GOP cache snapshot and engine
+	// publication. Cleared when the first live keyframe arrives.
+	needsKeyframeA bool
+	needsKeyframeB bool
+
 	// Reusable buffer for scaling mismatched-resolution frames
 	scaleBuf []byte
 
@@ -336,7 +342,7 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 // source (toSource), triggers blend+encode+output with the source's PTS
 // to maintain timestamp continuity on the program stream.
 // For FTB, the fromSource triggers blend (no toSource).
-func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64) {
+func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -354,10 +360,42 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	// Reset watchdog timer on every valid frame
 	e.lastFrameAt = time.Now()
 
+	// After warmup, skip non-keyframe decodes to avoid reference chain
+	// corruption. The warmup's latestYUV is used for blending until a
+	// live keyframe re-establishes proper reference state.
+	if isFrom && e.needsKeyframeA {
+		if isKeyframe {
+			e.needsKeyframeA = false
+			// Flush decoder to clear stale warmup references before
+			// decoding the fresh keyframe.
+			type flusher interface{ Flush() }
+			if f, ok := e.decoderA.(flusher); ok {
+				f.Flush()
+			}
+		} else {
+			// Skip decode — keep warmup frame for blending.
+			// Still allow blend to proceed (latestYUVA from warmup).
+			goto blend
+		}
+	}
+	if isTo && e.needsKeyframeB {
+		if isKeyframe {
+			e.needsKeyframeB = false
+			type flusher interface{ Flush() }
+			if f, ok := e.decoderB.(flusher); ok {
+				f.Flush()
+			}
+		} else {
+			goto blend
+		}
+	}
+
 	if !e.decodeAndStore(sourceKey, wireData, isFrom) {
 		e.mu.Unlock()
 		return
 	}
+
+blend:
 
 	// Determine if we should trigger blend+output
 	// For Mix/Dip: triggered by incoming source (toSource) frame
@@ -445,6 +483,17 @@ func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
 	}
 
 	e.decodeAndStore(sourceKey, wireData, isFrom)
+}
+
+// WarmupComplete marks the end of warmup. After this call, IngestFrame will
+// skip non-keyframe decodes until the first live keyframe arrives for each
+// source. This prevents reference chain corruption from frames that were
+// sent between the GOP cache snapshot and engine publication.
+func (e *TransitionEngine) WarmupComplete() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.needsKeyframeA = true
+	e.needsKeyframeB = true
 }
 
 // Abort cancels the active transition and invokes OnComplete(aborted=true).
