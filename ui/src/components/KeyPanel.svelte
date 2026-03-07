@@ -2,6 +2,7 @@
 	import type { ControlRoomState, KeyConfig } from '$lib/api/types';
 	import { setSourceKey, deleteSourceKey, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import { rgbToYCbCr, ycbcrToHex, hexToRgb, KEY_PRESETS } from '$lib/util/color';
 
 	interface Props {
 		state: ControlRoomState;
@@ -25,6 +26,25 @@
 	let lowClip = $state(0.0);
 	let highClip = $state(0.8);
 	let softness = $state(0.1);
+
+	// Color swatch derived from current YCbCr values
+	let colorHex = $derived(ycbcrToHex(keyColorY, keyColorCb, keyColorCr));
+
+	let advancedOpen = $state(false);
+
+	function applyPreset(preset: typeof KEY_PRESETS[0]) {
+		keyColorY = preset.y;
+		keyColorCb = preset.cb;
+		keyColorCr = preset.cr;
+	}
+
+	function handleColorInput(hex: string) {
+		const { r, g, b } = hexToRgb(hex);
+		const ycbcr = rgbToYCbCr(r, g, b);
+		keyColorY = ycbcr.y;
+		keyColorCb = ycbcr.cb;
+		keyColorCr = ycbcr.cr;
+	}
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 	let activeSource = $state('');
@@ -105,6 +125,24 @@
 
 	{#if keyType === 'chroma'}
 		<div class="key-controls">
+			<div class="color-presets">
+				<span class="field-label">Key Color</span>
+				<div class="preset-row">
+					{#each KEY_PRESETS as preset}
+						<button class="preset-btn" onclick={() => applyPreset(preset)}>
+							{preset.label}
+						</button>
+					{/each}
+					<input
+						type="color"
+						value={colorHex}
+						oninput={(e) => handleColorInput((e.target as HTMLInputElement).value)}
+						class="color-swatch"
+						title="Pick key color"
+					/>
+				</div>
+			</div>
+
 			<div class="slider-group">
 				<label class="slider-label">Similarity: {similarity.toFixed(2)}
 				<input type="range" min="0" max="1" step="0.01" bind:value={similarity} class="slider" />
@@ -120,14 +158,19 @@
 				<input type="range" min="0" max="1" step="0.01" bind:value={spillSuppress} class="slider" />
 				</label>
 			</div>
-			<div class="color-group">
-				<span class="slider-label">Key Color (Y/Cb/Cr)</span>
-				<div class="color-inputs">
-					<input type="number" min="0" max="255" bind:value={keyColorY} class="num-input" />
-					<input type="number" min="0" max="255" bind:value={keyColorCb} class="num-input" />
-					<input type="number" min="0" max="255" bind:value={keyColorCr} class="num-input" />
+
+			<button class="advanced-toggle" onclick={() => advancedOpen = !advancedOpen}>
+				{advancedOpen ? '▾' : '▸'} Advanced (Y/Cb/Cr)
+			</button>
+			{#if advancedOpen}
+				<div class="color-group">
+					<div class="color-inputs">
+						<label class="num-label">Y<input type="number" min="0" max="255" bind:value={keyColorY} class="num-input" /></label>
+						<label class="num-label">Cb<input type="number" min="0" max="255" bind:value={keyColorCb} class="num-input" /></label>
+						<label class="num-label">Cr<input type="number" min="0" max="255" bind:value={keyColorCr} class="num-input" /></label>
+					</div>
 				</div>
-			</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -328,5 +371,71 @@
 
 	.remove-btn:hover {
 		background: rgba(239, 68, 68, 0.25);
+	}
+
+	.color-presets {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.preset-row {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.preset-btn {
+		flex: 1;
+		padding: 4px 6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast);
+	}
+
+	.preset-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.color-swatch {
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 0;
+		cursor: pointer;
+		background: none;
+	}
+
+	.advanced-toggle {
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		cursor: pointer;
+		text-align: left;
+		padding: 2px 0;
+	}
+
+	.advanced-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.num-label {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		font-family: var(--font-ui);
+		font-size: 0.55rem;
+		color: var(--text-tertiary);
+		flex: 1;
 	}
 </style>
