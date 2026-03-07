@@ -36,7 +36,6 @@
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
-	import type { GraphicsTemplate } from '$lib/graphics/templates';
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -154,15 +153,6 @@
 	let macroList = $state<Macro[]>([]);
 	async function refreshMacros() {
 		try { macroList = await listMacros(); } catch { /* ignore */ }
-	}
-
-	// Graphics overlay template/values for rendering on program monitor
-	let gfxTemplate = $state<GraphicsTemplate | null>(null);
-	let gfxValues = $state<Record<string, string>>({});
-
-	function handleGraphicsTemplateChange(template: GraphicsTemplate | null, values: Record<string, string>) {
-		gfxTemplate = template;
-		gfxValues = values;
 	}
 
 	function handleLabelChange(key: string, label: string) {
@@ -447,7 +437,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} graphicsTemplate={gfxTemplate} graphicsValues={gfxValues} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} />
 			</section>
 
 			<section class="multiview-section">
@@ -476,7 +466,7 @@
 								<div class="panel-header">
 									<LockIndicator state={store.effectiveState} subsystem="graphics" />
 								</div>
-								<GraphicsPanel state={store.effectiveState} onTemplateChange={handleGraphicsTemplateChange} />
+								<GraphicsPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Macros'}
 							<div class="tab-panel">

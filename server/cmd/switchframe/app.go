@@ -28,6 +28,7 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
+	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -64,6 +65,7 @@ type App struct {
 	keyProcessor   *graphics.KeyProcessor
 	keyBridge      *graphics.KeyProcessorBridge
 	replayMgr      *replay.Manager
+	stingerStore   *stinger.StingerStore
 
 	// MXL integration
 	mxlInstance *mxl.Instance
@@ -254,6 +256,13 @@ func (a *App) initSubsystems() error {
 		return fmt.Errorf("create operator store: %w", err)
 	}
 	slog.Info("operator store initialized", "path", operatorPath)
+
+	stingerDir := filepath.Join(homeDir, ".switchframe", "stingers")
+	a.stingerStore, err = stinger.NewStingerStore(stingerDir, 0)
+	if err != nil {
+		return fmt.Errorf("create stinger store: %w", err)
+	}
+	slog.Info("stinger store initialized", "path", stingerDir)
 
 	// Session manager for operator session tracking and subsystem locks.
 	a.sessionMgr = operator.NewSessionManager()
@@ -486,6 +495,7 @@ func (a *App) initAPI() error {
 		control.WithKeyer(a.keyProcessor),
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),
+		control.WithStingerStore(a.stingerStore),
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
@@ -549,6 +559,23 @@ func (a *App) Run(ctx context.Context) error {
 		// Add raw MXL demo sources (exercises IngestRawVideo/IngestPCM path).
 		stopMXLDemo := a.startMXLDemo(ctx)
 		defer stopMXLDemo()
+
+		// Load demo stinger if none exist yet.
+		if len(a.stingerStore.List()) == 0 {
+			vi := a.programRelay.VideoInfo()
+			w, h := vi.Width, vi.Height
+			if w == 0 || h == 0 {
+				w, h = 320, 240
+			}
+			zipData, err := demo.GenerateStingerZip(w, h, 20)
+			if err == nil {
+				if err := a.stingerStore.Upload("demo-wipe", zipData); err != nil {
+					slog.Warn("failed to load demo stinger", "error", err)
+				} else {
+					slog.Info("demo stinger loaded", "name", "demo-wipe", "resolution", fmt.Sprintf("%dx%d", w, h))
+				}
+			}
+		}
 	}
 	a.debugCollector.Register("demo", demoStats)
 

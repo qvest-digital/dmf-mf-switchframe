@@ -59,6 +59,9 @@ export class KeyboardHandler {
 	}
 
 	private handleKeydown(e: KeyboardEvent) {
+		// Ignore key repeats (holding a key down) to prevent rapid toggling
+		if (e.repeat) return;
+
 		// Ignore when focus is in an input/textarea/select/contenteditable
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
