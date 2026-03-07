@@ -11,7 +11,7 @@
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
-	import { updatePeakHold as _updatePeakHold, CLIP_THRESHOLD_DB, CLIP_DISPLAY_MS } from '$lib/audio/peak-hold';
+	import { updatePeakHold as _updatePeakHold, isClipActive, CLIP_THRESHOLD_DB } from '$lib/audio/peak-hold';
 
 	interface Props {
 		state: ControlRoomState;
@@ -154,7 +154,7 @@
 	function isClipped(key: string, channel: 'L' | 'R'): boolean {
 		const clip = _clipIndicators.get(key);
 		if (!clip) return false;
-		return Date.now() - clip[channel] < CLIP_DISPLAY_MS;
+		return isClipActive(clip, channel, Date.now());
 	}
 
 	function clearClip(key: string) {

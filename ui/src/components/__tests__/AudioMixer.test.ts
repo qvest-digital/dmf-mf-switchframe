@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { updatePeakHold, CLIP_THRESHOLD_DB, CLIP_DISPLAY_MS } from '$lib/audio/peak-hold';
+import { updatePeakHold, updateClip, isClipActive, CLIP_THRESHOLD_DB, CLIP_DISPLAY_MS } from '$lib/audio/peak-hold';
 
 describe('peak hold logic', () => {
 	beforeEach(() => {
@@ -67,16 +67,14 @@ describe('peak hold logic', () => {
 describe('clip detection', () => {
 	it('detects clip above CLIP_THRESHOLD_DB', () => {
 		const now = Date.now();
-		const clip = { L: 0, R: 0 };
-		const peakLDb = -0.5;
-		if (peakLDb > CLIP_THRESHOLD_DB) clip.L = now;
+		const clip = updateClip({ L: 0, R: 0 }, -0.5, -96, now);
 		expect(clip.L).toBe(now);
+		expect(clip.R).toBe(0);
 	});
 
 	it('does not clip at CLIP_THRESHOLD_DB or below', () => {
-		const clip = { L: 0, R: 0 };
-		const peakLDb = CLIP_THRESHOLD_DB;
-		if (peakLDb > CLIP_THRESHOLD_DB) clip.L = Date.now();
+		const now = Date.now();
+		const clip = updateClip({ L: 0, R: 0 }, CLIP_THRESHOLD_DB, -96, now);
 		expect(clip.L).toBe(0);
 	});
 
@@ -85,13 +83,11 @@ describe('clip detection', () => {
 		vi.setSystemTime(1000);
 		const clip = { L: 1000, R: 0 };
 
-		// At 3999ms — clip.L was set at 1000, so 3999-1000=2999 < CLIP_DISPLAY_MS → still active
-		vi.setSystemTime(3999);
-		expect(Date.now() - clip.L < CLIP_DISPLAY_MS).toBe(true);
+		// At 3999ms — still active
+		expect(isClipActive(clip, 'L', 3999)).toBe(true);
 
-		// At 4001ms — clip.L was set at 1000, so 4001-1000=3001 >= CLIP_DISPLAY_MS → expired
-		vi.setSystemTime(4001);
-		expect(Date.now() - clip.L < CLIP_DISPLAY_MS).toBe(false);
+		// At 4001ms — expired
+		expect(isClipActive(clip, 'L', 4001)).toBe(false);
 
 		vi.useRealTimers();
 	});

@@ -3,7 +3,7 @@
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
-	import { tbarPosition } from '$lib/util/tbar';
+	import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
 
 	interface Props {
 		state: ControlRoomState;
@@ -113,19 +113,8 @@
 	}
 
 	function handleTbarKeydown(e: KeyboardEvent) {
-		const step = e.shiftKey ? 0.1 : 0.01;
-		let newValue = tbarValue;
-		if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-			newValue = Math.min(1, tbarValue + step);
-		} else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-			newValue = Math.max(0, tbarValue - step);
-		} else if (e.key === 'Home') {
-			newValue = 0;
-		} else if (e.key === 'End') {
-			newValue = 1;
-		} else {
-			return;
-		}
+		const newValue = applyKeyStep(tbarValue, e.key, e.shiftKey);
+		if (newValue === tbarValue) return;
 		e.preventDefault();
 		anim.active = false;
 
