@@ -383,7 +383,7 @@ func (m *AudioMixer) AddChannel(sourceKey string) {
 	defer m.mu.Unlock()
 	m.channels[sourceKey] = &Channel{
 		sourceKey:  sourceKey,
-		eq:         NewEQ(m.sampleRate),
+		eq:         NewEQ(m.sampleRate, m.numChannels),
 		compressor: NewCompressor(m.sampleRate, m.numChannels),
 	}
 	m.recalcPassthrough()
@@ -528,7 +528,7 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 				cp[i] = s * trimGain
 			}
 			if !ch.eq.IsBypassed() {
-				ch.eq.Process(cp)
+				ch.eq.Process(cp, m.numChannels)
 			}
 			if !ch.compressor.IsBypassed() {
 				ch.compressor.Process(cp)
@@ -833,7 +833,7 @@ mixing:
 
 	// Apply EQ (3-band parametric)
 	if !ch.eq.IsBypassed() {
-		ch.eq.Process(trimmedPCM)
+		ch.eq.Process(trimmedPCM, m.numChannels)
 	}
 
 	// Apply compressor
@@ -951,7 +951,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		trimmedPCM[i] = s * trimGain
 	}
 	if !ch.eq.IsBypassed() {
-		ch.eq.Process(trimmedPCM)
+		ch.eq.Process(trimmedPCM, m.numChannels)
 	}
 	if !ch.compressor.IsBypassed() {
 		ch.compressor.Process(trimmedPCM)

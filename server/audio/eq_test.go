@@ -4,12 +4,13 @@ import (
 	"math"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestEQ_FlatPassesSignalUnchanged(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 
 	// Generate a 1kHz sine wave
 	samples := make([]float32, 1024)
@@ -19,7 +20,7 @@ func TestEQ_FlatPassesSignalUnchanged(t *testing.T) {
 	original := make([]float32, len(samples))
 	copy(original, samples)
 
-	result := eq.Process(samples)
+	result := eq.Process(samples, 1)
 
 	// Flat EQ (all bands at 0dB gain) should not alter the signal
 	for i := range result {
@@ -30,13 +31,13 @@ func TestEQ_FlatPassesSignalUnchanged(t *testing.T) {
 
 func TestEQ_IsBypassed_FlatGain(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	require.True(t, eq.IsBypassed(), "new EQ with 0dB gains should be bypassed")
 }
 
 func TestEQ_IsBypassed_AllDisabled(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	// Set a non-zero gain but disable the band
 	err := eq.SetBand(0, 500, 6.0, 1.0, false)
 	require.NoError(t, err)
@@ -45,7 +46,7 @@ func TestEQ_IsBypassed_AllDisabled(t *testing.T) {
 
 func TestEQ_IsBypassed_NonZeroGain(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	err := eq.SetBand(0, 500, 6.0, 1.0, true)
 	require.NoError(t, err)
 	require.False(t, eq.IsBypassed(), "EQ with an enabled band at non-zero gain should not be bypassed")
@@ -53,7 +54,7 @@ func TestEQ_IsBypassed_NonZeroGain(t *testing.T) {
 
 func TestEQ_SingleBandBoost(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	// Boost band 0 at 200Hz by +12dB
 	err := eq.SetBand(0, 200, 12.0, 1.0, true)
 	require.NoError(t, err)
@@ -69,7 +70,7 @@ func TestEQ_SingleBandBoost(t *testing.T) {
 	energyBefore := rmsEnergy(samples)
 
 	// Process through EQ
-	result := eq.Process(samples)
+	result := eq.Process(samples, 1)
 
 	// Measure energy after
 	energyAfter := rmsEnergy(result)
@@ -81,7 +82,7 @@ func TestEQ_SingleBandBoost(t *testing.T) {
 
 func TestEQ_SingleBandCut(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	// Cut band 1 at 1kHz by -12dB
 	err := eq.SetBand(1, 1000, -12.0, 1.0, true)
 	require.NoError(t, err)
@@ -97,7 +98,7 @@ func TestEQ_SingleBandCut(t *testing.T) {
 	energyBefore := rmsEnergy(samples)
 
 	// Process through EQ
-	result := eq.Process(samples)
+	result := eq.Process(samples, 1)
 
 	// Cutting at the target frequency should decrease energy
 	require.Less(t, rmsEnergy(result), energyBefore*0.5,
@@ -106,7 +107,7 @@ func TestEQ_SingleBandCut(t *testing.T) {
 
 func TestEQ_ParameterValidation_FrequencyRanges(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 
 	// Band 0 (Low): 80-1000Hz
 	require.Error(t, eq.SetBand(0, 79, 0, 1.0, true), "band 0 freq below 80 should fail")
@@ -129,7 +130,7 @@ func TestEQ_ParameterValidation_FrequencyRanges(t *testing.T) {
 
 func TestEQ_ParameterValidation_GainLimits(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	require.Error(t, eq.SetBand(0, 500, -13, 1.0, true), "gain below -12 should fail")
 	require.Error(t, eq.SetBand(0, 500, 13, 1.0, true), "gain above +12 should fail")
 	require.NoError(t, eq.SetBand(0, 500, -12, 1.0, true), "gain at -12 should succeed")
@@ -138,7 +139,7 @@ func TestEQ_ParameterValidation_GainLimits(t *testing.T) {
 
 func TestEQ_ParameterValidation_QLimits(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	require.Error(t, eq.SetBand(0, 500, 0, 0.4, true), "Q below 0.5 should fail")
 	require.Error(t, eq.SetBand(0, 500, 0, 4.1, true), "Q above 4.0 should fail")
 	require.NoError(t, eq.SetBand(0, 500, 0, 0.5, true), "Q at 0.5 should succeed")
@@ -147,21 +148,21 @@ func TestEQ_ParameterValidation_QLimits(t *testing.T) {
 
 func TestEQ_ParameterValidation_InvalidBand(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	require.Error(t, eq.SetBand(-1, 500, 0, 1.0, true), "band -1 should fail")
 	require.Error(t, eq.SetBand(3, 500, 0, 1.0, true), "band 3 should fail")
 }
 
 func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 
 	// Process a signal
 	samples1 := make([]float32, 1024)
 	for i := range samples1 {
 		samples1[i] = float32(math.Sin(2 * math.Pi * 1000.0 * float64(i) / 48000.0))
 	}
-	result1 := eq.Process(samples1)
+	result1 := eq.Process(samples1, 1)
 
 	// Change a band
 	err := eq.SetBand(1, 1000, 6.0, 1.0, true)
@@ -174,10 +175,10 @@ func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
 	}
 
 	// Reset the EQ's filter state for a fair comparison
-	eq2 := NewEQ(48000)
+	eq2 := NewEQ(48000, 1)
 	err = eq2.SetBand(1, 1000, 6.0, 1.0, true)
 	require.NoError(t, err)
-	result2 := eq2.Process(samples2)
+	result2 := eq2.Process(samples2, 1)
 
 	// The two results should differ (flat vs boosted)
 	differ := false
@@ -192,7 +193,7 @@ func TestEQ_CoefficientsRecalculateOnSetBand(t *testing.T) {
 
 func TestEQ_GetBands(t *testing.T) {
 	t.Parallel()
-	eq := NewEQ(48000)
+	eq := NewEQ(48000, 1)
 	err := eq.SetBand(0, 200, 3.0, 1.5, true)
 	require.NoError(t, err)
 
@@ -202,6 +203,39 @@ func TestEQ_GetBands(t *testing.T) {
 	require.InDelta(t, 3.0, bands[0].Gain, 0.01)
 	require.InDelta(t, 1.5, bands[0].Q, 0.01)
 	require.True(t, bands[0].Enabled)
+}
+
+func TestEQ_StereoNoCrosstalk(t *testing.T) {
+	t.Parallel()
+	eq := NewEQ(48000, 2)
+	err := eq.SetBand(1, 1000, 12.0, 1.0, true)
+	require.NoError(t, err)
+
+	// Interleaved stereo: left = 1kHz sine, right = silence
+	const numSamples = 1024
+	samples := make([]float32, numSamples*2)
+	for i := 0; i < numSamples; i++ {
+		samples[i*2] = float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+		samples[i*2+1] = 0.0
+	}
+
+	processed := eq.Process(samples, 2)
+
+	// Right channel must remain silent
+	for i := 0; i < numSamples; i++ {
+		require.InDelta(t, 0.0, float64(processed[i*2+1]), 1e-6,
+			"right channel sample %d should be silent", i)
+	}
+
+	// Left channel should have signal
+	var leftPeak float64
+	for i := 0; i < numSamples; i++ {
+		v := math.Abs(float64(processed[i*2]))
+		if v > leftPeak {
+			leftPeak = v
+		}
+	}
+	assert.Greater(t, leftPeak, 0.5)
 }
 
 // rmsEnergy computes the root mean square energy of a sample buffer.
