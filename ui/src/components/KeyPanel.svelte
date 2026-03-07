@@ -14,10 +14,10 @@
 	let keyType = $state<'none' | 'chroma' | 'luma'>('none');
 	let enabled = $state(true);
 
-	// Chroma params
-	let keyColorY = $state(182);
-	let keyColorCb = $state(30);
-	let keyColorCr = $state(12);
+	// Chroma params (defaults match Green Screen preset)
+	let keyColorY = $state(173);
+	let keyColorCb = $state(42);
+	let keyColorCr = $state(26);
 	let similarity = $state(0.4);
 	let smoothness = $state(0.1);
 	let spillSuppress = $state(0.5);
@@ -48,6 +48,7 @@
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 	let activeSource = $state('');
+	let loadGeneration = 0;
 
 	// Initialize activeSource when sources become available
 	$effect(() => {
@@ -60,14 +61,16 @@
 	$effect(() => {
 		const source = activeSource;
 		if (!source) return;
+		const gen = ++loadGeneration;
 
 		getSourceKey(source).then((config) => {
+			if (gen !== loadGeneration) return; // stale response
 			keyType = config.type ?? 'none';
 			enabled = config.enabled ?? true;
 			if (config.type === 'chroma') {
-				keyColorY = config.keyColorY ?? 182;
-				keyColorCb = config.keyColorCb ?? 30;
-				keyColorCr = config.keyColorCr ?? 12;
+				keyColorY = config.keyColorY ?? 173;
+				keyColorCb = config.keyColorCb ?? 42;
+				keyColorCr = config.keyColorCr ?? 26;
 				similarity = config.similarity ?? 0.4;
 				smoothness = config.smoothness ?? 0.1;
 				spillSuppress = config.spillSuppress ?? 0.5;
@@ -77,12 +80,13 @@
 				softness = config.softness ?? 0.1;
 			}
 		}).catch(() => {
-			// No key config for this source — reset to defaults
+			if (gen !== loadGeneration) return; // stale response
+			// No key config for this source (404) — reset to defaults
 			keyType = 'none';
 			enabled = true;
-			keyColorY = 182;
-			keyColorCb = 30;
-			keyColorCr = 12;
+			keyColorY = 173;
+			keyColorCb = 42;
+			keyColorCr = 26;
 			similarity = 0.4;
 			smoothness = 0.1;
 			spillSuppress = 0.5;

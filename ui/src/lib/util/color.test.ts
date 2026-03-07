@@ -49,7 +49,7 @@ describe('rgbToYCbCr', () => {
 
 describe('ycbcrToHex', () => {
 	it('converts green screen preset back to approximate hex', () => {
-		const hex = ycbcrToHex(149, 43, 21);
+		const hex = ycbcrToHex(173, 42, 26);
 		// Should be a greenish hex
 		expect(hex).toMatch(/^#[0-9a-f]{6}$/);
 	});

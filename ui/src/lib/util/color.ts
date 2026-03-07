@@ -59,6 +59,6 @@ export interface KeyPreset {
 }
 
 export const KEY_PRESETS: KeyPreset[] = [
-	{ label: 'Green Screen', y: 149, cb: 43, cr: 21 },
-	{ label: 'Blue Screen', y: 76, cb: 189, cr: 110 },
+	{ label: 'Green Screen', y: 173, cb: 42, cr: 26 },
+	{ label: 'Blue Screen', y: 32, cb: 240, cr: 118 },
 ];
