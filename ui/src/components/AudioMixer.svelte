@@ -160,6 +160,11 @@
 
 	const EQ_BAND_NAMES = ['Low', 'Mid', 'High'];
 
+	// LUFS readout values for master strip.
+	let momentaryLufs = $derived(crState.momentaryLufs ?? -Infinity);
+	let shortTermLufs = $derived(crState.shortTermLufs ?? -Infinity);
+	let integratedLufs = $derived(crState.integratedLufs ?? -Infinity);
+
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
 		crState.audioChannels != null
@@ -582,6 +587,35 @@
 		</div>
 
 		<span class="strip-db">{crState.masterLevel.toFixed(1)}</span>
+
+		<!-- LUFS loudness readout -->
+		<div class="lufs-readout">
+			<div class="lufs-row">
+				<span class="lufs-label">M</span>
+				<span class="lufs-value" class:lufs-green={momentaryLufs >= -24 && momentaryLufs <= -14}
+					class:lufs-yellow={momentaryLufs > -14 && momentaryLufs <= -10}
+					class:lufs-red={momentaryLufs > -10 || (momentaryLufs < -28 && isFinite(momentaryLufs))}>
+					{isFinite(momentaryLufs) ? momentaryLufs.toFixed(1) : '---'}
+				</span>
+			</div>
+			<div class="lufs-row">
+				<span class="lufs-label">S</span>
+				<span class="lufs-value" class:lufs-green={shortTermLufs >= -24 && shortTermLufs <= -14}
+					class:lufs-yellow={shortTermLufs > -14 && shortTermLufs <= -10}
+					class:lufs-red={shortTermLufs > -10 || (shortTermLufs < -28 && isFinite(shortTermLufs))}>
+					{isFinite(shortTermLufs) ? shortTermLufs.toFixed(1) : '---'}
+				</span>
+			</div>
+			<div class="lufs-row">
+				<span class="lufs-label">I</span>
+				<span class="lufs-value" class:lufs-green={integratedLufs >= -24 && integratedLufs <= -14}
+					class:lufs-yellow={integratedLufs > -14 && integratedLufs <= -10}
+					class:lufs-red={integratedLufs > -10 || (integratedLufs < -28 && isFinite(integratedLufs))}>
+					{isFinite(integratedLufs) ? integratedLufs.toFixed(1) : '---'}
+				</span>
+			</div>
+			<span class="lufs-unit">LUFS</span>
+		</div>
 	</div>
 	{/if}
 </div>
@@ -1101,5 +1135,53 @@
 	.audio-mixer.collapsed {
 		gap: 0;
 		padding: 4px;
+	}
+
+	.lufs-readout {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		padding: 4px;
+		background: var(--bg-surface);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-mono, monospace);
+		font-size: 0.65rem;
+		min-width: 70px;
+	}
+
+	.lufs-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.lufs-label {
+		color: var(--text-muted);
+		font-weight: 600;
+		width: 12px;
+	}
+
+	.lufs-value {
+		color: var(--text-secondary);
+		text-align: right;
+	}
+
+	.lufs-green {
+		color: #16a34a;
+	}
+
+	.lufs-yellow {
+		color: #ca8a04;
+	}
+
+	.lufs-red {
+		color: #dc2626;
+	}
+
+	.lufs-unit {
+		text-align: center;
+		color: var(--text-muted);
+		font-size: 0.6rem;
+		margin-top: 2px;
 	}
 </style>

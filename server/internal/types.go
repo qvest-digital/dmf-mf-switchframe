@@ -155,6 +155,9 @@ type ControlRoomState struct {
 	MasterLevel          float64                   `json:"masterLevel"`
 	ProgramPeak          [2]float64                `json:"programPeak"`
 	GainReduction        float64                   `json:"gainReduction,omitempty"`
+	MomentaryLUFS        float64                   `json:"momentaryLufs,omitempty"`
+	ShortTermLUFS        float64                   `json:"shortTermLufs,omitempty"`
+	IntegratedLUFS       float64                   `json:"integratedLufs,omitempty"`
 	TallyState           map[string]string          `json:"tallyState"`
 	Recording            *RecordingStatus           `json:"recording,omitempty"`
 	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`

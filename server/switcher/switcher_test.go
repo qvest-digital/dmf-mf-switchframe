@@ -513,6 +513,18 @@ func (m *mockAudioStateProvider) GainReduction() float64 {
 	return m.gainReduction
 }
 
+func (m *mockAudioStateProvider) MomentaryLUFS() float64 {
+	return 0
+}
+
+func (m *mockAudioStateProvider) ShortTermLUFS() float64 {
+	return 0
+}
+
+func (m *mockAudioStateProvider) IntegratedLUFS() float64 {
+	return 0
+}
+
 func TestStateIncludesAudioFromMixer(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)

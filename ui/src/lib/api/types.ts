@@ -177,6 +177,9 @@ export interface ControlRoomState {
 	masterLevel: number;
 	programPeak: [number, number];
 	gainReduction?: number;
+	momentaryLufs?: number;
+	shortTermLufs?: number;
+	integratedLufs?: number;
 	tallyState: Record<string, TallyStatus>;
 	sources: Record<string, SourceInfo>;
 	presets?: PresetInfo[];

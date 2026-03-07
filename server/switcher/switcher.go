@@ -112,6 +112,9 @@ type audioStateProvider interface {
 	ChannelStates() map[string]internal.AudioChannel
 	MasterLevel() float64
 	GainReduction() float64
+	MomentaryLUFS() float64
+	ShortTermLUFS() float64
+	IntegratedLUFS() float64
 }
 
 // audioCutHandler is called during a cut to trigger audio crossfade.
@@ -1705,6 +1708,9 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		state.MasterLevel = s.mixer.MasterLevel()
 		state.ProgramPeak = s.mixer.ProgramPeak()
 		state.GainReduction = s.mixer.GainReduction()
+		state.MomentaryLUFS = s.mixer.MomentaryLUFS()
+		state.ShortTermLUFS = s.mixer.ShortTermLUFS()
+		state.IntegratedLUFS = s.mixer.IntegratedLUFS()
 	}
 
 	return state

@@ -122,6 +122,9 @@ type AudioMixer struct {
 	// Program bus limiter (always active)
 	limiter *Limiter
 
+	// BS.1770-4 LUFS loudness meter (program bus, after master fader)
+	loudness *LoudnessMeter
+
 	// Metering state
 	programPeakL float64 // linear amplitude [0,1]
 	programPeakR float64 // linear amplitude [0,1]
@@ -164,6 +167,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		config:         config,
 		stopTicker:     make(chan struct{}),
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
+		loudness:       NewLoudnessMeter(config.SampleRate, config.Channels),
 		lastDecodedPCM: make(map[string][]float32),
 		mixBuffer:      make(map[string][]float32),
 	}
@@ -284,6 +288,9 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	for i := range mixed {
 		mixed[i] *= masterGain
 	}
+
+	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
+	m.loudness.Process(mixed)
 
 	// Apply brickwall limiter at -1 dBFS (always active)
 	m.limiter.Process(mixed)
@@ -1290,6 +1297,26 @@ func (m *AudioMixer) MasterLevel() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.masterLevel
+}
+
+// MomentaryLUFS returns the BS.1770-4 momentary loudness (400ms window).
+func (m *AudioMixer) MomentaryLUFS() float64 {
+	return m.loudness.MomentaryLUFS()
+}
+
+// ShortTermLUFS returns the BS.1770-4 short-term loudness (3s window).
+func (m *AudioMixer) ShortTermLUFS() float64 {
+	return m.loudness.ShortTermLUFS()
+}
+
+// IntegratedLUFS returns the BS.1770-4 integrated loudness (gated, since last reset).
+func (m *AudioMixer) IntegratedLUFS() float64 {
+	return m.loudness.IntegratedLUFS()
+}
+
+// ResetLoudness clears the integrated loudness measurement.
+func (m *AudioMixer) ResetLoudness() {
+	m.loudness.Reset()
 }
 
 // recordAndOutput tracks output timing diagnostics and delivers the frame.
