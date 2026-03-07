@@ -1232,6 +1232,11 @@ func (s *Switcher) AbortTransition() {
 // transition finishes. If completed (not aborted), it swaps program/preview
 // sources and replays the new source's cached GOP to avoid a keyframe gap.
 func (s *Switcher) handleTransitionComplete(aborted bool) {
+	// Phase 1: Read transition state under lock. Identify the new program
+	// source and capture GOP replay frames, but DON'T change routing yet.
+	// The transition engine has already output its last blended frame (at
+	// position 1.0) before calling OnComplete, so its internal state is
+	// StateIdle — subsequent IngestFrame calls are no-ops.
 	s.mu.Lock()
 	if !s.state.isInTransition() {
 		s.mu.Unlock()
@@ -1240,24 +1245,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	audioHandler := s.audioTransition
 	var audioCut audioCutHandler
-	var newProgram string
+	var newProgram, oldProgram string
 
 	if !aborted && s.transEngine != nil {
 		newProgram = s.transEngine.ToSource()
-		oldProgram := s.programSource
+		oldProgram = s.programSource
 		if newProgram != "" {
-			s.programSource = newProgram
-			s.previewSource = oldProgram
 			audioCut = s.audioCut
-			// Gate incoming source frames until GOP replay provides a
-			// keyframe through the pipeline. The gate is cleared below
-			// after GOP replay, or held until the next natural keyframe
-			// as fallback. MXL sources provide raw YUV (no H.264), so
-			// IDR gating is not applicable.
-			if ss, ok := s.sources[newProgram]; ok && !ss.isMXL {
-				ss.pendingIDR = true
-				s.idrGateStartNano.Store(time.Now().UnixNano())
-			}
 		}
 	}
 
@@ -1270,6 +1264,54 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	transType := ""
 	if s.transEngine != nil {
 		transType = string(s.transEngine.TransitionType())
+	}
+	s.mu.Unlock()
+
+	// Phase 2: Warm the pipeline decoder BEFORE switching routing. While
+	// this runs (~50-300ms), frames still route to the transition engine
+	// (which silently drops them since it's internally completed). This is
+	// unavoidable but far better than the old approach where replayGOP ran
+	// AFTER routing switched, causing the IDR gate to drop all frames
+	// (including the gap for replayGOP + potential keyframe wait).
+	replayOK := false
+	if len(replayFrames) > 0 {
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			// replayGOP creates a fresh decoder with the GOP's reference
+			// chain, then swaps it in atomically. The pipeline decoder is
+			// fully warm for the new source when this returns.
+			pipeCodecs.replayGOP(replayFrames)
+			replayOK = true
+		}
+	}
+
+	// Phase 3: Atomically switch routing under write lock. If replayGOP
+	// warmed the decoder, skip the IDR gate entirely — frames from the new
+	// source can be decoded immediately using the warmed reference chain.
+	// The IDR gate is only needed as fallback when no GOP replay is available.
+	s.mu.Lock()
+	// Re-check state in case of concurrent abort
+	if !s.state.isInTransition() {
+		s.mu.Unlock()
+		return
+	}
+
+	if newProgram != "" {
+		s.programSource = newProgram
+		s.previewSource = oldProgram
+
+		if !replayOK {
+			// No GOP replay — fall back to IDR gate until next keyframe.
+			// MXL sources provide raw YUV (no H.264), so IDR gating
+			// is not applicable.
+			if ss, ok := s.sources[newProgram]; ok && !ss.isMXL {
+				ss.pendingIDR = true
+				s.idrGateStartNano.Store(time.Now().UnixNano())
+			}
+		}
+		// When replayOK, the pipeline decoder is already warm with the new
+		// source's reference chain. forceNextIDR (set by replayGOP) ensures
+		// the encoder produces a keyframe on the first live frame. No IDR
+		// gate needed — frames flow through immediately.
 	}
 
 	s.transitionState(StateIdle)
@@ -1285,34 +1327,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	if aborted {
 		s.log.Warn("transition aborted", "type", transType, "reason", "engine aborted")
 	} else {
-		s.log.Info("transition completed", "type", transType)
-	}
-
-	// Replay the full GOP through the pipeline decoder to build its reference
-	// chain, then set forceNextIDR so the first live frame produces a keyframe.
-	// This avoids encoding during replay (unreliable with HW encoders) and
-	// avoids re-decoding the IDR through the async pipeline (which would clear
-	// the reference chain via H.264 IDR semantics).
-	if len(replayFrames) > 0 {
-		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-			// replayGOP creates a fresh decoder with the GOP's reference
-			// chain, then swaps it in. No need to flush the old decoder
-			// first — the old one is replaced atomically.
-			pipeCodecs.replayGOP(replayFrames)
-		}
-		// Clear the IDR gate — the replayed GOP seeds the decoder
-		s.mu.Lock()
-		if ss, ok := s.sources[newProgram]; ok && ss.pendingIDR {
-			ss.pendingIDR = false
-			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
-				dur := time.Since(time.Unix(0, startNano))
-				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
-				if s.promMetrics != nil {
-					s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
-				}
-			}
-		}
-		s.mu.Unlock()
+		s.log.Info("transition completed", "type", transType, "replay_ok", replayOK)
 	}
 
 	if audioHandler != nil {
@@ -1369,6 +1384,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 // StateIdle (screen is now fully visible) and replays the GOP to avoid a
 // keyframe gap. If aborted, it transitions to StateFTB (screen stays black).
 func (s *Switcher) handleFTBReverseComplete(aborted bool) {
+	// Phase 1: Read state under lock.
 	s.mu.Lock()
 	if !s.state.isInTransition() {
 		s.mu.Unlock()
@@ -1378,15 +1394,39 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	audioHandler := s.audioTransition
 	programSource := s.programSource
 
+	var replayFrames []*media.VideoFrame
+	if !aborted && programSource != "" {
+		replayFrames = s.gopCache.GetOriginalGOP(programSource)
+	}
+	s.mu.Unlock()
+
+	// Phase 2: Warm pipeline decoder BEFORE switching routing.
+	// Same pattern as handleTransitionComplete — see comments there.
+	replayOK := false
+	if len(replayFrames) > 0 {
+		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
+			pipeCodecs.replayGOP(replayFrames)
+			replayOK = true
+		}
+	}
+
+	// Phase 3: Atomically switch state under write lock.
+	s.mu.Lock()
+	if !s.state.isInTransition() {
+		s.mu.Unlock()
+		return
+	}
+
 	if aborted {
 		s.transitionState(StateFTB) // Aborted — screen stays black
 	} else {
 		s.transitionState(StateIdle) // Completed — screen is visible
-		// Gate incoming source frames until GOP replay provides a
-		// keyframe through the pipeline.
-		if ss, ok := s.sources[programSource]; ok {
-			ss.pendingIDR = true
-			s.idrGateStartNano.Store(time.Now().UnixNano())
+		if !replayOK {
+			// No GOP replay — fall back to IDR gate.
+			if ss, ok := s.sources[programSource]; ok {
+				ss.pendingIDR = true
+				s.idrGateStartNano.Store(time.Now().UnixNano())
+			}
 		}
 	}
 	s.transEngine = nil
@@ -1395,38 +1435,14 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
 	}
 
-	var replayFrames []*media.VideoFrame
-	if !aborted && programSource != "" {
-		replayFrames = s.gopCache.GetOriginalGOP(programSource)
-	}
-
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
 
-	// Replay full GOP — see handleTransitionComplete for explanation.
-	if len(replayFrames) > 0 {
-		if pipeCodecs := s.pipeCodecs; pipeCodecs != nil {
-			pipeCodecs.replayGOP(replayFrames)
-		}
-		s.mu.Lock()
-		if ss, ok := s.sources[programSource]; ok && ss.pendingIDR {
-			ss.pendingIDR = false
-			if startNano := s.idrGateStartNano.Load(); startNano > 0 {
-				dur := time.Since(time.Unix(0, startNano))
-				s.lastIDRGateDurationMs.Store(dur.Milliseconds())
-				if s.promMetrics != nil {
-					s.promMetrics.IDRGateDuration.Observe(dur.Seconds())
-				}
-			}
-		}
-		s.mu.Unlock()
-	}
-
 	if aborted {
 		s.log.Warn("transition aborted", "type", "ftb_reverse", "reason", "engine aborted")
 	} else {
-		s.log.Info("FTB deactivated")
+		s.log.Info("FTB deactivated", "replay_ok", replayOK)
 	}
 
 	if audioHandler != nil {
