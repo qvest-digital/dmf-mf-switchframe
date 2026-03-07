@@ -78,8 +78,10 @@ func probeEncoder() string {
 	return "none"
 }
 
-// tryEncoder attempts to create a small FFmpeg encoder, encode one frame,
+// tryEncoder attempts to create a small FFmpeg encoder, encode a few frames,
 // and close it. Returns true if the codec is functional.
+// Some hardware encoders (e.g. VideoToolbox) return EAGAIN on the first
+// frame(s) while warming up, so we send up to 4 frames.
 func tryEncoder(codecName string) bool {
 	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30.0, nil)
 	if err != nil {
@@ -87,19 +89,22 @@ func tryEncoder(codecName string) bool {
 	}
 	defer enc.Close()
 
-	// Encode one tiny YUV420 frame (64x64) to verify the codec actually works.
 	yuvSize := 64 * 64 * 3 / 2
 	yuv := make([]byte, yuvSize)
-	// Fill with neutral values (Y=128, U=128, V=128 = gray).
 	for i := range yuv {
 		yuv[i] = 128
 	}
 
-	data, _, err := enc.Encode(yuv, true)
-	if err != nil {
-		return false
+	for i := range 8 {
+		data, _, err := enc.Encode(yuv, i == 0)
+		if err != nil {
+			continue // EAGAIN expected during warmup
+		}
+		if len(data) > 0 {
+			return true
+		}
 	}
-	return len(data) > 0
+	return false
 }
 
 // tryOpenH264Encoder attempts to create a small OpenH264 encoder and encode one frame.

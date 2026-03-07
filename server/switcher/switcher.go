@@ -604,6 +604,10 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 		}
 		return
 	}
+	if out == nil {
+		// Encoder buffering (e.g. VideoToolbox warmup) — no output yet.
+		return
+	}
 
 	if s.promMetrics != nil {
 		s.promMetrics.PipelineFramesProcessed.Inc()
@@ -680,6 +684,10 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		if s.promMetrics != nil {
 			s.promMetrics.PipelineEncodeErrorsTotal.Inc()
 		}
+		return
+	}
+	if frame == nil {
+		// Encoder buffering (e.g. VideoToolbox warmup) — no output yet.
 		return
 	}
 

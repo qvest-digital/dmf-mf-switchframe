@@ -81,7 +81,6 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
-		av_opt_set_int(h->ctx->priv_data, "allow_sw", 0, 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
 	}
 
@@ -296,7 +295,9 @@ func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) 
 	}
 	if rc == 1 {
 		// EAGAIN: encoder needs more input before producing output.
-		return nil, false, fmt.Errorf("encoder needs more input (EAGAIN)")
+		// This is normal for hardware encoders (e.g. VideoToolbox) that
+		// buffer a few frames during warmup. Return nil data, no error.
+		return nil, false, nil
 	}
 
 	n := int(outLen)

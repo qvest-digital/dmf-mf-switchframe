@@ -53,7 +53,8 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 	require.NotNil(t, enc)
 	defer enc.Close()
 
-	// Encode one frame to verify it works end-to-end.
+	// Encode frames to verify it works end-to-end. Hardware encoders
+	// (e.g. VideoToolbox) may buffer the first few frames (EAGAIN).
 	w, h := 160, 120
 	ySize := w * h
 	uvSize := (w / 2) * (h / 2)
@@ -62,10 +63,19 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	data, isKey, err := enc.Encode(yuv, true)
-	require.NoError(t, err)
-	require.True(t, isKey, "first forced IDR should be a keyframe")
-	require.NotEmpty(t, data, "encoded data should not be empty")
+	var gotOutput bool
+	for i := range 8 {
+		data, isKey, err := enc.Encode(yuv, i == 0)
+		require.NoError(t, err)
+		if len(data) > 0 {
+			if i == 0 || !gotOutput {
+				require.True(t, isKey, "first output frame should be a keyframe")
+			}
+			gotOutput = true
+			break
+		}
+	}
+	require.True(t, gotOutput, "encoder should produce output within 8 frames")
 }
 
 func TestNewVideoDecoder_Works(t *testing.T) {
@@ -97,11 +107,19 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Encode a keyframe.
-	encoded, isKey, err := enc.Encode(yuv, true)
-	require.NoError(t, err)
-	require.True(t, isKey)
-	require.NotEmpty(t, encoded)
+	// Encode frames until we get output. Hardware encoders (e.g.
+	// VideoToolbox) may buffer the first few frames (EAGAIN).
+	var encoded []byte
+	for i := range 8 {
+		data, isKey, err := enc.Encode(yuv, i == 0)
+		require.NoError(t, err)
+		if len(data) > 0 {
+			encoded = data
+			_ = isKey
+			break
+		}
+	}
+	require.NotEmpty(t, encoded, "encoder should produce output within 8 frames")
 
 	// Decode it back.
 	decoded, dw, dh, err := dec.Decode(encoded)

@@ -513,6 +513,71 @@ func (e *slowEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
 
 func (e *slowEncoder) Close() { e.inner.Close() }
 
+func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
+	// Hardware encoders (e.g. VideoToolbox) return nil data during warmup
+	// (EAGAIN). The pipeline should silently drop these frames without
+	// error, then resume normal output once the encoder starts producing.
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
+		},
+	)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Send 5 frames: first 3 should be silently dropped (buffering),
+	// frames 4 and 5 should produce output.
+	for i := range 5 {
+		cam1Relay.BroadcastVideo(&media.VideoFrame{
+			PTS: int64(i*100 + 100), IsKeyframe: i == 0, WireData: []byte{0x01},
+		})
+		time.Sleep(5 * time.Millisecond) // let async processing run
+	}
+
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 2
+	}, 200*time.Millisecond, 5*time.Millisecond,
+		"should receive frames after encoder warmup")
+
+	viewer.mu.Lock()
+	// Exactly 2 frames should have made it through (frames 4 and 5)
+	require.Equal(t, 2, len(viewer.videos), "only post-warmup frames should reach viewer")
+	viewer.mu.Unlock()
+}
+
+// bufferingEncoder returns nil data for the first N calls (simulating
+// hardware encoder warmup like VideoToolbox EAGAIN), then delegates.
+type bufferingEncoder struct {
+	inner     transition.VideoEncoder
+	remaining atomic.Int32
+}
+
+func newBufferingEncoder(inner transition.VideoEncoder, warmupFrames int) *bufferingEncoder {
+	e := &bufferingEncoder{inner: inner}
+	e.remaining.Store(int32(warmupFrames))
+	return e
+}
+
+func (e *bufferingEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+	if e.remaining.Add(-1) >= 0 {
+		return nil, false, nil // EAGAIN — no output yet
+	}
+	return e.inner.Encode(yuv, forceIDR)
+}
+
+func (e *bufferingEncoder) Close() { e.inner.Close() }
+
 // failingEncoder always returns an error from Encode.
 type failingEncoder struct{}
 

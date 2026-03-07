@@ -129,6 +129,11 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: encode: %w", err)
 	}
+	// Hardware encoders (e.g. VideoToolbox) may return nil data during warmup
+	// (EAGAIN). Return nil frame to signal "no output yet" — not an error.
+	if len(encoded) == 0 {
+		return nil, nil
+	}
 
 	if pf.GroupID > pc.groupID {
 		pc.groupID = pf.GroupID
