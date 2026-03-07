@@ -10,6 +10,7 @@
 		setCompressor as apiSetCompressor,
 	} from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
 	interface Props {
 		state: ControlRoomState;
@@ -120,7 +121,7 @@
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
 		crState.audioChannels != null
-			? Object.keys(crState.audioChannels).sort()
+			? sortedSourceKeys(crState.sources).filter(k => k in crState.audioChannels!)
 			: [],
 	);
 

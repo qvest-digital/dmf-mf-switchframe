@@ -23,6 +23,7 @@ type SourceInfo struct {
 	Key       string             `json:"key"`
 	Label     string             `json:"label,omitempty"`
 	Status    string             `json:"status"`
+	Position  int                `json:"position"`
 	DelayMs   int                `json:"delayMs,omitempty"`
 	KeyConfig *SourceKeyConfig   `json:"keyConfig,omitempty"`
 	IsVirtual bool               `json:"isVirtual,omitempty"`

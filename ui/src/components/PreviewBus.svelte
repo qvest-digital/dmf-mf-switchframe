@@ -2,13 +2,14 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import SourceTile from './SourceTile.svelte';
 	import { setPreview, apiCall } from '$lib/api/switch-api';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
 	interface Props {
 		state: ControlRoomState;
 		onPreview?: (key: string) => void;
 	}
 	let { state, onPreview }: Props = $props();
-	let sourceKeys = $derived(Object.keys(state.sources).sort());
+	let sourceKeys = $derived(sortedSourceKeys(state.sources));
 </script>
 
 <div class="bus preview-bus">

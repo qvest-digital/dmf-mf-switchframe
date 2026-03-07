@@ -3,13 +3,14 @@
 	import { setPreview, apiCall } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
 	interface Props {
 		state: ControlRoomState;
 		onLabelChange?: (key: string, label: string) => void;
 	}
 	let { state: crState, onLabelChange }: Props = $props();
-	let sourceKeys = $derived(Object.keys(crState.sources).sort());
+	let sourceKeys = $derived(sortedSourceKeys(crState.sources));
 	let multiviewEl: HTMLDivElement;
 
 	// High-DPI canvas sizing for all tile canvases

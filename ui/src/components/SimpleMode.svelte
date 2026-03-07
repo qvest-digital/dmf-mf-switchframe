@@ -2,6 +2,7 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import { setPreview, cut, startTransition, apiCall } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
 	interface Props {
 		state: ControlRoomState;
@@ -52,7 +53,7 @@
 		return () => observers.forEach((obs) => obs.disconnect());
 	});
 
-	let sourceKeys = $derived(Object.keys(state.sources).sort());
+	let sourceKeys = $derived(sortedSourceKeys(state.sources));
 	let previewLabel = $derived(
 		state.previewSource && state.sources[state.previewSource]
 			? state.sources[state.previewSource].label || state.previewSource

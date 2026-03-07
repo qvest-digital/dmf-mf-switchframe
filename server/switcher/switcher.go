@@ -153,6 +153,7 @@ type sourceState struct {
 	viewer     *sourceViewer
 	pendingIDR bool // true after a cut until first keyframe from this source
 	isVirtual  bool // true for virtual sources (replay, etc.)
+	position   int  // display order in the UI (1-based)
 
 	// Rolling frame statistics for dynamic encoder parameters.
 	// Updated on every video frame. Used to estimate bitrate/fps for
@@ -1135,7 +1136,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		viewer.delayBuffer.Store(s.delayBuffer)
 	}
 	relay.AddViewer(viewer)
-	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer}
+	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer, position: len(s.sources) + 1}
 	s.health.registerSource(key)
 	s.mu.Unlock()
 
@@ -1161,6 +1162,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 		relay:     relay,
 		viewer:    viewer,
 		isVirtual: true,
+		position:  len(s.sources) + 1,
 	}
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
@@ -1320,6 +1322,32 @@ func (s *Switcher) SetLabel(ctx context.Context, sourceKey, label string) error 
 	return nil
 }
 
+// SetSourcePosition sets the display position for a source. Sources are
+// ordered by position in the UI. If another source already occupies the
+// target position, they swap positions.
+func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
+	s.mu.Lock()
+	ss, ok := s.sources[sourceKey]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
+	}
+	// Swap with any source already at the target position
+	for _, other := range s.sources {
+		if other.key != sourceKey && other.position == position {
+			other.position = ss.position
+			break
+		}
+	}
+	ss.position = position
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
 // SetSourceDelay sets the input delay for a source in milliseconds (0-500).
 // A delay of 0 means no buffering (passthrough). Non-zero delays are used
 // for lip-sync compensation. Returns ErrSourceNotFound if the source is not
@@ -1424,6 +1452,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 			Key:       key,
 			Label:     ss.label,
 			Status:    string(s.health.status(key)),
+			Position:  ss.position,
 			DelayMs:   int(s.delayBuffer.GetDelay(key) / time.Millisecond),
 			IsVirtual: ss.isVirtual,
 		}

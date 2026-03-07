@@ -6,6 +6,7 @@ export interface SourceInfo {
 	label?: string;
 	status: SourceHealthStatus;
 	lastFrameTime: number;
+	position?: number;
 	delayMs?: number;
 	isVirtual?: boolean;
 }
