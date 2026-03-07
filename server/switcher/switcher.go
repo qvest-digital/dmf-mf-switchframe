@@ -162,6 +162,9 @@ type sourceState struct {
 	// Rolling frame statistics for dynamic encoder parameters.
 	// Updated on every video frame. Used to estimate bitrate/fps for
 	// the transition encoder so it matches the source stream quality.
+	// Protected by statsMu — separate from the main s.mu to avoid
+	// contention between per-source stats updates and switcher operations.
+	statsMu      sync.Mutex
 	avgFrameSize float64 // exponential moving average of len(WireData) in bytes
 	avgFPS       float64 // exponential moving average of fps from PTS deltas
 	lastPTS      int64   // PTS of the most recent video frame (microseconds)
@@ -648,6 +651,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 
 	// Always encode
 	out, err := pipeCodecs.encode(pf, frame.IsKeyframe)
+	pf.ReleaseYUV() // return pooled buffer after encode copies it
 	if err != nil {
 		s.log.Warn("pipeline encode failed, dropping frame", "error", err)
 		if s.promMetrics != nil {
@@ -677,7 +681,9 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	hasPipeline := s.pipeCodecs != nil
 	var groupID uint32
 	if ss, ok := s.sources[s.programSource]; ok {
+		ss.statsMu.Lock()
 		groupID = ss.lastGroupID
+		ss.statsMu.Unlock()
 	}
 	s.mu.RUnlock()
 
@@ -1729,7 +1735,7 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 
 // updateFrameStats updates the rolling frame size and FPS estimates for a
 // source. Called on every video frame. Uses an exponential moving average
-// with alpha=0.1 for stability. Caller must hold s.mu (write lock).
+// with alpha=0.1 for stability. Caller must hold ss.statsMu.
 func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	const alpha = 0.1 // EMA smoothing factor
 
@@ -1773,19 +1779,32 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey)
 
-	// Update per-source frame statistics (needs write lock)
-	s.mu.Lock()
-	if ss, ok := s.sources[sourceKey]; ok {
+	// Update per-source frame statistics using separate statsMu.
+	// Only need RLock on s.mu to read the sources map and programSource.
+	s.mu.RLock()
+	ss := s.sources[sourceKey]
+	isProgramSource := sourceKey == s.programSource
+	pipeCodecs := s.pipeCodecs
+	s.mu.RUnlock()
+
+	if ss != nil {
+		ss.statsMu.Lock()
 		s.updateFrameStats(ss, frame)
+		avgFrameSize := ss.avgFrameSize
+		avgFPS := ss.avgFPS
+		ss.statsMu.Unlock()
+
 		// Propagate program source stats to pipeline encoder
-		if sourceKey == s.programSource && s.pipeCodecs != nil {
-			s.pipeCodecs.updateSourceStats(ss.avgFrameSize, ss.avgFPS)
+		if isProgramSource && pipeCodecs != nil {
+			pipeCodecs.updateSourceStats(avgFrameSize, avgFPS)
 		}
 	}
-	s.mu.Unlock()
 
 	// Record frame in GOP cache for all sources (uses its own mutex)
 	s.gopCache.RecordFrame(sourceKey, frame)
+
+	// Pre-compute AnnexB for potential transition routing (avoids duplicate conversion)
+	var annexB []byte
 
 	// Check if transition is active — route both sources to engine
 	s.mu.RLock()
@@ -1796,9 +1815,11 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	if inTrans && engine != nil {
 		s.routeToEngine.Add(1)
 		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
-		annexB := codec.AVC1ToAnnexB(frame.WireData)
-		if frame.IsKeyframe {
-			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		if annexB == nil {
+			annexB = codec.AVC1ToAnnexB(frame.WireData)
+			if frame.IsKeyframe {
+				annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+			}
 		}
 		engine.IngestFrame(sourceKey, annexB, frame.PTS, frame.IsKeyframe)
 

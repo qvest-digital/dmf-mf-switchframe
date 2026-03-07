@@ -1,8 +1,6 @@
 package graphics
 
-import (
-	"math"
-)
+// keyer.go — chroma and luma key generation in YUV420 domain.
 
 // YCbCr represents a color in YCbCr space (BT.709).
 type YCbCr struct {
@@ -92,9 +90,11 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 				// Inside similarity threshold: fully transparent (no sqrt needed).
 				alpha = 0.0
 			} else if smoothDist > 0 && distSq < totalDistSq {
-				// In smoothness zone: need actual distance for linear interpolation.
-				dist := float32(math.Sqrt(float64(distSq)))
-				alpha = (dist - simDist) / smoothDist
+				// Smoothness zone: squared-distance interpolation avoids sqrt.
+				// Uses (distSq - simDistSq) / (totalDistSq - simDistSq) which
+				// produces a slightly different curve than linear distance but
+				// is visually similar in the feathering region.
+				alpha = (distSq - simDistSq) / (totalDistSq - simDistSq)
 			} else {
 				// Outside both: fully opaque (no sqrt needed).
 				alpha = 1.0
@@ -102,9 +102,8 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 
 			// Spill suppression: desaturate near-key pixels proportionally.
 			if spillSuppress > 0 && spillDist > 0 && distSq < spillDistSq {
-				// Only compute sqrt when inside the spill zone.
-				dist := float32(math.Sqrt(float64(distSq)))
-				spillAmount := spillSuppress * (1.0 - dist/spillDist)
+				// Squared-distance interpolation avoids sqrt.
+				spillAmount := spillSuppress * (1.0 - distSq/spillDistSq)
 				if spillAmount > 0 {
 					// Pull chroma toward the replacement color.
 					newCb := cb + (replaceCb-cb)*spillAmount

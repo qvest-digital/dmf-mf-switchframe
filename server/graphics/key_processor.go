@@ -44,8 +44,9 @@ type KeyConfig struct {
 //
 // The processor is safe for concurrent use from multiple goroutines.
 type KeyProcessor struct {
-	mu   sync.RWMutex
-	keys map[string]KeyConfig // source key → config
+	mu           sync.RWMutex
+	keys         map[string]KeyConfig // source key → config
+	spillWorkBuf []byte               // reused across frames for spill suppression copy
 }
 
 // NewKeyProcessor creates a new key processor with no keys configured.
@@ -147,9 +148,11 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 		// Luma keys and chroma keys without spill work on the original, saving ~3MB per frame.
 		var workFill []byte
 		if cfg.Type == KeyTypeChroma && cfg.SpillSuppress > 0 {
-			fillCopy := make([]byte, len(fill))
-			copy(fillCopy, fill)
-			workFill = fillCopy
+			if cap(kp.spillWorkBuf) < len(fill) {
+				kp.spillWorkBuf = make([]byte, len(fill))
+			}
+			workFill = kp.spillWorkBuf[:len(fill)]
+			copy(workFill, fill)
 		} else {
 			workFill = fill
 		}

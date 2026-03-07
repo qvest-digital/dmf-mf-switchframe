@@ -718,10 +718,12 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	// Check that stats have been updated
 	sw.mu.RLock()
 	ss := sw.sources["cam1"]
+	sw.mu.RUnlock()
+	ss.statsMu.Lock()
 	avgFrameSize := ss.avgFrameSize
 	avgFPS := ss.avgFPS
 	frameCount := ss.frameCount
-	sw.mu.RUnlock()
+	ss.statsMu.Unlock()
 
 	require.Equal(t, 20, frameCount, "should have recorded 20 frames")
 	require.InDelta(t, 10000, avgFrameSize, 1000, "avg frame size should be near 10000 bytes")

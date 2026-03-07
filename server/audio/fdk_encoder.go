@@ -170,6 +170,8 @@ type FDKEncoder struct {
 	handle   C.aacenc_t
 	channels int
 	closed   bool
+	pcm16Buf []int16 // reused across Encode() calls
+	outBuf   []byte  // reused across Encode() calls
 }
 
 // NewFDKEncoder creates a new FDK AAC-LC encoder for the given sample rate and channel count.
@@ -190,6 +192,16 @@ func NewFDKEncoder(sampleRate, channels int) (*FDKEncoder, error) {
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to open FDK AAC encoder: code %d", int(rc))
 	}
+
+	// Pre-allocate reusable buffers to eliminate per-frame allocations.
+	frameSize := int(C.aacenc_frame_size(&e.handle))
+	e.pcm16Buf = make([]int16, frameSize*channels)
+	maxOut := int(C.aacenc_max_out_bytes(&e.handle))
+	if maxOut <= 0 {
+		maxOut = 8192
+	}
+	e.outBuf = make([]byte, maxOut)
+
 	return e, nil
 }
 
@@ -207,8 +219,8 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 			expectedSamples, frameSize, e.channels, len(pcm))
 	}
 
-	// Convert float32 [-1.0, 1.0] to int16.
-	pcm16 := make([]int16, len(pcm))
+	// Convert float32 [-1.0, 1.0] to int16, reusing pre-allocated buffer.
+	pcm16 := e.pcm16Buf[:expectedSamples]
 	for i, s := range pcm {
 		// Clamp to [-1.0, 1.0].
 		if s > 1.0 {
@@ -219,11 +231,7 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 		pcm16[i] = int16(s * float32(math.MaxInt16))
 	}
 
-	maxOut := int(C.aacenc_max_out_bytes(&e.handle))
-	if maxOut <= 0 {
-		maxOut = 8192
-	}
-	outBuf := make([]byte, maxOut)
+	outBuf := e.outBuf
 	var outBytes C.int
 
 	rc := C.aacenc_encode(
@@ -231,7 +239,7 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 		(*C.INT_PCM)(unsafe.Pointer(&pcm16[0])),
 		C.int(len(pcm16)),
 		(*C.uchar)(unsafe.Pointer(&outBuf[0])),
-		C.int(maxOut),
+		C.int(len(outBuf)),
 		&outBytes,
 	)
 	if rc != 0 {
@@ -243,7 +251,8 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 		// Encoder is priming; return empty but not nil.
 		return []byte{}, nil
 	}
-	return outBuf[:n], nil
+	// Return a copy so callers own the slice (outBuf is reused next call).
+	return append([]byte(nil), outBuf[:n]...), nil
 }
 
 // Close releases the encoder resources. Safe to call multiple times.

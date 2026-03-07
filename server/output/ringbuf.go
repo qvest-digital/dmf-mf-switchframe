@@ -40,18 +40,25 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 		r.count = 0
 	}
 
-	for i := 0; i < len(p); i++ {
-		// If the buffer is full, advancing writePos overwrites the oldest
-		// byte, so we must advance readPos too.
-		if r.count == r.capacity {
-			r.overflowed = true
-			r.readPos = (r.readPos + 1) % r.capacity
-			r.count--
-		}
-		r.data[r.writePos] = p[i]
-		r.writePos = (r.writePos + 1) % r.capacity
-		r.count++
+	n := len(p)
+	// If writing more than available space, mark overflow and advance readPos.
+	if r.count+n > r.capacity {
+		r.overflowed = true
+		overflow := r.count + n - r.capacity
+		r.readPos = (r.readPos + overflow) % r.capacity
+		r.count -= overflow
 	}
+
+	// Write in up to 2 segments (handle wraparound).
+	firstLen := r.capacity - r.writePos
+	if firstLen >= n {
+		copy(r.data[r.writePos:], p)
+	} else {
+		copy(r.data[r.writePos:], p[:firstLen])
+		copy(r.data[0:], p[firstLen:])
+	}
+	r.writePos = (r.writePos + n) % r.capacity
+	r.count += n
 
 	return total, nil
 }

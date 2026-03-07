@@ -49,27 +49,35 @@ type pipelineCodecs struct {
 
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
 // to raw YUV420. Lazy-initializes the decoder on the first keyframe.
+//
+// The lock is only held for lazy-init and to capture the decoder reference.
+// The actual decode (30-100ms) runs outside the lock. This is safe because
+// the pipeline is single-threaded (one videoProcessingLoop goroutine).
 func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, error) {
+	// Phase 1: Lock to get decoder reference + lazy-init
 	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	if pc.decoder == nil {
 		if !frame.IsKeyframe {
+			pc.mu.Unlock()
 			return nil, fmt.Errorf("pipeline: need keyframe to init decoder")
 		}
 		dec, err := pc.decoderFactory()
 		if err != nil {
+			pc.mu.Unlock()
 			return nil, fmt.Errorf("pipeline: decoder init: %w", err)
 		}
 		pc.decoder = dec
 	}
+	decoder := pc.decoder
+	pc.mu.Unlock()
 
+	// Phase 2: NALU conversion + decode OUTSIDE lock
 	annexB := codec.AVC1ToAnnexB(frame.WireData)
 	if frame.IsKeyframe {
 		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
 	}
 
-	yuv, w, h, err := pc.decoder.Decode(annexB)
+	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
 		if strings.Contains(err.Error(), "buffering") {
 			return nil, errDecoderBuffering
@@ -81,7 +89,7 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 	if len(yuv) < yuvSize {
 		return nil, fmt.Errorf("pipeline: decoder buffer too small: got %d, need %d", len(yuv), yuvSize)
 	}
-	yuvCopy := make([]byte, yuvSize)
+	yuvCopy := getYUVBuffer(yuvSize)
 	copy(yuvCopy, yuv[:yuvSize])
 
 	return &ProcessingFrame{
@@ -98,10 +106,13 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 
 // encode converts a ProcessingFrame back to a media.VideoFrame by encoding
 // YUV420 to H.264. Lazy-initializes the encoder on first call.
+//
+// The lock is only held for config checks and state updates, not for the
+// actual encode (30-100ms). This is safe because the pipeline is
+// single-threaded (one videoProcessingLoop goroutine).
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
+	// Phase 1: Lock for config + init
 	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	// Check forceNextIDR flag (set by replayGOP after building decoder
 	// references). This ensures the first live frame after a transition
 	// produces a keyframe for browser sync.
@@ -126,14 +137,18 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		}
 		enc, err := pc.encoderFactory(pf.Width, pf.Height, bitrate, fps)
 		if err != nil {
+			pc.mu.Unlock()
 			return nil, fmt.Errorf("pipeline: encoder init: %w", err)
 		}
 		pc.encoder = enc
 		pc.encWidth = pf.Width
 		pc.encHeight = pf.Height
 	}
+	encoder := pc.encoder
+	pc.mu.Unlock()
 
-	encoded, isKeyframe, err := pc.encoder.Encode(pf.YUV, forceIDR)
+	// Phase 2: Encode OUTSIDE lock
+	encoded, isKeyframe, err := encoder.Encode(pf.YUV, forceIDR)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: encode: %w", err)
 	}
@@ -143,21 +158,26 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		return nil, nil
 	}
 
+	avc1 := codec.AnnexBToAVC1(encoded)
+
+	// Phase 3: Lock for state update
+	pc.mu.Lock()
 	if pf.GroupID > pc.groupID {
 		pc.groupID = pf.GroupID
 	}
 	if isKeyframe {
 		pc.groupID++
 	}
+	groupID := pc.groupID
+	pc.mu.Unlock()
 
-	avc1 := codec.AnnexBToAVC1(encoded)
 	frame := &media.VideoFrame{
 		PTS:        pf.PTS,
 		DTS:        pf.DTS,
 		IsKeyframe: isKeyframe,
 		WireData:   avc1,
 		Codec:      pf.Codec,
-		GroupID:    pc.groupID,
+		GroupID:    groupID,
 	}
 
 	if isKeyframe {
@@ -173,10 +193,14 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 		}
 		if frame.SPS != nil && frame.PPS != nil && pc.onVideoInfoChange != nil {
+			pc.mu.Lock()
 			if !bytes.Equal(frame.SPS, pc.lastSPS) || !bytes.Equal(frame.PPS, pc.lastPPS) {
 				pc.lastSPS = append(pc.lastSPS[:0], frame.SPS...)
 				pc.lastPPS = append(pc.lastPPS[:0], frame.PPS...)
-				pc.onVideoInfoChange(frame.SPS, frame.PPS, pc.encWidth, pc.encHeight)
+				pc.mu.Unlock()
+				pc.onVideoInfoChange(frame.SPS, frame.PPS, pf.Width, pf.Height)
+			} else {
+				pc.mu.Unlock()
 			}
 		}
 	}
@@ -242,8 +266,8 @@ func (pc *pipelineCodecs) flushDecoder() {
 
 // updateSourceStats propagates the program source's estimated bitrate and FPS
 // to the encoder. These are used when the encoder is (re)created.
-// Uses TryLock to avoid blocking the source delivery goroutine when the
-// encoder is actively encoding (which holds pc.mu for 30-100ms). Stats are
+// Uses TryLock to avoid blocking the source delivery goroutine on the rare
+// occasion when pc.mu is held (lazy-init or state update). Stats are
 // approximate and will be picked up on the next available frame.
 func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64) {
 	if !pc.mu.TryLock() {

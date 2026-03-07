@@ -48,6 +48,10 @@ type Compressor struct {
 	releaseCoeff    float64 // envelope release coefficient
 	makeupLinear    float64 // linear gain for makeup
 
+	// Precomputed gain lookup table — indexed by overDB * 4 (0.25 dB resolution).
+	// Rebuilt on threshold/ratio change. Eliminates per-sample Log10+Pow.
+	gainTable [256]float32 // 0-64 dB range at 0.25 dB steps
+
 	// State
 	envelope      float64 // current envelope level (linear)
 	gainReduction float64 // current GR in dB
@@ -83,6 +87,21 @@ func (c *Compressor) recalcCoefficients() {
 	c.attackCoeff = 1 - math.Exp(-1.0/(sr*c.attackMs/1000.0))
 	c.releaseCoeff = 1 - math.Exp(-1.0/(sr*c.releaseMs/1000.0))
 	c.makeupLinear = math.Pow(10, c.makeupGain/20.0)
+	c.rebuildGainTable()
+}
+
+// rebuildGainTable precomputes gain reduction for 256 over-threshold dB steps
+// at 0.25 dB resolution (0-64 dB range). Caller must hold c.mu or be in constructor.
+func (c *Compressor) rebuildGainTable() {
+	for i := 0; i < len(c.gainTable); i++ {
+		overDB := float64(i) * 0.25
+		if overDB > 0 && c.ratio > 1.0 {
+			reductionDB := overDB * (1 - 1/c.ratio)
+			c.gainTable[i] = float32(math.Pow(10, -reductionDB/20.0))
+		} else {
+			c.gainTable[i] = 1.0
+		}
+	}
 }
 
 // SetParams sets all compressor parameters at once. Validates all parameters
@@ -163,12 +182,12 @@ func (c *Compressor) Process(samples []float32) []float32 {
 	defer c.mu.Unlock()
 
 	threshold := c.thresholdLinear
-	ratio := c.ratio
 	env := c.envelope
 	makeupGain := float32(c.makeupLinear)
 	attackCoeff := c.attackCoeff
 	releaseCoeff := c.releaseCoeff
 	ch := c.channels
+	gainTable := &c.gainTable
 
 	for i := 0; i < len(samples); i += ch {
 		// Find peak across all channels in this group
@@ -187,12 +206,18 @@ func (c *Compressor) Process(samples []float32) []float32 {
 			env += releaseCoeff * (peak - env)
 		}
 
-		// Compute gain for this group
+		// Lookup gain from precomputed table
 		var gain float32 = 1.0
 		if env > threshold && threshold > 0 {
 			overDB := 20 * math.Log10(env/threshold)
-			reductionDB := overDB * (1 - 1/ratio)
-			gain = float32(math.Pow(10, -reductionDB/20.0))
+			idx := int(overDB * 4) // 0.25 dB resolution
+			if idx >= len(gainTable) {
+				idx = len(gainTable) - 1
+			}
+			if idx < 0 {
+				idx = 0
+			}
+			gain = gainTable[idx]
 		}
 
 		// Apply same gain + makeup to all channels
@@ -206,7 +231,7 @@ func (c *Compressor) Process(samples []float32) []float32 {
 	// Compute and store GR in dB for metering
 	if env > threshold && threshold > 0 {
 		overDB := 20 * math.Log10(env/threshold)
-		c.gainReduction = overDB * (1 - 1/ratio)
+		c.gainReduction = overDB * (1 - 1/c.ratio)
 	} else {
 		c.gainReduction = 0
 	}

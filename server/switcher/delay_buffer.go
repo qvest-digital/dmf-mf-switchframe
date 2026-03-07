@@ -8,67 +8,43 @@ import (
 	"github.com/zsiec/prism/media"
 )
 
-// frameType tags queued frames so the release goroutine can dispatch
-// to the correct handler method.
-type frameType int
-
-const (
-	frameTypeVideo   frameType = iota
-	frameTypeAudio
-	frameTypeCaption
-)
-
-// delayedFrame wraps a frame of any type together with the metadata
-// needed to release it after the configured delay.
-type delayedFrame struct {
-	sourceKey string
-	pushTime  time.Time
-	delay     time.Duration
-	ftype     frameType
-	video     *media.VideoFrame
-	audio     *media.AudioFrame
-	caption   *ccx.CaptionFrame
-}
-
-// sourceDelay holds the configured delay and pending frame queue for
-// a single source.
+// sourceDelay holds the configured delay for a single source.
+// The generation counter is incremented on RemoveSource so that
+// in-flight time.AfterFunc callbacks for removed sources are discarded.
 type sourceDelay struct {
-	delay time.Duration
-	queue []*delayedFrame
+	delay      time.Duration
+	generation uint64
 }
 
 // DelayBuffer introduces a configurable per-source delay between frame
 // ingestion (from sourceViewer) and delivery to the downstream frameHandler.
 // When delay is 0 for a source, frames pass through immediately with zero
-// allocation. A background goroutine ticks at 1ms resolution to release
-// queued frames whose delay has elapsed.
+// allocation. Delayed frames are scheduled via time.AfterFunc, eliminating
+// the need for a background polling goroutine.
 type DelayBuffer struct {
-	mu       sync.Mutex
-	sources  map[string]*sourceDelay
-	handler  frameHandler
-	stopCh   chan struct{}
-	done     chan struct{} // closed when releaseTicker goroutine exits
-	stopped  bool
+	mu      sync.Mutex
+	sources map[string]*sourceDelay
+	handler frameHandler
+	done    chan struct{} // closed on Close() for compatibility
+	stopped bool
 }
 
 // Compile-time check that DelayBuffer implements the frameHandler interface.
 var _ frameHandler = (*DelayBuffer)(nil)
 
 // NewDelayBuffer creates a DelayBuffer that forwards released frames to
-// the given handler. A background ticker goroutine is started immediately.
+// the given handler. No background goroutine is started; delayed frames
+// are scheduled individually via time.AfterFunc.
 func NewDelayBuffer(handler frameHandler) *DelayBuffer {
-	db := &DelayBuffer{
+	return &DelayBuffer{
 		sources: make(map[string]*sourceDelay),
 		handler: handler,
-		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
 	}
-	go db.releaseTicker()
-	return db
 }
 
 // SetDelay configures the delay for a source. New frames pushed after this
-// call use the new delay; already-queued frames retain their original
+// call use the new delay; already-scheduled frames retain their original
 // scheduled release time.
 func (db *DelayBuffer) SetDelay(sourceKey string, delay time.Duration) {
 	db.mu.Lock()
@@ -92,150 +68,133 @@ func (db *DelayBuffer) GetDelay(sourceKey string) time.Duration {
 	return sd.delay
 }
 
-// RemoveSource removes a source's delay configuration and discards all
-// queued frames for that source.
+// RemoveSource removes a source's delay configuration. Any in-flight
+// time.AfterFunc callbacks for this source will detect the generation
+// mismatch and discard the frame.
 func (db *DelayBuffer) RemoveSource(sourceKey string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if sd, ok := db.sources[sourceKey]; ok {
+		sd.generation++ // invalidate in-flight timers
+	}
 	delete(db.sources, sourceKey)
 }
 
-// Close stops the background ticker and discards all pending frames.
-// It is safe to call Close multiple times.
+// Close marks the buffer as stopped. Any in-flight time.AfterFunc callbacks
+// will check the stopped flag and discard frames. It is safe to call Close
+// multiple times.
 func (db *DelayBuffer) Close() {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.stopped {
+		return
+	}
+	db.stopped = true
+	db.sources = make(map[string]*sourceDelay)
+	close(db.done)
+}
+
+// handleVideoFrame implements frameHandler. If delay=0 for the source,
+// the frame is forwarded immediately. Otherwise it is scheduled via
+// time.AfterFunc for release after the configured delay.
+func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	db.mu.Lock()
 	if db.stopped {
 		db.mu.Unlock()
 		return
 	}
-	db.stopped = true
-	close(db.stopCh)
-	// Discard all pending frames.
-	db.sources = make(map[string]*sourceDelay)
-	db.mu.Unlock()
-
-	// Wait for the releaseTicker goroutine to exit.
-	<-db.done
-}
-
-// handleVideoFrame implements frameHandler. If delay=0 for the source,
-// the frame is forwarded immediately. Otherwise it is queued.
-func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
-	db.mu.Lock()
 	sd := db.sources[sourceKey]
 	if sd == nil || sd.delay == 0 {
 		db.mu.Unlock()
 		db.handler.handleVideoFrame(sourceKey, frame)
 		return
 	}
-	sd.queue = append(sd.queue, &delayedFrame{
-		sourceKey: sourceKey,
-		pushTime:  time.Now(),
-		delay:     sd.delay,
-		ftype:     frameTypeVideo,
-		video:     frame,
-	})
+	delay := sd.delay
+	gen := sd.generation
 	db.mu.Unlock()
+
+	time.AfterFunc(delay, func() {
+		db.mu.Lock()
+		if db.stopped {
+			db.mu.Unlock()
+			return
+		}
+		curSD := db.sources[sourceKey]
+		if curSD == nil || curSD.generation != gen {
+			db.mu.Unlock()
+			return
+		}
+		db.mu.Unlock()
+		db.handler.handleVideoFrame(sourceKey, frame)
+	})
 }
 
 // handleAudioFrame implements frameHandler. If delay=0 for the source,
-// the frame is forwarded immediately. Otherwise it is queued.
+// the frame is forwarded immediately. Otherwise it is scheduled via
+// time.AfterFunc for release after the configured delay.
 func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	db.mu.Lock()
+	if db.stopped {
+		db.mu.Unlock()
+		return
+	}
 	sd := db.sources[sourceKey]
 	if sd == nil || sd.delay == 0 {
 		db.mu.Unlock()
 		db.handler.handleAudioFrame(sourceKey, frame)
 		return
 	}
-	sd.queue = append(sd.queue, &delayedFrame{
-		sourceKey: sourceKey,
-		pushTime:  time.Now(),
-		delay:     sd.delay,
-		ftype:     frameTypeAudio,
-		audio:     frame,
-	})
+	delay := sd.delay
+	gen := sd.generation
 	db.mu.Unlock()
+
+	time.AfterFunc(delay, func() {
+		db.mu.Lock()
+		if db.stopped {
+			db.mu.Unlock()
+			return
+		}
+		curSD := db.sources[sourceKey]
+		if curSD == nil || curSD.generation != gen {
+			db.mu.Unlock()
+			return
+		}
+		db.mu.Unlock()
+		db.handler.handleAudioFrame(sourceKey, frame)
+	})
 }
 
 // handleCaptionFrame implements frameHandler. If delay=0 for the source,
-// the frame is forwarded immediately. Otherwise it is queued.
+// the frame is forwarded immediately. Otherwise it is scheduled via
+// time.AfterFunc for release after the configured delay.
 func (db *DelayBuffer) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
 	db.mu.Lock()
+	if db.stopped {
+		db.mu.Unlock()
+		return
+	}
 	sd := db.sources[sourceKey]
 	if sd == nil || sd.delay == 0 {
 		db.mu.Unlock()
 		db.handler.handleCaptionFrame(sourceKey, frame)
 		return
 	}
-	sd.queue = append(sd.queue, &delayedFrame{
-		sourceKey: sourceKey,
-		pushTime:  time.Now(),
-		delay:     sd.delay,
-		ftype:     frameTypeCaption,
-		caption:   frame,
-	})
+	delay := sd.delay
+	gen := sd.generation
 	db.mu.Unlock()
-}
 
-// releaseTicker runs in a background goroutine, checking every 1ms for
-// frames whose delay has elapsed and forwarding them to the handler.
-func (db *DelayBuffer) releaseTicker() {
-	defer close(db.done)
-	ticker := time.NewTicker(1 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-db.stopCh:
+	time.AfterFunc(delay, func() {
+		db.mu.Lock()
+		if db.stopped {
+			db.mu.Unlock()
 			return
-		case <-ticker.C:
-			db.releaseReady()
 		}
-	}
-}
-
-// releaseReady scans all source queues and forwards any frames whose
-// delay has elapsed. Released frames are removed from their queue.
-func (db *DelayBuffer) releaseReady() {
-	now := time.Now()
-
-	db.mu.Lock()
-	// Collect frames to release outside the lock to avoid holding it
-	// during downstream handler calls.
-	var ready []*delayedFrame
-	for _, sd := range db.sources {
-		i := 0
-		for i < len(sd.queue) {
-			df := sd.queue[i]
-			if now.Sub(df.pushTime) >= df.delay {
-				ready = append(ready, df)
-				// Remove from queue by swapping with the last element.
-				// This does NOT preserve order within the queue, but we
-				// re-scan from the beginning, so all ready frames in
-				// this tick are collected. Order is preserved because
-				// frames are pushed in order and have monotonic push
-				// times + same delay, so they all become ready at once.
-				sd.queue[i] = sd.queue[len(sd.queue)-1]
-				sd.queue[len(sd.queue)-1] = nil
-				sd.queue = sd.queue[:len(sd.queue)-1]
-				// Don't increment i — the swapped element needs checking.
-			} else {
-				i++
-			}
+		curSD := db.sources[sourceKey]
+		if curSD == nil || curSD.generation != gen {
+			db.mu.Unlock()
+			return
 		}
-	}
-	db.mu.Unlock()
-
-	// Deliver outside the lock.
-	for _, df := range ready {
-		switch df.ftype {
-		case frameTypeVideo:
-			db.handler.handleVideoFrame(df.sourceKey, df.video)
-		case frameTypeAudio:
-			db.handler.handleAudioFrame(df.sourceKey, df.audio)
-		case frameTypeCaption:
-			db.handler.handleCaptionFrame(df.sourceKey, df.caption)
-		}
-	}
+		db.mu.Unlock()
+		db.handler.handleCaptionFrame(sourceKey, frame)
+	})
 }

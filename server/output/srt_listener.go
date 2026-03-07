@@ -152,10 +152,13 @@ func (l *SRTListener) Write(tsData []byte) (int, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
+	// Single copy shared across all connections. connWriter goroutines
+	// only read the data (passing to conn.Write), so sharing is safe.
+	cp := make([]byte, len(tsData))
+	copy(cp, tsData)
+
 	for _, lc := range l.conns {
 		// Non-blocking send: drop data for slow clients
-		cp := make([]byte, len(tsData))
-		copy(cp, tsData)
 		select {
 		case lc.dataCh <- cp:
 		default:

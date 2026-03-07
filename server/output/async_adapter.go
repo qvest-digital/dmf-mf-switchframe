@@ -7,6 +7,10 @@ import (
 	"sync/atomic"
 )
 
+var tsPacketPool = sync.Pool{
+	New: func() any { return make([]byte, 0, 4096) },
+}
+
 // AsyncAdapter wraps an OutputAdapter with a buffered channel for non-blocking writes.
 // When the buffer is full, writes are dropped and the drop counter is incremented.
 // This prevents a slow adapter (e.g., disk I/O or network) from blocking other
@@ -55,14 +59,15 @@ func (a *AsyncAdapter) startDrain() {
 // is full, the packet is dropped and the drop counter is incremented.
 // Write never blocks.
 func (a *AsyncAdapter) Write(tsData []byte) (int, error) {
-	cp := make([]byte, len(tsData))
-	copy(cp, tsData)
+	cp := tsPacketPool.Get().([]byte)
+	cp = append(cp[:0], tsData...)
 
 	select {
 	case a.buffer <- cp:
 		// Sent successfully.
 	default:
 		// Buffer full, drop the packet.
+		tsPacketPool.Put(cp)
 		a.dropped.Add(1)
 		slog.Warn("async adapter dropped packet",
 			"adapter", a.inner.ID(),
@@ -113,6 +118,7 @@ func (a *AsyncAdapter) drain() {
 					"adapter", a.inner.ID(),
 					"err", err)
 			}
+			tsPacketPool.Put(data)
 		case <-a.stopCh:
 			// Drain remaining items in the buffer before exiting.
 			for {
@@ -126,6 +132,7 @@ func (a *AsyncAdapter) drain() {
 							"adapter", a.inner.ID(),
 							"err", err)
 					}
+					tsPacketPool.Put(data)
 				default:
 					return
 				}
