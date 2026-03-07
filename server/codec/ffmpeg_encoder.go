@@ -74,6 +74,12 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 
+	// Signal BT.709 colorspace in VUI parameters.
+	h->ctx->color_primaries = AVCOL_PRI_BT709;
+	h->ctx->color_trc = AVCOL_TRC_BT709;
+	h->ctx->colorspace = AVCOL_SPC_BT709;
+	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
+
 	// Derive thread count from CPU cores, clamped to [2, 8].
 	// More than 8 threads adds pipeline latency without meaningful
 	// throughput gain for real-time encoding at broadcast bitrates.
