@@ -95,8 +95,11 @@ func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
 		return encodeCount.Load() >= 1
 	}, 200*time.Millisecond, 5*time.Millisecond)
 
-	// Should have created exactly 1 decoder and 1 encoder
-	require.Equal(t, int32(1), decodeCount.Load(), "should decode exactly once")
+	// Should have created 1 pipeline decoder + optionally 1 pre-warm replay
+	// decoder (background goroutine may or may not complete by now).
+	// The key invariant: compositor does NOT create its own decoder.
+	dc := decodeCount.Load()
+	require.True(t, dc == 1 || dc == 2, "should create 1 pipeline decoder (+1 optional pre-warm), got %d", dc)
 	require.Equal(t, int32(1), encodeCount.Load(), "should encode exactly once")
 }
 

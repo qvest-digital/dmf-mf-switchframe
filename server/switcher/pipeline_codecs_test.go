@@ -1,7 +1,10 @@
 package switcher
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
@@ -181,3 +184,176 @@ func TestPipelineCodecs_Close(t *testing.T) {
 	require.Nil(t, pc.decoder)
 	require.Nil(t, pc.encoder)
 }
+
+// flushTrackingDecoder wraps a decoder and counts Flush() and Close() calls.
+type flushTrackingDecoder struct {
+	inner      transition.VideoDecoder
+	flushCount atomic.Int32
+	closeCount atomic.Int32
+}
+
+func (d *flushTrackingDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	return d.inner.Decode(data)
+}
+
+func (d *flushTrackingDecoder) Close() {
+	d.closeCount.Add(1)
+	d.inner.Close()
+}
+
+func (d *flushTrackingDecoder) Flush() {
+	d.flushCount.Add(1)
+}
+
+func makeGOP(n int) []*media.VideoFrame {
+	frames := make([]*media.VideoFrame, n)
+	frames[0] = &media.VideoFrame{
+		PTS: 100, IsKeyframe: true,
+		WireData: []byte{0x01},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0x42, 0x00},
+	}
+	for i := 1; i < n; i++ {
+		frames[i] = &media.VideoFrame{
+			PTS:      int64(100 + i*33333),
+			WireData: []byte{0x02},
+		}
+	}
+	return frames
+}
+
+func TestReplayGOP_PoolReuse(t *testing.T) {
+	// First call creates from factory (factoryCount=1).
+	// Second call reuses pool (factoryCount still 1).
+	var factoryCount atomic.Int32
+	factory := func() (transition.VideoDecoder, error) {
+		factoryCount.Add(1)
+		return transition.NewMockDecoder(4, 4), nil
+	}
+
+	pc := &pipelineCodecs{
+		decoder:        transition.NewMockDecoder(4, 4),
+		decoderFactory: factory,
+	}
+
+	frames := makeGOP(3)
+
+	// First call — no pool decoder, creates via factory.
+	pc.replayGOP(frames)
+	require.Equal(t, int32(1), factoryCount.Load(), "first replayGOP should create from factory")
+	require.NotNil(t, pc.replayDecoder, "old pipeline decoder should be recycled into pool")
+
+	// Second call — takes from pool, no factory call.
+	pc.replayGOP(frames)
+	require.Equal(t, int32(1), factoryCount.Load(), "second replayGOP should reuse pool, not factory")
+	require.NotNil(t, pc.replayDecoder, "pool should be replenished after second call")
+
+	// Verify instrumentation.
+	require.Equal(t, int64(2), pc.replayGOPCount.Load())
+	require.Equal(t, int64(1), pc.replayGOPPoolHits.Load(), "second call should be a pool hit")
+}
+
+func TestReplayGOP_PoolEliminatesColdStartGap(t *testing.T) {
+	// Use a slow factory (500ms). Pre-warm the replayDecoder.
+	// replayGOP time should be ~N×decode_time, NOT 500ms+.
+	slowFactory := func() (transition.VideoDecoder, error) {
+		time.Sleep(500 * time.Millisecond)
+		return transition.NewMockDecoder(4, 4), nil
+	}
+
+	frames := makeGOP(5)
+
+	// Cold path: no pre-warmed decoder.
+	pcCold := &pipelineCodecs{
+		decoder:        transition.NewMockDecoder(4, 4),
+		decoderFactory: slowFactory,
+	}
+	coldStart := time.Now()
+	pcCold.replayGOP(frames)
+	coldDur := time.Since(coldStart)
+
+	// Warm path: pre-warmed replayDecoder.
+	pcWarm := &pipelineCodecs{
+		decoder:        transition.NewMockDecoder(4, 4),
+		decoderFactory: slowFactory,
+		replayDecoder:  transition.NewMockDecoder(4, 4),
+	}
+	warmStart := time.Now()
+	pcWarm.replayGOP(frames)
+	warmDur := time.Since(warmStart)
+
+	t.Logf("Cold: %v, Warm: %v", coldDur, warmDur)
+
+	require.Greater(t, coldDur, 400*time.Millisecond,
+		"cold path should include factory creation time")
+	require.Less(t, warmDur, 100*time.Millisecond,
+		"warm path should skip factory, just flush+decode")
+}
+
+func TestReplayGOP_FlushCalledOnReuse(t *testing.T) {
+	// Verify Flush is called when reusing from pool, NOT on factory creation.
+	poolDec := &flushTrackingDecoder{inner: transition.NewMockDecoder(4, 4)}
+	pc := &pipelineCodecs{
+		decoder:       transition.NewMockDecoder(4, 4),
+		replayDecoder: poolDec,
+		decoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+	}
+
+	frames := makeGOP(3)
+	pc.replayGOP(frames)
+
+	require.Equal(t, int32(1), poolDec.flushCount.Load(),
+		"Flush should be called when reusing pooled decoder")
+	require.Equal(t, int32(0), poolDec.closeCount.Load(),
+		"pooled decoder should NOT be closed (recycled)")
+}
+
+func TestPipelineCodecs_CloseReleasesPool(t *testing.T) {
+	dec := &flushTrackingDecoder{inner: transition.NewMockDecoder(4, 4)}
+	poolDec := &flushTrackingDecoder{inner: transition.NewMockDecoder(4, 4)}
+
+	pc := &pipelineCodecs{
+		decoder:       dec,
+		replayDecoder: poolDec,
+	}
+
+	pc.close()
+
+	require.Equal(t, int32(1), dec.closeCount.Load(), "pipeline decoder should be closed")
+	require.Equal(t, int32(1), poolDec.closeCount.Load(), "pool decoder should be closed")
+	require.Nil(t, pc.decoder)
+	require.Nil(t, pc.replayDecoder)
+}
+
+func TestReplayGOP_FailedDecodeReturnsToPool(t *testing.T) {
+	// When no frames decode successfully, the replay decoder should be
+	// returned to the pool (not wasted).
+	poolDec := &flushTrackingDecoder{inner: &failingDecoder{}}
+	pc := &pipelineCodecs{
+		decoder:       transition.NewMockDecoder(4, 4),
+		replayDecoder: poolDec,
+		decoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+	}
+
+	frames := makeGOP(3)
+	pc.replayGOP(frames)
+
+	// Decoder should be returned to pool, not closed.
+	require.Equal(t, int32(0), poolDec.closeCount.Load(),
+		"failed decode should return decoder to pool, not close it")
+	require.NotNil(t, pc.replayDecoder,
+		"pool should still have a decoder after failed replay")
+}
+
+// failingDecoder always returns an error from Decode.
+type failingDecoder struct{}
+
+func (d *failingDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	return nil, 0, 0, fmt.Errorf("mock decode failure")
+}
+
+func (d *failingDecoder) Close() {}

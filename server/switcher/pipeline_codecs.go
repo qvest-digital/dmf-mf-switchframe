@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
@@ -30,6 +33,12 @@ type pipelineCodecs struct {
 	encHeight      int
 	groupID        uint32
 
+	// replayDecoder is a pre-warmed decoder kept in the pool for GOP replay.
+	// On transition, replayGOP flushes and reuses this instead of creating
+	// a fresh decoder (which costs ~500-700ms for VideoToolbox cold start).
+	// After replay, the old pipeline decoder is recycled into this slot.
+	replayDecoder transition.VideoDecoder
+
 	// Source-derived encoder parameters (updated via updateSourceStats).
 	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
 	sourceFPS     float32 // estimated FPS from program source
@@ -45,6 +54,12 @@ type pipelineCodecs struct {
 	// Last-known SPS/PPS for deduplication — only fire callback on change.
 	lastSPS []byte
 	lastPPS []byte
+
+	// Instrumentation for replay GOP performance tracking.
+	replayGOPCount    atomic.Int64
+	replayGOPLastNano atomic.Int64
+	replayGOPMaxNano  atomic.Int64
+	replayGOPPoolHits atomic.Int64 // reused from pool (vs factory creation)
 }
 
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
@@ -56,6 +71,7 @@ type pipelineCodecs struct {
 func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, error) {
 	// Phase 1: Lock to get decoder reference + lazy-init
 	pc.mu.Lock()
+	needPrewarm := false
 	if pc.decoder == nil {
 		if !frame.IsKeyframe {
 			pc.mu.Unlock()
@@ -67,9 +83,32 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 			return nil, fmt.Errorf("pipeline: decoder init: %w", err)
 		}
 		pc.decoder = dec
+		// Pre-warm the replay decoder in the background so it's ready
+		// before the first transition. This avoids the ~500-700ms
+		// VideoToolbox cold start on the first replayGOP call.
+		needPrewarm = pc.replayDecoder == nil && pc.decoderFactory != nil
 	}
 	decoder := pc.decoder
+	factory := pc.decoderFactory
 	pc.mu.Unlock()
+
+	if needPrewarm && factory != nil {
+		go func() {
+			rd, err := factory()
+			if err != nil {
+				return
+			}
+			pc.mu.Lock()
+			if pc.replayDecoder == nil {
+				pc.replayDecoder = rd
+			} else {
+				pc.mu.Unlock()
+				rd.Close()
+				return
+			}
+			pc.mu.Unlock()
+		}()
+	}
 
 	// Phase 2: NALU conversion + decode OUTSIDE lock
 	annexB := codec.AVC1ToAnnexB(frame.WireData)
@@ -208,46 +247,63 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	return frame, nil
 }
 
-// replayGOP feeds all cached GOP frames through a fresh decoder to build
-// its reference frame chain, then swaps the warmed-up decoder into the
-// pipeline and sets forceNextIDR so the first live frame produces a keyframe
-// for browser sync.
+// replayGOP feeds all cached GOP frames through a decoder to build its
+// reference frame chain, then swaps the warmed-up decoder into the pipeline
+// and sets forceNextIDR so the first live frame produces a keyframe for
+// browser sync.
 //
-// This approach avoids encoding during replay (which failed 7/10 times with
-// VT hardware encoder) and avoids re-decoding the keyframe through the async
-// pipeline (which would clear the reference chain via H.264 IDR semantics).
+// Pool semantics: replayGOP takes a pre-warmed decoder from the pool (or
+// creates one via factory on first call), flushes it (~1ms), decodes the
+// GOP through it, then swaps it into the pipeline. The OLD pipeline decoder
+// is recycled into the pool slot (not closed), so the next transition reuses
+// it. This eliminates both creation (~500-700ms VideoToolbox cold start) and
+// destruction overhead on every transition.
 //
-// The decoder is created and warmed up OUTSIDE the lock, eliminating the
-// O(N × decode_time) lock hold that previously blocked videoProcessingLoop
-// for 400-600ms on large GOPs. The lock is only held briefly for the swap.
+// The decoder is warmed up OUTSIDE the lock, eliminating the O(N × decode_time)
+// lock hold that previously blocked videoProcessingLoop for 400-600ms.
 func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
+	start := time.Now()
 	if len(frames) == 0 {
 		return
 	}
 
+	// Phase 1: Take replay decoder from pool (or capture factory).
 	pc.mu.Lock()
 	if pc.decoder == nil {
 		pc.mu.Unlock()
 		return
 	}
+	replayDec := pc.replayDecoder
+	pc.replayDecoder = nil
 	factory := pc.decoderFactory
 	pc.mu.Unlock()
 
-	if factory == nil {
-		// No factory available — fall back to in-place replay under lock.
+	poolHit := replayDec != nil
+
+	if replayDec == nil && factory == nil {
+		// No pool decoder and no factory — fall back to in-place replay.
 		// This path is only hit in tests that set decoder directly.
 		pc.replayGOPInPlace(frames)
 		return
 	}
 
-	// Create a fresh decoder outside the lock. The entire GOP decode
-	// happens without holding pc.mu, so videoProcessingLoop can continue
-	// processing and broadcasting frames concurrently.
-	replayDec, err := factory()
-	if err != nil {
-		return
+	// Phase 2: Get a decoder (from pool or factory), outside the lock.
+	if replayDec == nil {
+		// First-time only: create via factory (cold start).
+		var err error
+		replayDec, err = factory()
+		if err != nil {
+			return
+		}
+	} else {
+		// Flush the pooled decoder to clear stale reference frames (~1ms).
+		type flusher interface{ Flush() }
+		if f, ok := replayDec.(flusher); ok {
+			f.Flush()
+		}
 	}
 
+	// Phase 3: Decode all GOP frames outside the lock (N × 8ms).
 	decoded := false
 	for _, frame := range frames {
 		annexB := codec.AVC1ToAnnexB(frame.WireData)
@@ -260,26 +316,46 @@ func (pc *pipelineCodecs) replayGOP(frames []*media.VideoFrame) {
 	}
 
 	if !decoded {
-		replayDec.Close()
-		return
+		// No frames decoded — return decoder to pool instead of wasting it.
+		pc.mu.Lock()
+		if pc.replayDecoder == nil {
+			pc.replayDecoder = replayDec
+		} else {
+			pc.mu.Unlock()
+			replayDec.Close()
+			goto instrument
+		}
+		pc.mu.Unlock()
+		goto instrument
 	}
 
-	// Atomic swap: replace the flushed decoder with the warmed-up one.
-	// Brief lock (~microseconds) instead of the old O(N × decode_time) hold.
-	pc.mu.Lock()
-	oldDec := pc.decoder
-	pc.decoder = replayDec
-	pc.forceNextIDR = true
-	pc.mu.Unlock()
-
-	// Close the old (flushed) decoder. Safe because:
-	// 1. flushDecoder() was called before replayGOP, clearing its state.
-	// 2. The IDR gate prevents new raw frames from entering videoProcCh
-	//    during replay, so no concurrent decode() should be in progress.
-	// 3. Tail transition frames use encode() (not decode()).
-	if oldDec != nil {
-		oldDec.Close()
+	// Phase 4: Swap — warmed-up decoder becomes pipeline decoder,
+	// old pipeline decoder is recycled into pool for next transition.
+	{
+		pc.mu.Lock()
+		oldDec := pc.decoder
+		pc.decoder = replayDec
+		pc.forceNextIDR = true
+		// Recycle the old pipeline decoder into the pool slot.
+		// It's safe because the IDR gate prevents concurrent decode() calls.
+		if pc.replayDecoder != nil {
+			// Shouldn't happen (we nil'd it above), but be safe.
+			pc.replayDecoder.Close()
+		}
+		pc.replayDecoder = oldDec
+		pc.mu.Unlock()
 	}
+
+instrument:
+	dur := time.Since(start)
+	durNano := dur.Nanoseconds()
+	pc.replayGOPCount.Add(1)
+	pc.replayGOPLastNano.Store(durNano)
+	updateAtomicMax(&pc.replayGOPMaxNano, durNano)
+	if poolHit {
+		pc.replayGOPPoolHits.Add(1)
+	}
+	slog.Info("replayGOP", "frames", len(frames), "ms", dur.Milliseconds(), "pool_hit", poolHit)
 }
 
 // replayGOPInPlace is the fallback path when no decoder factory is available.
@@ -366,7 +442,7 @@ func (pc *pipelineCodecs) dimensions() (int, int) {
 	return pc.encWidth, pc.encHeight
 }
 
-// close releases decoder and encoder resources.
+// close releases decoder, encoder, and pool resources.
 func (pc *pipelineCodecs) close() {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
@@ -377,5 +453,19 @@ func (pc *pipelineCodecs) close() {
 	if pc.encoder != nil {
 		pc.encoder.Close()
 		pc.encoder = nil
+	}
+	if pc.replayDecoder != nil {
+		pc.replayDecoder.Close()
+		pc.replayDecoder = nil
+	}
+}
+
+// replayStats returns instrumentation data for the replay decoder pool.
+func (pc *pipelineCodecs) replayStats() map[string]any {
+	return map[string]any{
+		"replay_gop_count":     pc.replayGOPCount.Load(),
+		"replay_gop_last_ms":   float64(pc.replayGOPLastNano.Load()) / 1e6,
+		"replay_gop_max_ms":    float64(pc.replayGOPMaxNano.Load()) / 1e6,
+		"replay_gop_pool_hits": pc.replayGOPPoolHits.Load(),
 	}
 }

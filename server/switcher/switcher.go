@@ -1852,6 +1852,14 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		},
 	}
 
+	// Merge replay decoder pool stats into video_pipeline map.
+	if s.pipeCodecs != nil {
+		pipeline := result["video_pipeline"].(map[string]any)
+		for k, v := range s.pipeCodecs.replayStats() {
+			pipeline[k] = v
+		}
+	}
+
 	// Include transition engine timing when active
 	if s.state.isInTransition() && s.transEngine != nil {
 		result["transition_engine"] = s.transEngine.Timing()
