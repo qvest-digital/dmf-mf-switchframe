@@ -45,6 +45,10 @@ SRC1_AUDIO="a0000001-0000-0000-0000-000000000002"
 SRC2_VIDEO="a0000002-0000-0000-0000-000000000001"
 SRC2_AUDIO="a0000002-0000-0000-0000-000000000002"
 
+# Output UUIDs (must match test/mxl/output_*.json files)
+OUT_VIDEO="b0000001-0000-0000-0000-000000000001"
+OUT_AUDIO="b0000001-0000-0000-0000-000000000002"
+
 PIDS=()
 
 cleanup() {
@@ -147,7 +151,10 @@ MXL_SOURCES="${SRC1_VIDEO}:${SRC1_AUDIO},${SRC2_VIDEO}:${SRC2_AUDIO}"
 "$PROJECT_DIR/bin/switchframe" \
     --demo \
     --mxl-domain "$MXL_DOMAIN" \
-    --mxl-sources "$MXL_SOURCES" &
+    --mxl-sources "$MXL_SOURCES" \
+    --mxl-output program \
+    --mxl-output-video-def "$FLOW_DIR/output_video.json" \
+    --mxl-output-audio-def "$FLOW_DIR/output_audio.json" &
 PIDS+=($!)
 
 # ─── Start UI dev server ────────────────────────────────────────────────────
@@ -168,6 +175,14 @@ echo ""
 echo "  Sources:"
 echo "    Source 1: SMPTE bars + audio"
 echo "    Source 2: Checkerboard + audio"
+echo ""
+echo "  Program Output (MXL):"
+echo "    Video: $OUT_VIDEO"
+echo "    Audio: $OUT_AUDIO"
+echo ""
+echo "  Monitor output with mxl-gst-sink:"
+echo "    export DYLD_LIBRARY_PATH=$MXL_ROOT/lib"
+echo "    $MXL_ROOT/bin/mxl-gst-sink -d $MXL_DOMAIN -v $OUT_VIDEO -a $OUT_AUDIO"
 echo ""
 echo "  Press Ctrl+C to stop"
 echo ""

@@ -85,14 +85,19 @@ func TestPipelineVideoRoundTrip(t *testing.T) {
 	writer.SetVideoWriter(vWriter, Rational{30, 1})
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
 	writer.Start(ctx2)
 	writer.WriteVideo(cf.yuv, cf.w, cf.h, cf.pts)
+
+	// Wait for the steady-rate ticker to write the grain.
+	waitFor(t, 500*time.Millisecond, func() bool {
+		return len(vWriter.getGrains()) >= 1
+	})
 	cancel2()
-	time.Sleep(20 * time.Millisecond)
 
 	grains := vWriter.getGrains()
-	if len(grains) != 1 {
-		t.Fatalf("Writer: expected 1 V210 grain, got %d", len(grains))
+	if len(grains) < 1 {
+		t.Fatalf("Writer: expected at least 1 V210 grain, got %d", len(grains))
 	}
 
 	// 5. Decode the output V210 and compare to original YUV420p.
@@ -238,10 +243,15 @@ func TestPipelineOutputCapturesSinkFrames(t *testing.T) {
 	pcm := []float32{0.1, 0.2, 0.3, 0.4}
 	mixer.sink(pcm, 2000, 48000, 2)
 
+	// Wait for the steady-rate ticker to write the video grain.
+	waitFor(t, 500*time.Millisecond, func() bool {
+		return len(vWriter.getGrains()) >= 1
+	})
+
 	// Verify video grain was written (YUV420p → V210).
 	grains := vWriter.getGrains()
-	if len(grains) != 1 {
-		t.Fatalf("expected 1 video grain, got %d", len(grains))
+	if len(grains) < 1 {
+		t.Fatalf("expected at least 1 video grain, got %d", len(grains))
 	}
 	if len(grains[0].data) == 0 {
 		t.Fatal("expected non-empty V210 data")
@@ -353,6 +363,11 @@ func TestPipelineFullLoopback(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for loopback delivery")
 	}
+
+	// Wait for the steady-rate ticker to write at least one video grain.
+	waitFor(t, 500*time.Millisecond, func() bool {
+		return len(outputVWriter.getGrains()) >= 1
+	})
 
 	srcCancel()
 	src.Stop()

@@ -273,6 +273,30 @@ func (m *AudioMixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
+// advanceOutputPTS advances the monotonic output PTS counter.
+// Seeds from inputPTS on first call; reseeds on gaps > 5 seconds.
+// Caller must hold m.mu.
+func (m *AudioMixer) advanceOutputPTS(inputPTS int64) int64 {
+	const ptsGapThreshold = 5 * 90000
+	if !m.outputPTSInited {
+		m.outputPTS = inputPTS
+		m.outputPTSInited = true
+		m.lastSeenMixPTS = inputPTS
+	} else {
+		diff := inputPTS - m.lastSeenMixPTS
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > ptsGapThreshold {
+			m.outputPTS = inputPTS
+		} else {
+			m.outputPTS += m.frameDuration90k()
+		}
+		m.lastSeenMixPTS = inputPTS
+	}
+	return m.outputPTS
+}
+
 // collectMixCycleLocked sums the accumulated mix buffers, applies master gain,
 // program mute, metering, encodes to AAC, and returns the output frame.
 // Returns nil if there is nothing to output (empty buffer, encoder error, etc.).
@@ -315,28 +339,8 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	// Apply brickwall limiter at -1 dBFS (always active)
 	m.limiter.Process(mixed)
 
-	// Monotonic PTS: seed from first frame, then increment by frame duration.
-	// Gap detection: if incoming PTS jumps > 5 seconds, reseed.
-	// Computed before MXL tap and encode so both receive the correct PTS.
-	const ptsGapThreshold = 5 * 90000 // 5 seconds in 90 kHz ticks
-	if !m.outputPTSInited {
-		m.outputPTS = m.mixPTS
-		m.outputPTSInited = true
-		m.lastSeenMixPTS = m.mixPTS
-	} else {
-		// Check for gap before incrementing
-		diff := m.mixPTS - m.lastSeenMixPTS
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > ptsGapThreshold {
-			m.outputPTS = m.mixPTS // reseed
-		} else {
-			m.outputPTS += m.frameDuration90k()
-		}
-		m.lastSeenMixPTS = m.mixPTS
-	}
-	pts := m.outputPTS
+	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
+	pts := m.advanceOutputPTS(m.mixPTS)
 
 	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
 	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
@@ -828,9 +832,19 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				m.log.Warn("decode error", "source", sourceKey, "err", err)
 			}
 		}
+
+		// Stamp output PTS from the monotonic counter — same clock as mixing mode.
+		// Raw AAC bytes are still forwarded (zero CPU decode/encode), but the PTS
+		// is continuous across passthrough↔mixing transitions.
+		outFrame := &media.AudioFrame{
+			PTS:        m.advanceOutputPTS(frame.PTS),
+			Data:       frame.Data,
+			SampleRate: frame.SampleRate,
+			Channels:   frame.Channels,
+		}
 		m.mu.Unlock()
 
-		m.recordAndOutput(frame)
+		m.recordAndOutput(outFrame)
 		m.framesPassthrough.Add(1)
 		if m.promMetrics != nil {
 			m.promMetrics.PassthroughBypassTotal.Inc()
@@ -1208,28 +1222,9 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	m.crossfadeActive = false
 	m.crossfadePCM = nil
 
-	// Monotonic PTS for crossfade output
-	const ptsGapThreshold = 5 * 90000
-	if !m.outputPTSInited {
-		m.outputPTS = frame.PTS
-		m.outputPTSInited = true
-		m.lastSeenMixPTS = frame.PTS
-	} else {
-		diff := frame.PTS - m.lastSeenMixPTS
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > ptsGapThreshold {
-			m.outputPTS = frame.PTS
-		} else {
-			m.outputPTS += m.frameDuration90k()
-		}
-		m.lastSeenMixPTS = frame.PTS
-	}
-
 	// Build output frame before releasing lock
 	outputFrame := &media.AudioFrame{
-		PTS:        m.outputPTS,
+		PTS:        m.advanceOutputPTS(frame.PTS),
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,

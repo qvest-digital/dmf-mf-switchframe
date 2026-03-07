@@ -57,13 +57,21 @@ func TestOutput_ReceivesVideoFromSink(t *testing.T) {
 
 	sw.sink(yuv, 12, 2, 1000)
 
-	// Check that a grain was written.
-	grains := vMock.getGrains()
-	if len(grains) != 1 {
-		t.Fatalf("expected 1 grain written, got %d", len(grains))
-	}
-	if len(grains[0].data) == 0 {
-		t.Fatal("expected non-empty V210 data")
+	// Wait for the steady-rate ticker to write the grain.
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		grains := vMock.getGrains()
+		if len(grains) >= 1 {
+			if len(grains[0].data) == 0 {
+				t.Fatal("expected non-empty V210 data")
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for grain write, got %d grains", len(vMock.getGrains()))
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 

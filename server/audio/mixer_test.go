@@ -50,7 +50,17 @@ func TestMixerPassthrough(t *testing.T) {
 	mu.Lock()
 	require.Equal(t, 1, len(output))
 	require.Equal(t, []byte{0xAA, 0xBB}, output[0].Data, "passthrough should forward raw AAC")
-	require.Equal(t, int64(1000), output[0].PTS)
+	require.Equal(t, int64(1000), output[0].PTS, "first frame should seed from source PTS")
+	mu.Unlock()
+
+	// Second frame verifies the monotonic counter advances by frame duration
+	frame2 := &media.AudioFrame{PTS: 2920, Data: []byte{0xCC}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame2)
+
+	mu.Lock()
+	require.Equal(t, 2, len(output))
+	// 1024 samples / 48000 Hz * 90000 = 1920 ticks
+	require.Equal(t, int64(1000+1920), output[1].PTS, "second frame should use monotonic PTS")
 	mu.Unlock()
 }
 
@@ -2145,5 +2155,100 @@ func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
 		// After reseed, the next frame should still increment by frameDuration
 		require.Equal(t, expectedDelta, delta,
 			"frame after gap reseed should still have correct delta")
+	}
+}
+
+// TestMixer_MonotonicPTSAcrossPassthroughMixingCycles verifies that output PTS
+// is monotonically increasing across passthrough↔mixing mode transitions.
+// Before the fix, passthrough forwarded raw source PTS while mixing used a
+// monotonic counter, causing drift after each transition.
+func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
+	var mu sync.Mutex
+	var outputFrames []*media.AudioFrame
+
+	// 1024 samples / 48000 Hz = ~21.33ms; in 90 kHz ticks = 1920
+	const frameDuration90k = int64(1024) * 90000 / 48000
+
+	pcmSamples := make([]float32, 1024*2) // 1024 stereo samples
+	for i := range pcmSamples {
+		pcmSamples[i] = 0.1
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			outputFrames = append(outputFrames, frame)
+			mu.Unlock()
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcmSamples}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+
+	// Each source has its own PTS sequence — in a real system these come from
+	// independent cameras and are NOT synchronized.
+	cam1PTS := int64(100000)
+	cam2PTS := int64(200000) // intentionally different from cam1
+
+	// Run 4 transition cycles
+	for cycle := 0; cycle < 4; cycle++ {
+		fromCam, toCam := "cam1", "cam2"
+		fromPTS, toPTS := &cam1PTS, &cam2PTS
+		if cycle%2 == 1 {
+			fromCam, toCam = "cam2", "cam1"
+			fromPTS, toPTS = &cam2PTS, &cam1PTS
+		}
+
+		// Phase A: passthrough on fromCam (10 frames)
+		m.SetActive(fromCam, true)
+		m.SetActive(toCam, false)
+		for i := 0; i < 10; i++ {
+			m.IngestFrame(fromCam, &media.AudioFrame{
+				PTS: *fromPTS, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2,
+			})
+			*fromPTS += frameDuration90k
+		}
+
+		// Phase B: transition crossfade (mixing mode)
+		m.OnTransitionStart(fromCam, toCam, AudioCrossfade, 500)
+		m.OnTransitionPosition(0.5)
+		for i := 0; i < 5; i++ {
+			m.IngestFrame(fromCam, &media.AudioFrame{
+				PTS: *fromPTS, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2,
+			})
+			*fromPTS += frameDuration90k
+			m.IngestFrame(toCam, &media.AudioFrame{
+				PTS: *toPTS, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2,
+			})
+			*toPTS += frameDuration90k
+		}
+		m.OnTransitionComplete()
+	}
+
+	// Collect all output frames
+	mu.Lock()
+	frames := append([]*media.AudioFrame{}, outputFrames...)
+	mu.Unlock()
+
+	require.Greater(t, len(frames), 40, "should have substantial output frames across 4 cycles")
+
+	// Assert: output PTS is strictly monotonically increasing across ALL frames
+	for i := 1; i < len(frames); i++ {
+		delta := frames[i].PTS - frames[i-1].PTS
+		require.Greater(t, delta, int64(0),
+			"frame %d→%d: PTS must be strictly increasing (got delta=%d, prev=%d, cur=%d)",
+			i-1, i, delta, frames[i-1].PTS, frames[i].PTS)
+		require.LessOrEqual(t, delta, 2*frameDuration90k,
+			"frame %d→%d: PTS gap must be ≤ 2× frame duration (got delta=%d)",
+			i-1, i, delta)
 	}
 }

@@ -6,7 +6,7 @@ Browser-based live video switcher for multi-camera production. Built on [Prism](
 
 ## What It Does
 
-SwitchFrame is a video switcher that runs in the browser. Sources come in via Prism's MoQ ingest, the Go server handles all switching/mixing/encoding, and browsers connect over WebTransport to view sources and control the switcher via REST.
+SwitchFrame is a video switcher that runs in the browser. Sources come in via Prism's MoQ ingest or MXL shared-memory transport (uncompressed V210 video + float32 audio). The Go server handles all switching/mixing/encoding, and browsers connect over WebTransport to view sources and control the switcher via REST.
 
 The server produces the authoritative program output — the browser is a control surface, not the mixer.
 
@@ -96,6 +96,17 @@ The server produces the authoritative program output — the browser is a contro
 - Preset save/recall, macro run/edit/delete, upstream key config, replay controls
 - Operator registration, subsystem lock indicators
 
+### MXL Integration
+
+- Shared-memory media transport for professional broadcast I/O (V210 10-bit 4:2:2 video + float32 audio)
+- Zero-copy ingest from MXL flows bypasses H.264 decode — raw YUV420p directly into the switching pipeline
+- Program output routed back to MXL shared memory for downstream consumers
+- NMOS IS-04 flow discovery (`--mxl-discover` lists available flows)
+- V210 (10-bit packed 4:2:2) to YUV420p (8-bit planar 4:2:0) conversion with chroma downsampling
+- MXL sources also encoded to H.264/AAC for browser multiview monitoring
+- Build tag `mxl` — standard builds use stub implementation (no SDK dependency)
+- `make mxl-demo` for end-to-end demo with GStreamer test sources
+
 ### Infrastructure
 
 - WebTransport (QUIC/HTTP3) for state sync, REST polling fallback
@@ -138,6 +149,30 @@ make demo
 
 Open **http://localhost:5173**. Four simulated cameras appear.
 
+### Run the MXL Demo
+
+For professional broadcast environments using MXL shared-memory transport:
+
+```bash
+# Prerequisites: MXL SDK built and installed, GStreamer
+export MXL_ROOT=$HOME/dev/mxl/install/Darwin-Clang-Release  # macOS
+# export MXL_ROOT=$HOME/dev/mxl/install/Linux-GCC-Release   # Linux
+
+make mxl-demo
+```
+
+This starts two GStreamer test sources (SMPTE bars + checkerboard) writing V210 video and float32 audio to MXL shared memory, builds SwitchFrame with MXL support, and launches the full stack. The demo combines 4 simulated H.264 cameras with 2 real MXL raw sources, plus program output back to MXL.
+
+Monitor the MXL program output with:
+
+```bash
+$MXL_ROOT/bin/mxl-gst-sink -d /Volumes/MXL \
+  -v b0000001-0000-0000-0000-000000000001 \
+  -a b0000001-0000-0000-0000-000000000002
+```
+
+See [MXL Integration Guide](docs/mxl.md) for full setup details.
+
 ### Controls
 
 | Action | Mouse | Keyboard |
@@ -166,9 +201,12 @@ Open **http://localhost:5173**. Four simulated cameras appear.
 ```bash
 make dev          # Go server + Vite dev server (no demo sources)
 make demo         # 4 simulated cameras, open localhost:5173
+make mxl-demo     # MXL shared-memory demo (requires MXL SDK + GStreamer)
 make build        # Production binary with embedded UI → bin/switchframe
+make build-server-mxl  # Build with MXL SDK support
 make docker       # Multi-stage Docker image
 make test-all     # Go tests + Vitest + Playwright E2E
+make test-mxl     # MXL pipeline integration tests
 make lint         # go vet + svelte-check
 make format       # gofmt + prettier
 make clean        # Remove build artifacts
@@ -203,6 +241,7 @@ server/                     Go module (github.com/zsiec/switchframe/server)
   preset/                   File-based save/recall
   metrics/                  Prometheus counters, gauges, histograms
   debug/                    Snapshot collector, circular event log
+  mxl/                      MXL shared-memory transport (V210 video, float32 audio, NMOS discovery)
   demo/                     Simulated camera sources
   internal/                 Shared types (ControlRoomState, SourceInfo, etc.)
 ui/                         SvelteKit frontend (Svelte 5 + TypeScript)
@@ -239,6 +278,8 @@ graph TD
 
     subgraph server["Server (Go)"]
         prism["Prism<br/>MoQ/WebTransport :8080 · REST :8081"]
+        mxlIn["MXL Sources<br/>(V210 shared memory)"] --> switcher
+        mxlIn --> mixer
         prism --> switcher["Switcher<br/>cut / fade / dissolve / wipe / stinger"]
         prism --> api["Control API<br/>REST + MoQ state"]
         switcher --> keyer["Upstream Keyer<br/>chroma / luma"]
@@ -253,6 +294,7 @@ graph TD
         replay --> replayRelay["Replay Relay"]
         api --> operators["Operator Manager<br/>roles · locks · sessions"]
         api --> macros["Macro Runner<br/>sequential execution"]
+        relay --> mxlOut["MXL Output<br/>(V210 shared memory)"]
         admin["Admin :9090<br/>/metrics · /health · /pprof"]
     end
 ```
@@ -266,6 +308,7 @@ graph TD
 - **Audio passthrough.** When a single source is at 0 dB with EQ and compressor bypassed, the mixer skips decode/encode entirely.
 - **Lock-free hot path.** `atomic.Pointer` for source viewers, `RLock` for frame routing. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
 - **Raw YUV pipeline.** Single decode at ingest, processing chain (keying → compositing) operates on raw YUV420, single encode at output. No multi-encode generation loss.
+- **MXL shared-memory I/O.** Optional V210 video + float32 audio via shared memory (build tag `mxl`). MXL sources bypass H.264 decode — raw V210→YUV420p conversion feeds directly into the switching pipeline. Program output routes back to MXL for zero-latency interop with other broadcast tools.
 
 ## Configuration
 
@@ -280,12 +323,19 @@ graph TD
 | `--api-token` | auto-generated | Bearer token for API auth (or `SWITCHFRAME_API_TOKEN` env var) |
 | `--frame-sync` | `false` | Enable freerun frame synchronizer |
 | `--replay-buffer-secs` | `60` | Per-source replay buffer in seconds (0 to disable, max 300) |
+| `--mxl-sources` | — | MXL source specs: `videoUUID:audioUUID,...` (or `SWITCHFRAME_MXL_SOURCES` env var) |
+| `--mxl-output` | — | MXL flow name for program output |
+| `--mxl-output-video-def` | — | Path to output video flow definition JSON |
+| `--mxl-output-audio-def` | — | Path to output audio flow definition JSON |
+| `--mxl-domain` | `/dev/shm/mxl` | MXL shared memory domain path |
+| `--mxl-discover` | `false` | List available MXL flows and exit |
 
 ### Environment Variables
 
 | Variable | Description |
 |---|---|
 | `SWITCHFRAME_API_TOKEN` | API authentication token (overridden by `--api-token` flag) |
+| `SWITCHFRAME_MXL_SOURCES` | MXL source specs (overridden by `--mxl-sources` flag) |
 | `APP_ENV=production` | JSON structured logging |
 
 ### Ports
@@ -481,12 +531,14 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [go-astits](https://github.com/asticode/go-astits) — MPEG-TS muxer
 - [srtgo](https://github.com/zsiec/srtgo) — Pure Go SRT
 - [Prometheus](https://prometheus.io/) — Metrics
+- [MXL](https://mxl.media/) — EBU/Linux Foundation shared-memory media transport SDK (optional, build tag `mxl`)
 
 ## Documentation
 
 - [API Reference](docs/api.md) — Endpoints with request/response examples
 - [Deployment Guide](docs/deployment.md) — Production setup, Docker, TLS, monitoring
 - [Architecture](docs/architecture.md) — System design, data flow, decisions
+- [MXL Integration](docs/mxl.md) — MXL shared-memory setup, configuration, demo
 
 ## License
 

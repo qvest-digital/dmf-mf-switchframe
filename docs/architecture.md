@@ -8,13 +8,15 @@ distribution server. It replaces traditional hardware video switchers
 (ATEM, Ross) with a Go server and a Svelte 5 SPA, connected over
 WebTransport using the MoQ draft-15 protocol.
 
-Sources publish H.264+AAC streams to Prism via MoQ. The SwitchFrame
+Sources publish H.264+AAC streams to Prism via MoQ, or provide raw
+V210 video and float32 audio via MXL shared memory. The SwitchFrame
 server receives all source frames, routes the selected program source to
 a "program" relay, mixes audio, composites graphics overlays, and
-manages dissolve transitions -- all server-side. Browsers subscribe to
-each source stream for multiview monitoring and to the program stream for
-the authoritative output. Operator commands (cut, preview, transition)
-flow as REST POST requests over HTTP/3.
+manages dissolve transitions -- all server-side. Program output can also
+be published back to MXL shared memory for downstream consumers.
+Browsers subscribe to each source stream for multiview monitoring and to
+the program stream for the authoritative output. Operator commands (cut,
+preview, transition) flow as REST POST requests over HTTP/3.
 
 ### Server Data Flow
 
@@ -23,8 +25,13 @@ graph TD
     cam1["Camera 1<br/>(MoQ)"] --> relay1["Per-source Relay"]
     cam2["Camera 2<br/>(MoQ)"] --> relay2["Per-source Relay"]
     camN["Camera N<br/>(MoQ)"] --> relayN["Per-source Relay"]
+    mxl1["MXL Source<br/>(V210 shared mem)"] --> mxlSrc["mxl.Source<br/>V210→YUV420p"]
+    mxl2["MXL Source<br/>(float32 audio)"] --> mxlSrc
 
     subgraph prism["Prism Distribution Server"]
+        mxlSrc -->|"IngestRawVideo"| fs
+        mxlSrc -->|"IngestPCM"| am
+        mxlSrc -->|"H.264/AAC"| mxlRelay["Browser Relay"]
         relay1 --> sv1["sourceViewer"]
         relay2 --> sv2["sourceViewer"]
         relayN --> svN["sourceViewer"]
@@ -68,6 +75,9 @@ graph TD
     om --> mux["MPEG-TS Muxer"]
     mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts files)"]
     mux --> aa2["AsyncAdapter"] --> srt["SRT Caller/Listener<br/>(push/pull)"]
+
+    pr --> mxlOut["mxl.Output<br/>YUV420p→V210"]
+    mxlOut --> mxlShm["MXL Shared Memory<br/>(program output)"]
 ```
 
 ### Browser Architecture
@@ -1196,7 +1206,116 @@ sequenceDiagram
 ```
 
 
-## 5. Key Design Decisions
+## 5. MXL Integration
+
+MXL (Media eXchange Layer) is the EBU/Linux Foundation open-source SDK
+for zero-copy, real-time media exchange between software processes via
+shared memory. SwitchFrame integrates MXL as an alternative I/O path
+alongside the standard MoQ/WebTransport pipeline.
+
+### What MXL Provides
+
+- **V210 video**: Uncompressed 10-bit YCbCr 4:2:2 packed in shared-memory ring buffers
+- **Float32 audio**: De-interleaved floating-point PCM in continuous ring buffers
+- **NMOS IS-04 discovery**: Flow definitions as JSON files in the domain directory
+- **Zero-copy transport**: POSIX shared memory on the same host (no network, no codec)
+
+### MXL Source Path
+
+```
+MXL Shared Memory (V210 + float32 PCM)
+         │
+    [flow.go: cgo bindings]
+    DiscreteReader / ContinuousReader
+         │
+    [reader.go: Reader goroutines]
+    videoLoop (discrete grains, error recovery)
+    audioLoop (5ms timeout, ring buffer head start)
+         │
+    [source.go: Source — triple fan-out]
+         │
+    ├── OnRawVideo ──→ sw.IngestRawVideo()      (raw YUV420p to switcher)
+    ├── OnRawAudio ──→ mixer.IngestPCM()         (float32 PCM to mixer)
+    └── Encode     ──→ relay.BroadcastVideo()    (H.264/AAC to browsers)
+```
+
+MXL sources bypass the normal Prism viewer path. `RegisterMXLSource()`
+creates a `sourceState` with nil relay/viewer. Frames arrive via
+`IngestRawVideo()` instead of the relay callback. This eliminates one
+H.264 decode cycle on the ingest path — the V210→YUV420p conversion is
+a simple pixel format transform, not a codec operation.
+
+Audio also bypasses AAC decode — MXL provides raw float32 PCM, which
+feeds directly into the mixer via `IngestPCM()`. The `mxl:` key prefix
+excludes MXL sources from Prism's stream registration callback.
+
+### MXL Output Path
+
+```
+Switcher program output (raw YUV420p ProcessingFrame)
+         │
+    sw.SetRawVideoSink() → Output.Writer().WriteVideo()
+         │
+    [writer.go: steady-rate ticker model]
+    YUV420p → V210 conversion, write at source frame rate
+         │
+    DiscreteWriter.WriteGrain() → MXL shared memory
+
+Mixer program output (raw float32 PCM)
+         │
+    mixer.SetRawAudioSink() → Output.Writer().WriteAudio()
+         │
+    [writer.go: wall-clock index with monotonic enforcement]
+    Interleaved → de-interleaved, write at sample rate
+         │
+    ContinuousWriter.WriteSamples() → MXL shared memory
+```
+
+The writer uses a **steady-rate ticker model** for video: `WriteVideo()`
+stores the latest V210 frame atomically, and a background ticker writes
+at the configured grain rate. This decouples output timing from the
+pipeline callback rate, preventing gaps during keyframe waits and bursts
+during transitions.
+
+### V210 Pixel Format
+
+V210 packs 10-bit 4:2:2 YCbCr samples into 32-bit words. Each 128-bit
+group encodes 6 pixels:
+
+```
+[Cb0:10][Y0:10][Cr0:10][xx:2]  [Y1:10][Cb2:10][Y2:10][xx:2]  ...
+```
+
+`V210ToYUV420p()` extracts and down-converts to 8-bit 4:2:0 planar
+(matching the switcher's internal format). The reverse conversion
+(`YUV420pToV210`) upsamples chroma for output. Line stride is 128-byte
+aligned per the V210 specification.
+
+### Build Configuration
+
+MXL support is opt-in via build tags: `cgo && mxl`. Without the `mxl`
+tag, the stub implementation (`stub.go`) returns `ErrMXLNotAvailable`
+for all operations. The stub provides a monotonic-clock `CurrentIndex`
+approximation so test code can reference timing without the SDK.
+
+The real implementation uses `pkg-config: libmxl` for cgo flags,
+resolved from `MXL_ROOT/lib/pkgconfig`. A 30-second GC goroutine
+calls `mxlGarbageCollectFlows()` to clean up stale flows from crashed
+writers.
+
+### Error Recovery
+
+- **Video reader**: Consecutive error counter (max 50 before stopping).
+  Timeout/too-early errors trigger brief 1ms backoff. Invalid grains
+  (flagged `MXL_GRAIN_FLAG_INVALID`) are skipped. Timestamp
+  discontinuities are logged but frames are still delivered.
+- **Audio reader**: "Too late" errors trigger re-sync to ring buffer
+  write head. The 5ms read timeout prevents MXL SDK thread starvation
+  (the SDK can hold cgo threads for the full timeout duration).
+- **Writer**: Write failures are logged but do not stop the writer.
+  Resolution mismatches silently drop frames.
+
+## 6. Key Design Decisions
 
 ### Server-Side Switching
 
@@ -1289,7 +1408,7 @@ works even in environments that do not support WebTransport (proxies,
 older browsers).
 
 
-## 6. Technology Stack
+## 7. Technology Stack
 
 | Layer | Technology | Purpose |
 |---|---|---|
@@ -1298,6 +1417,7 @@ older browsers).
 | Media server | Prism (Go library) | MoQ protocol, relay fan-out, stream management |
 | Video codec | FFmpeg libavcodec (cgo) | H.264 decode/encode for transitions/DSK |
 | Video fallback | OpenH264 (cgo, build tag) | Fallback encoder when FFmpeg unavailable |
+| Shared-memory I/O | MXL SDK (cgo, optional) | V210 video + float32 audio via shared memory |
 | Audio codec | FDK-AAC (cgo) | AAC decode/encode for audio mixing |
 | SRT transport | zsiec/srtgo (pure Go) | SRT caller and listener output |
 | TS muxing | go-astits | MPEG-TS container for recording/SRT |
@@ -1319,6 +1439,8 @@ older browsers).
 | `!embed_ui` | No-op UI handler (development, Vite serves UI) |
 | `cgo && !noffmpeg` | Enable FFmpeg-based video codec |
 | `cgo && openh264` | Enable OpenH264 fallback codec |
+| `cgo && mxl` | Enable MXL shared-memory transport |
+| `!cgo \|\| !mxl` | Stub MXL -- returns `ErrMXLNotAvailable` |
 | (no cgo) | Stub codecs -- passthrough only, no transitions |
 
 ### Ports

@@ -45,6 +45,21 @@ The resulting binary serves the entire application (API + UI + WebTransport) wit
 | `embed_ui` | Embeds the SvelteKit build into the binary. Without this tag, `uiHandler()` returns nil and no static files are served. |
 | `noffmpeg` | Disables FFmpeg cgo bindings. Transitions and codec probing become no-ops. |
 | `openh264` | Enables the OpenH264 fallback encoder/decoder (requires OpenH264 shared library). |
+| `mxl` | Enables MXL shared-memory transport (requires MXL SDK). Without this tag, MXL features return `ErrMXLNotAvailable`. |
+
+### MXL Build (Shared-Memory Transport)
+
+To build with MXL SDK support for shared-memory video/audio I/O:
+
+```bash
+export MXL_ROOT=$HOME/dev/mxl/install/Darwin-Clang-Release  # macOS
+# export MXL_ROOT=$HOME/dev/mxl/install/Linux-GCC-Release   # Linux
+
+make build-server-mxl
+# Output: bin/switchframe (with MXL support, no embedded UI)
+```
+
+This adds `-tags "cgo mxl"` and sets `PKG_CONFIG_PATH` to resolve `libmxl`. The MXL SDK must be built and installed at `MXL_ROOT`. See the [MXL Integration Guide](mxl.md) for full details.
 
 ### Dev Build (No UI Embed)
 
@@ -175,12 +190,19 @@ volumes:
 | `--api-token <token>` | auto-generated | Bearer token for API authentication |
 | `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick boundary) |
 | `--replay-buffer-secs <n>` | `60` | Per-source replay buffer duration in seconds (0 to disable, max 300) |
+| `--mxl-sources <specs>` | `""` | MXL source specs: `videoUUID:audioUUID,...` (requires `mxl` build tag) |
+| `--mxl-output <name>` | `""` | MXL flow name for program output (empty = disabled) |
+| `--mxl-output-video-def <path>` | `""` | Path to NMOS IS-04 video flow definition JSON for program output |
+| `--mxl-output-audio-def <path>` | `""` | Path to NMOS IS-04 audio flow definition JSON for program output |
+| `--mxl-domain <path>` | `/dev/shm/mxl` | MXL shared memory domain directory path |
+| `--mxl-discover` | `false` | List available MXL flows and exit (diagnostic tool) |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `SWITCHFRAME_API_TOKEN` | API authentication token. Overridden by `--api-token` flag if both are set. If neither is set, a random 64-character hex token is auto-generated and printed to stdout. |
+| `SWITCHFRAME_MXL_SOURCES` | MXL source specs (same format as `--mxl-sources`). Overridden by the flag if both are set. |
 | `APP_ENV` | Set to `production` for JSON-formatted log output (structured logging). Any other value (or unset) produces human-readable text logs. |
 
 ### Token Resolution Order

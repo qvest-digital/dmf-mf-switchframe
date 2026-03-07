@@ -91,8 +91,10 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		slog.Info("MXL demo source started", "key", key, "resolution", [2]int{width, height})
 	}
 
-	// Wire output sink logging (proves the output tap path works).
+	// Wire output sink logging. If an MXL output writer is already configured
+	// (via --mxl-output), wrap it so frames flow through to the real writer.
 	var sinkFrameCount atomic.Int64
+	existingWriter := a.mxlOutput
 	a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
 		count := sinkFrameCount.Add(1)
 		// Log every 150 frames (~5 seconds at 30fps).
@@ -103,6 +105,10 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 				"height", pf.Height,
 				"pts", pf.PTS,
 			)
+		}
+		// Forward to the real MXL writer if configured.
+		if existingWriter != nil {
+			existingWriter.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
 		}
 	}))
 

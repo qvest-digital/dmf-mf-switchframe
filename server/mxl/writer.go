@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // WriterConfig configures an MXL flow writer.
@@ -20,8 +22,23 @@ type WriterConfig struct {
 	Logger *slog.Logger
 }
 
+// v210Frame holds a converted V210 frame for the steady-rate output ticker.
+type v210Frame struct {
+	data []byte
+}
+
 // Writer writes processed video and audio to MXL flows.
-// Implements the RawVideoSink and RawAudioSink callback signatures.
+//
+// Video uses a steady-rate output model: WriteVideo converts and buffers
+// the latest frame, while a ticker goroutine writes to MXL shared memory
+// at a fixed frame rate (matching mxl-gst-testsrc behavior). This ensures:
+//   - Exactly one grain per frame period (no gaps, no bursts)
+//   - Wall-clock aligned indices (reader can always find data)
+//   - During transitions: latest blended frame wins, no double-rate writes
+//   - During cuts: last frame repeats during keyframe wait (no gap)
+//
+// Audio uses wall-clock indices with monotonic enforcement for contiguous
+// sample delivery.
 type Writer struct {
 	config WriterConfig
 	log    *slog.Logger
@@ -32,6 +49,13 @@ type Writer struct {
 	videoRate   Rational
 	audioRate   Rational
 	closed      bool
+
+	// Steady-rate video: WriteVideo stores latest frame, ticker writes it.
+	latestV210 atomic.Pointer[v210Frame]
+
+	// Last written audio index for monotonic enforcement.
+	// Only accessed from the single mixer output goroutine.
+	lastAudioIndex uint64
 
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
@@ -65,18 +89,27 @@ func (w *Writer) SetAudioWriter(cw ContinuousWriter, sampleRate Rational) {
 	w.audioRate = sampleRate
 }
 
-// WriteVideo converts a YUV420p frame to V210 and writes it as a grain.
-// Intended to be used as a switcher.RawVideoSink callback.
-// The pf parameter carries YUV420p data, width, height, and PTS.
+// WriteVideo converts a YUV420p frame to V210 and stores it for the
+// steady-rate output ticker. Does NOT write to MXL directly — the
+// ticker goroutine handles that at a fixed frame rate.
+//
+// Called from a single goroutine (video processing loop).
 func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 	w.mu.Lock()
 	if w.closed || w.videoWriter == nil {
 		w.mu.Unlock()
 		return
 	}
-	vw := w.videoWriter
-	rate := w.videoRate
 	w.mu.Unlock()
+
+	// Skip frames that don't match the configured output resolution.
+	// Non-MXL sources (e.g., synthetic demo cameras) may produce different
+	// dimensions that can't be written to the fixed-size MXL flow.
+	if w.config.Width > 0 && w.config.Height > 0 {
+		if width != w.config.Width || height != w.config.Height {
+			return
+		}
+	}
 
 	// Convert YUV420p → V210.
 	v210, err := YUV420pToV210(yuv, width, height)
@@ -86,15 +119,56 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	// Compute grain index from PTS or current time.
-	var index uint64
-	if CurrentIndex != nil {
-		index = CurrentIndex(rate)
+	// Store for the ticker goroutine (latest wins).
+	w.latestV210.Store(&v210Frame{data: v210})
+}
+
+// videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.
+// This decouples the write rate from the pipeline callback rate, preventing
+// gaps during keyframe waits and bursts during transitions.
+func (w *Writer) videoTickLoop(ctx context.Context) {
+	w.mu.Lock()
+	rate := w.videoRate
+	w.mu.Unlock()
+
+	if rate.Numerator <= 0 || rate.Denominator <= 0 {
+		return
 	}
 
-	if err := vw.WriteGrain(index, v210); err != nil {
-		w.log.Error("mxl writer: failed to write video grain",
-			"error", err, "index", index)
+	intervalNs := float64(rate.Denominator) * 1e9 / float64(rate.Numerator)
+	ticker := time.NewTicker(time.Duration(intervalNs))
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			frame := w.latestV210.Load()
+			if frame == nil {
+				continue // no frame received yet
+			}
+
+			w.mu.Lock()
+			vw := w.videoWriter
+			closed := w.closed
+			vRate := w.videoRate
+			w.mu.Unlock()
+
+			if closed || vw == nil {
+				return
+			}
+
+			var index uint64
+			if CurrentIndex != nil {
+				index = CurrentIndex(vRate)
+			}
+
+			if err := vw.WriteGrain(index, frame.data); err != nil {
+				w.log.Error("mxl writer: failed to write video grain",
+					"error", err, "index", index)
+			}
+		}
 	}
 }
 
@@ -133,10 +207,16 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 		}
 	}
 
+	// Wall-clock index with monotonic enforcement: never overlap previous batch.
 	var index uint64
 	if CurrentIndex != nil {
 		index = CurrentIndex(rate)
 	}
+	expectedNext := w.lastAudioIndex + uint64(samplesPerCh)
+	if index < expectedNext && w.lastAudioIndex > 0 {
+		index = expectedNext
+	}
+	w.lastAudioIndex = index
 
 	if err := aw.WriteSamples(index, deinterleaved); err != nil {
 		w.log.Error("mxl writer: failed to write audio samples",
@@ -167,8 +247,19 @@ func (w *Writer) Close() error {
 	return firstErr
 }
 
-// Start is a convenience method that keeps the writer alive until ctx is done.
+// Start starts background goroutines for steady-rate output.
+// The video ticker writes the latest frame at the configured grain rate.
+// Call this after SetVideoWriter/SetAudioWriter.
 func (w *Writer) Start(ctx context.Context) {
+	// Start steady-rate video output if video writer is configured.
+	w.mu.Lock()
+	hasVideo := w.videoWriter != nil
+	w.mu.Unlock()
+
+	if hasVideo {
+		go w.videoTickLoop(ctx)
+	}
+
 	go func() {
 		<-ctx.Done()
 		_ = w.Close()

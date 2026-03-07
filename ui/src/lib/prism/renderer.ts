@@ -244,20 +244,15 @@ export class PrismRenderer {
 				}
 			}
 
-			// Look-ahead for video-ahead-of-audio: the program stream's audio
-			// goes through the server mixer (decode/mix/encode) plus the
-			// client-side ring buffer (~500ms schedule-ahead), adding
-			// 400-600ms of latency relative to video. This causes video
-			// frames to arrive well before their corresponding audio, so
-			// the buffer fills with "future" frames the binary search can't
-			// match. Draw the earliest frame if it's within tolerance to
-			// keep the display responsive. The 1.5s tolerance accommodates
-			// the full audio pipeline latency while still rejecting genuine
-			// PTS discontinuities (which are typically seconds to minutes).
+			// Look-ahead for video-ahead-of-audio: the client-side audio
+			// ring buffer (~100ms schedule-ahead) adds latency relative to
+			// video. Draw the earliest frame if it's within tolerance to
+			// keep the display responsive. 300ms tolerance accommodates
+			// the audio pipeline latency while rejecting PTS discontinuities.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS &&
-					peek.timestamp - targetPTS < 1_500_000) {
+					peek.timestamp - targetPTS < 300_000) {
 					frame = this.videoBuffer.takeNextFrame();
 				}
 			}

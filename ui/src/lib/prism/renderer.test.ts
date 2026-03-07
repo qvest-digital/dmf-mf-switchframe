@@ -43,9 +43,42 @@ describe('PrismRenderer', () => {
 	});
 
 	describe('look-ahead tolerance for video-ahead-of-audio', () => {
-		it('draws frame when video is 400ms ahead of audio', () => {
+		it('draws frame when video is 200ms ahead of audio', () => {
 			// Audio PTS is at 1,000,000 (1 second)
-			// Video frame PTS is at 1,400,000 (1.4 seconds) — 400ms ahead
+			// Video frame PTS is at 1,200,000 (1.2 seconds) — 200ms ahead
+			// Within the 300ms look-ahead tolerance
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_200_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('draws frame when video is 250ms ahead of audio', () => {
+			// Just within the 300ms tolerance
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_250_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('skips frame when video is 400ms+ ahead of audio', () => {
+			// 400ms exceeds the 300ms look-ahead tolerance — should NOT draw.
+			// With reduced audio buffer (~100ms), 400ms ahead indicates a
+			// PTS discontinuity, not normal pipeline latency.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -55,39 +88,8 @@ describe('PrismRenderer', () => {
 			renderer.renderOnce();
 
 			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(1);
-			expect(diag.framesSkipped).toBe(0);
-		});
-
-		it('draws frame when video is 600ms ahead of audio', () => {
-			// This is the key test: 600ms offset exceeds the old 500ms tolerance
-			// but should work with the new tolerance
-			const audioClock = { getPlaybackPTS: () => 1_000_000 };
-			const renderer = new PrismRenderer(canvas, buffer, audioClock);
-			renderer.externallyDriven = true;
-
-			buffer.addFrame(new MockVideoFrame(1_600_000) as unknown as VideoFrame);
-
-			renderer.renderOnce();
-
-			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(1);
-			expect(diag.framesSkipped).toBe(0);
-		});
-
-		it('draws frame when video is 999ms ahead of audio', () => {
-			// Edge case: almost 1 second ahead — should still work
-			const audioClock = { getPlaybackPTS: () => 1_000_000 };
-			const renderer = new PrismRenderer(canvas, buffer, audioClock);
-			renderer.externallyDriven = true;
-
-			buffer.addFrame(new MockVideoFrame(1_999_000) as unknown as VideoFrame);
-
-			renderer.renderOnce();
-
-			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(1);
-			expect(diag.framesSkipped).toBe(0);
+			expect(diag.framesDrawn).toBe(0);
+			expect(diag.framesSkipped).toBe(1);
 		});
 
 		it('skips frame when video is 2+ seconds ahead (likely PTS discontinuity)', () => {

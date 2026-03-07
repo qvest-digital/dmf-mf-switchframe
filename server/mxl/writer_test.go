@@ -91,6 +91,11 @@ func TestWriter_WritesVideoGrain(t *testing.T) {
 	w := NewWriter(WriterConfig{Width: 12, Height: 2})
 	w.SetVideoWriter(mock, Rational{30, 1})
 
+	// Start the ticker so grains actually get written.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
 	// Create a minimal YUV420p frame (12x2 = 12*2 + 6*1 + 6*1 = 36 bytes).
 	width, height := 12, 2
 	yuvSize := width*height + width/2*height/2 + width/2*height/2
@@ -105,13 +110,21 @@ func TestWriter_WritesVideoGrain(t *testing.T) {
 
 	w.WriteVideo(yuv, width, height, 0)
 
-	grains := mock.getGrains()
-	if len(grains) != 1 {
-		t.Fatalf("expected 1 grain written, got %d", len(grains))
-	}
-	// V210 output should be non-empty.
-	if len(grains[0].data) == 0 {
-		t.Fatal("expected non-empty V210 data")
+	// Wait for the ticker to fire and write the grain.
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		grains := mock.getGrains()
+		if len(grains) >= 1 {
+			if len(grains[0].data) == 0 {
+				t.Fatal("expected non-empty V210 data")
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for grain write, got %d grains", len(mock.getGrains()))
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
@@ -160,19 +173,32 @@ func TestWriter_StopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	w.Start(ctx)
 
-	// Write should work before cancel.
+	// Write a video frame and wait for the ticker to pick it up.
 	yuv := make([]byte, 12*2*3/2)
 	w.WriteVideo(yuv, 12, 2, 0)
-	if len(vMock.getGrains()) != 1 {
-		t.Fatal("expected 1 grain before cancel")
+
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		if len(vMock.getGrains()) >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for grain before cancel")
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 
 	cancel()
 	time.Sleep(50 * time.Millisecond) // Allow goroutine to close.
 
-	// Writes after close should be silently dropped.
+	countBefore := len(vMock.getGrains())
+
+	// Writes after close should be silently dropped (no new grains from ticker).
 	w.WriteVideo(yuv, 12, 2, 1)
-	if len(vMock.getGrains()) != 1 {
+	time.Sleep(100 * time.Millisecond)
+
+	if len(vMock.getGrains()) != countBefore {
 		t.Fatal("expected no new grains after close")
 	}
 }
@@ -228,5 +254,54 @@ func TestWriter_DeinterleavesMono(t *testing.T) {
 		if samples[0].channels[0][i] != v {
 			t.Fatalf("[%d] = %f, want %f", i, samples[0].channels[0][i], v)
 		}
+	}
+}
+
+func TestWriter_SkipsMismatchedResolution(t *testing.T) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 1920, Height: 1080})
+	w.SetVideoWriter(mock, Rational{30, 1})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	// Write a frame at wrong resolution — should be silently skipped.
+	yuv := make([]byte, 640*128*3/2)
+	w.WriteVideo(yuv, 640, 128, 0)
+
+	time.Sleep(100 * time.Millisecond)
+	if len(mock.getGrains()) != 0 {
+		t.Fatal("expected no grains for mismatched resolution")
+	}
+}
+
+func TestWriter_SteadyRateMultipleFrames(t *testing.T) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	// Use a fast rate (100fps = 10ms ticks) so the test runs quickly.
+	w.SetVideoWriter(mock, Rational{100, 1})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	// Write a frame.
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+	yuv := make([]byte, yuvSize)
+	for i := 0; i < width*height; i++ {
+		yuv[i] = 16
+	}
+	for i := width * height; i < yuvSize; i++ {
+		yuv[i] = 128
+	}
+	w.WriteVideo(yuv, width, height, 0)
+
+	// Wait for multiple ticks — the same frame should be written repeatedly.
+	time.Sleep(55 * time.Millisecond) // ~5 ticks at 100fps
+	grains := mock.getGrains()
+	if len(grains) < 3 {
+		t.Fatalf("expected at least 3 grains from steady ticker, got %d", len(grains))
 	}
 }

@@ -479,12 +479,30 @@ func (a *App) initMXL() error {
 			Channels:   2,
 		})
 
-		// Open MXL flow for writing.
-		videoWriter, err := inst.OpenWriter("{}")
+		// Load flow definitions from files (or fall back to empty).
+		videoFlowDef := "{}"
+		if a.cfg.MXLOutputVideoDef != "" {
+			data, err := os.ReadFile(a.cfg.MXLOutputVideoDef)
+			if err != nil {
+				return fmt.Errorf("mxl: read output video flow def: %w", err)
+			}
+			videoFlowDef = string(data)
+		}
+		audioFlowDef := "{}"
+		if a.cfg.MXLOutputAudioDef != "" {
+			data, err := os.ReadFile(a.cfg.MXLOutputAudioDef)
+			if err != nil {
+				return fmt.Errorf("mxl: read output audio flow def: %w", err)
+			}
+			audioFlowDef = string(data)
+		}
+
+		// Open MXL flows for writing.
+		videoWriter, err := inst.OpenWriter(videoFlowDef)
 		if err != nil {
 			slog.Warn("mxl: could not open output video flow", "error", err)
 		}
-		audioWriter, err := inst.OpenAudioWriter("{}")
+		audioWriter, err := inst.OpenAudioWriter(audioFlowDef)
 		if err != nil {
 			slog.Warn("mxl: could not open output audio flow", "error", err)
 		}

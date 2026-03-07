@@ -23,13 +23,18 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 
 // Adaptive rate control: when buffer is between LOW and HIGH, consume at 1x.
 // Below LOW, slow down consumption; above HIGH, speed up. Drift is
-// compensated by skipping or repeating ~6 samples per 128-sample quantum
-// (~125µs, inaudible) — no resampling or interpolation is used.
-const TARGET_BUFFER_MS = 1000;
-const LOW_WATER_MS = 600;
-const HIGH_WATER_MS = 1500;
-const MAX_SPEED_RATIO = 1.05;
+// compensated by skipping or repeating ~13 samples per 128-sample quantum
+// (~270µs, inaudible) — no resampling or interpolation is used.
+const TARGET_BUFFER_MS = 200;
+const LOW_WATER_MS = 100;
+const HIGH_WATER_MS = 400;
+const MAX_SPEED_RATIO = 1.10;
 const MIN_SPEED_RATIO = 0.95;
+// Above this threshold, hard-flush the ring buffer to TARGET_BUFFER_MS.
+// Set to HIGH_WATER_MS + TARGET_BUFFER_MS so any buffer level clearly
+// caused by a delivery stall (not normal jitter) is flushed instantly
+// rather than spending seconds on gradual drain at 1.10x.
+const HARD_FLUSH_MS = 600;
 
 function writePTS(states: Int32Array, pts: number): void {
 	const intPart = Math.trunc(pts);
@@ -85,7 +90,7 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 
 		const output = outputs[0];
 		const framesToFill = output[0].length;
-		const start = Atomics.load(this.sharedStates, SharedStates.BUFF_START);
+		let start = Atomics.load(this.sharedStates, SharedStates.BUFF_START);
 		const end = Atomics.load(this.sharedStates, SharedStates.BUFF_END);
 
 		let available: number;
@@ -108,7 +113,23 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 			return true;
 		}
 
-		const bufferMs = (available / this.localSampleRate) * 1000;
+		let bufferMs = (available / this.localSampleRate) * 1000;
+
+		// Hard flush: if buffer exceeds threshold (extreme stall recovery),
+		// skip forward to TARGET_BUFFER_MS. Adjust sampleOffset so PTS
+		// jumps to match the new ring position.
+		if (bufferMs > HARD_FLUSH_MS) {
+			const targetSamples = Math.round((TARGET_BUFFER_MS / 1000) * this.localSampleRate);
+			const skipSamples = available - targetSamples;
+			if (skipSamples > 0) {
+				start = (start + skipSamples) % this.ringSize;
+				Atomics.store(this.sharedStates, SharedStates.BUFF_START, start);
+				this.sampleOffset += skipSamples;
+				available = targetSamples;
+				bufferMs = TARGET_BUFFER_MS;
+			}
+		}
+
 		const speedRatio = this.computeSpeedRatio(bufferMs);
 
 		const channelsToFill = Math.min(output.length, this.numChannels);
@@ -116,8 +137,8 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 		// Drift compensation via pointer-rate adjustment:
 		// Always copy clean source samples to output (no interpolation/resampling).
 		// Compensate by advancing the ring read pointer at a slightly different
-		// rate than the output frame size. At ±5%, this means ~6 samples of
-		// overlap (slow) or skip (fast) per 128-sample quantum — ~125µs, inaudible.
+		// rate than the output frame size. At ±10%, this means ~13 samples of
+		// overlap (slow) or skip (fast) per 128-sample quantum — ~270µs, inaudible.
 		const exactAdvance = framesToFill * speedRatio + this.fractionalAccum;
 		const toAdvance = Math.min(Math.floor(exactAdvance), available);
 		this.fractionalAccum = exactAdvance - Math.floor(exactAdvance);

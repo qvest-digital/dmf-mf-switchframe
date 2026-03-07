@@ -1,0 +1,41 @@
+{
+  "description": "Switchframe program output (video)",
+  "id": "b0000001-0000-0000-0000-000000000001",
+  "tags": {
+    "urn:x-nmos:tag:grouphint/v1.0": [
+      "switchframe-pgm:video"
+    ]
+  },
+  "format": "urn:x-nmos:format:video",
+  "label": "Switchframe Program Video",
+  "parents": [],
+  "media_type": "video/v210",
+  "grain_rate": {
+    "numerator": 30000,
+    "denominator": 1001
+  },
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "interlace_mode": "progressive",
+  "colorspace": "BT709",
+  "components": [
+    {
+      "name": "Y",
+      "width": 1920,
+      "height": 1080,
+      "bit_depth": 10
+    },
+    {
+      "name": "Cb",
+      "width": 960,
+      "height": 1080,
+      "bit_depth": 10
+    },
+    {
+      "name": "Cr",
+      "width": 960,
+      "height": 1080,
+      "bit_depth": 10
+    }
+  ]
+}

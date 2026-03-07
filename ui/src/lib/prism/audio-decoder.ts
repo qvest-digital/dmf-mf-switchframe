@@ -1,7 +1,7 @@
 import { AudioRingBuffer } from "./audio-ring-buffer";
 import audioWorkletUrl from "./audio-worklet.ts?worker&url";
 
-const MIN_BUFFER_MS = 500;
+const MIN_BUFFER_MS = 100;
 const RING_BUFFER_SECONDS = 4;
 const PEAK_HOLD_SEC = 1.5;
 const PEAK_HOLD_DECAY = 0.9;
