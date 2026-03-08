@@ -22,11 +22,13 @@ import (
 )
 
 // Sentinel errors for the switcher package.
-var ErrSourceNotFound = errors.New("switcher: source not found")
-var ErrAlreadyOnProgram = errors.New("switcher: already on program")
-var ErrInvalidDelay = errors.New("switcher: delay must be 0-500ms")
-var ErrInvalidPosition = errors.New("switcher: position must be >= 1")
-var ErrNoTransition = errors.New("switcher: no active transition")
+var (
+	ErrSourceNotFound   = errors.New("switcher: source not found")
+	ErrAlreadyOnProgram = errors.New("switcher: already on program")
+	ErrInvalidDelay     = errors.New("switcher: delay must be 0-500ms")
+	ErrInvalidPosition  = errors.New("switcher: position must be >= 1")
+	ErrNoTransition     = errors.New("switcher: no active transition")
+)
 
 // updateAtomicMax atomically updates field to val if val > current.
 func updateAtomicMax(field *atomic.Int64, val int64) {

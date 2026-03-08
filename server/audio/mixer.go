@@ -32,8 +32,11 @@ func growBuf(buf []float32, n int) []float32 {
 // source needs to deliver a frame, so one AAC frame (~21.3ms) is sufficient.
 const crossfadeTimeout = 25 * time.Millisecond
 
-// ErrChannelNotFound is returned when a referenced audio channel does not exist.
-var ErrChannelNotFound = errors.New("audio: channel not found")
+// Sentinel errors for the audio mixer.
+var (
+	ErrChannelNotFound = errors.New("audio: channel not found")
+	ErrInvalidTrim     = errors.New("audio: trim must be between -20 and +20 dB")
+)
 
 // RawAudioSink receives a copy of the mixed PCM after master processing
 // (fader + limiter) but before AAC encode. Used by MXL output to write
@@ -468,9 +471,6 @@ func (m *AudioMixer) SetActive(sourceKey string, active bool) {
 		m.recalcPassthrough()
 	}
 }
-
-// ErrInvalidTrim is returned when trim is outside the valid range.
-var ErrInvalidTrim = errors.New("audio: trim must be between -20 and +20 dB")
 
 // SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
 // Trim is applied before the fader in the mix pipeline.
