@@ -381,6 +381,59 @@ func TestOutputManager_StateCallbackOnDestination(t *testing.T) {
 	require.Greater(t, callCount, prevCount, "stop should trigger state change")
 }
 
+func TestOutputManager_RemoveDestination_FiresStateCallback(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	callCount := 0
+	mgr.OnStateChange(func() {
+		callCount++
+	})
+
+	config := DestinationConfig{
+		Type:    "srt-caller",
+		Address: "192.168.1.100",
+		Port:    9000,
+	}
+
+	id, err := mgr.AddDestination(config)
+	require.NoError(t, err)
+	require.Equal(t, 0, callCount, "add should not trigger state change")
+
+	err = mgr.RemoveDestination(id)
+	require.NoError(t, err)
+	require.Equal(t, 1, callCount, "remove should trigger state change")
+}
+
+func TestOutputManager_RemoveActiveDestination_FiresStateCallback(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	callCount := 0
+	mgr.OnStateChange(func() {
+		callCount++
+	})
+
+	config := DestinationConfig{
+		Type:    "srt-caller",
+		Address: "192.168.1.100",
+		Port:    9000,
+	}
+
+	id, err := mgr.AddDestination(config)
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.StartDestination(id))
+	startCount := callCount
+	require.Greater(t, startCount, 0, "start should trigger state change")
+
+	err = mgr.RemoveDestination(id)
+	require.NoError(t, err)
+	require.Greater(t, callCount, startCount, "removing active destination should trigger state change")
+}
+
 func TestGenerateDestinationID(t *testing.T) {
 	id1 := generateDestinationID()
 	id2 := generateDestinationID()

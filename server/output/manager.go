@@ -360,7 +360,7 @@ func (m *OutputManager) RemoveDestination(id string) error {
 		}
 	}
 
-	if fn != nil && dest.active {
+	if fn != nil {
 		fn()
 	}
 
