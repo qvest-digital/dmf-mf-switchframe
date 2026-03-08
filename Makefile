@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format
+.PHONY: build build-server build-server-mxl dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format setup-mkcert
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -51,13 +51,32 @@ demo: build-server node_modules_check
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
-		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips & \
+		CERT_FLAGS=""; \
+		if [ -f $$HOME/.switchframe/cert.pem ] && [ -f $$HOME/.switchframe/key.pem ]; then \
+			CERT_FLAGS="--tls-cert $$HOME/.switchframe/cert.pem --tls-key $$HOME/.switchframe/key.pem"; \
+			echo "  Using mkcert certificate (HTTP/3 direct)"; \
 		else \
-			./bin/switchframe --demo & \
+			CERT_FLAGS="--http-fallback"; \
+			echo "  Using self-signed cert (Vite proxy mode)"; \
+			echo "  Tip: run 'make setup-mkcert' for HTTP/3 dev mode"; \
+		fi; \
+		echo ""; \
+		if [ -d test/clips ]; then \
+			./bin/switchframe --demo --demo-video test/clips --frame-sync --decode-all-sources $$CERT_FLAGS & \
+		else \
+			./bin/switchframe --demo --frame-sync --decode-all-sources $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
+
+# Generate mkcert certificate for trusted HTTP/3 dev mode
+setup-mkcert:
+	@command -v mkcert >/dev/null 2>&1 || { echo "Install mkcert first: brew install mkcert"; exit 1; }
+	mkcert -install
+	mkdir -p $(HOME)/.switchframe
+	mkcert -cert-file $(HOME)/.switchframe/cert.pem -key-file $(HOME)/.switchframe/key.pem localhost 127.0.0.1 ::1
+	@echo "Done! mkcert certificate generated at ~/.switchframe/"
+	@echo "Run 'make demo' to use HTTP/3 dev mode"
 
 # Build with MXL SDK support (requires MXL_ROOT env var)
 build-server-mxl:

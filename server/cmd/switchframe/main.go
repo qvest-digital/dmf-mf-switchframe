@@ -35,6 +35,8 @@ type AppConfig struct {
 	ReplayBufferSecs int
 	Addr             string
 	HTTPFallback     bool
+	TLSCert          string
+	TLSKey           string
 
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
@@ -100,6 +102,8 @@ func parseConfig() (AppConfig, error) {
 	formatFlag := flag.String("format", "1080p29.97", "Video standard (e.g. 1080p29.97, 1080p25, 720p59.94)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	httpFallbackFlag := flag.Bool("http-fallback", false, "Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts")
+	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
+	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
 
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID (env: SWITCHFRAME_MXL_SOURCES)")
@@ -145,6 +149,8 @@ func parseConfig() (AppConfig, error) {
 		ReplayBufferSecs:  *replayBufferSecs,
 		Addr:              ":8080",
 		HTTPFallback:      *httpFallbackFlag,
+		TLSCert:           *tlsCertFlag,
+		TLSKey:            *tlsKeyFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,

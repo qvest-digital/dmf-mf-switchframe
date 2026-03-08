@@ -5,6 +5,8 @@ export interface ServerInfo {
 	certHash: Uint8Array;
 	/** WebTransport host:port (e.g. ":4443"). */
 	addr: string;
+	/** True when the server is using an externally-provided (trusted) certificate. */
+	trusted: boolean;
 }
 
 /**
@@ -26,6 +28,7 @@ export async function fetchServerInfo(): Promise<ServerInfo> {
 	return {
 		certHash: hashBuffer,
 		addr: data.addr ?? ":4443",
+		trusted: data.trusted === true,
 	};
 }
 
@@ -41,18 +44,21 @@ export function wtBaseURL(info: ServerInfo): string {
 }
 
 /**
- * Creates and connects a WebTransport session pinned to the server's
- * self-signed certificate. Returns the connected transport.
+ * Creates and connects a WebTransport session. When the server uses a
+ * trusted certificate (e.g. mkcert), no cert pinning is needed. Otherwise
+ * the self-signed certificate hash is pinned for dev mode.
  */
-export async function connectWebTransport(url: string, certHash: Uint8Array): Promise<WebTransport> {
-	const transport = new WebTransport(url, {
-		serverCertificateHashes: [
+export async function connectWebTransport(url: string, certHash: Uint8Array, trusted: boolean): Promise<WebTransport> {
+	const opts: WebTransportOptions = {};
+	if (!trusted && certHash.length > 0) {
+		opts.serverCertificateHashes = [
 			{
 				algorithm: "sha-256",
 				value: certHash.buffer as ArrayBuffer,
 			},
-		],
-	});
+		];
+	}
+	const transport = new WebTransport(url, opts);
 	await transport.ready;
 	return transport;
 }

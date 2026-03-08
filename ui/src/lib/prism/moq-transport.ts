@@ -121,7 +121,7 @@ export class MoQTransport {
 		const url = `${wtBaseURL(info)}/moq?stream=${encodeURIComponent(this.streamKey)}`;
 
 		try {
-			this.transport = await connectWebTransport(url, info.certHash);
+			this.transport = await connectWebTransport(url, info.certHash, info.trusted);
 		} catch (err) {
 			this.callbacks.onError(`MoQ WebTransport connection failed: ${err}`);
 			return;

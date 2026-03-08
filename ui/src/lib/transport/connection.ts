@@ -34,19 +34,23 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		_setConnectionState('connecting');
 
 		try {
-			// Fetch cert hash for self-signed dev cert
+			// Fetch cert info for WebTransport connection
 			const certRes = await fetch(`${config.url}/api/cert-hash`);
-			const certHash = await certRes.text();
+			const certData = await certRes.json();
+			const trusted = certData.trusted === true;
 
-			// Connect via WebTransport with cert pinning
-			transport = new WebTransport(config.url, {
-				serverCertificateHashes: [
+			const opts: WebTransportOptions = {};
+			if (!trusted && certData.hash) {
+				const hashBinary = atob(certData.hash);
+				opts.serverCertificateHashes = [
 					{
 						algorithm: 'sha-256',
-						value: Uint8Array.from(atob(certHash), (c) => c.charCodeAt(0)).buffer,
+						value: Uint8Array.from(hashBinary, (c) => c.charCodeAt(0)).buffer,
 					},
-				],
-			});
+				];
+			}
+
+			transport = new WebTransport(config.url, opts);
 			await transport.ready;
 			retryDelay = 2000;
 			_setConnectionState('connected');

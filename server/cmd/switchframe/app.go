@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -40,7 +43,8 @@ type App struct {
 	cfg AppConfig
 
 	// Infrastructure
-	cert       *certs.CertInfo
+	cert         *certs.CertInfo
+	externalCert bool
 	appMetrics *metrics.Metrics
 	controlPub *control.ChannelPublisher
 
@@ -116,15 +120,36 @@ func (a *App) initInfra() error {
 
 	logSystemTuning(slog.Default())
 
-	// Generate self-signed TLS certificate for WebTransport (<=14 days validity).
-	cert, err := certs.Generate(14 * 24 * time.Hour)
-	if err != nil {
-		return fmt.Errorf("generate certificate: %w", err)
+	// Load external TLS certificate (e.g. from mkcert) or generate self-signed.
+	if a.cfg.TLSCert != "" && a.cfg.TLSKey != "" {
+		tlsCert, err := tls.LoadX509KeyPair(a.cfg.TLSCert, a.cfg.TLSKey)
+		if err != nil {
+			return fmt.Errorf("load TLS certificate: %w", err)
+		}
+		parsed, err := x509.ParseCertificate(tlsCert.Certificate[0])
+		if err != nil {
+			return fmt.Errorf("parse TLS certificate: %w", err)
+		}
+		fingerprint := sha256.Sum256(tlsCert.Certificate[0])
+		a.cert = &certs.CertInfo{
+			TLSCert:     tlsCert,
+			Fingerprint: fingerprint,
+			NotAfter:    parsed.NotAfter,
+		}
+		a.externalCert = true
+		slog.Info("using external TLS certificate",
+			"path", a.cfg.TLSCert,
+			"expires", parsed.NotAfter.Format(time.RFC3339))
+	} else {
+		cert, err := certs.Generate(14 * 24 * time.Hour)
+		if err != nil {
+			return fmt.Errorf("generate certificate: %w", err)
+		}
+		a.cert = cert
+		slog.Info("certificate generated",
+			"fingerprint", cert.FingerprintBase64(),
+			"expires", cert.NotAfter.Format(time.RFC3339))
 	}
-	a.cert = cert
-	slog.Info("certificate generated",
-		"fingerprint", cert.FingerprintBase64(),
-		"expires", cert.NotAfter.Format(time.RFC3339))
 
 	// Create channel-based state publisher for MoQ control track.
 	a.controlPub = control.NewChannelPublisher(64)
@@ -654,7 +679,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.debugCollector.Register("demo", demoStats)
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
-	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64())
+	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert)
 	defer stopAdmin()
 
 	// Optionally start HTTP/1.1 fallback for curl/scripts.
@@ -726,8 +751,9 @@ func (a *App) Close() {
 // No authentication required — browsers need this to establish WebTransport connections.
 func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"hash": a.cert.FingerprintBase64(),
-		"addr": a.cfg.Addr,
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"hash":    a.cert.FingerprintBase64(),
+		"addr":    a.cfg.Addr,
+		"trusted": a.externalCert,
 	})
 }

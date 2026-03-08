@@ -349,11 +349,12 @@
 
 		// Bootstrap: discover QUIC server address and set API base URL.
 		// In production (same-origin), this is a no-op (base URL stays '').
-		// In dev (Vite :5173), this points API calls to the QUIC server.
+		// In dev with mkcert (trusted cert), point API calls directly to the QUIC server.
+		// In dev with self-signed cert, keep relative URLs (Vite proxy handles them).
 		try {
 			const info = await fetchServerInfo();
 			const serverOrigin = wtBaseURL(info);
-			if (serverOrigin !== window.location.origin) {
+			if (serverOrigin !== window.location.origin && info.trusted) {
 				setApiBaseUrl(serverOrigin);
 			}
 		} catch {
