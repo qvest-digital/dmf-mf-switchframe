@@ -61,8 +61,10 @@
 
 	let syncStatus = $derived.by(() => {
 		const elapsed = now - store.lastServerUpdate;
-		if (elapsed > 5000) return 'disconnected' as const;
-		if (elapsed > 2000) return 'resyncing' as const;
+		// With MoQ control track, state updates are event-driven (not periodic
+		// polling), so gaps between updates are normal during idle periods.
+		if (elapsed > 15000) return 'disconnected' as const;
+		if (elapsed > 8000) return 'resyncing' as const;
 		return 'ok' as const;
 	});
 
