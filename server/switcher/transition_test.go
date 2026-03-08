@@ -22,20 +22,6 @@ func mockTransitionCodecs() TransitionConfig {
 	}
 }
 
-// slowDecoder wraps a mock decoder and adds a delay to each Decode() call.
-// Used to verify that warmup does NOT hold the switcher write lock.
-type slowDecoder struct {
-	inner transition.VideoDecoder
-	delay time.Duration
-}
-
-func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
-	time.Sleep(d.delay)
-	return d.inner.Decode(data)
-}
-
-func (d *slowDecoder) Close() { d.inner.Close() }
-
 // mockAudioTransHandler records calls to audio transition methods.
 type mockAudioTransHandler struct {
 	mu              sync.Mutex
