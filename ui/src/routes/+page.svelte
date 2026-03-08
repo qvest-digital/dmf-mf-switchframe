@@ -140,8 +140,38 @@
 		getSourceKeys: () => store.sourceKeys,
 	});
 
+	const connectionManager = new ConnectionManager({
+		url: window.location.origin,
+		onStateUpdate: (update) => {
+			if (update instanceof Uint8Array) {
+				store.applyFromMoQ(update);
+			} else {
+				store.applyUpdate(update as ControlRoomState);
+			}
+		},
+		onConnectionStateChange: (state) => {
+			connectionState = state;
+		},
+		onInitialLoadComplete: () => {
+			initialLoading = false;
+			connectionError = null;
+		},
+		onInitialLoadError: (error, rawError) => {
+			console.warn('Failed to fetch initial state:', error);
+			if (rawError instanceof SwitchApiError && rawError.status === 401) {
+				tokenRequired = true;
+				initialLoading = false;
+			}
+			connectionError = error;
+		},
+	});
+
 	// Media pipeline for MoQ video/audio decode
-	const pipeline = createMediaPipeline();
+	const pipeline = createMediaPipeline({
+		onControlState: (data) => {
+			connectionManager.handleControlData(data);
+		},
+	});
 	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys, (src, pgm) => {
 		sourceLevels = src;
 		programLevels = pgm;
@@ -306,32 +336,6 @@
 		initialLoading = true;
 		await connectionManager.start();
 	}
-
-	const connectionManager = new ConnectionManager({
-		url: window.location.origin,
-		onStateUpdate: (update) => {
-			if (update instanceof Uint8Array) {
-				store.applyFromMoQ(update);
-			} else {
-				store.applyUpdate(update as ControlRoomState);
-			}
-		},
-		onConnectionStateChange: (state) => {
-			connectionState = state;
-		},
-		onInitialLoadComplete: () => {
-			initialLoading = false;
-			connectionError = null;
-		},
-		onInitialLoadError: (error, rawError) => {
-			console.warn('Failed to fetch initial state:', error);
-			if (rawError instanceof SwitchApiError && rawError.status === 401) {
-				tokenRequired = true;
-				initialLoading = false;
-			}
-			connectionError = error;
-		},
-	});
 
 	onMount(async () => {
 		keyboard.attach();

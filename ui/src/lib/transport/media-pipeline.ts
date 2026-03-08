@@ -5,6 +5,12 @@ import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 
+/** Configuration for the media pipeline. */
+export interface MediaPipelineConfig {
+	/** Called when MoQ control track delivers state data. */
+	onControlState?: (data: Uint8Array) => void;
+}
+
 /** Diagnostics snapshot for a single source. */
 export interface SourceDiagnostics {
 	renderer: Record<string, unknown> | null;
@@ -93,7 +99,7 @@ export interface MediaPipeline {
  * is called, subscribes to its video/audio tracks, and routes decoded
  * frames through PrismVideoDecoder -> VideoRenderBuffer -> PrismRenderer.
  */
-export function createMediaPipeline(): MediaPipeline {
+export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline {
 	const sources = new Map<string, SourceMedia>();
 
 	function createSourceMedia(key: string): SourceMedia {
@@ -188,9 +194,9 @@ export function createMediaPipeline(): MediaPipeline {
 			},
 
 			onControlState(data: Uint8Array) {
-				// Control state is handled by the connection manager, not the media pipeline.
-				// But if routed here, ignore -- the control-room store handles it.
-				void data;
+				if (config?.onControlState) {
+					config.onControlState(data);
+				}
 			},
 
 			onClose() {

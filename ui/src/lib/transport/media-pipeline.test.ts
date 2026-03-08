@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMediaPipeline, type SourceDiagnostics } from './media-pipeline';
+import { createMediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
@@ -80,6 +80,17 @@ describe('MediaPipeline', () => {
 
 	it('should create a pipeline', () => {
 		const pipeline = createMediaPipeline();
+		expect(pipeline).toBeDefined();
+	});
+
+	it('should create a pipeline with config', () => {
+		const onControlState = vi.fn();
+		const pipeline = createMediaPipeline({ onControlState });
+		expect(pipeline).toBeDefined();
+	});
+
+	it('should create a pipeline with empty config', () => {
+		const pipeline = createMediaPipeline({});
 		expect(pipeline).toBeDefined();
 	});
 

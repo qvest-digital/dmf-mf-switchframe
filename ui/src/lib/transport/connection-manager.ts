@@ -66,6 +66,13 @@ export class ConnectionManager {
 		return this.connectionState;
 	}
 
+	/** Called when MoQ control track delivers state data via the media pipeline. */
+	handleControlData(data: Uint8Array): void {
+		this.config.onStateUpdate(data);
+		this.stopPolling();
+		this.setConnectionState('webtransport');
+	}
+
 	private setConnectionState(state: ConnectionStatus): void {
 		if (state === this.connectionState) return;
 		this.connectionState = state;

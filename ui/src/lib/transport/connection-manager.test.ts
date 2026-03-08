@@ -480,6 +480,55 @@ describe('ConnectionManager', () => {
 		});
 	});
 
+	describe('handleControlData()', () => {
+		it('should dispatch state update and stop polling', async () => {
+			setupMocks();
+			mockedGetState.mockResolvedValue(makeState());
+
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await manager.start();
+			mockedGetState.mockClear();
+			onStateUpdate.mockClear();
+
+			const data = new TextEncoder().encode(JSON.stringify(makeState({ seq: 10 })));
+			manager.handleControlData(data);
+
+			expect(onStateUpdate).toHaveBeenCalledWith(data);
+			expect(manager.getConnectionState()).toBe('webtransport');
+
+			// Polling should be stopped
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(mockedGetState).not.toHaveBeenCalled();
+		});
+
+		it('should work before start() is called', () => {
+			setupMocks();
+
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://localhost:8080',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			const data = new TextEncoder().encode(JSON.stringify(makeState({ seq: 1 })));
+			manager.handleControlData(data);
+
+			expect(onStateUpdate).toHaveBeenCalledWith(data);
+			expect(manager.getConnectionState()).toBe('webtransport');
+		});
+	});
+
 	describe('stop()', () => {
 		it('should stop polling', async () => {
 			setupMocks();
