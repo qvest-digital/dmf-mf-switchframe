@@ -140,6 +140,10 @@
 		getSourceKeys: () => store.sourceKeys,
 	});
 
+	// URL is the page origin — in production (embedded UI on :8080), WebTransport
+	// connects same-origin. In dev (Vite :5173), the connection.ts WebTransport
+	// path will fail (Vite doesn't speak QUIC), which is fine: MoQ state arrives
+	// via the media pipeline's per-source MoQTransport instead.
 	const connectionManager = new ConnectionManager({
 		url: window.location.origin,
 		onStateUpdate: (update) => {

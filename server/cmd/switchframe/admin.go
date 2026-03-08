@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -51,14 +52,15 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string)
 	mux.Handle("/debug/", http.DefaultServeMux)
 
 	// Cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
-	mux.HandleFunc("GET /api/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
+	// Wrapped with CORSMiddleware to handle OPTIONS preflight from cross-origin browsers.
+	certHashHandler := control.CORSMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"hash": certHash,
 			"addr": quicAddr,
 		})
-	})
+	}))
+	mux.Handle("/api/cert-hash", certHashHandler)
 
 	srv := &http.Server{
 		Handler: mux,

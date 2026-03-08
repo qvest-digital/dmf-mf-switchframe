@@ -13,6 +13,9 @@ export interface ServerInfo {
  */
 export async function fetchServerInfo(): Promise<ServerInfo> {
 	const resp = await fetch(resolveApiUrl("/api/cert-hash"));
+	if (!resp.ok) {
+		throw new Error(`cert-hash fetch failed: HTTP ${resp.status}`);
+	}
 	const data = await resp.json();
 	const hashBase64: string = data.hash;
 	const hashBinary = atob(hashBase64);

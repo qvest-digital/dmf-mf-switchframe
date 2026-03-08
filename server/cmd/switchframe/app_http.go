@@ -42,18 +42,12 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 			slog.Error("HTTP API server error", "err", err)
 		}
 	}()
-	go func() {
-		<-ctx.Done()
+
+	return func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("HTTP API server shutdown error", "err", err)
 		}
-	}()
-
-	return func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
 	}, nil
 }
