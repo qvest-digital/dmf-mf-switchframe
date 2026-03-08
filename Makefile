@@ -62,9 +62,9 @@ demo: build-server node_modules_check
 		fi; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --frame-sync --decode-all-sources $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --frame-sync --decode-all-sources $$CERT_FLAGS & \
+			./bin/switchframe --demo --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
