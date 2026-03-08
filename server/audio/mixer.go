@@ -52,6 +52,16 @@ type MixerConfig struct {
 	EncoderFactory EncoderFactory // nil = passthrough only (no mixing)
 }
 
+// CompressorState holds the current state of a channel's compressor.
+type CompressorState struct {
+	Threshold     float64
+	Ratio         float64
+	Attack        float64
+	Release       float64
+	MakeupGain    float64
+	GainReduction float64
+}
+
 // Channel tracks per-source audio state.
 type Channel struct {
 	sourceKey   string
@@ -1404,16 +1414,22 @@ func (m *AudioMixer) SetCompressor(sourceKey string, threshold, ratio, attack, r
 }
 
 // GetCompressor returns the current compressor settings and gain reduction for a channel.
-func (m *AudioMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error) {
+func (m *AudioMixer) GetCompressor(sourceKey string) (CompressorState, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
+		return CompressorState{}, fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
-	threshold, ratio, attack, release, makeupGain = ch.compressor.GetParams()
-	gainReduction = ch.compressor.GainReduction()
-	return
+	threshold, ratio, attack, release, makeupGain := ch.compressor.GetParams()
+	return CompressorState{
+		Threshold:     threshold,
+		Ratio:         ratio,
+		Attack:        attack,
+		Release:       release,
+		MakeupGain:    makeupGain,
+		GainReduction: ch.compressor.GainReduction(),
+	}, nil
 }
 
 // SetAudioDelay sets the audio delay in milliseconds for a source channel.

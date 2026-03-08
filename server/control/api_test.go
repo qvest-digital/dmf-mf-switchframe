@@ -418,11 +418,15 @@ func (m *mockMixer) SetCompressor(sourceKey string, threshold, ratio, attack, re
 	return nil
 }
 
-func (m *mockMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error) {
+func (m *mockMixer) GetCompressor(sourceKey string) (audio.CompressorState, error) {
 	if !m.knownKeys[sourceKey] {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
+		return audio.CompressorState{}, fmt.Errorf("%w: %s", audio.ErrChannelNotFound, sourceKey)
 	}
-	return 0, 1.0, 5.0, 100.0, 0, 0, nil
+	return audio.CompressorState{
+		Ratio:   1.0,
+		Attack:  5.0,
+		Release: 100.0,
+	}, nil
 }
 
 func (m *mockMixer) SetAudioDelay(sourceKey string, delayMs int) error {

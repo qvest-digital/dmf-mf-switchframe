@@ -39,7 +39,7 @@ type AudioMixerAPI interface {
 	SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error
 	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)
 	SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error
-	GetCompressor(sourceKey string) (threshold, ratio, attack, release, makeupGain, gainReduction float64, err error)
+	GetCompressor(sourceKey string) (audio.CompressorState, error)
 	SetAudioDelay(sourceKey string, delayMs int) error
 	AudioDelayMs(sourceKey string) int
 }
@@ -792,19 +792,19 @@ func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "source required")
 		return
 	}
-	threshold, ratio, attack, release, makeupGain, gainReduction, err := a.mixer.GetCompressor(source)
+	state, err := a.mixer.GetCompressor(source)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(compressorResponse{
-		Threshold:     threshold,
-		Ratio:         ratio,
-		Attack:        attack,
-		Release:       release,
-		MakeupGain:    makeupGain,
-		GainReduction: gainReduction,
+		Threshold:     state.Threshold,
+		Ratio:         state.Ratio,
+		Attack:        state.Attack,
+		Release:       state.Release,
+		MakeupGain:    state.MakeupGain,
+		GainReduction: state.GainReduction,
 	})
 }
 
