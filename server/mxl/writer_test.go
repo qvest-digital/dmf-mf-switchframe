@@ -394,18 +394,20 @@ func TestWriter_ContextCancelWaitsForGoroutines(t *testing.T) {
 	}
 
 	// Cancel context — the ctx.Done goroutine calls Close(), which waits
-	// for videoTickLoop. This must not deadlock.
+	// for videoTickLoop. This must not deadlock. We call Close() ourselves
+	// (racing with ctx.Done goroutine) to verify it returns; either caller
+	// will complete the shutdown.
 	cancel()
 
 	done := make(chan struct{})
 	go func() {
-		// Give the ctx.Done goroutine time to call Close().
-		time.Sleep(100 * time.Millisecond)
+		_ = w.Close()
 		close(done)
 	}()
 
 	select {
 	case <-done:
+		// Close returned — no deadlock
 	case <-time.After(2 * time.Second):
 		t.Fatal("context cancel path appears to have deadlocked")
 	}
