@@ -60,11 +60,14 @@
 	let syncInterval: ReturnType<typeof setInterval> | undefined;
 
 	let syncStatus = $derived.by(() => {
+		// When MoQ is delivering state via the media pipeline (connectionState
+		// is 'webtransport'), trust it — state updates are event-driven, so
+		// gaps between updates during idle periods are normal and expected.
+		if (connectionState === 'webtransport') return 'ok' as const;
+		// Fallback: time-based detection for polling mode.
 		const elapsed = now - store.lastServerUpdate;
-		// With MoQ control track, state updates are event-driven (not periodic
-		// polling), so gaps between updates are normal during idle periods.
-		if (elapsed > 15000) return 'disconnected' as const;
-		if (elapsed > 8000) return 'resyncing' as const;
+		if (elapsed > 5000) return 'disconnected' as const;
+		if (elapsed > 2000) return 'resyncing' as const;
 		return 'ok' as const;
 	});
 
