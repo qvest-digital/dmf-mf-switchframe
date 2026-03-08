@@ -138,6 +138,32 @@ func TestOutputManager_StateCallback(t *testing.T) {
 	require.Greater(t, callCount, prevCount)
 }
 
+func TestOutputManager_MuxStartCallback(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	muxStartCount := 0
+	mgr.OnMuxerStart(func() {
+		muxStartCount++
+	})
+
+	// First output starts the muxer — callback should fire once.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+	require.Equal(t, 1, muxStartCount, "muxStart should fire on first output")
+
+	// Second output reuses the muxer — callback should NOT fire again.
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type: "srt-caller", Address: "192.168.1.100", Port: 9000,
+	})
+	require.NoError(t, err)
+	// StartDestination will fail to connect (no real SRT), but the muxer
+	// check happens before the adapter start, so we just verify the count.
+	_ = mgr.StartDestination(id)
+	require.Equal(t, 1, muxStartCount, "muxStart should NOT fire when muxer already running")
+}
+
 func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)

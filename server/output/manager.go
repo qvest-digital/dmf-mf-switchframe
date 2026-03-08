@@ -130,8 +130,9 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 
 	m.recorder = rec
 	stale := m.rebuildAdaptersLocked()
-	m.ensureMuxerLocked()
+	muxStarted := m.ensureMuxerLocked()
 	fn := m.onState
+	muxFn := m.onMuxStart
 	m.mu.Unlock()
 
 	// Stop stale wrappers outside the lock.
@@ -140,6 +141,9 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 	}
 
 	// Notify outside lock (lock discipline).
+	if muxStarted && muxFn != nil {
+		muxFn()
+	}
 	if fn != nil {
 		fn()
 	}
@@ -248,8 +252,9 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 
 	m.srtOutput = adapter
 	stale := m.rebuildAdaptersLocked()
-	m.ensureMuxerLocked()
+	muxStarted := m.ensureMuxerLocked()
 	fn := m.onState
+	muxFn := m.onMuxStart
 	m.mu.Unlock()
 
 	// Stop stale wrappers outside the lock.
@@ -257,7 +262,10 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 		w.Stop()
 	}
 
-	// Notify outside lock.
+	// Notify outside lock (lock discipline).
+	if muxStarted && muxFn != nil {
+		muxFn()
+	}
 	if fn != nil {
 		fn()
 	}
@@ -470,8 +478,9 @@ func (m *OutputManager) StartDestination(id string) error {
 	dest.mu.Unlock()
 
 	stale := m.rebuildAdaptersLocked()
-	m.ensureMuxerLocked()
+	muxStarted := m.ensureMuxerLocked()
 	fn := m.onState
+	muxFn := m.onMuxStart
 	m.mu.Unlock()
 
 	// Stop stale wrappers outside the lock.
@@ -479,6 +488,10 @@ func (m *OutputManager) StartDestination(id string) error {
 		w.Stop()
 	}
 
+	// Notify outside lock (lock discipline).
+	if muxStarted && muxFn != nil {
+		muxFn()
+	}
 	if fn != nil {
 		fn()
 	}
@@ -749,10 +762,12 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 
 // ensureMuxerLocked creates the muxer, viewer, and registers the viewer
 // on the relay if they don't already exist. Must be called with m.mu held.
-func (m *OutputManager) ensureMuxerLocked() {
+// Returns true if a new muxer was created (caller should fire onMuxStart
+// outside the lock).
+func (m *OutputManager) ensureMuxerLocked() bool {
 	if m.viewer != nil {
 		// Already running.
-		return
+		return false
 	}
 
 	muxer := NewTSMuxer()
@@ -783,14 +798,8 @@ func (m *OutputManager) ensureMuxerLocked() {
 	// Register viewer on the relay so it receives program frames.
 	m.relay.AddViewer(viewer)
 
-	// Request an IDR keyframe so the muxer can initialize immediately.
-	// Without this, the muxer drops non-keyframes until the next GOP
-	// boundary (~2 seconds), causing a visible delay before SRT output starts.
-	if m.onMuxStart != nil {
-		m.onMuxStart()
-	}
-
 	m.log.Info("output pipeline started")
+	return true
 }
 
 // stopMuxerIfNoAdaptersLocked tears down the muxer and viewer if no
