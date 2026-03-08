@@ -177,11 +177,6 @@ func precomputeLanczosKernel(srcSize, dstSize int) *lanczosKernel {
 		if startX < 0 {
 			startX = 0
 		}
-		// End at min(srcSize-1, maxX)
-		endX := maxX
-		if endX >= srcSize {
-			endX = srcSize - 1
-		}
 		offsets[d] = int32(startX)
 
 		// Evaluate kernel: for each original tap position ix in [minX, maxX],
