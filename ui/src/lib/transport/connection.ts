@@ -20,10 +20,10 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 	}
 
 	/**
-	 * Handle incoming control data from MoQ control track.
-	 * Currently unused -- state comes via REST polling.
-	 * Will be wired when MoQ control track subscription is implemented.
-	 * Exported for testing the data flow.
+	 * Handle incoming control data from a dedicated MoQ control connection.
+	 * In practice, control data arrives via per-source MoQ subscriptions
+	 * through the media pipeline (see media-pipeline.ts onControlState).
+	 * This remains for the standalone connection fallback path.
 	 */
 	function _handleControlData(data: Uint8Array) {
 		config.onControlState(data);
