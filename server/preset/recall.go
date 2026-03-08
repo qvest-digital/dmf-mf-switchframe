@@ -39,38 +39,38 @@ func Recall(ctx context.Context, p Preset, target RecallTarget) []string {
 	// Set program source
 	if p.ProgramSource != "" {
 		if err := target.Cut(ctx, p.ProgramSource); err != nil {
-			msg := fmt.Sprintf("program source %q: %v", p.ProgramSource, err)
-			slog.Warn("preset recall: " + msg)
-			warnings = append(warnings, msg)
+			slog.Warn("preset recall: program source failed",
+				"source", p.ProgramSource, "error", err)
+			warnings = append(warnings, fmt.Sprintf("program source %q: %v", p.ProgramSource, err))
 		}
 	}
 
 	// Set preview source
 	if p.PreviewSource != "" {
 		if err := target.SetPreview(ctx, p.PreviewSource); err != nil {
-			msg := fmt.Sprintf("preview source %q: %v", p.PreviewSource, err)
-			slog.Warn("preset recall: " + msg)
-			warnings = append(warnings, msg)
+			slog.Warn("preset recall: preview source failed",
+				"source", p.PreviewSource, "error", err)
+			warnings = append(warnings, fmt.Sprintf("preview source %q: %v", p.PreviewSource, err))
 		}
 	}
 
 	// Apply audio channel settings
 	for key, ch := range p.AudioChannels {
 		if err := target.SetLevel(key, ch.Level); err != nil {
-			msg := fmt.Sprintf("audio channel %q level: %v", key, err)
-			slog.Warn("preset recall: " + msg)
-			warnings = append(warnings, msg)
+			slog.Warn("preset recall: audio level failed",
+				"channel", key, "error", err)
+			warnings = append(warnings, fmt.Sprintf("audio channel %q level: %v", key, err))
 			continue // skip mute/AFV if channel doesn't exist
 		}
 		if err := target.SetMuted(key, ch.Muted); err != nil {
-			msg := fmt.Sprintf("audio channel %q mute: %v", key, err)
-			slog.Warn("preset recall: " + msg)
-			warnings = append(warnings, msg)
+			slog.Warn("preset recall: audio mute failed",
+				"channel", key, "error", err)
+			warnings = append(warnings, fmt.Sprintf("audio channel %q mute: %v", key, err))
 		}
 		if err := target.SetAFV(key, ch.AFV); err != nil {
-			msg := fmt.Sprintf("audio channel %q afv: %v", key, err)
-			slog.Warn("preset recall: " + msg)
-			warnings = append(warnings, msg)
+			slog.Warn("preset recall: audio AFV failed",
+				"channel", key, "error", err)
+			warnings = append(warnings, fmt.Sprintf("audio channel %q afv: %v", key, err))
 		}
 	}
 
