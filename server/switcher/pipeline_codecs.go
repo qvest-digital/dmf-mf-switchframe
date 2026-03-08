@@ -36,6 +36,30 @@ func putAVC1Buffer(buf []byte) {
 	}
 }
 
+// defaultBitrateForResolution returns the minimum encoding bitrate for
+// broadcast-quality output at the given resolution. This serves as a quality
+// floor — the encoder will never use less than this, even if the source
+// stream has a lower bitrate. Re-encoding always needs headroom above the
+// source bitrate to compensate for generation loss (decode→encode).
+//
+// These values target visually clean output on the "fast" x264 preset and
+// are comparable to typical broadcast/streaming bitrates:
+//   - 720p:  6 Mbps  (YouTube recommends 5 Mbps, broadcast uses 6-8)
+//   - 1080p: 10 Mbps (YouTube recommends 8 Mbps, broadcast uses 10-15)
+func defaultBitrateForResolution(width, height int) int {
+	pixels := width * height
+	switch {
+	case pixels >= 3840*2160: // 4K
+		return 20_000_000
+	case pixels >= 1920*1080: // 1080p
+		return 10_000_000
+	case pixels >= 1280*720: // 720p
+		return 6_000_000
+	default: // 480p and below
+		return 2_000_000
+	}
+}
+
 // pipelineCodecs manages a shared encoder for the video processing pipeline.
 // The pipeline receives raw YUV420 frames (decoded per-source by sourceDecoder)
 // and encodes them to H.264 for program output.
@@ -53,8 +77,15 @@ type pipelineCodecs struct {
 	formatRef *atomic.Pointer[PipelineFormat]
 
 	// Source-derived encoder parameters (updated via updateSourceStats).
-	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
-	sourceFPS     float32 // estimated FPS from program source
+	sourceBitrate  int     // estimated bitrate from program source (bytes/sec * 8)
+	sourceFPS      float32 // estimated FPS from program source
+	createdBitrate int     // bitrate used when encoder was created (for change detection)
+
+	// Output timestamp normalization. The pipeline encoder has max_b_frames=0,
+	// so DTS must always equal PTS. Additionally, sources with B-frames can
+	// produce scrambled PTS (the sourceDecoder uses input frame PTS, but the
+	// FFmpeg decoder reorders internally). We enforce monotonic output PTS.
+	lastOutputPTS int64
 
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
@@ -87,14 +118,41 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	// Phase 1: Lock for config + init
 	pc.mu.Lock()
 
+	// Invalidate encoder on resolution change.
 	if pc.encoder != nil && (pf.Width != pc.encWidth || pf.Height != pc.encHeight) {
 		pc.encoder.Close()
 		pc.encoder = nil
 	}
 
+	// Invalidate encoder when the effective bitrate would change significantly
+	// (>20%) from what was used at creation. The effective bitrate is
+	// max(sourceBitrate, resolutionDefault), so only invalidate when the
+	// source bitrate exceeds the current createdBitrate by >20% (pulling
+	// it above the resolution floor). Low source bitrates are clamped to the
+	// floor and won't trigger invalidation.
+	if pc.encoder != nil && pc.sourceBitrate > 0 && pc.createdBitrate > 0 {
+		resDefault := defaultBitrateForResolution(pc.encWidth, pc.encHeight)
+		effectiveBitrate := resDefault
+		if pc.sourceBitrate > effectiveBitrate {
+			effectiveBitrate = pc.sourceBitrate
+		}
+		ratio := float64(effectiveBitrate) / float64(pc.createdBitrate)
+		if ratio > 1.2 || ratio < 0.8 {
+			pc.encoder.Close()
+			pc.encoder = nil
+		}
+	}
+
 	if pc.encoder == nil {
-		bitrate := transition.DefaultBitrate
-		if pc.sourceBitrate > 0 {
+		// Use the higher of resolution-based default and source bitrate.
+		// The resolution default is a quality floor — re-encoding always
+		// needs at least this many bits to look clean at the given resolution.
+		// Source bitrate can exceed the floor (e.g., high-quality 1080p at
+		// 12 Mbps) but should never pull the encoder below it (e.g., a
+		// low-bitrate 720p source at 1.6 Mbps would look terrible re-encoded
+		// at 1.6 Mbps due to generation loss).
+		bitrate := defaultBitrateForResolution(pf.Width, pf.Height)
+		if pc.sourceBitrate > bitrate {
 			bitrate = pc.sourceBitrate
 		}
 		// Read pipeline format for FPS
@@ -114,6 +172,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		pc.encoder = enc
 		pc.encWidth = pf.Width
 		pc.encHeight = pf.Height
+		pc.createdBitrate = bitrate
 	}
 	encoder := pc.encoder
 	pc.mu.Unlock()
@@ -144,9 +203,29 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	groupID := pc.groupID
 	pc.mu.Unlock()
 
+	// Normalize output timestamps. The pipeline encoder has max_b_frames=0
+	// (no B-frames), so DTS must always equal PTS. For sources with B-frames,
+	// the sourceDecoder uses the INPUT frame's PTS (not the decoded output's),
+	// which can be non-monotonic after FFmpeg's internal reorder. Enforce
+	// monotonic PTS to prevent VLC/players from dropping "late" frames.
+	outPTS := pf.PTS
+	if outPTS <= pc.lastOutputPTS && pc.lastOutputPTS > 0 {
+		// PTS went backwards — advance by one frame duration.
+		fpsNum, fpsDen := 30000, 1001
+		if pc.formatRef != nil {
+			if f := pc.formatRef.Load(); f != nil {
+				fpsNum = f.FPSNum
+				fpsDen = f.FPSDen
+			}
+		}
+		frameDur := int64(90000) * int64(fpsDen) / int64(fpsNum)
+		outPTS = pc.lastOutputPTS + frameDur
+	}
+	pc.lastOutputPTS = outPTS
+
 	frame := &media.VideoFrame{
-		PTS:        pf.PTS,
-		DTS:        pf.DTS,
+		PTS:        outPTS,
+		DTS:        outPTS, // No B-frames: DTS always equals PTS
 		IsKeyframe: isKeyframe,
 		WireData:   avc1,
 		Codec:      pf.Codec,

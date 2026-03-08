@@ -115,7 +115,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// can't sustain them at 60fps. 22 is visually clean for broadcast
 		// while keeping encode times under the frame budget.
 		av_opt_set(h->ctx->priv_data, "crf", "22", 0);
-		av_opt_set(h->ctx->priv_data, "preset", "faster", 0);
+		av_opt_set(h->ctx->priv_data, "preset", "fast", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		// Variance-based AQ redistributes bits toward high-detail regions
 		// (wipe boundaries, stinger edges) instead of uniform areas.
@@ -123,8 +123,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
 		// Low-latency lookahead: 3 frames gives AQ enough context for
 		// good bit allocation without adding significant delay. The
-		// "faster" preset defaults to 20 frames (~800ms at 24fps) which
-		// is unacceptable for live switching.
+		// "fast" preset defaults to a higher lookahead which is
+		// unacceptable for live switching.
 		av_opt_set(h->ctx->priv_data, "rc-lookahead", "3", 0);
 		// Disable sync-lookahead (threaded lookahead adds latency).
 		av_opt_set(h->ctx->priv_data, "sync-lookahead", "0", 0);

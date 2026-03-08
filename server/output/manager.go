@@ -43,8 +43,9 @@ type OutputManager struct {
 	// so they can be stopped when adapters are removed.
 	asyncWrappers map[string]*AsyncAdapter
 
-	onState func() // triggers ControlRoomState broadcast
-	closed  bool
+	onState    func() // triggers ControlRoomState broadcast
+	onMuxStart func() // triggers IDR keyframe request when muxer starts
+	closed     bool
 	ctx     context.Context    // cancelled on Close()
 	cancel  context.CancelFunc // cancels ctx
 
@@ -100,6 +101,16 @@ func (m *OutputManager) OnStateChange(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onState = fn
+}
+
+// OnMuxerStart registers a callback fired when the output muxer starts
+// (i.e., when the first output is enabled and the viewer joins the relay).
+// Used to request an IDR keyframe from the encoder so the muxer can
+// initialize immediately instead of waiting for the next GOP boundary.
+func (m *OutputManager) OnMuxerStart(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onMuxStart = fn
 }
 
 // StartRecording begins recording program output to a file.
@@ -771,6 +782,13 @@ func (m *OutputManager) ensureMuxerLocked() {
 
 	// Register viewer on the relay so it receives program frames.
 	m.relay.AddViewer(viewer)
+
+	// Request an IDR keyframe so the muxer can initialize immediately.
+	// Without this, the muxer drops non-keyframes until the next GOP
+	// boundary (~2 seconds), causing a visible delay before SRT output starts.
+	if m.onMuxStart != nil {
+		m.onMuxStart()
+	}
 
 	m.log.Info("output pipeline started")
 }

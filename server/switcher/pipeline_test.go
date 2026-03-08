@@ -551,6 +551,81 @@ func TestPipelineCodecs_ClampsBitrate(t *testing.T) {
 	pc.mu.Unlock()
 }
 
+func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
+	// Regression test: broadcastProcessedFromPF must deep-copy the YUV buffer
+	// BEFORE applying in-place processors (compositor, key bridge). The frame
+	// sync and FRC retain references to source buffers for repeated/interpolated
+	// frames. If the compositor modifies the shared buffer in-place, repeated
+	// frames get the overlay baked in progressively (visible as blinking).
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+
+	// Create a white overlay with full alpha (will visibly modify Y values).
+	comp := graphics.NewCompositor()
+	rgba := make([]byte, 4*4*4)
+	for i := 0; i < len(rgba); i += 4 {
+		rgba[i] = 255   // R
+		rgba[i+1] = 255 // G
+		rgba[i+2] = 255 // B
+		rgba[i+3] = 128 // 50% alpha — partial overlay
+	}
+	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
+	require.NoError(t, comp.On())
+	sw.SetCompositor(comp)
+
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Create a shared buffer simulating what the frame sync retains.
+	// Fill Y plane with a known value (128 = mid-gray).
+	sharedYUV := make([]byte, 4*4*3/2) // 4x4 YUV420
+	for i := 0; i < 4*4; i++ {
+		sharedYUV[i] = 128 // Y = 128
+	}
+
+	// Save a copy of the original for comparison.
+	original := make([]byte, len(sharedYUV))
+	copy(original, sharedYUV)
+
+	// Send the shared buffer through the pipeline twice (simulating
+	// repeated frames from frame sync).
+	for i := 0; i < 2; i++ {
+		pf := &ProcessingFrame{
+			YUV:        sharedYUV, // same underlying buffer both times
+			Width:      4,
+			Height:     4,
+			PTS:        int64(i * 100),
+			IsKeyframe: i == 0,
+			Codec:      "h264",
+		}
+		sw.broadcastProcessedFromPF(pf)
+	}
+
+	// Wait for async processing.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 2
+	}, 200*time.Millisecond, 5*time.Millisecond)
+
+	// The shared buffer must NOT have been modified by the compositor.
+	// If the deep copy happens after compositing, Y values would have changed
+	// from the alpha blend (128 blended with white at 50% != 128).
+	require.Equal(t, original, sharedYUV,
+		"compositor must not modify the shared source buffer; deep copy should happen before processing")
+}
+
 // failingEncoder always returns an error from Encode.
 type failingEncoder struct{}
 

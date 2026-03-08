@@ -277,6 +277,14 @@ func (a *App) initOutput() error {
 	a.confidenceMon = output.NewConfidenceMonitor(decoderFactory())
 	a.outputMgr.SetConfidenceMonitor(a.confidenceMon)
 
+	// When the output muxer starts, request an IDR keyframe from the
+	// encoder so the TSMuxer can initialize immediately.
+	a.outputMgr.OnMuxerStart(func() {
+		if a.sw != nil {
+			a.sw.RequestKeyframe()
+		}
+	})
+
 	return nil
 }
 

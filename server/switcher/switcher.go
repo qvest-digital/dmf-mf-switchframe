@@ -302,6 +302,12 @@ type Switcher struct {
 	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
 
+	// forceNextIDR is set when a new output viewer joins the program relay
+	// (e.g., SRT output starts). The next encode call forces an IDR keyframe
+	// so the TSMuxer can initialize immediately instead of waiting up to
+	// one full GOP interval (~2 seconds).
+	forceNextIDR atomic.Bool
+
 	// Raw video output tap — receives deep copy of YUV after processing,
 	// before encode. Used by MXL output to write raw video to shared memory.
 	rawVideoSink atomic.Pointer[RawVideoSink]
@@ -335,7 +341,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
-		videoProcCh:  make(chan videoProcWork, 2),
+		videoProcCh:  make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
@@ -453,6 +459,13 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audioTransition = handler
+}
+
+// RequestKeyframe forces the next encoded frame to be an IDR keyframe.
+// Called when a new output viewer joins (e.g., SRT output starts) so the
+// TSMuxer can initialize immediately without waiting for the next GOP boundary.
+func (s *Switcher) RequestKeyframe() {
+	s.forceNextIDR.Store(true)
 }
 
 // SetCompositor attaches the DSK graphics compositor. The compositor's
@@ -836,17 +849,21 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 		return
 	}
 
-	// Run YUV processors synchronously (fast, sub-millisecond).
+	// Deep-copy YUV BEFORE in-place processing. The frame sync and FRC
+	// retain references to the original buffer for repeated/interpolated
+	// frames. Without this copy, the compositor bakes the overlay into
+	// the retained buffer, causing progressive opacity accumulation on
+	// repeated frames (visible as overlay blinking/pulsing).
+	cp := pf.DeepCopy()
+
+	// Run YUV processors synchronously on the copy (fast, sub-millisecond).
 	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
-		pf.YUV = keyBridge.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+		cp.YUV = keyBridge.ProcessYUV(cp.YUV, cp.Width, cp.Height)
 	}
 	if compositor != nil && compositor.IsActive() {
-		pf.YUV = compositor.ProcessYUV(pf.YUV, pf.Width, pf.Height)
+		cp.YUV = compositor.ProcessYUV(cp.YUV, cp.Width, cp.Height)
 	}
 
-	// Deep-copy YUV before async enqueue — the sourceDecoder's callback
-	// may reuse the buffer on the next frame.
-	cp := pf.DeepCopy()
 	s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
 }
 
@@ -887,7 +904,8 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 	}
 
 	encStart := time.Now()
-	frame, err := pipeCodecs.encode(pf, pf.IsKeyframe)
+	forceIDR := pf.IsKeyframe || s.forceNextIDR.CompareAndSwap(true, false)
+	frame, err := pipeCodecs.encode(pf, forceIDR)
 	encDur := time.Since(encStart).Nanoseconds()
 	s.pipeEncodeLastNano.Store(encDur)
 	updateAtomicMax(&s.pipeEncodeMaxNano, encDur)
