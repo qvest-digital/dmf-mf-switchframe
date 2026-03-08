@@ -21,6 +21,9 @@ import (
 func init() {
 	// Wire CurrentIndex to the real MXL time function.
 	CurrentIndex = func(rate Rational) uint64 {
+		if rate.Denominator == 0 || rate.Numerator == 0 {
+			return 0
+		}
 		cr := C.mxlRational{
 			numerator:   C.int64_t(rate.Numerator),
 			denominator: C.int64_t(rate.Denominator),

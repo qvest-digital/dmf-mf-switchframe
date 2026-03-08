@@ -139,11 +139,3 @@ func TestParseFlowDef_AudioWithDenominator(t *testing.T) {
 		t.Fatalf("GrainRate.Denominator = %d, want 1", info.GrainRate.Denominator)
 	}
 }
-
-func TestDiscoverStub_ReturnsError2(t *testing.T) {
-	// In non-mxl builds, Discover should return ErrMXLNotAvailable.
-	_, err := Discover("/dev/shm/mxl")
-	if err != ErrMXLNotAvailable {
-		t.Fatalf("expected ErrMXLNotAvailable, got: %v", err)
-	}
-}
