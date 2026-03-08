@@ -123,8 +123,10 @@ function createTexture(gl: WebGLRenderingContext): WebGLTexture | null {
  * Returns null if WebGL is unavailable.
  */
 export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null {
-	const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-	if (!gl) return null;
+	const glCtx = canvas.getContext('webgl2') || canvas.getContext('webgl');
+	if (!glCtx) return null;
+	// Non-null from here — reassign so TypeScript narrows inside closures.
+	const gl: WebGLRenderingContext = glCtx;
 
 	const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE);
 	const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
