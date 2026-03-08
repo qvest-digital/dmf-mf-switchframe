@@ -289,7 +289,7 @@ graph TD
         subgraph engine["Switching Engine"]
             subgraph video["Video Path"]
                 fs & delay --> hvf["handleVideoFrame"]
-                hvf --> gc["GOP Cache"]
+                hvf --> gc["GOP Cache<br/>(H.264 only — warm<br/>decoder on cut)"]
                 hvf --> te["Transition Engine<br/>(YUV420 blend:<br/>mix / dip / wipe /<br/>FTB / stinger)"]
                 hvf --> idr["IDR Gate /<br/>Direct Broadcast"]
                 te & idr --> pipeline["pipelineCodecs<br/>decode → upstream key<br/>→ DSK compositor"]

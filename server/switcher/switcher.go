@@ -2058,7 +2058,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	keyBridge := s.keyBridge
 	s.mu.RUnlock()
 
-	if !ok || fTBActive {
+	if !ok {
 		s.routeFiltered.Add(1)
 		return
 	}
@@ -2084,7 +2084,9 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
 	}
 
-	// During transition: route to engine for blending.
+	// During transition (including FTB): route to engine for blending.
+	// This must come BEFORE the FTB filter — FTB transitions need frames
+	// from the program source to produce the fade-to-black blend.
 	if inTrans && engine != nil {
 		if engine.State() != transition.StateActive {
 			s.routeToIdleEngine.Add(1)
@@ -2098,8 +2100,9 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		return
 	}
 
-	// Normal: only program source passes through.
-	if sourceKey != programSource {
+	// Normal: only program source passes through. FTB hold (StateFTB)
+	// filters all frames — screen stays black until FTB is toggled off.
+	if sourceKey != programSource || fTBActive {
 		s.routeFiltered.Add(1)
 		return
 	}

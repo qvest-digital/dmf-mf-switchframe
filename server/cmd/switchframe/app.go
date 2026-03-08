@@ -207,10 +207,9 @@ func (a *App) initCoreEngine() error {
 		DecoderFactory: decoderFactory(),
 	})
 
-	// Always-decode mode: create per-source decoders at registration time.
-	if a.cfg.DecodeAllSources {
-		a.sw.SetSourceDecoderFactory(decoderFactory())
-	}
+	// Always-decode: every H.264 source gets a dedicated decoder goroutine
+	// producing raw YUV420, eliminating keyframe wait on cuts/transitions.
+	a.sw.SetSourceDecoderFactory(decoderFactory())
 
 	return nil
 }
