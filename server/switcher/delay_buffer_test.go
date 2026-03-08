@@ -49,6 +49,10 @@ func (m *delayTestHandler) handleAudioFrame(sourceKey string, frame *media.Audio
 	m.audios = append(m.audios, delayTaggedAudio{sourceKey: sourceKey, frame: frame, recvTime: time.Now()})
 }
 
+func (m *delayTestHandler) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
+	// No-op for delay buffer tests
+}
+
 func (m *delayTestHandler) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

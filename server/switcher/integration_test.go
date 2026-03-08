@@ -407,7 +407,6 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -460,7 +459,6 @@ func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 		},
 	})
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -524,7 +522,6 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 		},
 	})
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -571,7 +568,6 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 		},
 	})
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},

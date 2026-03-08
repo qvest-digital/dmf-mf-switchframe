@@ -23,6 +23,7 @@ const (
 type pendingRelease struct {
 	sourceKey string
 	video     *media.VideoFrame
+	rawVideo  *ProcessingFrame
 	audio     *media.AudioFrame
 }
 
@@ -40,11 +41,17 @@ type syncSource struct {
 	audioHead    int
 	audioCount   int
 
-	// lastVideo/lastAudio are the most recently released frames.
+	// pendingRawVideo is a ring buffer for decoded YUV frames (from sourceDecoder).
+	pendingRawVideo [syncRingSize]*ProcessingFrame
+	rawVideoHead    int
+	rawVideoCount   int
+
+	// lastVideo/lastAudio/lastRawVideo are the most recently released frames.
 	// Used for freeze behavior: if no new frame arrived since last tick,
 	// the last frame is repeated to maintain continuous output.
-	lastVideo *media.VideoFrame
-	lastAudio *media.AudioFrame
+	lastVideo    *media.VideoFrame
+	lastRawVideo *ProcessingFrame
+	lastAudio    *media.AudioFrame
 
 	// audioMissCount tracks consecutive ticks with no new audio frame.
 	// After 2 repeated frames, audio emission stops to prevent a glitch loop
@@ -77,6 +84,30 @@ func (ss *syncSource) popNewestVideo() *media.VideoFrame {
 	}
 	ss.videoHead = 0
 	ss.videoCount = 0
+	return frame
+}
+
+// pushRawVideo adds a decoded YUV frame to the ring buffer.
+func (ss *syncSource) pushRawVideo(pf *ProcessingFrame) {
+	ss.pendingRawVideo[ss.rawVideoHead] = pf
+	ss.rawVideoHead = (ss.rawVideoHead + 1) % syncRingSize
+	if ss.rawVideoCount < syncRingSize {
+		ss.rawVideoCount++
+	}
+}
+
+// popNewestRawVideo returns the most recently pushed raw video frame.
+func (ss *syncSource) popNewestRawVideo() *ProcessingFrame {
+	if ss.rawVideoCount == 0 {
+		return nil
+	}
+	newest := (ss.rawVideoHead - 1 + syncRingSize) % syncRingSize
+	frame := ss.pendingRawVideo[newest]
+	for i := range ss.pendingRawVideo {
+		ss.pendingRawVideo[i] = nil
+	}
+	ss.rawVideoHead = 0
+	ss.rawVideoCount = 0
 	return frame
 }
 
@@ -114,18 +145,19 @@ func (ss *syncSource) popNewestAudio() *media.AudioFrame {
 // Frame PTS values are rewritten to the tick timestamp to ensure consistent
 // timing across all sources in the output.
 type FrameSynchronizer struct {
-	log      *slog.Logger
-	mu       sync.Mutex
-	sources  map[string]*syncSource
-	tickRate time.Duration
-	onVideo  func(sourceKey string, frame media.VideoFrame)
-	onAudio  func(sourceKey string, frame media.AudioFrame)
-	done     chan struct{}
-	wg       sync.WaitGroup
-	started  bool
-	stopped  bool
-	tickNum  int64            // monotonic tick counter for PTS generation
-	releases []pendingRelease // reused across ticks to avoid allocation
+	log        *slog.Logger
+	mu         sync.Mutex
+	sources    map[string]*syncSource
+	tickRate   time.Duration
+	onVideo    func(sourceKey string, frame media.VideoFrame)
+	onRawVideo func(sourceKey string, pf *ProcessingFrame)
+	onAudio    func(sourceKey string, frame media.AudioFrame)
+	done       chan struct{}
+	wg         sync.WaitGroup
+	started    bool
+	stopped    bool
+	tickNum    int64            // monotonic tick counter for PTS generation
+	releases   []pendingRelease // reused across ticks to avoid allocation
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -192,6 +224,19 @@ func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFra
 	}
 	ss.mu.Lock()
 	ss.pushAudio(frame)
+	ss.mu.Unlock()
+}
+
+// IngestRawVideo buffers a decoded YUV frame for the specified source.
+func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
+	fs.mu.Lock()
+	ss, ok := fs.sources[sourceKey]
+	fs.mu.Unlock()
+	if !ok {
+		return
+	}
+	ss.mu.Lock()
+	ss.pushRawVideo(pf)
 	ss.mu.Unlock()
 }
 
@@ -302,16 +347,29 @@ func (fs *FrameSynchronizer) releaseTick() {
 
 	for key, ss := range fs.sources {
 		var releaseVideo *media.VideoFrame
+		var releaseRawVideo *ProcessingFrame
 		var releaseAudio *media.AudioFrame
 
 		ss.mu.Lock()
 
-		// Video: pop newest from ring, or repeat last.
-		if newest := ss.popNewestVideo(); newest != nil {
-			ss.lastVideo = newest
-			releaseVideo = newest
-		} else if ss.lastVideo != nil {
-			releaseVideo = ss.lastVideo
+		// Raw video: pop newest from ring, or repeat last.
+		// Raw video takes priority over H.264 video — sources with a
+		// sourceDecoder produce raw frames; H.264 frames are for legacy path.
+		if newest := ss.popNewestRawVideo(); newest != nil {
+			ss.lastRawVideo = newest
+			releaseRawVideo = newest
+		} else if ss.lastRawVideo != nil {
+			releaseRawVideo = ss.lastRawVideo
+		}
+
+		// H.264 video: only if no raw video frame was released.
+		if releaseRawVideo == nil {
+			if newest := ss.popNewestVideo(); newest != nil {
+				ss.lastVideo = newest
+				releaseVideo = newest
+			} else if ss.lastVideo != nil {
+				releaseVideo = ss.lastVideo
+			}
 		}
 
 		// Audio: pop newest from ring, or repeat last (max 2 repeats to avoid glitch loop).
@@ -330,10 +388,11 @@ func (fs *FrameSynchronizer) releaseTick() {
 
 		ss.mu.Unlock()
 
-		if releaseVideo != nil || releaseAudio != nil {
+		if releaseVideo != nil || releaseRawVideo != nil || releaseAudio != nil {
 			fs.releases = append(fs.releases, pendingRelease{
 				sourceKey: key,
 				video:     releaseVideo,
+				rawVideo:  releaseRawVideo,
 				audio:     releaseAudio,
 			})
 		}
@@ -342,7 +401,14 @@ func (fs *FrameSynchronizer) releaseTick() {
 
 	// Deliver outside the lock to prevent deadlocks with downstream handlers.
 	for _, r := range fs.releases {
-		if r.video != nil {
+		if r.rawVideo != nil {
+			// Deep copy with PTS rewrite for raw video.
+			pf := *r.rawVideo
+			pf.PTS = tickPTS
+			if fs.onRawVideo != nil {
+				fs.onRawVideo(r.sourceKey, &pf)
+			}
+		} else if r.video != nil {
 			// Copy the frame to rewrite PTS without mutating the original.
 			vf := *r.video
 			vf.PTS = tickPTS

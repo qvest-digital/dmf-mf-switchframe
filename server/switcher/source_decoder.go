@@ -1,0 +1,151 @@
+package switcher
+
+import (
+	"log/slog"
+	"sync/atomic"
+
+	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/transition"
+)
+
+// sourceDecoder runs a per-source decode goroutine, converting H.264 frames
+// to raw YUV420 ProcessingFrames. Each source gets its own decoder and
+// goroutine, matching how FFmpeg decoders are single-threaded. The callback
+// receives decoded frames for routing through the switcher pipeline.
+type sourceDecoder struct {
+	sourceKey string
+	decoder   transition.VideoDecoder
+	ch        chan *media.VideoFrame // capacity 2, newest-wins drop
+	callback  func(string, *ProcessingFrame)
+	done      chan struct{}
+
+	// Frame stats (EMA of H.264 frame size/FPS for encoder params)
+	avgFrameSize float64
+	avgFPS       float64
+	lastPTS      int64
+	frameCount   int
+	lastGroupID  atomic.Uint32
+}
+
+// newSourceDecoder creates a decoder for the given source key, starts its
+// decode goroutine, and returns the decoder. Returns nil if the factory fails.
+func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame)) *sourceDecoder {
+	dec, err := factory()
+	if err != nil {
+		slog.Warn("source decoder creation failed", "source", key, "error", err)
+		return nil
+	}
+
+	sd := &sourceDecoder{
+		sourceKey: key,
+		decoder:   dec,
+		ch:        make(chan *media.VideoFrame, 2),
+		callback:  callback,
+		done:      make(chan struct{}),
+	}
+	go sd.decodeLoop()
+	return sd
+}
+
+// Send enqueues an H.264 frame for decoding. Uses newest-wins drop policy:
+// if the channel is full, the oldest frame is dropped.
+func (sd *sourceDecoder) Send(frame *media.VideoFrame) {
+	sd.updateStats(frame)
+
+	select {
+	case sd.ch <- frame:
+	default:
+		// Channel full — drop oldest, enqueue new (newest-wins).
+		select {
+		case <-sd.ch:
+		default:
+		}
+		select {
+		case sd.ch <- frame:
+		default:
+		}
+	}
+}
+
+// Close stops the decode goroutine and releases the decoder.
+func (sd *sourceDecoder) Close() {
+	close(sd.ch)
+	<-sd.done
+	sd.decoder.Close()
+}
+
+// Stats returns the rolling average frame size and FPS.
+func (sd *sourceDecoder) Stats() (avgFrameSize, avgFPS float64) {
+	return sd.avgFrameSize, sd.avgFPS
+}
+
+// decodeLoop reads H.264 frames from the channel, converts AVC1→AnnexB,
+// decodes to YUV420, and invokes the callback with a ProcessingFrame.
+func (sd *sourceDecoder) decodeLoop() {
+	defer close(sd.done)
+
+	for frame := range sd.ch {
+		// Convert AVC1 wire format to Annex B for decoder
+		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
+
+		yuv, w, h, err := sd.decoder.Decode(annexB)
+		if err != nil {
+			slog.Debug("source decoder: decode failed",
+				"source", sd.sourceKey, "error", err)
+			continue
+		}
+
+		// Deep-copy YUV (decoder reuses internal buffer)
+		yuvSize := w * h * 3 / 2
+		if len(yuv) < yuvSize {
+			continue
+		}
+		buf := getYUVBuffer(yuvSize)
+		copy(buf, yuv[:yuvSize])
+
+		pf := &ProcessingFrame{
+			YUV:        buf,
+			Width:      w,
+			Height:     h,
+			PTS:        frame.PTS,
+			DTS:        frame.DTS,
+			IsKeyframe: frame.IsKeyframe,
+			GroupID:     frame.GroupID,
+			Codec:      frame.Codec,
+		}
+
+		sd.lastGroupID.Store(frame.GroupID)
+		sd.callback(sd.sourceKey, pf)
+	}
+}
+
+// updateStats maintains rolling EMA of frame size and FPS.
+// Called from Send() which is single-writer per source viewer goroutine.
+func (sd *sourceDecoder) updateStats(frame *media.VideoFrame) {
+	sd.frameCount++
+	frameSize := float64(len(frame.WireData))
+
+	const alpha = 0.1 // EMA smoothing factor
+	if sd.frameCount == 1 {
+		sd.avgFrameSize = frameSize
+	} else {
+		sd.avgFrameSize = alpha*frameSize + (1-alpha)*sd.avgFrameSize
+	}
+
+	// FPS from PTS delta (requires at least 2 frames)
+	if sd.lastPTS > 0 && frame.PTS > sd.lastPTS {
+		ptsDelta := frame.PTS - sd.lastPTS
+		// PTS is in 90kHz units
+		instantFPS := 90000.0 / float64(ptsDelta)
+		if sd.frameCount == 2 {
+			sd.avgFPS = instantFPS
+		} else {
+			sd.avgFPS = alpha*instantFPS + (1-alpha)*sd.avgFPS
+		}
+	}
+	sd.lastPTS = frame.PTS
+}

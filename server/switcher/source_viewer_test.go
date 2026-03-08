@@ -39,6 +39,10 @@ func (m *mockFrameHandler) handleVideoFrame(sourceKey string, frame *media.Video
 	m.videos = append(m.videos, videoFrameWithSource{sourceKey, frame})
 }
 
+func (m *mockFrameHandler) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
+	// No-op for source viewer tests
+}
+
 func (m *mockFrameHandler) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

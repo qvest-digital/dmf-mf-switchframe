@@ -219,18 +219,21 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 		return ErrTransitionActive
 	}
 
-	// Create decoders
-	decA, err := e.config.DecoderFactory()
-	if err != nil {
-		return fmt.Errorf("create decoder A: %w", err)
-	}
-
-	var decB VideoDecoder
-	if ttype != TransitionFTB && ttype != TransitionFTBReverse {
-		decB, err = e.config.DecoderFactory()
+	// Create decoders (optional — nil factory means raw YUV only via IngestRawFrame).
+	var decA, decB VideoDecoder
+	if e.config.DecoderFactory != nil {
+		var err error
+		decA, err = e.config.DecoderFactory()
 		if err != nil {
-			decA.Close()
-			return fmt.Errorf("create decoder B: %w", err)
+			return fmt.Errorf("create decoder A: %w", err)
+		}
+
+		if ttype != TransitionFTB && ttype != TransitionFTBReverse {
+			decB, err = e.config.DecoderFactory()
+			if err != nil {
+				decA.Close()
+				return fmt.Errorf("create decoder B: %w", err)
+			}
 		}
 	}
 
@@ -414,6 +417,11 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 // sources sending frames near-simultaneously don't block each other during
 // the 3-16ms decode step.
 func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
+	// No decoders — raw-only mode. IngestRawFrame is the only active path.
+	if e.decoderA == nil && e.decoderB == nil {
+		return
+	}
+
 	ingestStart := time.Now()
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
@@ -738,6 +746,11 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 // produce blended output immediately. Produces no output callbacks.
 // No-op if the engine is not active.
 func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
+	// No-op when decoders are nil (raw-only mode).
+	if e.decoderA == nil && e.decoderB == nil {
+		return
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -757,7 +770,11 @@ func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
 // WarmupComplete marks the end of warmup. Sets flush flags so that if the
 // first live frame from either source is a keyframe, the decoder is flushed
 // to discard stale warmup references before decoding the fresh IDR.
+// No-op when decoders are nil (raw-only mode).
 func (e *TransitionEngine) WarmupComplete() {
+	if e.decoderA == nil && e.decoderB == nil {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.needsFlushA = true

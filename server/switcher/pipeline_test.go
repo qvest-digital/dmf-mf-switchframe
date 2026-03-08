@@ -11,11 +11,25 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// sendRawFrame sends a raw YUV420 frame through handleRawVideoFrame,
+// simulating what the sourceDecoder produces in always-decode mode.
+// The YUV buffer is 4x4 (24 bytes) for test compatibility with mock decoders.
+func sendRawFrame(sw *Switcher, sourceKey string, pts int64, isKeyframe bool) {
+	pf := &ProcessingFrame{
+		YUV:        make([]byte, 4*4*3/2), // 4x4 YUV420
+		Width:      4,
+		Height:     4,
+		PTS:        pts,
+		IsKeyframe: isKeyframe,
+		Codec:      "h264",
+	}
+	sw.handleRawVideoFrame(sourceKey, pf)
+}
 
 func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	programRelay := newTestRelay()
@@ -24,7 +38,6 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -35,8 +48,8 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0xDE, 0xAD}}
-	cam1Relay.BroadcastVideo(frame)
+	// Send raw YUV frame through always-decode pipeline
+	sendRawFrame(sw, "cam1", 100, true)
 
 	// Wait for async video processing to complete
 	require.Eventually(t, func() bool {
@@ -49,27 +62,23 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	got := viewer.videos[len(viewer.videos)-1]
 	viewer.mu.Unlock()
 
-	// Always re-encode: PTS is preserved, but WireData differs because
-	// the frame was decoded then re-encoded through the pipeline.
-	require.Equal(t, frame.PTS, got.PTS)
-	require.NotEqual(t, frame.WireData, got.WireData, "WireData should differ after re-encode")
+	// PTS is preserved through the encode pipeline
+	require.Equal(t, int64(100), got.PTS)
 	require.Greater(t, got.GroupID, uint32(0), "GroupID should be set (keyframe increments programGroupID)")
 }
 
-func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
+func TestPipeline_CompositorEncodesOnce(t *testing.T) {
+	// In always-decode mode, frames arrive as raw YUV. The compositor
+	// processes YUV and the pipeline encodes once. No pipeline decoder
+	// is needed for the normal frame path.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
 
-	var decodeCount atomic.Int32
 	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) {
-			decodeCount.Add(1)
-			return transition.NewMockDecoder(4, 4), nil
-		},
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
@@ -91,40 +100,30 @@ func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
-	})
+	// Send raw YUV frame through pipeline with compositor active
+	sendRawFrame(sw, "cam1", 100, true)
 
 	// Wait for async video processing to complete
 	require.Eventually(t, func() bool {
 		return encodeCount.Load() >= 1
 	}, 200*time.Millisecond, 5*time.Millisecond)
 
-	// Should have created 1 pipeline decoder + optionally 1 pre-warm replay
-	// decoder (background goroutine may or may not complete by now).
-	// The key invariant: compositor does NOT create its own decoder.
-	dc := decodeCount.Load()
-	require.True(t, dc == 1 || dc == 2, "should create 1 pipeline decoder (+1 optional pre-warm), got %d", dc)
 	require.Equal(t, int32(1), encodeCount.Load(), "should encode exactly once")
 }
 
 func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
+	// In always-decode mode, both sources provide raw YUV via IngestRawFrame.
+	// The transition engine blends YUV and outputs to broadcastProcessed.
+	// The pipeline encoder should be created exactly once.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	sw.SetTransitionConfig(TransitionConfig{
-		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return transition.NewMockDecoder(4, 4), nil
-		},
-	})
+	sw.SetTransitionConfig(TransitionConfig{})
 
 	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
@@ -147,29 +146,28 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
 
 	// Start transition
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
 
-	// Feed frames from both sources
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
+	// Feed raw YUV frames from both sources — transition engine uses IngestRawFrame
+	sendRawFrame(sw, "cam1", 100, true)
+	sendRawFrame(sw, "cam2", 101, true)
 
 	// Wait for async video processing to complete
 	require.Eventually(t, func() bool {
 		return encodeCount.Load() >= 1
 	}, 200*time.Millisecond, 5*time.Millisecond)
 
-	// The transition engine decoded both sources internally (2 decoders).
-	// The pipeline coordinator should encode exactly once (not 2 or 3 times).
 	// encodeCount tracks encoder FACTORY calls, not Encode() calls.
 	require.Equal(t, int32(1), encodeCount.Load(), "should create only one encoder for the pipeline")
+
+	sw.AbortTransition()
 }
 
 func TestPipeline_ResolutionChange(t *testing.T) {
-	// Validates Task 2: encoder is recreated when resolution changes.
+	// Validates encoder creation when raw YUV frames arrive.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -177,49 +175,30 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	sw := New(programRelay)
 	var encoderCreateCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			encoderCreateCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
 	)
-
-	comp := graphics.NewCompositor()
-	rgba := make([]byte, 4*4*4)
-	for i := 3; i < len(rgba); i += 4 {
-		rgba[i] = 255
-	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
-	sw.SetCompositor(comp)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Feed 4x4 frame
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
-	})
+	// Feed 4x4 raw YUV frame
+	sendRawFrame(sw, "cam1", 100, true)
 
 	// Wait for async video processing to complete
 	require.Eventually(t, func() bool {
 		return encoderCreateCount.Load() >= 1
 	}, 200*time.Millisecond, 5*time.Millisecond)
 	require.Equal(t, int32(1), encoderCreateCount.Load())
-
-	// The mock decoder always returns 4x4, so the encoder won't be recreated
-	// through the full pipeline. The unit test in pipeline_codecs_test.go
-	// validates the recreation logic directly.
 }
 
-func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
-	// Validates that a decode error (short buffer) causes the frame to be
-	// dropped rather than passed through. The program output must never
-	// contain source SPS/PPS, so passthrough is not an option.
+func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
+	// Validates that an encode error causes the frame to be dropped.
+	// In always-decode mode, frames arrive as raw YUV — no pipeline decode needed.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -230,13 +209,9 @@ func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
 	m := metrics.NewMetrics(reg)
 	sw.SetMetrics(m)
 
-	// Use a decoder factory that returns a short buffer
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) {
-			return &shortBufferDecoder{width: 4, height: 4}, nil
-		},
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
+			return &failingEncoder{}, nil
 		},
 	)
 	defer sw.Close()
@@ -245,23 +220,18 @@ func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Frame should be dropped (decode error), not passed through
-	frame := &media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
-	}
-	cam1Relay.BroadcastVideo(frame)
+	// Send raw YUV frame — should be dropped (encode error)
+	sendRawFrame(sw, "cam1", 100, true)
 	time.Sleep(50 * time.Millisecond)
 
 	viewer.mu.Lock()
 	count := len(viewer.videos)
 	viewer.mu.Unlock()
-	require.Equal(t, 0, count, "frame should be dropped on decode error, not passed through")
+	require.Equal(t, 0, count, "frame should be dropped on encode error, not passed through")
 
-	// Verify decode error metric was incremented
-	val := testutil.ToFloat64(m.PipelineDecodeErrorsTotal)
-	require.GreaterOrEqual(t, val, 1.0, "decode error metric should be incremented")
+	// Verify encode error metric was incremented
+	val := testutil.ToFloat64(m.PipelineEncodeErrorsTotal)
+	require.GreaterOrEqual(t, val, 1.0, "encode error metric should be incremented")
 }
 
 func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
@@ -270,13 +240,8 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	sw.SetTransitionConfig(TransitionConfig{
-		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return transition.NewMockDecoder(4, 4), nil
-		},
-	})
+	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -288,13 +253,12 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
 
-	// Feed frames
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
+	// Feed raw YUV frames from both sources
+	sendRawFrame(sw, "cam1", 100, true)
+	sendRawFrame(sw, "cam2", 101, true)
 
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
@@ -307,7 +271,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 }
 
 func TestPipeline_EncodeFailureMetrics(t *testing.T) {
-	// Validates Task 4: encode failure increments metric counter.
+	// Validates that encode failure increments metric counter.
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
@@ -316,31 +280,18 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 	sw.SetMetrics(m)
 
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return &failingEncoder{}, nil
 		},
 	)
-
-	comp := graphics.NewCompositor()
-	rgba := make([]byte, 4*4*4)
-	for i := 3; i < len(rgba); i += 4 {
-		rgba[i] = 255
-	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
-	sw.SetCompositor(comp)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
-	})
+	// Send raw YUV frame — will fail at encode
+	sendRawFrame(sw, "cam1", 100, true)
 	time.Sleep(10 * time.Millisecond)
 
 	// Check that the encode error metric was incremented
@@ -349,48 +300,56 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 }
 
 func TestPipeline_SourceStatsPropagate(t *testing.T) {
-	// Validates Task 5: source bitrate/fps are propagated to pipeline codecs.
+	// Validates that source bitrate/fps are propagated to pipeline codecs
+	// via handleRawVideoFrame (always-decode mode).
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
 	var lastBitrate int
 	var lastFPS float32
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			lastBitrate = bitrate
 			lastFPS = fps
 			return transition.NewMockEncoder(), nil
 		},
 	)
-
-	comp := graphics.NewCompositor()
-	rgba := make([]byte, 4*4*4)
-	for i := 3; i < len(rgba); i += 4 {
-		rgba[i] = 255
-	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
-	sw.SetCompositor(comp)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Feed enough frames to build up EMA stats
+	// Create a mock sourceDecoder to provide stats.
+	// The sourceDecoder's Stats() returns avgFrameSize and avgFPS.
+	mockDec := &sourceDecoder{
+		sourceKey:    "cam1",
+		avgFrameSize: 5000, // ~5KB per frame
+		avgFPS:       30,   // 30fps
+	}
+	sw.mu.RLock()
+	ss := sw.sources["cam1"]
+	sw.mu.RUnlock()
+	ss.viewer.srcDecoder.Store(mockDec)
+	// Clear the mock decoder before sw.Close() runs to avoid panic.
+	// This defer runs AFTER the earlier `defer sw.Close()` because defers
+	// run in LIFO order. So this clears the mock before Close unregisters.
+	defer func() { ss.viewer.srcDecoder.Store(nil) }()
+
+	// Feed enough raw YUV frames to trigger stats propagation
 	for i := 0; i < 15; i++ {
-		cam1Relay.BroadcastVideo(&media.VideoFrame{
-			PTS: int64(i * 33333), IsKeyframe: i == 0,
-			WireData: make([]byte, 5000), // ~5KB per frame → ~1.2 Mbps at 30fps
-			SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
-		})
+		pf := &ProcessingFrame{
+			YUV:        make([]byte, 4*4*3/2), // 4x4 YUV420
+			Width:      4,
+			Height:     4,
+			PTS:        int64(i * 33333),
+			IsKeyframe: i == 0,
+		}
+		sw.handleRawVideoFrame("cam1", pf)
 		time.Sleep(2 * time.Millisecond)
 	}
 
 	// Verify that updateSourceStats was called by inspecting the pipeCodecs directly.
-	// The encoder is lazy-inited on the first frame before stats build up, so we
-	// verify propagation to the pipeCodecs struct, not the encoder factory args.
 	sw.mu.RLock()
 	pc := sw.pipeCodecs
 	sw.mu.RUnlock()
@@ -405,11 +364,10 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 }
 
 func TestPipeline_AsyncVideoProcessing(t *testing.T) {
-	// Verify that handleVideoFrame does NOT block the caller for the
-	// duration of decode+encode. This is critical because the source relay's
-	// delivery goroutine calls handleVideoFrame synchronously — if it blocks
-	// for 30-100ms on decode+encode, audio delivery from the same goroutine
-	// gets starved, causing permanent audio choppiness.
+	// Verify that handleRawVideoFrame does NOT block the caller for the
+	// duration of encode. This is critical because the source decoder's
+	// callback calls handleRawVideoFrame synchronously — if it blocks
+	// for 30ms on encode, audio delivery gets starved.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -417,14 +375,11 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 	sw := New(programRelay)
 
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) {
-			return &slowDecoder{
-				inner: transition.NewMockDecoder(4, 4),
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return &slowEncoder{
+				inner: transition.NewMockEncoder(),
 				delay: 30 * time.Millisecond,
 			}, nil
-		},
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
 		},
 	)
 	defer sw.Close()
@@ -433,15 +388,13 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0xDE, 0xAD}}
-
-	// handleVideoFrame should return quickly (< 5ms), NOT block for 30ms decode
+	// handleRawVideoFrame should return quickly (< 5ms), NOT block for 30ms encode
 	start := time.Now()
-	sw.handleVideoFrame("cam1", frame)
+	sendRawFrame(sw, "cam1", 100, true)
 	elapsed := time.Since(start)
 
 	require.Less(t, elapsed, 5*time.Millisecond,
-		"handleVideoFrame should return immediately, not block for decode+encode (took %v)", elapsed)
+		"handleRawVideoFrame should return immediately, not block for encode (took %v)", elapsed)
 
 	// But the frame should still be processed asynchronously
 	require.Eventually(t, func() bool {
@@ -454,22 +407,16 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 
 func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	// Verify that broadcastProcessed (transition engine output) does NOT
-	// block the caller for the duration of encoding. During transitions,
-	// the transition engine callback runs inside IngestFrame, which is called
-	// from handleVideoFrame on the source relay's delivery goroutine. If
-	// encoding blocks that goroutine, audio delivery is starved.
+	// block the caller. During transitions, handleRawVideoFrame routes
+	// frames to the engine which outputs via broadcastProcessed — encoding
+	// happens asynchronously.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
-	sw.SetTransitionConfig(TransitionConfig{
-		DecoderFactory: func() (transition.VideoDecoder, error) {
-			return transition.NewMockDecoder(4, 4), nil
-		},
-	})
+	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return &slowEncoder{
 				inner: transition.NewMockEncoder(),
@@ -484,20 +431,19 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
 	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
 
 	// Start transition — broadcastProcessed will be called with slow encoder
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
 
-	// Feed frames from both sources; handleVideoFrame should return quickly
+	// Feed raw YUV frames from both sources; should return quickly
 	start := time.Now()
-	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
+	sendRawFrame(sw, "cam1", 100, true)
+	sendRawFrame(sw, "cam2", 101, true)
 	elapsed := time.Since(start)
 
 	require.Less(t, elapsed, 10*time.Millisecond,
-		"handleVideoFrame during transition should not block for encode (took %v)", elapsed)
+		"handleRawVideoFrame during transition should not block for encode (took %v)", elapsed)
 
 	// Transition output should still reach viewer asynchronously
 	require.Eventually(t, func() bool {
@@ -533,7 +479,6 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
 		},
@@ -544,12 +489,10 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Send 5 frames: first 3 should be silently dropped (buffering),
+	// Send 5 raw YUV frames: first 3 should be silently dropped (buffering),
 	// frames 4 and 5 should produce output.
 	for i := range 5 {
-		cam1Relay.BroadcastVideo(&media.VideoFrame{
-			PTS: int64(i*100 + 100), IsKeyframe: i == 0, WireData: []byte{0x01},
-		})
+		sendRawFrame(sw, "cam1", int64(i*100+100), i == 0)
 		time.Sleep(5 * time.Millisecond) // let async processing run
 	}
 
@@ -616,483 +559,3 @@ func (e *failingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, b
 
 func (e *failingEncoder) Close() {}
 
-// countingDecoder wraps a decoder and counts Decode calls.
-type countingDecoder struct {
-	inner transition.VideoDecoder
-	count atomic.Int32
-}
-
-func (d *countingDecoder) Decode(data []byte) ([]byte, int, int, error) {
-	d.count.Add(1)
-	return d.inner.Decode(data)
-}
-
-func (d *countingDecoder) Close() { d.inner.Close() }
-
-func TestPipelineCodecs_ReplayGOP(t *testing.T) {
-	dec := &countingDecoder{inner: transition.NewMockDecoder(4, 4)}
-	pc := &pipelineCodecs{
-		decoder: dec,
-	}
-
-	// Simulate a 3-frame GOP: keyframe + 2 P-frames
-	frames := []*media.VideoFrame{
-		{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}, SPS: []byte{0x67}, PPS: []byte{0x68}},
-		{PTS: 200, IsKeyframe: false, WireData: []byte{0x02}},
-		{PTS: 300, IsKeyframe: false, WireData: []byte{0x03}},
-	}
-
-	pc.replayGOP(frames)
-
-	require.Equal(t, int32(3), dec.count.Load(),
-		"replayGOP should decode all frames to build reference chain")
-	require.True(t, pc.forceNextIDR,
-		"replayGOP should set forceNextIDR so next encode produces keyframe")
-}
-
-func TestPipelineCodecs_ReplayGOPNilDecoder(t *testing.T) {
-	// replayGOP should be a no-op when decoder is nil
-	pc := &pipelineCodecs{decoder: nil}
-	pc.replayGOP([]*media.VideoFrame{
-		{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}},
-	})
-	require.False(t, pc.forceNextIDR, "should not set forceNextIDR without decoder")
-}
-
-func TestPipelineCodecs_ReplayGOPEmpty(t *testing.T) {
-	dec := &countingDecoder{inner: transition.NewMockDecoder(4, 4)}
-	pc := &pipelineCodecs{decoder: dec}
-	pc.replayGOP(nil)
-	require.False(t, pc.forceNextIDR, "should not set forceNextIDR for empty frames")
-	require.Equal(t, int32(0), dec.count.Load())
-}
-
-func TestPipelineCodecs_ForceNextIDRConsumedByEncode(t *testing.T) {
-	// Verify that forceNextIDR flag is consumed by the next encode call.
-	pc := &pipelineCodecs{
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	}
-
-	// Set the flag as replayGOP would.
-	pc.forceNextIDR = true
-
-	pf := &ProcessingFrame{
-		YUV:    make([]byte, 4*4*3/2),
-		Width:  4,
-		Height: 4,
-		PTS:    100,
-	}
-
-	out, err := pc.encode(pf, false)
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	require.True(t, out.IsKeyframe, "first encode after forceNextIDR should produce keyframe")
-	require.False(t, pc.forceNextIDR, "forceNextIDR should be cleared after encode")
-
-	// Second encode should NOT force IDR.
-	out2, err := pc.encode(pf, false)
-	require.NoError(t, err)
-	require.NotNil(t, out2)
-	// MockEncoder always returns keyframe, but the flag should be cleared.
-	require.False(t, pc.forceNextIDR, "forceNextIDR should remain cleared")
-}
-
-func TestReplayGOP_BlocksDecodeForEntireGOP(t *testing.T) {
-	// This test proves the root cause of the observed 536ms broadcast gap:
-	// replayGOP() holds pc.mu for the entire GOP decode sequence, which
-	// blocks decode() (called by videoProcessingLoop) from acquiring the lock.
-	//
-	// With 60 frames at 8ms/frame decode, the lock is held for ~480ms,
-	// during which no frames can be processed or broadcast.
-	const (
-		gopSize       = 60
-		decodeDelay   = 8 * time.Millisecond
-		expectedBlock = time.Duration(gopSize) * decodeDelay // ~480ms
-	)
-
-	slowDec := &slowDecoder{
-		inner: transition.NewMockDecoder(4, 4),
-		delay: decodeDelay,
-	}
-
-	// No decoderFactory → falls back to replayGOPInPlace (old behavior)
-	pc := &pipelineCodecs{
-		decoder: slowDec,
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	}
-
-	// Build a GOP with 60 frames (keyframe + 59 P-frames)
-	frames := make([]*media.VideoFrame, gopSize)
-	frames[0] = &media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x01},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:      []byte{0x68, 0x42, 0x00},
-	}
-	for i := 1; i < gopSize; i++ {
-		frames[i] = &media.VideoFrame{
-			PTS:        int64(100 + i*33333),
-			IsKeyframe: false,
-			WireData:   []byte{0x02},
-		}
-	}
-
-	// Start replayGOP in a goroutine (simulates handleTransitionComplete)
-	replayStarted := make(chan struct{})
-	replayDone := make(chan struct{})
-	go func() {
-		close(replayStarted)
-		pc.replayGOP(frames)
-		close(replayDone)
-	}()
-	<-replayStarted
-
-	// Give replayGOP a moment to acquire the lock
-	time.Sleep(5 * time.Millisecond)
-
-	// Now try to decode a frame (simulates videoProcessingLoop)
-	// This should block until replayGOP releases the lock
-	decodeStart := time.Now()
-	liveFrame := &media.VideoFrame{
-		PTS: 99999, IsKeyframe: true,
-		WireData: []byte{0x01},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:      []byte{0x68, 0x42, 0x00},
-	}
-	_, _ = pc.decode(liveFrame, nil)
-	decodeBlocked := time.Since(decodeStart)
-
-	// Wait for replay to finish
-	<-replayDone
-
-	// The decode call should have been blocked for approximately the
-	// duration of the entire GOP replay (minus the 5ms head start).
-	// We use a generous lower bound to avoid flaky timing.
-	minExpected := expectedBlock * 60 / 100 // at least 60% of expected
-	t.Logf("replayGOP with %d frames at %v/frame: decode() blocked for %v (expected ~%v)",
-		gopSize, decodeDelay, decodeBlocked, expectedBlock)
-
-	require.Greater(t, decodeBlocked, minExpected,
-		"decode() should be blocked for most of the GOP replay duration (%v), "+
-			"proving lock contention. Blocked for only %v", expectedBlock, decodeBlocked)
-
-	// Also verify that the total block time is proportional to GOP size.
-	// This confirms the O(N) lock hold time.
-	require.Less(t, decodeBlocked, expectedBlock+200*time.Millisecond,
-		"decode() should not be blocked for much longer than the GOP replay")
-}
-
-func TestReplayGOP_BlocksEncode(t *testing.T) {
-	// Same contention applies to encode(): if videoProcessingLoop is in the
-	// middle of encoding (which acquires pc.mu briefly for config checks),
-	// replayGOP blocks it.
-	const (
-		gopSize     = 30
-		decodeDelay = 5 * time.Millisecond
-	)
-
-	slowDec := &slowDecoder{
-		inner: transition.NewMockDecoder(4, 4),
-		delay: decodeDelay,
-	}
-
-	pc := &pipelineCodecs{
-		decoder: slowDec,
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	}
-
-	frames := make([]*media.VideoFrame, gopSize)
-	frames[0] = &media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x01},
-		SPS:      []byte{0x67}, PPS: []byte{0x68},
-	}
-	for i := 1; i < gopSize; i++ {
-		frames[i] = &media.VideoFrame{
-			PTS: int64(100 + i*33333), WireData: []byte{0x02},
-		}
-	}
-
-	replayStarted := make(chan struct{})
-	replayDone := make(chan struct{})
-	go func() {
-		close(replayStarted)
-		pc.replayGOP(frames)
-		close(replayDone)
-	}()
-	<-replayStarted
-	time.Sleep(5 * time.Millisecond)
-
-	// Try to encode — this also needs pc.mu
-	encodeStart := time.Now()
-	pf := &ProcessingFrame{
-		YUV:    make([]byte, 4*4*3/2),
-		Width:  4,
-		Height: 4,
-		PTS:    99999,
-	}
-	_, _ = pc.encode(pf, true)
-	encodeBlocked := time.Since(encodeStart)
-	<-replayDone
-
-	expectedBlock := time.Duration(gopSize) * decodeDelay
-	minExpected := expectedBlock * 50 / 100
-
-	t.Logf("replayGOP with %d frames at %v/frame: encode() blocked for %v (expected ~%v)",
-		gopSize, decodeDelay, encodeBlocked, expectedBlock)
-
-	require.Greater(t, encodeBlocked, minExpected,
-		"encode() should be blocked during GOP replay, proving contention")
-}
-
-func TestReplayGOP_LockHoldTimeScalesWithGOPSize(t *testing.T) {
-	// Proves that the lock hold time is O(N) — proportional to GOP size.
-	// This directly explains why larger GOPs cause longer broadcast gaps.
-	const decodeDelay = 2 * time.Millisecond
-
-	measureReplayTime := func(gopSize int) time.Duration {
-		slowDec := &slowDecoder{
-			inner: transition.NewMockDecoder(4, 4),
-			delay: decodeDelay,
-		}
-		pc := &pipelineCodecs{decoder: slowDec}
-
-		frames := make([]*media.VideoFrame, gopSize)
-		frames[0] = &media.VideoFrame{
-			PTS: 100, IsKeyframe: true,
-			WireData: []byte{0x01},
-			SPS:      []byte{0x67}, PPS: []byte{0x68},
-		}
-		for i := 1; i < gopSize; i++ {
-			frames[i] = &media.VideoFrame{
-				PTS: int64(100 + i*33333), WireData: []byte{0x02},
-			}
-		}
-
-		start := time.Now()
-		pc.replayGOP(frames)
-		return time.Since(start)
-	}
-
-	small := measureReplayTime(10) // 10 frames → ~20ms
-	large := measureReplayTime(60) // 60 frames → ~120ms
-
-	t.Logf("10-frame GOP: %v", small)
-	t.Logf("60-frame GOP: %v", large)
-
-	// The large GOP should take roughly 6x longer (±tolerance for scheduling)
-	ratio := float64(large) / float64(small)
-	t.Logf("Ratio (expected ~6.0): %.1f", ratio)
-
-	require.Greater(t, ratio, 3.0,
-		"lock hold time should scale with GOP size (O(N)): 60-frame took %v, 10-frame took %v, ratio %.1f",
-		large, small, ratio)
-	require.Less(t, ratio, 12.0,
-		"ratio should be reasonable (expected ~6x)")
-}
-
-func TestReplayGOP_SimulatedBroadcastGap_Old(t *testing.T) {
-	// This test proves that the OLD replayGOPInPlace (no factory) causes
-	// the observed 536ms broadcast gap. It uses the in-place fallback path
-	// (no decoderFactory) to demonstrate the problem.
-	const (
-		gopSize     = 50                   // Typical GOP at 24fps × 2sec
-		decodeDelay = 8 * time.Millisecond // Realistic FFmpeg decode time
-	)
-
-	var lastBroadcast atomic.Int64
-	var maxGap atomic.Int64
-
-	slowDec := &slowDecoder{
-		inner: transition.NewMockDecoder(4, 4),
-		delay: decodeDelay,
-	}
-
-	// No decoderFactory → falls back to replayGOPInPlace (old behavior)
-	pc := &pipelineCodecs{
-		decoder: slowDec,
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	processingDone := make(chan struct{})
-	go func() {
-		defer close(processingDone)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			// Simulate encode-only path (transition tail frames)
-			pf := &ProcessingFrame{
-				YUV:    make([]byte, 4*4*3/2),
-				Width:  4,
-				Height: 4,
-				PTS:    time.Now().UnixNano() / 1000,
-			}
-			_, err := pc.encode(pf, false)
-			if err != nil {
-				continue
-			}
-
-			now := time.Now().UnixNano()
-			prev := lastBroadcast.Swap(now)
-			if prev > 0 {
-				gap := now - prev
-				for {
-					cur := maxGap.Load()
-					if gap <= cur {
-						break
-					}
-					if maxGap.CompareAndSwap(cur, gap) {
-						break
-					}
-				}
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	maxGap.Store(0)
-
-	gopFrames := make([]*media.VideoFrame, gopSize)
-	gopFrames[0] = &media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x01},
-		SPS:      []byte{0x67}, PPS: []byte{0x68},
-	}
-	for i := 1; i < gopSize; i++ {
-		gopFrames[i] = &media.VideoFrame{
-			PTS: int64(100 + i*33333), WireData: []byte{0x02},
-		}
-	}
-
-	pc.replayGOP(gopFrames) // Uses in-place fallback → holds lock
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-processingDone
-
-	observedGap := time.Duration(maxGap.Load())
-	expectedMinGap := time.Duration(gopSize) * decodeDelay * 50 / 100
-
-	t.Logf("OLD path (in-place): broadcast gap %v (GOP: %d frames × %v = %v expected)",
-		observedGap, gopSize, decodeDelay, time.Duration(gopSize)*decodeDelay)
-
-	require.Greater(t, observedGap, expectedMinGap,
-		"OLD replayGOPInPlace should cause significant broadcast gap (>%v), was %v",
-		expectedMinGap, observedGap)
-}
-
-func TestReplayGOP_FixEliminatesContention(t *testing.T) {
-	// This test proves the fix works: with a decoderFactory, replayGOP
-	// creates a fresh decoder outside the lock, so videoProcessingLoop
-	// is NOT blocked during the GOP replay.
-	const (
-		gopSize     = 50
-		decodeDelay = 8 * time.Millisecond
-	)
-
-	var lastBroadcast atomic.Int64
-	var maxGap atomic.Int64
-
-	pc := &pipelineCodecs{
-		decoder: transition.NewMockDecoder(4, 4), // existing decoder
-		decoderFactory: func() (transition.VideoDecoder, error) {
-			// Replay decoder is slow (simulating real FFmpeg)
-			return &slowDecoder{
-				inner: transition.NewMockDecoder(4, 4),
-				delay: decodeDelay,
-			}, nil
-		},
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-			return transition.NewMockEncoder(), nil
-		},
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	processingDone := make(chan struct{})
-	go func() {
-		defer close(processingDone)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			pf := &ProcessingFrame{
-				YUV:    make([]byte, 4*4*3/2),
-				Width:  4,
-				Height: 4,
-				PTS:    time.Now().UnixNano() / 1000,
-			}
-			_, err := pc.encode(pf, false)
-			if err != nil {
-				continue
-			}
-
-			now := time.Now().UnixNano()
-			prev := lastBroadcast.Swap(now)
-			if prev > 0 {
-				gap := now - prev
-				for {
-					cur := maxGap.Load()
-					if gap <= cur {
-						break
-					}
-					if maxGap.CompareAndSwap(cur, gap) {
-						break
-					}
-				}
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	maxGap.Store(0)
-
-	gopFrames := make([]*media.VideoFrame, gopSize)
-	gopFrames[0] = &media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0x01},
-		SPS:      []byte{0x67}, PPS: []byte{0x68},
-	}
-	for i := 1; i < gopSize; i++ {
-		gopFrames[i] = &media.VideoFrame{
-			PTS: int64(100 + i*33333), WireData: []byte{0x02},
-		}
-	}
-
-	pc.replayGOP(gopFrames) // Uses new path → creates fresh decoder outside lock
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-processingDone
-
-	observedGap := time.Duration(maxGap.Load())
-	totalReplayTime := time.Duration(gopSize) * decodeDelay
-	maxAcceptableGap := 50 * time.Millisecond // should be < 50ms, not 400ms+
-
-	t.Logf("NEW path (async decoder): broadcast gap %v (GOP replay took ~%v)",
-		observedGap, totalReplayTime)
-
-	require.Less(t, observedGap, maxAcceptableGap,
-		"FIXED replayGOP should NOT block videoProcessingLoop. "+
-			"Max gap should be <50ms, was %v (old behavior would be >%v)",
-		observedGap, totalReplayTime)
-}

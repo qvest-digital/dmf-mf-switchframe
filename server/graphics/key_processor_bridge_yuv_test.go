@@ -4,8 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/media"
-	"github.com/zsiec/switchframe/server/transition"
 )
 
 func TestBridgeProcessYUV_NoKeys(t *testing.T) {
@@ -42,19 +40,9 @@ func TestBridgeProcessYUV_WithFill(t *testing.T) {
 	})
 
 	bridge := NewKeyProcessorBridge(kp)
-	bridge.SetDecoderFactory(
-		func() (transition.VideoDecoder, error) {
-			return &mockBridgeDecoder{yuv: fillYUV, w: w, h: h}, nil
-		},
-	)
 
-	// Ingest fill frame
-	bridge.IngestFillFrame("cam1", &media.VideoFrame{
-		PTS: 1000, IsKeyframe: true,
-		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
-		PPS:      []byte{0x68, 0x42, 0x00},
-	})
+	// Ingest fill via raw YUV
+	bridge.IngestFillYUV("cam1", fillYUV, w, h)
 
 	// Process YUV directly (no decode/encode of program frame)
 	result := bridge.ProcessYUV(bgYUV, w, h)

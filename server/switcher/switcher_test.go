@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,14 @@ import (
 
 func newTestRelay() *distribution.Relay {
 	return distribution.NewRelay()
+}
+
+// makeAVC1Frame creates a minimal AVC1-formatted frame (4-byte length prefix + NALU data).
+func makeAVC1Frame(naluData []byte) []byte {
+	buf := make([]byte, 4+len(naluData))
+	binary.BigEndian.PutUint32(buf[:4], uint32(len(naluData)))
+	copy(buf[4:], naluData)
+	return buf
 }
 
 // mockProgramViewer captures frames from the program relay.
@@ -356,7 +365,9 @@ func TestAudioFrameForwarding(t *testing.T) {
 	require.Equal(t, int64(500), viewer.audios[0].PTS)
 }
 
-func TestCutGatesUntilKeyframe(t *testing.T) {
+func TestCutForwardsAllFrames(t *testing.T) {
+	// In always-decode mode, there is no IDR gating — all frames from the
+	// program source are forwarded immediately after a cut.
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
@@ -368,33 +379,32 @@ func TestCutGatesUntilKeyframe(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 	sw.RegisterSource("camera2", cam2Relay)
 
-	// Cut to camera1, send a keyframe to establish it.
+	// Cut to camera1, send a keyframe.
 	_ = sw.Cut(context.Background(), "camera1")
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	// Cut to camera2.
 	_ = sw.Cut(context.Background(), "camera2")
 
-	// Send P-frame from camera2 — should be DROPPED (no keyframe yet).
+	// All frames from camera2 should be forwarded immediately (no IDR gate).
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 200, IsKeyframe: false})
-
-	// Send keyframe from camera2 — should be forwarded.
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 300, IsKeyframe: true})
-
-	// Send P-frame from camera2 — should be forwarded (keyframe was seen).
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 400, IsKeyframe: false})
 
 	viewer.mu.Lock()
 	defer viewer.mu.Unlock()
 
-	// Should have: cam1 keyframe(100) + cam2 keyframe(300) + cam2 P-frame(400) = 3
-	require.Equal(t, 3, len(viewer.videos), "video frame count")
+	// Should have: cam1 keyframe(100) + all 3 cam2 frames = 4
+	require.Equal(t, 4, len(viewer.videos), "video frame count")
 	require.Equal(t, int64(100), viewer.videos[0].PTS)
-	require.Equal(t, int64(300), viewer.videos[1].PTS)
-	require.Equal(t, int64(400), viewer.videos[2].PTS)
+	require.Equal(t, int64(200), viewer.videos[1].PTS)
+	require.Equal(t, int64(300), viewer.videos[2].PTS)
+	require.Equal(t, int64(400), viewer.videos[3].PTS)
 }
 
-func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
+func TestCutAudioForwardedImmediately(t *testing.T) {
+	// In always-decode mode, there is no IDR gating — audio from the new
+	// program source is forwarded immediately after a cut.
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 
@@ -412,20 +422,17 @@ func TestCutAudioGatedUntilVideoKeyframe(t *testing.T) {
 	// Cut to camera2.
 	_ = sw.Cut(context.Background(), "camera2")
 
-	// Audio from camera2 before video keyframe — should be DROPPED.
+	// Audio from camera2 should be forwarded immediately (no IDR gate).
 	cam2Relay.BroadcastAudio(&media.AudioFrame{PTS: 200, Data: []byte{0xAA}})
-
-	// Video keyframe from camera2 — clears the gate.
-	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 300, IsKeyframe: true})
-
-	// Audio from camera2 after keyframe — should be forwarded.
 	cam2Relay.BroadcastAudio(&media.AudioFrame{PTS: 400, Data: []byte{0xBB}})
 
 	viewer.mu.Lock()
 	defer viewer.mu.Unlock()
 
-	require.Equal(t, 1, len(viewer.audios), "audio frame count")
-	require.Equal(t, int64(400), viewer.audios[0].PTS)
+	// Both audio frames should be forwarded
+	require.Equal(t, 2, len(viewer.audios), "audio frame count")
+	require.Equal(t, int64(200), viewer.audios[0].PTS)
+	require.Equal(t, int64(400), viewer.audios[1].PTS)
 }
 
 func TestHealthStatusUpdatesOnFrames(t *testing.T) {
@@ -653,8 +660,7 @@ func TestSwitcher_DebugSnapshot(t *testing.T) {
 	require.Equal(t, false, snap["in_transition"])
 	require.Equal(t, false, snap["ftb_active"])
 	require.Equal(t, uint64(0), snap["seq"])
-	require.Equal(t, int64(0), snap["idr_gate_events"])
-	require.Equal(t, int64(0), snap["last_idr_gate_duration_ms"])
+	require.Equal(t, int64(0), snap["cuts_total"])
 	require.Equal(t, int64(0), snap["transitions_started"])
 	require.Equal(t, int64(0), snap["transitions_completed"])
 
@@ -671,29 +677,27 @@ func TestSwitcher_DebugSnapshot(t *testing.T) {
 
 	snap = sw.DebugSnapshot()
 	require.Equal(t, "cam1", snap["program_source"])
-	require.Equal(t, int64(1), snap["idr_gate_events"])
+	require.Equal(t, int64(1), snap["cuts_total"])
 
 	sources = snap["sources"].(map[string]any)
 	require.Len(t, sources, 2)
 
 	cam1Info, ok := sources["cam1"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, true, cam1Info["pending_idr"], "should be pending IDR after cut")
+	_ = cam1Info
 
-	// Send keyframe to clear IDR gate.
+	// Send a frame to verify video_frames_in is tracked.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true})
 
 	snap = sw.DebugSnapshot()
 	sources = snap["sources"].(map[string]any)
 	cam1Info = sources["cam1"].(map[string]any)
-	require.Equal(t, false, cam1Info["pending_idr"], "should be cleared after keyframe")
 	require.Equal(t, int64(1), cam1Info["video_frames_in"])
-	require.GreaterOrEqual(t, snap["last_idr_gate_duration_ms"].(int64), int64(0))
 
-	// Second cut increments idr_gate_events.
+	// Second cut increments cuts_total.
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 	snap = sw.DebugSnapshot()
-	require.Equal(t, int64(2), snap["idr_gate_events"])
+	require.Equal(t, int64(2), snap["cuts_total"])
 	require.Equal(t, "cam2", snap["program_source"])
 	require.Equal(t, "cam1", snap["preview_source"])
 }
@@ -780,13 +784,14 @@ func TestUpdateAtomicMax(t *testing.T) {
 }
 
 func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
+	// In always-decode mode, frames arrive as raw YUV — the pipeline only
+	// encodes (no pipeline decode). Verify encode timing is recorded.
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
 		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
@@ -797,11 +802,8 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	// Send a keyframe through the pipeline.
-	cam1Relay.BroadcastVideo(&media.VideoFrame{
-		PTS: 100, IsKeyframe: true,
-		WireData: []byte{0xDE, 0xAD},
-	})
+	// Send a raw YUV frame through the pipeline.
+	sendRawFrame(sw, "cam1", 100, true)
 
 	// Wait for async video processing to complete.
 	require.Eventually(t, func() bool {
@@ -813,14 +815,10 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 	snap := sw.DebugSnapshot()
 	pipeline := snap["video_pipeline"].(map[string]any)
 
-	// Decode and encode stages should have non-zero timing.
-	decLast := pipeline["decode_last_ms"].(float64)
-	decMax := pipeline["decode_max_ms"].(float64)
+	// Encode stage should have non-zero timing.
 	encLast := pipeline["encode_last_ms"].(float64)
 	encMax := pipeline["encode_max_ms"].(float64)
 
-	require.Greater(t, decLast, 0.0, "decode_last_ms should be > 0 after processing a frame")
-	require.Greater(t, decMax, 0.0, "decode_max_ms should be > 0 after processing a frame")
 	require.Greater(t, encLast, 0.0, "encode_last_ms should be > 0 after processing a frame")
 	require.Greater(t, encMax, 0.0, "encode_max_ms should be > 0 after processing a frame")
 

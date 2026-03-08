@@ -25,6 +25,7 @@ func init() {
 type AppConfig struct {
 	Demo             bool
 	FrameSync        bool
+	DecodeAllSources bool
 	DemoVideoDir     string
 	LogLevel         string
 	AdminAddr        string
@@ -91,6 +92,7 @@ func parseConfig() (AppConfig, error) {
 	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
+	decodeAllSourcesFlag := flag.Bool("decode-all-sources", false, "Decode all sources to raw YUV at ingest (eliminates keyframe wait on cuts/transitions)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 
 	// MXL integration flags.
@@ -127,6 +129,7 @@ func parseConfig() (AppConfig, error) {
 	return AppConfig{
 		Demo:              *demoFlag,
 		FrameSync:         *frameSyncFlag,
+		DecodeAllSources:  *decodeAllSourcesFlag,
 		DemoVideoDir:      *demoVideoDir,
 		LogLevel:          *logLevel,
 		AdminAddr:         *adminAddr,

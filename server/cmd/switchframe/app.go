@@ -207,6 +207,11 @@ func (a *App) initCoreEngine() error {
 		DecoderFactory: decoderFactory(),
 	})
 
+	// Always-decode mode: create per-source decoders at registration time.
+	if a.cfg.DecodeAllSources {
+		a.sw.SetSourceDecoderFactory(decoderFactory())
+	}
+
 	return nil
 }
 
@@ -284,12 +289,10 @@ func (a *App) initSubsystems() error {
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
 	a.keyBridge = graphics.NewKeyProcessorBridge(a.keyProcessor)
-	a.keyBridge.SetDecoderFactory(decoderFactory())
 	a.sw.SetKeyBridge(a.keyBridge)
-	a.sw.SetKeyFillIngestor(a.keyBridge.IngestFillFrame)
 
-	// Pipeline codec pool: single decode/encode cycle for the video processing chain.
-	a.sw.SetPipelineCodecs(decoderFactory(), encoderFactory())
+	// Pipeline encoder for the video processing chain.
+	a.sw.SetPipelineCodecs(encoderFactory())
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 
 	// Replay manager.

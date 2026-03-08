@@ -144,6 +144,39 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 	})
 }
 
+// handleRawVideoFrame implements frameHandler for decoded YUV frames.
+// Uses the same delay mechanism as handleVideoFrame.
+func (db *DelayBuffer) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
+	if !db.hasAnyDelay.Load() {
+		db.handler.handleRawVideoFrame(sourceKey, pf)
+		return
+	}
+	db.mu.Lock()
+	if db.stopped.Load() {
+		db.mu.Unlock()
+		return
+	}
+	sd := db.sources[sourceKey]
+	if sd == nil || sd.delay == 0 {
+		db.mu.Unlock()
+		db.handler.handleRawVideoFrame(sourceKey, pf)
+		return
+	}
+	delay := sd.delay
+	gen := sd.generation.Load()
+	db.mu.Unlock()
+
+	time.AfterFunc(delay, func() {
+		if db.stopped.Load() {
+			return
+		}
+		if sd.generation.Load() != gen {
+			return
+		}
+		db.handler.handleRawVideoFrame(sourceKey, pf)
+	})
+}
+
 // handleAudioFrame implements frameHandler. If delay=0 for the source,
 // the frame is forwarded immediately. Otherwise it is scheduled via
 // time.AfterFunc for release after the configured delay.
