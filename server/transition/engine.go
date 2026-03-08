@@ -51,6 +51,10 @@ type EngineConfig struct {
 	// TransitionType is "stinger", ignored for other types.
 	Stinger *StingerData
 
+	// Easing sets the easing curve for the transition. If nil, the engine
+	// falls back to legacy smoothstep for backward compatibility.
+	Easing *EasingCurve
+
 	// HintWidth/HintHeight pre-initialize the blender at Start() time.
 	// When set, the engine can produce output (via black frame fallback)
 	// even before any decode succeeds. Set from the pipeline's known
@@ -76,6 +80,9 @@ type TransitionEngine struct {
 	// Manual T-bar overrides automatic position
 	manualControl  bool
 	manualPosition float64
+
+	// Easing curve for auto-position calculation (nil = legacy smoothstep)
+	easing *EasingCurve
 
 	// Codec pipeline
 	decoderA VideoDecoder
@@ -209,6 +216,16 @@ func (e *TransitionEngine) ToSource() string {
 	return e.toSource
 }
 
+// Easing returns the current easing type, or "smoothstep" if nil.
+func (e *TransitionEngine) Easing() EasingType {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.easing != nil {
+		return e.easing.Type
+	}
+	return EasingSmoothstep
+}
+
 // Start initializes the transition pipeline. Creates decoders and blender.
 // Returns error if already active.
 func (e *TransitionEngine) Start(from, to string, ttype TransitionType, durationMs int) error {
@@ -247,6 +264,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.position = 0
 	e.manualControl = false
 	e.manualPosition = 0
+	e.easing = e.config.Easing
 	e.decoderA = decA
 	e.decoderB = decB
 	e.latestYUVA = nil
@@ -296,9 +314,13 @@ func (e *TransitionEngine) currentPosition() float64 {
 	}
 	elapsed := time.Since(e.startTime).Milliseconds()
 	t := math.Min(float64(elapsed)/float64(e.durationMs), 1.0)
-	// Smoothstep easing: zero-derivative at endpoints for perceptually smooth
-	// transitions. Eliminates the abrupt start/stop of linear interpolation.
-	pos := t * t * (3.0 - 2.0*t)
+	// Apply easing curve. Nil defaults to smoothstep for backward compatibility.
+	var pos float64
+	if e.easing != nil {
+		pos = e.easing.Ease(t)
+	} else {
+		pos = t * t * (3.0 - 2.0*t) // Legacy smoothstep
+	}
 	return math.Max(0.0, math.Min(1.0, pos))
 }
 
@@ -956,6 +978,7 @@ func (e *TransitionEngine) cleanup() {
 	e.position = 0
 	e.manualPosition = 0
 	e.manualControl = false
+	e.easing = nil
 	e.firstOutput = false
 	e.latestYUVA = nil
 	e.latestYUVB = nil

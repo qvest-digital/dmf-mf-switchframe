@@ -1,9 +1,11 @@
 <script lang="ts">
-	import type { ControlRoomState } from '$lib/api/types';
+	import type { ControlRoomState, EasingConfig } from '$lib/api/types';
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
+	import type { EasingPreset } from '$lib/util/easing';
+	import { getEasingFunction } from '$lib/util/easing';
 
 	interface Props {
 		state: ControlRoomState;
@@ -22,6 +24,8 @@
 	let uploading = $state(false);
 	let fileInput = $state<HTMLInputElement>();
 	let showDeleteConfirm = $state('');
+	let easingPreset = $state<EasingPreset>('smoothstep');
+	let customBezier = $state({ x1: 0.25, y1: 0.1, x2: 0.25, y2: 1.0 });
 
 	/** Local guard: prevents duplicate startTransition() calls while awaiting server confirmation. */
 	let tbarStarting = $state(false);
@@ -49,6 +53,14 @@
 
 	const anim = new AutoAnimation();
 
+	function getEasingConfig(): EasingConfig | undefined {
+		if (easingPreset === 'smoothstep') return undefined; // server default
+		if (easingPreset === 'custom') {
+			return { type: 'custom', x1: customBezier.x1, y1: customBezier.y1, x2: customBezier.x2, y2: customBezier.y2 };
+		}
+		return { type: easingPreset };
+	}
+
 	const autoDisabled = $derived(
 		!crState.previewSource || crState.inTransition || crState.ftbActive ||
 		(transType === 'stinger' && !stingerName)
@@ -71,11 +83,13 @@
 
 	function handleAuto() {
 		if (autoDisabled) return;
-		anim.start(durationMs);
+		const easingFn = getEasingFunction(easingPreset, customBezier.x1, customBezier.y1, customBezier.x2, customBezier.y2);
+		anim.start(durationMs, easingFn);
 		apiCall(startTransition(
 			crState.previewSource, transType, durationMs,
 			transType === 'wipe' ? wipeDirection : undefined,
-			transType === 'stinger' ? stingerName : undefined
+			transType === 'stinger' ? stingerName : undefined,
+			getEasingConfig()
 		), 'Transition failed');
 
 		// Safety timeout: cancel animation if server never confirms
@@ -153,7 +167,8 @@
 			const p = startTransition(
 				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
-				transType === 'stinger' ? stingerName : undefined
+				transType === 'stinger' ? stingerName : undefined,
+				getEasingConfig()
 			);
 			p.catch(() => { tbarStarting = false; });
 			apiCall(p, 'Transition failed');
@@ -172,7 +187,8 @@
 			const p = startTransition(
 				crState.previewSource, transType, durationMs,
 				transType === 'wipe' ? wipeDirection : undefined,
-				transType === 'stinger' ? stingerName : undefined
+				transType === 'stinger' ? stingerName : undefined,
+				getEasingConfig()
 			);
 			p.catch(() => { tbarStarting = false; });
 			apiCall(p, 'Transition failed');
@@ -280,6 +296,37 @@
 				<option value={2000}>2.0s</option>
 				<option value={3000}>3.0s</option>
 			</select>
+
+			<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
+				<option value="smoothstep">Smooth</option>
+				<option value="linear">Linear</option>
+				<option value="ease">Ease</option>
+				<option value="ease-in">Ease In</option>
+				<option value="ease-out">Ease Out</option>
+				<option value="ease-in-out">Ease In/Out</option>
+				<option value="custom">Custom</option>
+			</select>
+
+			{#if easingPreset === 'custom'}
+				<div class="custom-bezier">
+					<label class="bezier-input">
+						x1
+						<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x1} />
+					</label>
+					<label class="bezier-input">
+						y1
+						<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y1} />
+					</label>
+					<label class="bezier-input">
+						x2
+						<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x2} />
+					</label>
+					<label class="bezier-input">
+						y2
+						<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y2} />
+					</label>
+				</div>
+			{/if}
 		</div>
 	</div>
 
@@ -595,6 +642,64 @@
 	}
 
 	.duration-select:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	.easing-select {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 500;
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		padding: 3px 6px;
+		cursor: pointer;
+		transition: border-color var(--transition-fast);
+	}
+
+	.easing-select:hover {
+		border-color: var(--border-strong);
+	}
+
+	.easing-select:focus {
+		border-color: var(--accent-blue);
+		outline: none;
+	}
+
+	.custom-bezier {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.bezier-input {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		color: var(--text-secondary);
+	}
+
+	.bezier-input input {
+		width: 48px;
+		font-family: var(--font-mono);
+		font-size: 0.65rem;
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 2px 4px;
+		transition: border-color var(--transition-fast);
+	}
+
+	.bezier-input input:hover {
+		border-color: var(--border-strong);
+	}
+
+	.bezier-input input:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}

@@ -11,11 +11,12 @@ import (
 
 // transitionRequest is the JSON body for transition commands.
 type transitionRequest struct {
-	Source        string `json:"source"`
-	Type          string `json:"type"`
-	DurationMs    int    `json:"durationMs"`
-	WipeDirection string `json:"wipeDirection,omitempty"`
-	StingerName   string `json:"stingerName,omitempty"`
+	Source        string                  `json:"source"`
+	Type          string                  `json:"type"`
+	DurationMs    int                     `json:"durationMs"`
+	WipeDirection string                  `json:"wipeDirection,omitempty"`
+	StingerName   string                  `json:"stingerName,omitempty"`
+	Easing        *transition.EasingConfig `json:"easing,omitempty"`
 }
 
 // handleTransition starts a mix, dip, wipe, or stinger transition to the specified source.
@@ -53,6 +54,26 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var opts []switcher.TransitionOption
+	if req.Easing != nil {
+		et := transition.EasingType(req.Easing.Type)
+		if !transition.ValidEasingTypes[et] {
+			httperr.Write(w, http.StatusBadRequest,
+				"easing type must be one of: linear, ease, ease-in, ease-out, ease-in-out, smoothstep, custom")
+			return
+		}
+		var ec *transition.EasingCurve
+		if et == transition.EasingCustom {
+			var err error
+			ec, err = transition.NewCustomEasingCurve(req.Easing.X1, req.Easing.Y1, req.Easing.X2, req.Easing.Y2)
+			if err != nil {
+				httperr.Write(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else {
+			ec = transition.NewEasingCurve(et)
+		}
+		opts = append(opts, switcher.WithEasing(ec))
+	}
 	if req.Type == "stinger" {
 		clip, ok := a.stingerStore.Get(req.StingerName)
 		if !ok {

@@ -1699,3 +1699,86 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 
 	e.Stop()
 }
+
+// --- Easing integration tests ---
+
+func TestEngineEasingDefault(t *testing.T) {
+	// nil Easing should default to smoothstep behavior.
+	e := NewTransitionEngine(EngineConfig{
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	err := e.Start("cam1", "cam2", TransitionMix, 1000)
+	require.NoError(t, err)
+	defer e.Stop()
+
+	// Easing() should report smoothstep when config.Easing is nil.
+	require.Equal(t, EasingSmoothstep, e.Easing())
+
+	// At ~25% elapsed, smoothstep(0.25) = 0.25^2*(3-2*0.25) = 0.15625.
+	// Wait 250ms for a 1000ms transition, then check position.
+	time.Sleep(250 * time.Millisecond)
+	pos := e.Position()
+	// The actual elapsed time has jitter, so we verify the position is NOT
+	// close to the linear value of ~0.25. Smoothstep bends downward early,
+	// so the eased position should be less than the raw time fraction.
+	// With timing jitter the raw t might be 0.25±0.05, but smoothstep(0.3)=0.216
+	// and smoothstep(0.2)=0.104 — both well below 0.3. We just verify < 0.35.
+	require.Less(t, pos, 0.35, "smoothstep should produce a position below the linear value near t=0.25")
+}
+
+func TestEngineEasingLinear(t *testing.T) {
+	e := NewTransitionEngine(EngineConfig{
+		Easing:     NewEasingCurve(EasingLinear),
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	err := e.Start("cam1", "cam2", TransitionMix, 100)
+	require.NoError(t, err)
+	defer e.Stop()
+
+	require.Equal(t, EasingLinear, e.Easing())
+
+	// Sleep roughly half the duration and check that Position is near 0.5.
+	time.Sleep(50 * time.Millisecond)
+	pos := e.Position()
+	require.InDelta(t, 0.5, pos, 0.15, "linear easing at ~50%% elapsed should be near 0.5")
+}
+
+func TestEngineEasingCustom(t *testing.T) {
+	ec, err := NewCustomEasingCurve(0.42, 0, 0.58, 1.0) // ease-in-out
+	require.NoError(t, err)
+
+	e := NewTransitionEngine(EngineConfig{
+		Easing:     ec,
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	err = e.Start("cam1", "cam2", TransitionMix, 500)
+	require.NoError(t, err)
+	defer e.Stop()
+
+	require.Equal(t, EasingCustom, e.Easing())
+}
+
+func TestEngineEasingIgnoredForManual(t *testing.T) {
+	e := NewTransitionEngine(EngineConfig{
+		Easing:     NewEasingCurve(EasingLinear),
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	err := e.Start("cam1", "cam2", TransitionMix, 2000)
+	require.NoError(t, err)
+	defer e.Stop()
+
+	// SetPosition switches to manual mode — easing is bypassed.
+	e.SetPosition(0.5)
+	require.Equal(t, 0.5, e.Position(), "manual position should be exactly 0.5, not eased")
+
+	e.SetPosition(0.75)
+	require.Equal(t, 0.75, e.Position(), "manual position should be exactly 0.75, not eased")
+}

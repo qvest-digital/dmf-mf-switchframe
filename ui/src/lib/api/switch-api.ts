@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -102,13 +102,16 @@ export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }
 
-export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string): Promise<ControlRoomState> {
+export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string, easing?: EasingConfig): Promise<ControlRoomState> {
 	const body: Record<string, unknown> = { source, type, durationMs };
 	if (wipeDirection) {
 		body.wipeDirection = wipeDirection;
 	}
 	if (stingerName) {
 		body.stingerName = stingerName;
+	}
+	if (easing) {
+		body.easing = easing;
 	}
 	return post('/api/switch/transition', body);
 }

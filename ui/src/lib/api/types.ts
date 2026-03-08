@@ -108,6 +108,14 @@ export interface DestinationStatus {
 	startedAt?: string;
 }
 
+export interface EasingConfig {
+	type: string;
+	x1?: number;
+	y1?: number;
+	x2?: number;
+	y2?: number;
+}
+
 export interface GraphicsState {
 	active: boolean;
 	template?: string;
@@ -210,6 +218,7 @@ export interface ControlRoomState {
 	transitionType: string;
 	transitionDurationMs: number;
 	transitionPosition: number;
+	transitionEasing?: string;
 	inTransition: boolean;
 	ftbActive: boolean;
 	audioChannels?: Record<string, AudioChannel>;

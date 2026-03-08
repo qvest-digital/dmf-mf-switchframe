@@ -161,11 +161,17 @@ type TransitionOption func(*transitionOpts)
 
 type transitionOpts struct {
 	stingerData *transition.StingerData
+	easing      *transition.EasingCurve
 }
 
 // WithStingerData sets the stinger overlay data for a stinger transition.
 func WithStingerData(sd *transition.StingerData) TransitionOption {
 	return func(o *transitionOpts) { o.stingerData = sd }
+}
+
+// WithEasing sets the easing curve for the transition.
+func WithEasing(ec *transition.EasingCurve) TransitionOption {
+	return func(o *transitionOpts) { o.easing = ec }
 }
 
 // sourceState tracks a registered source and its Relay/viewer pair.
@@ -923,6 +929,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
 		Stinger:        topts.stingerData,
+		Easing:         topts.easing,
 		HintWidth:      hintW,
 		HintHeight:     hintH,
 		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
@@ -1897,6 +1904,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 	if s.state.isInTransition() && s.transEngine != nil {
 		state.TransitionPosition = s.transEngine.Position()
+		state.TransitionEasing = string(s.transEngine.Easing())
 	}
 
 	// Populate audio state from mixer if available.
