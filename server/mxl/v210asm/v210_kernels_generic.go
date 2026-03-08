@@ -1,15 +1,15 @@
 //go:build !arm64 && !amd64
 
-package mxl
+package v210asm
 
 import (
 	"encoding/binary"
 	"unsafe"
 )
 
-// chromaVAvg computes dst[i] = (top[i] + bot[i] + 1) >> 1 for n bytes.
+// ChromaVAvg computes dst[i] = (top[i] + bot[i] + 1) >> 1 for n bytes.
 // Used for vertical 4:2:2 → 4:2:0 chroma downsampling.
-func chromaVAvg(dst, top, bot *byte, n int) {
+func ChromaVAvg(dst, top, bot *byte, n int) {
 	if n <= 0 {
 		return
 	}
@@ -21,10 +21,10 @@ func chromaVAvg(dst, top, bot *byte, n int) {
 	}
 }
 
-// v210UnpackRow extracts Y, Cb, Cr from V210 packed data for one row.
+// V210UnpackRow extracts Y, Cb, Cr from V210 packed data for one row.
 // Each group of 16 bytes (4 uint32 words) produces 6 Y + 3 Cb + 3 Cr bytes.
 // 10-bit values are right-shifted by 2 to produce 8-bit output.
-func v210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
+func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 	if groups <= 0 {
 		return
 	}
@@ -61,10 +61,10 @@ func v210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 	}
 }
 
-// v210PackRow packs Y, Cb, Cr bytes into V210 format for one row.
+// V210PackRow packs Y, Cb, Cr bytes into V210 format for one row.
 // Each group of 6 Y + 3 Cb + 3 Cr bytes produces 16 bytes (4 uint32 words).
 // 8-bit values are left-shifted by 2 to produce 10-bit output.
-func v210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int) {
+func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int) {
 	if groups <= 0 {
 		return
 	}

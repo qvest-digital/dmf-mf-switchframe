@@ -2,6 +2,8 @@ package mxl
 
 import (
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/mxl/v210asm"
 )
 
 // V210LineStride returns the byte stride for one line of V210 data at the given width.
@@ -96,15 +98,15 @@ func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) 
 		botRow := topRow + 1
 
 		// Unpack top row
-		v210UnpackRow(&yPlane[topRow*width], &cbTop[0], &crTop[0], &v210[topRow*stride], groups)
+		v210asm.V210UnpackRow(&yPlane[topRow*width], &cbTop[0], &crTop[0], &v210[topRow*stride], groups)
 		// Unpack bottom row
-		v210UnpackRow(&yPlane[botRow*width], &cbBot[0], &crBot[0], &v210[botRow*stride], groups)
+		v210asm.V210UnpackRow(&yPlane[botRow*width], &cbBot[0], &crBot[0], &v210[botRow*stride], groups)
 
 		// Downsample: average top and bottom chroma rows → 4:2:0
 		dstCb := cbPlane[rowPair*chromaW:]
-		chromaVAvg(&dstCb[0], &cbTop[0], &cbBot[0], chromaW)
+		v210asm.ChromaVAvg(&dstCb[0], &cbTop[0], &cbBot[0], chromaW)
 		dstCr := crPlane[rowPair*chromaW:]
-		chromaVAvg(&dstCr[0], &crTop[0], &crBot[0], chromaW)
+		v210asm.ChromaVAvg(&dstCr[0], &crTop[0], &crBot[0], chromaW)
 	}
 
 	return nil
@@ -156,7 +158,7 @@ func YUV420pToV210Into(yuv, out []byte, width, height int) error {
 		cbRow := cbPlane[(row/2)*chromaW:]
 		crRow := crPlane[(row/2)*chromaW:]
 		v210Row := out[row*stride:]
-		v210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
+		v210asm.V210PackRow(&v210Row[0], &yRow[0], &cbRow[0], &crRow[0], groups)
 	}
 
 	return nil

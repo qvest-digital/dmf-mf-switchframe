@@ -2,8 +2,8 @@
 
 // ARM64 NEON V210 conversion kernels.
 //
-// chromaVAvg: uses URHADD for single-instruction rounding average (16 bytes/iter).
-// v210UnpackRow/v210PackRow: scalar per-group processing with bitfield extraction.
+// ChromaVAvg: uses URHADD for single-instruction rounding average (16 bytes/iter).
+// V210UnpackRow/V210PackRow: scalar per-group processing with bitfield extraction.
 // The V210 format's irregular field layout (3 x 10-bit in 32-bit words) makes
 // SIMD difficult, but the scalar loop still benefits from assembly by eliminating
 // bounds checks and using efficient register allocation.
@@ -14,11 +14,11 @@
 
 
 // ============================================================================
-// func chromaVAvg(dst, top, bot *byte, n int)
+// func ChromaVAvg(dst, top, bot *byte, n int)
 // ============================================================================
 // dst[i] = (top[i] + bot[i] + 1) >> 1
 // URHADD does this in a single instruction for 16 bytes.
-TEXT ·chromaVAvg(SB), NOSPLIT, $0-32
+TEXT ·ChromaVAvg(SB), NOSPLIT, $0-32
 	MOVD dst+0(FP), R0
 	MOVD top+8(FP), R1
 	MOVD bot+16(FP), R2
@@ -61,12 +61,12 @@ cavg_done:
 
 
 // ============================================================================
-// func v210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int)
+// func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int)
 // ============================================================================
 // Extracts 10-bit fields from V210 words, converts to 8-bit (>>2).
 // Per group: 4 x uint32 -> 6 Y + 3 Cb + 3 Cr bytes.
 // Scalar per-group with efficient register usage (no bounds checks).
-TEXT ·v210UnpackRow(SB), NOSPLIT, $0-40
+TEXT ·V210UnpackRow(SB), NOSPLIT, $0-40
 	MOVD yOut+0(FP), R0      // Y output pointer
 	MOVD cbOut+8(FP), R1     // Cb output pointer
 	MOVD crOut+16(FP), R2    // Cr output pointer
@@ -158,11 +158,11 @@ unpack_done:
 
 
 // ============================================================================
-// func v210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int)
+// func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int)
 // ============================================================================
 // Packs 8-bit Y/Cb/Cr into V210 words (<<2 to 10-bit).
 // Per group: 6 Y + 3 Cb + 3 Cr -> 4 x uint32 (16 bytes).
-TEXT ·v210PackRow(SB), NOSPLIT, $0-40
+TEXT ·V210PackRow(SB), NOSPLIT, $0-40
 	MOVD v210Out+0(FP), R0   // V210 output pointer
 	MOVD yIn+8(FP), R1       // Y input pointer
 	MOVD cbIn+16(FP), R2     // Cb input pointer
