@@ -6,10 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/control"
 )
+
+func init() {
+	// Reduce GC frequency for real-time frame processing.
+	// GOGC=400 means GC triggers at 5x live heap (vs default 2x).
+	// Override with GOGC environment variable.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(400)
+	}
+}
 
 // AppConfig holds all configuration parsed from flags and environment.
 type AppConfig struct {

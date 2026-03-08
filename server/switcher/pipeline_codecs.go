@@ -20,6 +20,29 @@ import (
 // startup behavior, not an error — the frame is buffered internally.
 var errDecoderBuffering = errors.New("pipeline: decoder buffering")
 
+// avc1Pool recycles AVC1 output buffers to avoid 50-150KB/frame allocations
+// on every pipeline encode. Seeded with 64KB; getAVC1Buffer transparently
+// allocates larger buffers for higher bitrate frames.
+var avc1Pool = sync.Pool{
+	New: func() any {
+		return make([]byte, 0, 65536)
+	},
+}
+
+func getAVC1Buffer(size int) []byte {
+	buf := avc1Pool.Get().([]byte)
+	if cap(buf) < size {
+		return make([]byte, size)
+	}
+	return buf[:size]
+}
+
+func putAVC1Buffer(buf []byte) {
+	if buf != nil {
+		avc1Pool.Put(buf[:0]) //nolint:staticcheck // slice value is intentional
+	}
+}
+
 // pipelineCodecs manages a shared decoder/encoder pair for the video processing
 // pipeline. Instead of each processor (compositor, key bridge) owning its own
 // codec pair, the pipeline coordinator uses a single decode/encode cycle.
@@ -205,7 +228,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	}
 
 	pc.avc1Buf = codec.AnnexBToAVC1Into(encoded, pc.avc1Buf[:0])
-	avc1 := make([]byte, len(pc.avc1Buf))
+	avc1 := getAVC1Buffer(len(pc.avc1Buf))
 	copy(avc1, pc.avc1Buf)
 
 	// Phase 3: Lock for state update

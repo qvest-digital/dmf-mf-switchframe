@@ -2272,7 +2272,7 @@ func TestStereoGainInterpolation(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -2301,8 +2301,7 @@ func TestStereoGainInterpolation(t *testing.T) {
 	gainedPCM := ch.gainBuf
 
 	// Apply the transition gain interpolation (same code as IngestFrame)
-	var gainFn func(float64) float64
-	gainFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
+	gainFn := func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
 	gStart := float32(gainFn(m.transCrossfadeAudioPos))
 	gEnd := float32(gainFn(m.mixCycleTransPos))
 	channels := m.numChannels
@@ -2335,7 +2334,7 @@ func TestChannelGainCached(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 

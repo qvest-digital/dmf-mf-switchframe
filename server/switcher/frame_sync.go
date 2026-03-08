@@ -28,6 +28,8 @@ type pendingRelease struct {
 
 // syncSource holds per-source buffering state for the FrameSynchronizer.
 type syncSource struct {
+	mu sync.Mutex // per-source lock; protects ring buffers and last-frame state
+
 	// pendingVideo is a fixed-size ring buffer for incoming video frames.
 	pendingVideo [syncRingSize]*media.VideoFrame
 	videoHead    int // write index into pendingVideo
@@ -169,24 +171,28 @@ func (fs *FrameSynchronizer) RemoveSource(key string) {
 // Takes a pointer to avoid value copy heap escape on the hot path.
 func (fs *FrameSynchronizer) IngestVideo(sourceKey string, frame *media.VideoFrame) {
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	ss, ok := fs.sources[sourceKey]
+	fs.mu.Unlock()
 	if !ok {
 		return
 	}
+	ss.mu.Lock()
 	ss.pushVideo(frame)
+	ss.mu.Unlock()
 }
 
 // IngestAudio buffers an incoming audio frame for the specified source.
 // Takes a pointer to avoid value copy heap escape on the hot path.
 func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFrame) {
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
 	ss, ok := fs.sources[sourceKey]
+	fs.mu.Unlock()
 	if !ok {
 		return
 	}
+	ss.mu.Lock()
 	ss.pushAudio(frame)
+	ss.mu.Unlock()
 }
 
 // SetTickRate updates the tick rate. Takes effect on the next tick cycle.
@@ -237,15 +243,22 @@ func (fs *FrameSynchronizer) tickLoop() {
 	rate := fs.tickRate
 	fs.mu.Unlock()
 
+	timer := time.NewTimer(rate)
+	defer timer.Stop()
 	nextTick := time.Now().Add(rate)
 	for {
 		sleepDur := time.Until(nextTick)
 		if sleepDur > 0 {
-			timer := time.NewTimer(sleepDur)
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(sleepDur)
 			select {
 			case <-timer.C:
 			case <-fs.done:
-				timer.Stop()
 				return
 			}
 		} else {
@@ -291,6 +304,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 		var releaseVideo *media.VideoFrame
 		var releaseAudio *media.AudioFrame
 
+		ss.mu.Lock()
+
 		// Video: pop newest from ring, or repeat last.
 		if newest := ss.popNewestVideo(); newest != nil {
 			ss.lastVideo = newest
@@ -311,8 +326,9 @@ func (fs *FrameSynchronizer) releaseTick() {
 			if ss.audioMissCount <= 2 {
 				releaseAudio = ss.lastAudio
 			}
-			// After 2 repeats, stop emitting — downstream handles silence.
 		}
+
+		ss.mu.Unlock()
 
 		if releaseVideo != nil || releaseAudio != nil {
 			fs.releases = append(fs.releases, pendingRelease{

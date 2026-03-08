@@ -33,7 +33,7 @@ func TestHealthStatusFromAge(t *testing.T) {
 
 func TestHealthMonitorRecordAndStatus(t *testing.T) {
 	hm := newHealthMonitor()
-	hm.recordFrame("camera1")
+	hm.recordFrame("camera1", time.Now())
 	status := hm.status("camera1")
 	require.Equal(t, SourceHealthy, status)
 	hm.stop()
@@ -105,7 +105,7 @@ func TestProactiveHealthBroadcast(t *testing.T) {
 func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// Initial check establishes the source as healthy (first-time: applies immediately).
 	changed := hm.checkForChanges()
@@ -144,7 +144,7 @@ func TestHealthHysteresis_DegradationRequiresConsecutiveChecks(t *testing.T) {
 func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// Establish initial status as healthy.
 	hm.checkForChanges()
@@ -163,7 +163,7 @@ func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
 	hm.mu.RUnlock()
 
 	// Now record a fresh frame to simulate recovery.
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// First check after recovery: should recover immediately (threshold = 1).
 	changed = hm.checkForChanges()
@@ -179,7 +179,7 @@ func TestHealthHysteresis_RecoveryIsImmediate(t *testing.T) {
 func TestHealthHysteresis_IntermittentFramesResetCounter(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// Establish initial status as healthy.
 	hm.checkForChanges()
@@ -196,7 +196,7 @@ func TestHealthHysteresis_IntermittentFramesResetCounter(t *testing.T) {
 	require.False(t, changed, "second check should not trigger transition")
 
 	// Now a frame arrives — source is healthy again.
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// Next check: source is healthy, which matches current status → reset counter.
 	changed = hm.checkForChanges()
@@ -219,7 +219,7 @@ func TestHealthHysteresis_IntermittentFramesResetCounter(t *testing.T) {
 func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// Establish initial healthy status.
 	hm.checkForChanges()
@@ -245,7 +245,7 @@ func TestHealthStatus_ReturnsCommittedNotRaw(t *testing.T) {
 func TestHealthMonitor_StopWaitsForGoroutine(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	published := make(chan struct{}, 100)
 	hm.start(10*time.Millisecond, func() {
@@ -280,7 +280,7 @@ func TestHealthMonitor_StopWithoutStart(t *testing.T) {
 func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")
-	hm.recordFrame("cam1")
+	hm.recordFrame("cam1", time.Now())
 
 	// First check for a new source should apply the initial status immediately.
 	changed := hm.checkForChanges()

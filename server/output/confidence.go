@@ -77,9 +77,9 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 
 	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
 	// the viewer goroutine or LatestThumbnail readers.
-	annexB := codec.AVC1ToAnnexB(frame.WireData)
+	annexB := codec.AVC1ToAnnexBInto(frame.WireData, nil)
 	if frame.IsKeyframe {
-		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		annexB = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, annexB, nil)
 	}
 	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {

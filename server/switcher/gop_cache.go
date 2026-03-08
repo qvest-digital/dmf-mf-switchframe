@@ -9,25 +9,24 @@ import (
 
 var gopBufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 0, 65536)
-		return &b
+		return make([]byte, 0, 65536)
 	},
 }
 
 func getGOPBuf(size int) []byte {
-	bp := gopBufPool.Get().(*[]byte)
-	b := *bp
+	b := gopBufPool.Get().([]byte)
 	if cap(b) < size {
-		b = make([]byte, size)
-	} else {
-		b = b[:size]
+		gopBufPool.Put(b[:0]) //nolint:staticcheck // return undersized buffer
+		return make([]byte, size)
 	}
-	return b
+	return b[:size]
 }
 
 func putGOPBuf(b []byte) {
-	b = b[:0]
-	gopBufPool.Put(&b)
+	if b == nil {
+		return
+	}
+	gopBufPool.Put(b[:0]) //nolint:staticcheck // slice value is intentional
 }
 
 // cachedFrame stores a deep-copied frame for GOP replay.
@@ -115,30 +114,30 @@ func (g *gopCache) SetActiveSources(program, preview string) {
 // Frames from sources not in the active set are skipped to avoid unnecessary
 // deep-copy allocations on the hot path.
 func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame, precomputedAnnexB []byte) {
-	// Fast path: skip sources that aren't active. Check under lock since
-	// activeSources can be updated from Cut/SetPreview.
-	g.mu.Lock()
-	if g.activeSources != nil && !g.activeSources[sourceKey] {
-		g.mu.Unlock()
-		return
-	}
-	g.mu.Unlock()
-
+	// Prepare data outside lock to minimize critical section.
 	var annexB []byte
 	if len(precomputedAnnexB) > 0 {
 		annexB = getGOPBuf(len(precomputedAnnexB))
 		copy(annexB, precomputedAnnexB)
 	} else {
-		annexB = codec.AVC1ToAnnexB(frame.WireData)
-		if len(annexB) == 0 {
+		// Convert AVC1→AnnexB directly into a pool buffer to avoid
+		// an intermediate allocation.
+		poolBuf := getGOPBuf(len(frame.WireData))
+		converted := codec.AVC1ToAnnexBInto(frame.WireData, poolBuf[:0])
+		if len(converted) == 0 {
+			putGOPBuf(poolBuf)
 			return
 		}
 		if frame.IsKeyframe {
-			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+			withSPSPPS := codec.PrependSPSPPSInto(frame.SPS, frame.PPS, converted, nil)
+			putGOPBuf(poolBuf)
+			annexB = getGOPBuf(len(withSPSPPS))
+			copy(annexB, withSPSPPS)
+		} else {
+			annexB = converted
 		}
 	}
 
-	// Deep-copy the original frame for program relay replay
 	orig := &media.VideoFrame{
 		PTS:        frame.PTS,
 		DTS:        frame.DTS,
@@ -167,20 +166,27 @@ func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame, precom
 		isKeyframe: frame.IsKeyframe,
 	}
 
+	// Single lock acquisition for both active-source check and cache write.
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	if g.activeSources != nil && !g.activeSources[sourceKey] {
+		putGOPBuf(annexB)
+		if orig != nil && len(orig.WireData) > 0 {
+			putGOPBuf(orig.WireData)
+		}
+		return
+	}
+
 	if frame.IsKeyframe {
 		old := g.caches[sourceKey]
-		if old != nil {
-			for i := range old {
-				putGOPBuf(old[i].annexB)
-				if old[i].original != nil {
-					putGOPBuf(old[i].original.WireData)
-				}
-				old[i].annexB = nil
-				old[i].original = nil
+		for i := range old {
+			putGOPBuf(old[i].annexB)
+			if old[i].original != nil {
+				putGOPBuf(old[i].original.WireData)
 			}
+			old[i].annexB = nil
+			old[i].original = nil
 		}
 		cache := make([]cachedFrame, 1, g.maxFrames)
 		cache[0] = cf

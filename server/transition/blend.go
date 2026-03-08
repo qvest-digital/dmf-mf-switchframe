@@ -29,8 +29,9 @@ type FrameBlender struct {
 	ySize              int    // w*h (luma plane size)
 	uvSize             int    // w/2 * h/2 (each chroma plane size)
 	blackY             byte   // Y value for black (0 = full-range, 16 = limited-range)
-	wipeAlphaMap       []byte // precomputed per-pixel alpha for wipe transitions (w*h)
-	wipeAlphaMapChroma []byte // subsampled chroma alpha map (w/2 * h/2)
+	wipeAlphaMap        []byte // precomputed per-pixel alpha for wipe transitions (w*h)
+	wipeAlphaMapChroma  []byte // subsampled chroma alpha map (w/2 * h/2)
+	stingerChromaAlpha  []byte // precomputed chroma-resolution alpha for stinger blending (w/2 * h/2)
 }
 
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
@@ -45,8 +46,9 @@ func NewFrameBlender(width, height int) *FrameBlender {
 		ySize:              ySize,
 		uvSize:             uvSize,
 		blackY:             16, // BT.709 limited-range black
-		wipeAlphaMap:       make([]byte, ySize),
-		wipeAlphaMapChroma: make([]byte, uvSize),
+		wipeAlphaMap:        make([]byte, ySize),
+		wipeAlphaMapChroma:  make([]byte, uvSize),
+		stingerChromaAlpha:  make([]byte, uvSize),
 	}
 }
 
@@ -145,33 +147,15 @@ func (fb *FrameBlender) BlendDip(yuvA, yuvB []byte, position float64) []byte {
 //   - box-center-out: B reveals from center expanding outward
 //   - box-edges-in: B reveals from edges contracting inward
 func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction WipeDirection) []byte {
-	w := fb.width
-	h := fb.height
-
-	// Generate the luma alpha map (byte values 0-255)
+	// Generate luma and chroma alpha maps (byte values 0-255)
 	fb.generateWipeAlpha(position, direction)
 
 	// --- Y plane: blend using precomputed alpha map ---
 	blendAlpha(&fb.yuvBufOut[0], &yuvA[0], &yuvB[0], &fb.wipeAlphaMap[0], fb.ySize)
 
-	// --- Chroma planes: downsample alpha to chroma resolution, then use SIMD kernel ---
-	uvW := w / 2
-	uvH := h / 2
+	// --- Chroma planes: use chroma alpha computed directly by generateWipeAlpha ---
 	cbOffset := fb.ySize
 	crOffset := fb.ySize + fb.uvSize
-
-	// Downsample luma alpha map to chroma resolution (w/2 x h/2).
-	// For each 2x2 block, take the top-left luma pixel's alpha as the
-	// representative value (matches the previous scalar implementation).
-	for py := 0; py < uvH; py++ {
-		lumaRow := py * 2 * w
-		chromaRow := py * uvW
-		for px := 0; px < uvW; px++ {
-			fb.wipeAlphaMapChroma[chromaRow+px] = fb.wipeAlphaMap[lumaRow+px*2]
-		}
-	}
-
-	// Use the SIMD-optimized blendAlpha kernel for Cb and Cr planes.
 	blendAlpha(&fb.yuvBufOut[cbOffset], &yuvA[cbOffset], &yuvB[cbOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
 	blendAlpha(&fb.yuvBufOut[crOffset], &yuvA[crOffset], &yuvB[crOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
 
@@ -249,6 +233,40 @@ func (fb *FrameBlender) generateWipeAlpha(position float64, direction WipeDirect
 			}
 		}
 
+		// Compute chroma alpha directly at half resolution
+		chromaW := w / 2
+		chromaH := h / 2
+		chromaCx := float64(chromaW-1) / 2.0
+		chromaCy := float64(chromaH-1) / 2.0
+		chromaInvCx := 1.0 / chromaCx
+		chromaInvCy := 1.0 / chromaCy
+
+		for py := 0; py < chromaH; py++ {
+			dy := float64(py) - chromaCy
+			if dy < 0 {
+				dy = -dy
+			}
+			ty := dy * chromaInvCy
+
+			row := py * chromaW
+			for px := 0; px < chromaW; px++ {
+				dx := float64(px) - chromaCx
+				if dx < 0 {
+					dx = -dx
+				}
+				tx := dx * chromaInvCx
+
+				threshold := tx
+				if ty > tx {
+					threshold = ty
+				}
+				if invert {
+					threshold = 1.0 - threshold
+				}
+				fb.wipeAlphaMapChroma[row+px] = wipeAlphaByte(threshold, position, softEdge)
+			}
+		}
+
 	default:
 		fb.generateWipeAlphaHorizontal(position, softEdge, false)
 	}
@@ -276,6 +294,22 @@ func (fb *FrameBlender) generateWipeAlphaHorizontal(position, softEdge float64, 
 	for py := 1; py < h; py++ {
 		copy(fb.wipeAlphaMap[py*w:py*w+w], row0)
 	}
+
+	// Compute chroma alpha directly at half resolution (1D, replicate rows).
+	chromaW := w / 2
+	chromaH := h / 2
+	chromaRow0 := fb.wipeAlphaMapChroma[:chromaW]
+	invCW := 1.0 / float64(w) // use full-width denominator for matching thresholds
+	for cx := 0; cx < chromaW; cx++ {
+		threshold := float64(cx*2) * invCW
+		if invert {
+			threshold = 1.0 - threshold
+		}
+		chromaRow0[cx] = wipeAlphaByte(threshold, position, softEdge)
+	}
+	for cy := 1; cy < chromaH; cy++ {
+		copy(fb.wipeAlphaMapChroma[cy*chromaW:cy*chromaW+chromaW], chromaRow0)
+	}
 }
 
 // generateWipeAlphaVertical computes one alpha value per row and fills
@@ -293,6 +327,22 @@ func (fb *FrameBlender) generateWipeAlphaVertical(position, softEdge float64, in
 		}
 		a := wipeAlphaByte(threshold, position, softEdge)
 		row := fb.wipeAlphaMap[py*w : py*w+w]
+		for i := range row {
+			row[i] = a
+		}
+	}
+
+	// Compute chroma alpha directly at half resolution (constant per row).
+	chromaW := w / 2
+	chromaH := h / 2
+	invCH := 1.0 / float64(h) // use full-height denominator for matching thresholds
+	for cy := 0; cy < chromaH; cy++ {
+		threshold := float64(cy*2) * invCH
+		if invert {
+			threshold = 1.0 - threshold
+		}
+		a := wipeAlphaByte(threshold, position, softEdge)
+		row := fb.wipeAlphaMapChroma[cy*chromaW : cy*chromaW+chromaW]
 		for i := range row {
 			row[i] = a
 		}
@@ -327,45 +377,45 @@ func wipeAlphaByte(threshold, position, softEdge float64) byte {
 	return byte(a)
 }
 
+// downsampleAlphaToChroma converts a full-resolution alpha map to chroma resolution
+// by averaging each 2x2 block. Writes into dst which must be (w/2)*(h/2) in size.
+func downsampleAlphaToChroma(alpha []byte, w, h int, dst []byte) {
+	chromaW := w / 2
+	chromaH := h / 2
+	for cy := 0; cy < chromaH; cy++ {
+		for cx := 0; cx < chromaW; cx++ {
+			ly := cy * 2
+			lx := cx * 2
+			a00 := int(alpha[ly*w+lx])
+			a10 := int(alpha[ly*w+lx+1])
+			a01 := int(alpha[(ly+1)*w+lx])
+			a11 := int(alpha[(ly+1)*w+lx+1])
+			dst[cy*chromaW+cx] = byte((a00 + a10 + a01 + a11 + 2) / 4)
+		}
+	}
+}
+
 // BlendStinger composites a stinger frame (with alpha) over a base YUV420 source.
 // The stinger frame's YUV data is blended with the base using per-pixel alpha.
 // alpha is a per-luma-pixel alpha map [0-255], same dimensions as the Y plane.
 // stingerYUV is YUV420 planar format matching base dimensions.
 // Uses integer math with >>8 shift (GPU-standard approximation for /255).
 func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []byte) []byte {
-	// Bounds check: all inputs must be large enough for the configured resolution.
 	expected := fb.ySize + 2*fb.uvSize
 	if len(baseYUV) < expected || len(stingerYUV) < expected || len(alpha) < fb.ySize {
 		return nil
 	}
 
-	w := fb.width
-	h := fb.height
-
 	// --- Y plane: per-pixel alpha blend ---
-	// The kernel converts alpha 0-255 to 0-256 weight for exact pass-through
-	// at both extremes: a + (a >> 7) maps 0->0, 255->256.
 	blendAlpha(&fb.yuvBufOut[0], &baseYUV[0], &stingerYUV[0], &alpha[0], fb.ySize)
 
-	// --- Cb and Cr planes: average alpha over corresponding 2x2 luma block ---
-	uvW := w / 2
+	// --- Chroma planes: downsample alpha to chroma resolution, then use SIMD kernel ---
+	downsampleAlphaToChroma(alpha, fb.width, fb.height, fb.stingerChromaAlpha)
+
 	cbOffset := fb.ySize
 	crOffset := fb.ySize + fb.uvSize
-
-	for py := 0; py < h/2; py++ {
-		for px := 0; px < uvW; px++ {
-			// Average the alpha of the 4 luma pixels in this 2x2 block
-			ly := py * 2
-			lx := px * 2
-			a := (int(alpha[ly*w+lx]) + int(alpha[ly*w+lx+1]) + int(alpha[(ly+1)*w+lx]) + int(alpha[(ly+1)*w+lx+1])) / 4
-			w256 := a + (a >> 7) // 0-255 -> 0-256
-			inv := 256 - w256
-
-			idx := py*uvW + px
-			fb.yuvBufOut[cbOffset+idx] = byte((int(baseYUV[cbOffset+idx])*inv + int(stingerYUV[cbOffset+idx])*w256) >> 8)
-			fb.yuvBufOut[crOffset+idx] = byte((int(baseYUV[crOffset+idx])*inv + int(stingerYUV[crOffset+idx])*w256) >> 8)
-		}
-	}
+	blendAlpha(&fb.yuvBufOut[cbOffset], &baseYUV[cbOffset], &stingerYUV[cbOffset], &fb.stingerChromaAlpha[0], fb.uvSize)
+	blendAlpha(&fb.yuvBufOut[crOffset], &baseYUV[crOffset], &stingerYUV[crOffset], &fb.stingerChromaAlpha[0], fb.uvSize)
 
 	return fb.yuvBufOut
 }

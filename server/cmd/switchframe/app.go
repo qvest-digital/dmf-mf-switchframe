@@ -113,6 +113,8 @@ func (a *App) initInfra() error {
 		_, _ = fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", a.cfg.APIToken)
 	}
 
+	logSystemTuning(slog.Default())
+
 	// Generate self-signed TLS certificate for WebTransport (<=14 days validity).
 	cert, err := certs.Generate(14 * 24 * time.Hour)
 	if err != nil {
@@ -635,6 +637,17 @@ func (a *App) Run(ctx context.Context) error {
 
 	slog.Info("starting Prism distribution server", "addr", a.cfg.Addr)
 	return a.server.Start(ctx)
+}
+
+// logSystemTuning checks OS-level resource limits and logs warnings when
+// they are below recommended values for real-time video processing.
+func logSystemTuning(log *slog.Logger) {
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err == nil {
+		if rlimit.Cur < 65536 {
+			log.Warn("low file descriptor limit", "current", rlimit.Cur, "recommended", 65536)
+		}
+	}
 }
 
 // Close cleans up all subsystems in reverse initialization order.

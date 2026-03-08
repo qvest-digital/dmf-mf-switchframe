@@ -295,7 +295,7 @@ func TestWriterConcurrentWriteVideo(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		time.Sleep(time.Millisecond)
-		w.Close()
+		_ = w.Close()
 	}()
 
 	wg.Wait()
@@ -308,7 +308,7 @@ func TestWriterCloseFlagPreventsWrites(t *testing.T) {
 	w.SetVideoWriter(vMock, Rational{30, 1})
 	w.SetAudioWriter(aMock, Rational{48000, 1})
 
-	w.Close()
+	_ = w.Close()
 
 	width, height := 12, 2
 	yuvSize := width*height + width/2*height/2 + width/2*height/2

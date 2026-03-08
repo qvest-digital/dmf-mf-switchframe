@@ -7,8 +7,8 @@ Svelte 5 + SvelteKit frontend for SwitchFrame. See the [root README](../README.m
 ```bash
 npm ci              # Install dependencies
 npm run dev         # Dev server (proxies /api to Go server on :8081)
-npx vitest run      # Unit tests (478 tests)
-npx playwright test # E2E tests (45 tests)
+npx vitest run      # Unit tests (590 tests)
+npx playwright test # E2E tests (47 tests)
 ```
 
 ## Tech Stack

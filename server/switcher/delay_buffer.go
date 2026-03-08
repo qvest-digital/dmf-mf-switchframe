@@ -12,9 +12,10 @@ import (
 // sourceDelay holds the configured delay for a single source.
 // The generation counter is incremented on RemoveSource so that
 // in-flight time.AfterFunc callbacks for removed sources are discarded.
+// generation is atomic so callbacks can check it without locking.
 type sourceDelay struct {
 	delay      time.Duration
-	generation uint64
+	generation atomic.Uint64
 }
 
 // DelayBuffer introduces a configurable per-source delay between frame
@@ -24,11 +25,11 @@ type sourceDelay struct {
 // the need for a background polling goroutine.
 type DelayBuffer struct {
 	hasAnyDelay atomic.Bool
+	stopped     atomic.Bool
 	mu          sync.Mutex
 	sources     map[string]*sourceDelay
 	handler     frameHandler
 	done        chan struct{} // closed on Close() for compatibility
-	stopped     bool
 }
 
 // Compile-time check that DelayBuffer implements the frameHandler interface.
@@ -90,7 +91,7 @@ func (db *DelayBuffer) RemoveSource(sourceKey string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if sd, ok := db.sources[sourceKey]; ok {
-		sd.generation++ // invalidate in-flight timers
+		sd.generation.Add(1)
 	}
 	delete(db.sources, sourceKey)
 	db.updateHasAnyDelay()
@@ -100,13 +101,12 @@ func (db *DelayBuffer) RemoveSource(sourceKey string) {
 // will check the stopped flag and discard frames. It is safe to call Close
 // multiple times.
 func (db *DelayBuffer) Close() {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-	if db.stopped {
+	if !db.stopped.CompareAndSwap(false, true) {
 		return
 	}
-	db.stopped = true
+	db.mu.Lock()
 	db.sources = make(map[string]*sourceDelay)
+	db.mu.Unlock()
 	close(db.done)
 }
 
@@ -119,7 +119,7 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 		return
 	}
 	db.mu.Lock()
-	if db.stopped {
+	if db.stopped.Load() {
 		db.mu.Unlock()
 		return
 	}
@@ -130,21 +130,16 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 		return
 	}
 	delay := sd.delay
-	gen := sd.generation
+	gen := sd.generation.Load()
 	db.mu.Unlock()
 
 	time.AfterFunc(delay, func() {
-		db.mu.Lock()
-		if db.stopped {
-			db.mu.Unlock()
+		if db.stopped.Load() {
 			return
 		}
-		curSD := db.sources[sourceKey]
-		if curSD == nil || curSD.generation != gen {
-			db.mu.Unlock()
+		if sd.generation.Load() != gen {
 			return
 		}
-		db.mu.Unlock()
 		db.handler.handleVideoFrame(sourceKey, frame)
 	})
 }
@@ -158,7 +153,7 @@ func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFram
 		return
 	}
 	db.mu.Lock()
-	if db.stopped {
+	if db.stopped.Load() {
 		db.mu.Unlock()
 		return
 	}
@@ -169,21 +164,16 @@ func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFram
 		return
 	}
 	delay := sd.delay
-	gen := sd.generation
+	gen := sd.generation.Load()
 	db.mu.Unlock()
 
 	time.AfterFunc(delay, func() {
-		db.mu.Lock()
-		if db.stopped {
-			db.mu.Unlock()
+		if db.stopped.Load() {
 			return
 		}
-		curSD := db.sources[sourceKey]
-		if curSD == nil || curSD.generation != gen {
-			db.mu.Unlock()
+		if sd.generation.Load() != gen {
 			return
 		}
-		db.mu.Unlock()
 		db.handler.handleAudioFrame(sourceKey, frame)
 	})
 }
@@ -197,7 +187,7 @@ func (db *DelayBuffer) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFr
 		return
 	}
 	db.mu.Lock()
-	if db.stopped {
+	if db.stopped.Load() {
 		db.mu.Unlock()
 		return
 	}
@@ -208,21 +198,16 @@ func (db *DelayBuffer) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFr
 		return
 	}
 	delay := sd.delay
-	gen := sd.generation
+	gen := sd.generation.Load()
 	db.mu.Unlock()
 
 	time.AfterFunc(delay, func() {
-		db.mu.Lock()
-		if db.stopped {
-			db.mu.Unlock()
+		if db.stopped.Load() {
 			return
 		}
-		curSD := db.sources[sourceKey]
-		if curSD == nil || curSD.generation != gen {
-			db.mu.Unlock()
+		if sd.generation.Load() != gen {
 			return
 		}
-		db.mu.Unlock()
 		db.handler.handleCaptionFrame(sourceKey, frame)
 	})
 }

@@ -34,12 +34,17 @@ type TSMuxer struct {
 	initialized  bool
 	cancel       context.CancelFunc
 	pendingAudio []*media.AudioFrame
+	annexBBuf    []byte
+	prependBuf   []byte
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
 // writing frames. The muxer initializes on the first keyframe.
 func NewTSMuxer() *TSMuxer {
-	return &TSMuxer{}
+	return &TSMuxer{
+		annexBBuf:  make([]byte, 0, 65536),
+		prependBuf: make([]byte, 0, 65536),
+	}
 }
 
 // SetOutput sets the callback that receives muxed MPEG-TS data.
@@ -70,15 +75,17 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		}
 	}
 
-	// Convert AVC1 wire data to Annex B format.
-	annexB := codec.AVC1ToAnnexB(frame.WireData)
-	if len(annexB) == 0 {
+	// Convert AVC1 wire data to Annex B format, reusing the buffer.
+	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
+	if len(m.annexBBuf) == 0 {
 		return nil
 	}
 
+	annexB := m.annexBBuf
 	// On keyframes, prepend SPS + PPS as Annex B NALUs.
 	if frame.IsKeyframe {
-		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		m.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, m.annexBBuf, m.prependBuf[:0])
+		annexB = m.prependBuf
 	}
 
 	// Build PES data for video.

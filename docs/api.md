@@ -46,6 +46,13 @@ Base URL: `http://localhost:8081` (TCP) or `https://localhost:8080` (HTTP/3)
   - [POST /api/output/srt/start](#post-apioutputsrtstart)
   - [POST /api/output/srt/stop](#post-apioutputsrtstop)
   - [GET /api/output/srt/status](#get-apioutputsrtstatus)
+- [Multi-Destination SRT Output](#multi-destination-srt-output)
+  - [POST /api/output/destinations](#post-apioutputdestinations)
+  - [GET /api/output/destinations](#get-apioutputdestinations)
+  - [GET /api/output/destinations/{id}](#get-apioutputdestinationsid)
+  - [DELETE /api/output/destinations/{id}](#delete-apioutputdestinationsid)
+  - [POST /api/output/destinations/{id}/start](#post-apioutputdestinationsidstart)
+  - [POST /api/output/destinations/{id}/stop](#post-apioutputdestinationsidstop)
 - [Graphics Overlay (DSK)](#graphics-overlay-dsk)
   - [POST /api/graphics/on](#post-apigraphicson)
   - [POST /api/graphics/off](#post-apigraphicsoff)
@@ -1574,6 +1581,120 @@ Get the current SRT output status without changing state.
 curl http://localhost:8081/api/output/srt/status \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+---
+
+## Multi-Destination SRT Output
+
+The multi-destination API allows adding, removing, starting, and stopping independent SRT destinations. Each destination has its own lifecycle and can be a caller (push) or listener (pull). This is the recommended API for managing SRT outputs -- the legacy single-destination endpoints above are still supported for backward compatibility.
+
+### POST /api/output/destinations
+
+Add a new SRT destination.
+
+**Request Body:**
+
+```json
+{
+  "name": "Platform A",
+  "mode": "caller",
+  "address": "ingest.example.com",
+  "port": 9000,
+  "latency": 200,
+  "streamID": "live/stream1"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Human-readable name for the destination |
+| `mode` | `string` | Yes | `"caller"` (push) or `"listener"` (pull) |
+| `address` | `string` | Caller only | Remote hostname or IP |
+| `port` | `int` | Yes | Port number |
+| `latency` | `int` | No | SRT latency in milliseconds |
+| `streamID` | `string` | No | SRT stream ID |
+
+**Response:** `201 Created` with the destination status
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid mode, missing port, or missing address for caller |
+| `501` | Output manager not configured |
+
+---
+
+### GET /api/output/destinations
+
+List all configured SRT destinations with their current status.
+
+**Response:** `200 OK` with array of destination statuses
+
+---
+
+### GET /api/output/destinations/{id}
+
+Get the status of a specific destination.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Destination ID |
+
+**Response:** `200 OK` with destination status
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Destination not found |
+
+---
+
+### DELETE /api/output/destinations/{id}
+
+Remove a destination. The destination must be stopped first.
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Destination not found |
+| `409` | Destination is currently active |
+
+---
+
+### POST /api/output/destinations/{id}/start
+
+Start a specific destination.
+
+**Response:** `200 OK` with destination status
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Destination not found |
+| `409` | Destination is already active |
+
+---
+
+### POST /api/output/destinations/{id}/stop
+
+Stop a specific destination.
+
+**Response:** `200 OK` with destination status
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Destination not found |
+| `409` | Destination is not active |
 
 ---
 

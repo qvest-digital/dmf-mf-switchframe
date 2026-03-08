@@ -220,13 +220,13 @@ cd ui && npx vitest run             # Frontend unit tests
 cd ui && npx playwright test        # E2E (builds static app, serves on :4173)
 ```
 
-~1100 Go tests, 575 Vitest tests, 45 Playwright E2E tests. All pass with `-race`.
+~1336 Go tests, 590 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
 
 ### Project Structure
 
 ```
 server/                     Go module (github.com/zsiec/switchframe/server)
-  cmd/switchframe/          Entry point, admin endpoints, static embed
+  cmd/switchframe/          Entry point, admin endpoints, static embed, GC/system tuning
   switcher/                 State machine, frame routing, frame sync, delay buffer, GOP cache
   audio/                    FDK AAC decode/mix/encode, EQ, compressor, crossfade, limiter, LUFS
   transition/               YUV420 blend, bilinear + Lanczos-3 scaler, smoothstep easing
@@ -245,11 +245,11 @@ server/                     Go module (github.com/zsiec/switchframe/server)
   demo/                     Simulated camera sources
   internal/                 Shared types (ControlRoomState, SourceInfo, etc.)
 ui/                         SvelteKit frontend (Svelte 5 + TypeScript)
-  src/components/           30+ Svelte 5 components (runes syntax)
+  src/components/           31 Svelte 5 components (runes syntax)
   src/lib/api/              REST client + TypeScript types
   src/lib/state/            Reactive store with MoQ update handler
   src/lib/transport/        WebTransport connection + MoQ media pipeline
-  src/lib/audio/            Client-side PFL
+  src/lib/audio/            Client-side PFL, peak hold
   src/lib/video/            Dissolve renderer (Canvas 2D, WebGPU stub)
   src/lib/keyboard/         Capture-phase keydown handler
   src/lib/graphics/         Graphics template publisher
@@ -311,7 +311,8 @@ graph TD
 - **MoQ for state and media.** Single QUIC connection carries both control state (JSON snapshots) and video/audio frames.
 - **Always-on re-encode.** Every program frame goes through decode→process→encode. This costs CPU but guarantees consistent SPS/PPS across transition boundaries so browsers don't need to reconfigure VideoDecoder.
 - **Audio passthrough.** When a single source is at 0 dB with EQ and compressor bypassed, the mixer skips decode/encode entirely.
-- **Lock-free hot path.** `atomic.Pointer` for source viewers, `RLock` for frame routing. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
+- **Lock-free hot path.** `atomic.Pointer` for source viewers, `RLock` for frame routing. Per-source locks in frame sync, atomic `lastGroupID` eliminates `statsMu`, cache line padding prevents false sharing on source viewer counters. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
+- **Zero-allocation hot path.** Buffer-reuse APIs (`AVC1ToAnnexBInto`, `PrependSPSPPSInto`, `EqualPowerCrossfadeStereoInto`) with caller-provided buffers. `sync.Pool` for AVC1/GOP/YUV buffers. Precomputed crossfade gain tables. `GOGC=400` reduces GC frequency.
 - **Raw YUV pipeline.** Single decode at ingest, processing chain (keying → compositing) operates on raw YUV420, single encode at output. No multi-encode generation loss.
 - **MXL shared-memory I/O.** Optional V210 video + float32 audio via shared memory (build tag `mxl`). MXL sources bypass H.264 decode — raw V210→YUV420p conversion feeds directly into the switching pipeline. Program output routes back to MXL for zero-latency interop with other broadcast tools.
 

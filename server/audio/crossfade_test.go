@@ -94,6 +94,69 @@ func TestCrossfadeEmptySlices(t *testing.T) {
 	require.InDelta(t, 1.0, result[0], 0.01, "single sample: old at t=0 should be ~1.0")
 }
 
+func TestEqualPowerCrossfadeStereoInto_MatchesOriginal(t *testing.T) {
+	t.Parallel()
+	n := 1024
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 0.8
+		newPCM[i] = 0.6
+	}
+
+	original := audio.EqualPowerCrossfadeStereo(old, newPCM, 2)
+	into := audio.EqualPowerCrossfadeStereoInto(nil, old, newPCM, 2)
+	require.Equal(t, len(original), len(into))
+	for i := range original {
+		require.InDelta(t, original[i], into[i], 1e-7, "sample %d mismatch", i)
+	}
+}
+
+func TestEqualPowerCrossfadeStereoInto_BufferReuse(t *testing.T) {
+	t.Parallel()
+	n := 512
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 1.0
+		newPCM[i] = 0.5
+	}
+
+	// Pre-allocate a buffer with sufficient capacity
+	dst := make([]float32, n)
+	result := audio.EqualPowerCrossfadeStereoInto(dst, old, newPCM, 2)
+
+	// Verify the returned slice shares the same backing array
+	require.Equal(t, n, len(result))
+	require.Equal(t, &dst[0], &result[0], "should reuse the provided buffer")
+
+	// Verify correct values
+	require.InDelta(t, 1.0, result[0], 0.01, "start should be ~old")
+	require.InDelta(t, 0.5, result[n-1], 0.01, "end should be ~new")
+
+	// Call again with a too-small buffer — should allocate a new one
+	smallDst := make([]float32, 4)
+	result2 := audio.EqualPowerCrossfadeStereoInto(smallDst, old, newPCM, 2)
+	require.Equal(t, n, len(result2))
+	require.NotEqual(t, &smallDst[0], &result2[0], "should allocate new buffer when capacity insufficient")
+}
+
+func TestEqualPowerCrossfadeInto(t *testing.T) {
+	t.Parallel()
+	old := []float32{1.0, 1.0, 1.0, 1.0}
+	newPCM := []float32{0.0, 0.0, 0.0, 0.0}
+
+	dst := make([]float32, 4)
+	result := audio.EqualPowerCrossfadeInto(dst, old, newPCM)
+	original := audio.EqualPowerCrossfade(old, newPCM)
+
+	require.Equal(t, len(original), len(result))
+	for i := range original {
+		require.InDelta(t, original[i], result[i], 1e-7, "sample %d mismatch", i)
+	}
+	require.Equal(t, &dst[0], &result[0], "should reuse the provided buffer")
+}
+
 func TestEqualPowerCrossfade_StereoGainSymmetry(t *testing.T) {
 	t.Parallel()
 	numPairs := 512

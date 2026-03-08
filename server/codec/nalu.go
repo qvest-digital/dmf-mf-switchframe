@@ -34,6 +34,37 @@ func AVC1ToAnnexB(avc1 []byte) []byte {
 	return out[:pos]
 }
 
+// AVC1ToAnnexBInto converts AVC1 format to Annex B format, writing into dst.
+// If dst has insufficient capacity, a new buffer is allocated. Returns the
+// result slice (possibly resliced dst). Pass dst[:0] to reuse a buffer.
+func AVC1ToAnnexBInto(avc1 []byte, dst []byte) []byte {
+	if len(avc1) == 0 {
+		if dst != nil {
+			return dst[:0]
+		}
+		return nil
+	}
+
+	if cap(dst) < len(avc1) {
+		dst = make([]byte, len(avc1))
+	}
+	dst = dst[:len(avc1)]
+	pos := 0
+
+	for pos+4 <= len(avc1) {
+		naluLen := int(binary.BigEndian.Uint32(avc1[pos : pos+4]))
+		if naluLen <= 0 || pos+4+naluLen > len(avc1) {
+			break
+		}
+
+		copy(dst[pos:pos+4], annexBStartCode)
+		copy(dst[pos+4:pos+4+naluLen], avc1[pos+4:pos+4+naluLen])
+		pos += 4 + naluLen
+	}
+
+	return dst[:pos]
+}
+
 // AnnexBToAVC1 converts Annex B format (start-code-prefixed NALUs) to
 // AVC1 format (4-byte length-prefixed NALUs). Handles both 3-byte
 // (0x000001) and 4-byte (0x00000001) start codes. Returns nil for nil
@@ -166,6 +197,42 @@ func PrependSPSPPS(sps, pps, annexBData []byte) []byte {
 		buf = append(buf, pps...)
 	}
 	return append(buf, annexBData...)
+}
+
+// PrependSPSPPSInto prepends SPS and PPS NALUs to annexBData, writing into dst.
+// Returns the result slice. Pass dst[:0] to reuse a buffer.
+func PrependSPSPPSInto(sps, pps, annexBData []byte, dst []byte) []byte {
+	if len(sps) == 0 && len(pps) == 0 {
+		if cap(dst) < len(annexBData) {
+			return append(dst[:0], annexBData...)
+		}
+		dst = dst[:len(annexBData)]
+		copy(dst, annexBData)
+		return dst
+	}
+
+	needed := len(annexBData)
+	if len(sps) > 0 {
+		needed += 4 + len(sps)
+	}
+	if len(pps) > 0 {
+		needed += 4 + len(pps)
+	}
+
+	if cap(dst) < needed {
+		dst = make([]byte, 0, needed)
+	}
+	dst = dst[:0]
+	if len(sps) > 0 {
+		dst = append(dst, annexBStartCode...)
+		dst = append(dst, sps...)
+	}
+	if len(pps) > 0 {
+		dst = append(dst, annexBStartCode...)
+		dst = append(dst, pps...)
+	}
+	dst = append(dst, annexBData...)
+	return dst
 }
 
 // ParseSPSCodecString returns a WebCodecs-compatible codec string from SPS NALU bytes.

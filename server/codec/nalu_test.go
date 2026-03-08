@@ -173,6 +173,166 @@ func TestParseSPSCodecString_TooShort(t *testing.T) {
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67, 0x42, 0xC0}))
 }
 
+func TestAVC1ToAnnexBInto_MatchesAVC1ToAnnexB(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		avc1 []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte{}},
+		{"single_nalu", []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x01, 0x02, 0x03, 0x04}},
+		{"multiple_nalus", []byte{
+			0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
+			0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
+		}},
+		{"three_nalus", []byte{
+			0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
+			0x00, 0x00, 0x00, 0x05, 0x68, 0x01, 0x02, 0x03, 0x04,
+			0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expected := AVC1ToAnnexB(tc.avc1)
+			got := AVC1ToAnnexBInto(tc.avc1, nil)
+			require.Equal(t, expected, got)
+		})
+	}
+}
+
+func TestAVC1ToAnnexBInto_ReusesBuffer(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{
+		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
+		0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
+	}
+
+	buf := make([]byte, 0, 1024)
+	result := AVC1ToAnnexBInto(avc1, buf[:0])
+	require.Equal(t, AVC1ToAnnexB(avc1), result)
+
+	result2 := AVC1ToAnnexBInto(avc1, result[:0])
+	require.Equal(t, AVC1ToAnnexB(avc1), result2)
+	require.Equal(t, cap(result), cap(result2), "backing array should be reused")
+}
+
+func TestAVC1ToAnnexBInto_NoAllocWhenCapSufficient(t *testing.T) {
+	avc1 := []byte{
+		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
+		0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
+	}
+
+	buf := make([]byte, 0, 256)
+	allocs := testing.AllocsPerRun(100, func() {
+		buf = AVC1ToAnnexBInto(avc1, buf[:0])
+	})
+	require.Equal(t, float64(0), allocs, "should not allocate when capacity is sufficient")
+}
+
+func TestAVC1ToAnnexBInto_NilDstAllocates(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x01, 0x02, 0x03, 0x04}
+	result := AVC1ToAnnexBInto(avc1, nil)
+	expected := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02, 0x03, 0x04}
+	require.Equal(t, expected, result)
+}
+
+func TestAVC1ToAnnexBInto_EmptyInput(t *testing.T) {
+	t.Parallel()
+	require.Nil(t, AVC1ToAnnexBInto(nil, nil))
+
+	buf := make([]byte, 0, 64)
+	result := AVC1ToAnnexBInto(nil, buf)
+	require.NotNil(t, result)
+	require.Empty(t, result)
+
+	result = AVC1ToAnnexBInto([]byte{}, buf)
+	require.NotNil(t, result)
+	require.Empty(t, result)
+}
+
+func TestPrependSPSPPSInto_MatchesPrependSPSPPS(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		sps    []byte
+		pps    []byte
+		annexB []byte
+	}{
+		{
+			"both_sps_pps",
+			[]byte{0x67, 0x64, 0x00, 0x28},
+			[]byte{0x68, 0xEE, 0x3C, 0x80},
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+		},
+		{
+			"only_sps",
+			[]byte{0x67, 0x64},
+			nil,
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		},
+		{
+			"only_pps",
+			nil,
+			[]byte{0x68, 0xEE},
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		},
+		{
+			"nil_both",
+			nil,
+			nil,
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		},
+		{
+			"empty_both",
+			[]byte{},
+			[]byte{},
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expected := PrependSPSPPS(tc.sps, tc.pps, tc.annexB)
+			got := PrependSPSPPSInto(tc.sps, tc.pps, tc.annexB, nil)
+			require.Equal(t, expected, got)
+		})
+	}
+}
+
+func TestPrependSPSPPSInto_ReusesBuffer(t *testing.T) {
+	t.Parallel()
+	sps := []byte{0x67, 0x64, 0x00, 0x28}
+	pps := []byte{0x68, 0xEE, 0x3C, 0x80}
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+
+	buf := make([]byte, 0, 1024)
+	result := PrependSPSPPSInto(sps, pps, annexB, buf[:0])
+	require.Equal(t, PrependSPSPPS(sps, pps, annexB), result)
+
+	result2 := PrependSPSPPSInto(sps, pps, annexB, result[:0])
+	require.Equal(t, PrependSPSPPS(sps, pps, annexB), result2)
+	require.Equal(t, cap(result), cap(result2), "backing array should be reused")
+}
+
+func TestPrependSPSPPSInto_NoAllocWhenCapSufficient(t *testing.T) {
+	sps := []byte{0x67, 0x64, 0x00, 0x28}
+	pps := []byte{0x68, 0xEE, 0x3C, 0x80}
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+
+	buf := make([]byte, 0, 1024)
+	allocs := testing.AllocsPerRun(100, func() {
+		buf = PrependSPSPPSInto(sps, pps, annexB, buf[:0])
+	})
+	require.Equal(t, float64(0), allocs, "should not allocate when capacity is sufficient")
+}
+
 func TestAnnexBToAVC1Into_MatchesAnnexBToAVC1(t *testing.T) {
 	t.Parallel()
 

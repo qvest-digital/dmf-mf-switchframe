@@ -179,16 +179,14 @@ type sourceState struct {
 	position   int  // display order in the UI (1-based)
 
 	// Rolling frame statistics for dynamic encoder parameters.
-	// Updated on every video frame. Used to estimate bitrate/fps for
-	// the transition encoder so it matches the source stream quality.
-	// Protected by statsMu — separate from the main s.mu to avoid
-	// contention between per-source stats updates and switcher operations.
-	statsMu      sync.Mutex
-	avgFrameSize float64 // exponential moving average of len(WireData) in bytes
-	avgFPS       float64 // exponential moving average of fps from PTS deltas
-	lastPTS      int64   // PTS of the most recent video frame (microseconds)
-	frameCount   int     // total video frames received (for EMA warmup)
-	lastGroupID  uint32  // most recent GroupID from this source's video frames
+	// Updated on every video frame from a single goroutine (source viewer).
+	// Used to estimate bitrate/fps for the transition encoder so it
+	// matches the source stream quality.
+	avgFrameSize float64       // exponential moving average of len(WireData) in bytes
+	avgFPS       float64       // exponential moving average of fps from PTS deltas
+	lastPTS      int64         // PTS of the most recent video frame (microseconds)
+	frameCount   int           // total video frames received (for EMA warmup)
+	lastGroupID  atomic.Uint32 // most recent GroupID from this source's video frames
 }
 
 // Switcher is the central switching engine. It manages which source is
@@ -296,6 +294,10 @@ type Switcher struct {
 	routeToPipeline   atomic.Int64 // frames routed to normal pipeline
 	routeFiltered     atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
+	// Frame deadline monitor: tracks pipeline latency violations.
+	frameBudgetNs      int64        // frame budget in nanoseconds (33ms for 30fps)
+	deadlineViolations atomic.Int64 // count of frames that exceeded budget
+
 	// Raw video output tap — receives deep copy of YUV after processing,
 	// before encode. Used by MXL output to write raw video to shared memory.
 	rawVideoSink atomic.Pointer[RawVideoSink]
@@ -330,7 +332,8 @@ func New(programRelay *distribution.Relay) *Switcher {
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		gopCache:      newGOPCache(),
-		videoProcCh:   make(chan videoProcWork, 4),
+		frameBudgetNs: 33_333_333, // 33ms for 30fps
+		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
 	}
 	s.delayBuffer = NewDelayBuffer(s)
@@ -543,6 +546,13 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// SetFrameBudget sets the per-frame processing time budget in nanoseconds.
+// When pipeline latency exceeds this budget, deadlineViolations is incremented.
+// Default is 33ms (30fps). Call with 16_666_666 for 60fps sources.
+func (s *Switcher) SetFrameBudget(ns int64) {
+	s.frameBudgetNs = ns
+}
+
 // LastBroadcastVideoPTS returns the PTS of the most recently broadcast video
 // frame to the program relay. Used by the replay system to anchor its output
 // PTS to the program timeline.
@@ -720,6 +730,9 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame, annexB []by
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
 		updateAtomicMax(&s.videoProcMaxNano, dur)
+		if dur > s.frameBudgetNs {
+			s.deadlineViolations.Add(1)
+		}
 	}()
 
 	s.mu.RLock()
@@ -809,6 +822,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame, annexB []by
 		s.promMetrics.PipelineFramesProcessed.Inc()
 	}
 	s.broadcastOwnedToProgram(out)
+	putAVC1Buffer(out.WireData)
 }
 
 // broadcastProcessed handles frames that are already decoded to YUV
@@ -821,9 +835,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	hasPipeline := s.pipeCodecs != nil
 	var groupID uint32
 	if ss, ok := s.sources[s.programSource]; ok {
-		ss.statsMu.Lock()
-		groupID = ss.lastGroupID
-		ss.statsMu.Unlock()
+		groupID = ss.lastGroupID.Load()
 	}
 	s.mu.RUnlock()
 
@@ -839,9 +851,14 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		yuv = compositor.ProcessYUV(yuv, width, height)
 	}
 
-	// Enqueue for async encode — avoid blocking the source delivery goroutine.
+	// Deep-copy YUV before async enqueue: the transition engine's FrameBlender
+	// reuses its output buffer, so the next IngestFrame overwrites it. The
+	// async encoder must operate on its own copy.
+	buf := getYUVBuffer(len(yuv))
+	copy(buf, yuv)
+
 	pf := &ProcessingFrame{
-		YUV: yuv, Width: width, Height: height,
+		YUV: buf, Width: width, Height: height,
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
 		Codec:   "h264", // only codec supported today
 		GroupID: groupID,
@@ -854,11 +871,15 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 // the videoProcessingLoop goroutine.
 func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 	start := time.Now()
+	defer pf.ReleaseYUV()
 	defer func() {
 		dur := time.Since(start).Nanoseconds()
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
 		updateAtomicMax(&s.videoProcMaxNano, dur)
+		if dur > s.frameBudgetNs {
+			s.deadlineViolations.Add(1)
+		}
 	}()
 
 	s.mu.RLock()
@@ -900,6 +921,7 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		s.promMetrics.PipelineFramesProcessed.Inc()
 	}
 	s.broadcastOwnedToProgram(frame)
+	putAVC1Buffer(frame.WireData)
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current
@@ -1677,7 +1699,7 @@ func (s *Switcher) RegisterMXLSource(key string) {
 // (keying -> compositor -> encode -> program relay). During active
 // transitions, routes to the transition engine for blending.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
-	s.health.recordFrame(sourceKey)
+	s.health.recordFrame(sourceKey, time.Now())
 
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
@@ -1715,9 +1737,7 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	// Update stats for encoder parameter derivation.
-	ss.statsMu.Lock()
-	ss.lastGroupID = pf.GroupID
-	ss.statsMu.Unlock()
+	ss.lastGroupID.Store(pf.GroupID)
 
 	// Enqueue as yuvFrame — goes through encodeAndBroadcastTransition
 	// which handles encode and broadcast to program relay.
@@ -2017,6 +2037,8 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"last_idr_gate_duration_ms": s.lastIDRGateDurationMs.Load(),
 		"transitions_started":       s.transitionsStarted.Load(),
 		"transitions_completed":     s.transitionsCompleted.Load(),
+		"deadline_violations":       s.deadlineViolations.Load(),
+		"frame_budget_ms":           float64(s.frameBudgetNs) / 1e6,
 		"video_pipeline": map[string]any{
 			"frames_processed":     s.videoProcCount.Load(),
 			"frames_broadcast":     s.videoBroadcastCount.Load(),
@@ -2197,8 +2219,8 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 }
 
 // updateFrameStats updates the rolling frame size and FPS estimates for a
-// source. Called on every video frame. Uses an exponential moving average
-// with alpha=0.1 for stability. Caller must hold ss.statsMu.
+// source. Called on every video frame from the source's viewer goroutine
+// (single-writer). Uses an exponential moving average with alpha=0.1.
 func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	const alpha = 0.1 // EMA smoothing factor
 
@@ -2230,8 +2252,8 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 		}
 	}
 	ss.lastPTS = frame.PTS
-	if frame.GroupID > ss.lastGroupID {
-		ss.lastGroupID = frame.GroupID
+	if frame.GroupID > ss.lastGroupID.Load() {
+		ss.lastGroupID.Store(frame.GroupID)
 	}
 }
 
@@ -2240,7 +2262,8 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 // program source are forwarded to the program Relay. After a cut, frames
 // are gated until the first keyframe (IDR) to prevent decoder artifacts.
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
-	s.health.recordFrame(sourceKey)
+	now := time.Now()
+	s.health.recordFrame(sourceKey, now)
 
 	// Single RLock to snapshot all state needed for this frame.
 	s.mu.RLock()
@@ -2259,16 +2282,12 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 
-	// Update per-source frame statistics (uses its own statsMu, not s.mu).
+	// Update per-source frame statistics (single-writer per source viewer).
 	if ss != nil {
-		ss.statsMu.Lock()
 		s.updateFrameStats(ss, frame)
-		avgFrameSize := ss.avgFrameSize
-		avgFPS := ss.avgFPS
-		ss.statsMu.Unlock()
 
 		if isProgramSource && pipeCodecs != nil {
-			pipeCodecs.updateSourceStats(avgFrameSize, avgFPS)
+			pipeCodecs.updateSourceStats(ss.avgFrameSize, ss.avgFPS)
 		}
 	}
 
@@ -2377,7 +2396,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 // Otherwise, only the current program source's audio is forwarded to the
 // program Relay, gated along with video until the first keyframe after a cut.
 func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
-	s.health.recordFrame(sourceKey)
+	s.health.recordFrame(sourceKey, time.Now())
 
 	s.mu.RLock()
 	handler := s.audioHandler

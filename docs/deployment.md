@@ -804,6 +804,16 @@ In Docker (non-root user with no home dir), these paths resolve based on the `sw
 docker run -v switchframe-data:/home/switchframe/.switchframe switchframe
 ```
 
+### GC and System Tuning
+
+Switchframe sets `GOGC=400` by default (if the `GOGC` environment variable is not already set). This reduces GC frequency by triggering collection at 5x live heap instead of the default 2x, trading memory for fewer latency spikes during real-time frame processing. Override with `GOGC=100` (Go default) or `GOGC=off` to disable.
+
+At startup, `logSystemTuning()` checks `RLIMIT_NOFILE` and logs a warning if the file descriptor limit is below 65536. On Linux:
+
+```bash
+ulimit -n 65536
+```
+
 ### Recommended Production Checklist
 
 - [ ] Set `SWITCHFRAME_API_TOKEN` explicitly (do not rely on auto-generation)

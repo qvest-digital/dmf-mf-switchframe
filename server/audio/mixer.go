@@ -140,6 +140,10 @@ type AudioMixer struct {
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
+	// Reusable buffers for hot-path allocation elimination
+	mxlSinkBuf   []float32 // reused by MXL raw audio sink copy
+	crossfadeBuf []float32 // reused by ingestCrossfadeFrame crossfade output
+
 	// Raw audio output tap for MXL (atomic, lock-free read)
 	rawAudioSink atomic.Pointer[RawAudioSink]
 
@@ -325,8 +329,14 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		m.mixAccum[i] = 0
 	}
 	for _, buf := range m.mixBuffer {
-		for i := 0; i < len(buf) && i < mixLen; i++ {
-			m.mixAccum[i] += buf[i]
+		n := len(buf)
+		if n > mixLen {
+			n = mixLen
+		}
+		accum := m.mixAccum[:n]
+		src := buf[:n]
+		for i := range accum {
+			accum[i] += src[i]
 		}
 	}
 	mixed := m.mixAccum
@@ -347,9 +357,9 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 
 	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
 	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
-		cp := make([]float32, len(mixed))
-		copy(cp, mixed)
-		(*sinkPtr)(cp, pts, m.sampleRate, m.numChannels)
+		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
+		copy(m.mxlSinkBuf, mixed)
+		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
 	}
 
 	// Apply program mute (FTB held): zero the buffer so output is silent
@@ -1178,7 +1188,8 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Apply equal-power crossfade (or use single source if timed out)
 	var mixed []float32
 	if hasFrom && hasTo {
-		mixed = EqualPowerCrossfadeStereo(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
+		m.crossfadeBuf = EqualPowerCrossfadeStereoInto(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
+		mixed = m.crossfadeBuf
 	} else if hasTo {
 		// Outgoing source timed out — use incoming source only
 		mixed = m.crossfadePCM[m.crossfadeTo]

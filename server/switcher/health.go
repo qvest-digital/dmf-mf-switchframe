@@ -59,21 +59,21 @@ func (hm *healthMonitor) registerSource(sourceKey string) {
 	hm.mu.Unlock()
 }
 
-func (hm *healthMonitor) recordFrame(sourceKey string) {
-	now := time.Now().UnixNano()
+func (hm *healthMonitor) recordFrame(sourceKey string, now time.Time) {
+	nanos := now.UnixNano()
 
 	// Load-or-store an *atomic.Int64 for this source.
 	if val, ok := hm.lastFrame.Load(sourceKey); ok {
-		val.(*atomic.Int64).Store(now)
+		val.(*atomic.Int64).Store(nanos)
 		return
 	}
 
 	// First frame for this source: store a new atomic.
 	v := &atomic.Int64{}
-	v.Store(now)
+	v.Store(nanos)
 	if actual, loaded := hm.lastFrame.LoadOrStore(sourceKey, v); loaded {
 		// Another goroutine beat us; use the existing entry.
-		actual.(*atomic.Int64).Store(now)
+		actual.(*atomic.Int64).Store(nanos)
 	}
 }
 

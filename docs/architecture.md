@@ -400,6 +400,13 @@ stalled SRT connection) from blocking the muxer and other adapters.
 - **Listener** (pull): binds a port and accepts up to 8 incoming SRT
   connections.
 
+**Multi-destination SRT.** Per-destination `OutputDestination` with
+independent lifecycle (add/remove/start/stop). Each destination gets its
+own `AsyncAdapter` wrapper. CRUD API at `/api/output/destinations`.
+Destinations are included in the adapter fan-out via
+`rebuildAdaptersLocked()`. State change callbacks trigger
+ControlRoomState broadcast.
+
 
 ### 2.6 Graphics Compositor (`graphics/`)
 
@@ -677,7 +684,8 @@ flowchart TD
             sort --> fps["Estimate source FPS<br/>(from PTS span)"]
             fps --> enc["Create encoder<br/>(bitrate from resolution)"]
             enc --> dup["Output with frame duplication<br/>(dupCount = ceil(1/speed))"]
-            dup --> pace["Pace at source FPS<br/>(time.NewTimer per frame)"]
+            dup --> wsola["WSOLA time-stretch audio<br/>(pitch-preserved slow-mo)"]
+            wsola --> pace["Pace at source FPS<br/>(time.NewTimer per frame)"]
         end
 
         pace --> relay["Replay Relay<br/>(BroadcastVideo)"]
@@ -716,8 +724,11 @@ on completion. It:
 registered as `server.RegisterStream("replay")`. Browsers subscribe to
 this MoQ stream to display the replay in the preview or program window.
 
-**Audio.** Audio is muted in v1. The `replayViewer.SendAudio` is a no-op
-that counts dropped frames for stats reporting.
+**Audio.** Replay audio uses WSOLA (Waveform Similarity Overlap-Add)
+time-stretching for pitch-preserved slow-motion playback. At 1.0x speed,
+audio passes through unchanged. At slower speeds, the WSOLA processor
+stretches audio to match the frame duplication rate while maintaining
+original pitch. Window size is 1024 samples with a search range of 256.
 
 **Loop support.** When `loop` is true, the player restarts from the
 beginning of the clip after completing playback, continuing until
@@ -1323,7 +1334,67 @@ writers.
 - **Writer**: Write failures are logged but do not stop the writer.
   Resolution mismatches silently drop frames.
 
-## 6. Key Design Decisions
+## 6. Performance Optimizations
+
+### Hot-Path Allocation Elimination
+
+The video/audio frame processing paths are designed for zero steady-state
+allocations. Key techniques:
+
+- **Buffer-reuse APIs:** `AVC1ToAnnexBInto(avc1, dst)` and
+  `PrependSPSPPSInto(sps, pps, data, dst)` write into caller-provided
+  buffers. The TSMuxer, GOP cache, and confidence monitor maintain
+  persistent buffers that grow once and are reused.
+- **sync.Pool for frame buffers:** AVC1 output buffers, GOP cache
+  buffers, and YUV processing buffers use `sync.Pool` to recycle
+  allocations across frames.
+- **Crossfade lookup table:** 1024-entry precomputed cos/sin tables
+  replace per-sample `math.Cos`/`math.Sin` calls. The mixer stores a
+  reusable `crossfadeBuf` for crossfade output.
+- **Mix accumulation BCE:** The inner mix loop pre-slices accumulators
+  with a single `range` bound, enabling compiler bounds-check elimination.
+
+### Lock Contention Reduction
+
+- **Per-source frame sync locks:** Each `syncSource` has its own mutex.
+  Ingest acquires the global `fs.mu` briefly for source lookup, then
+  uses the per-source `ss.mu` for ring buffer operations. This eliminates
+  contention between sources on the ingest path.
+- **Atomic source stats:** `sourceState.statsMu` was eliminated. Frame
+  statistics are single-writer (updated only from the source viewer
+  goroutine). `lastGroupID` uses `atomic.Uint32` for lock-free reads.
+- **Lock-free delay buffer callbacks:** `sourceDelay.generation` is
+  `atomic.Uint64` and `stopped` is `atomic.Bool`. Timer callbacks check
+  these atomically without acquiring the mutex.
+- **Cache line padding:** Source viewer atomic counters (`videoSent`,
+  `audioSent`, `captionSent`) are separated by `[56]byte` padding to
+  prevent false sharing between goroutines on the same cache line.
+- **GOP cache single lock:** `RecordFrame` combines the active-source
+  check and cache write into a single lock acquisition.
+
+### GC Tuning
+
+`GOGC=400` is set by default (if the `GOGC` env var isn't already set),
+reducing GC frequency by triggering collection at 5x live heap instead
+of the default 2x. At startup, `logSystemTuning()` checks
+`RLIMIT_NOFILE` and warns if below 65536.
+
+### Frame Deadline Monitoring
+
+A `frameBudgetNs` field (default 33ms for 30fps) and `deadlineViolations`
+atomic counter track when processing exceeds the frame budget. Exposed
+in `DebugSnapshot()` as `deadline_violations` and `frame_budget_ms`.
+
+### SIMD-Accelerated Chroma Blending
+
+Wipe transitions now compute chroma alpha maps directly at half
+resolution instead of downsampling from luma resolution. Stinger
+transitions use `downsampleAlphaToChroma()` plus the SIMD-optimized
+`blendAlpha` kernel for Cb/Cr planes, replacing scalar per-pixel loops.
+
+---
+
+## 7. Key Design Decisions
 
 ### Server-Side Switching
 
@@ -1387,11 +1458,12 @@ polling.
 
 ### Transition Engine Lifecycle
 
-Each transition creates a fresh `TransitionEngine` with its own decoders
-and encoder, which are destroyed on completion/abort. This avoids
-persistent codec state between transitions (no resource leaks, no stale
-encoder state). Between transitions, no video decode or encode occurs --
-just raw frame forwarding.
+Each transition creates a fresh `TransitionEngine` with its own decoders,
+which are destroyed on completion/abort. The engine outputs raw YUV via
+callback -- encoding is handled by the shared `pipelineCodecs` encoder.
+This avoids persistent codec state between transitions (no resource leaks,
+no stale decoder state). Between transitions, program frames still flow
+through the always-on decode→encode pipeline for consistent SPS/PPS.
 
 ### Encoder Auto-Detection
 
@@ -1425,7 +1497,7 @@ works even in environments that do not support WebTransport (proxies,
 older browsers).
 
 
-## 7. Technology Stack
+## 8. Technology Stack
 
 | Layer | Technology | Purpose |
 |---|---|---|

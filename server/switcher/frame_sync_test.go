@@ -637,10 +637,7 @@ func TestMonotonicTickAccuracy(t *testing.T) {
 	// Wait for 100 ticks worth of frames. With freeze repeat, each tick
 	// releases the same frame, so we need >= numTicks frames.
 	deadline := time.After(3 * time.Second)
-	for {
-		if handler.videoCount() >= numTicks {
-			break
-		}
+	for handler.videoCount() < numTicks {
 		select {
 		case <-deadline:
 			t.Fatalf("timed out: only got %d frames, wanted %d", handler.videoCount(), numTicks)

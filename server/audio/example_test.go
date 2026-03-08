@@ -40,7 +40,7 @@ func ExampleEqualPowerCrossfade() {
 	}
 	// Output:
 	// sample[0] = 0.0000
-	// sample[1] = 0.3827
-	// sample[2] = 0.7071
-	// sample[3] = 0.9239
+	// sample[1] = 0.3816
+	// sample[2] = 0.7066
+	// sample[3] = 0.9237
 }
