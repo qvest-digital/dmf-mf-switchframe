@@ -23,8 +23,13 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 
 // Adaptive rate control: when buffer is between LOW and HIGH, consume at 1x.
 // Below LOW, slow down consumption; above HIGH, speed up. Drift is
-// compensated by skipping or repeating ~13 samples per 128-sample quantum
-// (~270µs, inaudible) — no resampling or interpolation is used.
+// compensated by skipping or repeating ~3 samples per 128-sample quantum
+// (~60µs, perceptually transparent) — no resampling or interpolation.
+//
+// The ±2% range is chosen to be imperceptible. Broadcast systems use
+// ±0.1-0.5%, but we allow slightly more to handle WebTransport jitter.
+// At ±2%, pitch shift is <0.3 semitones — well below audibility threshold.
+// The previous ±10% caused noticeable pitch changes and garbling.
 //
 // Buffer depth directly determines A/V sync offset: video displays immediately
 // but audio plays through the buffer, so avSyncMs ≈ buffer depth. Targets are
@@ -32,13 +37,12 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 const TARGET_BUFFER_MS = 100;
 const LOW_WATER_MS = 50;
 const HIGH_WATER_MS = 200;
-const MAX_SPEED_RATIO = 1.10;
-const MIN_SPEED_RATIO = 0.90;
+const MAX_SPEED_RATIO = 1.02;
+const MIN_SPEED_RATIO = 0.98;
 // Above this threshold, hard-flush the ring buffer to TARGET_BUFFER_MS.
-// Set to HIGH_WATER_MS + TARGET_BUFFER_MS so any buffer level clearly
-// caused by a delivery stall (not normal jitter) is flushed instantly
-// rather than spending seconds on gradual drain at 1.10x.
-const HARD_FLUSH_MS = 300;
+// Set high enough that normal jitter doesn't trigger it, but delivery
+// stalls (network hiccup, tab backgrounded) are caught quickly.
+const HARD_FLUSH_MS = 400;
 
 function writePTS(states: Int32Array, pts: number): void {
 	const intPart = Math.trunc(pts);
