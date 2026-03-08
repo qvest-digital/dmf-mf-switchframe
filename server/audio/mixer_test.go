@@ -1969,12 +1969,13 @@ func TestMixer_MonotonicOutputPTS(t *testing.T) {
 
 	require.GreaterOrEqual(t, len(frames), 2, "need at least 2 frames")
 
-	expectedDelta := int64(1024) * 90000 / int64(48000) // frameDuration90k
+	// Output PTS must be strictly monotonically increasing.
+	// With source-following PTS, the deltas track input PTS (not a fixed counter),
+	// but backward inputs are corrected to advance by frameDuration90k.
 	for i := 1; i < len(frames); i++ {
-		delta := frames[i].PTS - frames[i-1].PTS
-		require.Equal(t, expectedDelta, delta,
-			"frame %d PTS delta should be exactly frameDuration90k (%d), got %d",
-			i, expectedDelta, delta)
+		require.Greater(t, frames[i].PTS, frames[i-1].PTS,
+			"frame %d PTS (%d) must be > frame %d PTS (%d)",
+			i, frames[i].PTS, i-1, frames[i-1].PTS)
 	}
 }
 
@@ -2100,12 +2101,12 @@ func TestMixer_MonotonicPTS_ArrivalOrderIndependent(t *testing.T) {
 
 			require.GreaterOrEqual(t, len(frames), 2, "need at least 2 frames")
 
-			expectedDelta := int64(1024) * 90000 / int64(48000)
+			// Output PTS must be strictly monotonically increasing regardless
+			// of ingestion order. Deltas follow source PTS, not a fixed counter.
 			for i := 1; i < len(frames); i++ {
-				delta := frames[i].PTS - frames[i-1].PTS
-				require.Equal(t, expectedDelta, delta,
-					"frame %d PTS delta should be exactly frameDuration90k (%d), got %d (order=%s)",
-					i, expectedDelta, delta, order)
+				require.Greater(t, frames[i].PTS, frames[i-1].PTS,
+					"frame %d PTS (%d) must be > frame %d PTS (%d) (order=%s)",
+					i, frames[i].PTS, i-1, frames[i-1].PTS, order)
 			}
 		})
 	}
@@ -2253,15 +2254,13 @@ func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
 
 	require.Greater(t, len(frames), 40, "should have substantial output frames across 4 cycles")
 
-	// Assert: output PTS is strictly monotonically increasing across ALL frames
+	// Assert: output PTS is strictly monotonically increasing across ALL frames.
+	// With source-following PTS, deltas may be larger than frameDuration90k
+	// when the mixer switches between sources on different PTS timelines.
 	for i := 1; i < len(frames); i++ {
-		delta := frames[i].PTS - frames[i-1].PTS
-		require.Greater(t, delta, int64(0),
-			"frame %d→%d: PTS must be strictly increasing (got delta=%d, prev=%d, cur=%d)",
-			i-1, i, delta, frames[i-1].PTS, frames[i].PTS)
-		require.LessOrEqual(t, delta, 2*frameDuration90k,
-			"frame %d→%d: PTS gap must be ≤ 2× frame duration (got delta=%d)",
-			i-1, i, delta)
+		require.Greater(t, frames[i].PTS, frames[i-1].PTS,
+			"frame %d→%d: PTS must be strictly increasing (prev=%d, cur=%d)",
+			i-1, i, frames[i-1].PTS, frames[i].PTS)
 	}
 }
 

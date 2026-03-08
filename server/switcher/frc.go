@@ -106,6 +106,12 @@ type frcSource struct {
 	meLastNs      int64     // duration of last ME in nanoseconds
 	degradedSince time.Time // when we last degraded
 
+	// Tick tracking for emit alpha computation.
+	// ticksSinceLastFresh counts ticks since the last fresh source frame was popped.
+	// Used to compute interpolation position relative to source frame cadence.
+	ticksSinceLastFresh int
+	tickIntervalPTS     int64 // pipeline tick interval in 90kHz PTS units
+
 	// Reusable buffers (zero-alloc steady state)
 	warpA    []byte // forward-warped scratch
 	warpB    []byte // backward-warped scratch
@@ -117,10 +123,11 @@ type frcSource struct {
 }
 
 // newFRCSource creates an frcSource with the given quality level.
-func newFRCSource(quality FRCQuality) *frcSource {
+func newFRCSource(quality FRCQuality, tickIntervalPTS int64) *frcSource {
 	return &frcSource{
 		requestedQuality: quality,
 		effectiveQuality: quality,
+		tickIntervalPTS:  tickIntervalPTS,
 	}
 }
 
@@ -213,7 +220,9 @@ func (fs *frcSource) emit(tickPTS int64) *ProcessingFrame {
 		return nil
 	}
 
-	// Compute alpha from PTS
+	// Compute alpha from PTS. The tickPTS must be on the source PTS timeline
+	// (not the synthetic tick counter). The frame sync passes
+	// lastReleasedPTS + tickIntervalPTS for interpolation ticks.
 	ptsDelta := fs.currPTS - fs.prevPTS
 	if ptsDelta <= 0 {
 		return fs.currFrame

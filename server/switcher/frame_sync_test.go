@@ -159,7 +159,7 @@ func TestFrameSync_TickReleasesAudio(t *testing.T) {
 	require.GreaterOrEqual(t, handler.audioCount(), 1, "audio count after tick")
 }
 
-func TestFrameSync_PTSRewritten(t *testing.T) {
+func TestFrameSync_PTSPreservedForFreshFrames(t *testing.T) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
@@ -173,8 +173,13 @@ func TestFrameSync_PTSRewritten(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	videos := handler.getVideos()
 	require.NotEmpty(t, videos, "no video frames released")
-	// PTS should be rewritten to a tick-based timestamp (not the original 99999).
-	require.NotEqual(t, int64(99999), videos[0].frame.PTS, "PTS was not rewritten — still original value 99999")
+	// Fresh frame PTS should be preserved (same timeline as audio for A/V sync).
+	require.Equal(t, int64(99999), videos[0].frame.PTS, "fresh frame PTS should be preserved")
+	// Repeated frames (freeze) should advance PTS monotonically.
+	if len(videos) >= 3 {
+		require.Greater(t, videos[2].frame.PTS, videos[1].frame.PTS,
+			"repeated frame PTS should advance monotonically")
+	}
 }
 
 func TestFrameSync_FreezeRepeatsLastFrame(t *testing.T) {

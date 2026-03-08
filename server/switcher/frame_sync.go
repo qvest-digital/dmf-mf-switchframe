@@ -22,6 +22,7 @@ const (
 // outside the lock. The slice is reused across ticks to avoid allocation.
 type pendingRelease struct {
 	sourceKey string
+	ss        *syncSource // for PTS tracking during delivery
 	video     *media.VideoFrame
 	rawVideo  *ProcessingFrame
 	audio     *media.AudioFrame
@@ -57,6 +58,12 @@ type syncSource struct {
 	// After 2 repeated frames, audio emission stops to prevent a glitch loop
 	// with encoded AAC (which sounds worse than silence).
 	audioMissCount int
+
+	// lastReleasedPTS tracks the PTS of the last video frame released by this
+	// source. Used to generate monotonic PTS for repeated/frozen frames while
+	// preserving original source PTS for fresh frames (A/V sync with audio).
+	lastReleasedPTS int64
+	ptsInitialized  bool
 
 	// frc holds per-source frame rate conversion state. nil when FRC is disabled.
 	frc *frcSource
@@ -192,7 +199,8 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	}
 	ss := &syncSource{}
 	if fs.frcQuality != FRCNone {
-		ss.frc = newFRCSource(fs.frcQuality)
+		tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
+		ss.frc = newFRCSource(fs.frcQuality, tickIntervalPTS)
 	}
 	fs.sources[key] = ss
 	fs.log.Debug("source added", "key", key)
@@ -275,7 +283,8 @@ func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 				ss.frc = nil
 			}
 		} else if ss.frc == nil {
-			ss.frc = newFRCSource(q)
+			tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
+			ss.frc = newFRCSource(q, tickIntervalPTS)
 		} else {
 			ss.frc.requestedQuality = q
 			ss.frc.effectiveQuality = q
@@ -376,13 +385,14 @@ func (fs *FrameSynchronizer) tickLoop() {
 // - If no new frames, repeat the last frame (freeze).
 // - If no frame has ever been received, skip.
 //
-// PTS is rewritten to a monotonic tick-based timestamp.
+// Fresh source frames preserve their original PTS (A/V sync with audio).
+// Repeated/frozen/interpolated frames advance PTS by one tick interval to
+// maintain monotonic output for downstream decoders.
 func (fs *FrameSynchronizer) releaseTick() {
 	fs.mu.Lock()
 	fs.tickNum++
-	// Convert tick number to 90 kHz PTS units.
-	// tickRate is a time.Duration (nanoseconds); multiply by 90000/1e9 to convert.
-	tickPTS := fs.tickNum * int64(fs.tickRate) * mpegtsClock / int64(time.Second)
+	// Tick interval in 90 kHz PTS units (e.g., 3003 for 29.97fps).
+	tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
 
 	// Reuse the releases slice from previous ticks to avoid allocation.
 	fs.releases = fs.releases[:0]
@@ -400,9 +410,16 @@ func (fs *FrameSynchronizer) releaseTick() {
 		if newest := ss.popNewestRawVideo(); newest != nil {
 			ss.lastRawVideo = newest
 			releaseRawVideo = newest
+			// Reset FRC interpolation counter — fresh frame arrived
+			if ss.frc != nil {
+				ss.frc.ticksSinceLastFresh = 0
+			}
 		} else if ss.frc != nil && ss.frc.canInterpolate() {
-			// FRC: synthesize interpolated frame instead of repeating last
-			releaseRawVideo = ss.frc.emit(tickPTS)
+			// FRC: synthesize interpolated frame on the source PTS timeline.
+			// Advance from the last released PTS by one tick interval per missed tick.
+			ss.frc.ticksSinceLastFresh++
+			frcPTS := ss.lastReleasedPTS + int64(ss.frc.ticksSinceLastFresh)*ss.frc.tickIntervalPTS
+			releaseRawVideo = ss.frc.emit(frcPTS)
 		} else if ss.lastRawVideo != nil {
 			releaseRawVideo = ss.lastRawVideo
 		}
@@ -436,6 +453,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 		if releaseVideo != nil || releaseRawVideo != nil || releaseAudio != nil {
 			fs.releases = append(fs.releases, pendingRelease{
 				sourceKey: key,
+				ss:        ss,
 				video:     releaseVideo,
 				rawVideo:  releaseRawVideo,
 				audio:     releaseAudio,
@@ -445,23 +463,46 @@ func (fs *FrameSynchronizer) releaseTick() {
 	fs.mu.Unlock()
 
 	// Deliver outside the lock to prevent deadlocks with downstream handlers.
+	//
+	// PTS strategy (broadcast-correct A/V sync):
+	// - Fresh source frames: preserve original PTS (same timeline as audio)
+	// - Repeated/frozen frames: advance PTS by one tick interval (monotonic for decoders)
+	// - FRC-interpolated frames: use tick PTS (no source PTS exists)
+	//
+	// Audio bypasses frame sync entirely (continuous sample stream), so keeping
+	// video PTS on the source timeline maintains A/V sync in the muxer.
 	for _, r := range fs.releases {
 		if r.rawVideo != nil {
-			// Deep copy with PTS rewrite for raw video.
 			pf := *r.rawVideo
-			pf.PTS = tickPTS
+			if r.ss != nil {
+				if pf.PTS != r.ss.lastReleasedPTS || !r.ss.ptsInitialized {
+					// Fresh frame or FRC-interpolated: preserve source PTS
+					r.ss.lastReleasedPTS = pf.PTS
+					r.ss.ptsInitialized = true
+				} else {
+					// Repeated frame (freeze): advance by tick interval for monotonic output
+					r.ss.lastReleasedPTS += tickIntervalPTS
+					pf.PTS = r.ss.lastReleasedPTS
+				}
+			}
 			if fs.onRawVideo != nil {
 				fs.onRawVideo(r.sourceKey, &pf)
 			}
 		} else if r.video != nil {
-			// Copy the frame to rewrite PTS without mutating the original.
 			vf := *r.video
-			vf.PTS = tickPTS
+			if r.ss != nil {
+				if vf.PTS != r.ss.lastReleasedPTS || !r.ss.ptsInitialized {
+					r.ss.lastReleasedPTS = vf.PTS
+					r.ss.ptsInitialized = true
+				} else {
+					r.ss.lastReleasedPTS += tickIntervalPTS
+					vf.PTS = r.ss.lastReleasedPTS
+				}
+			}
 			fs.onVideo(r.sourceKey, vf)
 		}
 		if r.audio != nil {
 			af := *r.audio
-			af.PTS = tickPTS
 			fs.onAudio(r.sourceKey, af)
 		}
 	}

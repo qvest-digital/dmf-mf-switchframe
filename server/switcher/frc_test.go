@@ -90,7 +90,7 @@ func makeFRCGradientFrame(width, height int, offset byte, pts int64) *Processing
 }
 
 func TestFRC_IngestBuildsState(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	f1 := makeTestFrame(64, 64, 100, 3000)
 	f2 := makeTestFrame(64, 64, 110, 6000)
@@ -104,7 +104,7 @@ func TestFRC_IngestBuildsState(t *testing.T) {
 }
 
 func TestFRC_IngestSingleFrame(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	f1 := makeTestFrame(64, 64, 100, 3000)
 	fs.ingest(f1)
@@ -114,7 +114,7 @@ func TestFRC_IngestSingleFrame(t *testing.T) {
 }
 
 func TestFRC_EmitNearest(t *testing.T) {
-	fs := newFRCSource(FRCNearest)
+	fs := newFRCSource(FRCNearest, 3000)
 
 	prevPTS := int64(3000) // at 30fps with 90kHz clock = 3000 ticks/frame
 	currPTS := int64(6000)
@@ -138,7 +138,7 @@ func TestFRC_EmitNearest(t *testing.T) {
 }
 
 func TestFRC_EmitBlend(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	prevPTS := int64(3000)
 	currPTS := int64(6000)
@@ -164,7 +164,7 @@ func TestFRC_EmitBlend(t *testing.T) {
 
 func TestFRC_EmitMCFI_Static(t *testing.T) {
 	// With identical (static) frames, MCFI output should be very close to source
-	fs := newFRCSource(FRCMCFI)
+	fs := newFRCSource(FRCMCFI, 3000)
 
 	// Use 64x64 frames (multiple of 16 block size)
 	prevPTS := int64(3000)
@@ -187,7 +187,7 @@ func TestFRC_EmitMCFI_Static(t *testing.T) {
 }
 
 func TestFRC_SceneChangeDetection(t *testing.T) {
-	fs := newFRCSource(FRCMCFI)
+	fs := newFRCSource(FRCMCFI, 3000)
 
 	// Build up some SAD history with similar frames
 	for i := 0; i < 8; i++ {
@@ -209,7 +209,7 @@ func TestFRC_SceneChangeDetection(t *testing.T) {
 }
 
 func TestFRC_AdaptiveThreshold(t *testing.T) {
-	fs := newFRCSource(FRCMCFI)
+	fs := newFRCSource(FRCMCFI, 3000)
 
 	// Feed frames with moderate but consistent motion (gradient shift)
 	// This should build up a reasonable SAD history without triggering scene change
@@ -227,7 +227,7 @@ func TestFRC_AdaptiveThreshold(t *testing.T) {
 }
 
 func TestFRC_NearThreshold(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	prevPTS := int64(3000)
 	currPTS := int64(6000)
@@ -251,7 +251,7 @@ func TestFRC_NearThreshold(t *testing.T) {
 }
 
 func TestFRC_Reset(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	f1 := makeTestFrame(64, 64, 100, 3000)
 	f2 := makeTestFrame(64, 64, 200, 6000)
@@ -267,7 +267,7 @@ func TestFRC_Reset(t *testing.T) {
 }
 
 func TestFRC_AdaptiveDegradation(t *testing.T) {
-	fs := newFRCSource(FRCMCFI)
+	fs := newFRCSource(FRCMCFI, 3000)
 
 	// Ingest two frames to build initial state
 	f1 := makeTestFrame(64, 64, 100, 1000)
@@ -488,7 +488,7 @@ func TestFrameSync_SetFRCQuality(t *testing.T) {
 // --- Additional edge case tests ---
 
 func TestFRC_EmitClampsAlpha(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	prevPTS := int64(3000)
 	currPTS := int64(6000)
@@ -510,7 +510,7 @@ func TestFRC_EmitClampsAlpha(t *testing.T) {
 }
 
 func TestFRC_FPSTracking(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	// Simulate 30fps: 3000 ticks per frame at 90kHz
 	for i := 0; i < 10; i++ {
@@ -525,7 +525,7 @@ func TestFRC_FPSTracking(t *testing.T) {
 }
 
 func TestFRC_EmitZeroPTSDelta(t *testing.T) {
-	fs := newFRCSource(FRCBlend)
+	fs := newFRCSource(FRCBlend, 3000)
 
 	// Two frames with same PTS (degenerate case)
 	f1 := makeTestFrame(64, 64, 100, 3000)

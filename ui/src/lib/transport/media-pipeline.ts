@@ -392,9 +392,22 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.secondaryBuffers.delete(canvasId);
 		}
 
-		// Raw YUV sources use WebGL renderer instead of PrismRenderer
+		// Raw YUV sources use WebGL renderer instead of PrismRenderer.
+		// WebGL and Canvas2D contexts are mutually exclusive, so if a
+		// PrismRenderer previously used this canvas (2D context), we must
+		// create a fresh canvas element for the WebGL YUV renderer.
 		if (source.isRawYUV) {
-			const yuvR = createYUVRenderer(canvas);
+			let glCanvas = canvas;
+			const testCtx = canvas.getContext('webgl2') || canvas.getContext('webgl');
+			if (!testCtx) {
+				// Canvas already has a 2D context — swap it with a fresh one.
+				glCanvas = document.createElement('canvas');
+				glCanvas.width = canvas.width;
+				glCanvas.height = canvas.height;
+				glCanvas.style.cssText = canvas.style.cssText;
+				canvas.parentElement?.replaceChild(glCanvas, canvas);
+			}
+			const yuvR = createYUVRenderer(glCanvas);
 			if (yuvR) {
 				source.yuvRenderer = yuvR;
 			}

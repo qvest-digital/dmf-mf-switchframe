@@ -139,7 +139,6 @@ type AudioMixer struct {
 	// Monotonic output PTS counter
 	outputPTS       int64
 	outputPTSInited bool
-	lastSeenMixPTS  int64 // tracks incoming PTS for gap detection
 
 	// Program bus limiter (always active)
 	limiter *Limiter
@@ -295,26 +294,31 @@ func (m *AudioMixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
-// advanceOutputPTS advances the monotonic output PTS counter.
-// Seeds from inputPTS on first call; reseeds on gaps > 5 seconds.
+// advanceOutputPTS returns a monotonically non-decreasing output PTS derived
+// from the input PTS. This keeps audio on the same PTS timeline as the source
+// (and therefore the video pipeline), maintaining A/V sync. The only adjustment
+// is a monotonic guard: if the input PTS goes backward (e.g., source switch),
+// the counter advances by one frame duration instead. On large forward jumps
+// (> 5 seconds), it reseeds to the input PTS to recover from timeline resets.
 // Caller must hold m.mu.
 func (m *AudioMixer) advanceOutputPTS(inputPTS int64) int64 {
 	const ptsGapThreshold = 5 * 90000
 	if !m.outputPTSInited {
 		m.outputPTS = inputPTS
 		m.outputPTSInited = true
-		m.lastSeenMixPTS = inputPTS
-	} else {
-		diff := inputPTS - m.lastSeenMixPTS
-		if diff < 0 {
-			diff = -diff
-		}
+	} else if inputPTS > m.outputPTS {
+		// Normal forward progression: use input PTS directly (stays on source clock)
+		diff := inputPTS - m.outputPTS
 		if diff > ptsGapThreshold {
+			// Large jump — likely source change or loop wrap. Reseed.
 			m.outputPTS = inputPTS
 		} else {
-			m.outputPTS += m.frameDuration90k()
+			// Follow source PTS exactly
+			m.outputPTS = inputPTS
 		}
-		m.lastSeenMixPTS = inputPTS
+	} else {
+		// Backward or duplicate — advance by one frame to stay monotonic
+		m.outputPTS += m.frameDuration90k()
 	}
 	return m.outputPTS
 }
