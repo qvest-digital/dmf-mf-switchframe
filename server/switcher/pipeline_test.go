@@ -38,7 +38,7 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -79,7 +79,7 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 
 	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
@@ -124,7 +124,7 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 
 	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			encodeCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
@@ -175,7 +175,7 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	sw := New(programRelay)
 	var encoderCreateCount atomic.Int32
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			encoderCreateCount.Add(1)
 			return transition.NewMockEncoder(), nil
 		},
@@ -210,7 +210,7 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 	sw.SetMetrics(m)
 
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return &failingEncoder{}, nil
 		},
 	)
@@ -242,7 +242,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 	sw := New(programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -280,7 +280,7 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 	sw.SetMetrics(m)
 
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return &failingEncoder{}, nil
 		},
 	)
@@ -306,11 +306,11 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	sw := New(programRelay)
 
 	var lastBitrate int
-	var lastFPS float32
+	var lastFPSNum int
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			lastBitrate = bitrate
-			lastFPS = fps
+			lastFPSNum = fpsNum
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -359,8 +359,9 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	require.Greater(t, pc.sourceFPS, float32(0), "source FPS should be propagated")
 	pc.mu.Unlock()
 
-	_ = lastBitrate
-	_ = lastFPS
+	// Verify the encoder factory received the pipeline format's FPS (default 1080p29.97).
+	require.Equal(t, 30000, lastFPSNum, "encoder factory should receive pipeline format fpsNum")
+	require.Greater(t, lastBitrate, 0, "encoder factory should receive a positive bitrate")
 }
 
 func TestPipeline_AsyncVideoProcessing(t *testing.T) {
@@ -375,7 +376,7 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 	sw := New(programRelay)
 
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return &slowEncoder{
 				inner: transition.NewMockEncoder(),
 				delay: 30 * time.Millisecond,
@@ -417,7 +418,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	sw := New(programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return &slowEncoder{
 				inner: transition.NewMockEncoder(),
 				delay: 30 * time.Millisecond,
@@ -479,7 +480,7 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
 		},
 	)

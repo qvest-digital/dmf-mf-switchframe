@@ -24,33 +24,33 @@ func TestOpenH264DecoderDoubleClose(t *testing.T) {
 }
 
 func TestOpenH264EncoderCreate(t *testing.T) {
-	enc, err := NewOpenH264Encoder(640, 480, 1000000, 30.0)
+	enc, err := NewOpenH264Encoder(640, 480, 1000000, 30, 1)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	enc.Close()
 }
 
 func TestOpenH264EncoderDoubleClose(t *testing.T) {
-	enc, err := NewOpenH264Encoder(640, 480, 1000000, 30.0)
+	enc, err := NewOpenH264Encoder(640, 480, 1000000, 30, 1)
 	require.NoError(t, err)
 	enc.Close()
 	enc.Close() // should not panic
 }
 
 func TestOpenH264EncoderInvalidParams(t *testing.T) {
-	_, err := NewOpenH264Encoder(0, 0, 1000000, 30.0)
+	_, err := NewOpenH264Encoder(0, 0, 1000000, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewOpenH264Encoder(640, 480, 0, 30.0)
+	_, err = NewOpenH264Encoder(640, 480, 0, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewOpenH264Encoder(640, 480, 1000000, 0)
+	_, err = NewOpenH264Encoder(640, 480, 1000000, 0, 1)
 	require.Error(t, err)
 }
 
 func TestOpenH264EncodeDecodeRoundTrip(t *testing.T) {
 	w, h := 320, 240
-	enc, err := NewOpenH264Encoder(w, h, 500000, 30.0)
+	enc, err := NewOpenH264Encoder(w, h, 500000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -85,7 +85,7 @@ func TestOpenH264EncodeDecodeRoundTrip(t *testing.T) {
 
 func TestOpenH264EncoderMultipleFrames(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewOpenH264Encoder(w, h, 200000, 30.0)
+	enc, err := NewOpenH264Encoder(w, h, 200000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -106,7 +106,7 @@ func TestOpenH264EncoderMultipleFrames(t *testing.T) {
 }
 
 func TestOpenH264EncoderWrongYUVSize(t *testing.T) {
-	enc, err := NewOpenH264Encoder(320, 240, 500000, 30.0)
+	enc, err := NewOpenH264Encoder(320, 240, 500000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -140,7 +140,7 @@ func TestOpenH264DecoderInterface(t *testing.T) {
 func TestOpenH264EncoderInterface(t *testing.T) {
 	// Verify OpenH264Encoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder
-	e, err := NewOpenH264Encoder(320, 240, 500000, 30.0)
+	e, err := NewOpenH264Encoder(320, 240, 500000, 30, 1)
 	require.NoError(t, err)
 	enc = e
 	require.NotNil(t, enc)
@@ -150,7 +150,7 @@ func TestOpenH264EncoderInterface(t *testing.T) {
 func TestOpenH264MultiFrameDecodeSequence(t *testing.T) {
 	w, h := 320, 240
 	// Use a higher bitrate to reduce frame skipping by rate control.
-	enc, err := NewOpenH264Encoder(w, h, 2000000, 30.0)
+	enc, err := NewOpenH264Encoder(w, h, 2000000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 

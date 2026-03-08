@@ -65,7 +65,7 @@ func TestStartSources_LabelsAndState(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(4)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
 	defer stop()
 
 	sw.mu.Lock()
@@ -87,7 +87,7 @@ func TestStartSources_GeneratesFrames(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(1)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
 
 	// Add a viewer to cam1's relay to capture frames.
 	viewer := &frameCollector{}
@@ -118,7 +118,7 @@ func TestStartSources_StopCancels(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(2)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "")
+	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
 
 	viewer := &frameCollector{}
 	relays[0].AddViewer(viewer)
@@ -286,7 +286,7 @@ func TestStartSources_WithVideoDir(t *testing.T) {
 	relays := makeRelays(4)
 	stats := NewDemoStats()
 
-	stop := StartSources(ctx, sw, relays, stats, dir)
+	stop := StartSources(ctx, sw, relays, stats, dir, 33*time.Millisecond)
 
 	// Add viewers to capture frames.
 	viewers := make([]*frameCollector, 4)

@@ -37,6 +37,7 @@ var errorMappings = []errorMapping{
 	{replay.ErrNoSource, http.StatusNotFound},
 
 	// 409 Conflict
+	{switcher.ErrFormatDuringTransition, http.StatusConflict},
 	{switcher.ErrNoTransition, http.StatusConflict},
 	{transition.ErrTransitionActive, http.StatusConflict},
 	{transition.ErrFTBActive, http.StatusConflict},

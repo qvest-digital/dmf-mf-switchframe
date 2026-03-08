@@ -44,10 +44,13 @@ type SourceConfig struct {
 	SampleRate int
 	Channels   int
 
+	// FPSNum and FPSDen express the frame rate as a rational number (e.g. 30000/1001
+	// for 29.97fps). Used for PTS conversion and encoder creation. Defaults: 30000/1001.
+	FPSNum int
+	FPSDen int
+
 	// Bitrate for H.264 encoding (relay path). Default: 6 Mbps.
 	Bitrate int
-	// FPS for H.264 encoding (relay path). Default: 30.
-	FPS float32
 
 	// OnRawVideo delivers raw YUV420p to the switcher pipeline.
 	OnRawVideo SourceVideoSink
@@ -126,6 +129,12 @@ type Source struct {
 
 // NewSource creates an MXL source.
 func NewSource(config SourceConfig) *Source {
+	if config.FPSNum == 0 {
+		config.FPSNum = 30000
+	}
+	if config.FPSDen == 0 {
+		config.FPSDen = 1001
+	}
 	if config.SampleRate == 0 {
 		config.SampleRate = 48000
 	}
@@ -221,11 +230,8 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	yuv := s.v210Bufs.yuvOut
 
 	// Convert frame-index PTS to 90kHz MPEG-TS time base.
-	fps := float64(s.config.FPS)
-	if fps == 0 {
-		fps = 30
-	}
-	pts := int64(float64(grain.PTS) * 90000.0 / fps)
+	// pts = grain.PTS * 90000 * FPSDen / FPSNum
+	pts := grain.PTS * 90000 * int64(s.config.FPSDen) / int64(s.config.FPSNum)
 
 	// 2. Deliver raw YUV to switcher pipeline.
 	if s.config.OnRawVideo != nil {
@@ -246,11 +252,7 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 		if bitrate == 0 {
 			bitrate = 6_000_000
 		}
-		fps := s.config.FPS
-		if fps == 0 {
-			fps = 30
-		}
-		enc, err := s.config.EncoderFactory(width, height, bitrate, fps)
+		enc, err := s.config.EncoderFactory(width, height, bitrate, s.config.FPSNum, s.config.FPSDen)
 		if err != nil {
 			s.log.Error("mxl source: failed to create video encoder", "error", err)
 			return

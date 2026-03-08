@@ -33,7 +33,8 @@ var (
 	ErrAlreadyOnProgram = errors.New("switcher: already on program")
 	ErrInvalidDelay     = errors.New("switcher: delay must be 0-500ms")
 	ErrInvalidPosition  = errors.New("switcher: position must be >= 1")
-	ErrNoTransition     = errors.New("switcher: no active transition")
+	ErrNoTransition          = errors.New("switcher: no active transition")
+	ErrFormatDuringTransition = errors.New("switcher: cannot change pipeline format during active transition")
 )
 
 // updateAtomicMax atomically updates field to val if val > current.
@@ -231,6 +232,10 @@ type Switcher struct {
 	// This eliminates keyframe wait on cuts/transitions (always-decode mode).
 	sourceDecoderFactory transition.DecoderFactory
 
+	// Global pipeline format (resolution + frame rate). Atomic pointer for
+	// lock-free reads on the hot path (frame budget check, encoder FPS).
+	pipelineFormat atomic.Pointer[PipelineFormat]
+
 	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
 	// Used when any YUV processor (compositor, key bridge) is active or when
 	// the transition engine outputs raw YUV.
@@ -294,7 +299,7 @@ type Switcher struct {
 	routeFiltered     atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
 	// Frame deadline monitor: tracks pipeline latency violations.
-	frameBudgetNs      int64        // frame budget in nanoseconds (33ms for 30fps)
+	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
 
 	// Raw video output tap — receives deep copy of YUV after processing,
@@ -321,15 +326,17 @@ var _ frameHandler = (*Switcher)(nil)
 
 // New creates a Switcher that forwards program frames to programRelay.
 func New(programRelay *distribution.Relay) *Switcher {
+	defaultFmt := DefaultFormat
 	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		frameBudgetNs: 33_333_333, // 33ms for 30fps
-		videoProcCh:   make(chan videoProcWork, 2),
+		log:          slog.With("component", "switcher"),
+		sources:      make(map[string]*sourceState),
+		programRelay: programRelay,
+		health:       newHealthMonitor(),
+		videoProcCh:  make(chan videoProcWork, 2),
 		videoProcDone: make(chan struct{}),
 	}
+	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
+	s.pipelineFormat.Store(&defaultFmt)
 	s.delayBuffer = NewDelayBuffer(s)
 	go s.videoProcessingLoop()
 	return s
@@ -468,6 +475,7 @@ func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory) {
 	defer s.mu.Unlock()
 	s.pipeCodecs = &pipelineCodecs{
 		encoderFactory: encoderFactory,
+		formatRef:      &s.pipelineFormat,
 	}
 }
 
@@ -501,7 +509,11 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 
 	if enabled {
 		if tickRate <= 0 {
-			tickRate = 33333 * time.Microsecond // ~30fps default
+			if f := s.pipelineFormat.Load(); f != nil {
+				tickRate = f.FrameDuration()
+			} else {
+				tickRate = 33333 * time.Microsecond
+			}
 		}
 		fs := NewFrameSynchronizer(tickRate,
 			func(sourceKey string, frame media.VideoFrame) {
@@ -548,7 +560,53 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 // When pipeline latency exceeds this budget, deadlineViolations is incremented.
 // Default is 33ms (30fps). Call with 16_666_666 for 60fps sources.
 func (s *Switcher) SetFrameBudget(ns int64) {
-	s.frameBudgetNs = ns
+	s.frameBudgetNs.Store(ns)
+}
+
+// PipelineFormat returns the current pipeline format.
+func (s *Switcher) PipelineFormat() PipelineFormat {
+	if p := s.pipelineFormat.Load(); p != nil {
+		return *p
+	}
+	return DefaultFormat
+}
+
+// SetPipelineFormat changes the global pipeline format at runtime.
+// Returns error if a transition is currently active.
+// Propagates change to: frame budget, frame sync tick rate, encoder.
+func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
+	s.mu.Lock()
+
+	if s.state.isInTransition() {
+		s.mu.Unlock()
+		return ErrFormatDuringTransition
+	}
+
+	s.pipelineFormat.Store(&f)
+	s.frameBudgetNs.Store(f.FrameBudgetNs())
+
+	// Update frame sync tick rate if active
+	if s.frameSyncActive && s.frameSync != nil {
+		s.frameSync.SetTickRate(f.FrameDuration())
+	}
+
+	// Force encoder recreation on next frame
+	if s.pipeCodecs != nil {
+		s.pipeCodecs.invalidateEncoder()
+	}
+
+	s.log.Info("pipeline format changed",
+		"name", f.Name,
+		"width", f.Width,
+		"height", f.Height,
+		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
+
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	s.notifyStateChange(snapshot)
+	return nil
 }
 
 // LastBroadcastVideoPTS returns the PTS of the most recently broadcast video
@@ -778,7 +836,7 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
 		updateAtomicMax(&s.videoProcMaxNano, dur)
-		if dur > s.frameBudgetNs {
+		if dur > s.frameBudgetNs.Load() {
 			s.deadlineViolations.Add(1)
 		}
 	}()
@@ -1773,7 +1831,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"transitions_started":   s.transitionsStarted.Load(),
 		"transitions_completed": s.transitionsCompleted.Load(),
 		"deadline_violations":   s.deadlineViolations.Load(),
-		"frame_budget_ms":       float64(s.frameBudgetNs) / 1e6,
+		"frame_budget_ms":       float64(s.frameBudgetNs.Load()) / 1e6,
 		"video_pipeline": map[string]any{
 			"frames_processed":     s.videoProcCount.Load(),
 			"frames_broadcast":     s.videoBroadcastCount.Load(),
@@ -1916,6 +1974,17 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		state.MomentaryLUFS = s.mixer.MomentaryLUFS()
 		state.ShortTermLUFS = s.mixer.ShortTermLUFS()
 		state.IntegratedLUFS = s.mixer.IntegratedLUFS()
+	}
+
+	// Include pipeline format
+	if f := s.pipelineFormat.Load(); f != nil {
+		state.PipelineFormat = &internal.PipelineFormatInfo{
+			Width:  f.Width,
+			Height: f.Height,
+			FPSNum: f.FPSNum,
+			FPSDen: f.FPSDen,
+			Name:   f.Name,
+		}
 	}
 
 	return state

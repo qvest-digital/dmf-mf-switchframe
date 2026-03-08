@@ -18,8 +18,8 @@ func decoderFactory() transition.DecoderFactory {
 // encoderFactory returns a factory that creates video encoders using the
 // auto-detected codec.
 func encoderFactory() transition.EncoderFactory {
-	return func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
-		return codec.NewVideoEncoder(w, h, bitrate, fps)
+	return func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
 	}
 }
 

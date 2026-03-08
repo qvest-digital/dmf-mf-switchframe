@@ -36,7 +36,8 @@ typedef struct {
 // hwDeviceCtx is currently unused (reserved for future HW accel).
 // Returns 0 on success, negative on error.
 static int ffenc_open(ffenc_t* h, const char* codec_name,
-                      int width, int height, int bitrate, float fps,
+                      int width, int height, int bitrate,
+                      int fps_num, int fps_den,
                       int gop_secs, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
@@ -59,8 +60,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 
 	h->ctx->width = width;
 	h->ctx->height = height;
-	h->ctx->time_base = (AVRational){1, (int)(fps + 0.5f)};
-	h->ctx->framerate = (AVRational){(int)(fps + 0.5f), 1};
+	h->ctx->time_base = (AVRational){fps_den, fps_num};
+	h->ctx->framerate = (AVRational){fps_num, fps_den};
 
 	// Broadcast-quality rate control: target constant quality, not constant
 	// bitrate. The encoder spends whatever bits are needed for each frame's
@@ -79,7 +80,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->rc_max_rate = bitrate * 2;
 	h->ctx->rc_buffer_size = bitrate; // 1 second
 
-	h->ctx->gop_size = (int)(fps + 0.5f) * gop_secs;
+	h->ctx->gop_size = fps_num * gop_secs / fps_den;
 	h->ctx->max_b_frames = 0;
 	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 
@@ -96,10 +97,11 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
+	float fps_f = (float)fps_num / (float)fps_den;
 	int level;
 	if (width <= 1280 && height <= 720) {
 		level = 31; // Level 3.1
-	} else if (width <= 1920 && height <= 1080 && fps <= 30.5f) {
+	} else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f) {
 		level = 40; // Level 4.0
 	} else {
 		level = 42; // Level 4.2
@@ -318,18 +320,19 @@ type FFmpegEncoder struct {
 // NewFFmpegEncoder creates a new FFmpeg encoder using the named codec.
 //
 // codecName is the FFmpeg encoder name (e.g. "libx264", "h264_videotoolbox").
-// width, height, bitrate, and fps configure the output stream.
+// width, height, bitrate, fpsNum, and fpsDen configure the output stream.
+// fpsNum/fpsDen express the frame rate as a rational number (e.g. 30000/1001 for 29.97fps).
 // gopSecs sets the IDR keyframe interval in seconds.
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
-func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
 	}
 	if bitrate <= 0 {
 		return nil, fmt.Errorf("invalid bitrate: %d", bitrate)
 	}
-	if fps <= 0 {
-		return nil, fmt.Errorf("invalid fps: %f", fps)
+	if fpsNum <= 0 || fpsDen <= 0 {
+		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
 	}
 
 	cName := C.CString(codecName)
@@ -341,7 +344,8 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32,
 
 	e := &FFmpegEncoder{}
 	rc := C.ffenc_open(&e.handle, cName,
-		C.int(width), C.int(height), C.int(bitrate), C.float(fps),
+		C.int(width), C.int(height), C.int(bitrate),
+		C.int(fpsNum), C.int(fpsDen),
 		C.int(gopSecs), hwDeviceCtx)
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: code %d", codecName, int(rc))

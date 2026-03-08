@@ -1,12 +1,14 @@
 package control
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 func TestTransitionWithEasingPreset(t *testing.T) {
@@ -20,6 +22,12 @@ func TestTransitionWithEasingPreset(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	// Verify response is valid ControlRoomState with transition info
+	var state internal.ControlRoomState
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err, "response should be valid ControlRoomState JSON")
+	require.True(t, state.InTransition, "expected InTransition=true")
 }
 
 func TestTransitionWithEasingCustom(t *testing.T) {
@@ -33,6 +41,12 @@ func TestTransitionWithEasingCustom(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	// Verify response is valid ControlRoomState with transition info
+	var state internal.ControlRoomState
+	err := json.NewDecoder(rec.Body).Decode(&state)
+	require.NoError(t, err, "response should be valid ControlRoomState JSON")
+	require.True(t, state.InTransition, "expected InTransition=true")
 }
 
 func TestTransitionWithInvalidEasingType(t *testing.T) {

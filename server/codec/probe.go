@@ -83,7 +83,7 @@ func probeEncoder() string {
 // Some hardware encoders (e.g. VideoToolbox) return EAGAIN on the first
 // frame(s) while warming up, so we send up to 4 frames.
 func tryEncoder(codecName string) bool {
-	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30.0, 2, nil)
+	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, nil)
 	if err != nil {
 		return false
 	}
@@ -110,7 +110,7 @@ func tryEncoder(codecName string) bool {
 // tryOpenH264Encoder attempts to create a small OpenH264 encoder and encode one frame.
 // Returns true if the codec is functional.
 func tryOpenH264Encoder() bool {
-	enc, err := NewOpenH264Encoder(64, 64, 100000, 30.0)
+	enc, err := NewOpenH264Encoder(64, 64, 100000, 30, 1)
 	if err != nil {
 		return false
 	}

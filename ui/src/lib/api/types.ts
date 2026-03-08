@@ -212,6 +212,14 @@ export interface LockInfo {
 	acquiredAt: number; // Unix ms
 }
 
+export interface PipelineFormatInfo {
+	width: number;
+	height: number;
+	fpsNum: number;
+	fpsDen: number;
+	name: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -238,6 +246,7 @@ export interface ControlRoomState {
 	replay?: ReplayState;
 	operators?: OperatorInfo[];
 	locks?: Record<string, LockInfo>;
+	pipelineFormat?: PipelineFormatInfo;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;

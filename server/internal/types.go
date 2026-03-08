@@ -155,6 +155,15 @@ type LockInfo struct {
 	AcquiredAt int64  `json:"acquiredAt"` // Unix ms
 }
 
+// PipelineFormatInfo describes the current video pipeline format.
+type PipelineFormatInfo struct {
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	FPSNum int    `json:"fpsNum"`
+	FPSDen int    `json:"fpsDen"`
+	Name   string `json:"name"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -183,6 +192,7 @@ type ControlRoomState struct {
 	Replay               *ReplayState            `json:"replay,omitempty"`
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
+	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	Timestamp            int64                   `json:"timestamp"`

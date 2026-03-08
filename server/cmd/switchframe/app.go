@@ -191,6 +191,15 @@ func (a *App) initCoreEngine() error {
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
 
+	// Apply pipeline format from config.
+	if f, ok := switcher.FormatPresets[a.cfg.Format]; ok {
+		if err := a.sw.SetPipelineFormat(f); err != nil {
+			return fmt.Errorf("set pipeline format: %w", err)
+		}
+	} else {
+		return fmt.Errorf("unknown format preset: %q (use one of: 1080p29.97, 1080p25, etc.)", a.cfg.Format)
+	}
+
 	// Enable frame sync if requested.
 	if a.cfg.FrameSync {
 		a.sw.SetFrameSync(true, 0) // 0 = default 30fps
@@ -420,12 +429,15 @@ func (a *App) initMXL() error {
 		}
 
 		// Capture relay for OnVideoInfo closure.
+		pf := a.sw.PipelineFormat()
 		sourceRelay := relay
 		src := mxl.NewSource(mxl.SourceConfig{
 			FlowName:            flowName,
 			VideoFlowID:         videoFlowID,
-			Width:               1920,
-			Height:              1080,
+			Width:               pf.Width,
+			Height:              pf.Height,
+			FPSNum:              pf.FPSNum,
+			FPSDen:              pf.FPSDen,
 			EncoderFactory:      encoderFactory(),
 			AudioEncoderFactory: audioEncoderFactoryForMXL(),
 			Relay:               relay,
@@ -475,10 +487,12 @@ func (a *App) initMXL() error {
 
 	// Configure MXL output.
 	if a.cfg.MXLOutput != "" {
+		outFmt := a.sw.PipelineFormat()
 		out := mxl.NewOutput(mxl.OutputConfig{
 			FlowName:   a.cfg.MXLOutput,
-			Width:      1920,
-			Height:     1080,
+			Width:      outFmt.Width,
+			Height:     outFmt.Height,
+			VideoRate:  mxl.Rational{Numerator: int64(outFmt.FPSNum), Denominator: int64(outFmt.FPSDen)},
 			SampleRate: 48000,
 			Channels:   2,
 		})
@@ -592,7 +606,7 @@ func (a *App) Run(ctx context.Context) error {
 				})
 			}
 		}
-		stopDemo := demo.StartSources(ctx, a.sw, relays, demoStats, a.cfg.DemoVideoDir)
+		stopDemo := demo.StartSources(ctx, a.sw, relays, demoStats, a.cfg.DemoVideoDir, a.sw.PipelineFormat().FrameDuration())
 		defer stopDemo()
 
 		// Copy video info from first source to program relay.

@@ -21,7 +21,7 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -65,7 +65,7 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -116,7 +116,7 @@ func TestSetRawVideoSink_NilDisables(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -154,7 +154,7 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 	sw := New(programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)

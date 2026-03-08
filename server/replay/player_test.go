@@ -73,7 +73,7 @@ func mockDecoderFactory() (transition.VideoDecoder, error) {
 	return &mockReplayDecoder{width: 320, height: 240}, nil
 }
 
-func mockEncoderFactory(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+func mockEncoderFactory(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 	return &mockReplayEncoder{}, nil
 }
 
@@ -1023,6 +1023,33 @@ func TestReplayPlayer_AudioPTSMonotonic(t *testing.T) {
 		delta := audioFrames[i].PTS - audioFrames[i-1].PTS
 		require.Equal(t, int64(1920), delta,
 			"audio PTS step at frame %d should be 1920, got %d", i, delta)
+	}
+}
+
+func TestFpsToRational(t *testing.T) {
+	tests := []struct {
+		name    string
+		fps     float64
+		wantNum int
+		wantDen int
+	}{
+		{"29.97 NTSC", 29.97, 30000, 1001},
+		{"exact 30", 30.0, 30, 1},
+		{"23.976 film", 23.976, 24000, 1001},
+		{"exact 24", 24.0, 24, 1},
+		{"exact 25 PAL", 25.0, 25, 1},
+		{"exact 50", 50.0, 50, 1},
+		{"59.94", 59.94, 60000, 1001},
+		{"exact 60", 60.0, 60, 1},
+		{"non-standard 15fps snaps to nearest", 15.0, 24000, 1001},
+		{"non-standard 120fps snaps to nearest", 120.0, 60, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			num, den := fpsToRational(tt.fps)
+			require.Equal(t, tt.wantNum, num, "fpsNum")
+			require.Equal(t, tt.wantDen, den, "fpsDen")
+		})
 	}
 }
 

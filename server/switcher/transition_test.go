@@ -74,7 +74,7 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 	sw := New(programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
@@ -143,7 +143,7 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	sw := New(programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)

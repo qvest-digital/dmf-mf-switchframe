@@ -52,7 +52,7 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 		t.Skip("no H.264 encoder available")
 	}
 
-	enc, err := NewVideoEncoder(160, 120, 200000, 30.0)
+	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	defer enc.Close()
@@ -97,7 +97,7 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 
 	w, h := 160, 120
 
-	enc, err := NewVideoEncoder(w, h, 500000, 30.0)
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -156,16 +156,16 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 }
 
 func TestNewVideoEncoder_InvalidParams(t *testing.T) {
-	_, err := NewVideoEncoder(0, 120, 200000, 30.0)
+	_, err := NewVideoEncoder(0, 120, 200000, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 0, 200000, 30.0)
+	_, err = NewVideoEncoder(160, 0, 200000, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 0, 30.0)
+	_, err = NewVideoEncoder(160, 120, 0, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 200000, 0)
+	_, err = NewVideoEncoder(160, 120, 200000, 0, 1)
 	require.Error(t, err)
 }
 

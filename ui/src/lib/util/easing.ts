@@ -22,6 +22,7 @@ export function smoothstep(t: number): number {
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
 	const EPSILON = 1e-7;
 	const MAX_ITERATIONS = 8;
+	const BISECTION_ITERATIONS = 64;
 
 	function sampleCurve(s: number, p1: number, p2: number): number {
 		// Bernstein polynomial: ((a*s + b)*s + c)*s
@@ -47,13 +48,15 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t:
 			const d = sampleDerivative(s, x1, x2);
 			if (Math.abs(d) < EPSILON) break;
 			s -= residual / d;
+			if (s < 0) s = 0;
+			else if (s > 1) s = 1;
 		}
 
 		// Bisection fallback
 		let lo = 0;
 		let hi = 1;
 		s = x;
-		for (let i = 0; i < MAX_ITERATIONS; i++) {
+		for (let i = 0; i < BISECTION_ITERATIONS; i++) {
 			const val = sampleCurve(s, x1, x2);
 			if (Math.abs(val - x) < EPSILON) return s;
 			if (val < x) {

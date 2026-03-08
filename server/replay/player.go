@@ -135,7 +135,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 	// Create encoder from first decoded frame dimensions.
 	w, h := allDecoded[0][0].width, allDecoded[0][0].height
 	bitrate := estimateBitrate(w, h)
-	encoder, err := p.config.EncoderFactory(w, h, bitrate, float32(sourceFPS))
+	fpsNum, fpsDen := fpsToRational(sourceFPS)
+	encoder, err := p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
 	if err != nil {
 		slog.Error("replay player: encoder creation failed", "err", err)
 		return
@@ -524,4 +525,34 @@ func estimateBitrate(w, h int) int {
 	default:
 		return 2_000_000
 	}
+}
+
+// fpsToRational converts a float64 FPS to a rational fpsNum/fpsDen pair.
+// Snaps to standard broadcast rates (23.976, 24, 25, 29.97, 30, 50, 59.94, 60).
+func fpsToRational(fps float64) (int, int) {
+	type rate struct {
+		num, den int
+		nominal  float64
+	}
+	standards := []rate{
+		{24000, 1001, 23.976},
+		{24, 1, 24},
+		{25, 1, 25},
+		{30000, 1001, 29.97},
+		{30, 1, 30},
+		{50, 1, 50},
+		{60000, 1001, 59.94},
+		{60, 1, 60},
+	}
+	bestNum, bestDen := 30000, 1001
+	bestDist := math.Abs(fps - 29.97)
+	for _, s := range standards {
+		d := math.Abs(fps - s.nominal)
+		if d < bestDist {
+			bestDist = d
+			bestNum = s.num
+			bestDen = s.den
+		}
+	}
+	return bestNum, bestDen
 }

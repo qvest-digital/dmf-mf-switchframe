@@ -33,7 +33,7 @@ func (d *OpenH264Decoder) Close() {}
 type OpenH264Encoder struct{}
 
 // NewOpenH264Encoder returns an error when the openh264 build tag is not set.
-func NewOpenH264Encoder(width, height, bitrate int, fps float32) (*OpenH264Encoder, error) {
+func NewOpenH264Encoder(width, height, bitrate, fpsNum, fpsDen int) (*OpenH264Encoder, error) {
 	return nil, errOpenH264Disabled
 }
 

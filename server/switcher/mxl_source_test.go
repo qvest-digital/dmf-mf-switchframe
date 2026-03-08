@@ -66,7 +66,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	)

@@ -215,6 +215,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/transition/position", a.handleTransitionPosition)
 	mux.HandleFunc("POST /api/switch/ftb", a.handleFTB)
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
+	mux.HandleFunc("GET /api/format", a.handleGetFormat)
+	mux.HandleFunc("PUT /api/format", a.handleSetFormat)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
 	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)

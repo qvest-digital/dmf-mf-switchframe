@@ -79,10 +79,10 @@ func TestDecoderFactoryFunc(t *testing.T) {
 }
 
 func TestEncoderFactoryFunc(t *testing.T) {
-	factory := EncoderFactory(func(w, h, bitrate int, fps float32) (VideoEncoder, error) {
+	factory := EncoderFactory(func(w, h, bitrate, fpsNum, fpsDen int) (VideoEncoder, error) {
 		return &mockEncoder{}, nil
 	})
-	enc, err := factory(1920, 1080, 4000000, 30.0)
+	enc, err := factory(1920, 1080, 4000000, 30000, 1001)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	enc.Close()

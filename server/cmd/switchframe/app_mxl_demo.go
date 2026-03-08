@@ -25,8 +25,10 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		// 360 is divisible by 6 (V210 requirement), 240 is even (YUV420p requirement).
 		width  = 360
 		height = 240
-		fps    = 29.97
 	)
+
+	pf := a.sw.PipelineFormat()
+	fps := pf.FPS() // float64 for demo reader pacing
 
 	names := []string{"raw1", "raw2"}
 
@@ -51,6 +53,8 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			FlowName:            key,
 			Width:               width,
 			Height:              height,
+			FPSNum:              pf.FPSNum,
+			FPSDen:              pf.FPSDen,
 			SampleRate:          48000,
 			Channels:            2,
 			Relay:               relay,

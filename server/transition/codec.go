@@ -34,7 +34,7 @@ type DecoderFactory func() (VideoDecoder, error)
 
 // EncoderFactory creates a new VideoEncoder with the given parameters.
 // Allows tests to inject mock factories without cgo.
-type EncoderFactory func(width, height, bitrate int, fps float32) (VideoEncoder, error)
+type EncoderFactory func(width, height, bitrate, fpsNum, fpsDen int) (VideoEncoder, error)
 
 // --- Mock implementations for testing ---
 

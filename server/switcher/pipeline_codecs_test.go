@@ -9,14 +9,14 @@ import (
 
 func TestPipelineCodecs_EncodeProcessingFrame(t *testing.T) {
 	pc := &pipelineCodecs{
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	}
 	// Must init encoder first (needs dimensions)
 	pc.encWidth = 4
 	pc.encHeight = 4
-	enc, err := pc.encoderFactory(4, 4, 4_000_000, 30)
+	enc, err := pc.encoderFactory(4, 4, 4_000_000, 30, 1)
 	require.NoError(t, err)
 	pc.encoder = enc
 
@@ -41,7 +41,7 @@ func TestPipelineCodecs_EncodeProcessingFrame(t *testing.T) {
 func TestPipelineCodecs_ResolutionChange(t *testing.T) {
 	encoderCreateCount := 0
 	pc := &pipelineCodecs{
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			encoderCreateCount++
 			return transition.NewMockEncoder(), nil
 		},
@@ -72,7 +72,7 @@ func TestPipelineCodecs_ResolutionChange(t *testing.T) {
 
 func TestPipelineCodecs_Close(t *testing.T) {
 	pc := &pipelineCodecs{
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	}
@@ -92,7 +92,7 @@ func TestPipelineCodecs_Close(t *testing.T) {
 
 func BenchmarkPipelineEncode(b *testing.B) {
 	pc := &pipelineCodecs{
-		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
 		},
 	}

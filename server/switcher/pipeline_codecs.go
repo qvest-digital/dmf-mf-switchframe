@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
@@ -47,6 +48,10 @@ type pipelineCodecs struct {
 	groupID        uint32
 	closed         bool
 
+	// Pipeline format reference — provides FPS for encoder creation.
+	// Points to the Switcher's atomic PipelineFormat pointer for lock-free reads.
+	formatRef *atomic.Pointer[PipelineFormat]
+
 	// Source-derived encoder parameters (updated via updateSourceStats).
 	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
 	sourceFPS     float32 // estimated FPS from program source
@@ -60,6 +65,16 @@ type pipelineCodecs struct {
 	// Last-known SPS/PPS for deduplication -- only fire callback on change.
 	lastSPS []byte
 	lastPPS []byte
+}
+
+// invalidateEncoder forces encoder recreation on next encode call.
+func (pc *pipelineCodecs) invalidateEncoder() {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.encoder != nil {
+		pc.encoder.Close()
+		pc.encoder = nil
+	}
 }
 
 // encode converts a ProcessingFrame back to a media.VideoFrame by encoding
@@ -79,14 +94,19 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 
 	if pc.encoder == nil {
 		bitrate := transition.DefaultBitrate
-		fps := float32(transition.DefaultFPS)
 		if pc.sourceBitrate > 0 {
 			bitrate = pc.sourceBitrate
 		}
-		if pc.sourceFPS > 0 {
-			fps = pc.sourceFPS
+		// Read pipeline format for FPS
+		fpsNum := 30000
+		fpsDen := 1001
+		if pc.formatRef != nil {
+			if f := pc.formatRef.Load(); f != nil {
+				fpsNum = f.FPSNum
+				fpsDen = f.FPSDen
+			}
 		}
-		enc, err := pc.encoderFactory(pf.Width, pf.Height, bitrate, fps)
+		enc, err := pc.encoderFactory(pf.Width, pf.Height, bitrate, fpsNum, fpsDen)
 		if err != nil {
 			pc.mu.Unlock()
 			return nil, fmt.Errorf("pipeline: encoder init: %w", err)

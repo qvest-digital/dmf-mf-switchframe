@@ -103,7 +103,7 @@ var clipFiles = []string{
 // The caller is responsible for registering the relays with Prism's
 // server (so MoQ clients can subscribe) and with the switcher/mixer (via
 // OnStreamRegistered). Returns a stop function that cancels all generators.
-func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Relay, stats *DemoStats, videoDir string) func() {
+func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Relay, stats *DemoStats, videoDir string, frameDuration time.Duration) func() {
 	ctx, cancel := context.WithCancel(ctx)
 
 	n := len(relays)
@@ -127,6 +127,11 @@ func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Re
 		}
 	}
 
+	// Default to ~30fps if no duration specified.
+	if frameDuration <= 0 {
+		frameDuration = 33 * time.Millisecond
+	}
+
 	if videoDir != "" {
 		startFileBasedSources(ctx, relays, stats, videoDir)
 	} else {
@@ -135,7 +140,7 @@ func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Re
 			stats.SetFileInfo("synthetic", "", 0, 0)
 		}
 		for i := range n {
-			go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1), stats)
+			go generateFrames(ctx, relays[i], fmt.Sprintf("cam%d", i+1), stats, frameDuration)
 		}
 	}
 
@@ -153,7 +158,7 @@ func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, st
 		result, err := demuxTSFile(path)
 		if err != nil {
 			slog.Error("demo: failed to demux clip, falling back to synthetic", "key", key, "path", path, "err", err)
-			go generateFrames(ctx, relay, key, stats)
+			go generateFrames(ctx, relay, key, stats, 33*time.Millisecond)
 			continue
 		}
 
@@ -187,15 +192,18 @@ func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, st
 	}
 }
 
-// generateFrames pumps synthetic video+audio frames into a relay at ~30fps.
-// Every 30th frame is a keyframe (1 per second). PTS uses 90kHz clock.
-func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *DemoStats) {
-	ticker := time.NewTicker(33 * time.Millisecond)
+// generateFrames pumps synthetic video+audio frames into a relay at the
+// configured frame rate. Every 30th frame is a keyframe (~1 per second at 30fps).
+// PTS uses 90kHz clock.
+func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *DemoStats, frameDuration time.Duration) {
+	ticker := time.NewTicker(frameDuration)
 	defer ticker.Stop()
 
 	var frameNum int64
-	var groupID uint32 = 1   // start at 1; Prism uses 0 as "not damaged" sentinel
-	const ptsPerFrame = 3000 // 33ms × 90kHz
+	var groupID uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
+
+	// PTS per frame: frameDuration in 90kHz clock units.
+	ptsPerFrame := int64(frameDuration.Nanoseconds() * 90000 / int64(time.Second))
 
 	for {
 		select {

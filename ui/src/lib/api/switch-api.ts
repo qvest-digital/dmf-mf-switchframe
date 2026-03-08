@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 
 export class SwitchApiError extends Error {
@@ -408,6 +408,23 @@ export function operatorForceUnlock(subsystem: string): Promise<{ ok: boolean }>
 
 export function operatorDelete(id: string): Promise<{ ok: boolean }> {
 	return request(`/api/operator/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// --- Pipeline Format API ---
+
+export function getFormat(): Promise<{ format: PipelineFormatInfo; presets: string[] }> {
+	return request('/api/format');
+}
+
+export function setFormat(format: string): Promise<ControlRoomState>;
+export function setFormat(opts: { width: number; height: number; fpsNum: number; fpsDen: number }): Promise<ControlRoomState>;
+export function setFormat(arg: string | { width: number; height: number; fpsNum: number; fpsDen: number }): Promise<ControlRoomState> {
+	const body = typeof arg === 'string' ? { format: arg } : arg;
+	return request('/api/format', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
 }
 
 /**

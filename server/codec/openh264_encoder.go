@@ -16,7 +16,7 @@ typedef struct {
 	int height;
 } oh264enc_t;
 
-static int oh264enc_open(oh264enc_t* h, int width, int height, int bitrate, float fps) {
+static int oh264enc_open(oh264enc_t* h, int width, int height, int bitrate, int fps_num, int fps_den) {
 	int rc = WelsCreateSVCEncoder(&h->enc);
 	if (rc != 0 || h->enc == NULL) {
 		return -1;
@@ -43,7 +43,7 @@ static int oh264enc_open(oh264enc_t* h, int width, int height, int bitrate, floa
 	param.iPicHeight = height;
 	param.iTargetBitrate = bitrate;
 	param.iRCMode = RC_QUALITY_MODE;
-	param.fMaxFrameRate = fps;
+	param.fMaxFrameRate = (float)fps_num / (float)fps_den;
 	param.iMinQp = 18;
 	param.iMaxQp = 28;
 
@@ -66,7 +66,7 @@ static int oh264enc_open(oh264enc_t* h, int width, int height, int bitrate, floa
 	param.iSpatialLayerNum = 1;
 	param.sSpatialLayers[0].iVideoWidth = width;
 	param.sSpatialLayers[0].iVideoHeight = height;
-	param.sSpatialLayers[0].fFrameRate = fps;
+	param.sSpatialLayers[0].fFrameRate = (float)fps_num / (float)fps_den;
 	param.sSpatialLayers[0].iSpatialBitrate = bitrate;
 	param.sSpatialLayers[0].iMaxSpatialBitrate = bitrate * 2;
 
@@ -183,19 +183,20 @@ type OpenH264Encoder struct {
 }
 
 // NewOpenH264Encoder creates a new OpenH264 encoder with the given parameters.
-func NewOpenH264Encoder(width, height, bitrate int, fps float32) (*OpenH264Encoder, error) {
+// fpsNum/fpsDen express the frame rate as a rational number (e.g. 30000/1001 for 29.97fps).
+func NewOpenH264Encoder(width, height, bitrate, fpsNum, fpsDen int) (*OpenH264Encoder, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
 	}
 	if bitrate <= 0 {
 		return nil, fmt.Errorf("invalid bitrate: %d", bitrate)
 	}
-	if fps <= 0 {
-		return nil, fmt.Errorf("invalid fps: %f", fps)
+	if fpsNum <= 0 || fpsDen <= 0 {
+		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
 	}
 
 	e := &OpenH264Encoder{}
-	rc := C.oh264enc_open(&e.handle, C.int(width), C.int(height), C.int(bitrate), C.float(fps))
+	rc := C.oh264enc_open(&e.handle, C.int(width), C.int(height), C.int(bitrate), C.int(fpsNum), C.int(fpsDen))
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create OpenH264 encoder: code %d", int(rc))
 	}
