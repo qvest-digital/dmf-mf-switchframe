@@ -61,13 +61,22 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->height = height;
 	h->ctx->time_base = (AVRational){1, (int)(fps + 0.5f)};
 	h->ctx->framerate = (AVRational){(int)(fps + 0.5f), 1};
+
+	// Broadcast-quality rate control: target constant quality, not constant
+	// bitrate. The encoder spends whatever bits are needed for each frame's
+	// complexity — steady shots use low bitrate, transitions (wipes, stingers,
+	// dissolves) burst high. A VBV ceiling prevents runaway bitrate.
+	//
+	// bit_rate is set as a hint for HW encoders that require it, but libx264
+	// uses CRF mode which ignores it (quality-driven, not bitrate-driven).
 	h->ctx->bit_rate = bitrate;
 
-	// VBV buffer model for transport stream compliance.
-	// rc_max_rate = bit_rate for CBR-like ceiling (no spikes above target).
-	// rc_buffer_size = 500ms of data (broadcast standard buffer duration).
-	h->ctx->rc_max_rate = bitrate;
-	h->ctx->rc_buffer_size = bitrate / 2;
+	// VBV ceiling: 3x source bitrate with 2-second buffer. This is generous
+	// enough that the rate controller never needs to crush quality during
+	// transitions, but still prevents unbounded bitrate that could overwhelm
+	// downstream buffers (SRT, browser WebTransport).
+	h->ctx->rc_max_rate = bitrate * 3;
+	h->ctx->rc_buffer_size = bitrate * 2; // 2 seconds
 
 	h->ctx->gop_size = (int)(fps + 0.5f) * gop_secs;
 	h->ctx->max_b_frames = 0;
@@ -80,15 +89,12 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
 
 	// Derive thread count from CPU cores, clamped to [2, 8].
-	// More than 8 threads adds pipeline latency without meaningful
-	// throughput gain for real-time encoding at broadcast bitrates.
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 2) ncpu = 2;
 	if (ncpu > 8) ncpu = 8;
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
-	// Level 3.1 for ≤720p, 4.0 for ≤1080p30, 4.2 for higher.
 	int level;
 	if (width <= 1280 && height <= 720) {
 		level = 31; // Level 3.1
@@ -98,44 +104,55 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		level = 42; // Level 4.2
 	}
 
-	// Codec-specific options for low-latency encoding.
+	// Codec-specific options.
 	if (strcmp(codec_name, "libx264") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "veryfast", 0);
-		// No tune: veryfast without zerolatency gives 1-frame lookahead
-		// for significantly better quality at lower CPU than medium+zerolatency.
+		// CRF (Constant Rate Factor): quality-targeted encoding.
+		// CRF 22 balances quality with realtime encode speed. Lower values
+		// (16-18) produce better quality but VideoToolbox/software encoders
+		// can't sustain them at 60fps. 22 is visually clean for broadcast
+		// while keeping encode times under the frame budget.
+		av_opt_set(h->ctx->priv_data, "crf", "22", 0);
+		av_opt_set(h->ctx->priv_data, "preset", "faster", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
+		// Variance-based AQ redistributes bits toward high-detail regions
+		// (wipe boundaries, stinger edges) instead of uniform areas.
+		av_opt_set(h->ctx->priv_data, "aq-mode", "2", 0);
+		av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
+		// Mbtree (macroblock tree) looks at future reference usage to
+		// allocate more bits to frames that will be referenced heavily.
+		// With no B-frames and transitions, every P-frame is a reference.
+		av_opt_set(h->ctx->priv_data, "mbtree", "1", 0);
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
-		// Set explicit level (libx264 takes string).
 		char level_str[8];
 		snprintf(level_str, sizeof(level_str), "%d", level);
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.
-		// AUD NALUs mark AU boundaries, required by ISO 13818-1 for
-		// correct demuxing in hardware decoders and broadcast chains.
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
-		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
+		// VBR with constant quality target: NVENC's closest equivalent to CRF.
+		// cq=22 targets quality similar to x264 CRF 22.
+		av_opt_set(h->ctx->priv_data, "rc", "vbr", 0);
+		av_opt_set(h->ctx->priv_data, "cq", "22", 0);
 		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
-		// Disable scene-change detection: transitions ARE the content change.
-		// Without this, NVENC inserts extra IDRs during dissolves/wipes,
-		// causing downstream decoders to reset and producing visual glitches.
+		// Spatial AQ + temporal AQ for better bit distribution across regions
+		// and across frames during transitions.
+		av_opt_set_int(h->ctx->priv_data, "spatial-aq", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "temporal-aq", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "aq-strength", 8, 0);
 		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
-		// Note: VA-API does not expose a scene-change detection toggle.
 		h->ctx->level = level;
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
-		// VT ignores AVCodecContext.max_b_frames — must use its own option.
-		// B-frames break reference chains at transition boundaries.
+		av_opt_set_int(h->ctx->priv_data, "prio_speed", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
-		// Note: VideoToolbox does not expose a scene-change detection toggle.
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	}
 

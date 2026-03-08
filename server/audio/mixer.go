@@ -623,6 +623,17 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// If currently in passthrough mode, flush the pending cycle so the
+	// last passthrough frame is output before switching to mixing mode.
+	// This prevents a gap at the passthrough→mixing boundary.
+	if m.passthrough && m.mixStarted {
+		if out := m.collectMixCycleLocked(); out != nil {
+			// Can't call recordAndOutput under lock — defer it.
+			defer m.recordAndOutput(out)
+		}
+	}
+
 	m.transCrossfadeActive = true
 	m.transCrossfades.Add(1)
 	m.transCrossfadeFrom = oldSource
@@ -632,10 +643,30 @@ func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTr
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
 
-	// Ensure the incoming source's channel is active so frames are accepted
+	// Ensure the incoming source's channel is active so frames are accepted.
 	if ch, ok := m.channels[newSource]; ok {
 		ch.active = true
+		// Pre-warm the decoder so the first frame from this source
+		// doesn't produce warmup transients in the mix output.
+		m.initChannelDecoder(ch)
 	}
+
+	// Pre-warm the encoder if it hasn't been used yet (common when
+	// transitioning out of passthrough mode). A cold encoder's first
+	// output frame has different spectral characteristics than the
+	// passthrough stream, causing an audible pop. Feed it a silent
+	// frame to prime its internal state.
+	if m.encoder == nil && m.config.EncoderFactory != nil {
+		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+		if err == nil {
+			// Encode a silent frame to prime the encoder's internal buffers.
+			// The output is discarded — we just need the encoder state initialized.
+			silence := make([]float32, 1024*m.numChannels)
+			_, _ = enc.Encode(silence)
+			m.encoder = enc
+		}
+	}
+
 	m.recalcPassthrough()
 }
 

@@ -941,20 +941,13 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("start transition: %w", err)
 	}
 
-	// Phase 3: Publish the engine under write lock (fast).
-	// No decoder warmup needed — all sources provide raw YUV via IngestRawFrame.
+	// Phase 3: Start audio crossfade BEFORE publishing the engine.
+	// This eliminates a race where video frames see the engine and call
+	// OnTransitionPosition before the mixer receives OnTransitionStart,
+	// causing a gain discontinuity (audible pop).
 	s.mu.Lock()
-	s.transEngine = engine
-	s.previewSource = sourceKey
-	s.transitionsStarted.Add(1)
 	audioHandler := s.audioTransition
-
-	atomic.AddUint64(&s.seq, 1)
-	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
-
-	s.log.Info("transition started",
-		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
 
 	if audioHandler != nil {
 		audioMode := audio.AudioCrossfade
@@ -963,6 +956,21 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		}
 		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 	}
+
+	// Now publish the engine — audio crossfade is already active, so the
+	// first OnTransitionPosition from a video frame will be handled.
+	s.mu.Lock()
+	s.transEngine = engine
+	s.previewSource = sourceKey
+	s.transitionsStarted.Add(1)
+
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+
+	s.log.Info("transition started",
+		"type", string(tt), "from", fromSource, "to", sourceKey, "duration_ms", durationMs)
+
 	s.notifyStateChange(snapshot)
 	return nil
 }
@@ -1046,11 +1054,19 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			return fmt.Errorf("start FTB reverse: %w", err)
 		}
 
-		// Publish the engine under write lock.
+		// Start audio BEFORE publishing engine (prevents position race).
+		s.mu.RLock()
+		audioHandler := s.audioTransition
+		s.mu.RUnlock()
+		if audioHandler != nil {
+			audioHandler.SetProgramMute(false)
+			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, defaultFTBDurMs)
+		}
+
+		// Now publish the engine.
 		s.mu.Lock()
 		s.transEngine = engine
 		s.transitionsStarted.Add(1)
-		audioHandler := s.audioTransition
 
 		atomic.AddUint64(&s.seq, 1)
 		snapshot := s.buildStateLocked()
@@ -1059,11 +1075,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.log.Info("transition started",
 			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
 
-		if audioHandler != nil {
-			// Unmute program audio so the fade-in is audible
-			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, defaultFTBDurMs)
-		}
 		s.notifyStateChange(snapshot)
 		return nil
 	}
@@ -1101,11 +1112,18 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		return fmt.Errorf("start FTB: %w", err)
 	}
 
-	// Publish the engine under write lock.
+	// Start audio BEFORE publishing engine (prevents position race).
+	s.mu.RLock()
+	audioHandler := s.audioTransition
+	s.mu.RUnlock()
+	if audioHandler != nil {
+		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, defaultFTBDurMs)
+	}
+
+	// Now publish the engine.
 	s.mu.Lock()
 	s.transEngine = engine
 	s.transitionsStarted.Add(1)
-	audioHandler := s.audioTransition
 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
@@ -1114,9 +1132,6 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.log.Info("transition started",
 		"type", "ftb", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
 
-	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, defaultFTBDurMs)
-	}
 	s.notifyStateChange(snapshot)
 	return nil
 }
