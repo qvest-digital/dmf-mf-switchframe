@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,14 +112,7 @@ func (s *Switcher) transitionState(to SwitcherState) {
 	if from == to {
 		return
 	}
-	valid := false
-	for _, allowed := range validTransitions[from] {
-		if allowed == to {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	if !slices.Contains(validTransitions[from], to) {
 		s.log.Warn("invalid state transition",
 			"from", from.String(), "to", to.String())
 	}

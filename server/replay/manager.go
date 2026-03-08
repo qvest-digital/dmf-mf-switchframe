@@ -1,9 +1,10 @@
 package replay
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -319,8 +320,8 @@ func (m *Manager) Status() ReplayStatus {
 		status.Buffers = append(status.Buffers, info)
 	}
 
-	sort.Slice(status.Buffers, func(i, j int) bool {
-		return status.Buffers[i].Source < status.Buffers[j].Source
+	slices.SortFunc(status.Buffers, func(a, b SourceBufferInfo) int {
+		return cmp.Compare(a.Source, b.Source)
 	})
 
 	return status

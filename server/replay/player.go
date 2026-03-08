@@ -1,10 +1,11 @@
 package replay
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"math"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -118,8 +119,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 			return
 		}
 		// Sort within GOP for B-frame display order.
-		sort.Slice(decoded, func(i, j int) bool {
-			return decoded[i].pts < decoded[j].pts
+		slices.SortFunc(decoded, func(a, b decodedFrame) int {
+			return cmp.Compare(a.pts, b.pts)
 		})
 		allDecoded = append(allDecoded, decoded)
 	}
@@ -420,7 +421,7 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 	for i, bf := range gop {
 		sortedPTS[i] = bf.pts
 	}
-	sort.Slice(sortedPTS, func(i, j int) bool { return sortedPTS[i] < sortedPTS[j] })
+	slices.Sort(sortedPTS)
 
 	var decoded []decodedFrame
 	collectFrame := func(yuv []byte, w, h int) {

@@ -1,7 +1,7 @@
 package graphics
 
 import (
-	"sort"
+	"slices"
 	"sync"
 )
 
@@ -131,7 +131,7 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 	for source := range kp.keys {
 		sortedKeys = append(sortedKeys, source)
 	}
-	sort.Strings(sortedKeys)
+	slices.Sort(sortedKeys)
 
 	for _, source := range sortedKeys {
 		cfg := kp.keys[source]

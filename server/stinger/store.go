@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -120,7 +120,7 @@ func (s *StingerStore) List() []string {
 	for name := range s.clips {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -291,7 +291,7 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 			pngFiles = append(pngFiles, e.Name())
 		}
 	}
-	sort.Strings(pngFiles)
+	slices.Sort(pngFiles)
 
 	if len(pngFiles) == 0 {
 		return nil, fmt.Errorf("stinger %q has no PNG files", name)

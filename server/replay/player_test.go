@@ -1,8 +1,9 @@
 package replay
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -398,8 +399,8 @@ func TestReplayPlayer_PTSSortingExtractsBFrames(t *testing.T) {
 	for i, f := range clip {
 		decoded[i] = displayFrame{pts: f.pts}
 	}
-	sort.Slice(decoded, func(i, j int) bool {
-		return decoded[i].pts < decoded[j].pts
+	slices.SortFunc(decoded, func(a, b displayFrame) int {
+		return cmp.Compare(a.pts, b.pts)
 	})
 
 	expectedPTS := []int64{0, 3003, 6006, 9009}
