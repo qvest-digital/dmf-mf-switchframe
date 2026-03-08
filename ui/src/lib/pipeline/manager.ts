@@ -111,11 +111,14 @@ export class PipelineManager {
 		programCanvasEl?: HTMLCanvasElement | null,
 		previewCanvasEl?: HTMLCanvasElement | null,
 	): void {
-		// Program canvas: render the "program" MoQ stream (shows transitions).
+		// Prefer raw YUV program stream when available (bypasses H.264 decode).
+		const programKey = this.pipeline.isRawYUVSource('program-raw') ? 'program-raw' : 'program';
+
+		// Program canvas: render the program MoQ stream (shows transitions).
 		// Re-attach if the canvas element changed (HMR, layout switch) even if
-		// the source key is already 'program'.
+		// the source key hasn't changed.
 		const needsProgramAttach =
-			this.currentProgramCanvas !== 'program' ||
+			this.currentProgramCanvas !== programKey ||
 			(programCanvasEl && programCanvasEl !== this.currentProgramCanvasEl);
 
 		if (needsProgramAttach) {
@@ -123,8 +126,8 @@ export class PipelineManager {
 				this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 			}
 			if (programCanvasEl) {
-				this.pipeline.attachCanvas('program', 'program', programCanvasEl);
-				this.currentProgramCanvas = 'program';
+				this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
+				this.currentProgramCanvas = programKey;
 				this.currentProgramCanvasEl = programCanvasEl;
 			} else {
 				this.currentProgramCanvas = null;

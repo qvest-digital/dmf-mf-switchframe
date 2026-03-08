@@ -4,6 +4,7 @@ import { VideoRenderBuffer } from '$lib/prism/video-render-buffer';
 import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
+import { createYUVRenderer, type YUVRenderer } from '$lib/video/yuv-renderer';
 
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
@@ -44,6 +45,10 @@ interface SourceMedia {
 	videoWidth: number;
 	videoHeight: number;
 	videoInitData: string | null; // base64 avcC
+	/** WebGL YUV420 renderer for raw YUV sources (no H.264 decode needed). */
+	yuvRenderer: YUVRenderer | null;
+	/** True if this source uses raw/yuv420 codec instead of H.264. */
+	isRawYUV: boolean;
 }
 
 /** Orchestrates MoQ media subscriptions and per-source decode pipelines. */
@@ -86,6 +91,8 @@ export interface MediaPipeline {
 	resumeAllAudio(): Promise<void>;
 	/** Reset A/V sync tracking on all renderers for a source (e.g. after program source change). */
 	resetRendererSync(sourceKey: string): void;
+	/** Check if a source uses raw YUV420. */
+	isRawYUVSource(sourceKey: string): boolean;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
 }
@@ -129,6 +136,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			videoWidth: 0,
 			videoHeight: 0,
 			videoInitData: null,
+			yuvRenderer: null,
+			isRawYUV: false,
 		};
 	}
 
@@ -145,6 +154,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						source.videoWidth = track.width;
 						source.videoHeight = track.height;
 						source.videoInitData = track.initData ?? null;
+						if (track.codec === 'raw/yuv420') {
+							source.isRawYUV = true;
+						}
 					} else if (track.type === 'audio' && !source.audioConfigured) {
 						// Configure audio decoder from catalog info
 						const codec = track.codec || 'mp4a.40.2';
@@ -233,6 +245,14 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const source = sources.get(sourceKey);
 		if (!source) return;
 
+		// Raw YUV path: bypass WebCodecs, render directly via WebGL
+		if (source.isRawYUV) {
+			if (source.yuvRenderer) {
+				source.yuvRenderer.render(data);
+			}
+			return;
+		}
+
 		// Configure decoder on first frame with description (avcC config record).
 		// description is often a subarray (view into a larger extensions buffer),
 		// so we must slice() to get an owned copy — .buffer would return the
@@ -306,6 +326,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.audioDecoder = null;
 		}
 
+		// Clean up YUV renderer
+		if (source.yuvRenderer) {
+			source.yuvRenderer.destroy();
+			source.yuvRenderer = null;
+		}
+
 		sources.delete(key);
 	}
 
@@ -349,6 +375,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (existing) {
 			existing.destroy();
 			source.secondaryBuffers.delete(canvasId);
+		}
+
+		// Raw YUV sources use WebGL renderer instead of PrismRenderer
+		if (source.isRawYUV) {
+			const yuvR = createYUVRenderer(canvas);
+			if (yuvR) {
+				source.yuvRenderer = yuvR;
+			}
+			return;
 		}
 
 		// Create audio clock from the source's audio decoder (or a no-op clock)
@@ -454,6 +489,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
+	function isRawYUVSource(sourceKey: string): boolean {
+		return sources.get(sourceKey)?.isRawYUV === true;
+	}
+
 	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
 		const result: Record<string, SourceDiagnostics> = {};
 		for (const [key, source] of sources) {
@@ -489,6 +528,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		feedVideoFrame,
 		feedAudioFrame,
 		resetRendererSync,
+		isRawYUVSource,
 		getAllDiagnostics,
 	};
 }
