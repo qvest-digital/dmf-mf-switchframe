@@ -129,10 +129,10 @@ uniform_avx2_loop:
 	VPADDW  Y4, Y3, Y3
 	VPSRLW  $8, Y3, Y3
 
-	// Pack and fix lane ordering (AVX2 pack interleaves 128-bit lanes)
+	// Pack 16-bit words back to bytes.
+	// VPUNPCKLBW/VPUNPCKHBW split lanes as [0-7|16-23] and [8-15|24-31],
+	// so VPACKUSWB recombines them into correct order [0-15|16-31].
 	VPACKUSWB Y3, Y2, Y2
-	// VPERMQ fixes the AVX2 lane interleave: [0,2,1,3] → [0,1,2,3]
-	VPERMQ  $0xD8, Y2, Y2       // 0xD8 = 11_01_10_00 = [0,2,1,3]
 	VMOVDQU Y2, (DI)
 
 	ADDQ    $32, SI
@@ -277,9 +277,11 @@ fadeconst_avx2_loop:
 
 	// Double narrow: 8 dwords → 8 words, then 16 words → 16 bytes
 	VPACKUSDW Y3, Y2, Y2        // Y2 = 16 words (lane-interleaved)
-	VPERMQ  $0xD8, Y2, Y2       // fix lane ordering
-	VEXTRACTI128 $0, Y2, X2
+	VPERMQ  $0xD8, Y2, Y2       // fix VPACKUSDW lane ordering
+	// Extract upper lane FIRST to avoid aliasing: X2 = lower Y2,
+	// so writing X2 via VEX zeros Y2[255:128].
 	VEXTRACTI128 $1, Y2, X3
+	VEXTRACTI128 $0, Y2, X2
 	PACKUSWB X3, X2             // X2 = 16 result bytes
 	MOVOU   X2, (DI)
 
@@ -448,8 +450,8 @@ alpha_avx2_loop:
 	VPADDW  Y10, Y9, Y9
 	VPSRLW  $8, Y9, Y9
 
+	// VPUNPCKLBW/VPUNPCKHBW + VPACKUSWB already produces correct order.
 	VPACKUSWB Y9, Y8, Y8
-	VPERMQ  $0xD8, Y8, Y8       // fix lane ordering
 	VMOVDQU Y8, (DI)
 
 	ADDQ    $32, SI

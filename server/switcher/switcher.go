@@ -2240,14 +2240,24 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	s.health.recordFrame(sourceKey)
 
-	// Update per-source frame statistics using separate statsMu.
-	// Only need RLock on s.mu to read the sources map and programSource.
+	// Single RLock to snapshot all state needed for this frame.
 	s.mu.RLock()
 	ss := s.sources[sourceKey]
 	isProgramSource := sourceKey == s.programSource
 	pipeCodecs := s.pipeCodecs
+	engine := s.transEngine
+	inTrans := s.state.isInTransition()
+	fillIngestor := s.keyFillIngestor
+	isFTB := s.state.isFTBActive()
+	var pendingIDR, isVirtual bool
+	if ss != nil {
+		pendingIDR = ss.pendingIDR
+		isVirtual = ss.isVirtual
+	}
+	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 
+	// Update per-source frame statistics (uses its own statsMu, not s.mu).
 	if ss != nil {
 		ss.statsMu.Lock()
 		s.updateFrameStats(ss, frame)
@@ -2255,34 +2265,35 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		avgFPS := ss.avgFPS
 		ss.statsMu.Unlock()
 
-		// Propagate program source stats to pipeline encoder
 		if isProgramSource && pipeCodecs != nil {
 			pipeCodecs.updateSourceStats(avgFrameSize, avgFPS)
 		}
 	}
 
-	// Record frame in GOP cache for all sources (uses its own mutex)
-	s.gopCache.RecordFrame(sourceKey, frame)
-
-	// Pre-compute AnnexB for potential transition routing (avoids duplicate conversion)
+	// Pre-compute AnnexB once for the program source. This avoids duplicate
+	// conversion in gopCache.RecordFrame, the transition engine path, and
+	// the pipeline decode path.
 	var annexB []byte
+	if isProgramSource {
+		annexB = codec.AVC1ToAnnexB(frame.WireData)
+		if len(annexB) > 0 && frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
+	}
+
+	// Record frame in GOP cache for all sources (uses its own mutex).
+	// Pass pre-computed annexB for the program source; nil for others
+	// causes RecordFrame to compute it internally.
+	s.gopCache.RecordFrame(sourceKey, frame, annexB)
 
 	// Check if transition is active — route both sources to engine
-	s.mu.RLock()
-	engine := s.transEngine
-	inTrans := s.state.isInTransition()
-	s.mu.RUnlock()
-
 	if inTrans && engine != nil {
-		// Check if engine is still active before routing. After auto-complete,
-		// the engine is idle but routing hasn't switched yet — detect and count
-		// these dropped frames for diagnostics.
 		if engine.State() != transition.StateActive {
 			s.routeToIdleEngine.Add(1)
 			return
 		}
 		s.routeToEngine.Add(1)
-		// WireData is AVC1 (length-prefixed); OpenH264 decoder expects Annex B.
+		// WireData is AVC1 (length-prefixed); decoder expects Annex B.
 		if annexB == nil {
 			annexB = codec.AVC1ToAnnexB(frame.WireData)
 			if frame.IsKeyframe {
@@ -2292,12 +2303,6 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 		engine.IngestFrame(sourceKey, annexB, frame.PTS, frame.IsKeyframe)
 
 		// Sync audio crossfade position with video on every frame.
-		// Without this, auto-timed transitions only update audio at
-		// start/complete, causing the audio to jump 0→1 instead of
-		// smoothly tracking the video dissolve.
-		s.mu.RLock()
-		audioHandler := s.audioTransition
-		s.mu.RUnlock()
 		if audioHandler != nil {
 			audioHandler.OnTransitionPosition(engine.Position())
 		}
@@ -2307,32 +2312,21 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	// Forward source frames to the key fill ingestor (if set).
 	// This must happen before the program source check because keyed
 	// sources may be non-program sources that need their fills cached.
-	s.mu.RLock()
-	fillIngestor := s.keyFillIngestor
-	s.mu.RUnlock()
 	if fillIngestor != nil {
 		fillIngestor(sourceKey, frame)
 	}
 
-	// Normal frame routing: RLock for steady-state (pendingIDR is false most of the time).
-	s.mu.RLock()
-	ss, ok := s.sources[sourceKey]
-	if !ok || s.programSource != sourceKey || s.state.isFTBActive() {
-		s.mu.RUnlock()
+	// Normal frame routing (all state read from locals captured above).
+	if ss == nil || !isProgramSource || isFTB {
 		s.routeFiltered.Add(1)
 		return
 	}
-	if !ss.pendingIDR {
-		isVirtual := ss.isVirtual
-		s.mu.RUnlock()
+	if !pendingIDR {
 		s.routeToPipeline.Add(1)
 		if isVirtual {
 			// Virtual sources (replay) already produce properly encoded
 			// output with consistent SPS/PPS. Skip the decode→encode
 			// pipeline to avoid double processing.
-			// Keep all virtual-source frames in the same MoQ group
-			// (QUIC stream) to guarantee in-order delivery. The initial
-			// group was created when the IDR gate cleared (slow path).
 			f := *frame
 			f.GroupID = s.programGroupID.Load()
 			s.lastBroadcastPTS.Store(f.PTS)
@@ -2340,12 +2334,10 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 			s.videoBroadcastCount.Add(1)
 			s.programRelay.BroadcastVideo(&f)
 		} else {
-			s.broadcastVideo(frame)
+			s.broadcastVideo(frame, annexB)
 		}
 		return
 	}
-	isVirtual := ss.isVirtual
-	s.mu.RUnlock()
 
 	// Slow path: pendingIDR is true. Need write lock to clear it.
 	if !frame.IsKeyframe {
@@ -2357,7 +2349,6 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	var gateDurationMs int64
 	if ss.pendingIDR {
 		ss.pendingIDR = false
-		// Record how long the IDR gate was active.
 		if startNano := s.idrGateStartNano.Load(); startNano > 0 {
 			dur := time.Since(time.Unix(0, startNano))
 			gateDurationMs = dur.Milliseconds()
@@ -2374,7 +2365,7 @@ func (s *Switcher) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
 	if isVirtual {
 		s.broadcastToProgram(frame)
 	} else {
-		s.broadcastVideo(frame)
+		s.broadcastVideo(frame, annexB)
 	}
 }
 
