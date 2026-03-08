@@ -85,6 +85,8 @@ type pipelineCodecs struct {
 	// so DTS must always equal PTS. Additionally, sources with B-frames can
 	// produce scrambled PTS (the sourceDecoder uses input frame PTS, but the
 	// FFmpeg decoder reorders internally). We enforce monotonic output PTS.
+	//
+	// Only accessed from the videoProcessingLoop goroutine (single-writer).
 	lastOutputPTS int64
 
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.

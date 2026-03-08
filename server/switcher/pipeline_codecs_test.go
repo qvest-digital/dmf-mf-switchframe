@@ -231,7 +231,7 @@ func TestPipelineCodecs_SmallBitrateChangeKeepsEncoder(t *testing.T) {
 		},
 	}
 
-	// Use 1280x720 (floor = 4 Mbps) so we can test above-floor changes
+	// Use 1280x720 (floor = 6 Mbps) so we can test above-floor changes
 	pf := &ProcessingFrame{
 		YUV: make([]byte, 1280*720*3/2), Width: 1280, Height: 720,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
