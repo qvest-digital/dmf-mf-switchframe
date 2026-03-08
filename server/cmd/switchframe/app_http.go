@@ -11,10 +11,8 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 )
 
-// startHTTPAPIServer launches a plain HTTP/1.1 server on TCP :8081 that mirrors
-// the REST API routes. Prism's distribution server only listens on QUIC/UDP, so
-// the Vite dev proxy (and curl) can't reach it. This TCP listener provides the
-// same API endpoints over standard HTTP.
+// startHTTPAPIServer launches a plain HTTP/1.1 server on TCP :8081 for
+// curl/scripts that can't speak HTTP/3. Enabled via --http-fallback flag.
 //
 // Returns a stop function that gracefully shuts down the server, or an error if
 // the TCP listener cannot bind.
@@ -22,11 +20,13 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiMux := http.NewServeMux()
 	a.api.RegisterOnMux(apiMux)
 
+	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> auth -> operator
 	var apiHandler http.Handler = apiMux
 	apiHandler = a.operatorMW(apiHandler)
+	apiHandler = a.authMW(apiHandler)
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
-	apiHandler = a.authMW(apiHandler)
+	apiHandler = control.CORSMiddleware(apiHandler)
 
 	httpSrv := &http.Server{
 		Handler: apiHandler,
