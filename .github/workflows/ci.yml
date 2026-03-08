@@ -29,10 +29,7 @@ jobs:
         with:
           go-version: '1.25'
           cache-dependency-path: server/go.sum
-      - name: Install cgo dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+      - uses: ./.github/actions/setup-cgo-deps
       - name: Vet
         run: cd server && go vet ./...
       - name: golangci-lint
@@ -49,10 +46,7 @@ jobs:
         with:
           go-version: '1.25'
           cache-dependency-path: server/go.sum
-      - name: Install cgo dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+      - uses: ./.github/actions/setup-cgo-deps
       - name: Run tests with coverage
         run: cd server && go test ./... -race -coverprofile=coverage.out
       - name: Upload Go coverage
@@ -61,42 +55,18 @@ jobs:
           name: go-coverage
           path: server/coverage.out
 
-  benchmark:
+  test-go-nocgo:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
           cache-dependency-path: server/go.sum
-      - name: Install cgo dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
-      - name: Run all benchmarks
-        run: |
-          set -o pipefail
-          cd server && go test ./... -run=^$ -bench=. -benchmem -benchtime=1s -timeout=15m 2>&1 | tee benchmark-results.txt
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: server/benchmark-results.txt
-      - name: Store benchmark results
-        uses: benchmark-action/github-action-benchmark@v1.20.4
-        if: github.ref == 'refs/heads/main'
-        with:
-          tool: 'go'
-          output-file-path: server/benchmark-results.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          alert-threshold: '200%'
-          comment-on-alert: true
-          fail-on-alert: false
-          benchmark-data-dir-path: dev/bench
+      - name: Verify non-cgo build
+        run: cd server && CGO_ENABLED=0 go build ./...
+      - name: Run non-cgo tests
+        run: cd server && CGO_ENABLED=0 go test ./... -short
 
   test-ui:
     runs-on: ubuntu-latest
@@ -123,3 +93,20 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Docker image
         run: docker build -t switchframe:ci .
+      - name: Smoke test Docker image
+        run: |
+          docker run -d --name sf-smoke -p 9090:9090 switchframe:ci --demo
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9090/health > /dev/null 2>&1; then
+              echo "Health check passed after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Health check failed after 30s"
+              docker logs sf-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          docker stop sf-smoke
+          docker rm sf-smoke

@@ -38,17 +38,22 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	frame := &media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0xDE, 0xAD}}
 	cam1Relay.BroadcastVideo(frame)
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for async video processing to complete
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
 
 	viewer.mu.Lock()
-	require.GreaterOrEqual(t, len(viewer.videos), 1)
 	got := viewer.videos[len(viewer.videos)-1]
+	viewer.mu.Unlock()
+
 	// Always re-encode: PTS is preserved, but WireData differs because
 	// the frame was decoded then re-encoded through the pipeline.
 	require.Equal(t, frame.PTS, got.PTS)
 	require.NotEqual(t, frame.WireData, got.WireData, "WireData should differ after re-encode")
 	require.Greater(t, got.GroupID, uint32(0), "GroupID should be set (keyframe increments programGroupID)")
-	viewer.mu.Unlock()
 }
 
 func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
@@ -247,11 +252,12 @@ func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
 		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	}
 	cam1Relay.BroadcastVideo(frame)
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	viewer.mu.Lock()
-	require.Equal(t, 0, len(viewer.videos), "frame should be dropped on decode error, not passed through")
+	count := len(viewer.videos)
 	viewer.mu.Unlock()
+	require.Equal(t, 0, count, "frame should be dropped on decode error, not passed through")
 
 	// Verify decode error metric was incremented
 	val := testutil.ToFloat64(m.PipelineDecodeErrorsTotal)
@@ -290,13 +296,12 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 100, IsKeyframe: true, WireData: []byte{0x01}})
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 101, IsKeyframe: true, WireData: []byte{0x02}})
 
-	time.Sleep(20 * time.Millisecond)
-
-	viewer.mu.Lock()
-	count := len(viewer.videos)
-	viewer.mu.Unlock()
-
-	require.GreaterOrEqual(t, count, 1, "transition output should reach viewer via pipeline encode")
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond,
+		"transition output should reach viewer via pipeline encode")
 
 	sw.AbortTransition()
 }

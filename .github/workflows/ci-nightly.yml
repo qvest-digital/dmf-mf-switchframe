@@ -1,0 +1,86 @@
+name: CI Nightly
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Monday 6 AM UTC
+  workflow_dispatch:
+
+jobs:
+  test-mxl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - uses: ./.github/actions/setup-cgo-deps
+
+      - name: Install MXL build dependencies
+        run: |
+          sudo apt-get install -y cmake ninja-build build-essential \
+            librdmacm-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - name: Cache MXL SDK
+        uses: actions/cache@v4
+        id: mxl-cache
+        with:
+          path: ~/mxl-sdk
+          key: mxl-sdk-${{ hashFiles('.github/mxl-sdk-version.txt') }}
+
+      - name: Cache vcpkg
+        if: steps.mxl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/vcpkg
+          key: vcpkg-mxl-${{ hashFiles('.github/mxl-sdk-version.txt') }}
+
+      - name: Build MXL SDK
+        if: steps.mxl-cache.outputs.cache-hit != 'true'
+        run: |
+          # Bootstrap vcpkg
+          if [ ! -f ~/vcpkg/vcpkg ]; then
+            git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
+            ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          fi
+
+          # Clone and build MXL
+          git clone https://github.com/dmf-mxl/mxl.git ~/mxl-src
+          cd ~/mxl-src
+          cmake --preset Linux-GCC-Release \
+            -DCMAKE_INSTALL_PREFIX=$HOME/mxl-sdk \
+            -DCMAKE_TOOLCHAIN_FILE=$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake
+          cmake --build build/Linux-GCC-Release
+          cmake --install build/Linux-GCC-Release
+
+      - name: Create MXL shared memory domain
+        run: mkdir -p /dev/shm/mxl
+
+      - name: Build with MXL support
+        run: |
+          cd server
+          PKG_CONFIG_PATH=$HOME/mxl-sdk/lib/pkgconfig \
+            go build -tags "cgo mxl" ./...
+
+      - name: Run MXL tests
+        run: |
+          cd server
+          PKG_CONFIG_PATH=$HOME/mxl-sdk/lib/pkgconfig \
+          LD_LIBRARY_PATH=$HOME/mxl-sdk/lib \
+            go test -tags "cgo mxl" ./mxl/ -v -race
+
+  test-openh264:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - name: Install OpenH264
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenh264-dev pkg-config
+      - name: Run OpenH264 tests
+        run: cd server && go test ./codec/ -v -race -tags "cgo openh264" -run TestOpenH264

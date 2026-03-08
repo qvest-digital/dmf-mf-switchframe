@@ -1,0 +1,65 @@
+name: CI Extended
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-go-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - uses: ./.github/actions/setup-cgo-deps
+      - name: Run tests (ARM64)
+        run: cd server && go test ./... -race -count=1
+
+  test-go-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - uses: ./.github/actions/setup-cgo-deps
+      - name: Run tests (macOS ARM64)
+        run: cd server && go test ./... -race -count=1
+
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - uses: ./.github/actions/setup-cgo-deps
+      - name: Run all benchmarks
+        run: |
+          set -o pipefail
+          cd server && go test ./... -run=^$ -bench=. -benchmem -benchtime=1s -timeout=15m 2>&1 | tee benchmark-results.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: server/benchmark-results.txt
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1.20.4
+        if: github.ref == 'refs/heads/main'
+        with:
+          tool: 'go'
+          output-file-path: server/benchmark-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/bench

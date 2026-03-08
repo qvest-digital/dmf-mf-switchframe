@@ -41,7 +41,7 @@ RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list
         ca-certificates \
         curl && \
     rm -rf /var/lib/apt/lists/* && \
-    useradd --system --no-create-home switchframe
+    useradd --system --create-home switchframe
 
 COPY --from=go-builder /switchframe /usr/local/bin/switchframe
 

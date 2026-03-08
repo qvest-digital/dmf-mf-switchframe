@@ -1,0 +1,16 @@
+name: Setup cgo dependencies
+description: Install FFmpeg, FDK-AAC, and pkg-config for cgo builds (Linux apt-get or macOS brew)
+
+runs:
+  using: composite
+  steps:
+    - name: Install cgo deps (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+    - name: Install cgo deps (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install ffmpeg fdk-aac pkg-config
