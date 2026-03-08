@@ -1360,7 +1360,7 @@ func (m *AudioMixer) SetEQ(sourceKey string, band int, frequency, gain, q float6
 	ch, ok := m.channels[sourceKey]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	eq := ch.eq
 	m.mu.Unlock()
@@ -1379,7 +1379,7 @@ func (m *AudioMixer) GetEQ(sourceKey string) ([3]EQBandSettings, error) {
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return [3]EQBandSettings{}, fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
+		return [3]EQBandSettings{}, fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	return ch.eq.GetBands(), nil
 }
@@ -1390,7 +1390,7 @@ func (m *AudioMixer) SetCompressor(sourceKey string, threshold, ratio, attack, r
 	ch, ok := m.channels[sourceKey]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
+		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	comp := ch.compressor
 	m.mu.Unlock()
@@ -1409,7 +1409,7 @@ func (m *AudioMixer) GetCompressor(sourceKey string) (threshold, ratio, attack, 
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
-		return 0, 0, 0, 0, 0, 0, fmt.Errorf("%w: %s", ErrChannelNotFound, sourceKey)
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	threshold, ratio, attack, release, makeupGain = ch.compressor.GetParams()
 	gainReduction = ch.compressor.GainReduction()
