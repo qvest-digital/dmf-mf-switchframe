@@ -14,7 +14,7 @@ The server produces the authoritative program output — the browser is a contro
 
 ### Video
 
-- Hard cut with GOP replay (instant decoder warmup, no keyframe wait)
+- Hard cut (instant — all sources continuously decoded to raw YUV420)
 - Mix, dip-to-black, and wipe transitions (100–5000ms)
 - 6 wipe directions: horizontal L/R, vertical T/B, box center-out, box edges-in
 - Stinger transitions from PNG sequences with per-pixel alpha
@@ -22,11 +22,11 @@ The server produces the authoritative program output — the browser is a contro
 - Fade to black with reverse (smooth fade back in)
 - Per-source delay buffer (0–500ms, for lip-sync correction)
 - Freerun frame synchronizer aligns multi-source frames to common 90 kHz tick
-- GOP cache for keyframe on cut
+- Frame rate conversion with 4 quality levels: nearest, blend, motion-compensated (MCFI with SIMD SAD kernels)
 - Resolution mismatch handled by bilinear scaler (speed-critical) or Lanczos-3 (quality-critical, used in transitions and replay)
 - Upstream chroma and luma keying per source, computed in YUV420 domain
 - H.264 output with BT.709 colorspace signaling, limited-range black level (Y=16)
-- Always-on re-encode through decode→process→encode for consistent SPS/PPS
+- Always-on re-encode through process→encode for consistent SPS/PPS (decode is per-source at ingest)
 
 ### Audio
 
@@ -220,7 +220,7 @@ cd ui && npx vitest run             # Frontend unit tests
 cd ui && npx playwright test        # E2E (builds static app, serves on :4173)
 ```
 
-~1336 Go tests, 590 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
+~1469 Go tests, 624 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
 
 Benchmark results are tracked per commit and published at **[zsiec.github.io/switchframe/dev/bench](https://zsiec.github.io/switchframe/dev/bench/)**.
 
@@ -229,7 +229,7 @@ Benchmark results are tracked per commit and published at **[zsiec.github.io/swi
 ```
 server/                     Go module (github.com/zsiec/switchframe/server)
   cmd/switchframe/          Entry point, admin endpoints, static embed, GC/system tuning
-  switcher/                 State machine, frame routing, frame sync, delay buffer, GOP cache
+  switcher/                 State machine, frame routing, frame sync, delay buffer, format presets, FRC
   audio/                    FDK AAC decode/mix/encode, EQ, compressor, crossfade, limiter, LUFS
   transition/               YUV420 blend, bilinear + Lanczos-3 scaler, smoothstep easing
   output/                   MPEG-TS recording, SRT caller/listener, confidence monitor, multi-destination
@@ -289,10 +289,9 @@ graph TD
         subgraph engine["Switching Engine"]
             subgraph video["Video Path"]
                 fs & delay --> hvf["handleVideoFrame"]
-                hvf --> gc["GOP Cache<br/>(H.264 only — warm<br/>decoder on cut)"]
                 hvf --> te["Transition Engine<br/>(YUV420 blend:<br/>mix / dip / wipe /<br/>FTB / stinger)"]
-                hvf --> idr["IDR Gate /<br/>Direct Broadcast"]
-                te & idr --> pipeline["pipelineCodecs<br/>decode → upstream key<br/>→ DSK compositor"]
+                hvf --> pipeline["pipelineCodecs<br/>upstream key<br/>→ DSK compositor"]
+                te --> pipeline
                 pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p→V210)"]
                 pipeline --> enc["H.264 Encode<br/>(HW or libx264)"]
                 enc --> bv["programRelay<br/>.BroadcastVideo()"]
@@ -342,7 +341,7 @@ graph TD
 - **Server-side switching.** The server produces the program output. The browser is a control surface and preview monitor, not the mixer.
 - **YUV420 blending in BT.709.** All transitions, keying, and compositing happen in YUV420 to avoid YUV↔RGB round-trips. This matches how hardware switchers (ATEM, Ross) work.
 - **MoQ for state and media.** Single QUIC connection carries both control state (JSON snapshots) and video/audio frames.
-- **Always-on re-encode.** Every program frame goes through decode→process→encode. This costs CPU but guarantees consistent SPS/PPS across transition boundaries so browsers don't need to reconfigure VideoDecoder.
+- **Always-on re-encode.** Every program frame goes through process→encode (decode happens per-source at ingest). This costs CPU but guarantees consistent SPS/PPS across transition boundaries so browsers don't need to reconfigure VideoDecoder.
 - **Audio passthrough.** When a single source is at 0 dB with EQ and compressor bypassed, the mixer skips decode/encode entirely.
 - **Lock-free hot path.** `atomic.Pointer` for source viewers, `RLock` for frame routing. Per-source locks in frame sync, atomic `lastGroupID` eliminates `statsMu`, cache line padding prevents false sharing on source viewer counters. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
 - **Zero-allocation hot path.** Buffer-reuse APIs (`AVC1ToAnnexBInto`, `PrependSPSPPSInto`, `EqualPowerCrossfadeStereoInto`) with caller-provided buffers. `sync.Pool` for AVC1/GOP/YUV buffers. Precomputed crossfade gain tables. `GOGC=400` reduces GC frequency.
@@ -368,6 +367,14 @@ graph TD
 | `--mxl-output-audio-def` | — | Path to output audio flow definition JSON |
 | `--mxl-domain` | `/dev/shm/mxl` | MXL shared memory domain path |
 | `--mxl-discover` | `false` | List available MXL flows and exit |
+| `--decode-all-sources` | `false` | Decode all sources to raw YUV420 at ingest (instant cuts, no keyframe wait) |
+| `--frc-quality` | `none` | Frame rate conversion quality: `none`, `nearest`, `blend`, `mcfi` |
+| `--format` | `1080p29.97` | Video standard preset (e.g. `1080p25`, `720p59.94`) |
+| `--http-fallback` | `false` | Start plain HTTP/1.1 API server on TCP :8081 |
+| `--tls-cert` | — | TLS certificate PEM file path (e.g. from mkcert) |
+| `--tls-key` | — | TLS private key PEM file path |
+| `--raw-program-monitor` | `false` | Enable raw YUV420 program monitor MoQ track |
+| `--raw-monitor-scale` | — | Raw monitor resolution: `720p`, `480p`, `360p` |
 
 ### Environment Variables
 
@@ -382,7 +389,7 @@ graph TD
 | Port | Protocol | Purpose |
 |---|---|---|
 | 8080 | QUIC/HTTP3 | WebTransport (MoQ media + state) |
-| 8081 | HTTP/TCP | REST API |
+| 8081 | HTTP/TCP | REST API (opt-in via `--http-fallback`) |
 | 9090 | HTTP/TCP | Admin: Prometheus metrics, health, pprof |
 | 9000 | UDP | SRT listener (configurable) |
 
@@ -413,6 +420,13 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `POST` | `/api/switch/transition/position` | T-bar position (0–1) |
 | `POST` | `/api/switch/ftb` | Fade to black / reverse |
 
+### Format
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/format` | Current pipeline format and available presets |
+| `PUT` | `/api/format` | Set format by preset name or custom resolution/fps |
+
 ### Sources
 
 | Method | Endpoint | Description |
@@ -438,6 +452,7 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `GET` | `/api/audio/{source}/eq` | Get all EQ bands |
 | `PUT` | `/api/audio/{source}/compressor` | Set compressor parameters |
 | `GET` | `/api/audio/{source}/compressor` | Get compressor settings + gain reduction |
+| `PUT` | `/api/audio/{source}/audio-delay` | Set per-source audio delay (0–500ms, lip-sync) |
 
 ### Output
 
