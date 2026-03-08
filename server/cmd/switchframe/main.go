@@ -38,6 +38,10 @@ type AppConfig struct {
 	TLSCert          string
 	TLSKey           string
 
+	// Raw program monitor.
+	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
+	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
+
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
 	MXLOutput         string   // Flow name for program output (empty = disabled)
@@ -105,6 +109,10 @@ func parseConfig() (AppConfig, error) {
 	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
 
+	// Raw program monitor flags.
+	rawProgramMonitorFlag := flag.Bool("raw-program-monitor", false, "Enable raw YUV420 program monitor track for low-latency local display")
+	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
+
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
@@ -151,6 +159,8 @@ func parseConfig() (AppConfig, error) {
 		HTTPFallback:      *httpFallbackFlag,
 		TLSCert:           *tlsCertFlag,
 		TLSKey:            *tlsKeyFlag,
+		RawProgramMonitor: *rawProgramMonitorFlag,
+		RawMonitorScale:   *rawMonitorScaleFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,

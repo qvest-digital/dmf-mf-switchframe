@@ -35,6 +35,7 @@ import (
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // App holds all subsystems for the switchframe server. Init methods are called
@@ -49,9 +50,10 @@ type App struct {
 	controlPub *control.ChannelPublisher
 
 	// Prism server + relays
-	server       *distribution.Server
-	programRelay *distribution.Relay
-	replayRelay  *distribution.Relay
+	server          *distribution.Server
+	programRelay    *distribution.Relay
+	rawProgramRelay *distribution.Relay
+	replayRelay     *distribution.Relay
 
 	// Core engine
 	sw    *switcher.Switcher
@@ -677,6 +679,74 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	a.debugCollector.Register("demo", demoStats)
+
+	// Raw YUV program monitor — sends uncompressed YUV420 to local browsers.
+	if a.cfg.RawProgramMonitor {
+		a.rawProgramRelay = a.server.RegisterStream("program-raw")
+
+		// Determine output resolution.
+		pf := a.sw.PipelineFormat()
+		rawW, rawH := pf.Width, pf.Height
+		switch a.cfg.RawMonitorScale {
+		case "720p":
+			rawW, rawH = 1280, 720
+		case "480p":
+			rawW, rawH = 854, 480
+		case "360p":
+			rawW, rawH = 640, 360
+		case "":
+			// native resolution
+		default:
+			slog.Warn("unknown --raw-monitor-scale, using native", "scale", a.cfg.RawMonitorScale)
+		}
+
+		a.rawProgramRelay.SetVideoInfo(distribution.VideoInfo{
+			Codec:  "raw/yuv420",
+			Width:  rawW,
+			Height: rawH,
+		})
+
+		needsScale := rawW != pf.Width || rawH != pf.Height
+
+		a.sw.SetRawMonitorSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
+			yuv := frame.YUV
+			w, h := frame.Width, frame.Height
+
+			// Scale if needed.
+			if needsScale {
+				scaledSize := rawW * rawH * 3 / 2
+				scaled := make([]byte, scaledSize)
+				transition.ScaleYUV420(yuv, w, h, scaled, rawW, rawH)
+				yuv = scaled
+				w, h = rawW, rawH
+			}
+
+			// Pack: 4-byte width (big-endian) + 4-byte height (big-endian) + YUV420 planar data
+			packed := make([]byte, 8+len(yuv))
+			packed[0] = byte(w >> 24)
+			packed[1] = byte(w >> 16)
+			packed[2] = byte(w >> 8)
+			packed[3] = byte(w)
+			packed[4] = byte(h >> 24)
+			packed[5] = byte(h >> 16)
+			packed[6] = byte(h >> 8)
+			packed[7] = byte(h)
+			copy(packed[8:], yuv)
+
+			vf := &media.VideoFrame{
+				PTS:        frame.PTS,
+				DTS:        frame.DTS,
+				IsKeyframe: true,
+				WireData:   packed,
+				Codec:      "raw/yuv420",
+			}
+			a.rawProgramRelay.BroadcastVideo(vf)
+		}))
+
+		slog.Info("raw program monitor enabled",
+			"width", rawW, "height", rawH,
+			"scale", a.cfg.RawMonitorScale)
+	}
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
 	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert)

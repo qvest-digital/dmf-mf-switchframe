@@ -306,6 +306,9 @@ type Switcher struct {
 	// before encode. Used by MXL output to write raw video to shared memory.
 	rawVideoSink atomic.Pointer[RawVideoSink]
 
+	// Raw monitor output — sends YUV copy to program-raw MoQ track.
+	rawMonitorSink atomic.Pointer[RawVideoSink]
+
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
@@ -377,6 +380,17 @@ func (s *Switcher) SetRawVideoSink(sink RawVideoSink) {
 		s.rawVideoSink.Store(&sink)
 	} else {
 		s.rawVideoSink.Store(nil)
+	}
+}
+
+// SetRawMonitorSink sets or clears the raw monitor output tap.
+// Like RawVideoSink, it receives a deep copy of each processed YUV420p frame
+// after all video processing but before H.264 encode.
+func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
+	if sink != nil {
+		s.rawMonitorSink.Store(&sink)
+	} else {
+		s.rawMonitorSink.Store(nil)
 	}
 }
 
@@ -862,6 +876,12 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 
 	// MXL output tap — deep copy YUV after all processing, before encode
 	if sinkPtr := s.rawVideoSink.Load(); sinkPtr != nil {
+		cp := pf.DeepCopy()
+		(*sinkPtr)(cp)
+	}
+
+	// Raw monitor tap — deep copy YUV for low-latency program monitor
+	if sinkPtr := s.rawMonitorSink.Load(); sinkPtr != nil {
 		cp := pf.DeepCopy()
 		(*sinkPtr)(cp)
 	}
