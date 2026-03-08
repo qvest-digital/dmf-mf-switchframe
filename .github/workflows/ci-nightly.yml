@@ -63,12 +63,14 @@ jobs:
         run: |
           cd server
           PKG_CONFIG_PATH=$HOME/mxl-sdk/lib/pkgconfig \
+          CGO_LDFLAGS="-L$HOME/mxl-sdk/lib -Wl,-rpath-link,$HOME/mxl-sdk/lib -lspdlog" \
             go build -tags "cgo mxl" ./...
 
       - name: Run MXL tests
         run: |
           cd server
           PKG_CONFIG_PATH=$HOME/mxl-sdk/lib/pkgconfig \
+          CGO_LDFLAGS="-L$HOME/mxl-sdk/lib -Wl,-rpath-link,$HOME/mxl-sdk/lib -lspdlog" \
           LD_LIBRARY_PATH=$HOME/mxl-sdk/lib \
             go test -tags "cgo mxl" ./mxl/ -v -race
 
