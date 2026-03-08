@@ -24,12 +24,12 @@ const (
 type WipeDirection string
 
 const (
-	WipeHLeft       WipeDirection = "h-left"
-	WipeHRight      WipeDirection = "h-right"
-	WipeVTop        WipeDirection = "v-top"
-	WipeVBottom     WipeDirection = "v-bottom"
+	WipeHLeft        WipeDirection = "h-left"
+	WipeHRight       WipeDirection = "h-right"
+	WipeVTop         WipeDirection = "v-top"
+	WipeVBottom      WipeDirection = "v-bottom"
 	WipeBoxCenterOut WipeDirection = "box-center-out"
-	WipeBoxEdgesIn  WipeDirection = "box-edges-in"
+	WipeBoxEdgesIn   WipeDirection = "box-edges-in"
 )
 
 // ValidWipeDirections is the set of all valid wipe directions.

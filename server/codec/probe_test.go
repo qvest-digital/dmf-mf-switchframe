@@ -69,7 +69,7 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 
 	var gotOutput bool
 	for i := range 30 {
-		data, isKey, err := enc.Encode(yuv, i == 0)
+		data, isKey, err := enc.Encode(yuv, int64(i*3000), i == 0)
 		require.NoError(t, err)
 		if len(data) > 0 {
 			if !gotOutput {
@@ -120,7 +120,7 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 	// multi-threaded encoding, the pipeline may buffer ~15 frames.
 	var encoded []byte
 	for i := range 30 {
-		data, _, err := enc.Encode(yuv, i == 0)
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
 		require.NoError(t, err)
 		if len(data) > 0 {
 			encoded = data
@@ -138,7 +138,7 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 		// Decoder is buffering — feed more frames to flush it.
 		for i := 0; i < 30; i++ {
 			var moreEncoded []byte
-			moreEncoded, _, err = enc.Encode(yuv, false)
+			moreEncoded, _, err = enc.Encode(yuv, int64((30+i)*3000), false)
 			require.NoError(t, err)
 			if moreEncoded == nil {
 				continue

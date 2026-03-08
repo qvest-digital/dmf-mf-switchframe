@@ -51,6 +51,9 @@ type pipelineCodecs struct {
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
 	onVideoInfoChange func(sps, pps []byte, width, height int)
 
+	// Reusable buffer for AnnexB→AVC1 conversion (grows to steady state).
+	avc1Buf []byte
+
 	// Last-known SPS/PPS for deduplication — only fire callback on change.
 	lastSPS []byte
 	lastPPS []byte
@@ -65,10 +68,14 @@ type pipelineCodecs struct {
 // decode converts a media.VideoFrame to a ProcessingFrame by decoding H.264
 // to raw YUV420. Lazy-initializes the decoder on the first keyframe.
 //
+// If precomputedAnnexB is non-nil, it is used directly instead of converting
+// from AVC1. This avoids duplicate conversion when the caller (handleVideoFrame)
+// has already computed AnnexB for the GOP cache and/or transition engine.
+//
 // The lock is only held for lazy-init and to capture the decoder reference.
 // The actual decode (30-100ms) runs outside the lock. This is safe because
 // the pipeline is single-threaded (one videoProcessingLoop goroutine).
-func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, error) {
+func (pc *pipelineCodecs) decode(frame *media.VideoFrame, precomputedAnnexB []byte) (*ProcessingFrame, error) {
 	// Phase 1: Lock to get decoder reference + lazy-init
 	pc.mu.Lock()
 	needPrewarm := false
@@ -83,9 +90,6 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 			return nil, fmt.Errorf("pipeline: decoder init: %w", err)
 		}
 		pc.decoder = dec
-		// Pre-warm the replay decoder in the background so it's ready
-		// before the first transition. This avoids the ~500-700ms
-		// VideoToolbox cold start on the first replayGOP call.
 		needPrewarm = pc.replayDecoder == nil && pc.decoderFactory != nil
 	}
 	decoder := pc.decoder
@@ -111,9 +115,12 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame) (*ProcessingFrame, err
 	}
 
 	// Phase 2: NALU conversion + decode OUTSIDE lock
-	annexB := codec.AVC1ToAnnexB(frame.WireData)
-	if frame.IsKeyframe {
-		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+	annexB := precomputedAnnexB
+	if len(annexB) == 0 {
+		annexB = codec.AVC1ToAnnexB(frame.WireData)
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
 	}
 
 	yuv, w, h, err := decoder.Decode(annexB)
@@ -187,7 +194,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	pc.mu.Unlock()
 
 	// Phase 2: Encode OUTSIDE lock
-	encoded, isKeyframe, err := encoder.Encode(pf.YUV, forceIDR)
+	encoded, isKeyframe, err := encoder.Encode(pf.YUV, pf.PTS, forceIDR)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: encode: %w", err)
 	}
@@ -197,7 +204,9 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		return nil, nil
 	}
 
-	avc1 := codec.AnnexBToAVC1(encoded)
+	pc.avc1Buf = codec.AnnexBToAVC1Into(encoded, pc.avc1Buf[:0])
+	avc1 := make([]byte, len(pc.avc1Buf))
+	copy(avc1, pc.avc1Buf)
 
 	// Phase 3: Lock for state update
 	pc.mu.Lock()

@@ -28,13 +28,13 @@ type mockOutputManager struct {
 	recDroppedPackets int64
 
 	// Multi-destination fields.
-	destinations       map[string]output.DestinationStatus
-	addDestErr         error
-	removeDestErr      error
-	startDestErr       error
-	stopDestErr        error
-	lastDestConfig     output.DestinationConfig
-	lastDestID         string
+	destinations   map[string]output.DestinationStatus
+	addDestErr     error
+	removeDestErr  error
+	startDestErr   error
+	stopDestErr    error
+	lastDestConfig output.DestinationConfig
+	lastDestID     string
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {

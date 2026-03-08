@@ -25,7 +25,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32,
 }
 
 // Encode is a stub that always returns an error.
-func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	return nil, false, errFFmpegDisabled
 }
 

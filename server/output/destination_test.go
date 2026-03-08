@@ -331,9 +331,7 @@ func TestOutputManager_DestinationsInRebuild(t *testing.T) {
 	require.NoError(t, mgr.StartDestination(id))
 
 	// The adapters list should include the destination's async wrapper.
-	mgr.mu.Lock()
-	adapterCount := len(mgr.adapters)
-	mgr.mu.Unlock()
+	adapterCount := len(*mgr.adapters.Load())
 	require.Equal(t, 1, adapterCount)
 }
 

@@ -313,7 +313,7 @@ func decodeSPSResolution(sps []byte) (width, height int, ok bool) {
 	case 0:
 		bits.readExpGolomb() // log2_max_pic_order_cnt_lsb_minus4
 	case 1:
-		bits.skip(1)         // delta_pic_order_always_zero_flag
+		bits.skip(1)               // delta_pic_order_always_zero_flag
 		bits.readSignedExpGolomb() // offset_for_non_ref_pic
 		bits.readSignedExpGolomb() // offset_for_top_to_bottom_field
 		numRefFrames := bits.readExpGolomb()

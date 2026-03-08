@@ -117,16 +117,28 @@ func (v *OutputViewer) Stats() distribution.ViewerStats {
 
 // Run starts the drain goroutine that reads frames from channels and feeds
 // them to the TSMuxer. It blocks until Stop() is called.
+//
+// Video frames are given priority: before each select on all channels,
+// video is drained first to prevent audio bursts from starving video.
 func (v *OutputViewer) Run() {
 	defer close(v.done)
 
 	for {
+		// Priority 1: always drain video first.
 		select {
-		case <-v.stopCh:
-			// Drain remaining frames before exiting.
-			v.drain()
-			return
+		case frame := <-v.videoCh:
+			if err := v.muxer.WriteVideo(frame); err != nil {
+				slog.Error("output viewer: mux video error", "err", err)
+			}
+			if v.onVideo != nil {
+				v.onVideo(frame)
+			}
+			continue
+		default:
+		}
 
+		// Priority 2: video, audio, captions, or stop.
+		select {
 		case frame := <-v.videoCh:
 			if err := v.muxer.WriteVideo(frame); err != nil {
 				slog.Error("output viewer: mux video error", "err", err)
@@ -144,6 +156,10 @@ func (v *OutputViewer) Run() {
 		// does not have a caption PID). We still drain the channel to
 		// avoid backpressure.
 		case <-v.captionCh:
+
+		case <-v.stopCh:
+			v.drain()
+			return
 		}
 	}
 }

@@ -18,6 +18,14 @@ const (
 	syncRingSize = 2
 )
 
+// pendingRelease holds a frame pair collected under the lock for delivery
+// outside the lock. The slice is reused across ticks to avoid allocation.
+type pendingRelease struct {
+	sourceKey string
+	video     *media.VideoFrame
+	audio     *media.AudioFrame
+}
+
 // syncSource holds per-source buffering state for the FrameSynchronizer.
 type syncSource struct {
 	// pendingVideo is a fixed-size ring buffer for incoming video frames.
@@ -114,7 +122,8 @@ type FrameSynchronizer struct {
 	wg       sync.WaitGroup
 	started  bool
 	stopped  bool
-	tickNum  int64 // monotonic tick counter for PTS generation
+	tickNum  int64            // monotonic tick counter for PTS generation
+	releases []pendingRelease // reused across ticks to avoid allocation
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -157,25 +166,27 @@ func (fs *FrameSynchronizer) RemoveSource(key string) {
 
 // IngestVideo buffers an incoming video frame for the specified source.
 // If the source is not registered, the frame is silently dropped.
-func (fs *FrameSynchronizer) IngestVideo(sourceKey string, frame media.VideoFrame) {
+// Takes a pointer to avoid value copy heap escape on the hot path.
+func (fs *FrameSynchronizer) IngestVideo(sourceKey string, frame *media.VideoFrame) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	ss, ok := fs.sources[sourceKey]
 	if !ok {
 		return
 	}
-	ss.pushVideo(&frame)
+	ss.pushVideo(frame)
 }
 
 // IngestAudio buffers an incoming audio frame for the specified source.
-func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame media.AudioFrame) {
+// Takes a pointer to avoid value copy heap escape on the hot path.
+func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFrame) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	ss, ok := fs.sources[sourceKey]
 	if !ok {
 		return
 	}
-	ss.pushAudio(&frame)
+	ss.pushAudio(frame)
 }
 
 // SetTickRate updates the tick rate. Takes effect on the next tick cycle.
@@ -217,33 +228,46 @@ func (fs *FrameSynchronizer) Stop() {
 }
 
 // tickLoop is the background goroutine that runs the ticker.
+// Uses a monotonic deadline loop: nextTick advances by fixed intervals from
+// the previous *target* time, not from time.Now(). If a tick handler takes
+// variable time, the next tick fires earlier to compensate, preventing drift.
 func (fs *FrameSynchronizer) tickLoop() {
 	defer fs.wg.Done()
 	fs.mu.Lock()
 	rate := fs.tickRate
 	fs.mu.Unlock()
 
-	ticker := time.NewTicker(rate)
-	defer ticker.Stop()
-
+	nextTick := time.Now().Add(rate)
 	for {
-		select {
-		case <-fs.done:
-			return
-		case <-ticker.C:
-			fs.mu.Lock()
-			newRate := fs.tickRate
-			fs.mu.Unlock()
-
-			// If tick rate changed, reset the ticker.
-			if newRate != rate {
-				ticker.Stop()
-				rate = newRate
-				ticker = time.NewTicker(rate)
+		sleepDur := time.Until(nextTick)
+		if sleepDur > 0 {
+			timer := time.NewTimer(sleepDur)
+			select {
+			case <-timer.C:
+			case <-fs.done:
+				timer.Stop()
+				return
 			}
-
-			fs.releaseTick()
+		} else {
+			select {
+			case <-fs.done:
+				return
+			default:
+			}
 		}
+
+		fs.mu.Lock()
+		newRate := fs.tickRate
+		fs.mu.Unlock()
+
+		if newRate != rate {
+			rate = newRate
+			nextTick = time.Now().Add(rate)
+		} else {
+			nextTick = nextTick.Add(rate)
+		}
+
+		fs.releaseTick()
 	}
 }
 
@@ -260,13 +284,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 	// tickRate is a time.Duration (nanoseconds); multiply by 90000/1e9 to convert.
 	tickPTS := fs.tickNum * int64(fs.tickRate) * mpegtsClock / int64(time.Second)
 
-	// Collect frames to release outside the lock.
-	type pendingRelease struct {
-		sourceKey string
-		video     *media.VideoFrame
-		audio     *media.AudioFrame
-	}
-	var releases []pendingRelease
+	// Reuse the releases slice from previous ticks to avoid allocation.
+	fs.releases = fs.releases[:0]
 
 	for key, ss := range fs.sources {
 		var releaseVideo *media.VideoFrame
@@ -296,7 +315,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 		}
 
 		if releaseVideo != nil || releaseAudio != nil {
-			releases = append(releases, pendingRelease{
+			fs.releases = append(fs.releases, pendingRelease{
 				sourceKey: key,
 				video:     releaseVideo,
 				audio:     releaseAudio,
@@ -306,7 +325,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 	fs.mu.Unlock()
 
 	// Deliver outside the lock to prevent deadlocks with downstream handlers.
-	for _, r := range releases {
+	for _, r := range fs.releases {
 		if r.video != nil {
 			// Copy the frame to rewrite PTS without mutating the original.
 			vf := *r.video

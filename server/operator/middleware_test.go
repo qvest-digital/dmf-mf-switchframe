@@ -41,7 +41,7 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/presets/abc", SubsystemSwitching, true},        // preset mutation (update/delete)
 		{"/api/switch/state", "", false},                      // GET endpoint
 		{"/api/operator/register", "", false},                 // operator management
-		{"/api/presets", "", false},                            // list endpoint (no trailing slash)
+		{"/api/presets", "", false},                           // list endpoint (no trailing slash)
 		{"/api/unknown", "", false},
 	}
 

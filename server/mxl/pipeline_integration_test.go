@@ -415,7 +415,7 @@ func TestPipelineFullLoopback(t *testing.T) {
 // produces identical YUV420p on both conversions (conversion is stable).
 func TestV210RoundTripIdempotent(t *testing.T) {
 	tests := []struct {
-		name string
+		name      string
 		y, cb, cr byte
 	}{
 		{"black", 16, 128, 128},
@@ -467,7 +467,7 @@ func TestV210RoundTripIdempotent(t *testing.T) {
 // --- Test helpers ---
 
 type capturedFrame struct {
-	yuv []byte
+	yuv  []byte
 	w, h int
 	pts  int64
 }

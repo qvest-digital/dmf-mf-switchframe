@@ -28,7 +28,7 @@ type PlayerConfig struct {
 	Output         func(frame *media.VideoFrame)
 	AudioOutput    func(frame *media.AudioFrame)
 	OnDone         func()
-	OnReady        func() // Called when first GOP decoded and encoder created.
+	OnReady        func()                                   // Called when first GOP decoded and encoder created.
 	OnVideoInfo    func(sps, pps []byte, width, height int) // Called once on first encoded keyframe.
 }
 
@@ -239,7 +239,7 @@ func (p *replayPlayer) outputGOP(
 				// If no next frame or dimension mismatch, fall back to duplication (yuvToEncode stays as df.yuv).
 			}
 
-			encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, forceIDR)
+			encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, *outputPTS, forceIDR)
 			if encErr != nil {
 				slog.Error("replay player: encode failed", "err", encErr)
 				return true

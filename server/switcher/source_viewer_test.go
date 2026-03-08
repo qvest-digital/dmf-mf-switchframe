@@ -58,6 +58,17 @@ func TestSourceViewerImplementsViewer(t *testing.T) {
 	require.Equal(t, "switchframe:camera1", sv.ID())
 }
 
+func TestSourceViewer_IDPrecomputed(t *testing.T) {
+	handler := &mockFrameHandler{}
+	sv := newSourceViewer("cam42", handler)
+
+	// The id field should be set at construction time.
+	require.Equal(t, "switchframe:cam42", sv.id, "id field should be pre-computed")
+
+	// ID() should return the same pre-computed value.
+	require.Equal(t, sv.id, sv.ID(), "ID() should return pre-computed field")
+}
+
 func TestSourceViewerForwardsVideo(t *testing.T) {
 	handler := &mockFrameHandler{}
 	sv := newSourceViewer("camera1", handler)

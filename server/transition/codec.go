@@ -17,10 +17,12 @@ type VideoDecoder interface {
 // VideoEncoder encodes YUV420 planar frames into AVC1/Annex B wire data.
 // Implementations: codec.FFmpegEncoder (cgo), codec.OpenH264Encoder (cgo+openh264), mockEncoder (tests).
 type VideoEncoder interface {
-	// Encode encodes a YUV420 planar frame. If forceIDR is true, the
-	// encoder produces a keyframe. Returns encoded data, whether the
-	// frame is a keyframe, and any error.
-	Encode(yuv []byte, forceIDR bool) (data []byte, isKeyframe bool, err error)
+	// Encode encodes a YUV420 planar frame. pts is the presentation
+	// timestamp in 90 kHz MPEG-TS units, passed through to the encoded
+	// bitstream for A/V sync. If forceIDR is true, the encoder produces
+	// a keyframe. Returns encoded data, whether the frame is a keyframe,
+	// and any error.
+	Encode(yuv []byte, pts int64, forceIDR bool) (data []byte, isKeyframe bool, err error)
 
 	// Close releases encoder resources.
 	Close()
@@ -59,7 +61,7 @@ type mockEncoder struct {
 	isKeyframe bool
 }
 
-func (e *mockEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *mockEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	isIDR := forceIDR || e.isKeyframe
 	if e.avcOut != nil {
 		return e.avcOut, isIDR, nil
@@ -86,7 +88,7 @@ func (d *bufferingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 }
 
 func (d *bufferingMockDecoder) Close() {}
-func (d *bufferingMockDecoder) Flush()  {}
+func (d *bufferingMockDecoder) Flush() {}
 
 // NewMockDecoder creates a mock decoder for cross-package testing.
 func NewMockDecoder(width, height int) VideoDecoder {

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/ccx"
@@ -22,11 +23,12 @@ type sourceDelay struct {
 // allocation. Delayed frames are scheduled via time.AfterFunc, eliminating
 // the need for a background polling goroutine.
 type DelayBuffer struct {
-	mu      sync.Mutex
-	sources map[string]*sourceDelay
-	handler frameHandler
-	done    chan struct{} // closed on Close() for compatibility
-	stopped bool
+	hasAnyDelay atomic.Bool
+	mu          sync.Mutex
+	sources     map[string]*sourceDelay
+	handler     frameHandler
+	done        chan struct{} // closed on Close() for compatibility
+	stopped     bool
 }
 
 // Compile-time check that DelayBuffer implements the frameHandler interface.
@@ -43,6 +45,18 @@ func NewDelayBuffer(handler frameHandler) *DelayBuffer {
 	}
 }
 
+// updateHasAnyDelay scans all sources and sets the atomic flag. Must be
+// called with db.mu held.
+func (db *DelayBuffer) updateHasAnyDelay() {
+	for _, sd := range db.sources {
+		if sd.delay > 0 {
+			db.hasAnyDelay.Store(true)
+			return
+		}
+	}
+	db.hasAnyDelay.Store(false)
+}
+
 // SetDelay configures the delay for a source. New frames pushed after this
 // call use the new delay; already-scheduled frames retain their original
 // scheduled release time.
@@ -55,6 +69,7 @@ func (db *DelayBuffer) SetDelay(sourceKey string, delay time.Duration) {
 		db.sources[sourceKey] = sd
 	}
 	sd.delay = delay
+	db.updateHasAnyDelay()
 }
 
 // GetDelay returns the configured delay for a source, or 0 if not set.
@@ -78,6 +93,7 @@ func (db *DelayBuffer) RemoveSource(sourceKey string) {
 		sd.generation++ // invalidate in-flight timers
 	}
 	delete(db.sources, sourceKey)
+	db.updateHasAnyDelay()
 }
 
 // Close marks the buffer as stopped. Any in-flight time.AfterFunc callbacks
@@ -98,6 +114,10 @@ func (db *DelayBuffer) Close() {
 // the frame is forwarded immediately. Otherwise it is scheduled via
 // time.AfterFunc for release after the configured delay.
 func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFrame) {
+	if !db.hasAnyDelay.Load() {
+		db.handler.handleVideoFrame(sourceKey, frame)
+		return
+	}
 	db.mu.Lock()
 	if db.stopped {
 		db.mu.Unlock()
@@ -133,6 +153,10 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 // the frame is forwarded immediately. Otherwise it is scheduled via
 // time.AfterFunc for release after the configured delay.
 func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
+	if !db.hasAnyDelay.Load() {
+		db.handler.handleAudioFrame(sourceKey, frame)
+		return
+	}
 	db.mu.Lock()
 	if db.stopped {
 		db.mu.Unlock()
@@ -168,6 +192,10 @@ func (db *DelayBuffer) handleAudioFrame(sourceKey string, frame *media.AudioFram
 // the frame is forwarded immediately. Otherwise it is scheduled via
 // time.AfterFunc for release after the configured delay.
 func (db *DelayBuffer) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
+	if !db.hasAnyDelay.Load() {
+		db.handler.handleCaptionFrame(sourceKey, frame)
+		return
+	}
 	db.mu.Lock()
 	if db.stopped {
 		db.mu.Unlock()

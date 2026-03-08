@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 )
 
 // makeAVC1Frame creates a minimal AVC1-formatted frame (4-byte length prefix + NALU data).
@@ -29,17 +30,17 @@ func TestGOPCacheKeyframeResets(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	// Record two deltas
 	gc.RecordFrame("cam1", &media.VideoFrame{
 		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
 		IsKeyframe: false,
-	})
+	}, nil)
 	gc.RecordFrame("cam1", &media.VideoFrame{
 		WireData:   makeAVC1Frame([]byte{0x41, 0x02}),
 		IsKeyframe: false,
-	})
+	}, nil)
 
 	gop := gc.GetGOP("cam1")
 	require.Equal(t, 3, len(gop), "should have keyframe + 2 deltas")
@@ -53,7 +54,7 @@ func TestGOPCacheKeyframeResets(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	gop = gc.GetGOP("cam1")
 	require.Equal(t, 1, len(gop), "keyframe should reset cache")
@@ -69,7 +70,7 @@ func TestGOPCacheDeepCopy(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        []byte{0x67},
 		PPS:        []byte{0x68},
-	})
+	}, nil)
 
 	gop := gc.GetGOP("cam1")
 	require.Equal(t, 1, len(gop))
@@ -97,7 +98,7 @@ func TestGOPCacheSPSPPSPrepended(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	gop := gc.GetGOP("cam1")
 	require.Equal(t, 1, len(gop))
@@ -127,7 +128,7 @@ func TestGOPCacheConcurrentAccess(t *testing.T) {
 				IsKeyframe: i%10 == 0,
 				SPS:        []byte{0x67},
 				PPS:        []byte{0x68},
-			})
+			}, nil)
 		}
 	}()
 
@@ -140,7 +141,7 @@ func TestGOPCacheConcurrentAccess(t *testing.T) {
 				IsKeyframe: i%10 == 0,
 				SPS:        []byte{0x67},
 				PPS:        []byte{0x68},
-			})
+			}, nil)
 		}
 	}()
 
@@ -164,7 +165,7 @@ func TestGOPCacheRemoveSource(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        []byte{0x67},
 		PPS:        []byte{0x68},
-	})
+	}, nil)
 
 	require.NotNil(t, gc.GetGOP("cam1"))
 
@@ -191,15 +192,15 @@ func TestGetOriginalGOPReturnsFrames(t *testing.T) {
 		SPS:        sps,
 		PPS:        pps,
 		Codec:      "h264",
-		GroupID:     5,
-	})
+		GroupID:    5,
+	}, nil)
 	gc.RecordFrame("cam1", &media.VideoFrame{
 		PTS:        1033,
 		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
 		IsKeyframe: false,
 		Codec:      "h264",
-		GroupID:     5,
-	})
+		GroupID:    5,
+	}, nil)
 
 	frames := gc.GetOriginalGOP("cam1")
 	require.Equal(t, 2, len(frames))
@@ -227,7 +228,7 @@ func TestGetOriginalGOPDeepCopy(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        []byte{0x67},
 		PPS:        []byte{0x68},
-	})
+	}, nil)
 
 	frames1 := gc.GetOriginalGOP("cam1")
 	require.Equal(t, 1, len(frames1))
@@ -255,7 +256,7 @@ func TestGOPCacheMaxFrames(t *testing.T) {
 			PTS:        int64(i * 33000),
 			WireData:   makeAVC1Frame([]byte{0x41, byte(i)}),
 			IsKeyframe: false,
-		})
+		}, nil)
 	}
 
 	gop := gc.GetGOP("cam1")
@@ -283,7 +284,7 @@ func TestGOPCacheMaxFramesKeepsKeyframe(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	// Feed 14 more delta frames (total 15 frames, limit is 10)
 	for i := 1; i <= 14; i++ {
@@ -291,7 +292,7 @@ func TestGOPCacheMaxFramesKeepsKeyframe(t *testing.T) {
 			PTS:        int64(i * 33000),
 			WireData:   makeAVC1Frame([]byte{0x41, byte(i)}),
 			IsKeyframe: false,
-		})
+		}, nil)
 	}
 
 	gop := gc.GetGOP("cam1")
@@ -328,7 +329,7 @@ func TestGOPCacheMaxFramesSmallLimit(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	gop := gc.GetGOP("cam1")
 	require.Equal(t, 1, len(gop), "single keyframe should fit")
@@ -339,7 +340,7 @@ func TestGOPCacheMaxFramesSmallLimit(t *testing.T) {
 		PTS:        33000,
 		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
 		IsKeyframe: false,
-	})
+	}, nil)
 
 	gop = gc.GetGOP("cam1")
 	require.Equal(t, 1, len(gop), "should trim to maxFrames=1")
@@ -361,17 +362,17 @@ func TestGOPCacheMaxFramesSmallLimit(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	gc2.RecordFrame("cam1", &media.VideoFrame{
 		PTS:        33000,
 		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
 		IsKeyframe: false,
-	})
+	}, nil)
 	gc2.RecordFrame("cam1", &media.VideoFrame{
 		PTS:        66000,
 		WireData:   makeAVC1Frame([]byte{0x41, 0x02}),
 		IsKeyframe: false,
-	})
+	}, nil)
 
 	gop2 := gc2.GetGOP("cam1")
 	require.Equal(t, 2, len(gop2), "should trim to maxFrames=2")
@@ -387,7 +388,7 @@ func TestGOPCacheMaxFramesSmallLimit(t *testing.T) {
 			PTS:        int64(i * 33000),
 			WireData:   makeAVC1Frame([]byte{0x41, byte(i)}),
 			IsKeyframe: false,
-		})
+		}, nil)
 	}
 
 	gop3 := gc3.GetGOP("cam1")
@@ -411,7 +412,7 @@ func TestGOPCacheMaxFramesKeyframeInMiddle(t *testing.T) {
 			PTS:        int64(i * 33000),
 			WireData:   makeAVC1Frame([]byte{0x41, byte(i)}),
 			IsKeyframe: false,
-		})
+		}, nil)
 	}
 
 	// Keyframe at position 3 — this will reset the cache (normal keyframe behavior)
@@ -421,7 +422,7 @@ func TestGOPCacheMaxFramesKeyframeInMiddle(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	// 10 more deltas after the keyframe (total 11: 1 keyframe + 10 deltas)
 	for i := 4; i <= 13; i++ {
@@ -429,7 +430,7 @@ func TestGOPCacheMaxFramesKeyframeInMiddle(t *testing.T) {
 			PTS:        int64(i * 33000),
 			WireData:   makeAVC1Frame([]byte{0x41, byte(i)}),
 			IsKeyframe: false,
-		})
+		}, nil)
 	}
 
 	// Cache has: keyframe(3) + deltas(4..13) = 11 frames, limit is 8
@@ -463,7 +464,7 @@ func TestGOPCacheSetActiveSources(t *testing.T) {
 			IsKeyframe: true,
 			SPS:        sps,
 			PPS:        pps,
-		})
+		}, nil)
 	}
 	require.NotNil(t, gc.GetGOP("cam1"))
 	require.NotNil(t, gc.GetGOP("cam2"))
@@ -483,14 +484,14 @@ func TestGOPCacheSetActiveSources(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	require.Nil(t, gc.GetGOP("cam3"), "non-active source should not be recorded")
 
 	// Active sources should still record
 	gc.RecordFrame("cam1", &media.VideoFrame{
 		WireData:   makeAVC1Frame([]byte{0x41, 0x01}),
 		IsKeyframe: false,
-	})
+	}, nil)
 	gop := gc.GetGOP("cam1")
 	require.Equal(t, 2, len(gop), "active source should record new frames")
 }
@@ -509,7 +510,7 @@ func TestGOPCacheSetActiveSourcesSameSource(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	require.NotNil(t, gc.GetGOP("cam1"))
 }
 
@@ -524,7 +525,7 @@ func TestGOPCacheSetActiveSourcesEmptyStrings(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	// Empty strings should be ignored — results in empty active set
 	gc.SetActiveSources("", "")
@@ -536,7 +537,7 @@ func TestGOPCacheSetActiveSourcesEmptyStrings(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	require.Nil(t, gc.GetGOP("cam1"), "nothing recorded with empty active set")
 }
 
@@ -554,13 +555,13 @@ func TestGOPCacheSetActiveSourcesTransition(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	gc.RecordFrame("cam2", &media.VideoFrame{
 		WireData:   makeAVC1Frame([]byte{0x65, 0xBB}),
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 
 	// Cut to cam2: now cam2 is program, cam3 is preview
 	gc.SetActiveSources("cam2", "cam3")
@@ -574,7 +575,7 @@ func TestGOPCacheSetActiveSourcesTransition(t *testing.T) {
 		IsKeyframe: true,
 		SPS:        sps,
 		PPS:        pps,
-	})
+	}, nil)
 	require.NotNil(t, gc.GetGOP("cam3"), "new preview should accept frames")
 }
 
@@ -592,7 +593,7 @@ func TestGOPCacheNilActiveSourcesRecordsAll(t *testing.T) {
 			IsKeyframe: true,
 			SPS:        sps,
 			PPS:        pps,
-		})
+		}, nil)
 	}
 
 	require.NotNil(t, gc.GetGOP("cam1"))
@@ -619,7 +620,7 @@ func TestGOPCacheSetActiveSourcesConcurrent(t *testing.T) {
 				IsKeyframe: i%10 == 0,
 				SPS:        sps,
 				PPS:        pps,
-			})
+			}, nil)
 		}
 	}()
 
@@ -676,11 +677,37 @@ func BenchmarkGOPCacheRecordFrame(b *testing.B) {
 					SPS:        sps,
 					PPS:        pps,
 					Codec:      "h264",
-				})
+				}, nil)
 			} else {
 				frame.PTS = int64(i * 3000)
-				gc.RecordFrame("cam1", frame)
+				gc.RecordFrame("cam1", frame, nil)
 			}
+		}
+	})
+
+	b.Run("delta_only", func(b *testing.B) {
+		gc := newGOPCache()
+		gc.SetActiveSources("cam1", "cam2")
+		// Seed with a keyframe so subsequent deltas append
+		gc.RecordFrame("cam1", &media.VideoFrame{
+			PTS:        0,
+			WireData:   wireData,
+			IsKeyframe: true,
+			SPS:        sps,
+			PPS:        pps,
+			Codec:      "h264",
+		}, nil)
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   wireData,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			frame.PTS = int64((i + 1) * 3000)
+			gc.RecordFrame("cam1", frame, nil)
 		}
 	})
 
@@ -697,7 +724,7 @@ func BenchmarkGOPCacheRecordFrame(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			frame.PTS = int64(i * 3000)
-			gc.RecordFrame("cam3", frame) // cam3 is NOT active
+			gc.RecordFrame("cam3", frame, nil) // cam3 is NOT active
 		}
 	})
 
@@ -721,11 +748,138 @@ func BenchmarkGOPCacheRecordFrame(b *testing.B) {
 					SPS:        sps,
 					PPS:        pps,
 					Codec:      "h264",
-				})
+				}, nil)
 			} else {
 				frame.PTS = int64(i * 3000)
-				gc.RecordFrame("cam1", frame)
+				gc.RecordFrame("cam1", frame, nil)
 			}
+		}
+	})
+
+	b.Run("trim_triggered", func(b *testing.B) {
+		gc := newGOPCacheWithMax(30)
+		gc.SetActiveSources("cam1", "cam2")
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   wireData,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if i%30 == 0 {
+				gc.RecordFrame("cam1", &media.VideoFrame{
+					PTS:        int64(i * 3000),
+					WireData:   wireData,
+					IsKeyframe: true,
+					SPS:        sps,
+					PPS:        pps,
+					Codec:      "h264",
+				}, nil)
+			} else {
+				frame.PTS = int64(i * 3000)
+				gc.RecordFrame("cam1", frame, nil)
+			}
+		}
+	})
+
+	b.Run("realistic_1080p", func(b *testing.B) {
+		largeWire := makeAVC1Frame(make([]byte, 80*1024)) // ~80KB 1080p frame
+		gc := newGOPCache()
+		gc.SetActiveSources("cam1", "cam2")
+		frame := &media.VideoFrame{
+			PTS:        1000,
+			WireData:   largeWire,
+			IsKeyframe: false,
+			Codec:      "h264",
+		}
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if i%30 == 0 {
+				gc.RecordFrame("cam1", &media.VideoFrame{
+					PTS:        int64(i * 3000),
+					WireData:   largeWire,
+					IsKeyframe: true,
+					SPS:        sps,
+					PPS:        pps,
+					Codec:      "h264",
+				}, nil)
+			} else {
+				frame.PTS = int64(i * 3000)
+				gc.RecordFrame("cam1", frame, nil)
+			}
+		}
+	})
+}
+
+func TestAnnexBComputedOnce(t *testing.T) {
+	gc := newGOPCache()
+	sps := []byte{0x67, 0x42, 0x00, 0x0a}
+	pps := []byte{0x68, 0xce, 0x38, 0x80}
+	wireData := makeAVC1Frame([]byte{0x65, 0xAA, 0xBB})
+
+	// Pre-compute AnnexB with SPS/PPS
+	annexB := codec.AVC1ToAnnexB(wireData)
+	annexB = codec.PrependSPSPPS(sps, pps, annexB)
+
+	// Record with pre-computed AnnexB
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData: wireData, IsKeyframe: true, SPS: sps, PPS: pps,
+	}, annexB)
+
+	gopPrecomputed := gc.GetGOP("cam1")
+	require.Equal(t, 1, len(gopPrecomputed))
+
+	// Record without pre-computed AnnexB (nil) — resets cache on keyframe
+	gc.RecordFrame("cam1", &media.VideoFrame{
+		WireData: wireData, IsKeyframe: true, SPS: sps, PPS: pps,
+	}, nil)
+
+	gopComputed := gc.GetGOP("cam1")
+	require.Equal(t, 1, len(gopComputed))
+
+	// Both paths should produce identical AnnexB data
+	expectedAnnexB := codec.AVC1ToAnnexB(wireData)
+	expectedAnnexB = codec.PrependSPSPPS(sps, pps, expectedAnnexB)
+	require.Equal(t, expectedAnnexB, gopPrecomputed[0].annexB)
+	require.Equal(t, expectedAnnexB, gopComputed[0].annexB)
+}
+
+func BenchmarkTrimCache(b *testing.B) {
+	makeCache := func(n int) []cachedFrame {
+		cache := make([]cachedFrame, n)
+		for i := range cache {
+			cache[i] = cachedFrame{
+				annexB:     make([]byte, 4096),
+				original:   &media.VideoFrame{PTS: int64(i * 3000)},
+				isKeyframe: i == 0,
+			}
+		}
+		return cache
+	}
+
+	b.Run("with_keyframe", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cache := makeCache(60)
+			trimCache(cache, 30)
+		}
+	})
+
+	b.Run("no_keyframe", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			cache := make([]cachedFrame, 60)
+			for j := range cache {
+				cache[j] = cachedFrame{
+					annexB:     make([]byte, 4096),
+					original:   &media.VideoFrame{PTS: int64(j * 3000)},
+					isKeyframe: false,
+				}
+			}
+			trimCache(cache, 30)
 		}
 	})
 }

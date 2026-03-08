@@ -105,3 +105,47 @@ func TestAudioDelayBuffer_SequentialOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestAudioDelayRingBufferWrap(t *testing.T) {
+	// Fill past the ring capacity and verify correct FIFO behavior.
+	buf := NewAudioDelayBuffer(10)
+	now := time.Now()
+
+	// Ingest audioDelayRingSize+10 frames at 1ms intervals.
+	// Each frame added after the delay elapses should produce the
+	// oldest buffered frame in FIFO order.
+	totalFrames := audioDelayRingSize + 10
+	var outputs []*media.AudioFrame
+	for i := 0; i < totalFrames; i++ {
+		f := &media.AudioFrame{Data: []byte{byte(i)}, PTS: int64(i * 100)}
+		out := buf.ingestAt(f, now.Add(time.Duration(i*5)*time.Millisecond))
+		if out != nil {
+			outputs = append(outputs, out)
+		}
+	}
+
+	// Verify we got frames out and they're in FIFO order.
+	require.NotEmpty(t, outputs, "should have released frames")
+	for i := 1; i < len(outputs); i++ {
+		require.Greater(t, outputs[i].PTS, outputs[i-1].PTS,
+			"frame %d PTS (%d) should be > frame %d PTS (%d)",
+			i, outputs[i].PTS, i-1, outputs[i-1].PTS)
+	}
+}
+
+func TestAudioDelayRingBufferNoLeak(t *testing.T) {
+	// Process many frames and verify the internal ring stays bounded.
+	buf := NewAudioDelayBuffer(20)
+	now := time.Now()
+
+	for i := 0; i < 10000; i++ {
+		f := &media.AudioFrame{Data: []byte{byte(i & 0xFF)}, PTS: int64(i * 100)}
+		buf.ingestAt(f, now.Add(time.Duration(i)*time.Millisecond))
+	}
+
+	// The ring buffer has a fixed size; count should never exceed it.
+	buf.mu.Lock()
+	require.LessOrEqual(t, buf.count, audioDelayRingSize,
+		"ring count %d exceeds capacity %d", buf.count, audioDelayRingSize)
+	buf.mu.Unlock()
+}

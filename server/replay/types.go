@@ -65,8 +65,8 @@ type bufferedFrame struct {
 
 // bufferedAudioFrame stores a single encoded audio frame with wall-clock timestamp.
 type bufferedAudioFrame struct {
-	data       []byte    // AAC frame data (deep-copied)
-	pts        int64     // 90kHz PTS
+	data       []byte // AAC frame data (deep-copied)
+	pts        int64  // 90kHz PTS
 	sampleRate int
 	channels   int
 	wallTime   time.Time
@@ -82,15 +82,15 @@ type gopDescriptor struct {
 // ReplayStatus is the JSON-serializable status for the replay system,
 // included in ControlRoomState for the browser.
 type ReplayStatus struct {
-	State       PlayerState        `json:"state"`
-	Source      string             `json:"source,omitempty"`
-	Speed       float64            `json:"speed,omitempty"`
-	Loop        bool               `json:"loop,omitempty"`
-	Position    float64            `json:"position,omitempty"`    // 0.0–1.0 playback progress
-	MarkIn      *time.Time         `json:"markIn,omitempty"`
-	MarkOut     *time.Time         `json:"markOut,omitempty"`
-	MarkSource  string             `json:"markSource,omitempty"`
-	Buffers     []SourceBufferInfo `json:"buffers,omitempty"`
+	State      PlayerState        `json:"state"`
+	Source     string             `json:"source,omitempty"`
+	Speed      float64            `json:"speed,omitempty"`
+	Loop       bool               `json:"loop,omitempty"`
+	Position   float64            `json:"position,omitempty"` // 0.0–1.0 playback progress
+	MarkIn     *time.Time         `json:"markIn,omitempty"`
+	MarkOut    *time.Time         `json:"markOut,omitempty"`
+	MarkSource string             `json:"markSource,omitempty"`
+	Buffers    []SourceBufferInfo `json:"buffers,omitempty"`
 }
 
 // MarkInUnixMs returns the mark-in time as Unix milliseconds, or nil if not set.

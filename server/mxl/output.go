@@ -24,6 +24,9 @@ type OutputConfig struct {
 	Width  int
 	Height int
 
+	// VideoRate is the output frame rate. Zero-value defaults to 30000/1001 (29.97fps NTSC).
+	VideoRate Rational
+
 	// Audio parameters.
 	SampleRate int
 	Channels   int
@@ -47,6 +50,9 @@ func NewOutput(config OutputConfig) *Output {
 	}
 	if config.Channels == 0 {
 		config.Channels = 2
+	}
+	if config.VideoRate.Numerator == 0 && config.VideoRate.Denominator == 0 {
+		config.VideoRate = Rational{30000, 1001}
 	}
 	log := config.Logger
 	if log == nil {
@@ -72,8 +78,7 @@ func (o *Output) Start(ctx context.Context, videoWriter DiscreteWriter, audioWri
 	ctx, o.cancel = context.WithCancel(ctx)
 
 	if videoWriter != nil {
-		// Default to 29.97fps for grain rate — will use CurrentIndex for timing.
-		o.writer.SetVideoWriter(videoWriter, Rational{30000, 1001})
+		o.writer.SetVideoWriter(videoWriter, o.config.VideoRate)
 	}
 	if audioWriter != nil {
 		o.writer.SetAudioWriter(audioWriter, Rational{int64(o.config.SampleRate), 1})
@@ -107,7 +112,7 @@ func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter,
 	ctx, o.cancel = context.WithCancel(ctx)
 
 	if videoWriter != nil {
-		o.writer.SetVideoWriter(videoWriter, Rational{30000, 1001})
+		o.writer.SetVideoWriter(videoWriter, o.config.VideoRate)
 	}
 	if audioWriter != nil {
 		o.writer.SetAudioWriter(audioWriter, Rational{int64(o.config.SampleRate), 1})
@@ -119,11 +124,12 @@ func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter,
 		"video", videoWriter != nil, "audio", audioWriter != nil)
 }
 
-// Stop disconnects sinks and closes the MXL writer.
+// Stop disconnects sinks and stops the MXL writer via context cancellation.
+// Writer.Start() has a goroutine that calls Close() on ctx.Done(), so we
+// only cancel the context here to avoid a double-close.
 func (o *Output) Stop() {
 	if o.cancel != nil {
 		o.cancel()
 	}
-	_ = o.writer.Close()
 	o.log.Info("MXL output stopped", "flow", o.config.FlowName)
 }

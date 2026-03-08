@@ -1,6 +1,7 @@
 package output
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -188,3 +189,56 @@ func (d *countingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 }
 
 func (d *countingDecoder) Close() {}
+
+// slowDecoder simulates a decoder that takes time to process, exposing the
+// window where Close() could race with an in-flight Decode.
+type slowDecoder struct {
+	delay time.Duration
+}
+
+func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	time.Sleep(d.delay)
+	w, h := 320, 180
+	return make([]byte, w*h*3/2), w, h, nil
+}
+
+func (d *slowDecoder) Close() {}
+
+func TestConfidenceMonitorConcurrentClose(t *testing.T) {
+	decoderFactory := func() (transition.VideoDecoder, error) {
+		return &slowDecoder{delay: 50 * time.Millisecond}, nil
+	}
+
+	cm := NewConfidenceMonitor(decoderFactory)
+	cm.minInterval = 0 // allow every frame through for stress
+
+	keyframe := &media.VideoFrame{
+		PTS:        1000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+	}
+
+	// Launch several IngestVideo goroutines concurrently with Close.
+	var wg sync.WaitGroup
+	const goroutines = 10
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cm.IngestVideo(keyframe)
+		}()
+	}
+
+	// Give goroutines a moment to start and acquire the decoder.
+	time.Sleep(10 * time.Millisecond)
+
+	// Close concurrently — must not race with in-flight Decode calls.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cm.Close()
+	}()
+
+	wg.Wait()
+}

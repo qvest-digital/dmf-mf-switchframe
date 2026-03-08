@@ -133,7 +133,7 @@ func TestLoudnessMeter_Stereo(t *testing.T) {
 	for i := 0; i < 48000; i++ {
 		// Left at full scale, right at half scale
 		samples[i*2] = float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
-		samples[i*2+1] = float32(0.5 * math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+		samples[i*2+1] = float32(0.5 * math.Sin(2*math.Pi*1000*float64(i)/48000))
 	}
 	m.Process(samples)
 
@@ -202,5 +202,88 @@ func TestLoudnessMeter_KWeightingAttenuatesLowFreq(t *testing.T) {
 	if lufs100 >= lufs1k {
 		t.Errorf("expected 100Hz (%f) to measure lower than 1kHz (%f) with K-weighting",
 			lufs100, lufs1k)
+	}
+}
+
+func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
+	// Verify the compaction path in emitBlock(). maxIntegratedBlocks = 360,000.
+	// Directly calling Process() 360,000+ times is too slow under -race.
+	//
+	// Instead, we verify the meter's behavior: feed a substantial amount of
+	// audio (10,000 blocks), verify integrated LUFS is valid, then feed more
+	// and verify the meter still works. This confirms the accumulator doesn't
+	// corrupt data under heavy use.
+	m := NewLoudnessMeter(48000, 1)
+
+	// 1kHz sine at 0.5 amplitude — loud enough to pass both BS.1770 gates.
+	// stepSize at 48kHz = 4800 mono samples per block.
+	// 100 blocks per call * 4800 = 480,000 samples per call.
+	chunkSamples := 4800 * 100
+	chunk := make([]float32, chunkSamples)
+	for i := range chunk {
+		chunk[i] = float32(0.5 * math.Sin(2*math.Pi*1000*float64(i)/48000))
+	}
+
+	// Phase 1: feed 10,000 blocks (100 calls * 100 blocks/call)
+	for i := 0; i < 100; i++ {
+		m.Process(chunk)
+	}
+
+	lufs1 := m.IntegratedLUFS()
+	if math.IsInf(lufs1, -1) || lufs1 == -math.MaxFloat64 {
+		t.Fatalf("phase 1: integrated LUFS should be finite, got %v", lufs1)
+	}
+	if lufs1 < -30 || lufs1 > 0 {
+		t.Errorf("phase 1: expected LUFS between -30 and 0, got %f", lufs1)
+	}
+
+	// Phase 2: feed another 10,000 blocks — meter should remain stable
+	for i := 0; i < 100; i++ {
+		m.Process(chunk)
+	}
+
+	lufs2 := m.IntegratedLUFS()
+	if math.IsInf(lufs2, -1) || lufs2 == -math.MaxFloat64 {
+		t.Fatalf("phase 2: integrated LUFS should be finite, got %v", lufs2)
+	}
+
+	// Same signal → integrated LUFS should be very close across phases
+	diff := math.Abs(lufs1 - lufs2)
+	if diff > 1.0 {
+		t.Errorf("integrated LUFS drifted %f between phases (p1=%f, p2=%f)", diff, lufs1, lufs2)
+	}
+
+	// Momentary and short-term should also be valid
+	mom := m.MomentaryLUFS()
+	if math.IsInf(mom, -1) || mom == -math.MaxFloat64 {
+		t.Fatalf("momentary LUFS should be finite after heavy use, got %v", mom)
+	}
+	st := m.ShortTermLUFS()
+	if math.IsInf(st, -1) || st == -math.MaxFloat64 {
+		t.Fatalf("short-term LUFS should be finite after heavy use, got %v", st)
+	}
+}
+
+func TestLoudnessMeterSampleRateWarning(t *testing.T) {
+	// Creating a meter with a non-48kHz sample rate should warn (not panic).
+	// The meter is functional but LUFS readings may be inaccurate.
+	m := NewLoudnessMeter(44100, 2)
+	if m == nil {
+		t.Fatal("NewLoudnessMeter should not return nil for non-48kHz sample rate")
+	}
+
+	// Should still process audio without error
+	samples := make([]float32, 44100*2)
+	m.Process(samples)
+
+	lufs := m.MomentaryLUFS()
+	if lufs > -60 {
+		t.Errorf("silence at 44100Hz should still measure very low, got %f", lufs)
+	}
+
+	// Verify 48kHz does not warn (test passes if no panic)
+	m48 := NewLoudnessMeter(48000, 2)
+	if m48 == nil {
+		t.Fatal("NewLoudnessMeter should not return nil for 48kHz sample rate")
 	}
 }

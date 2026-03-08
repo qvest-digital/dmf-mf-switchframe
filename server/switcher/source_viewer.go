@@ -32,6 +32,7 @@ type frameHandler interface {
 // lock or no lock at all).
 type sourceViewer struct {
 	sourceKey   string
+	id          string
 	handler     frameHandler
 	delayBuffer atomic.Pointer[DelayBuffer]
 	frameSync   atomic.Pointer[FrameSynchronizer]
@@ -48,13 +49,14 @@ var _ distribution.Viewer = (*sourceViewer)(nil)
 func newSourceViewer(sourceKey string, handler frameHandler) *sourceViewer {
 	return &sourceViewer{
 		sourceKey: sourceKey,
+		id:        "switchframe:" + sourceKey,
 		handler:   handler,
 	}
 }
 
 // ID returns a unique viewer identifier prefixed with "switchframe:".
 func (sv *sourceViewer) ID() string {
-	return "switchframe:" + sv.sourceKey
+	return sv.id
 }
 
 // SendVideo forwards a video frame to the handler tagged with the source key.
@@ -64,7 +66,7 @@ func (sv *sourceViewer) ID() string {
 func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 	sv.videoSent.Add(1)
 	if fs := sv.frameSync.Load(); fs != nil {
-		fs.IngestVideo(sv.sourceKey, *frame)
+		fs.IngestVideo(sv.sourceKey, frame)
 		return
 	}
 	if db := sv.delayBuffer.Load(); db != nil {
@@ -80,7 +82,7 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
 	if fs := sv.frameSync.Load(); fs != nil {
-		fs.IngestAudio(sv.sourceKey, *frame)
+		fs.IngestAudio(sv.sourceKey, frame)
 		return
 	}
 	if db := sv.delayBuffer.Load(); db != nil {

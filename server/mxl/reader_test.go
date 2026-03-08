@@ -140,8 +140,8 @@ func TestReader_DeliversVideoGrains(t *testing.T) {
 	if len(received) != 3 {
 		t.Fatalf("expected 3 grains, got %d", len(received))
 	}
-	if received[0].PTS != 100 {
-		t.Fatalf("expected PTS=100, got %d", received[0].PTS)
+	if received[0].PTS != 1 {
+		t.Fatalf("expected PTS=1 (monotonic counter), got %d", received[0].PTS)
 	}
 	if received[0].Width != 1920 || received[0].Height != 1080 {
 		t.Fatalf("expected 1920x1080, got %dx%d", received[0].Width, received[0].Height)
@@ -311,13 +311,14 @@ func TestReader_SkipsInvalidGrains(t *testing.T) {
 	if len(received) != 1 {
 		t.Fatalf("expected 1 valid grain (invalid skipped), got %d", len(received))
 	}
-	if received[0].PTS != 2 {
-		t.Fatalf("expected PTS=2 (skipped invalid at 1), got %d", received[0].PTS)
+	if received[0].PTS != 1 {
+		t.Fatalf("expected PTS=1 (monotonic counter, invalid grain skipped), got %d", received[0].PTS)
 	}
 }
 
 func TestReader_DetectsTimestampDiscontinuity(t *testing.T) {
-	// Gap from index 1 to 5 — should log a warning.
+	// Gap from MXL index 1 to 5 — grains still delivered.
+	// PTS is now a monotonic counter, so values are 1, 2.
 	grains := []mockGrain{
 		{data: []byte{1}, info: GrainInfo{Index: 1, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
 		{data: []byte{2}, info: GrainInfo{Index: 5, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
@@ -348,12 +349,63 @@ func TestReader_DetectsTimestampDiscontinuity(t *testing.T) {
 	}
 	reader.Wait()
 
-	// Both grains delivered despite discontinuity.
+	// Both grains delivered; PTS is monotonic counter (1, 2).
 	if len(received) != 2 {
 		t.Fatalf("expected 2 grains, got %d", len(received))
 	}
-	if received[0].PTS != 1 || received[1].PTS != 5 {
-		t.Fatalf("expected PTS 1,5; got %d,%d", received[0].PTS, received[1].PTS)
+	if received[0].PTS != 1 || received[1].PTS != 2 {
+		t.Fatalf("expected PTS 1,2 (monotonic); got %d,%d", received[0].PTS, received[1].PTS)
+	}
+}
+
+func TestMXLReaderPTSMonotonic(t *testing.T) {
+	// Video grains with high ring-buffer indices (wall-clock derived).
+	// PTS should be monotonic from 1, NOT the MXL index values.
+	grains := []mockGrain{
+		{data: []byte{1, 2, 3, 4}, info: GrainInfo{Index: 50000, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+		{data: []byte{5, 6, 7, 8}, info: GrainInfo{Index: 50001, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+		{data: []byte{9, 10, 11, 12}, info: GrainInfo{Index: 50002, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+		{data: []byte{13, 14, 15, 16}, info: GrainInfo{Index: 50003, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+		{data: []byte{17, 18, 19, 20}, info: GrainInfo{Index: 50004, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+	}
+	flow := newMockDiscreteReader(grains, FlowConfig{
+		Format:    DataFormatVideo,
+		GrainRate: Rational{30, 1},
+	})
+	flow.headIdx = 50000
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   8,
+		TimeoutMs: 10,
+		Width:     1920,
+		Height:    1080,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+
+	var received []VideoGrain
+	for g := range reader.Video() {
+		received = append(received, g)
+		if len(received) == 5 {
+			cancel()
+		}
+	}
+	reader.Wait()
+
+	if len(received) != 5 {
+		t.Fatalf("expected 5 grains, got %d", len(received))
+	}
+
+	// PTS should start at 1 and increment by 1 (monotonic counter domain).
+	for i, g := range received {
+		expectedPTS := int64(i + 1)
+		if g.PTS != expectedPTS {
+			t.Fatalf("grain[%d]: expected PTS=%d (monotonic), got %d (MXL index would be %d)",
+				i, expectedPTS, g.PTS, 50000+i)
+		}
 	}
 }
 
@@ -366,6 +418,191 @@ func TestReader_VideoChannelNilForAudio(t *testing.T) {
 		t.Fatal("expected non-nil Audio() channel for audio reader")
 	}
 }
+
+func TestVideoReaderTooLateRecovery(t *testing.T) {
+	// Simulate a video reader that returns "too late" after the first grain,
+	// then succeeds after re-sync to HeadIndex.
+	flow := &tooLateDiscreteReader{
+		headIdx: 200,
+		grains: []mockGrain{
+			// First read succeeds at index 100.
+			{data: []byte{1, 2, 3, 4}, info: GrainInfo{Index: 100, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+			// Second read will return "too late" (triggered by tooLateAt).
+			// After re-sync, third read succeeds at headIdx-2 = 198.
+			{data: []byte{5, 6, 7, 8}, info: GrainInfo{Index: 198, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+			{data: []byte{9, 10, 11, 12}, info: GrainInfo{Index: 199, GrainSize: 4, TotalSlices: 1, ValidSlices: 1}},
+		},
+		tooLateAt: 1, // Return "too late" on the 2nd ReadGrain call.
+	}
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   8,
+		TimeoutMs: 10,
+		Width:     1920,
+		Height:    1080,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+
+	var received []VideoGrain
+	for g := range reader.Video() {
+		received = append(received, g)
+		if len(received) == 3 {
+			cancel()
+		}
+	}
+	reader.Wait()
+
+	if len(received) != 3 {
+		t.Fatalf("expected 3 grains (1 before too-late, 2 after re-sync), got %d", len(received))
+	}
+
+	// PTS should be monotonic from 1 (using counter, not MXL index).
+	for i, g := range received {
+		expectedPTS := int64(i + 1)
+		if g.PTS != expectedPTS {
+			t.Fatalf("grain[%d]: expected PTS=%d, got %d", i, expectedPTS, g.PTS)
+		}
+	}
+}
+
+// tooLateDiscreteReader returns a "too late" error on the Nth ReadGrain call,
+// then succeeds with remaining grains after re-sync.
+type tooLateDiscreteReader struct {
+	mu        sync.Mutex
+	grains    []mockGrain
+	cursor    int
+	callCount int
+	tooLateAt int // 0-based call index to return "too late"
+	headIdx   uint64
+}
+
+func (r *tooLateDiscreteReader) ReadGrain(index uint64, _ uint64) ([]byte, GrainInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	call := r.callCount
+	r.callCount++
+
+	if call == r.tooLateAt {
+		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: too late (index %d already overwritten)", index)
+	}
+
+	if r.cursor >= len(r.grains) {
+		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+	}
+
+	g := r.grains[r.cursor]
+	r.cursor++
+	return g.data, g.info, nil
+}
+
+func (r *tooLateDiscreteReader) ConfigInfo() FlowConfig {
+	return FlowConfig{Format: DataFormatVideo, GrainRate: Rational{30, 1}}
+}
+
+func (r *tooLateDiscreteReader) HeadIndex() (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.headIdx, nil
+}
+
+func (r *tooLateDiscreteReader) Close() error { return nil }
+
+func TestAudioReaderTooLateRecovery(t *testing.T) {
+	flow := &tooLateContinuousReader{
+		headIdx: 96000,
+		samples: []mockSamples{
+			{pcm: [][]float32{{0.1, 0.2}, {0.3, 0.4}}},
+			// 2nd ReadSamples call returns "too late" (triggered by tooLateAt).
+			// After re-sync to headIdx, 3rd and 4th calls succeed.
+			{pcm: [][]float32{{0.5, 0.6}, {0.7, 0.8}}},
+			{pcm: [][]float32{{0.9, 1.0}, {1.1, 1.2}}},
+		},
+		tooLateAt: 1,
+	}
+
+	reader := NewAudioReader(ReaderConfig{
+		BufSize:        8,
+		TimeoutMs:      10,
+		SamplesPerRead: 2,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	reader.StartAudio(ctx, flow)
+
+	var received []AudioGrain
+	for g := range reader.Audio() {
+		received = append(received, g)
+		if len(received) == 3 {
+			cancel()
+		}
+	}
+	reader.Wait()
+
+	if len(received) != 3 {
+		t.Fatalf("expected 3 audio grains (1 before too-late, 2 after re-sync), got %d", len(received))
+	}
+
+	if received[0].SampleRate != 48000 {
+		t.Fatalf("expected sample rate 48000, got %d", received[0].SampleRate)
+	}
+	if received[0].Channels != 2 {
+		t.Fatalf("expected 2 channels, got %d", received[0].Channels)
+	}
+}
+
+// tooLateContinuousReader returns a "too late" error on the Nth ReadSamples call,
+// then succeeds with remaining samples after re-sync.
+type tooLateContinuousReader struct {
+	mu        sync.Mutex
+	samples   []mockSamples
+	cursor    int
+	callCount int
+	tooLateAt int
+	headIdx   uint64
+}
+
+func (r *tooLateContinuousReader) ReadSamples(index uint64, count int, timeoutNs uint64) ([][]float32, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	call := r.callCount
+	r.callCount++
+
+	if call == r.tooLateAt {
+		return nil, fmt.Errorf("mxl: read samples: too late (index %d already overwritten)", index)
+	}
+
+	if r.cursor >= len(r.samples) {
+		return nil, fmt.Errorf("mxl: read samples: timeout")
+	}
+
+	s := r.samples[r.cursor]
+	r.cursor++
+	return s.pcm, nil
+}
+
+func (r *tooLateContinuousReader) ConfigInfo() FlowConfig {
+	return FlowConfig{
+		Format:       DataFormatAudio,
+		GrainRate:    Rational{48000, 1},
+		ChannelCount: 2,
+	}
+}
+
+func (r *tooLateContinuousReader) HeadIndex() (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.headIdx, nil
+}
+
+func (r *tooLateContinuousReader) Close() error { return nil }
 
 func TestReader_AudioChannelNilForVideo(t *testing.T) {
 	reader := NewVideoReader(ReaderConfig{BufSize: 4})

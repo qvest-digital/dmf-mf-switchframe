@@ -23,12 +23,12 @@ type AppConfig struct {
 	Addr             string
 
 	// MXL integration.
-	MXLSources  []string // Flow UUIDs to subscribe as sources
-	MXLOutput         string // Flow name for program output (empty = disabled)
-	MXLOutputVideoDef string // Path to output video flow definition JSON
-	MXLOutputAudioDef string // Path to output audio flow definition JSON
-	MXLDomain         string // MXL shared memory domain path
-	MXLDiscover       bool   // List available MXL flows and exit
+	MXLSources        []string // Flow UUIDs to subscribe as sources
+	MXLOutput         string   // Flow name for program output (empty = disabled)
+	MXLOutputVideoDef string   // Path to output video flow definition JSON
+	MXLOutputAudioDef string   // Path to output audio flow definition JSON
+	MXLDomain         string   // MXL shared memory domain path
+	MXLDiscover       bool     // List available MXL flows and exit
 }
 
 func main() {
@@ -115,20 +115,20 @@ func parseConfig() (AppConfig, error) {
 	}
 
 	return AppConfig{
-		Demo:             *demoFlag,
-		FrameSync:        *frameSyncFlag,
-		DemoVideoDir:     *demoVideoDir,
-		LogLevel:         *logLevel,
-		AdminAddr:        *adminAddr,
-		APIToken:         apiToken,
-		ReplayBufferSecs: *replayBufferSecs,
-		Addr:             ":8080",
-		MXLSources:       mxlSources,
+		Demo:              *demoFlag,
+		FrameSync:         *frameSyncFlag,
+		DemoVideoDir:      *demoVideoDir,
+		LogLevel:          *logLevel,
+		AdminAddr:         *adminAddr,
+		APIToken:          apiToken,
+		ReplayBufferSecs:  *replayBufferSecs,
+		Addr:              ":8080",
+		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,
 		MXLOutputAudioDef: *mxlOutputAudioDef,
 		MXLDomain:         *mxlDomain,
-		MXLDiscover:      *mxlDiscover,
+		MXLDiscover:       *mxlDiscover,
 	}, nil
 }
 

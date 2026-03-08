@@ -103,7 +103,9 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
 	)
 
 	cam1Relay := newTestRelay()
@@ -171,7 +173,9 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
 	)
 	defer sw.Close()
 
@@ -714,11 +718,11 @@ func TestStartTransitionWarmsDecodersOutsideLock(t *testing.T) {
 		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
 			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
 			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
-		})
+		}, nil)
 		sw.gopCache.RecordFrame("cam2", &media.VideoFrame{
 			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
 			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
-		})
+		}, nil)
 	}
 
 	// Total warmup will be ~20 frames * 20ms = ~400ms (10 from each source).
@@ -785,7 +789,7 @@ func TestFadeToBlackWarmsDecodersOutsideLock(t *testing.T) {
 		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
 			PTS: int64(100 + i), IsKeyframe: kf, WireData: avc1Data,
 			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
-		})
+		}, nil)
 	}
 
 	// Total warmup will be ~10 frames * 20ms = ~200ms.
@@ -854,7 +858,7 @@ func TestFTBReverseWarmsDecodersOutsideLock(t *testing.T) {
 		sw.gopCache.RecordFrame("cam1", &media.VideoFrame{
 			PTS: int64(200 + i), IsKeyframe: kf, WireData: avc1Data,
 			SPS: []byte{0x67, 0x42}, PPS: []byte{0x68, 0x00},
-		})
+		}, nil)
 	}
 
 	// Toggle FTB off (starts reverse FTB transition with slow warmup).

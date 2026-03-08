@@ -493,3 +493,63 @@ func TestNewFrameBlenderDefaultsToLimitedRange(t *testing.T) {
 	fb := NewFrameBlender(16, 16)
 	require.Equal(t, byte(16), fb.blackY)
 }
+
+func TestWipeAlphaLinearCorrectness(t *testing.T) {
+	t.Parallel()
+	w, h := 64, 48
+	fb := NewFrameBlender(w, h)
+
+	for _, pos := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
+		// Horizontal left: alpha varies along X only
+		fb.generateWipeAlpha(pos, WipeHLeft)
+		softEdge := 2.0 / float64(w)
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				threshold := float64(x) / float64(w)
+				expected := wipeAlphaByte(threshold, pos, softEdge)
+				got := fb.wipeAlphaMap[y*w+x]
+				require.Equal(t, expected, got,
+					"HLeft mismatch at (%d,%d) pos=%f", x, y, pos)
+			}
+		}
+
+		// Vertical top: alpha varies along Y only
+		fb.generateWipeAlpha(pos, WipeVTop)
+		softEdge = 2.0 / float64(h)
+		for y := 0; y < h; y++ {
+			threshold := float64(y) / float64(h)
+			expected := wipeAlphaByte(threshold, pos, softEdge)
+			for x := 0; x < w; x++ {
+				got := fb.wipeAlphaMap[y*w+x]
+				require.Equal(t, expected, got,
+					"VTop mismatch at (%d,%d) pos=%f", x, y, pos)
+			}
+		}
+	}
+}
+
+func BenchmarkWipeAlphaLinear(b *testing.B) {
+	w, h := 1920, 1080
+	fb := NewFrameBlender(w, h)
+
+	b.Run("horizontal_1D", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			fb.generateWipeAlpha(0.5, WipeHLeft)
+		}
+	})
+
+	b.Run("vertical_1D", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			fb.generateWipeAlpha(0.5, WipeVTop)
+		}
+	})
+
+	b.Run("box_per_pixel", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			fb.generateWipeAlpha(0.5, WipeBoxCenterOut)
+		}
+	})
+}

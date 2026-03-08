@@ -39,6 +39,14 @@ func AVC1ToAnnexB(avc1 []byte) []byte {
 // (0x000001) and 4-byte (0x00000001) start codes. Returns nil for nil
 // or empty input.
 func AnnexBToAVC1(annexB []byte) []byte {
+	return AnnexBToAVC1Into(annexB, nil)
+}
+
+// AnnexBToAVC1Into converts Annex B format to AVC1 format, appending
+// the result to dst. Returns the (possibly grown) dst slice.
+// Pass dst[:0] to reuse a buffer without allocating.
+// Returns nil for nil or empty input.
+func AnnexBToAVC1Into(annexB []byte, dst []byte) []byte {
 	if len(annexB) == 0 {
 		return nil
 	}
@@ -48,26 +56,33 @@ func AnnexBToAVC1(annexB []byte) []byte {
 		return nil
 	}
 
-	// Calculate output size: 4-byte length prefix + NALU data for each.
 	totalLen := 0
 	for _, nalu := range nalus {
 		totalLen += 4 + len(nalu)
 	}
 
-	out := make([]byte, totalLen)
-	pos := 0
+	if cap(dst)-len(dst) < totalLen {
+		grown := make([]byte, len(dst), len(dst)+totalLen)
+		copy(grown, dst)
+		dst = grown
+	}
+
+	pos := len(dst)
+	dst = dst[:pos+totalLen]
 
 	for _, nalu := range nalus {
-		binary.BigEndian.PutUint32(out[pos:pos+4], uint32(len(nalu)))
-		copy(out[pos+4:], nalu)
+		binary.BigEndian.PutUint32(dst[pos:pos+4], uint32(len(nalu)))
+		copy(dst[pos+4:], nalu)
 		pos += 4 + len(nalu)
 	}
 
-	return out
+	return dst
 }
 
 // ExtractNALUs extracts individual NALUs from AVC1 format data,
 // returning each NALU body without the 4-byte length prefix.
+// The returned slices are sub-slices of the input — callers that
+// need to own the data (e.g. SPS/PPS storage) must copy it themselves.
 // Returns nil for nil or empty input.
 func ExtractNALUs(avc1 []byte) [][]byte {
 	if len(avc1) == 0 {
@@ -83,9 +98,7 @@ func ExtractNALUs(avc1 []byte) [][]byte {
 			break
 		}
 
-		nalu := make([]byte, naluLen)
-		copy(nalu, avc1[pos+4:pos+4+naluLen])
-		nalus = append(nalus, nalu)
+		nalus = append(nalus, avc1[pos+4:pos+4+naluLen])
 		pos += 4 + naluLen
 	}
 
@@ -94,53 +107,41 @@ func ExtractNALUs(avc1 []byte) [][]byte {
 
 // splitAnnexBNALUs splits an Annex B byte stream into individual NALUs.
 // Handles both 3-byte (0x000001) and 4-byte (0x00000001) start codes.
+// Returns sub-slices of the input data (zero-copy).
 func splitAnnexBNALUs(data []byte) [][]byte {
 	if len(data) == 0 {
 		return nil
 	}
 
-	// Find all start code positions.
-	var starts []int
+	var nalus [][]byte
+	naluStart := -1 // byte offset where current NALU body begins
+
 	i := 0
-	for i < len(data) {
-		if i+3 <= len(data) && data[i] == 0x00 && data[i+1] == 0x00 {
-			if i+4 <= len(data) && data[i+2] == 0x00 && data[i+3] == 0x01 {
-				// 4-byte start code
-				starts = append(starts, i)
-				i += 4
-				continue
+	for i < len(data)-2 {
+		if data[i] == 0x00 && data[i+1] == 0x00 {
+			scLen := 0
+			if i+3 < len(data) && data[i+2] == 0x00 && data[i+3] == 0x01 {
+				scLen = 4
+			} else if data[i+2] == 0x01 {
+				scLen = 3
 			}
-			if data[i+2] == 0x01 {
-				// 3-byte start code
-				starts = append(starts, i)
-				i += 3
+			if scLen > 0 {
+				if naluStart >= 0 {
+					nalu := data[naluStart:i]
+					if len(nalu) > 0 {
+						nalus = append(nalus, nalu)
+					}
+				}
+				naluStart = i + scLen
+				i += scLen
 				continue
 			}
 		}
 		i++
 	}
 
-	if len(starts) == 0 {
-		return nil
-	}
-
-	var nalus [][]byte
-	for idx, start := range starts {
-		// Determine where the NALU data begins (after start code).
-		naluStart := start + 3
-		if start+3 < len(data) && data[start+2] == 0x00 {
-			naluStart = start + 4
-		}
-
-		// Determine where the NALU data ends.
-		var naluEnd int
-		if idx+1 < len(starts) {
-			naluEnd = starts[idx+1]
-		} else {
-			naluEnd = len(data)
-		}
-
-		nalu := data[naluStart:naluEnd]
+	if naluStart >= 0 && naluStart < len(data) {
+		nalu := data[naluStart:]
 		if len(nalu) > 0 {
 			nalus = append(nalus, nalu)
 		}

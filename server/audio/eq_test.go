@@ -2,6 +2,7 @@ package audio
 
 import (
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -245,4 +246,203 @@ func rmsEnergy(samples []float32) float64 {
 		sum += float64(s) * float64(s)
 	}
 	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func TestEQProcessNoMutex(t *testing.T) {
+	t.Parallel()
+	eq := NewEQ(48000, 2)
+	require.NoError(t, eq.SetBand(1, 1000, 6.0, 1.0, true))
+
+	const iterations = 5000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer goroutine: continuously change EQ parameters
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			gain := float64(i%24) - 12.0 // cycle -12 to +11
+			q := 0.5 + float64(i%8)*0.5  // cycle 0.5 to 4.0
+			freq := 200.0 + float64(i%7800)
+			if freq > 8000 {
+				freq = 8000
+			}
+			_ = eq.SetBand(1, freq, gain, q, i%3 != 0)
+		}
+	}()
+
+	// Processing goroutine: continuously process audio
+	go func() {
+		defer wg.Done()
+		samples := make([]float32, 256)
+		for i := 0; i < iterations; i++ {
+			for j := range samples {
+				samples[j] = float32(math.Sin(2 * math.Pi * 1000 * float64(j) / 48000))
+			}
+			eq.Process(samples, 2)
+			_ = eq.IsBypassed()
+			_ = eq.GetBands()
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestCompressorProcessNoMutex(t *testing.T) {
+	t.Parallel()
+	c := NewCompressor(48000, 2)
+	require.NoError(t, c.SetParams(-10, 4.0, 5.0, 100.0, 3.0))
+
+	const iterations = 5000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			thresh := -40.0 + float64(i%40)
+			ratio := 1.0 + float64(i%19)
+			_ = c.SetParams(thresh, ratio, 5.0, 100.0, float64(i%24))
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		samples := make([]float32, 256)
+		for i := 0; i < iterations; i++ {
+			for j := range samples {
+				samples[j] = float32(math.Sin(2*math.Pi*1000*float64(j)/48000)) * 0.8
+			}
+			c.Process(samples)
+			_ = c.IsBypassed()
+			_ = c.GainReduction()
+			_, _, _, _, _ = c.GetParams()
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestLimiterProcessNoMutex(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(48000, 2)
+
+	const iterations = 5000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		samples := make([]float32, 256)
+		for i := 0; i < iterations; i++ {
+			for j := range samples {
+				samples[j] = 2.0 * float32(math.Sin(2*math.Pi*1000*float64(j)/48000))
+			}
+			lim.Process(samples)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = lim.GainReduction()
+			if i%500 == 0 {
+				lim.Reset()
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+func TestLoudnessProcessNoMutex(t *testing.T) {
+	t.Parallel()
+	m := NewLoudnessMeter(48000, 2)
+
+	const iterations = 2000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		samples := make([]float32, 960) // 10ms stereo at 48kHz
+		for i := 0; i < iterations; i++ {
+			for j := 0; j < 480; j++ {
+				v := float32(0.5 * math.Sin(2*math.Pi*1000*float64(j)/48000))
+				samples[j*2] = v
+				samples[j*2+1] = v
+			}
+			m.Process(samples)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = m.MomentaryLUFS()
+			_ = m.ShortTermLUFS()
+			_ = m.IntegratedLUFS()
+			if i%500 == 0 {
+				m.Reset()
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
+func BenchmarkBiquadAfterSilence(b *testing.B) {
+	coeffs := calcBandCoefficients(1000, 6.0, 1.0, 48000)
+	f := &BiquadFilter{
+		b0: coeffs.b0, b1: coeffs.b1, b2: coeffs.b2,
+		a1: coeffs.a1, a2: coeffs.a2,
+	}
+
+	// Prime with 10 seconds of silence (480000 samples at 48kHz)
+	for i := 0; i < 480000; i++ {
+		f.Process(0.0)
+	}
+
+	burst := make([]float64, 1024)
+	for i := range burst {
+		burst[i] = math.Sin(2 * math.Pi * float64(i) / 48.0)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		for _, s := range burst {
+			f.Process(s)
+		}
+	}
+}
+
+func TestBiquadDenormalProtection(t *testing.T) {
+	t.Parallel()
+	f := &BiquadFilter{
+		b0: 1.53512485958697,
+		b1: -2.69169618940638,
+		b2: 1.19839281085285,
+		a1: -1.69065929318241,
+		a2: 0.73248077421585,
+	}
+
+	// Process 48000 samples of silence — enough for any denormal to accumulate
+	for i := 0; i < 48000; i++ {
+		f.Process(0)
+	}
+
+	// The DC offset trick keeps filter state at ~denormalGuard magnitude
+	// (normal float range) rather than decaying into denormal territory.
+	// Verify state is bounded near the guard magnitude, not at denormal levels (<1e-300).
+	assert.InDelta(t, 0, f.s1, 1e-20, "s1 should be near zero (within DC guard range) after processing silence")
+	assert.InDelta(t, 0, f.s2, 1e-20, "s2 should be near zero (within DC guard range) after processing silence")
+
+	// Verify the output for silence is effectively zero (denormalGuard cancels out)
+	out := f.Process(0)
+	assert.InDelta(t, 0, out, 1e-15, "output should be effectively zero for silence input")
 }

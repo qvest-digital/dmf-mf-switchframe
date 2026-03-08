@@ -53,16 +53,18 @@ type MixerConfig struct {
 type Channel struct {
 	sourceKey   string
 	level       float64 // dB (-inf to +12), fader level
+	levelLinear float32 // cached linear gain from level (avoids per-frame math.Pow)
 	trim        float64 // dB (-20 to +20), input gain/trim
+	trimLinear  float32 // cached linear gain from trim (avoids per-frame math.Pow)
 	muted       bool
 	afv         bool
 	active      bool
-	decoder     AudioDecoder // lazy init, nil in passthrough
-	decoderOnce sync.Once    // ensures decoder factory is called at most once
-	peakL       float64      // linear amplitude [0,1] — updated on every decoded frame
-	peakR       float64      // linear amplitude [0,1]
-	eq          *EQ          // 3-band parametric EQ (always initialized)
-	compressor  *Compressor  // single-band compressor (always initialized)
+	decoder     AudioDecoder      // lazy init, nil in passthrough
+	decoderOnce sync.Once         // ensures decoder factory is called at most once
+	peakL       float64           // linear amplitude [0,1] — updated on every decoded frame
+	peakR       float64           // linear amplitude [0,1]
+	eq          *EQ               // 3-band parametric EQ (always initialized)
+	compressor  *Compressor       // single-band compressor (always initialized)
 	audioDelay  *AudioDelayBuffer // per-source audio delay for lip-sync correction
 
 	// Reusable work buffers (hot-path allocation elimination)
@@ -73,16 +75,17 @@ type Channel struct {
 
 // AudioMixer mixes audio from multiple sources.
 type AudioMixer struct {
-	log         *slog.Logger
-	mu          sync.RWMutex
-	channels    map[string]*Channel
-	masterLevel float64 // dB, default 0.0
-	sampleRate  int
-	numChannels int
-	encoder     AudioEncoder
-	output      func(*media.AudioFrame)
-	passthrough bool
-	config      MixerConfig
+	log          *slog.Logger
+	mu           sync.RWMutex
+	channels     map[string]*Channel
+	masterLevel  float64 // dB, default 0.0
+	masterLinear float32 // cached linear gain from masterLevel
+	sampleRate   int
+	numChannels  int
+	encoder      AudioEncoder
+	output       func(*media.AudioFrame)
+	passthrough  bool
+	config       MixerConfig
 
 	// Mix accumulation state: tracks which active unmuted channels
 	// have contributed to the current mix cycle.
@@ -101,8 +104,8 @@ type AudioMixer struct {
 	lastDecodedPCM map[string][]float32
 
 	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
-	crossfadeFrom     string               // outgoing source key
-	crossfadeTo       string               // incoming source key
+	crossfadeFrom     string // outgoing source key
+	crossfadeTo       string // incoming source key
 	crossfadeActive   bool
 	crossfadePCM      map[string][]float32 // "from" and "to" PCM buffers
 	crossfadeDeadline time.Time            // timeout for crossfade completion
@@ -168,6 +171,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 		log:            slog.With("component", "audio"),
 		channels:       make(map[string]*Channel),
 		masterLevel:    0.0,
+		masterLinear:   1.0, // 0 dB = unity
 		sampleRate:     config.SampleRate,
 		numChannels:    config.Channels,
 		output:         config.Output,
@@ -328,9 +332,8 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	mixed := m.mixAccum
 
 	// Apply master gain
-	masterGain := float32(DBToLinear(m.masterLevel))
 	for i := range mixed {
-		mixed[i] *= masterGain
+		mixed[i] *= m.masterLinear
 	}
 
 	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
@@ -422,10 +425,12 @@ func (m *AudioMixer) AddChannel(sourceKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[sourceKey] = &Channel{
-		sourceKey:  sourceKey,
-		eq:         NewEQ(m.sampleRate, m.numChannels),
-		compressor: NewCompressor(m.sampleRate, m.numChannels),
-		audioDelay: NewAudioDelayBuffer(0),
+		sourceKey:   sourceKey,
+		levelLinear: 1.0, // 0 dB = unity
+		trimLinear:  1.0, // 0 dB = unity
+		eq:          NewEQ(m.sampleRate, m.numChannels),
+		compressor:  NewCompressor(m.sampleRate, m.numChannels),
+		audioDelay:  NewAudioDelayBuffer(0),
 	}
 	m.recalcPassthrough()
 }
@@ -470,6 +475,7 @@ func (m *AudioMixer) SetTrim(sourceKey string, trimDB float64) error {
 		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.trim = trimDB
+	ch.trimLinear = float32(DBToLinear(trimDB))
 	m.recalcPassthrough()
 	return nil
 }
@@ -483,6 +489,7 @@ func (m *AudioMixer) SetLevel(sourceKey string, levelDB float64) error {
 		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.level = levelDB
+	ch.levelLinear = float32(DBToLinear(levelDB))
 	m.recalcPassthrough()
 	return nil
 }
@@ -505,6 +512,7 @@ func (m *AudioMixer) SetMasterLevel(levelDB float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.masterLevel = levelDB
+	m.masterLinear = float32(DBToLinear(levelDB))
 	m.recalcPassthrough()
 }
 
@@ -564,9 +572,8 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 	if lastPCM, ok := m.lastDecodedPCM[oldSource]; ok && len(lastPCM) > 0 {
 		cp := make([]float32, len(lastPCM))
 		if ch, chOk := m.channels[oldSource]; chOk {
-			trimGain := float32(DBToLinear(ch.trim))
 			for i, s := range lastPCM {
-				cp[i] = s * trimGain
+				cp[i] = s * ch.trimLinear
 			}
 			if !ch.eq.IsBypassed() {
 				ch.eq.Process(cp, m.numChannels)
@@ -574,9 +581,8 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 			if !ch.compressor.IsBypassed() {
 				ch.compressor.Process(cp)
 			}
-			faderGain := float32(DBToLinear(ch.level))
 			for i := range cp {
-				cp[i] *= faderGain
+				cp[i] *= ch.levelLinear
 			}
 		} else {
 			copy(cp, lastPCM)
@@ -888,11 +894,10 @@ mixing:
 	// Pipeline order: Trim -> EQ -> Compressor -> Fader -> Mix -> Master -> Limiter -> Encode
 
 	// Apply trim (input gain)
-	trimGain := float32(DBToLinear(ch.trim))
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
 	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
-		trimmedPCM[i] = s * trimGain
+		trimmedPCM[i] = s * ch.trimLinear
 	}
 
 	// Apply EQ (3-band parametric)
@@ -918,7 +923,7 @@ mixing:
 	}
 
 	// Apply fader level with per-sample transition interpolation
-	faderGain := float32(DBToLinear(ch.level))
+	faderGain := ch.levelLinear
 	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
 	gainedPCM := ch.gainBuf
 
@@ -938,9 +943,10 @@ mixing:
 		}
 		gStart := float32(gainFn(m.transCrossfadeAudioPos))
 		gEnd := float32(gainFn(m.mixCycleTransPos))
-		n := float32(len(trimmedPCM))
+		channels := m.numChannels
+		pairCount := float32(len(trimmedPCM) / channels)
 		for i, s := range trimmedPCM {
-			t := float32(i) / n
+			t := float32(i/channels) / pairCount
 			transGain := gStart + (gEnd-gStart)*t
 			gainedPCM[i] = s * faderGain * transGain
 		}
@@ -1012,11 +1018,10 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
 	// Pipeline order: Trim -> EQ -> Compressor -> Fader -> Mix -> Master -> Limiter -> Encode
 
 	// Apply trim (input gain)
-	trimGain := float32(DBToLinear(ch.trim))
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
 	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
-		trimmedPCM[i] = s * trimGain
+		trimmedPCM[i] = s * ch.trimLinear
 	}
 
 	// Apply EQ (3-band parametric)
@@ -1039,7 +1044,7 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
 	}
 
 	// Apply fader level with per-sample transition interpolation
-	faderGain := float32(DBToLinear(ch.level))
+	faderGain := ch.levelLinear
 	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
 	gainedPCM := ch.gainBuf
 
@@ -1055,9 +1060,10 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
 		}
 		gStart := float32(gainFn(m.transCrossfadeAudioPos))
 		gEnd := float32(gainFn(m.mixCycleTransPos))
-		n := float32(len(trimmedPCM))
+		channels := m.numChannels
+		pairCount := float32(len(trimmedPCM) / channels)
 		for i, s := range trimmedPCM {
-			t := float32(i) / n
+			t := float32(i/channels) / pairCount
 			transGain := gStart + (gEnd-gStart)*t
 			gainedPCM[i] = s * faderGain * transGain
 		}
@@ -1125,11 +1131,10 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	}
 
 	// Pipeline: Trim -> EQ -> Compressor -> Fader (reuse channel work buffers)
-	trimGain := float32(DBToLinear(ch.trim))
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
 	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
-		trimmedPCM[i] = s * trimGain
+		trimmedPCM[i] = s * ch.trimLinear
 	}
 	if !ch.eq.IsBypassed() {
 		ch.eq.Process(trimmedPCM, m.numChannels)
@@ -1137,11 +1142,10 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	if !ch.compressor.IsBypassed() {
 		ch.compressor.Process(trimmedPCM)
 	}
-	faderGain := float32(DBToLinear(ch.level))
 	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
 	gainedPCM := ch.gainBuf
 	for i, s := range trimmedPCM {
-		gainedPCM[i] = s * faderGain
+		gainedPCM[i] = s * ch.levelLinear
 	}
 
 	m.crossfadePCM[sourceKey] = gainedPCM
@@ -1174,7 +1178,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Apply equal-power crossfade (or use single source if timed out)
 	var mixed []float32
 	if hasFrom && hasTo {
-		mixed = EqualPowerCrossfade(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo])
+		mixed = EqualPowerCrossfadeStereo(m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
 	} else if hasTo {
 		// Outgoing source timed out — use incoming source only
 		mixed = m.crossfadePCM[m.crossfadeTo]
@@ -1184,9 +1188,8 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	}
 
 	// Apply master gain
-	masterGain := float32(DBToLinear(m.masterLevel))
 	for i := range mixed {
-		mixed[i] *= masterGain
+		mixed[i] *= m.masterLinear
 	}
 
 	// Lazy-init encoder
@@ -1521,7 +1524,7 @@ func (m *AudioMixer) DebugSnapshot() map[string]any {
 	maxGapMs := m.maxInterFrameNano.Load() / 1e6
 
 	return map[string]any{
-		"mode":                    mode,
+		"mode":                   mode,
 		"program_peak_dbfs":      peak,
 		"channels_active":        activeCount,
 		"channels_muted":         mutedCount,

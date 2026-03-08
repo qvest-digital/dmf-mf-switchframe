@@ -37,7 +37,7 @@ type mockReplayEncoder struct {
 	closed      bool
 }
 
-func (e *mockReplayEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *mockReplayEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.encodeCount++
@@ -46,12 +46,12 @@ func (e *mockReplayEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, err
 		// Return Annex B with SPS (High profile, Level 4.0) + PPS + IDR.
 		// SPS NALU type = 0x67, profile_idc=0x64, constraint=0x00, level=0x28
 		var out []byte
-		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x00, 0x00, 0x00, 0x01)                   // start code
 		out = append(out, 0x67, 0x64, 0x00, 0x28, 0xAC, 0xD1, 0x00) // SPS (type 7, High L4.0)
-		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
-		out = append(out, 0x68, 0xCE, 0x38, 0x80) // PPS (type 8)
-		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
-		out = append(out, 0x65, 0x88, 0x84, 0x00) // IDR slice (type 5)
+		out = append(out, 0x00, 0x00, 0x00, 0x01)                   // start code
+		out = append(out, 0x68, 0xCE, 0x38, 0x80)                   // PPS (type 8)
+		out = append(out, 0x00, 0x00, 0x00, 0x01)                   // start code
+		out = append(out, 0x65, 0x88, 0x84, 0x00)                   // IDR slice (type 5)
 		return out, true, nil
 	}
 

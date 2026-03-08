@@ -273,6 +273,96 @@ func TestWriter_SkipsMismatchedResolution(t *testing.T) {
 	}
 }
 
+func TestWriterConcurrentWriteVideo(t *testing.T) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, Rational{30, 1})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+
+	go func() {
+		defer wg.Done()
+		yuv := make([]byte, yuvSize)
+		for i := 0; i < 100; i++ {
+			w.WriteVideo(yuv, width, height, int64(i*3000))
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		time.Sleep(time.Millisecond)
+		w.Close()
+	}()
+
+	wg.Wait()
+}
+
+func TestWriterCloseFlagPreventsWrites(t *testing.T) {
+	vMock := &mockDiscreteWriter{}
+	aMock := &mockContinuousWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2, SampleRate: 48000, Channels: 2})
+	w.SetVideoWriter(vMock, Rational{30, 1})
+	w.SetAudioWriter(aMock, Rational{48000, 1})
+
+	w.Close()
+
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+	yuv := make([]byte, yuvSize)
+	w.WriteVideo(yuv, width, height, 0)
+	w.WriteAudio([]float32{0.1, 0.2}, 0, 48000, 2)
+
+	if len(vMock.getGrains()) != 0 {
+		t.Fatal("expected no video grains after close")
+	}
+	if len(aMock.getSamples()) != 0 {
+		t.Fatal("expected no audio samples after close")
+	}
+}
+
+func BenchmarkMXLWriterVideoHotPath(b *testing.B) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, Rational{30, 1})
+
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+	yuv := make([]byte, yuvSize)
+	for i := 0; i < width*height; i++ {
+		yuv[i] = 16
+	}
+	for i := width * height; i < yuvSize; i++ {
+		yuv[i] = 128
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		w.WriteVideo(yuv, width, height, int64(i))
+	}
+}
+
+func BenchmarkMXLWriterAudioHotPath(b *testing.B) {
+	mock := &mockContinuousWriter{}
+	w := NewWriter(WriterConfig{SampleRate: 48000, Channels: 2})
+	w.SetAudioWriter(mock, Rational{48000, 1})
+
+	pcm := make([]float32, 2048)
+	for i := range pcm {
+		pcm[i] = float32(i) * 0.001
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		w.WriteAudio(pcm, int64(i), 48000, 2)
+	}
+}
+
 func TestWriter_SteadyRateMultipleFrames(t *testing.T) {
 	mock := &mockDiscreteWriter{}
 	w := NewWriter(WriterConfig{Width: 12, Height: 2})

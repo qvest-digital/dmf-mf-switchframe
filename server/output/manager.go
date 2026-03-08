@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/distribution"
@@ -33,7 +34,7 @@ type OutputManager struct {
 	recorder     *FileRecorder
 	srtOutput    OutputAdapter // SRTCaller or SRTListener (legacy single output)
 	destinations map[string]*OutputDestination
-	adapters     []OutputAdapter
+	adapters     atomic.Pointer[[]OutputAdapter]
 
 	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
 	// so they can be stopped when adapters are removed.
@@ -55,11 +56,14 @@ type OutputManager struct {
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
 func NewOutputManager(relay *distribution.Relay) *OutputManager {
-	return &OutputManager{
+	m := &OutputManager{
 		log:          slog.With("component", "output"),
 		relay:        relay,
 		destinations: make(map[string]*OutputDestination),
 	}
+	empty := make([]OutputAdapter, 0)
+	m.adapters.Store(&empty)
+	return m
 }
 
 // SetSRTWiring injects real SRT connection functions. Called from main.go
@@ -610,7 +614,8 @@ func (m *OutputManager) Close() error {
 	srt := m.srtOutput
 	m.recorder = nil
 	m.srtOutput = nil
-	m.adapters = nil
+	empty := make([]OutputAdapter, 0)
+	m.adapters.Store(&empty)
 
 	// Snapshot active destinations and clear them.
 	var destAdapters []OutputAdapter
@@ -719,7 +724,7 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 		adapters = append(adapters, wrapper)
 	}
 
-	m.adapters = adapters
+	m.adapters.Store(&adapters)
 	return stale
 }
 
@@ -733,13 +738,8 @@ func (m *OutputManager) ensureMuxerLocked() {
 
 	muxer := NewTSMuxer()
 	muxer.SetOutput(func(tsData []byte) {
-		// Snapshot the adapter list under lock, write outside lock.
-		m.mu.Lock()
-		snapshot := make([]OutputAdapter, len(m.adapters))
-		copy(snapshot, m.adapters)
-		m.mu.Unlock()
-
-		for _, a := range snapshot {
+		adapters := m.adapters.Load()
+		for _, a := range *adapters {
 			if _, err := a.Write(tsData); err != nil {
 				m.log.Error("adapter write error", "adapter", a.ID(), "err", err)
 			}
@@ -770,7 +770,7 @@ func (m *OutputManager) ensureMuxerLocked() {
 // stopMuxerIfNoAdaptersLocked tears down the muxer and viewer if no
 // adapters remain. Must be called with m.mu held.
 func (m *OutputManager) stopMuxerIfNoAdaptersLocked() {
-	if len(m.adapters) > 0 || m.viewer == nil {
+	if len(*m.adapters.Load()) > 0 || m.viewer == nil {
 		return
 	}
 	m.stopMuxerLocked()
@@ -778,8 +778,7 @@ func (m *OutputManager) stopMuxerIfNoAdaptersLocked() {
 
 // stopMuxerLocked tears down the muxer and viewer unconditionally.
 // Must be called with m.mu held. Temporarily releases the lock while
-// waiting for the viewer goroutine to exit, to avoid deadlock with
-// the muxer output callback which also acquires m.mu.
+// waiting for the viewer goroutine to exit.
 func (m *OutputManager) stopMuxerLocked() {
 	if m.viewer == nil {
 		return
@@ -826,8 +825,8 @@ func (m *OutputManager) Status() OutputManagerStatus {
 
 // OutputManagerStatus is the combined status of all outputs.
 type OutputManagerStatus struct {
-	Recording RecordingStatus  `json:"recording"`
-	SRT       SRTOutputStatus  `json:"srt"`
+	Recording RecordingStatus `json:"recording"`
+	SRT       SRTOutputStatus `json:"srt"`
 }
 
 // DebugSnapshot implements debug.SnapshotProvider.
@@ -876,9 +875,7 @@ func (m *OutputManager) ConfidenceThumbnail() []byte {
 
 // HasActiveOutputs returns true if at least one output is active.
 func (m *OutputManager) HasActiveOutputs() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.adapters) > 0
+	return len(*m.adapters.Load()) > 0
 }
 
 // StartedAt returns when recording started (zero value if not recording).

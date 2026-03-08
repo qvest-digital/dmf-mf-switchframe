@@ -40,7 +40,7 @@ func Recall(ctx context.Context, p Preset, target RecallTarget) []string {
 	if p.ProgramSource != "" {
 		if err := target.Cut(ctx, p.ProgramSource); err != nil {
 			msg := fmt.Sprintf("program source %q: %v", p.ProgramSource, err)
-			slog.Warn("preset recall: "+msg)
+			slog.Warn("preset recall: " + msg)
 			warnings = append(warnings, msg)
 		}
 	}
@@ -49,7 +49,7 @@ func Recall(ctx context.Context, p Preset, target RecallTarget) []string {
 	if p.PreviewSource != "" {
 		if err := target.SetPreview(ctx, p.PreviewSource); err != nil {
 			msg := fmt.Sprintf("preview source %q: %v", p.PreviewSource, err)
-			slog.Warn("preset recall: "+msg)
+			slog.Warn("preset recall: " + msg)
 			warnings = append(warnings, msg)
 		}
 	}
@@ -58,18 +58,18 @@ func Recall(ctx context.Context, p Preset, target RecallTarget) []string {
 	for key, ch := range p.AudioChannels {
 		if err := target.SetLevel(key, ch.Level); err != nil {
 			msg := fmt.Sprintf("audio channel %q level: %v", key, err)
-			slog.Warn("preset recall: "+msg)
+			slog.Warn("preset recall: " + msg)
 			warnings = append(warnings, msg)
 			continue // skip mute/AFV if channel doesn't exist
 		}
 		if err := target.SetMuted(key, ch.Muted); err != nil {
 			msg := fmt.Sprintf("audio channel %q mute: %v", key, err)
-			slog.Warn("preset recall: "+msg)
+			slog.Warn("preset recall: " + msg)
 			warnings = append(warnings, msg)
 		}
 		if err := target.SetAFV(key, ch.AFV); err != nil {
 			msg := fmt.Sprintf("audio channel %q afv: %v", key, err)
-			slog.Warn("preset recall: "+msg)
+			slog.Warn("preset recall: " + msg)
 			warnings = append(warnings, msg)
 		}
 	}

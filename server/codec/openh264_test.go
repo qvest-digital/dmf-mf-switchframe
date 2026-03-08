@@ -67,7 +67,7 @@ func TestOpenH264EncodeDecodeRoundTrip(t *testing.T) {
 	}
 
 	// First frame should be IDR.
-	encoded, isIDR, err := enc.Encode(yuv, true)
+	encoded, isIDR, err := enc.Encode(yuv, 0, true)
 	require.NoError(t, err)
 	require.True(t, isIDR)
 	require.NotEmpty(t, encoded)
@@ -96,7 +96,7 @@ func TestOpenH264EncoderMultipleFrames(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		forceIDR := i == 0
-		data, isKey, err := enc.Encode(yuv, forceIDR)
+		data, isKey, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err)
 		require.NotEmpty(t, data)
 		if i == 0 {
@@ -111,7 +111,7 @@ func TestOpenH264EncoderWrongYUVSize(t *testing.T) {
 	defer enc.Close()
 
 	// Wrong size YUV buffer.
-	_, _, err = enc.Encode([]byte{1, 2, 3}, false)
+	_, _, err = enc.Encode([]byte{1, 2, 3}, 0, false)
 	require.Error(t, err)
 }
 
@@ -174,7 +174,7 @@ func TestOpenH264MultiFrameDecodeSequence(t *testing.T) {
 		}
 
 		forceIDR := i == 0
-		encoded, _, err := enc.Encode(yuv, forceIDR)
+		encoded, _, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		if err != nil {
 			// Frame may be skipped by rate control; that's acceptable.
 			continue

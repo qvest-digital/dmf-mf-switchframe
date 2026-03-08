@@ -79,6 +79,30 @@ type AudioEnc interface {
 	Close() error
 }
 
+// v210Buffers holds pre-allocated buffers for V210↔YUV420p conversion,
+// eliminating per-frame allocation on the hot path.
+type v210Buffers struct {
+	yuvOut   []byte // YUV420p output: w*h + 2*(w/2)*(h/2)
+	cb422Tmp []byte // temporary 4:2:2 chroma (2 rows): (w/2)*2
+	cr422Tmp []byte // temporary 4:2:2 chroma (2 rows): (w/2)*2
+	width    int
+	height   int
+}
+
+func (vb *v210Buffers) ensureSize(width, height int) {
+	if vb.width == width && vb.height == height {
+		return
+	}
+	ySize := width * height
+	chromaW := width / 2
+	cSize := chromaW * (height / 2)
+	vb.yuvOut = make([]byte, ySize+2*cSize)
+	vb.cb422Tmp = make([]byte, chromaW*2)
+	vb.cr422Tmp = make([]byte, chromaW*2)
+	vb.width = width
+	vb.height = height
+}
+
 // Source reads from an MXL flow and fans out to switcher, mixer, and relay.
 type Source struct {
 	config SourceConfig
@@ -95,6 +119,9 @@ type Source struct {
 	audioEncoder  AudioEnc
 	groupID       atomic.Uint32
 	videoInfoSent bool
+
+	// Pre-allocated V210 conversion buffers (used from single videoFanOut goroutine).
+	v210Bufs v210Buffers
 }
 
 // NewSource creates an MXL source.
@@ -183,13 +210,15 @@ func (s *Source) videoFanOut(ctx context.Context) {
 }
 
 func (s *Source) processVideoGrain(grain VideoGrain) {
-	// 1. Convert V210 → YUV420p.
-	yuv, err := V210ToYUV420p(grain.V210, grain.Width, grain.Height)
+	// 1. Convert V210 → YUV420p using pre-allocated buffers.
+	s.v210Bufs.ensureSize(grain.Width, grain.Height)
+	err := V210ToYUV420pInto(grain.V210, s.v210Bufs.yuvOut, s.v210Bufs.cb422Tmp, s.v210Bufs.cr422Tmp, grain.Width, grain.Height)
 	if err != nil {
 		s.log.Error("mxl source: V210→YUV420p conversion failed",
 			"error", err, "width", grain.Width, "height", grain.Height)
 		return
 	}
+	yuv := s.v210Bufs.yuvOut
 
 	// Convert frame-index PTS to 90kHz MPEG-TS time base.
 	fps := float64(s.config.FPS)
@@ -229,7 +258,7 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 		s.videoEncoder = enc
 	}
 
-	encoded, isKeyframe, err := s.videoEncoder.Encode(yuv, false)
+	encoded, isKeyframe, err := s.videoEncoder.Encode(yuv, pts, false)
 	if err != nil {
 		s.log.Error("mxl source: video encode failed", "error", err)
 		return

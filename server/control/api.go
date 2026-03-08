@@ -127,14 +127,14 @@ func WithSessionManager(sm *operator.SessionManager) APIOption {
 
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
-	switcher     *switcher.Switcher
-	mixer        AudioMixerAPI
-	outputMgr    OutputManagerAPI
-	debug        DebugAPI
-	presetStore  *preset.PresetStore
-	compositor   *graphics.Compositor
-	stingerStore *stinger.StingerStore
-	macroStore   *macro.Store
+	switcher      *switcher.Switcher
+	mixer         AudioMixerAPI
+	outputMgr     OutputManagerAPI
+	debug         DebugAPI
+	presetStore   *preset.PresetStore
+	compositor    *graphics.Compositor
+	stingerStore  *stinger.StingerStore
+	macroStore    *macro.Store
 	keyer         *graphics.KeyProcessor
 	replayMgr     *replay.Manager
 	operatorStore *operator.Store
@@ -548,7 +548,7 @@ type audioLevelRequest struct {
 // audioMuteRequest is the JSON body for the audio mute endpoint.
 type audioMuteRequest struct {
 	Source string `json:"source"`
-	Muted bool   `json:"muted"`
+	Muted  bool   `json:"muted"`
 }
 
 // audioAFVRequest is the JSON body for the audio AFV endpoint.
@@ -842,9 +842,9 @@ func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
 
 // recordingStartRequest is the JSON body for the recording start endpoint.
 type recordingStartRequest struct {
-	OutputDir      string `json:"outputDir"`
-	RotateAfterMins int   `json:"rotateAfterMins,omitempty"` // optional, minutes
-	MaxFileSizeMB   int   `json:"maxFileSizeMB,omitempty"`   // optional, megabytes
+	OutputDir       string `json:"outputDir"`
+	RotateAfterMins int    `json:"rotateAfterMins,omitempty"` // optional, minutes
+	MaxFileSizeMB   int    `json:"maxFileSizeMB,omitempty"`   // optional, megabytes
 }
 
 // handleRecordingStart begins recording program output to a file.
@@ -1675,14 +1675,14 @@ func (a *API) handleReplayStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	rs := a.replayMgr.Status()
 	resp := struct {
-		State      string                  `json:"state"`
-		Source     string                  `json:"source,omitempty"`
-		Speed      float64                 `json:"speed,omitempty"`
-		Loop       bool                    `json:"loop,omitempty"`
-		Position   float64                 `json:"position,omitempty"`
-		MarkIn     *int64                  `json:"markIn,omitempty"`
-		MarkOut    *int64                  `json:"markOut,omitempty"`
-		MarkSource string                  `json:"markSource,omitempty"`
+		State      string                    `json:"state"`
+		Source     string                    `json:"source,omitempty"`
+		Speed      float64                   `json:"speed,omitempty"`
+		Loop       bool                      `json:"loop,omitempty"`
+		Position   float64                   `json:"position,omitempty"`
+		MarkIn     *int64                    `json:"markIn,omitempty"`
+		MarkOut    *int64                    `json:"markOut,omitempty"`
+		MarkSource string                    `json:"markSource,omitempty"`
 		Buffers    []replay.SourceBufferInfo `json:"buffers,omitempty"`
 	}{
 		State:      string(rs.State),

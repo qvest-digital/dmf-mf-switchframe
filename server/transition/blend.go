@@ -24,12 +24,13 @@ package transition
 // YUV420 layout: Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]
 // Black in full-range YUV: Y=0, Cb=128, Cr=128
 type FrameBlender struct {
-	width, height int
-	yuvBufOut     []byte
-	ySize         int  // w*h (luma plane size)
-	uvSize        int  // w/2 * h/2 (each chroma plane size)
-	blackY        byte // Y value for black (0 = full-range, 16 = limited-range)
-	wipeAlphaMap  []byte // precomputed per-pixel alpha for wipe transitions
+	width, height      int
+	yuvBufOut          []byte
+	ySize              int    // w*h (luma plane size)
+	uvSize             int    // w/2 * h/2 (each chroma plane size)
+	blackY             byte   // Y value for black (0 = full-range, 16 = limited-range)
+	wipeAlphaMap       []byte // precomputed per-pixel alpha for wipe transitions (w*h)
+	wipeAlphaMapChroma []byte // subsampled chroma alpha map (w/2 * h/2)
 }
 
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
@@ -38,13 +39,14 @@ func NewFrameBlender(width, height int) *FrameBlender {
 	ySize := width * height
 	uvSize := (width / 2) * (height / 2)
 	return &FrameBlender{
-		width:        width,
-		height:       height,
-		yuvBufOut:    make([]byte, ySize+2*uvSize),
-		ySize:        ySize,
-		uvSize:       uvSize,
-		blackY:       16, // BT.709 limited-range black
-		wipeAlphaMap: make([]byte, ySize),
+		width:              width,
+		height:             height,
+		yuvBufOut:          make([]byte, ySize+2*uvSize),
+		ySize:              ySize,
+		uvSize:             uvSize,
+		blackY:             16, // BT.709 limited-range black
+		wipeAlphaMap:       make([]byte, ySize),
+		wipeAlphaMapChroma: make([]byte, uvSize),
 	}
 }
 
@@ -146,39 +148,44 @@ func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction
 	w := fb.width
 	h := fb.height
 
-	// Generate the alpha map (byte values 0-255) for the Y plane
+	// Generate the luma alpha map (byte values 0-255)
 	fb.generateWipeAlpha(position, direction)
 
 	// --- Y plane: blend using precomputed alpha map ---
-	// Alpha map values are 0-255. The kernel converts to 0-256 weight for exact
-	// pass-through at both extremes: a + (a >> 7) maps 0->0, 255->256.
 	blendAlpha(&fb.yuvBufOut[0], &yuvA[0], &yuvB[0], &fb.wipeAlphaMap[0], fb.ySize)
 
-	// --- Cb and Cr planes: subsample alpha by reading every other row/column ---
+	// --- Chroma planes: downsample alpha to chroma resolution, then use SIMD kernel ---
 	uvW := w / 2
 	uvH := h / 2
 	cbOffset := fb.ySize
 	crOffset := fb.ySize + fb.uvSize
 
+	// Downsample luma alpha map to chroma resolution (w/2 x h/2).
+	// For each 2x2 block, take the top-left luma pixel's alpha as the
+	// representative value (matches the previous scalar implementation).
 	for py := 0; py < uvH; py++ {
+		lumaRow := py * 2 * w
+		chromaRow := py * uvW
 		for px := 0; px < uvW; px++ {
-			// Use the alpha from the corresponding top-left luma pixel
-			a := int(fb.wipeAlphaMap[py*2*w+px*2])
-			w256 := a + (a >> 7)
-			inv := 256 - w256
-			idx := py*uvW + px
-			fb.yuvBufOut[cbOffset+idx] = byte((int(yuvA[cbOffset+idx])*inv + int(yuvB[cbOffset+idx])*w256) >> 8)
-			fb.yuvBufOut[crOffset+idx] = byte((int(yuvA[crOffset+idx])*inv + int(yuvB[crOffset+idx])*w256) >> 8)
+			fb.wipeAlphaMapChroma[chromaRow+px] = fb.wipeAlphaMap[lumaRow+px*2]
 		}
 	}
+
+	// Use the SIMD-optimized blendAlpha kernel for Cb and Cr planes.
+	blendAlpha(&fb.yuvBufOut[cbOffset], &yuvA[cbOffset], &yuvB[cbOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
+	blendAlpha(&fb.yuvBufOut[crOffset], &yuvA[crOffset], &yuvB[crOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
 
 	return fb.yuvBufOut
 }
 
 // generateWipeAlpha populates fb.wipeAlphaMap with per-pixel alpha values
-// (0-255) for the given wipe position and direction. For linear wipes,
-// alpha is constant along the perpendicular axis, so only one value per
-// row or column is computed and filled across the entire line.
+// (0-255) for the given wipe position and direction.
+//
+// For linear wipes (H/V), alpha varies along only one axis:
+//   - Horizontal: compute 1D alpha[x] array, fill each row by copying it
+//   - Vertical: compute alpha per row, memset each row to that value
+//
+// Box wipes remain per-pixel (2D threshold function).
 func (fb *FrameBlender) generateWipeAlpha(position float64, direction WipeDirection) {
 	w := fb.width
 	h := fb.height
@@ -198,55 +205,18 @@ func (fb *FrameBlender) generateWipeAlpha(position float64, direction WipeDirect
 
 	switch direction {
 	case WipeHLeft:
-		// Threshold = px/w, constant per column
-		invW := 1.0 / float64(w)
-		for px := 0; px < w; px++ {
-			threshold := float64(px) * invW
-			a := wipeAlphaByte(threshold, position, softEdge)
-			// Fill this column for all rows
-			for py := 0; py < h; py++ {
-				fb.wipeAlphaMap[py*w+px] = a
-			}
-		}
+		fb.generateWipeAlphaHorizontal(position, softEdge, false)
 
 	case WipeHRight:
-		// Threshold = 1 - px/w, constant per column
-		invW := 1.0 / float64(w)
-		for px := 0; px < w; px++ {
-			threshold := 1.0 - float64(px)*invW
-			a := wipeAlphaByte(threshold, position, softEdge)
-			for py := 0; py < h; py++ {
-				fb.wipeAlphaMap[py*w+px] = a
-			}
-		}
+		fb.generateWipeAlphaHorizontal(position, softEdge, true)
 
 	case WipeVTop:
-		// Threshold = py/h, constant per row
-		invH := 1.0 / float64(h)
-		for py := 0; py < h; py++ {
-			threshold := float64(py) * invH
-			a := wipeAlphaByte(threshold, position, softEdge)
-			row := py * w
-			for px := 0; px < w; px++ {
-				fb.wipeAlphaMap[row+px] = a
-			}
-		}
+		fb.generateWipeAlphaVertical(position, softEdge, false)
 
 	case WipeVBottom:
-		// Threshold = 1 - py/h, constant per row
-		invH := 1.0 / float64(h)
-		for py := 0; py < h; py++ {
-			threshold := 1.0 - float64(py)*invH
-			a := wipeAlphaByte(threshold, position, softEdge)
-			row := py * w
-			for px := 0; px < w; px++ {
-				fb.wipeAlphaMap[row+px] = a
-			}
-		}
+		fb.generateWipeAlphaVertical(position, softEdge, true)
 
 	case WipeBoxCenterOut, WipeBoxEdgesIn:
-		// Per-pixel: threshold = max(|px-cx|/cx, |py-cy|/cy) for center-out,
-		// or 1 - that for edges-in.
 		cx := float64(w-1) / 2.0
 		cy := float64(h-1) / 2.0
 		invCx := 1.0 / cx
@@ -280,14 +250,51 @@ func (fb *FrameBlender) generateWipeAlpha(position float64, direction WipeDirect
 		}
 
 	default:
-		// Fallback to h-left
-		invW := 1.0 / float64(w)
-		for px := 0; px < w; px++ {
-			threshold := float64(px) * invW
-			a := wipeAlphaByte(threshold, position, softEdge)
-			for py := 0; py < h; py++ {
-				fb.wipeAlphaMap[py*w+px] = a
-			}
+		fb.generateWipeAlphaHorizontal(position, softEdge, false)
+	}
+}
+
+// generateWipeAlphaHorizontal computes a 1D alpha array along the X axis,
+// then replicates it across all rows. O(w + w*h_copy) instead of O(w*h).
+// If invert is true, threshold is mirrored (right-to-left).
+func (fb *FrameBlender) generateWipeAlphaHorizontal(position, softEdge float64, invert bool) {
+	w := fb.width
+	h := fb.height
+
+	// Compute 1D alpha for the first row (used as template).
+	row0 := fb.wipeAlphaMap[:w]
+	invW := 1.0 / float64(w)
+	for px := 0; px < w; px++ {
+		threshold := float64(px) * invW
+		if invert {
+			threshold = 1.0 - threshold
+		}
+		row0[px] = wipeAlphaByte(threshold, position, softEdge)
+	}
+
+	// Copy row 0 to all subsequent rows.
+	for py := 1; py < h; py++ {
+		copy(fb.wipeAlphaMap[py*w:py*w+w], row0)
+	}
+}
+
+// generateWipeAlphaVertical computes one alpha value per row and fills
+// each row with that constant value. O(h + w*h_memset) instead of O(w*h).
+// If invert is true, threshold is mirrored (bottom-to-top).
+func (fb *FrameBlender) generateWipeAlphaVertical(position, softEdge float64, invert bool) {
+	w := fb.width
+	h := fb.height
+	invH := 1.0 / float64(h)
+
+	for py := 0; py < h; py++ {
+		threshold := float64(py) * invH
+		if invert {
+			threshold = 1.0 - threshold
+		}
+		a := wipeAlphaByte(threshold, position, softEdge)
+		row := fb.wipeAlphaMap[py*w : py*w+w]
+		for i := range row {
+			row[i] = a
 		}
 	}
 }

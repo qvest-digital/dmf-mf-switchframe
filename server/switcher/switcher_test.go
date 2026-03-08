@@ -931,6 +931,47 @@ func TestSeqConcurrentAccess(t *testing.T) {
 	require.Greater(t, finalState.Seq, uint64(0), "seq should have been incremented")
 }
 
+func TestHandleVideoFrameSingleRLock(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	var wg sync.WaitGroup
+	const iterations = 1000
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			frame := &media.VideoFrame{
+				PTS:      int64(i * 3000),
+				WireData: makeAVC1Frame([]byte{0x41, byte(i % 256)}),
+			}
+			sw.handleVideoFrame("cam1", frame)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations/10; i++ {
+			if i%2 == 0 {
+				_ = sw.Cut(context.Background(), "cam2")
+			} else {
+				_ = sw.Cut(context.Background(), "cam1")
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+
 func TestCutGroupIDMonotonicity(t *testing.T) {
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test-viewer")

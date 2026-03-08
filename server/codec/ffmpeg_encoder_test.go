@@ -76,7 +76,7 @@ func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 	var isKeyframe bool
 	for i := 0; i < 30; i++ {
 		forceIDR := i == 0
-		encoded, isKeyframe, err = enc.Encode(yuv, forceIDR)
+		encoded, isKeyframe, err = enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err)
 		if encoded != nil {
 			break
@@ -115,7 +115,7 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 		}
 
 		forceIDR := i == 0
-		data, isKey, err := enc.Encode(yuv, forceIDR)
+		data, isKey, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "frame %d", i)
 		// Without zerolatency, initial frames may return nil (EAGAIN).
 		if data != nil {
@@ -145,7 +145,7 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 	// Encode frames to fill the pipeline and produce output.
 	for i := 0; i < 30; i++ {
 		forceIDR := i == 0
-		_, _, err := enc.Encode(yuv, forceIDR)
+		_, _, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "frame %d", i)
 	}
 
@@ -154,7 +154,7 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 	foundIDR := false
 	for i := 0; i < 30; i++ {
 		forceOnFirst := i == 0
-		data, isKeyframe, err := enc.Encode(yuv, forceOnFirst)
+		data, isKeyframe, err := enc.Encode(yuv, int64((30+i)*3000), forceOnFirst)
 		require.NoError(t, err)
 		if data != nil && isKeyframe {
 			foundIDR = true
@@ -170,7 +170,7 @@ func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
 	defer enc.Close()
 
 	// Wrong size YUV buffer.
-	_, _, err = enc.Encode([]byte{1, 2, 3}, false)
+	_, _, err = enc.Encode([]byte{1, 2, 3}, 0, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "YUV buffer")
 }
@@ -181,7 +181,7 @@ func TestFFmpegEncoderClosedEncode(t *testing.T) {
 	enc.Close()
 
 	yuv := make([]byte, 320*240*3/2)
-	_, _, err = enc.Encode(yuv, false)
+	_, _, err = enc.Encode(yuv, 0, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "closed")
 }
@@ -206,7 +206,7 @@ func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 		}
 
 		forceIDR := i%30 == 0
-		data, _, err := enc.Encode(yuv, forceIDR)
+		data, _, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err)
 		if len(data) > maxSize {
 			maxSize = len(data)
@@ -239,7 +239,7 @@ func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 		}
 
 		forceIDR := i == 0
-		data, isKey, err := enc.Encode(yuv, forceIDR)
+		data, isKey, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "frame %d", i)
 		// With threading/lookahead, initial frames may return nil (EAGAIN).
 		// After pipeline fills, frames should produce output.
@@ -280,7 +280,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 			var data []byte
 			var isKey bool
 			for i := 0; i < 30; i++ {
-				data, isKey, err = enc.Encode(yuv, i == 0)
+				data, isKey, err = enc.Encode(yuv, int64(i*3000), i == 0)
 				require.NoError(t, err)
 				if data != nil && isKey {
 					break
@@ -318,7 +318,7 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 	// Feed enough frames to get output
 	var data []byte
 	for i := 0; i < 30; i++ {
-		data, _, err = enc.Encode(yuv, i == 0)
+		data, _, err = enc.Encode(yuv, int64(i*3000), i == 0)
 		require.NoError(t, err)
 		if data != nil {
 			break
@@ -336,6 +336,47 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 		}
 	}
 	require.True(t, foundAUD, "encoder output should contain AUD NALU for TS compliance")
+}
+
+func TestEncoderPTSPassthrough(t *testing.T) {
+	w, h := 160, 120
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30.0, 2, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	for i := 0; i < 30; i++ {
+		pts := int64(i * 3000)
+		_, _, err := enc.Encode(yuv, pts, i == 0)
+		require.NoError(t, err)
+	}
+}
+
+func BenchmarkEncoderOutput(b *testing.B) {
+	w, h := 160, 120
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30.0, 2, nil)
+	require.NoError(b, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	// Warm up the encoder pipeline
+	for i := 0; i < 30; i++ {
+		_, _, _ = enc.Encode(yuv, int64(i*3000), i == 0)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = enc.Encode(yuv, int64((30+i)*3000), i%30 == 0)
+	}
 }
 
 func TestFFmpegEncoderInterface(t *testing.T) {

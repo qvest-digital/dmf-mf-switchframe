@@ -30,7 +30,6 @@ typedef struct {
 	AVPacket*       pkt;
 	int             width;
 	int             height;
-	int64_t         pts;
 } ffenc_t;
 
 // ffenc_open initializes the encoder with the given codec name and parameters.
@@ -169,17 +168,19 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		return -6;
 	}
 
-	h->pts = 0;
 	return 0;
 }
 
 // ffenc_encode encodes one YUV420 frame.
 // yuv_data points to packed planar YUV420 (Y: w*h, U: w/2*h/2, V: w/2*h/2).
 // If force_idr is non-zero, the frame is forced to be an IDR keyframe.
-// On success (return 0): out_buf/out_len contain the Annex B bitstream, is_idr is set.
-// The caller must free out_buf with free().
+// input_pts is the presentation timestamp passed through from the pipeline
+// (90 kHz MPEG-TS time base) for correct A/V sync.
+// On success (return 0): out_buf/out_len point directly into pkt->data.
+// Caller must copy the data before calling ffenc_unref_packet().
 // Returns 0 on success, 1 if EAGAIN (need more input), negative on error.
 static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
+                        int64_t input_pts,
                         unsigned char** out_buf, int* out_len, int* is_idr) {
 	*out_buf = NULL;
 	*out_len = 0;
@@ -214,7 +215,7 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 		       yuv_data + y_size + uv_w * uv_h + row * uv_w, uv_w);
 	}
 
-	h->frame->pts = h->pts++;
+	h->frame->pts = input_pts;
 
 	if (force_idr) {
 		h->frame->pict_type = AV_PICTURE_TYPE_I;
@@ -237,19 +238,18 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 		return -3; // receive failed
 	}
 
-	// Copy packet data to a malloc'd buffer for the Go side.
-	unsigned char* buf = (unsigned char*)malloc(h->pkt->size);
-	if (!buf) {
-		av_packet_unref(h->pkt);
-		return -4;
-	}
-	memcpy(buf, h->pkt->data, h->pkt->size);
-	*out_buf = buf;
+	// Return pointer directly into pkt->data — no intermediate malloc+memcpy.
+	// Caller must copy the data (via C.GoBytes) before calling ffenc_unref_packet.
+	*out_buf = h->pkt->data;
 	*out_len = h->pkt->size;
 	*is_idr = (h->pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
 
-	av_packet_unref(h->pkt);
 	return 0;
+}
+
+// ffenc_unref_packet releases the packet data after the caller has copied it.
+static void ffenc_unref_packet(ffenc_t* h) {
+	av_packet_unref(h->pkt);
 }
 
 // ffenc_close frees all encoder resources.
@@ -321,9 +321,11 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate int, fps float32,
 }
 
 // Encode encodes a packed YUV420 planar frame to Annex B H.264 data.
+// pts is the presentation timestamp in 90 kHz MPEG-TS units, passed through
+// to the encoded bitstream for A/V sync.
 // If forceIDR is true, the encoder forces an IDR keyframe.
 // Returns the encoded bitstream, whether the frame is a keyframe, and any error.
-func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	if e.closed {
 		return nil, false, fmt.Errorf("encoder is closed")
 	}
@@ -349,6 +351,7 @@ func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) 
 		&e.handle,
 		(*C.uchar)(unsafe.Pointer(&yuv[0])),
 		forceIDRInt,
+		C.int64_t(pts),
 		&outBuf, &outLen, &isIDR,
 	)
 	if rc < 0 {
@@ -366,9 +369,9 @@ func (e *FFmpegEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) 
 		return nil, false, fmt.Errorf("encoder produced no output")
 	}
 
-	// Copy from C-allocated buffer to Go slice, then free.
+	// GoBytes copies pkt->data into Go memory; then unref releases the AVPacket.
 	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
-	C.free(unsafe.Pointer(outBuf))
+	C.ffenc_unref_packet(&e.handle)
 
 	return result, isIDR != 0, nil
 }

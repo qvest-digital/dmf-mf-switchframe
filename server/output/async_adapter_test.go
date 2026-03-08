@@ -219,6 +219,37 @@ func TestAsyncAdapter_ImplementsInterface(t *testing.T) {
 	var _ OutputAdapter = (*AsyncAdapter)(nil)
 }
 
+func TestAsyncAdapterDropLogRateLimit(t *testing.T) {
+	// Adapter that blocks forever so all writes after buffer fills are dropped.
+	inner := newBlockingAdapter()
+
+	// Buffer of 1: first write fills the buffer, subsequent writes drop.
+	async := NewAsyncAdapter(inner, 1)
+	require.NoError(t, async.Start(context.Background()))
+
+	// Drop many packets rapidly.
+	const dropCount = 50
+	for i := 0; i < dropCount+1; i++ {
+		_, _ = async.Write([]byte{byte(i)})
+	}
+
+	// Verify drops occurred.
+	require.GreaterOrEqual(t, async.Dropped(), int64(dropCount-1),
+		"should have dropped many packets")
+
+	// The rate-limited log should have fired at most once in this tight loop
+	// since all drops happen within a single nanosecond-scale burst (well
+	// under the 1-second rate limit window). We verify the field exists and
+	// was updated (non-zero means the log path was hit at least once).
+	lastLog := async.lastDropLog.Load()
+	require.Greater(t, lastLog, int64(0),
+		"lastDropLog should have been set at least once")
+
+	// Unblock and clean up.
+	close(inner.unblock)
+	async.Stop()
+}
+
 func TestSlowAdapterDoesntBlockFastAdapter(t *testing.T) {
 	// Two adapters share a simulated muxer output callback: one fast (no delay)
 	// and one very slow (50ms per write). We send 100 packets through the

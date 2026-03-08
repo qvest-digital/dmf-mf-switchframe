@@ -210,9 +210,9 @@ func TestGraphicsHandlers_SetLastOperator(t *testing.T) {
 	uploadOverlay(t, api, 4, 4, "test")
 
 	endpoints := []struct {
-		name   string
-		path   string
-		setup  func() // optional pre-step
+		name  string
+		path  string
+		setup func() // optional pre-step
 	}{
 		{"on", "/api/graphics/on", nil},
 		{"off", "/api/graphics/off", nil},

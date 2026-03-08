@@ -60,8 +60,8 @@ func TestScaleYUV420_MatchedResolution(t *testing.T) {
 	t.Parallel()
 	// Same size = exact copy for full YUV420 frame
 	w, h := 4, 4
-	ySize := w * h              // 16
-	uvSize := (w / 2) * (h / 2) // 4
+	ySize := w * h                // 16
+	uvSize := (w / 2) * (h / 2)   // 4
 	totalSize := ySize + 2*uvSize // 24
 
 	src := make([]byte, totalSize)
@@ -94,7 +94,7 @@ func TestScaleYUV420_DifferentResolutions(t *testing.T) {
 		src[i] = 128 // Y
 	}
 	for i := 0; i < srcUVSize; i++ {
-		src[srcYSize+i] = 100          // Cb
+		src[srcYSize+i] = 100           // Cb
 		src[srcYSize+srcUVSize+i] = 200 // Cr
 	}
 
@@ -143,7 +143,7 @@ func TestScaleYUV420_CornerPreservation(t *testing.T) {
 
 	src := make([]byte, srcTotal)
 	// Set Y plane corners to distinct values
-	src[0] = 10                      // top-left
+	src[0] = 10                     // top-left
 	src[srcW-1] = 50                // top-right
 	src[(srcH-1)*srcW] = 150        // bottom-left
 	src[(srcH-1)*srcW+srcW-1] = 200 // bottom-right

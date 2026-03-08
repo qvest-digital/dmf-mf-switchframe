@@ -9,6 +9,11 @@ import (
 
 const maxAudioDelayMs = 500
 
+// audioDelayRingSize is the fixed capacity of the circular buffer.
+// At 500ms max delay with ~23ms AAC frames, worst case is ~22 frames.
+// 32 provides comfortable headroom.
+const audioDelayRingSize = 32
+
 type delayedAudioFrame struct {
 	frame     *media.AudioFrame
 	arrivedAt time.Time
@@ -16,10 +21,14 @@ type delayedAudioFrame struct {
 
 // AudioDelayBuffer delays audio frames by a configurable number of milliseconds.
 // At 0ms delay, frames pass through immediately with no allocation.
+// Uses a fixed-size circular buffer to avoid unbounded slice growth.
 type AudioDelayBuffer struct {
 	mu      sync.Mutex
 	delayMs int
-	frames  []delayedAudioFrame
+	ring    [audioDelayRingSize]delayedAudioFrame
+	head    int // read position
+	tail    int // write position
+	count   int // number of valid frames in ring
 }
 
 // NewAudioDelayBuffer creates a new AudioDelayBuffer with the given delay in ms.
@@ -69,12 +78,23 @@ func (b *AudioDelayBuffer) ingestAt(frame *media.AudioFrame, now time.Time) *med
 		return frame
 	}
 
-	b.frames = append(b.frames, delayedAudioFrame{frame: frame, arrivedAt: now})
+	// Write to tail position.
+	b.ring[b.tail] = delayedAudioFrame{frame: frame, arrivedAt: now}
+	b.tail = (b.tail + 1) % audioDelayRingSize
+	if b.count < audioDelayRingSize {
+		b.count++
+	} else {
+		// Ring full — advance head to drop the oldest frame.
+		b.head = (b.head + 1) % audioDelayRingSize
+	}
 
+	// Check if the oldest frame has aged past the delay.
 	delay := time.Duration(b.delayMs) * time.Millisecond
-	if len(b.frames) > 0 && now.Sub(b.frames[0].arrivedAt) >= delay {
-		f := b.frames[0].frame
-		b.frames = b.frames[1:]
+	if b.count > 0 && now.Sub(b.ring[b.head].arrivedAt) >= delay {
+		f := b.ring[b.head].frame
+		b.ring[b.head] = delayedAudioFrame{} // clear to avoid retaining pointer
+		b.head = (b.head + 1) % audioDelayRingSize
+		b.count--
 		return f
 	}
 	return nil

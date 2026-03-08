@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 )
 
 // Compressor parameter limits
@@ -29,35 +30,73 @@ var (
 	ErrInvalidMakeupGain = errors.New("audio: makeup gain must be between 0 and 24 dB")
 )
 
+// compressorParams is an immutable snapshot of compressor configuration.
+// Swapped atomically so Process() and IsBypassed() are lock-free.
+type compressorParams struct {
+	threshold  float64
+	ratio      float64
+	attackMs   float64
+	releaseMs  float64
+	makeupGain float64
+
+	thresholdLinear float64
+	attackCoeff     float64
+	releaseCoeff    float64
+	makeupLinear    float64
+
+	gainTable [256]float32
+}
+
 // Compressor is a single-band dynamics compressor with envelope follower.
-// Uses an exponential envelope detector (same pattern as limiter.go) with
-// configurable threshold, ratio, attack, release, and makeup gain.
+// Uses an exponential envelope detector with configurable threshold, ratio,
+// attack, release, and makeup gain.
+//
+// Parameters are stored in an immutable compressorParams snapshot swapped
+// atomically. Envelope state is only written by Process() (single-writer
+// from the mixer's processing goroutine). GainReduction is an atomic float64
+// for lock-free metering reads.
 type Compressor struct {
+	params atomic.Pointer[compressorParams]
+
+	// Envelope state: only written by Process() (single-writer, no lock needed)
+	envelope float64
+
+	// Lock-free GR metering via atomic float64 encoding
+	gainReductionBits atomic.Uint64
+
+	// Reset flag: set by Reset(), cleared by Process()
+	pendingReset atomic.Bool
+
+	// Retained for tests that directly inspect envelope under lock
 	mu sync.Mutex
 
-	// Parameters
-	threshold  float64 // dBFS (-40 to 0)
-	ratio      float64 // 1:1 to 20:1
-	attackMs   float64 // ms (0.1 to 100)
-	releaseMs  float64 // ms (10 to 1000)
-	makeupGain float64 // dB (0 to 24)
-
-	// Derived coefficients
-	thresholdLinear float64 // linear amplitude of threshold
-	attackCoeff     float64 // envelope attack coefficient
-	releaseCoeff    float64 // envelope release coefficient
-	makeupLinear    float64 // linear gain for makeup
-
-	// Precomputed gain lookup table — indexed by overDB * 4 (0.25 dB resolution).
-	// Rebuilt on threshold/ratio change. Eliminates per-sample Log10+Pow.
-	gainTable [256]float32 // 0-64 dB range at 0.25 dB steps
-
-	// State
-	envelope      float64 // current envelope level (linear)
-	gainReduction float64 // current GR in dB
-
 	sampleRate float64
-	channels   int // number of interleaved channels (for linked stereo)
+	channels   int
+}
+
+// newCompressorParams builds an immutable params snapshot.
+func newCompressorParams(threshold, ratio, attackMs, releaseMs, makeupGain, sampleRate float64) *compressorParams {
+	p := &compressorParams{
+		threshold:       threshold,
+		ratio:           ratio,
+		attackMs:        attackMs,
+		releaseMs:       releaseMs,
+		makeupGain:      makeupGain,
+		thresholdLinear: math.Pow(10, threshold/20.0),
+		attackCoeff:     1 - math.Exp(-1.0/(sampleRate*attackMs/1000.0)),
+		releaseCoeff:    1 - math.Exp(-1.0/(sampleRate*releaseMs/1000.0)),
+		makeupLinear:    math.Pow(10, makeupGain/20.0),
+	}
+	for i := 0; i < len(p.gainTable); i++ {
+		overDB := float64(i) * 0.25
+		if overDB > 0 && ratio > 1.0 {
+			reductionDB := overDB * (1 - 1/ratio)
+			p.gainTable[i] = float32(math.Pow(10, -reductionDB/20.0))
+		} else {
+			p.gainTable[i] = 1.0
+		}
+	}
+	return p
 }
 
 // NewCompressor creates a new compressor with default parameters (bypassed: ratio 1:1).
@@ -67,41 +106,11 @@ func NewCompressor(sampleRate, channels int) *Compressor {
 		channels = 1
 	}
 	c := &Compressor{
-		threshold:  0,
-		ratio:      1.0,
-		attackMs:   5.0,
-		releaseMs:  100.0,
-		makeupGain: 0,
 		sampleRate: float64(sampleRate),
 		channels:   channels,
 	}
-	c.recalcCoefficients()
+	c.params.Store(newCompressorParams(0, 1.0, 5.0, 100.0, 0, float64(sampleRate)))
 	return c
-}
-
-// recalcCoefficients updates derived values from the current parameters.
-// Caller must hold c.mu or be in the constructor.
-func (c *Compressor) recalcCoefficients() {
-	sr := c.sampleRate
-	c.thresholdLinear = math.Pow(10, c.threshold/20.0)
-	c.attackCoeff = 1 - math.Exp(-1.0/(sr*c.attackMs/1000.0))
-	c.releaseCoeff = 1 - math.Exp(-1.0/(sr*c.releaseMs/1000.0))
-	c.makeupLinear = math.Pow(10, c.makeupGain/20.0)
-	c.rebuildGainTable()
-}
-
-// rebuildGainTable precomputes gain reduction for 256 over-threshold dB steps
-// at 0.25 dB resolution (0-64 dB range). Caller must hold c.mu or be in constructor.
-func (c *Compressor) rebuildGainTable() {
-	for i := 0; i < len(c.gainTable); i++ {
-		overDB := float64(i) * 0.25
-		if overDB > 0 && c.ratio > 1.0 {
-			reductionDB := overDB * (1 - 1/c.ratio)
-			c.gainTable[i] = float32(math.Pow(10, -reductionDB/20.0))
-		} else {
-			c.gainTable[i] = 1.0
-		}
-	}
 }
 
 // SetParams sets all compressor parameters at once. Validates all parameters
@@ -123,74 +132,58 @@ func (c *Compressor) SetParams(threshold, ratio, attackMs, releaseMs, makeupGain
 		return ErrInvalidMakeupGain
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.threshold = threshold
-	c.ratio = ratio
-	c.attackMs = attackMs
-	c.releaseMs = releaseMs
-	c.makeupGain = makeupGain
-	c.recalcCoefficients()
+	c.params.Store(newCompressorParams(threshold, ratio, attackMs, releaseMs, makeupGain, c.sampleRate))
 	return nil
 }
 
 // GetParams returns the current compressor parameters.
 func (c *Compressor) GetParams() (threshold, ratio, attackMs, releaseMs, makeupGain float64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.threshold, c.ratio, c.attackMs, c.releaseMs, c.makeupGain
+	p := c.params.Load()
+	return p.threshold, p.ratio, p.attackMs, p.releaseMs, p.makeupGain
 }
 
 // IsBypassed returns true when the compressor has no audible effect:
 // ratio <= 1.0 (no compression) AND no makeup gain applied.
+// Lock-free: reads the atomic params snapshot.
 func (c *Compressor) IsBypassed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.ratio <= 1.0 && c.makeupGain == 0
+	p := c.params.Load()
+	return p.ratio <= 1.0 && p.makeupGain == 0
 }
 
 // Reset clears the envelope and gain reduction state.
 // Called when the program bus transitions to mute (FTB) so that stale
 // envelope state does not briefly suppress audio on unmute.
 func (c *Compressor) Reset() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.envelope = 0
-	c.gainReduction = 0
+	c.gainReductionBits.Store(0)
+	c.pendingReset.Store(true)
 }
 
 // GainReduction returns the current gain reduction in dB.
 // 0 means no compression is active. Positive values indicate dB of reduction.
+// Lock-free: reads the atomic float64.
 func (c *Compressor) GainReduction() float64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.gainReduction
+	return math.Float64frombits(c.gainReductionBits.Load())
 }
 
 // Process applies compression to the samples in-place and returns the result.
-// The compression algorithm:
-// 1. Envelope follower tracks the signal level (fast attack, slow release)
-// 2. When envelope exceeds threshold, gain reduction is applied based on ratio
-// 3. Makeup gain is applied to the entire signal
-//
-// For multi-channel (stereo) audio, the envelope is linked: the peak across
-// all channels in each sample group drives a single envelope, and the same
-// gain reduction is applied to all channels. This prevents stereo image shift.
+// Lock-free: reads params atomically, writes envelope state (single-writer).
 func (c *Compressor) Process(samples []float32) []float32 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.pendingReset.CompareAndSwap(true, false) {
+		c.envelope = 0
+		c.gainReductionBits.Store(0)
+	}
 
-	threshold := c.thresholdLinear
+	p := c.params.Load()
+
+	threshold := p.thresholdLinear
 	env := c.envelope
-	makeupGain := float32(c.makeupLinear)
-	attackCoeff := c.attackCoeff
-	releaseCoeff := c.releaseCoeff
+	makeupGain := float32(p.makeupLinear)
+	attackCoeff := p.attackCoeff
+	releaseCoeff := p.releaseCoeff
 	ch := c.channels
-	gainTable := &c.gainTable
+	gainTable := &p.gainTable
 
 	for i := 0; i < len(samples); i += ch {
-		// Find peak across all channels in this group
 		var peak float64
 		for j := 0; j < ch && i+j < len(samples); j++ {
 			abs := math.Abs(float64(samples[i+j]))
@@ -199,18 +192,19 @@ func (c *Compressor) Process(samples []float32) []float32 {
 			}
 		}
 
-		// Peak-following envelope: fast attack, slow release
 		if peak > env {
 			env += attackCoeff * (peak - env)
 		} else {
 			env += releaseCoeff * (peak - env)
 		}
+		if env < 1e-15 {
+			env = 0
+		}
 
-		// Lookup gain from precomputed table
 		var gain float32 = 1.0
 		if env > threshold && threshold > 0 {
 			overDB := 20 * math.Log10(env/threshold)
-			idx := int(overDB * 4) // 0.25 dB resolution
+			idx := int(overDB * 4)
 			if idx >= len(gainTable) {
 				idx = len(gainTable) - 1
 			}
@@ -220,7 +214,6 @@ func (c *Compressor) Process(samples []float32) []float32 {
 			gain = gainTable[idx]
 		}
 
-		// Apply same gain + makeup to all channels
 		for j := 0; j < ch && i+j < len(samples); j++ {
 			samples[i+j] = samples[i+j] * gain * makeupGain
 		}
@@ -228,13 +221,12 @@ func (c *Compressor) Process(samples []float32) []float32 {
 
 	c.envelope = env
 
-	// Compute and store GR in dB for metering
+	var gr float64
 	if env > threshold && threshold > 0 {
 		overDB := 20 * math.Log10(env/threshold)
-		c.gainReduction = overDB * (1 - 1/c.ratio)
-	} else {
-		c.gainReduction = 0
+		gr = overDB * (1 - 1/p.ratio)
 	}
+	c.gainReductionBits.Store(math.Float64bits(gr))
 
 	return samples
 }

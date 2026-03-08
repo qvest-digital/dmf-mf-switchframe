@@ -228,7 +228,7 @@ func TestScaleBilinearRow_CrossValidation_Downscale(t *testing.T) {
 
 	src := make([]byte, srcW*srcH)
 	for i := range src {
-		src[i] = byte((i * 17 + 42) % 256)
+		src[i] = byte((i*17 + 42) % 256)
 	}
 
 	refDst := make([]byte, dstW*dstH)

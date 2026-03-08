@@ -25,7 +25,9 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	sw := New(programRelay)
 	sw.SetPipelineCodecs(
 		func() (transition.VideoDecoder, error) { return transition.NewMockDecoder(4, 4), nil },
-		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) { return transition.NewMockEncoder(), nil },
+		func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
 	)
 	defer sw.Close()
 
@@ -87,7 +89,7 @@ func TestPipeline_CompositorActiveDecodesOnce(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{
 		PTS: 100, IsKeyframe: true,
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	})
 
 	// Wait for async video processing to complete
@@ -195,7 +197,7 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{
 		PTS: 100, IsKeyframe: true,
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	})
 
 	// Wait for async video processing to complete
@@ -242,7 +244,7 @@ func TestPipeline_DecoderFailureDropsFrame(t *testing.T) {
 	frame := &media.VideoFrame{
 		PTS: 100, IsKeyframe: true,
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	}
 	cam1Relay.BroadcastVideo(frame)
 	time.Sleep(10 * time.Millisecond)
@@ -332,7 +334,7 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 	cam1Relay.BroadcastVideo(&media.VideoFrame{
 		PTS: 100, IsKeyframe: true,
 		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
-		SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 	})
 	time.Sleep(10 * time.Millisecond)
 
@@ -376,7 +378,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 		cam1Relay.BroadcastVideo(&media.VideoFrame{
 			PTS: int64(i * 33333), IsKeyframe: i == 0,
 			WireData: make([]byte, 5000), // ~5KB per frame → ~1.2 Mbps at 30fps
-			SPS: []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
+			SPS:      []byte{0x67, 0x42, 0x00, 0x0a}, PPS: []byte{0x68, 0x42, 0x00},
 		})
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -509,9 +511,9 @@ type slowEncoder struct {
 	delay time.Duration
 }
 
-func (e *slowEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *slowEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	time.Sleep(e.delay)
-	return e.inner.Encode(yuv, forceIDR)
+	return e.inner.Encode(yuv, pts, forceIDR)
 }
 
 func (e *slowEncoder) Close() { e.inner.Close() }
@@ -572,11 +574,11 @@ func newBufferingEncoder(inner transition.VideoEncoder, warmupFrames int) *buffe
 	return e
 }
 
-func (e *bufferingEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *bufferingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	if e.remaining.Add(-1) >= 0 {
 		return nil, false, nil // EAGAIN — no output yet
 	}
-	return e.inner.Encode(yuv, forceIDR)
+	return e.inner.Encode(yuv, pts, forceIDR)
 }
 
 func (e *bufferingEncoder) Close() { e.inner.Close() }
@@ -603,7 +605,7 @@ func TestPipelineCodecs_ClampsBitrate(t *testing.T) {
 // failingEncoder always returns an error from Encode.
 type failingEncoder struct{}
 
-func (e *failingEncoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *failingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("mock encode failure")
 }
 
@@ -700,9 +702,9 @@ func TestReplayGOP_BlocksDecodeForEntireGOP(t *testing.T) {
 	// With 60 frames at 8ms/frame decode, the lock is held for ~480ms,
 	// during which no frames can be processed or broadcast.
 	const (
-		gopSize        = 60
-		decodeDelay    = 8 * time.Millisecond
-		expectedBlock  = time.Duration(gopSize) * decodeDelay // ~480ms
+		gopSize       = 60
+		decodeDelay   = 8 * time.Millisecond
+		expectedBlock = time.Duration(gopSize) * decodeDelay // ~480ms
 	)
 
 	slowDec := &slowDecoder{
@@ -756,7 +758,7 @@ func TestReplayGOP_BlocksDecodeForEntireGOP(t *testing.T) {
 		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
 		PPS:      []byte{0x68, 0x42, 0x00},
 	}
-	_, _ = pc.decode(liveFrame)
+	_, _ = pc.decode(liveFrame, nil)
 	decodeBlocked := time.Since(decodeStart)
 
 	// Wait for replay to finish
@@ -873,8 +875,8 @@ func TestReplayGOP_LockHoldTimeScalesWithGOPSize(t *testing.T) {
 		return time.Since(start)
 	}
 
-	small := measureReplayTime(10)  // 10 frames → ~20ms
-	large := measureReplayTime(60)  // 60 frames → ~120ms
+	small := measureReplayTime(10) // 10 frames → ~20ms
+	large := measureReplayTime(60) // 60 frames → ~120ms
 
 	t.Logf("10-frame GOP: %v", small)
 	t.Logf("60-frame GOP: %v", large)
@@ -895,7 +897,7 @@ func TestReplayGOP_SimulatedBroadcastGap_Old(t *testing.T) {
 	// the observed 536ms broadcast gap. It uses the in-place fallback path
 	// (no decoderFactory) to demonstrate the problem.
 	const (
-		gopSize     = 50 // Typical GOP at 24fps × 2sec
+		gopSize     = 50                   // Typical GOP at 24fps × 2sec
 		decodeDelay = 8 * time.Millisecond // Realistic FFmpeg decode time
 	)
 

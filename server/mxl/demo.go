@@ -172,10 +172,10 @@ func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
 	// Use YCbCr values directly to stay in-domain.
 	type yuvColor struct{ y, cb, cr byte }
 	colors := []yuvColor{
-		{180, 170, 50},  // cyan-ish
-		{100, 85, 212},  // magenta-ish
-		{210, 16, 146},  // yellow-ish
-		{80, 190, 120},  // teal-ish
+		{180, 170, 50}, // cyan-ish
+		{100, 85, 212}, // magenta-ish
+		{210, 16, 146}, // yellow-ish
+		{80, 190, 120}, // teal-ish
 	}
 	baseColor := colors[colorIdx%len(colors)]
 

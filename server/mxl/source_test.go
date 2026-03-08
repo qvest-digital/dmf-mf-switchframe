@@ -159,9 +159,9 @@ func TestSource_StopsCleanly(t *testing.T) {
 	flow := &infiniteDiscreteReader{}
 
 	src := NewSource(SourceConfig{
-		FlowName: "cam1",
-		Width:    12,
-		Height:   2,
+		FlowName:   "cam1",
+		Width:      12,
+		Height:     2,
 		OnRawVideo: func(string, []byte, int, int, int64) {},
 	})
 

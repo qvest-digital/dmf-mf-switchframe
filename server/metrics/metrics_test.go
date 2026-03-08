@@ -30,14 +30,14 @@ func TestNewMetrics_AllMetricsGatherable(t *testing.T) {
 	// Note: CounterVec metrics only appear once they have been observed,
 	// so we check for at least the scalar counters + histogram.
 	wantNames := map[string]bool{
-		"switchframe_cuts_total":                  false,
-		"switchframe_idr_gate_events_total":       false,
-		"switchframe_idr_gate_duration_seconds":        false,
-		"switchframe_mixer_frames_mixed_total":    false,
-		"switchframe_mixer_encode_errors_total":   false,
+		"switchframe_cuts_total":                     false,
+		"switchframe_idr_gate_events_total":          false,
+		"switchframe_idr_gate_duration_seconds":      false,
+		"switchframe_mixer_frames_mixed_total":       false,
+		"switchframe_mixer_encode_errors_total":      false,
 		"switchframe_mixer_passthrough_bypass_total": false,
 		"switchframe_output_ringbuf_overflows_total": false,
-		"switchframe_output_srt_reconnects_total":   false,
+		"switchframe_output_srt_reconnects_total":    false,
 		"switchframe_output_recording_bytes_total":   false,
 		"switchframe_output_srt_bytes_total":         false,
 	}

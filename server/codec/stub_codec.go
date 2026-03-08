@@ -38,7 +38,7 @@ func NewOpenH264Encoder(width, height, bitrate int, fps float32) (*OpenH264Encod
 }
 
 // Encode is a stub that always returns an error.
-func (e *OpenH264Encoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *OpenH264Encoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	return nil, false, errOpenH264Disabled
 }
 

@@ -111,7 +111,7 @@ type TransitionEngine struct {
 	timeout      time.Duration // default 10s, configurable via SetTimeout()
 	lastFrameAt  time.Time     // updated in IngestFrame()
 	watchdogStop chan struct{} // closed in cleanup() to stop watchdog goroutine
-	watchdogOnce sync.Once    // prevents double-close of watchdogStop
+	watchdogOnce sync.Once     // prevents double-close of watchdogStop
 
 	// Timing instrumentation (atomic, lock-free — safe to read from any goroutine)
 	decodeLastNano atomic.Int64
@@ -388,7 +388,7 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 
 	// Store YUV directly — no colorspace conversion needed.
 	// Deep-copy because the decoder may reuse its internal buffer.
-	yuvSize := w*h*3/2
+	yuvSize := w * h * 3 / 2
 	if isFrom {
 		if len(e.latestYUVA) != yuvSize {
 			e.latestYUVA = make([]byte, yuvSize)
@@ -409,6 +409,10 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 // source (toSource), triggers blend+encode+output with the source's PTS
 // to maintain timestamp continuity on the program stream.
 // For FTB, the fromSource triggers blend (no toSource).
+//
+// Lock scope is minimized: decode happens outside the lock so that two
+// sources sending frames near-simultaneously don't block each other during
+// the 3-16ms decode step.
 func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
 	ingestStart := time.Now()
 	defer func() {
@@ -418,13 +422,13 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	}()
 	e.framesIngested.Add(1)
 
+	// --- Phase 1 (lock): snapshot state, determine source, flush if needed ---
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
 		return
 	}
 
-	// Determine which source this is
 	isFrom := sourceKey == e.fromSource
 	isTo := sourceKey == e.toSource
 	if !isFrom && !isTo {
@@ -432,44 +436,103 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		return
 	}
 
-	// Reset watchdog timer on every valid frame
 	e.lastFrameAt = time.Now()
 
-	// After warmup, the decoder's reference chain matches the live stream
-	// (warmup fed the full GOP). Live frames continue the chain — decode
-	// them immediately instead of waiting for the next keyframe (which could
-	// be up to 1 GOP interval away, causing visible freeze-frames).
-	//
-	// If a keyframe arrives, flush the decoder to reset stale warmup
-	// references and decode cleanly from the new IDR.
-	if isFrom && e.needsFlushA {
-		if isKeyframe {
-			type flusher interface{ Flush() }
-			if f, ok := e.decoderA.(flusher); ok {
-				f.Flush()
+	// Snapshot the decoder pointer for use outside the lock.
+	// Each source (A/B) has its own decoder so concurrent decodes don't conflict.
+	var decoder VideoDecoder
+	if isFrom {
+		decoder = e.decoderA
+		if e.needsFlushA {
+			if isKeyframe {
+				type flusher interface{ Flush() }
+				if f, ok := decoder.(flusher); ok {
+					f.Flush()
+				}
 			}
+			e.needsFlushA = false
 		}
-		e.needsFlushA = false
+	} else {
+		decoder = e.decoderB
+		if e.needsFlushB {
+			if isKeyframe {
+				type flusher interface{ Flush() }
+				if f, ok := decoder.(flusher); ok {
+					f.Flush()
+				}
+			}
+			e.needsFlushB = false
+		}
 	}
-	if isTo && e.needsFlushB {
-		if isKeyframe {
-			type flusher interface{ Flush() }
-			if f, ok := e.decoderB.(flusher); ok {
-				f.Flush()
-			}
+	e.mu.Unlock()
+
+	// --- Phase 2 (no lock): decode using snapshotted decoder ---
+	var decodedYUV []byte
+	var decW, decH int
+	decodeOK := false
+	if decoder != nil {
+		decStart := time.Now()
+		yuv, w, h, err := decoder.Decode(wireData)
+		decDur := time.Since(decStart).Nanoseconds()
+		e.decodeLastNano.Store(decDur)
+		updateAtomicMax(&e.decodeMaxNano, decDur)
+		if err == nil {
+			decodedYUV = yuv
+			decW = w
+			decH = h
+			decodeOK = true
+			e.log.Debug("decoded frame", "source", sourceKey, "isFrom", isFrom, "w", w, "h", h)
+		} else {
+			e.log.Debug("decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
 		}
-		e.needsFlushB = false
 	}
 
-	// decodeAndStore may fail (EAGAIN from B-frame reorder). Fall through
-	// to blend regardless — the black frame fallback handles nil sources.
-	e.decodeAndStore(sourceKey, wireData, isFrom)
+	// --- Phase 3 (lock): store decoded YUV, blend, check auto-complete ---
+	e.mu.Lock()
+	if e.state != StateActive {
+		e.mu.Unlock()
+		return
+	}
+
+	if decodeOK {
+		if e.width == 0 {
+			e.width = decW
+			e.height = decH
+			e.blender = NewFrameBlender(decW, decH)
+		}
+
+		// Scale if resolution doesn't match the target.
+		if decW != e.width || decH != e.height {
+			e.log.Debug("scaling frame", "source", sourceKey,
+				"from_w", decW, "from_h", decH, "to_w", e.width, "to_h", e.height)
+			targetSize := e.width * e.height * 3 / 2
+			if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
+				e.scaleBuf = make([]byte, targetSize)
+			}
+			ScaleYUV420WithQuality(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+			decodedYUV = e.scaleBuf[:targetSize]
+			decW = e.width
+			decH = e.height
+		}
+
+		// Deep-copy because the decoder may reuse its internal buffer.
+		yuvSize := decW * decH * 3 / 2
+		if isFrom {
+			if len(e.latestYUVA) != yuvSize {
+				e.latestYUVA = make([]byte, yuvSize)
+			}
+			copy(e.latestYUVA, decodedYUV)
+		} else {
+			if len(e.latestYUVB) != yuvSize {
+				e.latestYUVB = make([]byte, yuvSize)
+			}
+			copy(e.latestYUVB, decodedYUV)
+		}
+	}
 
 	// Determine if we should trigger blend+output.
 	// For Mix/Dip/Wipe: triggered by incoming TO source frame.
 	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
-	// When a source's YUV is nil (B-frame reorder EAGAIN during warmup),
-	// we substitute a black frame to maintain continuous output at source fps.
 	shouldBlend := false
 	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
 		shouldBlend = true
@@ -492,11 +555,8 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		yuvB = e.getBlackFrame()
 	}
 
-	// Calculate position
 	pos := e.currentPosition()
 
-	// Blend directly in YUV420 space — no colorspace conversion needed.
-	// The blender's output buffer is pre-allocated and reused across frames.
 	blendStart := time.Now()
 	var blended []byte
 	switch e.transitionType {
@@ -507,14 +567,12 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	case TransitionFTB:
 		blended = e.blender.BlendFTB(yuvA, pos)
 	case TransitionFTBReverse:
-		// Inverted: position 0→1 fades from black to fully visible
 		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
 	case TransitionWipe:
 		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
 	case TransitionStinger:
 		blended = e.blendStinger(pos)
 	default:
-		// Unknown transition type — pass through source A
 		blended = yuvA
 	}
 	blendDur := time.Since(blendStart).Nanoseconds()
@@ -522,13 +580,10 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	updateAtomicMax(&e.blendMaxNano, blendDur)
 	e.framesBlended.Add(1)
 
-	// Signal keyframe on the very first output frame so the pipeline
-	// coordinator can force an IDR for downstream decoders.
 	isKF := !e.firstOutput
 	e.firstOutput = true
 	e.log.Debug("blended", "pos", fmt.Sprintf("%.3f", pos), "w", e.width, "h", e.height)
 
-	// Check if auto-mode completed
 	var autoComplete bool
 	if !e.manualControl && pos >= 1.0 {
 		autoComplete = true
@@ -539,7 +594,7 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	w, h := e.width, e.height
 	e.mu.Unlock()
 
-	// Output raw YUV and completion callbacks outside lock
+	// --- Phase 4 (no lock): output callback and completion ---
 	if e.config.Output != nil && blended != nil {
 		e.config.Output(blended, w, h, pts, isKF)
 	}

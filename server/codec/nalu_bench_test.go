@@ -127,6 +127,21 @@ func BenchmarkAnnexBToAVC1(b *testing.B) {
 	}
 }
 
+// BenchmarkAnnexBToAVC1Into benchmarks the pooled variant that appends to a
+// reusable destination buffer, avoiding per-frame output allocation.
+func BenchmarkAnnexBToAVC1Into(b *testing.B) {
+	annexB := buildRealisticAnnexB()
+
+	buf := make([]byte, 0, len(annexB)+64)
+	b.SetBytes(int64(len(annexB)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		buf = AnnexBToAVC1Into(annexB, buf[:0])
+	}
+}
+
 // BenchmarkExtractNALUs benchmarks extracting individual NALUs from an AVC1
 // frame. This is used when the switcher needs to inspect NALU types (e.g.,
 // to detect keyframes by checking for IDR slices).

@@ -88,7 +88,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 		PTS:        1000,
 		DTS:        1000,
 		IsKeyframe: true,
-		GroupID:     1,
+		GroupID:    1,
 		Codec:      "h264",
 	}
 
@@ -127,7 +127,7 @@ func TestIngestRawVideo_NonProgramSourceDropped(t *testing.T) {
 		Height:     4,
 		PTS:        1000,
 		IsKeyframe: true,
-		GroupID:     1,
+		GroupID:    1,
 	}
 	sw.IngestRawVideo("mxl-cam2", pf)
 
@@ -201,7 +201,7 @@ func TestIngestRawVideo_HealthTracking(t *testing.T) {
 		Height:     4,
 		PTS:        1000,
 		IsKeyframe: true,
-		GroupID:     1,
+		GroupID:    1,
 	}
 	sw.IngestRawVideo("mxl-cam1", pf)
 

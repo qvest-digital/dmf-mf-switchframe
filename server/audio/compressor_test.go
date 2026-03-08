@@ -274,3 +274,32 @@ func TestCompressor_MonoStillWorks(t *testing.T) {
 	require.Less(t, avgLast, 0.8, "mono compressor should reduce loud signal")
 	require.Greater(t, avgLast, 0.2, "mono compressor should not reduce to near-zero")
 }
+
+func TestCompressorDenormalProtection(t *testing.T) {
+	t.Parallel()
+	c := NewCompressor(48000, 2)
+	// Use fast release (10ms) to speed up decay
+	err := c.SetParams(-6, 4.0, 0.1, 10.0, 0)
+	require.NoError(t, err)
+
+	// Drive the envelope above threshold to prime it
+	loud := make([]float32, 1024)
+	for i := range loud {
+		loud[i] = 2.0
+	}
+	c.Process(loud)
+
+	// Process enough silence for the envelope to fully decay.
+	// 10ms release at 48kHz: after ~10 seconds the exponential envelope
+	// would reach denormal territory without the floor clamp.
+	for i := 0; i < 20; i++ {
+		silence := make([]float32, 48000*2)
+		c.Process(silence)
+	}
+
+	c.mu.Lock()
+	env := c.envelope
+	c.mu.Unlock()
+
+	require.Equal(t, float64(0), env, "compressor envelope should be exactly 0 after processing silence, not a denormal") //nolint:govet // test inspects internal state
+}

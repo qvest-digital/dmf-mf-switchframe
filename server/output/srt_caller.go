@@ -21,9 +21,9 @@ const (
 type SRTCallerConfig struct {
 	Address        string
 	Port           int
-	Latency        int    // ms, default 120
+	Latency        int // ms, default 120
 	StreamID       string
-	RingBufferSize int    // bytes, default 4MB
+	RingBufferSize int // bytes, default 4MB
 }
 
 // SRTCaller pushes MPEG-TS data to a remote SRT receiver.
@@ -31,19 +31,19 @@ type SRTCallerConfig struct {
 type SRTCaller struct {
 	config SRTCallerConfig
 
-	mu           sync.Mutex
-	conn         srtConn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	ringBuf      *ringBuffer
-	backoff      time.Duration
-	reconnecting atomic.Bool  // guards against duplicate reconnect goroutines
-	pendingIDR    atomic.Bool  // when true, drop writes until a keyframe arrives
+	mu            sync.Mutex
+	conn          srtConn
+	ctx           context.Context
+	cancel        context.CancelFunc
+	ringBuf       *ringBuffer
+	backoff       time.Duration
+	reconnecting  atomic.Bool // guards against duplicate reconnect goroutines
+	pendingIDR    atomic.Bool // when true, drop writes until a keyframe arrives
 	bytesWritten  atomic.Int64
 	overflowCount atomic.Int64 // number of ring buffer overflow events
-	state        atomic.Value // AdapterState
-	lastError    atomic.Value // string
-	startedAt    time.Time
+	state         atomic.Value // AdapterState
+	lastError     atomic.Value // string
+	startedAt     time.Time
 
 	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)

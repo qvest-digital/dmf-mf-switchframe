@@ -427,11 +427,128 @@ func TestYUV420pToV210_BufferTooSmall(t *testing.T) {
 	}
 }
 
+func TestV210ToYUV420pInto_MatchesOriginal(t *testing.T) {
+	width, height := 6, 2
+	numPixels := width * height
+	numChroma := (width / 2) * height
+	y10 := make([]uint32, numPixels)
+	cb10 := make([]uint32, numChroma)
+	cr10 := make([]uint32, numChroma)
+	for i := range y10 {
+		y10[i] = uint32(64 + i*30)
+	}
+	for i := range cb10 {
+		cb10[i] = uint32(400 + i*40)
+	}
+	for i := range cr10 {
+		cr10[i] = uint32(300 + i*50)
+	}
+
+	v210 := buildV210Frame(t, width, height, y10, cb10, cr10)
+
+	orig, err := V210ToYUV420p(v210, width, height)
+	if err != nil {
+		t.Fatalf("V210ToYUV420p error: %v", err)
+	}
+
+	chromaW := width / 2
+	ySize := width * height
+	cSize := chromaW * (height / 2)
+	out := make([]byte, ySize+2*cSize)
+	cb422Tmp := make([]byte, chromaW*2)
+	cr422Tmp := make([]byte, chromaW*2)
+	err = V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp, width, height)
+	if err != nil {
+		t.Fatalf("V210ToYUV420pInto error: %v", err)
+	}
+
+	if len(out) != len(orig) {
+		t.Fatalf("size mismatch: Into=%d, orig=%d", len(out), len(orig))
+	}
+	for i := range orig {
+		if out[i] != orig[i] {
+			t.Fatalf("byte %d: Into=%d, orig=%d", i, out[i], orig[i])
+		}
+	}
+}
+
+func TestV210ToYUV420pInto_InvalidBuffers(t *testing.T) {
+	width, height := 6, 2
+	stride := V210LineStride(width)
+	v210 := make([]byte, stride*height)
+	chromaW := width / 2
+
+	// Output too small
+	err := V210ToYUV420pInto(v210, make([]byte, 1), make([]byte, chromaW*2), make([]byte, chromaW*2), width, height)
+	if err == nil {
+		t.Fatal("expected error for output buffer too small")
+	}
+
+	ySize := width * height
+	cSize := chromaW * (height / 2)
+	out := make([]byte, ySize+2*cSize)
+
+	// cb422Tmp too small
+	err = V210ToYUV420pInto(v210, out, make([]byte, 1), make([]byte, chromaW*2), width, height)
+	if err == nil {
+		t.Fatal("expected error for cb422Tmp too small")
+	}
+
+	// cr422Tmp too small
+	err = V210ToYUV420pInto(v210, out, make([]byte, chromaW*2), make([]byte, 1), width, height)
+	if err == nil {
+		t.Fatal("expected error for cr422Tmp too small")
+	}
+}
+
+func TestYUV420pToV210Into_MatchesOriginal(t *testing.T) {
+	width, height := 6, 2
+	ySize := width * height
+	cSize := (width / 2) * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = byte(16 + i*18)
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = byte(64 + i*13)
+	}
+
+	orig, err := YUV420pToV210(yuv, width, height)
+	if err != nil {
+		t.Fatalf("YUV420pToV210 error: %v", err)
+	}
+
+	stride := V210LineStride(width)
+	out := make([]byte, stride*height)
+	err = YUV420pToV210Into(yuv, out, width, height)
+	if err != nil {
+		t.Fatalf("YUV420pToV210Into error: %v", err)
+	}
+
+	for i := range orig {
+		if out[i] != orig[i] {
+			t.Fatalf("byte %d: Into=%d, orig=%d", i, out[i], orig[i])
+		}
+	}
+}
+
+func TestYUV420pToV210Into_InvalidBuffers(t *testing.T) {
+	width, height := 6, 2
+	ySize := width * height
+	cSize := (width / 2) * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+
+	// Output too small
+	err := YUV420pToV210Into(yuv, make([]byte, 1), width, height)
+	if err == nil {
+		t.Fatal("expected error for output buffer too small")
+	}
+}
+
 func BenchmarkV210ToYUV420p_1080p(b *testing.B) {
 	width, height := 1920, 1080
 	stride := V210LineStride(width)
 	v210 := make([]byte, stride*height)
-	// Fill with mid-gray pattern (Y=128→512, Cb=Cr=128→512)
 	for i := range v210 {
 		v210[i] = byte(i % 256)
 	}
@@ -441,6 +558,29 @@ func BenchmarkV210ToYUV420p_1080p(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		_, _ = V210ToYUV420p(v210, width, height)
+	}
+}
+
+func BenchmarkV210ToYUV420pInto_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	stride := V210LineStride(width)
+	v210 := make([]byte, stride*height)
+	for i := range v210 {
+		v210[i] = byte(i % 256)
+	}
+
+	ySize := width * height
+	chromaW := width / 2
+	cSize := chromaW * (height / 2)
+	out := make([]byte, ySize+2*cSize)
+	cb422Tmp := make([]byte, chromaW*2)
+	cr422Tmp := make([]byte, chromaW*2)
+
+	b.SetBytes(int64(len(v210)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp, width, height)
 	}
 }
 
@@ -461,6 +601,26 @@ func BenchmarkYUV420pToV210_1080p(b *testing.B) {
 	}
 }
 
+func BenchmarkYUV420pToV210Into_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	ySize := width * height
+	cSize := (width / 2) * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := range yuv {
+		yuv[i] = byte(i % 256)
+	}
+
+	stride := V210LineStride(width)
+	out := make([]byte, stride*height)
+
+	b.SetBytes(int64(len(yuv)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = YUV420pToV210Into(yuv, out, width, height)
+	}
+}
+
 func BenchmarkV210RoundTrip_1080p(b *testing.B) {
 	width, height := 1920, 1080
 	ySize := width * height
@@ -476,6 +636,31 @@ func BenchmarkV210RoundTrip_1080p(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		v210, _ := YUV420pToV210(yuv, width, height)
 		_, _ = V210ToYUV420p(v210, width, height)
+	}
+}
+
+func BenchmarkV210RoundTripInto_1080p(b *testing.B) {
+	width, height := 1920, 1080
+	ySize := width * height
+	chromaW := width / 2
+	cSize := chromaW * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := range yuv {
+		yuv[i] = byte(i % 256)
+	}
+
+	stride := V210LineStride(width)
+	v210Out := make([]byte, stride*height)
+	yuvOut := make([]byte, ySize+2*cSize)
+	cb422Tmp := make([]byte, chromaW*2)
+	cr422Tmp := make([]byte, chromaW*2)
+
+	b.SetBytes(int64(len(yuv)))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = YUV420pToV210Into(yuv, v210Out, width, height)
+		_ = V210ToYUV420pInto(v210Out, yuvOut, cb422Tmp, cr422Tmp, width, height)
 	}
 }
 

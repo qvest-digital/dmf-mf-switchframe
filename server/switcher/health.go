@@ -33,11 +33,11 @@ func healthStatusFromAge(age time.Duration) SourceHealthStatus {
 
 type healthMonitor struct {
 	mu               sync.RWMutex
-	sources          map[string]bool                        // all registered source keys
-	lastFrame        sync.Map                               // map[string]*atomic.Int64 (UnixNano)
+	sources          map[string]bool               // all registered source keys
+	lastFrame        sync.Map                      // map[string]*atomic.Int64 (UnixNano)
 	lastStatus       map[string]SourceHealthStatus // last broadcast status per source
 	pendingStatus    map[string]SourceHealthStatus // status awaiting hysteresis threshold
-	consecutiveCount map[string]int                         // consecutive checks at pending status
+	consecutiveCount map[string]int                // consecutive checks at pending status
 	running          bool
 	stopCh           chan struct{}
 	done             chan struct{} // closed when the monitor goroutine exits; nil if never started

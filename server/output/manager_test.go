@@ -215,3 +215,43 @@ func TestOutputManager_Close(t *testing.T) {
 	err := mgr.Close()
 	require.NoError(t, err)
 }
+
+func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Grab the muxer reference while we still can.
+	mgr.mu.Lock()
+	muxer := mgr.muxer
+	mgr.mu.Unlock()
+	require.NotNil(t, muxer)
+
+	// Hold the manager lock for the duration of the test. If the muxer
+	// output callback still acquired m.mu, writing a frame would deadlock.
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		idrFrame := &media.VideoFrame{
+			PTS: 90000, DTS: 90000, IsKeyframe: true,
+			SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+			PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+			WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+			Codec:    "h264",
+		}
+		_ = muxer.WriteVideo(idrFrame)
+	}()
+
+	select {
+	case <-done:
+		// Callback completed without deadlock.
+	case <-time.After(2 * time.Second):
+		t.Fatal("muxer callback deadlocked — still acquiring m.mu")
+	}
+}

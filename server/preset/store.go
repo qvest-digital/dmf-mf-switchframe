@@ -17,15 +17,15 @@ import (
 
 // Preset represents a saved production setup that can be recalled.
 type Preset struct {
-	ID              string                       `json:"id"`
-	Name            string                       `json:"name"`
-	ProgramSource   string                       `json:"programSource"`
-	PreviewSource   string                       `json:"previewSource"`
-	TransitionType  string                       `json:"transitionType"`
-	TransitionDurMs int                          `json:"transitionDurMs"`
+	ID              string                        `json:"id"`
+	Name            string                        `json:"name"`
+	ProgramSource   string                        `json:"programSource"`
+	PreviewSource   string                        `json:"previewSource"`
+	TransitionType  string                        `json:"transitionType"`
+	TransitionDurMs int                           `json:"transitionDurMs"`
 	AudioChannels   map[string]AudioChannelPreset `json:"audioChannels"`
-	MasterLevel     float64                      `json:"masterLevel"`
-	CreatedAt       time.Time                    `json:"createdAt"`
+	MasterLevel     float64                       `json:"masterLevel"`
+	CreatedAt       time.Time                     `json:"createdAt"`
 }
 
 // AudioChannelPreset captures audio settings for a single channel in a preset.

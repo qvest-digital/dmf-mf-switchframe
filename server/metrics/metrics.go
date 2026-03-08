@@ -60,7 +60,7 @@ type Metrics struct {
 	CutsTotal          prometheus.Counter
 	TransitionsTotal   *prometheus.CounterVec // label: type
 	IDRGateEventsTotal prometheus.Counter
-	IDRGateDuration  prometheus.Histogram
+	IDRGateDuration    prometheus.Histogram
 
 	// Mixer
 	FramesMixedTotal       prometheus.Counter

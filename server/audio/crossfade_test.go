@@ -93,3 +93,33 @@ func TestCrossfadeEmptySlices(t *testing.T) {
 	require.Equal(t, 1, len(result))
 	require.InDelta(t, 1.0, result[0], 0.01, "single sample: old at t=0 should be ~1.0")
 }
+
+func TestEqualPowerCrossfade_StereoGainSymmetry(t *testing.T) {
+	t.Parallel()
+	numPairs := 512
+	channels := 2
+	n := numPairs * channels
+
+	// Old: L=1.0, R=0.5; New: L=0.0, R=0.0
+	// If crossfade gain is applied per-pair, L and R at the same time instant
+	// should receive the same gain factor, preserving the 2:1 L/R ratio.
+	old := make([]float32, n)
+	new := make([]float32, n)
+	for i := 0; i < numPairs; i++ {
+		old[i*2] = 1.0
+		old[i*2+1] = 0.5
+	}
+
+	result := audio.EqualPowerCrossfadeStereo(old, new, channels)
+	require.Equal(t, n, len(result))
+
+	for i := 0; i < numPairs; i++ {
+		lSample := result[i*2]
+		rSample := result[i*2+1]
+		if lSample > 1e-6 {
+			ratio := rSample / lSample
+			require.InDelta(t, 0.5, float64(ratio), 1e-5,
+				"pair %d: L/R ratio should be 0.5 (same gain for both channels)", i)
+		}
+	}
+}

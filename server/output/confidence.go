@@ -23,6 +23,7 @@ const (
 // per second, scales to thumbnail size, and stores the latest JPEG.
 type ConfidenceMonitor struct {
 	mu             sync.RWMutex
+	inFlight       sync.WaitGroup
 	latestJPEG     []byte
 	lastUpdate     time.Time
 	minInterval    time.Duration
@@ -70,7 +71,9 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	decoder := cm.decoder
 	// Stamp now to prevent re-entry while we decode outside the lock.
 	cm.lastUpdate = time.Now()
+	cm.inFlight.Add(1)
 	cm.mu.Unlock()
+	defer cm.inFlight.Done()
 
 	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
 	// the viewer goroutine or LatestThumbnail readers.
@@ -132,10 +135,17 @@ func (cm *ConfidenceMonitor) LatestThumbnail() []byte {
 // After Close, IngestVideo becomes a no-op.
 func (cm *ConfidenceMonitor) Close() {
 	cm.mu.Lock()
+	cm.decoderFactory = nil // prevent re-creation after close
+	cm.mu.Unlock()
+
+	// Wait for any in-flight decode operations to finish before
+	// destroying the decoder, preventing use-after-close.
+	cm.inFlight.Wait()
+
+	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.decoder != nil {
 		cm.decoder.Close()
 		cm.decoder = nil
 	}
-	cm.decoderFactory = nil // prevent re-creation after close
 }

@@ -13,7 +13,7 @@ type VideoGrain struct {
 	V210   []byte // V210 packed pixel data
 	Width  int
 	Height int
-	PTS    int64 // MXL grain index as PTS
+	PTS    int64 // Monotonic frame counter (1, 2, 3, ...)
 }
 
 // AudioGrain carries raw float32 PCM audio read from an MXL flow.
@@ -21,7 +21,7 @@ type AudioGrain struct {
 	PCM        [][]float32 // De-interleaved channels
 	SampleRate int
 	Channels   int
-	PTS        int64 // MXL sample index as PTS
+	PTS        int64 // Monotonic sample counter from 0
 }
 
 // ReaderConfig configures an MXL flow reader.
@@ -130,7 +130,12 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 		return
 	}
 
-	var lastPTS int64
+	// Monotonic PTS counter starting from 0, incremented by 1 per grain.
+	// Both video and audio PTS use their own monotonic counter domains
+	// (frame number for video, sample count for audio). The downstream
+	// PTS conversion handles scaling to 90 kHz MPEG-TS clock.
+	var videoPTSCounter int64
+
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 50
 
@@ -143,6 +148,21 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 		data, info, err := flow.ReadGrain(index, timeoutNs)
 		if err != nil {
+			errStr := err.Error()
+
+			// On "too late" errors, re-sync to the current write head
+			// instead of dying. The ring buffer moved past our position.
+			if strings.Contains(errStr, "too late") {
+				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
+					gap := headIdx - index
+					log.Warn("mxl video reader: ring buffer wrapped, re-syncing",
+						"gap", gap, "old_index", index, "new_index", headIdx-2)
+					index = headIdx - 2
+					consecutiveErrors = 0
+					continue
+				}
+			}
+
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
 				log.Error("mxl reader: too many consecutive errors, stopping",
@@ -160,14 +180,8 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			continue
 		}
 
-		pts := int64(info.Index)
-
-		// Detect timestamp discontinuity.
-		if lastPTS > 0 && pts-lastPTS > 2 {
-			log.Warn("mxl reader: timestamp discontinuity",
-				"expected", lastPTS+1, "got", pts, "gap", pts-lastPTS)
-		}
-		lastPTS = pts
+		videoPTSCounter++
+		pts := videoPTSCounter
 
 		grain := VideoGrain{
 			V210:   data,
@@ -178,9 +192,6 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 		// If width/height not configured, derive from config.
 		if grain.Width == 0 && len(config.SliceSizes) > 0 && config.SliceSizes[0] > 0 {
-			// V210 line stride = (width + 47) / 48 * 128
-			// We can't easily reverse this without knowing one dimension.
-			// Rely on configured width/height.
 			grain.Width = r.config.Width
 			grain.Height = r.config.Height
 		}

@@ -18,11 +18,11 @@ var (
 
 // State represents the current graphics overlay state.
 type State struct {
-	Active       bool    `json:"active"`
-	Template     string  `json:"template,omitempty"`
-	FadePosition float64 `json:"fadePosition,omitempty"` // 0.0 = invisible, 1.0 = fully visible
-	ProgramWidth  int    `json:"programWidth,omitempty"`
-	ProgramHeight int    `json:"programHeight,omitempty"`
+	Active        bool    `json:"active"`
+	Template      string  `json:"template,omitempty"`
+	FadePosition  float64 `json:"fadePosition,omitempty"` // 0.0 = invisible, 1.0 = fully visible
+	ProgramWidth  int     `json:"programWidth,omitempty"`
+	ProgramHeight int     `json:"programHeight,omitempty"`
 }
 
 // Compositor manages the downstream keyer (DSK) graphics overlay state.

@@ -1180,9 +1180,9 @@ func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
 			outputs = append(outputs, cp)
 			mu.Unlock()
 		},
-		OnComplete:  func(aborted bool) {},
-		HintWidth:   4,
-		HintHeight:  4,
+		OnComplete: func(aborted bool) {},
+		HintWidth:  4,
+		HintHeight: 4,
 	})
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
@@ -1634,4 +1634,68 @@ func TestEngineTimingInstrumentation_ZeroBeforeIngest(t *testing.T) {
 	require.Equal(t, float64(0), timing["ingest_max_ms"])
 	require.Equal(t, int64(0), timing["frames_ingested"])
 	require.Equal(t, int64(0), timing["frames_blended"])
+}
+
+func TestTransitionEngineParallelIngest(t *testing.T) {
+	// Verify that two sources can ingest frames simultaneously without
+	// deadlock. With the old lock scope (decode+blend under one lock),
+	// source B's IngestFrame would block while source A was decoding.
+	// The reduced lock scope allows both decoders to run concurrently.
+	const iterations = 100
+
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &mockDecoder{width: 4, height: 4}, nil
+		},
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*3000), true)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*3000), true)
+		}
+	}()
+
+	wg.Wait()
+
+	mu.Lock()
+	outputCount := len(outputs)
+	mu.Unlock()
+
+	require.Greater(t, outputCount, 0, "parallel ingest should produce blended output")
+	require.LessOrEqual(t, outputCount, iterations, "at most one output per TO-source frame")
+
+	timing := e.Timing()
+	framesIngested := timing["frames_ingested"].(int64)
+	require.Equal(t, int64(2*iterations), framesIngested,
+		"all frames from both sources should be counted")
+
+	ingestMaxMs, ok := timing["ingest_max_ms"].(float64)
+	require.True(t, ok, "ingest_max_ms should be float64")
+	require.Less(t, ingestMaxMs, 50.0, "max ingest time should be < 50ms even on slow CI")
+
+	e.Stop()
 }

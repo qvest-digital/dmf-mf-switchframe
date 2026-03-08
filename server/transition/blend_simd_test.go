@@ -57,7 +57,7 @@ func TestKernelUniform_VariousSizes(t *testing.T) {
 		dst := make([]byte, n)
 		for i := range a {
 			a[i] = byte(i % 256)
-			b[i] = byte((i * 7 + 13) % 256)
+			b[i] = byte((i*7 + 13) % 256)
 		}
 		blendUniform(&dst[0], &a[0], &b[0], n, 100, 156)
 		for i := 0; i < n; i++ {
@@ -230,7 +230,7 @@ func TestKernelAlpha_VariousSizes(t *testing.T) {
 		dst := make([]byte, n)
 		for i := range a {
 			a[i] = byte(i % 256)
-			b[i] = byte((i * 7 + 13) % 256)
+			b[i] = byte((i*7 + 13) % 256)
 			alpha[i] = byte((i * 3) % 256)
 		}
 		blendAlpha(&dst[0], &a[0], &b[0], &alpha[0], n)

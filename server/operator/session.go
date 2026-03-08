@@ -21,8 +21,8 @@ const (
 type SessionManager struct {
 	log           *slog.Logger
 	mu            sync.Mutex
-	sessions      map[string]*Session       // operator ID → session
-	locks         map[Subsystem]*LockInfo   // subsystem → lock
+	sessions      map[string]*Session     // operator ID → session
+	locks         map[Subsystem]*LockInfo // subsystem → lock
 	onStateChange func()
 
 	cancel context.CancelFunc

@@ -134,9 +134,11 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 			return len(data), nil
 		},
 	}
-	mgr.mu.Lock()
-	mgr.adapters = append(mgr.adapters, mock)
-	mgr.mu.Unlock()
+	current := *mgr.adapters.Load()
+	newAdapters := make([]OutputAdapter, len(current)+1)
+	copy(newAdapters, current)
+	newAdapters[len(current)] = mock
+	mgr.adapters.Store(&newAdapters)
 
 	// Broadcast a keyframe so the muxer initializes and produces TS output.
 	relay.BroadcastVideo(makeKeyframe(90000))
@@ -234,7 +236,7 @@ func (a *testAdapter) Write(data []byte) (int, error) {
 	}
 	return len(data), nil
 }
-func (a *testAdapter) Close() error         { return nil }
+func (a *testAdapter) Close() error          { return nil }
 func (a *testAdapter) Status() AdapterStatus { return AdapterStatus{State: StateActive} }
 
 // Compile-time check that testAdapter satisfies OutputAdapter.

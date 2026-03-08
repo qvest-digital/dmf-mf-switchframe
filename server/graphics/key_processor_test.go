@@ -113,7 +113,7 @@ func TestKeyProcessor_MultipleKeysApplied(t *testing.T) {
 		LowClip:  0.0,
 	})
 
-	fg1 := makeYUV420Frame(4, 4, 182, 30, 12)  // green
+	fg1 := makeYUV420Frame(4, 4, 182, 30, 12)   // green
 	fg2 := makeYUV420Frame(4, 4, 240, 128, 128) // bright
 	bg := makeYUV420Frame(4, 4, 100, 128, 128)
 

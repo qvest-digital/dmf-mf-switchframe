@@ -77,8 +77,6 @@ func BenchmarkBlendFTB1080p(b *testing.B) {
 }
 
 // BenchmarkBlendWipe1080p benchmarks a horizontal-left wipe at 1080p.
-// Wipe is the most expensive blend mode because of per-pixel threshold
-// computation and the soft-edge alpha calculation.
 func BenchmarkBlendWipe1080p(b *testing.B) {
 	blender := NewFrameBlender(1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
@@ -93,6 +91,69 @@ func BenchmarkBlendWipe1080p(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		blender.BlendWipe(a, bSlice, 0.5, WipeHLeft)
+	}
+}
+
+// BenchmarkBlendWipeVTop1080p benchmarks a vertical top-to-bottom wipe at 1080p.
+func BenchmarkBlendWipeVTop1080p(b *testing.B) {
+	blender := NewFrameBlender(1920, 1080)
+	yuvSize := 1920 * 1080 * 3 / 2
+	a := make([]byte, yuvSize)
+	bSlice := make([]byte, yuvSize)
+	fillTestPattern(a)
+	fillTestPattern(bSlice)
+
+	b.SetBytes(int64(yuvSize))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		blender.BlendWipe(a, bSlice, 0.5, WipeVTop)
+	}
+}
+
+// BenchmarkBlendWipeBox1080p benchmarks a box-center-out wipe at 1080p (per-pixel).
+func BenchmarkBlendWipeBox1080p(b *testing.B) {
+	blender := NewFrameBlender(1920, 1080)
+	yuvSize := 1920 * 1080 * 3 / 2
+	a := make([]byte, yuvSize)
+	bSlice := make([]byte, yuvSize)
+	fillTestPattern(a)
+	fillTestPattern(bSlice)
+
+	b.SetBytes(int64(yuvSize))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		blender.BlendWipe(a, bSlice, 0.5, WipeBoxCenterOut)
+	}
+}
+
+func BenchmarkWipeAlphaHLeft1080p(b *testing.B) {
+	blender := NewFrameBlender(1920, 1080)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		blender.generateWipeAlpha(0.5, WipeHLeft)
+	}
+}
+
+func BenchmarkWipeAlphaVTop1080p(b *testing.B) {
+	blender := NewFrameBlender(1920, 1080)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		blender.generateWipeAlpha(0.5, WipeVTop)
+	}
+}
+
+func BenchmarkWipeAlphaBoxCenterOut1080p(b *testing.B) {
+	blender := NewFrameBlender(1920, 1080)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		blender.generateWipeAlpha(0.5, WipeBoxCenterOut)
 	}
 }
 

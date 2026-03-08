@@ -194,7 +194,7 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string, 
 	defer ticker.Stop()
 
 	var frameNum int64
-	var groupID uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
+	var groupID uint32 = 1   // start at 1; Prism uses 0 as "not damaged" sentinel
 	const ptsPerFrame = 3000 // 33ms × 90kHz
 
 	for {
@@ -287,13 +287,13 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 	}
 
 	var (
-		vidIdx           int
-		audIdx           int
+		vidIdx            int
+		audIdx            int
 		audioSentThisLoop int
-		tsOffset         int64
-		groupID          uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
-		startTime        = time.Now()
-		baseDTS          = videoFrames[0].DTS
+		tsOffset          int64
+		groupID           uint32 = 1 // start at 1; Prism uses 0 as "not damaged" sentinel
+		startTime                = time.Now()
+		baseDTS                  = videoFrames[0].DTS
 	)
 
 	for {

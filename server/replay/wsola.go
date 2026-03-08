@@ -106,7 +106,7 @@ func findBestOverlap(input, output []float32, inputPos, outputPos, windowSize, c
 		for i := 0; i < windowSize && i < searchRange; i++ {
 			for ch := 0; ch < channels; ch++ {
 				a := float64(input[(pos+i)*channels+ch])
-				outIdx := (outputPos/channels + i) * channels + ch
+				outIdx := (outputPos/channels+i)*channels + ch
 				if outIdx >= len(output) {
 					continue
 				}

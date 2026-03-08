@@ -134,7 +134,7 @@ func TestRGBAToStingerFrame(t *testing.T) {
 	}
 
 	frame := RGBAToStingerFrame(img, 4, 4)
-	require.Len(t, frame.Alpha, 16) // 4x4
+	require.Len(t, frame.Alpha, 16)   // 4x4
 	require.Len(t, frame.YUV, 16+4+4) // Y(16) + Cb(4) + Cr(4)
 
 	// Alpha should be 128 everywhere

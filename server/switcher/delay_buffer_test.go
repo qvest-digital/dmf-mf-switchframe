@@ -310,3 +310,84 @@ func TestDelayBuffer_CloseWaitsForGoroutine(t *testing.T) {
 		t.Fatal("Close returned without closing done channel")
 	}
 }
+
+func TestDelayBuffer_AtomicFastPath_NoDelay(t *testing.T) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+	defer db.Close()
+
+	// hasAnyDelay should be false initially.
+	require.False(t, db.hasAnyDelay.Load(), "hasAnyDelay should be false with no delays set")
+
+	// All frame types should pass through without acquiring the mutex.
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	af := &media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
+	cf := &ccx.CaptionFrame{}
+
+	db.handleVideoFrame("cam1", vf)
+	db.handleAudioFrame("cam1", af)
+	db.handleCaptionFrame("cam1", cf)
+
+	require.Equal(t, 1, handler.videoCount(), "video fast path")
+	require.Equal(t, 1, handler.audioCount(), "audio fast path")
+	require.Equal(t, 1, handler.captionCount(), "caption fast path")
+}
+
+func TestDelayBuffer_AtomicFastPath_SetAndClear(t *testing.T) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+	defer db.Close()
+
+	// Setting a non-zero delay should flip hasAnyDelay to true.
+	db.SetDelay("cam1", 100*time.Millisecond)
+	require.True(t, db.hasAnyDelay.Load(), "hasAnyDelay should be true after SetDelay")
+
+	// Setting it back to zero should flip hasAnyDelay to false.
+	db.SetDelay("cam1", 0)
+	require.False(t, db.hasAnyDelay.Load(), "hasAnyDelay should be false after clearing delay")
+}
+
+func TestDelayBuffer_AtomicFastPath_RemoveSource(t *testing.T) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+	defer db.Close()
+
+	db.SetDelay("cam1", 100*time.Millisecond)
+	require.True(t, db.hasAnyDelay.Load())
+
+	db.RemoveSource("cam1")
+	require.False(t, db.hasAnyDelay.Load(),
+		"hasAnyDelay should be false after removing the only delayed source")
+}
+
+func BenchmarkDelayBufferZeroDelay(b *testing.B) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+	defer db.Close()
+	frame := &media.VideoFrame{PTS: 1000, WireData: []byte{0x65, 0x01}}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		db.handleVideoFrame("cam1", frame)
+	}
+}
+
+func TestDelayBuffer_AtomicFastPath_MultipleDelays(t *testing.T) {
+	handler := &delayTestHandler{}
+	db := NewDelayBuffer(handler)
+	defer db.Close()
+
+	db.SetDelay("cam1", 50*time.Millisecond)
+	db.SetDelay("cam2", 100*time.Millisecond)
+	require.True(t, db.hasAnyDelay.Load())
+
+	// Removing one still leaves another with delay.
+	db.RemoveSource("cam1")
+	require.True(t, db.hasAnyDelay.Load(),
+		"hasAnyDelay should stay true when another source still has delay")
+
+	db.SetDelay("cam2", 0)
+	require.False(t, db.hasAnyDelay.Load(),
+		"hasAnyDelay should be false when all delays are zero")
+}

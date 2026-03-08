@@ -42,7 +42,7 @@ func TestGenerateStingerZip(t *testing.T) {
 
 func TestGenerateStingerZip_InvalidArgs(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		w, h, n int
 	}{
 		{"zero width", 0, 240, 20},

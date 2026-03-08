@@ -177,11 +177,11 @@ func TestV210UnpackRow_MultipleGroups(t *testing.T) {
 		// Extract expected Y values
 		expY := [6]byte{
 			byte((w0 >> 10 & 0x3FF) >> 2), // Y0
-			byte((w1 & 0x3FF) >> 2),        // Y1
-			byte((w1 >> 20 & 0x3FF) >> 2),  // Y2
-			byte((w2 >> 10 & 0x3FF) >> 2),  // Y3
-			byte((w3 & 0x3FF) >> 2),        // Y4
-			byte((w3 >> 20 & 0x3FF) >> 2),  // Y5
+			byte((w1 & 0x3FF) >> 2),       // Y1
+			byte((w1 >> 20 & 0x3FF) >> 2), // Y2
+			byte((w2 >> 10 & 0x3FF) >> 2), // Y3
+			byte((w3 & 0x3FF) >> 2),       // Y4
+			byte((w3 >> 20 & 0x3FF) >> 2), // Y5
 		}
 		for i, want := range expY {
 			got := yOut[g*6+i]
@@ -327,8 +327,8 @@ func TestV210UnpackPackRoundTrip(t *testing.T) {
 	// Fill with realistic V210 data
 	for g := 0; g < groups; g++ {
 		offset := g * 16
-		y := uint32(64 + (g*7)%876)    // 10-bit luma: 64-940
-		cb := uint32(64 + (g*13)%896)   // 10-bit chroma
+		y := uint32(64 + (g*7)%876)   // 10-bit luma: 64-940
+		cb := uint32(64 + (g*13)%896) // 10-bit chroma
 		cr := uint32(64 + (g*17)%896)
 		binary.LittleEndian.PutUint32(v210In[offset:], packV210Word(cb, y, cr))
 		binary.LittleEndian.PutUint32(v210In[offset+4:], packV210Word(y+4, cb+8, y+12))

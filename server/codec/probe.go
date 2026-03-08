@@ -96,7 +96,7 @@ func tryEncoder(codecName string) bool {
 	}
 
 	for i := range 8 {
-		data, _, err := enc.Encode(yuv, i == 0)
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
 		if err != nil {
 			continue // EAGAIN expected during warmup
 		}
@@ -122,7 +122,7 @@ func tryOpenH264Encoder() bool {
 		yuv[i] = 128
 	}
 
-	data, _, err := enc.Encode(yuv, true)
+	data, _, err := enc.Encode(yuv, 0, true)
 	if err != nil {
 		return false
 	}

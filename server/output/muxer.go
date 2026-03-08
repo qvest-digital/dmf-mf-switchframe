@@ -253,14 +253,19 @@ func (m *TSMuxer) init() error {
 
 // flush sends buffered TS data to the output callback and resets the
 // buffer. Must be called with m.mu held.
+//
+// Design note: rather than using a sync.Pool for flush buffers (as
+// originally planned in Phase 22 WG1.5), we pass m.buf.Bytes() directly
+// to the output callback. This is a zero-copy optimization — the slice
+// is valid only during the synchronous callback, and AsyncAdapter.Write
+// copies the data into its own pooled buffer. This eliminates both the
+// flush allocation AND the pool overhead.
 func (m *TSMuxer) flush() error {
 	if m.buf == nil || m.buf.Len() == 0 {
 		return nil
 	}
 	if m.output != nil {
-		data := make([]byte, m.buf.Len())
-		copy(data, m.buf.Bytes())
-		m.output(data)
+		m.output(m.buf.Bytes())
 	}
 	m.buf.Reset()
 	return nil

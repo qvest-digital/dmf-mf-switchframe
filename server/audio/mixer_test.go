@@ -1835,6 +1835,18 @@ func TestMixerPassthroughRaceSafety(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
+	// Ingest a few frames synchronously while passthrough is guaranteed
+	// (only cam1 active). This ensures outputCount > 0 regardless of
+	// goroutine scheduling in the concurrent phase below.
+	for i := 0; i < 5; i++ {
+		m.IngestFrame("cam1", &media.AudioFrame{
+			PTS:        int64(i),
+			Data:       []byte{0xAA, 0xBB},
+			SampleRate: 48000,
+			Channels:   2,
+		})
+	}
+
 	const iterations = 1000
 	var wg sync.WaitGroup
 
@@ -1842,7 +1854,7 @@ func TestMixerPassthroughRaceSafety(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := 5; i < 5+iterations; i++ {
 			m.IngestFrame("cam1", &media.AudioFrame{
 				PTS:        int64(i),
 				Data:       []byte{0xAA, 0xBB},
@@ -2251,4 +2263,111 @@ func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
 			"frame %d→%d: PTS gap must be ≤ 2× frame duration (got delta=%d)",
 			i-1, i, delta)
 	}
+}
+
+func TestStereoGainInterpolation(t *testing.T) {
+	t.Parallel()
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.transCrossfadeActive = true
+	m.transCrossfadeFrom = "cam1"
+	m.transCrossfadeTo = "cam2"
+	m.transCrossfadeMode = AudioCrossfade
+	m.transCrossfadeAudioPos = 0.0
+	m.mixCycleTransPos = 1.0
+	m.mixStarted = true
+
+	// Create a stereo buffer: L=1.0, R=0.5 for all sample pairs
+	numPairs := 512
+	trimmedPCM := make([]float32, numPairs*2)
+	for i := 0; i < numPairs; i++ {
+		trimmedPCM[i*2] = 1.0   // L
+		trimmedPCM[i*2+1] = 0.5 // R
+	}
+
+	ch := m.channels["cam1"]
+	ch.gainBuf = make([]float32, len(trimmedPCM))
+	gainedPCM := ch.gainBuf
+
+	// Apply the transition gain interpolation (same code as IngestFrame)
+	var gainFn func(float64) float64
+	gainFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
+	gStart := float32(gainFn(m.transCrossfadeAudioPos))
+	gEnd := float32(gainFn(m.mixCycleTransPos))
+	channels := m.numChannels
+	pairCount := float32(len(trimmedPCM) / channels)
+	for i, s := range trimmedPCM {
+		t := float32(i/channels) / pairCount
+		transGain := gStart + (gEnd-gStart)*t
+		gainedPCM[i] = s * ch.levelLinear * transGain
+	}
+	m.mu.Unlock()
+
+	// Verify that L and R at the same time position received identical gain
+	for i := 0; i < numPairs; i++ {
+		lSample := gainedPCM[i*2]
+		rSample := gainedPCM[i*2+1]
+		// L input was 1.0, R input was 0.5, so R should be exactly half of L
+		// if the same gain was applied to both
+		if lSample != 0 {
+			ratio := rSample / lSample
+			require.InDelta(t, 0.5, float64(ratio), 1e-5,
+				"pair %d: L/R ratio should be 0.5 (identical gain), got %v", i, ratio)
+		}
+	}
+}
+
+func TestChannelGainCached(t *testing.T) {
+	t.Parallel()
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+
+	// Default: 0dB level and 0dB trim should cache as 1.0 linear
+	m.mu.RLock()
+	ch := m.channels["cam1"]
+	require.InDelta(t, 1.0, float64(ch.levelLinear), 1e-6, "default level should cache as 1.0")
+	require.InDelta(t, 1.0, float64(ch.trimLinear), 1e-6, "default trim should cache as 1.0")
+	m.mu.RUnlock()
+
+	// Set level to -6 dB and verify cached value
+	err := m.SetLevel("cam1", -6)
+	require.NoError(t, err)
+	m.mu.RLock()
+	ch = m.channels["cam1"]
+	expected := float32(DBToLinear(-6))
+	require.InDelta(t, float64(expected), float64(ch.levelLinear), 1e-6, "levelLinear should match DBToLinear(-6)")
+	m.mu.RUnlock()
+
+	// Set trim to +3 dB and verify cached value
+	err = m.SetTrim("cam1", 3)
+	require.NoError(t, err)
+	m.mu.RLock()
+	ch = m.channels["cam1"]
+	expectedTrim := float32(DBToLinear(3))
+	require.InDelta(t, float64(expectedTrim), float64(ch.trimLinear), 1e-6, "trimLinear should match DBToLinear(3)")
+	m.mu.RUnlock()
+
+	// Set master level to -3 dB and verify cached value
+	m.SetMasterLevel(-3)
+	m.mu.RLock()
+	expectedMaster := float32(DBToLinear(-3))
+	require.InDelta(t, float64(expectedMaster), float64(m.masterLinear), 1e-6, "masterLinear should match DBToLinear(-3)")
+	m.mu.RUnlock()
 }

@@ -119,8 +119,8 @@ func TestSRTCaller_BackoffProgression(t *testing.T) {
 		4 * time.Second,
 		8 * time.Second,
 		16 * time.Second,
-		30 * time.Second,  // cap
-		30 * time.Second,  // stays at cap
+		30 * time.Second, // cap
+		30 * time.Second, // stays at cap
 	}
 	for _, expected := range levels {
 		got := c.nextBackoff()

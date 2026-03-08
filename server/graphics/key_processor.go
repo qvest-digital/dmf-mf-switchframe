@@ -19,11 +19,11 @@ type KeyConfig struct {
 	Enabled bool    `json:"enabled"`
 
 	// Chroma key params
-	KeyColorY     uint8   `json:"keyColorY"`
-	KeyColorCb    uint8   `json:"keyColorCb"`
-	KeyColorCr    uint8   `json:"keyColorCr"`
-	Similarity    float32 `json:"similarity"`
-	Smoothness    float32 `json:"smoothness"`
+	KeyColorY      uint8   `json:"keyColorY"`
+	KeyColorCb     uint8   `json:"keyColorCb"`
+	KeyColorCr     uint8   `json:"keyColorCr"`
+	Similarity     float32 `json:"similarity"`
+	Smoothness     float32 `json:"smoothness"`
 	SpillSuppress  float32 `json:"spillSuppress"`
 	SpillReplaceCb uint8   `json:"spillReplaceCb,omitempty"`
 	SpillReplaceCr uint8   `json:"spillReplaceCr,omitempty"`

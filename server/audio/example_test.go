@@ -17,9 +17,9 @@ func ExamplePeakLevel() {
 }
 
 func ExampleLinearToDBFS() {
-	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(1.0))  // full scale
-	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(0.5))  // half amplitude
-	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(0.0))  // silence
+	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(1.0)) // full scale
+	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(0.5)) // half amplitude
+	fmt.Printf("%.1f dBFS\n", audio.LinearToDBFS(0.0)) // silence
 	// Output:
 	// 0.0 dBFS
 	// -6.0 dBFS

@@ -134,11 +134,99 @@ func TestOutput_StopsCleanly(t *testing.T) {
 
 	out.Stop()
 
-	if !vMock.closed {
+	vMock.mu.Lock()
+	vClosed := vMock.closed
+	vMock.mu.Unlock()
+	if !vClosed {
 		t.Fatal("expected video writer closed")
 	}
-	if !aMock.closed {
+
+	aMock.mu.Lock()
+	aClosed := aMock.closed
+	aMock.mu.Unlock()
+	if !aClosed {
 		t.Fatal("expected audio writer closed")
+	}
+}
+
+func TestMXLOutputConfigurableFrameRate(t *testing.T) {
+	vMock := &mockDiscreteWriter{}
+	sw := &mockSwitcherSink{}
+
+	out := NewOutput(OutputConfig{
+		FlowName:  "program",
+		Width:     12,
+		Height:    2,
+		VideoRate: Rational{25, 1}, // PAL 25fps
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out.Start(ctx, vMock, nil, sw, nil)
+
+	// Verify the writer received the configured rate, not the default 29.97fps.
+	writer := out.Writer()
+	ref := writer.videoRef.Load()
+	if ref == nil {
+		t.Fatal("expected videoRef to be set")
+	}
+
+	if ref.rate.Numerator != 25 || ref.rate.Denominator != 1 {
+		t.Fatalf("expected video rate 25/1 (PAL), got %d/%d", ref.rate.Numerator, ref.rate.Denominator)
+	}
+}
+
+func TestMXLOutputDefaultFrameRate(t *testing.T) {
+	vMock := &mockDiscreteWriter{}
+	sw := &mockSwitcherSink{}
+
+	// Zero-value VideoRate should default to 29.97fps (30000/1001).
+	out := NewOutput(OutputConfig{
+		FlowName: "program",
+		Width:    12,
+		Height:   2,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out.Start(ctx, vMock, nil, sw, nil)
+
+	writer := out.Writer()
+	ref := writer.videoRef.Load()
+	if ref == nil {
+		t.Fatal("expected videoRef to be set")
+	}
+
+	if ref.rate.Numerator != 30000 || ref.rate.Denominator != 1001 {
+		t.Fatalf("expected default video rate 30000/1001, got %d/%d", ref.rate.Numerator, ref.rate.Denominator)
+	}
+}
+
+func TestMXLOutputConfigurableFrameRateLifecycle(t *testing.T) {
+	vMock := &mockDiscreteWriter{}
+
+	out := NewOutput(OutputConfig{
+		FlowName:  "program",
+		Width:     12,
+		Height:    2,
+		VideoRate: Rational{50, 1}, // 50fps
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out.StartLifecycle(ctx, vMock, nil)
+
+	writer := out.Writer()
+	ref := writer.videoRef.Load()
+	if ref == nil {
+		t.Fatal("expected videoRef to be set")
+	}
+
+	if ref.rate.Numerator != 50 || ref.rate.Denominator != 1 {
+		t.Fatalf("expected video rate 50/1, got %d/%d", ref.rate.Numerator, ref.rate.Denominator)
 	}
 }
 

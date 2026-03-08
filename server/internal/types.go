@@ -4,31 +4,31 @@ package internal
 // SourceKeyConfig describes the upstream key configuration for a source,
 // included in SourceInfo so the browser knows the current key state.
 type SourceKeyConfig struct {
-	Type          string  `json:"type"`                    // "chroma", "luma", or ""
-	Enabled       bool    `json:"enabled"`
-	KeyColorY     uint8   `json:"keyColorY,omitempty"`
-	KeyColorCb    uint8   `json:"keyColorCb,omitempty"`
-	KeyColorCr    uint8   `json:"keyColorCr,omitempty"`
-	Similarity    float32 `json:"similarity,omitempty"`
-	Smoothness    float32 `json:"smoothness,omitempty"`
+	Type           string  `json:"type"` // "chroma", "luma", or ""
+	Enabled        bool    `json:"enabled"`
+	KeyColorY      uint8   `json:"keyColorY,omitempty"`
+	KeyColorCb     uint8   `json:"keyColorCb,omitempty"`
+	KeyColorCr     uint8   `json:"keyColorCr,omitempty"`
+	Similarity     float32 `json:"similarity,omitempty"`
+	Smoothness     float32 `json:"smoothness,omitempty"`
 	SpillSuppress  float32 `json:"spillSuppress,omitempty"`
 	SpillReplaceCb uint8   `json:"spillReplaceCb,omitempty"`
 	SpillReplaceCr uint8   `json:"spillReplaceCr,omitempty"`
 	LowClip        float32 `json:"lowClip,omitempty"`
-	HighClip      float32 `json:"highClip,omitempty"`
-	Softness      float32 `json:"softness,omitempty"`
-	FillSource    string  `json:"fillSource,omitempty"`
+	HighClip       float32 `json:"highClip,omitempty"`
+	Softness       float32 `json:"softness,omitempty"`
+	FillSource     string  `json:"fillSource,omitempty"`
 }
 
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
-	Key       string             `json:"key"`
-	Label     string             `json:"label,omitempty"`
-	Status    string             `json:"status"`
-	Position  int                `json:"position"`
-	DelayMs   int                `json:"delayMs,omitempty"`
-	KeyConfig *SourceKeyConfig   `json:"keyConfig,omitempty"`
-	IsVirtual bool               `json:"isVirtual,omitempty"`
+	Key       string           `json:"key"`
+	Label     string           `json:"label,omitempty"`
+	Status    string           `json:"status"`
+	Position  int              `json:"position"`
+	DelayMs   int              `json:"delayMs,omitempty"`
+	KeyConfig *SourceKeyConfig `json:"keyConfig,omitempty"`
+	IsVirtual bool             `json:"isVirtual,omitempty"`
 }
 
 // EQBand describes the settings for a single EQ band.
@@ -111,8 +111,8 @@ type ReplayState struct {
 	Speed      float64            `json:"speed,omitempty"`
 	Loop       bool               `json:"loop,omitempty"`
 	Position   float64            `json:"position,omitempty"`
-	MarkIn     *int64             `json:"markIn,omitempty"`     // Unix ms
-	MarkOut    *int64             `json:"markOut,omitempty"`    // Unix ms
+	MarkIn     *int64             `json:"markIn,omitempty"`  // Unix ms
+	MarkOut    *int64             `json:"markOut,omitempty"` // Unix ms
 	MarkSource string             `json:"markSource,omitempty"`
 	Buffers    []ReplayBufferInfo `json:"buffers,omitempty"`
 }
@@ -158,31 +158,31 @@ type LockInfo struct {
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
-	ProgramSource        string                    `json:"programSource"`
-	PreviewSource        string                    `json:"previewSource"`
-	TransitionType       string                    `json:"transitionType"`
-	TransitionDurationMs int                       `json:"transitionDurationMs,omitempty"`
-	TransitionPosition   float64                   `json:"transitionPosition,omitempty"`
-	InTransition         bool                      `json:"inTransition,omitempty"`
-	FTBActive            bool                      `json:"ftbActive,omitempty"`
-	AudioChannels        map[string]AudioChannel   `json:"audioChannels"`
-	MasterLevel          float64                   `json:"masterLevel"`
-	ProgramPeak          [2]float64                `json:"programPeak"`
-	GainReduction        float64                   `json:"gainReduction,omitempty"`
-	MomentaryLUFS        float64                   `json:"momentaryLufs,omitempty"`
-	ShortTermLUFS        float64                   `json:"shortTermLufs,omitempty"`
-	IntegratedLUFS       float64                   `json:"integratedLufs,omitempty"`
-	TallyState           map[string]string          `json:"tallyState"`
-	Recording            *RecordingStatus           `json:"recording,omitempty"`
-	SRTOutput            *SRTOutputStatus           `json:"srtOutput,omitempty"`
-	Destinations         []DestinationInfo         `json:"destinations,omitempty"`
-	Sources              map[string]SourceInfo     `json:"sources"`
-	Presets              []PresetInfo              `json:"presets,omitempty"`
-	Graphics             *GraphicsState            `json:"graphics,omitempty"`
-	Replay               *ReplayState              `json:"replay,omitempty"`
-	Operators            []OperatorInfo            `json:"operators,omitempty"`
-	Locks                map[string]LockInfo       `json:"locks,omitempty"`
-	LastChangedBy        string                    `json:"lastChangedBy,omitempty"`
-	Seq                  uint64                    `json:"seq"`
-	Timestamp            int64                     `json:"timestamp"`
+	ProgramSource        string                  `json:"programSource"`
+	PreviewSource        string                  `json:"previewSource"`
+	TransitionType       string                  `json:"transitionType"`
+	TransitionDurationMs int                     `json:"transitionDurationMs,omitempty"`
+	TransitionPosition   float64                 `json:"transitionPosition,omitempty"`
+	InTransition         bool                    `json:"inTransition,omitempty"`
+	FTBActive            bool                    `json:"ftbActive,omitempty"`
+	AudioChannels        map[string]AudioChannel `json:"audioChannels"`
+	MasterLevel          float64                 `json:"masterLevel"`
+	ProgramPeak          [2]float64              `json:"programPeak"`
+	GainReduction        float64                 `json:"gainReduction,omitempty"`
+	MomentaryLUFS        float64                 `json:"momentaryLufs,omitempty"`
+	ShortTermLUFS        float64                 `json:"shortTermLufs,omitempty"`
+	IntegratedLUFS       float64                 `json:"integratedLufs,omitempty"`
+	TallyState           map[string]string       `json:"tallyState"`
+	Recording            *RecordingStatus        `json:"recording,omitempty"`
+	SRTOutput            *SRTOutputStatus        `json:"srtOutput,omitempty"`
+	Destinations         []DestinationInfo       `json:"destinations,omitempty"`
+	Sources              map[string]SourceInfo   `json:"sources"`
+	Presets              []PresetInfo            `json:"presets,omitempty"`
+	Graphics             *GraphicsState          `json:"graphics,omitempty"`
+	Replay               *ReplayState            `json:"replay,omitempty"`
+	Operators            []OperatorInfo          `json:"operators,omitempty"`
+	Locks                map[string]LockInfo     `json:"locks,omitempty"`
+	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
+	Seq                  uint64                  `json:"seq"`
+	Timestamp            int64                   `json:"timestamp"`
 }

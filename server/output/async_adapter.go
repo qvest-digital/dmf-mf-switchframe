@@ -5,11 +5,12 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var tsPacketPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 0, 4096)
+		b := make([]byte, 0, 65536)
 		return &b
 	},
 }
@@ -19,12 +20,13 @@ var tsPacketPool = sync.Pool{
 // This prevents a slow adapter (e.g., disk I/O or network) from blocking other
 // adapters in the fan-out loop.
 type AsyncAdapter struct {
-	inner    OutputAdapter
-	buffer   chan *[]byte
-	dropped  atomic.Int64
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	stopOnce sync.Once
+	inner       OutputAdapter
+	buffer      chan *[]byte
+	dropped     atomic.Int64
+	lastDropLog atomic.Int64
+	stopCh      chan struct{}
+	doneCh      chan struct{}
+	stopOnce    sync.Once
 }
 
 // NewAsyncAdapter creates an AsyncAdapter wrapping the given inner adapter
@@ -72,9 +74,15 @@ func (a *AsyncAdapter) Write(tsData []byte) (int, error) {
 		// Buffer full, drop the packet.
 		tsPacketPool.Put(bp)
 		a.dropped.Add(1)
-		slog.Warn("async adapter dropped packet",
-			"adapter", a.inner.ID(),
-			"dropped", a.dropped.Load())
+		now := time.Now().UnixNano()
+		last := a.lastDropLog.Load()
+		if now-last > int64(time.Second) {
+			if a.lastDropLog.CompareAndSwap(last, now) {
+				slog.Warn("async adapter dropped packet",
+					"adapter", a.inner.ID(),
+					"dropped", a.dropped.Load())
+			}
+		}
 	}
 
 	return len(tsData), nil

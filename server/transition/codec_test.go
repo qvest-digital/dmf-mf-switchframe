@@ -39,7 +39,7 @@ func TestMockEncoderEncode(t *testing.T) {
 		isKeyframe: true,
 	}
 	yuv := make([]byte, 1920*1080*3/2)
-	data, isIDR, err := enc.Encode(yuv, true)
+	data, isIDR, err := enc.Encode(yuv, 0, true)
 	require.NoError(t, err)
 	require.True(t, isIDR)
 	require.NotEmpty(t, data)
@@ -48,7 +48,7 @@ func TestMockEncoderEncode(t *testing.T) {
 func TestMockEncoderDefaultOutput(t *testing.T) {
 	enc := &mockEncoder{}
 	yuv := make([]byte, 1920*1080*3/2)
-	data, isIDR, err := enc.Encode(yuv, false)
+	data, isIDR, err := enc.Encode(yuv, 0, false)
 	require.NoError(t, err)
 	require.False(t, isIDR)
 	require.NotEmpty(t, data)
@@ -57,7 +57,7 @@ func TestMockEncoderDefaultOutput(t *testing.T) {
 func TestMockEncoderForceIDR(t *testing.T) {
 	enc := &mockEncoder{}
 	yuv := make([]byte, 1920*1080*3/2)
-	data, isIDR, err := enc.Encode(yuv, true)
+	data, isIDR, err := enc.Encode(yuv, 0, true)
 	require.NoError(t, err)
 	require.True(t, isIDR)
 	require.NotEmpty(t, data)

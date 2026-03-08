@@ -20,9 +20,9 @@ type DataFormat int
 
 const (
 	DataFormatUnspecified DataFormat = iota
-	DataFormatVideo                 // Discrete grain-based (V210)
-	DataFormatAudio                 // Continuous sample-based (Float32)
-	DataFormatData                  // Discrete grain-based (ANC/metadata)
+	DataFormatVideo                  // Discrete grain-based (V210)
+	DataFormatAudio                  // Continuous sample-based (Float32)
+	DataFormatData                   // Discrete grain-based (ANC/metadata)
 )
 
 // Rational represents a rational number (e.g., frame rate 30000/1001).

@@ -195,15 +195,15 @@ type sourceState struct {
 // on-program (live output) and which is on-preview, maintains tally state,
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
-	log            *slog.Logger
-	mu             sync.RWMutex
-	sources        map[string]*sourceState
-	programSource  string
-	previewSource  string
-	programRelay   *distribution.Relay
-	seq            uint64 // always use atomic ops, even under s.mu, to prevent races on lock-free read paths
-	stateCallbacks []func(internal.ControlRoomState)
-	health         *healthMonitor
+	log             *slog.Logger
+	mu              sync.RWMutex
+	sources         map[string]*sourceState
+	programSource   string
+	previewSource   string
+	programRelay    *distribution.Relay
+	seq             uint64 // always use atomic ops, even under s.mu, to prevent races on lock-free read paths
+	stateCallbacks  []func(internal.ControlRoomState)
+	health          *healthMonitor
 	audioHandler    func(sourceKey string, frame *media.AudioFrame)
 	mixer           audioStateProvider
 	audioCut        audioCutHandler
@@ -315,6 +315,8 @@ type videoProcWork struct {
 	rawFrame *media.VideoFrame
 	// yuvFrame: pre-decoded YUV from transition engine, needing encode only
 	yuvFrame *ProcessingFrame
+	// annexBData: pre-computed Annex B data for rawFrame (avoids duplicate conversion)
+	annexBData []byte
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -659,7 +661,7 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 // for async processing in a dedicated goroutine, decoupling the source
 // relay's delivery goroutine from the 30-100ms decode+encode overhead.
 // Without pipeline codecs, passthrough is synchronous (fast).
-func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
+func (s *Switcher) broadcastVideo(frame *media.VideoFrame, annexB []byte) {
 	s.mu.RLock()
 	hasPipeline := s.pipeCodecs != nil
 	s.mu.RUnlock()
@@ -669,7 +671,7 @@ func (s *Switcher) broadcastVideo(frame *media.VideoFrame) {
 		return
 	}
 
-	s.enqueueVideoWork(videoProcWork{rawFrame: frame})
+	s.enqueueVideoWork(videoProcWork{rawFrame: frame, annexBData: annexB})
 }
 
 // enqueueVideoWork sends a work item to the async video processing goroutine
@@ -699,7 +701,7 @@ func (s *Switcher) videoProcessingLoop() {
 	defer close(s.videoProcDone)
 	for work := range s.videoProcCh {
 		if work.rawFrame != nil {
-			s.processAndBroadcastVideo(work.rawFrame)
+			s.processAndBroadcastVideo(work.rawFrame, work.annexBData)
 		} else if work.yuvFrame != nil {
 			s.encodeAndBroadcastTransition(work.yuvFrame)
 		}
@@ -711,7 +713,7 @@ func (s *Switcher) videoProcessingLoop() {
 // regardless of whether YUV processors (upstream keying, DSK compositor) are
 // active. This eliminates browser-side VideoDecoder reconfigurations when
 // transitioning between passthrough and processed modes.
-func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
+func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame, annexB []byte) {
 	start := time.Now()
 	defer func() {
 		dur := time.Since(start).Nanoseconds()
@@ -734,7 +736,7 @@ func (s *Switcher) processAndBroadcastVideo(frame *media.VideoFrame) {
 
 	// Always decode for consistent SPS/PPS
 	decStart := time.Now()
-	pf, err := pipeCodecs.decode(frame)
+	pf, err := pipeCodecs.decode(frame, annexB)
 	decDur := time.Since(decStart).Nanoseconds()
 	s.pipeDecodeLastNano.Store(decDur)
 	updateAtomicMax(&s.pipeDecodeMaxNano, decDur)
@@ -2016,34 +2018,34 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"transitions_started":       s.transitionsStarted.Load(),
 		"transitions_completed":     s.transitionsCompleted.Load(),
 		"video_pipeline": map[string]any{
-			"frames_processed":         s.videoProcCount.Load(),
-			"frames_broadcast":         s.videoBroadcastCount.Load(),
-			"frames_dropped":           s.videoProcDropped.Load(),
-			"decode_errors":            s.pipeDecodeErrors.Load(),
-			"decode_buffering":         s.pipeDecodeBuffering.Load(),
-			"encode_nil":               s.pipeEncodeNil.Load(),
-			"trans_output":             s.transOutputCount.Load(),
-			"idr_gate_drops":           s.idrGateDrops.Load(),
-			"last_proc_time_ms":        float64(s.videoProcLastNano.Load()) / 1e6,
-			"max_proc_time_ms":         float64(s.videoProcMaxNano.Load()) / 1e6,
-			"max_broadcast_gap_ms":     float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
-			"route_to_engine":          s.routeToEngine.Load(),
-			"route_to_idle_engine":     s.routeToIdleEngine.Load(),
-			"route_to_pipeline":        s.routeToPipeline.Load(),
-			"route_filtered":           s.routeFiltered.Load(),
-			"queue_len":                len(s.videoProcCh),
-			"output_fps":               s.outputFPSLastSecond.Load(),
-			"decode_last_ms":           float64(s.pipeDecodeLastNano.Load()) / 1e6,
-			"decode_max_ms":            float64(s.pipeDecodeMaxNano.Load()) / 1e6,
-			"key_last_ms":              float64(s.pipeKeyLastNano.Load()) / 1e6,
-			"key_max_ms":               float64(s.pipeKeyMaxNano.Load()) / 1e6,
-			"composite_last_ms":        float64(s.pipeCompositeLastNano.Load()) / 1e6,
-			"composite_max_ms":         float64(s.pipeCompositeMaxNano.Load()) / 1e6,
-			"encode_last_ms":           float64(s.pipeEncodeLastNano.Load()) / 1e6,
-			"encode_max_ms":            float64(s.pipeEncodeMaxNano.Load()) / 1e6,
-			"trans_seam_last_ms":       float64(s.transSeamLastNano.Load()) / 1e6,
-			"trans_seam_max_ms":        float64(s.transSeamMaxNano.Load()) / 1e6,
-			"trans_seam_count":         s.transSeamCount.Load(),
+			"frames_processed":     s.videoProcCount.Load(),
+			"frames_broadcast":     s.videoBroadcastCount.Load(),
+			"frames_dropped":       s.videoProcDropped.Load(),
+			"decode_errors":        s.pipeDecodeErrors.Load(),
+			"decode_buffering":     s.pipeDecodeBuffering.Load(),
+			"encode_nil":           s.pipeEncodeNil.Load(),
+			"trans_output":         s.transOutputCount.Load(),
+			"idr_gate_drops":       s.idrGateDrops.Load(),
+			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":     float64(s.videoProcMaxNano.Load()) / 1e6,
+			"max_broadcast_gap_ms": float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
+			"route_to_engine":      s.routeToEngine.Load(),
+			"route_to_idle_engine": s.routeToIdleEngine.Load(),
+			"route_to_pipeline":    s.routeToPipeline.Load(),
+			"route_filtered":       s.routeFiltered.Load(),
+			"queue_len":            len(s.videoProcCh),
+			"output_fps":           s.outputFPSLastSecond.Load(),
+			"decode_last_ms":       float64(s.pipeDecodeLastNano.Load()) / 1e6,
+			"decode_max_ms":        float64(s.pipeDecodeMaxNano.Load()) / 1e6,
+			"key_last_ms":          float64(s.pipeKeyLastNano.Load()) / 1e6,
+			"key_max_ms":           float64(s.pipeKeyMaxNano.Load()) / 1e6,
+			"composite_last_ms":    float64(s.pipeCompositeLastNano.Load()) / 1e6,
+			"composite_max_ms":     float64(s.pipeCompositeMaxNano.Load()) / 1e6,
+			"encode_last_ms":       float64(s.pipeEncodeLastNano.Load()) / 1e6,
+			"encode_max_ms":        float64(s.pipeEncodeMaxNano.Load()) / 1e6,
+			"trans_seam_last_ms":   float64(s.transSeamLastNano.Load()) / 1e6,
+			"trans_seam_max_ms":    float64(s.transSeamMaxNano.Load()) / 1e6,
+			"trans_seam_count":     s.transSeamCount.Load(),
 		},
 	}
 
@@ -2066,12 +2068,12 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		pvs := make([]map[string]any, len(programViewers))
 		for i, vs := range programViewers {
 			pvs[i] = map[string]any{
-				"id":              vs.ID,
-				"video_sent":      vs.VideoSent,
-				"video_dropped":   vs.VideoDropped,
-				"audio_sent":      vs.AudioSent,
-				"audio_dropped":   vs.AudioDropped,
-				"bytes_sent":      vs.BytesSent,
+				"id":               vs.ID,
+				"video_sent":       vs.VideoSent,
+				"video_dropped":    vs.VideoDropped,
+				"audio_sent":       vs.AudioSent,
+				"audio_dropped":    vs.AudioDropped,
+				"bytes_sent":       vs.BytesSent,
 				"last_video_ts_ms": vs.LastVideoTsMS,
 			}
 		}

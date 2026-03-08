@@ -173,6 +173,93 @@ func TestParseSPSCodecString_TooShort(t *testing.T) {
 	require.Equal(t, "avc1.42C01E", ParseSPSCodecString([]byte{0x67, 0x42, 0xC0}))
 }
 
+func TestAnnexBToAVC1Into_MatchesAnnexBToAVC1(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		annexB []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte{}},
+		{"single_4byte", []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02, 0x03, 0x04}},
+		{"single_3byte", []byte{0x00, 0x00, 0x01, 0x65, 0x01, 0x02}},
+		{"multiple_4byte", []byte{
+			0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB,
+			0x00, 0x00, 0x00, 0x01, 0x65, 0xCC,
+		}},
+		{"mixed_start_codes", []byte{
+			0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, // 4-byte
+			0x00, 0x00, 0x01, 0x65, 0xBB, // 3-byte
+		}},
+		{"three_nalus", []byte{
+			0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB,
+			0x00, 0x00, 0x00, 0x01, 0x68, 0xCC,
+			0x00, 0x00, 0x00, 0x01, 0x65, 0xDD, 0xEE,
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			expected := AnnexBToAVC1(tc.annexB)
+			got := AnnexBToAVC1Into(tc.annexB, nil)
+			require.Equal(t, expected, got)
+		})
+	}
+}
+
+func TestAnnexBToAVC1Into_ReusesBuffer(t *testing.T) {
+	t.Parallel()
+	annexB := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB,
+		0x00, 0x00, 0x00, 0x01, 0x65, 0xCC,
+	}
+
+	buf := make([]byte, 0, 1024)
+	result := AnnexBToAVC1Into(annexB, buf[:0])
+	require.Equal(t, AnnexBToAVC1(annexB), result)
+
+	// Second call should reuse the same backing array.
+	result2 := AnnexBToAVC1Into(annexB, result[:0])
+	require.Equal(t, AnnexBToAVC1(annexB), result2)
+	require.Equal(t, cap(result), cap(result2), "backing array should be reused")
+}
+
+func TestAnnexBToAVC1Into_NilDst(t *testing.T) {
+	t.Parallel()
+	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02}
+	result := AnnexBToAVC1Into(annexB, nil)
+	expected := []byte{0x00, 0x00, 0x00, 0x03, 0x65, 0x01, 0x02}
+	require.Equal(t, expected, result)
+}
+
+func TestAnnexBToAVC1Into_EmptyInput(t *testing.T) {
+	t.Parallel()
+	require.Nil(t, AnnexBToAVC1Into(nil, nil))
+	require.Nil(t, AnnexBToAVC1Into([]byte{}, nil))
+
+	buf := make([]byte, 0, 64)
+	require.Nil(t, AnnexBToAVC1Into(nil, buf))
+	require.Nil(t, AnnexBToAVC1Into([]byte{}, buf))
+}
+
+func TestExtractNALUs_SubSlice(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{
+		0x00, 0x00, 0x00, 0x03, 0x67, 0xAA, 0xBB,
+		0x00, 0x00, 0x00, 0x02, 0x65, 0xCC,
+	}
+	nalus := ExtractNALUs(avc1)
+	require.Len(t, nalus, 2)
+	require.Equal(t, []byte{0x67, 0xAA, 0xBB}, nalus[0])
+	require.Equal(t, []byte{0x65, 0xCC}, nalus[1])
+
+	// Verify they are sub-slices of the input (share backing array).
+	require.Equal(t, &avc1[4], &nalus[0][0], "first NALU should be a sub-slice of input")
+	require.Equal(t, &avc1[11], &nalus[1][0], "second NALU should be a sub-slice of input")
+}
+
 func TestPrependSPSPPS(t *testing.T) {
 	t.Parallel()
 	sps := []byte{0x67, 0x64, 0x00, 0x28}

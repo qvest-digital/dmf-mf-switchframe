@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -29,7 +30,7 @@ func TestPipelineCodecs_DecodeToProcessingFrame(t *testing.T) {
 		PPS:        []byte{0x68, 0x42, 0x00},
 	}
 
-	pf, err := pc.decode(frame)
+	pf, err := pc.decode(frame, nil)
 	require.NoError(t, err)
 	require.NotNil(t, pf)
 	require.Equal(t, 4, pf.Width)
@@ -55,7 +56,7 @@ func TestPipelineCodecs_DecodeNeedsKeyframe(t *testing.T) {
 		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x41, 0x9a, 0x80, 0x40},
 	}
 
-	pf, err := pc.decode(frame)
+	pf, err := pc.decode(frame, nil)
 	require.Error(t, err, "should fail without keyframe to init decoder")
 	require.Nil(t, pf)
 }
@@ -108,7 +109,7 @@ func TestPipelineCodecs_DecodeShortBuffer(t *testing.T) {
 		PPS:        []byte{0x68, 0x42, 0x00},
 	}
 
-	pf, err := pc.decode(frame)
+	pf, err := pc.decode(frame, nil)
 	require.Error(t, err, "should return error for short buffer, not panic")
 	require.Nil(t, pf)
 	require.Contains(t, err.Error(), "decoder buffer too small")
@@ -176,7 +177,7 @@ func TestPipelineCodecs_Close(t *testing.T) {
 		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
 		PPS:      []byte{0x68, 0x42, 0x00},
 	}
-	_, err := pc.decode(frame)
+	_, err := pc.decode(frame, nil)
 	require.NoError(t, err)
 	require.NotNil(t, pc.decoder)
 
@@ -357,3 +358,80 @@ func (d *failingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 }
 
 func (d *failingDecoder) Close() {}
+
+func BenchmarkPipelineEncode(b *testing.B) {
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		YUV:        make([]byte, 320*240*3/2),
+		Width:      320,
+		Height:     240,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	// Prime the encoder
+	_, err := pc.encode(pf, true)
+	require.NoError(b, err)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		pf.PTS = int64(i * 3000)
+		pf.IsKeyframe = i%30 == 0
+		_, _ = pc.encode(pf, i%30 == 0)
+	}
+}
+
+func TestPipelineCodecs_DecodeWithPrecomputedAnnexB(t *testing.T) {
+	pc := &pipelineCodecs{
+		decoderFactory: func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(4, 4), nil
+		},
+	}
+
+	frame := &media.VideoFrame{
+		PTS:        1000,
+		DTS:        900,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
+		Codec:      "h264",
+		GroupID:    5,
+		SPS:        []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:        []byte{0x68, 0x42, 0x00},
+	}
+
+	// Decode without pre-computed AnnexB (nil)
+	pfWithout, err := pc.decode(frame, nil)
+	require.NoError(t, err)
+	require.NotNil(t, pfWithout)
+
+	// Reset decoder for a fair comparison
+	pc.decoder.Close()
+	pc.decoder = nil
+
+	// Pre-compute AnnexB
+	annexB := codec.AVC1ToAnnexB(frame.WireData)
+	annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+
+	// Decode with pre-computed AnnexB
+	pfWith, err := pc.decode(frame, annexB)
+	require.NoError(t, err)
+	require.NotNil(t, pfWith)
+
+	// Both paths should produce identical ProcessingFrame metadata
+	require.Equal(t, pfWithout.Width, pfWith.Width)
+	require.Equal(t, pfWithout.Height, pfWith.Height)
+	require.Equal(t, pfWithout.PTS, pfWith.PTS)
+	require.Equal(t, pfWithout.DTS, pfWith.DTS)
+	require.Equal(t, pfWithout.IsKeyframe, pfWith.IsKeyframe)
+	require.Equal(t, pfWithout.Codec, pfWith.Codec)
+	require.Equal(t, pfWithout.GroupID, pfWith.GroupID)
+	require.Equal(t, len(pfWithout.YUV), len(pfWith.YUV))
+}

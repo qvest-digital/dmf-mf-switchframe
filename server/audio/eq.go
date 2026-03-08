@@ -3,13 +3,13 @@ package audio
 import (
 	"errors"
 	"math"
-	"sync"
+	"sync/atomic"
 )
 
 // EQ band frequency ranges
 var eqBandRanges = [3][2]float64{
-	{80, 1000},   // Band 0 (Low)
-	{200, 8000},  // Band 1 (Mid)
+	{80, 1000},    // Band 0 (Low)
+	{200, 8000},   // Band 1 (Mid)
 	{1000, 16000}, // Band 2 (High)
 }
 
@@ -43,12 +43,17 @@ type BiquadFilter struct {
 	s1, s2 float64
 }
 
+const denormalGuard = 1e-25
+
 // Process applies the biquad filter to a single sample.
+// A tiny DC offset is injected and removed to prevent filter state from
+// decaying into denormal territory during silence (10-100x CPU spike on x86).
 func (f *BiquadFilter) Process(x float64) float64 {
+	x += denormalGuard
 	y := f.b0*x + f.s1
 	f.s1 = f.b1*x - f.a1*y + f.s2
 	f.s2 = f.b2*x - f.a2*y
-	return y
+	return y - denormalGuard
 }
 
 // Reset clears the filter state.
@@ -57,24 +62,56 @@ func (f *BiquadFilter) Reset() {
 	f.s2 = 0
 }
 
-// eqBand holds parameters and per-channel filters for a single EQ band.
-type eqBand struct {
+// eqBandCoeffs holds the immutable biquad coefficients for one band.
+type eqBandCoeffs struct {
+	b0, b1, b2 float64
+	a1, a2     float64
+}
+
+// eqBandParams holds the immutable parameters for one band.
+type eqBandParams struct {
 	frequency float64
 	gain      float64
 	q         float64
 	enabled   bool
-	filters   []BiquadFilter // one per channel to avoid stereo crosstalk
+	coeffs    eqBandCoeffs
+}
+
+// eqParams is an immutable snapshot of all EQ band parameters and coefficients.
+// Swapped atomically so Process() and IsBypassed() are lock-free.
+type eqParams struct {
+	bands    [3]eqBandParams
+	channels int
+}
+
+// EQBandSettings holds the parameters for a single EQ band.
+type EQBandSettings struct {
+	Frequency float64
+	Gain      float64
+	Q         float64
+	Enabled   bool
 }
 
 // EQ is a 3-band parametric equalizer using biquad filters.
 // Each band uses an RBJ peakingEQ formula with configurable
 // frequency, gain, and Q. Per-channel filter state prevents
 // stereo crosstalk in interleaved audio.
+//
+// Parameters and coefficients are stored in an immutable eqParams snapshot
+// swapped atomically. Filter state (s1, s2) is only accessed by Process()
+// which is single-threaded (called from the mixer's processing goroutine).
+// SetBand() signals a reset via atomic flag; Process() performs the actual reset.
 type EQ struct {
-	mu         sync.Mutex
-	bands      [3]eqBand
+	params atomic.Pointer[eqParams]
+
+	// Filter states: only written by Process() (single-writer, no lock needed).
+	// Indexed as [band][channel].
+	filterStates [3][]BiquadFilter
+
+	// Per-band reset flags: set by SetBand(), cleared by Process().
+	pendingReset [3]atomic.Bool
+
 	sampleRate float64
-	channels   int
 }
 
 // NewEQ creates a new 3-band parametric EQ with flat (0dB) defaults.
@@ -85,34 +122,28 @@ func NewEQ(sampleRate, channels int) *EQ {
 	}
 	eq := &EQ{
 		sampleRate: float64(sampleRate),
-		channels:   channels,
 	}
-	// Initialize bands with default frequencies, 0dB gain, Q=1.0, disabled
+
+	p := &eqParams{channels: channels}
 	for i := 0; i < 3; i++ {
-		eq.bands[i] = eqBand{
+		p.bands[i] = eqBandParams{
 			frequency: eqBandDefaults[i],
 			gain:      0,
 			q:         1.0,
 			enabled:   false,
-			filters:   make([]BiquadFilter, channels),
+			coeffs:    calcBandCoefficients(eqBandDefaults[i], 0, 1.0, float64(sampleRate)),
 		}
-		eq.calcCoefficients(i)
+		eq.filterStates[i] = make([]BiquadFilter, channels)
 	}
+	eq.params.Store(p)
 	return eq
 }
 
-// calcCoefficients computes the biquad coefficients for band i using
-// the RBJ Audio EQ Cookbook peakingEQ formula.
-// Caller must hold eq.mu.
-func (eq *EQ) calcCoefficients(i int) {
-	band := &eq.bands[i]
-	gain := band.gain
-	freq := band.frequency
-	q := band.q
-
-	// RBJ peakingEQ coefficients
+// calcBandCoefficients computes biquad coefficients using the RBJ Audio EQ
+// Cookbook peakingEQ formula. Pure function — no side effects.
+func calcBandCoefficients(freq, gain, q, sampleRate float64) eqBandCoeffs {
 	A := math.Pow(10, gain/40.0)
-	w0 := 2 * math.Pi * freq / eq.sampleRate
+	w0 := 2 * math.Pi * freq / sampleRate
 	sinW0 := math.Sin(w0)
 	cosW0 := math.Cos(w0)
 	alpha := sinW0 / (2 * q)
@@ -124,14 +155,9 @@ func (eq *EQ) calcCoefficients(i int) {
 	a1 := -2 * cosW0
 	a2 := 1 - alpha/A
 
-	// Normalize by a0 and set on all per-channel filter instances
-	// (same coefficients, independent state per channel)
-	for ch := range band.filters {
-		band.filters[ch].b0 = b0 / a0
-		band.filters[ch].b1 = b1 / a0
-		band.filters[ch].b2 = b2 / a0
-		band.filters[ch].a1 = a1 / a0
-		band.filters[ch].a2 = a2 / a0
+	return eqBandCoeffs{
+		b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+		a1: a1 / a0, a2: a2 / a0,
 	}
 }
 
@@ -155,50 +181,47 @@ func (eq *EQ) SetBand(band int, frequency, gain, q float64, enabled bool) error 
 		return ErrInvalidQ
 	}
 
-	eq.mu.Lock()
-	defer eq.mu.Unlock()
+	coeffs := calcBandCoefficients(frequency, gain, q, eq.sampleRate)
 
-	eq.bands[band].frequency = frequency
-	eq.bands[band].gain = gain
-	eq.bands[band].q = q
-	eq.bands[band].enabled = enabled
-	for ch := range eq.bands[band].filters {
-		eq.bands[band].filters[ch].Reset()
+	for {
+		old := eq.params.Load()
+		newParams := *old
+		newParams.bands[band] = eqBandParams{
+			frequency: frequency,
+			gain:      gain,
+			q:         q,
+			enabled:   enabled,
+			coeffs:    coeffs,
+		}
+		if eq.params.CompareAndSwap(old, &newParams) {
+			eq.pendingReset[band].Store(true)
+			break
+		}
 	}
-	eq.calcCoefficients(band)
 	return nil
 }
 
 // GetBands returns a snapshot of the current EQ band settings.
 func (eq *EQ) GetBands() [3]EQBandSettings {
-	eq.mu.Lock()
-	defer eq.mu.Unlock()
+	p := eq.params.Load()
 	var result [3]EQBandSettings
 	for i := 0; i < 3; i++ {
 		result[i] = EQBandSettings{
-			Frequency: eq.bands[i].frequency,
-			Gain:      eq.bands[i].gain,
-			Q:         eq.bands[i].q,
-			Enabled:   eq.bands[i].enabled,
+			Frequency: p.bands[i].frequency,
+			Gain:      p.bands[i].gain,
+			Q:         p.bands[i].q,
+			Enabled:   p.bands[i].enabled,
 		}
 	}
 	return result
 }
 
-// EQBandSettings holds the parameters for a single EQ band.
-type EQBandSettings struct {
-	Frequency float64
-	Gain      float64
-	Q         float64
-	Enabled   bool
-}
-
 // IsBypassed returns true when all bands are either at 0dB gain or disabled.
+// Lock-free: reads the atomic params snapshot.
 func (eq *EQ) IsBypassed() bool {
-	eq.mu.Lock()
-	defer eq.mu.Unlock()
+	p := eq.params.Load()
 	for i := 0; i < 3; i++ {
-		if eq.bands[i].enabled && eq.bands[i].gain != 0 {
+		if p.bands[i].enabled && p.bands[i].gain != 0 {
 			return false
 		}
 	}
@@ -208,17 +231,33 @@ func (eq *EQ) IsBypassed() bool {
 // Process applies the enabled EQ bands in series to the input samples.
 // samples must be interleaved with the given number of channels.
 // Returns the processed samples (modifies and returns the input slice).
+//
+// Lock-free: reads coefficients from the atomic params snapshot.
+// Filter states are only written here (single-writer from mixer goroutine).
 func (eq *EQ) Process(samples []float32, channels int) []float32 {
-	eq.mu.Lock()
-	defer eq.mu.Unlock()
+	p := eq.params.Load()
 
 	for i := 0; i < 3; i++ {
-		if !eq.bands[i].enabled || eq.bands[i].gain == 0 {
+		if eq.pendingReset[i].CompareAndSwap(true, false) {
+			for ch := range eq.filterStates[i] {
+				eq.filterStates[i][ch].Reset()
+			}
+		}
+
+		band := &p.bands[i]
+		if !band.enabled || band.gain == 0 {
 			continue
 		}
+		coeffs := &band.coeffs
+		filters := eq.filterStates[i]
 		for j := 0; j < len(samples); j += channels {
-			for ch := 0; ch < channels && ch < len(eq.bands[i].filters); ch++ {
-				samples[j+ch] = float32(eq.bands[i].filters[ch].Process(float64(samples[j+ch])))
+			for ch := 0; ch < channels && ch < len(filters); ch++ {
+				f := &filters[ch]
+				x := float64(samples[j+ch]) + denormalGuard
+				y := coeffs.b0*x + f.s1
+				f.s1 = coeffs.b1*x - coeffs.a1*y + f.s2
+				f.s2 = coeffs.b2*x - coeffs.a2*y
+				samples[j+ch] = float32(y - denormalGuard)
 			}
 		}
 	}

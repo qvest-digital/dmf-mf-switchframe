@@ -87,11 +87,37 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	return 0;
 }
 
+// ffdec_copy_frame copies YUV420 planes from src_frame into dst, stripping stride padding.
+// dst must have capacity >= w*h*3/2.
+static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
+                             int w, int h_val) {
+	int uv_w = w / 2;
+	int uv_h = h_val / 2;
+	int y_size = w * h_val;
+	int uv_size = uv_w * uv_h;
+
+	for (int row = 0; row < h_val; row++) {
+		memcpy(dst + row * w,
+		       src_frame->data[0] + row * src_frame->linesize[0], w);
+	}
+	for (int row = 0; row < uv_h; row++) {
+		memcpy(dst + y_size + row * uv_w,
+		       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
+	}
+	for (int row = 0; row < uv_h; row++) {
+		memcpy(dst + y_size + uv_size + row * uv_w,
+		       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
+	}
+}
+
 // ffdec_decode decodes one packet of Annex B H.264 data to packed YUV420.
-// On success (return 0): out_buf is malloc'd with packed YUV420 data, out_len/width/height are set.
-// The caller must free out_buf with free().
+// If dst_buf is non-NULL and dst_cap >= the required size, the frame is
+// written directly into dst_buf (zero-copy to caller). Otherwise a buffer
+// is malloc'd and returned via out_buf (caller must free with free()).
+// On success (return 0): out_buf/out_len/out_width/out_height are set.
 // Returns 0 on success, 1 if EAGAIN (buffering), negative on error.
 static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
+                        unsigned char* dst_buf, int dst_cap,
                         unsigned char** out_buf, int* out_len, int* out_width, int* out_height) {
 	*out_buf = NULL;
 	*out_len = 0;
@@ -114,64 +140,48 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 		return -2; // receive failed
 	}
 
-	// Determine which frame to read from (handle HW transfer if needed).
 	AVFrame* src_frame = h->frame;
 
 	if (h->frame->format != AV_PIX_FMT_YUV420P &&
 	    h->frame->format != AV_PIX_FMT_YUVJ420P) {
-		// Check if this is a hardware frame that needs transfer.
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
 				av_frame_unref(h->frame);
-				return -3; // HW transfer failed
+				return -3;
 			}
 			src_frame = h->sw_frame;
-			// Verify transferred frame is YUV420P.
 			if (src_frame->format != AV_PIX_FMT_YUV420P &&
 			    src_frame->format != AV_PIX_FMT_YUVJ420P) {
 				av_frame_unref(h->frame);
 				av_frame_unref(h->sw_frame);
-				return -4; // unexpected pixel format after HW transfer
+				return -4;
 			}
 		} else {
 			av_frame_unref(h->frame);
-			return -4; // unexpected pixel format
+			return -4;
 		}
 	}
 
 	int w = src_frame->width;
 	int h_val = src_frame->height;
-	int uv_w = w / 2;
-	int uv_h = h_val / 2;
-	int y_size = w * h_val;
-	int uv_size = uv_w * uv_h;
-	int total = y_size + 2 * uv_size;
+	int total = w * h_val * 3 / 2;
 
-	unsigned char* buf = (unsigned char*)malloc(total);
-	if (!buf) {
-		av_frame_unref(h->frame);
-		if (src_frame == h->sw_frame) {
-			av_frame_unref(h->sw_frame);
+	unsigned char* buf;
+	if (dst_buf && dst_cap >= total) {
+		buf = dst_buf;
+	} else {
+		buf = (unsigned char*)malloc(total);
+		if (!buf) {
+			av_frame_unref(h->frame);
+			if (src_frame == h->sw_frame) {
+				av_frame_unref(h->sw_frame);
+			}
+			return -5;
 		}
-		return -5; // malloc failed
 	}
 
-	// Copy Y plane (row-by-row to handle linesize padding).
-	for (int row = 0; row < h_val; row++) {
-		memcpy(buf + row * w,
-		       src_frame->data[0] + row * src_frame->linesize[0], w);
-	}
-	// Copy U plane.
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(buf + y_size + row * uv_w,
-		       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
-	}
-	// Copy V plane.
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(buf + y_size + uv_size + row * uv_w,
-		       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
-	}
+	ffdec_copy_frame(src_frame, buf, w, h_val);
 
 	*out_buf = buf;
 	*out_len = total;
@@ -201,8 +211,10 @@ static int ffdec_send_eos(ffdec_t* h) {
 
 // ffdec_receive_only receives a decoded frame without sending new input.
 // Used to drain remaining frames after all input has been sent or after EOS.
+// Same dst_buf/dst_cap semantics as ffdec_decode.
 // Returns 0 on success, 1 if no more frames (EAGAIN/EOF), negative on error.
-static int ffdec_receive_only(ffdec_t* h, unsigned char** out_buf, int* out_len,
+static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
+                              unsigned char** out_buf, int* out_len,
                               int* out_width, int* out_height) {
 	*out_buf = NULL;
 	*out_len = 0;
@@ -242,33 +254,23 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char** out_buf, int* out_len,
 
 	int w = src_frame->width;
 	int h_val = src_frame->height;
-	int uv_w = w / 2;
-	int uv_h = h_val / 2;
-	int y_size = w * h_val;
-	int uv_size = uv_w * uv_h;
-	int total = y_size + 2 * uv_size;
+	int total = w * h_val * 3 / 2;
 
-	unsigned char* buf = (unsigned char*)malloc(total);
-	if (!buf) {
-		av_frame_unref(h->frame);
-		if (src_frame == h->sw_frame) {
-			av_frame_unref(h->sw_frame);
+	unsigned char* buf;
+	if (dst_buf && dst_cap >= total) {
+		buf = dst_buf;
+	} else {
+		buf = (unsigned char*)malloc(total);
+		if (!buf) {
+			av_frame_unref(h->frame);
+			if (src_frame == h->sw_frame) {
+				av_frame_unref(h->sw_frame);
+			}
+			return -5;
 		}
-		return -5;
 	}
 
-	for (int row = 0; row < h_val; row++) {
-		memcpy(buf + row * w,
-		       src_frame->data[0] + row * src_frame->linesize[0], w);
-	}
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(buf + y_size + row * uv_w,
-		       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
-	}
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(buf + y_size + uv_size + row * uv_w,
-		       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
-	}
+	ffdec_copy_frame(src_frame, buf, w, h_val);
 
 	*out_buf = buf;
 	*out_len = total;
@@ -318,6 +320,7 @@ var _ transition.VideoDecoder = (*FFmpegDecoder)(nil)
 type FFmpegDecoder struct {
 	handle C.ffdec_t
 	closed bool
+	yuvBuf []byte // reusable buffer for decoded YUV output
 }
 
 // NewFFmpegDecoder creates a new FFmpeg H.264 decoder.
@@ -341,6 +344,13 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		return nil, 0, 0, fmt.Errorf("empty input data")
 	}
 
+	var dstBuf *C.uchar
+	var dstCap C.int
+	if len(d.yuvBuf) > 0 {
+		dstBuf = (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0]))
+		dstCap = C.int(cap(d.yuvBuf))
+	}
+
 	var outBuf *C.uchar
 	var outLen, outWidth, outHeight C.int
 
@@ -348,6 +358,7 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		&d.handle,
 		(*C.uchar)(unsafe.Pointer(&data[0])),
 		C.int(len(data)),
+		dstBuf, dstCap,
 		&outBuf, &outLen, &outWidth, &outHeight,
 	)
 	if rc == 1 {
@@ -362,11 +373,35 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		return nil, 0, 0, fmt.Errorf("decoder produced no output")
 	}
 
-	// Copy from C-allocated buffer to Go slice, then free.
+	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))
+}
+
+// adoptOrCopy handles the output from ffdec_decode/ffdec_receive_only.
+// If outBuf points into d.yuvBuf (the Go-provided buffer was used), it re-slices
+// d.yuvBuf to the output length. Otherwise, the C side malloc'd a buffer because
+// d.yuvBuf was too small or nil, so we copy via GoBytes and free the C buffer.
+// In both cases, d.yuvBuf is updated for the next call.
+func (d *FFmpegDecoder) adoptOrCopy(outBuf *C.uchar, outLen C.int, w, h int) ([]byte, int, int, error) {
+	n := int(outLen)
+	needed := w * h * 3 / 2
+
+	if len(d.yuvBuf) > 0 && outBuf == (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0])) {
+		// C wrote directly into our Go buffer — no copy needed.
+		return d.yuvBuf[:n], w, h, nil
+	}
+
+	// C malloc'd its own buffer (first call or resolution changed).
 	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
 	C.free(unsafe.Pointer(outBuf))
 
-	return result, int(outWidth), int(outHeight), nil
+	// Cache the buffer for future frames at this resolution.
+	if cap(d.yuvBuf) < needed {
+		d.yuvBuf = make([]byte, needed)
+	} else {
+		d.yuvBuf = d.yuvBuf[:needed]
+	}
+
+	return result, w, h, nil
 }
 
 // Flush resets the decoder's internal state (reference frames, reorder buffer)
@@ -399,11 +434,19 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 		return nil, 0, 0, fmt.Errorf("decoder is closed")
 	}
 
+	var dstBuf *C.uchar
+	var dstCap C.int
+	if len(d.yuvBuf) > 0 {
+		dstBuf = (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0]))
+		dstCap = C.int(cap(d.yuvBuf))
+	}
+
 	var outBuf *C.uchar
 	var outLen, outWidth, outHeight C.int
 
 	rc := C.ffdec_receive_only(
 		&d.handle,
+		dstBuf, dstCap,
 		&outBuf, &outLen, &outWidth, &outHeight,
 	)
 	if rc == 1 {
@@ -418,10 +461,7 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 		return nil, 0, 0, fmt.Errorf("decoder produced no output")
 	}
 
-	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
-	C.free(unsafe.Pointer(outBuf))
-
-	return result, int(outWidth), int(outHeight), nil
+	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))
 }
 
 // Close releases the decoder resources. Safe to call multiple times.

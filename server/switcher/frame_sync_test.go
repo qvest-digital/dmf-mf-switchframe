@@ -76,7 +76,7 @@ func TestFrameSync_IngestBuffersFrame(t *testing.T) {
 	fs.AddSource("cam1")
 
 	// Ingest a video frame — should NOT be delivered immediately (buffered).
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	// Without starting the ticker, nothing should be released.
@@ -89,10 +89,10 @@ func TestFrameSync_IngestUnknownSourceIgnored(t *testing.T) {
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
 
 	// Ingesting to an unregistered source should not panic.
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("unknown", vf)
 
-	af := media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
+	af := &media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
 	fs.IngestAudio("unknown", af)
 
 	// Nothing released.
@@ -106,9 +106,9 @@ func TestFrameSync_RingBufferOverwrite(t *testing.T) {
 	fs.AddSource("cam1")
 
 	// Push 3 frames into a 2-slot ring buffer — first should be overwritten.
-	vf1 := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
-	vf2 := media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
-	vf3 := media.VideoFrame{PTS: 3000, WireData: []byte{0x03}}
+	vf1 := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	vf3 := &media.VideoFrame{PTS: 3000, WireData: []byte{0x03}}
 	fs.IngestVideo("cam1", vf1)
 	fs.IngestVideo("cam1", vf2)
 	fs.IngestVideo("cam1", vf3)
@@ -133,7 +133,7 @@ func TestFrameSync_TickReleasesFrames(t *testing.T) {
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -149,7 +149,7 @@ func TestFrameSync_TickReleasesAudio(t *testing.T) {
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	af := media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
+	af := &media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
 	fs.IngestAudio("cam1", af)
 
 	fs.Start()
@@ -164,7 +164,7 @@ func TestFrameSync_PTSRewritten(t *testing.T) {
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 99999, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 99999, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -184,7 +184,7 @@ func TestFrameSync_FreezeRepeatsLastFrame(t *testing.T) {
 	fs.AddSource("cam1")
 
 	// Push one frame, then let the ticker run without pushing more.
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0xAA}, IsKeyframe: true}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0xAA}, IsKeyframe: true}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -223,8 +223,8 @@ func TestFrameSync_MultiSourceAlignment(t *testing.T) {
 	fs.AddSource("cam1")
 	fs.AddSource("cam2")
 
-	vf1 := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
-	vf2 := media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	vf1 := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
 	fs.IngestVideo("cam1", vf1)
 	fs.IngestVideo("cam2", vf2)
 
@@ -279,13 +279,13 @@ func TestFrameSync_AddSourceDynamic(t *testing.T) {
 	fs.Start()
 	defer fs.Stop()
 
-	vf1 := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf1 := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf1)
 	time.Sleep(40 * time.Millisecond)
 
 	// Add a second source dynamically while running.
 	fs.AddSource("cam2")
-	vf2 := media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
 	fs.IngestVideo("cam2", vf2)
 
 	time.Sleep(40 * time.Millisecond)
@@ -307,8 +307,8 @@ func TestFrameSync_RemoveSource(t *testing.T) {
 	fs.AddSource("cam1")
 	fs.AddSource("cam2")
 
-	vf1 := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
-	vf2 := media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	vf1 := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
 	fs.IngestVideo("cam1", vf1)
 	fs.IngestVideo("cam2", vf2)
 
@@ -325,7 +325,7 @@ func TestFrameSync_RemoveSource(t *testing.T) {
 	handler.mu.Unlock()
 
 	// Push new frame to cam2 — should be ignored.
-	vf3 := media.VideoFrame{PTS: 3000, WireData: []byte{0x03}}
+	vf3 := &media.VideoFrame{PTS: 3000, WireData: []byte{0x03}}
 	fs.IngestVideo("cam2", vf3)
 
 	time.Sleep(40 * time.Millisecond)
@@ -344,7 +344,7 @@ func TestFrameSync_SetTickRate(t *testing.T) {
 	fs := NewFrameSynchronizer(100*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -358,7 +358,7 @@ func TestFrameSync_SetTickRate(t *testing.T) {
 	fs.SetTickRate(15 * time.Millisecond)
 
 	// Push another frame so freeze has content.
-	vf2 := media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
 	fs.IngestVideo("cam1", vf2)
 
 	// Wait for several fast ticks.
@@ -377,7 +377,7 @@ func TestFrameSync_StopCeasesTicking(t *testing.T) {
 	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -396,7 +396,7 @@ func TestFrameSync_StopWaitsForGoroutine(t *testing.T) {
 	fs := NewFrameSynchronizer(10*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -458,11 +458,11 @@ func TestFrameSync_ConcurrentIngest(t *testing.T) {
 		wg.Add(2)
 		go func(pts int64) {
 			defer wg.Done()
-			fs.IngestVideo("cam1", media.VideoFrame{PTS: pts, WireData: []byte{0x01}})
+			fs.IngestVideo("cam1", &media.VideoFrame{PTS: pts, WireData: []byte{0x01}})
 		}(int64(i * 1000))
 		go func(pts int64) {
 			defer wg.Done()
-			fs.IngestVideo("cam2", media.VideoFrame{PTS: pts, WireData: []byte{0x02}})
+			fs.IngestVideo("cam2", &media.VideoFrame{PTS: pts, WireData: []byte{0x02}})
 		}(int64(i * 1000))
 	}
 	wg.Wait()
@@ -485,7 +485,7 @@ func TestFrameSync_ConcurrentAddRemove(t *testing.T) {
 			defer wg.Done()
 			key := "cam" + string(rune('A'+idx%5))
 			fs.AddSource(key)
-			fs.IngestVideo(key, media.VideoFrame{PTS: int64(idx), WireData: []byte{0x01}})
+			fs.IngestVideo(key, &media.VideoFrame{PTS: int64(idx), WireData: []byte{0x01}})
 		}(i)
 		go func(idx int) {
 			defer wg.Done()
@@ -504,8 +504,8 @@ func TestFrameSync_PairedAudioVideoRelease(t *testing.T) {
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
-	af := media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	af := &media.AudioFrame{PTS: 1000, Data: []byte{0x02}}
 	fs.IngestVideo("cam1", vf)
 	fs.IngestAudio("cam1", af)
 
@@ -523,7 +523,7 @@ func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
 	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	af := media.AudioFrame{PTS: 1000, Data: []byte{0xBB}}
+	af := &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}}
 	fs.IngestAudio("cam1", af)
 
 	fs.Start()
@@ -546,7 +546,7 @@ func TestFrameSync_AudioFreezeLimit(t *testing.T) {
 	defer fs.Stop()
 
 	// Send one audio frame, then never send another.
-	fs.IngestAudio("cam1", media.AudioFrame{PTS: 1000, Data: []byte{0x01}})
+	fs.IngestAudio("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0x01}})
 
 	// Wait for several ticks (more than 3).
 	// With 10ms ticks over 80ms we'd get ~8 ticks, but audio should stop after 3
@@ -566,7 +566,7 @@ func TestFrameSync_PreservesKeyframeFlag(t *testing.T) {
 	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
 
-	vf := media.VideoFrame{PTS: 1000, WireData: []byte{0x01}, IsKeyframe: true}
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}, IsKeyframe: true}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -584,7 +584,7 @@ func TestFrameSync_PreservesWireData(t *testing.T) {
 	fs.AddSource("cam1")
 
 	data := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	vf := media.VideoFrame{PTS: 1000, WireData: data, IsKeyframe: false}
+	vf := &media.VideoFrame{PTS: 1000, WireData: data, IsKeyframe: false}
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
@@ -594,4 +594,109 @@ func TestFrameSync_PreservesWireData(t *testing.T) {
 	videos := handler.getVideos()
 	require.NotEmpty(t, videos, "no video frames released")
 	require.Equal(t, data, videos[0].frame.WireData, "WireData not preserved")
+}
+
+func TestFrameSync_ReleaseSliceReuse(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(10*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+
+	fs.IngestVideo("cam1", &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}})
+	fs.IngestVideo("cam2", &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}})
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Let several ticks run so the releases slice is reused.
+	time.Sleep(60 * time.Millisecond)
+
+	// The releases field should exist on the struct and have capacity
+	// from previous ticks (reused, not re-allocated each tick).
+	fs.mu.Lock()
+	require.NotNil(t, fs.releases, "releases slice should be initialized after ticks")
+	require.GreaterOrEqual(t, cap(fs.releases), 2,
+		"releases slice cap should reflect reuse across ticks")
+	fs.mu.Unlock()
+}
+
+func TestMonotonicTickAccuracy(t *testing.T) {
+	handler := &syncTestHandler{}
+	tickRate := 10 * time.Millisecond
+	numTicks := 100
+
+	fs := NewFrameSynchronizer(tickRate, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf)
+
+	start := time.Now()
+	fs.Start()
+
+	// Wait for 100 ticks worth of frames. With freeze repeat, each tick
+	// releases the same frame, so we need >= numTicks frames.
+	deadline := time.After(3 * time.Second)
+	for {
+		if handler.videoCount() >= numTicks {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out: only got %d frames, wanted %d", handler.videoCount(), numTicks)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	fs.Stop()
+	elapsed := time.Since(start)
+
+	expected := time.Duration(numTicks) * tickRate
+	drift := elapsed - expected
+	if drift < 0 {
+		drift = -drift
+	}
+
+	// Drift should be less than one tick interval. Allow some slack for
+	// goroutine scheduling but the monotonic approach should keep it tight.
+	require.Less(t, drift, tickRate,
+		"total drift %v over %d ticks exceeds one tick interval (%v); elapsed=%v expected=%v",
+		drift, numTicks, tickRate, elapsed, expected)
+}
+
+func BenchmarkReleaseTick(b *testing.B) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	for _, src := range []string{"cam1", "cam2", "cam3", "cam4"} {
+		fs.AddSource(src)
+	}
+
+	frame := &media.VideoFrame{PTS: 1000, WireData: []byte{0x65, 0x01}}
+	audioFrame := &media.AudioFrame{PTS: 1000, Data: []byte{0x01, 0x02}}
+
+	for _, src := range []string{"cam1", "cam2", "cam3", "cam4"} {
+		fs.IngestVideo(src, frame)
+		fs.IngestAudio(src, audioFrame)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		fs.releaseTick()
+	}
+}
+
+func BenchmarkFrameSyncIngest(b *testing.B) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	frame := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01, 0x02, 0x03, 0x04}}
+	aframe := &media.AudioFrame{PTS: 1000, Data: []byte{0x01, 0x02}}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		fs.IngestVideo("cam1", frame)
+		fs.IngestAudio("cam1", aframe)
+	}
 }

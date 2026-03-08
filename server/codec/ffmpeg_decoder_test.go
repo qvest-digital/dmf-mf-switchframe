@@ -101,7 +101,7 @@ func TestFFmpegEncodeDecodeRoundTrip(t *testing.T) {
 	var encoded []byte
 	for i := 0; i < 30; i++ {
 		forceIDR := i == 0
-		encoded, _, err = enc.Encode(yuv, forceIDR)
+		encoded, _, err = enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err)
 		if encoded != nil {
 			break
@@ -118,7 +118,7 @@ func TestFFmpegEncodeDecodeRoundTrip(t *testing.T) {
 		// Decoder is buffering — feed more frames to flush it.
 		for i := 0; i < 30; i++ {
 			var moreEncoded []byte
-			moreEncoded, _, err = enc.Encode(yuv, false)
+			moreEncoded, _, err = enc.Encode(yuv, int64((30+i)*3000), false)
 			require.NoError(t, err)
 			if moreEncoded == nil {
 				continue
@@ -161,7 +161,7 @@ func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 		}
 
 		forceIDR := i == 0
-		encoded, _, err := enc.Encode(yuv, forceIDR)
+		encoded, _, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "encode frame %d", i)
 		// Without zerolatency, initial frames may return nil (EAGAIN).
 		if encoded == nil {

@@ -70,8 +70,8 @@ type App struct {
 
 	// MXL integration
 	mxlInstance *mxl.Instance
-	mxlSources []*mxl.Source
-	mxlOutput  *mxl.Output
+	mxlSources  []*mxl.Source
+	mxlOutput   *mxl.Output
 
 	// API + middleware
 	api        *control.API

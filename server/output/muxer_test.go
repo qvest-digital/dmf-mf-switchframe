@@ -353,3 +353,38 @@ func TestTSMuxer_TSPacketSyncBytes(t *testing.T) {
 			"packet %d at offset %d must have sync byte", i, i*188)
 	}
 }
+
+func BenchmarkMuxerFlush(b *testing.B) {
+	m := NewTSMuxer()
+	m.SetOutput(func(data []byte) {
+		// Simulate consumer reading the data length (prevents dead-code elimination).
+		_ = len(data)
+	})
+
+	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88}
+	pps := []byte{0x68, 0xCE, 0x38, 0x80}
+	wireData := []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00}
+
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS: sps, PPS: pps, WireData: wireData, Codec: "h264",
+	}
+	if err := m.WriteVideo(idrFrame); err != nil {
+		b.Fatal(err)
+	}
+
+	pFrame := &media.VideoFrame{
+		PTS: 93600, DTS: 93600, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x01},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pFrame.PTS = int64(93600 + i*3600)
+		pFrame.DTS = pFrame.PTS
+		if err := m.WriteVideo(pFrame); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

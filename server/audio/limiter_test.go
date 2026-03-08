@@ -224,3 +224,29 @@ func TestLimiter_MonoStillWorks(t *testing.T) {
 	}
 	require.Greater(t, gr, 0.0, "GR should be positive when limiting")
 }
+
+func TestLimiterDenormalProtection(t *testing.T) {
+	t.Parallel()
+	lim := NewLimiter(48000, 2)
+
+	// Drive the envelope above threshold to prime it
+	loud := make([]float32, 1024)
+	for i := range loud {
+		loud[i] = 2.0
+	}
+	lim.Process(loud)
+
+	// Process enough silence for the envelope to fully decay.
+	// 50ms release at 48kHz: after ~10 seconds the exponential envelope
+	// would reach denormal territory without the floor clamp.
+	for i := 0; i < 20; i++ {
+		silence := make([]float32, 48000*2)
+		lim.Process(silence)
+	}
+
+	lim.mu.Lock()
+	env := lim.envelope
+	lim.mu.Unlock()
+
+	require.Equal(t, float64(0), env, "limiter envelope should be exactly 0 after processing silence, not a denormal") //nolint:govet // test inspects internal state
+}

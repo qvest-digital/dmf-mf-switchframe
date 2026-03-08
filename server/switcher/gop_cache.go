@@ -7,10 +7,33 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 )
 
+var gopBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 65536)
+		return &b
+	},
+}
+
+func getGOPBuf(size int) []byte {
+	bp := gopBufPool.Get().(*[]byte)
+	b := *bp
+	if cap(b) < size {
+		b = make([]byte, size)
+	} else {
+		b = b[:size]
+	}
+	return b
+}
+
+func putGOPBuf(b []byte) {
+	b = b[:0]
+	gopBufPool.Put(&b)
+}
+
 // cachedFrame stores a deep-copied frame for GOP replay.
 type cachedFrame struct {
-	annexB     []byte             // Annex B format with SPS/PPS prepended for keyframes
-	original   *media.VideoFrame  // Deep copy of original frame for program relay replay
+	annexB     []byte            // Annex B format with SPS/PPS prepended for keyframes
+	original   *media.VideoFrame // Deep copy of original frame for program relay replay
 	isKeyframe bool
 }
 
@@ -64,9 +87,15 @@ func (g *gopCache) SetActiveSources(program, preview string) {
 		active[preview] = true
 	}
 
-	// Clear caches for sources no longer active.
-	for key := range g.caches {
+	for key, frames := range g.caches {
 		if !active[key] {
+			for i := range frames {
+				putGOPBuf(frames[i].annexB)
+				if frames[i].original != nil {
+					putGOPBuf(frames[i].original.WireData)
+				}
+				frames[i] = cachedFrame{}
+			}
 			delete(g.caches, key)
 		}
 	}
@@ -79,9 +108,13 @@ func (g *gopCache) SetActiveSources(program, preview string) {
 // On delta: appends to the existing cache.
 // All data is deep-copied; the caller's buffers are not retained.
 //
+// If precomputedAnnexB is non-nil, it is used directly (deep-copied) instead
+// of converting from AVC1. This avoids duplicate conversion on the hot path
+// when the caller has already computed AnnexB for other purposes.
+//
 // Frames from sources not in the active set are skipped to avoid unnecessary
 // deep-copy allocations on the hot path.
-func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
+func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame, precomputedAnnexB []byte) {
 	// Fast path: skip sources that aren't active. Check under lock since
 	// activeSources can be updated from Cut/SetPreview.
 	g.mu.Lock()
@@ -90,15 +123,19 @@ func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
 		return
 	}
 	g.mu.Unlock()
-	// Convert AVC1 WireData to Annex B (deep copy)
-	annexB := codec.AVC1ToAnnexB(frame.WireData)
-	if len(annexB) == 0 {
-		return
-	}
 
-	// For keyframes, prepend SPS/PPS as Annex B NALUs
-	if frame.IsKeyframe {
-		annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+	var annexB []byte
+	if len(precomputedAnnexB) > 0 {
+		annexB = getGOPBuf(len(precomputedAnnexB))
+		copy(annexB, precomputedAnnexB)
+	} else {
+		annexB = codec.AVC1ToAnnexB(frame.WireData)
+		if len(annexB) == 0 {
+			return
+		}
+		if frame.IsKeyframe {
+			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+		}
 	}
 
 	// Deep-copy the original frame for program relay replay
@@ -107,10 +144,10 @@ func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
 		DTS:        frame.DTS,
 		IsKeyframe: frame.IsKeyframe,
 		Codec:      frame.Codec,
-		GroupID:     frame.GroupID,
+		GroupID:    frame.GroupID,
 	}
 	if len(frame.WireData) > 0 {
-		orig.WireData = make([]byte, len(frame.WireData))
+		orig.WireData = getGOPBuf(len(frame.WireData))
 		copy(orig.WireData, frame.WireData)
 	}
 	if frame.IsKeyframe {
@@ -134,10 +171,21 @@ func (g *gopCache) RecordFrame(sourceKey string, frame *media.VideoFrame) {
 	defer g.mu.Unlock()
 
 	if frame.IsKeyframe {
-		// Reset cache on keyframe
-		g.caches[sourceKey] = []cachedFrame{cf}
+		old := g.caches[sourceKey]
+		if old != nil {
+			for i := range old {
+				putGOPBuf(old[i].annexB)
+				if old[i].original != nil {
+					putGOPBuf(old[i].original.WireData)
+				}
+				old[i].annexB = nil
+				old[i].original = nil
+			}
+		}
+		cache := make([]cachedFrame, 1, g.maxFrames)
+		cache[0] = cf
+		g.caches[sourceKey] = cache
 	} else {
-		// Append delta frame
 		g.caches[sourceKey] = append(g.caches[sourceKey], cf)
 	}
 
@@ -190,7 +238,7 @@ func (g *gopCache) GetOriginalGOP(sourceKey string) []*media.VideoFrame {
 			PTS:        cf.original.PTS,
 			IsKeyframe: cf.original.IsKeyframe,
 			Codec:      cf.original.Codec,
-			GroupID:     cf.original.GroupID,
+			GroupID:    cf.original.GroupID,
 		}
 		if len(cf.original.WireData) > 0 {
 			f.WireData = make([]byte, len(cf.original.WireData))
@@ -209,12 +257,12 @@ func (g *gopCache) GetOriginalGOP(sourceKey string) []*media.VideoFrame {
 	return result
 }
 
-// trimCache trims a cache slice to at most maxFrames entries. If a keyframe
-// exists in the cache, it is retained along with the most recent delta frames
-// that fit within the limit. If no keyframe exists, only the most recent
-// maxFrames entries are kept.
+// trimCache trims a cache slice to at most maxFrames entries in-place.
+// If a keyframe exists in the cache, it is retained along with the most
+// recent delta frames that fit within the limit. If no keyframe exists,
+// only the most recent maxFrames entries are kept. Evicted frames have
+// their pooled buffers (annexB and WireData) returned to the pool.
 func trimCache(cache []cachedFrame, maxFrames int) []cachedFrame {
-	// Find the most recent keyframe
 	keyframeIdx := -1
 	for i := len(cache) - 1; i >= 0; i-- {
 		if cache[i].isKeyframe {
@@ -224,30 +272,67 @@ func trimCache(cache []cachedFrame, maxFrames int) []cachedFrame {
 	}
 
 	if keyframeIdx < 0 {
-		// No keyframe — keep the most recent maxFrames entries
-		return cache[len(cache)-maxFrames:]
+		start := len(cache) - maxFrames
+		for i := 0; i < start; i++ {
+			putGOPBuf(cache[i].annexB)
+			if cache[i].original != nil {
+				putGOPBuf(cache[i].original.WireData)
+			}
+			cache[i] = cachedFrame{}
+		}
+		return cache[start:]
 	}
 
-	// Keep the keyframe plus the most recent (maxFrames - 1) deltas after it.
-	// If there are fewer deltas than (maxFrames - 1), the cache from keyframe
-	// onward is already within the limit (this shouldn't happen since we only
-	// trim when len > maxFrames, but handle it defensively).
-	tailCount := len(cache) - keyframeIdx // keyframe + deltas after it
+	tailCount := len(cache) - keyframeIdx
 	if tailCount <= maxFrames {
+		for i := 0; i < keyframeIdx; i++ {
+			putGOPBuf(cache[i].annexB)
+			if cache[i].original != nil {
+				putGOPBuf(cache[i].original.WireData)
+			}
+			cache[i] = cachedFrame{}
+		}
 		return cache[keyframeIdx:]
 	}
 
-	// More frames from keyframe onward than maxFrames allows.
-	// Keep keyframe + last (maxFrames - 1) frames.
-	trimmed := make([]cachedFrame, maxFrames)
-	trimmed[0] = cache[keyframeIdx]
-	copy(trimmed[1:], cache[len(cache)-(maxFrames-1):])
-	return trimmed
+	keepStart := len(cache) - (maxFrames - 1)
+	for i := 0; i < keyframeIdx; i++ {
+		putGOPBuf(cache[i].annexB)
+		if cache[i].original != nil {
+			putGOPBuf(cache[i].original.WireData)
+		}
+		cache[i] = cachedFrame{}
+	}
+	for i := keyframeIdx + 1; i < keepStart; i++ {
+		putGOPBuf(cache[i].annexB)
+		if cache[i].original != nil {
+			putGOPBuf(cache[i].original.WireData)
+		}
+		cache[i] = cachedFrame{}
+	}
+	cache[0] = cache[keyframeIdx]
+	if keyframeIdx != 0 {
+		cache[keyframeIdx] = cachedFrame{}
+	}
+	copy(cache[1:], cache[keepStart:])
+	for i := maxFrames; i < len(cache); i++ {
+		cache[i] = cachedFrame{}
+	}
+	return cache[:maxFrames]
 }
 
 // RemoveSource removes the cached GOP for the given source.
 func (g *gopCache) RemoveSource(sourceKey string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.caches, sourceKey)
+	if frames, ok := g.caches[sourceKey]; ok {
+		for i := range frames {
+			putGOPBuf(frames[i].annexB)
+			if frames[i].original != nil {
+				putGOPBuf(frames[i].original.WireData)
+			}
+			frames[i] = cachedFrame{}
+		}
+		delete(g.caches, sourceKey)
+	}
 }

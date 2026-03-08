@@ -203,9 +203,11 @@ func NewOpenH264Encoder(width, height, bitrate int, fps float32) (*OpenH264Encod
 }
 
 // Encode encodes a packed YUV420 planar frame to Annex B H.264 data.
+// pts is the presentation timestamp (accepted for interface compliance but
+// not used by OpenH264, which manages its own internal timing).
 // If forceIDR is true, the encoder forces an IDR keyframe.
 // Returns the encoded bitstream, whether the frame is a keyframe, and any error.
-func (e *OpenH264Encoder) Encode(yuv []byte, forceIDR bool) ([]byte, bool, error) {
+func (e *OpenH264Encoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	if e.closed {
 		return nil, false, fmt.Errorf("encoder is closed")
 	}
