@@ -111,12 +111,12 @@ The Dockerfile uses a three-stage build:
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| `8080` | UDP (QUIC) | HTTP/3 + WebTransport + MoQ + embedded UI |
+| `8080` | UDP (QUIC) | HTTP/3 + WebTransport + MoQ + REST API + embedded UI |
 | `8080` | TCP | HTTP/3 Alt-Svc advertisement (same port) |
-| `9090` | TCP | Admin server (metrics, health, pprof) |
+| `9090` | TCP | Admin server (metrics, health, cert-hash, pprof) |
 | `9000` | UDP | SRT listener mode (when enabled) |
 
-Note: Port 8081 (plain HTTP API for dev/curl) is not exposed in the Dockerfile by default. Add it if you need TCP-based API access.
+Note: Port 8081 (plain HTTP API, enabled via `--http-fallback`) is not exposed in the Dockerfile by default. Add it if you need TCP-based API access.
 
 ### Docker Run
 
@@ -188,7 +188,15 @@ volumes:
 | `--log-level <level>` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `--admin-addr <addr>` | `:9090` | Admin/metrics server listen address |
 | `--api-token <token>` | auto-generated | Bearer token for API authentication |
+| `--http-fallback` | `false` | Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts |
+| `--tls-cert <path>` | `""` | Path to TLS certificate PEM file (e.g., from mkcert) |
+| `--tls-key <path>` | `""` | Path to TLS private key PEM file |
+| `--format <preset>` | `1080p29.97` | Video standard (e.g., `1080p29.97`, `1080p25`, `720p59.94`) |
 | `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick boundary) |
+| `--frc-quality <mode>` | `""` | Frame rate conversion quality (e.g., `mcfi` for motion-compensated) |
+| `--decode-all-sources` | `false` | Enable always-on per-source H.264 decoders (instant cuts, no IDR gating) |
+| `--raw-program-monitor` | `false` | Enable raw YUV program monitor on `"program-raw"` MoQ track |
+| `--raw-monitor-scale <res>` | `""` | Downscale raw monitor output (e.g., `720p`, `480p`, `360p`) |
 | `--replay-buffer-secs <n>` | `60` | Per-source replay buffer duration in seconds (0 to disable, max 300) |
 | `--mxl-sources <specs>` | `""` | MXL source specs: `videoUUID:audioUUID,...` (requires `mxl` build tag) |
 | `--mxl-output <name>` | `""` | MXL flow name for program output (empty = disabled) |
@@ -217,8 +225,8 @@ These listen addresses are not currently configurable via flags:
 
 | Address | Purpose |
 |---------|---------|
-| `:8080` | Main server (QUIC/HTTP3 + WebTransport) |
-| `:8081` | Plain HTTP/TCP API mirror (for curl, Vite proxy, non-QUIC clients) |
+| `:8080` | Main server (QUIC/HTTP3 + WebTransport + REST API) |
+| `:8081` | Plain HTTP/TCP API mirror (opt-in via `--http-fallback`) |
 
 ---
 
@@ -228,10 +236,10 @@ These listen addresses are not currently configurable via flags:
 
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
-| **8080** | UDP | Inbound | QUIC/HTTP3, WebTransport, MoQ subscriptions, embedded UI |
+| **8080** | UDP | Inbound | QUIC/HTTP3, WebTransport, MoQ subscriptions, REST API, embedded UI |
 | **8080** | TCP | Inbound | HTTP/3 Alt-Svc advertisement |
-| **8081** | TCP | Inbound | Plain HTTP REST API (same endpoints as 8080, no WebTransport) |
-| **9090** | TCP | Inbound | Admin: Prometheus `/metrics`, `/health`, `/ready`, `/debug/pprof/*` |
+| **8081** | TCP | Inbound | Plain HTTP REST API (opt-in via `--http-fallback`, same endpoints as 8080) |
+| **9090** | TCP | Inbound | Admin: Prometheus `/metrics`, `/health`, `/ready`, `/api/cert-hash`, `/debug/pprof/*` |
 | **9000** | UDP | Inbound | SRT listener mode (pull connections from downstream) |
 | **Ephemeral** | UDP | Outbound | SRT caller mode (push to upstream/platform) |
 
@@ -246,7 +254,7 @@ iptables -A INPUT -p udp --dport 8080 -j ACCEPT
 # HTTP/3 Alt-Svc (browsers discover QUIC via TCP first)
 iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
 
-# Plain HTTP API (only if needed for curl/integrations)
+# Plain HTTP API (only if --http-fallback is enabled)
 iptables -A INPUT -p tcp --dport 8081 -j ACCEPT
 
 # Admin (restrict to monitoring network)
@@ -270,25 +278,50 @@ At startup, Switchframe generates a self-signed TLS certificate using Prism's `c
 - **Fingerprint:** Logged at startup and available via `GET /api/cert-hash`
 - **Usage:** Browsers use the fingerprint to trust the self-signed cert for WebTransport connections
 
-The certificate fingerprint is served unauthenticated at `/api/cert-hash` so browsers can bootstrap WebTransport:
+The certificate fingerprint is served unauthenticated at `/api/cert-hash` on the admin server (port 9090) and the QUIC server (port 8080):
 
 ```bash
-curl http://localhost:8081/api/cert-hash
-# {"hash":"abc123...","addr":":8080"}
+curl http://localhost:9090/api/cert-hash
+# {"hash":"abc123...","addr":":8080","trusted":false}
 ```
+
+### Trusted Certificates with mkcert (Recommended for Development)
+
+[mkcert](https://github.com/FiloSottile/mkcert) generates locally-trusted certificates, enabling direct HTTP/3 access from browsers without fingerprint pinning. This is the recommended setup for development:
+
+```bash
+# One-time setup
+make setup-mkcert
+
+# Start with trusted cert
+./bin/switchframe --tls-cert ~/.switchframe/cert.pem --tls-key ~/.switchframe/key.pem
+```
+
+The `make setup-mkcert` target:
+1. Installs the mkcert CA into the system trust store (`mkcert -install`)
+2. Generates a certificate for `localhost`, `127.0.0.1`, and `::1`
+3. Saves to `~/.switchframe/cert.pem` and `~/.switchframe/key.pem`
+
+When `--tls-cert` and `--tls-key` are provided, Switchframe uses the specified certificate instead of generating a self-signed one. The `trusted` field in the `/api/cert-hash` response will be `true`, and browsers can connect over HTTP/3 directly without needing the certificate hash.
+
+The `make demo` target automatically detects mkcert certificates and uses them if present. Otherwise it falls back to `--http-fallback` mode with a self-signed cert.
 
 ### Production TLS
 
-For production with real TLS certificates (e.g., from Let's Encrypt), place a reverse proxy (Caddy, nginx) in front of Switchframe. The reverse proxy terminates TLS and forwards traffic:
+For production with real TLS certificates (e.g., from Let's Encrypt), you have two options:
 
-- HTTPS on port 443 proxies to Switchframe's port 8081 (REST API)
+**Option 1: Direct certificate provisioning.** Use `--tls-cert` and `--tls-key` to provide CA-signed certificates directly to Switchframe. Browsers connect over HTTP/3 (QUIC) without fingerprint pinning.
+
+**Option 2: Reverse proxy.** Place a reverse proxy (Caddy, nginx) in front of Switchframe. The reverse proxy terminates TLS and forwards traffic:
+
+- HTTPS on port 443 proxies to Switchframe's port 8081 (REST API, requires `--http-fallback`)
 - WebTransport/QUIC requires direct UDP access to port 8080 (the browser uses the self-signed cert fingerprint)
-
-**Important:** WebTransport currently requires either a self-signed cert with fingerprint pinning or a certificate from a CA trusted by the browser. Switchframe's built-in cert generation handles the self-signed case. For CA-signed QUIC, you would need to provide certificates to Prism's distribution server (not yet configurable).
 
 ### Certificate Renewal
 
-The self-signed certificate is regenerated every time the server restarts. For long-running deployments, restart the server at least every 14 days to refresh the certificate. Browsers will re-fetch the fingerprint from `/api/cert-hash` automatically.
+Self-signed certificates are regenerated every time the server restarts. For long-running deployments, restart the server at least every 14 days to refresh the certificate. Browsers will re-fetch the fingerprint from `/api/cert-hash` automatically.
+
+When using `--tls-cert`/`--tls-key`, certificate renewal is your responsibility. Restart the server after updating the certificate files.
 
 ---
 
@@ -299,7 +332,7 @@ The self-signed certificate is regenerated every time the server restarts. For l
 All `/api/*` endpoints (except `/api/cert-hash`) require a Bearer token:
 
 ```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8081/api/switch/state
+curl -H "Authorization: Bearer YOUR_TOKEN" https://localhost:8080/api/switch/state
 ```
 
 Authentication uses `crypto/subtle.ConstantTimeCompare` for timing-safe token validation.
@@ -644,7 +677,7 @@ Switchframe uses HTTP/3 (QUIC) for WebTransport and MoQ. This has important impl
 
 1. **QUIC is UDP.** Most reverse proxies are TCP-only. You need a proxy that supports UDP passthrough or HTTP/3 termination.
 2. **WebTransport requires direct QUIC access.** The browser connects to the QUIC endpoint directly using a certificate fingerprint.
-3. **REST API works over plain HTTP.** Port 8081 serves the same API over regular TCP and can be proxied normally.
+3. **REST API works over plain HTTP.** Port 8081 (enabled via `--http-fallback`) serves the same API over regular TCP and can be proxied normally.
 
 ### Recommended Approach
 
@@ -704,7 +737,7 @@ server {
 
 ### CORS
 
-The `/api/cert-hash` endpoint includes `Access-Control-Allow-Origin: *` so browsers on any origin can fetch the fingerprint for WebTransport bootstrapping. Other API endpoints do not set CORS headers -- add them at the reverse proxy if needed.
+All `/api/*` endpoints include CORS headers (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`) via `CORSMiddleware`. This enables cross-origin access from the Vite dev server (port 5173) to the Go server (port 8080) during development. Preflight `OPTIONS` requests are handled automatically. In production behind a reverse proxy, the proxy's CORS configuration takes precedence.
 
 ---
 
@@ -785,7 +818,7 @@ chown 999:999 /data/recordings
 ### Network Isolation
 
 - **Admin server (9090):** Restrict to your monitoring network. It exposes pprof, which can leak heap contents and goroutine stacks. Never expose to the public internet.
-- **Plain HTTP API (8081):** If exposed externally, always place behind a TLS-terminating reverse proxy.
+- **Plain HTTP API (8081):** Only active when `--http-fallback` is enabled. If exposed externally, always place behind a TLS-terminating reverse proxy.
 - **SRT ports:** Open only the specific port you configure. Listener mode accepts up to 8 connections by default.
 
 ### Preset Storage
@@ -820,7 +853,7 @@ ulimit -n 65536
 - [ ] Set `APP_ENV=production` for structured JSON logging
 - [ ] Set `--log-level info` (avoid `debug` in production)
 - [ ] Restrict port 9090 to internal/monitoring networks
-- [ ] Place port 8081 behind a TLS reverse proxy if externally accessible
+- [ ] Use `--tls-cert`/`--tls-key` with CA-signed certs, or place behind a TLS reverse proxy with `--http-fallback`
 - [ ] Mount persistent storage for `/recordings` if recording is used
 - [ ] Verify hardware acceleration probe at startup (`"video codec selected"` log line)
 - [ ] Configure Prometheus scraping on port 9090
@@ -828,4 +861,4 @@ ulimit -n 65536
 - [ ] Test the readiness probe (`/ready`) in your orchestrator
 - [ ] Size replay buffer memory appropriately (`--replay-buffer-secs` × N sources × ~bitrate)
 - [ ] Configure operator tokens if using multi-operator mode (tokens persist in `operators.json`)
-- [ ] Plan for server restart every 14 days (TLS certificate renewal) or implement certificate rotation
+- [ ] Plan for server restart every 14 days (self-signed TLS certificate renewal) or use `--tls-cert`/`--tls-key` with CA-signed certs

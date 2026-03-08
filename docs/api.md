@@ -2,9 +2,9 @@
 
 Switchframe exposes a REST API for controlling all aspects of the live video switcher: switching sources, managing transitions, audio mixing, recording, SRT output, graphics overlays, and presets.
 
-All endpoints are served over HTTP on port **8081** (TCP) and over HTTP/3 on port **8080** (QUIC/UDP). The API accepts and returns **JSON**. All `POST` and `PUT` requests must include `Content-Type: application/json`.
+All endpoints are served over HTTP/3 on port **8080** (QUIC/UDP). An optional plain HTTP/1.1 server on TCP port **8081** can be enabled with `--http-fallback` for curl, scripts, and environments that cannot speak QUIC. The API accepts and returns **JSON**. All `POST` and `PUT` requests must include `Content-Type: application/json`.
 
-Base URL: `http://localhost:8081` (TCP) or `https://localhost:8080` (HTTP/3)
+Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` (TCP, requires `--http-fallback`)
 
 ---
 
@@ -96,6 +96,9 @@ Base URL: `http://localhost:8081` (TCP) or `https://localhost:8080` (HTTP/3)
   - [POST /api/operator/unlock](#post-apioperatorunlock)
   - [POST /api/operator/force-unlock](#post-apioperatorforceunlock)
   - [DELETE /api/operator/{id}](#delete-apioperatorid)
+- [Format](#format)
+  - [GET /api/format](#get-apiformat)
+  - [PUT /api/format](#put-apiformat)
 - [Debug](#debug)
   - [GET /api/debug/snapshot](#get-apidebugsnapshot)
 - [Admin Endpoints](#admin-endpoints)
@@ -3152,6 +3155,101 @@ curl -X DELETE http://localhost:8081/api/operator/op_abc123 \
 
 ---
 
+## Format
+
+The format API allows querying and changing the pipeline video format (resolution and frame rate). Changes take effect on the next keyframe.
+
+### GET /api/format
+
+Retrieve the current pipeline format and available presets.
+
+**Request Body:** None
+
+**Response:** `200 OK` with format info and preset list:
+
+```json
+{
+  "format": {
+    "width": 1920,
+    "height": 1080,
+    "fpsNum": 30000,
+    "fpsDen": 1001,
+    "name": "1080p29.97"
+  },
+  "presets": ["720p25", "720p29.97", "720p50", "720p59.94", "1080p25", "1080p29.97", "1080p50", "1080p59.94"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `format.width` | `int` | Current pipeline width in pixels |
+| `format.height` | `int` | Current pipeline height in pixels |
+| `format.fpsNum` | `int` | Frame rate numerator (e.g., `30000` for 29.97fps) |
+| `format.fpsDen` | `int` | Frame rate denominator (e.g., `1001` for 29.97fps) |
+| `format.name` | `string` | Preset name if a known preset matches, otherwise empty |
+| `presets` | `string[]` | List of available format preset names |
+
+**Example:**
+
+```bash
+curl https://localhost:8080/api/format \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/format
+
+Change the pipeline format. Provide either a preset name or custom dimensions.
+
+**Request Body (preset):**
+
+```json
+{
+  "format": "1080p25"
+}
+```
+
+**Request Body (custom):**
+
+```json
+{
+  "width": 1280,
+  "height": 720,
+  "fpsNum": 50,
+  "fpsDen": 1
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `format` | `string` | One of | Preset name (e.g., `"1080p29.97"`, `"720p50"`) |
+| `width` | `int` | One of | Custom width in pixels. Range: `320`-`7680`. Must be even. |
+| `height` | `int` | One of | Custom height in pixels. Range: `180`-`4320`. Must be even. |
+| `fpsNum` | `int` | One of | Frame rate numerator. Must be positive. |
+| `fpsDen` | `int` | One of | Frame rate denominator. Must be positive. |
+
+Provide either `format` (preset name) or all four custom fields (`width`, `height`, `fpsNum`, `fpsDen`).
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Unknown preset name, dimensions out of range, odd width/height, or invalid JSON |
+
+**Example:**
+
+```bash
+curl -X PUT https://localhost:8080/api/format \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"format": "1080p25"}'
+```
+
+---
+
 ## Debug
 
 ### GET /api/debug/snapshot
@@ -3256,27 +3354,28 @@ Prometheus metrics endpoint. Returns metrics in Prometheus text exposition forma
 
 Returns the WebTransport TLS certificate fingerprint. This is needed by browsers to establish a WebTransport connection to the QUIC server. This endpoint is exempt from authentication.
 
-Served on both the main API (port 8081) and the QUIC server (port 8080).
+Served on the QUIC server (port 8080), the admin server (port 9090, for Vite dev proxy bootstrapping), and the HTTP fallback server (port 8081, when `--http-fallback` is enabled). The response includes a `trusted` field indicating whether the certificate is CA-signed (e.g., from mkcert) vs self-signed.
 
 **Response:**
 
 ```json
 {
   "hash": "sha-256 base64-encoded fingerprint",
-  "addr": ":8080"
+  "addr": ":8080",
+  "trusted": false
 }
 ```
 
 **Example:**
 
 ```bash
-curl http://localhost:8081/api/cert-hash
+curl http://localhost:9090/api/cert-hash
 ```
 
 ---
 
 ## Real-Time State Updates
 
-In addition to polling `GET /api/switch/state`, clients can receive real-time state updates via the MoQ (Media over QUIC) `"control"` track. Each message on this track is a full `ControlRoomState` JSON snapshot. This is the primary mechanism used by the Switchframe UI for sub-frame latency state synchronization.
+State updates are pushed to browsers in real time via the MoQ (Media over QUIC) `"control"` track. Each message is a full `ControlRoomState` JSON snapshot (not a delta), enabling late-join clients to receive the complete current state immediately. This is the primary mechanism used by the Switchframe UI for sub-frame latency state synchronization.
 
-The UI falls back to REST polling when WebTransport/MoQ is unavailable (e.g., behind a reverse proxy that does not support QUIC).
+`GET /api/switch/state` is available as a polling fallback when WebTransport/MoQ is unavailable (e.g., behind a reverse proxy that does not support QUIC). The UI automatically falls back to REST polling and switches back to MoQ when the connection recovers.

@@ -145,8 +145,13 @@ Browsers subscribe to it via MoQ to view the authoritative program
 output. The `streamCallbackRouter` skips the "program" key to avoid
 treating it as a source.
 
-A separate **HTTP/TCP server on `:8081`** mirrors the REST API for the
-Vite dev proxy and tools that cannot speak QUIC.
+An optional **HTTP/TCP server on `:8081`** mirrors the REST API for the
+Vite dev proxy and tools that cannot speak QUIC. It is enabled via the
+`--http-fallback` flag (off by default). The REST API middleware chain
+on the ExtraRoutes mux is: CORS -> Logger -> Metrics -> Auth -> Operator.
+
+The **admin server on `:9090`** also serves `/api/cert-hash` so the
+Vite dev proxy can bootstrap WebTransport connections over plain TCP.
 
 
 ### 2.2 Switching Engine (`switcher/`)
@@ -938,6 +943,20 @@ encoder forces an IDR. The resulting frame gets a new monotonic
 `GroupID`, and if the SPS/PPS changed, an `onVideoInfoChange` callback
 fires to update the program relay's MoQ catalog.
 
+**Raw program monitor tap.** When `--raw-program-monitor` is enabled, a
+`rawMonitorSink` (`atomic.Pointer[RawVideoSink]`) taps the processed
+YUV buffer after upstream keying and DSK compositing but before H.264
+encode. The YUV is deep-copied and published to a `"program-raw"` MoQ
+track. Browsers can subscribe to this track and render via a WebGL YUV
+shader, eliminating one encode-decode round trip for ultra-low-latency
+monitoring. The `--raw-monitor-scale` flag optionally downscales the
+output (720p, 480p, 360p) to reduce bandwidth.
+
+**Format preset API.** `GET /api/format` returns the current pipeline
+resolution and frame rate. `PUT /api/format` changes it using either a
+preset name (e.g., `"1080p25"`) or custom `width`/`height`/`fpsNum`/`fpsDen`.
+The `--format` CLI flag sets the initial format at startup.
+
 
 ## 3. Frontend Architecture
 
@@ -1063,6 +1082,10 @@ The `ConnectionManager` provides resilient state synchronization:
 4. On WebTransport success: stop polling, use MoQ control track
 5. On WebTransport failure: fall back to REST polling
 6. On WebTransport reconnect: switch back to MoQ
+
+A `hasMoQPipeline` flag tracks whether MoQ control data has been received
+via the media pipeline. When true, standalone WebTransport failures (which
+always occur in Vite dev mode) do not downgrade to REST polling.
 
 The connection state (`webtransport` | `polling` | `disconnected`) is
 displayed in the UI header as a connection status banner.

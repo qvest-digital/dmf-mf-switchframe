@@ -108,6 +108,7 @@ Every lock in the system, what it protects, and its characteristics:
 | sourceViewer | `frameSync` | `atomic.Pointer` | Hot-swap frame synchronizer |
 | sourceViewer | `srcDecoder` | `atomic.Pointer` | Per-source H.264→YUV decoder |
 | sourceViewer | `videoSent` etc. | `atomic.Int64` | Per-source counters (cache-line padded) |
+| Switcher | `rawMonitorSink` | `atomic.Pointer` | Raw YUV program monitor tap (deep copy to MoQ track) |
 | DelayBuffer | `stopped` | `atomic.Bool` | Lock-free check in timer callbacks |
 | sourceDelay | `generation` | `atomic.Uint64` | Invalidate in-flight timer callbacks |
 | DelayBuffer | `hasAnyDelay` | `atomic.Bool` | Skip lock when no sources have delay |
