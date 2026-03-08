@@ -359,6 +359,92 @@ func (d *failingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 func (d *failingDecoder) Close() {}
 
+func TestPipelineCodecs_PrewarmRaceOnClose(t *testing.T) {
+	// Verify that close() waits for an in-flight prewarm goroutine and
+	// that no decoders are leaked. Runs multiple iterations to exercise
+	// timing variations under the race detector.
+	for i := 0; i < 20; i++ {
+		var callCount atomic.Int32
+		pc := &pipelineCodecs{
+			decoderFactory: func() (transition.VideoDecoder, error) {
+				n := callCount.Add(1)
+				if n > 1 {
+					// Slow prewarm to increase overlap with close().
+					time.Sleep(10 * time.Millisecond)
+				}
+				return &flushTrackingDecoder{inner: transition.NewMockDecoder(4, 4)}, nil
+			},
+		}
+
+		frame := &media.VideoFrame{
+			PTS: 1000, IsKeyframe: true,
+			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
+			SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+			PPS:      []byte{0x68, 0x42, 0x00},
+		}
+		_, err := pc.decode(frame, nil)
+		require.NoError(t, err)
+
+		// Call close() while prewarm goroutine is likely still running.
+		pc.close()
+
+		pc.mu.Lock()
+		require.True(t, pc.closed, "closed flag must be set")
+		require.Nil(t, pc.decoder, "decoder must be nil after close")
+		require.Nil(t, pc.replayDecoder, "replayDecoder must be nil after close")
+		pc.mu.Unlock()
+	}
+}
+
+func TestPipelineCodecs_PrewarmGoroutineCleansUpAfterClose(t *testing.T) {
+	// A slow prewarm factory that finishes after close() is called should
+	// see the closed flag and clean up the decoder instead of storing it.
+	factoryStarted := make(chan struct{})
+	factoryProceed := make(chan struct{})
+	var prewarmDec atomic.Pointer[flushTrackingDecoder]
+	var callCount atomic.Int32
+
+	pc := &pipelineCodecs{
+		decoderFactory: func() (transition.VideoDecoder, error) {
+			n := callCount.Add(1)
+			dec := &flushTrackingDecoder{inner: transition.NewMockDecoder(4, 4)}
+			if n > 1 {
+				// This is the prewarm call — synchronize with the test.
+				prewarmDec.Store(dec)
+				factoryStarted <- struct{}{}
+				<-factoryProceed
+			}
+			return dec, nil
+		},
+	}
+
+	frame := &media.VideoFrame{
+		PTS: 1000, IsKeyframe: true,
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x88, 0x80, 0x40},
+		SPS:      []byte{0x67, 0x42, 0x00, 0x0a},
+		PPS:      []byte{0x68, 0x42, 0x00},
+	}
+	_, err := pc.decode(frame, nil)
+	require.NoError(t, err)
+
+	// Wait for prewarm goroutine to enter the factory.
+	<-factoryStarted
+
+	// Release the factory — close() will wait for prewarm via WaitGroup.
+	// The prewarm goroutine should see pc.closed and close the decoder.
+	close(factoryProceed)
+	pc.close()
+
+	dec := prewarmDec.Load()
+	require.NotNil(t, dec)
+	require.Equal(t, int32(1), dec.closeCount.Load(),
+		"prewarm decoder must be closed (either by prewarm seeing closed flag, or by close())")
+
+	pc.mu.Lock()
+	require.Nil(t, pc.replayDecoder, "replayDecoder must be nil after close")
+	pc.mu.Unlock()
+}
+
 func BenchmarkPipelineEncode(b *testing.B) {
 	pc := &pipelineCodecs{
 		encoderFactory: func(w, h, bitrate int, fps float32) (transition.VideoEncoder, error) {

@@ -55,12 +55,14 @@ type pipelineCodecs struct {
 	encWidth       int
 	encHeight      int
 	groupID        uint32
+	closed         bool
 
 	// replayDecoder is a pre-warmed decoder kept in the pool for GOP replay.
 	// On transition, replayGOP flushes and reuses this instead of creating
 	// a fresh decoder (which costs ~500-700ms for VideoToolbox cold start).
 	// After replay, the old pipeline decoder is recycled into this slot.
 	replayDecoder transition.VideoDecoder
+	prewarmWg     sync.WaitGroup
 
 	// Source-derived encoder parameters (updated via updateSourceStats).
 	sourceBitrate int     // estimated bitrate from program source (bytes/sec * 8)
@@ -120,19 +122,20 @@ func (pc *pipelineCodecs) decode(frame *media.VideoFrame, precomputedAnnexB []by
 	pc.mu.Unlock()
 
 	if needPrewarm && factory != nil {
+		pc.prewarmWg.Add(1)
 		go func() {
+			defer pc.prewarmWg.Done()
 			rd, err := factory()
 			if err != nil {
 				return
 			}
 			pc.mu.Lock()
-			if pc.replayDecoder == nil {
-				pc.replayDecoder = rd
-			} else {
+			if pc.closed || pc.replayDecoder != nil {
 				pc.mu.Unlock()
 				rd.Close()
 				return
 			}
+			pc.replayDecoder = rd
 			pc.mu.Unlock()
 		}()
 	}
@@ -490,9 +493,12 @@ func (pc *pipelineCodecs) dimensions() (int, int) {
 }
 
 // close releases decoder, encoder, and pool resources.
+// Waits for any in-flight prewarm goroutine before cleanup.
 func (pc *pipelineCodecs) close() {
+	pc.prewarmWg.Wait()
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
+	pc.closed = true
 	if pc.decoder != nil {
 		pc.decoder.Close()
 		pc.decoder = nil
