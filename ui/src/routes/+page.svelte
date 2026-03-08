@@ -26,6 +26,8 @@
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
+	import { setApiBaseUrl, resolveApiUrl } from '$lib/api/base-url';
+	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
@@ -181,7 +183,7 @@
 
 		let backend: Record<string, unknown> | null = null;
 		try {
-			const resp = await fetch('/api/debug/snapshot');
+			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'));
 			if (resp.ok) backend = await resp.json();
 		} catch { /* ignore */ }
 
@@ -336,6 +338,19 @@
 		document.addEventListener('keydown', handleDebugDump);
 		mounted = true;
 		syncInterval = setInterval(() => { now = Date.now(); }, 1000);
+
+		// Bootstrap: discover QUIC server address and set API base URL.
+		// In production (same-origin), this is a no-op (base URL stays '').
+		// In dev (Vite :5173), this points API calls to the QUIC server.
+		try {
+			const info = await fetchServerInfo();
+			const serverOrigin = wtBaseURL(info);
+			if (serverOrigin !== window.location.origin) {
+				setApiBaseUrl(serverOrigin);
+			}
+		} catch {
+			// Will retry via connection manager
+		}
 
 		// Subscribe to "program" MoQ stream so the program canvas shows
 		// the actual server output (including transition blends).

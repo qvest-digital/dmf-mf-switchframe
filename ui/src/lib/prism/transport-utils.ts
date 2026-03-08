@@ -1,3 +1,5 @@
+import { resolveApiUrl } from '$lib/api/base-url';
+
 /** Server connection info returned by fetchServerInfo. */
 export interface ServerInfo {
 	certHash: Uint8Array;
@@ -10,7 +12,7 @@ export interface ServerInfo {
  * address from the /api/cert-hash endpoint.
  */
 export async function fetchServerInfo(): Promise<ServerInfo> {
-	const resp = await fetch("/api/cert-hash");
+	const resp = await fetch(resolveApiUrl("/api/cert-hash"));
 	const data = await resp.json();
 	const hashBase64: string = data.hash;
 	const hashBinary = atob(hashBase64);

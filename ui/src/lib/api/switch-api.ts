@@ -1,5 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo } from './types';
 import { notify } from '$lib/state/notifications.svelte';
+import { resolveApiUrl } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -34,7 +35,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 		...options,
 		headers: { ...authHeaders(), ...options?.headers },
 	};
-	const res = await fetch(url, opts);
+	const res = await fetch(resolveApiUrl(url), opts);
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
@@ -233,7 +234,7 @@ export function setStingerCutPoint(name: string, cutPoint: number): Promise<void
 }
 
 export async function uploadStinger(name: string, file: File): Promise<void> {
-	const response = await fetch(`/api/stinger/${encodeURIComponent(name)}/upload`, {
+	const response = await fetch(resolveApiUrl(`/api/stinger/${encodeURIComponent(name)}/upload`), {
 		method: 'POST',
 		body: await file.arrayBuffer(),
 	});
