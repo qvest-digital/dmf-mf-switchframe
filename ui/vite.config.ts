@@ -25,8 +25,8 @@ export default defineConfig({
 	},
 	server: {
 		proxy: {
-			'/api': {
-				target: 'http://localhost:8081',
+			'/api/cert-hash': {
+				target: 'http://localhost:9090',
 			},
 		},
 	},

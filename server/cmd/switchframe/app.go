@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -144,14 +145,27 @@ func (a *App) initPrismServer() error {
 		Addr: a.cfg.Addr,
 		Cert: a.cert,
 		ExtraRoutes: func(mux *http.ServeMux) {
-			// Register API routes on a sub-mux so we can wrap with auth + operator middleware.
+			// Register API routes on a sub-mux so we can wrap with middleware.
 			apiSubMux := http.NewServeMux()
 			a.api.RegisterOnMux(apiSubMux)
-			// Chain: auth -> operator (role/lock check) -> handler
-			authedAPI := a.authMW(a.operatorMW(apiSubMux))
-			mux.Handle("/api/", authedAPI)
+
+			// Chain (outermost first): CORS -> logger -> metrics -> auth -> operator -> handler
+			var apiHandler http.Handler = apiSubMux
+			apiHandler = a.operatorMW(apiHandler)
+			apiHandler = a.authMW(apiHandler)
+			apiHandler = control.MetricsMiddleware(apiHandler)
+			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
+			apiHandler = control.CORSMiddleware(apiHandler)
+
+			// Cert-hash: outside auth chain (browsers need this before they have tokens).
+			// Wrap with CORS only for cross-origin dev access.
+			certHashHandler := control.CORSMiddleware(http.HandlerFunc(a.handleCertHash))
+			mux.Handle("GET /api/cert-hash", certHashHandler)
+
+			// All other API routes go through the full middleware chain.
+			mux.Handle("/api/", apiHandler)
+
 			if h := uiHandler(); h != nil {
-				// Mount embedded UI as catch-all (after API routes)
 				mux.Handle("/", h)
 			}
 		},
@@ -637,8 +651,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.debugCollector.Register("demo", demoStats)
 
-	// Start admin server (Prometheus metrics, health, readiness, pprof).
-	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr)
+	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
+	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64())
 	defer stopAdmin()
 
 	// Start HTTP API server on TCP :8081.
@@ -700,4 +714,14 @@ func (a *App) Close() {
 	if a.mixer != nil {
 		_ = a.mixer.Close()
 	}
+}
+
+// handleCertHash returns the WebTransport certificate fingerprint and QUIC address.
+// No authentication required — browsers need this to establish WebTransport connections.
+func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"hash": a.cert.FingerprintBase64(),
+		"addr": a.cfg.Addr,
+	})
 }

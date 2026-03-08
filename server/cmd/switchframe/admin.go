@@ -18,9 +18,10 @@ import (
 var readyFlag atomic.Bool
 
 // StartAdminServer launches an HTTP server on addr that exposes operational
-// endpoints: Prometheus metrics, health/readiness probes, and Go pprof.
+// endpoints: Prometheus metrics, health/readiness probes, Go pprof, and the
+// cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
 // It returns a stop function that gracefully shuts down the server.
-func StartAdminServer(ctx context.Context, addr string) (stop func()) {
+func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string) (stop func()) {
 	mux := http.NewServeMux()
 
 	// Prometheus metrics scrape endpoint.
@@ -49,18 +50,28 @@ func StartAdminServer(ctx context.Context, addr string) (stop func()) {
 	// Mount it under /debug/ so all /debug/pprof/* paths work.
 	mux.Handle("/debug/", http.DefaultServeMux)
 
+	// Cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
+	mux.HandleFunc("GET /api/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"hash": certHash,
+			"addr": quicAddr,
+		})
+	})
+
 	srv := &http.Server{
 		Handler: mux,
 	}
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", adminAddr)
 	if err != nil {
-		slog.Error("admin server listen failed", "addr", addr, "err", err)
+		slog.Error("admin server listen failed", "addr", adminAddr, "err", err)
 		return func() {}
 	}
 
 	go func() {
-		slog.Info("admin server listening", "addr", addr)
+		slog.Info("admin server listening", "addr", adminAddr)
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("admin server error", "err", err)
 		}
