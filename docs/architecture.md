@@ -29,7 +29,7 @@ graph TD
     mxl2["MXL Source<br/>(float32 audio)"] --> mxlSrc
 
     subgraph prism["Prism Distribution Server"]
-        mxlSrc -->|"IngestRawVideo"| fs
+        mxlSrc -->|"IngestRawVideo<br/>(bypasses sourceViewer)"| hvf
         mxlSrc -->|"IngestPCM"| am
         mxlSrc -->|"H.264/AAC"| mxlRelay["Browser Relay"]
         relay1 --> sv1["sourceViewer"]
@@ -41,10 +41,14 @@ graph TD
         rv2 --> rb
 
         subgraph engine["SwitchFrame Switching Engine"]
-            sv1 --> fs["FrameSynchronizer<br/>(optional)"]
+            sv1 --> fs["FrameSynchronizer<br/>(optional, mutual-exclusive<br/>with delayBuffer)"]
             sv2 --> fs
             svN --> fs
-            fs --> delay["delayBuffer"]
+            sv1 -.-> delay["delayBuffer<br/>(per-source 0-500ms)"]
+            sv2 -.-> delay
+            svN -.-> delay
+            fs --> hvf
+            fs --> haf
 
             subgraph video["Video Path"]
                 delay --> hvf["handleVideoFrame"]
@@ -170,8 +174,16 @@ before forwarding to the switcher's central `handleVideoFrame` /
 ```mermaid
 flowchart LR
     relay["Source Relay"] -->|SendVideo / SendAudio| sv["sourceViewer"]
-    sv -->|"handleVideoFrame(key, frame)<br/>handleAudioFrame(key, frame)"| sw["Switcher"]
+    sv -->|"if frameSync enabled"| fs["FrameSynchronizer"]
+    sv -->|"else if delayBuffer set"| db["delayBuffer"]
+    sv -->|"else direct"| sw["Switcher<br/>handleVideoFrame()<br/>handleAudioFrame()"]
+    fs --> sw
+    db --> sw
 ```
+
+FrameSynchronizer and delayBuffer are **mutually exclusive**. When frame
+sync is enabled, delay buffers are set to nil on all source viewers.
+Both route video AND audio frames through the same path.
 
 **Frame routing in `handleVideoFrame`.** On every video frame:
 
@@ -208,8 +220,11 @@ reference chain. The `pendingIDR` flag is only used as a fallback when
 no GOP replay is available.
 
 **Delay buffer.** Per-source configurable delay (0-500ms) for lip-sync
-correction. Frames pass through the delay buffer before reaching the
-switcher's handle methods.
+correction. Video, audio, and caption frames all pass through the delay
+buffer before reaching the switcher's handle methods, keeping all media
+types synchronized. The delay buffer is mutually exclusive with the
+frame synchronizer -- when frame sync is enabled, delay buffers are
+bypassed (set to nil on all source viewers).
 
 
 ### 2.3 Audio Pipeline (`audio/`)

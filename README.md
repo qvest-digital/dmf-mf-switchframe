@@ -262,48 +262,79 @@ ui/                         SvelteKit frontend (Svelte 5 + TypeScript)
 
 ```mermaid
 graph TD
-    subgraph browser["Browser (Svelte 5 SPA)"]
-        mv["Multiview Tiles"]
-        pp["Preview / Program"]
-        am["Audio Mixer + EQ"]
-        tc["Transition Controls"]
-        rp["Replay Panel"]
-        op["Operator Controls"]
-    end
+    cam1["Camera 1<br/>(MoQ)"] --> relay1["Per-source<br/>Relay"]
+    cam2["Camera 2<br/>(MoQ)"] --> relay2["Per-source<br/>Relay"]
+    camN["Camera N<br/>(MoQ)"] --> relayN["Per-source<br/>Relay"]
+    mxlHW["MXL Source<br/>(V210 + float32)"] --> mxlSrc["mxl.Source<br/>V210→YUV420p"]
 
-    mv ---|"MoQ/WT"| prism
-    pp ---|"MoQ/WT"| prism
-    am ---|"REST 20Hz"| prism
-    tc ---|"REST"| prism
-    rp ---|"REST"| prism
-    op ---|"REST"| prism
-
-    subgraph server["Server (Go)"]
-        prism["Prism<br/>MoQ/WebTransport :8080 · REST :8081"]
-        mxlIn["MXL Sources<br/>(V210 shared memory)"] --> pipeline
-        prism --> pipeline
-        prism --> api["Control API<br/>REST + MoQ state"]
-
-        subgraph pipeline["Video/Audio Pipeline"]
-            switcher["Switcher<br/>cut / fade / dissolve / wipe / stinger"]
-            switcher --> keyer["Upstream Keyer<br/>chroma / luma"]
-            keyer --> dsk["DSK Graphics<br/>compositor"]
-            dsk --> mxlOut["MXL Output<br/>(raw YUV420p → V210)"]
-            dsk --> encode["H.264 Encode"]
-            encode --> relay["Program Relay"]
-            mixer["Audio Mixer<br/>trim · EQ · compressor · fader · limiter"]
-            mixer --> relay
+    subgraph server["Go Server"]
+        subgraph ingest["Source Ingest"]
+            relay1 --> sv1["sourceViewer"]
+            relay2 --> sv2["sourceViewer"]
+            relayN --> svN["sourceViewer"]
+            relay1 --> rv1["replayViewer"]
+            relay2 --> rv2["replayViewer"]
+            rv1 & rv2 --> rb["Replay Buffers<br/>(per-source,<br/>GOP-aligned)"]
         end
 
-        relay --> rec["Recording<br/>MPEG-TS rotation"]
-        relay --> srt["SRT Output<br/>push / pull"]
-        relay --> conf["Confidence<br/>1fps JPEG"]
-        switcher --> replay["Instant Replay<br/>per-source buffers"]
-        replay --> replayRelay["Replay Relay"]
-        api --> operators["Operator Manager<br/>roles · locks · sessions"]
-        api --> macros["Macro Runner<br/>sequential execution"]
-        admin["Admin :9090<br/>/metrics · /health · /pprof"]
+        subgraph routing["Frame Routing (mutually exclusive)"]
+            sv1 & sv2 & svN --> fs["FrameSynchronizer<br/>(freerun, optional)"]
+            sv1 & sv2 & svN -.-> delay["delayBuffer<br/>(per-source<br/>0–500ms)"]
+        end
+
+        mxlSrc -->|"IngestRawVideo<br/>(bypasses routing)"| hvf
+        mxlSrc -->|"IngestPCM<br/>(bypasses routing)"| mixer
+        mxlSrc -->|"H.264/AAC encode"| mxlBrowserRelay["Browser Relay"]
+
+        subgraph engine["Switching Engine"]
+            subgraph video["Video Path"]
+                fs & delay --> hvf["handleVideoFrame"]
+                hvf --> gc["GOP Cache"]
+                hvf --> te["Transition Engine<br/>(YUV420 blend:<br/>mix / dip / wipe /<br/>FTB / stinger)"]
+                hvf --> idr["IDR Gate /<br/>Direct Broadcast"]
+                te & idr --> pipeline["pipelineCodecs<br/>decode → upstream key<br/>→ DSK compositor"]
+                pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p→V210)"]
+                pipeline --> enc["H.264 Encode<br/>(HW or libx264)"]
+                enc --> bv["programRelay<br/>.BroadcastVideo()"]
+            end
+
+            subgraph audio["Audio Path"]
+                fs & delay --> haf["handleAudioFrame"]
+                haf --> mixer["Audio Mixer<br/>trim → EQ → comp<br/>→ fader → mix<br/>→ master → limiter"]
+                mixer --> ba["programRelay<br/>.BroadcastAudio()"]
+                mixer --> mxlAudioOut["MXL Audio Sink<br/>(float32 PCM)"]
+            end
+        end
+
+        bv & ba --> pr["Program Relay"]
+
+        mxlOut & mxlAudioOut --> mxlShm["MXL Shared Memory<br/>(program output)"]
+
+        pr --> browser1["MoQ Viewer<br/>(Browser)"]
+        pr --> browser2["MoQ Viewer<br/>(Browser)"]
+        pr --> om["Output Manager"]
+
+        om --> conf["Confidence Monitor<br/>(1fps JPEG)"]
+        om --> mux["MPEG-TS Muxer"]
+        mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts rotation)"]
+        mux --> aa2["AsyncAdapter"] --> srt["SRT Output<br/>(push/pull,<br/>multi-dest)"]
+
+        api["Control API<br/>(REST + MoQ state)"] --> operators["Operator Mgr<br/>roles · locks"]
+        api --> macros["Macro Runner"]
+        admin["Admin :9090<br/>/metrics · /health<br/>/debug · /pprof"]
     end
+
+    subgraph browser["Browser (Svelte 5 SPA)"]
+        mv["Multiview<br/>+ audio bars"]
+        pp["Preview /<br/>Program"]
+        amUI["Audio Mixer<br/>EQ · comp · faders"]
+        tc["Transition<br/>Controls + T-bar"]
+        rpUI["Replay Panel"]
+        opUI["Operator<br/>Registration"]
+    end
+
+    browser ---|"MoQ/WebTransport<br/>(media + state)"| server
+    browser ---|"REST/HTTP3<br/>(commands)"| server
 ```
 
 ### Design Decisions
