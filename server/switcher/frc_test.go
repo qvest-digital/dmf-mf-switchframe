@@ -320,12 +320,6 @@ func (h *rawVideoTestHandler) onRawVideo(sourceKey string, pf *ProcessingFrame) 
 	h.frames = append(h.frames, rawVideoTagged{sourceKey: sourceKey, frame: cp})
 }
 
-func (h *rawVideoTestHandler) count() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.frames)
-}
-
 func (h *rawVideoTestHandler) getFrames() []rawVideoTagged {
 	h.mu.Lock()
 	defer h.mu.Unlock()
