@@ -103,19 +103,32 @@ export class PipelineManager {
 	 * getElementById collisions when ProgramPreview and SimpleMode share
 	 * the same canvas IDs.
 	 */
+	/** Track the actual DOM element to detect canvas replacement (HMR, layout). */
+	private currentProgramCanvasEl: HTMLCanvasElement | null = null;
+
 	syncProgramPreviewCanvases(
 		previewSource: string,
 		programCanvasEl?: HTMLCanvasElement | null,
 		previewCanvasEl?: HTMLCanvasElement | null,
 	): void {
-		// Program canvas: render the "program" MoQ stream (shows transitions)
-		if (this.currentProgramCanvas !== 'program') {
+		// Program canvas: render the "program" MoQ stream (shows transitions).
+		// Re-attach if the canvas element changed (HMR, layout switch) even if
+		// the source key is already 'program'.
+		const needsProgramAttach =
+			this.currentProgramCanvas !== 'program' ||
+			(programCanvasEl && programCanvasEl !== this.currentProgramCanvasEl);
+
+		if (needsProgramAttach) {
 			if (this.currentProgramCanvas) {
 				this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 			}
 			if (programCanvasEl) {
 				this.pipeline.attachCanvas('program', 'program', programCanvasEl);
 				this.currentProgramCanvas = 'program';
+				this.currentProgramCanvasEl = programCanvasEl;
+			} else {
+				this.currentProgramCanvas = null;
+				this.currentProgramCanvasEl = null;
 			}
 		}
 
@@ -161,6 +174,7 @@ export class PipelineManager {
 		// Reset tracking
 		this.attachedCanvases = new Set<string>();
 		this.currentProgramCanvas = null;
+		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
 	}
 
