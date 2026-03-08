@@ -176,6 +176,11 @@
 			connectionManager.handleControlData(data);
 		},
 	});
+	// Pre-register "program" source so ProgramPreview's $effect can attach
+	// the canvas renderer before onMount (which connects the MoQ transport).
+	pipeline.setSourceMuted('program', false);
+	pipeline.addSource('program');
+
 	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys, (src, pgm) => {
 		sourceLevels = src;
 		programLevels = pgm;
@@ -361,10 +366,8 @@
 			// Will retry via connection manager
 		}
 
-		// Subscribe to "program" MoQ stream so the program canvas shows
-		// the actual server output (including transition blends).
-		pipeline.setSourceMuted('program', false);
-		pipeline.addSource('program');
+		// Connect the "program" MoQ stream (source was added during init
+		// so the canvas can attach before onMount via ProgramPreview's $effect).
 		pipeline.connectSource('program');
 
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
