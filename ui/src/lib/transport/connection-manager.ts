@@ -18,6 +18,8 @@ export class ConnectionManager {
 	private retryTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly config: ConnectionManagerConfig;
 	private readonly connection: ReturnType<typeof createPrismConnection>;
+	/** True when MoQ control data has been received via the media pipeline. */
+	private hasMoQPipeline = false;
 
 	constructor(config: ConnectionManagerConfig) {
 		this.config = config;
@@ -25,7 +27,7 @@ export class ConnectionManager {
 			url: config.url,
 			onControlState: (data) => {
 				config.onStateUpdate(data);
-				// MoQ is delivering state; stop polling
+				this.hasMoQPipeline = true;
 				this.stopPolling();
 				this.setConnectionState('webtransport');
 			},
@@ -33,10 +35,13 @@ export class ConnectionManager {
 				if (connState === 'connected') {
 					this.setConnectionState('webtransport');
 				} else if (connState === 'disconnected' || connState === 'error') {
-					// WebTransport lost; fall back to REST polling
-					this.startPolling();
-					// Ensure state reflects polling (startPolling may skip if already active)
-					this.setConnectionState('polling');
+					// Don't downgrade to polling if MoQ data is flowing
+					// via the media pipeline (the standalone connection.ts
+					// WebTransport always fails in dev mode).
+					if (!this.hasMoQPipeline) {
+						this.startPolling();
+						this.setConnectionState('polling');
+					}
 				}
 			},
 		});
@@ -69,6 +74,7 @@ export class ConnectionManager {
 	/** Called when MoQ control track delivers state data via the media pipeline. */
 	handleControlData(data: Uint8Array): void {
 		this.config.onStateUpdate(data);
+		this.hasMoQPipeline = true;
 		this.stopPolling();
 		this.setConnectionState('webtransport');
 	}
