@@ -27,7 +27,7 @@ func TestReconnect_RingBufferPreservesData(t *testing.T) {
 		RingBufferSize: 8192,
 	})
 	c.conn = mock1
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
@@ -44,7 +44,7 @@ func TestReconnect_RingBufferPreservesData(t *testing.T) {
 
 	// Phase 2: Simulate disconnect — put caller into reconnecting state
 	// and write more packets (which go to the ring buffer).
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	c.ringBuf.Reset() // clear any stale data
 
 	for i := 0; i < 3; i++ {
@@ -95,7 +95,7 @@ func TestReconnect_ResumesFromKeyframe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write enough data to overflow the ring buffer.
 	bigData := make([]byte, 512)
@@ -172,7 +172,7 @@ func TestReconnect_OverflowCallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Overflow the ring buffer.
 	_, _ = c.ringBuf.Write(make([]byte, 256))
@@ -222,7 +222,7 @@ func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write exactly 3 TS packets — well within the buffer capacity.
 	for i := 0; i < 3; i++ {

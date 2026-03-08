@@ -16,6 +16,9 @@ import (
 // Verifies that a V210 frame survives the round-trip through the pipeline
 // and produces the same YUV420p when decoded at both ends.
 func TestPipelineVideoRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	const width, height = 12, 2
 
 	// 1. Generate a V210 test frame from known YUV420p.
@@ -118,6 +121,9 @@ func TestPipelineVideoRoundTrip(t *testing.T) {
 //	De-interleaved float32 → Source (interleave) → OnRawAudio callback
 //	→ Writer (de-interleave) → mock ContinuousWriter
 func TestPipelineAudioRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Input: de-interleaved stereo (what MXL provides).
 	inputL := []float32{0.1, 0.2, 0.3, 0.4}
 	inputR := []float32{0.5, 0.6, 0.7, 0.8}
@@ -214,6 +220,9 @@ func TestPipelineAudioRoundTrip(t *testing.T) {
 // TestPipelineOutputCapturesSinkFrames proves the Output orchestrator wires
 // sinks correctly: switcher sink → Writer → V210, mixer sink → Writer → PCM.
 func TestPipelineOutputCapturesSinkFrames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	vWriter := &mockDiscreteWriter{}
 	aWriter := &mockContinuousWriter{}
 	sw := &mockSwitcherSink{}
@@ -282,6 +291,9 @@ func TestPipelineOutputCapturesSinkFrames(t *testing.T) {
 // TestPipelineFullLoopback connects Source input to Output, simulating
 // a complete MXL-in → Switchframe → MXL-out loopback.
 func TestPipelineFullLoopback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	const width, height = 12, 2
 
 	// Input: known YUV420p pattern with non-trivial pixel values.
@@ -414,6 +426,9 @@ func TestPipelineFullLoopback(t *testing.T) {
 // TestV210RoundTripIdempotent verifies that V210→YUV420p→V210→YUV420p
 // produces identical YUV420p on both conversions (conversion is stable).
 func TestV210RoundTripIdempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	tests := []struct {
 		name      string
 		y, cb, cr byte

@@ -41,8 +41,8 @@ type SRTCaller struct {
 	pendingIDR    atomic.Bool // when true, drop writes until a keyframe arrives
 	bytesWritten  atomic.Int64
 	overflowCount atomic.Int64 // number of ring buffer overflow events
-	state         atomic.Value // AdapterState
-	lastError     atomic.Value // string
+	state         atomic.Pointer[AdapterState]
+	lastError     atomic.Pointer[string]
 	startedAt     time.Time
 
 	// connectFn is overridden in tests to avoid real network I/O.
@@ -68,8 +68,8 @@ func NewSRTCaller(config SRTCallerConfig) *SRTCaller {
 		ringBuf: newRingBuffer(ringSize),
 		backoff: initialBackoff,
 	}
-	c.state.Store(StateStopped)
-	c.lastError.Store("")
+	c.state.Store(ptrTo(StateStopped))
+	c.lastError.Store(ptrTo(""))
 	c.connectFn = defaultSRTConnect
 	return c
 }
@@ -89,20 +89,20 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	c.startedAt = time.Now()
 	c.bytesWritten.Store(0)
 	c.overflowCount.Store(0)
-	c.state.Store(StateStarting)
-	c.lastError.Store("")
+	c.state.Store(ptrTo(StateStarting))
+	c.lastError.Store(ptrTo(""))
 
 	conn, err := c.connectFn(c.ctx, c.config)
 	if err != nil {
-		c.state.Store(StateReconnecting)
-		c.lastError.Store(err.Error())
+		c.state.Store(ptrTo(StateReconnecting))
+		c.lastError.Store(ptrTo(err.Error()))
 		c.reconnecting.Store(true)
 		go c.reconnectLoop()
 		return nil // Don't fail start — reconnect will keep trying
 	}
 
 	c.conn = conn
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 	c.resetBackoffLocked()
 	return nil
 }
@@ -112,7 +112,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 // Write never propagates SRT errors to the caller; instead it
 // triggers a reconnect and buffers data.
 func (c *SRTCaller) Write(tsData []byte) (int, error) {
-	state := c.state.Load().(AdapterState)
+	state := *c.state.Load()
 
 	switch state {
 	case StateActive:
@@ -137,8 +137,8 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 		n, err := conn.Write(tsData)
 		if err != nil {
 			slog.Warn("SRT write failed, entering reconnect", "error", err)
-			c.state.Store(StateReconnecting)
-			c.lastError.Store(err.Error())
+			c.state.Store(ptrTo(StateReconnecting))
+			c.lastError.Store(ptrTo(err.Error()))
 			c.mu.Lock()
 			_, _ = c.ringBuf.Write(tsData)
 			c.mu.Unlock()
@@ -178,14 +178,14 @@ func (c *SRTCaller) Close() error {
 		c.conn = nil
 	}
 
-	c.state.Store(StateStopped)
+	c.state.Store(ptrTo(StateStopped))
 	return nil
 }
 
 // Status returns the current SRT caller status.
 func (c *SRTCaller) Status() AdapterStatus {
-	state := c.state.Load().(AdapterState)
-	errStr, _ := c.lastError.Load().(string)
+	state := *c.state.Load()
+	errStr := *c.lastError.Load()
 
 	return AdapterStatus{
 		State:        state,
@@ -234,7 +234,7 @@ func (c *SRTCaller) reconnectLoop() {
 
 		conn, err := c.connectFn(c.ctx, c.config)
 		if err != nil {
-			c.lastError.Store(err.Error())
+			c.lastError.Store(ptrTo(err.Error()))
 			continue
 		}
 
@@ -266,8 +266,8 @@ func (c *SRTCaller) reconnectLoop() {
 			c.overflowCount.Add(1)
 		}
 
-		c.state.Store(StateActive)
-		c.lastError.Store("")
+		c.state.Store(ptrTo(StateActive))
+		c.lastError.Store(ptrTo(""))
 		c.resetBackoff()
 
 		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)

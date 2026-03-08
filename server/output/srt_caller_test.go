@@ -56,7 +56,7 @@ func TestSRTCaller_WriteWithMockConn(t *testing.T) {
 		Port:    9998,
 	})
 	c.conn = mock
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 
 	data := make([]byte, 188*7)
 	n, err := c.Write(data)
@@ -73,7 +73,7 @@ func TestSRTCaller_WriteBuffersDuringReconnect(t *testing.T) {
 		Port:           9998,
 		RingBufferSize: 4096,
 	})
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	c.ringBuf = newRingBuffer(4096)
 
 	data := make([]byte, 188)
@@ -95,7 +95,7 @@ func TestSRTCaller_Close(t *testing.T) {
 	c.ctx = ctx
 	c.cancel = cancel
 	c.conn = mock
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 
 	err := c.Close()
 	require.NoError(t, err)
@@ -234,7 +234,7 @@ func TestSRTCaller_WriteErrorTriggersReconnect(t *testing.T) {
 		RingBufferSize: 4096,
 	})
 	c.conn = mock
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
@@ -271,13 +271,13 @@ func TestSRTCaller_SRTStatusSnapshot(t *testing.T) {
 	require.Equal(t, 9998, snap.Port)
 
 	// When active
-	c.state.Store(StateActive)
+	c.state.Store(ptrTo(StateActive))
 	snap = c.SRTStatusSnapshot()
 	require.True(t, snap.Active)
 	require.Equal(t, "active", snap.State)
 
 	// When reconnecting
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	snap = c.SRTStatusSnapshot()
 	require.True(t, snap.Active) // still considered active
 	require.Equal(t, "reconnecting", snap.State)
@@ -326,7 +326,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write small data (no overflow)
 	_, _ = c.ringBuf.Write(make([]byte, 188))
@@ -364,7 +364,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write more data than the buffer can hold to trigger overflow
 	_, _ = c.ringBuf.Write(make([]byte, 512))
@@ -406,7 +406,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	_, _ = c.ringBuf.Write(make([]byte, 512)) // overflow
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		return mock, nil
@@ -427,7 +427,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	// Simulate a second overflow reconnect
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	c.mu.Lock()
 	c.ringBuf = newRingBuffer(256)
 	_, _ = c.ringBuf.Write(make([]byte, 512)) // overflow again
@@ -480,7 +480,7 @@ func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 	// onReconnect is nil by default
 
 	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
@@ -578,7 +578,7 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write more data than the buffer can hold to trigger overflow
 	_, _ = c.ringBuf.Write(make([]byte, 512))
@@ -644,7 +644,7 @@ func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write small data (no overflow)
 	_, _ = c.ringBuf.Write(make([]byte, 188))
@@ -690,7 +690,7 @@ func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.ctx = ctx
 	c.cancel = cancel
-	c.state.Store(StateReconnecting)
+	c.state.Store(ptrTo(StateReconnecting))
 
 	// Write some data to the ring buffer
 	testData := make([]byte, 188*3)

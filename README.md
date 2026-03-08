@@ -222,6 +222,8 @@ cd ui && npx playwright test        # E2E (builds static app, serves on :4173)
 
 ~1336 Go tests, 590 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
 
+Benchmark results are tracked per commit and published at **[zsiec.github.io/switchframe/dev/bench](https://zsiec.github.io/switchframe/dev/bench/)**.
+
 ### Project Structure
 
 ```

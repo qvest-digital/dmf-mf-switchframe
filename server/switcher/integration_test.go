@@ -18,6 +18,9 @@ import (
 // together, ensuring frames flow end-to-end exactly as expected.
 
 func TestIntegrationCutSwitchesFrames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Setup: program relay with a capture viewer.
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
@@ -80,6 +83,9 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 }
 
 func TestIntegrationAudioFollowsVideo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -111,6 +117,9 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 }
 
 func TestProgramRelayFromPrismServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Simulate the pattern used in restructured main.go:
 	// Get a relay (as RegisterStream would return), create switcher with it.
 	programRelay := newTestRelay()
@@ -133,6 +142,9 @@ func TestProgramRelayFromPrismServer(t *testing.T) {
 }
 
 func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -159,6 +171,9 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 }
 
 func TestIntegrationAudioWithMixerHandler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -183,6 +198,9 @@ func TestIntegrationAudioWithMixerHandler(t *testing.T) {
 }
 
 func TestIntegrationMixerPassthrough(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -231,6 +249,9 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 }
 
 func TestIntegrationMixerAFVOnCut(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -285,6 +306,9 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 }
 
 func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 	defer sw.Close()
@@ -324,6 +348,9 @@ func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
 }
 
 func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 	defer sw.Close()
@@ -368,6 +395,9 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 }
 
 func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -414,6 +444,9 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 }
 
 func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -478,6 +511,9 @@ func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 }
 
 func TestIntegrationTBarPartialAbort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 	defer sw.Close()
@@ -519,6 +555,9 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 }
 
 func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -562,6 +601,9 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 }
 
 func TestIntegrationFTBMutesAudio(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 
 	sw := New(programRelay)
@@ -613,6 +655,9 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 }
 
 func TestIntegrationFTBReverseFadesIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 
 	sw := New(programRelay)

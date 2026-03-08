@@ -1,5 +1,8 @@
 package output
 
+// ptrTo returns a pointer to v. Used for atomic.Pointer[T].Store().
+func ptrTo[T any](v T) *T { return &v }
+
 const (
 	defaultSRTLatency = 120 // ms
 

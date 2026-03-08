@@ -43,8 +43,8 @@ type SRTListener struct {
 	cancel context.CancelFunc
 
 	bytesWritten atomic.Int64
-	state        atomic.Value // AdapterState
-	lastError    atomic.Value // string
+	state        atomic.Pointer[AdapterState]
+	lastError    atomic.Pointer[string]
 	startedAt    time.Time
 
 	// acceptFn is overridden in tests to avoid real network I/O.
@@ -65,8 +65,8 @@ func NewSRTListener(config SRTListenerConfig) *SRTListener {
 		config: config,
 		conns:  make(map[string]*listenerConn),
 	}
-	l.state.Store(StateStopped)
-	l.lastError.Store("")
+	l.state.Store(ptrTo(StateStopped))
+	l.lastError.Store(ptrTo(""))
 	return l
 }
 
@@ -79,8 +79,8 @@ func (l *SRTListener) Start(ctx context.Context) error {
 	l.ctx, l.cancel = context.WithCancel(ctx)
 	l.startedAt = time.Now()
 	l.bytesWritten.Store(0)
-	l.state.Store(StateActive)
-	l.lastError.Store("")
+	l.state.Store(ptrTo(StateActive))
+	l.lastError.Store(ptrTo(""))
 	l.mu.Unlock()
 
 	if l.acceptFn != nil {
@@ -145,7 +145,7 @@ func (l *SRTListener) ConnectionCount() int {
 
 // Write fans out TS data to all connected clients non-blocking.
 func (l *SRTListener) Write(tsData []byte) (int, error) {
-	if state := l.state.Load().(AdapterState); state != StateActive {
+	if state := *l.state.Load(); state != StateActive {
 		return 0, fmt.Errorf("srt listener not active (state: %s)", state)
 	}
 
@@ -183,14 +183,14 @@ func (l *SRTListener) Close() error {
 	}
 	l.mu.Unlock()
 
-	l.state.Store(StateStopped)
+	l.state.Store(ptrTo(StateStopped))
 	return nil
 }
 
 // Status returns the current listener status.
 func (l *SRTListener) Status() AdapterStatus {
-	state := l.state.Load().(AdapterState)
-	errStr, _ := l.lastError.Load().(string)
+	state := *l.state.Load()
+	errStr := *l.lastError.Load()
 
 	return AdapterStatus{
 		State:        state,

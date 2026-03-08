@@ -10,6 +10,9 @@ import (
 
 // TestStress_ConcurrentRecordAndExtract tests concurrent frame recording and clip extraction.
 func TestStress_ConcurrentRecordAndExtract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	buf := newReplayBuffer(10, 0)
 	const nWriters = 4
 	const framesPerWriter = 500
@@ -53,6 +56,9 @@ func TestStress_ConcurrentRecordAndExtract(t *testing.T) {
 
 // TestStress_RapidMarkAndPlay tests rapid mark-in/mark-out/play/stop cycles.
 func TestStress_RapidMarkAndPlay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	relay := &mockRelay{}
 	m := NewManager(relay, Config{BufferDurationSecs: 5}, mockDecoderFactory, mockEncoderFactory)
 	defer m.Close()

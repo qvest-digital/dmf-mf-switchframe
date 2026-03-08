@@ -52,7 +52,7 @@ func TestSRTListener_AddAndRemoveConnection(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	mock := &mockListenerConn{id: "test-1"}
 	err := l.AddConnection("test-1", mock)
@@ -70,7 +70,7 @@ func TestSRTListener_FanOut(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	mock1 := &mockListenerConn{id: "c1"}
 	mock2 := &mockListenerConn{id: "c2"}
@@ -105,7 +105,7 @@ func TestSRTListener_MaxConnections(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	require.NoError(t, l.AddConnection("c1", &mockListenerConn{id: "c1"}))
 	require.NoError(t, l.AddConnection("c2", &mockListenerConn{id: "c2"}))
@@ -120,14 +120,14 @@ func TestSRTListener_Close(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	mock := &mockListenerConn{id: "c1"}
 	require.NoError(t, l.AddConnection("c1", mock))
 
 	err := l.Close()
 	require.NoError(t, err)
-	require.Equal(t, StateStopped, l.state.Load().(AdapterState))
+	require.Equal(t, StateStopped, *l.state.Load())
 	require.True(t, mock.closed.Load())
 }
 
@@ -137,7 +137,7 @@ func TestSRTListener_SlowClientDrops(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	// Mock that blocks on Write (simulating slow client)
 	blockCh := make(chan struct{})
@@ -179,7 +179,7 @@ func TestSRTListener_WriteErrorRemovesClient(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	errConn := &mockListenerConn{
 		id: "err-client",
@@ -221,7 +221,7 @@ func TestSRTListener_SRTStatusSnapshot(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	require.NoError(t, l.AddConnection("c1", &mockListenerConn{id: "c1"}))
 	_, _ = l.Write([]byte("data"))
@@ -240,7 +240,7 @@ func TestSRTListener_RemoveNonexistent(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	// Should not panic
 	l.RemoveConnection("nonexistent")
@@ -253,7 +253,7 @@ func TestSRTListener_ConcurrentFanOut(t *testing.T) {
 	defer cancel()
 	l.ctx = ctx
 	l.cancel = cancel
-	l.state.Store(StateActive)
+	l.state.Store(ptrTo(StateActive))
 
 	const numConns = 4
 	const numWrites = 50

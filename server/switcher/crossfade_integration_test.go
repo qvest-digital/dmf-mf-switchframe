@@ -19,6 +19,9 @@ import (
 // audio behavior.
 
 func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -104,6 +107,9 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 }
 
 func TestIntegration_CutCrossfadeDuration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Verify that a plain Cut uses the one-frame crossfade (OnCut path)
 	// rather than the multi-frame transition crossfade used by dissolves.
 	programRelay := newTestRelay()
@@ -174,6 +180,9 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 }
 
 func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Verify that when a dissolve completes (position reaches 1.0),
 	// the audio transition state is properly cleaned up.
 	programRelay := newTestRelay()
@@ -246,6 +255,9 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 }
 
 func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	// Verify that as the T-bar moves forward, the audio transition position
 	// increases monotonically.
 	programRelay := newTestRelay()

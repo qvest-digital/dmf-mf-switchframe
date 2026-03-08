@@ -45,6 +45,8 @@ type OutputManager struct {
 
 	onState func() // triggers ControlRoomState broadcast
 	closed  bool
+	ctx     context.Context    // cancelled on Close()
+	cancel  context.CancelFunc // cancels ctx
 
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
@@ -59,10 +61,13 @@ type OutputManager struct {
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
 func NewOutputManager(relay *distribution.Relay) *OutputManager {
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &OutputManager{
 		log:          slog.With("component", "output"),
 		relay:        relay,
 		destinations: make(map[string]*OutputDestination),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	empty := make([]OutputAdapter, 0)
 	m.adapters.Store(&empty)
@@ -107,7 +112,7 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 	}
 
 	rec := NewFileRecorder(config)
-	if err := rec.Start(context.Background()); err != nil {
+	if err := rec.Start(m.ctx); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start recorder: %w", err)
 	}
@@ -225,8 +230,7 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 		return fmt.Errorf("unknown SRT mode: %s", config.Mode)
 	}
 
-	ctx := context.Background()
-	if err := adapter.Start(ctx); err != nil {
+	if err := adapter.Start(m.ctx); err != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("start SRT output: %w", err)
 	}
@@ -442,8 +446,7 @@ func (m *OutputManager) StartDestination(id string) error {
 		adapter = listener
 	}
 
-	ctx := context.Background()
-	if err := adapter.Start(ctx); err != nil {
+	if err := adapter.Start(m.ctx); err != nil {
 		dest.mu.Unlock()
 		m.mu.Unlock()
 		return fmt.Errorf("start destination %s: %w", id, err)
@@ -606,6 +609,8 @@ func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
 // Close stops all outputs, the muxer, and the viewer. Safe to call
 // multiple times.
 func (m *OutputManager) Close() error {
+	m.cancel() // signal all adapters started with m.ctx
+
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()

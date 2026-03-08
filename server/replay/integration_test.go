@@ -11,6 +11,9 @@ import (
 
 // TestIntegration_FullReplayWorkflow tests the complete mark-in → mark-out → play → stop cycle.
 func TestIntegration_FullReplayWorkflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := &mockRelay{}
 	m := NewManager(relay, Config{BufferDurationSecs: 10}, mockDecoderFactory, mockEncoderFactory)
 	defer m.Close()
@@ -83,6 +86,9 @@ func TestIntegration_FullReplayWorkflow(t *testing.T) {
 
 // TestIntegration_MultiSourceBuffering tests buffering from multiple sources simultaneously.
 func TestIntegration_MultiSourceBuffering(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := &mockRelay{}
 	m := NewManager(relay, Config{BufferDurationSecs: 30}, mockDecoderFactory, mockEncoderFactory)
 	defer m.Close()

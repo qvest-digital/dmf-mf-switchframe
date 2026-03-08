@@ -20,6 +20,9 @@ import (
 // injection from 4 sources. Verifies: final program source is correct,
 // seq incremented correctly, no panics under the race detector.
 func TestStress_RapidCuts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -102,6 +105,9 @@ type testRelay = distribution.Relay
 // a Cut() before it completes. Verifies: transition is aborted cleanly, cut
 // completes, program is the new source, no leaked goroutines.
 func TestStress_CutDuringTransition(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 	defer sw.Close()
@@ -163,6 +169,9 @@ func TestStress_CutDuringTransition(t *testing.T) {
 // cuts between them. Verifies: all 20 sources appear in state, frame routing
 // works for an arbitrary source.
 func TestStress_20Sources(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
@@ -229,6 +238,9 @@ func TestStress_20Sources(t *testing.T) {
 // viewer attached (simulating recording/SRT) do not deadlock. All operations
 // must complete within 5 seconds.
 func TestStress_SimultaneousOutputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 
 	// Attach multiple mock viewers to simulate recording + SRT output.
@@ -322,6 +334,9 @@ func TestStress_SimultaneousOutputs(t *testing.T) {
 // one continuously reading state, and one registering/unregistering sources.
 // The -race flag catches any data races.
 func TestStress_ConcurrentStateReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 	sw := New(programRelay)
 	defer sw.Close()
@@ -436,6 +451,9 @@ func TestStress_ConcurrentStateReads(t *testing.T) {
 // mix cycle completes, output frames are produced, no deadline timeout
 // causes a hang.
 func TestStress_AllChannelsMixing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test")
+	}
 	programRelay := newTestRelay()
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)

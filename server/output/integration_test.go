@@ -52,6 +52,9 @@ func makeAudioFrame(pts int64) *media.AudioFrame {
 // The resulting file must be a valid MPEG-TS container with 188-byte aligned
 // packets, each starting with the 0x47 sync byte.
 func TestIntegration_RecordingProducesValidTS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
 	defer func() { _ = mgr.Close() }()
@@ -91,6 +94,9 @@ func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 // TestIntegration_OutputManagerLifecycle verifies that the muxer and viewer
 // are created on first output and torn down when the last output stops.
 func TestIntegration_OutputManagerLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
 
@@ -116,6 +122,9 @@ func TestIntegration_OutputManagerLifecycle(t *testing.T) {
 // TestIntegration_MultipleAdapters verifies that the muxer fans out TS data
 // to all registered adapters simultaneously (file recorder + mock adapter).
 func TestIntegration_MultipleAdapters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
 	defer func() { _ = mgr.Close() }()
@@ -157,6 +166,9 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 // TestIntegration_FramesStopAfterManagerClose verifies that no frames are
 // delivered after the output manager is closed.
 func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
 
@@ -195,6 +207,9 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 // first keyframe are silently dropped (the muxer waits for a keyframe to
 // initialize PAT/PMT tables).
 func TestIntegration_PreKeyframeDropped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
 	relay := distribution.NewRelay()
 	mgr := NewOutputManager(relay)
 	defer func() { _ = mgr.Close() }()
