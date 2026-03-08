@@ -32,33 +32,34 @@ graph TD
         mxlSrc -->|"IngestRawVideo<br/>(bypasses sourceViewer)"| hvf
         mxlSrc -->|"IngestPCM"| am
         mxlSrc -->|"H.264/AAC"| mxlRelay["Browser Relay"]
-        relay1 --> sv1["sourceViewer"]
-        relay2 --> sv2["sourceViewer"]
-        relayN --> svN["sourceViewer"]
+        relay1 --> sv1["sourceViewer<br/>(+sourceDecoder)"]
+        relay2 --> sv2["sourceViewer<br/>(+sourceDecoder)"]
+        relayN --> svN["sourceViewer<br/>(+sourceDecoder)"]
         relay1 --> rv1["replayViewer"]
         relay2 --> rv2["replayViewer"]
         rv1 --> rb["Replay Buffers<br/>(per-source, GOP-aligned)"]
         rv2 --> rb
 
         subgraph engine["SwitchFrame Switching Engine"]
-            sv1 --> fs["FrameSynchronizer<br/>(optional, mutual-exclusive<br/>with delayBuffer)"]
-            sv2 --> fs
-            svN --> fs
-            sv1 -.-> delay["delayBuffer<br/>(per-source 0-500ms)"]
-            sv2 -.-> delay
-            svN -.-> delay
+            sv1 --> sd1["sourceDecoder<br/>H.264→YUV420"]
+            sv2 --> sd2["sourceDecoder<br/>H.264→YUV420"]
+            svN --> sdN["sourceDecoder<br/>H.264→YUV420"]
+            sd1 --> fs["FrameSynchronizer<br/>(optional, mutual-exclusive<br/>with delayBuffer)"]
+            sd2 --> fs
+            sdN --> fs
+            sd1 -.-> delay["delayBuffer<br/>(per-source 0-500ms)"]
+            sd2 -.-> delay
+            sdN -.-> delay
             fs --> hvf
             fs --> haf
 
-            subgraph video["Video Path"]
-                delay --> hvf["handleVideoFrame"]
-                hvf --> gc["GOP Cache"]
-                hvf --> te["Transition Engine<br/>(raw YUV output)"]
-                hvf --> idr["IDR Gate"]
-                te --> pipeline["pipelineCodecs<br/>decode → key → DSK"]
-                idr --> pipeline
+            subgraph video["Video Path (always-decode)"]
+                delay --> hvf["handleRawVideoFrame<br/>(decoded YUV420)"]
+                hvf --> te["Transition Engine<br/>(YUV blend)"]
+                hvf --> pipeline["key → DSK compositor"]
+                te --> pipeline
                 pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p → V210)"]
-                pipeline --> enc["H.264 Encode"]
+                pipeline --> enc["pipelineCodecs<br/>H.264 Encode"]
                 enc --> bv["programRelay.BroadcastVideo()"]
             end
 
@@ -173,51 +174,44 @@ before forwarding to the switcher's central `handleVideoFrame` /
 
 ```mermaid
 flowchart LR
-    relay["Source Relay"] -->|SendVideo / SendAudio| sv["sourceViewer"]
-    sv -->|"if frameSync enabled"| fs["FrameSynchronizer"]
-    sv -->|"else if delayBuffer set"| db["delayBuffer"]
-    sv -->|"else direct"| sw["Switcher<br/>handleVideoFrame()<br/>handleAudioFrame()"]
+    relay["Source Relay"] -->|"SendVideo (H.264)"| sv["sourceViewer"]
+    sv -->|"srcDecoder set"| sd["sourceDecoder<br/>H.264 → YUV420"]
+    sd -->|"if frameSync"| fs["FrameSynchronizer"]
+    sd -->|"else delayBuffer"| db["delayBuffer"]
+    sd -->|"else direct"| sw["Switcher<br/>handleRawVideoFrame()"]
+    sv -->|"no srcDecoder<br/>(virtual sources)"| hvf["handleVideoFrame()"]
     fs --> sw
     db --> sw
+    relay -->|"SendAudio"| sva["sourceViewer"]
+    sva --> sw2["handleAudioFrame()"]
 ```
 
-FrameSynchronizer and delayBuffer are **mutually exclusive**. When frame
-sync is enabled, delay buffers are set to nil on all source viewers.
-Both route video AND audio frames through the same path.
+Each source has a **sourceDecoder** goroutine that continuously decodes
+H.264 to raw YUV420 (always-decode architecture). Decoded frames flow
+through FrameSynchronizer or delayBuffer (mutually exclusive), then to
+`handleRawVideoFrame`. Virtual sources (replay) bypass the decoder and
+use `handleVideoFrame` directly.
 
-**Frame routing in `handleVideoFrame`.** On every video frame:
+**Frame routing in `handleRawVideoFrame`.** On every decoded YUV frame:
 
 1. Record frame in health monitor (for stale/offline detection).
-2. Update rolling frame statistics (EMA of frame size, FPS from PTS
-   deltas) used to configure the transition encoder.
-3. Record frame in GOP cache (for instant keyframe on cut).
-4. If a transition is active, convert AVC1 to Annex B and feed to the
-   transition engine. Sync audio crossfade position.
-5. Otherwise, check if this is the program source:
-   - If `pendingIDR` is false (steady state), broadcast immediately
-     via `broadcastVideo()`. Uses RLock for maximum concurrency.
-   - If `pendingIDR` is true (just after a cut), drop non-keyframes.
-     When the first keyframe arrives, clear the flag under write lock
-     and broadcast.
-
-**`broadcastVideo`** passes the frame through the optional video
-processor (DSK compositor), then calls `programRelay.BroadcastVideo()`.
+2. Update encoder stats from sourceDecoder (rolling EMA of frame size/FPS).
+3. Feed key fill bridge with decoded YUV (for upstream keying fills).
+4. If a transition is active, feed to the transition engine via
+   `IngestRawFrame`. Sync audio crossfade position.
+5. If program source, run through key processor and DSK compositor,
+   then enqueue for encode and broadcast to program relay.
+6. Non-program sources are filtered (dropped).
 
 **Cut operation.** `Cut(sourceKey)`:
-1. Under write lock: set `programSource`, set `pendingIDR = true` on the
-   new source, swap old program to preview, increment `seq`.
-2. Outside lock: replay the new source's cached GOP to warm the pipeline
-   decoder (`replayGOP`), feed delta frames that arrived during replay
-   (`feedDeltaFrames`), clear `pendingIDR`, notify audio mixer (`OnCut`
-   for crossfade, `OnProgramChange` for AFV), fire state callbacks.
+1. Under write lock: set `programSource`, swap old program to preview,
+   increment `seq`.
+2. Outside lock: notify audio mixer (`OnCut` for crossfade,
+   `OnProgramChange` for AFV), fire state callbacks.
 
-**GOP replay on cut.** The GOP cache stores the most recent GOP for each
-source. On cut, `replayGOP` feeds these frames to a pre-warmed decoder
-from the pool, then pointer-swaps it into the pipeline. This eliminates
-the keyframe wait entirely. `feedDeltaFrames` then feeds any frames that
-arrived during the replay window (~10-35ms) to maintain the decoder's
-reference chain. The `pendingIDR` flag is only used as a fallback when
-no GOP replay is available.
+Since all sources are continuously decoded, cuts are instant — the next
+decoded frame from the new program source flows through immediately.
+No keyframe wait, no GOP replay, no IDR gating.
 
 **Delay buffer.** Per-source configurable delay (0-500ms) for lip-sync
 correction. Video, audio, and caption frames all pass through the delay
@@ -303,12 +297,10 @@ completion or abort -- no persistent codec resources between transitions.
 
 ```mermaid
 flowchart TD
-    start["Start(from, to, type, durationMs)"] --> create["Create decoderA (FFmpeg H.264)<br/>Create decoderB (if not FTB)"]
-    create --> active["StateActive"]
-    active --> ingest["IngestFrame(sourceKey, annexB, pts)"]
-    ingest --> decode["decoder.Decode(annexB) → YUV420"]
-    decode --> init{"First frame?"}
-    init -->|Yes| lazy["Lazy-init blender<br/>(dimensions from first decoded frame)"]
+    start["Start(from, to, type, durationMs)"] --> active["StateActive<br/>(no decoder creation needed)"]
+    active --> ingest["IngestRawFrame(sourceKey, yuv, w, h, pts)<br/>(pre-decoded by sourceDecoder)"]
+    ingest --> init{"First frame?"}
+    init -->|Yes| lazy["Lazy-init blender<br/>(dimensions from first frame)"]
     init -->|No| scale
     lazy --> scale{"Resolution mismatch?"}
     scale -->|Yes| scaler["Bilinear YUV420 scaler"]

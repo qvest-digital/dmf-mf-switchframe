@@ -24,10 +24,15 @@ graph TD
         DB[DelayBuffer]
     end
 
+    subgraph "Per-Source Decoders"
+        SD1[sourceDecoder 1]
+        SD2[sourceDecoder 2]
+        SD3[sourceDecoder N]
+    end
+
     subgraph "Switcher Core"
-        HVF[handleVideoFrame]
+        HRVF[handleRawVideoFrame]
         HAF[handleAudioFrame]
-        GC[gopCache]
         TE[TransitionEngine]
     end
 
@@ -49,16 +54,18 @@ graph TD
         MIX[AudioMixer]
     end
 
-    SV1 -->|atomic.Pointer| FS
-    SV2 -->|atomic.Pointer| DB
-    SV3 -->|atomic.Pointer| DB
-    FS -->|callback| HVF
-    DB -->|callback| HVF
+    SV1 -->|atomic.Pointer| SD1
+    SV2 -->|atomic.Pointer| SD2
+    SV3 -->|atomic.Pointer| SD3
+    SD1 --> FS
+    SD2 --> DB
+    SD3 --> DB
+    FS -->|callback| HRVF
+    DB -->|callback| HRVF
     FS -->|callback| HAF
     DB -->|callback| HAF
-    HVF -->|RLock| GC
-    HVF -->|RLock| TE
-    HVF --> VPC
+    HRVF -->|RLock| TE
+    HRVF --> VPC
     TE -->|blend| VPC
     VPC --> VPL
     VPL --> PC
@@ -82,9 +89,9 @@ Every lock in the system, what it protects, and its characteristics:
 | Switcher | `s.mu` | `RWMutex` | sources map, programSource, state, transEngine, pipeCodecs | Yes (RLock) |
 | FrameSynchronizer | `fs.mu` | `Mutex` | sources map, tickRate, tickNum | Yes (brief) |
 | syncSource | `ss.mu` | `Mutex` | per-source ring buffers (video/audio) | Yes (brief) |
-| gopCache | `g.mu` | `Mutex` | caches map, activeSources | Yes |
 | DelayBuffer | `db.mu` | `Mutex` | sources map | Conditional |
-| pipelineCodecs | `pc.mu` | `Mutex` | decoder/encoder state, avc1Buf | Yes (brief) |
+| sourceDecoder | (none) | — | Single goroutine per decoder, channel-based | Yes |
+| pipelineCodecs | `pc.mu` | `Mutex` | encoder state, avc1Buf | Yes (brief) |
 | TransitionEngine | `e.mu` | `RWMutex` | state, decoders, YUV buffers, blender | During transitions |
 | AudioMixer | `m.mu` | `RWMutex` | channels, mix state, crossfade | Yes |
 | TSMuxer | `m.mu` | `Mutex` | muxer, output buffer | Yes |
@@ -99,13 +106,13 @@ Every lock in the system, what it protects, and its characteristics:
 |-----------|-------|------|---------|
 | sourceViewer | `delayBuffer` | `atomic.Pointer` | Hot-swap delay buffer / frame sync |
 | sourceViewer | `frameSync` | `atomic.Pointer` | Hot-swap frame synchronizer |
+| sourceViewer | `srcDecoder` | `atomic.Pointer` | Per-source H.264→YUV decoder |
 | sourceViewer | `videoSent` etc. | `atomic.Int64` | Per-source counters (cache-line padded) |
 | DelayBuffer | `stopped` | `atomic.Bool` | Lock-free check in timer callbacks |
 | sourceDelay | `generation` | `atomic.Uint64` | Invalidate in-flight timer callbacks |
 | DelayBuffer | `hasAnyDelay` | `atomic.Bool` | Skip lock when no sources have delay |
 | OutputManager | `adapters` | `atomic.Pointer` | Lock-free read in muxer callback |
 | Switcher | 30+ fields | `atomic.Int64` etc. | Metrics counters (never locked) |
-| pipelineCodecs | `replayGOP*` | `atomic.Int64` | Replay stats |
 
 ### Pools
 
@@ -113,7 +120,6 @@ Every lock in the system, what it protects, and its characteristics:
 |------|----------|-----------|---------|
 | `yuvPool` | `processing_frame.go` | 1080p (3.1 MB) | YUV420 frame buffers |
 | `avc1Pool` | `pipeline_codecs.go` | 64 KB | Encoded AVC1 output |
-| `gopBufPool` | `gop_cache.go` | 64 KB | GOP cache deep-copy buffers |
 | `tsPacketPool` | `async_adapter.go` | 64 KB | MPEG-TS packet batches |
 | `lanczosIntermPool` | `scaler_lanczos.go` | 1080p (5.5 MB) | Lanczos horizontal pass float32 intermediates |
 
@@ -130,41 +136,36 @@ Every lock in the system, what it protects, and its characteristics:
 ### Flow 1: Normal Video Frame (No Transition)
 
 The most common path — a single source is on program, frames flow straight through.
+With always-decode, each source has a dedicated decoder goroutine. Decoded YUV
+frames pass through the delay buffer or frame sync, then to `handleRawVideoFrame`.
 
 ```mermaid
 sequenceDiagram
     participant SV as sourceViewer
+    participant SD as sourceDecoder
     participant DB as DelayBuffer
     participant SW as Switcher
-    participant GC as gopCache
     participant CH as videoProcCh
     participant PL as videoProcessingLoop
     participant PC as pipelineCodecs
     participant PR as programRelay
 
-    Note over SV: No locks — atomic.Pointer loads
-    SV->>DB: handleVideoFrame(key, frame)
+    Note over SV: atomic.Pointer load srcDecoder
+    SV->>SD: Send(frame) [channel, cap=2]
+    Note over SD: Decode goroutine:<br/>AVC1→AnnexB<br/>decoder.Decode() → YUV420<br/>Deep-copy from pool
+
+    SD->>DB: handleRawVideoFrame(key, pf)
     Note over DB: atomic hasAnyDelay check<br/>If delay=0: no lock, passthrough
 
-    DB->>SW: handleVideoFrame(key, frame)
+    DB->>SW: handleRawVideoFrame(key, pf)
     activate SW
     Note over SW: s.mu.RLock()<br/>Read: sources, programSource,<br/>state, transEngine<br/>s.mu.RUnlock()
     deactivate SW
-
-    SW->>GC: RecordFrame(key, frame, annexB)
-    activate GC
-    Note over GC: Prep data (no lock)<br/>g.mu.Lock()<br/>Check active, write cache<br/>g.mu.Unlock()
-    deactivate GC
 
     SW->>CH: enqueueVideoWork (channel send)
     Note over CH: Buffered channel (cap=8)<br/>Newest-wins drop policy
 
     CH->>PL: work := <-videoProcCh
-    PL->>PC: decode(frame)
-    activate PC
-    Note over PC: pc.mu.Lock() — init only<br/>pc.mu.Unlock()<br/>Decode (no lock)
-    deactivate PC
-
     PL->>PC: encode(pf, isKF)
     activate PC
     Note over PC: pc.mu.Lock() — config<br/>pc.mu.Unlock()<br/>Encode (no lock)
@@ -174,19 +175,19 @@ sequenceDiagram
     Note over PR: Copies data to each viewer's channel
 ```
 
-**Lock sequence:** `s.mu` RLock → release → `g.mu` Lock → release → `pc.mu` Lock → release (×2)
+**Lock sequence:** `s.mu` RLock → release → `pc.mu` Lock → release
 
-**Total locks on hot path:** 3 mutex acquisitions, all brief, none nested.
+**Total locks on hot path:** 2 mutex acquisitions, all brief, none nested.
 
 ---
 
 ### Flow 2: Video Frame During Transition
 
-Two sources feed the transition engine; blended output goes through the async pipeline.
+Two sources feed the transition engine with pre-decoded YUV; blended output goes through the async pipeline.
 
 ```mermaid
 sequenceDiagram
-    participant SV as sourceViewer (A or B)
+    participant SD as sourceDecoder (A or B)
     participant SW as Switcher
     participant TE as TransitionEngine
     participant CH as videoProcCh
@@ -194,18 +195,14 @@ sequenceDiagram
     participant PC as pipelineCodecs
     participant PR as programRelay
 
-    SV->>SW: handleVideoFrame(key, frame)
+    SD->>SW: handleRawVideoFrame(key, pf)
     activate SW
     Note over SW: s.mu.RLock()<br/>Sees inTransition=true<br/>s.mu.RUnlock()
     deactivate SW
 
-    SW->>TE: IngestFrame(key, frame)
+    SW->>TE: IngestRawFrame(key, yuv, w, h, pts)
     activate TE
-    Note over TE: Phase 1: e.mu.Lock()<br/>Snapshot state, decoder refs<br/>e.mu.Unlock()
-
-    Note over TE: Phase 2: Decode (NO LOCK)<br/>H.264 → YUV420
-
-    Note over TE: Phase 3: e.mu.Lock()<br/>Store YUV, compute blend<br/>Call blendMix/blendWipe/etc.<br/>e.mu.Unlock()
+    Note over TE: e.mu.Lock()<br/>Store YUV, compute blend<br/>Call blendMix/blendWipe/etc.<br/>e.mu.Unlock()
     deactivate TE
 
     TE->>SW: Output(blended, w, h, pts, isKF)
@@ -219,9 +216,9 @@ sequenceDiagram
     PL->>PR: BroadcastVideo(frame)
 ```
 
-**Lock sequence:** `s.mu` RLock → `e.mu` Lock → release → (decode) → `e.mu` Lock → release → `s.mu` RLock → release → `pc.mu` Lock → release
+**Lock sequence:** `s.mu` RLock → `e.mu` Lock → release → `s.mu` RLock → release → `pc.mu` Lock → release
 
-**Key insight:** The transition engine releases its lock between decode and blend, and before calling the Output callback. This prevents the engine lock from blocking other sources' ingestion.
+**Key insight:** Since sources are pre-decoded by sourceDecoder goroutines, the transition engine receives raw YUV and only needs to blend + output. No decode step in the engine lock.
 
 ---
 
@@ -261,37 +258,19 @@ sequenceDiagram
 
 ### Flow 4: Cut Operation
 
-A cut changes the program source and triggers GOP replay to warm the decoder.
+A cut changes the program source. Since all sources are continuously decoded
+(always-decode architecture), cuts are instant — no GOP replay or IDR gating needed.
 
 ```mermaid
 sequenceDiagram
     participant API as HTTP Handler
     participant SW as Switcher
-    participant GC as gopCache
-    participant PC as pipelineCodecs
     participant MX as AudioMixer
 
     API->>SW: Cut(ctx, sourceKey)
     activate SW
-    Note over SW: s.mu.Lock()<br/>Change programSource<br/>Set pendingIDR<br/>buildStateLocked()<br/>s.mu.Unlock()
+    Note over SW: s.mu.Lock()<br/>Change programSource<br/>buildStateLocked()<br/>s.mu.Unlock()
     deactivate SW
-
-    SW->>GC: GetOriginalGOP(sourceKey)
-    activate GC
-    Note over GC: g.mu.Lock()<br/>Deep copy cached frames<br/>g.mu.Unlock()
-    deactivate GC
-
-    SW->>PC: replayGOP(frames)
-    activate PC
-    Note over PC: pc.mu.Lock() — init<br/>pc.mu.Unlock()<br/>Decode each frame (no lock)
-    deactivate PC
-
-    SW->>PC: feedDeltaFrames(delta)
-    activate PC
-    Note over PC: pc.mu.Lock() — read decoder<br/>pc.mu.Unlock()<br/>Decode (no lock)
-    deactivate PC
-
-    Note over SW: s.mu.Lock()<br/>Clear pendingIDR<br/>s.mu.Unlock()
 
     SW->>MX: OnCut(old, new)
     activate MX
