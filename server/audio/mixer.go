@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio/vec"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -346,17 +347,15 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		if n > mixLen {
 			n = mixLen
 		}
-		accum := m.mixAccum[:n]
-		src := buf[:n]
-		for i := range accum {
-			accum[i] += src[i]
+		if n > 0 {
+			vec.AddFloat32(&m.mixAccum[0], &buf[0], n)
 		}
 	}
 	mixed := m.mixAccum
 
-	// Apply master gain
-	for i := range mixed {
-		mixed[i] *= m.masterLinear
+	// Apply master gain (skip if unity — preserves passthrough optimization)
+	if m.masterLinear != 1.0 && len(mixed) > 0 {
+		vec.ScaleFloat32(&mixed[0], m.masterLinear, len(mixed))
 	}
 
 	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)

@@ -1,6 +1,11 @@
 package audio
 
-import "math"
+import (
+	"math"
+	"sync"
+
+	"github.com/zsiec/switchframe/server/audio/vec"
+)
 
 const crossfadeTableSize = 1024
 
@@ -13,6 +18,23 @@ func init() {
 		crossfadeCosTable[i] = float32(math.Cos(t * math.Pi / 2))
 		crossfadeSinTable[i] = float32(math.Sin(t * math.Pi / 2))
 	}
+}
+
+// crossfadeGainPool recycles gain buffers used to expand cos/sin tables
+// for SIMD crossfade. Stores *[]float32 to avoid slice header boxing (SA6002).
+var crossfadeGainPool = sync.Pool{
+	New: func() any {
+		b := make([]float32, 0, 2048)
+		return &b
+	},
+}
+
+// crossfadePadPool recycles zero-padded input buffers for length-mismatched crossfade.
+var crossfadePadPool = sync.Pool{
+	New: func() any {
+		b := make([]float32, 0, 2048)
+		return &b
+	},
 }
 
 // EqualPowerCrossfade applies an equal-power crossfade between oldPCM and newPCM.
@@ -44,6 +66,9 @@ func EqualPowerCrossfadeStereo(oldPCM, newPCM []float32, channels int) []float32
 
 // EqualPowerCrossfadeStereoInto is like EqualPowerCrossfadeStereo but writes into dst.
 // If dst has insufficient capacity, it is grown. Returns the result slice.
+//
+// Uses SIMD-accelerated vec.MulAddFloat32 kernel for the multiply-add loop,
+// with pre-expanded gain arrays from the lookup tables.
 func EqualPowerCrossfadeStereoInto(dst, oldPCM, newPCM []float32, channels int) []float32 {
 	if channels < 1 {
 		channels = 1
@@ -66,21 +91,59 @@ func EqualPowerCrossfadeStereoInto(dst, oldPCM, newPCM []float32, channels int) 
 	} else {
 		dst = make([]float32, n)
 	}
+
+	// Pre-expand gain arrays from lookup tables.
+	// Borrow from pool to avoid per-call allocation.
+	cosGainsPtr := crossfadeGainPool.Get().(*[]float32)
+	sinGainsPtr := crossfadeGainPool.Get().(*[]float32)
+	cosGains := growBuf(*cosGainsPtr, n)
+	sinGains := growBuf(*sinGainsPtr, n)
+
 	for i := 0; i < n; i++ {
 		idx := int(float64(i/channels) / pairCount * float64(crossfadeTableSize-1))
 		if idx >= crossfadeTableSize {
 			idx = crossfadeTableSize - 1
 		}
-		cosGain := crossfadeCosTable[idx]
-		sinGain := crossfadeSinTable[idx]
-		var oldSample, newSample float32
-		if i < len(oldPCM) {
-			oldSample = oldPCM[i]
-		}
-		if i < len(newPCM) {
-			newSample = newPCM[i]
-		}
-		dst[i] = oldSample*cosGain + newSample*sinGain
+		cosGains[i] = crossfadeCosTable[idx]
+		sinGains[i] = crossfadeSinTable[idx]
 	}
+
+	// Ensure both input slices are at least n elements for the SIMD kernel.
+	// If they differ in length, zero-pad the shorter one via a pooled buffer.
+	oldBuf := oldPCM
+	newBuf := newPCM
+	var paddedPtr *[]float32 // track which buffer came from pool, if any
+	if len(oldPCM) < n {
+		paddedPtr = crossfadePadPool.Get().(*[]float32)
+		padded := growBuf(*paddedPtr, n)
+		copy(padded[:len(oldPCM)], oldPCM)
+		for i := len(oldPCM); i < n; i++ {
+			padded[i] = 0
+		}
+		oldBuf = padded
+		*paddedPtr = padded
+	} else if len(newPCM) < n {
+		paddedPtr = crossfadePadPool.Get().(*[]float32)
+		padded := growBuf(*paddedPtr, n)
+		copy(padded[:len(newPCM)], newPCM)
+		for i := len(newPCM); i < n; i++ {
+			padded[i] = 0
+		}
+		newBuf = padded
+		*paddedPtr = padded
+	}
+
+	// SIMD kernel: dst[i] = oldBuf[i]*cosGains[i] + newBuf[i]*sinGains[i]
+	vec.MulAddFloat32(&dst[0], &oldBuf[0], &cosGains[0], &newBuf[0], &sinGains[0], n)
+
+	// Return buffers to pools.
+	*cosGainsPtr = cosGains
+	*sinGainsPtr = sinGains
+	crossfadeGainPool.Put(cosGainsPtr)
+	crossfadeGainPool.Put(sinGainsPtr)
+	if paddedPtr != nil {
+		crossfadePadPool.Put(paddedPtr)
+	}
+
 	return dst
 }

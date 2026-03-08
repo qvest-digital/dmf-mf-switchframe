@@ -9,6 +9,10 @@ package graphics
 // The fast path skips fully transparent pixels (alpha == 0), which is
 // the common case for lower-third graphics that occupy <10% of the frame.
 //
+// The Y plane is processed per-row via alphaBlendRGBARowY (assembly on
+// amd64/arm64, integer fallback elsewhere). Chroma planes are blended
+// in Go at quarter resolution using integer fixed-point math.
+//
 // YUV420 layout: Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]
 // RGBA layout:   R,G,B,A,R,G,B,A,... (w*h*4 bytes)
 func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float64) {
@@ -17,50 +21,65 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 	crOffset := ySize + (width/2)*(height/2)
 	halfW := width / 2
 
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			rgbaIdx := (row*width + col) * 4
-			a := float64(rgba[rgbaIdx+3]) / 255.0 * alphaScale
+	// Convert float64 alphaScale to fixed-point 0-256 range.
+	alphaScale256 := int(alphaScale*256 + 0.5)
+	if alphaScale256 < 0 {
+		alphaScale256 = 0
+	}
+	if alphaScale256 > 256 {
+		alphaScale256 = 256
+	}
 
-			// Fast path: skip fully transparent pixels.
-			if a < 1.0/255.0 {
+	// Early exit: if alphaScale is zero, no blending needed.
+	if alphaScale256 == 0 {
+		return
+	}
+
+	// Process Y plane using per-row kernel (assembly on amd64/arm64).
+	for row := 0; row < height; row++ {
+		yStart := row * width
+		rgbaStart := row * width * 4
+		alphaBlendRGBARowY(&yuv[yStart], &rgba[rgbaStart], width, alphaScale256)
+	}
+
+	// Process Cb/Cr planes in Go using integer math (quarter resolution).
+	// Uses top-left pixel's RGBA for chroma blend (matching previous
+	// "last write wins" behavior, now deterministic).
+	//
+	// BT.709 integer coefficients (scaled by 256):
+	//   Cb = (-29*R - 99*G + 128*B + 128) >> 8 + 128
+	//   Cr = (128*R - 116*G - 12*B + 128) >> 8 + 128
+	for row := 0; row < height; row += 2 {
+		for col := 0; col < width; col += 2 {
+			rgbaIdx := (row*width + col) * 4
+			A := int(rgba[rgbaIdx+3])
+			A += A >> 7 // map 0-255 to 0-256
+			a256 := (A * alphaScale256) >> 8
+			if a256 == 0 {
 				continue
 			}
+			R := int(rgba[rgbaIdx])
+			G := int(rgba[rgbaIdx+1])
+			B := int(rgba[rgbaIdx+2])
 
-			r := float64(rgba[rgbaIdx])
-			g := float64(rgba[rgbaIdx+1])
-			b := float64(rgba[rgbaIdx+2])
+			overlayCb := ((-29*R - 99*G + 128*B + 128) >> 8) + 128
+			overlayCr := ((128*R - 116*G - 12*B + 128) >> 8) + 128
 
-			// BT.709 RGB -> YUV
-			overlayY := 0.2126*r + 0.7152*g + 0.0722*b
-			overlayCb := -0.1146*r - 0.3854*g + 0.5*b + 128.0
-			overlayCr := 0.5*r - 0.4542*g - 0.0458*b + 128.0
-
-			invA := 1.0 - a
-
-			// Blend Y (luma) - per pixel
-			yIdx := row*width + col
-			yuv[yIdx] = clampByte(float64(yuv[yIdx])*invA + overlayY*a)
-
-			// Blend Cb, Cr (chroma) - at quarter resolution
-			// We accumulate overlay chroma per 2x2 block below.
-			// For simplicity, apply chroma blend for every luma pixel.
-			// Since chroma is shared by 2x2 blocks, the last write wins
-			// (acceptable for typical overlay content).
+			inv := 256 - a256
 			uvIdx := (row/2)*halfW + (col / 2)
-			yuv[cbOffset+uvIdx] = clampByte(float64(yuv[cbOffset+uvIdx])*invA + overlayCb*a)
-			yuv[crOffset+uvIdx] = clampByte(float64(yuv[crOffset+uvIdx])*invA + overlayCr*a)
+			yuv[cbOffset+uvIdx] = byte(clampInt((int(yuv[cbOffset+uvIdx])*inv+overlayCb*a256+128)>>8, 0, 255))
+			yuv[crOffset+uvIdx] = byte(clampInt((int(yuv[crOffset+uvIdx])*inv+overlayCr*a256+128)>>8, 0, 255))
 		}
 	}
 }
 
-// clampByte clamps a float64 value to [0, 255] and returns as byte.
-func clampByte(v float64) byte {
-	if v < 0 {
-		return 0
+// clampInt clamps an integer value to [min, max].
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
 	}
-	if v > 255 {
-		return 255
+	if v > max {
+		return max
 	}
-	return byte(v + 0.5) // round to nearest
+	return v
 }

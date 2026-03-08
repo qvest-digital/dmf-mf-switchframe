@@ -1,6 +1,7 @@
 package transition
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -422,6 +423,251 @@ func BenchmarkScaleLanczos_1080to720(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}
+}
+
+// --- Optimized Lanczos cross-validation tests ---
+
+// scalePlaneLanczosReference is the original float64 implementation for cross-validation.
+func scalePlaneLanczosReference(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
+	if srcW == dstW && srcH == dstH {
+		copy(dst, src)
+		return
+	}
+	if srcW == 1 && srcH == 1 {
+		val := src[0]
+		for i := range dst {
+			dst[i] = val
+		}
+		return
+	}
+
+	tmp := make([]float64, dstW*srcH)
+	xRatio := float64(srcW) / float64(dstW)
+	hScale := 1.0
+	if xRatio > 1.0 {
+		hScale = xRatio
+	}
+	hRadius := 3.0 * hScale
+
+	for y := 0; y < srcH; y++ {
+		srcRow := y * srcW
+		tmpRow := y * dstW
+		for dx := 0; dx < dstW; dx++ {
+			sx := (float64(dx)+0.5)*xRatio - 0.5
+			minX := int(math.Floor(sx - hRadius))
+			maxX := int(math.Ceil(sx + hRadius))
+			var sum, wsum float64
+			for ix := minX; ix <= maxX; ix++ {
+				cix := ix
+				if cix < 0 {
+					cix = 0
+				} else if cix >= srcW {
+					cix = srcW - 1
+				}
+				w := lanczos3((float64(ix) - sx) / hScale)
+				sum += w * float64(src[srcRow+cix])
+				wsum += w
+			}
+			if wsum != 0 {
+				tmp[tmpRow+dx] = sum / wsum
+			}
+		}
+	}
+
+	yRatio := float64(srcH) / float64(dstH)
+	vScale := 1.0
+	if yRatio > 1.0 {
+		vScale = yRatio
+	}
+	vRadius := 3.0 * vScale
+
+	for dx := 0; dx < dstW; dx++ {
+		for dy := 0; dy < dstH; dy++ {
+			sy := (float64(dy)+0.5)*yRatio - 0.5
+			minY := int(math.Floor(sy - vRadius))
+			maxY := int(math.Ceil(sy + vRadius))
+			var sum, wsum float64
+			for iy := minY; iy <= maxY; iy++ {
+				ciy := iy
+				if ciy < 0 {
+					ciy = 0
+				} else if ciy >= srcH {
+					ciy = srcH - 1
+				}
+				w := lanczos3((float64(iy) - sy) / vScale)
+				sum += w * tmp[ciy*dstW+dx]
+				wsum += w
+			}
+			var val float64
+			if wsum != 0 {
+				val = sum / wsum
+			}
+			if val < 0 {
+				val = 0
+			} else if val > 255 {
+				val = 255
+			}
+			dst[dy*dstW+dx] = byte(val + 0.5)
+		}
+	}
+}
+
+func TestPrecomputeKernel_WeightsNormalized(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		srcSize, dstSize int
+	}{
+		{"upscale_720_1080", 720, 1080},
+		{"upscale_1280_1920", 1280, 1920},
+		{"downscale_1920_1280", 1920, 1280},
+		{"downscale_1080_720", 1080, 720},
+		{"identity_1920", 1920, 1920},
+		{"small_4_8", 4, 8},
+		{"small_8_4", 8, 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			k := precomputeLanczosKernel(tt.srcSize, tt.dstSize)
+			require.Equal(t, tt.dstSize, k.size)
+
+			for d := 0; d < k.size; d++ {
+				var sum float32
+				wBase := d * k.maxTaps
+				for t := 0; t < k.maxTaps; t++ {
+					sum += k.weights[wBase+t]
+				}
+				diff := sum - 1.0
+				if diff < 0 {
+					diff = -diff
+				}
+				require.LessOrEqual(t, diff, float32(0.01),
+					"position %d: weights sum to %f, expected ~1.0", d, sum)
+			}
+		})
+	}
+}
+
+func TestPrecomputeKernel_OffsetsInRange(t *testing.T) {
+	t.Parallel()
+	k := precomputeLanczosKernel(1280, 1920)
+	for d := 0; d < k.size; d++ {
+		off := k.offsets[d]
+		require.GreaterOrEqual(t, off, int32(0), "offset[%d] = %d, must be >= 0", d, off)
+		// Offset itself must be within source
+		require.Less(t, int(off), 1280, "offset[%d] = %d, must be < srcSize", d, off)
+		// Any taps past the source boundary must have zero weight
+		wBase := d * k.maxTaps
+		for t2 := 0; t2 < k.maxTaps; t2++ {
+			idx := int(off) + t2
+			if idx >= 1280 && k.weights[wBase+t2] != 0 {
+				t.Fatalf("offset[%d]+tap %d = %d >= srcSize, but weight = %f (should be 0)",
+					d, t2, idx, k.weights[wBase+t2])
+			}
+		}
+	}
+}
+
+func TestScalePlaneLanczos_CrossValidate_Upscale(t *testing.T) {
+	t.Parallel()
+	// Clear kernel cache to avoid stale entries from other tests
+	for i := range kernelCache {
+		kernelCache[i].Store(nil)
+	}
+	srcW, srcH := 64, 48
+	dstW, dstH := 128, 96
+
+	src := make([]byte, srcW*srcH)
+	for i := range src {
+		src[i] = byte((i * 37) % 256)
+	}
+
+	ref := make([]byte, dstW*dstH)
+	opt := make([]byte, dstW*dstH)
+
+	scalePlaneLanczosReference(src, srcW, srcH, ref, dstW, dstH)
+	scalePlaneLanczos(src, srcW, srcH, opt, dstW, dstH)
+
+	maxDiff := 0
+	maxDiffIdx := 0
+	for i := range ref {
+		d := int(ref[i]) - int(opt[i])
+		if d < 0 {
+			d = -d
+		}
+		if d > maxDiff {
+			maxDiff = d
+			maxDiffIdx = i
+		}
+	}
+	if maxDiff > 2 {
+		y := maxDiffIdx / dstW
+		x := maxDiffIdx % dstW
+		t.Logf("max diff at (%d,%d): ref=%d opt=%d diff=%d", x, y, ref[maxDiffIdx], opt[maxDiffIdx], maxDiff)
+	}
+	require.LessOrEqual(t, maxDiff, 2,
+		"max pixel difference %d exceeds tolerance of ±2", maxDiff)
+}
+
+func TestScalePlaneLanczos_CrossValidate_Downscale(t *testing.T) {
+	t.Parallel()
+	srcW, srcH := 128, 96
+	dstW, dstH := 64, 48
+
+	src := make([]byte, srcW*srcH)
+	for i := range src {
+		src[i] = byte((i * 37) % 256)
+	}
+
+	ref := make([]byte, dstW*dstH)
+	opt := make([]byte, dstW*dstH)
+
+	scalePlaneLanczosReference(src, srcW, srcH, ref, dstW, dstH)
+	scalePlaneLanczos(src, srcW, srcH, opt, dstW, dstH)
+
+	maxDiff := 0
+	for i := range ref {
+		d := int(ref[i]) - int(opt[i])
+		if d < 0 {
+			d = -d
+		}
+		if d > maxDiff {
+			maxDiff = d
+		}
+	}
+	require.LessOrEqual(t, maxDiff, 2,
+		"max pixel difference %d exceeds tolerance of ±2", maxDiff)
+}
+
+func TestScalePlaneLanczos_CrossValidate_720to1080(t *testing.T) {
+	t.Parallel()
+	srcW, srcH := 320, 180 // smaller than full 720p for test speed
+	dstW, dstH := 480, 270
+
+	src := make([]byte, srcW*srcH)
+	for i := range src {
+		src[i] = byte((i * 37) % 256)
+	}
+
+	ref := make([]byte, dstW*dstH)
+	opt := make([]byte, dstW*dstH)
+
+	scalePlaneLanczosReference(src, srcW, srcH, ref, dstW, dstH)
+	scalePlaneLanczos(src, srcW, srcH, opt, dstW, dstH)
+
+	maxDiff := 0
+	for i := range ref {
+		d := int(ref[i]) - int(opt[i])
+		if d < 0 {
+			d = -d
+		}
+		if d > maxDiff {
+			maxDiff = d
+		}
+	}
+	require.LessOrEqual(t, maxDiff, 2,
+		"max pixel difference %d exceeds tolerance of ±2", maxDiff)
 }
 
 func BenchmarkScaleLanczos_720to1080(b *testing.B) {
