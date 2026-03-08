@@ -2075,9 +2075,10 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 
 	// Merge replay decoder pool stats into video_pipeline map.
 	if s.pipeCodecs != nil {
-		pipeline := result["video_pipeline"].(map[string]any)
-		for k, v := range s.pipeCodecs.replayStats() {
-			pipeline[k] = v
+		if pipeline, ok := result["video_pipeline"].(map[string]any); ok {
+			for k, v := range s.pipeCodecs.replayStats() {
+				pipeline[k] = v
+			}
 		}
 	}
 

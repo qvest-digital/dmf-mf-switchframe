@@ -64,7 +64,11 @@ func (a *AsyncAdapter) startDrain() {
 // is full, the packet is dropped and the drop counter is incremented.
 // Write never blocks.
 func (a *AsyncAdapter) Write(tsData []byte) (int, error) {
-	bp := tsPacketPool.Get().(*[]byte)
+	bp, ok := tsPacketPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, 65536)
+		bp = &b
+	}
 	*bp = append((*bp)[:0], tsData...)
 
 	select {

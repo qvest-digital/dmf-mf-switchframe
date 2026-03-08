@@ -30,8 +30,8 @@ var avc1Pool = sync.Pool{
 }
 
 func getAVC1Buffer(size int) []byte {
-	buf := avc1Pool.Get().([]byte)
-	if cap(buf) < size {
+	buf, ok := avc1Pool.Get().([]byte)
+	if !ok || cap(buf) < size {
 		return make([]byte, size)
 	}
 	return buf[:size]

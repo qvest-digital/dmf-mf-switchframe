@@ -14,9 +14,9 @@ var yuvPool = sync.Pool{
 
 // getYUVBuffer retrieves a YUV buffer from the pool, growing if needed.
 func getYUVBuffer(size int) []byte {
-	buf := yuvPool.Get().([]byte)
-	if cap(buf) < size {
-		buf = make([]byte, size)
+	buf, ok := yuvPool.Get().([]byte)
+	if !ok || cap(buf) < size {
+		return make([]byte, size)
 	}
 	return buf[:size]
 }

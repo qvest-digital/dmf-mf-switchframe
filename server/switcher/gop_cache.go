@@ -14,9 +14,8 @@ var gopBufPool = sync.Pool{
 }
 
 func getGOPBuf(size int) []byte {
-	b := gopBufPool.Get().([]byte)
-	if cap(b) < size {
-		gopBufPool.Put(b[:0]) //nolint:staticcheck // return undersized buffer
+	b, ok := gopBufPool.Get().([]byte)
+	if !ok || cap(b) < size {
 		return make([]byte, size)
 	}
 	return b[:size]
