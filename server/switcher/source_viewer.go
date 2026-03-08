@@ -37,9 +37,9 @@ type sourceViewer struct {
 	delayBuffer atomic.Pointer[DelayBuffer]
 	frameSync   atomic.Pointer[FrameSynchronizer]
 	videoSent   atomic.Int64
-	_pad1       [56]byte // cache line padding (64 - sizeof(atomic.Int64))
+	_pad1       [56]byte //nolint:unused // cache line padding between atomic counters
 	audioSent   atomic.Int64
-	_pad2       [56]byte
+	_pad2       [56]byte //nolint:unused // cache line padding between atomic counters
 	captionSent atomic.Int64
 }
 
