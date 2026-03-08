@@ -1455,13 +1455,13 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 
-	if !ok || fTBActive {
+	if !ok {
 		s.routeFiltered.Add(1)
 		return
 	}
 
-	// During transition: route to engine for blending (same as handleVideoFrame).
-	// The engine needs frames from BOTH from/to sources to produce blended output.
+	// During transition (including FTB): route to engine for blending.
+	// Must come before the FTB filter — FTB transitions need frames.
 	if inTrans && engine != nil {
 		if engine.State() != transition.StateActive {
 			s.routeToIdleEngine.Add(1)
@@ -1475,8 +1475,8 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 		return
 	}
 
-	// Normal: only program source passes through.
-	if sourceKey != programSource {
+	// Normal: only program source passes through. FTB hold filters all frames.
+	if sourceKey != programSource || fTBActive {
 		s.routeFiltered.Add(1)
 		return
 	}
