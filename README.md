@@ -544,6 +544,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [API Reference](docs/api.md) — Endpoints with request/response examples
 - [Deployment Guide](docs/deployment.md) — Production setup, Docker, TLS, monitoring
 - [Architecture](docs/architecture.md) — System design, data flow, decisions
+- [Locking & Concurrency](docs/locking-and-concurrency.md) — Lock inventory, frame flow diagrams, lock ordering, deadlock-free guarantees
 - [MXL Integration](docs/mxl.md) — MXL shared-memory setup, configuration, demo
 
 ## License
