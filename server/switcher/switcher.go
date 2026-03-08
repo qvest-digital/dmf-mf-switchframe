@@ -556,6 +556,17 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// SetFRCQuality sets the frame rate conversion quality for all sources.
+// Only effective when frame sync is enabled.
+func (s *Switcher) SetFRCQuality(q FRCQuality) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frameSync != nil {
+		s.frameSync.SetFRCQuality(q)
+	}
+	s.log.Info("FRC quality set", "quality", q.String())
+}
+
 // SetFrameBudget sets the per-frame processing time budget in nanoseconds.
 // When pipeline latency exceeds this budget, deadlineViolations is incremented.
 // Default is 33ms (30fps). Call with 16_666_666 for 60fps sources.
@@ -1862,6 +1873,13 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	// Include transition engine timing when active
 	if s.state.isInTransition() && s.transEngine != nil {
 		result["transition_engine"] = s.transEngine.Timing()
+	}
+
+	// Include FRC info when frame sync is active.
+	if s.frameSync != nil {
+		result["frame_rate_converter"] = map[string]any{
+			"quality": s.frameSync.FRCQuality().String(),
+		}
 	}
 
 	// Program relay viewer stats — reveals MoQ channel drops.

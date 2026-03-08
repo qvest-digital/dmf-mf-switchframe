@@ -57,6 +57,9 @@ type syncSource struct {
 	// After 2 repeated frames, audio emission stops to prevent a glitch loop
 	// with encoded AAC (which sounds worse than silence).
 	audioMissCount int
+
+	// frc holds per-source frame rate conversion state. nil when FRC is disabled.
+	frc *frcSource
 }
 
 // pushVideo adds a video frame to the ring buffer, overwriting the oldest
@@ -158,6 +161,7 @@ type FrameSynchronizer struct {
 	stopped    bool
 	tickNum    int64            // monotonic tick counter for PTS generation
 	releases   []pendingRelease // reused across ticks to avoid allocation
+	frcQuality FRCQuality       // FRC quality level for new sources
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -186,7 +190,11 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	if _, exists := fs.sources[key]; exists {
 		return
 	}
-	fs.sources[key] = &syncSource{}
+	ss := &syncSource{}
+	if fs.frcQuality != FRCNone {
+		ss.frc = newFRCSource(fs.frcQuality)
+	}
+	fs.sources[key] = ss
 	fs.log.Debug("source added", "key", key)
 }
 
@@ -237,6 +245,9 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 	}
 	ss.mu.Lock()
 	ss.pushRawVideo(pf)
+	if ss.frc != nil {
+		ss.frc.ingest(pf)
+	}
 	ss.mu.Unlock()
 }
 
@@ -247,6 +258,37 @@ func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	defer fs.mu.Unlock()
 	fs.tickRate = d
 	fs.log.Debug("tick rate updated", "rate", d)
+}
+
+// SetFRCQuality sets the frame rate conversion quality for all sources.
+// FRCNone disables FRC and removes frcSource instances. Other values
+// create or update frcSource on each syncSource.
+func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.frcQuality = q
+	for _, ss := range fs.sources {
+		ss.mu.Lock()
+		if q == FRCNone {
+			if ss.frc != nil {
+				ss.frc.reset()
+				ss.frc = nil
+			}
+		} else if ss.frc == nil {
+			ss.frc = newFRCSource(q)
+		} else {
+			ss.frc.requestedQuality = q
+			ss.frc.effectiveQuality = q
+		}
+		ss.mu.Unlock()
+	}
+}
+
+// FRCQuality returns the current FRC quality level.
+func (fs *FrameSynchronizer) FRCQuality() FRCQuality {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.frcQuality
 }
 
 // Start begins the background ticker goroutine that releases frames at
@@ -358,6 +400,9 @@ func (fs *FrameSynchronizer) releaseTick() {
 		if newest := ss.popNewestRawVideo(); newest != nil {
 			ss.lastRawVideo = newest
 			releaseRawVideo = newest
+		} else if ss.frc != nil && ss.frc.canInterpolate() {
+			// FRC: synthesize interpolated frame instead of repeating last
+			releaseRawVideo = ss.frc.emit(tickPTS)
 		} else if ss.lastRawVideo != nil {
 			releaseRawVideo = ss.lastRawVideo
 		}

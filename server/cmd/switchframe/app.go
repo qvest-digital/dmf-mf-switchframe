@@ -214,6 +214,11 @@ func (a *App) initCoreEngine() error {
 	// Enable frame sync if requested.
 	if a.cfg.FrameSync {
 		a.sw.SetFrameSync(true, 0) // 0 = default 30fps
+		// Enable frame rate conversion if requested.
+		q := switcher.ParseFRCQuality(a.cfg.FRCQuality)
+		if q != switcher.FRCNone {
+			a.sw.SetFRCQuality(q)
+		}
 	}
 
 	// Wire audio mixer to the switcher.

@@ -26,6 +26,7 @@ type AppConfig struct {
 	Demo             bool
 	FrameSync        bool
 	DecodeAllSources bool
+	FRCQuality       string
 	Format           string
 	DemoVideoDir     string
 	LogLevel         string
@@ -95,6 +96,7 @@ func parseConfig() (AppConfig, error) {
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
 	decodeAllSourcesFlag := flag.Bool("decode-all-sources", false, "Decode all sources to raw YUV at ingest (eliminates keyframe wait on cuts/transitions)")
+	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
 	formatFlag := flag.String("format", "1080p29.97", "Video standard (e.g. 1080p29.97, 1080p25, 720p59.94)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	httpFallbackFlag := flag.Bool("http-fallback", false, "Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts")
@@ -134,6 +136,7 @@ func parseConfig() (AppConfig, error) {
 		Demo:              *demoFlag,
 		FrameSync:         *frameSyncFlag,
 		DecodeAllSources:  *decodeAllSourcesFlag,
+		FRCQuality:        *frcQualityFlag,
 		Format:            *formatFlag,
 		DemoVideoDir:      *demoVideoDir,
 		LogLevel:          *logLevel,
