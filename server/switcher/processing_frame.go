@@ -2,13 +2,15 @@ package switcher
 
 import "sync"
 
+const yuv420Size1080p = 1920 * 1080 * 3 / 2
+
 // yuvPool recycles YUV420 frame buffers to avoid 3MB/frame allocations
 // on every pipeline decode. Seeded with 1080p buffers; getYUVBuffer
 // transparently allocates larger buffers for higher resolutions.
 var yuvPool = sync.Pool{
 	New: func() any {
 		// Start with 1080p size; will grow as needed
-		return make([]byte, 1920*1080*3/2)
+		return make([]byte, yuv420Size1080p)
 	},
 }
 

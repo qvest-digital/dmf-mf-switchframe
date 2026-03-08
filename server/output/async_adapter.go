@@ -8,9 +8,11 @@ import (
 	"time"
 )
 
+const tsPacketBufCap = 65536 // 64KB default buffer capacity for TS packet pool
+
 var tsPacketPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 0, 65536)
+		b := make([]byte, 0, tsPacketBufCap)
 		return &b
 	},
 }
@@ -66,7 +68,7 @@ func (a *AsyncAdapter) startDrain() {
 func (a *AsyncAdapter) Write(tsData []byte) (int, error) {
 	bp, ok := tsPacketPool.Get().(*[]byte)
 	if !ok {
-		b := make([]byte, 0, 65536)
+		b := make([]byte, 0, tsPacketBufCap)
 		bp = &b
 	}
 	*bp = append((*bp)[:0], tsData...)

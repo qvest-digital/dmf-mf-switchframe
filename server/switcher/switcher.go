@@ -21,6 +21,11 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+const (
+	maxDelayMs      = 500  // maximum source delay for lip-sync correction
+	defaultFTBDurMs = 1000 // default FTB transition duration in milliseconds
+)
+
 // Sentinel errors for the switcher package.
 var (
 	ErrSourceNotFound   = errors.New("switcher: source not found")
@@ -1176,7 +1181,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			},
 		})
 
-		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, 1000); err != nil {
+		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, defaultFTBDurMs); err != nil {
 			s.mu.Lock()
 			s.transitionState(StateFTB) // Roll back to StateFTB
 			s.mu.Unlock()
@@ -1210,12 +1215,12 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.Unlock()
 
 		s.log.Info("transition started",
-			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", 1000)
+			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
 
 		if audioHandler != nil {
 			// Unmute program audio so the fade-in is audible
 			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, 1000)
+			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, defaultFTBDurMs)
 		}
 		s.notifyStateChange(snapshot)
 		return nil
@@ -1246,7 +1251,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		},
 	})
 
-	if err := engine.Start(fromSource, "", transition.TransitionFTB, 1000); err != nil {
+	if err := engine.Start(fromSource, "", transition.TransitionFTB, defaultFTBDurMs); err != nil {
 		s.mu.Lock()
 		s.transitionState(StateIdle)
 		s.mu.Unlock()
@@ -1280,10 +1285,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.mu.Unlock()
 
 	s.log.Info("transition started",
-		"type", "ftb", "from", fromSource, "to", "", "duration_ms", 1000)
+		"type", "ftb", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, 1000)
+		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, defaultFTBDurMs)
 	}
 	s.notifyStateChange(snapshot)
 	return nil
@@ -1960,7 +1965,7 @@ func (s *Switcher) SetSourcePosition(sourceKey string, position int) error {
 // for lip-sync compensation. Returns ErrSourceNotFound if the source is not
 // registered, or ErrInvalidDelay if the value is out of range.
 func (s *Switcher) SetSourceDelay(sourceKey string, delayMs int) error {
-	if delayMs < 0 || delayMs > 500 {
+	if delayMs < 0 || delayMs > maxDelayMs {
 		return ErrInvalidDelay
 	}
 	s.mu.Lock()

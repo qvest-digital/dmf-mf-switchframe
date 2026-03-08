@@ -7,9 +7,11 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 )
 
+const gopBufCap = 65536 // 64KB default buffer capacity for GOP pool
+
 var gopBufPool = sync.Pool{
 	New: func() any {
-		return make([]byte, 0, 65536)
+		return make([]byte, 0, gopBufCap)
 	},
 }
 

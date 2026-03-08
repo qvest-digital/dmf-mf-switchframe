@@ -15,6 +15,8 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+const avc1BufCap = 65536 // 64KB default buffer capacity for AVC1 pool
+
 // errDecoderBuffering is returned when the decoder needs more input frames
 // before it can produce output (H.264 B-frame reordering). This is normal
 // startup behavior, not an error — the frame is buffered internally.
@@ -25,7 +27,7 @@ var errDecoderBuffering = errors.New("pipeline: decoder buffering")
 // allocates larger buffers for higher bitrate frames.
 var avc1Pool = sync.Pool{
 	New: func() any {
-		return make([]byte, 0, 65536)
+		return make([]byte, 0, avc1BufCap)
 	},
 }
 

@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	muxerBufCap = 65536 // 64KB default buffer capacity for Annex B buffers
 	// videoPID is the MPEG-TS packet identifier for the H.264 video stream.
 	videoPID uint16 = 0x100
 	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
@@ -42,8 +43,8 @@ type TSMuxer struct {
 // writing frames. The muxer initializes on the first keyframe.
 func NewTSMuxer() *TSMuxer {
 	return &TSMuxer{
-		annexBBuf:  make([]byte, 0, 65536),
-		prependBuf: make([]byte, 0, 65536),
+		annexBBuf:  make([]byte, 0, muxerBufCap),
+		prependBuf: make([]byte, 0, muxerBufCap),
 	}
 }
 
