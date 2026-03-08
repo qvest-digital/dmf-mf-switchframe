@@ -321,7 +321,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		programRelay:  programRelay,
 		health:        newHealthMonitor(),
 		frameBudgetNs: 33_333_333, // 33ms for 30fps
-		videoProcCh:   make(chan videoProcWork, 8),
+		videoProcCh:   make(chan videoProcWork, 2),
 		videoProcDone: make(chan struct{}),
 	}
 	s.delayBuffer = NewDelayBuffer(s)

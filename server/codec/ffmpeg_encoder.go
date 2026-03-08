@@ -71,12 +71,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	// uses CRF mode which ignores it (quality-driven, not bitrate-driven).
 	h->ctx->bit_rate = bitrate;
 
-	// VBV ceiling: 3x source bitrate with 2-second buffer. This is generous
-	// enough that the rate controller never needs to crush quality during
-	// transitions, but still prevents unbounded bitrate that could overwhelm
-	// downstream buffers (SRT, browser WebTransport).
-	h->ctx->rc_max_rate = bitrate * 3;
-	h->ctx->rc_buffer_size = bitrate * 2; // 2 seconds
+	// VBV ceiling: 2x source bitrate with 1-second buffer. Generous enough
+	// that the rate controller doesn't crush quality during transitions,
+	// but tight enough to prevent encoder-internal buffering from adding
+	// latency. Larger VBV buffers let the encoder defer bits across more
+	// frames, which helps quality but adds delay.
+	h->ctx->rc_max_rate = bitrate * 2;
+	h->ctx->rc_buffer_size = bitrate; // 1 second
 
 	h->ctx->gop_size = (int)(fps + 0.5f) * gop_secs;
 	h->ctx->max_b_frames = 0;
@@ -118,10 +119,16 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// (wipe boundaries, stinger edges) instead of uniform areas.
 		av_opt_set(h->ctx->priv_data, "aq-mode", "2", 0);
 		av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
-		// Mbtree (macroblock tree) looks at future reference usage to
-		// allocate more bits to frames that will be referenced heavily.
-		// With no B-frames and transitions, every P-frame is a reference.
-		av_opt_set(h->ctx->priv_data, "mbtree", "1", 0);
+		// Low-latency lookahead: 3 frames gives AQ enough context for
+		// good bit allocation without adding significant delay. The
+		// "faster" preset defaults to 20 frames (~800ms at 24fps) which
+		// is unacceptable for live switching.
+		av_opt_set(h->ctx->priv_data, "rc-lookahead", "3", 0);
+		// Disable sync-lookahead (threaded lookahead adds latency).
+		av_opt_set(h->ctx->priv_data, "sync-lookahead", "0", 0);
+		// Disable mbtree — it needs deep lookahead to be effective and
+		// adds frame-buffering latency in low-lookahead configurations.
+		av_opt_set(h->ctx->priv_data, "mbtree", "0", 0);
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
 		char level_str[8];
@@ -152,7 +159,12 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "prio_speed", 1, 0);
+		// Force frame-at-a-time output — no internal encoder frame buffering.
+		// Without this, VT can hold 1-3 frames for rate control lookahead.
+		h->ctx->max_b_frames = 0;
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
+		// Constant quality via capped VBR — higher quality than pure ABR.
+		av_opt_set(h->ctx->priv_data, "constant_bit_rate", "false", 0);
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	}
 
