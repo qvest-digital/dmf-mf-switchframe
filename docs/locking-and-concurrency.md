@@ -115,6 +115,13 @@ Every lock in the system, what it protects, and its characteristics:
 | `avc1Pool` | `pipeline_codecs.go` | 64 KB | Encoded AVC1 output |
 | `gopBufPool` | `gop_cache.go` | 64 KB | GOP cache deep-copy buffers |
 | `tsPacketPool` | `async_adapter.go` | 64 KB | MPEG-TS packet batches |
+| `lanczosIntermPool` | `scaler_lanczos.go` | 1080p (5.5 MB) | Lanczos horizontal pass float32 intermediates |
+
+### Atomic Caches
+
+| Cache | Location | Size | Purpose |
+|-------|----------|------|---------|
+| `kernelCache` | `scaler_lanczos.go` | 8 entries | Precomputed Lanczos-3 kernel weights (keyed by src/dst size) |
 
 ---
 
