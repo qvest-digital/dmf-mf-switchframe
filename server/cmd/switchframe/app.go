@@ -655,12 +655,16 @@ func (a *App) Run(ctx context.Context) error {
 	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64())
 	defer stopAdmin()
 
-	// Start HTTP API server on TCP :8081.
-	stopHTTP, err := a.startHTTPAPIServer(ctx)
-	if err != nil {
-		return err
+	// Optionally start HTTP/1.1 fallback for curl/scripts.
+	if a.cfg.HTTPFallback {
+		stopHTTP, err := a.startHTTPAPIServer(ctx)
+		if err != nil {
+			return err
+		}
+		defer stopHTTP()
+	} else {
+		slog.Info("HTTP/1.1 fallback disabled (use --http-fallback to enable)")
 	}
-	defer stopHTTP()
 
 	// All components initialized -- mark ready for readiness probe.
 	readyFlag.Store(true)

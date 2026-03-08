@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -22,14 +21,6 @@ import (
 func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiMux := http.NewServeMux()
 	a.api.RegisterOnMux(apiMux)
-	apiMux.HandleFunc("GET /api/cert-hash", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"hash": a.cert.FingerprintBase64(),
-			"addr": a.cfg.Addr,
-		})
-	})
 
 	var apiHandler http.Handler = apiMux
 	apiHandler = a.operatorMW(apiHandler)
