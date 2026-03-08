@@ -1,6 +1,10 @@
 package transition
 
-import "math"
+import (
+	"math"
+	"sync"
+	"sync/atomic"
+)
 
 // ScaleQuality selects the scaling algorithm.
 type ScaleQuality int
@@ -36,8 +40,8 @@ func ScaleYUV420WithQuality(src []byte, srcW, srcH int, dst []byte, dstW, dstH i
 // native resolution: full for Y, half for Cb/Cr.
 //
 // The scaler uses separable filtering (horizontal pass then vertical pass)
-// for performance. The Lanczos-3 kernel has a support radius of 3 pixels
-// and produces sharper output than bilinear, particularly on downscales.
+// with precomputed kernel weights for performance. The Lanczos-3 kernel has
+// a support radius of 3 pixels and produces sharper output than bilinear.
 func ScaleYUV420Lanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	srcYSize := srcW * srcH
 	srcUVW := srcW / 2
@@ -72,6 +76,50 @@ func ScaleYUV420Lanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) 
 	)
 }
 
+// lanczosKernel holds precomputed weights for one dimension of Lanczos-3 scaling.
+// For a given (srcSize, dstSize) pair, weights are constant across all frames.
+type lanczosKernel struct {
+	size    int       // number of destination positions
+	maxTaps int       // max taps per position (typically 7 for upscale, ~13 for 2x down)
+	offsets []int32   // [size] first source index per destination pixel
+	weights []float32 // [size * maxTaps] packed weight array (zero-padded)
+}
+
+// kernelCacheEntry wraps a kernel with its key.
+type kernelCacheEntry struct {
+	srcSize, dstSize int
+	kernel           *lanczosKernel
+}
+
+// kernelCache holds recently-used kernels. Sized for typical YUV420 usage:
+// Y horizontal, Y vertical, chroma horizontal, chroma vertical = 4 entries.
+const kernelCacheSize = 8
+
+var kernelCache [kernelCacheSize]atomic.Pointer[kernelCacheEntry]
+
+// getLanczosKernel returns a precomputed kernel, using a small cache for repeated calls.
+func getLanczosKernel(srcSize, dstSize int) *lanczosKernel {
+	// Search cache
+	for i := range kernelCache {
+		if c := kernelCache[i].Load(); c != nil && c.srcSize == srcSize && c.dstSize == dstSize {
+			return c.kernel
+		}
+	}
+	// Compute and store in first empty or overwrite slot 0
+	k := precomputeLanczosKernel(srcSize, dstSize)
+	entry := &kernelCacheEntry{srcSize: srcSize, dstSize: dstSize, kernel: k}
+	for i := range kernelCache {
+		if kernelCache[i].Load() == nil {
+			kernelCache[i].Store(entry)
+			return k
+		}
+	}
+	// Cache full — overwrite slot based on hash to spread evictions
+	slot := (srcSize*31 + dstSize) % kernelCacheSize
+	kernelCache[slot].Store(entry)
+	return k
+}
+
 // lanczos3 computes the Lanczos-3 kernel value:
 //
 //	L(x) = sinc(x) * sinc(x/3)   for |x| < 3
@@ -90,13 +138,125 @@ func lanczos3(x float64) float64 {
 	return (math.Sin(pix) / pix) * (math.Sin(pix/3.0) / (pix / 3.0))
 }
 
+// precomputeLanczosKernel builds the weight table for one dimension.
+// For each destination position, it evaluates the Lanczos-3 kernel at the
+// original (unclamped) tap positions, then folds weights of out-of-bounds
+// taps onto the nearest edge pixel. This exactly matches the reference
+// implementation's edge-clamping behavior.
+func precomputeLanczosKernel(srcSize, dstSize int) *lanczosKernel {
+	ratio := float64(srcSize) / float64(dstSize)
+
+	// When downscaling, widen the filter to avoid aliasing
+	scale := 1.0
+	if ratio > 1.0 {
+		scale = ratio
+	}
+	radius := 3.0 * scale
+
+	// Compute max number of taps. We store weights indexed by clamped
+	// source position relative to the start offset. The window spans
+	// [0, srcSize-1] at most, but typically only a few pixels.
+	rawTaps := int(math.Ceil(radius))*2 + 2 // generous upper bound
+	if rawTaps > srcSize {
+		rawTaps = srcSize
+	}
+
+	offsets := make([]int32, dstSize)
+	weights := make([]float32, dstSize*rawTaps)
+
+	for d := 0; d < dstSize; d++ {
+		// Map destination center to source coordinate
+		center := (float64(d)+0.5)*ratio - 0.5
+
+		// Determine unclamped tap range (matching reference)
+		minX := int(math.Floor(center - radius))
+		maxX := int(math.Ceil(center + radius))
+
+		// The clamped window starts at max(0, minX)
+		startX := minX
+		if startX < 0 {
+			startX = 0
+		}
+		// End at min(srcSize-1, maxX)
+		endX := maxX
+		if endX >= srcSize {
+			endX = srcSize - 1
+		}
+		nTaps := endX - startX + 1
+		if nTaps > rawTaps {
+			nTaps = rawTaps
+		}
+
+		offsets[d] = int32(startX)
+
+		// Evaluate kernel: for each original tap position ix in [minX, maxX],
+		// compute its weight and add it to the clamped position.
+		wBase := d * rawTaps
+		var wsum float64
+		for ix := minX; ix <= maxX; ix++ {
+			w := lanczos3((float64(ix) - center) / scale)
+			wsum += w
+
+			// Clamp to [0, srcSize-1], matching reference behavior
+			cix := ix
+			if cix < 0 {
+				cix = 0
+			} else if cix >= srcSize {
+				cix = srcSize - 1
+			}
+
+			// Map to local tap index relative to startX
+			t := cix - startX
+			if t >= 0 && t < rawTaps {
+				weights[wBase+t] += float32(w)
+			}
+		}
+
+		// Normalize so weights sum to 1.0
+		if wsum != 0 {
+			invW := float32(1.0 / wsum)
+			for t := 0; t < rawTaps; t++ {
+				weights[wBase+t] *= invW
+			}
+		}
+	}
+
+	return &lanczosKernel{
+		size:    dstSize,
+		maxTaps: rawTaps,
+		offsets: offsets,
+		weights: weights,
+	}
+}
+
+// lanczosIntermPool recycles float32 intermediate buffers.
+var lanczosIntermPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate for common 1080p horizontal pass: 1920 * 1080
+		buf := make([]float32, 1920*1080)
+		return &buf
+	},
+}
+
+func getLanczosTempBuf(n int) []float32 {
+	bp := lanczosIntermPool.Get().(*[]float32)
+	buf := *bp
+	if cap(buf) < n {
+		buf = make([]float32, n)
+		*bp = buf
+		return buf
+	}
+	return buf[:n]
+}
+
+func putLanczosTempBuf(buf []float32) {
+	buf = buf[:cap(buf)]
+	lanczosIntermPool.Put(&buf)
+}
+
 // scalePlaneLanczos performs Lanczos-3 interpolation on a single plane using
-// separable filtering: horizontal pass into a temp buffer, then vertical pass
-// to produce the final output.
-//
-// Fast paths:
-//   - Same dimensions: plain copy
-//   - 1x1 source: fill destination with single value
+// separable filtering with precomputed kernel weights: horizontal pass into
+// a float32 intermediate buffer, then vertical pass to produce final output.
 func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	// Fast path: same dimensions
 	if srcW == dstW && srcH == dstH {
@@ -113,97 +273,39 @@ func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 		return
 	}
 
-	// Separable filtering: horizontal then vertical.
-	// Temp buffer has dstW columns and srcH rows.
-	tmp := make([]float64, dstW*srcH)
+	// Precompute kernels (cached for repeated same-ratio calls)
+	hKernel := getLanczosKernel(srcW, dstW)
+	vKernel := getLanczosKernel(srcH, dstH)
 
-	// --- Horizontal pass: resample each row from srcW to dstW ---
-	xRatio := float64(srcW) / float64(dstW)
-
-	// When downscaling, widen the filter window proportionally to
-	// avoid aliasing. The effective radius becomes a * xRatio (clamped
-	// to at least 3) and the kernel is evaluated at x/xRatio.
-	hScale := 1.0
-	if xRatio > 1.0 {
-		hScale = xRatio
+	// Get float32 intermediate buffer from pool (dstW × srcH)
+	temp := getLanczosTempBuf(dstW * srcH)
+	defer putLanczosTempBuf(temp)
+	// Zero the buffer — stale values could corrupt results when
+	// zero-weight taps read from uninitialized regions.
+	for i := range temp {
+		temp[i] = 0
 	}
-	hRadius := 3.0 * hScale
 
+	// Horizontal pass: resample each source row from srcW to dstW
 	for y := 0; y < srcH; y++ {
-		srcRow := y * srcW
-		tmpRow := y * dstW
-		for dx := 0; dx < dstW; dx++ {
-			// Map destination center to source coordinate
-			sx := (float64(dx)+0.5)*xRatio - 0.5
-
-			// Determine tap range
-			minX := int(math.Floor(sx - hRadius))
-			maxX := int(math.Ceil(sx + hRadius))
-
-			var sum, wsum float64
-			for ix := minX; ix <= maxX; ix++ {
-				// Clamp to valid source range
-				cix := ix
-				if cix < 0 {
-					cix = 0
-				} else if cix >= srcW {
-					cix = srcW - 1
-				}
-
-				w := lanczos3((float64(ix) - sx) / hScale)
-				sum += w * float64(src[srcRow+cix])
-				wsum += w
-			}
-
-			if wsum != 0 {
-				tmp[tmpRow+dx] = sum / wsum
-			}
-		}
+		lanczosHorizRow(
+			temp[y*dstW:(y+1)*dstW],
+			src[y*srcW:(y+1)*srcW],
+			hKernel.offsets,
+			hKernel.weights,
+			hKernel.maxTaps,
+		)
 	}
 
-	// --- Vertical pass: resample each column from srcH to dstH ---
-	yRatio := float64(srcH) / float64(dstH)
-
-	vScale := 1.0
-	if yRatio > 1.0 {
-		vScale = yRatio
-	}
-	vRadius := 3.0 * vScale
-
-	for dx := 0; dx < dstW; dx++ {
-		for dy := 0; dy < dstH; dy++ {
-			sy := (float64(dy)+0.5)*yRatio - 0.5
-
-			minY := int(math.Floor(sy - vRadius))
-			maxY := int(math.Ceil(sy + vRadius))
-
-			var sum, wsum float64
-			for iy := minY; iy <= maxY; iy++ {
-				ciy := iy
-				if ciy < 0 {
-					ciy = 0
-				} else if ciy >= srcH {
-					ciy = srcH - 1
-				}
-
-				w := lanczos3((float64(iy) - sy) / vScale)
-				sum += w * tmp[ciy*dstW+dx]
-				wsum += w
-			}
-
-			var val float64
-			if wsum != 0 {
-				val = sum / wsum
-			}
-
-			// Clamp to [0, 255]
-			if val < 0 {
-				val = 0
-			} else if val > 255 {
-				val = 255
-			}
-
-			dst[dy*dstW+dx] = byte(val + 0.5) // round to nearest
-		}
+	// Vertical pass: resample each column from srcH to dstH
+	for dy := 0; dy < dstH; dy++ {
+		lanczosVertRow(
+			dst[dy*dstW:(dy+1)*dstW],
+			temp,
+			dstW,
+			vKernel.offsets[dy],
+			vKernel.weights[dy*vKernel.maxTaps:(dy+1)*vKernel.maxTaps],
+			vKernel.maxTaps,
+		)
 	}
 }

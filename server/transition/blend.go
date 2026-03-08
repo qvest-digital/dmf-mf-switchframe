@@ -379,19 +379,15 @@ func wipeAlphaByte(threshold, position, softEdge float64) byte {
 
 // downsampleAlphaToChroma converts a full-resolution alpha map to chroma resolution
 // by averaging each 2x2 block. Writes into dst which must be (w/2)*(h/2) in size.
+// Uses the SIMD-accelerated downsampleAlpha2x2 kernel per row pair.
 func downsampleAlphaToChroma(alpha []byte, w, h int, dst []byte) {
 	chromaW := w / 2
 	chromaH := h / 2
 	for cy := 0; cy < chromaH; cy++ {
-		for cx := 0; cx < chromaW; cx++ {
-			ly := cy * 2
-			lx := cx * 2
-			a00 := int(alpha[ly*w+lx])
-			a10 := int(alpha[ly*w+lx+1])
-			a01 := int(alpha[(ly+1)*w+lx])
-			a11 := int(alpha[(ly+1)*w+lx+1])
-			dst[cy*chromaW+cx] = byte((a00 + a10 + a01 + a11 + 2) / 4)
-		}
+		ly := cy * 2
+		row0 := alpha[ly*w:]
+		row1 := alpha[(ly+1)*w:]
+		downsampleAlpha2x2(&dst[cy*chromaW], &row0[0], &row1[0], chromaW)
 	}
 }
 
