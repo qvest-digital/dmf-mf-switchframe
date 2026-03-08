@@ -22,6 +22,9 @@ const asyncAdapterBufSize = 256
 // It auto-starts the viewer (registers on the program relay) when the first
 // output is enabled and removes it when the last output is disabled, ensuring
 // zero CPU overhead when no outputs are active.
+//
+// Lock ordering: OutputManager.mu must be acquired before OutputDestination.mu.
+// Never acquire OutputManager.mu while holding a destination lock.
 type OutputManager struct {
 	log   *slog.Logger
 	relay *distribution.Relay

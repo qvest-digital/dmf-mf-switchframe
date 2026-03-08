@@ -10,11 +10,11 @@ import (
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive     = errors.New("graphics: overlay already active")
-	ErrNotActive         = errors.New("graphics: overlay not active")
-	ErrNoOverlay         = errors.New("graphics: no overlay frame uploaded")
-	ErrFadeActive        = errors.New("graphics: fade transition in progress")
-	ErrCompositorClosed  = errors.New("compositor: closed")
+	ErrAlreadyActive    = errors.New("graphics: overlay already active")
+	ErrNotActive        = errors.New("graphics: overlay not active")
+	ErrNoOverlay        = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive       = errors.New("graphics: fade transition in progress")
+	ErrCompositorClosed = errors.New("compositor: closed")
 )
 
 // State represents the current graphics overlay state.
@@ -90,12 +90,13 @@ func (c *Compositor) SetOverlay(rgba []byte, width, height int, template string)
 // On activates the overlay immediately (CUT ON).
 func (c *Compositor) On() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
 	if c.overlay == nil {
+		c.mu.Unlock()
 		return ErrNoOverlay
 	}
 
@@ -105,16 +106,22 @@ func (c *Compositor) On() error {
 	c.active = true
 	c.fadePosition = 1.0
 	c.log.Debug("overlay CUT ON")
-	c.notifyStateChange()
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
 	return nil
 }
 
 // Off deactivates the overlay immediately (CUT OFF).
 func (c *Compositor) Off() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
 
@@ -124,25 +131,34 @@ func (c *Compositor) Off() error {
 	c.active = false
 	c.fadePosition = 0.0
 	c.log.Debug("overlay CUT OFF")
-	c.notifyStateChange()
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
 	return nil
 }
 
 // AutoOn starts a fade-in transition (AUTO ON) over the given duration.
 func (c *Compositor) AutoOn(duration time.Duration) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
 	if c.overlay == nil {
+		c.mu.Unlock()
 		return ErrNoOverlay
 	}
 	if c.fadeDone != nil {
+		c.mu.Unlock()
 		return ErrFadeActive
 	}
 	if c.active && c.fadePosition >= 1.0 {
+		c.mu.Unlock()
 		return nil
 	}
 
@@ -150,8 +166,13 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 	c.fadePosition = 0.0
 	c.fadeDone = make(chan struct{})
 	c.fadeCancel = make(chan struct{})
-	c.notifyStateChange()
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
 
+	if cb != nil {
+		cb(state)
+	}
 	go c.runFade(0.0, 1.0, duration)
 	return nil
 }
@@ -159,22 +180,29 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 // AutoOff starts a fade-out transition (AUTO OFF) over the given duration.
 func (c *Compositor) AutoOff(duration time.Duration) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
 	if !c.active {
+		c.mu.Unlock()
 		return ErrNotActive
 	}
 	if c.fadeDone != nil {
+		c.mu.Unlock()
 		return ErrFadeActive
 	}
 
 	c.fadeDone = make(chan struct{})
 	c.fadeCancel = make(chan struct{})
-	c.notifyStateChange()
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
 
+	if cb != nil {
+		cb(state)
+	}
 	go c.runFade(1.0, 0.0, duration)
 	return nil
 }
@@ -215,9 +243,9 @@ func (c *Compositor) SetResolutionProvider(fn func() (width, height int)) {
 }
 
 // OnStateChange registers a callback invoked when the overlay state changes.
-// The callback receives a snapshot of the compositor's state so it doesn't
-// need to call Status() (which would deadlock since the callback runs under
-// the compositor's lock).
+// The callback receives a snapshot of the compositor's state and is invoked
+// outside the compositor's lock, so it is safe to call any compositor method
+// or perform blocking I/O from the callback.
 func (c *Compositor) OnStateChange(fn func(State)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -252,10 +280,16 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 		done := c.fadeDone
 		c.fadeDone = nil
 		c.fadeCancel = nil
+		var state State
+		var cb func(State)
 		if !cancelled {
-			c.notifyStateChange()
+			state = c.buildStateLocked()
+			cb = c.onStateChange
 		}
 		c.mu.Unlock()
+		if cb != nil {
+			cb(state)
+		}
 		if done != nil {
 			close(done)
 		}
@@ -285,8 +319,12 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 				c.mu.Unlock()
 				return
 			}
-			c.notifyStateChange()
+			state := c.buildStateLocked()
+			cb := c.onStateChange
 			c.mu.Unlock()
+			if cb != nil {
+				cb(state)
+			}
 		}
 	}
 }
@@ -336,16 +374,12 @@ func (c *Compositor) IsActive() bool {
 	return c.active
 }
 
-// notifyStateChange invokes the state change callback if set.
-// Must be called with mu held (read or write). Builds a state snapshot
-// under the lock and passes it to the callback so the callback never
-// needs to call Status() (which would deadlock).
-func (c *Compositor) notifyStateChange() {
-	if c.onStateChange != nil {
-		c.onStateChange(State{
-			Active:       c.active,
-			Template:     c.template,
-			FadePosition: c.fadePosition,
-		})
+// buildStateLocked returns a snapshot of the compositor's current state.
+// Must be called with mu held (read or write).
+func (c *Compositor) buildStateLocked() State {
+	return State{
+		Active:       c.active,
+		Template:     c.template,
+		FadePosition: c.fadePosition,
 	}
 }

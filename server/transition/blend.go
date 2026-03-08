@@ -29,9 +29,9 @@ type FrameBlender struct {
 	ySize              int    // w*h (luma plane size)
 	uvSize             int    // w/2 * h/2 (each chroma plane size)
 	blackY             byte   // Y value for black (0 = full-range, 16 = limited-range)
-	wipeAlphaMap        []byte // precomputed per-pixel alpha for wipe transitions (w*h)
-	wipeAlphaMapChroma  []byte // subsampled chroma alpha map (w/2 * h/2)
-	stingerChromaAlpha  []byte // precomputed chroma-resolution alpha for stinger blending (w/2 * h/2)
+	wipeAlphaMap       []byte // precomputed per-pixel alpha for wipe transitions (w*h)
+	wipeAlphaMapChroma []byte // subsampled chroma alpha map (w/2 * h/2)
+	stingerChromaAlpha []byte // precomputed chroma-resolution alpha for stinger blending (w/2 * h/2)
 }
 
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
@@ -46,9 +46,9 @@ func NewFrameBlender(width, height int) *FrameBlender {
 		ySize:              ySize,
 		uvSize:             uvSize,
 		blackY:             16, // BT.709 limited-range black
-		wipeAlphaMap:        make([]byte, ySize),
-		wipeAlphaMapChroma:  make([]byte, uvSize),
-		stingerChromaAlpha:  make([]byte, uvSize),
+		wipeAlphaMap:       make([]byte, ySize),
+		wipeAlphaMapChroma: make([]byte, uvSize),
+		stingerChromaAlpha: make([]byte, uvSize),
 	}
 }
 
