@@ -55,13 +55,47 @@ jobs:
           sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
       - name: Run tests with coverage
         run: cd server && go test ./... -race -coverprofile=coverage.out
-      - name: Transition benchmarks
-        run: cd server && go test ./transition/... -bench=. -benchmem -benchtime=3s
       - name: Upload Go coverage
         uses: actions/upload-artifact@v4
         with:
           name: go-coverage
           path: server/coverage.out
+
+  benchmark:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache-dependency-path: server/go.sum
+      - name: Install cgo dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+      - name: Run all benchmarks
+        run: |
+          set -o pipefail
+          cd server && go test ./... -run=^$ -bench=. -benchmem -benchtime=3s 2>&1 | tee benchmark-results.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: server/benchmark-results.txt
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1.20.4
+        if: github.ref == 'refs/heads/main'
+        with:
+          tool: 'go'
+          output-file-path: server/benchmark-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/bench
 
   test-ui:
     runs-on: ubuntu-latest
