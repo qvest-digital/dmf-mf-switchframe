@@ -10,6 +10,8 @@ import { createYUVRenderer, type YUVRenderer } from '$lib/video/yuv-renderer';
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
 	onControlState?: (data: Uint8Array) => void;
+	/** Called when a source is identified as raw YUV (after catalog arrives). */
+	onRawSourceReady?: (sourceKey: string) => void;
 }
 
 /** Diagnostics snapshot for a single source. */
@@ -156,6 +158,19 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						source.videoInitData = track.initData ?? null;
 						if (track.codec === 'raw/yuv420') {
 							source.isRawYUV = true;
+							// If a PrismRenderer was already attached (before we knew
+							// this was raw YUV), detach it so the pipeline manager
+							// re-attaches with a YUVRenderer on the next sync call.
+							for (const [canvasId, renderer] of source.renderers) {
+								renderer.destroy();
+							}
+							source.renderers.clear();
+							for (const buf of source.secondaryBuffers.values()) {
+								buf.clear();
+							}
+							source.secondaryBuffers.clear();
+							// Notify so the pipeline manager can re-attach canvases.
+							config?.onRawSourceReady?.(key);
 						}
 					} else if (track.type === 'audio' && !source.audioConfigured) {
 						// Configure audio decoder from catalog info

@@ -177,6 +177,14 @@
 		onControlState: (data) => {
 			connectionManager.handleControlData(data);
 		},
+		onRawSourceReady: () => {
+			// Raw YUV source catalog arrived — re-sync canvases so the pipeline
+			// manager switches from PrismRenderer to YUVRenderer.
+			if (mounted) {
+				pipelineManager.resetProgramCanvas();
+				pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+			}
+		},
 	});
 	// Pre-register "program" source so ProgramPreview's $effect can attach
 	// the canvas renderer before onMount (which connects the MoQ transport).

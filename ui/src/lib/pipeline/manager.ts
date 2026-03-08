@@ -158,6 +158,19 @@ export class PipelineManager {
 	}
 
 	/**
+	 * Reset program canvas tracking so the next syncProgramPreviewCanvases
+	 * call re-evaluates which source (program vs program-raw) to use and
+	 * re-attaches the canvas. Called when a raw YUV source becomes ready.
+	 */
+	resetProgramCanvas(): void {
+		if (this.currentProgramCanvas) {
+			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+		}
+		this.currentProgramCanvas = null;
+		this.currentProgramCanvasEl = null;
+	}
+
+	/**
 	 * Detach all canvases. Called before DOM replacement (e.g. layout mode
 	 * switch) so renderers don't reference destroyed canvas elements.
 	 */
