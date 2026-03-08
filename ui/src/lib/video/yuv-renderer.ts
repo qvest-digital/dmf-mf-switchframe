@@ -177,15 +177,14 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 		const chromaW = width >> 1;
 		const chromaH = height >> 1;
 
-		// Track resolution for texture recreation; don't override canvas size
-		// (ProgramPreview's ResizeObserver handles HiDPI canvas sizing).
+		// Update canvas size if resolution changed
 		if (width !== currentWidth || height !== currentHeight) {
+			canvas.width = width;
+			canvas.height = height;
+			gl.viewport(0, 0, width, height);
 			currentWidth = width;
 			currentHeight = height;
 		}
-
-		// Always set viewport to current canvas backing dimensions.
-		gl.viewport(0, 0, canvas.width, canvas.height);
 
 		gl.useProgram(program);
 
