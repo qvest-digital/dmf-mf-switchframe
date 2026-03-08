@@ -144,6 +144,17 @@ func TestCompositor_Close(t *testing.T) {
 	require.Error(t, err, "expected error after Close")
 }
 
+func TestCompositor_ClosedReturnsSentinel(t *testing.T) {
+	c := NewCompositor()
+	c.Close()
+
+	err := c.On()
+	require.ErrorIs(t, err, ErrCompositorClosed)
+
+	err = c.Off()
+	require.ErrorIs(t, err, ErrCompositorClosed)
+}
+
 func TestCompositor_SetOverlaySizeMismatch(t *testing.T) {
 	c := NewCompositor()
 	defer c.Close()

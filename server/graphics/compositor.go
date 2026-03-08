@@ -10,10 +10,11 @@ import (
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive = errors.New("graphics: overlay already active")
-	ErrNotActive     = errors.New("graphics: overlay not active")
-	ErrNoOverlay     = errors.New("graphics: no overlay frame uploaded")
-	ErrFadeActive    = errors.New("graphics: fade transition in progress")
+	ErrAlreadyActive     = errors.New("graphics: overlay already active")
+	ErrNotActive         = errors.New("graphics: overlay not active")
+	ErrNoOverlay         = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive        = errors.New("graphics: fade transition in progress")
+	ErrCompositorClosed  = errors.New("compositor: closed")
 )
 
 // State represents the current graphics overlay state.
@@ -92,7 +93,7 @@ func (c *Compositor) On() error {
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return errors.New("compositor closed")
+		return ErrCompositorClosed
 	}
 	if c.overlay == nil {
 		return ErrNoOverlay
@@ -114,7 +115,7 @@ func (c *Compositor) Off() error {
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return errors.New("compositor closed")
+		return ErrCompositorClosed
 	}
 
 	// Cancel any in-progress fade.
@@ -133,7 +134,7 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return errors.New("compositor closed")
+		return ErrCompositorClosed
 	}
 	if c.overlay == nil {
 		return ErrNoOverlay
@@ -161,7 +162,7 @@ func (c *Compositor) AutoOff(duration time.Duration) error {
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return errors.New("compositor closed")
+		return ErrCompositorClosed
 	}
 	if !c.active {
 		return ErrNotActive
