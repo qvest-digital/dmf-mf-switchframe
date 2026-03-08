@@ -157,12 +157,9 @@ func (a *App) initPrismServer() error {
 			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 			apiHandler = control.CORSMiddleware(apiHandler)
 
-			// Cert-hash: outside auth chain (browsers need this before they have tokens).
-			// Wrap with CORS only for cross-origin dev access.
-			certHashHandler := control.CORSMiddleware(http.HandlerFunc(a.handleCertHash))
-			mux.Handle("GET /api/cert-hash", certHashHandler)
+			// Cert-hash is already registered by Prism (distribution/server.go)
+			// on this mux — no need to register it here.
 
-			// All other API routes go through the full middleware chain.
 			mux.Handle("/api/", apiHandler)
 
 			if h := uiHandler(); h != nil {
