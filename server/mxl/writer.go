@@ -59,6 +59,7 @@ type Writer struct {
 	audioRate   Rational
 
 	closed atomic.Bool
+	wg     sync.WaitGroup
 
 	// Steady-rate video: WriteVideo stores latest frame, ticker writes it.
 	latestV210 atomic.Pointer[v210Frame]
@@ -247,15 +248,18 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 	}
 }
 
-// Close releases the writer resources.
+// Close releases the writer resources and waits for goroutines to exit.
 func (w *Writer) Close() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.closed.Load() {
+	if !w.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	w.closed.Store(true)
+
+	// Wait for worker goroutines (videoTickLoop) to exit.
+	// They check w.closed on each tick and return promptly.
+	w.wg.Wait()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	var firstErr error
 	if ref := w.videoRef.Load(); ref != nil && ref.writer != nil {
@@ -278,9 +282,15 @@ func (w *Writer) Close() error {
 // Call this after SetVideoWriter/SetAudioWriter.
 func (w *Writer) Start(ctx context.Context) {
 	if ref := w.videoRef.Load(); ref != nil && ref.writer != nil {
-		go w.videoTickLoop(ctx)
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.videoTickLoop(ctx)
+		}()
 	}
 
+	// ctx.Done goroutine is NOT tracked in the WaitGroup — it calls Close(),
+	// which calls wg.Wait(). Including it would deadlock.
 	go func() {
 		<-ctx.Done()
 		_ = w.Close()

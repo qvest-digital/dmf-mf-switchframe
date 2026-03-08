@@ -324,6 +324,98 @@ func TestWriterCloseFlagPreventsWrites(t *testing.T) {
 	}
 }
 
+func TestWriter_CloseWaitsForGoroutines(t *testing.T) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, Rational{30, 1})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	// Feed a frame so the ticker has something to write.
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+	yuv := make([]byte, yuvSize)
+	w.WriteVideo(yuv, width, height, 0)
+
+	// Wait for at least one grain to confirm the goroutine is running.
+	deadline := time.After(200 * time.Millisecond)
+	for len(mock.getGrains()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for initial grain")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Close should block until the videoTickLoop goroutine exits.
+	// If it doesn't wait, the race detector would catch concurrent access.
+	done := make(chan struct{})
+	go func() {
+		_ = w.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Close returned — goroutines have exited.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() did not return — possible deadlock")
+	}
+
+	// Second Close should be a no-op and return immediately.
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close returned error: %v", err)
+	}
+}
+
+func TestWriter_ContextCancelWaitsForGoroutines(t *testing.T) {
+	mock := &mockDiscreteWriter{}
+	w := NewWriter(WriterConfig{Width: 12, Height: 2})
+	w.SetVideoWriter(mock, Rational{30, 1})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx)
+
+	// Feed a frame so the ticker is active.
+	width, height := 12, 2
+	yuvSize := width*height + width/2*height/2 + width/2*height/2
+	yuv := make([]byte, yuvSize)
+	w.WriteVideo(yuv, width, height, 0)
+
+	deadline := time.After(200 * time.Millisecond)
+	for len(mock.getGrains()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for initial grain")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// Cancel context — the ctx.Done goroutine calls Close(), which waits
+	// for videoTickLoop. This must not deadlock.
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		// Give the ctx.Done goroutine time to call Close().
+		time.Sleep(100 * time.Millisecond)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("context cancel path appears to have deadlocked")
+	}
+
+	// Writer should be closed now.
+	if !w.closed.Load() {
+		t.Fatal("expected writer to be closed after context cancel")
+	}
+}
+
 func BenchmarkMXLWriterVideoHotPath(b *testing.B) {
 	mock := &mockDiscreteWriter{}
 	w := NewWriter(WriterConfig{Width: 12, Height: 2})
