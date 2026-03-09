@@ -96,26 +96,29 @@ func findBestOverlap(input, output []float32, inputPos, outputPos, windowSize, c
 	bestCorr := -math.MaxFloat64
 	bestOffset := 0
 
+	// Number of samples to correlate per offset (limited by both window and search range).
+	corrSamples := windowSize
+	if corrSamples > searchRange {
+		corrSamples = searchRange
+	}
+	corrLen := corrSamples * channels // total float32 elements
+
 	for offset := -searchRange; offset <= searchRange; offset++ {
 		pos := inputPos + offset
 		if pos < 0 || pos+windowSize > totalSamples {
 			continue
 		}
 
-		var corr, normA, normB float64
-		for i := 0; i < windowSize && i < searchRange; i++ {
-			for ch := 0; ch < channels; ch++ {
-				a := float64(input[(pos+i)*channels+ch])
-				outIdx := (outputPos/channels+i)*channels + ch
-				if outIdx >= len(output) {
-					continue
-				}
-				b := float64(output[outIdx])
-				corr += a * b
-				normA += a * a
-				normB += b * b
-			}
+		aStart := pos * channels
+		bStart := outputPos
+		if bStart+corrLen > len(output) || aStart+corrLen > len(input) {
+			continue
 		}
+
+		corr32, normA32, normB32 := crossCorrFloat32(&input[aStart], &output[bStart], corrLen)
+		corr := float64(corr32)
+		normA := float64(normA32)
+		normB := float64(normB32)
 
 		if normA > 0 && normB > 0 {
 			ncc := corr / math.Sqrt(normA*normB)
