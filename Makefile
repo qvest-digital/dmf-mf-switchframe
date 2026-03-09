@@ -48,6 +48,7 @@ demo: build-server node_modules_check
 	@echo "  SwitchFrame Demo"
 	@echo "  Open http://localhost:5173 in your browser"
 	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV pipeline)"
+	@echo "  SCTE-35: Enabled (SCTE-35 tab in bottom panel)"
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
@@ -62,9 +63,9 @@ demo: build-server node_modules_check
 		fi; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor $$CERT_FLAGS & \
+			./bin/switchframe --demo --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
