@@ -17,8 +17,11 @@ type scte35CueRequest struct {
 	DurationMs  *int64                    `json:"durationMs,omitempty"`
 	AutoReturn  *bool                     `json:"autoReturn,omitempty"`
 	PreRollMs   *int64                    `json:"preRollMs,omitempty"`
-	EventID     *uint32                   `json:"eventId,omitempty"`
-	Descriptors []scte35DescriptorRequest `json:"descriptors,omitempty"`
+	EventID         *uint32                   `json:"eventId,omitempty"`
+	UniqueProgramID *uint16                   `json:"uniqueProgramId,omitempty"`
+	AvailNum        *uint8                    `json:"availNum,omitempty"`
+	AvailsExpected  *uint8                    `json:"availsExpected,omitempty"`
+	Descriptors     []scte35DescriptorRequest `json:"descriptors,omitempty"`
 }
 
 // scte35DescriptorRequest is the JSON representation of a segmentation descriptor.
@@ -151,6 +154,32 @@ func (a *API) handleSCTE35Cancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.scte35.CancelEvent(eventID); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// --- Cancel segmentation handler ---
+
+// handleSCTE35CancelSegmentation handles POST /api/scte35/cancel-segmentation/{segEventId}.
+func (a *API) handleSCTE35CancelSegmentation(w http.ResponseWriter, r *http.Request) {
+	if a.scte35 == nil {
+		httperr.Write(w, http.StatusNotImplemented, "scte35 not enabled")
+		return
+	}
+	a.setLastOperator(r)
+
+	s := r.PathValue("segEventId")
+	v, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid segEventId")
+		return
+	}
+
+	if err := a.scte35.CancelSegmentationEvent(uint32(v)); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -477,6 +506,15 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 	}
 	if req.EventID != nil {
 		msg.EventID = *req.EventID
+	}
+	if req.UniqueProgramID != nil {
+		msg.UniqueProgramID = *req.UniqueProgramID
+	}
+	if req.AvailNum != nil {
+		msg.AvailNum = *req.AvailNum
+	}
+	if req.AvailsExpected != nil {
+		msg.AvailsExpected = *req.AvailsExpected
 	}
 	if req.DurationMs != nil {
 		dur := time.Duration(*req.DurationMs) * time.Millisecond

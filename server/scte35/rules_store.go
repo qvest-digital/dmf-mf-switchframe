@@ -189,10 +189,13 @@ func (s *RulesStore) Reorder(ids []string) error {
 		reordered = append(reordered, r)
 	}
 
+	old := s.rules
 	s.rules = reordered
 	s.syncEngine()
 
 	if err := s.save(); err != nil {
+		s.rules = old
+		s.syncEngine()
 		return fmt.Errorf("save rules: %w", err)
 	}
 	return nil
@@ -210,10 +213,13 @@ func (s *RulesStore) SetDefaultAction(action RuleAction) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	oldAction := s.defaultAction
 	s.defaultAction = action
 	s.syncEngine()
 
 	if err := s.save(); err != nil {
+		s.defaultAction = oldAction
+		s.syncEngine()
 		return fmt.Errorf("save rules: %w", err)
 	}
 	return nil

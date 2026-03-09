@@ -3,6 +3,7 @@
 package scte35
 
 import (
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -24,6 +25,11 @@ type CueMessage struct {
 	// EventID is the splice_event_id for splice_insert commands.
 	EventID uint32
 
+	// SpliceEventCancelIndicator when true cancels the event identified by EventID.
+	// Per the SCTE-35 spec, when set, Program/BreakDuration/OutOfNetworkIndicator
+	// fields are absent in the encoded message.
+	SpliceEventCancelIndicator bool
+
 	// IsOut indicates out-of-network (true = cue-out, false = cue-in).
 	IsOut bool
 
@@ -44,17 +50,27 @@ type CueMessage struct {
 
 	// Timing indicates "immediate" or "scheduled" splice mode.
 	Timing string
+
+	// UniqueProgramID identifies the program in the avail.
+	UniqueProgramID uint16
+
+	// AvailNum identifies the avail within a group.
+	AvailNum uint8
+
+	// AvailsExpected is the total number of avails in the group.
+	AvailsExpected uint8
 }
 
 // SegmentationDescriptor carries segmentation metadata for time_signal commands.
 type SegmentationDescriptor struct {
-	SegmentationType    uint8   `json:"segmentationType"`
-	SegEventID          uint32  `json:"segEventId"`
-	DurationTicks       *uint64 `json:"durationTicks,omitempty"`
-	UPIDType            uint8   `json:"upidType"`
-	UPID                []byte  `json:"upid"`
-	SubSegmentNum       uint8   `json:"subSegmentNum,omitempty"`
-	SubSegmentsExpected uint8   `json:"subSegmentsExpected,omitempty"`
+	SegmentationType             uint8   `json:"segmentationType"`
+	SegEventID                   uint32  `json:"segEventId"`
+	SegmentationEventCancelIndicator bool `json:"segmentationEventCancelIndicator,omitempty"`
+	DurationTicks                *uint64 `json:"durationTicks,omitempty"`
+	UPIDType                     uint8   `json:"upidType"`
+	UPID                         []byte  `json:"upid"`
+	SubSegmentNum                uint8   `json:"subSegmentNum,omitempty"`
+	SubSegmentsExpected          uint8   `json:"subSegmentsExpected,omitempty"`
 }
 
 // DeliveryRestrictions carries delivery restriction flags.
@@ -112,6 +128,10 @@ func NewTimeSignalMulti(descriptors []SegmentationDescriptor) *CueMessage {
 
 // Encode converts this CueMessage into SCTE-35 binary format.
 // If verify is true, the encoded bytes are decoded back and CRC-32 is verified.
+//
+// Note: verification is skipped for splice_insert cancel messages due to a
+// decoder bug in Comcast/scte35-go where unique_program_id/avail_num/
+// avails_expected are read outside the cancel indicator guard.
 func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 	sis := &scte35lib.SpliceInfoSection{
 		Tier:    4095,
@@ -124,37 +144,69 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 
 	case CommandSpliceInsert:
 		si := &scte35lib.SpliceInsert{
-			SpliceEventID:         m.EventID,
-			OutOfNetworkIndicator: m.IsOut,
-			SpliceImmediateFlag:   true,
-			Program:               &scte35lib.SpliceInsertProgram{},
+			SpliceEventID:              m.EventID,
+			SpliceEventCancelIndicator: m.SpliceEventCancelIndicator,
 		}
-		if m.BreakDuration != nil {
-			ticks := scte35lib.DurationToTicks(*m.BreakDuration)
-			si.BreakDuration = &scte35lib.BreakDuration{
-				AutoReturn: m.AutoReturn,
-				Duration:   ticks,
+		// Per SCTE-35 spec, when cancel indicator is set, Program/BreakDuration/
+		// OutOfNetworkIndicator fields are absent.
+		if !m.SpliceEventCancelIndicator {
+			si.OutOfNetworkIndicator = m.IsOut
+			if m.SpliceTimePTS != nil {
+				// Scheduled: use PTS-based splice time.
+				si.SpliceImmediateFlag = false
+				pts := uint64(*m.SpliceTimePTS)
+				si.Program = &scte35lib.SpliceInsertProgram{
+					SpliceTime: scte35lib.SpliceTime{
+						PTSTime: &pts,
+					},
+				}
+			} else {
+				// Immediate: no splice time.
+				si.SpliceImmediateFlag = true
+				si.Program = &scte35lib.SpliceInsertProgram{}
 			}
+			if m.BreakDuration != nil {
+				ticks := scte35lib.DurationToTicks(*m.BreakDuration)
+				si.BreakDuration = &scte35lib.BreakDuration{
+					AutoReturn: m.AutoReturn,
+					Duration:   ticks,
+				}
+			}
+			si.UniqueProgramID = uint32(m.UniqueProgramID)
+			si.AvailNum = uint32(m.AvailNum)
+			si.AvailsExpected = uint32(m.AvailsExpected)
+		}
+		// Skip verification for cancel messages (library decoder bug).
+		if m.SpliceEventCancelIndicator {
+			verify = false
 		}
 		sis.SpliceCommand = si
 
 	case CommandTimeSignal:
-		// Use PTS time 0 for immediate signals.
-		sis.SpliceCommand = scte35lib.NewTimeSignal(0)
+		var pts uint64
+		if m.SpliceTimePTS != nil {
+			pts = uint64(*m.SpliceTimePTS)
+		}
+		sis.SpliceCommand = scte35lib.NewTimeSignal(pts)
 
 		for _, d := range m.Descriptors {
 			sd := &scte35lib.SegmentationDescriptor{
-				SegmentationTypeID: uint32(d.SegmentationType),
-				SegmentationEventID: d.SegEventID,
+				SegmentationEventID:              d.SegEventID,
+				SegmentationEventCancelIndicator: d.SegmentationEventCancelIndicator,
 			}
-			if d.DurationTicks != nil {
-				dur := *d.DurationTicks
-				sd.SegmentationDuration = &dur
-			}
-			// Build UPID list.
-			if len(d.UPID) > 0 {
-				sd.SegmentationUPIDs = []scte35lib.SegmentationUPID{
-					scte35lib.NewSegmentationUPID(uint32(d.UPIDType), d.UPID),
+			// Per SCTE-35 spec, when cancel indicator is set,
+			// SegmentationDuration, UPIDs, and SegmentationTypeID are absent.
+			if !d.SegmentationEventCancelIndicator {
+				sd.SegmentationTypeID = uint32(d.SegmentationType)
+				if d.DurationTicks != nil {
+					dur := *d.DurationTicks
+					sd.SegmentationDuration = &dur
+				}
+				// Build UPID list.
+				if len(d.UPID) > 0 {
+					sd.SegmentationUPIDs = []scte35lib.SegmentationUPID{
+						scte35lib.NewSegmentationUPID(uint32(d.UPIDType), d.UPID),
+					}
 				}
 			}
 			sis.SpliceDescriptors = append(sis.SpliceDescriptors, sd)
@@ -180,9 +232,19 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 
 // Decode parses SCTE-35 binary data into a CueMessage.
 // CRC-32 is validated automatically by the underlying library.
+//
+// Note: splice_insert cancel messages are decoded with a fallback parser
+// because Comcast/scte35-go reads unique_program_id/avail_num/avails_expected
+// outside the cancel indicator guard, causing buffer overflow on spec-compliant
+// cancel messages.
 func Decode(data []byte) (*CueMessage, error) {
 	sis, err := scte35lib.DecodeBytes(data)
 	if err != nil {
+		// Check if this is a splice_insert cancel message that the library
+		// fails to decode due to its decoder bug.
+		if msg, fallbackErr := decodeSpliceInsertCancel(data); fallbackErr == nil {
+			return msg, nil
+		}
 		return nil, fmt.Errorf("scte35 decode: %w", err)
 	}
 
@@ -195,24 +257,34 @@ func Decode(data []byte) (*CueMessage, error) {
 	case *scte35lib.SpliceInsert:
 		msg.CommandType = CommandSpliceInsert
 		msg.EventID = cmd.SpliceEventID
-		msg.IsOut = cmd.OutOfNetworkIndicator
+		msg.SpliceEventCancelIndicator = cmd.SpliceEventCancelIndicator
 
-		if cmd.SpliceImmediateFlag {
-			msg.Timing = "immediate"
-		} else {
-			msg.Timing = "scheduled"
-		}
+		// Per SCTE-35 spec, when cancel indicator is set, the remaining
+		// fields (OutOfNetworkIndicator, BreakDuration, etc.) are absent.
+		if !cmd.SpliceEventCancelIndicator {
+			msg.IsOut = cmd.OutOfNetworkIndicator
 
-		if cmd.BreakDuration != nil {
-			msg.AutoReturn = cmd.BreakDuration.AutoReturn
-			dur := scte35lib.TicksToDuration(cmd.BreakDuration.Duration)
-			msg.BreakDuration = &dur
-		}
+			if cmd.SpliceImmediateFlag {
+				msg.Timing = "immediate"
+			} else {
+				msg.Timing = "scheduled"
+			}
 
-		// Extract splice time PTS if specified.
-		if cmd.Program != nil && cmd.Program.SpliceTime.PTSTime != nil {
-			pts := int64(*cmd.Program.SpliceTime.PTSTime)
-			msg.SpliceTimePTS = &pts
+			if cmd.BreakDuration != nil {
+				msg.AutoReturn = cmd.BreakDuration.AutoReturn
+				dur := scte35lib.TicksToDuration(cmd.BreakDuration.Duration)
+				msg.BreakDuration = &dur
+			}
+
+			// Extract splice time PTS if specified.
+			if cmd.Program != nil && cmd.Program.SpliceTime.PTSTime != nil {
+				pts := int64(*cmd.Program.SpliceTime.PTSTime)
+				msg.SpliceTimePTS = &pts
+			}
+
+			msg.UniqueProgramID = uint16(cmd.UniqueProgramID)
+			msg.AvailNum = uint8(cmd.AvailNum)
+			msg.AvailsExpected = uint8(cmd.AvailsExpected)
 		}
 
 	case *scte35lib.TimeSignal:
@@ -240,8 +312,9 @@ func Decode(data []byte) (*CueMessage, error) {
 			continue
 		}
 		d := SegmentationDescriptor{
-			SegmentationType: uint8(segDesc.SegmentationTypeID),
-			SegEventID:       segDesc.SegmentationEventID,
+			SegmentationType:             uint8(segDesc.SegmentationTypeID),
+			SegEventID:                   segDesc.SegmentationEventID,
+			SegmentationEventCancelIndicator: segDesc.SegmentationEventCancelIndicator,
 		}
 		if segDesc.SegmentationDuration != nil {
 			dur := *segDesc.SegmentationDuration
@@ -280,4 +353,63 @@ func Decode(data []byte) (*CueMessage, error) {
 	}
 
 	return msg, nil
+}
+
+// decodeSpliceInsertCancel attempts to parse an SCTE-35 splice_insert cancel
+// message from raw bytes. This is a fallback for the Comcast/scte35-go library
+// bug where the decoder reads unique_program_id/avail_num/avails_expected
+// outside the splice_event_cancel_indicator guard.
+//
+// SCTE-35 splice_info_section bit layout:
+//
+//	bits 0-7:     table_id (0xFC)
+//	bits 8-9:     section_syntax_indicator + private_indicator
+//	bits 10-11:   SAP type
+//	bits 12-23:   section_length
+//	bits 24-31:   protocol_version
+//	bits 32:      encrypted_packet_flag
+//	bits 33-38:   encryption_algorithm
+//	bits 39-71:   pts_adjustment
+//	bits 72-79:   cw_index
+//	bits 80-91:   tier
+//	bits 92-103:  splice_command_length
+//	bits 104-111: splice_command_type
+//	bits 112+:    splice_command data (splice_insert starts here)
+//
+// splice_insert cancel data:
+//
+//	bits 112-143: splice_event_id (32 bits)
+//	bit 144:      splice_event_cancel_indicator
+//	bits 145-151: reserved
+func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
+	// Minimum: 14 header bytes + 5 command bytes (event_id + cancel) +
+	// 2 descriptor_loop_length + 4 CRC = 25 bytes
+	if len(data) < 25 {
+		return nil, fmt.Errorf("too short for splice_insert cancel")
+	}
+
+	// Verify table_id.
+	if data[0] != 0xFC {
+		return nil, fmt.Errorf("not an SCTE-35 section")
+	}
+
+	// Verify splice_command_type is splice_insert (0x05) at byte 13.
+	if data[13] != CommandSpliceInsert {
+		return nil, fmt.Errorf("not a splice_insert command")
+	}
+
+	// Read splice_event_id (big-endian 32 bits at offset 14).
+	eventID := binary.BigEndian.Uint32(data[14:18])
+
+	// Read splice_event_cancel_indicator (MSB of byte 18).
+	cancelIndicator := (data[18] & 0x80) != 0
+	if !cancelIndicator {
+		return nil, fmt.Errorf("not a cancel message")
+	}
+
+	return &CueMessage{
+		CommandType:                 CommandSpliceInsert,
+		EventID:                    eventID,
+		SpliceEventCancelIndicator: true,
+	}, nil
 }

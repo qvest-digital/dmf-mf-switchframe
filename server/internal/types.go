@@ -204,7 +204,6 @@ type SCTE35State struct {
 	Enabled      bool                       `json:"enabled"`
 	ActiveEvents map[uint32]SCTE35Active    `json:"activeEvents"`
 	EventLog     []SCTE35Event              `json:"eventLog"`
-	PendingCues  []SCTE35Event              `json:"pendingCues,omitempty"`
 	HeartbeatOK  bool                       `json:"heartbeatOk"`
 	Config       SCTE35Config               `json:"config"`
 }

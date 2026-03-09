@@ -730,8 +730,13 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 	for id, dest := range m.destinations {
 		dest.mu.Lock()
 		if dest.active && dest.adapter != nil {
+			adapter := dest.adapter
+			// Wrap with SCTE-35 filter when destination has SCTE-35 disabled.
+			if !dest.config.SCTE35Enabled {
+				adapter = newSCTE35Filter(adapter, scte35PID)
+			}
 			// Use destination ID as key to avoid collisions with legacy adapter IDs.
-			raw["dest:"+id] = dest.adapter
+			raw["dest:"+id] = adapter
 		}
 		dest.mu.Unlock()
 	}
