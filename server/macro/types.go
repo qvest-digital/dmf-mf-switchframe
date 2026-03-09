@@ -12,6 +12,13 @@ const (
 	ActionTransition MacroAction = "transition"
 	ActionWait       MacroAction = "wait"
 	ActionSetAudio   MacroAction = "set_audio"
+
+	// SCTE-35 actions for ad break automation.
+	ActionSCTE35Cue    MacroAction = "scte35_cue"
+	ActionSCTE35Return MacroAction = "scte35_return"
+	ActionSCTE35Cancel MacroAction = "scte35_cancel"
+	ActionSCTE35Hold   MacroAction = "scte35_hold"
+	ActionSCTE35Extend MacroAction = "scte35_extend"
 )
 
 // MacroStep is a single operation within a macro sequence.

@@ -21,6 +21,22 @@ type MacroTarget interface {
 
 	// SetLevel sets the audio level for a source channel.
 	SetLevel(ctx context.Context, source string, level float64) error
+
+	// SCTE35Cue injects a SCTE-35 splice cue (e.g., ad break start).
+	SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error)
+
+	// SCTE35Return signals a return-to-program for a splice event.
+	// eventID=0 means the most recent event.
+	SCTE35Return(ctx context.Context, eventID uint32) error
+
+	// SCTE35Cancel cancels a pending splice event.
+	SCTE35Cancel(ctx context.Context, eventID uint32) error
+
+	// SCTE35Hold holds a break indefinitely (prevents auto-return).
+	SCTE35Hold(ctx context.Context, eventID uint32) error
+
+	// SCTE35Extend extends a break by the given duration.
+	SCTE35Extend(ctx context.Context, eventID uint32, durationMs int64) error
 }
 
 // Run executes a macro sequentially against the given target.
@@ -101,6 +117,42 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 			level = l
 		}
 		return target.SetLevel(ctx, source, level)
+
+	case ActionSCTE35Cue:
+		_, err := target.SCTE35Cue(ctx, step.Params)
+		return err
+
+	case ActionSCTE35Return:
+		eventID := uint32(0)
+		if id, ok := step.Params["eventId"].(float64); ok {
+			eventID = uint32(id)
+		}
+		return target.SCTE35Return(ctx, eventID)
+
+	case ActionSCTE35Cancel:
+		id, ok := step.Params["eventId"].(float64)
+		if !ok {
+			return fmt.Errorf("scte35_cancel requires 'eventId' param")
+		}
+		return target.SCTE35Cancel(ctx, uint32(id))
+
+	case ActionSCTE35Hold:
+		id, ok := step.Params["eventId"].(float64)
+		if !ok {
+			return fmt.Errorf("scte35_hold requires 'eventId' param")
+		}
+		return target.SCTE35Hold(ctx, uint32(id))
+
+	case ActionSCTE35Extend:
+		id, ok := step.Params["eventId"].(float64)
+		if !ok {
+			return fmt.Errorf("scte35_extend requires 'eventId' param")
+		}
+		dur, ok := step.Params["durationMs"].(float64)
+		if !ok {
+			return fmt.Errorf("scte35_extend requires 'durationMs' param")
+		}
+		return target.SCTE35Extend(ctx, uint32(id), int64(dur))
 
 	default:
 		return fmt.Errorf("unknown action %q", step.Action)
