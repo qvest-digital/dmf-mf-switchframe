@@ -185,7 +185,7 @@ muladd_done:
 // Returns max(|data[i]|) for i in [0, n).
 // NEON path processes 4 float32s per iteration using FABS + FMAX.
 // Uses V4 as the running max accumulator.
-TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-24
+TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-20
 	MOVD data+0(FP), R0       // R0 = data pointer
 	MOVD n+8(FP), R1          // R1 = n
 
@@ -322,6 +322,6 @@ stereo_scalar_loop:
 	BGE  stereo_scalar_loop
 
 stereo_store:
-	FMOVS F4, ret+16(FP)      // peakL
-	FMOVS F5, ret+20(FP)      // peakR
+	FMOVS F4, peakL+16(FP)
+	FMOVS F5, peakR+20(FP)
 	RET

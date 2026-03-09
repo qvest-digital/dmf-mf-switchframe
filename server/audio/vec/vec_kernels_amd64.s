@@ -306,7 +306,7 @@ muladd_done:
 // AVX path processes 8 float32s/iter, SSE2 fallback processes 4.
 //
 // abs_mask = 0x7FFFFFFF (clear sign bit) replicated to all lanes.
-TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-24
+TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-20
 	MOVQ data+0(FP), DI       // DI = data
 	MOVQ n+8(FP), CX          // CX = n
 
@@ -468,6 +468,6 @@ stereo_scalar_loop_amd64:
 	JGE  stereo_scalar_loop_amd64
 
 stereo_store_amd64:
-	MOVSS X4, ret+16(FP)      // peakL
-	MOVSS X5, ret+20(FP)      // peakR
+	MOVSS X4, peakL+16(FP)
+	MOVSS X5, peakR+20(FP)
 	RET
