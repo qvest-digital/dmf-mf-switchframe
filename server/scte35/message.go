@@ -73,10 +73,21 @@ type SegmentationDescriptor struct {
 	DurationTicks                *uint64 `json:"durationTicks,omitempty"`
 	UPIDType                     uint8   `json:"upidType"`
 	UPID                         []byte  `json:"upid"`
+
+	// AdditionalUPIDs holds any UPIDs beyond the first. The first UPID is
+	// stored in UPIDType/UPID for backward compatibility.
+	AdditionalUPIDs []AdditionalUPID `json:"additionalUpids,omitempty"`
+
 	SegNum                       uint8   `json:"segNum,omitempty"`
 	SegExpected                  uint8   `json:"segExpected,omitempty"`
 	SubSegmentNum                uint8   `json:"subSegmentNum,omitempty"`
 	SubSegmentsExpected          uint8   `json:"subSegmentsExpected,omitempty"`
+}
+
+// AdditionalUPID represents a UPID beyond the first in a segmentation descriptor.
+type AdditionalUPID struct {
+	Type  uint8  `json:"type"`
+	Value []byte `json:"value"`
 }
 
 // DeliveryRestrictions carries delivery restriction flags.
@@ -211,11 +222,15 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 					dur := *d.DurationTicks
 					sd.SegmentationDuration = &dur
 				}
-				// Build UPID list.
+				// Build UPID list: first from UPIDType/UPID, then AdditionalUPIDs.
 				if len(d.UPID) > 0 {
-					sd.SegmentationUPIDs = []scte35lib.SegmentationUPID{
+					upids := []scte35lib.SegmentationUPID{
 						scte35lib.NewSegmentationUPID(uint32(d.UPIDType), d.UPID),
 					}
+					for _, extra := range d.AdditionalUPIDs {
+						upids = append(upids, scte35lib.NewSegmentationUPID(uint32(extra.Type), extra.Value))
+					}
+					sd.SegmentationUPIDs = upids
 				}
 				sd.SegmentNum = uint32(d.SegNum)
 				sd.SegmentsExpected = uint32(d.SegExpected)
@@ -345,11 +360,18 @@ func Decode(data []byte) (*CueMessage, error) {
 		if segDesc.SubSegmentsExpected != nil {
 			d.SubSegmentsExpected = uint8(*segDesc.SubSegmentsExpected)
 		}
-		// Extract UPID from the first segmentation UPID if present.
+		// Extract UPIDs: first goes into UPIDType/UPID for backward
+		// compatibility, additional ones go into AdditionalUPIDs.
 		if len(segDesc.SegmentationUPIDs) > 0 {
 			upid := segDesc.SegmentationUPIDs[0]
 			d.UPIDType = uint8(upid.Type)
 			d.UPID = []byte(upid.Value)
+			for _, extra := range segDesc.SegmentationUPIDs[1:] {
+				d.AdditionalUPIDs = append(d.AdditionalUPIDs, AdditionalUPID{
+					Type:  uint8(extra.Type),
+					Value: []byte(extra.Value),
+				})
+			}
 		}
 		msg.Descriptors = append(msg.Descriptors, d)
 	}
@@ -412,6 +434,20 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 		return nil, fmt.Errorf("not an SCTE-35 section")
 	}
 
+	// Verify CRC-32 (last 4 bytes of section).
+	sectionLen := 3 + (int(data[1]&0x0F)<<8 | int(data[2]))
+	if len(data) < sectionLen {
+		return nil, fmt.Errorf("section length exceeds data")
+	}
+	if sectionLen < 4 {
+		return nil, fmt.Errorf("section too short for CRC")
+	}
+	crcData := data[:sectionLen-4]
+	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
+	if crc32MPEG2(crcData) != expectedCRC {
+		return nil, fmt.Errorf("CRC-32 mismatch")
+	}
+
 	// Verify splice_command_type is splice_insert (0x05) at byte 13.
 	if data[13] != CommandSpliceInsert {
 		return nil, fmt.Errorf("not a splice_insert command")
@@ -431,4 +467,21 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 		EventID:                    eventID,
 		SpliceEventCancelIndicator: true,
 	}, nil
+}
+
+// crc32MPEG2 computes CRC-32/MPEG-2 as used in SCTE-35 sections.
+// Polynomial 0x04C11DB7 (normal form), initial value 0xFFFFFFFF, no final complement.
+func crc32MPEG2(data []byte) uint32 {
+	crc := uint32(0xFFFFFFFF)
+	for _, b := range data {
+		crc ^= uint32(b) << 24
+		for i := 0; i < 8; i++ {
+			if crc&0x80000000 != 0 {
+				crc = (crc << 1) ^ 0x04C11DB7
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc
 }

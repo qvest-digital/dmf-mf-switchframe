@@ -935,6 +935,176 @@ func TestFromCueMessage_BreakDuration_Rounding(t *testing.T) {
 	}
 }
 
+// ---- FromCueMessage scheduled timing tests ----
+
+func TestFromCueMessage_SpliceInsert_ScheduledCueOut(t *testing.T) {
+	dur := 30 * time.Second
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       400,
+		IsOut:         true,
+		Timing:        "scheduled",
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartNormal {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceStartNormal)", srd.SpliceInsertType, SpliceStartNormal)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ScheduledCueIn(t *testing.T) {
+	cue := &scte35.CueMessage{
+		CommandType: scte35.CommandSpliceInsert,
+		EventID:     401,
+		IsOut:       false,
+		Timing:      "scheduled",
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceEndNormal {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceEndNormal)", srd.SpliceInsertType, SpliceEndNormal)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ImmediateCueOut_Regression(t *testing.T) {
+	// Regression: immediate cue-out must still produce SpliceStartImmediate.
+	dur := 10 * time.Second
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       402,
+		IsOut:         true,
+		Timing:        "immediate",
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartImmediate {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceStartImmediate)", srd.SpliceInsertType, SpliceStartImmediate)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ImmediateCueIn_Regression(t *testing.T) {
+	// Regression: immediate cue-in must still produce SpliceEndImmediate.
+	cue := &scte35.CueMessage{
+		CommandType: scte35.CommandSpliceInsert,
+		EventID:     403,
+		IsOut:       false,
+		Timing:      "immediate",
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceEndImmediate {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceEndImmediate)", srd.SpliceInsertType, SpliceEndImmediate)
+	}
+}
+
+func TestRoundTrip_ScheduledPreservation(t *testing.T) {
+	// Round-trip: scheduled cue-out should preserve timing through
+	// CueMessage -> SCTE-104 -> CueMessage.
+	dur := 20 * time.Second
+	original := &scte35.CueMessage{
+		CommandType:     scte35.CommandSpliceInsert,
+		EventID:         500,
+		IsOut:           true,
+		Timing:          "scheduled",
+		AutoReturn:      true,
+		BreakDuration:   &dur,
+		UniqueProgramID: 10,
+	}
+
+	msg104, err := FromCueMessage(original)
+	if err != nil {
+		t.Fatalf("FromCueMessage error: %v", err)
+	}
+
+	// Verify intermediate SCTE-104 uses SpliceStartNormal.
+	srd := msg104.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartNormal {
+		t.Errorf("intermediate SpliceInsertType = %d, want %d (SpliceStartNormal)",
+			srd.SpliceInsertType, SpliceStartNormal)
+	}
+
+	roundTripped, err := ToCueMessage(msg104)
+	if err != nil {
+		t.Fatalf("ToCueMessage error: %v", err)
+	}
+
+	if roundTripped.Timing != "scheduled" {
+		t.Errorf("Timing = %q, want %q", roundTripped.Timing, "scheduled")
+	}
+	if !roundTripped.IsOut {
+		t.Error("IsOut should be true after round-trip")
+	}
+	if roundTripped.EventID != original.EventID {
+		t.Errorf("EventID = %d, want %d", roundTripped.EventID, original.EventID)
+	}
+}
+
+func TestFromCueMessage_BreakDuration_OverflowClamp(t *testing.T) {
+	// 2 hours = 7200s = 72000 x 100ms units — exceeds uint16 max (65535).
+	// Must be clamped to 65535, not silently wrap around.
+	dur := 2 * time.Hour
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       1,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.BreakDuration != 65535 {
+		t.Errorf("BreakDuration = %d, want 65535 (clamped from 2h)", srd.BreakDuration)
+	}
+}
+
+func TestFromCueMessage_BreakDuration_JustUnderMax(t *testing.T) {
+	// 109 minutes = 6540s = 65400 x 100ms units — fits in uint16, must NOT be clamped.
+	dur := 109 * time.Minute
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       2,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	// 109 min = 6540s → 65400 units of 100ms
+	if srd.BreakDuration != 65400 {
+		t.Errorf("BreakDuration = %d, want 65400 (109 min, not clamped)", srd.BreakDuration)
+	}
+}
+
 func TestRoundTrip_SegNum(t *testing.T) {
 	// SCTE-104 → SCTE-35 → SCTE-104 should preserve SegNum/SegExpected.
 	msg := &Message{

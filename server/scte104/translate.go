@@ -2,6 +2,7 @@ package scte104
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/zsiec/switchframe/server/scte35"
@@ -157,8 +158,9 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 //
 // Translation rules:
 //   - CommandSpliceNull -> OpSpliceNull
-//   - CommandSpliceInsert -> OpSpliceRequest: IsOut=true -> SpliceStartImmediate,
-//     IsOut=false -> SpliceEndImmediate, Cancel -> SpliceCancel.
+//   - CommandSpliceInsert -> OpSpliceRequest: Timing="scheduled" uses Normal types,
+//     Timing="immediate" (or empty) uses Immediate types. IsOut=true -> SpliceStart*,
+//     IsOut=false -> SpliceEnd*, Cancel -> SpliceCancel.
 //     BreakDuration divided by 100ms for SCTE-104 units.
 //   - CommandTimeSignal -> OpTimeSignalRequest + one OpSegmentationDescriptorRequest
 //     per descriptor.
@@ -206,15 +208,27 @@ func fromSpliceInsert(cue *scte35.CueMessage) (Operation, error) {
 	if cue.SpliceEventCancelIndicator {
 		srd.SpliceInsertType = SpliceCancel
 	} else if cue.IsOut {
-		srd.SpliceInsertType = SpliceStartImmediate
+		if cue.Timing == "scheduled" {
+			srd.SpliceInsertType = SpliceStartNormal
+		} else {
+			srd.SpliceInsertType = SpliceStartImmediate
+		}
 	} else {
-		srd.SpliceInsertType = SpliceEndImmediate
+		if cue.Timing == "scheduled" {
+			srd.SpliceInsertType = SpliceEndNormal
+		} else {
+			srd.SpliceInsertType = SpliceEndImmediate
+		}
 	}
 
 	// Convert BreakDuration from time.Duration to 100ms units.
 	// Use rounding (+50ms) instead of truncation to avoid losing up to 99ms.
+	// Clamp to uint16 max (65535) to prevent silent overflow for breaks > 109 minutes.
 	if cue.BreakDuration != nil && !cue.SpliceEventCancelIndicator {
 		dur100ms := (*cue.BreakDuration + 50*time.Millisecond) / (100 * time.Millisecond)
+		if dur100ms > math.MaxUint16 {
+			dur100ms = math.MaxUint16
+		}
 		srd.BreakDuration = uint16(dur100ms)
 	}
 

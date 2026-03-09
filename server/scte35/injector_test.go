@@ -1189,14 +1189,26 @@ func TestInjector_ReturnToProgram_TimeSignal_SendsEndType(t *testing.T) {
 
 func TestInjector_IsSegCueOut_AllTypes(t *testing.T) {
 	// All ad insertion Start types from SCTE-35 Table 22.
-	cueOutTypes := []uint8{0x22, 0x30, 0x32, 0x34, 0x36, 0x44, 0x46}
+	cueOutTypes := []uint8{
+		0x22, // Break Start
+		0x30, // Provider Advertisement Start
+		0x32, // Distributor Advertisement Start
+		0x34, // Provider Placement Opportunity Start
+		0x36, // Distributor Placement Opportunity Start
+		0x38, // Provider Overlay Placement Opportunity Start
+		0x3A, // Distributor Overlay Placement Opportunity Start
+		0x3C, // Provider Promo Start
+		0x3E, // Distributor Promo Start
+		0x44, // Provider Ad Block Start
+		0x46, // Distributor Ad Block Start
+	}
 	for _, typeID := range cueOutTypes {
 		if !isSegCueOut(typeID) {
 			t.Errorf("expected 0x%02x to be cue-out", typeID)
 		}
 	}
 	// Corresponding End types should NOT be cue-out.
-	cueInTypes := []uint8{0x23, 0x31, 0x33, 0x35, 0x37, 0x45, 0x47}
+	cueInTypes := []uint8{0x23, 0x31, 0x33, 0x35, 0x37, 0x39, 0x3B, 0x3D, 0x3F, 0x45, 0x47}
 	for _, typeID := range cueInTypes {
 		if isSegCueOut(typeID) {
 			t.Errorf("expected 0x%02x (End type) to not be cue-out", typeID)
@@ -1370,6 +1382,225 @@ func TestInjector_ReturnToProgram_TimeSignal_PreservesSegNum(t *testing.T) {
 	}
 	if d.SegExpected != 4 {
 		t.Errorf("SegExpected = %d, want 4", d.SegExpected)
+	}
+}
+
+func TestInjector_CancelEvent_TimeSignal_SendsSegmentationCancel(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with Provider PO Start (0x34) — this creates an active event.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 500, UPIDType: 0x0F, UPID: []byte("test")},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+	if eventID != 500 {
+		t.Fatalf("expected eventID=500, got %d", eventID)
+	}
+
+	// Cancel the time_signal event — should send time_signal with
+	// segmentation_event_cancel_indicator, NOT splice_insert cancel.
+	if err := inj.CancelEvent(500); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	// Should have no active events.
+	if len(inj.ActiveEventIDs()) != 0 {
+		t.Fatal("expected no active events after cancel")
+	}
+
+	// Decode the cancel message (last sink call).
+	if len(sinkCalls) < 2 {
+		t.Fatalf("expected at least 2 sink calls, got %d", len(sinkCalls))
+	}
+	cancelData := sinkCalls[len(sinkCalls)-1]
+	decoded, err := Decode(cancelData)
+	if err != nil {
+		t.Fatalf("failed to decode cancel message: %v", err)
+	}
+
+	// Must be time_signal, not splice_insert.
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal cancel, got command type 0x%02x", decoded.CommandType)
+	}
+
+	// Must have exactly one descriptor with the cancel indicator set.
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor in cancel message, got %d", len(decoded.Descriptors))
+	}
+	d := decoded.Descriptors[0]
+	if !d.SegmentationEventCancelIndicator {
+		t.Fatal("expected SegmentationEventCancelIndicator=true in cancel message")
+	}
+	if d.SegEventID != 500 {
+		t.Fatalf("expected SegEventID=500, got %d", d.SegEventID)
+	}
+
+	// Verify event log has a "cancelled" entry with command type "time_signal".
+	log := inj.EventLog()
+	var cancelEntry *EventLogEntry
+	for i := range log {
+		if log[i].EventID == 500 && log[i].Status == "cancelled" {
+			cancelEntry = &log[i]
+			break
+		}
+	}
+	if cancelEntry == nil {
+		t.Fatal("expected cancelled entry in event log")
+	}
+	if cancelEntry.CommandType != "time_signal" {
+		t.Fatalf("expected event log command type 'time_signal', got %q", cancelEntry.CommandType)
+	}
+}
+
+func TestInjector_CancelEvent_TimeSignal_SCTE104Sink(t *testing.T) {
+	var scte104Msg *CueMessage
+	var mu sync.Mutex
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Msg = msg
+		mu.Unlock()
+	})
+
+	// Inject time_signal cue-out.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 600},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Reset to capture only the cancel message.
+	mu.Lock()
+	scte104Msg = nil
+	mu.Unlock()
+
+	// Cancel the event.
+	if err := inj.CancelEvent(600); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Msg == nil {
+		t.Fatal("expected scte104Sink to be called on CancelEvent")
+	}
+	// SCTE-104 sink should receive a time_signal, not splice_insert.
+	if scte104Msg.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal in SCTE-104 sink, got 0x%02x", scte104Msg.CommandType)
+	}
+	if len(scte104Msg.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(scte104Msg.Descriptors))
+	}
+	if !scte104Msg.Descriptors[0].SegmentationEventCancelIndicator {
+		t.Fatal("expected SegmentationEventCancelIndicator=true in SCTE-104 cancel message")
+	}
+}
+
+func TestInjector_CancelEvent_TimeSignal_MultipleDescriptors(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with two cue-out descriptors.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 700, UPIDType: 0x0F, UPID: []byte("ad1")},
+			{SegmentationType: 0x36, SegEventID: 701, UPIDType: 0x0F, UPID: []byte("ad2")},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Cancel event 700.
+	if err := inj.CancelEvent(700); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	// Decode the cancel message.
+	cancelData := sinkCalls[len(sinkCalls)-1]
+	decoded, err := Decode(cancelData)
+	if err != nil {
+		t.Fatalf("failed to decode cancel message: %v", err)
+	}
+
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal, got 0x%02x", decoded.CommandType)
+	}
+
+	// Should have cancel descriptors for all descriptors from the original event.
+	if len(decoded.Descriptors) != 2 {
+		t.Fatalf("expected 2 cancel descriptors, got %d", len(decoded.Descriptors))
+	}
+	for i, d := range decoded.Descriptors {
+		if !d.SegmentationEventCancelIndicator {
+			t.Fatalf("descriptor %d: expected cancel indicator", i)
+		}
+	}
+}
+
+func TestInjector_CancelEvent_SpliceInsert_StillWorks(t *testing.T) {
+	// Verify the original splice_insert cancel path is preserved.
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	eventID, _ := inj.InjectCue(msg)
+
+	if err := inj.CancelEvent(eventID); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	// Decode the cancel message.
+	cancelData := sinkCalls[len(sinkCalls)-1]
+	decoded, err := Decode(cancelData)
+	if err != nil {
+		t.Fatalf("failed to decode cancel message: %v", err)
+	}
+
+	// Must still be splice_insert cancel for splice_insert events.
+	if decoded.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got 0x%02x", decoded.CommandType)
+	}
+	if !decoded.SpliceEventCancelIndicator {
+		t.Fatal("expected SpliceEventCancelIndicator=true")
 	}
 }
 

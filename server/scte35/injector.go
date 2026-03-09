@@ -506,6 +506,7 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 					SegmentationType:    d.SegmentationType + 1, // Start→End
 					UPIDType:            d.UPIDType,
 					UPID:                d.UPID,
+					AdditionalUPIDs:     d.AdditionalUPIDs,
 					SegNum:              d.SegNum,
 					SegExpected:         d.SegExpected,
 					SubSegmentNum:       d.SubSegmentNum,
@@ -581,12 +582,31 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		ae.preRollCancel()
 	}
 
-	// Build a splice_insert with splice_event_cancel_indicator set.
-	cancelMsg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
-		EventID:                    eventID,
-		SpliceEventCancelIndicator: true,
+	// Build the appropriate cancel message based on the original command type.
+	var cancelMsg *CueMessage
+	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
+		// For time_signal events, send a time_signal with
+		// segmentation_event_cancel_indicator for each descriptor.
+		var cancelDescs []SegmentationDescriptor
+		for _, d := range ae.Descriptors {
+			cancelDescs = append(cancelDescs, SegmentationDescriptor{
+				SegEventID:                       d.SegEventID,
+				SegmentationEventCancelIndicator: true,
+			})
+		}
+		cancelMsg = &CueMessage{
+			CommandType: CommandTimeSignal,
+			Descriptors: cancelDescs,
+		}
+	} else {
+		// splice_insert cancel path.
+		cancelMsg = &CueMessage{
+			CommandType:                 CommandSpliceInsert,
+			EventID:                    eventID,
+			SpliceEventCancelIndicator: true,
+		}
 	}
+
 	data, err := cancelMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
 		inj.mu.Unlock()
@@ -598,7 +618,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	delete(inj.activeEvents, eventID)
 
 	// Log.
-	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled", cancelMsg)
+	inj.logEventLocked(eventID, cancelMsg.CommandType, false, nil, false, "cancelled", cancelMsg)
 
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
@@ -612,7 +632,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		s104(cancelMsg)
 	}
 
-	inj.dispatchWebhook("cancel", eventID, CommandSpliceInsert, false, 0)
+	inj.dispatchWebhook("cancel", eventID, cancelMsg.CommandType, false, 0)
 
 	return nil
 }
@@ -1019,6 +1039,10 @@ func isSegCueOut(typeID uint8) bool {
 		0x32, // Distributor Advertisement Start
 		0x34, // Provider Placement Opportunity Start
 		0x36, // Distributor Placement Opportunity Start
+		0x38, // Provider Overlay Placement Opportunity Start
+		0x3A, // Distributor Overlay Placement Opportunity Start
+		0x3C, // Provider Promo Start
+		0x3E, // Distributor Promo Start
 		0x44, // Provider Ad Block Start
 		0x46: // Distributor Ad Block Start
 		return true

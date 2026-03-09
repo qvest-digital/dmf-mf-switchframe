@@ -487,13 +487,17 @@ func parseEventID(r *http.Request) (uint32, error) {
 
 // buildCueMessage converts a scte35CueRequest into a CueMessage.
 func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
-	msg := &scte35.CueMessage{}
+	msg := &scte35.CueMessage{
+		Source: "api",
+	}
 
 	switch req.CommandType {
 	case "splice_insert":
 		msg.CommandType = scte35.CommandSpliceInsert
 	case "time_signal":
 		msg.CommandType = scte35.CommandTimeSignal
+	case "splice_null":
+		msg.CommandType = scte35.CommandSpliceNull
 	default:
 		return nil, &invalidCommandTypeError{req.CommandType}
 	}

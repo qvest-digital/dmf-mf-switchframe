@@ -177,9 +177,10 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 //
 // Spec note: SCTE-35 section 8.1 specifies that the CUEI registration
 // descriptor should appear in the PMT program_info loop (program-level),
-// not in the ES_info loop. However, go-astits only exposes descriptors
-// via PMTElementaryStream.ElementaryStreamDescriptors (ES-level); the
-// PMT.ProgramInfoDescriptors field is not publicly settable. ES_info
+// not in the ES_info loop. However, go-astits v1.15.0 Muxer has the
+// pmt field as private — PMTData.ProgramDescriptors exists but is not
+// settable through the public Muxer API. A future go-astits version or
+// fork could expose program-level descriptor insertion. ES_info
 // placement is widely accepted by downstream equipment and decoders.
 func cueiDescriptor() *astits.Descriptor {
 	return &astits.Descriptor{

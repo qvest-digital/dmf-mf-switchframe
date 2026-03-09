@@ -1,6 +1,8 @@
 package scte35
 
 import (
+	"encoding/binary"
+	"strings"
 	"testing"
 	"time"
 )
@@ -438,6 +440,232 @@ func TestEncode_SegNum_RoundTrip(t *testing.T) {
 	}
 	if d.SegExpected != 5 {
 		t.Errorf("SegExpected = %d, want 5", d.SegExpected)
+	}
+}
+
+func TestDecodeSpliceInsertCancel_ValidCRC(t *testing.T) {
+	// Encode a cancel message — the library produces correct CRC-32.
+	msg := &CueMessage{
+		CommandType:                 CommandSpliceInsert,
+		EventID:                    12345,
+		SpliceEventCancelIndicator: true,
+	}
+	data, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	// Call the fallback decoder directly.
+	decoded, err := decodeSpliceInsertCancel(data)
+	if err != nil {
+		t.Fatalf("decodeSpliceInsertCancel failed: %v", err)
+	}
+	if decoded.EventID != 12345 {
+		t.Fatalf("expected EventID=12345, got %d", decoded.EventID)
+	}
+	if !decoded.SpliceEventCancelIndicator {
+		t.Fatal("expected SpliceEventCancelIndicator=true")
+	}
+}
+
+func TestDecodeSpliceInsertCancel_CorruptCRC(t *testing.T) {
+	// Encode a cancel message with correct CRC.
+	msg := &CueMessage{
+		CommandType:                 CommandSpliceInsert,
+		EventID:                    12345,
+		SpliceEventCancelIndicator: true,
+	}
+	data, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	// Corrupt a byte in the middle of the payload.
+	data[10] ^= 0xFF
+
+	_, err = decodeSpliceInsertCancel(data)
+	if err == nil {
+		t.Fatal("expected CRC error on corrupt data")
+	}
+	if !strings.Contains(err.Error(), "CRC-32 mismatch") {
+		t.Fatalf("expected CRC-32 mismatch error, got: %v", err)
+	}
+}
+
+func TestDecodeSpliceInsertCancel_SectionLengthExceedsData(t *testing.T) {
+	// Construct minimal data where section_length claims more than available.
+	data := make([]byte, 25)
+	data[0] = 0xFC                // table_id
+	data[13] = CommandSpliceInsert // splice_command_type
+	// Set section_length to 255 (way more than 22 remaining bytes).
+	data[1] = 0x00
+	data[2] = 0xFF
+
+	_, err := decodeSpliceInsertCancel(data)
+	if err == nil {
+		t.Fatal("expected error for section length exceeding data")
+	}
+	if !strings.Contains(err.Error(), "section length exceeds data") {
+		t.Fatalf("expected 'section length exceeds data' error, got: %v", err)
+	}
+}
+
+func TestCrc32MPEG2(t *testing.T) {
+	// Known test vector: empty input should return 0xFFFFFFFF (initial CRC, no data).
+	// Actually for MPEG-2 CRC, the initial value is 0xFFFFFFFF with no final XOR.
+	// For zero-length data the result is 0xFFFFFFFF.
+	crc := crc32MPEG2(nil)
+	if crc != 0xFFFFFFFF {
+		t.Fatalf("expected 0xFFFFFFFF for empty data, got 0x%08X", crc)
+	}
+
+	// Test with a known SCTE-35 section: encode a message and verify
+	// the CRC of all-but-last-4-bytes matches the last 4 bytes.
+	msg := &CueMessage{
+		CommandType:                 CommandSpliceInsert,
+		EventID:                    42,
+		SpliceEventCancelIndicator: true,
+	}
+	data, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	sectionLen := 3 + (int(data[1]&0x0F)<<8 | int(data[2]))
+	crcData := data[:sectionLen-4]
+	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
+	computedCRC := crc32MPEG2(crcData)
+	if computedCRC != expectedCRC {
+		t.Fatalf("CRC mismatch: computed 0x%08X, expected 0x%08X", computedCRC, expectedCRC)
+	}
+}
+
+func TestMultipleUPIDs_RoundTrip(t *testing.T) {
+	// A segmentation descriptor with 2 UPIDs should survive encode→decode.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34, // Provider Placement Opportunity Start
+				SegEventID:       500,
+				UPIDType:         0x09, // ADI (first UPID)
+				UPID:             []byte("SIGNAL:first-upid"),
+				AdditionalUPIDs: []AdditionalUPID{
+					{Type: 0x0F, Value: []byte("https://example.com/second")},
+				},
+			},
+		},
+	}
+
+	encoded, err := msg.Encode(true) // verify=true
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	if len(encoded) == 0 {
+		t.Fatal("encoded data is empty")
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal, got %d", decoded.CommandType)
+	}
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+
+	d := decoded.Descriptors[0]
+
+	// First UPID preserved in backward-compatible fields.
+	if d.UPIDType != 0x09 {
+		t.Fatalf("first UPID type: expected 0x09, got 0x%02x", d.UPIDType)
+	}
+	if string(d.UPID) != "SIGNAL:first-upid" {
+		t.Fatalf("first UPID value: expected %q, got %q", "SIGNAL:first-upid", string(d.UPID))
+	}
+
+	// Second UPID preserved in AdditionalUPIDs.
+	if len(d.AdditionalUPIDs) != 1 {
+		t.Fatalf("expected 1 additional UPID, got %d", len(d.AdditionalUPIDs))
+	}
+	if d.AdditionalUPIDs[0].Type != 0x0F {
+		t.Fatalf("additional UPID type: expected 0x0F, got 0x%02x", d.AdditionalUPIDs[0].Type)
+	}
+	if string(d.AdditionalUPIDs[0].Value) != "https://example.com/second" {
+		t.Fatalf("additional UPID value: expected %q, got %q",
+			"https://example.com/second", string(d.AdditionalUPIDs[0].Value))
+	}
+}
+
+func TestMultipleUPIDs_ThreeUPIDs_RoundTrip(t *testing.T) {
+	// A segmentation descriptor with 3 UPIDs.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       501,
+				UPIDType:         0x09,
+				UPID:             []byte("first"),
+				AdditionalUPIDs: []AdditionalUPID{
+					{Type: 0x09, Value: []byte("second")},
+					{Type: 0x0F, Value: []byte("third")},
+				},
+			},
+		},
+	}
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	d := decoded.Descriptors[0]
+	if d.UPIDType != 0x09 {
+		t.Fatalf("first UPID type: expected 0x09, got 0x%02x", d.UPIDType)
+	}
+	if string(d.UPID) != "first" {
+		t.Fatalf("first UPID value: expected %q, got %q", "first", string(d.UPID))
+	}
+	if len(d.AdditionalUPIDs) != 2 {
+		t.Fatalf("expected 2 additional UPIDs, got %d", len(d.AdditionalUPIDs))
+	}
+	if string(d.AdditionalUPIDs[0].Value) != "second" {
+		t.Fatalf("second UPID: expected %q, got %q", "second", string(d.AdditionalUPIDs[0].Value))
+	}
+	if string(d.AdditionalUPIDs[1].Value) != "third" {
+		t.Fatalf("third UPID: expected %q, got %q", "third", string(d.AdditionalUPIDs[1].Value))
+	}
+}
+
+func TestSingleUPID_BackwardCompatible(t *testing.T) {
+	// A descriptor with only 1 UPID should have no AdditionalUPIDs.
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	d := decoded.Descriptors[0]
+	if d.UPIDType != 0x0F {
+		t.Fatalf("UPID type: expected 0x0F, got 0x%02x", d.UPIDType)
+	}
+	if len(d.AdditionalUPIDs) != 0 {
+		t.Fatalf("expected 0 additional UPIDs, got %d", len(d.AdditionalUPIDs))
 	}
 }
 

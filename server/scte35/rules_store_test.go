@@ -406,3 +406,137 @@ func TestRulesStore_EngineSync(t *testing.T) {
 		t.Fatalf("expected pass for time_signal, got %s", action2)
 	}
 }
+
+// TestRulesStore_EnginePointerStableAfterCRUD verifies that the engine pointer
+// returned by Engine() remains the same object after CRUD operations.
+// This is critical because the injector holds a pointer to the engine at startup;
+// if syncEngine() replaces the pointer, the injector becomes stale.
+func TestRulesStore_EnginePointerStableAfterCRUD(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.json")
+	store, err := LoadRulesStore(path)
+	if err != nil {
+		t.Fatalf("LoadRulesStore: %v", err)
+	}
+
+	// Grab the engine pointer before any CRUD operations.
+	engineBefore := store.Engine()
+
+	// --- Create: add an enabled rule that deletes splice_inserts ---
+	created, err := store.Create(Rule{
+		Name:       "delete inserts",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionDelete,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	engineAfterCreate := store.Engine()
+	if engineAfterCreate != engineBefore {
+		t.Fatal("engine pointer changed after Create — injector would hold stale reference")
+	}
+
+	// The original pointer should see the new rule take effect.
+	msg := NewSpliceInsert(1, 30*time.Second, true, true)
+	action, _ := engineBefore.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("original engine pointer should see created rule: expected delete, got %s", action)
+	}
+
+	// --- Update: change the rule action to pass ---
+	updated := created
+	updated.Action = ActionPass
+	if err := store.Update(created.ID, updated); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	engineAfterUpdate := store.Engine()
+	if engineAfterUpdate != engineBefore {
+		t.Fatal("engine pointer changed after Update — injector would hold stale reference")
+	}
+
+	action, _ = engineBefore.Evaluate(msg, "")
+	if action != ActionPass {
+		t.Fatalf("original engine pointer should see updated rule: expected pass, got %s", action)
+	}
+
+	// --- Delete: remove the rule, should fall back to default action ---
+	if err := store.Delete(created.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	engineAfterDelete := store.Engine()
+	if engineAfterDelete != engineBefore {
+		t.Fatal("engine pointer changed after Delete — injector would hold stale reference")
+	}
+
+	action, _ = engineBefore.Evaluate(msg, "")
+	if action != ActionPass {
+		t.Fatalf("original engine pointer should use default action after delete: expected pass, got %s", action)
+	}
+
+	// --- SetDefaultAction: change default to delete ---
+	if err := store.SetDefaultAction(ActionDelete); err != nil {
+		t.Fatalf("SetDefaultAction: %v", err)
+	}
+
+	engineAfterDefault := store.Engine()
+	if engineAfterDefault != engineBefore {
+		t.Fatal("engine pointer changed after SetDefaultAction — injector would hold stale reference")
+	}
+
+	action, _ = engineBefore.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("original engine pointer should see new default action: expected delete, got %s", action)
+	}
+
+	// --- Reorder: create two rules, reorder, verify pointer stable ---
+	// Reset default to pass first.
+	if err := store.SetDefaultAction(ActionPass); err != nil {
+		t.Fatalf("SetDefaultAction reset: %v", err)
+	}
+
+	r1, err := store.Create(Rule{
+		Name:       "rule A",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionDelete,
+	})
+	if err != nil {
+		t.Fatalf("Create r1: %v", err)
+	}
+	r2, err := store.Create(Rule{
+		Name:       "rule B",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionPass,
+	})
+	if err != nil {
+		t.Fatalf("Create r2: %v", err)
+	}
+
+	// First-match-wins: r1 (delete) should win since it was created first.
+	action, _ = engineBefore.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("before reorder: expected delete (r1 wins), got %s", action)
+	}
+
+	// Reorder: put r2 first so pass wins.
+	if err := store.Reorder([]string{r2.ID, r1.ID}); err != nil {
+		t.Fatalf("Reorder: %v", err)
+	}
+
+	engineAfterReorder := store.Engine()
+	if engineAfterReorder != engineBefore {
+		t.Fatal("engine pointer changed after Reorder — injector would hold stale reference")
+	}
+
+	action, _ = engineBefore.Evaluate(msg, "")
+	if action != ActionPass {
+		t.Fatalf("after reorder: expected pass (r2 wins), got %s", action)
+	}
+}

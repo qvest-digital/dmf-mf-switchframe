@@ -142,22 +142,6 @@ type pmtStream struct {
 	pid        uint16
 }
 
-// crc32MPEG2 calculates the MPEG-2 CRC-32 used in MPEG-TS PSI tables.
-func crc32MPEG2(data []byte) uint32 {
-	crc := uint32(0xFFFFFFFF)
-	for _, b := range data {
-		crc ^= uint32(b) << 24
-		for i := 0; i < 8; i++ {
-			if crc&0x80000000 != 0 {
-				crc = (crc << 1) ^ 0x04C11DB7
-			} else {
-				crc <<= 1
-			}
-		}
-	}
-	return crc
-}
-
 func TestParseFromTS_ValidSpliceInsert(t *testing.T) {
 	// Create a splice_insert using the existing message.go API
 	dur := 30 * time.Second

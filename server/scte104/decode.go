@@ -39,13 +39,44 @@ func Decode(data []byte) (*Message, error) {
 }
 
 // decodeSOM decodes a Single Operation Message. The opID has already been
-// consumed; payload contains the operation data bytes.
+// consumed; payload contains either:
+//   - Abbreviated (VANC) format: the operation data bytes directly.
+//   - Full SOM format: an 11-byte header followed by the operation data.
+//
+// Full SOM header (11 bytes):
+//
+//	messageSize(2) + result(2) + result_extension(2) +
+//	protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2)
+//
+// Detection heuristic: if len(payload) >= 13 (11 header + at least 2 bytes of
+// operation data) and the first 2 bytes (messageSize) equal len(payload), treat
+// as full SOM with the header. Otherwise treat as abbreviated.
 func decodeSOM(opID uint16, payload []byte) (*Message, error) {
+	// Check if this is a full SOM with header fields.
+	if len(payload) >= 13 { // 11 header + minimum 2 bytes for operation data
+		messageSize := int(binary.BigEndian.Uint16(payload[0:2]))
+		if messageSize == len(payload) {
+			// Full SOM format: parse the 11-byte header, then operation data.
+			msg := &Message{
+				ProtocolVersion: payload[6],
+				ASIndex:         payload[7],
+				MessageNumber:   payload[8],
+				DPIPIDIndex:     binary.BigEndian.Uint16(payload[9:11]),
+			}
+			op, err := decodeOperationData(opID, payload[11:])
+			if err != nil {
+				return nil, fmt.Errorf("scte104 SOM: %w", err)
+			}
+			msg.Operations = []Operation{op}
+			return msg, nil
+		}
+	}
+
+	// Abbreviated format (VANC): payload is directly the operation data.
 	op, err := decodeOperationData(opID, payload)
 	if err != nil {
 		return nil, fmt.Errorf("scte104 SOM: %w", err)
 	}
-
 	return &Message{
 		Operations: []Operation{op},
 	}, nil
@@ -62,15 +93,22 @@ func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 //	message_number       uint8
 //	DPI_PID_index        uint16
 //	SCTE35_protocol_ver  uint8
-//	timestamp            uint8   (skip/ignore)
+//	timestamp            variable (depends on time_type byte)
 //	num_ops              uint8
 //	[operations...]
+//
+// Timestamp formats by time_type:
+//
+//	0: no timestamp   (1 byte  — just the time_type field)
+//	1: UTC            (7 bytes — time_type(1) + GPS_seconds(4) + GPS_microseconds(2))
+//	2: VITC           (5 bytes — time_type(1) + hours(1) + minutes(1) + seconds(1) + frames(1))
+//	3: GPI            (3 bytes — time_type(1) + number(1) + edge(1))
 func decodeMOM(data []byte) (*Message, error) {
-	// Minimum MOM header: messageSize(2) + protocolVersion(1) + AS_index(1) +
-	// message_number(1) + DPI_PID_index(2) + SCTE35_protocol_version(1) +
-	// timestamp(1) + num_ops(1) = 10 bytes
-	if len(data) < 10 {
-		return nil, fmt.Errorf("%w: MOM header requires 10 bytes, got %d", ErrTooShort, len(data))
+	// Minimum MOM header before timestamp: messageSize(2) + protocolVersion(1) +
+	// AS_index(1) + message_number(1) + DPI_PID_index(2) + SCTE35_protocol_version(1) +
+	// time_type(1) = 9 bytes
+	if len(data) < 9 {
+		return nil, fmt.Errorf("%w: MOM header requires at least 9 bytes, got %d", ErrTooShort, len(data))
 	}
 
 	// messageSize is informational; we parse based on actual data length.
@@ -84,10 +122,33 @@ func decodeMOM(data []byte) (*Message, error) {
 	}
 
 	// data[7] = SCTE35 protocol version (skip)
-	// data[8] = timestamp (skip)
-	numOps := int(data[9])
 
-	offset := 10
+	// data[8] = time_type byte — determines variable-length timestamp.
+	timeType := data[8]
+	var timestampLen int
+	switch timeType {
+	case 0:
+		timestampLen = 1 // no timestamp, just the type field
+	case 1:
+		timestampLen = 7 // UTC: type(1) + GPS_seconds(4) + GPS_microseconds(2)
+	case 2:
+		timestampLen = 5 // VITC: type(1) + hours(1) + minutes(1) + seconds(1) + frames(1)
+	case 3:
+		timestampLen = 3 // GPI: type(1) + number(1) + edge(1)
+	default:
+		timestampLen = 1 // treat unknown as no timestamp
+	}
+
+	// Verify we have enough data for the full timestamp + num_ops byte.
+	minHeader := 8 + timestampLen + 1 // fixed fields + timestamp + num_ops
+	if len(data) < minHeader {
+		return nil, fmt.Errorf("%w: MOM header requires %d bytes for time_type %d, got %d",
+			ErrTooShort, minHeader, timeType, len(data))
+	}
+
+	numOps := int(data[8+timestampLen])
+
+	offset := 9 + timestampLen
 	for i := 0; i < numOps; i++ {
 		// Each operation: opID(2) + data_length(2) + data[data_length]
 		if offset+4 > len(data) {
