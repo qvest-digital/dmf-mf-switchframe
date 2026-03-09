@@ -2212,15 +2212,18 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	// Update source stats from the sourceDecoder for encoder parameter derivation.
+	// Guard against nil viewer — MXL and replay sources have no viewer.
 	if ss != nil {
-		if dec := ss.viewer.srcDecoder.Load(); dec != nil {
-			avgSize, avgFPS := dec.Stats()
-			if ss.viewer != nil && sourceKey == programSource {
-				s.mu.RLock()
-				pipeCodecs := s.pipeCodecs
-				s.mu.RUnlock()
-				if pipeCodecs != nil {
-					pipeCodecs.updateSourceStats(avgSize, avgFPS)
+		if ss.viewer != nil {
+			if dec := ss.viewer.srcDecoder.Load(); dec != nil {
+				avgSize, avgFPS := dec.Stats()
+				if sourceKey == programSource {
+					s.mu.RLock()
+					pipeCodecs := s.pipeCodecs
+					s.mu.RUnlock()
+					if pipeCodecs != nil {
+						pipeCodecs.updateSourceStats(avgSize, avgFPS)
+					}
 				}
 			}
 		}

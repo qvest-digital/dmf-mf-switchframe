@@ -1057,3 +1057,24 @@ func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
 	pts = sw.LastBroadcastVideoPTS()
 	require.Equal(t, int64(103_003), pts, "expected PTS to update on each broadcast")
 }
+
+func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Register an MXL-style source (nil viewer, nil relay).
+	sw.RegisterMXLSource("mxl:cam1")
+	require.NoError(t, sw.SetPreview(context.Background(), "mxl:cam1"))
+	require.NoError(t, sw.Cut(context.Background(), "mxl:cam1"))
+
+	// Should not panic — viewer is nil for MXL sources.
+	pf := &ProcessingFrame{
+		YUV:   make([]byte, 1920*1080*3/2),
+		Width: 1920, Height: 1080,
+		PTS: 90000, DTS: 90000,
+	}
+	require.NotPanics(t, func() {
+		sw.handleRawVideoFrame("mxl:cam1", pf)
+	})
+}
