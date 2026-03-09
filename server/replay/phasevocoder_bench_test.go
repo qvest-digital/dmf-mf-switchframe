@@ -102,3 +102,19 @@ func BenchmarkPhaseVocoder_10s_Stereo(b *testing.B) {
 		PhaseVocoderTimeStretch(input, 2, 48000, 0.5)
 	}
 }
+
+func BenchmarkWSOLA_vs_PhaseVocoder(b *testing.B) {
+	// 10-second stereo clip — head-to-head comparison
+	input := generateSineWave(48000, 10000, 440, 2)
+
+	b.Run("WSOLA", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			WSOLATimeStretch(input, 2, 48000, 0.5)
+		}
+	})
+	b.Run("PhaseVocoder", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			PhaseVocoderTimeStretch(input, 2, 48000, 0.5)
+		}
+	})
+}
