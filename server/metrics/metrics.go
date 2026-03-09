@@ -80,6 +80,7 @@ type Metrics struct {
 	PipelineDecodeDuration    prometheus.Histogram
 	PipelineEncodeDuration    prometheus.Histogram
 	PipelineBlendDuration     prometheus.Histogram
+	NodeProcessDuration       *prometheus.HistogramVec
 
 	// Health
 	SourceStatusChangesTotal *prometheus.CounterVec // labels: source, from_status, to_status
@@ -199,6 +200,13 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Transition blend latency.",
 			Buckets:   []float64{0.0001, 0.0005, 0.001, 0.002, 0.005, 0.01},
 		}),
+		NodeProcessDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "pipeline",
+			Name:      "node_duration_seconds",
+			Help:      "Per-node video processing duration.",
+			Buckets:   []float64{0.00001, 0.0001, 0.001, 0.01, 0.1},
+		}, []string{"node"}),
 
 		// Health
 		SourceStatusChangesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -226,6 +234,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.PipelineDecodeDuration,
 		m.PipelineEncodeDuration,
 		m.PipelineBlendDuration,
+		m.NodeProcessDuration,
 		m.SourceStatusChangesTotal,
 	)
 
