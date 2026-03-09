@@ -232,6 +232,39 @@ func TestRebuildPipeline_IncrementsEpoch(t *testing.T) {
 	require.NotNil(t, sw.pipeline.Load())
 }
 
+func TestSetCompositor_TriggersPipelineRebuild(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Set up pipeCodecs + framePool so rebuild works.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	epochBefore := sw.pipelineEpoch.Load()
+	sw.SetCompositor(nil)
+	epochAfter := sw.pipelineEpoch.Load()
+
+	require.Equal(t, epochBefore+1, epochAfter, "SetCompositor should trigger rebuildPipeline")
+}
+
+func TestSetKeyBridge_TriggersPipelineRebuild(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	epochBefore := sw.pipelineEpoch.Load()
+	sw.SetKeyBridge(nil)
+	epochAfter := sw.pipelineEpoch.Load()
+
+	require.Equal(t, epochBefore+1, epochAfter, "SetKeyBridge should trigger rebuildPipeline")
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))

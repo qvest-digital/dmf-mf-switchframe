@@ -488,16 +488,18 @@ func (s *Switcher) RequestKeyframe() {
 // ProcessYUV method is called in the video processing pipeline when active.
 func (s *Switcher) SetCompositor(c *graphics.Compositor) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.compositorRef = c
+	s.mu.Unlock()
+	s.rebuildPipeline()
 }
 
 // SetKeyBridge attaches the upstream key bridge for chroma/luma keying.
 // The bridge's ProcessYUV method is called in the video processing pipeline.
 func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.keyBridge = kb
+	s.mu.Unlock()
+	s.rebuildPipeline()
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
