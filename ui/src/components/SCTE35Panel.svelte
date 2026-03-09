@@ -194,8 +194,11 @@
 
 	function formatCountdown(evt: SCTE35Active): string {
 		if (evt.held) return 'HELD';
-		if (evt.remainingMs === undefined || evt.remainingMs <= 0) return '0:00';
-		const totalSec = Math.ceil(evt.remainingMs / 1000);
+		if (!evt.durationMs || !evt.startedAt) return '—';
+		const elapsed = now - evt.startedAt;
+		const remaining = evt.durationMs - elapsed;
+		if (remaining <= 0) return '0:00';
+		const totalSec = Math.ceil(remaining / 1000);
 		const min = Math.floor(totalSec / 60);
 		const sec = totalSec % 60;
 		return `${min}:${sec.toString().padStart(2, '0')}`;
