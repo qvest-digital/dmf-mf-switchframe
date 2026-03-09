@@ -1,3 +1,5 @@
+//go:build arm64
+
 package replay
 
 // butterflyRadix2 performs radix-2 butterfly operations for one FFT stage.
@@ -6,29 +8,9 @@ package replay
 // stride is always 1 for in-place FFT.
 // twiddleStride is N/(2*halfN) — step through twiddle table.
 //
-// This is a pure Go implementation for arm64. A NEON SIMD version
-// can replace this in a future task.
-func butterflyRadix2(data, twiddle []float32, halfN, stride, twiddleStride int) {
-	for k := 0; k < halfN; k++ {
-		twIdx := k * twiddleStride * 2
-		wRe := twiddle[twIdx]
-		wIm := twiddle[twIdx+1]
-
-		evenIdx := k * 2
-		oddIdx := (k + halfN) * 2
-
-		// Complex multiply: t = W * data[odd]
-		oddRe := data[oddIdx]
-		oddIm := data[oddIdx+1]
-		tRe := wRe*oddRe - wIm*oddIm
-		tIm := wRe*oddIm + wIm*oddRe
-
-		// Butterfly: even += t, odd = even_old - t
-		eRe := data[evenIdx]
-		eIm := data[evenIdx+1]
-		data[evenIdx] = eRe + tRe
-		data[evenIdx+1] = eIm + tIm
-		data[oddIdx] = eRe - tRe
-		data[oddIdx+1] = eIm - tIm
-	}
-}
+// ARM64 NEON implementation processes 2 butterflies per iteration when
+// twiddleStride == 1 (the largest FFT stages which dominate computation).
+// Falls back to scalar for other strides.
+//
+//go:noescape
+func butterflyRadix2(data, twiddle []float32, halfN, stride, twiddleStride int)
