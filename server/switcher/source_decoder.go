@@ -21,6 +21,12 @@ type sourceDecoder struct {
 	callback  func(string, *ProcessingFrame)
 	done      chan struct{}
 
+	// Reusable buffers for AVC1→AnnexB conversion (avoid alloc per frame).
+	// Two buffers needed: PrependSPSPPSInto reads from annexBBuf while
+	// writing to prependBuf — shared backing storage would corrupt data.
+	annexBBuf  []byte
+	prependBuf []byte
+
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
 	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
@@ -92,13 +98,14 @@ func (sd *sourceDecoder) decodeLoop() {
 	defer close(sd.done)
 
 	for frame := range sd.ch {
-		// Convert AVC1 wire format to Annex B for decoder
-		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		// Convert AVC1 wire format to Annex B for decoder (buffer reuse)
+		sd.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
 		if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
-			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+			sd.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, sd.annexBBuf, sd.prependBuf[:0])
+			sd.annexBBuf, sd.prependBuf = sd.prependBuf, sd.annexBBuf
 		}
 
-		yuv, w, h, err := sd.decoder.Decode(annexB)
+		yuv, w, h, err := sd.decoder.Decode(sd.annexBBuf)
 		if err != nil {
 			slog.Debug("source decoder: decode failed",
 				"source", sd.sourceKey, "error", err)
