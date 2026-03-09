@@ -672,11 +672,11 @@ func estimateBitrate(w, h int) int {
 	pixels := w * h
 	switch {
 	case pixels >= 1920*1080:
-		return 8_000_000
+		return 15_000_000
 	case pixels >= 1280*720:
-		return 4_000_000
+		return 8_000_000
 	default:
-		return 2_000_000
+		return 4_000_000
 	}
 }
 

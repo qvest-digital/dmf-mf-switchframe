@@ -201,12 +201,6 @@ func smoothWarpBlendPlane(
 		}
 		invFy := 1.0 - fy
 
-		// Block row for occlusion lookup
-		blockRow := int(lumaY) / bs
-		if blockRow >= mvf.rows {
-			blockRow = mvf.rows - 1
-		}
-
 		rowOff := py * planeW
 
 		for px := 0; px < planeW; px++ {
@@ -257,28 +251,11 @@ func smoothWarpBlendPlane(
 				float64(px)+bmvx*invAlpha*mvScale,
 				float64(py)+bmvy*invAlpha*mvScale)
 
-			// Occlusion-aware blend (per-block decision, smooth pixel values)
-			blockCol := int(lumaX) / bs
-			if blockCol >= mvf.cols {
-				blockCol = mvf.cols - 1
-			}
-			occ := mvf.occlusion[blockRow*mvf.cols+blockCol]
-
+			// Smooth alpha-weighted blend of both warps.
+			// Avoids per-block occlusion switching which causes hard
+			// boundaries when adjacent blocks have different flags.
 			idx := rowOff + px
-			switch occ {
-			case 0: // Valid: average both warps
-				dst[idx] = byte((uint16(sA) + uint16(sB) + 1) >> 1)
-			case 1: // Forward occluded: trust backward warp
-				dst[idx] = sB
-			case 2: // Backward occluded: trust forward warp
-				dst[idx] = sA
-			default: // Both occluded: nearest source
-				if alpha < 0.5 {
-					dst[idx] = srcA[idx]
-				} else {
-					dst[idx] = srcB[idx]
-				}
-			}
+			dst[idx] = byte(float64(sA)*invAlpha + float64(sB)*alpha + 0.5)
 		}
 	}
 }
