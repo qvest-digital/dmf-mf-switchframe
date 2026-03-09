@@ -21,7 +21,7 @@ func TestSourceDecoderCreation(t *testing.T) {
 		called.Add(1)
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -37,7 +37,7 @@ func TestSourceDecoderFactoryError(t *testing.T) {
 		return nil, fmt.Errorf("no codec")
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 	if sd != nil {
 		sd.Close()
 		t.Fatal("expected nil sourceDecoder when factory fails")
@@ -59,7 +59,7 @@ func TestSourceDecoderSendAndCallback(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send a keyframe (needed to init mock decoder)
@@ -127,7 +127,7 @@ func TestSourceDecoderNewestWinsDrop(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send 5 frames rapidly — channel capacity is 2, so oldest should be dropped
@@ -180,7 +180,7 @@ func TestSourceDecoderCloseStopsGoroutine(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 
 	// Close should return without hanging
 	done := make(chan struct{})
@@ -213,7 +213,7 @@ func TestSourceDecoderDecodeError(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send 3 frames sequentially — first 2 should fail, third should succeed.
@@ -254,7 +254,7 @@ func TestSourceDecoderStats(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 	defer sd.Close()
 
 	// Send a few frames to build stats
@@ -296,7 +296,7 @@ func TestSourceDecoderBufferReuse(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send 3 keyframes — each reuses the annexB/prepend buffers.
