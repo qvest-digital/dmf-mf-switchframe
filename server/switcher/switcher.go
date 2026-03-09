@@ -395,6 +395,7 @@ func (s *Switcher) SetRawVideoSink(sink RawVideoSink) {
 	} else {
 		s.rawVideoSink.Store(nil)
 	}
+	s.rebuildPipeline()
 }
 
 // SetRawMonitorSink sets or clears the raw monitor output tap.
@@ -406,6 +407,7 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 	} else {
 		s.rawMonitorSink.Store(nil)
 	}
+	s.rebuildPipeline()
 }
 
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.

@@ -265,6 +265,40 @@ func TestSetKeyBridge_TriggersPipelineRebuild(t *testing.T) {
 	require.Equal(t, epochBefore+1, epochAfter, "SetKeyBridge should trigger rebuildPipeline")
 }
 
+func TestSetRawVideoSink_TriggersPipelineRebuild(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	epochBefore := sw.pipelineEpoch.Load()
+	sink := RawVideoSink(func(pf *ProcessingFrame) {})
+	sw.SetRawVideoSink(sink)
+	epochAfter := sw.pipelineEpoch.Load()
+
+	require.Equal(t, epochBefore+1, epochAfter, "SetRawVideoSink should trigger rebuildPipeline")
+}
+
+func TestSetRawMonitorSink_TriggersPipelineRebuild(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	epochBefore := sw.pipelineEpoch.Load()
+	sink := RawVideoSink(func(pf *ProcessingFrame) {})
+	sw.SetRawMonitorSink(sink)
+	epochAfter := sw.pipelineEpoch.Load()
+
+	require.Equal(t, epochBefore+1, epochAfter, "SetRawMonitorSink should trigger rebuildPipeline")
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
