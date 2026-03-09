@@ -476,12 +476,16 @@ func (p *replayPlayer) preStretchAudio() {
 		slog.Error("replay: WSOLA audio decoder creation failed", "err", err)
 		return
 	}
-	defer dec.Close()
+	defer func() { _ = dec.Close() }()
 
 	var allPCM []float32
 	var decodeErrors int
 	for _, af := range audioClip {
-		pcm, err := dec.Decode(af.data)
+		// Ensure ADTS framing — source streams carry raw AAC AUs
+		// (without ADTS headers) in MPEG-TS PES packets. The FDK
+		// decoder requires ADTS sync headers.
+		adtsFrame := codec.EnsureADTS(af.data, af.sampleRate, af.channels)
+		pcm, err := dec.Decode(adtsFrame)
 		if err != nil {
 			decodeErrors++
 			continue
@@ -520,7 +524,7 @@ func (p *replayPlayer) preStretchAudio() {
 		slog.Error("replay: WSOLA audio encoder creation failed", "err", err)
 		return
 	}
-	defer enc.Close()
+	defer func() { _ = enc.Close() }()
 
 	samplesPerFrame := 1024 * channels
 	// Use the first audio frame's PTS as base for stretched audio PTS.
