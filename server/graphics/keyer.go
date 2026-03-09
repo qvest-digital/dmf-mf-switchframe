@@ -87,11 +87,12 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 		int(keyColor.Cb), int(keyColor.Cr), simThreshSq, totalThreshSq, invRange, uvSize)
 
 	// Step 2: Expand chroma mask to luma resolution (each chroma value covers 2x2 luma block).
-	for row := 0; row < height; row++ {
-		for col := 0; col < width; col++ {
-			uvIdx := (row/2)*uvWidth + (col / 2)
-			mask[row*width+col] = chromaMask[uvIdx]
-		}
+	// Per-chroma-row: expand horizontally (each byte → 2 bytes), then copy to odd row.
+	for chromaRow := 0; chromaRow < uvHeight; chromaRow++ {
+		srcOff := chromaRow * uvWidth
+		dstOff := (chromaRow * 2) * width
+		expandChromaMaskRow(&mask[dstOff], &chromaMask[srcOff], uvWidth)
+		copy(mask[dstOff+width:dstOff+2*width], mask[dstOff:dstOff+width])
 	}
 
 	// Step 3: Spill suppression via per-row kernel (assembly on arm64).
