@@ -31,16 +31,21 @@ func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) 
 	// For extreme slow-down (< 0.5x), cascade two moderate stretches.
 	// Each pass does sqrt(speed) stretch, e.g., 0.25x → two passes of 0.5x.
 	// This produces much better quality than a single extreme stretch.
+	var result []float32
 	if speed < 0.5 {
 		intermediate := math.Sqrt(speed)
 		pass1 := wsolaStretchSingle(input, channels, intermediate)
 		if len(pass1) == 0 {
 			return nil
 		}
-		return wsolaStretchSingle(pass1, channels, intermediate)
+		result = wsolaStretchSingle(pass1, channels, intermediate)
+	} else {
+		result = wsolaStretchSingle(input, channels, speed)
 	}
 
-	return wsolaStretchSingle(input, channels, speed)
+	// Normalize to prevent clipping — overlap-add can produce peaks > 1.0.
+	normalizePeak(result)
+	return result
 }
 
 // wsolaStretchSingle performs a single WSOLA pass. Speed should be in [0.5, 1.0)
@@ -118,6 +123,25 @@ func wsolaStretchSingle(input []float32, channels int, speed float64) []float32 
 	}
 
 	return output
+}
+
+// normalizePeak scales audio so the peak doesn't exceed 0.95 (-0.4 dBFS),
+// preventing clipping from overlap-add accumulation.
+func normalizePeak(samples []float32) {
+	var peak float32
+	for _, s := range samples {
+		if s > peak {
+			peak = s
+		} else if -s > peak {
+			peak = -s
+		}
+	}
+	if peak > 0.95 {
+		scale := float32(0.95) / peak
+		for i := range samples {
+			samples[i] *= scale
+		}
+	}
 }
 
 // makePeriodicHannWindow creates a periodic Hann window of the given size.
