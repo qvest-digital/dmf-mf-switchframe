@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRawSinkNode_AlwaysActive(t *testing.T) {
+func TestRawSinkNode_InactiveWhenNilSink(t *testing.T) {
 	var sink atomic.Pointer[RawVideoSink]
 	n := &rawSinkNode{sink: &sink, name: "raw-sink-test"}
-	require.True(t, n.Active()) // Always active; Process checks sink atomically
+	require.False(t, n.Active())
 	require.Equal(t, "raw-sink-test", n.Name())
 	require.Nil(t, n.Err())
 	require.True(t, n.Latency() >= 0)

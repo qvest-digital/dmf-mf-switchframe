@@ -16,8 +16,7 @@ var _ PipelineNode = (*upstreamKeyNode)(nil)
 // Active only when the bridge has enabled keys with cached fill frames.
 // When inactive, the pipeline skips this node entirely (zero overhead).
 type upstreamKeyNode struct {
-	bridge  *graphics.KeyProcessorBridge
-	lastErr error
+	bridge *graphics.KeyProcessorBridge
 }
 
 func (n *upstreamKeyNode) Name() string                          { return "upstream-key" }
@@ -25,7 +24,7 @@ func (n *upstreamKeyNode) Configure(format PipelineFormat) error { return nil }
 func (n *upstreamKeyNode) Active() bool {
 	return n.bridge != nil && n.bridge.HasEnabledKeysWithFills()
 }
-func (n *upstreamKeyNode) Err() error             { return n.lastErr }
+func (n *upstreamKeyNode) Err() error             { return nil }
 func (n *upstreamKeyNode) Latency() time.Duration { return 100 * time.Microsecond }
 func (n *upstreamKeyNode) Close() error           { return nil }
 
