@@ -498,6 +498,8 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
 		cb()
 	}
 
+	inj.dispatchWebhook("cancel_segmentation", segEventID, CommandTimeSignal, false, 0)
+
 	return nil
 }
 
