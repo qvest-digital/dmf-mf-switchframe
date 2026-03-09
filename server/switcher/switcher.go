@@ -252,6 +252,15 @@ type Switcher struct {
 	// future hot-swap reconfiguration (Phase 4).
 	pipeline atomic.Pointer[Pipeline]
 
+	// Pipeline epoch — monotonically increasing counter for downstream
+	// format change detection. Incremented on every pipeline rebuild/swap.
+	pipelineEpoch atomic.Uint64
+
+	// Tracks background drain goroutines launched by swapPipeline().
+	// Close() waits on this before closing pipeCodecs to prevent
+	// use-after-close on the encoder by still-draining old pipelines.
+	drainWg sync.WaitGroup
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -391,6 +400,7 @@ func (s *Switcher) SetRawVideoSink(sink RawVideoSink) {
 	} else {
 		s.rawVideoSink.Store(nil)
 	}
+	s.rebuildPipeline()
 }
 
 // SetRawMonitorSink sets or clears the raw monitor output tap.
@@ -402,6 +412,7 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 	} else {
 		s.rawMonitorSink.Store(nil)
 	}
+	s.rebuildPipeline()
 }
 
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
@@ -416,9 +427,14 @@ func (s *Switcher) Close() {
 	if s.framePool != nil {
 		s.framePool.Close()
 	}
-	if p := s.pipeline.Load(); p != nil {
+	// Swap pipeline to nil and synchronously drain + close.
+	if p := s.pipeline.Swap(nil); p != nil {
+		p.Wait()
 		p.Close()
 	}
+	// Wait for any background drain goroutines from previous swaps
+	// before closing pipeCodecs (prevents use-after-close on encoder).
+	s.drainWg.Wait()
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -484,16 +500,18 @@ func (s *Switcher) RequestKeyframe() {
 // ProcessYUV method is called in the video processing pipeline when active.
 func (s *Switcher) SetCompositor(c *graphics.Compositor) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.compositorRef = c
+	s.mu.Unlock()
+	s.rebuildPipeline()
 }
 
 // SetKeyBridge attaches the upstream key bridge for chroma/luma keying.
 // The bridge's ProcessYUV method is called in the video processing pipeline.
 func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.keyBridge = kb
+	s.mu.Unlock()
+	s.rebuildPipeline()
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
@@ -529,6 +547,8 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 }
 
 // buildNodeList constructs the ordered list of pipeline nodes.
+// Must be called with s.mu held (RLock or Lock) since it reads
+// s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
 // Node order: upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
@@ -552,6 +572,10 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 func (s *Switcher) BuildPipeline() error {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
 	s.mu.RUnlock()
 
 	if !hasPipeCodecs {
@@ -559,13 +583,63 @@ func (s *Switcher) BuildPipeline() error {
 	}
 
 	format := s.PipelineFormat()
-	nodes := s.buildNodeList()
 	p := &Pipeline{}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
+	p.epoch = s.pipelineEpoch.Add(1)
 	s.pipeline.Store(p)
 	return nil
+}
+
+// swapPipeline atomically replaces the current pipeline with newPipeline.
+// The old pipeline drains in-flight frames via WaitGroup, then closes all
+// nodes in a background goroutine. This is the primitive all rebuild triggers use.
+func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
+	old := s.pipeline.Swap(newPipeline)
+	if old == nil {
+		return
+	}
+	s.drainWg.Add(1)
+	go func() {
+		defer s.drainWg.Done()
+		old.Wait()
+		old.Close()
+	}()
+}
+
+// rebuildPipeline builds a fresh Pipeline from current state and atomically
+// swaps it in. Logs a warning and keeps the old pipeline if Build() fails.
+// This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
+// SetRawVideoSink, SetRawMonitorSink, and external callbacks all use this.
+func (s *Switcher) rebuildPipeline() {
+	s.mu.RLock()
+	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
+	s.mu.RUnlock()
+
+	if !hasPipeCodecs {
+		return
+	}
+
+	format := s.PipelineFormat()
+	p := &Pipeline{}
+	if err := p.Build(format, s.framePool, nodes); err != nil {
+		s.log.Warn("pipeline rebuild failed", "error", err)
+		return
+	}
+	p.epoch = s.pipelineEpoch.Add(1)
+	s.swapPipeline(p)
+}
+
+// RebuildPipeline rebuilds the video processing pipeline from current state.
+// Called by external components (compositor, key processor) via callbacks
+// when their Active() status may have changed.
+func (s *Switcher) RebuildPipeline() {
+	s.rebuildPipeline()
 }
 
 // SetFrameSync enables or disables the freerun frame synchronizer. When
@@ -675,20 +749,37 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
-	// Recreate frame pool at new dimensions. Existing sourceDecoders retain
-	// their pointer to the old pool — this is intentional. Old-pool buffers
-	// drain naturally: Release() discards wrong-sized buffers via cap check,
-	// and new frames acquire from the new pool via Switcher.framePool.
+	// Recreate frame pool at new dimensions. Old pool drains naturally —
+	// Release() discards wrong-sized buffers via cap check.
 	s.framePool = NewFramePool(32, f.Width, f.Height)
 
-	// Update frame sync tick rate if active
+	// Update frame sync tick rate if active.
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.SetTickRate(f.FrameDuration())
 	}
 
-	// Force encoder recreation on next frame
+	// Force encoder recreation on next frame.
 	if s.pipeCodecs != nil {
 		s.pipeCodecs.invalidateEncoder()
+	}
+
+	// Build new pipeline with new pool + new format, swap atomically.
+	// Capture node list under lock to avoid race on s.compositorRef etc.
+	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
+	s.mu.Unlock()
+
+	if hasPipeCodecs {
+		p := &Pipeline{}
+		if err := p.Build(f, s.framePool, nodes); err != nil {
+			s.log.Warn("pipeline rebuild failed on format change", "error", err)
+		} else {
+			p.epoch = s.pipelineEpoch.Add(1)
+			s.swapPipeline(p)
+		}
 	}
 
 	s.log.Info("pipeline format changed",
@@ -698,8 +789,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
 
 	atomic.AddUint64(&s.seq, 1)
+	s.mu.RLock()
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	s.notifyStateChange(snapshot)
 	return nil

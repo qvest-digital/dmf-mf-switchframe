@@ -27,8 +27,22 @@ type Pipeline struct {
 	lastRunNs    atomic.Int64
 	maxRunNs     atomic.Int64
 
+	// Pipeline epoch — set at build time, exposed in Snapshot().
+	// Monotonically increasing across rebuilds for downstream change detection.
+	epoch uint64
+
 	// In-flight tracking for safe cleanup (atomic swap drain)
 	inflight sync.WaitGroup
+}
+
+// PipelineEpoch captures the pipeline's identity at a point in time.
+// Downstream consumers (SRT output, recording, confidence monitor) can compare
+// epochs to detect pipeline changes and respond (force keyframe, start new segment).
+type PipelineEpoch struct {
+	Format    PipelineFormat
+	Epoch     uint64
+	StartPTS  int64
+	NodeNames []string
 }
 
 // Build validates all nodes against the format, filters active nodes,
@@ -100,6 +114,7 @@ func (p *Pipeline) Snapshot() map[string]any {
 	return map[string]any{
 		"active_nodes":     nodes,
 		"total_nodes":      len(p.allNodes),
+		"epoch":            p.epoch,
 		"run_count":        p.runCount.Load(),
 		"last_run_ns":      p.lastRunNs.Load(),
 		"max_run_ns":       p.maxRunNs.Load(),

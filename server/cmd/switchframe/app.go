@@ -357,6 +357,12 @@ func (a *App) initSubsystems() error {
 	a.keyBridge.SetScaleFunc(transition.ScaleYUV420)
 	a.sw.SetKeyBridge(a.keyBridge)
 
+	// Key processor changes trigger pipeline rebuild so Active() filtering
+	// reflects whether any upstream keys are configured.
+	a.keyProcessor.OnChange(func() {
+		a.sw.RebuildPipeline()
+	})
+
 	// Pipeline encoder for the video processing chain.
 	a.sw.SetPipelineCodecs(encoderFactory())
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
