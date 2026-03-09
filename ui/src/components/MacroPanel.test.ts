@@ -8,6 +8,8 @@ vi.mock('$lib/api/switch-api', () => ({
 	saveMacro: vi.fn().mockResolvedValue({ name: 'test', steps: [] }),
 	deleteMacro: vi.fn().mockResolvedValue(undefined),
 	runMacro: vi.fn().mockResolvedValue({ status: 'ok' }),
+	cancelMacro: vi.fn().mockResolvedValue(undefined),
+	dismissMacro: vi.fn().mockResolvedValue(undefined),
 	listStingers: vi.fn().mockResolvedValue(['intro', 'outro']),
 	listPresets: vi.fn().mockResolvedValue([{ id: 'p1', name: 'Preset 1' }]),
 	apiCall: vi.fn(),
@@ -17,7 +19,7 @@ vi.mock('$lib/state/notifications.svelte', () => ({
 	notify: vi.fn(),
 }));
 
-function makeState(sources: Record<string, Partial<SourceInfo>> = {}): ControlRoomState {
+function makeState(sources: Record<string, Partial<SourceInfo>> = {}, overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	const fullSources: Record<string, SourceInfo> = {};
 	for (const [key, val] of Object.entries(sources)) {
 		fullSources[key] = {
@@ -36,6 +38,7 @@ function makeState(sources: Record<string, Partial<SourceInfo>> = {}): ControlRo
 		previewSource: '',
 		audioChannels: {},
 		tallyState: {},
+		...overrides,
 	} as unknown as ControlRoomState;
 }
 
@@ -464,5 +467,118 @@ describe('MacroPanel', () => {
 		// Ensure durationSec is NOT in the params
 		const callArgs = vi.mocked(saveMacro).mock.calls[0][0];
 		expect(callArgs.steps[0].params).not.toHaveProperty('durationSec');
+	});
+
+	describe('Execution View', () => {
+		const runningState = makeState({}, {
+			macro: {
+				running: true,
+				macroName: 'Test Macro',
+				currentStep: 1,
+				steps: [
+					{ action: 'cut', summary: 'Cut \u2192 cam1', status: 'done' },
+					{ action: 'transition', summary: 'Transition mix 1000ms \u2192 cam2', status: 'running' },
+					{ action: 'wait', summary: 'Wait 500ms', status: 'pending' },
+				],
+			},
+		});
+
+		it('shows execution view when macro is running', () => {
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			expect(container.textContent).toContain('Running: Test Macro');
+			expect(container.textContent).toContain('Cut \u2192 cam1');
+			expect(container.textContent).toContain('Transition mix 1000ms \u2192 cam2');
+		});
+
+		it('shows correct status icons', () => {
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			const icons = container.querySelectorAll('.exec-step-icon');
+			expect(icons[0].textContent).toBe('\u2713');
+			expect(icons[1].textContent).toBe('\u25CF');
+			expect(icons[2].textContent).toBe('\u25CB');
+		});
+
+		it('shows cancel button when running', () => {
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			const cancelBtn = container.querySelector('.exec-btn-cancel');
+			expect(cancelBtn).toBeTruthy();
+			expect(cancelBtn?.textContent).toContain('Cancel');
+		});
+
+		it('calls cancelMacro on cancel click', async () => {
+			const { cancelMacro } = await import('$lib/api/switch-api');
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			const cancelBtn = container.querySelector('.exec-btn-cancel') as HTMLButtonElement;
+			await fireEvent.click(cancelBtn);
+			expect(cancelMacro).toHaveBeenCalled();
+		});
+
+		it('shows dismiss button and Complete on success', () => {
+			const successState = makeState({}, {
+				macro: {
+					running: false,
+					macroName: 'Test Macro',
+					currentStep: 1,
+					steps: [
+						{ action: 'cut', summary: 'Cut \u2192 cam1', status: 'done' },
+						{ action: 'wait', summary: 'Wait 500ms', status: 'done' },
+					],
+				},
+			});
+			const { container } = render(MacroPanel, { props: { state: successState } });
+			expect(container.textContent).toContain('Complete!');
+			expect(container.querySelector('.exec-btn-dismiss')).toBeTruthy();
+		});
+
+		it('calls dismissMacro on dismiss click', async () => {
+			const { dismissMacro } = await import('$lib/api/switch-api');
+			const successState = makeState({}, {
+				macro: {
+					running: false,
+					macroName: 'Done',
+					currentStep: 0,
+					steps: [{ action: 'cut', summary: 'Cut \u2192 cam1', status: 'done' }],
+				},
+			});
+			const { container } = render(MacroPanel, { props: { state: successState } });
+			const btn = container.querySelector('.exec-btn-dismiss') as HTMLButtonElement;
+			await fireEvent.click(btn);
+			expect(dismissMacro).toHaveBeenCalled();
+		});
+
+		it('shows error on failed step', () => {
+			const failState = makeState({}, {
+				macro: {
+					running: false,
+					macroName: 'Fail Macro',
+					currentStep: 1,
+					error: 'step 1 (transition): source not found',
+					steps: [
+						{ action: 'cut', summary: 'Cut \u2192 cam1', status: 'done' },
+						{ action: 'transition', summary: 'Transition mix 1000ms', status: 'failed', error: 'source not found' },
+						{ action: 'wait', summary: 'Wait 500ms', status: 'skipped' },
+					],
+				},
+			});
+			const { container } = render(MacroPanel, { props: { state: failState } });
+			expect(container.textContent).toContain('source not found');
+			expect(container.textContent).toContain('Failed at step 2');
+			expect(container.querySelector('.step-skipped')).toBeTruthy();
+		});
+
+		it('shows step counter', () => {
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			expect(container.textContent).toContain('2 / 3');
+		});
+
+		it('hides macro grid when execution view is shown', async () => {
+			const { listMacros } = await import('$lib/api/switch-api');
+			vi.mocked(listMacros).mockResolvedValueOnce([
+				{ name: 'Test', steps: [{ action: 'cut', params: { source: 'cam1' } }] },
+			]);
+			const { container } = render(MacroPanel, { props: { state: runningState } });
+			// Macro run buttons should not be visible
+			expect(container.querySelector('.macro-btn')).toBeNull();
+		});
 	});
 });
