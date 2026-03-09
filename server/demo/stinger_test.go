@@ -3,8 +3,10 @@ package demo
 import (
 	"archive/zip"
 	"bytes"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/stinger"
 )
 
@@ -116,4 +118,129 @@ func TestGenerateStingerZip_LoadsIntoStore(t *testing.T) {
 	if !hasNonZeroAlpha {
 		t.Error("expected non-zero alpha data in stinger frames")
 	}
+}
+
+// verifyZipContents checks a stinger zip has the expected PNGs and optionally a WAV.
+func verifyZipContents(t *testing.T, data []byte, expectedPNGs int, expectWAV bool) {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	pngCount := 0
+	wavCount := 0
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		lower := strings.ToLower(f.Name)
+		if strings.HasSuffix(lower, ".png") {
+			pngCount++
+		}
+		if strings.HasSuffix(lower, ".wav") {
+			wavCount++
+		}
+	}
+	require.Equal(t, expectedPNGs, pngCount)
+	if expectWAV {
+		require.Equal(t, 1, wavCount)
+	}
+}
+
+func TestGenerateWhooshStingerZip(t *testing.T) {
+	data, err := GenerateWhooshStingerZip(320, 240, 30)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 30, true)
+}
+
+func TestGenerateSlamStingerZip(t *testing.T) {
+	data, err := GenerateSlamStingerZip(320, 240, 30)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 30, true)
+}
+
+func TestGenerateMusicalStingerZip(t *testing.T) {
+	data, err := GenerateMusicalStingerZip(320, 240, 30)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 30, true)
+}
+
+func TestGenerateWhooshStingerZip_LoadsWithAudio(t *testing.T) {
+	data, err := GenerateWhooshStingerZip(320, 240, 20)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	store, err := stinger.NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	err = store.Upload("whoosh", data)
+	require.NoError(t, err)
+
+	clip, ok := store.Get("whoosh")
+	require.True(t, ok)
+	require.Equal(t, 20, len(clip.Frames))
+	require.NotNil(t, clip.Audio)
+	require.Equal(t, 48000, clip.AudioSampleRate)
+	require.Equal(t, 2, clip.AudioChannels)
+}
+
+func TestGenerateWhooshStingerZip_InvalidArgs(t *testing.T) {
+	_, err := GenerateWhooshStingerZip(0, 240, 20)
+	require.Error(t, err)
+	_, err = GenerateWhooshStingerZip(321, 240, 20) // odd
+	require.Error(t, err)
+}
+
+func TestGenerateSlamStingerZip_LoadsWithAudio(t *testing.T) {
+	data, err := GenerateSlamStingerZip(320, 240, 20)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	store, err := stinger.NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	err = store.Upload("slam", data)
+	require.NoError(t, err)
+
+	clip, ok := store.Get("slam")
+	require.True(t, ok)
+	require.Equal(t, 20, len(clip.Frames))
+	require.NotNil(t, clip.Audio)
+	require.Equal(t, 48000, clip.AudioSampleRate)
+	require.Equal(t, 2, clip.AudioChannels)
+}
+
+func TestGenerateMusicalStingerZip_LoadsWithAudio(t *testing.T) {
+	data, err := GenerateMusicalStingerZip(320, 240, 20)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	store, err := stinger.NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	err = store.Upload("musical", data)
+	require.NoError(t, err)
+
+	clip, ok := store.Get("musical")
+	require.True(t, ok)
+	require.Equal(t, 20, len(clip.Frames))
+	require.NotNil(t, clip.Audio)
+	require.Equal(t, 48000, clip.AudioSampleRate)
+	require.Equal(t, 2, clip.AudioChannels)
+}
+
+func TestGenerateSlamStingerZip_InvalidArgs(t *testing.T) {
+	_, err := GenerateSlamStingerZip(0, 240, 20)
+	require.Error(t, err)
+	_, err = GenerateSlamStingerZip(320, 241, 20) // odd height
+	require.Error(t, err)
+}
+
+func TestGenerateMusicalStingerZip_InvalidArgs(t *testing.T) {
+	_, err := GenerateMusicalStingerZip(320, 240, 0)
+	require.Error(t, err)
+	_, err = GenerateMusicalStingerZip(319, 240, 20) // odd width
+	require.Error(t, err)
 }
