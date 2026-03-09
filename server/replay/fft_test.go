@@ -149,3 +149,100 @@ func TestFFT_Roundtrip_Large(t *testing.T) {
 		assert.InDelta(t, original[i], data[i], 1e-3, "index %d", i)
 	}
 }
+
+func TestR2C_DCSignal(t *testing.T) {
+	halfN := 2048
+	fft := newFFT(halfN) // R2C processes 2*halfN = 4096 real samples
+	N := 2 * halfN
+
+	input := make([]float32, N)
+	for i := range input {
+		input[i] = 1.0
+	}
+	output := make([]float32, 2*(halfN+1))
+	fft.r2c(input, output)
+
+	// DC bin should equal N
+	assert.InDelta(t, float64(N), float64(output[0]), 1.0, "DC real")
+	assert.InDelta(t, 0.0, float64(output[1]), 1.0, "DC imag")
+
+	// All other bins should be near zero
+	for k := 1; k <= halfN; k++ {
+		assert.InDelta(t, 0.0, float64(output[2*k]), 1.0, "bin %d re", k)
+		assert.InDelta(t, 0.0, float64(output[2*k+1]), 1.0, "bin %d im", k)
+	}
+}
+
+func TestR2C_C2R_Roundtrip(t *testing.T) {
+	halfN := 2048
+	fft := newFFT(halfN)
+	N := 2 * halfN
+
+	input := make([]float32, N)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+	}
+
+	freq := make([]float32, 2*(halfN+1))
+	fft.r2c(input, freq)
+
+	recon := make([]float32, N)
+	fft.c2r(freq, recon)
+
+	for i := range input {
+		assert.InDelta(t, input[i], recon[i], 0.01, "sample %d", i)
+	}
+}
+
+func TestR2C_C2R_MultiFreq(t *testing.T) {
+	halfN := 2048
+	fft := newFFT(halfN)
+	N := 2 * halfN
+
+	input := make([]float32, N)
+	for i := range input {
+		input[i] = float32(
+			math.Sin(2*math.Pi*440*float64(i)/48000) +
+				0.5*math.Sin(2*math.Pi*880*float64(i)/48000) +
+				0.3*math.Sin(2*math.Pi*1320*float64(i)/48000))
+	}
+
+	freq := make([]float32, 2*(halfN+1))
+	fft.r2c(input, freq)
+
+	recon := make([]float32, N)
+	fft.c2r(freq, recon)
+
+	for i := range input {
+		assert.InDelta(t, input[i], recon[i], 0.02, "sample %d", i)
+	}
+}
+
+func TestR2C_PeakAtCorrectBin(t *testing.T) {
+	halfN := 2048
+	fft := newFFT(halfN)
+	N := 2 * halfN
+
+	// 1000 Hz sine at 48kHz sample rate
+	input := make([]float32, N)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+	}
+
+	freq := make([]float32, 2*(halfN+1))
+	fft.r2c(input, freq)
+
+	// Find peak bin
+	peakBin := 0
+	peakMag := float32(0)
+	for k := 0; k <= halfN; k++ {
+		mag := float32(math.Sqrt(float64(freq[2*k]*freq[2*k] + freq[2*k+1]*freq[2*k+1])))
+		if mag > peakMag {
+			peakMag = mag
+			peakBin = k
+		}
+	}
+
+	expectedBin := int(math.Round(1000.0 * float64(N) / 48000.0))
+	assert.InDelta(t, expectedBin, peakBin, 1, "peak bin for 1000Hz")
+}

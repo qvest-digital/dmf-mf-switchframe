@@ -76,6 +76,148 @@ func (f *fftState) forward(data []float32) {
 	}
 }
 
+// r2c performs a real-to-complex FFT. input contains N real samples where N = 2*f.n.
+// output has length 2*(f.n+1) containing f.n+1 complex bins as [re0, im0, re1, im1, ...].
+// The DC and Nyquist bins have zero imaginary parts.
+func (f *fftState) r2c(input []float32, output []float32) {
+	halfN := f.n // C2C size
+	N := 2 * halfN
+
+	// Pack real samples as complex: z[k] = input[2k] + i*input[2k+1]
+	packed := make([]float32, 2*halfN)
+	for k := 0; k < halfN; k++ {
+		packed[2*k] = input[2*k]
+		packed[2*k+1] = input[2*k+1]
+	}
+
+	// C2C FFT of size halfN
+	f.forward(packed)
+
+	// Unscramble: extract N/2+1 bins from the halfN-point C2C result.
+	// X[k] = 0.5 * (Z[k] + Z*[N/2-k]) - 0.5i * W(k,N) * (Z[k] - Z*[N/2-k])
+	// where Z*[k] means conjugate of Z[k].
+	numBins := halfN + 1
+
+	for k := 0; k <= halfN; k++ {
+		var zRe, zIm float32
+		var zcRe, zcIm float32
+
+		if k < halfN {
+			zRe = packed[2*k]
+			zIm = packed[2*k+1]
+		} else {
+			// Z[N/2] = Z[0] for periodicity
+			zRe = packed[0]
+			zIm = packed[1]
+		}
+
+		// Conjugate mirror: Z*[N/2-k]
+		mirrorK := halfN - k
+		if mirrorK < 0 {
+			mirrorK += halfN
+		}
+		if mirrorK == halfN {
+			mirrorK = 0
+		}
+		zcRe = packed[2*mirrorK]
+		zcIm = -packed[2*mirrorK+1] // conjugate
+
+		// Even part: Xe = 0.5 * (Z[k] + Z*[N/2-k])
+		xeRe := 0.5 * float32(zRe+zcRe)
+		xeIm := 0.5 * float32(zIm+zcIm)
+
+		// Odd part: Xo = 0.5 * (Z[k] - Z*[N/2-k])
+		xoRe := 0.5 * float32(zRe-zcRe)
+		xoIm := 0.5 * float32(zIm-zcIm)
+
+		// Twiddle: W(k,N) = cos(-2πk/N) + i*sin(-2πk/N)
+		angle := -2.0 * math.Pi * float64(k) / float64(N)
+		wRe := float32(math.Cos(angle))
+		wIm := float32(math.Sin(angle))
+
+		// -i * W * Xo = -(i * (wRe + i*wIm) * (xoRe + i*xoIm))
+		// i * (a+bi) = -b + ai
+		// So i*W = -wIm + i*wRe
+		// i*W*Xo = (-wIm + i*wRe) * (xoRe + i*xoIm)
+		//        = -wIm*xoRe - wRe*xoIm + i*(-wIm*xoIm + wRe*xoRe)
+		// -i*W*Xo = wIm*xoRe + wRe*xoIm + i*(wIm*xoIm - wRe*xoRe)
+		niWXoRe := wIm*xoRe + wRe*xoIm
+		niWXoIm := wIm*xoIm - wRe*xoRe
+
+		if k < numBins {
+			output[2*k] = xeRe + niWXoRe
+			output[2*k+1] = xeIm + niWXoIm
+		}
+	}
+}
+
+// c2r performs a complex-to-real inverse FFT. input has length 2*(f.n+1) containing
+// f.n+1 complex bins. output has length N = 2*f.n real samples.
+func (f *fftState) c2r(input []float32, output []float32) {
+	halfN := f.n
+	N := 2 * halfN
+
+	// Re-pack N/2+1 bins back into N/2 complex values for C2C inverse.
+	// Reverse the R2C unscrambling.
+	packed := make([]float32, 2*halfN)
+
+	for k := 0; k < halfN; k++ {
+		xRe := input[2*k]
+		xIm := input[2*k+1]
+
+		// Mirror: X*[N-k] = X*[N/2 + (N/2-k)]
+		// For the R2C output, X[N-k] = conj(X[k])
+		mirrorK := halfN - k
+		if mirrorK >= halfN+1 {
+			mirrorK = 0
+		}
+		if mirrorK > halfN {
+			mirrorK = halfN
+		}
+		xcRe := input[2*mirrorK]
+		xcIm := -input[2*mirrorK+1] // conjugate
+
+		// Xe = 0.5*(X[k] + X*[N-k])
+		xeRe := 0.5 * float32(xRe+xcRe)
+		xeIm := 0.5 * float32(xIm+xcIm)
+
+		// Xo' = 0.5*(X[k] - X*[N-k])
+		xoRe := 0.5 * float32(xRe-xcRe)
+		xoIm := 0.5 * float32(xIm-xcIm)
+
+		// Inverse twiddle: multiply by i * W^(-1)(k,N) = i * conj(W(k,N))
+		angle := -2.0 * math.Pi * float64(k) / float64(N)
+		wRe := float32(math.Cos(angle))
+		wIm := float32(-math.Sin(angle)) // conjugate
+
+		// i * W^-1 * Xo' = (i * (wRe + i*wIm)) * (xoRe + i*xoIm)
+		// i*(a+bi) = -b+ai
+		iWRe := -wIm
+		iWIm := wRe
+		iWXoRe := iWRe*xoRe - iWIm*xoIm
+		iWXoIm := iWRe*xoIm + iWIm*xoRe
+
+		// Z[k] = Xe + i*W^-1*Xo'
+		packed[2*k] = xeRe + iWXoRe
+		packed[2*k+1] = xeIm + iWXoIm
+	}
+
+	// Inverse C2C FFT
+	f.inverse(packed)
+
+	// Unpack: output[2k] = Re(z[k]), output[2k+1] = Im(z[k])
+	for k := 0; k < halfN; k++ {
+		output[2*k] = packed[2*k]
+		output[2*k+1] = packed[2*k+1]
+	}
+
+	// Scale by 2 because inverse C2C divides by halfN but we need to divide by N
+	// Actually: the C2C inverse already divides by halfN. The R2C packing doubles
+	// the effective transform, so we don't need extra scaling — the factor of 2
+	// from the unscrambling is already accounted for in the even/odd decomposition.
+	_ = N // used in twiddle angle computation above
+}
+
 // inverse performs an in-place inverse FFT on interleaved complex data.
 // data has length 2*n. Result is scaled by 1/n.
 func (f *fftState) inverse(data []float32) {
