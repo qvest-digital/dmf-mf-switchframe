@@ -96,6 +96,25 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/operator/unlock](#post-apioperatorunlock)
   - [POST /api/operator/force-unlock](#post-apioperatorforceunlock)
   - [DELETE /api/operator/{id}](#delete-apioperatorid)
+- [SCTE-35 Ad Insertion](#scte-35-ad-insertion)
+  - [POST /api/scte35/cue](#post-apiscte35cue)
+  - [POST /api/scte35/return](#post-apiscte35return)
+  - [POST /api/scte35/return/{eventId}](#post-apiscte35returneventid)
+  - [POST /api/scte35/cancel/{eventId}](#post-apiscte35canceleventid)
+  - [POST /api/scte35/cancel-segmentation/{segEventId}](#post-apiscte35cancel-segmentationsegeventid)
+  - [POST /api/scte35/hold/{eventId}](#post-apiscte35holdeventid)
+  - [POST /api/scte35/extend/{eventId}](#post-apiscte35extendeventid)
+  - [GET /api/scte35/status](#get-apiscte35status)
+  - [GET /api/scte35/log](#get-apiscte35log)
+  - [GET /api/scte35/active](#get-apiscte35active)
+  - [GET /api/scte35/rules](#get-apiscte35rules)
+  - [POST /api/scte35/rules](#post-apiscte35rules)
+  - [PUT /api/scte35/rules/{id}](#put-apiscte35rulesid)
+  - [DELETE /api/scte35/rules/{id}](#delete-apiscte35rulesid)
+  - [PUT /api/scte35/rules/default](#put-apiscte35rulesdefault)
+  - [POST /api/scte35/rules/reorder](#post-apiscte35rulesreorder)
+  - [GET /api/scte35/rules/templates](#get-apiscte35rulestemplates)
+  - [POST /api/scte35/rules/from-template](#post-apiscte35rulesfrom-template)
 - [Format](#format)
   - [GET /api/format](#get-apiformat)
   - [PUT /api/format](#put-apiformat)
@@ -3151,6 +3170,862 @@ Remove a registered operator. The operator's session is disconnected and any loc
 ```bash
 curl -X DELETE http://localhost:8081/api/operator/op_abc123 \
   -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## SCTE-35 Ad Insertion
+
+The SCTE-35 API provides real-time ad insertion signaling for MPEG-TS output streams. SCTE-35 splice_insert and time_signal commands are injected into the transport stream with PTS-synchronized timing. The system supports auto-return timers, break hold/extend for live overruns, splice_null heartbeats, and a signal conditioning rules engine for filtering and transforming pass-through signals.
+
+SCTE-35 must be enabled at startup with the `--scte35` CLI flag. All SCTE-35 endpoints return `501 Not Implemented` if the flag is not set. Additional CLI flags: `--scte35-pid` (default 258/0x102), `--scte35-preroll` (default 4000ms), `--scte35-heartbeat` (default 5000ms), `--scte35-verify` (CRC verification), `--scte35-webhook` (event notification URL).
+
+### POST /api/scte35/cue
+
+Inject an SCTE-35 cue message into the MPEG-TS output. Supports both `splice_insert` (ad break start) and `time_signal` (segmentation descriptors) command types. When `preRollMs` is specified, the cue is scheduled ahead of time using PTS-synchronized timing rather than injected immediately.
+
+**Request Body:**
+
+```json
+{
+  "commandType": "splice_insert",
+  "isOut": true,
+  "durationMs": 30000,
+  "autoReturn": true,
+  "preRollMs": 4000,
+  "eventId": 42,
+  "uniqueProgramId": 1234,
+  "availNum": 1,
+  "availsExpected": 4,
+  "descriptors": [
+    {
+      "segmentationType": 52,
+      "durationMs": 60000,
+      "upidType": 15,
+      "upid": "https://ads.example.com/avail/1"
+    }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `commandType` | `string` | Yes | Command type: `"splice_insert"` or `"time_signal"` |
+| `isOut` | `bool` | No | Out-of-network indicator. `true` for ad break start, `false` for return. Default `false`. |
+| `durationMs` | `int` | No | Break duration in milliseconds. Used for auto-return timing. |
+| `autoReturn` | `bool` | No | Automatically return to program when the break expires. Default `false`. |
+| `preRollMs` | `int` | No | Schedule the splice this many milliseconds ahead using PTS. When omitted or `0`, the cue is injected immediately. |
+| `eventId` | `uint32` | No | Explicit event ID. Auto-assigned if omitted. |
+| `uniqueProgramId` | `uint16` | No | Identifies the program within the avail. |
+| `availNum` | `uint8` | No | Avail number within the avail group. |
+| `availsExpected` | `uint8` | No | Total number of avails expected in the group. |
+| `descriptors` | `array` | No | Array of segmentation descriptors. Used with `time_signal` commands. |
+
+### Descriptor Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `segmentationType` | `uint8` | Yes | Segmentation type ID (e.g., `52` for provider placement opportunity start) |
+| `durationMs` | `int` | No | Descriptor duration in milliseconds |
+| `upidType` | `uint8` | Yes | UPID type (e.g., `15` for URI) |
+| `upid` | `string` | Yes | UPID value |
+
+**Response:** `200 OK`
+
+```json
+{
+  "eventId": 42,
+  "state": { "...ControlRoomState..." }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventId` | `uint32` | The assigned event ID (matches request or auto-generated) |
+| `state` | `ControlRoomState` | Full switcher state after the cue injection |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `commandType`, invalid JSON, or missing required fields |
+| `500` | Encoding or injection failure |
+| `501` | SCTE-35 not enabled (`--scte35` flag not set) |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/cue \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"commandType": "splice_insert", "isOut": true, "durationMs": 30000, "autoReturn": true}'
+```
+
+---
+
+### POST /api/scte35/return
+
+Return the most recent active event to program. Sends a splice_insert with `out_of_network_indicator` set to `false`, signaling the end of the current ad break. If multiple events are active, the most recently injected event is returned.
+
+**Request Body:** None required (empty body or `{}`)
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `500` | No active events, or encoding failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/return \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/return/{eventId}
+
+Return a specific active event to program by event ID.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `eventId` | Numeric event ID (uint32) |
+
+**Request Body:** None required (empty body or `{}`)
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `eventId` (not a valid uint32) |
+| `500` | Event not active, or encoding failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/return/42 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/cancel/{eventId}
+
+Cancel a specific active event by sending a `splice_event_cancel_indicator`. This removes the event from the active events list and cancels any pending auto-return timer.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `eventId` | Numeric event ID (uint32) |
+
+**Request Body:** None required (empty body or `{}`)
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `eventId` (not a valid uint32) |
+| `500` | Event not active, or encoding failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/cancel/42 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/cancel-segmentation/{segEventId}
+
+Cancel a specific segmentation event by sending a `segmentation_event_cancel_indicator`. This is used for cancelling individual segmentation descriptors within a time_signal command.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `segEventId` | Numeric segmentation event ID (uint32) |
+
+**Request Body:** None required (empty body or `{}`)
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `segEventId` (not a valid uint32) |
+| `500` | Encoding failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/cancel-segmentation/100 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/hold/{eventId}
+
+Pause the auto-return timer for an active event. Use this when a live segment is running long and the break needs to be held past its scheduled return time. The event remains active but will not auto-return until released via return or extend.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `eventId` | Numeric event ID (uint32) |
+
+**Request Body:** None required (empty body or `{}`)
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `eventId` (not a valid uint32) |
+| `500` | Event not active |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/hold/42 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/extend/{eventId}
+
+Extend the auto-return timer for an active event by adding additional time. The new duration is added to the remaining time (or the original duration if the event is held). A new splice_insert with the updated duration is injected.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `eventId` | Numeric event ID (uint32) |
+
+**Request Body:**
+
+```json
+{
+  "durationMs": 30000
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `durationMs` | `int` | Yes | Additional time in milliseconds to add to the break. Must be positive. |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `eventId`, missing `durationMs`, `durationMs` not positive, or invalid JSON |
+| `500` | Event not active, or encoding failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/extend/42 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"durationMs": 30000}'
+```
+
+---
+
+### GET /api/scte35/status
+
+Get the full SCTE-35 subsystem status including configuration, active events, event log, and heartbeat state.
+
+**Request Body:** None
+
+**Response:** `200 OK` with `SCTE35Status`:
+
+```json
+{
+  "enabled": true,
+  "activeEvents": {
+    "42": {
+      "eventId": 42,
+      "commandType": "splice_insert",
+      "isOut": true,
+      "durationMs": 30000,
+      "elapsedMs": 5000,
+      "remainingMs": 25000,
+      "autoReturn": true,
+      "held": false,
+      "spliceTimePts": 8100000,
+      "startedAt": 1709942400000,
+      "descriptors": []
+    }
+  },
+  "eventLog": [
+    {
+      "eventId": 42,
+      "commandType": "splice_insert",
+      "isOut": true,
+      "durationMs": 30000,
+      "autoReturn": true,
+      "timestamp": 1709942400000,
+      "status": "injected"
+    }
+  ],
+  "heartbeatOk": true,
+  "config": {
+    "heartbeatIntervalMs": 5000,
+    "defaultPreRollMs": 4000,
+    "pid": 258,
+    "verifyEncoding": false,
+    "webhookUrl": ""
+  }
+}
+```
+
+### SCTE35Status Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | `bool` | Whether SCTE-35 is enabled |
+| `activeEvents` | `object` | Map of event ID (as string key) to `ActiveEventState` |
+| `eventLog` | `array` | Array of recent `EventLogEntry` objects (most recent first, up to 256) |
+| `heartbeatOk` | `bool` | Whether the splice_null heartbeat goroutine is running |
+| `config` | `object` | Current SCTE-35 configuration |
+
+### ActiveEventState Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventId` | `uint32` | Event ID |
+| `commandType` | `string` | `"splice_insert"` or `"time_signal"` |
+| `isOut` | `bool` | Out-of-network indicator |
+| `durationMs` | `int` or `null` | Break duration in milliseconds. Omitted when not set. |
+| `elapsedMs` | `int` | Milliseconds elapsed since the event started |
+| `remainingMs` | `int` or `null` | Milliseconds remaining before auto-return. Omitted when duration not set. |
+| `autoReturn` | `bool` | Whether auto-return is enabled |
+| `held` | `bool` | Whether the auto-return timer is paused |
+| `spliceTimePts` | `int` | Splice time in 90 kHz PTS ticks |
+| `startedAt` | `int` | Unix timestamp in milliseconds when the event started |
+| `descriptors` | `array` | Array of segmentation descriptors. Omitted when empty. |
+
+### EventLogEntry Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventID` | `uint32` | Event ID |
+| `commandType` | `string` | `"splice_insert"` or `"time_signal"` |
+| `isOut` | `bool` | Out-of-network indicator |
+| `durationMs` | `int` or `null` | Break duration in milliseconds. Omitted when not set. |
+| `autoReturn` | `bool` | Whether auto-return was enabled |
+| `timestamp` | `int` | Unix timestamp in milliseconds |
+| `status` | `string` | Event status: `"injected"`, `"returned"`, `"cancelled"`, `"held"`, or `"extended"` |
+| `descriptors` | `array` | Segmentation descriptors. Omitted when empty. |
+| `spliceTimePts` | `int` or `null` | Splice time in PTS ticks. Omitted when not set. |
+| `source` | `string` | Event source identifier. Omitted when not set. |
+| `availNum` | `uint8` | Avail number. Omitted when `0`. |
+| `availsExpected` | `uint8` | Total avails expected. Omitted when `0`. |
+
+### SCTE35Config Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `heartbeatIntervalMs` | `int` | Interval between splice_null heartbeat messages in milliseconds |
+| `defaultPreRollMs` | `int` | Default pre-roll time for scheduled cues in milliseconds |
+| `pid` | `uint16` | MPEG-TS PID used for SCTE-35 data (default 258 / 0x102) |
+| `verifyEncoding` | `bool` | Whether encoded SCTE-35 is decoded back for CRC verification |
+| `webhookUrl` | `string` | URL for async event webhook notifications. Omitted when not set. |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/scte35/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/scte35/log
+
+Get the SCTE-35 event log. Returns an array of recent event log entries, ordered from oldest to newest, up to 256 entries.
+
+**Request Body:** None
+
+**Response:** `200 OK` with array of `EventLogEntry`:
+
+```json
+[
+  {
+    "eventID": 42,
+    "commandType": "splice_insert",
+    "isOut": true,
+    "durationMs": 30000,
+    "autoReturn": true,
+    "timestamp": 1709942400000,
+    "status": "injected"
+  },
+  {
+    "eventID": 42,
+    "commandType": "splice_insert",
+    "isOut": false,
+    "autoReturn": true,
+    "timestamp": 1709942430000,
+    "status": "returned"
+  }
+]
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/scte35/log \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/scte35/active
+
+Get the list of currently active event IDs. Returns an array of uint32 event IDs.
+
+**Request Body:** None
+
+**Response:** `200 OK` with array of event IDs:
+
+```json
+[42, 43, 44]
+```
+
+If no events are active, returns an empty array `[]`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/scte35/active \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/scte35/rules
+
+List all signal conditioning rules. Rules are evaluated in priority order (first match wins) against incoming SCTE-35 signals for pass-through processing.
+
+**Request Body:** None
+
+**Response:** `200 OK` with array of `Rule`:
+
+```json
+[
+  {
+    "id": "a1b2c3d4",
+    "name": "Strip short avails",
+    "enabled": true,
+    "priority": 1,
+    "conditions": [
+      { "field": "command_type", "operator": "=", "value": "5" },
+      { "field": "duration", "operator": "<", "value": "15000" }
+    ],
+    "logic": "and",
+    "action": "delete",
+    "destinations": []
+  }
+]
+```
+
+If no rules exist, returns an empty array `[]`.
+
+### Rule Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Unique rule identifier (auto-assigned on creation) |
+| `name` | `string` | Human-readable rule name |
+| `enabled` | `bool` | Whether the rule is active for evaluation |
+| `priority` | `int` | Evaluation priority (lower = higher priority). Omitted when `0`. |
+| `conditions` | `array` | Array of `RuleCondition` objects. Rules with no conditions match everything. |
+| `logic` | `string` | How conditions combine: `"and"` (all must match) or `"or"` (any must match). Default `"and"`. |
+| `action` | `string` | Action on match: `"pass"` (allow through), `"delete"` (drop signal), or `"replace"` (modify signal) |
+| `replaceWith` | `object` or `null` | Replacement parameters when `action` is `"replace"`. Omitted otherwise. |
+| `destinations` | `array` | Restrict rule to specific destination IDs. Empty array means all destinations. |
+
+### RuleCondition Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `field` | `string` | Field to match against (e.g., `"command_type"`, `"duration"`, `"segmentation_type"`) |
+| `operator` | `string` | Comparison operator: `"="`, `"!="`, `">"`, `"<"`, `">="`, `"<="`, `"range"`, `"contains"`, or `"matches"` |
+| `value` | `string` | Value to compare against. For `"range"`, use format `"min-max"`. For `"matches"`, use a regex pattern. |
+
+### ReplaceParams Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `duration` | `duration` or `null` | Replacement break duration. Omitted when not set. |
+| `eventID` | `uint32` or `null` | Replacement event ID. Omitted when not set. |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/scte35/rules \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/rules
+
+Create a new signal conditioning rule. The rule ID is auto-assigned.
+
+**Request Body:**
+
+```json
+{
+  "name": "Strip short avails",
+  "enabled": true,
+  "priority": 1,
+  "conditions": [
+    { "field": "command_type", "operator": "=", "value": "5" },
+    { "field": "duration", "operator": "<", "value": "15000" }
+  ],
+  "logic": "and",
+  "action": "delete"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Human-readable rule name |
+| `enabled` | `bool` | Yes | Whether the rule is active |
+| `priority` | `int` | No | Evaluation priority (lower = higher priority) |
+| `conditions` | `array` | No | Array of `RuleCondition` objects |
+| `logic` | `string` | No | Condition logic: `"and"` or `"or"`. Default `"and"`. |
+| `action` | `string` | Yes | Action: `"pass"`, `"delete"`, or `"replace"` |
+| `replaceWith` | `object` | No | Replacement parameters (required when `action` is `"replace"`) |
+| `destinations` | `array` | No | Restrict to specific destination IDs |
+
+**Response:** `200 OK` with the created `Rule` (including auto-assigned `id`):
+
+```json
+{
+  "id": "a1b2c3d4",
+  "name": "Strip short avails",
+  "enabled": true,
+  "priority": 1,
+  "conditions": [
+    { "field": "command_type", "operator": "=", "value": "5" },
+    { "field": "duration", "operator": "<", "value": "15000" }
+  ],
+  "logic": "and",
+  "action": "delete"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON |
+| `500` | Storage failure |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/rules \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Strip short avails", "enabled": true, "conditions": [{"field": "duration", "operator": "<", "value": "15000"}], "action": "delete"}'
+```
+
+---
+
+### PUT /api/scte35/rules/{id}
+
+Update an existing signal conditioning rule. The rule ID in the URL must match an existing rule.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Rule ID |
+
+**Request Body:**
+
+```json
+{
+  "name": "Updated rule name",
+  "enabled": true,
+  "priority": 2,
+  "conditions": [
+    { "field": "duration", "operator": ">=", "value": "30000" }
+  ],
+  "logic": "and",
+  "action": "pass"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Updated rule name |
+| `enabled` | `bool` | Yes | Whether the rule is active |
+| `priority` | `int` | No | Evaluation priority |
+| `conditions` | `array` | No | Array of `RuleCondition` objects |
+| `logic` | `string` | No | Condition logic: `"and"` or `"or"` |
+| `action` | `string` | Yes | Action: `"pass"`, `"delete"`, or `"replace"` |
+| `replaceWith` | `object` | No | Replacement parameters |
+| `destinations` | `array` | No | Restrict to specific destination IDs |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON |
+| `404` | Rule not found |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/scte35/rules/a1b2c3d4 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Allow long avails", "enabled": true, "conditions": [{"field": "duration", "operator": ">=", "value": "30000"}], "action": "pass"}'
+```
+
+---
+
+### DELETE /api/scte35/rules/{id}
+
+Delete a signal conditioning rule by ID. This is irreversible.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Rule ID |
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Rule not found |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/scte35/rules/a1b2c3d4 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/scte35/rules/default
+
+Set the default action for signals that do not match any rule. The default action applies when no rules match an incoming SCTE-35 signal.
+
+**Request Body:**
+
+```json
+{
+  "action": "pass"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `action` | `string` | Yes | Default action: `"pass"` or `"delete"` |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `action` or invalid JSON |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/scte35/rules/default \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "pass"}'
+```
+
+---
+
+### POST /api/scte35/rules/reorder
+
+Reorder signal conditioning rules by providing the complete list of rule IDs in the desired evaluation order. All existing rule IDs must be included.
+
+**Request Body:**
+
+```json
+{
+  "ids": ["rule-id-2", "rule-id-1", "rule-id-3"]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ids` | `string[]` | Yes | Ordered list of all rule IDs |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON, missing IDs, or IDs do not match existing rules |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/rules/reorder \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": ["rule-id-2", "rule-id-1", "rule-id-3"]}'
+```
+
+---
+
+### GET /api/scte35/rules/templates
+
+List available preset rule templates. Templates are pre-configured rules that can be instantiated via `POST /api/scte35/rules/from-template`. Templates do not have IDs assigned.
+
+**Request Body:** None
+
+**Response:** `200 OK` with array of `Rule` objects (without `id` fields):
+
+```json
+[
+  {
+    "name": "Strip short avails",
+    "enabled": true,
+    "conditions": [
+      { "field": "duration", "operator": "<", "value": "15000" }
+    ],
+    "logic": "and",
+    "action": "delete"
+  },
+  {
+    "name": "Pass all signals",
+    "enabled": true,
+    "conditions": [],
+    "logic": "and",
+    "action": "pass"
+  }
+]
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/scte35/rules/templates \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/scte35/rules/from-template
+
+Create a new rule from a preset template by name. The template is instantiated as a new rule with an auto-assigned ID.
+
+**Request Body:**
+
+```json
+{
+  "name": "Strip short avails"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Template name. Must match an available template exactly. |
+
+**Response:** `200 OK` with the created `Rule` (including auto-assigned `id`):
+
+```json
+{
+  "id": "e5f6g7h8",
+  "name": "Strip short avails",
+  "enabled": true,
+  "conditions": [
+    { "field": "duration", "operator": "<", "value": "15000" }
+  ],
+  "logic": "and",
+  "action": "delete"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `name` or invalid JSON |
+| `404` | Template not found |
+| `501` | SCTE-35 not enabled |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/scte35/rules/from-template \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Strip short avails"}'
 ```
 
 ---

@@ -85,7 +85,10 @@ graph TD
     om --> conf["Confidence Monitor<br/>(1fps JPEG thumbnail)"]
     om --> mux["MPEG-TS Muxer"]
     mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts files)"]
-    mux --> aa2["AsyncAdapter"] --> srt["SRT Caller/Listener<br/>(push/pull)"]
+    mux --> aa2["AsyncAdapter"] --> filt["SCTE-35 Filter<br/>(per-destination)"] --> srt["SRT Destinations"]
+
+    api["REST API<br/>/api/scte35/*"] --> inj["SCTE-35 Injector<br/>(rules engine)"]
+    inj --> mux
 ```
 
 ### Browser Architecture
@@ -1570,3 +1573,91 @@ older browsers).
 | `:8081` | TCP/HTTP | REST API mirror (dev proxy, curl) |
 | `:9090` | TCP/HTTP | Admin (Prometheus /metrics, pprof) |
 | `:9000` | UDP | SRT listener (configurable) |
+
+
+## 9. SCTE-35 Ad Insertion
+
+### 9.1 Architecture
+
+The `server/scte35/` package wraps the `Comcast/scte35-go v1.7.1`
+library for real-time SCTE-35 splice_insert and time_signal injection
+into MPEG-TS output. Key components:
+
+- **Injector** -- manages active SCTE-35 events with mutex-protected
+  state. PTS synchronized via `Switcher.LastBroadcastVideoPTS()` (atomic
+  load, 90kHz clock). Auto-return via `time.AfterFunc`. State change
+  callbacks fired outside lock to prevent deadlock.
+- **RuleEngine** -- first-match-wins signal conditioning with 8
+  operators (`=`, `!=`, `>`, `<`, `>=`, `<=`, `contains`, `range`,
+  `matches`). AND/OR compound conditions. Destination filtering.
+- **RulesStore** -- file-based CRUD at `~/.switchframe/scte35_rules.json`.
+  Atomic writes (temp file + fsync + rename). Internal RuleEngine rebuilt
+  on every mutation.
+- **Parser** -- extracts SCTE-35 sections from MPEG-TS with multi-packet
+  reassembly and CRC validation.
+- **WebhookDispatcher** -- async HTTP POST for external integrations.
+  Fire-and-forget.
+
+
+### 9.2 MPEG-TS Integration
+
+- SCTE-35 PID 0x102 (configurable via `--scte35-pid`)
+- PMT: stream_type 0x86 with CUEI registration descriptor
+  (format_identifier 0x43554549)
+- PSI section framing (not PES)
+- Continuity counter per PID
+- Pre-init buffering: sections queued before first keyframe, flushed
+  after muxer init
+- Per-destination filtering via `scte35Filter` adapter wrapping
+  `OutputAdapter`
+
+
+### 9.3 Data Flow
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant API as REST API
+    participant Inj as Injector
+    participant Rules as RuleEngine
+    participant Enc as Encoder
+    participant Mux as TSMuxer
+    participant Filt as SCTE35Filter
+    participant SRT as SRT Output
+    participant WH as Webhook
+
+    Op->>API: POST /api/scte35/cue
+    API->>Inj: InjectCue(msg)
+    Inj->>Rules: Evaluate(msg)
+    Rules-->>Inj: action (pass/delete/replace)
+    alt action = pass or replace
+        Inj->>Enc: Encode(msg)
+        Enc-->>Inj: SCTE-35 binary
+        Inj->>Mux: WriteSCTE35(data)
+        Mux->>Filt: Write(ts_packets)
+        Filt->>SRT: Write(filtered)
+    end
+    Inj->>WH: Dispatch(event)
+    Inj-->>API: eventId
+    Note over Inj: Auto-return timer starts
+```
+
+
+### 9.4 Concurrency Model
+
+- `sync.Mutex` protects `activeEvents` map and event log
+- State change callbacks (`onStateChange`) fired via deferred closures
+  OUTSIDE the lock
+- Auto-return timers via `time.AfterFunc` -- timer callbacks acquire lock
+- Heartbeat goroutine with ticker, stopped via context cancellation
+- Rules engine: `sync.RWMutex` on RulesStore, but RuleEngine itself is
+  immutable (rebuilt on mutation)
+
+
+### 9.5 Library Workaround
+
+Comcast/scte35-go has a decoder bug: it reads `unique_program_id` /
+`avail_num` / `avails_expected` outside the `splice_event_cancel_indicator`
+guard, causing buffer overflow on spec-compliant cancel messages.
+Switchframe includes a fallback parser (`decodeSpliceInsertCancel()`)
+that manually parses the raw bytes for cancel messages.
