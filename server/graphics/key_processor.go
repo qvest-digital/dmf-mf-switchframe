@@ -46,6 +46,7 @@ type KeyConfig struct {
 type KeyProcessor struct {
 	mu           sync.RWMutex
 	keys         map[string]KeyConfig // source key → config
+	onChange     func()               // called after SetKey/RemoveKey for pipeline rebuild
 	spillWorkBuf []byte               // reused across frames for spill suppression copy
 }
 
@@ -56,11 +57,23 @@ func NewKeyProcessor() *KeyProcessor {
 	}
 }
 
+// OnChange registers a callback invoked after any key mutation (SetKey, RemoveKey).
+// Used by the Switcher to trigger pipeline rebuild on key configuration changes.
+func (kp *KeyProcessor) OnChange(fn func()) {
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
+	kp.onChange = fn
+}
+
 // SetKey configures an upstream key for a source.
 func (kp *KeyProcessor) SetKey(source string, config KeyConfig) {
 	kp.mu.Lock()
-	defer kp.mu.Unlock()
 	kp.keys[source] = config
+	fn := kp.onChange
+	kp.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // GetKey returns the key configuration for a source.
@@ -74,8 +87,12 @@ func (kp *KeyProcessor) GetKey(source string) (KeyConfig, bool) {
 // RemoveKey removes the key configuration for a source.
 func (kp *KeyProcessor) RemoveKey(source string) {
 	kp.mu.Lock()
-	defer kp.mu.Unlock()
 	delete(kp.keys, source)
+	fn := kp.onChange
+	kp.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // HasEnabledKeys returns true if any keys are configured and enabled.
