@@ -589,6 +589,12 @@ func (s *Switcher) BuildPipeline() error {
 	}
 	p.SetMetrics(s.promMetrics)
 	p.epoch = s.pipelineEpoch.Add(1)
+	s.log.Info("pipeline built",
+		"epoch", p.epoch,
+		"active_nodes", len(p.activeNodes),
+		"total_latency", p.TotalLatency(),
+		"lip_sync_hint", p.TotalLatency()-aacFrameDuration,
+	)
 	s.pipeline.Store(p)
 	return nil
 }
@@ -634,6 +640,12 @@ func (s *Switcher) rebuildPipeline() {
 	}
 	p.SetMetrics(s.promMetrics)
 	p.epoch = s.pipelineEpoch.Add(1)
+	s.log.Info("pipeline rebuilt",
+		"epoch", p.epoch,
+		"active_nodes", len(p.activeNodes),
+		"total_latency", p.TotalLatency(),
+		"lip_sync_hint", p.TotalLatency()-aacFrameDuration,
+	)
 	s.swapPipeline(p)
 }
 
