@@ -14,7 +14,7 @@ import (
 
 func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	// In always-decode mode, frames arrive as raw YUV and flow through
-	// broadcastProcessedFromPF → encodeAndBroadcastTransition which taps the sink.
+	// broadcastProcessedFromPF → pipeline (raw-sink node taps, then encode).
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)

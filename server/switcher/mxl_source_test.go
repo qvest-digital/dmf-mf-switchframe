@@ -95,7 +95,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 
 	sw.IngestRawVideo("mxl-cam1", pf)
 
-	// The frame should be enqueued and processed through encodeAndBroadcastTransition,
+	// The frame should be enqueued and processed through the pipeline,
 	// ultimately reaching the program relay.
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
