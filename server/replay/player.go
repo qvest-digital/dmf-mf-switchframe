@@ -181,9 +181,9 @@ func (p *replayPlayer) run(ctx context.Context) {
 	frameDuration := time.Duration(float64(time.Second) / sourceFPS)
 
 	// Set total output frames for proportional audio distribution.
-	if p.audioPreStretched {
-		p.totalOutputFrames = totalFrames
-	}
+	// Both WSOLA-stretched and non-stretched paths use proportional
+	// distribution to avoid "pop pop pop" audio gaps.
+	p.totalOutputFrames = totalFrames
 
 	// Create timer once for frame pacing. Immediately Stop+drain because
 	// NewTimer fires immediately on creation, and we need a clean state
@@ -413,26 +413,17 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 		return
 	}
 
-	// Without stretching, only emit on the first duplicate to avoid repeats.
-	if dup != 0 {
-		return
+	// Without WSOLA stretching, distribute original audio frames
+	// proportionally across output video frames. The audio will play at
+	// normal speed and end before the video (at 0.25x, audio covers only
+	// 25% of playback), but while it plays it'll be continuous without pops.
+	p.audioCallCount++
+	targetAudioIdx := p.audioCallCount * len(audioClip) / p.totalOutputFrames
+	if targetAudioIdx > len(audioClip) {
+		targetAudioIdx = len(audioClip)
 	}
-
-	// Emit all audio frames whose source PTS falls within [sourcePTS, nextSourcePTS).
-	for p.audioIdx < len(audioClip) {
+	for p.audioIdx < targetAudioIdx {
 		af := &audioClip[p.audioIdx]
-		if af.pts < sourcePTS {
-			// Audio frame precedes this video frame — skip it.
-			p.audioIdx++
-			continue
-		}
-		if af.pts >= nextSourcePTS {
-			// Audio frame is at or after the next video frame — stop.
-			break
-		}
-
-		// Each audio frame gets its own monotonically advancing PTS.
-		// AAC frames are 1024 samples; PTS increment = 1024 * 90000 / sampleRate.
 		outFrame := &media.AudioFrame{
 			PTS:        p.outputAudioPTS,
 			Data:       af.data,
@@ -453,7 +444,12 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 // duration without gaps between duplicate video frames.
 func (p *replayPlayer) preStretchAudio() {
 	audioClip := p.config.AudioClip
-	if len(audioClip) == 0 || p.config.AudioDecoderFactory == nil || p.config.AudioEncoderFactory == nil {
+	if len(audioClip) == 0 {
+		slog.Warn("replay: WSOLA skipped — no audio frames in clip")
+		return
+	}
+	if p.config.AudioDecoderFactory == nil || p.config.AudioEncoderFactory == nil {
+		slog.Warn("replay: WSOLA skipped — audio codec factories not set")
 		return
 	}
 	if p.config.Speed >= 1.0 {
@@ -463,8 +459,16 @@ func (p *replayPlayer) preStretchAudio() {
 	sampleRate := audioClip[0].sampleRate
 	channels := audioClip[0].channels
 	if sampleRate == 0 || channels == 0 {
+		slog.Warn("replay: WSOLA skipped — invalid sampleRate/channels",
+			"sampleRate", sampleRate, "channels", channels)
 		return
 	}
+
+	slog.Info("replay: WSOLA starting",
+		"audio_frames", len(audioClip),
+		"sampleRate", sampleRate,
+		"channels", channels,
+		"speed", p.config.Speed)
 
 	// Decode all AAC frames to PCM.
 	dec, err := p.config.AudioDecoderFactory(sampleRate, channels)
@@ -475,23 +479,36 @@ func (p *replayPlayer) preStretchAudio() {
 	defer dec.Close()
 
 	var allPCM []float32
+	var decodeErrors int
 	for _, af := range audioClip {
 		pcm, err := dec.Decode(af.data)
 		if err != nil {
-			slog.Warn("replay: WSOLA audio decode failed", "err", err)
+			decodeErrors++
 			continue
 		}
 		allPCM = append(allPCM, pcm...)
 	}
 	if len(allPCM) == 0 {
+		slog.Warn("replay: WSOLA failed — all audio frames failed to decode",
+			"total_frames", len(audioClip), "decode_errors", decodeErrors)
 		return
+	}
+	if decodeErrors > 0 {
+		slog.Warn("replay: WSOLA decoded with errors",
+			"decoded_samples", len(allPCM), "decode_errors", decodeErrors)
 	}
 
 	// Time-stretch.
 	stretched := WSOLATimeStretch(allPCM, channels, sampleRate, p.config.Speed)
 	if len(stretched) == 0 {
+		slog.Warn("replay: WSOLA produced empty output")
 		return
 	}
+
+	slog.Info("replay: WSOLA stretched",
+		"input_samples", len(allPCM),
+		"output_samples", len(stretched),
+		"ratio", float64(len(stretched))/float64(len(allPCM)))
 
 	// Re-encode: segment into 1024-sample AAC frames.
 	enc, err := p.config.AudioEncoderFactory(sampleRate, channels)
@@ -507,14 +524,18 @@ func (p *replayPlayer) preStretchAudio() {
 	ptsPerFrame := int64(1024) * 90000 / int64(sampleRate)
 
 	var newClip []bufferedAudioFrame
+	var encodeErrors int
 	for i := 0; i+samplesPerFrame <= len(stretched); i += samplesPerFrame {
 		chunk := stretched[i : i+samplesPerFrame]
 		encoded, err := enc.Encode(chunk)
 		if err != nil {
-			slog.Warn("replay: WSOLA audio encode failed", "err", err)
+			encodeErrors++
 			continue
 		}
-		frameIdx := i / samplesPerFrame
+		if len(encoded) == 0 {
+			continue // Encoder priming frame
+		}
+		frameIdx := len(newClip)
 		newClip = append(newClip, bufferedAudioFrame{
 			data:       encoded,
 			pts:        basePTS + int64(frameIdx)*ptsPerFrame,
@@ -530,7 +551,11 @@ func (p *replayPlayer) preStretchAudio() {
 		slog.Info("replay: WSOLA pre-stretched audio",
 			"original_frames", len(audioClip),
 			"stretched_frames", len(newClip),
+			"encode_errors", encodeErrors,
 			"speed", p.config.Speed)
+	} else {
+		slog.Warn("replay: WSOLA re-encode produced no frames",
+			"stretched_samples", len(stretched), "encode_errors", encodeErrors)
 	}
 }
 
