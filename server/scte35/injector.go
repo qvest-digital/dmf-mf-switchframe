@@ -412,7 +412,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 // then injects the cue. Per SCTE-67, the cue message is repeated every 1s
 // during the pre-roll window until the splice PTS is reached.
 func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, error) {
-	currentPTS := inj.ptsFn()
+	currentPTS := maskPTS33(inj.ptsFn())
 	spliceTimePTS := maskPTS33(currentPTS + preRollMs*90) // 90 kHz ticks per ms, masked to 33 bits
 	msg.SpliceTimePTS = &spliceTimePTS
 	msg.Timing = "scheduled"
