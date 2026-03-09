@@ -33,6 +33,7 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
+	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -74,6 +75,10 @@ type App struct {
 	keyBridge      *graphics.KeyProcessorBridge
 	replayMgr      *replay.Manager
 	stingerStore   *stinger.StingerStore
+
+	// SCTE-35 signaling
+	scte35Injector *scte35.Injector
+	scte35Rules    *scte35.RulesStore
 
 	// MXL integration
 	mxlInstance *mxl.Instance
@@ -592,6 +597,45 @@ func (a *App) initMXL() error {
 	return nil
 }
 
+// initSCTE35 creates the SCTE-35 injector and rules store if enabled.
+func (a *App) initSCTE35() error {
+	if !a.cfg.SCTE35 {
+		return nil
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	rulesPath := filepath.Join(homeDir, ".switchframe", "scte35_rules.json")
+	var err error
+	a.scte35Rules, err = scte35.LoadRulesStore(rulesPath)
+	if err != nil {
+		return fmt.Errorf("create SCTE-35 rules store: %w", err)
+	}
+
+	config := scte35.InjectorConfig{
+		HeartbeatInterval: time.Duration(a.cfg.SCTE35HeartbeatMs) * time.Millisecond,
+		DefaultPreRollMs:  a.cfg.SCTE35PreRollMs,
+		SCTE35PID:         a.cfg.SCTE35PID,
+		VerifyEncoding:    a.cfg.SCTE35Verify,
+		WebhookURL:        a.cfg.SCTE35WebhookURL,
+	}
+
+	muxerSink := func(data []byte) {
+		_ = a.outputMgr.InjectSCTE35(data)
+	}
+	ptsFn := a.sw.LastBroadcastVideoPTS
+
+	a.scte35Injector = scte35.NewInjector(config, muxerSink, ptsFn)
+	a.scte35Injector.SetRuleEngine(a.scte35Rules.Engine())
+	a.outputMgr.SetSCTE35Injector(a.scte35Injector)
+
+	slog.Info("SCTE-35 injector initialized",
+		"pid", fmt.Sprintf("0x%X", a.cfg.SCTE35PID),
+		"preRollMs", a.cfg.SCTE35PreRollMs,
+		"heartbeatMs", a.cfg.SCTE35HeartbeatMs,
+		"verify", a.cfg.SCTE35Verify)
+	return nil
+}
+
 // initAPI creates the REST API and wires state callbacks.
 func (a *App) initAPI() error {
 	apiOpts := []control.APIOption{
@@ -608,6 +652,9 @@ func (a *App) initAPI() error {
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
+	}
+	if a.scte35Injector != nil {
+		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))
 	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
@@ -800,6 +847,10 @@ func (a *App) Close() {
 	}
 	if a.mxlInstance != nil {
 		_ = a.mxlInstance.Close()
+	}
+
+	if a.scte35Injector != nil {
+		a.scte35Injector.Close()
 	}
 
 	if a.keyBridge != nil {

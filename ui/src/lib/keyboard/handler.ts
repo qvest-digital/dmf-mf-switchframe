@@ -11,6 +11,10 @@ export interface KeyboardActions {
 	onSetTransitionType?: (type: string) => void;
 	onToggleDSK?: () => void;
 	onRunMacro?: (slotIndex: number) => void;
+	scte35Break?: () => void;
+	scte35Return?: () => void;
+	scte35Hold?: () => void;
+	scte35Extend?: () => void;
 	getSourceKeys: () => string[];
 }
 
@@ -98,6 +102,32 @@ export class KeyboardHandler {
 
 		// Ignore when modifier keys are held (avoid conflicts with browser shortcuts)
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+		// Shift+letter shortcuts for SCTE-35 operations
+		if (e.shiftKey) {
+			switch (e.code) {
+				case 'KeyB':
+					e.preventDefault();
+					e.stopPropagation();
+					this.actions.scte35Break?.();
+					return;
+				case 'KeyR':
+					e.preventDefault();
+					e.stopPropagation();
+					this.actions.scte35Return?.();
+					return;
+				case 'KeyH':
+					e.preventDefault();
+					e.stopPropagation();
+					this.actions.scte35Hold?.();
+					return;
+				case 'KeyE':
+					e.preventDefault();
+					e.stopPropagation();
+					this.actions.scte35Extend?.();
+					return;
+			}
+		}
 
 		// Digit1-Digit9: preview select or hot-punch
 		if (e.code.startsWith('Digit') && e.code.length === 6) {

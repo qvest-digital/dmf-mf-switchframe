@@ -104,3 +104,24 @@ func (t *apiMacroTarget) SetLevel(ctx context.Context, source string, level floa
 	}
 	return t.mixer.SetLevel(source, level)
 }
+
+func (t *apiMacroTarget) SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error) {
+	// TODO: wire to SCTE-35 injector when available on apiMacroTarget
+	return 0, nil
+}
+
+func (t *apiMacroTarget) SCTE35Return(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (t *apiMacroTarget) SCTE35Cancel(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (t *apiMacroTarget) SCTE35Hold(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (t *apiMacroTarget) SCTE35Extend(ctx context.Context, eventID uint32, durationMs int64) error {
+	return nil
+}

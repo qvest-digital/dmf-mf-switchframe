@@ -58,6 +58,26 @@ func (m *mockTarget) SetLevel(ctx context.Context, source string, level float64)
 	return nil
 }
 
+func (m *mockTarget) SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error) {
+	return 0, nil
+}
+
+func (m *mockTarget) SCTE35Return(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (m *mockTarget) SCTE35Cancel(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (m *mockTarget) SCTE35Hold(ctx context.Context, eventID uint32) error {
+	return nil
+}
+
+func (m *mockTarget) SCTE35Extend(ctx context.Context, eventID uint32, durationMs int64) error {
+	return nil
+}
+
 func (m *mockTarget) getCalls() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

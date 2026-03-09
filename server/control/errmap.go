@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
+	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -35,6 +36,8 @@ var errorMappings = []errorMapping{
 	{operator.ErrNotFound, http.StatusNotFound},
 	{operator.ErrSessionNotFound, http.StatusNotFound},
 	{replay.ErrNoSource, http.StatusNotFound},
+	{scte35.ErrRuleNotFound, http.StatusNotFound},
+	{scte35.ErrTemplateNotFound, http.StatusNotFound},
 
 	// 409 Conflict
 	{switcher.ErrFormatDuringTransition, http.StatusConflict},

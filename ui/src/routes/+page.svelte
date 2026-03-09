@@ -20,6 +20,7 @@
 	import KeyPanel from '../components/KeyPanel.svelte';
 	import ReplayPanel from '../components/ReplayPanel.svelte';
 	import PresetPanel from '../components/PresetPanel.svelte';
+	import SCTE35Panel from '../components/SCTE35Panel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
@@ -540,6 +541,14 @@
 							<div class="tab-panel">
 								<PresetPanel />
 							</div>
+						{:else if activeTab === 'SCTE-35'}
+							<div class="tab-panel">
+								{#if store.effectiveState.scte35?.enabled}
+									<SCTE35Panel state={store.effectiveState} onStateUpdate={store.applyUpdate} />
+								{:else}
+									<div class="panel-disabled">SCTE-35 not enabled on server</div>
+								{/if}
+							</div>
 						{/if}
 					{/snippet}
 				</BottomTabs>
@@ -695,5 +704,15 @@
 
 	.token-box button:hover {
 		background: #1d4ed8;
+	}
+
+	.panel-disabled {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		color: var(--text-tertiary);
+		font-family: var(--font-ui);
+		font-size: 0.8rem;
 	}
 </style>

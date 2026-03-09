@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
+	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -59,6 +60,32 @@ type OutputManagerAPI interface {
 // DebugAPI is the interface for the debug snapshot endpoint.
 type DebugAPI interface {
 	HandleSnapshot(w http.ResponseWriter, r *http.Request)
+}
+
+// SCTE35API is the interface for SCTE-35 splice event operations.
+type SCTE35API interface {
+	InjectCue(msg *scte35.CueMessage) (uint32, error)
+	ScheduleCue(msg *scte35.CueMessage, preRollMs int64) (uint32, error)
+	ReturnToProgram(eventID uint32) error
+	CancelEvent(eventID uint32) error
+	HoldBreak(eventID uint32) error
+	ExtendBreak(eventID uint32, newDurationMs int64) error
+	ActiveEventIDs() []uint32
+	State() scte35.InjectorState
+	EventLog() []scte35.EventLogEntry
+}
+
+// SCTE35RulesAPI is the interface for SCTE-35 rule management operations.
+type SCTE35RulesAPI interface {
+	List() []scte35.Rule
+	Create(rule scte35.Rule) (scte35.Rule, error)
+	Update(id string, rule scte35.Rule) error
+	Delete(id string) error
+	Reorder(ids []string) error
+	DefaultAction() scte35.RuleAction
+	SetDefaultAction(action scte35.RuleAction) error
+	Templates() []scte35.Rule
+	CreateFromTemplate(templateName string) (scte35.Rule, error)
 }
 
 // APIOption configures optional API dependencies.
@@ -109,6 +136,11 @@ func WithReplayManager(rm *replay.Manager) APIOption {
 	return func(a *API) { a.replayMgr = rm }
 }
 
+// WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
+func WithSCTE35(s SCTE35API, r SCTE35RulesAPI) APIOption {
+	return func(a *API) { a.scte35 = s; a.scte35Rules = r }
+}
+
 // WithOperatorStore attaches an operator store to the API.
 func WithOperatorStore(s *operator.Store) APIOption {
 	return func(a *API) { a.operatorStore = s }
@@ -133,6 +165,8 @@ type API struct {
 	replayMgr     *replay.Manager
 	operatorStore *operator.Store
 	sessionMgr    *operator.SessionManager
+	scte35        SCTE35API
+	scte35Rules   SCTE35RulesAPI
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -291,6 +325,29 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/replay/stop", a.handleReplayStop)
 		mux.HandleFunc("GET /api/replay/status", a.handleReplayStatus)
 		mux.HandleFunc("GET /api/replay/sources", a.handleReplaySources)
+	}
+	if a.scte35 != nil {
+		mux.HandleFunc("POST /api/scte35/cue", a.handleSCTE35Cue)
+		mux.HandleFunc("POST /api/scte35/return", a.handleSCTE35Return)
+		mux.HandleFunc("POST /api/scte35/return/{eventId}", a.handleSCTE35ReturnEvent)
+		mux.HandleFunc("POST /api/scte35/cancel/{eventId}", a.handleSCTE35Cancel)
+		mux.HandleFunc("POST /api/scte35/hold/{eventId}", a.handleSCTE35Hold)
+		mux.HandleFunc("POST /api/scte35/extend/{eventId}", a.handleSCTE35Extend)
+		mux.HandleFunc("GET /api/scte35/status", a.handleSCTE35Status)
+		mux.HandleFunc("GET /api/scte35/log", a.handleSCTE35Log)
+		mux.HandleFunc("GET /api/scte35/active", a.handleSCTE35Active)
+	}
+	if a.scte35Rules != nil {
+		// Register specific named routes before wildcard {id} routes to ensure
+		// Go's ServeMux picks them correctly.
+		mux.HandleFunc("PUT /api/scte35/rules/default", a.handleSCTE35SetDefault)
+		mux.HandleFunc("POST /api/scte35/rules/reorder", a.handleSCTE35ReorderRules)
+		mux.HandleFunc("GET /api/scte35/rules/templates", a.handleSCTE35Templates)
+		mux.HandleFunc("POST /api/scte35/rules/from-template", a.handleSCTE35FromTemplate)
+		mux.HandleFunc("GET /api/scte35/rules", a.handleSCTE35ListRules)
+		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
+		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
+		mux.HandleFunc("DELETE /api/scte35/rules/{id}", a.handleSCTE35DeleteRule)
 	}
 }
 

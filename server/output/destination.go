@@ -25,8 +25,9 @@ type DestinationConfig struct {
 	Encryption string `json:"encryption,omitempty"` // "", "aes-128", "aes-256"
 	Passphrase string `json:"passphrase,omitempty"`
 	MaxBW      int64  `json:"maxBandwidth,omitempty"`
-	MaxConns   int    `json:"maxConns,omitempty"` // listener only
-	Name       string `json:"name,omitempty"`     // user-friendly label
+	MaxConns      int    `json:"maxConns,omitempty"`      // listener only
+	Name          string `json:"name,omitempty"`          // user-friendly label
+	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"` // default true; false strips SCTE-35
 }
 
 // DestinationStatus is the runtime status of a destination.

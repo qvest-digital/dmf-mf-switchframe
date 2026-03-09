@@ -18,6 +18,11 @@ import (
 // 30fps video, 256 slots provides ~8 seconds of buffering.
 const asyncAdapterBufSize = 256
 
+// scte35InjectorInterface provides synthetic break state for late-joining viewers.
+type scte35InjectorInterface interface {
+	SyntheticBreakState() []byte
+}
+
 // OutputManager orchestrates the outputViewer, TSMuxer, and output adapters.
 // It auto-starts the viewer (registers on the program relay) when the first
 // output is enabled and removes it when the last output is disabled, ensuring
@@ -58,6 +63,9 @@ type OutputManager struct {
 
 	// Confidence monitor for program output thumbnails.
 	confidence *ConfidenceMonitor
+
+	// SCTE-35 injector provides synthetic break state for late-joining viewers.
+	scte35Injector scte35InjectorInterface
 }
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
@@ -771,6 +779,9 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 	}
 
 	muxer := NewTSMuxer()
+	if m.scte35Injector != nil {
+		muxer.SetSCTE35Enabled(true)
+	}
 	muxer.SetOutput(func(tsData []byte) {
 		adapters := m.adapters.Load()
 		for _, a := range *adapters {
@@ -894,6 +905,26 @@ func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confidence = cm
+}
+
+// SetSCTE35Injector attaches a SCTE-35 injector to the output manager.
+// The injector provides synthetic break state for late-joining viewers.
+func (m *OutputManager) SetSCTE35Injector(inj scte35InjectorInterface) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scte35Injector = inj
+}
+
+// InjectSCTE35 writes a SCTE-35 section to the output MPEG-TS stream.
+// If no muxer is active (no outputs running), the call is a no-op.
+func (m *OutputManager) InjectSCTE35(data []byte) error {
+	m.mu.Lock()
+	muxer := m.muxer
+	m.mu.Unlock()
+	if muxer == nil {
+		return nil
+	}
+	return muxer.WriteSCTE35(data)
 }
 
 // ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence

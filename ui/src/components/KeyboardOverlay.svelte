@@ -16,11 +16,16 @@
 		// Macros
 		{ key: 'Ctrl + 1-9', action: 'Run macro' },
 		// Tabs
-		{ key: 'Ctrl+Shift + 1-6', action: 'Switch bottom tab' },
+		{ key: 'Ctrl+Shift + 1-7', action: 'Switch bottom tab' },
 		// Misc
 		{ key: '` (backtick)', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },
 		{ key: 'Esc', action: 'Close overlay' },
+		// SCTE-35
+		{ key: 'Shift + B', action: 'Ad break (SCTE-35)' },
+		{ key: 'Shift + R', action: 'Return to program (SCTE-35)' },
+		{ key: 'Shift + H', action: 'Hold break (SCTE-35)' },
+		{ key: 'Shift + E', action: 'Extend break (SCTE-35)' },
 	];
 
 	function handleKeydown(e: KeyboardEvent) {

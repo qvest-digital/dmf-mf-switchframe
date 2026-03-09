@@ -220,6 +220,100 @@ export interface PipelineFormatInfo {
 	name: string;
 }
 
+export interface SCTE35State {
+	enabled: boolean;
+	activeEvents: Record<string, SCTE35Active>;
+	eventLog: SCTE35Event[];
+	pendingCues?: SCTE35Event[];
+	heartbeatOk: boolean;
+	config: SCTE35Config;
+}
+
+export interface SCTE35Active {
+	eventId: number;
+	commandType: string;
+	isOut: boolean;
+	durationMs?: number;
+	elapsedMs: number;
+	remainingMs?: number;
+	autoReturn: boolean;
+	held: boolean;
+	spliceTimePts: number;
+	startedAt: number;
+	descriptors?: SCTE35DescriptorInfo[];
+}
+
+export interface SCTE35DescriptorInfo {
+	segEventId: number;
+	segmentationType: number;
+	upidType: number;
+	upid: string;
+	durationTicks?: number;
+	subSegmentNum?: number;
+	subSegmentsExpected?: number;
+}
+
+export interface SCTE35Event {
+	eventId: number;
+	commandType: string;
+	isOut: boolean;
+	durationMs?: number;
+	autoReturn: boolean;
+	descriptors?: SCTE35DescriptorInfo[];
+	availNum?: number;
+	availsExpected?: number;
+	spliceTimePts?: number;
+	timestamp: number;
+	status: string;
+	source?: string;
+	destinationId?: string;
+}
+
+export interface SCTE35Config {
+	heartbeatIntervalMs: number;
+	defaultPreRollMs: number;
+	pid: number;
+	verifyEncoding: boolean;
+	webhookUrl?: string;
+}
+
+export interface SCTE35CueRequest {
+	commandType: 'splice_insert' | 'time_signal';
+	isOut?: boolean;
+	durationMs?: number;
+	autoReturn?: boolean;
+	preRollMs?: number;
+	eventId?: number;
+	descriptors?: SCTE35DescriptorRequest[];
+}
+
+export interface SCTE35DescriptorRequest {
+	segmentationType: number;
+	durationMs?: number;
+	upidType: number;
+	upid: string;
+	subSegmentNum?: number;
+	subSegmentsExpected?: number;
+}
+
+export interface SCTE35Rule {
+	id: string;
+	name: string;
+	enabled: boolean;
+	priority?: number;
+	conditions?: SCTE35RuleCondition[];
+	logic?: 'and' | 'or';
+	action: 'pass' | 'delete' | 'replace';
+	replaceWith?: Record<string, unknown>;
+	destinations?: string[];
+}
+
+export interface SCTE35RuleCondition {
+	field: string;
+	operator: string;
+	value: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -247,6 +341,7 @@ export interface ControlRoomState {
 	operators?: OperatorInfo[];
 	locks?: Record<string, LockInfo>;
 	pipelineFormat?: PipelineFormatInfo;
+	scte35?: SCTE35State;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;

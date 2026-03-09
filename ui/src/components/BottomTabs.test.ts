@@ -18,7 +18,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Keys');
 		expect(tabLabels).toContain('Replay');
 		expect(tabLabels).toContain('Presets');
-		expect(tabs.length).toBe(6);
+		expect(tabLabels).toContain('SCTE-35');
+		expect(tabs.length).toBe(7);
 	});
 
 	it('renders Presets tab', () => {
