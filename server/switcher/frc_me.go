@@ -1,6 +1,9 @@
 package switcher
 
 import (
+	"runtime"
+	"sync"
+
 	"github.com/zsiec/switchframe/server/switcher/frcasm"
 )
 
@@ -10,7 +13,11 @@ type motionVectorField struct {
 	cols      int // width / blockSize
 	rows      int // height / blockSize
 
-	// Forward vectors: displacement from F0 to F1 (in pixels)
+	// Sub-pixel resolution: 1 = integer pel, 2 = half-pel.
+	// MVs are stored in sub-pel units: value 17 with subPel=2 means 8.5 pixels.
+	subPel int
+
+	// Forward vectors: displacement from F0 to F1 (in sub-pel units)
 	fwdX   []int16
 	fwdY   []int16
 	fwdSAD []uint32 // matching cost per block
@@ -22,6 +29,12 @@ type motionVectorField struct {
 
 	// Occlusion: 0=valid, 1=fwd-occluded, 2=bwd-occluded, 3=both
 	occlusion []byte
+
+	// Scratch buffers for median filter (avoids per-call allocation)
+	medFwdX []int16
+	medFwdY []int16
+	medBwdX []int16
+	medBwdY []int16
 }
 
 // newMotionVectorField allocates a motion vector field for the given frame dimensions.
@@ -34,6 +47,7 @@ func newMotionVectorField(width, height, blockSize int) *motionVectorField {
 		blockSize: blockSize,
 		cols:      cols,
 		rows:      rows,
+		subPel:    1,
 		fwdX:      make([]int16, n),
 		fwdY:      make([]int16, n),
 		fwdSAD:    make([]uint32, n),
@@ -92,6 +106,23 @@ func diamondSearch(
 	blockSize int,
 	initMVX, initMVY int,
 ) (mvx, mvy int16, sad uint32) {
+	return diamondSearchAbsRange(cur, curStride, ref, refStride, bx, by, width, height,
+		searchRange, blockSize, initMVX, initMVY, searchRange)
+}
+
+// diamondSearchAbsRange is the core diamond search with an explicit absolute
+// range limit. searchRange controls the window around the predictor;
+// absRange caps the maximum absolute MV magnitude to prevent runaway propagation.
+func diamondSearchAbsRange(
+	cur []byte, curStride int,
+	ref []byte, refStride int,
+	bx, by int,
+	width, height int,
+	searchRange int,
+	blockSize int,
+	initMVX, initMVY int,
+	absRange int,
+) (mvx, mvy int16, sad uint32) {
 	// Compute SAD for a candidate motion vector (dx, dy).
 	// Returns (sad, ok) where ok is false if the block would read out of bounds.
 	computeSAD := func(dx, dy int) (uint32, bool) {
@@ -107,30 +138,36 @@ func diamondSearch(
 		return frcasm.SadBlock16x16(&cur[curOffset], &ref[refOffset], curStride, refStride), true
 	}
 
-	// Check that motion vector is within search range
+	// Check that MV is within search range of the predictor AND within
+	// the absolute range limit. The absolute limit prevents runaway MV
+	// propagation through neighbor chains in single-level ME.
 	inRange := func(dx, dy int) bool {
-		if dx > searchRange || dx < -searchRange {
+		if dx-initMVX > searchRange || dx-initMVX < -searchRange {
 			return false
 		}
-		if dy > searchRange || dy < -searchRange {
+		if dy-initMVY > searchRange || dy-initMVY < -searchRange {
+			return false
+		}
+		if dx > absRange || dx < -absRange {
+			return false
+		}
+		if dy > absRange || dy < -absRange {
 			return false
 		}
 		return true
 	}
 
-	// Start with the predictor
+	// Clamp predictor to absolute range
 	cx, cy := initMVX, initMVY
-
-	// Clamp predictor to search range
-	if cx > searchRange {
-		cx = searchRange
-	} else if cx < -searchRange {
-		cx = -searchRange
+	if cx > absRange {
+		cx = absRange
+	} else if cx < -absRange {
+		cx = -absRange
 	}
-	if cy > searchRange {
-		cy = searchRange
-	} else if cy < -searchRange {
-		cy = -searchRange
+	if cy > absRange {
+		cy = absRange
+	} else if cy < -absRange {
+		cy = -absRange
 	}
 
 	bestSAD := ^uint32(0)
@@ -321,11 +358,17 @@ func collectPredictors(mvX, mvY []int16, mvSAD []uint32, cols, col, row int) (in
 func medianFilterMVField(mvf *motionVectorField) {
 	n := mvf.cols * mvf.rows
 
-	// Work on copies to avoid read-after-write dependency
-	origFwdX := make([]int16, n)
-	origFwdY := make([]int16, n)
-	origBwdX := make([]int16, n)
-	origBwdY := make([]int16, n)
+	// Reuse struct scratch buffers to avoid per-call allocation
+	if cap(mvf.medFwdX) < n {
+		mvf.medFwdX = make([]int16, n)
+		mvf.medFwdY = make([]int16, n)
+		mvf.medBwdX = make([]int16, n)
+		mvf.medBwdY = make([]int16, n)
+	}
+	origFwdX := mvf.medFwdX[:n]
+	origFwdY := mvf.medFwdY[:n]
+	origBwdX := mvf.medBwdX[:n]
+	origBwdY := mvf.medBwdY[:n]
 	copy(origFwdX, mvf.fwdX)
 	copy(origFwdY, mvf.fwdY)
 	copy(origBwdX, mvf.bwdX)
@@ -422,13 +465,495 @@ func medianInt16(vals []int16) int16 {
 	return vals[n/2]
 }
 
+// hierarchicalME holds reusable state for multi-level hierarchical motion estimation.
+// Downsamples frames in a 3-level Gaussian pyramid and propagates motion vectors
+// from coarse to fine levels, extending the effective search range from ±32px to ±128px.
+type hierarchicalME struct {
+	// Downscaled Y planes (level 0 = full res, level 1 = half, level 2 = quarter)
+	prevPyr [3][]byte
+	currPyr [3][]byte
+
+	// Per-level MV fields (levels 1 and 2 only; level 0 uses the caller's mvf)
+	mvfL1 *motionVectorField
+	mvfL2 *motionVectorField
+
+	// Temporal prediction: previous frame's MV field for seeding
+	temporalMVF *motionVectorField
+}
+
+func newHierarchicalME() *hierarchicalME {
+	return &hierarchicalME{}
+}
+
+// estimate runs hierarchical motion estimation: L2 → L1 → L0.
+// Results are written into mvf (the full-resolution MV field).
+// searchRange applies at each level (typically 32), giving ±128px total at L0.
+func (h *hierarchicalME) estimate(prev, curr *ProcessingFrame, mvf *motionVectorField, searchRange int) {
+	w := prev.Width
+	h0 := prev.Height
+	bs := mvf.blockSize
+
+	prevY := prev.YUV[:w*h0]
+	currY := curr.YUV[:w*h0]
+
+	// Level 0: full resolution (pointers, no copy)
+	h.prevPyr[0] = prevY
+	h.currPyr[0] = currY
+
+	// Level 1: half resolution
+	w1, h1 := w/2, h0/2
+	if len(h.prevPyr[1]) < w1*h1 {
+		h.prevPyr[1] = make([]byte, w1*h1)
+		h.currPyr[1] = make([]byte, w1*h1)
+	}
+	downsampleY2x(h.prevPyr[1][:w1*h1], prevY, w, h0)
+	downsampleY2x(h.currPyr[1][:w1*h1], currY, w, h0)
+
+	// Level 2: quarter resolution
+	w2, h2 := w1/2, h1/2
+	if len(h.prevPyr[2]) < w2*h2 {
+		h.prevPyr[2] = make([]byte, w2*h2)
+		h.currPyr[2] = make([]byte, w2*h2)
+	}
+	downsampleY2x(h.prevPyr[2][:w2*h2], h.prevPyr[1][:w1*h1], w1, h1)
+	downsampleY2x(h.currPyr[2][:w2*h2], h.currPyr[1][:w1*h1], w1, h1)
+
+	// --- Level 2 (coarsest): full search, no predictor from above ---
+	cols2 := w2 / bs
+	rows2 := h2 / bs
+	if h.mvfL2 == nil || h.mvfL2.cols != cols2 || h.mvfL2.rows != rows2 {
+		h.mvfL2 = newMotionVectorField(w2, h2, bs)
+	}
+	pfL2prev := &ProcessingFrame{YUV: h.prevPyr[2][:w2*h2], Width: w2, Height: h2}
+	pfL2curr := &ProcessingFrame{YUV: h.currPyr[2][:w2*h2], Width: w2, Height: h2}
+	estimateMotionField(pfL2prev, pfL2curr, h.mvfL2, searchRange)
+
+	// --- Level 1 (half res): seed from upscaled L2 MVs ---
+	cols1 := w1 / bs
+	rows1 := h1 / bs
+	if h.mvfL1 == nil || h.mvfL1.cols != cols1 || h.mvfL1.rows != rows1 {
+		h.mvfL1 = newMotionVectorField(w1, h1, bs)
+	}
+	h.mvfL1.reset()
+
+	prevL1 := h.prevPyr[1][:w1*h1]
+	currL1 := h.currPyr[1][:w1*h1]
+	estimateWithSeeds(prevL1, currL1, w1, h1, h.mvfL1, h.mvfL2, nil, searchRange, bs)
+
+	// --- Level 0 (full res): seed from upscaled L1 MVs + temporal prediction ---
+	mvf.reset()
+	estimateWithSeeds(prevY, currY, w, h0, mvf, h.mvfL1, h.temporalMVF, searchRange, bs)
+
+	// Save current MV field as temporal predictor for next frame pair
+	// (stored in integer-pel units before half-pel refinement)
+	if h.temporalMVF == nil || h.temporalMVF.cols != mvf.cols || h.temporalMVF.rows != mvf.rows {
+		h.temporalMVF = newMotionVectorField(w, h0, bs)
+	}
+	n := mvf.cols * mvf.rows
+	copy(h.temporalMVF.fwdX[:n], mvf.fwdX[:n])
+	copy(h.temporalMVF.fwdY[:n], mvf.fwdY[:n])
+	copy(h.temporalMVF.fwdSAD[:n], mvf.fwdSAD[:n])
+	copy(h.temporalMVF.bwdX[:n], mvf.bwdX[:n])
+	copy(h.temporalMVF.bwdY[:n], mvf.bwdY[:n])
+	copy(h.temporalMVF.bwdSAD[:n], mvf.bwdSAD[:n])
+
+	// Half-pel refinement: test 8 sub-pixel positions around each integer-pel result.
+	// After this, MVs are in half-pel units (×2) and mvf.subPel = 2.
+	halfPelRefineMVField(mvf, prevY, currY, w, h0)
+}
+
+// estimateWithSeeds runs diamond search ME, seeding each block's initial predictor
+// from the corresponding block in the parent (coarser) MV field. Parent MVs are
+// scaled 2× since each parent pixel represents 2 pixels at this level.
+//
+// temporal is an optional MV field from the previous frame pair (same resolution).
+// When non-nil, the temporal MV is tested as an additional starting candidate
+// within a single diamond search (no extra full search).
+//
+// The absolute range for each block is seed_magnitude + searchRange, allowing
+// refinement around the parent's estimate without unbounded MV propagation.
+func estimateWithSeeds(
+	prevY, currY []byte,
+	w, h int,
+	mvf *motionVectorField,
+	parent *motionVectorField,
+	temporal *motionVectorField,
+	searchRange, bs int,
+) {
+	hasTemporal := temporal != nil && temporal.cols == mvf.cols && temporal.rows == mvf.rows
+
+	// Forward ME pass
+	for row := 0; row < mvf.rows; row++ {
+		for col := 0; col < mvf.cols; col++ {
+			idx := row*mvf.cols + col
+			bx := col * bs
+			by := row * bs
+
+			// Get seed from parent level (halved coordinates, 2× MV)
+			seedX, seedY := parentPredictor(parent.fwdX, parent.fwdY, parent.cols, parent.rows, col, row)
+			neighX, neighY := collectPredictors(mvf.fwdX, mvf.fwdY, mvf.fwdSAD, mvf.cols, col, row)
+
+			// Pick the best seed among: parent, neighbor, temporal
+			bestSeedX, bestSeedY := pickBestSeed(
+				prevY, currY, w, h, bx, by, bs,
+				seedX, seedY, neighX, neighY,
+				hasTemporal, temporal, idx, true,
+			)
+
+			absRange := absRangeForSeed(bestSeedX, bestSeedY, searchRange)
+			fx, fy, fSAD := diamondSearchAbsRange(prevY, w, currY, w, bx, by, w, h, searchRange, bs, bestSeedX, bestSeedY, absRange)
+
+			mvf.fwdX[idx] = fx
+			mvf.fwdY[idx] = fy
+			mvf.fwdSAD[idx] = fSAD
+		}
+	}
+
+	// Backward ME pass
+	for row := 0; row < mvf.rows; row++ {
+		for col := 0; col < mvf.cols; col++ {
+			idx := row*mvf.cols + col
+			bx := col * bs
+			by := row * bs
+
+			seedX, seedY := parentPredictor(parent.bwdX, parent.bwdY, parent.cols, parent.rows, col, row)
+			neighX, neighY := collectPredictors(mvf.bwdX, mvf.bwdY, mvf.bwdSAD, mvf.cols, col, row)
+
+			bestSeedX, bestSeedY := pickBestSeed(
+				currY, prevY, w, h, bx, by, bs,
+				seedX, seedY, neighX, neighY,
+				hasTemporal, temporal, idx, false,
+			)
+
+			absRange := absRangeForSeed(bestSeedX, bestSeedY, searchRange)
+			bxv, byv, bSAD := diamondSearchAbsRange(currY, w, prevY, w, bx, by, w, h, searchRange, bs, bestSeedX, bestSeedY, absRange)
+
+			mvf.bwdX[idx] = bxv
+			mvf.bwdY[idx] = byv
+			mvf.bwdSAD[idx] = bSAD
+		}
+	}
+}
+
+// pickBestSeed evaluates up to 3 candidate seeds (parent, neighbor, temporal)
+// by computing a single SAD for each and returning the one with lowest cost.
+// This replaces running multiple full diamond searches — just one SAD per candidate.
+func pickBestSeed(
+	cur, ref []byte,
+	w, h, bx, by, bs int,
+	parentX, parentY int,
+	neighX, neighY int,
+	hasTemporal bool,
+	temporal *motionVectorField,
+	idx int,
+	forward bool,
+) (int, int) {
+	bestX, bestY := parentX, parentY
+	bestSAD := sadForMV(cur, ref, w, h, bx, by, bs, parentX, parentY)
+
+	nSAD := sadForMV(cur, ref, w, h, bx, by, bs, neighX, neighY)
+	if nSAD < bestSAD {
+		bestSAD = nSAD
+		bestX = neighX
+		bestY = neighY
+	}
+
+	if hasTemporal {
+		var tx, ty int
+		if forward {
+			tx = int(temporal.fwdX[idx])
+			ty = int(temporal.fwdY[idx])
+		} else {
+			tx = int(temporal.bwdX[idx])
+			ty = int(temporal.bwdY[idx])
+		}
+		tSAD := sadForMV(cur, ref, w, h, bx, by, bs, tx, ty)
+		if tSAD < bestSAD {
+			bestX = tx
+			bestY = ty
+		}
+	}
+
+	return bestX, bestY
+}
+
+// sadForMV computes SAD for a single MV candidate. Returns max uint32 if out of bounds.
+func sadForMV(cur, ref []byte, w, h, bx, by, bs, mvx, mvy int) uint32 {
+	rx := bx + mvx
+	ry := by + mvy
+	if rx < 0 || ry < 0 || rx+bs > w || ry+bs > h {
+		return ^uint32(0)
+	}
+	curOff := by*w + bx
+	refOff := ry*w + rx
+	return frcasm.SadBlock16x16(&cur[curOff], &ref[refOff], w, w)
+}
+
+// absRangeForSeed computes the absolute MV range needed to search around a seed.
+// Returns max(abs(seedX), abs(seedY)) + searchRange.
+func absRangeForSeed(seedX, seedY, searchRange int) int {
+	ax := seedX
+	if ax < 0 {
+		ax = -ax
+	}
+	ay := seedY
+	if ay < 0 {
+		ay = -ay
+	}
+	m := ax
+	if ay > m {
+		m = ay
+	}
+	return m + searchRange
+}
+
+// parentPredictor returns the upscaled MV from the parent level for position (col, row).
+// Parent coordinates are col/2, row/2. MVs are scaled 2× since one parent pixel = 2 child pixels.
+func parentPredictor(mvX, mvY []int16, parentCols, parentRows, col, row int) (int, int) {
+	if parentCols <= 0 || parentRows <= 0 {
+		return 0, 0
+	}
+	pc := col / 2
+	pr := row / 2
+	if pc >= parentCols {
+		pc = parentCols - 1
+	}
+	if pr >= parentRows {
+		pr = parentRows - 1
+	}
+	idx := pr*parentCols + pc
+	return int(mvX[idx]) * 2, int(mvY[idx]) * 2
+}
+
+// downsampleY2x downsamples a Y plane by 2× using box filter (average of 2×2 blocks).
+// dst must be at least (w/2)*(h/2) bytes. src must be at least w*h bytes.
+func downsampleY2x(dst, src []byte, w, h int) {
+	dstW := w / 2
+	for row := 0; row < h/2; row++ {
+		srcRow0 := row * 2 * w
+		srcRow1 := srcRow0 + w
+		dstOff := row * dstW
+		for col := 0; col < dstW; col++ {
+			sc := col * 2
+			a := int(src[srcRow0+sc])
+			b := int(src[srcRow0+sc+1])
+			c := int(src[srcRow1+sc])
+			d := int(src[srcRow1+sc+1])
+			dst[dstOff+col] = byte((a + b + c + d + 2) / 4)
+		}
+	}
+}
+
+// halfPelRefine performs half-pixel refinement on all MVs in the field.
+// For each block, tests 8 half-pel positions around the integer-pel result
+// using bilinear-interpolated reference pixels. If a half-pel position has
+// lower SAD, the MV is updated. After refinement, MVs are stored in half-pel
+// units (original integer values ×2, half-pel adds ±1) and subPel is set to 2.
+//
+func halfPelRefine(mvf *motionVectorField, cur, ref []byte, w, h int, forward bool) {
+	bs := mvf.blockSize
+
+	var mvX, mvY []int16
+	var mvSAD []uint32
+	if forward {
+		mvX, mvY, mvSAD = mvf.fwdX, mvf.fwdY, mvf.fwdSAD
+	} else {
+		mvX, mvY, mvSAD = mvf.bwdX, mvf.bwdY, mvf.bwdSAD
+	}
+
+	cols := mvf.cols
+	rows := mvf.rows
+
+	// Row-parallel: each block row is independent
+	numWorkers := runtime.NumCPU()
+	if numWorkers > rows {
+		numWorkers = rows
+	}
+	if numWorkers <= 1 {
+		halfPelRefineRows(mvX, mvY, mvSAD, cur, ref, w, h, bs, cols, 0, rows)
+		return
+	}
+
+	var wg sync.WaitGroup
+	rowsPerWorker := rows / numWorkers
+	for g := 0; g < numWorkers; g++ {
+		startRow := g * rowsPerWorker
+		endRow := startRow + rowsPerWorker
+		if g == numWorkers-1 {
+			endRow = rows
+		}
+		wg.Add(1)
+		go func(sr, er int) {
+			defer wg.Done()
+			halfPelRefineRows(mvX, mvY, mvSAD, cur, ref, w, h, bs, cols, sr, er)
+		}(startRow, endRow)
+	}
+	wg.Wait()
+}
+
+// halfPelRefineRows processes block rows [startRow, endRow) for half-pel refinement.
+func halfPelRefineRows(mvX, mvY []int16, mvSAD []uint32, cur, ref []byte, w, h, bs, cols, startRow, endRow int) {
+	for row := startRow; row < endRow; row++ {
+		by := row * bs
+		rowBase := row * cols
+
+		for col := 0; col < cols; col++ {
+			bx := col * bs
+			i := rowBase + col
+
+			// Current integer MV in half-pel units
+			bestHpX := int(mvX[i]) * 2
+			bestHpY := int(mvY[i]) * 2
+			bestSAD := mvSAD[i]
+
+			// Phase 1: Test 4 axis-aligned half-pel positions
+			axisImproved := false
+			for _, off := range [][2]int{{0, -1}, {-1, 0}, {1, 0}, {0, 1}} {
+				hpX := bestHpX + off[0]
+				hpY := bestHpY + off[1]
+
+				sad, ok := sadHalfPelFused(cur, ref, w, h, bx, by, bs, hpX, hpY)
+				if ok && sad < bestSAD {
+					bestSAD = sad
+					bestHpX = hpX
+					bestHpY = hpY
+					axisImproved = true
+				}
+			}
+
+			// Phase 2: Only test diagonals if axis-aligned search found improvement
+			if axisImproved {
+				for _, off := range [][2]int{{-1, -1}, {1, -1}, {-1, 1}, {1, 1}} {
+					hpX := bestHpX + off[0]
+					hpY := bestHpY + off[1]
+
+					sad, ok := sadHalfPelFused(cur, ref, w, h, bx, by, bs, hpX, hpY)
+					if ok && sad < bestSAD {
+						bestSAD = sad
+						bestHpX = hpX
+						bestHpY = hpY
+					}
+				}
+			}
+
+			mvX[i] = int16(bestHpX)
+			mvY[i] = int16(bestHpY)
+			mvSAD[i] = bestSAD
+		}
+	}
+}
+
+// sadHalfPelFused computes SAD between a current block at (bx, by) and a
+// half-pel interpolated reference, fusing interpolation and SAD in one pass
+// (no intermediate buffer). hpX, hpY are in half-pel units.
+func sadHalfPelFused(cur, ref []byte, w, h, bx, by, bs, hpX, hpY int) (uint32, bool) {
+	intX := hpX >> 1
+	intY := hpY >> 1
+	fracX := hpX & 1
+	fracY := hpY & 1
+
+	rx := bx + intX
+	ry := by + intY
+
+	maxRX := rx + bs
+	maxRY := ry + bs
+	if fracX != 0 {
+		maxRX++
+	}
+	if fracY != 0 {
+		maxRY++
+	}
+	if rx < 0 || ry < 0 || maxRX > w || maxRY > h {
+		return 0, false
+	}
+
+	if fracX == 0 && fracY == 0 {
+		curOff := by*w + bx
+		refOff := ry*w + rx
+		return frcasm.SadBlock16x16(&cur[curOff], &ref[refOff], w, w), true
+	}
+
+	// Fused interpolation + SAD: compute interp and diff in one pass
+	var sad uint32
+	if fracX != 0 && fracY != 0 {
+		// Diagonal: average of 4 pixels
+		for dy := 0; dy < bs; dy++ {
+			curRow := (by+dy)*w + bx
+			refRow := (ry+dy)*w + rx
+			for dx := 0; dx < bs; dx++ {
+				interp := (int(ref[refRow+dx]) + int(ref[refRow+dx+1]) +
+					int(ref[refRow+dx+w]) + int(ref[refRow+dx+w+1]) + 2) >> 2
+				diff := int(cur[curRow+dx]) - interp
+				if diff < 0 {
+					diff = -diff
+				}
+				sad += uint32(diff)
+			}
+		}
+	} else if fracX != 0 {
+		// Horizontal only: average of (x, y) and (x+1, y)
+		for dy := 0; dy < bs; dy++ {
+			curRow := (by+dy)*w + bx
+			refRow := (ry+dy)*w + rx
+			for dx := 0; dx < bs; dx++ {
+				interp := (int(ref[refRow+dx]) + int(ref[refRow+dx+1]) + 1) >> 1
+				diff := int(cur[curRow+dx]) - interp
+				if diff < 0 {
+					diff = -diff
+				}
+				sad += uint32(diff)
+			}
+		}
+	} else {
+		// Vertical only: average of (x, y) and (x, y+1)
+		for dy := 0; dy < bs; dy++ {
+			curRow := (by+dy)*w + bx
+			refRow := (ry+dy)*w + rx
+			for dx := 0; dx < bs; dx++ {
+				interp := (int(ref[refRow+dx]) + int(ref[refRow+dx+w]) + 1) >> 1
+				diff := int(cur[curRow+dx]) - interp
+				if diff < 0 {
+					diff = -diff
+				}
+				sad += uint32(diff)
+			}
+		}
+	}
+	return sad, true
+}
+
+// halfPelRefineMVField applies half-pel refinement to both forward and backward
+// MV fields concurrently. After this call, all MVs are in half-pel units and
+// subPel is set to 2.
+func halfPelRefineMVField(mvf *motionVectorField, prevY, currY []byte, w, h int) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		halfPelRefine(mvf, prevY, currY, w, h, true) // forward: prev→curr
+	}()
+	go func() {
+		defer wg.Done()
+		halfPelRefine(mvf, currY, prevY, w, h, false) // backward: curr→prev
+	}()
+	wg.Wait()
+	mvf.subPel = 2
+}
+
 // checkConsistency marks blocks as occluded where forward and backward vectors disagree.
 // A block at (col, row) with forward vector (fx, fy) should have a backward vector near (-fx, -fy)
 // at the destination block (col + fx/blockSize, row + fy/blockSize). If the L1 disagreement
 // exceeds threshold pixels, the block is marked occluded.
 func checkConsistency(mvf *motionVectorField, threshold int) {
 	bs := mvf.blockSize
-	thresh16 := int16(threshold)
+	sp := mvf.subPel
+	if sp < 1 {
+		sp = 1
+	}
+	// Threshold in sub-pel units
+	thresh16 := int16(threshold * sp)
+	// Block stride in sub-pel units
+	bsSP := bs * sp
 
 	for row := 0; row < mvf.rows; row++ {
 		for col := 0; col < mvf.cols; col++ {
@@ -438,9 +963,9 @@ func checkConsistency(mvf *motionVectorField, threshold int) {
 			fx := mvf.fwdX[idx]
 			fy := mvf.fwdY[idx]
 
-			// Destination block in F1
-			dstCol := col + int(fx)/bs
-			dstRow := row + int(fy)/bs
+			// Destination block in F1 (MVs in sub-pel units, divide by blockSize*subPel)
+			dstCol := col + int(fx)/bsSP
+			dstRow := row + int(fy)/bsSP
 
 			fwdOccluded := false
 			if dstCol < 0 || dstCol >= mvf.cols || dstRow < 0 || dstRow >= mvf.rows {
@@ -468,8 +993,8 @@ func checkConsistency(mvf *motionVectorField, threshold int) {
 			bkx := mvf.bwdX[idx]
 			bky := mvf.bwdY[idx]
 
-			srcCol := col + int(bkx)/bs
-			srcRow := row + int(bky)/bs
+			srcCol := col + int(bkx)/bsSP
+			srcRow := row + int(bky)/bsSP
 
 			bwdOccluded := false
 			if srcCol < 0 || srcCol >= mvf.cols || srcRow < 0 || srcRow >= mvf.rows {

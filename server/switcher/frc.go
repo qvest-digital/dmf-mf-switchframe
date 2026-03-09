@@ -113,9 +113,8 @@ type frcSource struct {
 	tickIntervalPTS     int64 // pipeline tick interval in 90kHz PTS units
 
 	// Reusable buffers (zero-alloc steady state)
-	warpA    []byte // forward-warped scratch
-	warpB    []byte // backward-warped scratch
 	blendOut []byte // final blended output
+	hme      *hierarchicalME // pyramid ME state (reused across frames)
 
 	// FPS tracking from PTS deltas
 	avgIntervalTicks int64 // EMA of source PTS interval (90kHz units)
@@ -179,7 +178,10 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 	fs.ensureMVField(fs.prevFrame.Width, fs.prevFrame.Height)
 
 	meStart := time.Now()
-	estimateMotionField(fs.prevFrame, fs.currFrame, fs.mvField, frcMESearchRange)
+	if fs.hme == nil {
+		fs.hme = newHierarchicalME()
+	}
+	fs.hme.estimate(fs.prevFrame, fs.currFrame, fs.mvField, frcMESearchRange)
 	medianFilterMVField(fs.mvField)
 	checkConsistency(fs.mvField, 4)
 	meElapsed := time.Since(meStart)
@@ -309,9 +311,8 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 	totalSize := w * h * 3 / 2
 
 	fs.ensureBlendOut(totalSize)
-	fs.ensureWarpBuffers(totalSize)
 
-	mcfiInterpolate(fs.blendOut, fs.warpA, fs.warpB, fs.prevFrame, fs.currFrame, fs.mvField, alpha)
+	mcfiInterpolateFast(fs.blendOut, fs.prevFrame.YUV, fs.currFrame.YUV, w, h, fs.mvField, alpha)
 
 	return &ProcessingFrame{
 		YUV:        fs.blendOut,
@@ -339,7 +340,7 @@ func (fs *frcSource) reset() {
 	fs.degradedSince = time.Time{}
 	fs.intervalCount = 0
 	fs.avgIntervalTicks = 0
-	// Keep warpA/warpB/blendOut buffers for reuse
+	// Keep blendOut buffer for reuse
 }
 
 // detectSceneChange computes a subsampled SAD between two frames and
@@ -415,16 +416,3 @@ func (fs *frcSource) ensureBlendOut(size int) {
 	fs.blendOut = make([]byte, size)
 }
 
-// ensureWarpBuffers allocates or reuses the warp scratch buffers.
-func (fs *frcSource) ensureWarpBuffers(size int) {
-	if len(fs.warpA) < size {
-		fs.warpA = make([]byte, size)
-	} else {
-		fs.warpA = fs.warpA[:size]
-	}
-	if len(fs.warpB) < size {
-		fs.warpB = make([]byte, size)
-	} else {
-		fs.warpB = fs.warpB[:size]
-	}
-}

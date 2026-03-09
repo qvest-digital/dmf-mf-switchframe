@@ -247,7 +247,7 @@ func TestIntegration_SyntheticBreakState(t *testing.T) {
 	_, _ = inj.InjectCue(msg)
 
 	synth := inj.SyntheticBreakState()
-	if synth == nil || len(synth) == 0 {
+	if len(synth) == 0 {
 		t.Fatal("expected non-empty synthetic break state")
 	}
 

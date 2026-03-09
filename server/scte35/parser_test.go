@@ -420,9 +420,8 @@ func TestDetectSCTE35PID_EmptyPMT(t *testing.T) {
 func TestDetectSCTE35PID_TruncatedPMT(t *testing.T) {
 	// Truncated PMT should not panic
 	pids := DetectSCTE35PID([]byte{0x02, 0xB0, 0x10})
-	if pids == nil {
-		// nil is acceptable, just not a panic
-	}
+	// nil or empty is acceptable, just not a panic
+	_ = pids
 }
 
 func TestDetectSCTE35PID_WrongTableID(t *testing.T) {

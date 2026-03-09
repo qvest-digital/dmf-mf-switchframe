@@ -59,7 +59,7 @@ func (w *WebhookDispatcher) Dispatch(event WebhookEvent) {
 			slog.Debug("webhook dispatch failed", "url", w.url, "error", err)
 			return
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
 			slog.Warn("webhook returned error", "url", w.url, "status", resp.StatusCode)

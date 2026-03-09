@@ -55,14 +55,3 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 		alphaBlendRGBAChromaRow(&yuv[cbOffset+uvStart], &yuv[crOffset+uvStart], &rgba[rgbaStart], halfW, alphaScale256)
 	}
 }
-
-// clampInt clamps an integer value to [min, max].
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
-}

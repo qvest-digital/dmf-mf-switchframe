@@ -189,6 +189,26 @@ func makeTranslatedFrame(prev *ProcessingFrame, dx, dy int) *ProcessingFrame {
 	}
 }
 
+func makeUniformFrame(w, h int, yVal byte) *ProcessingFrame {
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	crSize := cbSize
+	yuv := make([]byte, ySize+cbSize+crSize)
+
+	for i := 0; i < ySize; i++ {
+		yuv[i] = yVal
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+
+	return &ProcessingFrame{
+		YUV:    yuv,
+		Width:  w,
+		Height: h,
+	}
+}
+
 func TestDiamondSearch_ZeroMotion(t *testing.T) {
 	w, h := 320, 240
 	frame := makeGradientFrame(w, h)
@@ -567,6 +587,335 @@ func TestEstimateMotionField_FullFrame(t *testing.T) {
 	}
 	require.Less(t, float64(occluded)/float64(n), 0.3,
 		"less than 30%% of blocks should be occluded for simple translation")
+}
+
+// TestDownsampleY2x verifies 2x box-filter downsampling of Y plane.
+func TestDownsampleY2x(t *testing.T) {
+	w, h := 320, 240
+	src := make([]byte, w*h)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+
+	dstW, dstH := w/2, h/2
+	dst := make([]byte, dstW*dstH)
+	downsampleY2x(dst, src, w, h)
+
+	// Verify a sample of pixels: each output pixel is the average of a 2x2 block
+	for row := 0; row < 10; row++ {
+		for col := 0; col < 10; col++ {
+			// Source 2x2 block
+			a := int(src[(row*2)*w+col*2])
+			b := int(src[(row*2)*w+col*2+1])
+			c := int(src[(row*2+1)*w+col*2])
+			d := int(src[(row*2+1)*w+col*2+1])
+			expected := byte((a + b + c + d + 2) / 4)
+			require.Equal(t, expected, dst[row*dstW+col],
+				"pixel (%d,%d)", col, row)
+		}
+	}
+}
+
+// TestHierarchicalME_LargeMotion verifies that hierarchical ME can find
+// large motion (64px) that exceeds the single-level search range (±32px).
+func TestHierarchicalME_LargeMotion(t *testing.T) {
+	w, h := 640, 480
+	shift := 64 // Beyond single-level ±32px range
+
+	prev := makeGradientFrame(w, h)
+	curr := makeTranslatedFrame(prev, shift, 0)
+
+	mvf := newMotionVectorField(w, h, 16)
+
+	// Single-level ME with ±32px absolute range should fail to find 64px motion.
+	// The absolute range cap prevents neighbor propagation from chaining beyond 32px.
+	estimateMotionField(prev, curr, mvf, 32)
+	singleLevelMiss := 0
+	total := 0
+	for row := 5; row < mvf.rows-5; row++ {
+		for col := 5; col < mvf.cols-5; col++ {
+			total++
+			idx := row*mvf.cols + col
+			diff := int(mvf.fwdX[idx]) - shift
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > 4 {
+				singleLevelMiss++
+			}
+		}
+	}
+	require.Greater(t, float64(singleLevelMiss)/float64(total), 0.5,
+		"single-level ME should miss most 64px motions (got %.1f%% miss)",
+		float64(singleLevelMiss)*100/float64(total))
+
+	// Hierarchical ME extends range via pyramid — should find them
+	hme := newHierarchicalME()
+	hme.estimate(prev, curr, mvf, 32)
+
+	// After hme.estimate, MVs are in half-pel units (subPel=2)
+	shiftHP := shift * mvf.subPel
+	hierMiss := 0
+	for row := 5; row < mvf.rows-5; row++ {
+		for col := 5; col < mvf.cols-5; col++ {
+			idx := row*mvf.cols + col
+			diff := int(mvf.fwdX[idx]) - shiftHP
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > 4*mvf.subPel {
+				hierMiss++
+			}
+		}
+	}
+	require.Less(t, float64(hierMiss)/float64(total), 0.15,
+		"hierarchical ME should find most 64px motions (got %.1f%% miss)",
+		float64(hierMiss)*100/float64(total))
+}
+
+// TestHierarchicalME_DiagonalLargeMotion tests large diagonal motion.
+func TestHierarchicalME_DiagonalLargeMotion(t *testing.T) {
+	w, h := 640, 480
+	dx, dy := 40, 30 // Diagonal motion, within ±128px hierarchical range
+
+	prev := makeCheckerGradientFrame(w, h)
+	curr := makeTranslatedFrame(prev, dx, dy)
+
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+	hme.estimate(prev, curr, mvf, 32)
+
+	// Interior blocks should approximate (40, 30) in half-pel units
+	sp := mvf.subPel
+	dxHP := dx * sp
+	dyHP := dy * sp
+	hits := 0
+	total := 0
+	for row := 5; row < mvf.rows-5; row++ {
+		for col := 5; col < mvf.cols-5; col++ {
+			total++
+			idx := row*mvf.cols + col
+			diffX := int(mvf.fwdX[idx]) - dxHP
+			diffY := int(mvf.fwdY[idx]) - dyHP
+			if diffX < 0 {
+				diffX = -diffX
+			}
+			if diffY < 0 {
+				diffY = -diffY
+			}
+			if diffX <= 4*sp && diffY <= 4*sp {
+				hits++
+			}
+		}
+	}
+	require.Greater(t, float64(hits)/float64(total), 0.70,
+		"hierarchical ME should find 70%%+ of diagonal (40,30) motions (got %.1f%%)",
+		float64(hits)*100/float64(total))
+}
+
+// TestHierarchicalME_SmallMotion verifies hierarchical ME doesn't degrade
+// small motion accuracy compared to single-level.
+func TestHierarchicalME_SmallMotion(t *testing.T) {
+	w, h := 640, 480
+	shift := 8 // Well within single-level range
+
+	prev := makeGradientFrame(w, h)
+	curr := makeTranslatedFrame(prev, shift, 0)
+
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+	hme.estimate(prev, curr, mvf, 32)
+
+	// Interior blocks should still find exact motion (in half-pel units)
+	sp := mvf.subPel
+	shiftHP := shift * sp
+	for row := 2; row < mvf.rows-2; row++ {
+		for col := 2; col < mvf.cols-2; col++ {
+			idx := row*mvf.cols + col
+			diff := int(mvf.fwdX[idx]) - shiftHP
+			if diff < 0 {
+				diff = -diff
+			}
+			require.LessOrEqual(t, diff, 2*sp,
+				"hierarchical ME should find small motion at (%d,%d): got %d, expected ~%d",
+				col, row, mvf.fwdX[idx], shiftHP)
+		}
+	}
+}
+
+// TestTemporalMVPrediction verifies that temporal prediction improves
+// ME quality across consecutive frame pairs with consistent motion.
+func TestTemporalMVPrediction(t *testing.T) {
+	w, h := 320, 240
+	shift := 10
+
+	// Create 3 frames with consistent 10px horizontal motion
+	f0 := makeGradientFrame(w, h)
+	f1 := makeTranslatedFrame(f0, shift, 0)
+	f2 := makeTranslatedFrame(f1, shift, 0)
+
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+
+	// First pair: no temporal history
+	hme.estimate(f0, f1, mvf, 32)
+
+	// Second pair: should benefit from temporal prediction
+	hme.estimate(f1, f2, mvf, 32)
+
+	// The temporal predictor from f0→f1 (MV≈10) should help f1→f2 converge.
+	// Interior blocks should find MV ≈ (10, 0) in half-pel units.
+	sp := mvf.subPel
+	shiftHP := shift * sp
+	for row := 2; row < mvf.rows-2; row++ {
+		for col := 2; col < mvf.cols-2; col++ {
+			idx := row*mvf.cols + col
+			diff := int(mvf.fwdX[idx]) - shiftHP
+			if diff < 0 {
+				diff = -diff
+			}
+			require.LessOrEqual(t, diff, 2*sp,
+				"temporal prediction should help find MV at (%d,%d): got %d, expected ~%d",
+				col, row, mvf.fwdX[idx], shiftHP)
+		}
+	}
+}
+
+// TestTemporalMV_SceneChange verifies temporal prediction doesn't cause
+// problems when motion changes abruptly (e.g., scene cut within clip).
+func TestTemporalMV_SceneChange(t *testing.T) {
+	w, h := 320, 240
+
+	f0 := makeGradientFrame(w, h)
+	f1 := makeTranslatedFrame(f0, 20, 0) // frame pair 1: rightward motion
+
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+
+	// Build temporal history with rightward motion
+	hme.estimate(f0, f1, mvf, 32)
+
+	// Second pair: completely different content (upward motion)
+	f2 := makeCheckerGradientFrame(w, h)
+	f3 := makeTranslatedFrame(f2, 0, 5) // vertical motion
+
+	hme.estimate(f2, f3, mvf, 32)
+
+	// Should still work — temporal prediction is just one candidate among
+	// parent seed and neighbor predictors. Should not crash or produce
+	// wildly wrong results.
+	sp := int(mvf.subPel)
+	if sp < 1 {
+		sp = 1
+	}
+	for row := 3; row < mvf.rows-3; row++ {
+		for col := 3; col < mvf.cols-3; col++ {
+			idx := row*mvf.cols + col
+			diffY := int(mvf.fwdY[idx]) - 5*sp
+			if diffY < 0 {
+				diffY = -diffY
+			}
+			// Tolerance is wider since content changed completely
+			require.LessOrEqual(t, diffY, 6*sp,
+				"scene change: fwdY at (%d,%d) = %d, expected ~%d",
+				col, row, mvf.fwdY[idx], 5*sp)
+		}
+	}
+}
+
+// TestHalfPelRefinement verifies that half-pel refinement produces MVs in
+// half-pel units and that subPel is set to 2.
+func TestHalfPelRefinement(t *testing.T) {
+	w, h := 320, 240
+	shift := 8
+
+	prev := makeGradientFrame(w, h)
+	curr := makeTranslatedFrame(prev, shift, 0)
+
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+	hme.estimate(prev, curr, mvf, 32)
+
+	// After hierarchical ME with half-pel, subPel should be 2
+	require.Equal(t, 2, mvf.subPel, "subPel should be 2 after half-pel refinement")
+
+	// Interior MVs should be close to shift*2 in half-pel units (= shift in pixels)
+	for row := 2; row < mvf.rows-2; row++ {
+		for col := 2; col < mvf.cols-2; col++ {
+			idx := row*mvf.cols + col
+			// In half-pel units, an 8px motion = 16 half-pels
+			expectedHP := shift * 2
+			diff := int(mvf.fwdX[idx]) - expectedHP
+			if diff < 0 {
+				diff = -diff
+			}
+			// Allow ±1 half-pel tolerance (±0.5 pixels)
+			require.LessOrEqual(t, diff, 1,
+				"half-pel fwdX at (%d,%d): got %d, expected ~%d (= %dpx)",
+				col, row, mvf.fwdX[idx], expectedHP, shift)
+		}
+	}
+}
+
+// TestHalfPelWarp verifies that the fast warp produces correct output with
+// half-pel MVs (subPel=2).
+func TestHalfPelWarp(t *testing.T) {
+	w, h := 320, 240
+	bs := 16
+
+	f0 := makeGradientFrame(w, h)
+	f1 := makeShiftedFrame(w, h, 8, 0)
+
+	mvf := newMotionVectorField(w, h, bs)
+	n := mvf.cols * mvf.rows
+	// Set half-pel MVs: 8px = 16 half-pels
+	mvf.subPel = 2
+	for i := 0; i < n; i++ {
+		mvf.fwdX[i] = 16 // 8px in half-pel units
+		mvf.fwdY[i] = 0
+		mvf.bwdX[i] = -16
+		mvf.bwdY[i] = 0
+	}
+
+	frameSize := w * h * 3 / 2
+
+	// Run both reference and fast warp
+	refDst := make([]byte, frameSize)
+	mcfiInterpolateSmooth(refDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+
+	fastDst := make([]byte, frameSize)
+	mcfiInterpolateFast(fastDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+
+	// Fast should match reference within ±1 LSB
+	maxDiff := 0
+	for i := 0; i < frameSize; i++ {
+		diff := int(fastDst[i]) - int(refDst[i])
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff > maxDiff {
+			maxDiff = diff
+		}
+	}
+	require.LessOrEqual(t, maxDiff, 1,
+		"half-pel warp: max diff should be <= 1 LSB, got %d", maxDiff)
+}
+
+func BenchmarkHierarchicalME_1080p(b *testing.B) {
+	w, h := 1920, 1080
+	shift := 8
+
+	prev := makeGradientFrame(w, h)
+	curr := makeShiftedFrame(w, h, shift, 0)
+	mvf := newMotionVectorField(w, h, 16)
+	hme := newHierarchicalME()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		hme.estimate(prev, curr, mvf, 32)
+	}
 }
 
 func BenchmarkDiamondSearch_1080p(b *testing.B) {

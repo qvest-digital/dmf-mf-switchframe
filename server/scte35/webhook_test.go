@@ -23,7 +23,7 @@ func TestWebhook_Dispatch(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		json.NewDecoder(r.Body).Decode(&received)
+		_ = json.NewDecoder(r.Body).Decode(&received)
 		close(done)
 	}))
 	defer srv.Close()

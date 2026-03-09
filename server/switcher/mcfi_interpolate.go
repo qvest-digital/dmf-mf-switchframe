@@ -29,6 +29,9 @@ type MCFIState struct {
 	// Reusable scratch buffers
 	blendOut    []byte
 	fallbackBuf []byte
+
+	// Hierarchical ME state (reused across frame pairs)
+	hme *hierarchicalME
 }
 
 // NewMCFIState creates a new MCFI interpolation state.
@@ -96,17 +99,20 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 				s.mvf = newMotionVectorField(width, height, frcMEBlockSize)
 			}
 
-			// Run full ME pipeline: diamond search → median filter → consistency check
-			estimateMotionField(pfA, pfB, s.mvf, frcMESearchRange)
+			// Run full ME pipeline: hierarchical diamond search → median filter → consistency check
+			if s.hme == nil {
+				s.hme = newHierarchicalME()
+			}
+			s.hme.estimate(pfA, pfB, s.mvf, frcMESearchRange)
 			medianFilterMVField(s.mvf)
 			checkConsistency(s.mvf, 4)
 			s.mvValid = true
 		}
 	}
 
-	// Motion-compensated interpolation with smooth per-pixel warping
+	// Motion-compensated interpolation with per-pixel warping (fixed-point, row-parallel)
 	if s.mvValid && !s.sceneChange {
-		mcfiInterpolateSmooth(s.blendOut, frameA, frameB, width, height, s.mvf, alpha)
+		mcfiInterpolateFast(s.blendOut, frameA, frameB, width, height, s.mvf, alpha)
 		return s.blendOut[:frameSize]
 	}
 
@@ -175,7 +181,11 @@ func smoothWarpBlendPlane(
 ) {
 	bs := mvf.blockSize
 	invAlpha := 1.0 - alpha
-	mvScale := 1.0 / float64(chromaScale)
+	subPel := mvf.subPel
+	if subPel < 1 {
+		subPel = 1
+	}
+	mvScale := 1.0 / float64(chromaScale*subPel)
 	halfBS := float64(bs) * 0.5
 
 	for py := 0; py < planeH; py++ {
