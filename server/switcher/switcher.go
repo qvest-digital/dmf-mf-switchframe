@@ -247,6 +247,11 @@ type Switcher struct {
 	// buffer lifecycle. Sized at pipeline format resolution.
 	framePool *FramePool
 
+	// Structured video processing pipeline. Built via BuildPipeline(),
+	// called per-frame from videoProcessingLoop. Atomic pointer for
+	// future hot-swap reconfiguration (Phase 4).
+	pipeline atomic.Pointer[Pipeline]
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -526,6 +531,46 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 	if s.pipeCodecs != nil {
 		s.pipeCodecs.onVideoInfoChange = cb
 	}
+}
+
+// buildNodeList constructs the ordered list of pipeline nodes.
+// Node order: upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
+func (s *Switcher) buildNodeList() []PipelineNode {
+	return []PipelineNode{
+		&upstreamKeyNode{bridge: s.keyBridge},
+		&compositorNode{compositor: s.compositorRef},
+		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
+		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
+		&encodeNode{
+			codecs:         s.pipeCodecs,
+			forceIDR:       &s.forceNextIDR,
+			promMetrics:    s.promMetrics,
+			encodeNilCount: &s.pipeEncodeNil,
+			onEncoded:      s.broadcastOwnedToProgram,
+		},
+	}
+}
+
+// BuildPipeline constructs and stores the video processing pipeline.
+// Must be called after SetCompositor, SetKeyBridge, and SetPipelineCodecs.
+// Safe to call multiple times — each call rebuilds from scratch.
+func (s *Switcher) BuildPipeline() error {
+	s.mu.RLock()
+	hasPipeCodecs := s.pipeCodecs != nil
+	s.mu.RUnlock()
+
+	if !hasPipeCodecs {
+		return nil // no encoder configured yet
+	}
+
+	format := s.PipelineFormat()
+	nodes := s.buildNodeList()
+	p := &Pipeline{}
+	if err := p.Build(format, s.framePool, nodes); err != nil {
+		return err
+	}
+	s.pipeline.Store(p)
+	return nil
 }
 
 // SetFrameSync enables or disables the freerun frame synchronizer. When
