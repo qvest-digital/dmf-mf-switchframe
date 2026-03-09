@@ -875,42 +875,44 @@ func TestDecode_SegmentationDescriptor_EmptyUPID(t *testing.T) {
 }
 
 func TestDecode_SOM_FullHeader(t *testing.T) {
-	// Build a full SOM with the 11-byte header before the operation data.
+	// Build a full SOM with the 12-byte header before the operation data.
 	//
 	// Wire format after OpID:
 	//   messageSize(2) + result(2) + result_extension(2) +
-	//   protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) = 11 bytes header
+	//   protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) +
+	//   SCTE35_protocol_version(1) = 12 bytes header
 	//   + splice_request_data(14) = 14 bytes operation data
-	// Total payload after OpID = 25 bytes.
-	// messageSize should equal 25 (the total length of the payload after OpID).
+	// Total payload after OpID = 26 bytes.
+	// messageSize (spec convention) = payloadSize - 2 = 24.
 
 	spliceData := make([]byte, 14)
-	spliceData[0] = SpliceStartImmediate       // splice_insert_type
-	binary.BigEndian.PutUint32(spliceData[1:5], 77)   // splice_event_id
-	binary.BigEndian.PutUint16(spliceData[5:7], 200)   // unique_program_id
-	binary.BigEndian.PutUint16(spliceData[7:9], 3000)  // pre_roll_time
-	binary.BigEndian.PutUint16(spliceData[9:11], 600)  // break_duration
-	spliceData[11] = 3  // avail_num
-	spliceData[12] = 4  // avails_expected
-	spliceData[13] = 1  // auto_return_flag
+	spliceData[0] = SpliceStartImmediate                // splice_insert_type
+	binary.BigEndian.PutUint32(spliceData[1:5], 77)     // splice_event_id
+	binary.BigEndian.PutUint16(spliceData[5:7], 200)    // unique_program_id
+	binary.BigEndian.PutUint16(spliceData[7:9], 3000)   // pre_roll_time
+	binary.BigEndian.PutUint16(spliceData[9:11], 600)   // break_duration
+	spliceData[11] = 3                                   // avail_num
+	spliceData[12] = 4                                   // avails_expected
+	spliceData[13] = 1                                   // auto_return_flag
 
-	headerSize := 11
-	payloadSize := headerSize + len(spliceData) // 11 + 14 = 25
+	headerSize := 12
+	payloadSize := headerSize + len(spliceData) // 12 + 14 = 26
 
-	// Full message: OpID(2) + payload(25)
+	// Full message: OpID(2) + payload(26)
 	buf := make([]byte, 2+payloadSize)
 	binary.BigEndian.PutUint16(buf[0:2], OpSpliceRequest) // OpID
 
 	// Payload starts at buf[2]:
 	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize)) // messageSize = 25
-	binary.BigEndian.PutUint16(payload[2:4], 0)                   // result (ignored)
-	binary.BigEndian.PutUint16(payload[4:6], 0)                   // result_extension (ignored)
-	payload[6] = 2                                                 // protocol_version
-	payload[7] = 10                                                // AS_index
-	payload[8] = 5                                                 // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 4000)                // DPI_PID_index
-	copy(payload[11:], spliceData)
+	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2)) // messageSize = 24 (spec: excludes self)
+	binary.BigEndian.PutUint16(payload[2:4], 0)                     // result (ignored)
+	binary.BigEndian.PutUint16(payload[4:6], 0)                     // result_extension (ignored)
+	payload[6] = 2                                                   // protocol_version
+	payload[7] = 10                                                  // AS_index
+	payload[8] = 5                                                   // message_number
+	binary.BigEndian.PutUint16(payload[9:11], 4000)                  // DPI_PID_index
+	payload[11] = 0                                                  // SCTE35_protocol_version
+	copy(payload[12:], spliceData)
 
 	msg, err := Decode(buf)
 	if err != nil {
@@ -1042,32 +1044,24 @@ func TestDecode_SOM_AbbreviatedVANC_Regression(t *testing.T) {
 }
 
 func TestDecode_SOM_FullHeader_SpliceNull(t *testing.T) {
-	// Full SOM with splice_null (0 bytes of operation data).
-	// Header only: messageSize(2) + result(2) + result_ext(2) +
-	//   protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) = 11 bytes
-	// messageSize = 11 (no operation data after header).
-	//
-	// Note: len(payload) == 11 < 13 minimum for full SOM detection,
-	// so this should fall through to abbreviated parsing.
-	// splice_null has no data, so abbreviated parsing (0 bytes) still works.
-	// But let's also test a full SOM with operation data that's small enough.
-
-	// Actually, test a full SOM with time_signal (2 bytes of operation data).
-	// payload = 11 (header) + 2 (time_signal) = 13 bytes
-	payloadSize := 13
+	// Full SOM with time_signal (2 bytes of operation data).
+	// 12-byte header + 2 bytes time_signal = 14 bytes payload.
+	// messageSize (spec convention) = 14 - 2 = 12.
+	payloadSize := 14
 
 	buf := make([]byte, 2+payloadSize)
 	binary.BigEndian.PutUint16(buf[0:2], OpTimeSignalRequest) // OpID
 
 	payload := buf[2:]
-	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize)) // messageSize = 13
-	binary.BigEndian.PutUint16(payload[2:4], 0)                   // result
-	binary.BigEndian.PutUint16(payload[4:6], 0)                   // result_extension
-	payload[6] = 1                                                 // protocol_version
-	payload[7] = 3                                                 // AS_index
-	payload[8] = 9                                                 // message_number
-	binary.BigEndian.PutUint16(payload[9:11], 500)                 // DPI_PID_index
-	binary.BigEndian.PutUint16(payload[11:13], 7000)               // pre_roll_time
+	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2)) // messageSize = 12 (spec: excludes self)
+	binary.BigEndian.PutUint16(payload[2:4], 0)                     // result
+	binary.BigEndian.PutUint16(payload[4:6], 0)                     // result_extension
+	payload[6] = 1                                                   // protocol_version
+	payload[7] = 3                                                   // AS_index
+	payload[8] = 9                                                   // message_number
+	binary.BigEndian.PutUint16(payload[9:11], 500)                   // DPI_PID_index
+	payload[11] = 0                                                  // SCTE35_protocol_version
+	binary.BigEndian.PutUint16(payload[12:14], 7000)                 // pre_roll_time
 
 	msg, err := Decode(buf)
 	if err != nil {
@@ -1211,5 +1205,50 @@ func TestDecode_SegmentationDescriptor_ComponentLevel(t *testing.T) {
 	}
 	if sd.SegExpected != 3 {
 		t.Errorf("SegExpected = %d, want 3", sd.SegExpected)
+	}
+}
+
+func TestDecode_SOM_LegacyMessageSize(t *testing.T) {
+	// Legacy convention: messageSize = len(payload) (total length, not spec-compliant).
+	// The decoder should accept this as a fallback.
+	spliceData := make([]byte, 14)
+	spliceData[0] = SpliceStartImmediate
+	binary.BigEndian.PutUint32(spliceData[1:5], 88)
+
+	headerSize := 12
+	payloadSize := headerSize + len(spliceData) // 26
+
+	buf := make([]byte, 2+payloadSize)
+	binary.BigEndian.PutUint16(buf[0:2], OpSpliceRequest)
+
+	payload := buf[2:]
+	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize)) // legacy: messageSize = total length
+	binary.BigEndian.PutUint16(payload[2:4], 0)
+	binary.BigEndian.PutUint16(payload[4:6], 0)
+	payload[6] = 1  // protocol_version
+	payload[7] = 5  // AS_index
+	payload[8] = 2  // message_number
+	binary.BigEndian.PutUint16(payload[9:11], 1000)
+	payload[11] = 0 // SCTE35_protocol_version
+	copy(payload[12:], spliceData)
+
+	msg, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if msg.ProtocolVersion != 1 {
+		t.Errorf("ProtocolVersion = %d, want 1", msg.ProtocolVersion)
+	}
+	if msg.ASIndex != 5 {
+		t.Errorf("ASIndex = %d, want 5", msg.ASIndex)
+	}
+
+	srd, ok := msg.Operations[0].Data.(*SpliceRequestData)
+	if !ok {
+		t.Fatalf("expected *SpliceRequestData, got %T", msg.Operations[0].Data)
+	}
+	if srd.SpliceEventID != 88 {
+		t.Errorf("SpliceEventID = %d, want 88", srd.SpliceEventID)
 	}
 }

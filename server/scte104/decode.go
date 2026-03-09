@@ -41,29 +41,33 @@ func Decode(data []byte) (*Message, error) {
 // decodeSOM decodes a Single Operation Message. The opID has already been
 // consumed; payload contains either:
 //   - Abbreviated (VANC) format: the operation data bytes directly.
-//   - Full SOM format: an 11-byte header followed by the operation data.
+//   - Full SOM format: a 12-byte header followed by the operation data.
 //
-// Full SOM header (11 bytes):
+// Full SOM header (12 bytes):
 //
 //	messageSize(2) + result(2) + result_extension(2) +
-//	protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2)
+//	protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) +
+//	SCTE35_protocol_version(1)
 //
-// Detection heuristic: if len(payload) >= 13 (11 header + at least 2 bytes of
-// operation data) and the first 2 bytes (messageSize) equal len(payload), treat
-// as full SOM with the header. Otherwise treat as abbreviated.
+// Detection heuristic: if len(payload) >= 14 (12 header + at least 2 bytes of
+// operation data) and the first 2 bytes (messageSize) match either convention
+// (spec: len-2, or legacy: len), treat as full SOM with the header.
 func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 	// Check if this is a full SOM with header fields.
-	if len(payload) >= 13 { // 11 header + minimum 2 bytes for operation data
+	if len(payload) >= 14 { // 12 header + minimum 2 bytes for operation data
 		messageSize := int(binary.BigEndian.Uint16(payload[0:2]))
-		if messageSize == len(payload) {
-			// Full SOM format: parse the 11-byte header, then operation data.
+		// Dual-convention heuristic: spec says messageSize counts bytes after
+		// the messageSize field itself. Legacy implementations set it to total length.
+		if messageSize == len(payload)-2 || messageSize == len(payload) {
+			// Full SOM format: parse the 12-byte header, then operation data.
 			msg := &Message{
 				ProtocolVersion: payload[6],
 				ASIndex:         payload[7],
 				MessageNumber:   payload[8],
 				DPIPIDIndex:     binary.BigEndian.Uint16(payload[9:11]),
 			}
-			op, err := decodeOperationData(opID, payload[11:])
+			// payload[11] = SCTE35_protocol_version (skip)
+			op, err := decodeOperationData(opID, payload[12:])
 			if err != nil {
 				return nil, fmt.Errorf("scte104 SOM: %w", err)
 			}
