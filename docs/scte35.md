@@ -57,6 +57,7 @@ v1.7.1 for binary encoding and decoding.
 - [UI Panel](#ui-panel)
 - [State Broadcast](#state-broadcast)
 - [Architecture](#architecture)
+- [SCTE-104 Integration](#scte-104-integration)
 - [Known Limitations](#known-limitations)
 
 ---
@@ -115,6 +116,7 @@ curl -X POST https://localhost:8080/api/scte35/return/1
 | `--scte35-heartbeat` | `5000` | Interval in milliseconds between splice_null heartbeat messages. Set to `0` to disable. |
 | `--scte35-verify` | `false` | Verify encoded SCTE-35 sections by round-trip decode (encode then decode back). Catches encoding errors at the cost of extra CPU. |
 | `--scte35-webhook` | `""` | URL for async HTTP POST event notifications. Empty string disables webhooks. |
+| `--scte104` | `false` | Enable bidirectional SCTE-104 translation on MXL data flows. Requires `--scte35` and MXL build (`-tags "cgo mxl"`). |
 
 ---
 
@@ -718,6 +720,7 @@ via the MoQ control track alongside all other switcher state.
 ```typescript
 interface SCTE35State {
   enabled: boolean;
+  scte104Enabled?: boolean;
   activeEvents: Record<number, {
     eventId: number;
     commandType: string;
@@ -760,6 +763,13 @@ server/scte35/
   rules.go           Signal conditioning rules engine (first-match-wins, AND/OR)
   rules_store.go     File-based rules CRUD with preset templates
   webhook.go         Async webhook dispatcher
+
+server/scte104/
+  message.go         SCTE-104 message types (Message, Operation, SpliceRequestData, etc.)
+  decode.go          Binary decoder for SOM and MOM (Multiple Operation Message)
+  encode.go          Binary encoder (always outputs MOM format)
+  st291.go           SMPTE ST 291 VANC wrapper: ParseST291() / WrapST291() (DID=0x41, SDID=0x07)
+  translate.go       Bidirectional translation: ToCueMessage() and FromCueMessage()
 
 server/control/
   api_scte35.go      17 REST API handlers (+ 1 cancel-segmentation = 18 total)
@@ -811,6 +821,83 @@ callback may call `State()` which acquires the same mutex).
 The heartbeat goroutine runs independently and only acquires the lock
 indirectly through `sendHeartbeat()` (which does not acquire the lock --
 it only calls `muxerSink`).
+
+---
+
+## SCTE-104 Integration
+
+SCTE-104 is the automation-to-splicer protocol used by broadcast
+automation systems (typically over TCP/serial or embedded in SDI ancillary
+data). SwitchFrame supports bidirectional translation between SCTE-104
+messages carried on MXL data flows and SCTE-35 cues in the MPEG-TS output.
+
+### Prerequisites
+
+- `--scte35` must be enabled
+- `--scte104` flag must be set
+- Built with MXL support (`-tags "cgo mxl"`)
+- MXL source spec must include a data flow UUID: `videoUUID:audioUUID:dataUUID`
+
+### Inbound Path (MXL → SCTE-35)
+
+```
+MXL data grain (ancillary data from SDI VANC)
+  → scte104.ParseST291(data)       // strip ST 291 wrapper, validate DID=0x41 SDID=0x07
+  → scte104.Decode(payload)         // parse SOM or MOM binary → *scte104.Message
+  → scte104.ToCueMessage(msg)       // translate to *scte35.CueMessage (Source="scte104")
+  → scte35.Injector.InjectCue()     // inject into MPEG-TS output (rules engine applies)
+```
+
+### Outbound Path (SCTE-35 → MXL)
+
+```
+scte35.Injector SCTE104Sink callback (fires on every injection)
+  → scte104.FromCueMessage(cue)     // translate *scte35.CueMessage → *scte104.Message
+  → scte104.Encode(msg)             // serialize to SCTE-104 binary (always MOM format)
+  → scte104.WrapST291(data)         // wrap in ST 291 VANC packet (DID=0x41, SDID=0x07)
+  → mxl.Writer.WriteDataGrain()     // write to MXL shared memory
+```
+
+### Translation Rules
+
+**SCTE-104 → SCTE-35 (inbound):**
+
+| SCTE-104 Operation | SCTE-35 Command |
+|---------------------|-----------------|
+| splice_request (0x0101), start normal/immediate | splice_insert, isOut=true |
+| splice_request, end normal/immediate | splice_insert, isOut=false |
+| splice_request, cancel | splice_insert with cancel indicator |
+| splice_null (0x0102) | splice_null |
+| time_signal_request (0x0104) | time_signal |
+| segmentation_descriptor_request (0x010B) | time_signal with segmentation descriptor |
+
+**SCTE-35 → SCTE-104 (outbound):**
+
+| SCTE-35 Command | SCTE-104 Operation |
+|-----------------|---------------------|
+| splice_null | splice_null |
+| splice_insert, isOut=true | splice_request, start immediate |
+| splice_insert, isOut=false | splice_request, end immediate |
+| splice_insert, cancel | splice_request, cancel |
+| time_signal | time_signal_request + segmentation_descriptor_request per descriptor |
+
+### Example
+
+```bash
+./bin/switchframe \
+  --scte35 \
+  --scte104 \
+  --mxl-sources "VIDEO_UUID:AUDIO_UUID:DATA_UUID" \
+  --mxl-output program
+```
+
+### Limitations
+
+- Fragmented ST 291 packets (`continued_pkt` or `following_pkt` set) are
+  not supported and return `ErrST291Fragmented`. Maximum single-packet
+  payload is 253 bytes.
+- `SegNum`/`SegExpected` from SCTE-104 segmentation descriptors are not
+  carried through to SCTE-35 (lost in Comcast/scte35-go translation).
 
 ---
 

@@ -281,9 +281,9 @@ sequenceDiagram
     SW->>MX: OnProgramChange(new)
 ```
 
-**Lock sequence:** `s.mu` Lock → release → `g.mu` Lock → release → `pc.mu` Lock → release (×2) → `s.mu` Lock → release → `m.mu` Lock → release
+**Lock sequence:** `s.mu` Lock → release → `m.mu` Lock → release
 
-**Key insight:** Each lock is acquired and released independently — no nesting. The Cut operation is sub-millisecond for the state change; the GOP replay runs without holding `s.mu`.
+**Key insight:** Each lock is acquired and released independently — no nesting. The Cut operation is sub-millisecond. Since all sources are continuously decoded (always-decode architecture), cuts are instant — no GOP replay or IDR gating needed.
 
 ---
 
@@ -369,13 +369,12 @@ These rules prevent deadlocks. Every lock acquisition follows this hierarchy —
 ```mermaid
 graph TD
     A["1. Switcher s.mu"] --> B["2. TransitionEngine e.mu"]
-    A --> C["3. gopCache g.mu"]
-    A --> D["4. pipelineCodecs pc.mu"]
-    A --> E["5. AudioMixer m.mu"]
-    A --> F["6. FrameSynchronizer fs.mu"]
-    F --> G["7. syncSource ss.mu"]
-    H["8. OutputManager m.mu"] --> I["9. OutputDestination dest.mu"]
-    H --> J["10. TSMuxer mux.mu"]
+    A --> D["3. pipelineCodecs pc.mu"]
+    A --> E["4. AudioMixer m.mu"]
+    A --> F["5. FrameSynchronizer fs.mu"]
+    F --> G["6. syncSource ss.mu"]
+    H["7. OutputManager m.mu"] --> I["8. OutputDestination dest.mu"]
+    H --> J["9. TSMuxer mux.mu"]
 
     style A fill:#ff9999
     style F fill:#99ccff
@@ -385,14 +384,14 @@ graph TD
 ### Rules
 
 1. **Switcher (`s.mu`) is always released** before acquiring any other lock.
-   - `handleVideoFrame`: RLock → release → then call gopCache, transEngine, etc.
-   - `Cut`: Lock → release → then call gopCache, pipelineCodecs, mixer.
+   - `handleRawVideoFrame`: RLock → release → then call transEngine, enqueue work, etc.
+   - `Cut`: Lock → release → then call mixer.
 
 2. **FrameSynchronizer uses two-level locking:** `fs.mu` (global) then `ss.mu` (per-source). Never reversed.
 
 3. **OutputManager releases before viewer/muxer stop:** `stopMuxerLocked` releases `m.mu` before calling `viewer.Stop()` to avoid deadlock with the muxer output callback.
 
-4. **No cross-subsystem lock nesting:** The video pipeline (Switcher → gopCache → pipelineCodecs) and the audio pipeline (Switcher → Mixer) never hold each other's locks simultaneously.
+4. **No cross-subsystem lock nesting:** The video pipeline (Switcher → pipelineCodecs) and the audio pipeline (Switcher → Mixer) never hold each other's locks simultaneously.
 
 5. **Transition engine releases before callbacks:** `IngestFrame` releases `e.mu` before calling `Output`, preventing the engine lock from blocking the switcher's broadcast path.
 
@@ -433,17 +432,19 @@ handleVideoFrame:
 
 ### Pattern 3: Prepare Outside, Commit Under Lock
 
-The GOP cache does expensive work (AnnexB conversion, deep copy) without holding its lock, then acquires the lock only for the final map write:
+pipelineCodecs holds `pc.mu` only for config checks and state updates, not for the actual encode (5–30ms):
 
 ```
-RecordFrame:
-    annexB := AVC1ToAnnexBInto(...)      ← no lock (expensive)
-    orig := deepCopy(frame)               ← no lock (expensive)
+encode():
+    pc.mu.Lock()                          ← brief: check encoder init
+    encoder := pc.encoder
+    pc.mu.Unlock()                        ← release before expensive work
 
-    g.mu.Lock()                           ← brief
-    if !active { putGOPBuf(annexB); return }
-    g.caches[key] = append(cache, cf)
-    g.mu.Unlock()
+    encoded, isKF := encoder.Encode()     ← no lock (expensive: 5-30ms)
+
+    pc.mu.Lock()                          ← brief: state update
+    pc.groupID = ...
+    pc.mu.Unlock()
 ```
 
 ### Pattern 4: Atomic Pointer Swap
@@ -483,10 +484,9 @@ At 30 fps, each frame has a 33ms budget. Here's the lock overhead per frame:
 | Lock | Acquisitions/frame | Hold time | Total |
 |------|--------------------|-----------|-------|
 | `s.mu` RLock | 2–3 | ~100ns each | ~300ns |
-| `g.mu` Lock | 1 | ~200ns | ~200ns |
-| `pc.mu` Lock | 2 (decode + encode) | ~100ns each | ~200ns |
+| `pc.mu` Lock | 2 (encode only) | ~100ns each | ~200ns |
 | `mux.mu` Lock | 1 | ~500ns | ~500ns |
-| **Total lock overhead** | | | **~1.2µs** |
+| **Total lock overhead** | | | **~1.0µs** |
 | **Frame budget** | | | **33,000µs** |
 | **Lock overhead %** | | | **0.004%** |
 

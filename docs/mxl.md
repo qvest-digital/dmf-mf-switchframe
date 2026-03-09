@@ -14,6 +14,7 @@ This enables SwitchFrame to interoperate with MXL-compatible broadcast tools —
 - [Flow Discovery](#flow-discovery)
 - [Source Configuration](#source-configuration)
 - [Program Output](#program-output)
+- [Data Flows (Ancillary/Metadata)](#data-flows-ancillarymetadata)
 - [How It Works](#how-it-works)
 - [Flow Definition Files](#flow-definition-files)
 - [Troubleshooting](#troubleshooting)
@@ -29,6 +30,7 @@ This enables SwitchFrame to interoperate with MXL-compatible broadcast tools —
 |---------|-------------|
 | **V210 video** | Uncompressed 10-bit YCbCr 4:2:2 in shared-memory ring buffers |
 | **Float32 audio** | De-interleaved floating-point PCM in continuous ring buffers |
+| **Ancillary data** | Discrete data flows for VANC/metadata (e.g., SCTE-104 automation messages) |
 | **NMOS IS-04 discovery** | Flow definitions as JSON files in the domain directory |
 | **Zero-copy transport** | POSIX shared memory, no network or codec overhead |
 
@@ -229,17 +231,22 @@ Discovery scans the domain directory for `*.mxl-flow` subdirectories, reads each
 
 ### Format
 
-Sources are specified as comma-separated `videoUUID:audioUUID` pairs:
+Sources are specified as comma-separated specs. Each spec can be one of three forms:
 
 ```bash
---mxl-sources "VIDEO_UUID1:AUDIO_UUID1,VIDEO_UUID2:AUDIO_UUID2"
-```
-
-Video-only sources (no audio):
-
-```bash
+# Video only
 --mxl-sources "VIDEO_UUID1,VIDEO_UUID2"
+
+# Video + audio
+--mxl-sources "VIDEO_UUID1:AUDIO_UUID1,VIDEO_UUID2:AUDIO_UUID2"
+
+# Video + audio + ancillary data (for SCTE-104 or other metadata flows)
+--mxl-sources "VIDEO_UUID1:AUDIO_UUID1:DATA_UUID1"
 ```
+
+The `dataUUID` part is optional. When provided, an MXL data (discrete) flow
+is opened for that source and delivered via the `OnDataGrain` callback.
+This is the input path for SCTE-104 ancillary data embedded in SDI VANC.
 
 ### Example
 
@@ -259,6 +266,8 @@ For each MXL source spec:
 4. An MXL video flow reader and audio flow reader are opened
 5. A `mxl.Source` orchestrator starts, fanning out to switcher, mixer, and browser relay
 6. If replay is enabled, the source is added to the replay manager
+
+7. If a data flow UUID is specified (`videoUUID:audioUUID:dataUUID`), an MXL data (discrete) flow reader is opened. Data grains are delivered via `Source.OnDataGrain`. When `--scte104` is enabled, this callback parses ST 291 packets, decodes SCTE-104 messages, and injects them into the SCTE-35 injector.
 
 MXL sources appear in the browser exactly like MoQ sources — with tally indicators, audio level bars, and all standard switching controls.
 
@@ -281,7 +290,47 @@ The flow definition files describe the output format in NMOS IS-04 JSON. They de
 
 - **Video**: The switcher's raw YUV420p program output is converted to V210 and written to MXL at a steady frame rate via a background ticker goroutine
 - **Audio**: The mixer's raw float32 PCM output is de-interleaved and written to MXL at the sample rate with monotonic index enforcement
+- **Data**: When `--scte104` is enabled, SCTE-104 encoded messages are written as data grains on every cue injection (event-driven, not steady-rate)
 - **Coexistence**: MXL output runs alongside MPEG-TS recording and SRT output — all three can be active simultaneously
+
+---
+
+## Data Flows (Ancillary/Metadata)
+
+MXL data flows carry non-video, non-audio payloads such as SMPTE ST 291
+VANC ancillary data. SwitchFrame supports opening a data flow reader per
+source and a data flow writer for program output.
+
+### Source Data Reader
+
+Specify a data flow UUID as the third component of the source spec:
+
+```bash
+--mxl-sources "VIDEO_UUID:AUDIO_UUID:DATA_UUID"
+```
+
+When present, the data flow is opened as a `DiscreteReader`. A `dataLoop`
+goroutine reads `DataGrain` values (raw bytes + monotonic PTS counter)
+and delivers them via `SourceConfig.OnDataGrain(key, data, pts)`.
+
+The data reader follows the same error recovery pattern as video: re-sync
+to ring buffer head on "too late" errors, skip invalid grains, stop after
+50 consecutive errors.
+
+### Program Data Writer
+
+The `Writer` struct exposes `SetDataWriter(dw DiscreteWriter, grainRate)`
+and `WriteDataGrain(data []byte)` for outputting ancillary data to MXL.
+The data writer uses event-driven (not steady-rate) indexing based on
+wall-clock time aligned to the video frame rate domain.
+
+### SCTE-104 via MXL Data Flows
+
+SMPTE ST 291 VANC packets carrying SCTE-104 messages can be received
+from SDI-connected tools and translated to SCTE-35 for MPEG-TS injection.
+Enable with `--scte35 --scte104`. See
+[SCTE-35 docs](scte35.md#scte-104-integration) for the complete data
+flow and translation rules.
 
 ---
 
@@ -295,6 +344,7 @@ The flow definition files describe the output format in NMOS IS-04 JSON. They de
 | **Registration** | `RegisterSource(key, relay)` | `RegisterMXLSource(key)` (nil relay) |
 | **Video delivery** | Relay viewer callback | `IngestRawVideo()` (raw YUV420p) |
 | **Audio delivery** | `IngestFrame()` (AAC, needs decode) | `IngestPCM()` (float32, no decode) |
+| **Data delivery** | N/A | `OnDataGrain` callback (raw bytes per grain) |
 | **Browser monitoring** | Direct relay subscription | Encoded to H.264/AAC, separate relay |
 | **Passthrough optimization** | Available | Not available (raw PCM forces mixing) |
 

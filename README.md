@@ -41,6 +41,7 @@ The server produces the authoritative program output — the browser is a contro
 - Per-source audio delay (0–500ms) for lip-sync correction
 - Signal chain: Trim → EQ → Compressor → Fader → Mix → Master → Limiter → Encode
 - Passthrough optimization: bypasses decode/encode when single source at 0 dB with EQ and compressor bypassed
+- Stinger audio: optional WAV file in stinger zip is additively mixed over program audio during transitions
 - Client-side PFL (pre-fade listen), per-operator, no server involvement
 
 ### Output
@@ -57,8 +58,8 @@ The server produces the authoritative program output — the browser is a contro
 - Per-source GOP-aligned circular buffers (1–300 seconds, configurable via `--replay-buffer-secs`)
 - Mark-in / mark-out with wall-clock precision
 - Variable-speed playback (0.25x–1x) with frame duplication for slow-mo
-- WSOLA time-stretching for pitch-preserved audio at slow speeds
-- Frame blending via pluggable interpolator interface
+- Phase vocoder (FFT STFT) for pitch-preserved audio at slow speeds, with WSOLA fallback
+- Frame interpolation: none (frame duplication), blend (alpha blend), or MCFI (motion-compensated)
 - Loop mode
 - Output routed to dedicated `"replay"` relay
 
@@ -79,6 +80,7 @@ The server produces the authoritative program output — the browser is a contro
 - Webhook notifications for cue lifecycle events
 - PID configurable (default 0x102)
 - SCTE-35 state included in control room state broadcast
+- SCTE-104 bidirectional translation on MXL data flows (`--scte104`, requires `--scte35`)
 
 ### Graphics
 
@@ -98,10 +100,12 @@ The server produces the authoritative program output — the browser is a contro
 
 ### Macros
 
-- 5 action types: cut, preview, transition, wait, set_audio
+- 35 action types across 10 categories (switching, audio, graphics, output, replay, SCTE-35, etc.)
 - Sequential execution with context cancellation
 - File-based JSON storage with atomic writes
 - Keyboard triggers via Ctrl+1–9
+- Execution state broadcast with per-step progress to UI
+- Step validation with errors (block save) and warnings
 
 ### UI
 
@@ -110,7 +114,7 @@ The server produces the authoritative program output — the browser is a contro
 - Keyboard shortcuts for all actions (press `?` for overlay)
 - Responsive: 4 CSS breakpoints (1920/1024/768px), `pointer: coarse` touch targets
 - Audio level bars on multiview tiles, LUFS metering with EBU R128 color coding
-- Tabbed bottom panel: Audio, Graphics, Macros, Keys, Replay, Presets
+- Tabbed bottom panel: Audio, Graphics, Macros, Keys, Replay, Presets, SCTE-35 (7 tabs)
 - Preset save/recall, macro run/edit/delete, upstream key config, replay controls
 - Operator registration, subsystem lock indicators
 
@@ -123,6 +127,7 @@ The server produces the authoritative program output — the browser is a contro
 - V210 (10-bit packed 4:2:2) to YUV420p (8-bit planar 4:2:0) conversion with chroma downsampling
 - MXL sources also encoded to H.264/AAC for browser multiview monitoring
 - Build tag `mxl` — standard builds use stub implementation (no SDK dependency)
+- Optional data (ancillary/metadata) flow per source via 3-part spec `videoUUID:audioUUID:dataUUID`
 - `make mxl-demo` for end-to-end demo with GStreamer test sources
 
 ### Infrastructure
@@ -205,13 +210,17 @@ See [MXL Integration Guide](docs/mxl.md) for full setup details.
 | Run macro | — | `Ctrl+1`–`9` |
 | Transition type: mix | — | `Alt+1` |
 | Transition type: dip | — | `Alt+2` |
-| Switch bottom panel | — | `Ctrl+Shift+1`–`6` |
+| Switch bottom panel | — | `Ctrl+Shift+1`–`7` |
 | Audio faders | Drag fader | — |
 | Toggle mute/AFV | Click button | — |
 | Record | Click **REC** | — |
 | SRT output | Click **SRT** | — |
 | Fullscreen | — | `` ` `` |
 | Keyboard help | — | `?` |
+| Ad break (SCTE-35) | — | `Shift+B` |
+| Return to program | — | `Shift+R` |
+| Hold break | — | `Shift+H` |
+| Extend break | — | `Shift+E` |
 | Simple mode | Add `?mode=simple` to URL | — |
 
 ## Development
@@ -238,7 +247,7 @@ cd ui && npx vitest run             # Frontend unit tests
 cd ui && npx playwright test        # E2E (builds static app, serves on :4173)
 ```
 
-~1469 Go tests, 624 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
+~1933 Go tests, 758 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
 
 Benchmark results are tracked per commit and published at **[zsiec.github.io/switchframe/dev/bench](https://zsiec.github.io/switchframe/dev/bench/)**.
 
@@ -254,19 +263,20 @@ server/                     Go module (github.com/zsiec/switchframe/server)
   control/                  REST API handlers, auth middleware, MoQ state publisher
   codec/                    FFmpeg/OpenH264 bindings, NALU/ADTS helpers, encoder auto-detect
   graphics/                 DSK compositor, chroma/luma keyer, upstream key processor
-  stinger/                  PNG sequence store (zip upload, path traversal prevention, memory limit)
-  macro/                    File-based JSON store, sequential runner
+  stinger/                  PNG sequence + optional WAV audio store (zip upload, path traversal prevention, memory limit)
+  macro/                    File-based JSON store, sequential runner, 35 action types, step validation, execution broadcast
   operator/                 Registration, sessions, role-based locking
-  replay/                   GOP-aligned buffers, clip extraction, variable-speed player, WSOLA
+  replay/                   GOP-aligned buffers, clip extraction, variable-speed player, phase vocoder, WSOLA, MCFI
   preset/                   File-based save/recall
   metrics/                  Prometheus counters, gauges, histograms
   debug/                    Snapshot collector, circular event log
   scte35/                   SCTE-35 ad insertion (injector, encoder, rules engine, webhook)
+  scte104/                  SCTE-104 encode/decode, ST 291 VANC framing, SCTE-104↔SCTE-35 translation
   mxl/                      MXL shared-memory transport (V210 video, float32 audio, NMOS discovery)
   demo/                     Simulated camera sources
   internal/                 Shared types (ControlRoomState, SourceInfo, etc.)
 ui/                         SvelteKit frontend (Svelte 5 + TypeScript)
-  src/components/           32 Svelte 5 components (runes syntax)
+  src/components/           34 Svelte 5 components (runes syntax)
   src/lib/api/              REST client + TypeScript types
   src/lib/state/            Reactive store with MoQ update handler
   src/lib/transport/        WebTransport connection + MoQ media pipeline
@@ -380,7 +390,7 @@ graph TD
 | `--api-token` | auto-generated | Bearer token for API auth (or `SWITCHFRAME_API_TOKEN` env var) |
 | `--frame-sync` | `false` | Enable freerun frame synchronizer |
 | `--replay-buffer-secs` | `60` | Per-source replay buffer in seconds (0 to disable, max 300) |
-| `--mxl-sources` | — | MXL source specs: `videoUUID:audioUUID,...` (or `SWITCHFRAME_MXL_SOURCES` env var) |
+| `--mxl-sources` | — | MXL source specs: `videoUUID`, `videoUUID:audioUUID`, or `videoUUID:audioUUID:dataUUID` (or `SWITCHFRAME_MXL_SOURCES` env var) |
 | `--mxl-output` | — | MXL flow name for program output |
 | `--mxl-output-video-def` | — | Path to output video flow definition JSON |
 | `--mxl-output-audio-def` | — | Path to output audio flow definition JSON |
@@ -400,6 +410,7 @@ graph TD
 | `--scte35-heartbeat` | `5000` | Heartbeat interval in ms (splice_null, 0 to disable) |
 | `--scte35-verify` | `true` | Verify SCTE-35 encoding by round-trip decode |
 | `--scte35-webhook` | — | Webhook URL for SCTE-35 event notifications |
+| `--scte104` | `false` | Enable SCTE-104 on MXL data flows (requires `--scte35`) |
 
 ### Environment Variables
 
@@ -505,6 +516,7 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `POST` | `/api/scte35/return` | Return most recent active event to program |
 | `POST` | `/api/scte35/return/{eventId}` | Return specific event by ID |
 | `POST` | `/api/scte35/cancel/{eventId}` | Cancel scheduled/active event |
+| `POST` | `/api/scte35/cancel-segmentation/{segEventId}` | Cancel segmentation event |
 | `POST` | `/api/scte35/hold/{eventId}` | Hold break (prevent auto-return) |
 | `POST` | `/api/scte35/extend/{eventId}` | Extend break duration |
 | `GET` | `/api/scte35/status` | Injector state (active events, config) |
@@ -524,7 +536,7 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/stinger/list` | List loaded stinger clips |
-| `POST` | `/api/stinger/{name}/upload` | Upload PNG sequence as zip (256MB limit) |
+| `POST` | `/api/stinger/{name}/upload` | Upload PNG sequence as zip with optional audio.wav (256MB limit) |
 | `POST` | `/api/stinger/{name}/cut-point` | Set cut point (0–1) |
 | `DELETE` | `/api/stinger/{name}` | Delete stinger clip |
 
@@ -559,6 +571,8 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `PUT` | `/api/macros/{name}` | Create or update macro |
 | `DELETE` | `/api/macros/{name}` | Delete macro |
 | `POST` | `/api/macros/{name}/run` | Run macro (sequential, cancellable) |
+| `DELETE` | `/api/macros/execution` | Dismiss macro execution state |
+| `POST` | `/api/macros/execution/cancel` | Cancel running macro |
 
 ### Operators
 

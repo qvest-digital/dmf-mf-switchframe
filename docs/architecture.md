@@ -27,10 +27,12 @@ graph TD
     camN["Camera N<br/>(MoQ)"] --> relayN["Per-source Relay"]
     mxl1["MXL Source<br/>(V210 shared mem)"] --> mxlSrc["mxl.Source<br/>V210→YUV420p"]
     mxl2["MXL Source<br/>(float32 audio)"] --> mxlSrc
+    mxl3["MXL Source<br/>(data grain)"] --> mxlSrc
 
     subgraph prism["Prism Distribution Server"]
         mxlSrc -->|"IngestRawVideo<br/>(bypasses sourceViewer)"| hvf
         mxlSrc -->|"IngestPCM"| am
+        mxlSrc -->|"Data grain"| scte104["scte104.Translator<br/>(SCTE-104 ↔ SCTE-35)"]
         mxlSrc -->|"H.264/AAC"| mxlRelay["Browser Relay"]
         relay1 --> sv1["sourceViewer<br/>(+sourceDecoder)"]
         relay2 --> sv2["sourceViewer<br/>(+sourceDecoder)"]
@@ -87,8 +89,11 @@ graph TD
     mux --> aa1["AsyncAdapter"] --> rec["FileRecorder<br/>(.ts files)"]
     mux --> aa2["AsyncAdapter"] --> filt["SCTE-35 Filter<br/>(per-destination)"] --> srt["SRT Destinations"]
 
+    scte104 --> inj
     api["REST API<br/>/api/scte35/*"] --> inj["SCTE-35 Injector<br/>(rules engine)"]
     inj --> mux
+    inj -->|"SCTE-35 → SCTE-104"| scte104out["scte104.Translator<br/>(outbound)"]
+    scte104out --> mxlDataOut["MXL Data Writer<br/>(VANC data grain)"]
 ```
 
 ### Browser Architecture
@@ -483,13 +488,14 @@ flowchart TD
 -- a browser connecting mid-session receives the full current state in
 the first MoQ group.
 
-**Multiple producers.** Five subsystems trigger state broadcasts:
+**Multiple producers.** Six subsystems trigger state broadcasts:
 1. **Switcher** -- cut, preview, transition start/complete, health
 2. **OutputManager** -- recording start/stop, SRT connect/disconnect,
    ring buffer overflow
 3. **Compositor** -- graphics on/off, fade position
 4. **ReplayManager** -- mark-in/out, playback start/stop, progress
 5. **SessionManager** -- operator connect/disconnect, lock acquire/release
+6. **MacroRunner** -- execution start/step progress/complete/error
 
 The `ChannelPublisher` handles channel-full backpressure by dropping the
 oldest message. This is safe because every message is a full snapshot.
@@ -559,6 +565,13 @@ stinger overlay.
 `.`, `..`, paths containing `/` or `\`, and any name where
 `filepath.Base(name) != name`. Zip extraction uses only the base name of
 each entry, ignoring directory components.
+
+**Audio overlay.** Stinger clips can include a WAV audio file alongside
+the PNG sequence. The `stinger/wav.go` parser reads PCM data from the WAV
+file at upload time. During playback, the audio mixer additively overlays
+the stinger's PCM samples onto the program mix via `mixer.SetStingerAudio()`.
+The overlay is position-synchronized with the video transition. Three
+pre-loaded audio stingers are included in `make demo`.
 
 **Memory limit.** The `maxClips` parameter (default 16) caps the number
 of loaded clips. A 1080p 30-frame stinger clip uses approximately 156 MB
@@ -698,9 +711,9 @@ flowchart TD
             decode --> sort["Sort by PTS<br/>(B-frame reorder)"]
             sort --> fps["Estimate source FPS<br/>(from PTS span)"]
             fps --> enc["Create encoder<br/>(bitrate from resolution)"]
-            enc --> dup["Output with frame duplication<br/>(dupCount = ceil(1/speed))"]
-            dup --> wsola["WSOLA time-stretch audio<br/>(pitch-preserved slow-mo)"]
-            wsola --> pace["Pace at source FPS<br/>(time.NewTimer per frame)"]
+            enc --> interp["Frame interpolation<br/>(duplication or MCFI blend)"]
+            interp --> vocoder["Phase vocoder time-stretch audio<br/>(FFT-based, pitch-preserved)<br/>WSOLA fallback"]
+            vocoder --> pace["Pace at source FPS<br/>(time.NewTimer per frame)"]
         end
 
         pace --> relay["Replay Relay<br/>(BroadcastVideo)"]
@@ -730,20 +743,27 @@ on completion. It:
    reordering).
 3. Estimates source FPS from PTS span, clamped to 10-120 fps.
 4. Creates an encoder with resolution-appropriate bitrate (2/4/8 Mbps).
-5. Outputs frames with duplication for slow motion: `dupCount =
-   ceil(1/speed)`. At 0.5x, each frame is emitted twice; at 0.25x, four
-   times.
+5. Outputs frames with interpolation for slow motion. Two modes:
+   - **Duplication** (default): `dupCount = ceil(1/speed)`. At 0.5x, each
+     frame is emitted twice; at 0.25x, four times.
+   - **MCFI** (motion-compensated): Uses motion estimation + warping to
+     synthesize intermediate frames via `MCFIInterpolator`. Produces
+     smoother slow-motion than frame duplication. Uses the same SAD
+     kernels as the FRC engine.
 6. Paces output at the source frame rate using a reusable `time.Timer`.
 
 **Replay relay.** The replay output is published to a dedicated relay
 registered as `server.RegisterStream("replay")`. Browsers subscribe to
 this MoQ stream to display the replay in the preview or program window.
 
-**Audio.** Replay audio uses WSOLA (Waveform Similarity Overlap-Add)
-time-stretching for pitch-preserved slow-motion playback. At 1.0x speed,
-audio passes through unchanged. At slower speeds, the WSOLA processor
-stretches audio to match the frame duplication rate while maintaining
-original pitch. Window size is 1024 samples with a search range of 256.
+**Audio.** Replay audio uses a phase vocoder (FFT-based STFT
+time-stretching) as the primary path for pitch-preserved slow-motion
+playback. The phase vocoder (`replay/phasevocoder.go`) uses overlapping
+Hann-windowed FFT frames with phase accumulation for high-quality
+stretching. WSOLA (Waveform Similarity Overlap-Add) is available as a
+fallback. At 1.0x speed, audio passes through unchanged. At slower
+speeds, the processor stretches audio to match the frame interpolation
+rate while maintaining original pitch.
 
 **Loop support.** When `loop` is true, the player restarts from the
 beginning of the clip after completing playback, continuing until
@@ -825,32 +845,37 @@ existing single-operator deployments work unchanged.
 ### 2.13 Macro System (`macro/`)
 
 The macro system automates sequences of switcher operations. Macros are
-stored on disk and executed sequentially with cancellation support.
+stored on disk and executed sequentially with cancellation support,
+step-by-step progress broadcast, and validation.
 
 ```mermaid
 flowchart TD
-    create["POST /api/macros<br/>{name, steps: [...]}"] --> store["macro.Store<br/>(~/.switchframe/macros.json)"]
+    create["POST /api/macros<br/>{name, steps: [...]}"] --> validate["macro.Validate(steps)<br/>(action + params check)"]
+    validate --> store["macro.Store<br/>(~/.switchframe/macros.json)"]
     store --> persist["Atomic write<br/>(temp file + rename)"]
 
-    trigger["Ctrl+1-9 in browser<br/>or POST /api/macros/{name}/run"] --> runner["macro.Run(ctx, macro, target)"]
+    trigger["Ctrl+1-9 in browser<br/>or POST /api/macros/{name}/run"] --> runner["macro.Run(ctx, macro, target, onProgress)"]
 
     runner --> loop["For each step"]
     loop --> ctxcheck{"ctx.Done()?"}
     ctxcheck -->|Yes| abort["Return ctx.Err()"]
     ctxcheck -->|No| exec["executeStep()"]
+    exec --> progress["onProgress(ExecutionState)<br/>→ state broadcast"]
 
-    exec --> action{"step.Action"}
+    exec --> action{"step.Action<br/>(35 action types)"}
     action -->|cut| cut["target.Cut(source)"]
     action -->|preview| preview["target.SetPreview(source)"]
-    action -->|transition| trans["target.StartTransition(source, type, durationMs)"]
-    action -->|wait| wait["time.After(ms) + ctx.Done select"]
-    action -->|set_audio| audio["target.SetLevel(source, level)"]
+    action -->|transition| trans["target.StartTransition(...)"]
+    action -->|wait| wait["time.After(ms) + ctx.Done"]
+    action -->|set_audio| audio["target.SetLevel(...)"]
+    action -->|"set_eq, set_comp,<br/>ftb, graphics_on,<br/>stinger, replay_*,<br/>scte35_*, ..."| other["35 total actions"]
 
     cut --> loop
     preview --> loop
     trans --> loop
     wait --> loop
     audio --> loop
+    other --> loop
 ```
 
 **File-based storage.** Macros are persisted at
@@ -858,23 +883,35 @@ flowchart TD
 RWMutex for concurrency, atomic temp-file + rename for crash safety.
 
 **MacroTarget interface.** The `MacroTarget` interface abstracts the
-switcher and mixer for testability:
+switcher, mixer, and all subsystems for testability. It provides methods
+for all 35 action types across switching, audio, graphics, transitions,
+replay, and SCTE-35.
 
-```go
-type MacroTarget interface {
-    Cut(ctx context.Context, source string) error
-    SetPreview(ctx context.Context, source string) error
-    StartTransition(ctx context.Context, source string, transType string, durationMs int) error
-    SetLevel(ctx context.Context, source string, level float64) error
-}
-```
+**35 action types** spanning all subsystems:
+- **Switching:** `cut`, `preview`
+- **Transitions:** `transition`, `ftb`
+- **Audio:** `set_audio`, `mute`, `unmute`, `afv_on`, `afv_off`,
+  `set_trim`, `set_eq`, `set_compressor`, `set_master`, `set_delay`
+- **Graphics:** `graphics_on`, `graphics_off`, `graphics_auto_on`,
+  `graphics_auto_off`
+- **Stinger:** `stinger`
+- **Replay:** `replay_mark_in`, `replay_mark_out`, `replay_play`,
+  `replay_stop`
+- **SCTE-35:** `scte35_cue`, `scte35_return`, `scte35_cancel`,
+  `scte35_hold`, `scte35_extend`
+- **Control:** `wait`
+- *(plus additional actions for presets, keying, etc.)*
 
-**Five action types:**
-- `cut` -- switch program to a source
-- `preview` -- set preview source
-- `transition` -- start a mix/dip/wipe transition (default 1000ms)
-- `wait` -- pause for N milliseconds (cancelable via context)
-- `set_audio` -- set audio level for a source channel
+**Validation.** `macro.Validate(steps)` checks each step's action is
+recognized and required parameters are present before persisting.
+Invalid macros are rejected at creation time.
+
+**Execution state broadcast.** The `OnProgress` callback emits
+`ExecutionState` (macro name, current step index, step status,
+error) on every step start/complete/error. This is wired into the
+state broadcast pipeline so browsers see real-time macro progress.
+`POST /api/macros/{name}/dismiss` clears the execution state.
+`POST /api/macros/{name}/cancel` aborts a running macro.
 
 **Sequential execution.** Steps run in order. The `wait` action uses
 `time.After` combined with a `ctx.Done` select, allowing cancellation
@@ -896,9 +933,7 @@ frames (normal, transition, and DSK).
 ```mermaid
 flowchart TD
     subgraph normal["Normal Program Frame"]
-        frame["H.264 AVC1 frame"] --> avc["AVC1 → Annex B<br/>+ prepend SPS/PPS"]
-        avc --> dec["pipeCodecs.decode()<br/>(FFmpeg H.264 → YUV420)"]
-        dec --> pf["ProcessingFrame<br/>(raw YUV + PTS + keyframe flag)"]
+        frame["sourceDecoder<br/>(per-source H.264 → YUV420)"] --> pf["ProcessingFrame<br/>(raw YUV + PTS + keyframe flag)"]
     end
 
     subgraph transition["Transition Frame"]
@@ -921,11 +956,12 @@ This guarantees consistent SPS/PPS parameters in the output stream,
 eliminating browser `VideoDecoder` reconfigurations at transition
 boundaries that would otherwise cause visual glitches.
 
-**Shared codec pool.** The `pipelineCodecs` struct holds one decoder and
-one encoder, lazily initialized on the first keyframe. The encoder's
-bitrate and FPS are derived from rolling statistics of the program
-source's recent frames (exponential moving average). Falls back to
-4 Mbps / 30fps if stats are unavailable.
+**Encoder-only pool.** The `pipelineCodecs` struct holds a single
+encoder (decoders moved to per-source `sourceDecoder` goroutines),
+lazily initialized on the first frame. The encoder's bitrate and FPS
+are derived from rolling statistics of the program source's recent
+frames (exponential moving average). Falls back to 4 Mbps / 30fps if
+stats are unavailable.
 
 **Async processing.** Video frames are enqueued into a buffered
 `videoProcCh` channel and processed in a dedicated
@@ -1110,9 +1146,13 @@ layout-independent shortcuts:
 | `F2` | Toggle DSK graphics |
 | `Alt+1` | Set transition type to mix |
 | `Alt+2` | Set transition type to dip |
+| `Shift+B` | SCTE-35: Start ad break |
+| `Shift+R` | SCTE-35: Return from break |
+| `Shift+H` | SCTE-35: Hold break |
+| `Shift+E` | SCTE-35: Extend break |
 | `` ` `` | Toggle fullscreen |
 | `?` | Toggle keyboard overlay |
-| `Ctrl+Shift+1`–`6` | Switch bottom panel tab (Audio/Graphics/Macros/Keys/Replay/Presets) |
+| `Ctrl+Shift+1`–`7` | Switch bottom panel tab (Audio/Graphics/Macros/Keys/Replay/Presets/SCTE-35) |
 
 
 ## 4. Data Flow Diagrams
@@ -1124,30 +1164,27 @@ flowchart TD
     pub["Camera publishes MoQ stream"] --> relay["Prism: distribution.Relay for 'cam1'"]
     relay -->|AddViewer| sv["sourceViewer{sourceKey: 'cam1'}"]
     relay -->|AddViewer| rv["replayViewer → circular buffer"]
-    sv -->|SendVideo| fs["FrameSynchronizer (optional)"]
-    fs --> delay["DelayBuffer (0-500ms)"]
-    delay -->|"handleVideoFrame('cam1', frame)"| hvf["Switcher.handleVideoFrame()"]
+    sv -->|SendVideo| sd["sourceDecoder<br/>H.264 → YUV420"]
+    sd --> fs["FrameSynchronizer (optional)"]
+    sd -.-> delay["delayBuffer (0-500ms)"]
+    fs --> hvf["Switcher.handleRawVideoFrame()"]
+    delay --> hvf
 
     hvf --> health["health.recordFrame('cam1')"]
     hvf --> stats["updateFrameStats (EMA bitrate/fps)"]
-    hvf --> gop["gopCache.RecordFrame('cam1', frame)"]
-    hvf --> fill["fillIngestor → keyBridge<br/>(decode for upstream keying)"]
+    hvf --> fill["fillIngestor → keyBridge<br/>(raw YUV for upstream keying)"]
 
     hvf --> trans{"Transition active?"}
-    trans -->|Yes| te["TransitionEngine.IngestFrame()<br/>(raw YUV blend → callback)"]
+    trans -->|Yes| te["TransitionEngine.IngestRawFrame()<br/>(raw YUV blend → callback)"]
     trans -->|No| pgm{"Program source?"}
     pgm -->|No| discard["Return (frame discarded)"]
-    pgm -->|Yes| idr{"pendingIDR?"}
-    idr -->|No| bv["enqueueVideoWork(frame)"]
-    idr -->|Yes| kf{"Keyframe?"}
-    kf -->|No| gate["Return (gated)"]
-    kf -->|Yes| clear["Clear pendingIDR"] --> bv
+    pgm -->|Yes| bv["enqueueVideoWork(frame)"]
 
     te -->|"raw YUV callback"| proc["broadcastProcessed()"]
     proc --> keycomp["keyBridge.ProcessYUV() →<br/>compositor.ProcessYUV()"]
     keycomp --> bv
 
-    bv --> pipeline["pipelineCodecs<br/>decode → upstream key → DSK → encode"]
+    bv --> pipeline["pipelineCodecs<br/>upstream key → DSK → encode"]
     pipeline --> broadcast["programRelay.BroadcastVideo(frame)"]
     broadcast --> browsers["MoQ viewers (browsers)"]
     broadcast --> output["OutputViewer (if recording/SRT active)"]
@@ -1169,7 +1206,6 @@ sequenceDiagram
     Note over SW: Lock
     SW->>SW: programSource = "cam2"
     SW->>SW: previewSource = "cam1" (old program)
-    SW->>SW: sources["cam2"].pendingIDR = true
     SW->>SW: seq++
     Note over SW: Unlock
 
@@ -1182,7 +1218,7 @@ sequenceDiagram
     SW->>MoQ: notifyStateChange(snapshot)
     Note over MoQ: enrichState → ChannelPublisher → browsers
 
-    Note over SW: GOP replay warms decoder<br/>replayGOP() + feedDeltaFrames()<br/>→ clear pendingIDR<br/>Frames from "cam2" decode immediately<br/>→ broadcastVideo(frame)<br/>→ browsers get clean IDR start
+    Note over SW: All sources continuously decoded<br/>(always-decode architecture)<br/>Next frame from "cam2" flows through<br/>immediately — no keyframe wait
 ```
 
 ### 4.3 Dissolve Transition
@@ -1199,20 +1235,19 @@ sequenceDiagram
 
     Note over SW: Phase 1: Lock<br/>Validate, StateTransitioning, seq++
 
-    Note over SW: Phase 2: Create + Warm TransitionEngine
+    Note over SW: Phase 2: Create TransitionEngine
     SW->>TE: Start("cam1", "cam2", Mix, 1000)
-    Note over TE: Create decoderA + decoderB (FFmpeg)
-    Note over SW: Warmup: feed GOP cache frames to both decoders<br/>Feed delta frames from warmup window<br/>WarmupComplete()
+    Note over TE: No decoder creation needed<br/>(sources pre-decoded by sourceDecoders)
 
     Note over SW: Phase 3: Lock, publish engine
     SW->>Mixer: OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
 
-    loop Each frame from both sources
-        SW->>TE: IngestFrame("cam1", annexB, pts)
-        Note over TE: decode → latestYUVA (not trigger, no output)
+    loop Each frame from both sources (raw YUV)
+        SW->>TE: IngestRawFrame("cam1", yuv, w, h, pts)
+        Note over TE: latestYUVA (not trigger, no output)
 
-        SW->>TE: IngestFrame("cam2", annexB, pts)
-        Note over TE: decode → latestYUVB (trigger source)
+        SW->>TE: IngestRawFrame("cam2", yuv, w, h, pts)
+        Note over TE: latestYUVB (trigger source)
         Note over TE: pos = smoothstep(elapsed / 1000ms)
         Note over TE: BlendMix(yuvA, yuvB, pos) → raw YUV
         TE->>SW: Output callback(rawYUV, w, h, pts)
@@ -1222,7 +1257,7 @@ sequenceDiagram
     end
 
     Note over TE: pos ≥ 1.0
-    TE->>TE: cleanup() → close decoders (no encoder)
+    TE->>TE: cleanup() (no decoders to close)
     TE->>SW: OnComplete(aborted=false)
 
     Note over SW: Lock<br/>programSource = "cam2"<br/>previewSource = "cam1"<br/>StateIdle, transEngine = nil
@@ -1269,13 +1304,14 @@ alongside the standard MoQ/WebTransport pipeline.
 
 - **V210 video**: Uncompressed 10-bit YCbCr 4:2:2 packed in shared-memory ring buffers
 - **Float32 audio**: De-interleaved floating-point PCM in continuous ring buffers
+- **Data grains**: Ancillary/metadata payloads (e.g., SCTE-104 VANC) via discrete data flows
 - **NMOS IS-04 discovery**: Flow definitions as JSON files in the domain directory
 - **Zero-copy transport**: POSIX shared memory on the same host (no network, no codec)
 
 ### MXL Source Path
 
 ```
-MXL Shared Memory (V210 + float32 PCM)
+MXL Shared Memory (V210 + float32 PCM + data grains)
          │
     [flow.go: cgo bindings]
     DiscreteReader / ContinuousReader
@@ -1283,11 +1319,13 @@ MXL Shared Memory (V210 + float32 PCM)
     [reader.go: Reader goroutines]
     videoLoop (discrete grains, error recovery)
     audioLoop (5ms timeout, ring buffer head start)
+    dataLoop  (discrete grains, SCTE-104 / ancillary)
          │
-    [source.go: Source — triple fan-out]
+    [source.go: Source — quad fan-out]
          │
     ├── OnRawVideo ──→ sw.IngestRawVideo()      (raw YUV420p to switcher)
     ├── OnRawAudio ──→ mixer.IngestPCM()         (float32 PCM to mixer)
+    ├── OnData     ──→ scte104.Translator        (SCTE-104 → SCTE-35)
     └── Encode     ──→ relay.BroadcastVideo()    (H.264/AAC to browsers)
 ```
 
@@ -1321,7 +1359,31 @@ Mixer program output (raw float32 PCM)
     Interleaved → de-interleaved, write at sample rate
          │
     ContinuousWriter.WriteSamples() → MXL shared memory
+
+SCTE-35 events (outbound SCTE-104)
+         │
+    scte104.Translator.OnSCTE35Event()
+         │
+    [scte104/translate.go: SCTE-35 → SCTE-104 conversion]
+    ST 291 VANC framing (DID=0x41, SDID=0x07)
+         │
+    Output.Writer().WriteDataGrain() → MXL shared memory
 ```
+
+### MXL Data Flows
+
+MXL data flows carry ancillary metadata (SCTE-104 messages, closed
+captions, etc.) as discrete data grains. Source configuration uses a
+3-part UUID format: `videoUUID:audioUUID:dataUUID`.
+
+The `scte104/` package provides bidirectional translation:
+- **Inbound**: SCTE-104 data grains from MXL → parsed via ST 291 VANC
+  framing → translated to SCTE-35 splice_insert/time_signal → injected
+  via the SCTE-35 Injector
+- **Outbound**: SCTE-35 events from the Injector → translated to
+  SCTE-104 messages → framed as ST 291 VANC → written as MXL data grains
+
+Enabled via `--scte104` flag (requires `--scte35`).
 
 The writer uses a **steady-rate ticker model** for video: `WriteVideo()`
 stores the latest V210 frame atomically, and a background ticker writes
@@ -1376,11 +1438,11 @@ allocations. Key techniques:
 
 - **Buffer-reuse APIs:** `AVC1ToAnnexBInto(avc1, dst)` and
   `PrependSPSPPSInto(sps, pps, data, dst)` write into caller-provided
-  buffers. The TSMuxer, GOP cache, and confidence monitor maintain
-  persistent buffers that grow once and are reused.
-- **sync.Pool for frame buffers:** AVC1 output buffers, GOP cache
-  buffers, and YUV processing buffers use `sync.Pool` to recycle
-  allocations across frames.
+  buffers. The TSMuxer and confidence monitor maintain persistent
+  buffers that grow once and are reused.
+- **sync.Pool for frame buffers:** AVC1 output buffers and YUV
+  processing buffers use `sync.Pool` to recycle allocations across
+  frames.
 - **Crossfade lookup table:** 1024-entry precomputed cos/sin tables
   replace per-sample `math.Cos`/`math.Sin` calls. The mixer stores a
   reusable `crossfadeBuf` for crossfade output.
@@ -1402,8 +1464,6 @@ allocations. Key techniques:
 - **Cache line padding:** Source viewer atomic counters (`videoSent`,
   `audioSent`, `captionSent`) are separated by `[56]byte` padding to
   prevent false sharing between goroutines on the same cache line.
-- **GOP cache single lock:** `RecordFrame` combines the active-source
-  check and cache write into a single lock acquisition.
 
 ### GC Tuning
 
@@ -1456,22 +1516,16 @@ frames. This reduces audio CPU to near zero during normal operation.
 The mixer recalculates passthrough eligibility on every state change
 (cut, mute toggle, gain change).
 
-### GOP Replay and IDR Gating
+### Always-Decode Architecture
 
-On cuts and transition completions, the switcher replays the new source's
-cached GOP to warm the pipeline decoder, avoiding a keyframe wait. The
-`replayGOP` method feeds GOP frames to a pre-warmed decoder from the pool,
-then pointer-swaps it into the pipeline. `feedDeltaFrames` closes the
-timing window by feeding frames that arrived during replay (~10-35ms).
-
-For transitions, the engine's decoders are warmed with GOP frames before
-publication, and delta frames from the warmup window are fed to maintain
-reference chain continuity. Live frames decode immediately — no keyframe
-gate.
-
-The `pendingIDR` fallback is only used when no GOP replay is available
-(e.g., no cached GOP for the source). In that case, non-keyframes are
-dropped until the first IDR arrives.
+Every source has a dedicated `sourceDecoder` goroutine that continuously
+decodes H.264 to raw YUV420. This eliminates the GOP cache, `pendingIDR`
+flag, `replayGOP`, and `feedDeltaFrames` mechanisms. Cuts are instant —
+the next decoded frame from the new program source flows through
+immediately. Transitions receive pre-decoded YUV from both sources,
+requiring no decoder warmup. The `TransitionEngine.DecoderFactory` is
+optional (nil when both sources provide raw YUV). Enabled via the
+`--decode-all-sources` CLI flag.
 
 ### REST Commands over HTTP/3
 
@@ -1491,12 +1545,12 @@ polling.
 
 ### Transition Engine Lifecycle
 
-Each transition creates a fresh `TransitionEngine` with its own decoders,
-which are destroyed on completion/abort. The engine outputs raw YUV via
-callback -- encoding is handled by the shared `pipelineCodecs` encoder.
-This avoids persistent codec state between transitions (no resource leaks,
-no stale decoder state). Between transitions, program frames still flow
-through the always-on decode→encode pipeline for consistent SPS/PPS.
+Each transition creates a fresh `TransitionEngine` which is destroyed on
+completion/abort. With the always-decode architecture, the engine receives
+pre-decoded YUV from both sources — no per-transition decoders are needed.
+The engine outputs raw YUV via callback — encoding is handled by the
+shared `pipelineCodecs` encoder. Between transitions, program frames
+still flow through the always-on encode pipeline for consistent SPS/PPS.
 
 ### Encoder Auto-Detection
 

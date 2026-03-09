@@ -198,12 +198,19 @@ volumes:
 | `--raw-program-monitor` | `false` | Enable raw YUV program monitor on `"program-raw"` MoQ track |
 | `--raw-monitor-scale <res>` | `""` | Downscale raw monitor output (e.g., `720p`, `480p`, `360p`) |
 | `--replay-buffer-secs <n>` | `60` | Per-source replay buffer duration in seconds (0 to disable, max 300) |
-| `--mxl-sources <specs>` | `""` | MXL source specs: `videoUUID:audioUUID,...` (requires `mxl` build tag) |
+| `--mxl-sources <specs>` | `""` | Comma-separated MXL source specs: `videoUUID`, `videoUUID:audioUUID`, or `videoUUID:audioUUID:dataUUID` (requires `mxl` build tag) |
 | `--mxl-output <name>` | `""` | MXL flow name for program output (empty = disabled) |
 | `--mxl-output-video-def <path>` | `""` | Path to NMOS IS-04 video flow definition JSON for program output |
 | `--mxl-output-audio-def <path>` | `""` | Path to NMOS IS-04 audio flow definition JSON for program output |
 | `--mxl-domain <path>` | `/dev/shm/mxl` | MXL shared memory domain directory path |
 | `--mxl-discover` | `false` | List available MXL flows and exit (diagnostic tool) |
+| `--scte35` | `false` | Enable SCTE-35 splice_insert and time_signal injection into MPEG-TS output |
+| `--scte35-pid` | `258` | SCTE-35 PID in MPEG-TS output (decimal, default 0x102) |
+| `--scte35-preroll` | `4000` | Default pre-roll time in milliseconds for scheduled cues |
+| `--scte35-heartbeat` | `5000` | Heartbeat interval in ms (splice_null, 0 to disable) |
+| `--scte35-verify` | `true` | Verify SCTE-35 encoding by round-trip decode |
+| `--scte35-webhook` | `""` | Webhook URL for async SCTE-35 event notifications |
+| `--scte104` | `false` | Enable SCTE-104 on MXL data flows (requires `--scte35` and MXL build) |
 
 ### Environment Variables
 
@@ -830,6 +837,7 @@ Persistent data is stored as JSON files in `~/.switchframe/`:
 | `presets.json` | Saved switcher presets (program/preview/audio state) |
 | `macros.json` | Macro definitions (sequential action lists) |
 | `operators.json` | Registered operators (name, role, token) |
+| `scte35_rules.json` | SCTE-35 signal conditioning rules and default action |
 
 In Docker (non-root user with no home dir), these paths resolve based on the `switchframe` user. Mount a volume if data needs to persist across container restarts:
 
