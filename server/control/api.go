@@ -206,6 +206,13 @@ func (a *API) SetBroadcastFunc(fn func()) {
 	a.broadcastFn = fn
 }
 
+// MacroState returns the current macro execution state, if any.
+func (a *API) MacroState() *internal.MacroExecutionState {
+	a.macroMu.Lock()
+	defer a.macroMu.Unlock()
+	return a.macroState
+}
+
 // enrichedState returns the current switcher state, enriched with output,
 // graphics, operator, and replay information if an enrich function is set.
 func (a *API) enrichedState() internal.ControlRoomState {
@@ -213,9 +220,6 @@ func (a *API) enrichedState() internal.ControlRoomState {
 	if a.enrichFn != nil {
 		s = a.enrichFn(s)
 	}
-	a.macroMu.Lock()
-	s.Macro = a.macroState
-	a.macroMu.Unlock()
 	return s
 }
 

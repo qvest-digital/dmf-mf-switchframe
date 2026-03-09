@@ -131,6 +131,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	// Macro execution state (running/completed progress).
+	if ms := a.api.MacroState(); ms != nil {
+		state.Macro = ms
+	}
+
 	return state
 }
 
