@@ -43,6 +43,7 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -94,6 +95,7 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
@@ -139,6 +141,7 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
@@ -181,6 +184,7 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -215,6 +219,7 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 			return &failingEncoder{}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -247,6 +252,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -285,6 +291,7 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 			return &failingEncoder{}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -315,6 +322,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -384,6 +392,7 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 			}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -426,6 +435,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 			}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -485,6 +495,7 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -581,6 +592,7 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
@@ -635,4 +647,119 @@ func (e *failingEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, b
 }
 
 func (e *failingEncoder) Close() {}
+
+func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
+	// When the videoProcCh is full and a new frame arrives, the oldest
+	// frame is dropped. Its pool buffer must be released to prevent
+	// exhausting the FramePool under sustained back-pressure.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &slowEncoder{
+				inner: transition.NewMockEncoder(),
+				delay: 100 * time.Millisecond, // slow enough to fill channel
+			}, nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	pool := NewFramePool(4, 4, 4) // small pool to detect leaks
+
+	// Fill the channel completely, then enqueue one more to trigger drop.
+	for i := 0; i < cap(sw.videoProcCh)+1; i++ {
+		pf := &ProcessingFrame{
+			YUV:        pool.Acquire(),
+			Width:      4,
+			Height:     4,
+			PTS:        int64(i * 100),
+			IsKeyframe: i == 0,
+			pool:       pool,
+		}
+		sw.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+	}
+
+	// Let pipeline drain.
+	time.Sleep(50 * time.Millisecond)
+
+	// At least one frame was dropped. Check pool stats — hits > 0 means
+	// the dropped frame's buffer was returned to the pool via ReleaseYUV.
+	hits, _ := pool.Stats()
+	require.Greater(t, hits, uint64(0),
+		"dropped frame's buffer should be returned to pool (hits > 0)")
+}
+
+func TestBuildNodeList_Ordering(t *testing.T) {
+	// The node ordering is architecturally critical:
+	// upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+
+	comp := graphics.NewCompositor()
+	sw.SetCompositor(comp)
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	defer sw.Close()
+
+	nodes := sw.buildNodeList()
+	require.Len(t, nodes, 5)
+	require.Equal(t, "upstream-key", nodes[0].Name())
+	require.Equal(t, "compositor", nodes[1].Name())
+	require.Equal(t, "raw-sink-mxl", nodes[2].Name())
+	require.Equal(t, "raw-sink-monitor", nodes[3].Name())
+	require.Equal(t, "h264-encode", nodes[4].Name())
+}
+
+func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
+	// BuildPipeline with no encoder configured should be a no-op.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	err := sw.BuildPipeline()
+	require.NoError(t, err)
+	require.Nil(t, sw.pipeline.Load(), "pipeline should not be created without pipeCodecs")
+}
+
+func TestPipelineSnapshot_LastError(t *testing.T) {
+	// Verify that Snapshot reports last_error from nodes.
+	codecs := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &failingMockEncoder{}, nil
+		},
+	}
+
+	var forceIDR atomic.Bool
+	n := &encodeNode{
+		codecs:   codecs,
+		forceIDR: &forceIDR,
+	}
+
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 4*4*3/2),
+		Width:  4,
+		Height: 4,
+		PTS:    100,
+	}
+	p.Run(pf)
+
+	snap := p.Snapshot()
+	activeNodes := snap["active_nodes"].([]map[string]any)
+	require.Len(t, activeNodes, 1)
+	require.Equal(t, "h264-encode", activeNodes[0]["name"])
+	require.Contains(t, activeNodes[0], "last_error")
+	require.Contains(t, activeNodes[0]["last_error"], "mock encode error")
+}
 

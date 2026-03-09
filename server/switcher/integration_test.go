@@ -411,6 +411,7 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -463,6 +464,7 @@ func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -526,6 +528,7 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -572,6 +575,7 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)

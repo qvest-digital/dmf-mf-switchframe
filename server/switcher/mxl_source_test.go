@@ -71,6 +71,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -94,7 +95,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 
 	sw.IngestRawVideo("mxl-cam1", pf)
 
-	// The frame should be enqueued and processed through encodeAndBroadcastTransition,
+	// The frame should be enqueued and processed through the pipeline,
 	// ultimately reaching the program relay.
 	require.Eventually(t, func() bool {
 		viewer.mu.Lock()
@@ -248,6 +249,7 @@ func TestIngestRawVideo_KeyingApplied(t *testing.T) {
 	kp := graphics.NewKeyProcessor()
 	bridge := graphics.NewKeyProcessorBridge(kp)
 	sw.SetKeyBridge(bridge)
+	require.NoError(t, sw.BuildPipeline())
 
 	sw.RegisterMXLSource("mxl-cam1")
 	sw.RegisterMXLSource("mxl-cam2")

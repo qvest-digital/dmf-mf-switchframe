@@ -81,6 +81,7 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -150,6 +151,7 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
