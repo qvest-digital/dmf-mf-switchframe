@@ -85,6 +85,7 @@ type RuleEngine struct {
 	mu            sync.RWMutex
 	rules         []Rule
 	defaultAction RuleAction
+	regexCache    sync.Map // pattern string -> *regexp.Regexp
 }
 
 // NewRuleEngine creates a new RuleEngine with default action "pass".
@@ -99,6 +100,7 @@ func (re *RuleEngine) AddRule(r Rule) {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 	re.rules = append(re.rules, r)
+	re.regexCache = sync.Map{}
 }
 
 // SetDefaultAction sets the action returned when no rule matches.
@@ -114,6 +116,7 @@ func (re *RuleEngine) SetRules(rules []Rule) {
 	defer re.mu.Unlock()
 	re.rules = make([]Rule, len(rules))
 	copy(re.rules, rules)
+	re.regexCache = sync.Map{}
 }
 
 // Evaluate checks msg against all rules in order (first-match wins).
@@ -136,7 +139,7 @@ func (re *RuleEngine) Evaluate(msg *CueMessage, destID string) (RuleAction, *Cue
 			continue
 		}
 
-		if matchRule(r, msg) {
+		if re.matchRule(r, msg) {
 			if r.Action == ActionReplace && r.ReplaceWith != nil {
 				modified := applyReplace(msg, r.ReplaceWith)
 				return r.Action, modified
@@ -177,8 +180,21 @@ func applyReplace(msg *CueMessage, params *ReplaceParams) *CueMessage {
 	return &cp
 }
 
+// getCompiledRegex returns a compiled regex from the cache, compiling on miss.
+func (re *RuleEngine) getCompiledRegex(pattern string) (*regexp.Regexp, error) {
+	if cached, ok := re.regexCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp), nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	re.regexCache.Store(pattern, compiled)
+	return compiled, nil
+}
+
 // matchRule checks if all/any conditions in the rule match the message.
-func matchRule(r Rule, msg *CueMessage) bool {
+func (re *RuleEngine) matchRule(r Rule, msg *CueMessage) bool {
 	if len(r.Conditions) == 0 {
 		return false
 	}
@@ -190,7 +206,7 @@ func matchRule(r Rule, msg *CueMessage) bool {
 
 	if logic == LogicOR {
 		for _, c := range r.Conditions {
-			if evaluateCondition(c, msg) {
+			if re.evaluateCondition(c, msg) {
 				return true
 			}
 		}
@@ -199,7 +215,7 @@ func matchRule(r Rule, msg *CueMessage) bool {
 
 	// Default: AND logic — all conditions must match.
 	for _, c := range r.Conditions {
-		if !evaluateCondition(c, msg) {
+		if !re.evaluateCondition(c, msg) {
 			return false
 		}
 	}
@@ -207,7 +223,7 @@ func matchRule(r Rule, msg *CueMessage) bool {
 }
 
 // evaluateCondition evaluates a single condition against a message.
-func evaluateCondition(c RuleCondition, msg *CueMessage) bool {
+func (re *RuleEngine) evaluateCondition(c RuleCondition, msg *CueMessage) bool {
 	fieldVal := extractField(c.Field, msg)
 
 	switch c.Operator {
@@ -228,8 +244,11 @@ func evaluateCondition(c RuleCondition, msg *CueMessage) bool {
 	case "range":
 		return matchRange(fieldVal, c.Value)
 	case "matches":
-		matched, err := regexp.MatchString(c.Value, fieldVal)
-		return err == nil && matched
+		compiled, err := re.getCompiledRegex(c.Value)
+		if err != nil {
+			return false
+		}
+		return compiled.MatchString(fieldVal)
 	default:
 		return false
 	}

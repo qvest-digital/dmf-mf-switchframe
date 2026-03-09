@@ -513,3 +513,40 @@ func TestMatchRange_NegativeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestRuleEngine_RegexCacheReuse(t *testing.T) {
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "regex rule",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "upid", Operator: "matches", Value: `^https://`}},
+		Action:     ActionDelete,
+	})
+
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
+
+	// Evaluate twice — second should use cached regex.
+	action1, _ := re.Evaluate(msg, "")
+	action2, _ := re.Evaluate(msg, "")
+
+	if action1 != ActionDelete {
+		t.Fatalf("first eval: expected delete, got %s", action1)
+	}
+	if action2 != ActionDelete {
+		t.Fatalf("second eval: expected delete, got %s", action2)
+	}
+
+	// Verify cache contains the pattern.
+	_, found := re.regexCache.Load(`^https://`)
+	if !found {
+		t.Error("expected regex pattern to be cached")
+	}
+
+	// SetRules should clear cache.
+	re.SetRules(nil)
+	_, found = re.regexCache.Load(`^https://`)
+	if found {
+		t.Error("expected cache to be cleared after SetRules")
+	}
+}
