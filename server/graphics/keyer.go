@@ -94,7 +94,7 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 		}
 	}
 
-	// Step 3: Spill suppression (remains in Go — modifies the frame in-place).
+	// Step 3: Spill suppression via per-row kernel (assembly on arm64).
 	if spillSuppress > 0 {
 		keyCb := float32(keyColor.Cb)
 		keyCr := float32(keyColor.Cr)
@@ -103,24 +103,10 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 		replaceCb := float32(spillReplaceCb)
 		replaceCr := float32(spillReplaceCr)
 
-		if spillDist > 0 {
-			for i := 0; i < uvSize; i++ {
-				cb := float32(frame[ySize+i])
-				cr := float32(frame[ySize+uvSize+i])
-				dCb := cb - keyCb
-				dCr := cr - keyCr
-				distSq := dCb*dCb + dCr*dCr
-
-				if distSq < spillDistSq {
-					spillAmount := spillSuppress * (1.0 - distSq/spillDistSq)
-					if spillAmount > 0 {
-						newCb := cb + (replaceCb-cb)*spillAmount
-						newCr := cr + (replaceCr-cr)*spillAmount
-						frame[ySize+i] = uint8(clampFloat(newCb, 0, 255))
-						frame[ySize+uvSize+i] = uint8(clampFloat(newCr, 0, 255))
-					}
-				}
-			}
+		if spillDist > 0 && spillDistSq > 0 {
+			invSpillDistSq := 1.0 / spillDistSq
+			spillSuppressChroma(&frame[ySize], &frame[ySize+uvSize],
+				keyCb, keyCr, spillSuppress, invSpillDistSq, replaceCb, replaceCr, uvSize)
 		}
 	}
 

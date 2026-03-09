@@ -19,7 +19,7 @@
 // MLA Vd.4S, Vn.4S, Vm.4S — Vd += Vn * Vm
 #define VMLA_4S(Vd, Vn, Vm) WORD $(0x4EA09400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 // UQXTN Vd.4H, Vn.4S — unsigned saturating narrow uint32→uint16
-#define UQXTN_4H(Vd, Vn) WORD $(0x2EA14800 | ((Vn)<<5) | (Vd))
+#define UQXTN_4H(Vd, Vn) WORD $(0x2E614800 | ((Vn)<<5) | (Vd))
 // UQXTN Vd.8B, Vn.8H — unsigned saturating narrow uint16→uint8
 #define UQXTN_8B(Vd, Vn) WORD $(0x2E214800 | ((Vn)<<5) | (Vd))
 // DUP Vd.4S, Rn — broadcast GP register to all lanes
