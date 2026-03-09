@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -242,6 +243,10 @@ type Switcher struct {
 	// the transition engine outputs raw YUV.
 	pipeCodecs *pipelineCodecs
 
+	// Pre-allocated YUV buffer pool — replaces sync.Pool for deterministic
+	// buffer lifecycle. Sized at pipeline format resolution.
+	framePool *FramePool
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -344,6 +349,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		health:       newHealthMonitor(),
 		videoProcCh:  make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
+		framePool:    NewFramePool(32, defaultFmt.Width, defaultFmt.Height),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -408,6 +414,11 @@ func (s *Switcher) Close() {
 	// Shut down async video processing goroutine.
 	close(s.videoProcCh)
 	<-s.videoProcDone
+	// Release pre-allocated frame pool buffers. Safe after videoProcDone
+	// guarantees no more pipeline work (no concurrent Acquire calls).
+	if s.framePool != nil {
+		s.framePool.Close()
+	}
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -624,6 +635,12 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
+	// Recreate frame pool at new dimensions. Existing sourceDecoders retain
+	// their pointer to the old pool — this is intentional. Old-pool buffers
+	// drain naturally: Release() discards wrong-sized buffers via cap check,
+	// and new frames acquire from the new pool via Switcher.framePool.
+	s.framePool = NewFramePool(32, f.Width, f.Height)
+
 	// Update frame sync tick rate if active
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.SetTickRate(f.FrameDuration())
@@ -785,6 +802,8 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 // the source relay's delivery goroutine from blocking on video processing,
 // which would starve audio delivery.
 func (s *Switcher) videoProcessingLoop() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
 	for work := range s.videoProcCh {
 		if work.yuvFrame != nil {
@@ -823,7 +842,12 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	// Deep-copy YUV before async enqueue: the transition engine's FrameBlender
 	// reuses its output buffer, so the next IngestFrame overwrites it. The
 	// async encoder must operate on its own copy.
-	buf := getYUVBuffer(len(yuv))
+	var buf []byte
+	if s.framePool != nil {
+		buf = s.framePool.Acquire()
+	} else {
+		buf = make([]byte, len(yuv))
+	}
 	copy(buf, yuv)
 
 	pf := &ProcessingFrame{
@@ -831,6 +855,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
 		Codec:   "h264", // only codec supported today
 		GroupID: groupID,
+		pool:    s.framePool,
 	}
 	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
 }
@@ -1471,7 +1496,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool)
 		if sd != nil {
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
@@ -1910,6 +1935,16 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"trans_seam_max_ms":    float64(s.transSeamMaxNano.Load()) / 1e6,
 			"trans_seam_count":     s.transSeamCount.Load(),
 		},
+	}
+
+	if s.framePool != nil {
+		hits, misses := s.framePool.Stats()
+		result["frame_pool"] = map[string]any{
+			"hits":     hits,
+			"misses":   misses,
+			"capacity": s.framePool.cap,
+			"buf_size": s.framePool.bufSize,
+		}
 	}
 
 	// Include transition engine timing when active

@@ -19,6 +19,9 @@ func init() {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(400)
 	}
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(2 << 30) // 2 GB
+	}
 }
 
 // AppConfig holds all configuration parsed from flags and environment.

@@ -21,7 +21,7 @@ func TestSourceDecoderCreation(t *testing.T) {
 		called.Add(1)
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -37,7 +37,7 @@ func TestSourceDecoderFactoryError(t *testing.T) {
 		return nil, fmt.Errorf("no codec")
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 	if sd != nil {
 		sd.Close()
 		t.Fatal("expected nil sourceDecoder when factory fails")
@@ -59,7 +59,7 @@ func TestSourceDecoderSendAndCallback(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send a keyframe (needed to init mock decoder)
@@ -127,7 +127,7 @@ func TestSourceDecoderNewestWinsDrop(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send 5 frames rapidly — channel capacity is 2, so oldest should be dropped
@@ -180,7 +180,7 @@ func TestSourceDecoderCloseStopsGoroutine(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 
 	// Close should return without hanging
 	done := make(chan struct{})
@@ -213,7 +213,7 @@ func TestSourceDecoderDecodeError(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback)
+	sd := newSourceDecoder("cam1", factory, callback, nil)
 	defer sd.Close()
 
 	// Send 3 frames sequentially — first 2 should fail, third should succeed.
@@ -254,7 +254,7 @@ func TestSourceDecoderStats(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {})
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil)
 	defer sd.Close()
 
 	// Send a few frames to build stats
@@ -278,6 +278,72 @@ func TestSourceDecoderStats(t *testing.T) {
 	}
 	// FPS may or may not be computed depending on timing
 	_ = avgFPS
+}
+
+func TestSourceDecoderBufferReuse(t *testing.T) {
+	// Verify the decoder reuses its annexB/prepend buffers across frames
+	// by checking that multiple frames produce correct output without
+	// inter-frame corruption.
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil)
+	defer sd.Close()
+
+	// Send 3 keyframes — each reuses the annexB/prepend buffers.
+	// If buffer reuse corrupts data, the decoder will fail or produce
+	// wrong dimensions.
+	for i := 0; i < 3; i++ {
+		sd.Send(&media.VideoFrame{
+			PTS:        int64((i + 1) * 90000),
+			DTS:        int64((i + 1) * 90000),
+			IsKeyframe: true,
+			WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+			SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+			PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+			Codec:      "h264",
+			GroupID:    uint32(i + 1),
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			mu.Lock()
+			t.Fatalf("timeout: got %d frames, want 3", len(received))
+			mu.Unlock()
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, pf := range received {
+		if pf.Width != 320 || pf.Height != 240 {
+			t.Errorf("frame %d: dimensions = %dx%d, want 320x240", i, pf.Width, pf.Height)
+		}
+		if pf.PTS != int64((i+1)*90000) {
+			t.Errorf("frame %d: PTS = %d, want %d", i, pf.PTS, int64((i+1)*90000))
+		}
+	}
 }
 
 // --- Test helpers ---
