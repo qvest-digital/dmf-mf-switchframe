@@ -312,7 +312,9 @@ func TestInjector_InjectCue_TimeSignal_PopulatesPTS(t *testing.T) {
 	defer inj.Close()
 
 	// Create a time_signal with no SpliceTimePTS set (nil).
+	// Set Timing="" (not "immediate") so PTS auto-assignment triggers.
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
+	msg.Timing = "" // non-immediate: PTS should be auto-assigned
 	if msg.SpliceTimePTS != nil {
 		t.Fatal("expected SpliceTimePTS to be nil before injection")
 	}
@@ -343,6 +345,54 @@ func TestInjector_InjectCue_TimeSignal_PopulatesPTS(t *testing.T) {
 	}
 	if *decoded.SpliceTimePTS != 8100000 {
 		t.Fatalf("expected SpliceTimePTS=8100000, got %d", *decoded.SpliceTimePTS)
+	}
+}
+
+func TestInjector_InjectCue_TimeSignal_ImmediateNoPTS(t *testing.T) {
+	var mu sync.Mutex
+	var captured []byte
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 8100000 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Create a time_signal with Timing="immediate" — PTS should NOT be assigned.
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
+	// NewTimeSignal sets Timing="immediate" by default
+	if msg.Timing != "immediate" {
+		t.Fatalf("expected Timing=immediate from NewTimeSignal, got %q", msg.Timing)
+	}
+
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	if len(data) == 0 {
+		t.Fatal("muxer sink not called")
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode captured data failed: %v", err)
+	}
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal, got %d", decoded.CommandType)
+	}
+	// Immediate time_signal should have time_specified_flag=0 (no PTS).
+	if decoded.SpliceTimePTS != nil {
+		t.Fatalf("expected SpliceTimePTS=nil for immediate time_signal, got %d", *decoded.SpliceTimePTS)
 	}
 }
 

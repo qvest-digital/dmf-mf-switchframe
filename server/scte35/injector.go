@@ -258,8 +258,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		msg.EventID = inj.eventIDCounter.Add(1) - 1
 	}
 
-	// Populate PTS for time_signal if not already set.
-	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil {
+	// Populate PTS for time_signal if not already set and not explicitly immediate.
+	// Timing="immediate" means time_specified_flag=0 (no PTS), per SCTE-35 spec.
+	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil && msg.Timing != "immediate" {
 		currentPTS := inj.ptsFn()
 		msg.SpliceTimePTS = &currentPTS
 	}
