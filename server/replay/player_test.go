@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1093,4 +1094,104 @@ func TestReplayPlayer_LoopDoesNotResetPTS(t *testing.T) {
 			"PTS not monotonic at frame %d: %d <= %d (loop boundary PTS reset?)",
 			i, outputFrames[i].PTS, outputFrames[i-1].PTS)
 	}
+}
+
+func TestReplayPlayer_RawVideoOutput(t *testing.T) {
+	clip := buildTestClip(1, 5) // 1 GOP, 5 frames
+	type rawFrame struct {
+		w, h int
+		pts  int64
+	}
+	var rawFrames []rawFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		InitialPTS:     0,
+		DecoderFactory: mockDecoderFactory,
+		// No EncoderFactory or Output — raw-only mode.
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+			mu.Lock()
+			defer mu.Unlock()
+			rawFrames = append(rawFrames, rawFrame{w: w, h: h, pts: pts})
+		},
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, rawFrames, 5, "should receive one raw frame per clip frame at 1.0x")
+	for _, f := range rawFrames {
+		require.True(t, f.w > 0)
+		require.True(t, f.h > 0)
+	}
+	// PTS should be monotonically increasing.
+	for i := 1; i < len(rawFrames); i++ {
+		require.Greater(t, rawFrames[i].pts, rawFrames[i-1].pts)
+	}
+}
+
+func TestReplayPlayer_RawVideoOutput_SlowMotion(t *testing.T) {
+	clip := buildTestClip(1, 4) // 1 GOP, 4 frames
+	var rawCount int64
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          0.5, // 2x duplication
+		Loop:           false,
+		InitialPTS:     0,
+		DecoderFactory: mockDecoderFactory,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+			atomic.AddInt64(&rawCount, 1)
+		},
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	p.Wait()
+
+	require.Equal(t, int64(8), atomic.LoadInt64(&rawCount),
+		"should receive 8 raw frames (4 clip frames x 2 dups at 0.5x)")
+}
+
+func TestReplayPlayer_RawAndEncodedOutput(t *testing.T) {
+	clip := buildTestClip(1, 3) // 1 GOP, 3 frames
+	var rawCount, encodedCount int64
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		InitialPTS:     0,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+			atomic.AddInt64(&rawCount, 1)
+		},
+		Output: func(frame *media.VideoFrame) {
+			atomic.AddInt64(&encodedCount, 1)
+		},
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	p.Wait()
+
+	// Both paths should receive the same number of frames.
+	require.Equal(t, int64(3), atomic.LoadInt64(&rawCount))
+	require.Equal(t, int64(3), atomic.LoadInt64(&encodedCount))
 }

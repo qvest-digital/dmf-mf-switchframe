@@ -31,6 +31,14 @@ type PlayerConfig struct {
 	OnDone         func()
 	OnReady        func()                                   // Called when first GOP decoded and encoder created.
 	OnVideoInfo    func(sps, pps []byte, width, height int) // Called once on first encoded keyframe.
+
+	// RawVideoOutput sends decoded YUV directly to the switcher pipeline.
+	// Called for every output frame (including slow-mo duplicates/interpolations).
+	RawVideoOutput func(yuv []byte, w, h int, pts int64)
+
+	// RawMonitorOutput sends raw YUV to a monitoring relay (e.g. "replay-raw").
+	// Optional — only set when raw program monitor is enabled.
+	RawMonitorOutput func(yuv []byte, w, h int, pts int64)
 }
 
 // decodedFrame is a decoded YUV frame with original PTS for display ordering.
@@ -128,24 +136,28 @@ func (p *replayPlayer) run(ctx context.Context) {
 		return
 	}
 
+	// Signal that decoding is ready and playback is about to begin.
+	if p.config.OnReady != nil {
+		p.config.OnReady()
+	}
+
 	// Estimate source FPS from all clip frames' PTS values.
 	sourceFPS := estimateFPSFromClip(clip)
 	ptsPerFrame := int64(90000 / sourceFPS)
 
-	// Create encoder from first decoded frame dimensions.
+	// Create encoder (optional — only needed when H.264 Output callback is set).
 	w, h := allDecoded[0][0].width, allDecoded[0][0].height
-	bitrate := estimateBitrate(w, h)
-	fpsNum, fpsDen := fpsToRational(sourceFPS)
-	encoder, err := p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
-	if err != nil {
-		slog.Error("replay player: encoder creation failed", "err", err)
-		return
-	}
-	defer encoder.Close()
-
-	// Signal that decoding is ready and playback is about to begin.
-	if p.config.OnReady != nil {
-		p.config.OnReady()
+	var encoder transition.VideoEncoder
+	if p.config.EncoderFactory != nil && p.config.Output != nil {
+		bitrate := estimateBitrate(w, h)
+		fpsNum, fpsDen := fpsToRational(sourceFPS)
+		var err error
+		encoder, err = p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
+		if err != nil {
+			slog.Error("replay player: encoder creation failed", "err", err)
+			return
+		}
+		defer encoder.Close()
 	}
 
 	// Count total frames for progress tracking.
@@ -241,60 +253,14 @@ func (p *replayPlayer) outputGOP(
 				// If no next frame or dimension mismatch, fall back to duplication (yuvToEncode stays as df.yuv).
 			}
 
-			encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, *outputPTS, forceIDR)
-			if encErr != nil {
-				slog.Error("replay player: encode failed", "err", encErr)
-				return true
-			}
-			// Multi-threaded encoders may return nil during pipeline warmup (EAGAIN).
-			if encoded == nil {
-				continue
+			// Primary output: raw YUV to switcher pipeline.
+			if p.config.RawVideoOutput != nil {
+				p.config.RawVideoOutput(yuvToEncode, df.width, df.height, *outputPTS)
 			}
 
-			// Convert Annex B encoder output to AVC1 for relay.
-			avc1 := codec.AnnexBToAVC1(encoded)
-			if len(avc1) == 0 {
-				avc1 = encoded // Fallback if already AVC1
-			}
-
-			// Derive codec string from encoder's SPS on keyframes,
-			// and fire OnVideoInfo callback once with SPS/PPS.
-			var spsNALU, ppsNALU []byte
-			if isKeyframe {
-				for _, nalu := range codec.ExtractNALUs(avc1) {
-					if len(nalu) == 0 {
-						continue
-					}
-					switch nalu[0] & 0x1F {
-					case 7:
-						spsNALU = nalu
-						*codecStr = codec.ParseSPSCodecString(nalu)
-					case 8:
-						ppsNALU = nalu
-					}
-				}
-				if !p.videoInfoSent && p.config.OnVideoInfo != nil && spsNALU != nil && ppsNALU != nil {
-					p.videoInfoSent = true
-					p.config.OnVideoInfo(spsNALU, ppsNALU, df.width, df.height)
-				}
-			}
-
-			// Only start a new MoQ group on the very first keyframe.
-			// Keeping all replay frames in a single group ensures they
-			// travel on one QUIC stream with guaranteed in-order delivery.
-			// Multiple groups cause inter-stream reordering at the browser.
-			if isKeyframe && *groupID == 0 {
-				*groupID++
-			}
-
-			frame := &media.VideoFrame{
-				PTS:        *outputPTS,
-				IsKeyframe: isKeyframe,
-				WireData:   avc1,
-				Codec:      *codecStr,
-				GroupID:    *groupID,
-				SPS:        spsNALU,
-				PPS:        ppsNALU,
+			// Raw monitoring output (e.g. "replay-raw" relay).
+			if p.config.RawMonitorOutput != nil {
+				p.config.RawMonitorOutput(yuvToEncode, df.width, df.height, *outputPTS)
 			}
 
 			// Pace BEFORE output: wait until the deadline, then emit
@@ -311,7 +277,60 @@ func (p *replayPlayer) outputGOP(
 				}
 			}
 
-			p.config.Output(frame)
+			// H.264 monitoring output (optional — only when encoder is available).
+			if encoder != nil {
+				encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, *outputPTS, forceIDR)
+				if encErr != nil {
+					slog.Error("replay player: encode failed", "err", encErr)
+					return true
+				}
+				// Multi-threaded encoders may return nil during pipeline warmup (EAGAIN).
+				if encoded != nil {
+					// Convert Annex B encoder output to AVC1 for relay.
+					avc1 := codec.AnnexBToAVC1(encoded)
+					if len(avc1) == 0 {
+						avc1 = encoded // Fallback if already AVC1
+					}
+
+					// Derive codec string from encoder's SPS on keyframes,
+					// and fire OnVideoInfo callback once with SPS/PPS.
+					var spsNALU, ppsNALU []byte
+					if isKeyframe {
+						for _, nalu := range codec.ExtractNALUs(avc1) {
+							if len(nalu) == 0 {
+								continue
+							}
+							switch nalu[0] & 0x1F {
+							case 7:
+								spsNALU = nalu
+								*codecStr = codec.ParseSPSCodecString(nalu)
+							case 8:
+								ppsNALU = nalu
+							}
+						}
+						if !p.videoInfoSent && p.config.OnVideoInfo != nil && spsNALU != nil && ppsNALU != nil {
+							p.videoInfoSent = true
+							p.config.OnVideoInfo(spsNALU, ppsNALU, df.width, df.height)
+						}
+					}
+
+					// Only start a new MoQ group on the very first keyframe.
+					if isKeyframe && *groupID == 0 {
+						*groupID++
+					}
+
+					frame := &media.VideoFrame{
+						PTS:        *outputPTS,
+						IsKeyframe: isKeyframe,
+						WireData:   avc1,
+						Codec:      *codecStr,
+						GroupID:    *groupID,
+						SPS:        spsNALU,
+						PPS:        ppsNALU,
+					}
+					p.config.Output(frame)
+				}
+			}
 
 			// Emit audio frames whose source PTS falls within this video
 			// frame's source PTS range. Uses source PTS (not wall time)
