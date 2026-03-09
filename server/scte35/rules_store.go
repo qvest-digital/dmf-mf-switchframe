@@ -116,11 +116,15 @@ func (s *RulesStore) Update(id string, rule Rule) error {
 
 	for i := range s.rules {
 		if s.rules[i].ID == id {
+			old := s.rules[i]
 			rule.ID = id
 			s.rules[i] = rule
 			s.syncEngine()
 
 			if err := s.save(); err != nil {
+				// Roll back on save failure.
+				s.rules[i] = old
+				s.syncEngine()
 				return fmt.Errorf("save rules: %w", err)
 			}
 			return nil
@@ -137,10 +141,15 @@ func (s *RulesStore) Delete(id string) error {
 
 	for i, r := range s.rules {
 		if r.ID == id {
+			old := make([]Rule, len(s.rules))
+			copy(old, s.rules)
 			s.rules = append(s.rules[:i], s.rules[i+1:]...)
 			s.syncEngine()
 
 			if err := s.save(); err != nil {
+				// Roll back on save failure.
+				s.rules = old
+				s.syncEngine()
 				return fmt.Errorf("save rules: %w", err)
 			}
 			return nil
@@ -166,8 +175,13 @@ func (s *RulesStore) Reorder(ids []string) error {
 		byID[r.ID] = r
 	}
 
+	seen := make(map[string]bool, len(ids))
 	reordered := make([]Rule, 0, len(ids))
 	for _, id := range ids {
+		if seen[id] {
+			return fmt.Errorf("scte35: duplicate ID %q in reorder", id)
+		}
+		seen[id] = true
 		r, ok := byID[id]
 		if !ok {
 			return fmt.Errorf("scte35: rule %q not found during reorder", id)

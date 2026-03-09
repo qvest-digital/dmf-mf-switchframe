@@ -113,7 +113,6 @@
 			isOut: true,
 			durationMs: getEffectiveDuration(),
 			autoReturn,
-			timing: preRollMs > 0 ? 'scheduled' : 'immediate',
 			preRollMs: preRollMs > 0 ? preRollMs : undefined,
 		};
 		apiCall(scte35Cue(req), 'SCTE-35 cue');
@@ -152,7 +151,6 @@
 			isOut: true,
 			durationMs,
 			autoReturn,
-			timing: advancedTiming,
 			preRollMs: advancedTiming === 'scheduled' ? parseInt(advancedPreRollMs) || 2000 : undefined,
 		};
 
@@ -314,44 +312,50 @@
 		{#if advancedTab === 'time_signal'}
 			<div class="adv-fields">
 				<div class="field-row">
-					<label class="field-label">Segmentation:</label>
+					<label class="field-label">Segmentation:
 					<select class="field-select" bind:value={segmentationType}>
 						{#each segmentationTypes as st}
 							<option value={st.value}>{st.label}</option>
 						{/each}
 					</select>
+					</label>
 				</div>
 				<div class="field-row">
-					<label class="field-label">UPID Type:</label>
+					<label class="field-label">UPID Type:
 					<select class="field-select" bind:value={upidType}>
 						{#each upidTypes as ut}
 							<option value={ut.value}>{ut.label}</option>
 						{/each}
 					</select>
+					</label>
 				</div>
 				<div class="field-row">
-					<label class="field-label">UPID:</label>
+					<label class="field-label">UPID:
 					<input type="text" class="field-input" bind:value={upidText} placeholder="e.g. ABCD0001000H" />
+					</label>
 				</div>
 			</div>
 		{/if}
 
 		<div class="adv-fields">
 			<div class="field-row">
-				<label class="field-label">Duration (s):</label>
+				<label class="field-label">Duration (s):
 				<input type="text" class="field-input field-narrow" bind:value={advancedDurationSec} placeholder="30" />
+				</label>
 			</div>
 			<div class="field-row">
-				<label class="field-label">Timing:</label>
+				<label class="field-label">Timing:
 				<select class="field-select field-narrow" bind:value={advancedTiming}>
 					<option value="immediate">Immediate</option>
 					<option value="scheduled">Scheduled</option>
 				</select>
+				</label>
 			</div>
 			{#if advancedTiming === 'scheduled'}
 				<div class="field-row">
-					<label class="field-label">Pre-roll (ms):</label>
+					<label class="field-label">Pre-roll (ms):
 					<input type="text" class="field-input field-narrow" bind:value={advancedPreRollMs} placeholder="2000" />
+					</label>
 				</div>
 			{/if}
 		</div>

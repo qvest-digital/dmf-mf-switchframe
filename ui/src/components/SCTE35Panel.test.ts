@@ -224,7 +224,6 @@ describe('SCTE35Panel', () => {
 			isOut: true,
 			durationMs: 30000,
 			autoReturn: true,
-			timing: 'immediate',
 		}));
 	});
 
@@ -529,8 +528,8 @@ describe('SCTE35Panel', () => {
 		const labels = Array.from(container.querySelectorAll('.field-label')).map(
 			el => el.textContent?.trim()
 		);
-		expect(labels).toContain('Duration (s):');
-		expect(labels).toContain('Timing:');
+		expect(labels.some(l => l?.startsWith('Duration (s):'))).toBe(true);
+		expect(labels.some(l => l?.startsWith('Timing:'))).toBe(true);
 	});
 
 	// --- Zone 3: Event Log ---

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, scte35UpdateConfig } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule } from './switch-api';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest } from './types';
 
@@ -494,7 +494,6 @@ describe('SCTE-35 API', () => {
 			isOut: true,
 			durationMs: 30000,
 			autoReturn: true,
-			timing: 'immediate',
 		};
 		await scte35Cue(req);
 		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
@@ -699,19 +698,4 @@ describe('SCTE-35 API', () => {
 		});
 	});
 
-	it('scte35UpdateConfig sends PUT with body', async () => {
-		const config = { defaultPreRollMs: 4000, pid: 501 };
-		const mockFetch = vi.fn().mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
-		});
-		vi.stubGlobal('fetch', mockFetch);
-
-		await scte35UpdateConfig(config);
-		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/config', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(config),
-		});
-	});
 });

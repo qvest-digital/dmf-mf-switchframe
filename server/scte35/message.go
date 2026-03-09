@@ -48,13 +48,13 @@ type CueMessage struct {
 
 // SegmentationDescriptor carries segmentation metadata for time_signal commands.
 type SegmentationDescriptor struct {
-	SegmentationType    uint8
-	SegEventID          uint32
-	DurationTicks       *uint64
-	UPIDType            uint8
-	UPID                []byte
-	SubSegmentNum       uint8
-	SubSegmentsExpected uint8
+	SegmentationType    uint8   `json:"segmentationType"`
+	SegEventID          uint32  `json:"segEventId"`
+	DurationTicks       *uint64 `json:"durationTicks,omitempty"`
+	UPIDType            uint8   `json:"upidType"`
+	UPID                []byte  `json:"upid"`
+	SubSegmentNum       uint8   `json:"subSegmentNum,omitempty"`
+	SubSegmentsExpected uint8   `json:"subSegmentsExpected,omitempty"`
 }
 
 // DeliveryRestrictions carries delivery restriction flags.

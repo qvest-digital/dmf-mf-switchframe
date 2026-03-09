@@ -246,14 +246,11 @@ export interface SCTE35Active {
 export interface SCTE35DescriptorInfo {
 	segEventId: number;
 	segmentationType: number;
-	segmentationTypeName: string;
 	upidType: number;
-	upidTypeName: string;
 	upid: string;
-	durationMs?: number;
+	durationTicks?: number;
 	subSegmentNum?: number;
 	subSegmentsExpected?: number;
-	cancelled?: boolean;
 }
 
 export interface SCTE35Event {
@@ -285,12 +282,9 @@ export interface SCTE35CueRequest {
 	isOut?: boolean;
 	durationMs?: number;
 	autoReturn?: boolean;
-	timing?: 'immediate' | 'scheduled';
 	preRollMs?: number;
+	eventId?: number;
 	descriptors?: SCTE35DescriptorRequest[];
-	availNum?: number;
-	availsExpected?: number;
-	deliveryRestrictions?: DeliveryRestrictions;
 }
 
 export interface SCTE35DescriptorRequest {
@@ -302,20 +296,13 @@ export interface SCTE35DescriptorRequest {
 	subSegmentsExpected?: number;
 }
 
-export interface DeliveryRestrictions {
-	webDeliveryAllowed: boolean;
-	noRegionalBlackout: boolean;
-	archiveAllowed: boolean;
-	deviceRestrictions: number;
-}
-
 export interface SCTE35Rule {
 	id: string;
 	name: string;
 	enabled: boolean;
-	priority: number;
-	conditions: SCTE35RuleCondition[];
-	logic: 'and' | 'or';
+	priority?: number;
+	conditions?: SCTE35RuleCondition[];
+	logic?: 'and' | 'or';
 	action: 'pass' | 'delete' | 'replace';
 	replaceWith?: Record<string, unknown>;
 	destinations?: string[];

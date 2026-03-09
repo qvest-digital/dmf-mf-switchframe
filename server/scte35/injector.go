@@ -55,7 +55,7 @@ type activeEvent struct {
 // ActiveEventState is the serializable snapshot of an active event, used by
 // State() and the control API.
 type ActiveEventState struct {
-	EventID       uint32                   `json:"eventID"`
+	EventID       uint32                   `json:"eventId"`
 	CommandType   string                   `json:"commandType"`
 	IsOut         bool                     `json:"isOut"`
 	DurationMs    *int64                   `json:"durationMs,omitempty"`
@@ -63,7 +63,7 @@ type ActiveEventState struct {
 	RemainingMs   *int64                   `json:"remainingMs,omitempty"`
 	AutoReturn    bool                     `json:"autoReturn"`
 	Held          bool                     `json:"held"`
-	SpliceTimePTS int64                    `json:"spliceTimePTS"`
+	SpliceTimePTS int64                    `json:"spliceTimePts"`
 	StartedAt     int64                    `json:"startedAt"` // unix ms
 	Descriptors   []SegmentationDescriptor `json:"descriptors,omitempty"`
 }
@@ -72,7 +72,7 @@ type ActiveEventState struct {
 type InjectorState struct {
 	ActiveEvents map[uint32]ActiveEventState `json:"activeEvents"`
 	EventLog     []EventLogEntry             `json:"eventLog"`
-	HeartbeatOK  bool                        `json:"heartbeatOK"`
+	HeartbeatOK  bool                        `json:"heartbeatOk"`
 	Enabled      bool                        `json:"enabled"`
 }
 
@@ -206,9 +206,9 @@ func (inj *Injector) sendHeartbeat() {
 // Returns the event ID used and any error.
 func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
 
 	if inj.closed.Load() {
+		inj.mu.Unlock()
 		return 0, fmt.Errorf("injector is closed")
 	}
 
@@ -220,6 +220,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// Encode the message.
 	data, err := msg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
+		inj.mu.Unlock()
 		return 0, fmt.Errorf("encode cue: %w", err)
 	}
 
@@ -264,12 +265,17 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	}
 	inj.logEventLocked(msg.EventID, msg.CommandType, msg.IsOut, durMs, msg.AutoReturn, "injected")
 
-	// Fire state change callback.
-	if inj.onStateChange != nil {
-		inj.onStateChange()
+	eventID := msg.EventID
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	// Fire state change callback outside the lock to avoid deadlock
+	// (callback may call State() which also acquires mu).
+	if cb != nil {
+		cb()
 	}
 
-	return msg.EventID, nil
+	return eventID, nil
 }
 
 // ScheduleCue sets the splice time PTS based on current PTS + preRollMs,
@@ -286,17 +292,23 @@ func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, erro
 // If eventID is 0, the most recent active event is used.
 func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
+
+	if inj.closed.Load() {
+		inj.mu.Unlock()
+		return fmt.Errorf("injector is closed")
+	}
 
 	if eventID == 0 {
 		eventID = inj.mostRecentActiveIDLocked()
 		if eventID == 0 {
+			inj.mu.Unlock()
 			return fmt.Errorf("no active events")
 		}
 	}
 
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
+		inj.mu.Unlock()
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
@@ -309,6 +321,7 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	cueIn := NewSpliceInsert(eventID, 0, false, false)
 	data, err := cueIn.Encode(inj.config.VerifyEncoding)
 	if err != nil {
+		inj.mu.Unlock()
 		return fmt.Errorf("encode cue-in: %w", err)
 	}
 	inj.muxerSink(data)
@@ -319,9 +332,11 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	// Log.
 	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "returned")
 
-	// Fire state change callback.
-	if inj.onStateChange != nil {
-		inj.onStateChange()
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 
 	return nil
@@ -331,10 +346,10 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 // removing it from active tracking.
 func (inj *Injector) CancelEvent(eventID uint32) error {
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
 
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
+		inj.mu.Unlock()
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
@@ -347,6 +362,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	cancelMsg := NewSpliceInsert(eventID, 0, false, false)
 	data, err := cancelMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
+		inj.mu.Unlock()
 		return fmt.Errorf("encode cancel: %w", err)
 	}
 	inj.muxerSink(data)
@@ -357,9 +373,11 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	// Log.
 	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled")
 
-	// Fire state change callback.
-	if inj.onStateChange != nil {
-		inj.onStateChange()
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 
 	return nil
@@ -368,10 +386,10 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 // HoldBreak prevents auto-return from firing for the given event.
 func (inj *Injector) HoldBreak(eventID uint32) error {
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
 
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
+		inj.mu.Unlock()
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
@@ -386,9 +404,11 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 	// Log.
 	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, nil, ae.AutoReturn, "held")
 
-	// Fire state change callback.
-	if inj.onStateChange != nil {
-		inj.onStateChange()
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 
 	return nil
@@ -398,10 +418,10 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 // auto-return timer.
 func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
 
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
+		inj.mu.Unlock()
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
@@ -429,6 +449,7 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	updateMsg := NewSpliceInsert(eventID, newDur, true, ae.AutoReturn)
 	data, err := updateMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
+		inj.mu.Unlock()
 		return fmt.Errorf("encode extend: %w", err)
 	}
 	inj.muxerSink(data)
@@ -437,9 +458,11 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	durMs := newDurationMs
 	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, &durMs, ae.AutoReturn, "extended")
 
-	// Fire state change callback.
-	if inj.onStateChange != nil {
-		inj.onStateChange()
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 
 	return nil

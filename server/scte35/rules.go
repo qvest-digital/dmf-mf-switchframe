@@ -158,9 +158,15 @@ func containsString(slice []string, s string) bool {
 	return false
 }
 
-// applyReplace creates a shallow copy of msg with ReplaceParams applied.
+// applyReplace creates a copy of msg with ReplaceParams applied.
 func applyReplace(msg *CueMessage, params *ReplaceParams) *CueMessage {
 	cp := *msg // shallow copy
+	// Deep copy Descriptors to prevent shared mutations.
+	if len(cp.Descriptors) > 0 {
+		descs := make([]SegmentationDescriptor, len(cp.Descriptors))
+		copy(descs, cp.Descriptors)
+		cp.Descriptors = descs
+	}
 	if params.Duration != nil {
 		d := *params.Duration
 		cp.BreakDuration = &d

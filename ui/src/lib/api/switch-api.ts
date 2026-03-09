@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Config, SCTE35Rule, SCTE35RuleCondition } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -430,16 +430,12 @@ export function setFormat(arg: string | { width: number; height: number; fpsNum:
 
 // SCTE-35 operations
 
-export function scte35Cue(req: SCTE35CueRequest): Promise<ControlRoomState> {
+export function scte35Cue(req: SCTE35CueRequest): Promise<{ eventId: number; state: ControlRoomState }> {
 	return post('/api/scte35/cue', req);
 }
 
-export function scte35CueScheduled(req: SCTE35CueRequest & { preRollMs: number }): Promise<ControlRoomState> {
-	return post('/api/scte35/cue/scheduled', req);
-}
-
 export function scte35Return(eventId?: number): Promise<ControlRoomState> {
-	if (eventId) return post(`/api/scte35/return/${eventId}`, {});
+	if (eventId !== undefined) return post(`/api/scte35/return/${eventId}`, {});
 	return post('/api/scte35/return', {});
 }
 
@@ -455,36 +451,16 @@ export function scte35Extend(eventId: number, durationMs: number): Promise<Contr
 	return post(`/api/scte35/extend/${eventId}`, { durationMs });
 }
 
-export function scte35Approve(eventId: number): Promise<ControlRoomState> {
-	return post(`/api/scte35/approve/${eventId}`, {});
-}
-
-export function scte35Modify(eventId: number, modifications: Record<string, unknown>): Promise<ControlRoomState> {
-	return post(`/api/scte35/modify/${eventId}`, modifications);
-}
-
-export function scte35Dismiss(eventId: number): Promise<ControlRoomState> {
-	return post(`/api/scte35/dismiss/${eventId}`, {});
-}
-
 export function scte35Status(): Promise<SCTE35State> {
 	return request('/api/scte35/status');
 }
 
 export function scte35Log(limit?: number, offset?: number): Promise<SCTE35Event[]> {
 	const params = new URLSearchParams();
-	if (limit) params.set('limit', String(limit));
-	if (offset) params.set('offset', String(offset));
+	if (limit !== undefined) params.set('limit', String(limit));
+	if (offset !== undefined) params.set('offset', String(offset));
 	const qs = params.toString();
 	return request(`/api/scte35/log${qs ? '?' + qs : ''}`);
-}
-
-export function scte35UpdateConfig(config: Partial<SCTE35Config>): Promise<ControlRoomState> {
-	return request('/api/scte35/config', {
-		method: 'PUT',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(config),
-	});
 }
 
 export function scte35ListRules(): Promise<SCTE35Rule[]> {
@@ -495,7 +471,7 @@ export function scte35CreateRule(rule: Omit<SCTE35Rule, 'id'>): Promise<SCTE35Ru
 	return post('/api/scte35/rules', rule);
 }
 
-export function scte35UpdateRule(id: string, rule: Partial<SCTE35Rule>): Promise<void> {
+export function scte35UpdateRule(id: string, rule: Partial<SCTE35Rule>): Promise<ControlRoomState> {
 	return request(`/api/scte35/rules/${encodeURIComponent(id)}`, {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
@@ -503,11 +479,11 @@ export function scte35UpdateRule(id: string, rule: Partial<SCTE35Rule>): Promise
 	});
 }
 
-export function scte35DeleteRule(id: string): Promise<void> {
+export function scte35DeleteRule(id: string): Promise<ControlRoomState> {
 	return request(`/api/scte35/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function scte35SetDefaultAction(action: 'pass' | 'delete'): Promise<void> {
+export function scte35SetDefaultAction(action: 'pass' | 'delete'): Promise<ControlRoomState> {
 	return request('/api/scte35/rules/default', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
@@ -515,7 +491,7 @@ export function scte35SetDefaultAction(action: 'pass' | 'delete'): Promise<void>
 	});
 }
 
-export function scte35ReorderRules(ids: string[]): Promise<void> {
+export function scte35ReorderRules(ids: string[]): Promise<ControlRoomState> {
 	return post('/api/scte35/rules/reorder', { ids });
 }
 
@@ -523,8 +499,8 @@ export function scte35Templates(): Promise<SCTE35Rule[]> {
 	return request('/api/scte35/rules/templates');
 }
 
-export function scte35CreateFromTemplate(template: string): Promise<SCTE35Rule> {
-	return post('/api/scte35/rules/from-template', { template });
+export function scte35CreateFromTemplate(name: string): Promise<SCTE35Rule> {
+	return post('/api/scte35/rules/from-template', { name });
 }
 
 /**
