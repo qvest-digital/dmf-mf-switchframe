@@ -808,4 +808,195 @@ describe('SCTE35Panel', () => {
 		await fireEvent.click(demoBtn);
 		expect(notify).toHaveBeenCalledWith('info', expect.stringContaining('60s ad break'));
 	});
+
+	// --- Event Detail Flyout ---
+
+	it('opens event detail flyout when log item clicked', async () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 99,
+						commandType: 'splice_insert',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: true,
+						timestamp: Date.now(),
+						status: 'completed',
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
+		expect(logItem).toBeTruthy();
+		await fireEvent.click(logItem);
+		const flyout = container.querySelector('.detail-flyout');
+		expect(flyout).toBeTruthy();
+		expect(flyout!.textContent).toContain('Event #99');
+		expect(flyout!.textContent).toContain('splice_insert');
+		expect(flyout!.textContent).toContain('OUT (break start)');
+	});
+
+	it('closes event detail flyout when close button clicked', async () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 1,
+						commandType: 'splice_insert',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: true,
+						timestamp: Date.now(),
+						status: 'completed',
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
+		await fireEvent.click(logItem);
+		expect(container.querySelector('.detail-flyout')).toBeTruthy();
+		const closeBtn = container.querySelector('.detail-close') as HTMLButtonElement;
+		await fireEvent.click(closeBtn);
+		expect(container.querySelector('.detail-flyout')).toBeFalsy();
+	});
+
+	it('closes event detail flyout when backdrop clicked', async () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 1,
+						commandType: 'splice_insert',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: true,
+						timestamp: Date.now(),
+						status: 'completed',
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
+		await fireEvent.click(logItem);
+		const backdrop = container.querySelector('.detail-backdrop') as HTMLDivElement;
+		await fireEvent.click(backdrop);
+		expect(container.querySelector('.detail-flyout')).toBeFalsy();
+	});
+
+	it('shows descriptors section in flyout when event has descriptors', async () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 5,
+						commandType: 'time_signal',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: false,
+						timestamp: Date.now(),
+						status: 'completed',
+						descriptors: [
+							{
+								segEventId: 5,
+								segmentationType: 48,
+								upidType: 9,
+								upid: 'ABCD0001000H',
+							},
+						],
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
+		await fireEvent.click(logItem);
+		const flyout = container.querySelector('.detail-flyout');
+		expect(flyout!.textContent).toContain('Descriptors (1)');
+		expect(flyout!.textContent).toContain('Provider Ad Start');
+		expect(flyout!.textContent).toContain('ADI');
+		expect(flyout!.textContent).toContain('ABCD0001000H');
+	});
+
+	it('shows routing section when event has source/destination', async () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 1,
+						commandType: 'splice_insert',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: true,
+						timestamp: Date.now(),
+						status: 'completed',
+						source: 'injector',
+						destinationId: 'dest-001',
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
+		await fireEvent.click(logItem);
+		const flyout = container.querySelector('.detail-flyout');
+		expect(flyout!.textContent).toContain('Routing');
+		expect(flyout!.textContent).toContain('injector');
+		expect(flyout!.textContent).toContain('dest-001');
+	});
+
+	it('log items are buttons with hover styling class', () => {
+		const state = {
+			...baseState,
+			scte35: {
+				enabled: true,
+				activeEvents: {},
+				eventLog: [
+					{
+						eventId: 1,
+						commandType: 'splice_insert',
+						isOut: true,
+						durationMs: 30000,
+						autoReturn: true,
+						timestamp: Date.now(),
+						status: 'completed',
+					},
+				],
+				heartbeatOk: true,
+				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
+			},
+		};
+		const { container } = render(SCTE35Panel, { props: { state } });
+		const logItem = container.querySelector('.log-item-btn');
+		expect(logItem).toBeTruthy();
+		expect(logItem!.tagName).toBe('BUTTON');
+	});
 });

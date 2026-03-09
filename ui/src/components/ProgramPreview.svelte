@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ControlRoomState } from '$lib/api/types';
+	import type { ControlRoomState, SCTE35Active } from '$lib/api/types';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import HealthAlarm from './HealthAlarm.svelte';
 
@@ -7,17 +7,42 @@
 		state: ControlRoomState;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
 	}
-	let { state, onCanvasReady }: Props = $props();
+	let { state: crState, onCanvasReady }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
 
-	let programSource = $derived(state.sources[state.programSource]);
+	let programSource = $derived(crState.sources[crState.programSource]);
 	let programHealth = $derived(programSource?.status ?? 'healthy');
-	let programLabel = $derived(programSource?.label || state.programSource || '—');
-	let previewSource = $derived(state.sources[state.previewSource]);
+	let programLabel = $derived(programSource?.label || crState.programSource || '—');
+	let previewSource = $derived(crState.sources[crState.previewSource]);
 	let previewHealth = $derived(previewSource?.status ?? 'healthy');
-	let previewLabel = $derived(previewSource?.label || state.previewSource || '—');
+	let previewLabel = $derived(previewSource?.label || crState.previewSource || '—');
+
+	// SCTE-35 break status
+	const scte35Active = $derived(
+		Object.values(crState.scte35?.activeEvents ?? {}).filter(e => e.isOut)
+	);
+	const breakEvent = $derived(scte35Active.length > 0 ? scte35Active[0] : null);
+	const isHeld = $derived(breakEvent?.held ?? false);
+
+	let breakNow = $state(Date.now());
+	$effect(() => {
+		if (!breakEvent) return;
+		const iv = setInterval(() => { breakNow = Date.now(); }, 250);
+		return () => clearInterval(iv);
+	});
+
+	function breakCountdown(evt: SCTE35Active): string {
+		if (evt.held) return 'HELD';
+		if (!evt.durationMs || !evt.startedAt) return '';
+		const remaining = evt.durationMs - (breakNow - evt.startedAt);
+		if (remaining <= 0) return '0:00';
+		const totalSec = Math.ceil(remaining / 1000);
+		const min = Math.floor(totalSec / 60);
+		const sec = totalSec % 60;
+		return `${min}:${sec.toString().padStart(2, '0')}`;
+	}
 
 	$effect(() => {
 		if (previewCanvas && programCanvas && onCanvasReady) {
@@ -69,6 +94,13 @@
 	</div>
 	<div class="monitor program-monitor">
 		<div class="monitor-label program-label">PROGRAM</div>
+		{#if breakEvent}
+			<div class="break-status" class:break-held={isHeld}>
+				<span class="break-icon">{isHeld ? '||' : breakEvent.autoReturn ? 'AR' : 'BR'}</span>
+				<span class="break-label">{isHeld ? 'HELD' : 'AD BREAK'}</span>
+				<span class="break-countdown">{breakCountdown(breakEvent)}</span>
+			</div>
+		{/if}
 		<div class="monitor-viewport">
 			<canvas bind:this={programCanvas}></canvas>
 			<div class="source-label">{programLabel}</div>
@@ -162,5 +194,54 @@
 		pointer-events: none;
 		z-index: 2;
 		letter-spacing: 0.02em;
+	}
+
+	/* SCTE-35 Break Status */
+	.break-status {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		padding: 3px 8px;
+		background: rgba(220, 38, 38, 0.85);
+		border-radius: var(--radius-sm);
+		z-index: 3;
+		animation: break-pulse 1.5s ease-in-out infinite;
+	}
+
+	.break-status.break-held {
+		background: rgba(245, 158, 11, 0.85);
+		animation: none;
+	}
+
+	@keyframes break-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.7; }
+	}
+
+	.break-icon {
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		font-weight: 700;
+		color: rgba(255, 255, 255, 0.7);
+	}
+
+	.break-label {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 700;
+		color: #fff;
+		letter-spacing: 0.04em;
+	}
+
+	.break-countdown {
+		font-family: var(--font-mono);
+		font-size: 0.75rem;
+		font-weight: 700;
+		color: #fff;
+		min-width: 2.5em;
+		text-align: right;
 	}
 </style>

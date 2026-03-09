@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ControlRoomState, SCTE35CueRequest, SCTE35Active, SCTE35Event, SCTE35DescriptorRequest } from '$lib/api/types';
+	import type { ControlRoomState, SCTE35CueRequest, SCTE35Active, SCTE35Event, SCTE35DescriptorRequest, SCTE35DescriptorInfo } from '$lib/api/types';
 	import { scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
@@ -221,6 +221,59 @@
 		if (evt.commandType === 'time_signal') return 'TIME SIG';
 		return 'CUE OUT';
 	}
+
+	// --- Event Detail Flyout ---
+	let selectedEvent = $state<SCTE35Event | null>(null);
+
+	function openEventDetail(evt: SCTE35Event) {
+		selectedEvent = evt;
+	}
+
+	function closeEventDetail() {
+		selectedEvent = null;
+	}
+
+	// Lookup maps for human-readable labels
+	const segTypeNames: Record<number, string> = {
+		16: 'Program Start', 17: 'Program End',
+		34: 'Break Start', 35: 'Break End',
+		48: 'Provider Ad Start', 49: 'Provider Ad End',
+		50: 'Distributor Ad Start', 51: 'Distributor Ad End',
+		52: 'Provider PO Start', 53: 'Provider PO End',
+		54: 'Distributor PO Start', 55: 'Distributor PO End',
+		64: 'Unscheduled Event Start', 65: 'Unscheduled Event End',
+	};
+
+	const upidTypeNames: Record<number, string> = {
+		0: 'Not Used', 1: 'User Defined', 2: 'ISCI',
+		3: 'Ad-ID', 4: 'UMID', 5: 'Deprecated',
+		6: 'ISAN', 7: 'TID', 8: 'TI', 9: 'ADI',
+		10: 'EIDR', 11: 'ATSC Content ID', 12: 'MPU',
+		13: 'MID', 14: 'ADS Info', 15: 'URI',
+	};
+
+	function formatSegType(val: number): string {
+		return segTypeNames[val] ?? `Unknown (${val})`;
+	}
+
+	function formatUpidType(val: number): string {
+		return upidTypeNames[val] ?? `Unknown (${val})`;
+	}
+
+	function formatPts(pts: number | undefined): string {
+		if (pts === undefined || pts === 0) return '—';
+		const secs = pts / 90000;
+		return `${pts} (${secs.toFixed(3)}s)`;
+	}
+
+	function formatFullTimestamp(ts: number): string {
+		const d = new Date(ts);
+		return d.toLocaleString(undefined, {
+			year: 'numeric', month: 'short', day: 'numeric',
+			hour: '2-digit', minute: '2-digit', second: '2-digit',
+			fractionalSecondDigits: 3,
+		});
+	}
 </script>
 
 <div class="scte35-panel">
@@ -430,7 +483,7 @@
 				<div class="empty-state">No events</div>
 			{:else}
 				{#each eventLog.slice().reverse() as evt (evt.eventId + '-' + evt.timestamp)}
-					<div class="log-item {eventTypeClass(evt)}">
+					<button class="log-item log-item-btn {eventTypeClass(evt)}" onclick={() => openEventDetail(evt)}>
 						<span class="log-type-badge">{eventTypeLabel(evt)}</span>
 						<span class="log-id">#{evt.eventId}</span>
 						{#if evt.durationMs}
@@ -438,11 +491,117 @@
 						{/if}
 						<span class="log-time">{formatTimestamp(evt.timestamp)}</span>
 						<span class="log-status">{evt.status}</span>
-					</div>
+					</button>
 				{/each}
 			{/if}
 		</div>
 	</div>
+
+	<!-- Event Detail Flyout -->
+	{#if selectedEvent}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="detail-backdrop" onclick={closeEventDetail} onkeydown={(e) => e.key === 'Escape' && closeEventDetail()}></div>
+		<div class="detail-flyout">
+			<div class="detail-header">
+				<span class="detail-title">Event #{selectedEvent.eventId}</span>
+				<button class="detail-close" onclick={closeEventDetail}>x</button>
+			</div>
+			<div class="detail-body">
+				<div class="detail-section">
+					<div class="detail-section-title">Command</div>
+					<div class="detail-grid">
+						<span class="detail-label">Type</span>
+						<span class="detail-value">{selectedEvent.commandType}</span>
+						<span class="detail-label">Direction</span>
+						<span class="detail-value">{selectedEvent.isOut ? 'OUT (break start)' : 'IN (return)'}</span>
+						<span class="detail-label">Status</span>
+						<span class="detail-value">{selectedEvent.status}</span>
+						<span class="detail-label">Event ID</span>
+						<span class="detail-value detail-mono">{selectedEvent.eventId}</span>
+					</div>
+				</div>
+
+				<div class="detail-section">
+					<div class="detail-section-title">Timing</div>
+					<div class="detail-grid">
+						<span class="detail-label">Timestamp</span>
+						<span class="detail-value detail-mono">{formatFullTimestamp(selectedEvent.timestamp)}</span>
+						{#if selectedEvent.durationMs}
+							<span class="detail-label">Duration</span>
+							<span class="detail-value detail-mono">{(selectedEvent.durationMs / 1000).toFixed(1)}s ({selectedEvent.durationMs}ms)</span>
+						{/if}
+						<span class="detail-label">Auto-Return</span>
+						<span class="detail-value">{selectedEvent.autoReturn ? 'Yes' : 'No'}</span>
+						{#if selectedEvent.spliceTimePts}
+							<span class="detail-label">Splice Time</span>
+							<span class="detail-value detail-mono">{formatPts(selectedEvent.spliceTimePts)}</span>
+						{/if}
+					</div>
+				</div>
+
+				{#if selectedEvent.availNum !== undefined || selectedEvent.availsExpected !== undefined}
+					<div class="detail-section">
+						<div class="detail-section-title">Avail</div>
+						<div class="detail-grid">
+							{#if selectedEvent.availNum !== undefined}
+								<span class="detail-label">Avail Num</span>
+								<span class="detail-value detail-mono">{selectedEvent.availNum}</span>
+							{/if}
+							{#if selectedEvent.availsExpected !== undefined}
+								<span class="detail-label">Avails Expected</span>
+								<span class="detail-value detail-mono">{selectedEvent.availsExpected}</span>
+							{/if}
+						</div>
+					</div>
+				{/if}
+
+				{#if selectedEvent.descriptors && selectedEvent.descriptors.length > 0}
+					<div class="detail-section">
+						<div class="detail-section-title">Descriptors ({selectedEvent.descriptors.length})</div>
+						{#each selectedEvent.descriptors as desc, i}
+							<div class="detail-descriptor">
+								<div class="detail-descriptor-header">Descriptor {i + 1}</div>
+								<div class="detail-grid">
+									<span class="detail-label">Seg Type</span>
+									<span class="detail-value">0x{desc.segmentationType.toString(16).padStart(2, '0')} &mdash; {formatSegType(desc.segmentationType)}</span>
+									<span class="detail-label">Seg Event ID</span>
+									<span class="detail-value detail-mono">{desc.segEventId}</span>
+									<span class="detail-label">UPID Type</span>
+									<span class="detail-value">{desc.upidType} &mdash; {formatUpidType(desc.upidType)}</span>
+									<span class="detail-label">UPID</span>
+									<span class="detail-value detail-mono">{desc.upid || '—'}</span>
+									{#if desc.durationTicks}
+										<span class="detail-label">Duration</span>
+										<span class="detail-value detail-mono">{formatPts(desc.durationTicks)}</span>
+									{/if}
+									{#if desc.subSegmentNum !== undefined}
+										<span class="detail-label">Sub-segment</span>
+										<span class="detail-value detail-mono">{desc.subSegmentNum} / {desc.subSegmentsExpected ?? '?'}</span>
+									{/if}
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				{#if selectedEvent.source || selectedEvent.destinationId}
+					<div class="detail-section">
+						<div class="detail-section-title">Routing</div>
+						<div class="detail-grid">
+							{#if selectedEvent.source}
+								<span class="detail-label">Source</span>
+								<span class="detail-value">{selectedEvent.source}</span>
+							{/if}
+							{#if selectedEvent.destinationId}
+								<span class="detail-label">Destination</span>
+								<span class="detail-value detail-mono">{selectedEvent.destinationId}</span>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -898,6 +1057,16 @@
 		border-radius: var(--radius-sm);
 		font-family: var(--font-mono);
 		font-size: 0.55rem;
+		width: 100%;
+		border: 1px solid transparent;
+		cursor: pointer;
+		text-align: left;
+		transition: border-color var(--transition-fast), background var(--transition-fast);
+	}
+
+	.log-item:hover {
+		border-color: var(--border-default);
+		background: var(--bg-hover);
 	}
 
 	.log-cue-out {
@@ -1084,5 +1253,126 @@
 			grid-column: auto;
 			max-height: 120px;
 		}
+	}
+
+	/* Event Detail Flyout */
+	.detail-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.5);
+		z-index: 100;
+	}
+
+	.detail-flyout {
+		position: fixed;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: 360px;
+		max-width: 90vw;
+		background: var(--bg-elevated);
+		border-left: 1px solid var(--border-default);
+		z-index: 101;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+	}
+
+	.detail-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 10px 12px;
+		border-bottom: 1px solid var(--border-default);
+		background: var(--bg-base);
+	}
+
+	.detail-title {
+		font-family: var(--font-ui);
+		font-size: 0.75rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.detail-close {
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 0.85rem;
+		padding: 2px 6px;
+		border-radius: var(--radius-sm);
+	}
+
+	.detail-close:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.detail-body {
+		flex: 1;
+		overflow-y: auto;
+		padding: 8px 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.detail-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.detail-section-title {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 700;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		padding-bottom: 2px;
+		border-bottom: 1px solid var(--border-default);
+	}
+
+	.detail-grid {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 2px 8px;
+		align-items: baseline;
+	}
+
+	.detail-label {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+
+	.detail-value {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: var(--text-primary);
+		word-break: break-all;
+	}
+
+	.detail-mono {
+		font-family: var(--font-mono);
+	}
+
+	.detail-descriptor {
+		padding: 4px 6px;
+		background: var(--bg-base);
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border-default);
+	}
+
+	.detail-descriptor-header {
+		font-family: var(--font-ui);
+		font-size: 0.55rem;
+		font-weight: 600;
+		color: var(--text-secondary);
+		margin-bottom: 3px;
 	}
 </style>
