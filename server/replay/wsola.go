@@ -2,11 +2,6 @@ package replay
 
 import "math"
 
-const (
-	wsolaWindowSize  = 2048 // ~42.7ms at 48kHz — captures more pitch periods for smoother output
-	wsolaSearchRange = 512  // +/-10.7ms search range — finds better overlaps at slow speeds
-)
-
 // WSOLATimeStretch performs Waveform Similarity Overlap-Add time-stretching.
 // Preserves pitch while changing duration.
 //
@@ -14,6 +9,9 @@ const (
 //   - channels: number of audio channels (1 or 2)
 //   - sampleRate: sample rate in Hz
 //   - speed: playback speed (0.25-1.0)
+//
+// For speeds below 0.5x, uses cascaded stretching (two passes at sqrt(speed))
+// to avoid the artifacts that single-pass extreme stretching produces.
 //
 // Returns the time-stretched output samples.
 func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) []float32 {
@@ -30,11 +28,48 @@ func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) 
 		speed = 0.1
 	}
 
+	// For extreme slow-down (< 0.5x), cascade two moderate stretches.
+	// Each pass does sqrt(speed) stretch, e.g., 0.25x → two passes of 0.5x.
+	// This produces much better quality than a single extreme stretch.
+	if speed < 0.5 {
+		intermediate := math.Sqrt(speed)
+		pass1 := wsolaStretchSingle(input, channels, intermediate)
+		if len(pass1) == 0 {
+			return nil
+		}
+		return wsolaStretchSingle(pass1, channels, intermediate)
+	}
+
+	return wsolaStretchSingle(input, channels, speed)
+}
+
+// wsolaStretchSingle performs a single WSOLA pass. Speed should be in [0.5, 1.0)
+// for best quality.
+func wsolaStretchSingle(input []float32, channels int, speed float64) []float32 {
+	if len(input) == 0 {
+		return nil
+	}
+	if speed >= 1.0 {
+		out := make([]float32, len(input))
+		copy(out, input)
+		return out
+	}
+	if speed < 0.1 {
+		speed = 0.1
+	}
+
 	totalSamples := len(input) / channels
-	windowSamples := wsolaWindowSize
+
+	// Window size: 1024 samples (~21ms at 48kHz). This matches typical pitch
+	// periods (50-500 Hz → 2-20ms) and produces clean overlap-add.
+	windowSamples := 1024
 	if windowSamples > totalSamples {
 		windowSamples = totalSamples
 	}
+
+	// Search range: ±256 samples (~5.3ms). Enough to find matching pitch
+	// periods without searching too far and finding false matches.
+	searchRange := 256
 
 	outputSamples := int(float64(totalSamples) / speed)
 	output := make([]float32, outputSamples*channels)
@@ -45,7 +80,9 @@ func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) 
 		analysisHop = 1
 	}
 
-	hann := makeHannWindow(windowSamples)
+	// Periodic Hann window — has exact constant-overlap-add (COLA) property
+	// at 50% hop, unlike the symmetric version which has slight ripple.
+	hann := makePeriodicHannWindow(windowSamples)
 
 	inputPos := 0
 	outputPos := 0
@@ -54,7 +91,7 @@ func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) 
 		bestOffset := 0
 		if inputPos > 0 {
 			bestOffset = findBestOverlap(input, output, inputPos, outputPos,
-				windowSamples, channels, wsolaSearchRange)
+				windowSamples, channels, searchRange)
 		}
 
 		srcPos := inputPos + bestOffset
@@ -83,10 +120,13 @@ func WSOLATimeStretch(input []float32, channels, sampleRate int, speed float64) 
 	return output
 }
 
-func makeHannWindow(size int) []float64 {
+// makePeriodicHannWindow creates a periodic Hann window of the given size.
+// The periodic form has the exact COLA property at 50% hop:
+//   sum of overlapping windows = 1.0 (constant)
+func makePeriodicHannWindow(size int) []float64 {
 	w := make([]float64, size)
 	for i := 0; i < size; i++ {
-		w[i] = 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(size-1)))
+		w[i] = 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(size)))
 	}
 	return w
 }
@@ -96,12 +136,13 @@ func findBestOverlap(input, output []float32, inputPos, outputPos, windowSize, c
 	bestCorr := -math.MaxFloat64
 	bestOffset := 0
 
-	// Number of samples to correlate per offset (limited by both window and search range).
-	corrSamples := windowSize
-	if corrSamples > searchRange {
-		corrSamples = searchRange
+	// Correlate over the overlap region (synthesisHop = windowSize/2).
+	// This gives the best match quality for the actual overlap.
+	corrSamples := windowSize / 2
+	if corrSamples > totalSamples {
+		corrSamples = totalSamples
 	}
-	corrLen := corrSamples * channels // total float32 elements
+	corrLen := corrSamples * channels
 
 	for offset := -searchRange; offset <= searchRange; offset++ {
 		pos := inputPos + offset

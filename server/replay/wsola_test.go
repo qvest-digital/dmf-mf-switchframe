@@ -78,15 +78,16 @@ func TestWSOLA_VeryShortInput(t *testing.T) {
 	require.NotNil(t, output)
 }
 
-func TestMakeHannWindow(t *testing.T) {
-	w := makeHannWindow(4)
+func TestMakePeriodicHannWindow(t *testing.T) {
+	w := makePeriodicHannWindow(4)
 	require.Len(t, w, 4)
-	// First and last elements should be 0.
+	// First element should be 0 (periodic: only first is zero).
 	assert.InDelta(t, 0.0, w[0], 1e-10)
-	assert.InDelta(t, 0.0, w[3], 1e-10)
 	// Middle elements should be positive.
 	assert.Greater(t, w[1], 0.0)
 	assert.Greater(t, w[2], 0.0)
+	// Last element should be positive (periodic, unlike symmetric).
+	assert.Greater(t, w[3], 0.0)
 }
 
 func TestFindBestOverlap(t *testing.T) {
