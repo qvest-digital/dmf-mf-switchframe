@@ -9,6 +9,10 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
+// aacFrameDuration is the duration of one AAC-LC frame at 48kHz (1024 samples).
+// Used for lip-sync hint calculation: 1024/48000 s ≈ 21.333ms.
+var aacFrameDuration = time.Second * 1024 / 48000
+
 // Pipeline holds a configured, ready-to-run processing chain.
 // Built via Build() on main goroutine. Run() called per-frame on pipeline goroutine.
 // Immutable once built — reconfiguration creates a new Pipeline via atomic swap.
@@ -133,6 +137,7 @@ func (p *Pipeline) Snapshot() map[string]any {
 		"last_run_ns":      p.lastRunNs.Load(),
 		"max_run_ns":       p.maxRunNs.Load(),
 		"total_latency_us": p.totalLatency.Microseconds(),
+		"lip_sync_hint_us": (p.totalLatency - aacFrameDuration).Microseconds(),
 	}
 }
 

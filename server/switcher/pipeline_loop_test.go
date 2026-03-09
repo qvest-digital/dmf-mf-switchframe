@@ -582,6 +582,23 @@ func TestPipelineLoop_RunNilMetricsSafe(t *testing.T) {
 	p.Run(pf)
 }
 
+func TestPipelineLoop_SnapshotIncludesLipSyncHint(t *testing.T) {
+	// Node with 10ms latency — video latency will be 10ms.
+	// AAC frame at 48kHz = 1024 samples = ~21.333ms
+	// lip_sync_hint = 10ms - 21.333ms ≈ -11333us (audio leads video)
+	n := &countingNode{name: "enc", active: true, latency: 10 * time.Millisecond}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	snap := p.Snapshot()
+	hint, ok := snap["lip_sync_hint_us"]
+	require.True(t, ok, "Snapshot should include lip_sync_hint_us")
+
+	// Video latency (10ms) minus audio latency (~21.333ms) = negative (audio leads)
+	hintVal := hint.(int64)
+	require.Less(t, hintVal, int64(0), "with 10ms video latency, audio leads")
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
