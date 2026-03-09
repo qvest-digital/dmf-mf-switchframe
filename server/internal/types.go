@@ -221,11 +221,12 @@ type MacroStepState struct {
 
 // SCTE35State represents the current SCTE-35 signaling state.
 type SCTE35State struct {
-	Enabled      bool                       `json:"enabled"`
-	ActiveEvents map[uint32]SCTE35Active    `json:"activeEvents"`
-	EventLog     []SCTE35Event              `json:"eventLog"`
-	HeartbeatOK  bool                       `json:"heartbeatOk"`
-	Config       SCTE35Config               `json:"config"`
+	Enabled        bool                       `json:"enabled"`
+	SCTE104Enabled bool                       `json:"scte104Enabled,omitempty"`
+	ActiveEvents   map[uint32]SCTE35Active    `json:"activeEvents"`
+	EventLog       []SCTE35Event              `json:"eventLog"`
+	HeartbeatOK    bool                       `json:"heartbeatOk"`
+	Config         SCTE35Config               `json:"config"`
 }
 
 // SCTE35Active describes an in-progress SCTE-35 event.

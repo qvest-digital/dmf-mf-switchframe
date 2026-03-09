@@ -58,6 +58,10 @@ type SourceConfig struct {
 	// OnRawAudio delivers interleaved float32 PCM to the mixer.
 	OnRawAudio SourceAudioSink
 
+	// OnDataGrain is called with raw data grain payloads (metadata/ancillary).
+	// key is the source identifier, data is the raw payload, pts is the monotonic counter.
+	OnDataGrain func(key string, data []byte, pts int64)
+
 	// Relay broadcasts H.264/AAC to browsers and replay.
 	Relay MediaBroadcaster
 
@@ -113,6 +117,7 @@ type Source struct {
 
 	videoReader *Reader
 	audioReader *Reader
+	dataReader  *Reader
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -152,8 +157,8 @@ func NewSource(config SourceConfig) *Source {
 }
 
 // Start begins reading from MXL flows and distributing media.
-// videoFlow and audioFlow are the MXL flow readers (can be nil to skip).
-func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow ContinuousReader) {
+// videoFlow, audioFlow, and dataFlow are the MXL flow readers (can be nil to skip).
+func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow ContinuousReader, dataFlow ...DiscreteReader) {
 	ctx, s.cancel = context.WithCancel(ctx)
 
 	if videoFlow != nil {
@@ -179,6 +184,18 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 		s.audioReader.StartAudio(ctx, audioFlow)
 		s.wg.Add(1)
 		go s.audioFanOut(ctx)
+	}
+
+	// Optional data flow (metadata/ancillary).
+	if len(dataFlow) > 0 && dataFlow[0] != nil {
+		s.dataReader = NewDataReader(ReaderConfig{
+			BufSize:   8,
+			TimeoutMs: 100,
+			Logger:    s.log,
+		})
+		s.dataReader.StartData(ctx, dataFlow[0])
+		s.wg.Add(1)
+		go s.dataFanOut(ctx)
 	}
 }
 
@@ -325,6 +342,29 @@ func (s *Source) audioFanOut(ctx context.Context) {
 				return
 			}
 			s.processAudioGrain(grain)
+		}
+	}
+}
+
+func (s *Source) dataFanOut(ctx context.Context) {
+	defer s.wg.Done()
+
+	dataCh := s.dataReader.Data()
+	if dataCh == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case grain, ok := <-dataCh:
+			if !ok {
+				return
+			}
+			if s.config.OnDataGrain != nil {
+				s.config.OnDataGrain(s.config.FlowName, grain.Data, grain.PTS)
+			}
 		}
 	}
 }

@@ -59,6 +59,10 @@ type CueMessage struct {
 
 	// AvailsExpected is the total number of avails in the group.
 	AvailsExpected uint8
+
+	// Source tracks the origin of this cue: "api", "macro", "scte104", "passthrough".
+	// Internal only — not serialized to SCTE-35 binary.
+	Source string
 }
 
 // SegmentationDescriptor carries segmentation metadata for time_signal commands.

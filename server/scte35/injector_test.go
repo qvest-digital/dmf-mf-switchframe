@@ -868,3 +868,182 @@ func TestInjector_Rules_Replace(t *testing.T) {
 		t.Fatalf("expected break duration 120000ms, got %dms", decoded.BreakDuration.Milliseconds())
 	}
 }
+
+func TestInjector_SCTE104Sink_InjectCue(t *testing.T) {
+	var muxerCalled bool
+	var scte104Msg *CueMessage
+	var mu sync.Mutex
+
+	sink := func(data []byte) {
+		mu.Lock()
+		muxerCalled = true
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Msg = msg
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	msg.Source = "api"
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !muxerCalled {
+		t.Fatal("expected muxerSink to be called")
+	}
+	if scte104Msg == nil {
+		t.Fatal("expected scte104Sink to be called")
+	}
+	if scte104Msg.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got %d", scte104Msg.CommandType)
+	}
+	if !scte104Msg.IsOut {
+		t.Fatal("expected IsOut=true in scte104 message")
+	}
+	if scte104Msg.Source != "api" {
+		t.Fatalf("expected Source='api', got %q", scte104Msg.Source)
+	}
+}
+
+func TestInjector_SCTE104Sink_ReturnToProgram(t *testing.T) {
+	var scte104Msg *CueMessage
+	var mu sync.Mutex
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Msg = msg
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	eventID, _ := inj.InjectCue(msg)
+
+	// Reset to capture only the return message.
+	mu.Lock()
+	scte104Msg = nil
+	mu.Unlock()
+
+	if err := inj.ReturnToProgram(eventID); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Msg == nil {
+		t.Fatal("expected scte104Sink to be called on ReturnToProgram")
+	}
+	if scte104Msg.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got %d", scte104Msg.CommandType)
+	}
+	if scte104Msg.IsOut {
+		t.Fatal("expected IsOut=false for cue-in")
+	}
+}
+
+func TestInjector_SCTE104Sink_CancelEvent(t *testing.T) {
+	var scte104Msg *CueMessage
+	var mu sync.Mutex
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Msg = msg
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	eventID, _ := inj.InjectCue(msg)
+
+	// Reset to capture only the cancel message.
+	mu.Lock()
+	scte104Msg = nil
+	mu.Unlock()
+
+	if err := inj.CancelEvent(eventID); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Msg == nil {
+		t.Fatal("expected scte104Sink to be called on CancelEvent")
+	}
+	if scte104Msg.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got %d", scte104Msg.CommandType)
+	}
+	if !scte104Msg.SpliceEventCancelIndicator {
+		t.Fatal("expected SpliceEventCancelIndicator=true")
+	}
+	if scte104Msg.EventID != eventID {
+		t.Fatalf("expected event ID %d, got %d", eventID, scte104Msg.EventID)
+	}
+}
+
+func TestInjector_MsgSource_InEventLog(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject with Source="macro"
+	msg := NewSpliceInsert(0, 30*time.Second, true, false)
+	msg.Source = "macro"
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	log := inj.EventLog()
+	if len(log) == 0 {
+		t.Fatal("event log empty")
+	}
+
+	var found bool
+	for _, entry := range log {
+		if entry.EventID == eventID && entry.Source == "macro" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected event log entry with Source='macro'")
+	}
+
+	// Inject without Source set — should default to "injector"
+	msg2 := NewSpliceInsert(0, 30*time.Second, true, false)
+	eventID2, err := inj.InjectCue(msg2)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	log = inj.EventLog()
+	for _, entry := range log {
+		if entry.EventID == eventID2 && entry.Source == "injector" {
+			return // success
+		}
+	}
+	t.Fatal("expected event log entry with default Source='injector'")
+}

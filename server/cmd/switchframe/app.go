@@ -33,6 +33,7 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
+	"github.com/zsiec/switchframe/server/scte104"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -474,13 +475,16 @@ func (a *App) initMXL() error {
 	a.mxlInstance = inst
 
 	// Register MXL sources.
-	// Each spec is "videoUUID" or "videoUUID:audioUUID".
+	// Each spec is "videoUUID", "videoUUID:audioUUID", or "videoUUID:audioUUID:dataUUID".
 	for _, spec := range a.cfg.MXLSources {
-		parts := strings.SplitN(spec, ":", 2)
+		parts := strings.SplitN(spec, ":", 3)
 		videoFlowID := parts[0]
-		var audioFlowID string
+		var audioFlowID, dataFlowID string
 		if len(parts) > 1 {
 			audioFlowID = parts[1]
+		}
+		if len(parts) > 2 {
+			dataFlowID = parts[2]
 		}
 
 		flowName := "mxl:" + videoFlowID
@@ -510,10 +514,21 @@ func (a *App) initMXL() error {
 			}
 		}
 
+		// Open MXL data flow if specified (for SCTE-104 ancillary data).
+		var dataFlow mxl.DiscreteReader
+		if dataFlowID != "" {
+			df, err := inst.OpenReader(dataFlowID)
+			if err != nil {
+				slog.Warn("mxl: could not open data flow", "flowID", dataFlowID, "error", err)
+			} else {
+				dataFlow = df
+			}
+		}
+
 		// Capture relay for OnVideoInfo closure.
 		pf := a.sw.PipelineFormat()
 		sourceRelay := relay
-		src := mxl.NewSource(mxl.SourceConfig{
+		srcCfg := mxl.SourceConfig{
 			FlowName:            flowName,
 			VideoFlowID:         videoFlowID,
 			Width:               pf.Width,
@@ -549,9 +564,41 @@ func (a *App) initMXL() error {
 			OnRawAudio: func(key string, pcm []float32, pts int64) {
 				a.mixer.IngestPCM(key, pcm, pts)
 			},
-		})
+		}
 
-		src.Start(context.Background(), videoFlow, audioFlow)
+		// Wire SCTE-104 input: data grains → parse → inject into SCTE-35 injector.
+		// The injector is created later in initSCTE35, so we capture the pointer
+		// and check at runtime. This avoids an init ordering dependency.
+		if a.cfg.SCTE104 && dataFlow != nil {
+			srcCfg.OnDataGrain = func(key string, data []byte, pts int64) {
+				if a.scte35Injector == nil {
+					return
+				}
+				payload, err := scte104.ParseST291(data)
+				if err != nil {
+					slog.Debug("scte104: invalid ST 291 packet", "source", key, "error", err)
+					return
+				}
+				msg, err := scte104.Decode(payload)
+				if err != nil {
+					slog.Warn("scte104: failed to decode SCTE-104", "source", key, "error", err)
+					return
+				}
+				cue, err := scte104.ToCueMessage(msg)
+				if err != nil {
+					slog.Warn("scte104: failed to translate to CueMessage", "source", key, "error", err)
+					return
+				}
+				cue.Source = "scte104"
+				if _, err := a.scte35Injector.InjectCue(cue); err != nil {
+					slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
+				}
+			}
+		}
+
+		src := mxl.NewSource(srcCfg)
+
+		src.Start(context.Background(), videoFlow, audioFlow, dataFlow)
 		a.mxlSources = append(a.mxlSources, src)
 
 		// Register replay viewer.
@@ -564,6 +611,7 @@ func (a *App) initMXL() error {
 		slog.Info("MXL source registered",
 			"videoFlowID", videoFlowID,
 			"audioFlowID", audioFlowID,
+			"dataFlowID", dataFlowID,
 			"key", flowName)
 	}
 
@@ -659,6 +707,48 @@ func (a *App) initSCTE35() error {
 		"preRollMs", a.cfg.SCTE35PreRollMs,
 		"heartbeatMs", a.cfg.SCTE35HeartbeatMs,
 		"verify", a.cfg.SCTE35Verify)
+	return nil
+}
+
+// initSCTE104 wires SCTE-104 output on the injector if enabled.
+// Input path is wired in initMXL (OnDataGrain callback on MXL sources).
+// Output: injector scte104Sink → FromCueMessage → Encode → WrapST291 → MXL WriteDataGrain
+func (a *App) initSCTE104() error {
+	if !a.cfg.SCTE104 {
+		return nil
+	}
+	if a.scte35Injector == nil {
+		return fmt.Errorf("--scte104 requires --scte35")
+	}
+
+	// Output path: wire scte104Sink on the injector to write SCTE-104
+	// data grains to MXL output.
+	if a.mxlOutput != nil {
+		a.scte35Injector.SetSCTE104Sink(func(cue *scte35.CueMessage) {
+			msg, err := scte104.FromCueMessage(cue)
+			if err != nil {
+				slog.Warn("scte104: failed to convert CueMessage to SCTE-104", "error", err)
+				return
+			}
+			data, err := scte104.Encode(msg)
+			if err != nil {
+				slog.Warn("scte104: failed to encode SCTE-104 message", "error", err)
+				return
+			}
+			packet, wrapErr := scte104.WrapST291(data)
+			if wrapErr != nil {
+				slog.Warn("scte104: failed to wrap ST 291 packet", "error", wrapErr)
+				return
+			}
+			if err := a.mxlOutput.Writer().WriteDataGrain(packet); err != nil {
+				slog.Warn("scte104: failed to write data grain", "error", err)
+			}
+		})
+	}
+
+	slog.Info("SCTE-104 initialized",
+		"mxlOutput", a.mxlOutput != nil,
+		"mxlSources", len(a.mxlSources))
 	return nil
 }
 

@@ -24,6 +24,12 @@ type AudioGrain struct {
 	PTS        int64 // Monotonic sample counter from 0
 }
 
+// DataGrain carries raw metadata/ancillary data read from an MXL flow.
+type DataGrain struct {
+	Data []byte // Raw payload data
+	PTS  int64  // Monotonic grain counter (1, 2, 3, ...)
+}
+
 // ReaderConfig configures an MXL flow reader.
 type ReaderConfig struct {
 	// BufSize is the channel buffer size for video/audio grains.
@@ -64,6 +70,7 @@ type Reader struct {
 	config  ReaderConfig
 	videoCh chan VideoGrain
 	audioCh chan AudioGrain
+	dataCh  chan DataGrain
 	wg      sync.WaitGroup
 }
 
@@ -85,6 +92,15 @@ func NewAudioReader(config ReaderConfig) *Reader {
 	}
 }
 
+// NewDataReader creates a Reader for a discrete data (metadata/ancillary) MXL flow.
+func NewDataReader(config ReaderConfig) *Reader {
+	config.defaults()
+	return &Reader{
+		config: config,
+		dataCh: make(chan DataGrain, config.BufSize),
+	}
+}
+
 // Video returns the channel that delivers video grains.
 // Returns nil for audio readers.
 func (r *Reader) Video() <-chan VideoGrain {
@@ -95,6 +111,12 @@ func (r *Reader) Video() <-chan VideoGrain {
 // Returns nil for video readers.
 func (r *Reader) Audio() <-chan AudioGrain {
 	return r.audioCh
+}
+
+// Data returns the channel that delivers data grains.
+// Returns nil for video/audio readers.
+func (r *Reader) Data() <-chan DataGrain {
+	return r.dataCh
 }
 
 // StartVideo begins reading video grains from the flow in a goroutine.
@@ -108,6 +130,12 @@ func (r *Reader) StartVideo(ctx context.Context, flow DiscreteReader) {
 func (r *Reader) StartAudio(ctx context.Context, flow ContinuousReader) {
 	r.wg.Add(1)
 	go r.audioLoop(ctx, flow)
+}
+
+// StartData begins reading data grains from the flow in a goroutine.
+func (r *Reader) StartData(ctx context.Context, flow DiscreteReader) {
+	r.wg.Add(1)
+	go r.dataLoop(ctx, flow)
 }
 
 // Wait blocks until all reader goroutines have stopped.
@@ -298,5 +326,84 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 
 		index += uint64(samplesPerRead)
 		ptsCounter += int64(samplesPerRead)
+	}
+}
+
+func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
+	defer r.wg.Done()
+	defer close(r.dataCh)
+
+	log := r.config.Logger
+	timeoutNs := uint64(r.config.TimeoutMs) * 1_000_000
+
+	// Start reading from the current head position.
+	index, err := flow.HeadIndex()
+	if err != nil {
+		log.Error("mxl data reader: failed to get head index", "error", err)
+		return
+	}
+
+	// Monotonic PTS counter starting from 0, incremented by 1 per grain.
+	var dataPTSCounter int64
+
+	consecutiveErrors := 0
+	const maxConsecutiveErrors = 50
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		data, info, err := flow.ReadGrain(index, timeoutNs)
+		if err != nil {
+			errStr := err.Error()
+
+			// On "too late" errors, re-sync to the current write head
+			// instead of dying. The ring buffer moved past our position.
+			if strings.Contains(errStr, "too late") {
+				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
+					gap := headIdx - index
+					log.Warn("mxl data reader: ring buffer wrapped, re-syncing",
+						"gap", gap, "old_index", index, "new_index", headIdx-2)
+					index = headIdx - 2
+					consecutiveErrors = 0
+					continue
+				}
+			}
+
+			consecutiveErrors++
+			if consecutiveErrors >= maxConsecutiveErrors {
+				log.Error("mxl data reader: too many consecutive errors, stopping",
+					"errors", consecutiveErrors, "last_error", err)
+				return
+			}
+			// Brief backoff on timeout/too-early errors.
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		consecutiveErrors = 0
+
+		if info.Invalid {
+			index++
+			continue
+		}
+
+		dataPTSCounter++
+		pts := dataPTSCounter
+
+		grain := DataGrain{
+			Data: data,
+			PTS:  pts,
+		}
+
+		select {
+		case r.dataCh <- grain:
+		case <-ctx.Done():
+			return
+		}
+
+		index++
 	}
 }

@@ -108,7 +108,8 @@ func (o *Output) Writer() *Writer {
 // StartLifecycle sets up the MXL flows and context lifecycle without
 // registering sink callbacks. Use this when sinks are wired externally
 // (e.g., via app.go adapters that bridge type mismatches).
-func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter, audioWriter ContinuousWriter) {
+// An optional data writer can be provided for SCTE-104/ancillary data output.
+func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter, audioWriter ContinuousWriter, dataWriter ...DiscreteWriter) {
 	ctx, o.cancel = context.WithCancel(ctx)
 
 	if videoWriter != nil {
@@ -117,11 +118,18 @@ func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter,
 	if audioWriter != nil {
 		o.writer.SetAudioWriter(audioWriter, Rational{int64(o.config.SampleRate), 1})
 	}
+	if len(dataWriter) > 0 && dataWriter[0] != nil {
+		// Use video frame rate for data grain indexing: SCTE-104 in SDI is
+		// embedded in the VANC region of video frames, so the index domain
+		// matches the video frame clock.
+		o.writer.SetDataWriter(dataWriter[0], o.config.VideoRate)
+	}
 
 	o.writer.Start(ctx)
 
+	hasData := len(dataWriter) > 0 && dataWriter[0] != nil
 	o.log.Info("MXL output started", "flow", o.config.FlowName,
-		"video", videoWriter != nil, "audio", audioWriter != nil)
+		"video", videoWriter != nil, "audio", audioWriter != nil, "data", hasData)
 }
 
 // Stop disconnects sinks and stops the MXL writer via context cancellation.

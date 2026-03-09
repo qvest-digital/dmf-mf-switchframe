@@ -1,0 +1,495 @@
+package scte104
+
+import (
+	"bytes"
+	"testing"
+)
+
+func TestEncode_NilMessage(t *testing.T) {
+	_, err := Encode(nil)
+	if err == nil {
+		t.Fatal("expected error for nil message")
+	}
+}
+
+func TestEncode_SpliceNull_RoundTrip(t *testing.T) {
+	msg := &Message{
+		ProtocolVersion: 0,
+		ASIndex:         1,
+		MessageNumber:   5,
+		DPIPIDIndex:     42,
+		Operations: []Operation{
+			{OpID: OpSpliceNull},
+		},
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if decoded.ASIndex != msg.ASIndex {
+		t.Errorf("ASIndex = %d, want %d", decoded.ASIndex, msg.ASIndex)
+	}
+	if decoded.MessageNumber != msg.MessageNumber {
+		t.Errorf("MessageNumber = %d, want %d", decoded.MessageNumber, msg.MessageNumber)
+	}
+	if decoded.DPIPIDIndex != msg.DPIPIDIndex {
+		t.Errorf("DPIPIDIndex = %d, want %d", decoded.DPIPIDIndex, msg.DPIPIDIndex)
+	}
+	if len(decoded.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(decoded.Operations))
+	}
+	if decoded.Operations[0].OpID != OpSpliceNull {
+		t.Errorf("OpID = 0x%04X, want OpSpliceNull", decoded.Operations[0].OpID)
+	}
+}
+
+func TestEncode_SpliceRequest_RoundTrip(t *testing.T) {
+	original := &Message{
+		ProtocolVersion: 0,
+		ASIndex:         3,
+		MessageNumber:   10,
+		DPIPIDIndex:     500,
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceStartImmediate,
+					SpliceEventID:    12345,
+					UniqueProgramID:  200,
+					PreRollTime:      8000,
+					BreakDuration:    600,
+					AvailNum:         1,
+					AvailsExpected:   4,
+					AutoReturnFlag:   true,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if len(decoded.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(decoded.Operations))
+	}
+
+	srd, ok := decoded.Operations[0].Data.(*SpliceRequestData)
+	if !ok {
+		t.Fatalf("expected *SpliceRequestData, got %T", decoded.Operations[0].Data)
+	}
+
+	orig := original.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != orig.SpliceInsertType {
+		t.Errorf("SpliceInsertType = %d, want %d", srd.SpliceInsertType, orig.SpliceInsertType)
+	}
+	if srd.SpliceEventID != orig.SpliceEventID {
+		t.Errorf("SpliceEventID = %d, want %d", srd.SpliceEventID, orig.SpliceEventID)
+	}
+	if srd.UniqueProgramID != orig.UniqueProgramID {
+		t.Errorf("UniqueProgramID = %d, want %d", srd.UniqueProgramID, orig.UniqueProgramID)
+	}
+	if srd.PreRollTime != orig.PreRollTime {
+		t.Errorf("PreRollTime = %d, want %d", srd.PreRollTime, orig.PreRollTime)
+	}
+	if srd.BreakDuration != orig.BreakDuration {
+		t.Errorf("BreakDuration = %d, want %d", srd.BreakDuration, orig.BreakDuration)
+	}
+	if srd.AvailNum != orig.AvailNum {
+		t.Errorf("AvailNum = %d, want %d", srd.AvailNum, orig.AvailNum)
+	}
+	if srd.AvailsExpected != orig.AvailsExpected {
+		t.Errorf("AvailsExpected = %d, want %d", srd.AvailsExpected, orig.AvailsExpected)
+	}
+	if srd.AutoReturnFlag != orig.AutoReturnFlag {
+		t.Errorf("AutoReturnFlag = %v, want %v", srd.AutoReturnFlag, orig.AutoReturnFlag)
+	}
+}
+
+func TestEncode_TimeSignalRequest_RoundTrip(t *testing.T) {
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpTimeSignalRequest,
+				Data: &TimeSignalRequestData{
+					PreRollTime: 3000,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	tsr := decoded.Operations[0].Data.(*TimeSignalRequestData)
+	if tsr.PreRollTime != 3000 {
+		t.Errorf("PreRollTime = %d, want 3000", tsr.PreRollTime)
+	}
+}
+
+func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
+	upid := []byte("TEST-UPID-DATA")
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         99999,
+					SegmentationTypeID: 0x34,
+					DurationTicks:      2700000,
+					UPIDType:           0x09,
+					UPID:               upid,
+					SegNum:             2,
+					SegExpected:        5,
+					CancelIndicator:    false,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	orig := original.Operations[0].Data.(*SegmentationDescriptorRequest)
+
+	if sd.SegEventID != orig.SegEventID {
+		t.Errorf("SegEventID = %d, want %d", sd.SegEventID, orig.SegEventID)
+	}
+	if sd.SegmentationTypeID != orig.SegmentationTypeID {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x%02X", sd.SegmentationTypeID, orig.SegmentationTypeID)
+	}
+	if sd.DurationTicks != orig.DurationTicks {
+		t.Errorf("DurationTicks = %d, want %d", sd.DurationTicks, orig.DurationTicks)
+	}
+	if sd.UPIDType != orig.UPIDType {
+		t.Errorf("UPIDType = 0x%02X, want 0x%02X", sd.UPIDType, orig.UPIDType)
+	}
+	if !bytes.Equal(sd.UPID, orig.UPID) {
+		t.Errorf("UPID = %q, want %q", sd.UPID, orig.UPID)
+	}
+	if sd.SegNum != orig.SegNum {
+		t.Errorf("SegNum = %d, want %d", sd.SegNum, orig.SegNum)
+	}
+	if sd.SegExpected != orig.SegExpected {
+		t.Errorf("SegExpected = %d, want %d", sd.SegExpected, orig.SegExpected)
+	}
+}
+
+func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         555,
+					SegmentationTypeID: 0x35,
+					CancelIndicator:    true,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if !sd.CancelIndicator {
+		t.Error("CancelIndicator should be true")
+	}
+	if sd.SegEventID != 555 {
+		t.Errorf("SegEventID = %d, want 555", sd.SegEventID)
+	}
+	if sd.SegmentationTypeID != 0x35 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x35", sd.SegmentationTypeID)
+	}
+}
+
+func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
+	original := &Message{
+		ProtocolVersion: 0,
+		ASIndex:         7,
+		MessageNumber:   22,
+		DPIPIDIndex:     1500,
+		Operations: []Operation{
+			{
+				OpID: OpTimeSignalRequest,
+				Data: &TimeSignalRequestData{PreRollTime: 5000},
+			},
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         1001,
+					SegmentationTypeID: 0x34,
+					DurationTicks:      900000,
+					UPIDType:           0x01,
+					UPID:               []byte{0xAB, 0xCD},
+					SegNum:             1,
+					SegExpected:        1,
+				},
+			},
+			{OpID: OpSpliceNull},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if len(decoded.Operations) != 3 {
+		t.Fatalf("expected 3 operations, got %d", len(decoded.Operations))
+	}
+
+	if decoded.Operations[0].OpID != OpTimeSignalRequest {
+		t.Errorf("op[0].OpID = 0x%04X, want OpTimeSignalRequest", decoded.Operations[0].OpID)
+	}
+	if decoded.Operations[1].OpID != OpSegmentationDescriptorRequest {
+		t.Errorf("op[1].OpID = 0x%04X, want OpSegmentationDescriptorRequest", decoded.Operations[1].OpID)
+	}
+	if decoded.Operations[2].OpID != OpSpliceNull {
+		t.Errorf("op[2].OpID = 0x%04X, want OpSpliceNull", decoded.Operations[2].OpID)
+	}
+}
+
+func TestEncode_UnsupportedOpID(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{OpID: 0x9999},
+		},
+	}
+
+	_, err := Encode(msg)
+	if err == nil {
+		t.Fatal("expected error for unsupported OpID")
+	}
+}
+
+func TestEncode_WrongDataType(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Operation
+	}{
+		{
+			name: "splice_request with wrong type",
+			op: Operation{
+				OpID: OpSpliceRequest,
+				Data: &TimeSignalRequestData{},
+			},
+		},
+		{
+			name: "time_signal with wrong type",
+			op: Operation{
+				OpID: OpTimeSignalRequest,
+				Data: &SpliceRequestData{},
+			},
+		},
+		{
+			name: "seg_descriptor with wrong type",
+			op: Operation{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SpliceRequestData{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &Message{
+				Operations: []Operation{tt.op},
+			}
+			_, err := Encode(msg)
+			if err == nil {
+				t.Fatal("expected error for wrong data type")
+			}
+		})
+	}
+}
+
+func TestEncode_EmptyOperations(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{},
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if len(decoded.Operations) != 0 {
+		t.Errorf("expected 0 operations, got %d", len(decoded.Operations))
+	}
+}
+
+func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         42,
+					SegmentationTypeID: 0x30,
+					DurationTicks:      0,
+					UPIDType:           0x00,
+					UPID:               nil,
+					SegNum:             0,
+					SegExpected:        0,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.SegEventID != 42 {
+		t.Errorf("SegEventID = %d, want 42", sd.SegEventID)
+	}
+	if len(sd.UPID) != 0 {
+		t.Errorf("UPID length = %d, want 0", len(sd.UPID))
+	}
+}
+
+func TestEncode_TooManyOperations(t *testing.T) {
+	ops := make([]Operation, 256)
+	for i := range ops {
+		ops[i] = Operation{OpID: OpSpliceNull}
+	}
+	msg := &Message{Operations: ops}
+
+	_, err := Encode(msg)
+	if err == nil {
+		t.Fatal("expected error for >255 operations")
+	}
+}
+
+func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         1,
+					SegmentationTypeID: 0x34,
+					DurationTicks:      0x10000000000, // exceeds 40-bit
+					UPIDType:           0,
+					SegNum:             0,
+					SegExpected:        0,
+				},
+			},
+		},
+	}
+
+	_, err := Encode(msg)
+	if err == nil {
+		t.Fatal("expected error for DurationTicks exceeding 40-bit maximum")
+	}
+}
+
+func TestEncode_SegmentationTypeIDExceeds7Bit(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         1,
+					SegmentationTypeID: 0x80, // bit 7 set = invalid
+					UPIDType:           0,
+					SegNum:             0,
+					SegExpected:        0,
+				},
+			},
+		},
+	}
+
+	_, err := Encode(msg)
+	if err == nil {
+		t.Fatal("expected error for SegmentationTypeID with bit 7 set")
+	}
+}
+
+func TestEncode_LargeDurationTicks(t *testing.T) {
+	// Test a 40-bit duration value close to the maximum.
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         1,
+					SegmentationTypeID: 0x34,
+					DurationTicks:      0xFFFFFFFFFF, // max 40-bit value
+					UPIDType:           0,
+					SegNum:             0,
+					SegExpected:        0,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.DurationTicks != 0xFFFFFFFFFF {
+		t.Errorf("DurationTicks = 0x%X, want 0xFFFFFFFFFF", sd.DurationTicks)
+	}
+}

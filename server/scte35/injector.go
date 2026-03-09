@@ -142,6 +142,7 @@ type Injector struct {
 	rules          *RuleEngine
 	webhook        *WebhookDispatcher
 	muxerSink      func([]byte)
+	scte104Sink    func(*CueMessage)
 	ptsFn          func() int64
 	onStateChange  func()
 	heartbeatStop  chan struct{}
@@ -227,6 +228,15 @@ func (inj *Injector) sendHeartbeat() {
 		return
 	}
 	inj.muxerSink(data)
+
+	// Capture sink reference under lock, call outside.
+	inj.mu.Lock()
+	s104 := inj.scte104Sink
+	inj.mu.Unlock()
+
+	if s104 != nil {
+		s104(msg)
+	}
 }
 
 // InjectCue injects an immediate SCTE-35 cue message.
@@ -322,12 +332,18 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		webhookDurMs = msg.BreakDuration.Milliseconds()
 	}
 	cb := inj.onStateChange
+	s104 := inj.scte104Sink
 	inj.mu.Unlock()
 
 	// Fire state change callback outside the lock to avoid deadlock
 	// (callback may call State() which also acquires mu).
 	if cb != nil {
 		cb()
+	}
+
+	// Fire SCTE-104 sink outside the lock.
+	if s104 != nil {
+		s104(msg)
 	}
 
 	// Dispatch webhook after releasing lock.
@@ -395,10 +411,15 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "returned", cueIn)
 
 	cb := inj.onStateChange
+	s104 := inj.scte104Sink
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+
+	if s104 != nil {
+		s104(cueIn)
 	}
 
 	inj.dispatchWebhook("cue_in", eventID, CommandSpliceInsert, false, 0)
@@ -447,10 +468,15 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled", cancelMsg)
 
 	cb := inj.onStateChange
+	s104 := inj.scte104Sink
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+
+	if s104 != nil {
+		s104(cancelMsg)
 	}
 
 	inj.dispatchWebhook("cancel", eventID, CommandSpliceInsert, false, 0)
@@ -492,10 +518,15 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
 	inj.logEventLocked(segEventID, CommandTimeSignal, false, nil, false, "cancelled", msg)
 
 	cb := inj.onStateChange
+	s104 := inj.scte104Sink
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+
+	if s104 != nil {
+		s104(msg)
 	}
 
 	inj.dispatchWebhook("cancel_segmentation", segEventID, CommandTimeSignal, false, 0)
@@ -597,10 +628,15 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	cmdType := ae.CommandType
 	isOut := ae.IsOut
 	cb := inj.onStateChange
+	s104 := inj.scte104Sink
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+
+	if s104 != nil {
+		s104(updateMsg)
 	}
 
 	inj.dispatchWebhook("extend", eventID, cmdType, isOut, newDurationMs)
@@ -724,6 +760,16 @@ func (inj *Injector) OnStateChange(fn func()) {
 	inj.onStateChange = fn
 }
 
+// SetSCTE104Sink registers a callback invoked with the CueMessage when a cue
+// is injected, returned, cancelled, extended, or heartbeated. The callback is
+// called outside the lock (same pattern as OnStateChange). The sink receives
+// the CueMessage so the app layer can convert it to SCTE-104 format.
+func (inj *Injector) SetSCTE104Sink(fn func(*CueMessage)) {
+	inj.mu.Lock()
+	defer inj.mu.Unlock()
+	inj.scte104Sink = fn
+}
+
 // Close stops the heartbeat and all auto-return timers.
 func (inj *Injector) Close() {
 	if inj.closed.Swap(true) {
@@ -763,6 +809,9 @@ func (inj *Injector) logEventLocked(eventID uint32, cmdType uint8, isOut bool, d
 		Source:      "injector",
 	}
 	if msg != nil {
+		if msg.Source != "" {
+			entry.Source = msg.Source
+		}
 		entry.Descriptors = msg.Descriptors
 		if msg.SpliceTimePTS != nil {
 			pts := *msg.SpliceTimePTS

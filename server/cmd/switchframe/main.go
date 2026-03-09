@@ -49,6 +49,7 @@ type AppConfig struct {
 	SCTE35HeartbeatMs int64  // Heartbeat interval in milliseconds (0 = disabled)
 	SCTE35Verify      bool   // Round-trip encode verification
 	SCTE35WebhookURL  string // Webhook URL for event notifications
+	SCTE104           bool   // Enable SCTE-104 on MXL data flows
 
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
@@ -96,6 +97,9 @@ func run() error {
 	if err := app.initSCTE35(); err != nil {
 		return err
 	}
+	if err := app.initSCTE104(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -132,8 +136,11 @@ func parseConfig() (AppConfig, error) {
 	scte35VerifyFlag := flag.Bool("scte35-verify", true, "Verify SCTE-35 encoding by round-trip decode")
 	scte35WebhookFlag := flag.String("scte35-webhook", "", "Webhook URL for SCTE-35 event notifications")
 
+	// SCTE-104 flag (requires --scte35 and MXL integration).
+	scte104Flag := flag.Bool("scte104", false, "Enable SCTE-104 on MXL data flows (requires --scte35)")
+
 	// MXL integration flags.
-	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID (env: SWITCHFRAME_MXL_SOURCES)")
+	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
 	mxlOutputVideoDef := flag.String("mxl-output-video-def", "", "Path to MXL output video flow definition JSON")
 	mxlOutputAudioDef := flag.String("mxl-output-audio-def", "", "Path to MXL output audio flow definition JSON")
@@ -186,6 +193,7 @@ func parseConfig() (AppConfig, error) {
 		SCTE35HeartbeatMs: int64(*scte35HeartbeatFlag),
 		SCTE35Verify:      *scte35VerifyFlag,
 		SCTE35WebhookURL:  *scte35WebhookFlag,
+		SCTE104:           *scte104Flag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,

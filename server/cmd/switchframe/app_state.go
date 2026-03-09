@@ -117,10 +117,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	if a.scte35Injector != nil {
 		s := a.scte35Injector.State()
 		state.SCTE35 = &internal.SCTE35State{
-			Enabled:      true,
-			ActiveEvents: convertActiveEvents(s.ActiveEvents),
-			EventLog:     convertEventLog(s.EventLog),
-			HeartbeatOK:  s.HeartbeatOK,
+			Enabled:        true,
+			SCTE104Enabled: a.cfg.SCTE104,
+			ActiveEvents:   convertActiveEvents(s.ActiveEvents),
+			EventLog:       convertEventLog(s.EventLog),
+			HeartbeatOK:    s.HeartbeatOK,
 			Config: internal.SCTE35Config{
 				HeartbeatIntervalMs: a.cfg.SCTE35HeartbeatMs,
 				DefaultPreRollMs:    a.cfg.SCTE35PreRollMs,

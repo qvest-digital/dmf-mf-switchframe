@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,13 @@ type videoWriterRef struct {
 	rate   Rational
 }
 
+// dataWriterRef wraps a DiscreteWriter and its grain rate for atomic access.
+// Same pattern as videoWriterRef — atomic.Pointer for lock-free reads.
+type dataWriterRef struct {
+	writer DiscreteWriter
+	rate   Rational
+}
+
 // Writer writes processed video and audio to MXL flows.
 //
 // Video uses a steady-rate output model: WriteVideo converts and buffers
@@ -52,6 +60,9 @@ type Writer struct {
 
 	// videoRef is lock-free: accessed atomically from the ticker hot path.
 	videoRef atomic.Pointer[videoWriterRef]
+
+	// dataRef is lock-free: accessed atomically from event-driven WriteDataGrain calls.
+	dataRef atomic.Pointer[dataWriterRef]
 
 	// mu protects audioWriter/audioRate and Close() resource cleanup.
 	mu          sync.Mutex
@@ -103,6 +114,38 @@ func (w *Writer) SetAudioWriter(cw ContinuousWriter, sampleRate Rational) {
 	defer w.mu.Unlock()
 	w.audioWriter = cw
 	w.audioRate = sampleRate
+}
+
+// SetDataWriter sets the discrete writer for data output (e.g., SCTE-104).
+func (w *Writer) SetDataWriter(dw DiscreteWriter, grainRate Rational) {
+	w.dataRef.Store(&dataWriterRef{writer: dw, rate: grainRate})
+}
+
+// WriteDataGrain writes a data grain to MXL shared memory with the current
+// timestamp. Event-driven — called from the injector sink, NOT on a ticker.
+// Returns an error if no data writer is set or if the writer is closed.
+func (w *Writer) WriteDataGrain(data []byte) error {
+	if w.closed.Load() {
+		return errors.New("mxl writer: closed")
+	}
+
+	ref := w.dataRef.Load()
+	if ref == nil || ref.writer == nil {
+		return errors.New("mxl writer: no data writer set")
+	}
+
+	var index uint64
+	if CurrentIndex != nil {
+		index = CurrentIndex(ref.rate)
+	}
+
+	if err := ref.writer.WriteGrain(index, data); err != nil {
+		w.log.Error("mxl writer: failed to write data grain",
+			"error", err, "index", index, "len", len(data))
+		return err
+	}
+
+	return nil
 }
 
 // WriteVideo converts a YUV420p frame to V210 and stores it for the
@@ -273,6 +316,12 @@ func (w *Writer) Close() error {
 			firstErr = err
 		}
 		w.audioWriter = nil
+	}
+	if ref := w.dataRef.Load(); ref != nil && ref.writer != nil {
+		if err := ref.writer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		w.dataRef.Store(nil)
 	}
 	return firstErr
 }
