@@ -1914,3 +1914,67 @@ func TestInjector_ExtendBreak_SpliceInsert_Unchanged(t *testing.T) {
 		t.Fatalf("expected splice_insert, got 0x%02x", decoded.CommandType)
 	}
 }
+
+func TestInjector_SyntheticBreakState_TimeSignal(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 300, UPIDType: 0x0F, UPID: []byte("test")},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	synth := inj.SyntheticBreakState()
+	if synth == nil {
+		t.Fatal("expected non-nil synthetic state")
+	}
+
+	decoded, err := Decode(synth)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// Must be time_signal, not splice_insert.
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal (0x%02x), got 0x%02x", CommandTimeSignal, decoded.CommandType)
+	}
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	if decoded.Descriptors[0].SegmentationType != 0x34 {
+		t.Fatalf("expected seg type 0x34, got 0x%02x", decoded.Descriptors[0].SegmentationType)
+	}
+}
+
+func TestInjector_SyntheticBreakState_SpliceInsert(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, true)
+	_, _ = inj.InjectCue(msg)
+
+	synth := inj.SyntheticBreakState()
+	if synth == nil {
+		t.Fatal("expected non-nil synthetic state")
+	}
+
+	decoded, err := Decode(synth)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got 0x%02x", decoded.CommandType)
+	}
+}

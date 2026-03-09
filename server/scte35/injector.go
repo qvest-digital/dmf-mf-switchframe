@@ -862,7 +862,28 @@ func (inj *Injector) SyntheticBreakState() []byte {
 		}
 	}
 
-	msg := NewSpliceInsert(ae.EventID, remaining, ae.IsOut, ae.AutoReturn)
+	var msg *CueMessage
+	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
+		// Rebuild a time_signal with the original descriptors and remaining duration.
+		// Use immediate mode (no PTS) since late-joiners have no PTS context.
+		var descs []SegmentationDescriptor
+		for _, d := range ae.Descriptors {
+			desc := d // copy
+			if remaining > 0 {
+				ticks := uint64(remaining.Seconds() * 90000)
+				desc.DurationTicks = &ticks
+			}
+			descs = append(descs, desc)
+		}
+		msg = &CueMessage{
+			CommandType: CommandTimeSignal,
+			Descriptors: descs,
+			Timing:      "immediate",
+		}
+	} else {
+		msg = NewSpliceInsert(ae.EventID, remaining, ae.IsOut, ae.AutoReturn)
+	}
+
 	data, err := msg.Encode(false)
 	if err != nil {
 		return nil
