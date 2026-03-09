@@ -153,6 +153,12 @@ type Injector struct {
 	mu             sync.Mutex
 }
 
+// maskPTS33 masks a PTS value to the 33-bit range used by MPEG-TS.
+// PTS wraps at 2^33 = 8,589,934,592 ticks (~26.5 hours at 90 kHz).
+func maskPTS33(pts int64) int64 {
+	return pts & 0x1FFFFFFFF
+}
+
 // NewInjector creates a new SCTE-35 injector.
 // muxerSink is called with encoded SCTE-35 binary data to inject into the TS
 // muxer. ptsFn returns the current video PTS in 90 kHz ticks.
@@ -261,7 +267,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// Populate PTS for time_signal if not already set and not explicitly immediate.
 	// Timing="immediate" means time_specified_flag=0 (no PTS), per SCTE-35 spec.
 	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil && msg.Timing != "immediate" {
-		currentPTS := inj.ptsFn()
+		currentPTS := maskPTS33(inj.ptsFn())
 		msg.SpliceTimePTS = &currentPTS
 	}
 
@@ -400,7 +406,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 // during the pre-roll window until the splice PTS is reached.
 func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, error) {
 	currentPTS := inj.ptsFn()
-	spliceTimePTS := currentPTS + preRollMs*90 // 90 kHz ticks per ms
+	spliceTimePTS := maskPTS33(currentPTS + preRollMs*90) // 90 kHz ticks per ms, masked to 33 bits
 	msg.SpliceTimePTS = &spliceTimePTS
 	msg.Timing = "scheduled"
 

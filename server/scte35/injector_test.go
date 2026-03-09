@@ -1661,3 +1661,98 @@ func TestWebhook_DispatchAfterClose(t *testing.T) {
 	// Dispatch after Close should not panic.
 	wh.Dispatch(WebhookEvent{Type: "test", EventID: 1})
 }
+
+func TestInjector_ScheduleCue_PTSWraparound(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	// PTS near 33-bit max (2^33 - 90000 = 8589844592)
+	nearMax := int64(1<<33 - 90000)
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return nearMax }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	eventID, err := inj.ScheduleCue(msg, 2000) // 2 second preroll → PTS wraps
+	if err != nil {
+		t.Fatalf("schedule failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if decoded.SpliceTimePTS == nil {
+		t.Fatal("expected SpliceTimePTS to be set")
+	}
+
+	// PTS must be masked to 33 bits.
+	pts := *decoded.SpliceTimePTS
+	if pts < 0 || pts >= 1<<33 {
+		t.Fatalf("PTS %d exceeds 33-bit range", pts)
+	}
+
+	// Verify wraparound: nearMax + 2000*90 = 8589844592 + 180000 = 8590024592
+	// Masked: 8590024592 & 0x1FFFFFFFF = 8590024592 - 8589934592 = 90000
+	expected := int64((nearMax + 2000*90) & 0x1FFFFFFFF)
+	if pts != expected {
+		t.Fatalf("PTS = %d, want %d (wrapped)", pts, expected)
+	}
+
+	// Verify the in-memory state also stores the masked PTS (not raw overflow).
+	state := inj.State()
+	ae, ok := state.ActiveEvents[eventID]
+	if !ok {
+		t.Fatal("expected active event in state")
+	}
+	if ae.SpliceTimePTS < 0 || ae.SpliceTimePTS >= 1<<33 {
+		t.Fatalf("State().SpliceTimePTS %d exceeds 33-bit range", ae.SpliceTimePTS)
+	}
+}
+
+func TestInjector_InjectCue_TimeSignal_PTSWraparound(t *testing.T) {
+	// PTS that exceeds 33-bit range to verify masking.
+	overMax := int64(1<<33 + 5000)
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return overMax }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 1},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Verify the in-memory state stores the masked PTS.
+	state := inj.State()
+	ae, ok := state.ActiveEvents[eventID]
+	if !ok {
+		t.Fatal("expected active event in state")
+	}
+	if ae.SpliceTimePTS < 0 || ae.SpliceTimePTS >= 1<<33 {
+		t.Fatalf("State().SpliceTimePTS %d exceeds 33-bit range", ae.SpliceTimePTS)
+	}
+
+	// The masked value should be 5000 (overMax & 0x1FFFFFFFF).
+	expected := int64(overMax & 0x1FFFFFFFF)
+	if ae.SpliceTimePTS != expected {
+		t.Fatalf("State().SpliceTimePTS = %d, want %d", ae.SpliceTimePTS, expected)
+	}
+}
