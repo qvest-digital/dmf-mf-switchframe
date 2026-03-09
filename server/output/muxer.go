@@ -182,6 +182,9 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 // settable through the public Muxer API. A future go-astits version or
 // fork could expose program-level descriptor insertion. ES_info
 // placement is widely accepted by downstream equipment and decoders.
+//
+// TODO(go-astits): Move CUEI descriptor to PMT program_info loop when
+// go-astits exposes program-level descriptor insertion via public API.
 func cueiDescriptor() *astits.Descriptor {
 	return &astits.Descriptor{
 		Tag: astits.DescriptorTagRegistration,
