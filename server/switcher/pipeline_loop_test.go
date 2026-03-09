@@ -299,6 +299,32 @@ func TestSetRawMonitorSink_TriggersPipelineRebuild(t *testing.T) {
 	require.Equal(t, epochBefore+1, epochAfter, "SetRawMonitorSink should trigger rebuildPipeline")
 }
 
+func TestSetPipelineFormat_SwapsPipeline(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Set up pipeCodecs + initial pipeline.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.rebuildPipeline()
+	require.NotNil(t, sw.pipeline.Load())
+
+	epochBefore := sw.pipelineEpoch.Load()
+
+	// Change format — should swap pipeline and increment epoch.
+	newFormat := PipelineFormat{Width: 1280, Height: 720, FPSNum: 30, FPSDen: 1, Name: "720p30"}
+	err := sw.SetPipelineFormat(newFormat)
+	require.NoError(t, err)
+
+	epochAfter := sw.pipelineEpoch.Load()
+	require.Greater(t, epochAfter, epochBefore, "SetPipelineFormat should increment epoch")
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))

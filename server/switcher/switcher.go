@@ -728,20 +728,33 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
-	// Recreate frame pool at new dimensions. Existing sourceDecoders retain
-	// their pointer to the old pool — this is intentional. Old-pool buffers
-	// drain naturally: Release() discards wrong-sized buffers via cap check,
-	// and new frames acquire from the new pool via Switcher.framePool.
+	// Recreate frame pool at new dimensions. Old pool drains naturally —
+	// Release() discards wrong-sized buffers via cap check.
 	s.framePool = NewFramePool(32, f.Width, f.Height)
 
-	// Update frame sync tick rate if active
+	// Update frame sync tick rate if active.
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.SetTickRate(f.FrameDuration())
 	}
 
-	// Force encoder recreation on next frame
+	// Force encoder recreation on next frame.
 	if s.pipeCodecs != nil {
 		s.pipeCodecs.invalidateEncoder()
+	}
+
+	// Build new pipeline with new pool + new format, swap atomically.
+	hasPipeCodecs := s.pipeCodecs != nil
+	s.mu.Unlock()
+
+	if hasPipeCodecs {
+		nodes := s.buildNodeList()
+		p := &Pipeline{}
+		if err := p.Build(f, s.framePool, nodes); err != nil {
+			s.log.Warn("pipeline rebuild failed on format change", "error", err)
+		} else {
+			p.epoch = s.pipelineEpoch.Add(1)
+			s.swapPipeline(p)
+		}
 	}
 
 	s.log.Info("pipeline format changed",
@@ -751,8 +764,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		"fps", fmt.Sprintf("%d/%d", f.FPSNum, f.FPSDen))
 
 	atomic.AddUint64(&s.seq, 1)
+	s.mu.RLock()
 	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	s.notifyStateChange(snapshot)
 	return nil
