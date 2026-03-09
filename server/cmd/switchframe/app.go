@@ -371,10 +371,10 @@ func (a *App) initSubsystems() error {
 		a.debugCollector.Register("replay", a.replayMgr)
 
 		// Wire replay playback lifecycle: register/unregister replay as a
-		// virtual switcher source + mixer channel.
+		// raw YUV switcher source + mixer channel.
 		a.replayMgr.OnPlaybackLifecycle(
 			func() {
-				a.sw.RegisterVirtualSource("replay", a.replayRelay)
+				a.sw.RegisterReplaySource("replay")
 				a.mixer.AddChannel("replay")
 				_ = a.mixer.SetAFV("replay", true)
 				// If program is already "replay" (user cut before OnReady),
@@ -385,6 +385,31 @@ func (a *App) initSubsystems() error {
 				a.sw.UnregisterSource("replay")
 				a.mixer.RemoveChannel("replay")
 			},
+		)
+
+		// Wire raw video output: player sends decoded YUV directly to
+		// the switcher pipeline (keying → compositor → encode → program).
+		a.replayMgr.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64) {
+			pf := &switcher.ProcessingFrame{
+				YUV:        yuv,
+				Width:      w,
+				Height:     h,
+				PTS:        pts,
+				DTS:        pts,
+				IsKeyframe: true,
+			}
+			a.sw.IngestReplayVideo("replay", pf)
+		})
+
+		// Wire audio directly to mixer (skip relay encode/decode hop).
+		a.replayMgr.SetAudioOutput(func(frame *media.AudioFrame) {
+			a.mixer.IngestFrame("replay", frame)
+		})
+
+		// Wire WSOLA audio codec factories for slow-motion time-stretching.
+		a.replayMgr.SetAudioCodecFactories(
+			audioDecoderFactory(),
+			audioEncoderFactory(),
 		)
 
 		// Wire replay VideoInfo so MoQ subscribers can discover tracks.
@@ -801,6 +826,39 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Info("raw program monitor enabled",
 			"width", rawW, "height", rawH,
 			"scale", a.cfg.RawMonitorScale)
+
+		// Also register "replay-raw" for raw YUV replay monitoring.
+		if a.replayMgr != nil {
+			rawReplayRelay := a.server.RegisterStream("replay-raw")
+			rawReplayRelay.SetVideoInfo(distribution.VideoInfo{
+				Codec:  "raw/yuv420",
+				Width:  rawW,
+				Height: rawH,
+			})
+
+			a.replayMgr.SetRawMonitorOutput(func(yuv []byte, w, h int, pts int64) {
+				packed := make([]byte, 8+len(yuv))
+				packed[0] = byte(w >> 24)
+				packed[1] = byte(w >> 16)
+				packed[2] = byte(w >> 8)
+				packed[3] = byte(w)
+				packed[4] = byte(h >> 24)
+				packed[5] = byte(h >> 16)
+				packed[6] = byte(h >> 8)
+				packed[7] = byte(h)
+				copy(packed[8:], yuv)
+
+				rawReplayRelay.BroadcastVideo(&media.VideoFrame{
+					PTS:        pts,
+					DTS:        pts,
+					IsKeyframe: true,
+					WireData:   packed,
+					Codec:      "raw/yuv420",
+				})
+			})
+
+			slog.Info("raw replay monitor enabled", "width", rawW, "height", rawH)
+		}
 	}
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
