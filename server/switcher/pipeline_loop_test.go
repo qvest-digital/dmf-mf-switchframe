@@ -151,6 +151,16 @@ func TestPipelineLoop_WaitAndClose(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestPipelineLoop_SnapshotIncludesEpoch(t *testing.T) {
+	n := &countingNode{name: "a", active: true}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+	p.epoch = 42
+
+	snap := p.Snapshot()
+	require.Equal(t, uint64(42), snap["epoch"])
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))

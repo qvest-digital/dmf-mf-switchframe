@@ -252,6 +252,10 @@ type Switcher struct {
 	// future hot-swap reconfiguration (Phase 4).
 	pipeline atomic.Pointer[Pipeline]
 
+	// Pipeline epoch — monotonically increasing counter for downstream
+	// format change detection. Incremented on every pipeline rebuild/swap.
+	pipelineEpoch atomic.Uint64
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
