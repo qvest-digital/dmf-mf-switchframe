@@ -9,6 +9,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
@@ -73,6 +74,18 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Concurrency guard: only one macro at a time.
+	a.macroMu.Lock()
+	if a.macroState != nil && a.macroState.Running {
+		a.macroMu.Unlock()
+		httperr.Write(w, http.StatusConflict, "macro already running")
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	a.macroCancel = cancel
+	a.macroState = &internal.MacroExecutionState{Running: true, MacroName: m.Name}
+	a.macroMu.Unlock()
+
 	target := &apiMacroTarget{
 		switcher:     a.switcher,
 		mixer:        a.mixer,
@@ -85,13 +98,77 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		scte35:       a.scte35,
 	}
 
-	if err := macro.Run(r.Context(), m, target, nil); err != nil {
-		httperr.WriteErr(w, errorStatus(err), err)
+	onProgress := func(state macro.ExecutionState) {
+		ms := &internal.MacroExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		}
+		ms.Steps = make([]internal.MacroStepState, len(state.Steps))
+		for i, s := range state.Steps {
+			ms.Steps[i] = internal.MacroStepState{
+				Action:      string(s.Action),
+				Summary:     s.Summary,
+				Status:      string(s.Status),
+				Error:       s.Error,
+				WaitMs:      s.WaitMs,
+				WaitStartMs: s.WaitStartMs,
+			}
+		}
+		a.macroMu.Lock()
+		a.macroState = ms
+		a.macroMu.Unlock()
+		if a.broadcastFn != nil {
+			a.broadcastFn()
+		}
+	}
+
+	runErr := macro.Run(ctx, m, target, onProgress)
+	cancel()
+
+	// Mark completed — state stays for dismiss
+	a.macroMu.Lock()
+	if a.macroState != nil {
+		a.macroState.Running = false
+	}
+	a.macroCancel = nil
+	a.macroMu.Unlock()
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
+
+	if runErr != nil {
+		httperr.WriteErr(w, errorStatus(runErr), runErr)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleDismissMacro clears the macro execution state.
+func (a *API) handleDismissMacro(w http.ResponseWriter, r *http.Request) {
+	a.macroMu.Lock()
+	a.macroState = nil
+	a.macroMu.Unlock()
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCancelMacro cancels a running macro.
+func (a *API) handleCancelMacro(w http.ResponseWriter, r *http.Request) {
+	a.macroMu.Lock()
+	cancel := a.macroCancel
+	a.macroMu.Unlock()
+	if cancel == nil {
+		httperr.Write(w, http.StatusNotFound, "no macro running")
+		return
+	}
+	cancel()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // apiMacroTarget adapts the API's subsystems to the macro.MacroTarget

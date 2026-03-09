@@ -1,8 +1,10 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/audio"
@@ -177,6 +179,10 @@ type API struct {
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
+	macroMu       sync.Mutex
+	macroState    *internal.MacroExecutionState
+	macroCancel   context.CancelFunc
+	broadcastFn   func()
 }
 
 // NewAPI creates an API that delegates to sw.
@@ -195,13 +201,21 @@ func (a *API) SetEnrichFunc(fn func(internal.ControlRoomState) internal.ControlR
 	a.enrichFn = fn
 }
 
+// SetBroadcastFunc sets the function used to trigger a state broadcast.
+func (a *API) SetBroadcastFunc(fn func()) {
+	a.broadcastFn = fn
+}
+
 // enrichedState returns the current switcher state, enriched with output,
 // graphics, operator, and replay information if an enrich function is set.
 func (a *API) enrichedState() internal.ControlRoomState {
 	s := a.switcher.State()
 	if a.enrichFn != nil {
-		return a.enrichFn(s)
+		s = a.enrichFn(s)
 	}
+	a.macroMu.Lock()
+	s.Macro = a.macroState
+	a.macroMu.Unlock()
 	return s
 }
 
@@ -311,6 +325,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/graphics/frame", a.handleGraphicsFrame)
 	}
 	if a.macroStore != nil {
+		mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)
+		mux.HandleFunc("POST /api/macros/execution/cancel", a.handleCancelMacro)
 		mux.HandleFunc("GET /api/macros", a.handleListMacros)
 		mux.HandleFunc("GET /api/macros/{name}", a.handleGetMacro)
 		mux.HandleFunc("PUT /api/macros/{name}", a.handleSaveMacro)
