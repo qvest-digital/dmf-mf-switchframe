@@ -44,3 +44,73 @@ func TestProcessingFrameDeepCopy(t *testing.T) {
 	copied.YUV[0] = 255
 	require.NotEqual(t, original.YUV[0], copied.YUV[0])
 }
+
+func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
+	pool := NewFramePool(4, 4, 4)
+	defer pool.Close()
+
+	original := &ProcessingFrame{
+		Width:      4,
+		Height:     4,
+		YUV:        pool.Acquire(),
+		PTS:        1000,
+		DTS:        900,
+		IsKeyframe: true,
+		GroupID:     5,
+		Codec:      "h264",
+		pool:       pool,
+	}
+	copy(original.YUV, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+
+	copied := original.DeepCopy()
+
+	// Copy inherits pool reference
+	require.NotNil(t, copied.pool)
+
+	// Data is independent
+	require.Equal(t, original.YUV, copied.YUV)
+	copied.YUV[0] = 255
+	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+
+	// Release both — should go back to pool
+	original.ReleaseYUV()
+	copied.ReleaseYUV()
+
+	hits, misses := pool.Stats()
+	require.Equal(t, uint64(2), hits)   // 2 acquires (original + copy)
+	require.Equal(t, uint64(0), misses) // pool had 4 slots
+}
+
+func TestProcessingFrameReleaseYUVWithPool(t *testing.T) {
+	pool := NewFramePool(4, 8, 8)
+	defer pool.Close()
+
+	pf := &ProcessingFrame{
+		Width:  8,
+		Height: 8,
+		YUV:    pool.Acquire(),
+		pool:   pool,
+	}
+
+	pf.ReleaseYUV()
+	require.Nil(t, pf.YUV)
+
+	// Double release is safe
+	pf.ReleaseYUV()
+}
+
+func TestProcessingFrameNilPoolFallback(t *testing.T) {
+	// No pool — DeepCopy falls back to make()
+	original := &ProcessingFrame{
+		Width:  4,
+		Height: 4,
+		YUV:    make([]byte, 4*4*3/2),
+	}
+
+	copied := original.DeepCopy()
+	require.Len(t, copied.YUV, 4*4*3/2)
+
+	// ReleaseYUV with nil pool doesn't panic
+	copied.ReleaseYUV()
+	require.Nil(t, copied.YUV)
+}

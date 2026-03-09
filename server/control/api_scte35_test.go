@@ -863,6 +863,40 @@ func TestHandleSCTE35Rules_FromTemplate_InvalidJSON(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// --- buildCueMessage unit tests ---
+
+func TestBuildCueMessage_SpliceNull(t *testing.T) {
+	req := scte35CueRequest{
+		CommandType: "splice_null",
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Equal(t, uint8(scte35.CommandSpliceNull), msg.CommandType)
+	require.Equal(t, "api", msg.Source)
+}
+
+func TestBuildCueMessage_SpliceInsert_Source(t *testing.T) {
+	isOut := true
+	req := scte35CueRequest{
+		CommandType: "splice_insert",
+		IsOut:       &isOut,
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Equal(t, uint8(scte35.CommandSpliceInsert), msg.CommandType)
+	require.Equal(t, "api", msg.Source)
+}
+
+func TestBuildCueMessage_TimeSignal_Source(t *testing.T) {
+	req := scte35CueRequest{
+		CommandType: "time_signal",
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Equal(t, uint8(scte35.CommandTimeSignal), msg.CommandType)
+	require.Equal(t, "api", msg.Source)
+}
+
 func TestHandleSCTE35Rules_FromTemplate_EmptyName(t *testing.T) {
 	api, _, _ := setupSCTE35TestAPI(t)
 

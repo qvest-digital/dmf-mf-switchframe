@@ -246,3 +246,30 @@ func TestKeyProcessor_UVBlendingAveraged(t *testing.T) {
 		require.Equal(t, byte(50), cr, "Cr[%d] should be 50", i)
 	}
 }
+
+func TestKeyProcessor_OnChangeCalledOnSetKey(t *testing.T) {
+	kp := NewKeyProcessor()
+	called := false
+	kp.OnChange(func() { called = true })
+
+	kp.SetKey("cam1", KeyConfig{Enabled: true, Type: KeyTypeChroma})
+	require.True(t, called, "OnChange should be called after SetKey")
+}
+
+func TestKeyProcessor_OnChangeCalledOnRemoveKey(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{Enabled: true, Type: KeyTypeChroma})
+
+	called := false
+	kp.OnChange(func() { called = true })
+
+	kp.RemoveKey("cam1")
+	require.True(t, called, "OnChange should be called after RemoveKey")
+}
+
+func TestKeyProcessor_OnChangeNilSafe(t *testing.T) {
+	kp := NewKeyProcessor()
+	// No OnChange registered — should not panic.
+	kp.SetKey("cam1", KeyConfig{Enabled: true, Type: KeyTypeChroma})
+	kp.RemoveKey("cam1")
+}

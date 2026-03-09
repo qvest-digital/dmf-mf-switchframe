@@ -28,14 +28,15 @@ func Encode(msg *Message) ([]byte, error) {
 		opsData = append(opsData, opBytes...)
 	}
 
-	// MOM header: messageSize(2) + protocolVersion(1) + AS_index(1) +
+	// MOM fields after messageSize: protocolVersion(1) + AS_index(1) +
 	// message_number(1) + DPI_PID_index(2) + SCTE35_protocol_version(1) +
-	// timestamp(1) + num_ops(1) = 10 bytes
-	headerSize := 10
-	messageSize := uint16(headerSize + len(opsData))
+	// timestamp(1) + num_ops(1) = 8 bytes.
+	// messageSize counts the remaining bytes after itself (excludes its own 2 bytes).
+	const fieldsAfterMsgSize = 8
+	messageSize := uint16(fieldsAfterMsgSize + len(opsData))
 
-	// Total wire size: OpID(2) + header + ops
-	buf := make([]byte, 2+int(messageSize))
+	// Total wire size: OpID(2) + messageSize(2) + fieldsAfterMsgSize + ops
+	buf := make([]byte, 2+2+int(messageSize))
 
 	// OpID = 0xFFFF (MOM)
 	binary.BigEndian.PutUint16(buf[0:2], OpMultipleOperationMessage)
@@ -58,7 +59,9 @@ func Encode(msg *Message) ([]byte, error) {
 	// SCTE35_protocol_version (always 0)
 	buf[9] = 0
 
-	// timestamp (placeholder byte)
+	// timestamp: SCTE-104 defines a multi-byte timestamp structure, but many
+	// implementations use a single zero byte (no timestamp). This simplification
+	// is widely accepted by downstream splicer equipment.
 	buf[10] = 0
 
 	// num_ops
@@ -137,31 +140,37 @@ func encodeTimeSignalRequest(data any) ([]byte, error) {
 }
 
 // encodeSegmentationDescriptor serializes a SegmentationDescriptorRequest.
+//
+// Wire format per SCTE 104 2021 Table 8-29:
+//
+//	Cancel:     seg_event_id(4) + flags_byte(1) = 5 bytes
+//	Non-cancel: seg_event_id(4) + flags_byte(1) + duration(5) + upid_type(1) +
+//	            upid_length(1) + upid[N] + type_id(1) + seg_num(1) + segs_expected(1)
 func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	sd, ok := data.(*SegmentationDescriptorRequest)
 	if !ok {
 		return nil, fmt.Errorf("segmentation_descriptor: expected *SegmentationDescriptorRequest, got %T", data)
 	}
 
-	if sd.SegmentationTypeID > 0x7F {
-		return nil, fmt.Errorf("segmentation_descriptor: SegmentationTypeID 0x%02X exceeds 7-bit maximum (bit 7 reserved for cancel indicator)", sd.SegmentationTypeID)
-	}
-
 	if sd.CancelIndicator {
-		// Cancel: seg_event_id(4) + type_with_cancel_bit(1) = 5 bytes
+		// Cancel: seg_event_id(4) + flags_byte(1) = 5 bytes
 		buf := make([]byte, 5)
 		binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
-		buf[4] = sd.SegmentationTypeID | 0x80
+		buf[4] = 0x80 // cancel=1, reserved=0, program_seg_flag=0
 		return buf, nil
 	}
 
-	// Non-cancel: seg_event_id(4) + type(1) + duration(5) + upid_type(1) +
-	// upid_length(1) + upid[N] + seg_num(1) + segs_expected(1)
+	// Non-cancel: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
+	// upid_length(1) + upid[N] + type_id(1) + seg_num(1) + segs_expected(1) = 15 + N
 	upidLen := len(sd.UPID)
-	buf := make([]byte, 14+upidLen)
+	buf := make([]byte, 15+upidLen)
 
 	binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
-	buf[4] = sd.SegmentationTypeID
+	if !sd.ProgramSegmentationFlag {
+		return nil, fmt.Errorf("segmentation_descriptor: component-level encoding not supported")
+	}
+	// flags_byte: cancel=0, reserved=0, program_segmentation_flag=1
+	buf[4] = 0x01
 
 	// 5-byte (40-bit) duration in 90kHz ticks, big-endian.
 	if sd.DurationTicks > 0xFFFFFFFFFF {
@@ -178,8 +187,9 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 
 	copy(buf[12:12+upidLen], sd.UPID)
 
-	buf[12+upidLen] = sd.SegNum
-	buf[12+upidLen+1] = sd.SegExpected
+	buf[12+upidLen] = sd.SegmentationTypeID
+	buf[12+upidLen+1] = sd.SegNum
+	buf[12+upidLen+2] = sd.SegExpected
 
 	return buf, nil
 }

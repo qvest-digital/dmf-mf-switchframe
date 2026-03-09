@@ -85,6 +85,7 @@ type RuleEngine struct {
 	mu            sync.RWMutex
 	rules         []Rule
 	defaultAction RuleAction
+	regexCache    sync.Map // pattern string -> *regexp.Regexp
 }
 
 // NewRuleEngine creates a new RuleEngine with default action "pass".
@@ -99,6 +100,7 @@ func (re *RuleEngine) AddRule(r Rule) {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 	re.rules = append(re.rules, r)
+	re.regexCache = sync.Map{}
 }
 
 // SetDefaultAction sets the action returned when no rule matches.
@@ -114,6 +116,7 @@ func (re *RuleEngine) SetRules(rules []Rule) {
 	defer re.mu.Unlock()
 	re.rules = make([]Rule, len(rules))
 	copy(re.rules, rules)
+	re.regexCache = sync.Map{}
 }
 
 // Evaluate checks msg against all rules in order (first-match wins).
@@ -136,7 +139,7 @@ func (re *RuleEngine) Evaluate(msg *CueMessage, destID string) (RuleAction, *Cue
 			continue
 		}
 
-		if matchRule(r, msg) {
+		if re.matchRule(r, msg) {
 			if r.Action == ActionReplace && r.ReplaceWith != nil {
 				modified := applyReplace(msg, r.ReplaceWith)
 				return r.Action, modified
@@ -177,8 +180,21 @@ func applyReplace(msg *CueMessage, params *ReplaceParams) *CueMessage {
 	return &cp
 }
 
+// getCompiledRegex returns a compiled regex from the cache, compiling on miss.
+func (re *RuleEngine) getCompiledRegex(pattern string) (*regexp.Regexp, error) {
+	if cached, ok := re.regexCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp), nil
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	re.regexCache.Store(pattern, compiled)
+	return compiled, nil
+}
+
 // matchRule checks if all/any conditions in the rule match the message.
-func matchRule(r Rule, msg *CueMessage) bool {
+func (re *RuleEngine) matchRule(r Rule, msg *CueMessage) bool {
 	if len(r.Conditions) == 0 {
 		return false
 	}
@@ -190,7 +206,7 @@ func matchRule(r Rule, msg *CueMessage) bool {
 
 	if logic == LogicOR {
 		for _, c := range r.Conditions {
-			if evaluateCondition(c, msg) {
+			if re.evaluateCondition(c, msg) {
 				return true
 			}
 		}
@@ -199,7 +215,7 @@ func matchRule(r Rule, msg *CueMessage) bool {
 
 	// Default: AND logic — all conditions must match.
 	for _, c := range r.Conditions {
-		if !evaluateCondition(c, msg) {
+		if !re.evaluateCondition(c, msg) {
 			return false
 		}
 	}
@@ -207,9 +223,20 @@ func matchRule(r Rule, msg *CueMessage) bool {
 }
 
 // evaluateCondition evaluates a single condition against a message.
-func evaluateCondition(c RuleCondition, msg *CueMessage) bool {
-	fieldVal := extractField(c.Field, msg)
+// For descriptor-level fields, returns true if ANY descriptor matches.
+func (re *RuleEngine) evaluateCondition(c RuleCondition, msg *CueMessage) bool {
+	values := extractFieldValues(c.Field, msg)
 
+	for _, fieldVal := range values {
+		if re.evaluateConditionValue(c, fieldVal) {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluateConditionValue evaluates a single condition against a single field value.
+func (re *RuleEngine) evaluateConditionValue(c RuleCondition, fieldVal string) bool {
 	switch c.Operator {
 	case "=":
 		return fieldVal == c.Value
@@ -228,48 +255,68 @@ func evaluateCondition(c RuleCondition, msg *CueMessage) bool {
 	case "range":
 		return matchRange(fieldVal, c.Value)
 	case "matches":
-		matched, err := regexp.MatchString(c.Value, fieldVal)
-		return err == nil && matched
+		compiled, err := re.getCompiledRegex(c.Value)
+		if err != nil {
+			return false
+		}
+		return compiled.MatchString(fieldVal)
 	default:
 		return false
 	}
 }
 
-// extractField returns a string representation of a CueMessage field.
-func extractField(field string, msg *CueMessage) string {
+// extractFieldValues returns string representations of a CueMessage field.
+// For descriptor-level fields (segmentation_type_id, upid, duration with descriptors),
+// returns one value per descriptor. For single-value fields, returns a single-element slice.
+func extractFieldValues(field string, msg *CueMessage) []string {
 	switch field {
 	case "command_type":
-		return fmt.Sprintf("%d", msg.CommandType)
+		return []string{fmt.Sprintf("%d", msg.CommandType)}
 	case "event_id":
-		return fmt.Sprintf("%d", msg.EventID)
+		return []string{fmt.Sprintf("%d", msg.EventID)}
 	case "is_out":
 		if msg.IsOut {
-			return "true"
+			return []string{"true"}
 		}
-		return "false"
+		return []string{"false"}
 	case "segmentation_type_id":
-		if len(msg.Descriptors) > 0 {
-			return fmt.Sprintf("%d", msg.Descriptors[0].SegmentationType)
+		if len(msg.Descriptors) == 0 {
+			return []string{"0"}
 		}
-		return "0"
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			vals[i] = fmt.Sprintf("%d", d.SegmentationType)
+		}
+		return vals
 	case "duration":
 		// Check top-level BreakDuration first (splice_insert).
 		if msg.BreakDuration != nil {
-			return fmt.Sprintf("%d", msg.BreakDuration.Milliseconds())
+			return []string{fmt.Sprintf("%d", msg.BreakDuration.Milliseconds())}
 		}
-		// Fall back to first descriptor's duration ticks (time_signal).
-		if len(msg.Descriptors) > 0 && msg.Descriptors[0].DurationTicks != nil {
-			ms := ticksToMillis(*msg.Descriptors[0].DurationTicks)
-			return fmt.Sprintf("%d", ms)
+		// Return duration from each descriptor (time_signal).
+		if len(msg.Descriptors) == 0 {
+			return []string{"0"}
 		}
-		return "0"
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			if d.DurationTicks != nil {
+				vals[i] = fmt.Sprintf("%d", ticksToMillis(*d.DurationTicks))
+			} else {
+				vals[i] = "0"
+			}
+		}
+		return vals
 	case "upid":
-		if len(msg.Descriptors) > 0 {
-			return string(msg.Descriptors[0].UPID)
+		if len(msg.Descriptors) == 0 {
+			return []string{""}
 		}
-		return ""
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			vals[i] = string(d.UPID)
+		}
+		return vals
 	default:
-		return ""
+		return []string{""}
 	}
 }
 
@@ -297,20 +344,30 @@ func compareNumeric(a, b string) int {
 }
 
 // matchRange checks if a numeric value is within a "min-max" range (inclusive).
+// Handles negative values by finding the last '-' preceded by a digit (the
+// separator), not a leading negative sign or the '-' after 'e'/'E' in floats.
 func matchRange(val, rangeStr string) bool {
-	parts := strings.SplitN(rangeStr, "-", 2)
-	if len(parts) != 2 {
+	// Find the separator '-': the last '-' that is preceded by a digit.
+	sepIdx := -1
+	for i := len(rangeStr) - 1; i > 0; i-- {
+		if rangeStr[i] == '-' && rangeStr[i-1] >= '0' && rangeStr[i-1] <= '9' {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 0 {
 		return false
 	}
+
 	v, err := strconv.ParseFloat(val, 64)
 	if err != nil {
 		return false
 	}
-	lo, err := strconv.ParseFloat(parts[0], 64)
+	lo, err := strconv.ParseFloat(rangeStr[:sepIdx], 64)
 	if err != nil {
 		return false
 	}
-	hi, err := strconv.ParseFloat(parts[1], 64)
+	hi, err := strconv.ParseFloat(rangeStr[sepIdx+1:], 64)
 	if err != nil {
 		return false
 	}

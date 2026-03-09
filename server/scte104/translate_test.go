@@ -912,3 +912,250 @@ func TestToCueMessage_SpliceRequest_ZeroBreakDuration(t *testing.T) {
 		t.Errorf("BreakDuration should be nil for zero duration, got %v", *cue.BreakDuration)
 	}
 }
+
+func TestFromCueMessage_BreakDuration_Rounding(t *testing.T) {
+	// 350ms should round to 4 (x100ms = 400ms) with rounding,
+	// not 3 (300ms) with truncation.
+	dur := 350 * time.Millisecond
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       1,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.BreakDuration != 4 {
+		t.Errorf("BreakDuration = %d, want 4 (rounded from 350ms)", srd.BreakDuration)
+	}
+}
+
+// ---- FromCueMessage scheduled timing tests ----
+
+func TestFromCueMessage_SpliceInsert_ScheduledCueOut(t *testing.T) {
+	dur := 30 * time.Second
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       400,
+		IsOut:         true,
+		Timing:        "scheduled",
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartNormal {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceStartNormal)", srd.SpliceInsertType, SpliceStartNormal)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ScheduledCueIn(t *testing.T) {
+	cue := &scte35.CueMessage{
+		CommandType: scte35.CommandSpliceInsert,
+		EventID:     401,
+		IsOut:       false,
+		Timing:      "scheduled",
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceEndNormal {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceEndNormal)", srd.SpliceInsertType, SpliceEndNormal)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ImmediateCueOut_Regression(t *testing.T) {
+	// Regression: immediate cue-out must still produce SpliceStartImmediate.
+	dur := 10 * time.Second
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       402,
+		IsOut:         true,
+		Timing:        "immediate",
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartImmediate {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceStartImmediate)", srd.SpliceInsertType, SpliceStartImmediate)
+	}
+}
+
+func TestFromCueMessage_SpliceInsert_ImmediateCueIn_Regression(t *testing.T) {
+	// Regression: immediate cue-in must still produce SpliceEndImmediate.
+	cue := &scte35.CueMessage{
+		CommandType: scte35.CommandSpliceInsert,
+		EventID:     403,
+		IsOut:       false,
+		Timing:      "immediate",
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceEndImmediate {
+		t.Errorf("SpliceInsertType = %d, want %d (SpliceEndImmediate)", srd.SpliceInsertType, SpliceEndImmediate)
+	}
+}
+
+func TestRoundTrip_ScheduledPreservation(t *testing.T) {
+	// Round-trip: scheduled cue-out should preserve timing through
+	// CueMessage -> SCTE-104 -> CueMessage.
+	dur := 20 * time.Second
+	original := &scte35.CueMessage{
+		CommandType:     scte35.CommandSpliceInsert,
+		EventID:         500,
+		IsOut:           true,
+		Timing:          "scheduled",
+		AutoReturn:      true,
+		BreakDuration:   &dur,
+		UniqueProgramID: 10,
+	}
+
+	msg104, err := FromCueMessage(original)
+	if err != nil {
+		t.Fatalf("FromCueMessage error: %v", err)
+	}
+
+	// Verify intermediate SCTE-104 uses SpliceStartNormal.
+	srd := msg104.Operations[0].Data.(*SpliceRequestData)
+	if srd.SpliceInsertType != SpliceStartNormal {
+		t.Errorf("intermediate SpliceInsertType = %d, want %d (SpliceStartNormal)",
+			srd.SpliceInsertType, SpliceStartNormal)
+	}
+
+	roundTripped, err := ToCueMessage(msg104)
+	if err != nil {
+		t.Fatalf("ToCueMessage error: %v", err)
+	}
+
+	if roundTripped.Timing != "scheduled" {
+		t.Errorf("Timing = %q, want %q", roundTripped.Timing, "scheduled")
+	}
+	if !roundTripped.IsOut {
+		t.Error("IsOut should be true after round-trip")
+	}
+	if roundTripped.EventID != original.EventID {
+		t.Errorf("EventID = %d, want %d", roundTripped.EventID, original.EventID)
+	}
+}
+
+func TestFromCueMessage_BreakDuration_OverflowClamp(t *testing.T) {
+	// 2 hours = 7200s = 72000 x 100ms units — exceeds uint16 max (65535).
+	// Must be clamped to 65535, not silently wrap around.
+	dur := 2 * time.Hour
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       1,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.BreakDuration != 65535 {
+		t.Errorf("BreakDuration = %d, want 65535 (clamped from 2h)", srd.BreakDuration)
+	}
+}
+
+func TestFromCueMessage_BreakDuration_JustUnderMax(t *testing.T) {
+	// 109 minutes = 6540s = 65400 x 100ms units — fits in uint16, must NOT be clamped.
+	dur := 109 * time.Minute
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       2,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	// 109 min = 6540s → 65400 units of 100ms
+	if srd.BreakDuration != 65400 {
+		t.Errorf("BreakDuration = %d, want 65400 (109 min, not clamped)", srd.BreakDuration)
+	}
+}
+
+func TestRoundTrip_SegNum(t *testing.T) {
+	// SCTE-104 → SCTE-35 → SCTE-104 should preserve SegNum/SegExpected.
+	msg := &Message{
+		Operations: []Operation{
+			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{}},
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         99,
+					SegmentationTypeID: 0x34,
+					SegNum:             2,
+					SegExpected:        5,
+				},
+			},
+		},
+	}
+
+	cue, err := ToCueMessage(msg)
+	if err != nil {
+		t.Fatalf("to cue: %v", err)
+	}
+	if len(cue.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(cue.Descriptors))
+	}
+	if cue.Descriptors[0].SegNum != 2 {
+		t.Errorf("SegNum = %d, want 2", cue.Descriptors[0].SegNum)
+	}
+	if cue.Descriptors[0].SegExpected != 5 {
+		t.Errorf("SegExpected = %d, want 5", cue.Descriptors[0].SegExpected)
+	}
+
+	msg2, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("from cue: %v", err)
+	}
+
+	// Find the segmentation descriptor operation.
+	var sd *SegmentationDescriptorRequest
+	for _, op := range msg2.Operations {
+		if op.OpID == OpSegmentationDescriptorRequest {
+			sd = op.Data.(*SegmentationDescriptorRequest)
+			break
+		}
+	}
+	if sd == nil {
+		t.Fatal("no segmentation descriptor in round-trip result")
+	}
+	if sd.SegNum != 2 {
+		t.Errorf("round-trip SegNum = %d, want 2", sd.SegNum)
+	}
+	if sd.SegExpected != 5 {
+		t.Errorf("round-trip SegExpected = %d, want 5", sd.SegExpected)
+	}
+}

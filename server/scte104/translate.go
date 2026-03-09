@@ -2,6 +2,7 @@ package scte104
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/zsiec/switchframe/server/scte35"
@@ -128,15 +129,13 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 	_ = data // pre-roll is for splicer scheduling, not encoded in SCTE-35
 
 	for _, sd := range segDescs {
-		// Note: SegNum/SegExpected from SCTE-104 are not mapped to SCTE-35
-		// because scte35.SegmentationDescriptor does not carry them through
-		// the Comcast/scte35-go encoding layer. These fields are lost in the
-		// SCTE-104 → SCTE-35 direction. A full round-trip will not preserve them.
 		desc := scte35.SegmentationDescriptor{
 			SegEventID:                       sd.SegEventID,
 			SegmentationType:                 sd.SegmentationTypeID,
 			SegmentationEventCancelIndicator: sd.CancelIndicator,
 			UPIDType:                         sd.UPIDType,
+			SegNum:                           sd.SegNum,
+			SegExpected:                      sd.SegExpected,
 		}
 
 		if len(sd.UPID) > 0 {
@@ -159,8 +158,9 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 //
 // Translation rules:
 //   - CommandSpliceNull -> OpSpliceNull
-//   - CommandSpliceInsert -> OpSpliceRequest: IsOut=true -> SpliceStartImmediate,
-//     IsOut=false -> SpliceEndImmediate, Cancel -> SpliceCancel.
+//   - CommandSpliceInsert -> OpSpliceRequest: Timing="scheduled" uses Normal types,
+//     Timing="immediate" (or empty) uses Immediate types. IsOut=true -> SpliceStart*,
+//     IsOut=false -> SpliceEnd*, Cancel -> SpliceCancel.
 //     BreakDuration divided by 100ms for SCTE-104 units.
 //   - CommandTimeSignal -> OpTimeSignalRequest + one OpSegmentationDescriptorRequest
 //     per descriptor.
@@ -208,14 +208,27 @@ func fromSpliceInsert(cue *scte35.CueMessage) (Operation, error) {
 	if cue.SpliceEventCancelIndicator {
 		srd.SpliceInsertType = SpliceCancel
 	} else if cue.IsOut {
-		srd.SpliceInsertType = SpliceStartImmediate
+		if cue.Timing == "scheduled" {
+			srd.SpliceInsertType = SpliceStartNormal
+		} else {
+			srd.SpliceInsertType = SpliceStartImmediate
+		}
 	} else {
-		srd.SpliceInsertType = SpliceEndImmediate
+		if cue.Timing == "scheduled" {
+			srd.SpliceInsertType = SpliceEndNormal
+		} else {
+			srd.SpliceInsertType = SpliceEndImmediate
+		}
 	}
 
 	// Convert BreakDuration from time.Duration to 100ms units.
+	// Use rounding (+50ms) instead of truncation to avoid losing up to 99ms.
+	// Clamp to uint16 max (65535) to prevent silent overflow for breaks > 109 minutes.
 	if cue.BreakDuration != nil && !cue.SpliceEventCancelIndicator {
-		dur100ms := *cue.BreakDuration / (100 * time.Millisecond)
+		dur100ms := (*cue.BreakDuration + 50*time.Millisecond) / (100 * time.Millisecond)
+		if dur100ms > math.MaxUint16 {
+			dur100ms = math.MaxUint16
+		}
 		srd.BreakDuration = uint16(dur100ms)
 	}
 
@@ -238,10 +251,13 @@ func fromTimeSignal(cue *scte35.CueMessage) []Operation {
 
 	for _, desc := range cue.Descriptors {
 		sd := &SegmentationDescriptorRequest{
-			SegEventID:         desc.SegEventID,
-			SegmentationTypeID: desc.SegmentationType,
-			UPIDType:           desc.UPIDType,
-			CancelIndicator:    desc.SegmentationEventCancelIndicator,
+			SegEventID:              desc.SegEventID,
+			SegmentationTypeID:      desc.SegmentationType,
+			UPIDType:                desc.UPIDType,
+			CancelIndicator:         desc.SegmentationEventCancelIndicator,
+			SegNum:                  desc.SegNum,
+			SegExpected:             desc.SegExpected,
+			ProgramSegmentationFlag: true,
 		}
 
 		if len(desc.UPID) > 0 {

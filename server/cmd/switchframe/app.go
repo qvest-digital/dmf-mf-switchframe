@@ -357,9 +357,18 @@ func (a *App) initSubsystems() error {
 	a.keyBridge.SetScaleFunc(transition.ScaleYUV420)
 	a.sw.SetKeyBridge(a.keyBridge)
 
+	// Key processor changes trigger pipeline rebuild so Active() filtering
+	// reflects whether any upstream keys are configured.
+	a.keyProcessor.OnChange(func() {
+		a.sw.RebuildPipeline()
+	})
+
 	// Pipeline encoder for the video processing chain.
 	a.sw.SetPipelineCodecs(encoderFactory())
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
+	if err := a.sw.BuildPipeline(); err != nil {
+		return fmt.Errorf("build pipeline: %w", err)
+	}
 
 	// Replay manager.
 	a.replayRelay = a.server.RegisterStream("replay")
@@ -700,7 +709,7 @@ func (a *App) initSCTE35() error {
 
 	a.scte35Injector = scte35.NewInjector(config, muxerSink, ptsFn)
 	a.scte35Injector.SetRuleEngine(a.scte35Rules.Engine())
-	a.outputMgr.SetSCTE35Injector(a.scte35Injector)
+	a.outputMgr.SetSCTE35Injector(a.scte35Injector, a.cfg.SCTE35PID)
 
 	slog.Info("SCTE-35 injector initialized",
 		"pid", fmt.Sprintf("0x%X", a.cfg.SCTE35PID),

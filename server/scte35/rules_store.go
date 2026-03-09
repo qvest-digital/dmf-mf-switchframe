@@ -298,18 +298,22 @@ func (s *RulesStore) save() error {
 	return nil
 }
 
-// syncEngine rebuilds the internal RuleEngine from the current rules and
-// default action. Must be called with s.mu held.
+// syncEngine updates the internal RuleEngine in-place from the current rules
+// and default action. Must be called with s.mu held.
+//
+// This mutates the existing engine via SetRules/SetDefaultAction rather than
+// creating a new *RuleEngine. This is critical because the injector holds
+// a pointer to the engine obtained at startup via Engine(); replacing the
+// pointer would leave the injector evaluating a stale engine.
 func (s *RulesStore) syncEngine() {
-	engine := NewRuleEngine()
-	engine.SetDefaultAction(s.defaultAction)
-	// Only add enabled rules to the engine.
+	var enabled []Rule
 	for _, r := range s.rules {
 		if r.Enabled {
-			engine.AddRule(r)
+			enabled = append(enabled, r)
 		}
 	}
-	s.engine = engine
+	s.engine.SetRules(enabled)
+	s.engine.SetDefaultAction(s.defaultAction)
 }
 
 // generateID returns an 8-character hex string from 4 random bytes.

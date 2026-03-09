@@ -483,3 +483,141 @@ func TestRuleEngine_ConcurrentAccess(t *testing.T) {
 		<-done
 	}
 }
+
+func TestMatchRange_NegativeValues(t *testing.T) {
+	tests := []struct {
+		val, rangeStr string
+		want          bool
+	}{
+		// Standard positive range.
+		{"5", "0-10", true},
+		{"15", "0-10", false},
+		// Negative min, positive max.
+		{"-5", "-10-5", true},
+		{"0", "-10-5", true},
+		{"6", "-10-5", false},
+		{"-11", "-10-5", false},
+		// Both negative.
+		{"-5", "-10--1", true},
+		{"-10", "-10--1", true},
+		{"-1", "-10--1", true},
+		{"0", "-10--1", false},
+		// Single values.
+		{"3", "3-3", true},
+		{"4", "3-3", false},
+	}
+	for _, tt := range tests {
+		got := matchRange(tt.val, tt.rangeStr)
+		if got != tt.want {
+			t.Errorf("matchRange(%q, %q) = %v, want %v", tt.val, tt.rangeStr, got, tt.want)
+		}
+	}
+}
+
+func TestRuleEngine_RegexCacheReuse(t *testing.T) {
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "regex rule",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "upid", Operator: "matches", Value: `^https://`}},
+		Action:     ActionDelete,
+	})
+
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
+
+	// Evaluate twice — second should use cached regex.
+	action1, _ := re.Evaluate(msg, "")
+	action2, _ := re.Evaluate(msg, "")
+
+	if action1 != ActionDelete {
+		t.Fatalf("first eval: expected delete, got %s", action1)
+	}
+	if action2 != ActionDelete {
+		t.Fatalf("second eval: expected delete, got %s", action2)
+	}
+
+	// Verify cache contains the pattern.
+	_, found := re.regexCache.Load(`^https://`)
+	if !found {
+		t.Error("expected regex pattern to be cached")
+	}
+
+	// SetRules should clear cache.
+	re.SetRules(nil)
+	_, found = re.regexCache.Load(`^https://`)
+	if found {
+		t.Error("expected cache to be cleared after SetRules")
+	}
+}
+
+func TestRuleEngine_MultiDescriptor_MatchesSecond(t *testing.T) {
+	// Rule matches segmentation_type_id=52 (0x34). Message has two descriptors:
+	// type 48 (0x30) and type 52 (0x34). Rule should match the second descriptor.
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 52",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "52"}},
+		Action:     ActionDelete,
+	})
+
+	dur1 := uint64(900000)
+	dur2 := uint64(2700000)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x30, DurationTicks: &dur1, UPIDType: 0x0F, UPID: []byte("first")},
+			{SegmentationType: 0x34, DurationTicks: &dur2, UPIDType: 0x0F, UPID: []byte("second")},
+		},
+	}
+
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("expected delete (match second descriptor), got %s", action)
+	}
+}
+
+func TestRuleEngine_MultiDescriptor_NoneMatch(t *testing.T) {
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 99",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "99"}},
+		Action:     ActionDelete,
+	})
+
+	dur := uint64(900000)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x30, DurationTicks: &dur},
+			{SegmentationType: 0x34, DurationTicks: &dur},
+		},
+	}
+
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionPass {
+		t.Fatalf("expected pass (no descriptor matches), got %s", action)
+	}
+}
+
+func TestRuleEngine_SingleDescriptor_Unchanged(t *testing.T) {
+	// Regression: single descriptor behavior identical to before.
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 52",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "52"}},
+		Action:     ActionDelete,
+	})
+
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("expected delete for single descriptor match, got %s", action)
+	}
+}

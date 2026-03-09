@@ -9,7 +9,7 @@ import (
 
 func TestTSMuxer_WriteSCTE35_BeforeInit(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35Enabled(true)
+	m.SetSCTE35PID(defaultSCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -28,7 +28,7 @@ func TestTSMuxer_WriteSCTE35_BeforeInit(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_AfterInit(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35Enabled(true)
+	m.SetSCTE35PID(defaultSCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -49,7 +49,7 @@ func TestTSMuxer_WriteSCTE35_AfterInit(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_PID(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35Enabled(true)
+	m.SetSCTE35PID(defaultSCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -123,7 +123,7 @@ func TestTSMuxer_CurrentPTS(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35Enabled(true)
+	m.SetSCTE35PID(defaultSCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -158,7 +158,7 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_PendingFlushed(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35Enabled(true)
+	m.SetSCTE35PID(defaultSCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -186,6 +186,39 @@ func TestTSMuxer_WriteSCTE35_PendingFlushed(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("pending SCTE-35 was not flushed after init")
+	}
+}
+
+func TestTSMuxer_WriteSCTE35_CustomPID(t *testing.T) {
+	customPID := uint16(0x1FF)
+	m := NewTSMuxer()
+	m.SetSCTE35PID(customPID)
+	var output []byte
+	m.SetOutput(func(data []byte) {
+		output = append(output, data...)
+	})
+
+	writeInitKeyframe(t, m)
+	output = nil
+
+	data := encodeSpliceNull(t)
+	_ = m.WriteSCTE35(data)
+
+	// Scan TS packets for the custom PID
+	found := false
+	for i := 0; i+188 <= len(output); i += 188 {
+		pkt := output[i : i+188]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		if pid == customPID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("no TS packet with custom PID 0x%X found", customPID)
 	}
 }
 

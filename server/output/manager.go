@@ -66,6 +66,9 @@ type OutputManager struct {
 
 	// SCTE-35 injector provides synthetic break state for late-joining viewers.
 	scte35Injector scte35InjectorInterface
+
+	// scte35PID is the configured SCTE-35 MPEG-TS PID. 0 = disabled.
+	scte35PID uint16
 }
 
 // NewOutputManager creates an OutputManager bound to the given program relay.
@@ -732,8 +735,8 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 		if dest.active && dest.adapter != nil {
 			adapter := dest.adapter
 			// Wrap with SCTE-35 filter when destination has SCTE-35 disabled.
-			if !dest.config.SCTE35Enabled {
-				adapter = newSCTE35Filter(adapter, scte35PID)
+			if !dest.config.SCTE35Enabled && m.scte35PID != 0 {
+				adapter = newSCTE35Filter(adapter, m.scte35PID)
 			}
 			// Use destination ID as key to avoid collisions with legacy adapter IDs.
 			raw["dest:"+id] = adapter
@@ -784,8 +787,8 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 	}
 
 	muxer := NewTSMuxer()
-	if m.scte35Injector != nil {
-		muxer.SetSCTE35Enabled(true)
+	if m.scte35PID != 0 {
+		muxer.SetSCTE35PID(m.scte35PID)
 	}
 	muxer.SetOutput(func(tsData []byte) {
 		adapters := m.adapters.Load()
@@ -914,10 +917,12 @@ func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 
 // SetSCTE35Injector attaches a SCTE-35 injector to the output manager.
 // The injector provides synthetic break state for late-joining viewers.
-func (m *OutputManager) SetSCTE35Injector(inj scte35InjectorInterface) {
+// pid is the MPEG-TS PID for SCTE-35 data (e.g., 0x102).
+func (m *OutputManager) SetSCTE35Injector(inj scte35InjectorInterface, pid uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scte35Injector = inj
+	m.scte35PID = pid
 }
 
 // InjectSCTE35 writes a SCTE-35 section to the output MPEG-TS stream.

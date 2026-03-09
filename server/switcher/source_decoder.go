@@ -21,6 +21,15 @@ type sourceDecoder struct {
 	callback  func(string, *ProcessingFrame)
 	done      chan struct{}
 
+	// Reusable buffers for AVC1→AnnexB conversion (avoid alloc per frame).
+	// Two buffers needed: PrependSPSPPSInto reads from annexBBuf while
+	// writing to prependBuf — shared backing storage would corrupt data.
+	annexBBuf  []byte
+	prependBuf []byte
+
+	// FramePool for YUV buffer allocation (nil-safe: falls back to make)
+	pool *FramePool
+
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
 	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
@@ -34,7 +43,7 @@ type sourceDecoder struct {
 
 // newSourceDecoder creates a decoder for the given source key, starts its
 // decode goroutine, and returns the decoder. Returns nil if the factory fails.
-func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame)) *sourceDecoder {
+func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool) *sourceDecoder {
 	dec, err := factory()
 	if err != nil {
 		slog.Warn("source decoder creation failed", "source", key, "error", err)
@@ -47,6 +56,7 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 		ch:        make(chan *media.VideoFrame, 2),
 		callback:  callback,
 		done:      make(chan struct{}),
+		pool:      pool,
 	}
 	go sd.decodeLoop()
 	return sd
@@ -92,13 +102,14 @@ func (sd *sourceDecoder) decodeLoop() {
 	defer close(sd.done)
 
 	for frame := range sd.ch {
-		// Convert AVC1 wire format to Annex B for decoder
-		annexB := codec.AVC1ToAnnexB(frame.WireData)
+		// Convert AVC1 wire format to Annex B for decoder (buffer reuse)
+		sd.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
 		if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
-			annexB = codec.PrependSPSPPS(frame.SPS, frame.PPS, annexB)
+			sd.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, sd.annexBBuf, sd.prependBuf[:0])
+			sd.annexBBuf, sd.prependBuf = sd.prependBuf, sd.annexBBuf
 		}
 
-		yuv, w, h, err := sd.decoder.Decode(annexB)
+		yuv, w, h, err := sd.decoder.Decode(sd.annexBBuf)
 		if err != nil {
 			slog.Debug("source decoder: decode failed",
 				"source", sd.sourceKey, "error", err)
@@ -110,7 +121,12 @@ func (sd *sourceDecoder) decodeLoop() {
 		if len(yuv) < yuvSize {
 			continue
 		}
-		buf := getYUVBuffer(yuvSize)
+		var buf []byte
+		if sd.pool != nil {
+			buf = sd.pool.Acquire()
+		} else {
+			buf = make([]byte, yuvSize)
+		}
 		copy(buf, yuv[:yuvSize])
 
 		pf := &ProcessingFrame{
@@ -122,6 +138,7 @@ func (sd *sourceDecoder) decodeLoop() {
 			IsKeyframe: frame.IsKeyframe,
 			GroupID:     frame.GroupID,
 			Codec:      frame.Codec,
+			pool:       sd.pool,
 		}
 
 		sd.lastGroupID.Store(frame.GroupID)

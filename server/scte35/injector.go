@@ -1,6 +1,7 @@
 package scte35
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -17,7 +18,7 @@ type InjectorConfig struct {
 	// DefaultPreRollMs is the default pre-roll time in milliseconds for scheduled cues.
 	DefaultPreRollMs int64
 
-	// SCTE35PID is the MPEG-TS PID for SCTE-35 data. Default: 0x0500.
+	// SCTE35PID is the MPEG-TS PID for SCTE-35 data. Default: 0x102.
 	SCTE35PID uint16
 
 	// EventIDStart is the starting value for auto-assigned event IDs. Default: 1.
@@ -49,7 +50,9 @@ type activeEvent struct {
 	Held          bool
 	SpliceTimePTS int64
 	Descriptors   []SegmentationDescriptor
-	returnTimer   *time.Timer
+	returnTimer     *time.Timer
+	preRollCancel   context.CancelFunc // cancels pre-roll repetition goroutine
+	lastEncodedData []byte             // encoded SCTE-35 data (for pre-roll repetition)
 }
 
 // ActiveEventState is the serializable snapshot of an active event, used by
@@ -155,7 +158,7 @@ type Injector struct {
 // muxer. ptsFn returns the current video PTS in 90 kHz ticks.
 func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int64) *Injector {
 	if config.SCTE35PID == 0 {
-		config.SCTE35PID = 0x0500
+		config.SCTE35PID = 0x102
 	}
 	if config.MaxEventLog <= 0 {
 		config.MaxEventLog = 256
@@ -255,8 +258,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		msg.EventID = inj.eventIDCounter.Add(1) - 1
 	}
 
-	// Populate PTS for time_signal if not already set.
-	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil {
+	// Populate PTS for time_signal if not already set and not explicitly immediate.
+	// Timing="immediate" means time_specified_flag=0 (no PTS), per SCTE-35 spec.
+	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil && msg.Timing != "immediate" {
 		currentPTS := inj.ptsFn()
 		msg.SpliceTimePTS = &currentPTS
 	}
@@ -286,6 +290,10 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// Send to muxer.
 	inj.muxerSink(data)
 
+	// eventID tracks the primary ID for this cue. For splice_insert it's
+	// msg.EventID; for time_signal it's the first cue-out SegEventID.
+	eventID := msg.EventID
+
 	// Track active event for splice_insert cue-out.
 	if msg.CommandType == CommandSpliceInsert && msg.IsOut {
 		ae := &activeEvent{
@@ -303,6 +311,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			ae.Duration = *msg.BreakDuration
 		}
 		ae.Descriptors = append([]SegmentationDescriptor(nil), msg.Descriptors...)
+		ae.lastEncodedData = append([]byte(nil), data...) // for pre-roll repetition
 
 		// Start auto-return timer if configured.
 		if msg.AutoReturn && msg.BreakDuration != nil && *msg.BreakDuration > 0 {
@@ -316,6 +325,37 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		inj.activeEvents[msg.EventID] = ae
 	}
 
+	// Track time_signal with cue-out segmentation descriptors as active events.
+	// The first tracked SegEventID is used as the return value so ScheduleCue
+	// can locate the active event for pre-roll repetition.
+	if msg.CommandType == CommandTimeSignal {
+		for _, d := range msg.Descriptors {
+			if isSegCueOut(d.SegmentationType) {
+				ae := &activeEvent{
+					EventID:     d.SegEventID,
+					CommandType: msg.CommandType,
+					IsOut:       true,
+					StartedAt:   time.Now(),
+					// time_signal events don't carry break duration or auto-return
+					// semantics directly; those are implicit in the segmentation
+					// descriptor type (Start/End pairing). Duration and auto-return
+					// are left at zero/false intentionally.
+				}
+				if msg.SpliceTimePTS != nil {
+					ae.SpliceTimePTS = *msg.SpliceTimePTS
+				}
+				ae.Descriptors = append([]SegmentationDescriptor(nil), msg.Descriptors...)
+				ae.lastEncodedData = append([]byte(nil), data...) // for pre-roll repetition
+				inj.activeEvents[d.SegEventID] = ae
+				// Use the first cue-out SegEventID as the returned eventID so
+				// callers (e.g. ScheduleCue) can find this active event.
+				if eventID == 0 {
+					eventID = d.SegEventID
+				}
+			}
+		}
+	}
+
 	// Log the event.
 	var durMs *int64
 	if msg.BreakDuration != nil {
@@ -324,7 +364,6 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	}
 	inj.logEventLocked(msg.EventID, msg.CommandType, msg.IsOut, durMs, msg.AutoReturn, "injected", msg)
 
-	eventID := msg.EventID
 	webhookIsOut := msg.IsOut
 	webhookCmdType := msg.CommandType
 	var webhookDurMs int64
@@ -357,13 +396,69 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 }
 
 // ScheduleCue sets the splice time PTS based on current PTS + preRollMs,
-// then injects the cue.
+// then injects the cue. Per SCTE-67, the cue message is repeated every 1s
+// during the pre-roll window until the splice PTS is reached.
 func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, error) {
 	currentPTS := inj.ptsFn()
 	spliceTimePTS := currentPTS + preRollMs*90 // 90 kHz ticks per ms
 	msg.SpliceTimePTS = &spliceTimePTS
 	msg.Timing = "scheduled"
-	return inj.InjectCue(msg)
+
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		return eventID, err
+	}
+
+	// Start pre-roll repetition goroutine (SCTE-67 recommends ~1s repeat).
+	// Only launch if the event was tracked (otherwise there's no way to cancel).
+	if preRollMs > 1000 {
+		inj.mu.Lock()
+		ae, ok := inj.activeEvents[eventID]
+		if ok && ae != nil {
+			// Use the encoded data stored on the active event (reflects any
+			// rules-modified message from InjectCue).
+			data := ae.lastEncodedData
+			if len(data) > 0 {
+				ctx, cancel := context.WithCancel(context.Background())
+				ae.preRollCancel = cancel
+				deadline := time.Duration(preRollMs) * time.Millisecond
+				inj.mu.Unlock()
+				go inj.preRollRepeat(ctx, data, deadline)
+			} else {
+				inj.mu.Unlock()
+			}
+		} else {
+			inj.mu.Unlock()
+		}
+	}
+
+	return eventID, nil
+}
+
+// preRollRepeat re-sends encoded SCTE-35 data every 1s until the deadline
+// or cancellation. Used for SCTE-67 compliant pre-roll repetition.
+func (inj *Injector) preRollRepeat(ctx context.Context, data []byte, deadline time.Duration) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			return
+		case <-inj.heartbeatStop:
+			return
+		case <-ticker.C:
+			if inj.closed.Load() {
+				return
+			}
+			inj.muxerSink(data)
+		}
+	}
 }
 
 // ReturnToProgram sends a cue-in (return to network) for the given event ID.
@@ -394,10 +489,46 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	if ae.returnTimer != nil {
 		ae.returnTimer.Stop()
 	}
+	// Stop pre-roll repetition if running.
+	if ae.preRollCancel != nil {
+		ae.preRollCancel()
+	}
 
-	// Build and send cue-in.
-	cueIn := NewSpliceInsert(eventID, 0, false, false)
-	data, err := cueIn.Encode(inj.config.VerifyEncoding)
+	// Build and send the appropriate return message based on the event type.
+	var returnMsg *CueMessage
+	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
+		// For time_signal events, send a time_signal with matching End
+		// segmentation types (per SCTE-35 Table 22: Start+1 = End).
+		var endDescs []SegmentationDescriptor
+		for _, d := range ae.Descriptors {
+			if isSegCueOut(d.SegmentationType) {
+				endDescs = append(endDescs, SegmentationDescriptor{
+					SegEventID:          d.SegEventID,
+					SegmentationType:    d.SegmentationType + 1, // Start→End
+					UPIDType:            d.UPIDType,
+					UPID:                d.UPID,
+					AdditionalUPIDs:     d.AdditionalUPIDs,
+					SegNum:              d.SegNum,
+					SegExpected:         d.SegExpected,
+					SubSegmentNum:       d.SubSegmentNum,
+					SubSegmentsExpected: d.SubSegmentsExpected,
+				})
+			}
+		}
+		if len(endDescs) == 0 {
+			// Fallback: no cue-out descriptors found, use splice_insert.
+			returnMsg = NewSpliceInsert(eventID, 0, false, false)
+		} else {
+			returnMsg = &CueMessage{
+				CommandType: CommandTimeSignal,
+				Descriptors: endDescs,
+			}
+		}
+	} else {
+		returnMsg = NewSpliceInsert(eventID, 0, false, false)
+	}
+
+	data, err := returnMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
 		inj.mu.Unlock()
 		return fmt.Errorf("encode cue-in: %w", err)
@@ -408,7 +539,7 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	delete(inj.activeEvents, eventID)
 
 	// Log.
-	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "returned", cueIn)
+	inj.logEventLocked(eventID, returnMsg.CommandType, false, nil, false, "returned", returnMsg)
 
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
@@ -419,10 +550,10 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	}
 
 	if s104 != nil {
-		s104(cueIn)
+		s104(returnMsg)
 	}
 
-	inj.dispatchWebhook("cue_in", eventID, CommandSpliceInsert, false, 0)
+	inj.dispatchWebhook("cue_in", eventID, returnMsg.CommandType, false, 0)
 
 	return nil
 }
@@ -447,13 +578,36 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	if ae.returnTimer != nil {
 		ae.returnTimer.Stop()
 	}
-
-	// Build a splice_insert with splice_event_cancel_indicator set.
-	cancelMsg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
-		EventID:                    eventID,
-		SpliceEventCancelIndicator: true,
+	// Stop pre-roll repetition if running.
+	if ae.preRollCancel != nil {
+		ae.preRollCancel()
 	}
+
+	// Build the appropriate cancel message based on the original command type.
+	var cancelMsg *CueMessage
+	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
+		// For time_signal events, send a time_signal with
+		// segmentation_event_cancel_indicator for each descriptor.
+		var cancelDescs []SegmentationDescriptor
+		for _, d := range ae.Descriptors {
+			cancelDescs = append(cancelDescs, SegmentationDescriptor{
+				SegEventID:                       d.SegEventID,
+				SegmentationEventCancelIndicator: true,
+			})
+		}
+		cancelMsg = &CueMessage{
+			CommandType: CommandTimeSignal,
+			Descriptors: cancelDescs,
+		}
+	} else {
+		// splice_insert cancel path.
+		cancelMsg = &CueMessage{
+			CommandType:                 CommandSpliceInsert,
+			EventID:                    eventID,
+			SpliceEventCancelIndicator: true,
+		}
+	}
+
 	data, err := cancelMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
 		inj.mu.Unlock()
@@ -465,7 +619,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	delete(inj.activeEvents, eventID)
 
 	// Log.
-	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled", cancelMsg)
+	inj.logEventLocked(eventID, cancelMsg.CommandType, false, nil, false, "cancelled", cancelMsg)
 
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
@@ -479,7 +633,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		s104(cancelMsg)
 	}
 
-	inj.dispatchWebhook("cancel", eventID, CommandSpliceInsert, false, 0)
+	inj.dispatchWebhook("cancel", eventID, cancelMsg.CommandType, false, 0)
 
 	return nil
 }
@@ -554,6 +708,11 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 		ae.returnTimer.Stop()
 		ae.returnTimer = nil
 	}
+	// Stop pre-roll repetition if running.
+	if ae.preRollCancel != nil {
+		ae.preRollCancel()
+		ae.preRollCancel = nil
+	}
 
 	ae.Held = true
 
@@ -595,6 +754,11 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	if ae.returnTimer != nil {
 		ae.returnTimer.Stop()
 		ae.returnTimer = nil
+	}
+	// Stop pre-roll repetition if running.
+	if ae.preRollCancel != nil {
+		ae.preRollCancel()
+		ae.preRollCancel = nil
 	}
 
 	// Update duration.
@@ -645,7 +809,9 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 }
 
 // SyntheticBreakState builds a splice_insert with the remaining duration for
-// late-joining clients. Returns nil if no active events.
+// late-joining clients (e.g. SRT reconnects). Uses splice_immediate_flag=true
+// because the late-joiner has no PTS context from the original scheduled splice.
+// Returns nil if no active events.
 func (inj *Injector) SyntheticBreakState() []byte {
 	inj.mu.Lock()
 	defer inj.mu.Unlock()
@@ -770,7 +936,7 @@ func (inj *Injector) SetSCTE104Sink(fn func(*CueMessage)) {
 	inj.scte104Sink = fn
 }
 
-// Close stops the heartbeat and all auto-return timers.
+// Close stops the heartbeat, all auto-return timers, and the webhook dispatcher.
 func (inj *Injector) Close() {
 	if inj.closed.Swap(true) {
 		return // already closed
@@ -779,12 +945,19 @@ func (inj *Injector) Close() {
 	close(inj.heartbeatStop)
 
 	inj.mu.Lock()
-	defer inj.mu.Unlock()
-
+	wh := inj.webhook
 	for _, ae := range inj.activeEvents {
 		if ae.returnTimer != nil {
 			ae.returnTimer.Stop()
 		}
+		if ae.preRollCancel != nil {
+			ae.preRollCancel()
+		}
+	}
+	inj.mu.Unlock()
+
+	if wh != nil {
+		wh.Close()
 	}
 }
 
@@ -849,5 +1022,29 @@ func commandTypeName(cmdType uint8) string {
 		return "time_signal"
 	default:
 		return fmt.Sprintf("unknown(0x%02x)", cmdType)
+	}
+}
+
+// isSegCueOut returns true if the segmentation_type_id represents a cue-out
+// (ad insertion boundary). Covers all Start types from SCTE-35 Table 22 that
+// follow the Start+1=End pairing convention for ad/placement opportunities.
+// Intentionally excludes 0x20 (Unscheduled Event Start) and 0x24 (Network
+// Start) as those are not ad insertion signals.
+func isSegCueOut(typeID uint8) bool {
+	switch typeID {
+	case 0x22, // Break Start
+		0x30, // Provider Advertisement Start
+		0x32, // Distributor Advertisement Start
+		0x34, // Provider Placement Opportunity Start
+		0x36, // Distributor Placement Opportunity Start
+		0x38, // Provider Overlay Placement Opportunity Start
+		0x3A, // Distributor Overlay Placement Opportunity Start
+		0x3C, // Provider Promo Start
+		0x3E, // Distributor Promo Start
+		0x44, // Provider Ad Block Start
+		0x46: // Distributor Ad Block Start
+		return true
+	default:
+		return false
 	}
 }

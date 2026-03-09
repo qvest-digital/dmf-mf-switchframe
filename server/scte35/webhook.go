@@ -5,8 +5,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// webhookQueueSize is the bounded dispatch queue capacity.
+// Events are dropped if the queue is full (slow webhook endpoint).
+const webhookQueueSize = 64
 
 // WebhookEvent is the JSON payload sent to external webhook endpoints.
 type WebhookEvent struct {
@@ -21,25 +27,35 @@ type WebhookEvent struct {
 }
 
 // WebhookDispatcher sends webhook events to an external URL.
+// Uses a bounded channel and single worker goroutine to prevent
+// unbounded goroutine spawning under high event rates.
 type WebhookDispatcher struct {
-	url    string
-	client *http.Client
+	url       string
+	client    *http.Client
+	queue     chan WebhookEvent
+	done      chan struct{}
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
 
 // NewWebhookDispatcher creates a webhook dispatcher. If url is empty, Dispatch is a no-op.
 func NewWebhookDispatcher(url string, timeout time.Duration) *WebhookDispatcher {
-	return &WebhookDispatcher{
+	w := &WebhookDispatcher{
 		url: url,
 		client: &http.Client{
 			Timeout: timeout,
 		},
+		queue: make(chan WebhookEvent, webhookQueueSize),
+		done:  make(chan struct{}),
 	}
+	go w.worker()
+	return w
 }
 
-// Dispatch sends a webhook event asynchronously. Never blocks the caller.
-// Errors are logged but not returned.
+// Dispatch queues a webhook event for async delivery. Never blocks the caller.
+// If the queue is full or the dispatcher is closed, the event is dropped.
 func (w *WebhookDispatcher) Dispatch(event WebhookEvent) {
-	if w.url == "" {
+	if w.url == "" || w.closed.Load() {
 		return
 	}
 
@@ -47,22 +63,46 @@ func (w *WebhookDispatcher) Dispatch(event WebhookEvent) {
 		event.Timestamp = time.Now().UnixMilli()
 	}
 
-	go func() {
-		body, err := json.Marshal(event)
-		if err != nil {
-			slog.Error("webhook marshal failed", "error", err)
-			return
-		}
+	select {
+	case w.queue <- event:
+	default:
+		slog.Warn("webhook queue full, dropping event", "type", event.Type, "eventId", event.EventID)
+	}
+}
 
-		resp, err := w.client.Post(w.url, "application/json", bytes.NewReader(body))
-		if err != nil {
-			slog.Debug("webhook dispatch failed", "url", w.url, "error", err)
-			return
-		}
-		_ = resp.Body.Close()
+// Close drains the queue and stops the worker goroutine. Safe to call multiple times.
+func (w *WebhookDispatcher) Close() {
+	w.closed.Store(true)
+	w.closeOnce.Do(func() {
+		close(w.queue)
+	})
+	<-w.done
+}
 
-		if resp.StatusCode >= 400 {
-			slog.Warn("webhook returned error", "url", w.url, "status", resp.StatusCode)
-		}
-	}()
+// worker drains the dispatch queue, sending each event via HTTP POST.
+func (w *WebhookDispatcher) worker() {
+	defer close(w.done)
+	for event := range w.queue {
+		w.send(event)
+	}
+}
+
+// send performs the HTTP POST for a single event.
+func (w *WebhookDispatcher) send(event WebhookEvent) {
+	body, err := json.Marshal(event)
+	if err != nil {
+		slog.Error("webhook marshal failed", "error", err)
+		return
+	}
+
+	resp, err := w.client.Post(w.url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		slog.Debug("webhook dispatch failed", "url", w.url, "error", err)
+		return
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		slog.Warn("webhook returned error", "url", w.url, "status", resp.StatusCode)
+	}
 }

@@ -159,6 +159,11 @@ func WrapST291(scte104Data []byte) ([]byte, error) {
 }
 
 // computeChecksum returns (sum of bytes) & 0xFF.
+//
+// This is a simplified 8-bit byte-sum checksum appropriate for byte-oriented
+// transports (e.g., MXL data grains). Full SMPTE ST 291 defines a 9-bit
+// checksum over 10-bit words with parity, which applies to raw SDI transport
+// but not to byte-level interfaces where data words are already 8-bit.
 func computeChecksum(data []byte) byte {
 	var sum byte
 	for _, b := range data {

@@ -15,9 +15,12 @@ func TestOutputManager_InjectSCTE35_NoMuxer(t *testing.T) {
 func TestOutputManager_SetSCTE35Injector(t *testing.T) {
 	m := &OutputManager{}
 	mock := &mockSCTE35Injector{}
-	m.SetSCTE35Injector(mock)
+	m.SetSCTE35Injector(mock, 0x102)
 	if m.scte35Injector == nil {
 		t.Fatal("expected non-nil scte35Injector")
+	}
+	if m.scte35PID != 0x102 {
+		t.Fatalf("expected scte35PID=0x102, got 0x%X", m.scte35PID)
 	}
 }
 
@@ -49,6 +52,7 @@ func TestOutputManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
 	}
 
 	m.mu.Lock()
+	m.scte35PID = defaultSCTE35PID // enable SCTE-35 filtering
 	m.destinations["enabled"] = destEnabled
 	m.destinations["disabled"] = destDisabled
 	stale := m.rebuildAdaptersLocked()

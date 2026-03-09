@@ -14,7 +14,7 @@ import (
 
 func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	// In always-decode mode, frames arrive as raw YUV and flow through
-	// broadcastProcessedFromPF → encodeAndBroadcastTransition which taps the sink.
+	// broadcastProcessedFromPF → pipeline (raw-sink node taps, then encode).
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
@@ -25,20 +25,22 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
-	defer sw.Close()
-
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	var mu sync.Mutex
 	var received []*ProcessingFrame
 
+	// Set sink BEFORE BuildPipeline so rawSinkNode.Active() == true at build time.
 	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
 		mu.Lock()
 		defer mu.Unlock()
 		received = append(received, pf)
 	})
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	sendRawFrame(sw, "cam1", 12345, true)
 
@@ -69,15 +71,11 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
-	defer sw.Close()
-
-	cam1Relay := newTestRelay()
-	sw.RegisterSource("cam1", cam1Relay)
-	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	var mu sync.Mutex
 	var sinkFrame *ProcessingFrame
 
+	// Set sink BEFORE BuildPipeline so rawSinkNode.Active() == true at build time.
 	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -87,6 +85,12 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 			pf.YUV[i] = 0xFF
 		}
 	})
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	sendRawFrame(sw, "cam1", 100, true)
 
@@ -120,18 +124,20 @@ func TestSetRawVideoSink_NilDisables(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+
+	var callCount atomic.Int32
+	// Set sink BEFORE BuildPipeline so rawSinkNode is active in the pipeline.
+	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
+		callCount.Add(1)
+	})
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
-	var callCount atomic.Int32
-	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
-		callCount.Add(1)
-	})
-
-	// Clear the sink
+	// Clear the sink — node is still in pipeline but Process() skips atomically.
 	sw.SetRawVideoSink(nil)
 
 	sendRawFrame(sw, "cam1", 100, true)
@@ -158,6 +164,17 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+
+	// Set sink BEFORE BuildPipeline so rawSinkNode.Active() == true at build time.
+	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		received = append(received, pf)
+	})
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -166,15 +183,6 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 	sw.RegisterSource("cam2", cam2Relay)
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
-
-	var mu sync.Mutex
-	var received []*ProcessingFrame
-
-	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
-		mu.Lock()
-		defer mu.Unlock()
-		received = append(received, pf)
-	})
 
 	// Start transition
 	require.NoError(t, sw.StartTransition(context.Background(), "cam2", "mix", 60000, ""))
