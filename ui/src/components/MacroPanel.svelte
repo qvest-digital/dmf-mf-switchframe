@@ -411,23 +411,24 @@
 	{/if}
 
 	<!-- Execution Progress View -->
-	{#if isExecuting && !editMode}
+	{#if crState.macro && !editMode}
+		{@const exec = crState.macro}
 		<div class="execution-view">
 			<div class="execution-header">
-				{#if macroExecution.running}
-					<span class="execution-title">{'\u25B6'} Running: {macroExecution.macroName}</span>
-				{:else if macroExecution.error}
-					<span class="execution-title exec-failed">{'\u2717'} {macroExecution.macroName}</span>
+				{#if exec.running}
+					<span class="execution-title">{'\u25B6'} Running: {exec.macroName}</span>
+				{:else if exec.error}
+					<span class="execution-title exec-failed">{'\u2717'} {exec.macroName}</span>
 				{:else}
-					<span class="execution-title exec-success">{'\u2713'} {macroExecution.macroName}</span>
+					<span class="execution-title exec-success">{'\u2713'} {exec.macroName}</span>
 				{/if}
 				<span class="exec-step-counter">
-					{macroExecution.currentStep + 1} / {macroExecution.steps.length}
+					{exec.currentStep + 1} / {exec.steps.length}
 				</span>
 			</div>
 
 			<div class="exec-step-list">
-				{#each macroExecution.steps as step, i}
+				{#each exec.steps as step, i}
 					<div class="exec-step-row {statusClass(step.status)}">
 						<span class="exec-step-icon">{statusIcon(step.status)}</span>
 						<span class="exec-step-summary">{step.summary}</span>
@@ -451,10 +452,10 @@
 			</div>
 
 			<div class="execution-footer">
-				{#if macroExecution.running}
+				{#if exec.running}
 					<button class="exec-btn exec-btn-cancel" onclick={() => cancelMacro()}>Cancel</button>
-				{:else if macroExecution.error}
-					<span class="exec-result">Failed at step {macroExecution.currentStep + 1}</span>
+				{:else if exec.error}
+					<span class="exec-result">Failed at step {exec.currentStep + 1}</span>
 					<button class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
 				{:else}
 					<span class="exec-result exec-success">Complete!</span>
