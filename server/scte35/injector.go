@@ -792,11 +792,11 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	var updateMsg *CueMessage
 	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
 		// Rebuild a time_signal with updated duration on each descriptor.
-		durationTicks := uint64(newDur.Seconds() * 90000)
 		var descs []SegmentationDescriptor
 		for _, d := range ae.Descriptors {
 			desc := d // copy
-			desc.DurationTicks = &durationTicks
+			ticks := uint64(newDur.Seconds() * 90000)
+			desc.DurationTicks = &ticks
 			descs = append(descs, desc)
 		}
 		updateMsg = &CueMessage{
