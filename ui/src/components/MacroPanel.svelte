@@ -320,7 +320,7 @@
 					{#if expandedStep === i}
 						<div class="step-body">
 							<div class="field-row">
-								<label class="field-label">Action</label>
+								<span class="field-label">Action</span>
 								<select
 									class="field-select action-select"
 									value={step.action}
@@ -339,7 +339,7 @@
 							<!-- Source field (cut, preview, transition, set_audio) -->
 							{#if ['cut', 'preview', 'transition', 'set_audio'].includes(step.action)}
 								<div class="field-row">
-									<label class="field-label">Source</label>
+									<span class="field-label">Source</span>
 									<select
 										class="field-select source-select"
 										value={step.params.source as string || ''}
@@ -355,7 +355,7 @@
 							<!-- Transition type + duration -->
 							{#if step.action === 'transition'}
 								<div class="field-row">
-									<label class="field-label">Type</label>
+									<span class="field-label">Type</span>
 									<select
 										class="field-select transition-type-select"
 										value={step.params.type as string || 'mix'}
@@ -367,7 +367,7 @@
 									</select>
 								</div>
 								<div class="field-row">
-									<label class="field-label">Duration</label>
+									<span class="field-label">Duration</span>
 									<div class="field-with-unit">
 										<input
 											class="field-input duration-input"
@@ -386,7 +386,7 @@
 							<!-- Wait duration -->
 							{#if step.action === 'wait'}
 								<div class="field-row">
-									<label class="field-label">Duration</label>
+									<span class="field-label">Duration</span>
 									<div class="field-with-unit">
 										<input
 											class="field-input wait-duration-input"
@@ -405,7 +405,7 @@
 							<!-- Audio level -->
 							{#if step.action === 'set_audio'}
 								<div class="field-row">
-									<label class="field-label">Level</label>
+									<span class="field-label">Level</span>
 									<div class="field-with-unit">
 										<input
 											class="field-input level-input"
@@ -424,7 +424,7 @@
 							<!-- SCTE-35 Cue -->
 							{#if step.action === 'scte35_cue'}
 								<div class="field-row">
-									<label class="field-label">Duration</label>
+									<span class="field-label">Duration</span>
 									<div class="field-with-unit">
 										<input
 											class="field-input"
@@ -439,7 +439,7 @@
 									</div>
 								</div>
 								<div class="field-row">
-									<label class="field-label">Auto-return</label>
+									<span class="field-label">Auto-return</span>
 									<input
 										class="field-checkbox"
 										type="checkbox"
@@ -452,7 +452,7 @@
 							<!-- SCTE-35 Event ID field (return, cancel, hold, extend) -->
 							{#if ['scte35_return', 'scte35_cancel', 'scte35_hold', 'scte35_extend'].includes(step.action)}
 								<div class="field-row">
-									<label class="field-label">Event ID</label>
+									<span class="field-label">Event ID</span>
 									<input
 										class="field-input event-id-input"
 										type="number"
@@ -468,7 +468,7 @@
 							<!-- SCTE-35 Extend duration -->
 							{#if step.action === 'scte35_extend'}
 								<div class="field-row">
-									<label class="field-label">Extend by</label>
+									<span class="field-label">Extend by</span>
 									<div class="field-with-unit">
 										<input
 											class="field-input"
