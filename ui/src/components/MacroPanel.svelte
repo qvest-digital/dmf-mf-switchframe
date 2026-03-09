@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Macro, MacroStep, MacroAction, ControlRoomState } from '$lib/api/types';
-	import { listMacros, saveMacro, deleteMacro, runMacro, listStingers, listPresets } from '$lib/api/switch-api';
+	import type { Macro, MacroStep, MacroAction, MacroStepStatus, MacroStepState, ControlRoomState } from '$lib/api/types';
+	import { listMacros, saveMacro, deleteMacro, runMacro, cancelMacro, dismissMacro, listStingers, listPresets } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import MacroStepEditor from './MacroStepEditor.svelte';
 	import { ACTION_META, CATEGORIES } from './macro-actions';
@@ -25,6 +25,52 @@
 	let presetList = $state<{ id: string; name: string }[]>([]);
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
+
+	let macroExecution = $derived(crState.macro);
+	let isExecuting = $derived(macroExecution != null);
+	let isRunning = $derived(macroExecution?.running ?? false);
+
+	// Client-side timer for wait step progress bars
+	let now = $state(Date.now());
+
+	$effect(() => {
+		if (isRunning) {
+			const interval = setInterval(() => { now = Date.now(); }, 50);
+			return () => clearInterval(interval);
+		}
+	});
+
+	function waitProgress(step: MacroStepState): number {
+		if (!step.waitStartMs || !step.waitMs || step.waitMs <= 0) return 0;
+		const elapsed = now - step.waitStartMs;
+		return Math.min(1, Math.max(0, elapsed / step.waitMs));
+	}
+
+	function waitElapsed(step: MacroStepState): string {
+		if (!step.waitStartMs || !step.waitMs) return '';
+		const elapsed = Math.min(now - step.waitStartMs, step.waitMs);
+		return `${(elapsed / 1000).toFixed(1)}s / ${(step.waitMs / 1000).toFixed(1)}s`;
+	}
+
+	function statusIcon(status: MacroStepStatus): string {
+		switch (status) {
+			case 'done': return '\u2713';
+			case 'running': return '\u25CF';
+			case 'failed': return '\u2717';
+			case 'skipped': return '\u2013';
+			default: return '\u25CB';
+		}
+	}
+
+	function statusClass(status: MacroStepStatus): string {
+		switch (status) {
+			case 'done': return 'step-done';
+			case 'running': return 'step-running';
+			case 'failed': return 'step-failed';
+			case 'skipped': return 'step-skipped';
+			default: return 'step-pending';
+		}
+	}
 
 	function sourceLabel(key: string): string {
 		return crState.sources[key]?.label || key;
@@ -364,8 +410,61 @@
 		</div>
 	{/if}
 
+	<!-- Execution Progress View -->
+	{#if isExecuting && !editMode}
+		<div class="execution-view">
+			<div class="execution-header">
+				{#if macroExecution.running}
+					<span class="execution-title">{'\u25B6'} Running: {macroExecution.macroName}</span>
+				{:else if macroExecution.error}
+					<span class="execution-title exec-failed">{'\u2717'} {macroExecution.macroName}</span>
+				{:else}
+					<span class="execution-title exec-success">{'\u2713'} {macroExecution.macroName}</span>
+				{/if}
+				<span class="exec-step-counter">
+					{macroExecution.currentStep + 1} / {macroExecution.steps.length}
+				</span>
+			</div>
+
+			<div class="exec-step-list">
+				{#each macroExecution.steps as step, i}
+					<div class="exec-step-row {statusClass(step.status)}">
+						<span class="exec-step-icon">{statusIcon(step.status)}</span>
+						<span class="exec-step-summary">{step.summary}</span>
+						{#if step.status === 'failed' && step.error}
+							<div class="exec-step-error">{step.error}</div>
+						{/if}
+						{#if step.status === 'running' && step.action === 'wait' && step.waitMs}
+							<div class="exec-progress-container">
+								<div class="exec-progress-bar" style="width: {waitProgress(step) * 100}%"></div>
+							</div>
+							<div class="exec-progress-label">{waitElapsed(step)}</div>
+						{/if}
+						{#if step.status === 'running' && step.action === 'transition' && crState.inTransition}
+							<div class="exec-progress-container">
+								<div class="exec-progress-bar" style="width: {crState.transitionPosition * 100}%"></div>
+							</div>
+							<div class="exec-progress-label">{Math.round(crState.transitionPosition * 100)}%</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+
+			<div class="execution-footer">
+				{#if macroExecution.running}
+					<button class="exec-btn exec-btn-cancel" onclick={() => cancelMacro()}>Cancel</button>
+				{:else if macroExecution.error}
+					<span class="exec-result">Failed at step {macroExecution.currentStep + 1}</span>
+					<button class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
+				{:else}
+					<span class="exec-result exec-success">Complete!</span>
+					<button class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
+				{/if}
+			</div>
+		</div>
+
 	<!-- Edit Mode -->
-	{#if editMode}
+	{:else if editMode}
 		<div class="macro-editor">
 			<input
 				class="macro-name-input"
@@ -471,7 +570,7 @@
 					<button
 						class="macro-btn"
 						class:running={runningMacro === m.name}
-						disabled={runningMacro !== null}
+						disabled={runningMacro !== null || isRunning}
 						onclick={() => handleRun(m.name)}
 						title="Run macro: {m.name} (Ctrl+{i + 1})"
 					>
@@ -990,5 +1089,203 @@
 
 	.cancel-btn:hover {
 		background: var(--bg-hover);
+	}
+
+	/* --- Execution View --- */
+	.execution-view {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.execution-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 4px 6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+	}
+
+	.execution-title {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.execution-title.exec-failed {
+		color: #ef4444;
+	}
+
+	.execution-title.exec-success {
+		color: #22c55e;
+	}
+
+	.exec-step-counter {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		color: var(--text-tertiary);
+	}
+
+	.exec-step-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.exec-step-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		transition: border-color var(--transition-fast), background var(--transition-fast);
+	}
+
+	.exec-step-row.step-done {
+		border-color: rgba(34, 197, 94, 0.3);
+	}
+
+	.exec-step-row.step-running {
+		border-color: var(--accent-blue);
+		background: rgba(59, 130, 246, 0.08);
+	}
+
+	.exec-step-row.step-failed {
+		border-color: rgba(239, 68, 68, 0.4);
+		background: rgba(239, 68, 68, 0.08);
+	}
+
+	.exec-step-row.step-skipped {
+		opacity: 0.4;
+	}
+
+	.exec-step-icon {
+		font-size: 0.7rem;
+		flex-shrink: 0;
+		width: 14px;
+		text-align: center;
+	}
+
+	.step-done .exec-step-icon {
+		color: #22c55e;
+	}
+
+	.step-running .exec-step-icon {
+		color: var(--accent-blue);
+		animation: pulse 1.2s ease-in-out infinite;
+	}
+
+	.step-failed .exec-step-icon {
+		color: #ef4444;
+	}
+
+	.step-skipped .exec-step-icon {
+		color: var(--text-tertiary);
+	}
+
+	.step-pending .exec-step-icon {
+		color: var(--text-tertiary);
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
+	}
+
+	.exec-step-summary {
+		flex: 1;
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.exec-step-error {
+		width: 100%;
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: #ef4444;
+		padding: 2px 0 0 20px;
+	}
+
+	.exec-progress-container {
+		width: 100%;
+		height: 4px;
+		background: var(--bg-base);
+		border-radius: 2px;
+		margin: 2px 0 0 20px;
+		overflow: hidden;
+	}
+
+	.exec-progress-bar {
+		height: 100%;
+		background: var(--accent-blue);
+		border-radius: 2px;
+		transition: width 0.05s linear;
+	}
+
+	.exec-progress-label {
+		width: 100%;
+		font-family: var(--font-mono);
+		font-size: 0.55rem;
+		color: var(--text-tertiary);
+		padding-left: 20px;
+	}
+
+	.execution-footer {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
+		padding: 2px 0;
+	}
+
+	.exec-result {
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		color: var(--text-secondary);
+	}
+
+	.exec-result.exec-success {
+		color: #22c55e;
+	}
+
+	.exec-btn {
+		padding: 3px 10px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background var(--transition-fast);
+	}
+
+	.exec-btn-cancel {
+		background: rgba(239, 68, 68, 0.15);
+		color: #ef4444;
+		border-color: rgba(239, 68, 68, 0.3);
+	}
+
+	.exec-btn-cancel:hover {
+		background: rgba(239, 68, 68, 0.25);
+	}
+
+	.exec-btn-dismiss {
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+	}
+
+	.exec-btn-dismiss:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
 	}
 </style>
