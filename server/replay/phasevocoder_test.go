@@ -195,3 +195,142 @@ func TestNearestPeak_NoPeaks(t *testing.T) {
 	result := nearestPeak(nil, 5)
 	assert.Equal(t, 5, result)
 }
+
+func TestSpectralFlux_SteadyState(t *testing.T) {
+	mag := make([]float32, 100)
+	for i := range mag {
+		mag[i] = float32(i) * 0.01
+	}
+	flux := spectralFlux(mag, mag)
+	assert.InDelta(t, 0.0, flux, 1e-6)
+}
+
+func TestSpectralFlux_Increase(t *testing.T) {
+	prevMag := make([]float32, 100)
+	curMag := make([]float32, 100)
+	for i := range curMag {
+		curMag[i] = 10.0
+	}
+	flux := spectralFlux(prevMag, curMag)
+	assert.InDelta(t, 1000.0, flux, 1e-3) // 100 bins * 10.0
+}
+
+func TestTransientDetector_SteadyState(t *testing.T) {
+	td := newTransientDetector(100, 20)
+	steady := make([]float32, 100)
+	for i := range steady {
+		steady[i] = 1.0
+	}
+	// Feed steady frames — should never be transient after warmup
+	for i := 0; i < 20; i++ {
+		assert.False(t, td.isTransient(steady), "frame %d should not be transient", i)
+	}
+}
+
+func TestTransientDetector_DetectsTransient(t *testing.T) {
+	td := newTransientDetector(100, 20)
+	steady := make([]float32, 100)
+	for i := range steady {
+		steady[i] = 1.0
+	}
+	// Warmup with steady frames
+	for i := 0; i < 20; i++ {
+		td.isTransient(steady)
+	}
+	// Sudden large increase
+	transient := make([]float32, 100)
+	for i := range transient {
+		transient[i] = 50.0
+	}
+	assert.True(t, td.isTransient(transient))
+}
+
+func TestPhaseVocoderTimeStretch_HalfSpeed(t *testing.T) {
+	input := make([]float32, 48000)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+	}
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.5)
+	require.NotNil(t, output)
+	expectedLen := len(input) * 2
+	assert.InDelta(t, expectedLen, len(output), float64(expectedLen)*0.1)
+}
+
+func TestPhaseVocoderTimeStretch_QuarterSpeed(t *testing.T) {
+	input := make([]float32, 48000)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+	}
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.25)
+	require.NotNil(t, output)
+	expectedLen := len(input) * 4
+	assert.InDelta(t, expectedLen, len(output), float64(expectedLen)*0.15)
+}
+
+func TestPhaseVocoderTimeStretch_Stereo(t *testing.T) {
+	input := make([]float32, 48000*2)
+	for i := 0; i < 48000; i++ {
+		v := float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+		input[i*2] = v
+		input[i*2+1] = v * 0.5
+	}
+	output := PhaseVocoderTimeStretch(input, 2, 48000, 0.5)
+	require.NotNil(t, output)
+	expectedLen := len(input) * 2
+	assert.InDelta(t, expectedLen, len(output), float64(expectedLen)*0.1)
+	assert.Equal(t, 0, len(output)%2, "output length must be even for stereo")
+}
+
+func TestPhaseVocoderTimeStretch_Passthrough(t *testing.T) {
+	input := make([]float32, 48000)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+	}
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 1.0)
+	require.Len(t, output, len(input))
+	for i := range input {
+		assert.InDelta(t, input[i], output[i], 1e-6)
+	}
+}
+
+func TestPhaseVocoderTimeStretch_Empty(t *testing.T) {
+	output := PhaseVocoderTimeStretch(nil, 1, 48000, 0.5)
+	assert.Nil(t, output)
+	output = PhaseVocoderTimeStretch([]float32{}, 1, 48000, 0.5)
+	assert.Nil(t, output)
+}
+
+func TestPhaseVocoderTimeStretch_SpeedClamping(t *testing.T) {
+	input := make([]float32, 48000)
+	for i := range input {
+		input[i] = float32(math.Sin(2 * math.Pi * 440 * float64(i) / 48000))
+	}
+	// Speed < 0.1 should be clamped
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.01)
+	require.NotNil(t, output)
+	require.Greater(t, len(output), len(input))
+}
+
+func TestPhaseVocoderTimeStretch_ShortInput(t *testing.T) {
+	// Input shorter than FFT window — should return nil (too short)
+	input := make([]float32, 100)
+	for i := range input {
+		input[i] = 0.5
+	}
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.5)
+	assert.Nil(t, output)
+}
+
+func TestPhaseVocoderTimeStretch_OutputNotClipped(t *testing.T) {
+	input := make([]float32, 48000)
+	for i := range input {
+		input[i] = float32(math.Sin(2*math.Pi*440*float64(i)/48000) +
+			0.5*math.Sin(2*math.Pi*880*float64(i)/48000))
+	}
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.5)
+	require.NotNil(t, output)
+	for i, s := range output {
+		assert.LessOrEqual(t, s, float32(0.96), "sample %d clipping positive", i)
+		assert.GreaterOrEqual(t, s, float32(-0.96), "sample %d clipping negative", i)
+	}
+}

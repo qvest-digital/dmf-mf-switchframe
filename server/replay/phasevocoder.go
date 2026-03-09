@@ -212,3 +212,264 @@ func lockPhases(mag, analysisPhase, synthPhase []float32, prevAnalysisPhase []fl
 		synthPhase[k] = synthPhase[p] + (analysisPhase[k] - analysisPhase[p])
 	}
 }
+
+// transientDetector tracks spectral flux to detect transient onsets.
+type transientDetector struct {
+	prevMag     []float32
+	hasPrev     bool
+	fluxHistory []float64
+	historyLen  int
+}
+
+func newTransientDetector(numBins, historyLen int) *transientDetector {
+	return &transientDetector{
+		prevMag:    make([]float32, numBins),
+		historyLen: historyLen,
+	}
+}
+
+// spectralFlux computes the half-wave rectified spectral flux between
+// consecutive magnitude spectra. Only positive increases count.
+func spectralFlux(prevMag, curMag []float32) float64 {
+	var flux float64
+	for i := range curMag {
+		diff := float64(curMag[i]) - float64(prevMag[i])
+		if diff > 0 {
+			flux += diff
+		}
+	}
+	return flux
+}
+
+// isTransient returns true if the current magnitude spectrum represents
+// a transient onset (spectral flux exceeds adaptive threshold).
+func (td *transientDetector) isTransient(mag []float32) bool {
+	if !td.hasPrev {
+		copy(td.prevMag, mag)
+		td.hasPrev = true
+		return false
+	}
+
+	flux := spectralFlux(td.prevMag, mag)
+	copy(td.prevMag, mag)
+
+	// Adaptive threshold: mean + 2*stddev of recent flux values
+	td.fluxHistory = append(td.fluxHistory, flux)
+	if len(td.fluxHistory) > td.historyLen {
+		td.fluxHistory = td.fluxHistory[len(td.fluxHistory)-td.historyLen:]
+	}
+
+	if len(td.fluxHistory) < 4 {
+		return false // need history to establish baseline
+	}
+
+	var sum, sumSq float64
+	for _, f := range td.fluxHistory {
+		sum += f
+		sumSq += f * f
+	}
+	n := float64(len(td.fluxHistory))
+	mean := sum / n
+	variance := sumSq/n - mean*mean
+	if variance < 0 {
+		variance = 0
+	}
+	stddev := math.Sqrt(variance)
+
+	return flux > mean+2*stddev
+}
+
+// PhaseVocoderTimeStretch performs high-quality pitch-preserved time-stretching
+// using an STFT-based phase vocoder with identity phase locking and transient
+// detection.
+//
+//   - input: interleaved PCM samples
+//   - channels: number of audio channels (1 or 2)
+//   - sampleRate: sample rate in Hz
+//   - speed: playback speed (0.1-1.0)
+//
+// Returns the time-stretched output samples.
+func PhaseVocoderTimeStretch(input []float32, channels, sampleRate int, speed float64) []float32 {
+	if len(input) == 0 {
+		return nil
+	}
+	if speed >= 1.0 {
+		out := make([]float32, len(input))
+		copy(out, input)
+		return out
+	}
+	if speed < 0.1 {
+		speed = 0.1
+	}
+
+	// For extreme slow-down (< 0.5x), cascade two passes at sqrt(speed).
+	if speed < 0.5 {
+		intermediate := math.Sqrt(speed)
+		pass1 := phaseVocoderStretchSingle(input, channels, sampleRate, intermediate)
+		if len(pass1) == 0 {
+			return nil
+		}
+		result := phaseVocoderStretchSingle(pass1, channels, sampleRate, intermediate)
+		normalizePeak(result)
+		return result
+	}
+
+	result := phaseVocoderStretchSingle(input, channels, sampleRate, speed)
+	normalizePeak(result)
+	return result
+}
+
+// phaseVocoderStretchSingle performs a single phase vocoder pass.
+func phaseVocoderStretchSingle(input []float32, channels, sampleRate int, speed float64) []float32 {
+	if len(input) == 0 {
+		return nil
+	}
+
+	totalSamples := len(input) / channels
+	fftSize := pvFFTSize
+
+	// If input is shorter than FFT window, fall back
+	if totalSamples < fftSize {
+		return nil
+	}
+
+	analysisHop := fftSize / pvHopDivisor
+	synthHop := int(float64(analysisHop) / speed)
+	if synthHop < 1 {
+		synthHop = 1
+	}
+
+	// Deinterleave channels
+	channelData := make([][]float32, channels)
+	for ch := 0; ch < channels; ch++ {
+		channelData[ch] = make([]float32, totalSamples)
+		for i := 0; i < totalSamples; i++ {
+			channelData[ch][i] = input[i*channels+ch]
+		}
+	}
+
+	// Process each channel independently
+	outputLen := int(float64(totalSamples) / speed)
+	channelOut := make([][]float32, channels)
+	for ch := 0; ch < channels; ch++ {
+		channelOut[ch] = stretchChannel(channelData[ch], fftSize, analysisHop, synthHop, sampleRate)
+		// Trim or pad to expected output length
+		if len(channelOut[ch]) > outputLen {
+			channelOut[ch] = channelOut[ch][:outputLen]
+		}
+	}
+
+	// Find minimum output length across channels
+	minLen := outputLen
+	for ch := 0; ch < channels; ch++ {
+		if len(channelOut[ch]) < minLen {
+			minLen = len(channelOut[ch])
+		}
+	}
+	if minLen <= 0 {
+		return nil
+	}
+
+	// Reinterleave
+	result := make([]float32, minLen*channels)
+	for i := 0; i < minLen; i++ {
+		for ch := 0; ch < channels; ch++ {
+			result[i*channels+ch] = channelOut[ch][i]
+		}
+	}
+
+	return result
+}
+
+// stretchChannel processes a single channel through the phase vocoder.
+func stretchChannel(data []float32, fftSize, analysisHop, synthHop, sampleRate int) []float32 {
+	numBins := fftSize/2 + 1
+	pv := newPhaseVocoder(fftSize, analysisHop, sampleRate)
+	td := newTransientDetector(numBins, 20)
+
+	// Calculate number of analysis frames
+	numFrames := 0
+	for pos := 0; pos+fftSize <= len(data); pos += analysisHop {
+		numFrames++
+	}
+	if numFrames == 0 {
+		return nil
+	}
+
+	// Estimate output length
+	outputLen := (numFrames-1)*synthHop + fftSize
+	output := make([]float32, outputLen)
+	windowSum := make([]float32, outputLen) // for COLA normalization
+
+	// Phase accumulation state
+	prevAnalysisPhase := make([]float32, numBins)
+	synthPhase := make([]float32, numBins)
+	firstFrame := true
+
+	outPos := 0
+	for inPos := 0; inPos+fftSize <= len(data); inPos += analysisHop {
+		frame := data[inPos : inPos+fftSize]
+
+		mag, analysisPhase := pv.analyzeFrame(frame)
+
+		// Copy analysis results (they reference internal buffers)
+		magCopy := make([]float32, numBins)
+		phaseCopy := make([]float32, numBins)
+		copy(magCopy, mag)
+		copy(phaseCopy, analysisPhase)
+
+		if firstFrame {
+			// First frame: use analysis phases directly
+			copy(synthPhase, phaseCopy)
+			copy(prevAnalysisPhase, phaseCopy)
+			firstFrame = false
+		} else {
+			// Detect transients
+			isTransient := td.isTransient(magCopy)
+
+			if isTransient {
+				// Reset synthesis phases to analysis phases
+				copy(synthPhase, phaseCopy)
+			} else {
+				// Phase accumulation with instantaneous frequency
+				for k := 0; k < numBins; k++ {
+					instFreq := pv.instantaneousFrequency(prevAnalysisPhase[k], phaseCopy[k], k)
+					// Accumulate synthesis phase
+					phaseAdvance := 2 * math.Pi * instFreq * float64(synthHop) / float64(sampleRate)
+					synthPhase[k] += float32(phaseAdvance)
+				}
+
+				// Phase locking
+				peaks := findSpectralPeaks(magCopy)
+				if len(peaks) > 0 {
+					lockPhases(magCopy, phaseCopy, synthPhase, prevAnalysisPhase, peaks, numBins)
+				}
+			}
+
+			copy(prevAnalysisPhase, phaseCopy)
+		}
+
+		// Synthesize with the modified phase
+		synthFrame := pv.synthesizeFrame(magCopy, synthPhase)
+
+		// Overlap-add
+		for i := 0; i < fftSize; i++ {
+			idx := outPos + i
+			if idx < len(output) {
+				output[idx] += synthFrame[i]
+				windowSum[idx] += pv.window[i] * pv.window[i] // Hann^2 for COLA normalization
+			}
+		}
+
+		outPos += synthHop
+	}
+
+	// Normalize by window sum (COLA normalization)
+	for i := range output {
+		if windowSum[i] > 1e-6 {
+			output[i] /= windowSum[i]
+		}
+	}
+
+	return output
+}

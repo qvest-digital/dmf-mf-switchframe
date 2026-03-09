@@ -132,6 +132,25 @@ func findBestOverlap(input, output []float32, inputPos, outputPos, windowSize, c
 	return bestOffset
 }
 
+// normalizePeak scales audio so the peak doesn't exceed 0.95 (-0.4 dBFS),
+// preventing clipping from overlap-add accumulation.
+func normalizePeak(samples []float32) {
+	var peak float32
+	for _, s := range samples {
+		if s > peak {
+			peak = s
+		} else if -s > peak {
+			peak = -s
+		}
+	}
+	if peak > 0.95 {
+		scale := float32(0.95) / peak
+		for i := range samples {
+			samples[i] *= scale
+		}
+	}
+}
+
 // linearTimeStretch stretches audio by linear interpolation between samples.
 // This changes pitch (lower at slow speeds) but guarantees continuous output
 // with no gaps. Used as a fallback when WSOLA fails.
