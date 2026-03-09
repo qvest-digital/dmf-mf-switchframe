@@ -62,6 +62,24 @@ The server produces the authoritative program output — the browser is a contro
 - Loop mode
 - Output routed to dedicated `"replay"` relay
 
+### SCTE-35
+
+- Digital Program Insertion Cueing (ANSI/SCTE 35) for ad insertion signaling
+- `splice_insert` and `time_signal` command injection into MPEG-TS output
+- `splice_null` heartbeat at configurable interval (default 5s)
+- Immediate and scheduled cue insertion with configurable pre-roll (default 4s)
+- `break_duration` with `auto_return` for timed ad breaks
+- Hold and extend active breaks
+- Cancel pending/active events
+- `segmentation_descriptor` support (segmentation type, UPID, sub-segments)
+- Rules engine for pass/delete/replace filtering with priority ordering
+- Built-in rule templates (block all, allow program start/end, etc.)
+- Event log with full cue lifecycle tracking
+- Round-trip encode verification (optional, on by default)
+- Webhook notifications for cue lifecycle events
+- PID configurable (default 0x102)
+- SCTE-35 state included in control room state broadcast
+
 ### Graphics
 
 - Downstream keyer (DSK) with RGBA alpha compositing
@@ -243,11 +261,12 @@ server/                     Go module (github.com/zsiec/switchframe/server)
   preset/                   File-based save/recall
   metrics/                  Prometheus counters, gauges, histograms
   debug/                    Snapshot collector, circular event log
+  scte35/                   SCTE-35 ad insertion (injector, encoder, rules engine, webhook)
   mxl/                      MXL shared-memory transport (V210 video, float32 audio, NMOS discovery)
   demo/                     Simulated camera sources
   internal/                 Shared types (ControlRoomState, SourceInfo, etc.)
 ui/                         SvelteKit frontend (Svelte 5 + TypeScript)
-  src/components/           31 Svelte 5 components (runes syntax)
+  src/components/           32 Svelte 5 components (runes syntax)
   src/lib/api/              REST client + TypeScript types
   src/lib/state/            Reactive store with MoQ update handler
   src/lib/transport/        WebTransport connection + MoQ media pipeline
@@ -375,6 +394,12 @@ graph TD
 | `--tls-key` | — | TLS private key PEM file path |
 | `--raw-program-monitor` | `false` | Enable raw YUV420 program monitor MoQ track |
 | `--raw-monitor-scale` | — | Raw monitor resolution: `720p`, `480p`, `360p` |
+| `--scte35` | `false` | Enable SCTE-35 ad insertion signaling |
+| `--scte35-pid` | `0x102` | SCTE-35 PID in MPEG-TS output |
+| `--scte35-preroll` | `4000` | Default pre-roll in milliseconds for scheduled cues |
+| `--scte35-heartbeat` | `5000` | Heartbeat interval in ms (splice_null, 0 to disable) |
+| `--scte35-verify` | `true` | Verify SCTE-35 encoding by round-trip decode |
+| `--scte35-webhook` | — | Webhook URL for SCTE-35 event notifications |
 
 ### Environment Variables
 
@@ -471,6 +496,28 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `POST` | `/api/output/destinations/{id}/start` | Start destination |
 | `POST` | `/api/output/destinations/{id}/stop` | Stop destination |
 | `GET` | `/api/output/confidence` | Program thumbnail (JPEG, ≤1fps) |
+
+### SCTE-35
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/scte35/cue` | Insert cue (immediate or scheduled with pre-roll) |
+| `POST` | `/api/scte35/return` | Return most recent active event to program |
+| `POST` | `/api/scte35/return/{eventId}` | Return specific event by ID |
+| `POST` | `/api/scte35/cancel/{eventId}` | Cancel scheduled/active event |
+| `POST` | `/api/scte35/hold/{eventId}` | Hold break (prevent auto-return) |
+| `POST` | `/api/scte35/extend/{eventId}` | Extend break duration |
+| `GET` | `/api/scte35/status` | Injector state (active events, config) |
+| `GET` | `/api/scte35/log` | Event history log |
+| `GET` | `/api/scte35/active` | List active event IDs |
+| `GET` | `/api/scte35/rules` | List all rules |
+| `POST` | `/api/scte35/rules` | Create rule |
+| `PUT` | `/api/scte35/rules/{id}` | Update rule |
+| `DELETE` | `/api/scte35/rules/{id}` | Delete rule |
+| `PUT` | `/api/scte35/rules/default` | Set default action for unmatched cues |
+| `POST` | `/api/scte35/rules/reorder` | Reorder rule evaluation priority |
+| `GET` | `/api/scte35/rules/templates` | List built-in rule templates |
+| `POST` | `/api/scte35/rules/from-template` | Create rule from template |
 
 ### Stinger Transitions
 
@@ -583,6 +630,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [FDK-AAC](https://github.com/mstorsjo/fdk-aac) — AAC codec
 - [FFmpeg libavcodec](https://ffmpeg.org/) — H.264 encode/decode
 - [go-astits](https://github.com/asticode/go-astits) — MPEG-TS muxer
+- [scte35-go](https://github.com/Comcast/scte35-go) — SCTE-35 encoding/decoding
 - [srtgo](https://github.com/zsiec/srtgo) — Pure Go SRT
 - [Prometheus](https://prometheus.io/) — Metrics
 - [MXL](https://tech.ebu.ch/dmf/mxl) — EBU/Linux Foundation shared-memory media transport SDK (optional, build tag `mxl`)
@@ -593,6 +641,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [Deployment Guide](docs/deployment.md) — Production setup, Docker, TLS, monitoring
 - [Architecture](docs/architecture.md) — System design, data flow, decisions
 - [Locking & Concurrency](docs/locking-and-concurrency.md) — Lock inventory, frame flow diagrams, lock ordering, deadlock-free guarantees
+- [SCTE-35 Compliance](docs/scte35-fixes.md) — Known compliance gaps and follow-up items vs ANSI/SCTE 35 2023r1
 - [MXL Integration](docs/mxl.md) — MXL shared-memory setup, configuration, demo
 
 ## License
