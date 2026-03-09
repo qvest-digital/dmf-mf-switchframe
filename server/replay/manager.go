@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -48,6 +49,15 @@ type Manager struct {
 	onPlaybackStop    func() // called when player finishes or is stopped
 	onVideoInfoChange func(sps, pps []byte, width, height int)
 	ptsProvider       func() int64
+
+	// Raw output callbacks for uncompressed pipeline.
+	rawVideoOutput   func(yuv []byte, w, h int, pts int64)
+	rawMonitorOutput func(yuv []byte, w, h int, pts int64)
+	audioOutput      func(frame *media.AudioFrame) // direct audio output (e.g. to mixer)
+
+	// Audio codec factories for WSOLA time-stretching.
+	audioDecoderFactory audio.DecoderFactory
+	audioEncoderFactory audio.EncoderFactory
 }
 
 // NewManager creates a replay manager.
@@ -227,6 +237,9 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 		m.playerCancel = cancel
 
 		videoInfoCb := m.onVideoInfoChange
+		rawVideoCb := m.rawVideoOutput
+		rawMonitorCb := m.rawMonitorOutput
+		audioOutputCb := m.audioOutput
 
 		m.player = newReplayPlayer(PlayerConfig{
 			Clip:           clip,
@@ -242,7 +255,14 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 			},
 			AudioOutput: func(frame *media.AudioFrame) {
 				m.relay.BroadcastAudio(frame)
+				if audioOutputCb != nil {
+					audioOutputCb(frame)
+				}
 			},
+			RawVideoOutput:      rawVideoCb,
+			RawMonitorOutput:    rawMonitorCb,
+			AudioDecoderFactory: m.audioDecoderFactory,
+			AudioEncoderFactory: m.audioEncoderFactory,
 			OnDone: func() {
 				m.mu.Lock()
 				m.player = nil
@@ -360,6 +380,39 @@ func (m *Manager) SetPTSProvider(fn func() int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ptsProvider = fn
+}
+
+// SetRawVideoOutput registers a callback for sending decoded YUV frames
+// directly to the switcher pipeline (primary output path).
+func (m *Manager) SetRawVideoOutput(fn func(yuv []byte, w, h int, pts int64)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rawVideoOutput = fn
+}
+
+// SetRawMonitorOutput registers a callback for sending raw YUV to a
+// monitoring relay (e.g. "replay-raw" track).
+func (m *Manager) SetRawMonitorOutput(fn func(yuv []byte, w, h int, pts int64)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rawMonitorOutput = fn
+}
+
+// SetAudioOutput registers a callback for sending audio directly to the
+// mixer, bypassing the relay encode/decode hop.
+func (m *Manager) SetAudioOutput(fn func(frame *media.AudioFrame)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioOutput = fn
+}
+
+// SetAudioCodecFactories sets the AAC decoder/encoder factories used for
+// WSOLA audio time-stretching during slow-motion playback.
+func (m *Manager) SetAudioCodecFactories(decFactory audio.DecoderFactory, encFactory audio.EncoderFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioDecoderFactory = decFactory
+	m.audioEncoderFactory = encFactory
 }
 
 // Close stops any active player and releases resources.

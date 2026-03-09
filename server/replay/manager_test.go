@@ -2,11 +2,13 @@ package replay
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 )
 
 // mockRelay implements the minimal relay interface for testing.
@@ -530,6 +532,95 @@ func TestReplayManager_SetPTSProvider(t *testing.T) {
 	require.NotEmpty(t, relay.videos)
 	require.Greater(t, relay.videos[0].PTS, programPTS-1,
 		"first frame PTS should be >= programPTS, got %d", relay.videos[0].PTS)
+}
+
+func TestReplayManager_RawVideoOutput(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	var rawCount int64
+	m.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64) {
+		atomic.AddInt64(&rawCount, 1)
+	})
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+
+	require.Greater(t, atomic.LoadInt64(&rawCount), int64(0),
+		"RawVideoOutput should receive frames during playback")
+}
+
+func TestReplayManager_AudioOutput(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	var directAudioCount int64
+	m.SetAudioOutput(func(frame *media.AudioFrame) {
+		atomic.AddInt64(&directAudioCount, 1)
+	})
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+
+	// Record audio frames within the mark window (between mark-in and mark-out).
+	buf := m.buffers["cam1"]
+	buf.RecordAudioFrame(&media.AudioFrame{PTS: 3003, Data: make([]byte, 50), SampleRate: 48000, Channels: 2})
+	buf.RecordAudioFrame(&media.AudioFrame{PTS: 4923, Data: make([]byte, 50), SampleRate: 48000, Channels: 2})
+
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, false, 50))
+	time.Sleep(10 * time.Millisecond)
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Audio goes to both relay AND direct output.
+	count := atomic.LoadInt64(&directAudioCount)
+	require.Greater(t, count, int64(0),
+		"AudioOutput should receive frames during playback")
+}
+
+func TestReplayManager_SetAudioCodecFactories(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	m.SetAudioCodecFactories(
+		func(sampleRate, channels int) (audio.AudioDecoder, error) {
+			return &mockAudioDecoder{}, nil
+		},
+		func(sampleRate, channels int) (audio.AudioEncoder, error) {
+			return &mockAudioEncoder{}, nil
+		},
+	)
+
+	// Verify factories are set (they'll be wired into PlayerConfig on Play).
+	m.mu.Lock()
+	require.NotNil(t, m.audioDecoderFactory)
+	require.NotNil(t, m.audioEncoderFactory)
+	m.mu.Unlock()
 }
 
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {
