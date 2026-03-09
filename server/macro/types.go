@@ -3,6 +3,8 @@
 // Macros are stored as JSON on disk and executed sequentially.
 package macro
 
+import "fmt"
+
 // MacroAction identifies the type of operation a macro step performs.
 type MacroAction string
 
@@ -113,4 +115,136 @@ type MacroStep struct {
 type Macro struct {
 	Name  string      `json:"name"`
 	Steps []MacroStep `json:"steps"`
+}
+
+// StepStatus indicates the execution state of a single macro step.
+type StepStatus string
+
+const (
+	StepPending StepStatus = "pending"
+	StepRunning StepStatus = "running"
+	StepDone    StepStatus = "done"
+	StepFailed  StepStatus = "failed"
+	StepSkipped StepStatus = "skipped"
+)
+
+// StepState tracks the runtime state of a single step during execution.
+type StepState struct {
+	Action      MacroAction `json:"action"`
+	Summary     string      `json:"summary"`
+	Status      StepStatus  `json:"status"`
+	Error       string      `json:"error,omitempty"`
+	WaitMs      int         `json:"waitMs,omitempty"`
+	WaitStartMs int64       `json:"waitStartMs,omitempty"`
+}
+
+// ExecutionState represents the full progress of a macro execution,
+// broadcast to browsers for real-time UI updates.
+type ExecutionState struct {
+	Running     bool        `json:"running"`
+	MacroName   string      `json:"macroName"`
+	Steps       []StepState `json:"steps"`
+	CurrentStep int         `json:"currentStep"`
+	Error       string      `json:"error,omitempty"`
+}
+
+// OnProgress is a callback invoked by the runner whenever execution state changes.
+type OnProgress func(state ExecutionState)
+
+// StepSummary generates a human-readable summary string for a macro step.
+func StepSummary(step MacroStep) string {
+	source, _ := step.Params["source"].(string)
+
+	switch step.Action {
+	case ActionCut:
+		return fmt.Sprintf("Cut → %s", source)
+	case ActionPreview:
+		return fmt.Sprintf("Preview → %s", source)
+	case ActionTransition:
+		transType, _ := step.Params["type"].(string)
+		durationMs := 0
+		if d, ok := step.Params["durationMs"].(float64); ok {
+			durationMs = int(d)
+		}
+		return fmt.Sprintf("Transition %s %dms → %s", transType, durationMs, source)
+	case ActionWait:
+		ms := 0
+		if d, ok := step.Params["ms"].(float64); ok {
+			ms = int(d)
+		}
+		return fmt.Sprintf("Wait %dms", ms)
+	case ActionSetAudio:
+		level := 0.0
+		if l, ok := step.Params["level"].(float64); ok {
+			level = l
+		}
+		return fmt.Sprintf("Set Audio %s %.1fdB", source, level)
+	case ActionAudioMute:
+		return fmt.Sprintf("Audio Mute %s", source)
+	case ActionAudioAFV:
+		return fmt.Sprintf("Audio AFV %s", source)
+	case ActionAudioTrim:
+		return fmt.Sprintf("Audio Trim %s", source)
+	case ActionAudioMaster:
+		return "Audio Master"
+	case ActionAudioEQ:
+		return fmt.Sprintf("Audio EQ %s", source)
+	case ActionAudioCompressor:
+		return fmt.Sprintf("Audio Compressor %s", source)
+	case ActionAudioDelay:
+		return fmt.Sprintf("Audio Delay %s", source)
+	case ActionGraphicsOn:
+		return "Graphics On"
+	case ActionGraphicsOff:
+		return "Graphics Off"
+	case ActionGraphicsAutoOn:
+		return "Graphics Auto On"
+	case ActionGraphicsAutoOff:
+		return "Graphics Auto Off"
+	case ActionRecordingStart:
+		return "Recording Start"
+	case ActionRecordingStop:
+		return "Recording Stop"
+	case ActionFTB:
+		return "Fade to Black"
+	case ActionPresetRecall:
+		id, _ := step.Params["id"].(string)
+		return fmt.Sprintf("Preset Recall %s", id)
+	case ActionKeySet:
+		return fmt.Sprintf("Key Set %s", source)
+	case ActionKeyDelete:
+		return fmt.Sprintf("Key Delete %s", source)
+	case ActionSourceLabel:
+		return fmt.Sprintf("Source Label %s", source)
+	case ActionSourceDelay:
+		return fmt.Sprintf("Source Delay %s", source)
+	case ActionSourcePosition:
+		return fmt.Sprintf("Source Position %s", source)
+	case ActionReplayMarkIn:
+		return fmt.Sprintf("Replay Mark In %s", source)
+	case ActionReplayMarkOut:
+		return fmt.Sprintf("Replay Mark Out %s", source)
+	case ActionReplayPlay:
+		return fmt.Sprintf("Replay Play %s", source)
+	case ActionReplayStop:
+		return "Replay Stop"
+	case ActionReplayQuickClip:
+		return fmt.Sprintf("Replay Quick Clip %s", source)
+	case ActionReplayPlayLast:
+		return "Replay Play Last"
+	case ActionReplayPlayClip:
+		return "Replay Play Clip"
+	case ActionSCTE35Cue:
+		return "SCTE-35 Cue"
+	case ActionSCTE35Return:
+		return "SCTE-35 Return"
+	case ActionSCTE35Cancel:
+		return "SCTE-35 Cancel"
+	case ActionSCTE35Hold:
+		return "SCTE-35 Hold"
+	case ActionSCTE35Extend:
+		return "SCTE-35 Extend"
+	default:
+		return string(step.Action)
+	}
 }

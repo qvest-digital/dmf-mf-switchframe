@@ -427,6 +427,102 @@ func TestRunner_SCTE35StillUsesSpecificMethods(t *testing.T) {
 	require.Len(t, calls, 0)
 }
 
+func TestStepSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		step     MacroStep
+		expected string
+	}{
+		{
+			name:     "cut",
+			step:     MacroStep{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			expected: "Cut → cam1",
+		},
+		{
+			name:     "preview",
+			step:     MacroStep{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
+			expected: "Preview → cam2",
+		},
+		{
+			name:     "transition",
+			step:     MacroStep{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix", "durationMs": float64(500)}},
+			expected: "Transition mix 500ms → cam1",
+		},
+		{
+			name:     "wait",
+			step:     MacroStep{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
+			expected: "Wait 1000ms",
+		},
+		{
+			name:     "set_audio",
+			step:     MacroStep{Action: ActionSetAudio, Params: map[string]interface{}{"source": "cam1", "level": float64(-6)}},
+			expected: "Set Audio cam1 -6.0dB",
+		},
+		{
+			name:     "graphics_on",
+			step:     MacroStep{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
+			expected: "Graphics On",
+		},
+		{
+			name:     "graphics_off",
+			step:     MacroStep{Action: ActionGraphicsOff, Params: map[string]interface{}{}},
+			expected: "Graphics Off",
+		},
+		{
+			name:     "recording_start",
+			step:     MacroStep{Action: ActionRecordingStart, Params: map[string]interface{}{}},
+			expected: "Recording Start",
+		},
+		{
+			name:     "recording_stop",
+			step:     MacroStep{Action: ActionRecordingStop, Params: map[string]interface{}{}},
+			expected: "Recording Stop",
+		},
+		{
+			name:     "ftb",
+			step:     MacroStep{Action: ActionFTB, Params: map[string]interface{}{}},
+			expected: "Fade to Black",
+		},
+		{
+			name:     "audio_mute",
+			step:     MacroStep{Action: ActionAudioMute, Params: map[string]interface{}{"source": "mic1"}},
+			expected: "Audio Mute mic1",
+		},
+		{
+			name:     "preset_recall",
+			step:     MacroStep{Action: ActionPresetRecall, Params: map[string]interface{}{"id": "preset-1"}},
+			expected: "Preset Recall preset-1",
+		},
+		{
+			name:     "key_set",
+			step:     MacroStep{Action: ActionKeySet, Params: map[string]interface{}{"source": "cam3"}},
+			expected: "Key Set cam3",
+		},
+		{
+			name:     "replay_play",
+			step:     MacroStep{Action: ActionReplayPlay, Params: map[string]interface{}{"source": "cam1"}},
+			expected: "Replay Play cam1",
+		},
+		{
+			name:     "scte35_cue",
+			step:     MacroStep{Action: ActionSCTE35Cue, Params: map[string]interface{}{}},
+			expected: "SCTE-35 Cue",
+		},
+		{
+			name:     "unknown_action_fallback",
+			step:     MacroStep{Action: MacroAction("custom_thing"), Params: map[string]interface{}{}},
+			expected: "custom_thing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := StepSummary(tt.step)
+			require.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestRunner_AllActionsMapComplete(t *testing.T) {
 	// Verify AllActions contains all expected actions
 	expectedActions := []MacroAction{
