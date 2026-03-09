@@ -718,4 +718,94 @@ describe('SCTE35Panel', () => {
 		const zones = panel!.querySelectorAll('.zone');
 		expect(zones.length).toBe(3);
 	});
+
+	// --- Getting Started Guide ---
+
+	it('renders Getting Started guide by default', () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const guide = container.querySelector('.guide-banner');
+		expect(guide).toBeTruthy();
+		expect(container.textContent).toContain('Getting Started with SCTE-35');
+		expect(container.textContent).toContain('AD BREAK');
+		expect(container.textContent).toContain('HOLD');
+		expect(container.textContent).toContain('Cue Builder');
+	});
+
+	it('dismisses guide when dismiss button clicked', async () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		expect(dismissBtn).toBeTruthy();
+		await fireEvent.click(dismissBtn);
+		const guide = container.querySelector('.guide-banner');
+		expect(guide).toBeFalsy();
+		expect(localStorage.getItem('sf-scte35-guide-dismissed')).toBe('true');
+	});
+
+	it('shows ? button to re-show guide after dismissal', async () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		await fireEvent.click(dismissBtn);
+		const showBtn = container.querySelector('.guide-show-btn');
+		expect(showBtn).toBeTruthy();
+		expect(showBtn!.textContent?.trim()).toBe('?');
+	});
+
+	it('re-shows guide when ? button clicked', async () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		// Dismiss first
+		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		await fireEvent.click(dismissBtn);
+		// Re-show
+		const showBtn = container.querySelector('.guide-show-btn') as HTMLButtonElement;
+		await fireEvent.click(showBtn);
+		const guide = container.querySelector('.guide-banner');
+		expect(guide).toBeTruthy();
+	});
+
+	it('respects localStorage dismissed state on mount', () => {
+		localStorage.setItem('sf-scte35-guide-dismissed', 'true');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const guide = container.querySelector('.guide-banner');
+		expect(guide).toBeFalsy();
+		const showBtn = container.querySelector('.guide-show-btn');
+		expect(showBtn).toBeTruthy();
+	});
+
+	// --- Run Demo Button ---
+
+	it('renders Run Demo button in guide', () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		expect(demoBtn).toBeTruthy();
+		expect(demoBtn.textContent).toContain('Run Demo');
+	});
+
+	it('calls scte35Cue with 60s auto-return when Run Demo clicked', async () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { apiCall, scte35Cue } = await import('$lib/api/switch-api');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		await fireEvent.click(demoBtn);
+		expect(apiCall).toHaveBeenCalled();
+		expect(scte35Cue).toHaveBeenCalledWith(expect.objectContaining({
+			commandType: 'splice_insert',
+			isOut: true,
+			durationMs: 60000,
+			autoReturn: true,
+		}));
+	});
+
+	it('shows notification when Run Demo clicked', async () => {
+		localStorage.removeItem('sf-scte35-guide-dismissed');
+		const { notify } = await import('$lib/state/notifications.svelte');
+		const { container } = render(SCTE35Panel, { props: { state: baseState } });
+		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		await fireEvent.click(demoBtn);
+		expect(notify).toHaveBeenCalledWith('info', expect.stringContaining('60s ad break'));
+	});
 });

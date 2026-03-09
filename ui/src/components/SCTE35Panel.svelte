@@ -84,6 +84,31 @@
 		{ value: 15, label: 'ADS Info' },
 	];
 
+	// --- Guide visibility ---
+	const GUIDE_STORAGE_KEY = 'sf-scte35-guide-dismissed';
+	let guideDismissed = $state(
+		typeof localStorage !== 'undefined' && localStorage.getItem(GUIDE_STORAGE_KEY) === 'true'
+	);
+
+	function toggleGuide() {
+		guideDismissed = !guideDismissed;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem(GUIDE_STORAGE_KEY, String(guideDismissed));
+		}
+	}
+
+	// --- Demo sequence ---
+	function handleRunDemo() {
+		const req: SCTE35CueRequest = {
+			commandType: 'splice_insert',
+			isOut: true,
+			durationMs: 60000,
+			autoReturn: true,
+		};
+		apiCall(scte35Cue(req), 'SCTE-35 demo ad break');
+		notify('info', 'Demo: 60s ad break inserted. Try HOLD, EXTEND, or RETURN while it counts down.');
+	}
+
 	// Duration presets in ms
 	const durationPresets = [
 		{ label: '30s', value: 30000 },
@@ -196,11 +221,37 @@
 </script>
 
 <div class="scte35-panel">
+	<!-- Getting Started Guide -->
+	{#if !guideDismissed}
+		<div class="guide-banner">
+			<div class="guide-header">
+				<span class="guide-title">Getting Started with SCTE-35</span>
+				<button class="guide-dismiss" onclick={toggleGuide} title="Dismiss guide">x</button>
+			</div>
+			<p class="guide-text">
+				SCTE-35 signals ad breaks in MPEG-TS streams. Downstream systems use these cues to insert ads or switch content.
+			</p>
+			<ol class="guide-steps">
+				<li>Click <strong>AD BREAK</strong> to insert a 30s ad break &mdash; watch the countdown</li>
+				<li>Click <strong>HOLD</strong> to freeze a break in progress (prevents auto-return)</li>
+				<li>Click <strong>EXTEND</strong> to add more time to the break</li>
+				<li>Click <strong>RETURN</strong> to end the break early and return to program</li>
+				<li>Use the <strong>Cue Builder</strong> for advanced signals (time_signal, segmentation descriptors)</li>
+			</ol>
+			<button class="demo-btn" onclick={handleRunDemo}>
+				Run Demo (60s Ad Break)
+			</button>
+		</div>
+	{/if}
+
 	<!-- Zone 1: Quick Actions -->
 	<div class="zone zone-quick">
 		<div class="zone-header">
 			<span class="zone-title">QUICK ACTIONS</span>
 			<span class="status-badge {statusClass}">{statusLabel}</span>
+			{#if guideDismissed}
+				<button class="guide-show-btn" onclick={toggleGuide} title="Show getting started guide">?</button>
+			{/if}
 		</div>
 
 		<div class="duration-row">
@@ -909,6 +960,104 @@
 		font-size: 0.65rem;
 		font-family: var(--font-ui);
 		padding: 12px 4px;
+	}
+
+	/* Getting Started Guide */
+	.guide-banner {
+		grid-column: 1 / -1;
+		padding: 8px 10px;
+		background: rgba(59, 130, 246, 0.08);
+		border: 1px solid rgba(59, 130, 246, 0.2);
+		border-radius: var(--radius-sm);
+	}
+
+	.guide-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 4px;
+	}
+
+	.guide-title {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		font-weight: 700;
+		color: var(--accent-blue);
+	}
+
+	.guide-dismiss {
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 0.75rem;
+		padding: 0 4px;
+		line-height: 1;
+	}
+
+	.guide-dismiss:hover {
+		color: var(--text-primary);
+	}
+
+	.guide-text {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: var(--text-secondary);
+		margin: 0 0 6px 0;
+		line-height: 1.4;
+	}
+
+	.guide-steps {
+		margin: 0 0 8px 0;
+		padding-left: 16px;
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: var(--text-secondary);
+		line-height: 1.6;
+	}
+
+	.guide-steps strong {
+		color: var(--text-primary);
+	}
+
+	.demo-btn {
+		padding: 5px 12px;
+		background: rgba(59, 130, 246, 0.2);
+		color: var(--accent-blue);
+		border: 1px solid rgba(59, 130, 246, 0.3);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: 0.65rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background var(--transition-fast);
+	}
+
+	.demo-btn:hover {
+		background: rgba(59, 130, 246, 0.35);
+	}
+
+	.guide-show-btn {
+		width: 16px;
+		height: 16px;
+		padding: 0;
+		background: var(--bg-base);
+		border: 1px solid var(--border-default);
+		border-radius: 50%;
+		color: var(--text-tertiary);
+		font-family: var(--font-ui);
+		font-size: 0.55rem;
+		font-weight: 700;
+		cursor: pointer;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		line-height: 1;
+	}
+
+	.guide-show-btn:hover {
+		color: var(--accent-blue);
+		border-color: var(--accent-blue);
 	}
 
 	/* Responsive: stack zones vertically on narrow screens */
