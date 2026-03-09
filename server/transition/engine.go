@@ -29,6 +29,10 @@ type StingerData struct {
 	Width, Height int
 	// CutPoint is the position [0.0-1.0] where the underlying source switches from A to B.
 	CutPoint float64
+	// Audio is optional stinger audio (interleaved float32 PCM).
+	Audio           []float32
+	AudioSampleRate int
+	AudioChannels   int
 }
 
 // StingerFrameData is a single stinger overlay frame.

@@ -723,6 +723,12 @@ func (m *AudioMixer) SetProgramMute(muted bool) {
 	m.recalcPassthrough()
 }
 
+// SetStingerAudio provides the stinger clip's audio PCM for additive overlay
+// during a stinger transition. Implementation in Task 4.
+func (m *AudioMixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
+	// TODO: store stinger audio for overlay mixing (Task 4)
+}
+
 // IsProgramMuted returns whether program output is muted (FTB held).
 func (m *AudioMixer) IsProgramMuted() bool {
 	m.mu.RLock()
