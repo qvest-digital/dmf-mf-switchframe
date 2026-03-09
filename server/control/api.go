@@ -68,6 +68,7 @@ type SCTE35API interface {
 	ScheduleCue(msg *scte35.CueMessage, preRollMs int64) (uint32, error)
 	ReturnToProgram(eventID uint32) error
 	CancelEvent(eventID uint32) error
+	CancelSegmentationEvent(segEventID uint32) error
 	HoldBreak(eventID uint32) error
 	ExtendBreak(eventID uint32, newDurationMs int64) error
 	ActiveEventIDs() []uint32
@@ -331,6 +332,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/scte35/return", a.handleSCTE35Return)
 		mux.HandleFunc("POST /api/scte35/return/{eventId}", a.handleSCTE35ReturnEvent)
 		mux.HandleFunc("POST /api/scte35/cancel/{eventId}", a.handleSCTE35Cancel)
+		mux.HandleFunc("POST /api/scte35/cancel-segmentation/{segEventId}", a.handleSCTE35CancelSegmentation)
 		mux.HandleFunc("POST /api/scte35/hold/{eventId}", a.handleSCTE35Hold)
 		mux.HandleFunc("POST /api/scte35/extend/{eventId}", a.handleSCTE35Extend)
 		mux.HandleFunc("GET /api/scte35/status", a.handleSCTE35Status)

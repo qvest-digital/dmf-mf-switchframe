@@ -84,6 +84,11 @@ func (m *mockSCTE35) CancelEvent(eventID uint32) error {
 	return m.cancelErr
 }
 
+func (m *mockSCTE35) CancelSegmentationEvent(segEventID uint32) error {
+	m.cancelCalls = append(m.cancelCalls, segEventID)
+	return m.cancelErr
+}
+
 func (m *mockSCTE35) HoldBreak(eventID uint32) error {
 	m.holdCalls = append(m.holdCalls, eventID)
 	return m.holdErr

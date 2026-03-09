@@ -245,7 +245,7 @@ func convertEventLog(src []scte35.EventLogEntry) []internal.SCTE35Event {
 	}
 	out := make([]internal.SCTE35Event, len(src))
 	for i, e := range src {
-		out[i] = internal.SCTE35Event{
+		evt := internal.SCTE35Event{
 			EventID:     e.EventID,
 			CommandType: e.CommandType,
 			IsOut:       e.IsOut,
@@ -253,7 +253,27 @@ func convertEventLog(src []scte35.EventLogEntry) []internal.SCTE35Event {
 			AutoReturn:  e.AutoReturn,
 			Timestamp:   e.Timestamp,
 			Status:      e.Status,
+			Source:       e.Source,
 		}
+		if e.SpliceTimePTS != nil {
+			pts := *e.SpliceTimePTS
+			evt.SpliceTimePTS = &pts
+		}
+		if e.AvailNum != 0 {
+			an := e.AvailNum
+			evt.AvailNum = &an
+		}
+		if e.AvailsExpected != 0 {
+			ae := e.AvailsExpected
+			evt.AvailsExpected = &ae
+		}
+		if len(e.Descriptors) > 0 {
+			evt.Descriptors = make([]internal.SCTE35DescriptorInfo, len(e.Descriptors))
+			for j, d := range e.Descriptors {
+				evt.Descriptors[j] = convertDescriptor(d)
+			}
+		}
+		out[i] = evt
 	}
 	return out
 }
@@ -261,11 +281,14 @@ func convertEventLog(src []scte35.EventLogEntry) []internal.SCTE35Event {
 // convertDescriptor converts a scte35.SegmentationDescriptor to internal.SCTE35DescriptorInfo.
 func convertDescriptor(d scte35.SegmentationDescriptor) internal.SCTE35DescriptorInfo {
 	info := internal.SCTE35DescriptorInfo{
-		SegEventID:          d.SegEventID,
-		SegmentationType:    d.SegmentationType,
-		UPIDType:            d.UPIDType,
-		SubSegmentNum:       d.SubSegmentNum,
-		SubSegmentsExpected: d.SubSegmentsExpected,
+		SegEventID:           d.SegEventID,
+		SegmentationType:     d.SegmentationType,
+		SegmentationTypeName: segmentationTypeNames[d.SegmentationType],
+		UPIDType:             d.UPIDType,
+		UPIDTypeName:         upidTypeNames[d.UPIDType],
+		SubSegmentNum:        d.SubSegmentNum,
+		SubSegmentsExpected:  d.SubSegmentsExpected,
+		Cancelled:            d.SegmentationEventCancelIndicator,
 	}
 	if len(d.UPID) > 0 {
 		info.UPID = hex.EncodeToString(d.UPID)
@@ -275,4 +298,64 @@ func convertDescriptor(d scte35.SegmentationDescriptor) internal.SCTE35Descripto
 		info.DurationMs = &ms
 	}
 	return info
+}
+
+// segmentationTypeNames maps SCTE-35 segmentation_type_id values to human-readable names.
+var segmentationTypeNames = map[uint8]string{
+	0x00: "Not Indicated",
+	0x01: "Content Identification",
+	0x10: "Program Start",
+	0x11: "Program End",
+	0x12: "Program Early Termination",
+	0x13: "Program Breakaway",
+	0x14: "Program Resumption",
+	0x15: "Program Runover Planned",
+	0x16: "Program Runover Unplanned",
+	0x17: "Program Overlap Start",
+	0x18: "Program Blackout Override",
+	0x19: "Program Start In Progress",
+	0x20: "Chapter Start",
+	0x21: "Chapter End",
+	0x22: "Break Start",
+	0x23: "Break End",
+	0x30: "Provider Advertisement Start",
+	0x31: "Provider Advertisement End",
+	0x32: "Distributor Advertisement Start",
+	0x33: "Distributor Advertisement End",
+	0x34: "Provider Placement Opportunity Start",
+	0x35: "Provider Placement Opportunity End",
+	0x36: "Distributor Placement Opportunity Start",
+	0x37: "Distributor Placement Opportunity End",
+	0x40: "Unscheduled Event Start",
+	0x41: "Unscheduled Event End",
+	0x42: "Alternate Content Opportunity Start",
+	0x43: "Alternate Content Opportunity End",
+	0x44: "Provider Ad Block Start",
+	0x45: "Provider Ad Block End",
+	0x46: "Distributor Ad Block Start",
+	0x47: "Distributor Ad Block End",
+	0x50: "Network Start",
+	0x51: "Network End",
+}
+
+// upidTypeNames maps SCTE-35 segmentation_upid_type values to human-readable names.
+var upidTypeNames = map[uint8]string{
+	0x00: "Not Used",
+	0x01: "User Defined (Deprecated)",
+	0x02: "ISCI (Deprecated)",
+	0x03: "Ad-ID",
+	0x04: "UMID",
+	0x05: "ISAN (Deprecated)",
+	0x06: "ISAN",
+	0x07: "TID",
+	0x08: "TI",
+	0x09: "ADI",
+	0x0A: "EIDR",
+	0x0B: "ATSC Content Identifier",
+	0x0C: "MPU",
+	0x0D: "MID",
+	0x0E: "ADS Information",
+	0x0F: "URI",
+	0x10: "UUID",
+	0x11: "SCR",
 }

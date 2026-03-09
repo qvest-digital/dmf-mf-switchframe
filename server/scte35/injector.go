@@ -78,13 +78,18 @@ type InjectorState struct {
 
 // EventLogEntry records a single SCTE-35 event for the event log.
 type EventLogEntry struct {
-	EventID     uint32 `json:"eventID"`
-	CommandType string `json:"commandType"`
-	IsOut       bool   `json:"isOut"`
-	DurationMs  *int64 `json:"durationMs,omitempty"`
-	AutoReturn  bool   `json:"autoReturn"`
-	Timestamp   int64  `json:"timestamp"` // unix ms
-	Status      string `json:"status"`    // "injected", "returned", "cancelled", "held", "extended"
+	EventID        uint32                   `json:"eventID"`
+	CommandType    string                   `json:"commandType"`
+	IsOut          bool                     `json:"isOut"`
+	DurationMs     *int64                   `json:"durationMs,omitempty"`
+	AutoReturn     bool                     `json:"autoReturn"`
+	Timestamp      int64                    `json:"timestamp"` // unix ms
+	Status         string                   `json:"status"`    // "injected", "returned", "cancelled", "held", "extended"
+	Descriptors    []SegmentationDescriptor `json:"descriptors,omitempty"`
+	SpliceTimePTS  *int64                   `json:"spliceTimePts,omitempty"`
+	Source         string                   `json:"source,omitempty"`
+	AvailNum       uint8                    `json:"availNum,omitempty"`
+	AvailsExpected uint8                    `json:"availsExpected,omitempty"`
 }
 
 // circularLog is a ring buffer for event log entries.
@@ -135,6 +140,7 @@ type Injector struct {
 	eventIDCounter atomic.Uint32
 	eventLog       *circularLog
 	rules          *RuleEngine
+	webhook        *WebhookDispatcher
 	muxerSink      func([]byte)
 	ptsFn          func() int64
 	onStateChange  func()
@@ -169,11 +175,33 @@ func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int
 	}
 	inj.eventIDCounter.Store(startID)
 
+	if config.WebhookURL != "" {
+		timeout := 5 * time.Second
+		if config.WebhookTimeoutMs > 0 {
+			timeout = time.Duration(config.WebhookTimeoutMs) * time.Millisecond
+		}
+		inj.webhook = NewWebhookDispatcher(config.WebhookURL, timeout)
+	}
+
 	if config.HeartbeatInterval > 0 {
 		go inj.heartbeatLoop()
 	}
 
 	return inj
+}
+
+// dispatchWebhook sends a webhook event if a dispatcher is configured.
+func (inj *Injector) dispatchWebhook(eventType string, eventID uint32, cmdType uint8, isOut bool, durationMs int64) {
+	if inj.webhook == nil {
+		return
+	}
+	inj.webhook.Dispatch(WebhookEvent{
+		Type:     eventType,
+		EventID:  eventID,
+		Command:  commandTypeName(cmdType),
+		IsOut:    isOut,
+		Duration: durationMs,
+	})
 }
 
 // heartbeatLoop sends splice_null at the configured interval.
@@ -215,6 +243,27 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// Auto-assign event ID for splice_insert if not set.
 	if msg.CommandType == CommandSpliceInsert && msg.EventID == 0 {
 		msg.EventID = inj.eventIDCounter.Add(1) - 1
+	}
+
+	// Populate PTS for time_signal if not already set.
+	if msg.CommandType == CommandTimeSignal && msg.SpliceTimePTS == nil {
+		currentPTS := inj.ptsFn()
+		msg.SpliceTimePTS = &currentPTS
+	}
+
+	// Evaluate rules if configured.
+	if inj.rules != nil {
+		action, modified := inj.rules.Evaluate(msg, "")
+		switch action {
+		case ActionDelete:
+			inj.mu.Unlock()
+			return 0, nil // silently drop
+		case ActionReplace:
+			if modified != nil {
+				msg = modified
+			}
+			// ActionPass: proceed normally
+		}
 	}
 
 	// Encode the message.
@@ -263,9 +312,15 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		ms := msg.BreakDuration.Milliseconds()
 		durMs = &ms
 	}
-	inj.logEventLocked(msg.EventID, msg.CommandType, msg.IsOut, durMs, msg.AutoReturn, "injected")
+	inj.logEventLocked(msg.EventID, msg.CommandType, msg.IsOut, durMs, msg.AutoReturn, "injected", msg)
 
 	eventID := msg.EventID
+	webhookIsOut := msg.IsOut
+	webhookCmdType := msg.CommandType
+	var webhookDurMs int64
+	if msg.BreakDuration != nil {
+		webhookDurMs = msg.BreakDuration.Milliseconds()
+	}
 	cb := inj.onStateChange
 	inj.mu.Unlock()
 
@@ -274,6 +329,13 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	if cb != nil {
 		cb()
 	}
+
+	// Dispatch webhook after releasing lock.
+	webhookType := "cue_out"
+	if !webhookIsOut {
+		webhookType = "cue_in"
+	}
+	inj.dispatchWebhook(webhookType, eventID, webhookCmdType, webhookIsOut, webhookDurMs)
 
 	return eventID, nil
 }
@@ -330,7 +392,7 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	delete(inj.activeEvents, eventID)
 
 	// Log.
-	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "returned")
+	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "returned", cueIn)
 
 	cb := inj.onStateChange
 	inj.mu.Unlock()
@@ -338,6 +400,8 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	if cb != nil {
 		cb()
 	}
+
+	inj.dispatchWebhook("cue_in", eventID, CommandSpliceInsert, false, 0)
 
 	return nil
 }
@@ -358,8 +422,12 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		ae.returnTimer.Stop()
 	}
 
-	// Build a splice_insert with cancel indicator (IsOut=false, no duration).
-	cancelMsg := NewSpliceInsert(eventID, 0, false, false)
+	// Build a splice_insert with splice_event_cancel_indicator set.
+	cancelMsg := &CueMessage{
+		CommandType:                 CommandSpliceInsert,
+		EventID:                    eventID,
+		SpliceEventCancelIndicator: true,
+	}
 	data, err := cancelMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
 		inj.mu.Unlock()
@@ -371,7 +439,52 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	delete(inj.activeEvents, eventID)
 
 	// Log.
-	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled")
+	inj.logEventLocked(eventID, CommandSpliceInsert, false, nil, false, "cancelled", cancelMsg)
+
+	cb := inj.onStateChange
+	inj.mu.Unlock()
+
+	if cb != nil {
+		cb()
+	}
+
+	inj.dispatchWebhook("cancel", eventID, CommandSpliceInsert, false, 0)
+
+	return nil
+}
+
+// CancelSegmentationEvent sends a time_signal with a segmentation descriptor
+// that has the segmentation_event_cancel_indicator set, per the SCTE-35 spec.
+// Unlike CancelEvent (which cancels tracked splice_insert events), this method
+// does not require the event to be tracked -- it simply emits the cancel message.
+func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
+	inj.mu.Lock()
+
+	if inj.closed.Load() {
+		inj.mu.Unlock()
+		return fmt.Errorf("injector is closed")
+	}
+
+	// Build a time_signal with a cancel descriptor.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:                      segEventID,
+				SegmentationEventCancelIndicator: true,
+			},
+		},
+	}
+
+	data, err := msg.Encode(inj.config.VerifyEncoding)
+	if err != nil {
+		inj.mu.Unlock()
+		return fmt.Errorf("encode cancel segmentation: %w", err)
+	}
+	inj.muxerSink(data)
+
+	// Log the event.
+	inj.logEventLocked(segEventID, CommandTimeSignal, false, nil, false, "cancelled", msg)
 
 	cb := inj.onStateChange
 	inj.mu.Unlock()
@@ -402,14 +515,19 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 	ae.Held = true
 
 	// Log.
-	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, nil, ae.AutoReturn, "held")
+	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, nil, ae.AutoReturn, "held", nil)
 
+	// Capture fields before unlocking.
+	cmdType := ae.CommandType
+	isOut := ae.IsOut
 	cb := inj.onStateChange
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
 	}
+
+	inj.dispatchWebhook("hold", eventID, cmdType, isOut, 0)
 
 	return nil
 }
@@ -456,14 +574,19 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 
 	// Log.
 	durMs := newDurationMs
-	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, &durMs, ae.AutoReturn, "extended")
+	inj.logEventLocked(eventID, ae.CommandType, ae.IsOut, &durMs, ae.AutoReturn, "extended", updateMsg)
 
+	// Capture fields before unlocking.
+	cmdType := ae.CommandType
+	isOut := ae.IsOut
 	cb := inj.onStateChange
 	inj.mu.Unlock()
 
 	if cb != nil {
 		cb()
 	}
+
+	inj.dispatchWebhook("extend", eventID, cmdType, isOut, newDurationMs)
 
 	return nil
 }
@@ -603,14 +726,16 @@ func (inj *Injector) Close() {
 }
 
 // logEventLocked adds an event log entry. Must be called with mu held.
-func (inj *Injector) logEventLocked(eventID uint32, cmdType uint8, isOut bool, durationMs *int64, autoReturn bool, status string) {
+// When msg is non-nil, additional fields (Descriptors, SpliceTimePTS, AvailNum,
+// AvailsExpected) are extracted from the message.
+func (inj *Injector) logEventLocked(eventID uint32, cmdType uint8, isOut bool, durationMs *int64, autoReturn bool, status string, msg *CueMessage) {
 	var durPtr *int64
 	if durationMs != nil {
 		d := *durationMs
 		durPtr = &d
 	}
 
-	inj.eventLog.add(EventLogEntry{
+	entry := EventLogEntry{
 		EventID:     eventID,
 		CommandType: commandTypeName(cmdType),
 		IsOut:       isOut,
@@ -618,7 +743,19 @@ func (inj *Injector) logEventLocked(eventID uint32, cmdType uint8, isOut bool, d
 		AutoReturn:  autoReturn,
 		Timestamp:   time.Now().UnixMilli(),
 		Status:      status,
-	})
+		Source:      "injector",
+	}
+	if msg != nil {
+		entry.Descriptors = msg.Descriptors
+		if msg.SpliceTimePTS != nil {
+			pts := *msg.SpliceTimePTS
+			entry.SpliceTimePTS = &pts
+		}
+		entry.AvailNum = msg.AvailNum
+		entry.AvailsExpected = msg.AvailsExpected
+	}
+
+	inj.eventLog.add(entry)
 }
 
 // mostRecentActiveIDLocked returns the event ID of the most recently started

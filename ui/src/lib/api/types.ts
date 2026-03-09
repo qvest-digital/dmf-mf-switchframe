@@ -224,7 +224,6 @@ export interface SCTE35State {
 	enabled: boolean;
 	activeEvents: Record<string, SCTE35Active>;
 	eventLog: SCTE35Event[];
-	pendingCues?: SCTE35Event[];
 	heartbeatOk: boolean;
 	config: SCTE35Config;
 }
