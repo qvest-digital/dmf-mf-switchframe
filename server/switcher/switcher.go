@@ -572,6 +572,7 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 func (s *Switcher) BuildPipeline() error {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -587,7 +588,7 @@ func (s *Switcher) BuildPipeline() error {
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
-	p.SetMetrics(s.promMetrics)
+	p.SetMetrics(prom)
 	p.epoch = s.pipelineEpoch.Add(1)
 	s.log.Info("pipeline built",
 		"epoch", p.epoch,
@@ -622,6 +623,7 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 func (s *Switcher) rebuildPipeline() {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -638,7 +640,7 @@ func (s *Switcher) rebuildPipeline() {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return
 	}
-	p.SetMetrics(s.promMetrics)
+	p.SetMetrics(prom)
 	p.epoch = s.pipelineEpoch.Add(1)
 	s.log.Info("pipeline rebuilt",
 		"epoch", p.epoch,
@@ -778,8 +780,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	}
 
 	// Build new pipeline with new pool + new format, swap atomically.
-	// Capture node list under lock to avoid race on s.compositorRef etc.
+	// Capture node list and metrics under lock to avoid race on s.compositorRef etc.
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -791,7 +794,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		if err := p.Build(f, s.framePool, nodes); err != nil {
 			s.log.Warn("pipeline rebuild failed on format change", "error", err)
 		} else {
-			p.SetMetrics(s.promMetrics)
+			p.SetMetrics(prom)
 			p.epoch = s.pipelineEpoch.Add(1)
 			s.swapPipeline(p)
 		}

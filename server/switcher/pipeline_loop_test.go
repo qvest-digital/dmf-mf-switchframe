@@ -599,6 +599,59 @@ func TestPipelineLoop_SnapshotIncludesLipSyncHint(t *testing.T) {
 	require.Less(t, hintVal, int64(0), "with 10ms video latency, audio leads")
 }
 
+func TestPipelineLoop_SnapshotLipSyncHintPositive(t *testing.T) {
+	// Node with 30ms latency — exceeds AAC frame duration (~21.333ms).
+	// lip_sync_hint = 30ms - 21.333ms ≈ +8666us (video leads audio)
+	n := &countingNode{name: "enc", active: true, latency: 30 * time.Millisecond}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	snap := p.Snapshot()
+	hintVal := snap["lip_sync_hint_us"].(int64)
+	require.Greater(t, hintVal, int64(0), "with 30ms video latency, video leads")
+}
+
+func TestBuildPipeline_WiresMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.SetMetrics(m)
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	err := sw.BuildPipeline()
+	require.NoError(t, err)
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	require.Same(t, m, p.metrics, "BuildPipeline should wire promMetrics into pipeline")
+}
+
+func TestRebuildPipeline_WiresMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.SetMetrics(m)
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	sw.rebuildPipeline()
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	require.Same(t, m, p.metrics, "rebuildPipeline should wire promMetrics into pipeline")
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
