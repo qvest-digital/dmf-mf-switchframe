@@ -335,6 +335,12 @@ func PhaseVocoderTimeStretch(input []float32, channels, sampleRate int, speed fl
 		speed = 0.1
 	}
 
+	// Measure input RMS before processing so we can match output level.
+	// Phase vocoders attenuate broadband content due to incoherent phase
+	// resynthesis — RMS matching compensates for this.
+	inputRMS := rmsF32(input)
+
+	var result []float32
 	// For extreme slow-down (< 0.5x), cascade two passes at sqrt(speed).
 	if speed < 0.5 {
 		intermediate := math.Sqrt(speed)
@@ -342,14 +348,53 @@ func PhaseVocoderTimeStretch(input []float32, channels, sampleRate int, speed fl
 		if len(pass1) == 0 {
 			return nil
 		}
-		result := phaseVocoderStretchSingle(pass1, channels, sampleRate, intermediate)
-		normalizePeak(result)
-		return result
+		result = phaseVocoderStretchSingle(pass1, channels, sampleRate, intermediate)
+	} else {
+		result = phaseVocoderStretchSingle(input, channels, sampleRate, speed)
 	}
 
-	result := phaseVocoderStretchSingle(input, channels, sampleRate, speed)
-	normalizePeak(result)
+	if len(result) == 0 {
+		return nil
+	}
+
+	matchRMS(result, inputRMS)
 	return result
+}
+
+// rmsF32 computes the root-mean-square of a float32 slice.
+func rmsF32(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += float64(s) * float64(s)
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+// matchRMS scales samples so their RMS matches targetRMS, then hard-clips
+// individual samples at ±0.95 to prevent clipping without rescaling the
+// entire buffer (which would undo the RMS match).
+func matchRMS(samples []float32, targetRMS float64) {
+	if targetRMS < 1e-10 {
+		return
+	}
+	outputRMS := rmsF32(samples)
+	if outputRMS < 1e-10 {
+		return
+	}
+
+	scale := float32(targetRMS / outputRMS)
+	for i := range samples {
+		s := samples[i] * scale
+		if s > 0.95 {
+			s = 0.95
+		} else if s < -0.95 {
+			s = -0.95
+		}
+		samples[i] = s
+	}
 }
 
 // phaseVocoderStretchSingle performs a single phase vocoder pass.

@@ -163,14 +163,12 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 	// Invalidate cached MV field
 	fs.mvValid = false
 
-	if fs.effectiveQuality < FRCMCFI {
-		return
-	}
-
-	// Detect scene change via subsampled SAD
+	// Detect scene change via subsampled SAD. This is cheap (one SAD pass)
+	// and must run at all quality levels — the emit path checks sceneChange
+	// to decide fallback behavior even when ME is degraded.
 	fs.sceneChange = fs.detectSceneChange(fs.prevFrame, fs.currFrame)
 
-	if fs.sceneChange {
+	if fs.effectiveQuality < FRCMCFI || fs.sceneChange {
 		return
 	}
 

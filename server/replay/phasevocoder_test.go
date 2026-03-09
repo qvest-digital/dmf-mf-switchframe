@@ -2,6 +2,7 @@ package replay
 
 import (
 	"math"
+	"math/rand"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -326,6 +327,74 @@ func TestPhaseVocoderTimeStretch_ShortInput(t *testing.T) {
 	}
 	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.5)
 	assert.Nil(t, output)
+}
+
+func rmsLevel(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += float64(s) * float64(s)
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func TestPhaseVocoderTimeStretch_BroadbandRMSPreserved(t *testing.T) {
+	// Broadband content (multiple harmonics + noise-like components) loses
+	// RMS energy through the phase vocoder due to incoherent phase
+	// resynthesis. Output RMS must match input RMS within 15%.
+	rng := rand.New(rand.NewSource(42))
+	input := make([]float32, 48000*2) // 2 seconds mono
+	for i := range input {
+		ti := float64(i) / 48000.0
+		// Mix of harmonics + noise-like transients
+		input[i] = float32(
+			0.2*math.Sin(2*math.Pi*200*ti) +
+				0.15*math.Sin(2*math.Pi*440*ti) +
+				0.1*math.Sin(2*math.Pi*880*ti) +
+				0.08*math.Sin(2*math.Pi*1760*ti))
+		// Add periodic noise bursts (like consonants/cymbals)
+		if i%12000 < 2400 {
+			input[i] += float32(0.15 * (rng.Float64()*2 - 1))
+		}
+	}
+
+	inputRMS := rmsLevel(input)
+
+	for _, speed := range []float64{0.75, 0.5, 0.25} {
+		output := PhaseVocoderTimeStretch(input, 1, 48000, speed)
+		require.NotNil(t, output, "speed=%.2f", speed)
+
+		outputRMS := rmsLevel(output)
+		ratio := outputRMS / inputRMS
+		assert.InDelta(t, 1.0, ratio, 0.15,
+			"speed=%.2fx: output RMS %.4f should match input RMS %.4f (ratio %.4f)",
+			speed, outputRMS, inputRMS, ratio)
+	}
+}
+
+func TestPhaseVocoderTimeStretch_WhiteNoiseRMSImproved(t *testing.T) {
+	// White noise is pathological for phase vocoders — incoherent phases
+	// cause massive destructive interference. RMS matching helps but
+	// hard-clipping limits recovery. Still, output should be at least 40%
+	// of input RMS (vs ~3% without RMS matching).
+	rng := rand.New(rand.NewSource(99))
+	input := make([]float32, 48000*2) // 2 seconds mono
+	for i := range input {
+		input[i] = float32(0.4 * (rng.Float64()*2 - 1))
+	}
+
+	inputRMS := rmsLevel(input)
+
+	output := PhaseVocoderTimeStretch(input, 1, 48000, 0.5)
+	require.NotNil(t, output)
+
+	outputRMS := rmsLevel(output)
+	ratio := outputRMS / inputRMS
+	assert.Greater(t, ratio, 0.4,
+		"white noise output RMS %.4f should be at least 40%% of input RMS %.4f (ratio %.4f, was ~3%% before fix)",
+		outputRMS, inputRMS, ratio)
 }
 
 func TestPhaseVocoderTimeStretch_OutputNotClipped(t *testing.T) {
