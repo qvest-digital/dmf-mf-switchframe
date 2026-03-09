@@ -3,8 +3,8 @@ package replay
 import "math"
 
 const (
-	wsolaWindowSize  = 1024 // ~21.3ms at 48kHz
-	wsolaSearchRange = 256  // +/-5.3ms search range
+	wsolaWindowSize  = 2048 // ~42.7ms at 48kHz — captures more pitch periods for smoother output
+	wsolaSearchRange = 512  // +/-10.7ms search range — finds better overlaps at slow speeds
 )
 
 // WSOLATimeStretch performs Waveform Similarity Overlap-Add time-stretching.

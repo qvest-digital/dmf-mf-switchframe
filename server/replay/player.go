@@ -71,6 +71,8 @@ type replayPlayer struct {
 	audioIdx           int
 	outputAudioPTS     int64 // Separate monotonic PTS for audio frames.
 	audioPreStretched  bool  // true when audio has been WSOLA-stretched
+	totalOutputFrames  int   // total output video frames (for proportional audio distribution)
+	audioCallCount     int   // counts emitAudioForFrame calls (for proportional distribution)
 
 	// Absolute-time pacing: playbackStart anchors the output timeline so
 	// frame N's deadline is playbackStart + N*frameDuration, preventing
@@ -178,6 +180,11 @@ func (p *replayPlayer) run(ctx context.Context) {
 	totalFrames := totalClipFrames * dupCount
 	frameDuration := time.Duration(float64(time.Second) / sourceFPS)
 
+	// Set total output frames for proportional audio distribution.
+	if p.audioPreStretched {
+		p.totalOutputFrames = totalFrames
+	}
+
 	// Create timer once for frame pacing. Immediately Stop+drain because
 	// NewTimer fires immediately on creation, and we need a clean state
 	// for the first Reset() call in the output loop.
@@ -200,6 +207,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 		firstFrame := true
 		outputIdx := 0
 		p.audioIdx = 0
+		p.audioCallCount = 0
 
 		for _, decoded := range allDecoded {
 			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, &groupID, interpolator, &pacingIdx) {
@@ -377,10 +385,36 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 		return
 	}
 
-	// When audio has been WSOLA-stretched, emit on every frame (including
-	// duplicates) because the stretched audio fills the full slow-mo duration.
+	if p.audioPreStretched {
+		// WSOLA-stretched audio fills the full slow-mo duration. The stretched
+		// clip's PTS values don't align with source video PTS (they span 1/speed
+		// times the original range), so PTS matching doesn't work. Instead,
+		// distribute stretched audio frames proportionally across all output
+		// video frames to maintain continuous playback.
+		p.audioCallCount++
+		targetAudioIdx := p.audioCallCount * len(audioClip) / p.totalOutputFrames
+		if targetAudioIdx > len(audioClip) {
+			targetAudioIdx = len(audioClip)
+		}
+		for p.audioIdx < targetAudioIdx {
+			af := &audioClip[p.audioIdx]
+			outFrame := &media.AudioFrame{
+				PTS:        p.outputAudioPTS,
+				Data:       af.data,
+				SampleRate: af.sampleRate,
+				Channels:   af.channels,
+			}
+			p.config.AudioOutput(outFrame)
+			if af.sampleRate > 0 {
+				p.outputAudioPTS += int64(1024) * 90000 / int64(af.sampleRate)
+			}
+			p.audioIdx++
+		}
+		return
+	}
+
 	// Without stretching, only emit on the first duplicate to avoid repeats.
-	if dup != 0 && !p.audioPreStretched {
+	if dup != 0 {
 		return
 	}
 
