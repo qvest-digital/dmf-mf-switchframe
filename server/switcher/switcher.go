@@ -1568,6 +1568,40 @@ func (s *Switcher) RegisterMXLSource(key string) {
 	s.notifyStateChange(snapshot)
 }
 
+// RegisterReplaySource registers a transient replay source that receives
+// raw YUV frames via IngestReplayVideo. Like virtual sources, replay
+// sources skip delay buffer, frame sync, and replay buffering.
+// Safe to call if the key already exists — cleans up the old registration.
+func (s *Switcher) RegisterReplaySource(key string) {
+	s.mu.Lock()
+	if old, exists := s.sources[key]; exists {
+		if old.relay != nil && old.viewer != nil {
+			old.relay.RemoveViewer(old.viewer.ID())
+		}
+		delete(s.sources, key)
+		s.health.removeSource(key)
+	}
+	s.sources[key] = &sourceState{
+		key:       key,
+		label:     strings.ToUpper(key),
+		position:  len(s.sources) + 1,
+		isVirtual: true,
+	}
+	s.health.registerSource(key)
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+	s.log.Info("replay source registered", "source_key", key)
+	s.notifyStateChange(snapshot)
+}
+
+// IngestReplayVideo accepts a raw YUV420p frame from the replay player.
+// Routes through the full video processing pipeline (keying, compositor,
+// encode) — identical to always-decode live sources.
+func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
+	s.handleRawVideoFrame(sourceKey, pf)
+}
+
 // IngestRawVideo accepts a raw YUV420p frame from an MXL source.
 // Skips H.264 decode — feeds directly into the YUV processing pipeline
 // (keying -> compositor -> encode -> program relay). During active

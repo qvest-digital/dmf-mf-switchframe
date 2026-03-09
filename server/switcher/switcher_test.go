@@ -1078,3 +1078,51 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 		sw.handleRawVideoFrame("mxl:cam1", pf)
 	})
 }
+
+func TestRegisterReplaySource(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+
+	sw.RegisterReplaySource("replay")
+
+	state := sw.State()
+	require.Len(t, state.Sources, 1)
+	src, ok := state.Sources["replay"]
+	require.True(t, ok)
+	require.True(t, src.IsVirtual, "replay source should be virtual")
+	require.Equal(t, "REPLAY", src.Label)
+}
+
+func TestRegisterReplaySource_CleansUpOld(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+
+	sw.RegisterReplaySource("replay")
+	sw.RegisterReplaySource("replay")
+
+	state := sw.State()
+	require.Len(t, state.Sources, 1)
+}
+
+func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+
+	sw.RegisterReplaySource("replay")
+	require.NoError(t, sw.SetPreview(context.Background(), "replay"))
+	require.NoError(t, sw.Cut(context.Background(), "replay"))
+
+	pf := &ProcessingFrame{
+		YUV:        make([]byte, 320*240*3/2),
+		Width:      320,
+		Height:     240,
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+	}
+
+	// Should not panic — routes through handleRawVideoFrame.
+	require.NotPanics(t, func() {
+		sw.IngestReplayVideo("replay", pf)
+	})
+}
