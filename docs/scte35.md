@@ -924,3 +924,11 @@ scte35.Injector SCTE104Sink callback (fires on every injection)
   spec-compliant cancel messages. SwitchFrame includes a fallback binary
   parser (`decodeSpliceInsertCancel`) and skips verification for cancel
   messages.
+- **Per-destination rule filtering.** Rules with the `destinations`
+  field are evaluated at injection time with no destination context
+  (empty `destID`). The injector produces a single SCTE-35 encoded
+  payload broadcast to all destinations. Per-destination SCTE-35
+  enable/disable (strip all packets) is handled by the output
+  manager's packet filter. True per-destination rule modification
+  (e.g., different durations per destination) would require
+  per-destination encoding and is not yet implemented.
