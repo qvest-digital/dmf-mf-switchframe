@@ -360,6 +360,49 @@ func TestBuildPipeline_SetsEpoch(t *testing.T) {
 	require.Equal(t, uint64(1), sw.pipelineEpoch.Load())
 }
 
+func TestAtomicSwap_FullLifecycle(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Phase 1: Initial build.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	err := sw.BuildPipeline()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sw.pipelineEpoch.Load())
+
+	// Phase 2: SetCompositor triggers rebuild.
+	sw.SetCompositor(nil)
+	require.Equal(t, uint64(2), sw.pipelineEpoch.Load())
+
+	// Phase 3: SetKeyBridge triggers rebuild.
+	sw.SetKeyBridge(nil)
+	require.Equal(t, uint64(3), sw.pipelineEpoch.Load())
+
+	// Phase 4: SetRawVideoSink triggers rebuild.
+	sink := RawVideoSink(func(pf *ProcessingFrame) {})
+	sw.SetRawVideoSink(sink)
+	require.Equal(t, uint64(4), sw.pipelineEpoch.Load())
+
+	// Phase 5: Clear sink triggers rebuild.
+	sw.SetRawVideoSink(nil)
+	require.Equal(t, uint64(5), sw.pipelineEpoch.Load())
+
+	// Phase 6: SetPipelineFormat triggers swap with new pool.
+	err = sw.SetPipelineFormat(PipelineFormat{Width: 1280, Height: 720, FPSNum: 30, FPSDen: 1, Name: "720p30"})
+	require.NoError(t, err)
+	require.Equal(t, uint64(6), sw.pipelineEpoch.Load())
+
+	// Epoch visible in Snapshot.
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	snap := p.Snapshot()
+	require.Equal(t, uint64(6), snap["epoch"])
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
