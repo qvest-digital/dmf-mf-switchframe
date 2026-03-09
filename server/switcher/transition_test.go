@@ -62,6 +62,9 @@ func (m *mockAudioTransHandler) SetProgramMute(muted bool) {
 	m.programMuted = muted
 }
 
+func (m *mockAudioTransHandler) SetStingerAudio(audio []float32, sampleRate, channels int) {}
+
+
 // setupSwitcherWithTransition creates a switcher with two sources, program on cam1,
 // preview on cam2, and transition config ready.
 func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {

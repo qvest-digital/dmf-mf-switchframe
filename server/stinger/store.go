@@ -46,11 +46,14 @@ type StingerFrame struct {
 
 // StingerClip is a pre-loaded stinger transition clip.
 type StingerClip struct {
-	Name     string
-	Frames   []StingerFrame
-	Width    int
-	Height   int
-	CutPoint float64 // 0.0-1.0, where A->B switch happens (default 0.5)
+	Name            string
+	Frames          []StingerFrame
+	Width           int
+	Height          int
+	CutPoint        float64   // 0.0-1.0, where A->B switch happens (default 0.5)
+	Audio           []float32 // interleaved PCM float32 (optional, nil = no audio)
+	AudioSampleRate int       // e.g. 48000
+	AudioChannels   int       // e.g. 2 (stereo)
 }
 
 // FrameAt returns the stinger frame for a given transition position [0.0, 1.0].
@@ -211,7 +214,7 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 		return fmt.Errorf("create stinger dir: %w", err)
 	}
 
-	// Extract PNGs from zip
+	// Extract PNGs and optional WAV from zip
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		_ = os.RemoveAll(dir) // clean up on failure
@@ -219,14 +222,19 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 	}
 
 	pngCount := 0
+	wavFound := false
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
 		}
 		lower := strings.ToLower(f.Name)
-		if !strings.HasSuffix(lower, ".png") {
+		isPNG := strings.HasSuffix(lower, ".png")
+		isWAV := strings.HasSuffix(lower, ".wav") && !wavFound // keep first WAV only
+
+		if !isPNG && !isWAV {
 			continue
 		}
+
 		// Use only the base name to prevent zip path traversal
 		baseName := filepath.Base(f.Name)
 
@@ -251,7 +259,13 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 			_ = os.RemoveAll(dir)
 			return fmt.Errorf("write file %s: %w", baseName, err)
 		}
-		pngCount++
+
+		if isPNG {
+			pngCount++
+		}
+		if isWAV {
+			wavFound = true
+		}
 	}
 
 	if pngCount == 0 {
@@ -280,8 +294,9 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 		return nil, fmt.Errorf("read stinger dir %q: %w", name, err)
 	}
 
-	// Filter and sort PNG files
+	// Filter and sort PNG files, find first WAV file
 	var pngFiles []string
+	var wavFile string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -289,6 +304,8 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 		lower := strings.ToLower(e.Name())
 		if strings.HasSuffix(lower, ".png") {
 			pngFiles = append(pngFiles, e.Name())
+		} else if strings.HasSuffix(lower, ".wav") && wavFile == "" {
+			wavFile = e.Name()
 		}
 	}
 	slices.Sort(pngFiles)
@@ -314,6 +331,21 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 			return nil, fmt.Errorf("frame %s has dimensions %dx%d, expected %dx%d", fname, w, h, clip.Width, clip.Height)
 		}
 		clip.Frames = append(clip.Frames, *frame)
+	}
+
+	// Load optional audio from WAV file
+	if wavFile != "" {
+		wavData, err := os.ReadFile(filepath.Join(dir, wavFile))
+		if err == nil {
+			pcm, sampleRate, channels, parseErr := ParseWAV(wavData)
+			if parseErr == nil {
+				clip.Audio = pcm
+				clip.AudioSampleRate = sampleRate
+				clip.AudioChannels = channels
+			}
+			// Silently ignore WAV parse errors — audio is optional
+		}
+		// Silently ignore file read errors — audio is optional
 	}
 
 	return clip, nil

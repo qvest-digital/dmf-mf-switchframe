@@ -341,3 +341,123 @@ func TestStingerStore_DefaultMaxClips(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 16, store.maxClips)
 }
+
+// createTestWAV creates a WAV file with silence (zero samples) in the given directory.
+func createTestWAV(t *testing.T, dir, name string, sampleRate, channels, numSamples int) {
+	t.Helper()
+	// Create int16 silence samples
+	samples := make([]byte, numSamples*channels*2) // int16 = 2 bytes per sample per channel
+	wavData := buildWAV(t, sampleRate, channels, 16, samples)
+	err := os.WriteFile(filepath.Join(dir, name), wavData, 0644)
+	require.NoError(t, err)
+}
+
+// createTestZipWithAudio creates a ZIP with PNGs + a WAV file.
+func createTestZipWithAudio(t *testing.T, width, height, numFrames, sampleRate, channels int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Add PNG frames
+	for i := 0; i < numFrames; i++ {
+		img := image.NewRGBA(image.Rect(0, 0, width, height))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				img.SetRGBA(x, y, color.RGBA{R: uint8(i * 50), G: 128, B: 128, A: 255})
+			}
+		}
+		name := fmt.Sprintf("frame_%03d.png", i)
+		fw, err := zw.Create(name)
+		require.NoError(t, err)
+		require.NoError(t, png.Encode(fw, img))
+	}
+
+	// Add a WAV file with some silence
+	numSamples := 480 // ~10ms at 48kHz
+	samples := make([]byte, numSamples*channels*2)
+	wavData := buildWAV(t, sampleRate, channels, 16, samples)
+	fw, err := zw.Create("stinger.wav")
+	require.NoError(t, err)
+	_, err = fw.Write(wavData)
+	require.NoError(t, err)
+
+	require.NoError(t, zw.Close())
+	return buf.Bytes()
+}
+
+func TestStingerStore_UploadWithAudio(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	// Create a zip with PNGs + WAV
+	zipData := createTestZipWithAudio(t, 2, 2, 3, 48000, 2)
+
+	err = store.Upload("audio-stinger", zipData)
+	require.NoError(t, err)
+
+	// Verify clip was loaded with audio fields populated
+	clip, ok := store.Get("audio-stinger")
+	require.True(t, ok)
+	require.Equal(t, 3, len(clip.Frames))
+	require.Equal(t, 2, clip.Width)
+	require.Equal(t, 2, clip.Height)
+	require.NotNil(t, clip.Audio, "clip should have audio data")
+	require.Equal(t, 48000, clip.AudioSampleRate)
+	require.Equal(t, 2, clip.AudioChannels)
+	require.Greater(t, len(clip.Audio), 0, "audio samples should not be empty")
+
+	// Verify WAV file was written to disk
+	wavPath := filepath.Join(dir, "audio-stinger", "stinger.wav")
+	require.FileExists(t, wavPath)
+}
+
+func TestStingerStore_UploadWithoutAudio(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	// Create a zip with only PNGs (no WAV)
+	zipData := createTestZip(t, 2, 2, 3)
+
+	err = store.Upload("no-audio-stinger", zipData)
+	require.NoError(t, err)
+
+	// Verify clip was loaded without audio
+	clip, ok := store.Get("no-audio-stinger")
+	require.True(t, ok)
+	require.Equal(t, 3, len(clip.Frames))
+	require.Nil(t, clip.Audio, "clip should have no audio data")
+	require.Equal(t, 0, clip.AudioSampleRate)
+	require.Equal(t, 0, clip.AudioChannels)
+}
+
+func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
+	dir := t.TempDir()
+	stingerDir := filepath.Join(dir, "audio-clip")
+	require.NoError(t, os.MkdirAll(stingerDir, 0755))
+
+	// Create PNG frames on disk
+	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{R: 255, A: 128})
+	createTestPNG(t, stingerDir, "002.png", 4, 4, color.NRGBA{R: 255, A: 255})
+
+	// Create a WAV file on disk
+	createTestWAV(t, stingerDir, "audio.wav", 48000, 2, 960)
+
+	// Create store - should auto-load the clip with audio
+	store, err := NewStingerStore(dir, 0)
+	require.NoError(t, err)
+
+	clip, ok := store.Get("audio-clip")
+	require.True(t, ok)
+	require.Equal(t, 2, len(clip.Frames))
+	require.Equal(t, 4, clip.Width)
+	require.Equal(t, 4, clip.Height)
+
+	// Audio should have been loaded
+	require.NotNil(t, clip.Audio, "clip should have audio data from WAV")
+	require.Equal(t, 48000, clip.AudioSampleRate)
+	require.Equal(t, 2, clip.AudioChannels)
+	// 960 samples * 2 channels = 1920 float32 values
+	require.Equal(t, 960*2, len(clip.Audio))
+}

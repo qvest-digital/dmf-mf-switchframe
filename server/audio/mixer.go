@@ -133,6 +133,11 @@ type AudioMixer struct {
 	transCrossfadeAudioPos float64             // position at end of last audio output (for smooth interpolation)
 	mixCycleTransPos       float64             // snapshotted transition position for current mix cycle
 
+	// Stinger audio overlay (optional, active during stinger transitions)
+	stingerAudio    []float32 // interleaved PCM from stinger clip
+	stingerOffset   int       // current read position in stingerAudio
+	stingerChannels int       // channel count of stinger audio
+
 	// Program mute: true while FTB is held (screen is black, audio is silent).
 	programMuted bool
 
@@ -356,6 +361,15 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 		}
 	}
 	mixed := m.mixAccum
+
+	// Stinger audio overlay: add stinger PCM on top of source crossfade.
+	// This path runs for multi-source mixing (passthrough disabled, no crossfade).
+	// The crossfade path in ingestCrossfadeFrame has its own injection point.
+	// Mutual exclusion: when transCrossfadeActive is true, sources participating
+	// in the crossfade go through ingestCrossfadeFrame instead of collectMixCycleLocked.
+	if m.stingerAudio != nil {
+		m.addStingerAudio(mixed)
+	}
 
 	// Apply master gain (skip if unity — preserves passthrough optimization)
 	if m.masterLinear != 1.0 && len(mixed) > 0 {
@@ -701,6 +715,9 @@ func (m *AudioMixer) OnTransitionComplete() {
 	m.transCrossfadeMode = 0
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
+	m.stingerAudio = nil
+	m.stingerOffset = 0
+	m.stingerChannels = 0
 	m.recalcPassthrough()
 	m.mu.Unlock()
 	if outputFrame != nil {
@@ -721,6 +738,71 @@ func (m *AudioMixer) SetProgramMute(muted bool) {
 		}
 	}
 	m.recalcPassthrough()
+}
+
+// SetStingerAudio provides the stinger clip's audio PCM for additive overlay
+// during a stinger transition. The audio is consumed sample-by-sample during
+// mix cycles until exhausted or cleared by OnTransitionComplete.
+// If the stinger audio has a different sample rate or channel count than the
+// mixer, a warning is logged and the audio is skipped to prevent artifacts.
+func (m *AudioMixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sampleRate != m.sampleRate {
+		m.log.Warn("stinger audio sample rate mismatch, skipping audio",
+			"stinger_rate", sampleRate, "mixer_rate", m.sampleRate)
+		return
+	}
+	if channels != m.numChannels {
+		m.log.Warn("stinger audio channel count mismatch, skipping audio",
+			"stinger_channels", channels, "mixer_channels", m.numChannels)
+		return
+	}
+	m.stingerAudio = audio
+	m.stingerOffset = 0
+	m.stingerChannels = channels
+}
+
+// addStingerAudio adds stinger PCM to the mixed output buffer. It applies a
+// fade envelope (10ms fade-in at start, 50ms fade-out at end) to avoid clicks.
+// Caller must hold m.mu.
+func (m *AudioMixer) addStingerAudio(mixed []float32) {
+	remaining := len(m.stingerAudio) - m.stingerOffset
+	if remaining <= 0 {
+		m.stingerAudio = nil
+		return
+	}
+
+	n := len(mixed)
+	if n > remaining {
+		n = remaining
+	}
+
+	// Fade envelope to prevent clicks
+	fadeInSamples := m.sampleRate * m.stingerChannels * 10 / 1000  // 10ms
+	fadeOutSamples := m.sampleRate * m.stingerChannels * 50 / 1000 // 50ms
+	totalSamples := len(m.stingerAudio)
+
+	for i := 0; i < n; i++ {
+		pos := m.stingerOffset + i
+		gain := float32(1.0)
+
+		// Fade in
+		if pos < fadeInSamples {
+			gain = float32(pos) / float32(fadeInSamples)
+		}
+		// Fade out
+		distFromEnd := totalSamples - pos
+		if distFromEnd < fadeOutSamples {
+			fadeGain := float32(distFromEnd) / float32(fadeOutSamples)
+			if fadeGain < gain {
+				gain = fadeGain
+			}
+		}
+
+		mixed[i] += m.stingerAudio[pos] * gain
+	}
+	m.stingerOffset += n
 }
 
 // IsProgramMuted returns whether program output is muted (FTB held).
@@ -1240,6 +1322,14 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	} else {
 		// Incoming source timed out — use outgoing source only (unusual)
 		mixed = m.crossfadePCM[m.crossfadeFrom]
+	}
+
+	// Stinger audio overlay: add stinger PCM on top of source crossfade.
+	// This path runs for the crossfade (transCrossfadeActive=true).
+	// collectMixCycleLocked has its own injection point for the multi-source path.
+	// Mutual exclusion: crossfade participants are routed here, not to collectMixCycleLocked.
+	if m.stingerAudio != nil {
+		m.addStingerAudio(mixed)
 	}
 
 	// Apply master gain

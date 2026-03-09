@@ -170,9 +170,12 @@ func clipToStingerData(clip *stinger.StingerClip) *transition.StingerData {
 		}
 	}
 	return &transition.StingerData{
-		Frames:   frames,
-		Width:    clip.Width,
-		Height:   clip.Height,
-		CutPoint: clip.CutPoint,
+		Frames:          frames,
+		Width:           clip.Width,
+		Height:          clip.Height,
+		CutPoint:        clip.CutPoint,
+		Audio:           clip.Audio,
+		AudioSampleRate: clip.AudioSampleRate,
+		AudioChannels:   clip.AudioChannels,
 	}
 }

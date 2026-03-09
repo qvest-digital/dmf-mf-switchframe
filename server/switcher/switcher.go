@@ -145,6 +145,7 @@ type audioTransitionHandler interface {
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
 	SetProgramMute(muted bool)
+	SetStingerAudio(audio []float32, sampleRate, channels int)
 }
 
 // RawVideoSink receives a deep copy of the processed YUV420p frame
@@ -1074,6 +1075,11 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 			audioMode = audio.AudioDipToSilence
 		}
 		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
+
+		// Pass stinger audio to mixer for additive overlay
+		if tt == transition.TransitionStinger && topts.stingerData != nil && topts.stingerData.Audio != nil {
+			audioHandler.SetStingerAudio(topts.stingerData.Audio, topts.stingerData.AudioSampleRate, topts.stingerData.AudioChannels)
+		}
 	}
 
 	// Now publish the engine — audio crossfade is already active, so the

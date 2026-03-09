@@ -2430,3 +2430,292 @@ func TestMixerCrossfadeLimiterApplied(t *testing.T) {
 		}
 	}
 }
+
+// --- Stinger audio overlay tests ---
+
+func TestMixer_SetStingerAudio(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	audio := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6}
+	m.SetStingerAudio(audio, 48000, 2)
+
+	m.mu.Lock()
+	require.Equal(t, audio, m.stingerAudio, "stingerAudio should be stored")
+	require.Equal(t, 0, m.stingerOffset, "stingerOffset should be reset to 0")
+	require.Equal(t, 2, m.stingerChannels, "stingerChannels should be stored")
+	m.mu.Unlock()
+
+	// Calling again should reset offset
+	m.mu.Lock()
+	m.stingerOffset = 3 // simulate partial consumption
+	m.mu.Unlock()
+
+	audio2 := []float32{0.7, 0.8}
+	m.SetStingerAudio(audio2, 48000, 2)
+
+	m.mu.Lock()
+	require.Equal(t, audio2, m.stingerAudio, "stingerAudio should be replaced")
+	require.Equal(t, 0, m.stingerOffset, "stingerOffset should be reset on new call")
+	m.mu.Unlock()
+}
+
+func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	audio := []float32{0.1, 0.2, 0.3}
+	m.SetStingerAudio(audio, 44100, 2) // wrong sample rate
+
+	m.mu.Lock()
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on sample rate mismatch")
+	m.mu.Unlock()
+}
+
+func TestMixer_SetStingerAudio_ChannelMismatch(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	audio := []float32{0.1, 0.2, 0.3}
+	m.SetStingerAudio(audio, 48000, 1) // wrong channel count
+
+	m.mu.Lock()
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on channel mismatch")
+	m.mu.Unlock()
+}
+
+func TestMixer_AddStingerAudio_Basic(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Create stinger audio that's long enough to avoid fade regions for simple testing
+	// With 48kHz stereo, fade-in is 10ms = 960 samples, fade-out is 50ms = 4800 samples
+	// We need enough samples to have a "middle" region at full gain
+	totalSamples := 960 + 100 + 4800 // fade-in + middle + fade-out
+	stingerPCM := make([]float32, totalSamples)
+	for i := range stingerPCM {
+		stingerPCM[i] = 0.5
+	}
+
+	m.mu.Lock()
+	m.stingerAudio = stingerPCM
+	m.stingerOffset = 960 // skip past fade-in
+	m.stingerChannels = 2
+
+	// Mix buffer with some existing audio
+	mixed := make([]float32, 100)
+	for i := range mixed {
+		mixed[i] = 0.3
+	}
+
+	m.addStingerAudio(mixed)
+
+	// After addStingerAudio, mixed should have stinger added: 0.3 + 0.5 = 0.8
+	for i := 0; i < 100; i++ {
+		require.InDelta(t, 0.8, mixed[i], 0.01,
+			"sample %d: should be source (0.3) + stinger (0.5)", i)
+	}
+	require.Equal(t, 960+100, m.stingerOffset, "offset should advance by mixed length")
+	m.mu.Unlock()
+}
+
+func TestMixer_AddStingerAudio_FadeEnvelope(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	// With 48kHz stereo: fadeIn = 48000 * 2 * 10 / 1000 = 960 samples
+	// fadeOut = 48000 * 2 * 50 / 1000 = 4800 samples
+	fadeInSamples := 960
+	fadeOutSamples := 4800
+	totalSamples := fadeInSamples + 1000 + fadeOutSamples // some middle section
+
+	stingerPCM := make([]float32, totalSamples)
+	for i := range stingerPCM {
+		stingerPCM[i] = 1.0 // unity to make fade easy to verify
+	}
+
+	// Test fade-in: first samples should be attenuated
+	m.mu.Lock()
+	m.stingerAudio = stingerPCM
+	m.stingerOffset = 0
+	m.stingerChannels = 2
+
+	mixed := make([]float32, fadeInSamples)
+	m.addStingerAudio(mixed)
+
+	// First sample should be near 0 (pos=0, gain=0/960=0)
+	require.InDelta(t, 0.0, mixed[0], 0.01, "first sample should be near zero (fade-in start)")
+
+	// Midpoint of fade-in should be ~0.5
+	midIdx := fadeInSamples / 2
+	require.InDelta(t, 0.5, mixed[midIdx], 0.05, "midpoint of fade-in should be ~0.5")
+
+	// Last sample of fade-in should be near 1.0
+	require.InDelta(t, 1.0, mixed[fadeInSamples-1], 0.01,
+		"last sample of fade-in should be near 1.0")
+	m.mu.Unlock()
+
+	// Test fade-out: position near the end
+	m.mu.Lock()
+	m.stingerAudio = stingerPCM
+	m.stingerOffset = totalSamples - fadeOutSamples
+	m.stingerChannels = 2
+
+	mixed2 := make([]float32, fadeOutSamples)
+	m.addStingerAudio(mixed2)
+
+	// First sample of fade-out region should be near 1.0
+	require.InDelta(t, 1.0, mixed2[0], 0.01,
+		"first sample of fade-out should be near 1.0")
+
+	// Last sample should be near 0
+	require.InDelta(t, 0.0, mixed2[fadeOutSamples-1], 0.01,
+		"last sample of fade-out should be near zero")
+
+	// Midpoint should be ~0.5
+	fadeMid := fadeOutSamples / 2
+	require.InDelta(t, 0.5, mixed2[fadeMid], 0.05,
+		"midpoint of fade-out should be ~0.5")
+	m.mu.Unlock()
+}
+
+func TestMixer_AddStingerAudio_Exhaustion(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Small stinger audio
+	stingerPCM := []float32{0.1, 0.2, 0.3, 0.4}
+
+	m.mu.Lock()
+	m.stingerAudio = stingerPCM
+	m.stingerOffset = 0
+	m.stingerChannels = 2
+
+	// Mix buffer larger than remaining stinger
+	mixed := make([]float32, 10)
+	m.addStingerAudio(mixed)
+
+	// Only first 4 samples should have stinger added (with fade envelope)
+	// After exhaustion, stingerAudio is NOT set to nil here because we consumed
+	// exactly 4 samples and offset is now 4 = len(stingerAudio)
+	require.Equal(t, 4, m.stingerOffset, "offset should be at end")
+
+	// Call again — should detect remaining <= 0 and set stingerAudio to nil
+	mixed2 := make([]float32, 10)
+	m.addStingerAudio(mixed2)
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil after exhaustion")
+	m.mu.Unlock()
+}
+
+func TestMixer_StingerAudioClearedOnComplete(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Set up stinger audio
+	m.SetStingerAudio([]float32{0.1, 0.2, 0.3}, 48000, 2)
+
+	m.mu.Lock()
+	require.NotNil(t, m.stingerAudio)
+	m.mu.Unlock()
+
+	// Complete the transition
+	m.OnTransitionComplete()
+
+	m.mu.Lock()
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil after OnTransitionComplete")
+	require.Equal(t, 0, m.stingerOffset, "stingerOffset should be 0 after OnTransitionComplete")
+	require.Equal(t, 0, m.stingerChannels, "stingerChannels should be 0 after OnTransitionComplete")
+	m.mu.Unlock()
+}
+
+func TestMixer_StingerAudioInMixPath(t *testing.T) {
+	// Verify stinger audio is additively mixed during the normal multi-source mix path.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	// Source PCM: silence (0.0) so we can isolate stinger contribution
+	sourcePCM := make([]float32, 2048)
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: sourcePCM}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: sourcePCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: sourcePCM}
+	m.mu.Unlock()
+
+	// Set stinger audio with a value we can detect.
+	// Make it large enough to avoid fade regions affecting our test area.
+	fadeIn := 48000 * 2 * 10 / 1000  // 960 samples
+	fadeOut := 48000 * 2 * 50 / 1000 // 4800
+	stingerLen := fadeIn + len(sourcePCM)*10 + fadeOut
+	stingerPCM := make([]float32, stingerLen)
+	for i := range stingerPCM {
+		stingerPCM[i] = 0.25
+	}
+	m.SetStingerAudio(stingerPCM, 48000, 2)
+
+	// Advance past fade-in so we get full-gain stinger
+	m.mu.Lock()
+	m.stingerOffset = fadeIn
+	m.mu.Unlock()
+
+	// Ingest from both sources to trigger mix
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.GreaterOrEqual(t, len(outputFrames), 1, "should produce output")
+	require.NotNil(t, capturedPCM, "should have captured PCM")
+
+	// Source is silence (0.0), stinger is 0.25 at full gain.
+	// After the limiter (which shouldn't affect 0.25), we should see stinger contribution.
+	for i := 0; i < len(capturedPCM) && i < 100; i++ {
+		require.InDelta(t, 0.25, capturedPCM[i], 0.05,
+			"sample %d: with silent source, output should be stinger audio", i)
+	}
+}
