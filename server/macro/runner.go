@@ -16,11 +16,15 @@ type MacroTarget interface {
 	// SetPreview sets the preview source.
 	SetPreview(ctx context.Context, source string) error
 
-	// StartTransition begins a mix/dip/wipe transition.
-	StartTransition(ctx context.Context, source string, transType string, durationMs int) error
+	// StartTransition begins a mix/dip/wipe/stinger transition.
+	StartTransition(ctx context.Context, source, transType string, durationMs int, wipeDirection, stingerName string) error
 
 	// SetLevel sets the audio level for a source channel.
 	SetLevel(ctx context.Context, source string, level float64) error
+
+	// Execute dispatches a generic action with arbitrary params.
+	// Used for all new actions that don't need dedicated interface methods.
+	Execute(ctx context.Context, action string, params map[string]interface{}) error
 
 	// SCTE35Cue injects a SCTE-35 splice cue (e.g., ad break start).
 	SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error)
@@ -88,7 +92,9 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 		if d, ok := step.Params["durationMs"].(float64); ok {
 			durationMs = int(d)
 		}
-		return target.StartTransition(ctx, source, transType, durationMs)
+		wipeDirection, _ := step.Params["wipeDirection"].(string)
+		stingerName, _ := step.Params["stingerName"].(string)
+		return target.StartTransition(ctx, source, transType, durationMs, wipeDirection, stingerName)
 
 	case ActionWait:
 		ms := 0.0
@@ -155,6 +161,9 @@ func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error 
 		return target.SCTE35Extend(ctx, uint32(id), int64(dur))
 
 	default:
+		if AllActions[step.Action] {
+			return target.Execute(ctx, string(step.Action), step.Params)
+		}
 		return fmt.Errorf("unknown action %q", step.Action)
 	}
 }

@@ -132,6 +132,11 @@ func WithKeyer(kp *graphics.KeyProcessor) APIOption {
 	return func(a *API) { a.keyer = kp }
 }
 
+// WithKeyBridge attaches a key processor bridge for fill cleanup on key removal.
+func WithKeyBridge(kb *graphics.KeyProcessorBridge) APIOption {
+	return func(a *API) { a.keyBridge = kb }
+}
+
 // WithReplayManager attaches a replay manager to the API.
 func WithReplayManager(rm *replay.Manager) APIOption {
 	return func(a *API) { a.replayMgr = rm }
@@ -163,6 +168,7 @@ type API struct {
 	stingerStore  *stinger.StingerStore
 	macroStore    *macro.Store
 	keyer         *graphics.KeyProcessor
+	keyBridge     *graphics.KeyProcessorBridge
 	replayMgr     *replay.Manager
 	operatorStore *operator.Store
 	sessionMgr    *operator.SessionManager

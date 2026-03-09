@@ -672,6 +672,7 @@ func (a *App) initAPI() error {
 		control.WithCompositor(a.compositor),
 		control.WithMacroStore(a.macroStore),
 		control.WithKeyer(a.keyProcessor),
+		control.WithKeyBridge(a.keyBridge),
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),
 		control.WithStingerStore(a.stingerStore),

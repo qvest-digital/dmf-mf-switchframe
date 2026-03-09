@@ -150,9 +150,33 @@ export interface RecallPresetResponse {
 	warnings?: string[];
 }
 
+export type MacroAction =
+	// Switching
+	| 'cut' | 'preview' | 'transition' | 'ftb'
+	// Audio
+	| 'set_audio' | 'audio_mute' | 'audio_afv' | 'audio_trim' | 'audio_master'
+	| 'audio_eq' | 'audio_compressor' | 'audio_delay'
+	// Graphics
+	| 'graphics_on' | 'graphics_off' | 'graphics_auto_on' | 'graphics_auto_off'
+	// Output
+	| 'recording_start' | 'recording_stop'
+	// Presets
+	| 'preset_recall'
+	// Keys
+	| 'key_set' | 'key_delete'
+	// Source
+	| 'source_label' | 'source_delay' | 'source_position'
+	// Replay (mark-based)
+	| 'replay_mark_in' | 'replay_mark_out' | 'replay_play' | 'replay_stop'
+	// Replay (clip-based)
+	| 'replay_quick_clip' | 'replay_play_last' | 'replay_play_clip'
+	// Timing
+	| 'wait'
+	// SCTE-35
+	| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend';
+
 export interface MacroStep {
-	action: 'cut' | 'preview' | 'transition' | 'wait' | 'set_audio'
-		| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend';
+	action: MacroAction;
 	params: Record<string, unknown>;
 }
 

@@ -8,6 +8,8 @@ vi.mock('$lib/api/switch-api', () => ({
 	saveMacro: vi.fn().mockResolvedValue({ name: 'test', steps: [] }),
 	deleteMacro: vi.fn().mockResolvedValue(undefined),
 	runMacro: vi.fn().mockResolvedValue({ status: 'ok' }),
+	listStingers: vi.fn().mockResolvedValue(['intro', 'outro']),
+	listPresets: vi.fn().mockResolvedValue([{ id: 'p1', name: 'Preset 1' }]),
 	apiCall: vi.fn(),
 }));
 

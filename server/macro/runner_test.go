@@ -3,6 +3,7 @@ package macro
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -38,10 +39,10 @@ func (m *mockTarget) SetPreview(ctx context.Context, source string) error {
 	return nil
 }
 
-func (m *mockTarget) StartTransition(ctx context.Context, source string, transType string, durationMs int) error {
+func (m *mockTarget) StartTransition(ctx context.Context, source string, transType string, durationMs int, wipeDirection, stingerName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, "transition:"+source+":"+transType)
+	m.calls = append(m.calls, fmt.Sprintf("transition:%s:%s:%s:%s", source, transType, wipeDirection, stingerName))
 	if m.failOn == "transition" {
 		return errors.New("transition failed")
 	}
@@ -54,6 +55,16 @@ func (m *mockTarget) SetLevel(ctx context.Context, source string, level float64)
 	m.calls = append(m.calls, "set_audio:"+source)
 	if m.failOn == "set_audio" {
 		return errors.New("set_audio failed")
+	}
+	return nil
+}
+
+func (m *mockTarget) Execute(ctx context.Context, action string, params map[string]interface{}) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "execute:"+action)
+	if m.failOn == action {
+		return fmt.Errorf("%s failed", action)
 	}
 	return nil
 }
@@ -184,7 +195,8 @@ func TestRunner_TransitionAction(t *testing.T) {
 
 	calls := target.getCalls()
 	require.Len(t, calls, 1)
-	require.Equal(t, "transition:cam1:mix", calls[0])
+	// mix transition with empty wipeDirection and stingerName
+	require.Equal(t, "transition:cam1:mix::", calls[0])
 }
 
 func TestRunner_TransitionWithSource(t *testing.T) {
@@ -201,7 +213,7 @@ func TestRunner_TransitionWithSource(t *testing.T) {
 
 	calls := target.getCalls()
 	require.Len(t, calls, 1)
-	require.Equal(t, "transition:cam2:mix", calls[0])
+	require.Equal(t, "transition:cam2:mix::", calls[0])
 }
 
 func TestRunner_TransitionMissingSource(t *testing.T) {
@@ -264,4 +276,179 @@ func TestRunner_ActionError(t *testing.T) {
 	// Second step should not have been called
 	calls := target.getCalls()
 	require.Len(t, calls, 1)
+}
+
+// --- New tests for macro system overhaul ---
+
+func TestRunner_TransitionWipeDirection(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "wipe-test",
+		Steps: []MacroStep{
+			{Action: ActionTransition, Params: map[string]interface{}{
+				"source":        "cam1",
+				"type":          "wipe",
+				"durationMs":    float64(500),
+				"wipeDirection": "h-left",
+			}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	require.NoError(t, err)
+
+	calls := target.getCalls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "transition:cam1:wipe:h-left:", calls[0])
+}
+
+func TestRunner_TransitionStingerName(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "stinger-test",
+		Steps: []MacroStep{
+			{Action: ActionTransition, Params: map[string]interface{}{
+				"source":      "cam1",
+				"type":        "stinger",
+				"durationMs":  float64(1000),
+				"stingerName": "intro",
+			}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	require.NoError(t, err)
+
+	calls := target.getCalls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "transition:cam1:stinger::intro", calls[0])
+}
+
+func TestRunner_ExecuteDispatch(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "execute-test",
+		Steps: []MacroStep{
+			{Action: ActionFTB, Params: map[string]interface{}{}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	require.NoError(t, err)
+
+	calls := target.getCalls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "execute:ftb", calls[0])
+}
+
+func TestRunner_UnknownActionErrors(t *testing.T) {
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "unknown-action-test",
+		Steps: []MacroStep{
+			{Action: MacroAction("totally_bogus"), Params: map[string]interface{}{}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	require.Error(t, err, "expected error for truly unknown action")
+	require.Contains(t, err.Error(), "unknown action")
+	require.Contains(t, err.Error(), "totally_bogus")
+}
+
+func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
+	// Verify a selection of new actions all route through Execute
+	newActions := []MacroAction{
+		ActionFTB,
+		ActionAudioMute,
+		ActionAudioAFV,
+		ActionAudioTrim,
+		ActionAudioMaster,
+		ActionAudioEQ,
+		ActionAudioCompressor,
+		ActionAudioDelay,
+		ActionGraphicsOn,
+		ActionGraphicsOff,
+		ActionGraphicsAutoOn,
+		ActionGraphicsAutoOff,
+		ActionRecordingStart,
+		ActionRecordingStop,
+		ActionPresetRecall,
+		ActionKeySet,
+		ActionKeyDelete,
+		ActionSourceLabel,
+		ActionSourceDelay,
+		ActionSourcePosition,
+		ActionReplayMarkIn,
+		ActionReplayMarkOut,
+		ActionReplayPlay,
+		ActionReplayStop,
+		ActionReplayQuickClip,
+		ActionReplayPlayLast,
+		ActionReplayPlayClip,
+	}
+
+	for _, action := range newActions {
+		t.Run(string(action), func(t *testing.T) {
+			target := &mockTarget{}
+			macro := Macro{
+				Name: "dispatch-" + string(action),
+				Steps: []MacroStep{
+					{Action: action, Params: map[string]interface{}{"test": "value"}},
+				},
+			}
+
+			err := Run(context.Background(), macro, target)
+			require.NoError(t, err)
+
+			calls := target.getCalls()
+			require.Len(t, calls, 1)
+			require.Equal(t, "execute:"+string(action), calls[0])
+		})
+	}
+}
+
+func TestRunner_SCTE35StillUsesSpecificMethods(t *testing.T) {
+	// Verify existing SCTE-35 actions do NOT go through Execute
+	target := &mockTarget{}
+	macro := Macro{
+		Name: "scte35-still-works",
+		Steps: []MacroStep{
+			{Action: ActionSCTE35Cue, Params: map[string]interface{}{"durationMs": float64(30000)}},
+		},
+	}
+
+	err := Run(context.Background(), macro, target)
+	require.NoError(t, err)
+
+	calls := target.getCalls()
+	// SCTE35Cue doesn't record a call in our mock, so calls should be empty
+	// This verifies it went through SCTE35Cue, not Execute (which would record "execute:scte35_cue")
+	require.Len(t, calls, 0)
+}
+
+func TestRunner_AllActionsMapComplete(t *testing.T) {
+	// Verify AllActions contains all expected actions
+	expectedActions := []MacroAction{
+		ActionCut, ActionPreview, ActionTransition, ActionWait, ActionSetAudio,
+		ActionSCTE35Cue, ActionSCTE35Return, ActionSCTE35Cancel, ActionSCTE35Hold, ActionSCTE35Extend,
+		ActionFTB,
+		ActionAudioMute, ActionAudioAFV, ActionAudioTrim, ActionAudioMaster,
+		ActionAudioEQ, ActionAudioCompressor, ActionAudioDelay,
+		ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
+		ActionRecordingStart, ActionRecordingStop,
+		ActionPresetRecall,
+		ActionKeySet, ActionKeyDelete,
+		ActionSourceLabel, ActionSourceDelay, ActionSourcePosition,
+		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayStop,
+		ActionReplayQuickClip, ActionReplayPlayLast, ActionReplayPlayClip,
+	}
+
+	for _, action := range expectedActions {
+		require.True(t, AllActions[action], "AllActions should contain %q", action)
+	}
+
+	// Verify map doesn't contain unexpected entries
+	require.Equal(t, len(expectedActions), len(AllActions),
+		"AllActions should have exactly %d entries, got %d", len(expectedActions), len(AllActions))
 }

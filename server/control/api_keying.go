@@ -41,5 +41,8 @@ func (a *API) handleGetSourceKey(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleDeleteSourceKey(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	a.keyer.RemoveKey(source)
+	if a.keyBridge != nil {
+		a.keyBridge.RemoveFillSource(source)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -1,34 +1,14 @@
 <script lang="ts">
-	import type { Macro, MacroStep, ControlRoomState } from '$lib/api/types';
-	import { listMacros, saveMacro, deleteMacro, runMacro } from '$lib/api/switch-api';
+	import type { Macro, MacroStep, MacroAction, ControlRoomState } from '$lib/api/types';
+	import { listMacros, saveMacro, deleteMacro, runMacro, listStingers, listPresets } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import MacroStepEditor from './MacroStepEditor.svelte';
+	import { ACTION_META, CATEGORIES } from './macro-actions';
 
 	interface Props {
 		state: ControlRoomState;
 	}
 	let { state: crState }: Props = $props();
-
-	// --- Action metadata ---
-	type ActionMeta = {
-		label: string;
-		category: string;
-		description: string;
-	};
-
-	const ACTION_META: Record<MacroStep['action'], ActionMeta> = {
-		cut: { label: 'Cut', category: 'Switching', description: 'Switch program to source' },
-		preview: { label: 'Preview', category: 'Switching', description: 'Set preview source' },
-		transition: { label: 'Transition', category: 'Switching', description: 'Dissolve, wipe, or dip to source' },
-		wait: { label: 'Wait', category: 'Timing', description: 'Pause between steps' },
-		set_audio: { label: 'Set Audio', category: 'Audio', description: 'Adjust source audio level' },
-		scte35_cue: { label: 'Ad Break Cue', category: 'SCTE-35', description: 'Start an ad break' },
-		scte35_return: { label: 'Return', category: 'SCTE-35', description: 'End ad break, return to program' },
-		scte35_cancel: { label: 'Cancel', category: 'SCTE-35', description: 'Cancel a pending splice' },
-		scte35_hold: { label: 'Hold', category: 'SCTE-35', description: 'Hold break indefinitely' },
-		scte35_extend: { label: 'Extend', category: 'SCTE-35', description: 'Extend break duration' },
-	};
-
-	const CATEGORIES = ['Switching', 'Timing', 'Audio', 'SCTE-35'] as const;
 
 	// --- State ---
 	let macros = $state<Macro[]>([]);
@@ -41,12 +21,25 @@
 	let showPicker = $state(false);
 	let showGuide = $state(false);
 	let guideDismissed = $state(false);
+	let stingerNames = $state<string[]>([]);
+	let presetList = $state<{ id: string; name: string }[]>([]);
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 
 	function sourceLabel(key: string): string {
 		return crState.sources[key]?.label || key;
 	}
+
+	// --- Validation warnings ---
+	let editorWarnings = $derived.by(() => {
+		const warnings: string[] = [];
+		for (let i = 1; i < editingSteps.length; i++) {
+			if (editingSteps[i].action === 'transition' && editingSteps[i - 1].action === 'transition') {
+				warnings.push(`Steps ${i} and ${i + 1}: consecutive transitions without a wait`);
+			}
+		}
+		return warnings;
+	});
 
 	// --- Guide ---
 	function initGuide() {
@@ -84,6 +77,14 @@
 		}
 	}
 
+	async function loadEditorData() {
+		try { stingerNames = await listStingers(); } catch { stingerNames = []; }
+		try {
+			const presets = await listPresets();
+			presetList = presets.map(p => ({ id: p.id, name: p.name }));
+		} catch { presetList = []; }
+	}
+
 	function startEdit(m?: Macro) {
 		if (m) {
 			editingName = m.name;
@@ -96,6 +97,7 @@
 		editorError = '';
 		expandedStep = 0;
 		showPicker = false;
+		loadEditorData();
 	}
 
 	async function handleSave() {
@@ -134,32 +136,39 @@
 	}
 
 	// --- Step manipulation ---
-	function addStep(action: MacroStep['action']) {
+	function addStep(action: MacroAction) {
 		const params: Record<string, unknown> = {};
-		if (['cut', 'preview', 'transition', 'set_audio'].includes(action)) {
+		// Smart defaults: source for source-dependent actions
+		const sourceActions: MacroAction[] = [
+			'cut', 'preview', 'transition', 'set_audio',
+			'audio_mute', 'audio_afv', 'audio_trim',
+			'audio_eq', 'audio_compressor', 'audio_delay',
+			'key_set', 'key_delete', 'source_label',
+			'source_delay', 'source_position',
+			'replay_mark_in', 'replay_mark_out', 'replay_play',
+			'replay_quick_clip', 'replay_play_clip',
+		];
+		if (sourceActions.includes(action)) {
 			params.source = sourceKeys[0] ?? '';
 		}
 		if (action === 'transition') {
 			params.type = 'mix';
 			params.durationMs = 1000;
 		}
-		if (action === 'wait') {
-			params.ms = 500;
-		}
-		if (action === 'set_audio') {
-			params.level = 0;
-		}
-		if (action === 'scte35_cue') {
-			params.durationMs = 30000;
-			params.autoReturn = true;
-		}
-		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) {
-			params.eventId = 0;
-		}
-		if (action === 'scte35_extend') {
-			params.eventId = 0;
-			params.durationMs = 30000;
-		}
+		if (action === 'wait') params.ms = 500;
+		if (action === 'set_audio') params.level = 0;
+		if (action === 'audio_mute') params.muted = true;
+		if (action === 'audio_afv') params.afv = true;
+		if (action === 'audio_trim') params.trim = 0;
+		if (action === 'audio_master') params.level = 0;
+		if (action === 'audio_delay') params.delayMs = 0;
+		if (action === 'source_delay') params.delayMs = 0;
+		if (action === 'source_position') params.position = 1;
+		if (action === 'replay_play') { params.speed = 0.5; params.loop = false; }
+		if (action === 'replay_quick_clip') { params.durationSecs = 10; params.speed = 0.5; }
+		if (action === 'scte35_cue') { params.durationMs = 30000; params.autoReturn = true; }
+		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) params.eventId = 0;
+		if (action === 'scte35_extend') { params.eventId = 0; params.durationMs = 30000; }
 		editingSteps = [...editingSteps, { action, params }];
 		expandedStep = editingSteps.length - 1;
 		showPicker = false;
@@ -181,47 +190,124 @@
 		expandedStep = target;
 	}
 
-	function updateStepAction(index: number, action: MacroStep['action']) {
+	function updateStepAction(index: number, action: MacroAction) {
 		const step = editingSteps[index];
 		const params: Record<string, unknown> = {};
-		if (['cut', 'preview', 'transition', 'set_audio'].includes(action)) {
+		const sourceActions: MacroAction[] = [
+			'cut', 'preview', 'transition', 'set_audio',
+			'audio_mute', 'audio_afv', 'audio_trim',
+			'audio_eq', 'audio_compressor', 'audio_delay',
+			'key_set', 'key_delete', 'source_label',
+			'source_delay', 'source_position',
+			'replay_mark_in', 'replay_mark_out', 'replay_play',
+			'replay_quick_clip', 'replay_play_clip',
+		];
+		if (sourceActions.includes(action)) {
 			params.source = step.params.source || sourceKeys[0] || '';
 		}
-		if (action === 'transition') {
-			params.type = 'mix';
-			params.durationMs = 1000;
-		}
+		if (action === 'transition') { params.type = 'mix'; params.durationMs = 1000; }
 		if (action === 'wait') params.ms = 500;
 		if (action === 'set_audio') params.level = 0;
+		if (action === 'audio_mute') params.muted = true;
+		if (action === 'audio_afv') params.afv = true;
+		if (action === 'audio_trim') params.trim = 0;
+		if (action === 'audio_master') params.level = 0;
+		if (action === 'audio_delay') params.delayMs = 0;
+		if (action === 'source_delay') params.delayMs = 0;
+		if (action === 'source_position') params.position = 1;
+		if (action === 'replay_play') { params.speed = 0.5; params.loop = false; }
+		if (action === 'replay_quick_clip') { params.durationSecs = 10; params.speed = 0.5; }
 		if (action === 'scte35_cue') { params.durationMs = 30000; params.autoReturn = true; }
 		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) params.eventId = 0;
 		if (action === 'scte35_extend') { params.eventId = 0; params.durationMs = 30000; }
 		editingSteps[index] = { action, params };
-		editingSteps = [...editingSteps]; // trigger reactivity
+		editingSteps = [...editingSteps];
 	}
 
 	function updateStepParam(index: number, key: string, value: unknown) {
 		editingSteps[index].params[key] = value;
-		editingSteps = [...editingSteps]; // trigger reactivity
+		editingSteps = [...editingSteps];
 	}
 
 	function stepSummary(step: MacroStep): string {
 		const meta = ACTION_META[step.action];
+		if (!meta) return step.action;
 		switch (step.action) {
 			case 'cut':
 			case 'preview':
-				return `${meta.label} → ${sourceLabel(step.params.source as string || '?')}`;
+				return `${meta.label} \u2192 ${sourceLabel(step.params.source as string || '?')}`;
 			case 'transition': {
 				const type = (step.params.type as string) || 'mix';
 				const dur = step.params.durationMs as number || 1000;
-				return `${type.charAt(0).toUpperCase() + type.slice(1)} → ${sourceLabel(step.params.source as string || '?')} (${dur}ms)`;
+				let suffix = '';
+				if (type === 'wipe' && step.params.wipeDirection) suffix = ` [${step.params.wipeDirection}]`;
+				if (type === 'stinger' && step.params.stingerName) suffix = ` [${step.params.stingerName}]`;
+				return `${type.charAt(0).toUpperCase() + type.slice(1)} \u2192 ${sourceLabel(step.params.source as string || '?')} (${dur}ms)${suffix}`;
 			}
+			case 'ftb':
+				return 'Fade to Black';
 			case 'wait':
 				return `Wait ${step.params.ms || 0}ms`;
 			case 'set_audio': {
 				const lvl = step.params.level as number ?? 0;
-				return `Audio: ${sourceLabel(step.params.source as string || '?')} → ${lvl > 0 ? '+' : ''}${lvl} dB`;
+				return `Audio: ${sourceLabel(step.params.source as string || '?')} \u2192 ${lvl > 0 ? '+' : ''}${lvl} dB`;
 			}
+			case 'audio_mute':
+				return `${step.params.muted !== false ? 'Mute' : 'Unmute'} ${sourceLabel(step.params.source as string || '?')}`;
+			case 'audio_afv':
+				return `AFV ${step.params.afv !== false ? 'On' : 'Off'}: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'audio_trim': {
+				const trim = step.params.trim as number ?? 0;
+				return `Trim: ${sourceLabel(step.params.source as string || '?')} \u2192 ${trim > 0 ? '+' : ''}${trim} dB`;
+			}
+			case 'audio_master': {
+				const lvl = step.params.level as number ?? 0;
+				return `Master \u2192 ${lvl > 0 ? '+' : ''}${lvl} dB`;
+			}
+			case 'audio_eq':
+				return `EQ: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'audio_compressor':
+				return `Compressor: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'audio_delay':
+				return `Audio Delay: ${sourceLabel(step.params.source as string || '?')} \u2192 ${step.params.delayMs || 0}ms`;
+			case 'graphics_on':
+				return 'Graphics On';
+			case 'graphics_off':
+				return 'Graphics Off';
+			case 'graphics_auto_on':
+				return 'Auto Graphics On';
+			case 'graphics_auto_off':
+				return 'Auto Graphics Off';
+			case 'recording_start':
+				return 'Start Recording';
+			case 'recording_stop':
+				return 'Stop Recording';
+			case 'preset_recall':
+				return `Recall: ${step.params.name || step.params.id || '?'}`;
+			case 'key_set':
+				return `Key: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'key_delete':
+				return `Remove Key: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'source_label':
+				return `Label: ${sourceLabel(step.params.source as string || '?')} \u2192 "${step.params.label || ''}"`;
+			case 'source_delay':
+				return `Delay: ${sourceLabel(step.params.source as string || '?')} \u2192 ${step.params.delayMs || 0}ms`;
+			case 'source_position':
+				return `Position: ${sourceLabel(step.params.source as string || '?')} \u2192 #${step.params.position || 1}`;
+			case 'replay_mark_in':
+				return `Mark In: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'replay_mark_out':
+				return `Mark Out: ${sourceLabel(step.params.source as string || '?')}`;
+			case 'replay_play':
+				return `Replay: ${sourceLabel(step.params.source as string || '?')} @ ${step.params.speed || 0.5}x${step.params.loop ? ' (loop)' : ''}`;
+			case 'replay_stop':
+				return 'Stop Replay';
+			case 'replay_quick_clip':
+				return `Quick Clip: ${sourceLabel(step.params.source as string || '?')} ${step.params.durationSecs || 10}s @ ${step.params.speed || 0.5}x`;
+			case 'replay_play_last':
+				return 'Play Last Clip';
+			case 'replay_play_clip':
+				return `Play Clip: ${step.params.clipId || '?'}`;
 			case 'scte35_cue':
 				return `Ad Break (${((step.params.durationMs as number) || 30000) / 1000}s)`;
 			case 'scte35_return':
@@ -260,14 +346,15 @@
 		<div class="guide">
 			<div class="guide-title">Getting Started</div>
 			<p class="guide-text">
-				Macros automate sequences of switcher operations — cuts, transitions, audio changes, and ad breaks.
+				Macros automate sequences of switcher operations — cuts, transitions, audio changes, graphics, replay, and ad breaks.
 			</p>
 			<div class="guide-example">
 				<div class="guide-example-title">Example:</div>
 				<ol class="guide-steps">
 					<li>Cut to Camera 1</li>
 					<li>Wait 500ms</li>
-					<li>Dissolve to Camera 2</li>
+					<li>Wipe to Camera 2 (left)</li>
+					<li>Fade to Black</li>
 				</ol>
 			</div>
 			<p class="guide-text">
@@ -295,7 +382,7 @@
 					>
 						<span class="step-number">{i + 1}.</span>
 						<span class="step-summary">{stepSummary(step)}</span>
-						<span class="step-chevron">{expandedStep === i ? '▼' : '▶'}</span>
+						<span class="step-chevron">{expandedStep === i ? '\u25BC' : '\u25B6'}</span>
 					</button>
 					<div class="step-actions">
 						<button
@@ -303,186 +390,32 @@
 							disabled={i === 0}
 							onclick={() => moveStep(i, -1)}
 							title="Move up"
-						>▲</button>
+						>\u25B2</button>
 						<button
 							class="step-move"
 							disabled={i === editingSteps.length - 1}
 							onclick={() => moveStep(i, 1)}
 							title="Move down"
-						>▼</button>
+						>\u25BC</button>
 						<button
 							class="step-delete"
 							onclick={() => removeStep(i)}
 							title="Remove step"
-						>×</button>
+						>\u00D7</button>
 					</div>
 
 					{#if expandedStep === i}
 						<div class="step-body">
-							<div class="field-row">
-								<span class="field-label">Action</span>
-								<select
-									class="field-select action-select"
-									value={step.action}
-									onchange={(e) => updateStepAction(i, (e.target as HTMLSelectElement).value as MacroStep['action'])}
-								>
-									{#each CATEGORIES as category}
-										<optgroup label={category}>
-											{#each Object.entries(ACTION_META).filter(([, m]) => m.category === category) as [action, meta]}
-												<option value={action} title={meta.description}>{meta.label}</option>
-											{/each}
-										</optgroup>
-									{/each}
-								</select>
-							</div>
-
-							<!-- Source field (cut, preview, transition, set_audio) -->
-							{#if ['cut', 'preview', 'transition', 'set_audio'].includes(step.action)}
-								<div class="field-row">
-									<span class="field-label">Source</span>
-									<select
-										class="field-select source-select"
-										value={step.params.source as string || ''}
-										onchange={(e) => updateStepParam(i, 'source', (e.target as HTMLSelectElement).value)}
-									>
-										{#each sourceKeys as key}
-											<option value={key}>{sourceLabel(key)}</option>
-										{/each}
-									</select>
-								</div>
-							{/if}
-
-							<!-- Transition type + duration -->
-							{#if step.action === 'transition'}
-								<div class="field-row">
-									<span class="field-label">Type</span>
-									<select
-										class="field-select transition-type-select"
-										value={step.params.type as string || 'mix'}
-										onchange={(e) => updateStepParam(i, 'type', (e.target as HTMLSelectElement).value)}
-									>
-										<option value="mix">Mix (Dissolve)</option>
-										<option value="dip">Dip</option>
-										<option value="wipe">Wipe</option>
-									</select>
-								</div>
-								<div class="field-row">
-									<span class="field-label">Duration</span>
-									<div class="field-with-unit">
-										<input
-											class="field-input duration-input"
-											type="number"
-											min="100"
-											max="5000"
-											step="100"
-											value={step.params.durationMs as number || 1000}
-											oninput={(e) => updateStepParam(i, 'durationMs', parseInt((e.target as HTMLInputElement).value) || 1000)}
-										/>
-										<span class="field-unit">ms</span>
-									</div>
-								</div>
-							{/if}
-
-							<!-- Wait duration -->
-							{#if step.action === 'wait'}
-								<div class="field-row">
-									<span class="field-label">Duration</span>
-									<div class="field-with-unit">
-										<input
-											class="field-input wait-duration-input"
-											type="number"
-											min="0"
-											max="30000"
-											step="100"
-											value={step.params.ms as number || 500}
-											oninput={(e) => updateStepParam(i, 'ms', parseInt((e.target as HTMLInputElement).value) || 0)}
-										/>
-										<span class="field-unit">ms</span>
-									</div>
-								</div>
-							{/if}
-
-							<!-- Audio level -->
-							{#if step.action === 'set_audio'}
-								<div class="field-row">
-									<span class="field-label">Level</span>
-									<div class="field-with-unit">
-										<input
-											class="field-input level-input"
-											type="number"
-											min="-60"
-											max="20"
-											step="1"
-											value={step.params.level as number ?? 0}
-											oninput={(e) => updateStepParam(i, 'level', parseFloat((e.target as HTMLInputElement).value) || 0)}
-										/>
-										<span class="field-unit">dB</span>
-									</div>
-								</div>
-							{/if}
-
-							<!-- SCTE-35 Cue -->
-							{#if step.action === 'scte35_cue'}
-								<div class="field-row">
-									<span class="field-label">Duration</span>
-									<div class="field-with-unit">
-										<input
-											class="field-input"
-											type="number"
-											min="1"
-											max="3600"
-											step="1"
-											value={((step.params.durationMs as number) || 30000) / 1000}
-											oninput={(e) => updateStepParam(i, 'durationMs', (parseInt((e.target as HTMLInputElement).value) || 30) * 1000)}
-										/>
-										<span class="field-unit">sec</span>
-									</div>
-								</div>
-								<div class="field-row">
-									<span class="field-label">Auto-return</span>
-									<input
-										class="field-checkbox"
-										type="checkbox"
-										checked={step.params.autoReturn as boolean ?? true}
-										onchange={(e) => updateStepParam(i, 'autoReturn', (e.target as HTMLInputElement).checked)}
-									/>
-								</div>
-							{/if}
-
-							<!-- SCTE-35 Event ID field (return, cancel, hold, extend) -->
-							{#if ['scte35_return', 'scte35_cancel', 'scte35_hold', 'scte35_extend'].includes(step.action)}
-								<div class="field-row">
-									<span class="field-label">Event ID</span>
-									<input
-										class="field-input event-id-input"
-										type="number"
-										min="0"
-										step="1"
-										value={step.params.eventId as number || 0}
-										oninput={(e) => updateStepParam(i, 'eventId', parseInt((e.target as HTMLInputElement).value) || 0)}
-										placeholder="0 = most recent"
-									/>
-								</div>
-							{/if}
-
-							<!-- SCTE-35 Extend duration -->
-							{#if step.action === 'scte35_extend'}
-								<div class="field-row">
-									<span class="field-label">Extend by</span>
-									<div class="field-with-unit">
-										<input
-											class="field-input"
-											type="number"
-											min="1000"
-											max="600000"
-											step="1000"
-											value={step.params.durationMs as number || 30000}
-											oninput={(e) => updateStepParam(i, 'durationMs', parseInt((e.target as HTMLInputElement).value) || 30000)}
-										/>
-										<span class="field-unit">ms</span>
-									</div>
-								</div>
-							{/if}
+							<MacroStepEditor
+								{step}
+								index={i}
+								{sourceKeys}
+								{sourceLabel}
+								{stingerNames}
+								presetNames={presetList}
+								onupdate={(key, value) => updateStepParam(i, key, value)}
+								onchangeaction={(action) => updateStepAction(i, action)}
+							/>
 						</div>
 					{/if}
 				</div>
@@ -497,7 +430,7 @@
 							{#each Object.entries(ACTION_META).filter(([, m]) => m.category === category) as [action, meta]}
 								<button
 									class="picker-item"
-									onclick={() => addStep(action as MacroStep['action'])}
+									onclick={() => addStep(action as MacroAction)}
 									title={meta.description}
 								>
 									<span class="picker-label">{meta.label}</span>
@@ -510,6 +443,15 @@
 					<button class="add-step-btn" onclick={() => { showPicker = true; }}>+ Add Step</button>
 				{/if}
 			</div>
+
+			<!-- Validation warnings -->
+			{#if editorWarnings.length > 0}
+				<div class="editor-warnings">
+					{#each editorWarnings as w}
+						<div class="editor-warning">{w}</div>
+					{/each}
+				</div>
+			{/if}
 
 			{#if editorError}
 				<div class="editor-error">{editorError}</div>
@@ -908,59 +850,6 @@
 		width: 100%;
 		padding: 4px 6px 6px;
 		border-top: 1px solid var(--border-subtle);
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	/* --- Fields --- */
-	.field-row {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-	}
-
-	.field-label {
-		font-family: var(--font-ui);
-		font-size: 0.6rem;
-		color: var(--text-secondary);
-		min-width: 52px;
-		flex-shrink: 0;
-	}
-
-	.field-select, .field-input {
-		flex: 1;
-		padding: 3px 4px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-family: var(--font-ui);
-		font-size: 0.65rem;
-		min-width: 0;
-	}
-
-	.field-select:focus, .field-input:focus {
-		border-color: var(--accent-blue);
-		outline: none;
-	}
-
-	.field-with-unit {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: 4px;
-	}
-
-	.field-unit {
-		font-family: var(--font-mono);
-		font-size: 0.6rem;
-		color: var(--text-tertiary);
-		flex-shrink: 0;
-	}
-
-	.field-checkbox {
-		accent-color: var(--accent-blue);
 	}
 
 	/* --- Add Step Picker --- */
@@ -993,6 +882,8 @@
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
+		max-height: 300px;
+		overflow-y: auto;
 	}
 
 	.picker-category {
@@ -1042,7 +933,22 @@
 		color: var(--text-tertiary);
 	}
 
-	/* --- Editor Buttons --- */
+	/* --- Warnings & Errors --- */
+	.editor-warnings {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.editor-warning {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		color: #f59e0b;
+		padding: 2px 4px;
+		background: rgba(245, 158, 11, 0.1);
+		border-radius: var(--radius-sm);
+	}
+
 	.editor-error {
 		color: #ef4444;
 		font-size: 0.65rem;

@@ -89,6 +89,11 @@ func (s *Store) Save(m Macro) error {
 		return ErrNoSteps
 	}
 
+	result := ValidateSteps(m.Steps)
+	if result.HasErrors() {
+		return &result.Errors[0]
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

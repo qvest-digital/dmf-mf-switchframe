@@ -206,13 +206,12 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	pc.mu.Unlock()
 
 	// Normalize output timestamps. The pipeline encoder has max_b_frames=0
-	// (no B-frames), so DTS must always equal PTS. For sources with B-frames,
-	// the sourceDecoder uses the INPUT frame's PTS (not the decoded output's),
-	// which can be non-monotonic after FFmpeg's internal reorder. Enforce
-	// monotonic PTS to prevent VLC/players from dropping "late" frames.
+	// (no B-frames), so DTS must always equal PTS. Sources have independent
+	// PTS timelines, so switching sources (cuts and transitions) can produce
+	// both backwards jumps and large forward jumps. Enforce monotonic PTS
+	// with bounded forward advancement to prevent decoder stalls.
 	outPTS := pf.PTS
-	if outPTS <= pc.lastOutputPTS && pc.lastOutputPTS > 0 {
-		// PTS went backwards — advance by one frame duration.
+	if pc.lastOutputPTS > 0 {
 		fpsNum, fpsDen := 30000, 1001
 		if pc.formatRef != nil {
 			if f := pc.formatRef.Load(); f != nil {
@@ -221,7 +220,16 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 		}
 		frameDur := int64(90000) * int64(fpsDen) / int64(fpsNum)
-		outPTS = pc.lastOutputPTS + frameDur
+		if outPTS <= pc.lastOutputPTS {
+			// PTS went backwards (source switch or B-frame reorder) —
+			// advance by one frame duration.
+			outPTS = pc.lastOutputPTS + frameDur
+		} else if outPTS > pc.lastOutputPTS+frameDur*3 {
+			// PTS jumped too far forward (source switch to a source with
+			// a much larger PTS origin). Cap to one frame duration to
+			// prevent downstream MPEG-TS decoders from stalling on the gap.
+			outPTS = pc.lastOutputPTS + frameDur
+		}
 	}
 	pc.lastOutputPTS = outPTS
 
@@ -241,9 +249,13 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 			switch nalu[0] & 0x1F {
 			case 7:
-				frame.SPS = nalu
+				// Copy SPS — ExtractNALUs returns sub-slices of the pooled
+				// AVC1 buffer. Without a copy, putAVC1Buffer() recycles the
+				// backing memory while async viewers (output muxer,
+				// WebTransport) still reference SPS/PPS.
+				frame.SPS = append([]byte(nil), nalu...)
 			case 8:
-				frame.PPS = nalu
+				frame.PPS = append([]byte(nil), nalu...)
 			}
 		}
 		if frame.SPS != nil && frame.PPS != nil && pc.onVideoInfoChange != nil {

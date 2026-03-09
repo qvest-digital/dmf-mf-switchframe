@@ -143,6 +143,54 @@ func TestPipelineCodecs_MonotonicPTS(t *testing.T) {
 	}
 }
 
+func TestPipelineCodecs_ForwardPTSJumpCapped(t *testing.T) {
+	// When switching sources, the new source may have a much larger PTS origin.
+	// A large forward PTS jump causes downstream MPEG-TS decoders to stall
+	// while "buffering" the gap. The enforcer must cap forward jumps.
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	mkFrame := func(pts int64) *ProcessingFrame {
+		return &ProcessingFrame{
+			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+			PTS: pts, DTS: pts, IsKeyframe: true, Codec: "h264",
+		}
+	}
+
+	// Default frame duration at 30000/1001 fps = 3003 ticks (90kHz)
+	frameDur := int64(90000) * 1001 / 30000 // 3003
+
+	// Establish a baseline PTS
+	f1, err := pc.encode(mkFrame(1_000_000), true)
+	require.NoError(t, err)
+	require.NotNil(t, f1)
+	require.Equal(t, int64(1_000_000), f1.PTS)
+
+	// Normal advancement (within 3x frame duration) — passes through
+	f2, err := pc.encode(mkFrame(1_000_000+frameDur), true)
+	require.NoError(t, err)
+	require.Equal(t, int64(1_000_000)+frameDur, f2.PTS)
+
+	// Simulate source switch: new source has PTS 100 million ticks ahead
+	f3, err := pc.encode(mkFrame(100_000_000), true)
+	require.NoError(t, err)
+	require.NotNil(t, f3)
+
+	// Should be capped to lastOutputPTS + frameDur, NOT 100_000_000
+	expectedPTS := f2.PTS + frameDur
+	require.Equal(t, expectedPTS, f3.PTS,
+		"large forward PTS jump should be capped to one frame duration")
+
+	// Subsequent frames should continue from the capped value
+	f4, err := pc.encode(mkFrame(100_000_000+frameDur), true)
+	require.NoError(t, err)
+	require.Equal(t, expectedPTS+frameDur, f4.PTS,
+		"next frame should continue from capped PTS")
+}
+
 func TestPipelineCodecs_DefaultBitrateForResolution(t *testing.T) {
 	require.Equal(t, 10_000_000, defaultBitrateForResolution(1920, 1080), "1080p should default to 10 Mbps")
 	require.Equal(t, 6_000_000, defaultBitrateForResolution(1280, 720), "720p should default to 6 Mbps")
@@ -251,6 +299,90 @@ func TestPipelineCodecs_SmallBitrateChangeKeepsEncoder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, encoderCreateCount, "encoder should NOT be recreated for small bitrate change above floor")
 }
+
+// buildAnnexBKeyframe constructs Annex B data containing SPS, PPS, and IDR
+// NALUs with 4-byte start codes, matching what a real H.264 encoder produces.
+func buildAnnexBKeyframe(spsPayload, ppsPayload []byte) []byte {
+	startCode := []byte{0x00, 0x00, 0x00, 0x01}
+	spsNALU := append([]byte{0x67}, spsPayload...) // type 7 (SPS)
+	ppsNALU := append([]byte{0x68}, ppsPayload...) // type 8 (PPS)
+	idrNALU := []byte{0x65, 0xAA, 0xBB}            // type 5 (IDR)
+
+	var annexB []byte
+	for _, nalu := range [][]byte{spsNALU, ppsNALU, idrNALU} {
+		annexB = append(annexB, startCode...)
+		annexB = append(annexB, nalu...)
+	}
+	return annexB
+}
+
+func TestPipelineCodecs_SPSPPSIndependentOfWireData(t *testing.T) {
+	// Regression test: SPS and PPS must be independent copies, not sub-slices
+	// of the WireData buffer. When WireData is returned to a sync.Pool,
+	// sub-slices would point to recycled memory, causing corrupted parameter
+	// sets for downstream consumers (output muxer, WebTransport writer).
+
+	spsPayload := []byte{0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x6C}
+	ppsPayload := []byte{0xCE, 0x3C, 0x80}
+
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		YUV:        make([]byte, 4*4*3/2),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.NotNil(t, frame.SPS, "keyframe must have SPS")
+	require.NotNil(t, frame.PPS, "keyframe must have PPS")
+
+	// Save expected SPS/PPS content
+	expectedSPS := append([]byte{0x67}, spsPayload...)
+	expectedPPS := append([]byte{0x68}, ppsPayload...)
+
+	require.Equal(t, expectedSPS, frame.SPS)
+	require.Equal(t, expectedPPS, frame.PPS)
+
+	// Simulate pool recycling: overwrite the WireData buffer.
+	// If SPS/PPS are sub-slices of WireData, they'll be corrupted.
+	for i := range frame.WireData {
+		frame.WireData[i] = 0xFF
+	}
+
+	// SPS and PPS must be unaffected by WireData mutation
+	require.Equal(t, expectedSPS, frame.SPS,
+		"SPS corrupted after WireData overwrite — still a sub-slice of the pooled buffer")
+	require.Equal(t, expectedPPS, frame.PPS,
+		"PPS corrupted after WireData overwrite — still a sub-slice of the pooled buffer")
+}
+
+// mockAnnexBEncoder returns Annex B data with SPS/PPS/IDR NALUs, matching
+// what a real H.264 encoder produces. The encode() pipeline converts this
+// to AVC1 format before extracting SPS/PPS.
+type mockAnnexBEncoder struct {
+	annexB []byte
+}
+
+func (e *mockAnnexBEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	out := make([]byte, len(e.annexB))
+	copy(out, e.annexB)
+	return out, forceIDR, nil
+}
+
+func (e *mockAnnexBEncoder) Close() {}
 
 func BenchmarkPipelineEncode(b *testing.B) {
 	pc := &pipelineCodecs{

@@ -460,11 +460,12 @@ func TestMixerOnCutCrossfade(t *testing.T) {
 
 	// The crossfaded PCM: at start old=1.0, new=0.0
 	// EqualPowerCrossfade: result[0] = 1.0*cos(0) + 0.0*sin(0) = 1.0
-	// result[3] = 1.0*cos(3/4·π/2) + 0.0*sin(3/4·π/2) ≈ cos(3π/8) ≈ 0.383
-	// The crossfade output should be between 0 and 1 for all samples
+	// The brickwall limiter at -1 dBFS (~0.891) clamps full-scale values.
+	// result[3] = 1.0*cos(3/4·π/2) + 0.0*sin(3/4·π/2) ≈ cos(3π/8) ≈ 0.383 (below threshold)
+	limiterThreshold := math.Pow(10, -1.0/20.0) // -1 dBFS ≈ 0.891
 	lastPCM := allCapturedPCM[len(allCapturedPCM)-1]
 	require.Equal(t, 4, len(lastPCM))
-	require.InDelta(t, 1.0, lastPCM[0], 0.01, "first sample should be ~old")
+	require.InDelta(t, limiterThreshold, lastPCM[0], 0.02, "first sample should be clamped to limiter threshold")
 	// Last sample should be faded from old toward new
 	require.True(t, lastPCM[3] < lastPCM[0], "signal should be fading")
 }
@@ -2368,4 +2369,64 @@ func TestChannelGainCached(t *testing.T) {
 	expectedMaster := float32(DBToLinear(-3))
 	require.InDelta(t, float64(expectedMaster), float64(m.masterLinear), 1e-6, "masterLinear should match DBToLinear(-3)")
 	m.mu.RUnlock()
+}
+
+func TestMixerCrossfadeLimiterApplied(t *testing.T) {
+	// Two full-scale signals crossfaded peak at ~1.414 (+3dB) at the midpoint.
+	// The brickwall limiter must clamp output to ≤ -1 dBFS (~0.891).
+	var allCapturedPCM [][]float32
+
+	// Both sources at full scale — crossfade midpoint will exceed 1.0
+	fullScale := make([]float32, 1024)
+	for i := range fullScale {
+		fullScale[i] = 1.0
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			var captured []float32
+			allCapturedPCM = append(allCapturedPCM, captured)
+			idx := len(allCapturedPCM) - 1
+			return &mockEncoderCapture{pcmRef: &allCapturedPCM[idx]}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Both decoders return full-scale PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: fullScale}
+	m.channels["cam2"].decoder = &mockDecoder{samples: fullScale}
+	m.mu.Unlock()
+
+	// Trigger crossfade: cam1 → cam2
+	m.OnCut("cam1", "cam2")
+
+	frame1 := &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame2 := &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+
+	m.IngestFrame("cam1", frame1)
+	m.IngestFrame("cam2", frame2)
+
+	require.GreaterOrEqual(t, len(allCapturedPCM), 1, "should have captured crossfade PCM")
+	lastPCM := allCapturedPCM[len(allCapturedPCM)-1]
+
+	// Limiter threshold is -1 dBFS ≈ 0.891
+	threshold := float32(math.Pow(10, -1.0/20.0))
+
+	for i, sample := range lastPCM {
+		if sample > threshold+0.001 {
+			t.Fatalf("sample %d = %.4f exceeds limiter threshold %.4f — limiter not applied during crossfade",
+				i, sample, threshold)
+		}
+	}
 }

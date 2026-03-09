@@ -1247,6 +1247,12 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		mixed[i] *= m.masterLinear
 	}
 
+	// Feed LUFS meter (after master fader, before limiter — matches normal mix path)
+	m.loudness.Process(mixed)
+
+	// Apply brickwall limiter at -1 dBFS (always active — matches normal mix path)
+	m.limiter.Process(mixed)
+
 	// Lazy-init encoder
 	if m.encoder == nil && m.config.EncoderFactory != nil {
 		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)

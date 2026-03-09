@@ -111,7 +111,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 	greenScreenKey := "mxl:" + names[1]
 	a.keyProcessor.SetKey(greenScreenKey, graphics.KeyConfig{
 		Type:          graphics.KeyTypeChroma,
-		Enabled:       true,
+		Enabled:       false,
 		KeyColorY:     173,
 		KeyColorCb:    42,
 		KeyColorCr:    26,
@@ -119,7 +119,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		Smoothness:    0.1,
 		SpillSuppress: 0.5,
 	})
-	slog.Info("MXL demo: chroma key enabled (adjust in Keys tab)", "source", greenScreenKey)
+	slog.Info("MXL demo: chroma key pre-configured (enable in Keys tab)", "source", greenScreenKey)
 
 	// Wire output sink logging. If an MXL output writer is already configured
 	// (via --mxl-output), wrap it so frames flow through to the real writer.
