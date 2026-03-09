@@ -525,7 +525,7 @@
 							</div>
 						{:else if activeTab === 'Macros'}
 							<div class="tab-panel">
-								<MacroPanel />
+								<MacroPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Keys'}
 							<div class="tab-panel">
