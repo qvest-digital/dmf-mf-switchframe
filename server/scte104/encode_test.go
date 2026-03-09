@@ -162,6 +162,7 @@ func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
 					UPID:               upid,
 					SegNum:             2,
 					SegExpected:        5,
+					ProgramSegmentationFlag: true,
 					CancelIndicator:    false,
 				},
 			},
@@ -264,6 +265,7 @@ func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
 					UPID:               []byte{0xAB, 0xCD},
 					SegNum:             1,
 					SegExpected:        1,
+					ProgramSegmentationFlag: true,
 				},
 			},
 			{OpID: OpSpliceNull},
@@ -382,6 +384,7 @@ func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
 					UPID:               nil,
 					SegNum:             0,
 					SegExpected:        0,
+					ProgramSegmentationFlag: true,
 				},
 			},
 		},
@@ -431,6 +434,7 @@ func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
 					UPIDType:           0,
 					SegNum:             0,
 					SegExpected:        0,
+					ProgramSegmentationFlag: true,
 				},
 			},
 		},
@@ -456,6 +460,7 @@ func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
 						UPIDType:           0,
 						SegNum:             0,
 						SegExpected:        0,
+					ProgramSegmentationFlag: true,
 					},
 				},
 			},
@@ -491,6 +496,7 @@ func TestEncode_LargeDurationTicks(t *testing.T) {
 					UPIDType:           0,
 					SegNum:             0,
 					SegExpected:        0,
+					ProgramSegmentationFlag: true,
 				},
 			},
 		},
@@ -533,5 +539,25 @@ func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
 	expectedSize := uint16(len(data) - 4) // everything after messageSize
 	if messageSize != expectedSize {
 		t.Errorf("messageSize = %d, want %d (total %d - 4)", messageSize, expectedSize, len(data))
+	}
+}
+
+func TestEncode_SegmentationDescriptor_ComponentLevelRejected(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              1,
+					SegmentationTypeID:      0x34,
+					ProgramSegmentationFlag: false, // component-level
+				},
+			},
+		},
+	}
+
+	_, err := Encode(msg)
+	if err == nil {
+		t.Fatal("expected error for component-level segmentation encoding")
 	}
 }

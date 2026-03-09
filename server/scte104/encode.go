@@ -166,7 +166,10 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	buf := make([]byte, 15+upidLen)
 
 	binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
-	// flags_byte: cancel=0, reserved=0, program_segmentation_flag=1 (always program-level)
+	if !sd.ProgramSegmentationFlag {
+		return nil, fmt.Errorf("segmentation_descriptor: component-level encoding not supported")
+	}
+	// flags_byte: cancel=0, reserved=0, program_segmentation_flag=1
 	buf[4] = 0x01
 
 	// 5-byte (40-bit) duration in 90kHz ticks, big-endian.

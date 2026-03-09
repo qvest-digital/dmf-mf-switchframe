@@ -1026,9 +1026,6 @@ func commandTypeName(cmdType uint8) string {
 }
 
 // isSegCueOut returns true if the segmentation_type_id represents a cue-out
-// (placement opportunity start). These are the types that should create
-// active events when carried by time_signal commands.
-// isSegCueOut returns true if the segmentation_type_id represents a cue-out
 // (ad insertion boundary). Covers all Start types from SCTE-35 Table 22 that
 // follow the Start+1=End pairing convention for ad/placement opportunities.
 // Intentionally excludes 0x20 (Unscheduled Event Start) and 0x24 (Network
