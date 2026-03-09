@@ -587,6 +587,7 @@ func (s *Switcher) BuildPipeline() error {
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
+	p.SetMetrics(s.promMetrics)
 	p.epoch = s.pipelineEpoch.Add(1)
 	s.pipeline.Store(p)
 	return nil
@@ -631,6 +632,7 @@ func (s *Switcher) rebuildPipeline() {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return
 	}
+	p.SetMetrics(s.promMetrics)
 	p.epoch = s.pipelineEpoch.Add(1)
 	s.swapPipeline(p)
 }
@@ -777,6 +779,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		if err := p.Build(f, s.framePool, nodes); err != nil {
 			s.log.Warn("pipeline rebuild failed on format change", "error", err)
 		} else {
+			p.SetMetrics(s.promMetrics)
 			p.epoch = s.pipelineEpoch.Add(1)
 			s.swapPipeline(p)
 		}
