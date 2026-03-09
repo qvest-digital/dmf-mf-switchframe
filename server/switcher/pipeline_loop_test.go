@@ -325,6 +325,23 @@ func TestSetPipelineFormat_SwapsPipeline(t *testing.T) {
 	require.NotNil(t, p)
 }
 
+func TestClose_SwapsNilAndWaits(t *testing.T) {
+	sw := createTestSwitcher(t)
+
+	// Install a pipeline.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.rebuildPipeline()
+	require.NotNil(t, sw.pipeline.Load())
+
+	sw.Close()
+
+	// After Close, pipeline should be nil.
+	require.Nil(t, sw.pipeline.Load(), "Close should swap pipeline to nil")
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))

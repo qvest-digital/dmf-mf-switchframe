@@ -422,7 +422,9 @@ func (s *Switcher) Close() {
 	if s.framePool != nil {
 		s.framePool.Close()
 	}
-	if p := s.pipeline.Load(); p != nil {
+	// Swap pipeline to nil and synchronously drain + close.
+	if p := s.pipeline.Swap(nil); p != nil {
+		p.Wait()
 		p.Close()
 	}
 	s.mu.Lock()
