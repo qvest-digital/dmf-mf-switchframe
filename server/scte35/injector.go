@@ -387,7 +387,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	}
 
 	// Fire SCTE-104 sink outside the lock.
-	if s104 != nil {
+	// Skip when the cue originated from SCTE-104 input to prevent echo loop
+	// (input→inject→sink→output would echo incoming SCTE-104 back to output).
+	if s104 != nil && msg.Source != "scte104" {
 		s104(msg)
 	}
 

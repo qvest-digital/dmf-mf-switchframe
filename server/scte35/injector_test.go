@@ -1756,3 +1756,64 @@ func TestInjector_InjectCue_TimeSignal_PTSWraparound(t *testing.T) {
 		t.Fatalf("State().SpliceTimePTS = %d, want %d", ae.SpliceTimePTS, expected)
 	}
 }
+
+func TestInjector_SCTE104Sink_SkipsEchoForSCTE104Source(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	// Inject with Source="scte104" -- simulates SCTE-104 input path.
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	msg.Source = "scte104"
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Called {
+		t.Fatal("scte104Sink should NOT be called when Source='scte104' (echo prevention)")
+	}
+}
+
+func TestInjector_SCTE104Sink_FiresForAPISource(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	msg.Source = "api"
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !scte104Called {
+		t.Fatal("scte104Sink should be called when Source='api'")
+	}
+}
