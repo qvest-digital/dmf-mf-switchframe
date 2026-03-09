@@ -115,8 +115,15 @@ func decodeMOM(data []byte) (*Message, error) {
 		return nil, fmt.Errorf("%w: MOM header requires at least 9 bytes, got %d", ErrTooShort, len(data))
 	}
 
-	// messageSize is informational; we parse based on actual data length.
-	_ = binary.BigEndian.Uint16(data[0:2])
+	// Use messageSize to bound the operation loop when it matches a known convention.
+	messageSize := int(binary.BigEndian.Uint16(data[0:2]))
+	endOffset := len(data)
+	if messageSize == len(data)-2 {
+		endOffset = messageSize + 2 // spec convention: counts bytes after messageSize field
+	} else if messageSize == len(data) {
+		endOffset = messageSize // legacy convention: counts total
+	}
+	// Otherwise endOffset stays at len(data) for robustness.
 
 	msg := &Message{
 		ProtocolVersion: data[2],
@@ -155,7 +162,7 @@ func decodeMOM(data []byte) (*Message, error) {
 	offset := 9 + timestampLen
 	for i := 0; i < numOps; i++ {
 		// Each operation: opID(2) + data_length(2) + data[data_length]
-		if offset+4 > len(data) {
+		if offset+4 > endOffset {
 			return nil, fmt.Errorf("%w: operation %d header at offset %d", ErrTooShort, i, offset)
 		}
 
@@ -163,9 +170,9 @@ func decodeMOM(data []byte) (*Message, error) {
 		dataLen := int(binary.BigEndian.Uint16(data[offset+2 : offset+4]))
 		offset += 4
 
-		if offset+dataLen > len(data) {
+		if offset+dataLen > endOffset {
 			return nil, fmt.Errorf("%w: operation %d data needs %d bytes at offset %d, have %d",
-				ErrTooShort, i, dataLen, offset, len(data)-offset)
+				ErrTooShort, i, dataLen, offset, endOffset-offset)
 		}
 
 		opData := data[offset : offset+dataLen]

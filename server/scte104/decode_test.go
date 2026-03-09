@@ -1208,6 +1208,35 @@ func TestDecode_SegmentationDescriptor_ComponentLevel(t *testing.T) {
 	}
 }
 
+func TestDecode_MOM_MessageSizeMismatch(t *testing.T) {
+	// MOM with messageSize that doesn't match either convention.
+	// The decoder should still parse successfully using actual data length.
+	headerSize := 10
+	opSize := 4 + 0 // splice_null
+	messageSize := headerSize + opSize
+
+	buf := make([]byte, 2+messageSize)
+	binary.BigEndian.PutUint16(buf[0:2], OpMultipleOperationMessage)
+	binary.BigEndian.PutUint16(buf[2:4], 9999) // intentionally wrong messageSize
+	buf[11] = 1                                 // num_ops
+
+	offset := 12
+	binary.BigEndian.PutUint16(buf[offset:offset+2], OpSpliceNull)
+	binary.BigEndian.PutUint16(buf[offset+2:offset+4], 0)
+
+	msg, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+	if msg.Operations[0].OpID != OpSpliceNull {
+		t.Errorf("op[0].OpID = 0x%04X, want OpSpliceNull", msg.Operations[0].OpID)
+	}
+}
+
 func TestDecode_SOM_LegacyMessageSize(t *testing.T) {
 	// Legacy convention: messageSize = len(payload) (total length, not spec-compliant).
 	// The decoder should accept this as a fallback.
