@@ -411,6 +411,11 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 func (inj *Injector) CancelEvent(eventID uint32) error {
 	inj.mu.Lock()
 
+	if inj.closed.Load() {
+		inj.mu.Unlock()
+		return fmt.Errorf("injector is closed")
+	}
+
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
 		inj.mu.Unlock()
@@ -500,6 +505,11 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
 func (inj *Injector) HoldBreak(eventID uint32) error {
 	inj.mu.Lock()
 
+	if inj.closed.Load() {
+		inj.mu.Unlock()
+		return fmt.Errorf("injector is closed")
+	}
+
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {
 		inj.mu.Unlock()
@@ -536,6 +546,11 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 // auto-return timer.
 func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	inj.mu.Lock()
+
+	if inj.closed.Load() {
+		inj.mu.Unlock()
+		return fmt.Errorf("injector is closed")
+	}
 
 	ae, ok := inj.activeEvents[eventID]
 	if !ok {

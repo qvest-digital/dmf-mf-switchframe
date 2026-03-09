@@ -28,7 +28,23 @@ func (f *scte35Filter) Write(data []byte) (int, error) {
 		return f.inner.Write(data)
 	}
 
-	// Process packet-by-packet. Build filtered output.
+	// Fast path: scan for any matching PID. SCTE-35 packets are rare,
+	// so most writes can be forwarded without allocation.
+	hasMatch := false
+	for i := 0; i+tsPacketSize <= inputLen; i += tsPacketSize {
+		if data[i] == 0x47 {
+			pid := uint16(data[i+1]&0x1F)<<8 | uint16(data[i+2])
+			if pid == f.pid {
+				hasMatch = true
+				break
+			}
+		}
+	}
+	if !hasMatch {
+		return f.inner.Write(data)
+	}
+
+	// Slow path: build filtered output without SCTE-35 packets.
 	filtered := make([]byte, 0, inputLen)
 	for i := 0; i+tsPacketSize <= inputLen; i += tsPacketSize {
 		pkt := data[i : i+tsPacketSize]
