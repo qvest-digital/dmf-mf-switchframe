@@ -743,19 +743,33 @@ func (a *App) Run(ctx context.Context) error {
 		stopMXLDemo := a.startMXLDemo(ctx)
 		defer stopMXLDemo()
 
-		// Load demo stinger if none exist yet.
+		// Load demo stingers if none exist yet.
 		if len(a.stingerStore.List()) == 0 {
 			vi := a.programRelay.VideoInfo()
 			w, h := vi.Width, vi.Height
 			if w == 0 || h == 0 {
 				w, h = 320, 240
 			}
-			zipData, err := demo.GenerateStingerZip(w, h, 20)
-			if err == nil {
-				if err := a.stingerStore.Upload("demo-wipe", zipData); err != nil {
-					slog.Warn("failed to load demo stinger", "error", err)
+			numFrames := 30 // 1 second at 30fps
+
+			demoStingers := []struct {
+				name string
+				gen  func(int, int, int) ([]byte, error)
+			}{
+				{"whoosh", demo.GenerateWhooshStingerZip},
+				{"slam", demo.GenerateSlamStingerZip},
+				{"musical", demo.GenerateMusicalStingerZip},
+			}
+			for _, ds := range demoStingers {
+				zipData, err := ds.gen(w, h, numFrames)
+				if err != nil {
+					slog.Warn("failed to generate demo stinger", "name", ds.name, "error", err)
+					continue
+				}
+				if err := a.stingerStore.Upload(ds.name, zipData); err != nil {
+					slog.Warn("failed to load demo stinger", "name", ds.name, "error", err)
 				} else {
-					slog.Info("demo stinger loaded", "name", "demo-wipe", "resolution", fmt.Sprintf("%dx%d", w, h))
+					slog.Info("demo stinger loaded", "name", ds.name, "resolution", fmt.Sprintf("%dx%d", w, h))
 				}
 			}
 		}
