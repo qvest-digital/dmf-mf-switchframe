@@ -223,9 +223,20 @@ func (re *RuleEngine) matchRule(r Rule, msg *CueMessage) bool {
 }
 
 // evaluateCondition evaluates a single condition against a message.
+// For descriptor-level fields, returns true if ANY descriptor matches.
 func (re *RuleEngine) evaluateCondition(c RuleCondition, msg *CueMessage) bool {
-	fieldVal := extractField(c.Field, msg)
+	values := extractFieldValues(c.Field, msg)
 
+	for _, fieldVal := range values {
+		if re.evaluateConditionValue(c, fieldVal) {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluateConditionValue evaluates a single condition against a single field value.
+func (re *RuleEngine) evaluateConditionValue(c RuleCondition, fieldVal string) bool {
 	switch c.Operator {
 	case "=":
 		return fieldVal == c.Value
@@ -254,41 +265,58 @@ func (re *RuleEngine) evaluateCondition(c RuleCondition, msg *CueMessage) bool {
 	}
 }
 
-// extractField returns a string representation of a CueMessage field.
-func extractField(field string, msg *CueMessage) string {
+// extractFieldValues returns string representations of a CueMessage field.
+// For descriptor-level fields (segmentation_type_id, upid, duration with descriptors),
+// returns one value per descriptor. For single-value fields, returns a single-element slice.
+func extractFieldValues(field string, msg *CueMessage) []string {
 	switch field {
 	case "command_type":
-		return fmt.Sprintf("%d", msg.CommandType)
+		return []string{fmt.Sprintf("%d", msg.CommandType)}
 	case "event_id":
-		return fmt.Sprintf("%d", msg.EventID)
+		return []string{fmt.Sprintf("%d", msg.EventID)}
 	case "is_out":
 		if msg.IsOut {
-			return "true"
+			return []string{"true"}
 		}
-		return "false"
+		return []string{"false"}
 	case "segmentation_type_id":
-		if len(msg.Descriptors) > 0 {
-			return fmt.Sprintf("%d", msg.Descriptors[0].SegmentationType)
+		if len(msg.Descriptors) == 0 {
+			return []string{"0"}
 		}
-		return "0"
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			vals[i] = fmt.Sprintf("%d", d.SegmentationType)
+		}
+		return vals
 	case "duration":
 		// Check top-level BreakDuration first (splice_insert).
 		if msg.BreakDuration != nil {
-			return fmt.Sprintf("%d", msg.BreakDuration.Milliseconds())
+			return []string{fmt.Sprintf("%d", msg.BreakDuration.Milliseconds())}
 		}
-		// Fall back to first descriptor's duration ticks (time_signal).
-		if len(msg.Descriptors) > 0 && msg.Descriptors[0].DurationTicks != nil {
-			ms := ticksToMillis(*msg.Descriptors[0].DurationTicks)
-			return fmt.Sprintf("%d", ms)
+		// Return duration from each descriptor (time_signal).
+		if len(msg.Descriptors) == 0 {
+			return []string{"0"}
 		}
-		return "0"
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			if d.DurationTicks != nil {
+				vals[i] = fmt.Sprintf("%d", ticksToMillis(*d.DurationTicks))
+			} else {
+				vals[i] = "0"
+			}
+		}
+		return vals
 	case "upid":
-		if len(msg.Descriptors) > 0 {
-			return string(msg.Descriptors[0].UPID)
+		if len(msg.Descriptors) == 0 {
+			return []string{""}
 		}
-		return ""
+		vals := make([]string, len(msg.Descriptors))
+		for i, d := range msg.Descriptors {
+			vals[i] = string(d.UPID)
+		}
+		return vals
 	default:
-		return ""
+		return []string{""}
 	}
 }
 

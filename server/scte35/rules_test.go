@@ -550,3 +550,74 @@ func TestRuleEngine_RegexCacheReuse(t *testing.T) {
 		t.Error("expected cache to be cleared after SetRules")
 	}
 }
+
+func TestRuleEngine_MultiDescriptor_MatchesSecond(t *testing.T) {
+	// Rule matches segmentation_type_id=52 (0x34). Message has two descriptors:
+	// type 48 (0x30) and type 52 (0x34). Rule should match the second descriptor.
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 52",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "52"}},
+		Action:     ActionDelete,
+	})
+
+	dur1 := uint64(900000)
+	dur2 := uint64(2700000)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x30, DurationTicks: &dur1, UPIDType: 0x0F, UPID: []byte("first")},
+			{SegmentationType: 0x34, DurationTicks: &dur2, UPIDType: 0x0F, UPID: []byte("second")},
+		},
+	}
+
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("expected delete (match second descriptor), got %s", action)
+	}
+}
+
+func TestRuleEngine_MultiDescriptor_NoneMatch(t *testing.T) {
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 99",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "99"}},
+		Action:     ActionDelete,
+	})
+
+	dur := uint64(900000)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x30, DurationTicks: &dur},
+			{SegmentationType: 0x34, DurationTicks: &dur},
+		},
+	}
+
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionPass {
+		t.Fatalf("expected pass (no descriptor matches), got %s", action)
+	}
+}
+
+func TestRuleEngine_SingleDescriptor_Unchanged(t *testing.T) {
+	// Regression: single descriptor behavior identical to before.
+	re := NewRuleEngine()
+	re.AddRule(Rule{
+		ID:         "r1",
+		Name:       "match type 52",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "52"}},
+		Action:     ActionDelete,
+	})
+
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
+	action, _ := re.Evaluate(msg, "")
+	if action != ActionDelete {
+		t.Fatalf("expected delete for single descriptor match, got %s", action)
+	}
+}
