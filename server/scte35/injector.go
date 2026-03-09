@@ -783,8 +783,24 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 		})
 	}
 
-	// Send updated splice_insert with new duration.
-	updateMsg := NewSpliceInsert(eventID, newDur, true, ae.AutoReturn)
+	// Send updated message with new duration, matching the original command type.
+	var updateMsg *CueMessage
+	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
+		// Rebuild a time_signal with updated duration on each descriptor.
+		durationTicks := uint64(newDur.Seconds() * 90000)
+		var descs []SegmentationDescriptor
+		for _, d := range ae.Descriptors {
+			desc := d // copy
+			desc.DurationTicks = &durationTicks
+			descs = append(descs, desc)
+		}
+		updateMsg = &CueMessage{
+			CommandType: CommandTimeSignal,
+			Descriptors: descs,
+		}
+	} else {
+		updateMsg = NewSpliceInsert(eventID, newDur, true, ae.AutoReturn)
+	}
 	data, err := updateMsg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
 		inj.mu.Unlock()

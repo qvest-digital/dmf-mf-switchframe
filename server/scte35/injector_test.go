@@ -1817,3 +1817,100 @@ func TestInjector_SCTE104Sink_FiresForAPISource(t *testing.T) {
 		t.Fatal("scte104Sink should be called when Source='api'")
 	}
 }
+
+func TestInjector_ExtendBreak_TimeSignal(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with Provider PO Start (0x34).
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       500,
+				UPIDType:         0x0F,
+				UPID:             []byte("test-upid"),
+			},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Extend the break.
+	if err := inj.ExtendBreak(eventID, 60000); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// The extended message must be a time_signal, not splice_insert.
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal (0x%02x), got 0x%02x", CommandTimeSignal, decoded.CommandType)
+	}
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	if decoded.Descriptors[0].SegmentationType != 0x34 {
+		t.Fatalf("expected seg type 0x34, got 0x%02x", decoded.Descriptors[0].SegmentationType)
+	}
+	if decoded.Descriptors[0].DurationTicks == nil {
+		t.Fatal("expected DurationTicks on descriptor")
+	}
+}
+
+func TestInjector_ExtendBreak_SpliceInsert_Unchanged(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	if err := inj.ExtendBreak(eventID, 60000); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// splice_insert events must still produce splice_insert on extend.
+	if decoded.CommandType != CommandSpliceInsert {
+		t.Fatalf("expected splice_insert, got 0x%02x", decoded.CommandType)
+	}
+}
