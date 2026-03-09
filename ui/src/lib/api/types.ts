@@ -151,7 +151,8 @@ export interface RecallPresetResponse {
 }
 
 export interface MacroStep {
-	action: 'cut' | 'preview' | 'transition' | 'wait' | 'set_audio';
+	action: 'cut' | 'preview' | 'transition' | 'wait' | 'set_audio'
+		| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend';
 	params: Record<string, unknown>;
 }
 
