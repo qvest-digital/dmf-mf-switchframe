@@ -438,18 +438,18 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 	}
 }
 
-// preStretchAudio decodes all AAC frames, runs WSOLA time-stretch for
-// slow-motion speed, re-encodes to AAC, and replaces the audio clip.
-// This produces a continuous audio stream that fills the full slow-mo
-// duration without gaps between duplicate video frames.
+// preStretchAudio decodes all AAC frames, time-stretches for slow-motion
+// speed (phase vocoder → WSOLA → linear fallback), re-encodes to AAC,
+// and replaces the audio clip. This produces a continuous audio stream
+// that fills the full slow-mo duration without gaps.
 func (p *replayPlayer) preStretchAudio() {
 	audioClip := p.config.AudioClip
 	if len(audioClip) == 0 {
-		slog.Warn("replay: WSOLA skipped — no audio frames in clip")
+		slog.Warn("replay: audio time-stretch skipped — no audio frames in clip")
 		return
 	}
 	if p.config.AudioDecoderFactory == nil || p.config.AudioEncoderFactory == nil {
-		slog.Warn("replay: WSOLA skipped — audio codec factories not set")
+		slog.Warn("replay: audio time-stretch skipped — audio codec factories not set")
 		return
 	}
 	if p.config.Speed >= 1.0 {
@@ -459,12 +459,12 @@ func (p *replayPlayer) preStretchAudio() {
 	sampleRate := audioClip[0].sampleRate
 	channels := audioClip[0].channels
 	if sampleRate == 0 || channels == 0 {
-		slog.Warn("replay: WSOLA skipped — invalid sampleRate/channels",
+		slog.Warn("replay: audio time-stretch skipped — invalid sampleRate/channels",
 			"sampleRate", sampleRate, "channels", channels)
 		return
 	}
 
-	slog.Info("replay: WSOLA starting",
+	slog.Info("replay: audio time-stretch starting",
 		"audio_frames", len(audioClip),
 		"sampleRate", sampleRate,
 		"channels", channels,
@@ -473,7 +473,7 @@ func (p *replayPlayer) preStretchAudio() {
 	// Decode all AAC frames to PCM.
 	dec, err := p.config.AudioDecoderFactory(sampleRate, channels)
 	if err != nil {
-		slog.Error("replay: WSOLA audio decoder creation failed", "err", err)
+		slog.Error("replay: audio decoder creation failed", "err", err)
 		return
 	}
 	defer dec.Close()
@@ -489,17 +489,22 @@ func (p *replayPlayer) preStretchAudio() {
 		allPCM = append(allPCM, pcm...)
 	}
 	if len(allPCM) == 0 {
-		slog.Warn("replay: WSOLA failed — all audio frames failed to decode",
+		slog.Warn("replay: audio time-stretch failed — all audio frames failed to decode",
 			"total_frames", len(audioClip), "decode_errors", decodeErrors)
 		return
 	}
 	if decodeErrors > 0 {
-		slog.Warn("replay: WSOLA decoded with errors",
+		slog.Warn("replay: audio decoded with errors",
 			"decoded_samples", len(allPCM), "decode_errors", decodeErrors)
 	}
 
-	// Time-stretch: try WSOLA first, fall back to simple linear interpolation.
-	stretched := WSOLATimeStretch(allPCM, channels, sampleRate, p.config.Speed)
+	// Time-stretch: try phase vocoder first (best quality), fall back to
+	// WSOLA, then linear interpolation.
+	stretched := PhaseVocoderTimeStretch(allPCM, channels, sampleRate, p.config.Speed)
+	if len(stretched) == 0 {
+		slog.Warn("replay: phase vocoder produced empty output, falling back to WSOLA")
+		stretched = WSOLATimeStretch(allPCM, channels, sampleRate, p.config.Speed)
+	}
 	if len(stretched) == 0 {
 		slog.Warn("replay: WSOLA produced empty output, falling back to linear stretch")
 		stretched = linearTimeStretch(allPCM, channels, p.config.Speed)
@@ -509,7 +514,7 @@ func (p *replayPlayer) preStretchAudio() {
 		return
 	}
 
-	slog.Info("replay: WSOLA stretched",
+	slog.Info("replay: audio time-stretch complete",
 		"input_samples", len(allPCM),
 		"output_samples", len(stretched),
 		"ratio", float64(len(stretched))/float64(len(allPCM)))
@@ -517,7 +522,7 @@ func (p *replayPlayer) preStretchAudio() {
 	// Re-encode: segment into 1024-sample AAC frames.
 	enc, err := p.config.AudioEncoderFactory(sampleRate, channels)
 	if err != nil {
-		slog.Error("replay: WSOLA audio encoder creation failed", "err", err)
+		slog.Error("replay: audio encoder creation failed", "err", err)
 		return
 	}
 	defer enc.Close()
@@ -552,13 +557,13 @@ func (p *replayPlayer) preStretchAudio() {
 	if len(newClip) > 0 {
 		p.config.AudioClip = newClip
 		p.audioPreStretched = true
-		slog.Info("replay: WSOLA pre-stretched audio",
+		slog.Info("replay: audio pre-stretched",
 			"original_frames", len(audioClip),
 			"stretched_frames", len(newClip),
 			"encode_errors", encodeErrors,
 			"speed", p.config.Speed)
 	} else {
-		slog.Warn("replay: WSOLA re-encode produced no frames",
+		slog.Warn("replay: audio re-encode produced no frames",
 			"stretched_samples", len(stretched), "encode_errors", encodeErrors)
 	}
 }
