@@ -16,7 +16,7 @@
 		// Macros
 		{ key: 'Ctrl + 1-9', action: 'Run macro' },
 		// Tabs
-		{ key: 'Ctrl+Shift + 1-6', action: 'Switch bottom tab' },
+		{ key: 'Ctrl+Shift + 1-7', action: 'Switch bottom tab' },
 		// Misc
 		{ key: '` (backtick)', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },

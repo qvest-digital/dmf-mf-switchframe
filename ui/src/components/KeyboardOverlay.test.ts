@@ -9,10 +9,10 @@ describe('KeyboardOverlay', () => {
 		expect(heading?.textContent).toBe('Keyboard Shortcuts');
 	});
 
-	it('should render all 11 shortcuts in table rows', () => {
+	it('should render all 15 shortcuts in table rows', () => {
 		const { container } = render(KeyboardOverlay, { props: { onclose: vi.fn() } });
 		const rows = container.querySelectorAll('tbody tr');
-		expect(rows.length).toBe(11);
+		expect(rows.length).toBe(15);
 	});
 
 	it('should render expected shortcut keys', () => {
@@ -26,7 +26,7 @@ describe('KeyboardOverlay', () => {
 		expect(keys).toContain('F1');
 		expect(keys).toContain('F2');
 		expect(keys).toContain('Ctrl + 1-9');
-		expect(keys).toContain('Ctrl+Shift + 1-6');
+		expect(keys).toContain('Ctrl+Shift + 1-7');
 		expect(keys).toContain('` (backtick)');
 		expect(keys).toContain('?');
 		expect(keys).toContain('Esc');

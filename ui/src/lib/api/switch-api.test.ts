@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, scte35UpdateConfig } from './switch-api';
 import * as notifications from '$lib/state/notifications.svelte';
-import type { SRTOutputConfig } from './types';
+import type { SRTOutputConfig, SCTE35CueRequest } from './types';
 
 describe('switch-api', () => {
 	beforeEach(() => {
@@ -472,6 +472,246 @@ describe('Auth token', () => {
 		await getState();
 		expect(mockFetch).toHaveBeenCalledWith('/api/switch/state', {
 			headers: {},
+		});
+	});
+});
+
+describe('SCTE-35 API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		sessionStorage.clear();
+	});
+
+	it('scte35Cue sends POST with body', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const req: SCTE35CueRequest = {
+			commandType: 'splice_insert',
+			isOut: true,
+			durationMs: 30000,
+			autoReturn: true,
+			timing: 'immediate',
+		};
+		await scte35Cue(req);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(req),
+		});
+	});
+
+	it('scte35Cue sends time_signal with descriptors', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const req: SCTE35CueRequest = {
+			commandType: 'time_signal',
+			isOut: true,
+			durationMs: 60000,
+			descriptors: [{ segmentationType: 48, upidType: 9, upid: 'ABCD0001', durationMs: 60000 }],
+		};
+		await scte35Cue(req);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cue', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(req),
+		});
+	});
+
+	it('scte35Return sends POST without eventId', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Return();
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/return', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+	});
+
+	it('scte35Return sends POST with eventId', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Return(42);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/return/42', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+	});
+
+	it('scte35Hold sends POST', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Hold(7);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/hold/7', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+	});
+
+	it('scte35Extend sends POST with duration', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Extend(7, 30000);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/extend/7', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ durationMs: 30000 }),
+		});
+	});
+
+	it('scte35Cancel sends POST', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Cancel(99);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/cancel/99', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({}),
+		});
+	});
+
+	it('scte35Status sends GET', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ enabled: true, activeEvents: {}, eventLog: [], heartbeatOk: true, config: {} }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await scte35Status();
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/status', { headers: {} });
+		expect(result.enabled).toBe(true);
+	});
+
+	it('scte35Log sends GET without params', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve([]),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await scte35Log();
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/log', { headers: {} });
+		expect(result).toEqual([]);
+	});
+
+	it('scte35Log sends GET with limit and offset', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve([{ eventId: 1 }]),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35Log(10, 5);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/log?limit=10&offset=5', { headers: {} });
+	});
+
+	it('scte35ListRules sends GET', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve([]),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await scte35ListRules();
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/rules', { headers: {} });
+		expect(result).toEqual([]);
+	});
+
+	it('scte35CreateRule sends POST with body', async () => {
+		const rule = {
+			name: 'Block Ad Start',
+			enabled: true,
+			priority: 1,
+			conditions: [{ field: 'segmentationType', operator: 'eq', value: '48' }],
+			logic: 'and' as const,
+			action: 'delete' as const,
+		};
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: 'rule-1', ...rule }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await scte35CreateRule(rule);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/rules', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(rule),
+		});
+		expect(result.id).toBe('rule-1');
+	});
+
+	it('scte35DeleteRule sends DELETE', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve(undefined),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35DeleteRule('rule-1');
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/rules/rule-1', {
+			method: 'DELETE',
+			headers: {},
+		});
+	});
+
+	it('scte35DeleteRule encodes rule ID', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve(undefined),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35DeleteRule('rule/special');
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/rules/rule%2Fspecial', {
+			method: 'DELETE',
+			headers: {},
+		});
+	});
+
+	it('scte35UpdateConfig sends PUT with body', async () => {
+		const config = { defaultPreRollMs: 4000, pid: 501 };
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam1', seq: 1 }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await scte35UpdateConfig(config);
+		expect(mockFetch).toHaveBeenCalledWith('/api/scte35/config', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
 		});
 	});
 });
