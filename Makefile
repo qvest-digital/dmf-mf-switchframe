@@ -48,6 +48,7 @@ demo: build-server node_modules_check
 	@echo "  SwitchFrame Demo"
 	@echo "  Open http://localhost:5173 in your browser"
 	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV pipeline)"
+	@echo "  Keying: mxl:raw2 is a green screen with chroma key pre-configured (Keys tab)"
 	@echo "  SCTE-35: Enabled (SCTE-35 tab in bottom panel)"
 	@echo "  Press Ctrl+C to stop"
 	@echo ""

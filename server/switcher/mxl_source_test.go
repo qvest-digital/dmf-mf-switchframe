@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -225,6 +226,150 @@ func TestMXLSource_UnregisterSafe(t *testing.T) {
 
 	state := sw.State()
 	require.Empty(t, state.Sources, "MXL source should be removed after UnregisterSource")
+}
+
+func TestIngestRawVideo_KeyingApplied(t *testing.T) {
+	// Verify that IngestRawVideo feeds the key bridge and applies keying
+	// to the program output. Two MXL sources: cam1 on program, cam2 with
+	// a chroma key configured. cam2's fill should be composited onto cam1.
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	defer sw.Close()
+
+	// Set up key processor + bridge.
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	sw.RegisterMXLSource("mxl-cam1")
+	sw.RegisterMXLSource("mxl-cam2")
+	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
+
+	const (
+		w = 8
+		h = 8
+	)
+	yuvSize := w * h * 3 / 2
+
+	// Configure chroma key on mxl-cam2: key out green (Y=173, Cb=42, Cr=26).
+	kp.SetKey("mxl-cam2", graphics.KeyConfig{
+		Type:          graphics.KeyTypeChroma,
+		Enabled:       true,
+		KeyColorY:     173,
+		KeyColorCb:    42,
+		KeyColorCr:    26,
+		Similarity:    0.5,
+		Smoothness:    0.1,
+		SpillSuppress: 0.3,
+	})
+
+	// cam2 fill frame: solid bright white (foreground subject).
+	fillYUV := make([]byte, yuvSize)
+	yPlane := fillYUV[:w*h]
+	cbPlane := fillYUV[w*h : w*h+w*h/4]
+	crPlane := fillYUV[w*h+w*h/4:]
+	for i := range yPlane {
+		yPlane[i] = 235 // bright white
+	}
+	for i := range cbPlane {
+		cbPlane[i] = 128 // neutral
+		crPlane[i] = 128
+	}
+
+	// Ingest cam2 fill (non-program source — tests that fill is cached for all sources).
+	fillPF := &ProcessingFrame{
+		YUV:    fillYUV,
+		Width:  w,
+		Height: h,
+		PTS:    500,
+	}
+	sw.IngestRawVideo("mxl-cam2", fillPF)
+
+	// Verify fill was cached in the bridge.
+	require.True(t, bridge.HasEnabledKeysWithFills(),
+		"bridge should have cached fill from non-program IngestRawVideo")
+
+	// cam1 program frame: solid mid-gray.
+	programYUV := make([]byte, yuvSize)
+	pY := programYUV[:w*h]
+	pCb := programYUV[w*h : w*h+w*h/4]
+	pCr := programYUV[w*h+w*h/4:]
+	for i := range pY {
+		pY[i] = 128 // mid-gray
+	}
+	for i := range pCb {
+		pCb[i] = 128
+		pCr[i] = 128
+	}
+
+	programPF := &ProcessingFrame{
+		YUV:     programYUV,
+		Width:   w,
+		Height:  h,
+		PTS:     1000,
+		GroupID: 1,
+	}
+	sw.IngestRawVideo("mxl-cam1", programPF)
+
+	// Wait for frame to reach program relay.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 200*time.Millisecond, 5*time.Millisecond,
+		"keyed program frame should reach program relay")
+}
+
+func TestIngestRawVideo_KeyBridgeFillCachedForNonProgram(t *testing.T) {
+	// Verify that IngestRawVideo caches fill for non-program keyed sources.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	sw.RegisterMXLSource("mxl-cam1")
+	sw.RegisterMXLSource("mxl-cam2")
+	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
+
+	// Configure key on cam2.
+	kp.SetKey("mxl-cam2", graphics.KeyConfig{
+		Type:       graphics.KeyTypeChroma,
+		Enabled:    true,
+		KeyColorY:  173,
+		KeyColorCb: 42,
+		KeyColorCr: 26,
+		Similarity: 0.4,
+	})
+
+	require.False(t, bridge.HasEnabledKeysWithFills(),
+		"bridge should have no fills before any IngestRawVideo")
+
+	// Ingest a frame for the keyed (non-program) source.
+	yuv := make([]byte, 4*4*3/2)
+	for i := range yuv {
+		yuv[i] = 200
+	}
+	pf := &ProcessingFrame{
+		YUV:    yuv,
+		Width:  4,
+		Height: 4,
+		PTS:    500,
+	}
+	sw.IngestRawVideo("mxl-cam2", pf)
+
+	require.True(t, bridge.HasEnabledKeysWithFills(),
+		"bridge should have cached fill after IngestRawVideo for keyed source")
 }
 
 func TestMXLSource_DebugSnapshotSafe(t *testing.T) {

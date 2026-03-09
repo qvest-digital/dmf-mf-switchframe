@@ -9,6 +9,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/moq"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -32,6 +33,10 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 
 	names := []string{"raw1", "raw2"}
 
+	// Per-source pattern selection: raw2 gets green screen for keying demo.
+	patterns := []mxl.DemoPattern{mxl.PatternColorBars, mxl.PatternGreenScreen}
+	labels := []string{"", "Green Screen"} // empty = use default key
+
 	for i, name := range names {
 		key := "mxl:" + name
 
@@ -44,7 +49,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		relay := a.server.RegisterStream(key)
 
 		// Create demo flow readers.
-		videoReader := mxl.NewDemoVideoReader(width, height, fps, i)
+		videoReader := mxl.NewDemoVideoReaderWithPattern(width, height, fps, i, patterns[i])
 		audioReader := mxl.NewDemoAudioReader(48000, 2)
 
 		// Capture relay in closure for OnVideoInfo callback.
@@ -92,8 +97,29 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 		src.Start(ctx, videoReader, audioReader)
 		a.mxlSources = append(a.mxlSources, src)
 
-		slog.Info("MXL demo source started", "key", key, "resolution", [2]int{width, height})
+		// Set label if specified.
+		if labels[i] != "" {
+			_ = a.sw.SetLabel(ctx, key, labels[i])
+		}
+
+		slog.Info("MXL demo source started", "key", key, "pattern", patterns[i], "resolution", [2]int{width, height})
 	}
+
+	// Pre-configure chroma key on the green screen source (disabled by default).
+	// The user enables it in the Keys tab to see keying in action.
+	// Uses BT.709 green values matching the UI "Green Screen" preset.
+	greenScreenKey := "mxl:" + names[1]
+	a.keyProcessor.SetKey(greenScreenKey, graphics.KeyConfig{
+		Type:          graphics.KeyTypeChroma,
+		Enabled:       true,
+		KeyColorY:     173,
+		KeyColorCb:    42,
+		KeyColorCr:    26,
+		Similarity:    0.4,
+		Smoothness:    0.1,
+		SpillSuppress: 0.5,
+	})
+	slog.Info("MXL demo: chroma key enabled (adjust in Keys tab)", "source", greenScreenKey)
 
 	// Wire output sink logging. If an MXL output writer is already configured
 	// (via --mxl-output), wrap it so frames flow through to the real writer.

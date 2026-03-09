@@ -1603,53 +1603,12 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 }
 
 // IngestRawVideo accepts a raw YUV420p frame from an MXL source.
-// Skips H.264 decode — feeds directly into the YUV processing pipeline
-// (keying -> compositor -> encode -> program relay). During active
-// transitions, routes to the transition engine for blending.
+// Delegates to handleRawVideoFrame which handles the full pipeline:
+// health tracking → key fill ingest → transition routing → keying →
+// compositor → encode → program relay. The srcDecoder stats block in
+// handleRawVideoFrame safely handles nil viewers (MXL sources have none).
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
-	s.health.recordFrame(sourceKey, time.Now())
-
-	s.mu.RLock()
-	ss, ok := s.sources[sourceKey]
-	programSource := s.programSource
-	fTBActive := s.state.isFTBActive()
-	inTrans := s.state.isInTransition()
-	engine := s.transEngine
-	audioHandler := s.audioTransition
-	s.mu.RUnlock()
-
-	if !ok {
-		s.routeFiltered.Add(1)
-		return
-	}
-
-	// During transition (including FTB): route to engine for blending.
-	// Must come before the FTB filter — FTB transitions need frames.
-	if inTrans && engine != nil {
-		if engine.State() != transition.StateActive {
-			s.routeToIdleEngine.Add(1)
-			return
-		}
-		s.routeToEngine.Add(1)
-		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
-		if audioHandler != nil {
-			audioHandler.OnTransitionPosition(engine.Position())
-		}
-		return
-	}
-
-	// Normal: only program source passes through. FTB hold filters all frames.
-	if sourceKey != programSource || fTBActive {
-		s.routeFiltered.Add(1)
-		return
-	}
-
-	// Update stats for encoder parameter derivation.
-	ss.lastGroupID.Store(pf.GroupID)
-
-	// Enqueue as yuvFrame — goes through encodeAndBroadcastTransition
-	// which handles encode and broadcast to program relay.
-	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+	s.handleRawVideoFrame(sourceKey, pf)
 }
 
 // UnregisterSource removes a source from the switcher and detaches its
@@ -2265,7 +2224,10 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	// Feed key fill bridge with decoded YUV (for upstream keying).
-	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
+	// Use HasEnabledKeys (not HasEnabledKeysWithFills) to avoid chicken-and-egg:
+	// fills can't exist until IngestFillYUV is called, which requires this guard
+	// to pass. IngestFillYUV has its own per-source config check internally.
+	if keyBridge != nil {
 		keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
 	}
 

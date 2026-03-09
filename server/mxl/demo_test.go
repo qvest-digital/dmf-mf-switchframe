@@ -2,6 +2,8 @@ package mxl
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDemoVideoReader_GeneratesValidV210(t *testing.T) {
@@ -130,6 +132,87 @@ func TestDemoAudioReader_Closes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after close")
 	}
+}
+
+func TestGreenScreenPattern_ValidSize(t *testing.T) {
+	const w, h = 360, 240
+	yuv := generateGreenScreenYUV420p(w, h, 1)
+	expectedSize := w*h + w*h/4 + w*h/4
+	require.Equal(t, expectedSize, len(yuv), "YUV420p buffer size mismatch")
+}
+
+func TestGreenScreenPattern_GreenBackground(t *testing.T) {
+	const w, h = 360, 240
+	yuv := generateGreenScreenYUV420p(w, h, 0)
+
+	cw, ch := w/2, h/2
+	cbPlane := yuv[w*h : w*h+cw*ch]
+	crPlane := yuv[w*h+cw*ch:]
+
+	// Sample a background pixel (top-left corner should be green).
+	require.Equal(t, byte(173), yuv[0], "Y[0,0] should be green Y=173")
+	require.Equal(t, byte(42), cbPlane[0], "Cb[0,0] should be green Cb=42")
+	require.Equal(t, byte(26), crPlane[0], "Cr[0,0] should be green Cr=26")
+}
+
+func TestGreenScreenPattern_ForegroundPresent(t *testing.T) {
+	const w, h = 360, 240
+	yuv := generateGreenScreenYUV420p(w, h, 1)
+
+	yPlane := yuv[:w*h]
+
+	// Count white pixels (Y=235) — should have some from logo and lower third.
+	whiteCount := 0
+	for _, y := range yPlane {
+		if y == 235 {
+			whiteCount++
+		}
+	}
+	require.Greater(t, whiteCount, 0,
+		"should have white foreground pixels (logo and/or lower third)")
+
+	// Logo should be in top-right corner.
+	logoSize := w / 8
+	logoX0 := w - logoSize - 4
+	logoY0 := 4
+	require.Equal(t, byte(235), yPlane[logoY0*w+logoX0],
+		"logo top-left corner should be white")
+}
+
+func TestGreenScreenPattern_AnimatesBetweenFrames(t *testing.T) {
+	const w, h = 360, 240
+	yuv1 := generateGreenScreenYUV420p(w, h, 0)
+	yuv2 := generateGreenScreenYUV420p(w, h, 10) // 10 frames later
+
+	// The lower third sweeps, so the Y planes should differ.
+	y1 := yuv1[:w*h]
+	y2 := yuv2[:w*h]
+
+	diffs := 0
+	for i := range y1 {
+		if y1[i] != y2[i] {
+			diffs++
+		}
+	}
+	require.Greater(t, diffs, 0,
+		"green screen pattern should animate between frames")
+}
+
+func TestGreenScreenReader_GeneratesValidV210(t *testing.T) {
+	reader := NewDemoVideoReaderWithPattern(360, 240, 30, 0, PatternGreenScreen)
+	defer func() { _ = reader.Close() }()
+
+	data, info, err := reader.ReadGrain(0, 0)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), info.Index)
+	require.NotEmpty(t, data)
+
+	// V210 should round-trip back to YUV420p.
+	yuv, err := V210ToYUV420p(data, 360, 240)
+	require.NoError(t, err)
+
+	expectedSize := 360*240 + 180*120 + 180*120
+	require.Equal(t, expectedSize, len(yuv))
 }
 
 func TestGenerateDemoYUV420p_ValidSize(t *testing.T) {

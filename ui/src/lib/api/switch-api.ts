@@ -40,6 +40,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
 	}
+	if (res.status === 204 || res.headers.get('content-length') === '0') {
+		return undefined as T;
+	}
 	return res.json();
 }
 

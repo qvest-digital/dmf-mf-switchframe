@@ -353,6 +353,7 @@ func (a *App) initSubsystems() error {
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
 	a.keyBridge = graphics.NewKeyProcessorBridge(a.keyProcessor)
+	a.keyBridge.SetScaleFunc(transition.ScaleYUV420)
 	a.sw.SetKeyBridge(a.keyBridge)
 
 	// Pipeline encoder for the video processing chain.

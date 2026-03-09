@@ -55,8 +55,10 @@ func TestBridge_IngestFillYUV(t *testing.T) {
 
 	// Verify fill was cached
 	bridge.mu.Lock()
-	require.Contains(t, bridge.fillYUV, "cam1", "expected fill YUV to be cached for cam1")
-	require.Equal(t, yuvSize, len(bridge.fillYUV["cam1"]))
+	require.Contains(t, bridge.fills, "cam1", "expected fill to be cached for cam1")
+	require.Equal(t, yuvSize, len(bridge.fills["cam1"].yuv))
+	require.Equal(t, w, bridge.fills["cam1"].width)
+	require.Equal(t, h, bridge.fills["cam1"].height)
 	bridge.mu.Unlock()
 }
 
@@ -74,14 +76,14 @@ func TestBridge_RemoveFillSource(t *testing.T) {
 
 	// Verify fill was cached
 	bridge.mu.Lock()
-	require.Contains(t, bridge.fillYUV, "cam1", "expected fill YUV to be cached for cam1")
+	require.Contains(t, bridge.fills, "cam1", "expected fill YUV to be cached for cam1")
 	bridge.mu.Unlock()
 
 	bridge.RemoveFillSource("cam1")
 
 	// Verify fill was removed
 	bridge.mu.Lock()
-	require.NotContains(t, bridge.fillYUV, "cam1", "expected fill YUV to be removed for cam1")
+	require.NotContains(t, bridge.fills, "cam1", "expected fill YUV to be removed for cam1")
 	bridge.mu.Unlock()
 }
 
@@ -98,12 +100,12 @@ func TestBridge_CleanupOnClose(t *testing.T) {
 	bridge.IngestFillYUV("cam1", yuv, w, h)
 
 	bridge.mu.Lock()
-	require.Contains(t, bridge.fillYUV, "cam1")
+	require.Contains(t, bridge.fills, "cam1")
 	bridge.mu.Unlock()
 
 	bridge.Close()
 
 	bridge.mu.Lock()
-	require.NotContains(t, bridge.fillYUV, "cam1", "expected fillYUV cleared after Close")
+	require.NotContains(t, bridge.fills, "cam1", "expected fillYUV cleared after Close")
 	bridge.mu.Unlock()
 }

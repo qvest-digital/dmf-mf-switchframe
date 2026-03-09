@@ -104,8 +104,9 @@
 		if (!activeSource) return;
 
 		if (keyType === 'none') {
+			const label = crState.sources[activeSource]?.label || activeSource;
 			apiCall(deleteSourceKey(activeSource), 'Remove key');
-			notify('info', `Key removed from ${activeSource}`);
+			notify('info', `Key removed from ${label}`);
 			return;
 		}
 
@@ -124,7 +125,12 @@
 		};
 
 		apiCall(setSourceKey(activeSource, config), 'Set key');
-		notify('info', `${keyType} key applied to ${activeSource}`);
+		const label = crState.sources[activeSource]?.label || activeSource;
+		if (enabled) {
+			notify('info', `${keyType} key enabled on ${label} — composites onto program`);
+		} else {
+			notify('info', `${keyType} key configured on ${label} (disabled)`);
+		}
 	}
 </script>
 
