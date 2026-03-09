@@ -27,8 +27,6 @@ type MCFIState struct {
 	sceneChange bool
 
 	// Reusable scratch buffers
-	warpA       []byte
-	warpB       []byte
 	blendOut    []byte
 	fallbackBuf []byte
 }
@@ -42,9 +40,15 @@ func NewMCFIState() *MCFIState {
 // and frameB at position alpha (0.0=frameA, 1.0=frameB). Both frames must be
 // YUV420 with dimensions width × height.
 //
+// Uses per-pixel bilinear MV interpolation to eliminate block boundary
+// artifacts. Motion vectors are still estimated at 16×16 block granularity
+// (using SIMD-accelerated diamond search), but the warp smoothly interpolates
+// MVs across block boundaries and samples source pixels with bilinear
+// interpolation for sub-pixel accuracy.
+//
 // Motion estimation runs once per unique frame pair (~5-15ms for 1080p) and
 // is cached. Subsequent calls with different alpha values only perform the
-// fast warp+blend step (~2-3ms). Falls back to linear blend on scene change.
+// smooth warp (~8-18ms). Falls back to linear blend on scene change.
 //
 // The returned slice references internal state and is valid until the next
 // call to Interpolate.
@@ -69,8 +73,13 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 		s.lastPtrB = ptrB
 		s.mvValid = false
 
-		// Ensure buffers are allocated
-		s.ensureBuffers(frameSize)
+		// Ensure output buffers are allocated
+		if len(s.blendOut) < frameSize {
+			s.blendOut = make([]byte, frameSize)
+		}
+		if len(s.fallbackBuf) < frameSize {
+			s.fallbackBuf = make([]byte, frameSize)
+		}
 
 		// Scene change detection via subsampled SAD
 		s.sceneChange = detectSceneChangeSAD(frameA, frameB, width, height)
@@ -95,16 +104,19 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 		}
 	}
 
-	// Motion-compensated interpolation (cached MVs + fast warp)
+	// Motion-compensated interpolation with smooth per-pixel warping
 	if s.mvValid && !s.sceneChange {
-		pfA := &ProcessingFrame{YUV: frameA, Width: width, Height: height}
-		pfB := &ProcessingFrame{YUV: frameB, Width: width, Height: height}
-		mcfiInterpolate(s.blendOut, s.warpA, s.warpB, pfA, pfB, s.mvf, alpha)
+		mcfiInterpolateSmooth(s.blendOut, frameA, frameB, width, height, s.mvf, alpha)
 		return s.blendOut[:frameSize]
 	}
 
 	// Fallback: linear blend (scene change or invalid MVs)
-	s.ensureBuffers(frameSize)
+	if len(s.blendOut) < frameSize {
+		s.blendOut = make([]byte, frameSize)
+	}
+	if len(s.fallbackBuf) < frameSize {
+		s.fallbackBuf = make([]byte, frameSize)
+	}
 	invAlpha := 1.0 - alpha
 	for i := 0; i < frameSize && i < len(frameA) && i < len(frameB); i++ {
 		s.fallbackBuf[i] = byte(float64(frameA[i])*invAlpha + float64(frameB[i])*alpha + 0.5)
@@ -112,20 +124,210 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 	return s.fallbackBuf[:frameSize]
 }
 
-// ensureBuffers allocates scratch buffers if needed.
-func (s *MCFIState) ensureBuffers(frameSize int) {
-	if len(s.warpA) < frameSize {
-		s.warpA = make([]byte, frameSize)
+// mcfiInterpolateSmooth produces an interpolated frame using per-pixel
+// bilinear MV interpolation. For each output pixel, the motion vector is
+// smoothly interpolated from the 4 nearest block centers, then both source
+// frames are sampled at the displaced position with bilinear pixel
+// interpolation. The two warped samples are blended using per-block
+// occlusion flags.
+//
+// This eliminates the visible 16×16 block boundary artifacts of the
+// standard block-copy warp while using the same block-based ME results.
+func mcfiInterpolateSmooth(dst, srcA, srcB []byte, width, height int, mvf *motionVectorField, alpha float64) {
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crOff := ySize + cbSize
+
+	// Y plane
+	smoothWarpBlendPlane(
+		dst[:ySize], srcA[:ySize], srcB[:ySize],
+		width, height, mvf, alpha, 1,
+	)
+
+	// Cb plane
+	smoothWarpBlendPlane(
+		dst[ySize:ySize+cbSize],
+		srcA[ySize:ySize+cbSize],
+		srcB[ySize:ySize+cbSize],
+		width/2, height/2, mvf, alpha, 2,
+	)
+
+	// Cr plane
+	smoothWarpBlendPlane(
+		dst[crOff:crOff+cbSize],
+		srcA[crOff:crOff+cbSize],
+		srcB[crOff:crOff+cbSize],
+		width/2, height/2, mvf, alpha, 2,
+	)
+}
+
+// smoothWarpBlendPlane warps and blends a single YUV plane using per-pixel
+// bilinear MV interpolation with occlusion-aware blending.
+//
+// chromaScale is 1 for luma (pixel coords = luma coords) or 2 for 4:2:0
+// chroma (pixel coords map to 2x luma coords, MV displacement halved).
+func smoothWarpBlendPlane(
+	dst, srcA, srcB []byte,
+	planeW, planeH int,
+	mvf *motionVectorField,
+	alpha float64,
+	chromaScale int,
+) {
+	bs := mvf.blockSize
+	invAlpha := 1.0 - alpha
+	mvScale := 1.0 / float64(chromaScale)
+	halfBS := float64(bs) * 0.5
+
+	for py := 0; py < planeH; py++ {
+		// Map to luma coordinates for MV lookup
+		lumaY := float64(py * chromaScale)
+
+		// Pre-compute vertical block interpolation factors
+		by := (lumaY - halfBS) / float64(bs)
+		by0 := int(by)
+		if by0 < 0 {
+			by0 = 0
+		}
+		by1 := by0 + 1
+		if by1 >= mvf.rows {
+			by1 = mvf.rows - 1
+		}
+		fy := by - float64(by0)
+		if fy < 0 {
+			fy = 0
+		}
+		if fy > 1 {
+			fy = 1
+		}
+		invFy := 1.0 - fy
+
+		// Block row for occlusion lookup
+		blockRow := int(lumaY) / bs
+		if blockRow >= mvf.rows {
+			blockRow = mvf.rows - 1
+		}
+
+		rowOff := py * planeW
+
+		for px := 0; px < planeW; px++ {
+			lumaX := float64(px * chromaScale)
+
+			// Horizontal block interpolation factors
+			bx := (lumaX - halfBS) / float64(bs)
+			bx0 := int(bx)
+			if bx0 < 0 {
+				bx0 = 0
+			}
+			bx1 := bx0 + 1
+			if bx1 >= mvf.cols {
+				bx1 = mvf.cols - 1
+			}
+			fx := bx - float64(bx0)
+			if fx < 0 {
+				fx = 0
+			}
+			if fx > 1 {
+				fx = 1
+			}
+			invFx := 1.0 - fx
+
+			// Bilinear MV interpolation from 4 nearest block centers
+			i00 := by0*mvf.cols + bx0
+			i10 := by0*mvf.cols + bx1
+			i01 := by1*mvf.cols + bx0
+			i11 := by1*mvf.cols + bx1
+
+			// Forward MV (A → B direction)
+			fmvx := (float64(mvf.fwdX[i00])*invFx+float64(mvf.fwdX[i10])*fx)*invFy +
+				(float64(mvf.fwdX[i01])*invFx+float64(mvf.fwdX[i11])*fx)*fy
+			fmvy := (float64(mvf.fwdY[i00])*invFx+float64(mvf.fwdY[i10])*fx)*invFy +
+				(float64(mvf.fwdY[i01])*invFx+float64(mvf.fwdY[i11])*fx)*fy
+
+			// Backward MV (B → A direction)
+			bmvx := (float64(mvf.bwdX[i00])*invFx+float64(mvf.bwdX[i10])*fx)*invFy +
+				(float64(mvf.bwdX[i01])*invFx+float64(mvf.bwdX[i11])*fx)*fy
+			bmvy := (float64(mvf.bwdY[i00])*invFx+float64(mvf.bwdY[i10])*fx)*invFy +
+				(float64(mvf.bwdY[i01])*invFx+float64(mvf.bwdY[i11])*fx)*fy
+
+			// Sample from each source at displaced position
+			sA := bilinearSample(srcA, planeW, planeH,
+				float64(px)+fmvx*alpha*mvScale,
+				float64(py)+fmvy*alpha*mvScale)
+			sB := bilinearSample(srcB, planeW, planeH,
+				float64(px)+bmvx*invAlpha*mvScale,
+				float64(py)+bmvy*invAlpha*mvScale)
+
+			// Occlusion-aware blend (per-block decision, smooth pixel values)
+			blockCol := int(lumaX) / bs
+			if blockCol >= mvf.cols {
+				blockCol = mvf.cols - 1
+			}
+			occ := mvf.occlusion[blockRow*mvf.cols+blockCol]
+
+			idx := rowOff + px
+			switch occ {
+			case 0: // Valid: average both warps
+				dst[idx] = byte((uint16(sA) + uint16(sB) + 1) >> 1)
+			case 1: // Forward occluded: trust backward warp
+				dst[idx] = sB
+			case 2: // Backward occluded: trust forward warp
+				dst[idx] = sA
+			default: // Both occluded: nearest source
+				if alpha < 0.5 {
+					dst[idx] = srcA[idx]
+				} else {
+					dst[idx] = srcB[idx]
+				}
+			}
+		}
 	}
-	if len(s.warpB) < frameSize {
-		s.warpB = make([]byte, frameSize)
+}
+
+// bilinearSample samples a plane at sub-pixel position (x, y) using
+// bilinear interpolation. Coordinates are clamped to plane boundaries.
+func bilinearSample(src []byte, width, height int, x, y float64) byte {
+	// Clamp to valid range
+	if x < 0 {
+		x = 0
 	}
-	if len(s.blendOut) < frameSize {
-		s.blendOut = make([]byte, frameSize)
+	maxX := float64(width - 1)
+	if x > maxX {
+		x = maxX
 	}
-	if len(s.fallbackBuf) < frameSize {
-		s.fallbackBuf = make([]byte, frameSize)
+	if y < 0 {
+		y = 0
 	}
+	maxY := float64(height - 1)
+	if y > maxY {
+		y = maxY
+	}
+
+	x0 := int(x)
+	y0 := int(y)
+	x1 := x0 + 1
+	y1 := y0 + 1
+	if x1 >= width {
+		x1 = width - 1
+	}
+	if y1 >= height {
+		y1 = height - 1
+	}
+
+	fx := x - float64(x0)
+	fy := y - float64(y0)
+
+	// Four corner samples
+	off00 := y0*width + x0
+	off10 := y0*width + x1
+	off01 := y1*width + x0
+	off11 := y1*width + x1
+
+	v := float64(src[off00])*(1-fx)*(1-fy) +
+		float64(src[off10])*fx*(1-fy) +
+		float64(src[off01])*(1-fx)*fy +
+		float64(src[off11])*fx*fy
+
+	return byte(v + 0.5)
 }
 
 // detectSceneChangeSAD computes subsampled SAD between Y planes and compares
