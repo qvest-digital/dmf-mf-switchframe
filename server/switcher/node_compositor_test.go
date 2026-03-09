@@ -22,6 +22,18 @@ func TestCompositorNode_InactiveWhenNoOverlay(t *testing.T) {
 	require.False(t, n.Active(), "should be inactive when no overlay is set")
 }
 
+func TestCompositorNode_ActiveWhenOverlayOn(t *testing.T) {
+	c := graphics.NewCompositor()
+	rgba := make([]byte, 4*4*4)
+	for i := 3; i < len(rgba); i += 4 {
+		rgba[i] = 255
+	}
+	require.NoError(t, c.SetOverlay(rgba, 4, 4, "test"))
+	require.NoError(t, c.On())
+	n := &compositorNode{compositor: c}
+	require.True(t, n.Active(), "should be active when overlay is on")
+}
+
 func TestCompositorNode_ProcessPassthrough(t *testing.T) {
 	c := graphics.NewCompositor()
 	n := &compositorNode{compositor: c}

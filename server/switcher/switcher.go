@@ -825,8 +825,12 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 	case s.videoProcCh <- work:
 	default:
 		// Channel full — drop oldest, enqueue new (newest-wins).
+		// Release pool buffer from dropped frame to prevent pool exhaustion.
 		select {
-		case <-s.videoProcCh:
+		case dropped := <-s.videoProcCh:
+			if dropped.yuvFrame != nil {
+				dropped.yuvFrame.ReleaseYUV()
+			}
 		default:
 		}
 		select {

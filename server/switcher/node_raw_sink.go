@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+var _ PipelineNode = (*rawSinkNode)(nil)
+
 type rawSinkNode struct {
 	sink *atomic.Pointer[RawVideoSink]
 	name string

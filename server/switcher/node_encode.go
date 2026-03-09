@@ -8,11 +8,13 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
+var _ PipelineNode = (*encodeNode)(nil)
+
 type encodeNode struct {
 	codecs      *pipelineCodecs
 	forceIDR    *atomic.Bool
 	promMetrics *metrics.Metrics
-	lastErr     error
+	lastErr     atomic.Value // stores error; safe for concurrent Snapshot() reads
 
 	// Output callback -- called with encoded H.264 frame.
 	onEncoded func(frame *media.VideoFrame)
@@ -24,7 +26,12 @@ type encodeNode struct {
 func (n *encodeNode) Name() string                          { return "h264-encode" }
 func (n *encodeNode) Configure(format PipelineFormat) error { return nil }
 func (n *encodeNode) Active() bool                          { return true }
-func (n *encodeNode) Err() error                            { return n.lastErr }
+func (n *encodeNode) Err() error {
+	if v := n.lastErr.Load(); v != nil {
+		return v.(error)
+	}
+	return nil
+}
 func (n *encodeNode) Latency() time.Duration                { return 10 * time.Millisecond }
 func (n *encodeNode) Close() error                          { return nil }
 
@@ -43,7 +50,7 @@ func (n *encodeNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	}
 
 	if err != nil {
-		n.lastErr = err
+		n.lastErr.Store(err)
 		if n.promMetrics != nil {
 			n.promMetrics.PipelineEncodeErrorsTotal.Inc()
 		}

@@ -37,7 +37,7 @@ func (p *Pipeline) Build(format PipelineFormat, pool *FramePool, nodes []Pipelin
 	p.format = format
 	p.pool = pool
 	p.allNodes = nodes
-	p.activeNodes = p.activeNodes[:0]
+	p.activeNodes = p.activeNodes[:0] // Safe: new Pipeline created per build; not reused on live pipeline.
 	p.totalLatency = 0
 
 	for _, n := range nodes {

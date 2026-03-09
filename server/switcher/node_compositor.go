@@ -6,6 +6,8 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 )
 
+var _ PipelineNode = (*compositorNode)(nil)
+
 type compositorNode struct {
 	compositor *graphics.Compositor
 	lastErr    error
