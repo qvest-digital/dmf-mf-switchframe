@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/hex"
 	"log/slog"
 
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/scte35"
 )
 
 // enrichState patches a ControlRoomState snapshot with output, graphics,
@@ -111,6 +113,24 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 			state.Replay = rState
 		}
 	}
+
+	if a.scte35Injector != nil {
+		s := a.scte35Injector.State()
+		state.SCTE35 = &internal.SCTE35State{
+			Enabled:      true,
+			ActiveEvents: convertActiveEvents(s.ActiveEvents),
+			EventLog:     convertEventLog(s.EventLog),
+			HeartbeatOK:  s.HeartbeatOK,
+			Config: internal.SCTE35Config{
+				HeartbeatIntervalMs: a.cfg.SCTE35HeartbeatMs,
+				DefaultPreRollMs:    a.cfg.SCTE35PreRollMs,
+				PID:                 a.cfg.SCTE35PID,
+				VerifyEncoding:      a.cfg.SCTE35Verify,
+				WebhookURL:          a.cfg.SCTE35WebhookURL,
+			},
+		}
+	}
+
 	return state
 }
 
@@ -171,6 +191,14 @@ func (a *App) wireStateCallbacks() {
 		a.clearLastOperator()
 		a.broadcastState(nil)
 	})
+
+	// SCTE-35 injector state changes.
+	if a.scte35Injector != nil {
+		a.scte35Injector.OnStateChange(func() {
+			a.clearLastOperator()
+			a.broadcastState(nil)
+		})
+	}
 }
 
 // clearLastOperator resets the last-operator field before a state broadcast
@@ -178,4 +206,73 @@ func (a *App) wireStateCallbacks() {
 func (a *App) clearLastOperator() {
 	var empty string
 	a.api.SetLastOperator(&empty)
+}
+
+// convertActiveEvents converts scte35.ActiveEventState map to internal.SCTE35Active map.
+func convertActiveEvents(src map[uint32]scte35.ActiveEventState) map[uint32]internal.SCTE35Active {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[uint32]internal.SCTE35Active, len(src))
+	for id, ae := range src {
+		active := internal.SCTE35Active{
+			EventID:       ae.EventID,
+			CommandType:   ae.CommandType,
+			IsOut:         ae.IsOut,
+			DurationMs:    ae.DurationMs,
+			ElapsedMs:     ae.ElapsedMs,
+			RemainingMs:   ae.RemainingMs,
+			AutoReturn:    ae.AutoReturn,
+			Held:          ae.Held,
+			SpliceTimePTS: ae.SpliceTimePTS,
+			StartedAt:     ae.StartedAt,
+		}
+		if len(ae.Descriptors) > 0 {
+			active.Descriptors = make([]internal.SCTE35DescriptorInfo, len(ae.Descriptors))
+			for i, d := range ae.Descriptors {
+				active.Descriptors[i] = convertDescriptor(d)
+			}
+		}
+		out[id] = active
+	}
+	return out
+}
+
+// convertEventLog converts scte35.EventLogEntry slice to internal.SCTE35Event slice.
+func convertEventLog(src []scte35.EventLogEntry) []internal.SCTE35Event {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]internal.SCTE35Event, len(src))
+	for i, e := range src {
+		out[i] = internal.SCTE35Event{
+			EventID:     e.EventID,
+			CommandType: e.CommandType,
+			IsOut:       e.IsOut,
+			DurationMs:  e.DurationMs,
+			AutoReturn:  e.AutoReturn,
+			Timestamp:   e.Timestamp,
+			Status:      e.Status,
+		}
+	}
+	return out
+}
+
+// convertDescriptor converts a scte35.SegmentationDescriptor to internal.SCTE35DescriptorInfo.
+func convertDescriptor(d scte35.SegmentationDescriptor) internal.SCTE35DescriptorInfo {
+	info := internal.SCTE35DescriptorInfo{
+		SegEventID:          d.SegEventID,
+		SegmentationType:    d.SegmentationType,
+		UPIDType:            d.UPIDType,
+		SubSegmentNum:       d.SubSegmentNum,
+		SubSegmentsExpected: d.SubSegmentsExpected,
+	}
+	if len(d.UPID) > 0 {
+		info.UPID = hex.EncodeToString(d.UPID)
+	}
+	if d.DurationTicks != nil {
+		ms := int64(*d.DurationTicks / 90) // 90 kHz ticks to ms
+		info.DurationMs = &ms
+	}
+	return info
 }

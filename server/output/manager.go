@@ -779,6 +779,9 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 	}
 
 	muxer := NewTSMuxer()
+	if m.scte35Injector != nil {
+		muxer.SetSCTE35Enabled(true)
+	}
 	muxer.SetOutput(func(tsData []byte) {
 		adapters := m.adapters.Load()
 		for _, a := range *adapters {

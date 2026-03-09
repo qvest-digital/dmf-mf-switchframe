@@ -42,6 +42,14 @@ type AppConfig struct {
 	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
 	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
 
+	// SCTE-35 signaling.
+	SCTE35            bool   // Enable SCTE-35 insertion
+	SCTE35PID         uint16 // MPEG-TS PID for SCTE-35 data
+	SCTE35PreRollMs   int64  // Default pre-roll time in milliseconds
+	SCTE35HeartbeatMs int64  // Heartbeat interval in milliseconds (0 = disabled)
+	SCTE35Verify      bool   // Round-trip encode verification
+	SCTE35WebhookURL  string // Webhook URL for event notifications
+
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
 	MXLOutput         string   // Flow name for program output (empty = disabled)
@@ -85,6 +93,9 @@ func run() error {
 	if err := app.initMXL(); err != nil {
 		return err
 	}
+	if err := app.initSCTE35(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -112,6 +123,14 @@ func parseConfig() (AppConfig, error) {
 	// Raw program monitor flags.
 	rawProgramMonitorFlag := flag.Bool("raw-program-monitor", false, "Enable raw YUV420 program monitor track for low-latency local display")
 	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
+
+	// SCTE-35 flags.
+	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
+	scte35PIDFlag := flag.Int("scte35-pid", 0x102, "SCTE-35 PID in MPEG-TS output")
+	scte35PreRollFlag := flag.Int("scte35-preroll", 4000, "Default pre-roll in milliseconds for scheduled cues")
+	scte35HeartbeatFlag := flag.Int("scte35-heartbeat", 5000, "Interval between splice_null heartbeats in milliseconds (0 to disable)")
+	scte35VerifyFlag := flag.Bool("scte35-verify", true, "Verify SCTE-35 encoding by round-trip decode")
+	scte35WebhookFlag := flag.String("scte35-webhook", "", "Webhook URL for SCTE-35 event notifications")
 
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID (env: SWITCHFRAME_MXL_SOURCES)")
@@ -161,6 +180,12 @@ func parseConfig() (AppConfig, error) {
 		TLSKey:            *tlsKeyFlag,
 		RawProgramMonitor: *rawProgramMonitorFlag,
 		RawMonitorScale:   *rawMonitorScaleFlag,
+		SCTE35:            *scte35Flag,
+		SCTE35PID:         uint16(*scte35PIDFlag),
+		SCTE35PreRollMs:   int64(*scte35PreRollFlag),
+		SCTE35HeartbeatMs: int64(*scte35HeartbeatFlag),
+		SCTE35Verify:      *scte35VerifyFlag,
+		SCTE35WebhookURL:  *scte35WebhookFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,
