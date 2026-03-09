@@ -47,18 +47,75 @@ type MacroTarget interface {
 // It returns an error if any step fails or the context is cancelled.
 // The "wait" action blocks for the specified duration; context cancellation
 // aborts mid-wait.
-func Run(ctx context.Context, m Macro, target MacroTarget) error {
+//
+// If onProgress is non-nil, it is called with the current ExecutionState
+// at each state transition (initial, step running, step done/failed).
+func Run(ctx context.Context, m Macro, target MacroTarget, onProgress OnProgress) error {
+	// Build initial state with all steps pending.
+	state := ExecutionState{
+		Running:   true,
+		MacroName: m.Name,
+		Steps:     make([]StepState, len(m.Steps)),
+	}
+	for i, step := range m.Steps {
+		state.Steps[i] = StepState{
+			Action:  step.Action,
+			Summary: StepSummary(step),
+			Status:  StepPending,
+		}
+	}
+
+	notify := func() {
+		if onProgress != nil {
+			onProgress(state)
+		}
+	}
+
+	// Notify initial state.
+	notify()
+
 	for i, step := range m.Steps {
 		// Check context before each step.
 		select {
 		case <-ctx.Done():
+			state.Steps[i].Status = StepFailed
+			state.Steps[i].Error = "cancelled"
+			for j := i + 1; j < len(state.Steps); j++ {
+				state.Steps[j].Status = StepSkipped
+			}
+			state.Error = ctx.Err().Error()
+			notify()
 			return ctx.Err()
 		default:
 		}
 
+		// Mark step running.
+		state.CurrentStep = i
+		state.Steps[i].Status = StepRunning
+
+		// For wait steps, populate WaitMs and WaitStartMs before notifying.
+		if step.Action == ActionWait {
+			if ms, ok := step.Params["ms"].(float64); ok {
+				state.Steps[i].WaitMs = int(ms)
+			}
+			state.Steps[i].WaitStartMs = time.Now().UnixMilli()
+		}
+
+		notify()
+
 		if err := executeStep(ctx, step, target); err != nil {
+			state.Steps[i].Status = StepFailed
+			state.Steps[i].Error = err.Error()
+			for j := i + 1; j < len(state.Steps); j++ {
+				state.Steps[j].Status = StepSkipped
+			}
+			state.Error = fmt.Sprintf("step %d (%s): %s", i, step.Action, err.Error())
+			notify()
 			return fmt.Errorf("step %d (%s): %w", i, step.Action, err)
 		}
+
+		state.Steps[i].Status = StepDone
+		notify()
 	}
 	return nil
 }

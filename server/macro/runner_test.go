@@ -108,7 +108,7 @@ func TestRunner_ExecutesStepsInOrder(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -130,7 +130,7 @@ func TestRunner_WaitAction(t *testing.T) {
 	}
 
 	start := time.Now()
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestRunner_ContextCancellation(t *testing.T) {
 		cancel()
 	}()
 
-	err := Run(ctx, macro, target)
+	err := Run(ctx, macro, target, nil)
 	require.Error(t, err, "expected context cancellation error")
 	require.ErrorIs(t, err, context.Canceled)
 
@@ -177,7 +177,7 @@ func TestRunner_UnknownAction(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.Error(t, err, "expected error for unknown action")
 }
 
@@ -190,7 +190,7 @@ func TestRunner_TransitionAction(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -208,7 +208,7 @@ func TestRunner_TransitionWithSource(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -225,7 +225,7 @@ func TestRunner_TransitionMissingSource(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.Error(t, err, "expected error for transition without source")
 	require.True(t, strings.Contains(err.Error(), "source"),
 		"error should mention 'source', got: %s", err.Error())
@@ -249,7 +249,7 @@ func TestRunner_ContextCancellationDuringWait(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := Run(ctx, macro, target)
+	err := Run(ctx, macro, target, nil)
 	elapsed := time.Since(start)
 
 	require.Error(t, err, "expected context cancellation error")
@@ -270,7 +270,7 @@ func TestRunner_ActionError(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.Error(t, err, "expected error from failed cut")
 
 	// Second step should not have been called
@@ -294,7 +294,7 @@ func TestRunner_TransitionWipeDirection(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -316,7 +316,7 @@ func TestRunner_TransitionStingerName(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -333,7 +333,7 @@ func TestRunner_ExecuteDispatch(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -350,7 +350,7 @@ func TestRunner_UnknownActionErrors(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.Error(t, err, "expected error for truly unknown action")
 	require.Contains(t, err.Error(), "unknown action")
 	require.Contains(t, err.Error(), "totally_bogus")
@@ -398,7 +398,7 @@ func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 				},
 			}
 
-			err := Run(context.Background(), macro, target)
+			err := Run(context.Background(), macro, target, nil)
 			require.NoError(t, err)
 
 			calls := target.getCalls()
@@ -418,7 +418,7 @@ func TestRunner_SCTE35StillUsesSpecificMethods(t *testing.T) {
 		},
 	}
 
-	err := Run(context.Background(), macro, target)
+	err := Run(context.Background(), macro, target, nil)
 	require.NoError(t, err)
 
 	calls := target.getCalls()
@@ -521,6 +521,198 @@ func TestStepSummary(t *testing.T) {
 			require.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestRunner_OnProgressCallbacks(t *testing.T) {
+	target := &mockTarget{}
+	m := Macro{
+		Name: "progress-test",
+		Steps: []MacroStep{
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
+		},
+	}
+
+	var states []ExecutionState
+	onProgress := func(state ExecutionState) {
+		// Deep copy steps to capture snapshot
+		stepsCopy := make([]StepState, len(state.Steps))
+		copy(stepsCopy, state.Steps)
+		states = append(states, ExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			Steps:       stepsCopy,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		})
+	}
+
+	err := Run(context.Background(), m, target, onProgress)
+	require.NoError(t, err)
+
+	// Expected callbacks:
+	// 1. initial (all pending)
+	// 2. step 0 running
+	// 3. step 0 done
+	// 4. step 1 running
+	// 5. step 1 done
+	require.Len(t, states, 5, "expected 5 progress callbacks")
+
+	// Initial state: all pending
+	require.True(t, states[0].Running)
+	require.Equal(t, "progress-test", states[0].MacroName)
+	require.Equal(t, StepPending, states[0].Steps[0].Status)
+	require.Equal(t, StepPending, states[0].Steps[1].Status)
+
+	// Step 0 running
+	require.Equal(t, StepRunning, states[1].Steps[0].Status)
+	require.Equal(t, StepPending, states[1].Steps[1].Status)
+	require.Equal(t, 0, states[1].CurrentStep)
+
+	// Step 0 done
+	require.Equal(t, StepDone, states[2].Steps[0].Status)
+	require.Equal(t, StepPending, states[2].Steps[1].Status)
+
+	// Step 1 running
+	require.Equal(t, StepDone, states[3].Steps[0].Status)
+	require.Equal(t, StepRunning, states[3].Steps[1].Status)
+	require.Equal(t, 1, states[3].CurrentStep)
+
+	// Step 1 done
+	require.Equal(t, StepDone, states[4].Steps[0].Status)
+	require.Equal(t, StepDone, states[4].Steps[1].Status)
+}
+
+func TestRunner_OnProgressFailure(t *testing.T) {
+	target := &mockTarget{failOn: "cut"}
+	m := Macro{
+		Name: "fail-progress",
+		Steps: []MacroStep{
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
+		},
+	}
+
+	var states []ExecutionState
+	onProgress := func(state ExecutionState) {
+		stepsCopy := make([]StepState, len(state.Steps))
+		copy(stepsCopy, state.Steps)
+		states = append(states, ExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			Steps:       stepsCopy,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		})
+	}
+
+	err := Run(context.Background(), m, target, onProgress)
+	require.Error(t, err)
+
+	// Get last state
+	require.NotEmpty(t, states)
+	final := states[len(states)-1]
+	require.Equal(t, StepFailed, final.Steps[0].Status)
+	require.NotEmpty(t, final.Steps[0].Error)
+	require.Equal(t, StepSkipped, final.Steps[1].Status)
+	require.NotEmpty(t, final.Error)
+}
+
+func TestRunner_OnProgressWaitStep(t *testing.T) {
+	target := &mockTarget{}
+	m := Macro{
+		Name: "wait-progress",
+		Steps: []MacroStep{
+			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(50)}},
+		},
+	}
+
+	var states []ExecutionState
+	onProgress := func(state ExecutionState) {
+		stepsCopy := make([]StepState, len(state.Steps))
+		copy(stepsCopy, state.Steps)
+		states = append(states, ExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			Steps:       stepsCopy,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		})
+	}
+
+	err := Run(context.Background(), m, target, onProgress)
+	require.NoError(t, err)
+
+	// Find the "running" state for step 0
+	var runningState *ExecutionState
+	for i := range states {
+		if states[i].Steps[0].Status == StepRunning {
+			runningState = &states[i]
+			break
+		}
+	}
+	require.NotNil(t, runningState, "expected a running state for the wait step")
+	require.Equal(t, 50, runningState.Steps[0].WaitMs)
+	require.NotZero(t, runningState.Steps[0].WaitStartMs)
+}
+
+func TestRunner_NilOnProgress(t *testing.T) {
+	target := &mockTarget{}
+	m := Macro{
+		Name: "nil-progress",
+		Steps: []MacroStep{
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+		},
+	}
+
+	// Should not panic with nil onProgress
+	err := Run(context.Background(), m, target, nil)
+	require.NoError(t, err)
+
+	calls := target.getCalls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "cut:cam1", calls[0])
+}
+
+func TestRunner_OnProgressContextCancel(t *testing.T) {
+	target := &mockTarget{}
+	m := Macro{
+		Name: "cancel-progress",
+		Steps: []MacroStep{
+			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
+			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	var states []ExecutionState
+	onProgress := func(state ExecutionState) {
+		stepsCopy := make([]StepState, len(state.Steps))
+		copy(stepsCopy, state.Steps)
+		states = append(states, ExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			Steps:       stepsCopy,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		})
+	}
+
+	err := Run(ctx, m, target, onProgress)
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+
+	// Get last state
+	require.NotEmpty(t, states)
+	final := states[len(states)-1]
+	require.Equal(t, StepFailed, final.Steps[0].Status)
+	require.Contains(t, final.Steps[0].Error, "cancel")
+	require.Equal(t, StepSkipped, final.Steps[1].Status)
 }
 
 func TestRunner_AllActionsMapComplete(t *testing.T) {

@@ -85,7 +85,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		scte35:       a.scte35,
 	}
 
-	if err := macro.Run(r.Context(), m, target); err != nil {
+	if err := macro.Run(r.Context(), m, target, nil); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

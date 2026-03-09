@@ -59,7 +59,7 @@ func TestMacro_SCTE35Cue(t *testing.T) {
 			}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestMacro_SCTE35Return(t *testing.T) {
 			{Action: ActionSCTE35Return, Params: map[string]interface{}{}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestMacro_SCTE35Cancel(t *testing.T) {
 			{Action: ActionSCTE35Cancel, Params: map[string]interface{}{"eventId": float64(42)}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestMacro_SCTE35Hold(t *testing.T) {
 			{Action: ActionSCTE35Hold, Params: map[string]interface{}{"eventId": float64(42)}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestMacro_SCTE35Extend(t *testing.T) {
 			}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestMacro_SCTE35_FullWorkflow(t *testing.T) {
 			{Action: ActionSCTE35Return, Params: map[string]interface{}{}},
 		},
 	}
-	err := Run(context.Background(), m, target)
+	err := Run(context.Background(), m, target, nil)
 	if err != nil {
 		t.Fatalf("run failed: %v", err)
 	}
