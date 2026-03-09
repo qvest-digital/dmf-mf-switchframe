@@ -1,11 +1,14 @@
 package replay
 
+import "github.com/zsiec/switchframe/server/switcher"
+
 // InterpolationMode selects the frame interpolation algorithm.
 type InterpolationMode string
 
 const (
 	InterpolationNone  InterpolationMode = "none"  // frame duplication (current behavior)
 	InterpolationBlend InterpolationMode = "blend" // alpha blend adjacent frames
+	InterpolationMCFI  InterpolationMode = "mcfi"  // motion-compensated frame interpolation
 )
 
 // FrameInterpolator generates an interpolated frame between two YUV420 frames.
@@ -36,6 +39,8 @@ func newInterpolator(mode InterpolationMode) FrameInterpolator {
 	switch mode {
 	case InterpolationBlend:
 		return &blendInterpolator{}
+	case InterpolationMCFI:
+		return switcher.NewMCFIState()
 	default:
 		return nil // nil means frame duplication
 	}

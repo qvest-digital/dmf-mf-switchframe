@@ -247,7 +247,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 			Speed:          speed,
 			Loop:           loop,
 			InitialPTS:     initialPTS,
-			Interpolation:  InterpolationBlend,
+			Interpolation:  InterpolationMCFI,
 			DecoderFactory: m.decoderFactory,
 			EncoderFactory: m.encoderFactory,
 			Output: func(frame *media.VideoFrame) {

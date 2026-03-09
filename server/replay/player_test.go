@@ -753,6 +753,159 @@ func TestNewInterpolator(t *testing.T) {
 	}
 	result := interp.Interpolate(a, b, 2, 2, 0.5)
 	assert.InDelta(t, 50, int(result[0]), 1)
+
+	// InterpolationMCFI returns a non-nil interpolator.
+	mcfi := newInterpolator(InterpolationMCFI)
+	assert.NotNil(t, mcfi)
+}
+
+func TestMCFIInterpolator(t *testing.T) {
+	interp := newInterpolator(InterpolationMCFI)
+	require.NotNil(t, interp)
+
+	// Create two 32x32 frames (minimum for 16x16 block ME: 2 blocks wide, 2 tall).
+	w, h := 32, 32
+	size := w * h * 3 / 2
+	frameA := make([]byte, size)
+	frameB := make([]byte, size)
+
+	// Frame A: gradient left to right on Y plane
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			frameA[y*w+x] = byte(x * 8) // 0-248
+		}
+	}
+	// Frame B: same gradient shifted right by 4 pixels (simulates motion)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			srcX := x - 4
+			if srcX < 0 {
+				srcX = 0
+			}
+			frameB[y*w+x] = byte(srcX * 8)
+		}
+	}
+
+	// Set neutral chroma
+	ySize := w * h
+	for i := ySize; i < size; i++ {
+		frameA[i] = 128
+		frameB[i] = 128
+	}
+
+	// Interpolate at alpha=0.5
+	result := interp.Interpolate(frameA, frameB, w, h, 0.5)
+	require.Len(t, result, size)
+
+	// Result should differ from both source frames (motion-compensated)
+	diffA := 0
+	diffB := 0
+	for i := 0; i < ySize; i++ {
+		if result[i] != frameA[i] {
+			diffA++
+		}
+		if result[i] != frameB[i] {
+			diffB++
+		}
+	}
+	assert.Greater(t, diffA, 0, "MCFI result should differ from frame A")
+	assert.Greater(t, diffB, 0, "MCFI result should differ from frame B")
+}
+
+func TestMCFIInterpolator_CachesMVs(t *testing.T) {
+	interp := newInterpolator(InterpolationMCFI)
+	require.NotNil(t, interp)
+
+	// Use frames with spatial variation and motion so MVs are non-zero.
+	w, h := 32, 32
+	size := w * h * 3 / 2
+	frameA := make([]byte, size)
+	frameB := make([]byte, size)
+
+	// Frame A: horizontal gradient
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			frameA[y*w+x] = byte(x * 8)
+		}
+	}
+	// Frame B: same gradient shifted right by 4px (simulates motion)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			srcX := x - 4
+			if srcX < 0 {
+				srcX = 0
+			}
+			frameB[y*w+x] = byte(srcX * 8)
+		}
+	}
+	// Neutral chroma
+	ySize := w * h
+	for i := ySize; i < size; i++ {
+		frameA[i] = 128
+		frameB[i] = 128
+	}
+
+	// Multiple calls with same frame pair but different alpha should all work.
+	// Motion vectors are computed once (cached), warps use different alpha.
+	r1 := interp.Interpolate(frameA, frameB, w, h, 0.25)
+	require.Len(t, r1, size)
+	v1 := make([]byte, size)
+	copy(v1, r1)
+
+	r2 := interp.Interpolate(frameA, frameB, w, h, 0.5)
+	require.Len(t, r2, size)
+
+	r3 := interp.Interpolate(frameA, frameB, w, h, 0.75)
+	require.Len(t, r3, size)
+
+	// Results at different alpha should produce different warps
+	differ := false
+	for i := 0; i < ySize; i++ {
+		if v1[i] != r3[i] {
+			differ = true
+			break
+		}
+	}
+	assert.True(t, differ, "alpha=0.25 and alpha=0.75 should produce different results")
+}
+
+func TestReplayPlayer_MCFIInterpolation(t *testing.T) {
+	// Verify the player works with MCFI interpolation at 0.5x speed.
+	clip := buildTestClip(1, 4)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          0.5,
+		Loop:           false,
+		Interpolation:  InterpolationMCFI,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// At 0.5x, 4 input frames → 8 output frames (dupCount=2).
+	require.Len(t, outputFrames, 8)
+
+	// PTS should be monotonically increasing.
+	for i := 1; i < len(outputFrames); i++ {
+		require.Greater(t, outputFrames[i].PTS, outputFrames[i-1].PTS)
+	}
 }
 
 func TestReplayPlayer_BlendInterpolation(t *testing.T) {
