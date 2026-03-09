@@ -630,6 +630,10 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
+	// Recreate frame pool at new dimensions. Old pool drains naturally —
+	// Release() discards wrong-sized buffers via cap check.
+	s.framePool = NewFramePool(32, f.Width, f.Height)
+
 	// Update frame sync tick rate if active
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.SetTickRate(f.FrameDuration())

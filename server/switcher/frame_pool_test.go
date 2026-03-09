@@ -121,6 +121,30 @@ func TestFramePoolClose(t *testing.T) {
 	require.Equal(t, uint64(1), misses)
 }
 
+func TestFramePoolFormatChange(t *testing.T) {
+	// Simulate format change: old pool buffers are wrong size for new pool
+	oldPool := NewFramePool(4, 320, 240)
+	newPool := NewFramePool(4, 640, 480)
+
+	oldBuf := oldPool.Acquire()
+	require.Len(t, oldBuf, 320*240*3/2)
+
+	// Release old buffer to new pool — should be discarded (too small)
+	newPool.Release(oldBuf)
+
+	// New pool should still have all 4 pre-allocated buffers
+	for i := 0; i < 4; i++ {
+		buf := newPool.Acquire()
+		require.Len(t, buf, 640*480*3/2)
+	}
+
+	hits, _ := newPool.Stats()
+	require.Equal(t, uint64(4), hits)
+
+	oldPool.Close()
+	newPool.Close()
+}
+
 func BenchmarkFramePoolAcquireRelease(b *testing.B) {
 	fp := NewFramePool(32, 1920, 1080)
 	defer fp.Close()
