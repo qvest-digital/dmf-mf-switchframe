@@ -2,7 +2,7 @@
 
 // AMD64 SSE butterfly for radix-2 FFT stage.
 //
-// func butterflyRadix2(data, twiddle []float32, halfN, stride, twiddleStride int)
+// func butterflyRadix2(data, twiddle []float32, halfN, twiddleStride int)
 //
 // For twiddleStride == 1, processes 2 butterflies per iteration using SSE.
 // Falls back to scalar for other strides.
@@ -17,16 +17,15 @@ GLOBL sign_neg_re<>(SB), RODATA|NOPTR, $16
 
 // Registers:
 //   DI = data ptr, SI = twiddle ptr
-//   DX = halfN, CX = stride (unused), R8 = twiddleStride
+//   DX = halfN, R8 = twiddleStride
 //   R9 = k (loop counter)
 //   R10 = even byte offset, R11 = odd byte offset
 //   R12 = halfN * 8 (byte offset for odd half)
-TEXT ·butterflyRadix2(SB), NOSPLIT, $0-80
+TEXT ·butterflyRadix2(SB), NOSPLIT, $0-64
 	MOVQ data_base+0(FP), DI
 	MOVQ twiddle_base+24(FP), SI
 	MOVQ halfN+48(FP), DX
-	MOVQ stride+56(FP), CX
-	MOVQ twiddleStride+64(FP), R8
+	MOVQ twiddleStride+56(FP), R8
 
 	TESTQ DX, DX
 	JLE  bf_done
@@ -71,15 +70,6 @@ bf_sse_loop:
 	MOVUPS (DI)(R11*1), X2        // X2 = [oRe0, oIm0, oRe1, oIm1]
 
 	// Complex multiply: t = W * odd
-	// Strategy using SHUFPS:
-	// 1. SHUFPS $0xA0 on W: [wRe0, wRe0, wRe1, wRe1]
-	// 2. SHUFPS $0xF5 on W: [wIm0, wIm0, wIm1, wIm1]
-	// 3. MULPS wRe_dup * odd = [wRe*oRe, wRe*oIm, wRe*oRe, wRe*oIm]
-	// 4. SHUFPS $0xB1 on odd: swap re/im = [oIm0, oRe0, oIm1, oRe1]
-	// 5. MULPS wIm_dup * swapped = [wIm*oIm, wIm*oRe, wIm*oIm, wIm*oRe]
-	// 6. XOR sign mask: [-wIm*oIm, wIm*oRe, -wIm*oIm, wIm*oRe]
-	// 7. ADDPS step3 + step6
-
 	MOVAPS X0, X3
 	SHUFPS $0xA0, X3, X3          // X3 = [wRe0, wRe0, wRe1, wRe1]
 	MOVAPS X0, X4

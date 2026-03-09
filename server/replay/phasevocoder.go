@@ -3,8 +3,8 @@ package replay
 import "math"
 
 const (
-	pvFFTSize    = 4096        // FFT window size (samples)
-	pvHopDivisor = 4           // analysis hop = FFT/4 = 1024 (75% overlap)
+	pvFFTSize    = 4096            // FFT window size (samples)
+	pvHopDivisor = 4              // analysis hop = FFT/4 = 1024 (75% overlap)
 	pvNumBins    = pvFFTSize/2 + 1 // 2049 unique frequency bins
 )
 
@@ -15,7 +15,9 @@ type phaseVocoder struct {
 	sampleRate  int
 	fft         *fftState
 
-	window     []float32 // Hann analysis/synthesis window
+	window   []float32 // Hann analysis/synthesis window
+	windowSq []float32 // precomputed window^2 for COLA normalization
+
 	prevPhase  []float32 // previous frame analysis phase, per bin
 	synthPhase []float32 // accumulated synthesis phase, per bin
 
@@ -27,6 +29,10 @@ type phaseVocoder struct {
 	reBuf      []float32 // real part per bin (for synthesis)
 	imBuf      []float32 // imag part per bin (for synthesis)
 	synthFrame []float32 // IFFT output frame
+	peaksBuf   []int     // reusable buffer for spectral peak indices
+	nearestBuf []int     // reusable nearest-peak lookup table
+	magCopy    []float32 // reusable copy of magnitude per frame
+	phaseCopy  []float32 // reusable copy of phase per frame
 }
 
 // newPhaseVocoder creates a new phase vocoder state.
@@ -35,6 +41,10 @@ func newPhaseVocoder(fftSize, hop, sampleRate int) *phaseVocoder {
 	halfN := fftSize / 2
 
 	window := makeHannWindowF32(fftSize)
+	windowSq := make([]float32, fftSize)
+	for i, w := range window {
+		windowSq[i] = w * w
+	}
 
 	return &phaseVocoder{
 		fftSize:     fftSize,
@@ -42,6 +52,7 @@ func newPhaseVocoder(fftSize, hop, sampleRate int) *phaseVocoder {
 		sampleRate:  sampleRate,
 		fft:         newFFT(halfN), // C2C size = N/2
 		window:      window,
+		windowSq:    windowSq,
 		prevPhase:   make([]float32, numBins),
 		synthPhase:  make([]float32, numBins),
 		windowed:    make([]float32, fftSize),
@@ -51,6 +62,10 @@ func newPhaseVocoder(fftSize, hop, sampleRate int) *phaseVocoder {
 		reBuf:       make([]float32, numBins),
 		imBuf:       make([]float32, numBins),
 		synthFrame:  make([]float32, fftSize),
+		peaksBuf:    make([]int, 0, numBins/4),
+		nearestBuf:  make([]int, numBins),
+		magCopy:     make([]float32, numBins),
+		phaseCopy:   make([]float32, numBins),
 	}
 }
 
@@ -86,9 +101,16 @@ func polarToCartesian(mag, phase, re, im []float32, n int) {
 func (pv *phaseVocoder) analyzeFrame(frame []float32) (mag, phase []float32) {
 	numBins := pv.fftSize/2 + 1
 
-	// Apply analysis window
-	for i := 0; i < pv.fftSize && i < len(frame); i++ {
+	// Apply analysis window, zero-pad if frame is short
+	n := pv.fftSize
+	if len(frame) < n {
+		n = len(frame)
+	}
+	for i := 0; i < n; i++ {
 		pv.windowed[i] = frame[i] * pv.window[i]
+	}
+	for i := n; i < pv.fftSize; i++ {
+		pv.windowed[i] = 0
 	}
 
 	// R2C FFT
@@ -153,77 +175,85 @@ func (pv *phaseVocoder) instantaneousFrequency(prevPhase, curPhase float32, binI
 	return binFreq + freqCorrection
 }
 
-// findSpectralPeaks identifies local maxima in the magnitude spectrum.
-// A bin k is a peak if mag[k] > mag[k-1] and mag[k] > mag[k+1].
-func findSpectralPeaks(mag []float32) []int {
+// findSpectralPeaksInto identifies local maxima in the magnitude spectrum,
+// writing results into the provided buffer to avoid allocation.
+func findSpectralPeaksInto(mag []float32, buf []int) []int {
 	n := len(mag)
+	buf = buf[:0]
 	if n < 3 {
-		return nil
+		return buf
 	}
-	var peaks []int
 	for k := 1; k < n-1; k++ {
 		if mag[k] > mag[k-1] && mag[k] > mag[k+1] {
-			peaks = append(peaks, k)
+			buf = append(buf, k)
 		}
 	}
-	return peaks
+	return buf
 }
 
-// nearestPeak returns the peak index closest to bin k.
-func nearestPeak(peaks []int, k int) int {
+// buildNearestPeakMap builds an O(n) lookup table mapping each bin to its
+// nearest spectral peak. Replaces the O(n*p) nearestPeak linear scan.
+func buildNearestPeakMap(peaks []int, numBins int, buf []int) []int {
+	buf = buf[:numBins]
 	if len(peaks) == 0 {
-		return k // no peaks, return self
-	}
-	best := peaks[0]
-	bestDist := abs(k - best)
-	for _, p := range peaks[1:] {
-		d := abs(k - p)
-		if d < bestDist {
-			bestDist = d
-			best = p
+		for i := range buf {
+			buf[i] = i
 		}
+		return buf
 	}
-	return best
-}
 
-func abs(x int) int {
-	if x < 0 {
-		return -x
+	// Forward pass: assign each bin to closest peak seen so far
+	pi := 0
+	for k := 0; k < numBins; k++ {
+		// Advance to next peak if it's closer
+		for pi+1 < len(peaks) {
+			distCur := peaks[pi] - k
+			if distCur < 0 {
+				distCur = -distCur
+			}
+			distNext := peaks[pi+1] - k
+			if distNext < 0 {
+				distNext = -distNext
+			}
+			if distNext < distCur {
+				pi++
+			} else {
+				break
+			}
+		}
+		buf[k] = peaks[pi]
 	}
-	return x
+	return buf
 }
 
 // lockPhases applies identity phase locking. Non-peak bins inherit
 // their nearest peak's phase advancement, preserving phase coherence
 // and eliminating "phasiness" artifacts.
-func lockPhases(mag, analysisPhase, synthPhase []float32, prevAnalysisPhase []float32, peaks []int, numBins int) {
-	if len(peaks) == 0 {
-		return // no peaks, leave phases as-is
-	}
-
+func lockPhases(mag, analysisPhase, synthPhase []float32, nearest []int, numBins int) {
 	for k := 0; k < numBins; k++ {
-		// Find nearest peak
-		p := nearestPeak(peaks, k)
+		p := nearest[k]
 		if p == k {
 			continue // peak bins keep their own phase
 		}
 		// Non-peak bin: inherit peak's phase relationship
-		// synthPhase[k] = synthPhase[peak] + (analysisPhase[k] - analysisPhase[peak])
 		synthPhase[k] = synthPhase[p] + (analysisPhase[k] - analysisPhase[p])
 	}
 }
 
 // transientDetector tracks spectral flux to detect transient onsets.
 type transientDetector struct {
-	prevMag     []float32
-	hasPrev     bool
-	fluxHistory []float64
-	historyLen  int
+	prevMag    []float32
+	hasPrev    bool
+	fluxRing   []float64 // circular buffer of recent flux values
+	ringPos    int
+	ringCount  int
+	historyLen int
 }
 
 func newTransientDetector(numBins, historyLen int) *transientDetector {
 	return &transientDetector{
 		prevMag:    make([]float32, numBins),
+		fluxRing:   make([]float64, historyLen),
 		historyLen: historyLen,
 	}
 }
@@ -253,22 +283,25 @@ func (td *transientDetector) isTransient(mag []float32) bool {
 	flux := spectralFlux(td.prevMag, mag)
 	copy(td.prevMag, mag)
 
-	// Adaptive threshold: mean + 2*stddev of recent flux values
-	td.fluxHistory = append(td.fluxHistory, flux)
-	if len(td.fluxHistory) > td.historyLen {
-		td.fluxHistory = td.fluxHistory[len(td.fluxHistory)-td.historyLen:]
+	// Insert into ring buffer
+	td.fluxRing[td.ringPos] = flux
+	td.ringPos = (td.ringPos + 1) % td.historyLen
+	if td.ringCount < td.historyLen {
+		td.ringCount++
 	}
 
-	if len(td.fluxHistory) < 4 {
+	if td.ringCount < 4 {
 		return false // need history to establish baseline
 	}
 
+	// Adaptive threshold: mean + 2*stddev of recent flux values
 	var sum, sumSq float64
-	for _, f := range td.fluxHistory {
+	for i := 0; i < td.ringCount; i++ {
+		f := td.fluxRing[i]
 		sum += f
 		sumSq += f * f
 	}
-	n := float64(len(td.fluxHistory))
+	n := float64(td.ringCount)
 	mean := sum / n
 	variance := sumSq/n - mean*mean
 	if variance < 0 {
@@ -413,52 +446,53 @@ func stretchChannel(data []float32, fftSize, analysisHop, synthHop, sampleRate i
 		mag, analysisPhase := pv.analyzeFrame(frame)
 
 		// Copy analysis results (they reference internal buffers)
-		magCopy := make([]float32, numBins)
-		phaseCopy := make([]float32, numBins)
-		copy(magCopy, mag)
-		copy(phaseCopy, analysisPhase)
+		copy(pv.magCopy, mag)
+		copy(pv.phaseCopy, analysisPhase)
 
 		if firstFrame {
 			// First frame: use analysis phases directly
-			copy(synthPhase, phaseCopy)
-			copy(prevAnalysisPhase, phaseCopy)
+			copy(synthPhase, pv.phaseCopy)
+			copy(prevAnalysisPhase, pv.phaseCopy)
 			firstFrame = false
 		} else {
 			// Detect transients
-			isTransient := td.isTransient(magCopy)
+			isTransient := td.isTransient(pv.magCopy)
 
 			if isTransient {
 				// Reset synthesis phases to analysis phases
-				copy(synthPhase, phaseCopy)
+				copy(synthPhase, pv.phaseCopy)
 			} else {
 				// Phase accumulation with instantaneous frequency
 				for k := 0; k < numBins; k++ {
-					instFreq := pv.instantaneousFrequency(prevAnalysisPhase[k], phaseCopy[k], k)
+					instFreq := pv.instantaneousFrequency(prevAnalysisPhase[k], pv.phaseCopy[k], k)
 					// Accumulate synthesis phase
 					phaseAdvance := 2 * math.Pi * instFreq * float64(synthHop) / float64(sampleRate)
 					synthPhase[k] += float32(phaseAdvance)
 				}
 
-				// Phase locking
-				peaks := findSpectralPeaks(magCopy)
+				// Phase locking via O(n) nearest-peak lookup
+				peaks := findSpectralPeaksInto(pv.magCopy, pv.peaksBuf)
+				pv.peaksBuf = peaks // retain buffer capacity
 				if len(peaks) > 0 {
-					lockPhases(magCopy, phaseCopy, synthPhase, prevAnalysisPhase, peaks, numBins)
+					nearest := buildNearestPeakMap(peaks, numBins, pv.nearestBuf)
+					lockPhases(pv.magCopy, pv.phaseCopy, synthPhase, nearest, numBins)
 				}
 			}
 
-			copy(prevAnalysisPhase, phaseCopy)
+			copy(prevAnalysisPhase, pv.phaseCopy)
 		}
 
 		// Synthesize with the modified phase
-		synthFrame := pv.synthesizeFrame(magCopy, synthPhase)
+		synthFrame := pv.synthesizeFrame(pv.magCopy, synthPhase)
 
-		// Overlap-add
-		for i := 0; i < fftSize; i++ {
-			idx := outPos + i
-			if idx < len(output) {
-				output[idx] += synthFrame[i]
-				windowSum[idx] += pv.window[i] * pv.window[i] // Hann^2 for COLA normalization
-			}
+		// Overlap-add with precomputed window^2
+		end := outPos + fftSize
+		if end > len(output) {
+			end = len(output)
+		}
+		for i := 0; i < end-outPos; i++ {
+			output[outPos+i] += synthFrame[i]
+			windowSum[outPos+i] += pv.windowSq[i]
 		}
 
 		outPos += synthHop

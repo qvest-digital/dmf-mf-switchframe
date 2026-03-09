@@ -74,7 +74,7 @@ func TestButterflyRadix2_SinglePair(t *testing.T) {
 	// twiddle W(0) = 1+0i
 	data := []float32{1, 2, 3, 4}
 	tw := []float32{1, 0}
-	butterflyRadix2(data, tw, 1, 1, 0)
+	butterflyRadix2(data, tw, 1, 0)
 	// out[0] = (1+2i) + 1*(3+4i) = 4+6i
 	// out[1] = (1+2i) - 1*(3+4i) = -2-2i
 	assert.InDelta(t, 4.0, data[0], 1e-6)

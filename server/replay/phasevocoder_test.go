@@ -163,7 +163,7 @@ func TestFindSpectralPeaks(t *testing.T) {
 	mag[49] = 4.0
 	mag[51] = 4.0
 
-	peaks := findSpectralPeaks(mag)
+	peaks := findSpectralPeaksInto(mag, nil)
 	require.Contains(t, peaks, 10)
 	require.Contains(t, peaks, 50)
 	require.NotContains(t, peaks, 9)
@@ -171,13 +171,18 @@ func TestFindSpectralPeaks(t *testing.T) {
 	require.NotContains(t, peaks, 49)
 }
 
-func TestNearestPeak(t *testing.T) {
+func TestBuildNearestPeakMap(t *testing.T) {
 	peaks := []int{10, 50, 80}
-	assert.Equal(t, 10, nearestPeak(peaks, 8))
-	assert.Equal(t, 10, nearestPeak(peaks, 12))
-	assert.Equal(t, 50, nearestPeak(peaks, 45))
-	assert.Equal(t, 80, nearestPeak(peaks, 70))
-	assert.Equal(t, 80, nearestPeak(peaks, 90))
+	nearest := buildNearestPeakMap(peaks, 100, make([]int, 100))
+	assert.Equal(t, 10, nearest[8])
+	assert.Equal(t, 10, nearest[12])
+	assert.Equal(t, 50, nearest[45])
+	assert.Equal(t, 80, nearest[70])
+	assert.Equal(t, 80, nearest[90])
+	// Peak bins map to themselves
+	assert.Equal(t, 10, nearest[10])
+	assert.Equal(t, 50, nearest[50])
+	assert.Equal(t, 80, nearest[80])
 }
 
 func TestFindSpectralPeaks_Empty(t *testing.T) {
@@ -186,14 +191,16 @@ func TestFindSpectralPeaks_Empty(t *testing.T) {
 	for i := range mag {
 		mag[i] = 1.0
 	}
-	peaks := findSpectralPeaks(mag)
+	peaks := findSpectralPeaksInto(mag, nil)
 	assert.Empty(t, peaks)
 }
 
-func TestNearestPeak_NoPeaks(t *testing.T) {
-	// No peaks, should return self
-	result := nearestPeak(nil, 5)
-	assert.Equal(t, 5, result)
+func TestBuildNearestPeakMap_NoPeaks(t *testing.T) {
+	// No peaks — every bin maps to itself
+	nearest := buildNearestPeakMap(nil, 10, make([]int, 10))
+	for i := 0; i < 10; i++ {
+		assert.Equal(t, i, nearest[i])
+	}
 }
 
 func TestSpectralFlux_SteadyState(t *testing.T) {

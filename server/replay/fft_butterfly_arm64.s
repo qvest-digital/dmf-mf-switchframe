@@ -2,7 +2,7 @@
 
 // ARM64 NEON butterfly for radix-2 FFT stage.
 //
-// func butterflyRadix2(data, twiddle []float32, halfN, stride, twiddleStride int)
+// func butterflyRadix2(data, twiddle []float32, halfN, twiddleStride int)
 //
 // For twiddleStride == 1, processes 2 butterflies per iteration using NEON.
 // Falls back to scalar for other strides.
@@ -10,7 +10,6 @@
 // NEON macros for instructions missing from Go assembler
 #define FMUL_4S(Vd, Vn, Vm) WORD $(0x6E20DC00 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 #define FSUB_4S(Vd, Vn, Vm) WORD $(0x4EA0D400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
-#define FMLA_4S(Vd, Vn, Vm) WORD $(0x4E20CC00 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 #define FADD_4S(Vd, Vn, Vm) WORD $(0x4E20D400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 
 // TRN1 Vd.4S, Vn.4S, Vm.4S — zip even lanes
@@ -19,8 +18,6 @@
 #define TRN2_4S(Vd, Vn, Vm) WORD $(0x4E806800 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 // REV64 Vd.4S, Vn.4S — reverse 32-bit elements within 64-bit halves
 #define REV64_4S(Vd, Vn) WORD $(0x4EA00800 | ((Vn)<<5) | (Vd))
-// FNEG Vd.4S, Vn.4S — negate all lanes
-#define FNEG_4S(Vd, Vn) WORD $(0x6EA0F800 | ((Vn)<<5) | (Vd))
 
 // Sign mask for complex multiply: [-1, 1, -1, 1]
 // Used to negate real parts after REV64 swap for im*im subtraction
@@ -32,18 +29,16 @@ GLOBL sign_mask<>(SB), RODATA|NOPTR, $16
 
 // Registers:
 //   R0 = data ptr, R1 = twiddle ptr
-//   R2 = halfN, R3 = stride (unused), R4 = twiddleStride
+//   R2 = halfN, R4 = twiddleStride
 //   R5 = k (loop counter)
 //   R6 = even offset, R7 = odd offset
 //   R8 = twiddle offset
 //   R9 = halfN * 8 (byte offset for odd half)
-TEXT ·butterflyRadix2(SB), NOSPLIT, $0-80
+TEXT ·butterflyRadix2(SB), NOSPLIT, $0-64
 	MOVD data_base+0(FP), R0
-	MOVD data_len+8(FP), R10       // data length (not used for bounds)
 	MOVD twiddle_base+24(FP), R1
 	MOVD halfN+48(FP), R2
-	MOVD stride+56(FP), R3
-	MOVD twiddleStride+64(FP), R4
+	MOVD twiddleStride+56(FP), R4
 
 	CMP  $0, R2
 	BLE  bf_done
@@ -67,8 +62,6 @@ TEXT ·butterflyRadix2(SB), NOSPLIT, $0-80
 
 bf_neon_loop:
 	// k and k+1 butterflies
-	// Even: data[k*2..k*2+3], Odd: data[(k+halfN)*2..(k+halfN)*2+3]
-	// Twiddle: twiddle[k*2..k*2+3] (consecutive since twiddleStride=1)
 	LSL  $3, R5, R6                // R6 = k * 8 (byte offset for even)
 	ADD  R0, R6, R6                // R6 = &data[k*2]
 
@@ -85,18 +78,6 @@ bf_neon_loop:
 	VLD1 (R7), [V2.S4]            // V2 = [oRe0, oIm0, oRe1, oIm1]
 
 	// Complex multiply: t = W * odd
-	// tRe = wRe*oRe - wIm*oIm
-	// tIm = wRe*oIm + wIm*oRe
-	//
-	// Strategy:
-	// 1. TRN1 to get [wRe0, wRe0, wRe1, wRe1]
-	// 2. TRN2 to get [wIm0, wIm0, wIm1, wIm1]
-	// 3. FMUL wRe_dup * odd = [wRe*oRe, wRe*oIm, wRe*oRe, wRe*oIm]
-	// 4. REV64 odd to swap re/im = [oIm0, oRe0, oIm1, oRe1]
-	// 5. FMUL wIm_dup * swapped = [wIm*oIm, wIm*oRe, wIm*oIm, wIm*oRe]
-	// 6. Sign mask multiply: [-wIm*oIm, wIm*oRe, -wIm*oIm, wIm*oRe]
-	// 7. FADD step3 + step6 = [wRe*oRe - wIm*oIm, wRe*oIm + wIm*oRe, ...]
-
 	TRN1_4S(3, 0, 0)              // V3 = [wRe0, wRe0, wRe1, wRe1]
 	TRN2_4S(4, 0, 0)              // V4 = [wIm0, wIm0, wIm1, wIm1]
 	FMUL_4S(5, 3, 2)              // V5 = wRe * odd
@@ -114,8 +95,7 @@ bf_neon_loop:
 	VST1 [V4.S4], (R7)            // store odd'
 
 	ADD  $2, R5                    // k += 2
-	CMP  R2, R5
-	// Need at least 2 more iterations
+	// Need at least 2 more iterations (k+1 < halfN)
 	ADD  $1, R5, R8                // R8 = k + 1
 	CMP  R2, R8
 	BLT  bf_neon_loop

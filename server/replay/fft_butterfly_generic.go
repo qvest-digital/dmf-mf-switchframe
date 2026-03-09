@@ -5,9 +5,8 @@ package replay
 // butterflyRadix2 performs radix-2 butterfly operations for one FFT stage.
 // data contains interleaved complex values [re0, im0, re1, im1, ...].
 // halfN is the number of butterfly pairs in this stage.
-// stride is always 1 for in-place FFT.
 // twiddleStride is N/(2*halfN) — step through twiddle table.
-func butterflyRadix2(data, twiddle []float32, halfN, stride, twiddleStride int) {
+func butterflyRadix2(data, twiddle []float32, halfN, twiddleStride int) {
 	for k := 0; k < halfN; k++ {
 		twIdx := k * twiddleStride * 2
 		wRe := twiddle[twIdx]
