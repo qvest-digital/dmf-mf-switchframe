@@ -363,7 +363,10 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	mixed := m.mixAccum
 
 	// Stinger audio overlay: add stinger PCM on top of source crossfade.
-	// Also present in ingestCrossfadeFrame — only one path is active at a time.
+	// This path runs for multi-source mixing (passthrough disabled, no crossfade).
+	// The crossfade path in ingestCrossfadeFrame has its own injection point.
+	// Mutual exclusion: when transCrossfadeActive is true, sources participating
+	// in the crossfade go through ingestCrossfadeFrame instead of collectMixCycleLocked.
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}
@@ -1322,7 +1325,9 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	}
 
 	// Stinger audio overlay: add stinger PCM on top of source crossfade.
-	// Also present in collectMixCycleLocked — only one path is active at a time.
+	// This path runs for the crossfade (transCrossfadeActive=true).
+	// collectMixCycleLocked has its own injection point for the multi-source path.
+	// Mutual exclusion: crossfade participants are routed here, not to collectMixCycleLocked.
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}

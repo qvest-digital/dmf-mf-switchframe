@@ -258,6 +258,28 @@ func TestParseWAV_ChunkAlignment(t *testing.T) {
 	require.InDelta(t, 12345.0/32768.0, pcm[0], 1e-6)
 }
 
+func TestParseWAV_ZeroChannels(t *testing.T) {
+	// Build a WAV with numChannels=0, which should be rejected.
+	wav := buildWAV(t, 48000, 1, 16, make([]byte, 4))
+	// Patch numChannels to 0 (offset 22: 12 RIFF header + 8 fmt header + 2 audioFormat = 22)
+	binary.LittleEndian.PutUint16(wav[22:], 0)
+
+	_, _, _, err := ParseWAV(wav)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "channel count")
+}
+
+func TestParseWAV_ZeroSampleRate(t *testing.T) {
+	// Build a WAV with sampleRate=0, which should be rejected.
+	wav := buildWAV(t, 48000, 1, 16, make([]byte, 4))
+	// Patch sampleRate to 0 (offset 24: 12 RIFF header + 8 fmt header + 2 audioFormat + 2 numChannels = 24)
+	binary.LittleEndian.PutUint32(wav[24:], 0)
+
+	_, _, _, err := ParseWAV(wav)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sample rate")
+}
+
 func TestParseWAV_44100Hz(t *testing.T) {
 	// Verify a different sample rate works.
 	rawSamples := make([]byte, 4) // 2 int16 samples

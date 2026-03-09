@@ -75,6 +75,12 @@ func ParseWAV(data []byte) ([]float32, int, int, error) {
 	if dataChunk == nil {
 		return nil, 0, 0, fmt.Errorf("wav: no data chunk found")
 	}
+	if numChannels == 0 {
+		return nil, 0, 0, fmt.Errorf("wav: invalid channel count: 0")
+	}
+	if sampleRate == 0 {
+		return nil, 0, 0, fmt.Errorf("wav: invalid sample rate: 0")
+	}
 
 	// Convert samples to float32
 	switch audioFormat {

@@ -73,7 +73,8 @@ func SynthesizeWhoosh(sampleRate, channels int, durationSec float64) []float32 {
 		// Phase accumulation
 		phase += 2.0 * math.Pi * freq / float64(sampleRate)
 
-		// Sine wave with harmonics
+		// Sine with inharmonic overtones (2.3x and 4.7x phase produce spectral
+		// complexity that shifts with the sweep, creating a richer whoosh effect)
 		sample := 0.4*math.Sin(phase) + 0.2*math.Sin(2.3*phase) + 0.1*math.Sin(4.7*phase)
 
 		// Amplitude envelope: fast attack (first 5%), sustain, fade out (last 15%)
