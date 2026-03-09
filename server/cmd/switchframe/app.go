@@ -360,6 +360,9 @@ func (a *App) initSubsystems() error {
 	// Pipeline encoder for the video processing chain.
 	a.sw.SetPipelineCodecs(encoderFactory())
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
+	if err := a.sw.BuildPipeline(); err != nil {
+		return fmt.Errorf("build pipeline: %w", err)
+	}
 
 	// Replay manager.
 	a.replayRelay = a.server.RegisterStream("replay")

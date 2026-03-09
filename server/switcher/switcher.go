@@ -424,6 +424,9 @@ func (s *Switcher) Close() {
 	if s.framePool != nil {
 		s.framePool.Close()
 	}
+	if p := s.pipeline.Load(); p != nil {
+		p.Close()
+	}
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -1990,6 +1993,10 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"capacity": s.framePool.cap,
 			"buf_size": s.framePool.bufSize,
 		}
+	}
+
+	if p := s.pipeline.Load(); p != nil {
+		result["pipeline"] = p.Snapshot()
 	}
 
 	// Include transition engine timing when active
