@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -1194,4 +1195,116 @@ func TestReplayPlayer_RawAndEncodedOutput(t *testing.T) {
 	// Both paths should receive the same number of frames.
 	require.Equal(t, int64(3), atomic.LoadInt64(&rawCount))
 	require.Equal(t, int64(3), atomic.LoadInt64(&encodedCount))
+}
+
+// mockAudioDecoder returns 1024 stereo samples per Decode call.
+type mockAudioDecoder struct{}
+
+func (d *mockAudioDecoder) Decode(data []byte) ([]float32, error) {
+	// Return 1024 stereo samples of constant value.
+	pcm := make([]float32, 1024*2)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+	return pcm, nil
+}
+
+func (d *mockAudioDecoder) Close() error { return nil }
+
+// mockAudioEncoder returns a dummy AAC frame per Encode call.
+type mockAudioEncoder struct{}
+
+func (e *mockAudioEncoder) Encode(pcm []float32) ([]byte, error) {
+	return make([]byte, 64), nil
+}
+
+func (e *mockAudioEncoder) Close() error { return nil }
+
+func TestReplayPlayer_WSOLAPreStretch(t *testing.T) {
+	clip := buildTestClip(1, 4)
+
+	// Build audio frames spanning the clip.
+	var audioClip []bufferedAudioFrame
+	for i := 0; i < 6; i++ {
+		audioClip = append(audioClip, bufferedAudioFrame{
+			data:       make([]byte, 100),
+			pts:        int64(i) * 1920,
+			sampleRate: 48000,
+			channels:   2,
+			wallTime:   time.Now(),
+		})
+	}
+
+	var audioCount int64
+	p := newReplayPlayer(PlayerConfig{
+		Clip:      clip,
+		AudioClip: audioClip,
+		Speed:     0.5,
+		Loop:      false,
+		DecoderFactory: mockDecoderFactory,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		AudioOutput: func(frame *media.AudioFrame) {
+			atomic.AddInt64(&audioCount, 1)
+		},
+		AudioDecoderFactory: func(sampleRate, channels int) (audio.AudioDecoder, error) {
+			return &mockAudioDecoder{}, nil
+		},
+		AudioEncoderFactory: func(sampleRate, channels int) (audio.AudioEncoder, error) {
+			return &mockAudioEncoder{}, nil
+		},
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	p.Wait()
+
+	count := atomic.LoadInt64(&audioCount)
+	// With WSOLA stretching at 0.5x, stretched audio should have ~2x the frames.
+	// The stretched frames should be emitted during ALL duplicate frames, not just dup==0.
+	require.Greater(t, count, int64(6),
+		"WSOLA-stretched audio should produce more frames than original 6")
+}
+
+func TestReplayPlayer_AudioWithoutWSOLA(t *testing.T) {
+	clip := buildTestClip(1, 3)
+	var audioClip []bufferedAudioFrame
+	for i := 0; i < 4; i++ {
+		audioClip = append(audioClip, bufferedAudioFrame{
+			data:       make([]byte, 50),
+			pts:        int64(i) * 1920,
+			sampleRate: 48000,
+			channels:   2,
+			wallTime:   time.Now(),
+		})
+	}
+
+	var audioCount int64
+	p := newReplayPlayer(PlayerConfig{
+		Clip:      clip,
+		AudioClip: audioClip,
+		Speed:     0.5,
+		Loop:      false,
+		DecoderFactory: mockDecoderFactory,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		AudioOutput: func(frame *media.AudioFrame) {
+			atomic.AddInt64(&audioCount, 1)
+		},
+		// No AudioDecoderFactory/AudioEncoderFactory — falls back to sparse audio.
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	p.Wait()
+
+	count := atomic.LoadInt64(&audioCount)
+	// Without WSOLA, audio frames are only emitted on dup==0 (first duplicate).
+	// 3 source frames -> each gets some audio frames on first dup only.
+	require.Greater(t, count, int64(0), "should emit some audio frames")
+	require.LessOrEqual(t, count, int64(4), "without WSOLA, should not exceed original audio frame count")
 }

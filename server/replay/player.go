@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -39,6 +40,13 @@ type PlayerConfig struct {
 	// RawMonitorOutput sends raw YUV to a monitoring relay (e.g. "replay-raw").
 	// Optional — only set when raw program monitor is enabled.
 	RawMonitorOutput func(yuv []byte, w, h int, pts int64)
+
+	// AudioDecoderFactory creates an AAC decoder for WSOLA pre-processing.
+	// Required when Speed < 1.0 for pitch-preserved slow-motion audio.
+	AudioDecoderFactory audio.DecoderFactory
+
+	// AudioEncoderFactory creates an AAC encoder for WSOLA post-processing.
+	AudioEncoderFactory audio.EncoderFactory
 }
 
 // decodedFrame is a decoded YUV frame with original PTS for display ordering.
@@ -60,8 +68,9 @@ type replayPlayer struct {
 	videoInfoSent bool         // true after OnVideoInfo callback has been called
 
 	// Audio tracking: index into AudioClip for interleaved output.
-	audioIdx       int
-	outputAudioPTS int64 // Separate monotonic PTS for audio frames.
+	audioIdx           int
+	outputAudioPTS     int64 // Separate monotonic PTS for audio frames.
+	audioPreStretched  bool  // true when audio has been WSOLA-stretched
 
 	// Absolute-time pacing: playbackStart anchors the output timeline so
 	// frame N's deadline is playbackStart + N*frameDuration, preventing
@@ -140,6 +149,9 @@ func (p *replayPlayer) run(ctx context.Context) {
 	if p.config.OnReady != nil {
 		p.config.OnReady()
 	}
+
+	// Pre-stretch audio for slow-motion if needed.
+	p.preStretchAudio()
 
 	// Estimate source FPS from all clip frames' PTS values.
 	sourceFPS := estimateFPSFromClip(clip)
@@ -365,9 +377,10 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 		return
 	}
 
-	// Only emit audio on the first duplicate of each source frame to
-	// avoid repeating audio frames during slow-motion duplication.
-	if dup != 0 {
+	// When audio has been WSOLA-stretched, emit on every frame (including
+	// duplicates) because the stretched audio fills the full slow-mo duration.
+	// Without stretching, only emit on the first duplicate to avoid repeats.
+	if dup != 0 && !p.audioPreStretched {
 		return
 	}
 
@@ -397,6 +410,93 @@ func (p *replayPlayer) emitAudioForFrame(sourcePTS, nextSourcePTS int64, dup int
 			p.outputAudioPTS += int64(1024) * 90000 / int64(af.sampleRate)
 		}
 		p.audioIdx++
+	}
+}
+
+// preStretchAudio decodes all AAC frames, runs WSOLA time-stretch for
+// slow-motion speed, re-encodes to AAC, and replaces the audio clip.
+// This produces a continuous audio stream that fills the full slow-mo
+// duration without gaps between duplicate video frames.
+func (p *replayPlayer) preStretchAudio() {
+	audioClip := p.config.AudioClip
+	if len(audioClip) == 0 || p.config.AudioDecoderFactory == nil || p.config.AudioEncoderFactory == nil {
+		return
+	}
+	if p.config.Speed >= 1.0 {
+		return
+	}
+
+	sampleRate := audioClip[0].sampleRate
+	channels := audioClip[0].channels
+	if sampleRate == 0 || channels == 0 {
+		return
+	}
+
+	// Decode all AAC frames to PCM.
+	dec, err := p.config.AudioDecoderFactory(sampleRate, channels)
+	if err != nil {
+		slog.Error("replay: WSOLA audio decoder creation failed", "err", err)
+		return
+	}
+	defer dec.Close()
+
+	var allPCM []float32
+	for _, af := range audioClip {
+		pcm, err := dec.Decode(af.data)
+		if err != nil {
+			slog.Warn("replay: WSOLA audio decode failed", "err", err)
+			continue
+		}
+		allPCM = append(allPCM, pcm...)
+	}
+	if len(allPCM) == 0 {
+		return
+	}
+
+	// Time-stretch.
+	stretched := WSOLATimeStretch(allPCM, channels, sampleRate, p.config.Speed)
+	if len(stretched) == 0 {
+		return
+	}
+
+	// Re-encode: segment into 1024-sample AAC frames.
+	enc, err := p.config.AudioEncoderFactory(sampleRate, channels)
+	if err != nil {
+		slog.Error("replay: WSOLA audio encoder creation failed", "err", err)
+		return
+	}
+	defer enc.Close()
+
+	samplesPerFrame := 1024 * channels
+	// Use the first audio frame's PTS as base for stretched audio PTS.
+	basePTS := audioClip[0].pts
+	ptsPerFrame := int64(1024) * 90000 / int64(sampleRate)
+
+	var newClip []bufferedAudioFrame
+	for i := 0; i+samplesPerFrame <= len(stretched); i += samplesPerFrame {
+		chunk := stretched[i : i+samplesPerFrame]
+		encoded, err := enc.Encode(chunk)
+		if err != nil {
+			slog.Warn("replay: WSOLA audio encode failed", "err", err)
+			continue
+		}
+		frameIdx := i / samplesPerFrame
+		newClip = append(newClip, bufferedAudioFrame{
+			data:       encoded,
+			pts:        basePTS + int64(frameIdx)*ptsPerFrame,
+			sampleRate: sampleRate,
+			channels:   channels,
+			wallTime:   audioClip[0].wallTime, // approximate
+		})
+	}
+
+	if len(newClip) > 0 {
+		p.config.AudioClip = newClip
+		p.audioPreStretched = true
+		slog.Info("replay: WSOLA pre-stretched audio",
+			"original_frames", len(audioClip),
+			"stretched_frames", len(newClip),
+			"speed", p.config.Speed)
 	}
 }
 
