@@ -414,6 +414,11 @@ func (s *Switcher) Close() {
 	// Shut down async video processing goroutine.
 	close(s.videoProcCh)
 	<-s.videoProcDone
+	// Release pre-allocated frame pool buffers. Safe after videoProcDone
+	// guarantees no more pipeline work (no concurrent Acquire calls).
+	if s.framePool != nil {
+		s.framePool.Close()
+	}
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -630,8 +635,10 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
-	// Recreate frame pool at new dimensions. Old pool drains naturally —
-	// Release() discards wrong-sized buffers via cap check.
+	// Recreate frame pool at new dimensions. Existing sourceDecoders retain
+	// their pointer to the old pool — this is intentional. Old-pool buffers
+	// drain naturally: Release() discards wrong-sized buffers via cap check,
+	// and new frames acquire from the new pool via Switcher.framePool.
 	s.framePool = NewFramePool(32, f.Width, f.Height)
 
 	// Update frame sync tick rate if active
