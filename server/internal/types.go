@@ -193,7 +193,73 @@ type ControlRoomState struct {
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
+	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	Timestamp            int64                   `json:"timestamp"`
+}
+
+// SCTE35State represents the current SCTE-35 signaling state.
+type SCTE35State struct {
+	Enabled      bool                       `json:"enabled"`
+	ActiveEvents map[uint32]SCTE35Active    `json:"activeEvents"`
+	EventLog     []SCTE35Event              `json:"eventLog"`
+	PendingCues  []SCTE35Event              `json:"pendingCues,omitempty"`
+	HeartbeatOK  bool                       `json:"heartbeatOk"`
+	Config       SCTE35Config               `json:"config"`
+}
+
+// SCTE35Active describes an in-progress SCTE-35 event.
+type SCTE35Active struct {
+	EventID       uint32                 `json:"eventId"`
+	CommandType   string                 `json:"commandType"`
+	IsOut         bool                   `json:"isOut"`
+	DurationMs    *int64                 `json:"durationMs,omitempty"`
+	ElapsedMs     int64                  `json:"elapsedMs"`
+	RemainingMs   *int64                 `json:"remainingMs,omitempty"`
+	AutoReturn    bool                   `json:"autoReturn"`
+	Held          bool                   `json:"held"`
+	SpliceTimePTS int64                  `json:"spliceTimePts"`
+	StartedAt     int64                  `json:"startedAt"`
+	Descriptors   []SCTE35DescriptorInfo `json:"descriptors,omitempty"`
+}
+
+// SCTE35DescriptorInfo describes a segmentation descriptor in an active event.
+type SCTE35DescriptorInfo struct {
+	SegEventID           uint32 `json:"segEventId"`
+	SegmentationType     uint8  `json:"segmentationType"`
+	SegmentationTypeName string `json:"segmentationTypeName"`
+	UPIDType             uint8  `json:"upidType"`
+	UPIDTypeName         string `json:"upidTypeName"`
+	UPID                 string `json:"upid"`
+	DurationMs           *int64 `json:"durationMs,omitempty"`
+	SubSegmentNum        uint8  `json:"subSegmentNum,omitempty"`
+	SubSegmentsExpected  uint8  `json:"subSegmentsExpected,omitempty"`
+	Cancelled            bool   `json:"cancelled,omitempty"`
+}
+
+// SCTE35Event describes a logged SCTE-35 event.
+type SCTE35Event struct {
+	EventID        uint32                 `json:"eventId"`
+	CommandType    string                 `json:"commandType"`
+	IsOut          bool                   `json:"isOut"`
+	DurationMs     *int64                 `json:"durationMs,omitempty"`
+	AutoReturn     bool                   `json:"autoReturn"`
+	Descriptors    []SCTE35DescriptorInfo `json:"descriptors,omitempty"`
+	AvailNum       *uint8                 `json:"availNum,omitempty"`
+	AvailsExpected *uint8                 `json:"availsExpected,omitempty"`
+	SpliceTimePTS  *int64                 `json:"spliceTimePts,omitempty"`
+	Timestamp      int64                  `json:"timestamp"`
+	Status         string                 `json:"status"`
+	Source         string                 `json:"source,omitempty"`
+	DestinationID  string                 `json:"destinationId,omitempty"`
+}
+
+// SCTE35Config describes the SCTE-35 injector configuration.
+type SCTE35Config struct {
+	HeartbeatIntervalMs int64  `json:"heartbeatIntervalMs"`
+	DefaultPreRollMs    int64  `json:"defaultPreRollMs"`
+	PID                 uint16 `json:"pid"`
+	VerifyEncoding      bool   `json:"verifyEncoding"`
+	WebhookURL          string `json:"webhookUrl,omitempty"`
 }
