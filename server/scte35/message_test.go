@@ -365,6 +365,102 @@ func TestEncode_SpliceInsert_AvailFields_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestDecode_MultiDescriptor_DeliveryRestrictions(t *testing.T) {
+	// Build a time_signal with two descriptors having different delivery restrictions.
+	dur1 := uint64(2700000)
+	dur2 := uint64(900000)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       100,
+				DurationTicks:    &dur1,
+				UPIDType:         0x0F,
+				UPID:             []byte("https://example.com/1"),
+				SegNum:           1,
+				SegExpected:      1,
+				DeliveryRestrictions: &DeliveryRestrictions{
+					WebDeliveryAllowed: true,
+					NoRegionalBlackout: false,
+					ArchiveAllowed:     true,
+					DeviceRestrictions: 0,
+				},
+			},
+			{
+				SegmentationType: 0x36,
+				SegEventID:       200,
+				DurationTicks:    &dur2,
+				UPIDType:         0x0F,
+				UPID:             []byte("https://example.com/2"),
+				SegNum:           1,
+				SegExpected:      1,
+				DeliveryRestrictions: &DeliveryRestrictions{
+					WebDeliveryAllowed: false,
+					NoRegionalBlackout: true,
+					ArchiveAllowed:     false,
+					DeviceRestrictions: 3,
+				},
+			},
+		},
+	}
+
+	encoded, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(decoded.Descriptors) != 2 {
+		t.Fatalf("expected 2 descriptors, got %d", len(decoded.Descriptors))
+	}
+
+	// Verify first descriptor's restrictions.
+	dr1 := decoded.Descriptors[0].DeliveryRestrictions
+	if dr1 == nil {
+		t.Fatal("descriptor[0] DeliveryRestrictions is nil")
+	}
+	if !dr1.WebDeliveryAllowed {
+		t.Error("descriptor[0] WebDeliveryAllowed should be true")
+	}
+	if dr1.NoRegionalBlackout {
+		t.Error("descriptor[0] NoRegionalBlackout should be false")
+	}
+	if !dr1.ArchiveAllowed {
+		t.Error("descriptor[0] ArchiveAllowed should be true")
+	}
+
+	// Verify second descriptor has DIFFERENT restrictions.
+	dr2 := decoded.Descriptors[1].DeliveryRestrictions
+	if dr2 == nil {
+		t.Fatal("descriptor[1] DeliveryRestrictions is nil")
+	}
+	if dr2.WebDeliveryAllowed {
+		t.Error("descriptor[1] WebDeliveryAllowed should be false")
+	}
+	if !dr2.NoRegionalBlackout {
+		t.Error("descriptor[1] NoRegionalBlackout should be true")
+	}
+	if dr2.ArchiveAllowed {
+		t.Error("descriptor[1] ArchiveAllowed should be false")
+	}
+	if dr2.DeviceRestrictions != 3 {
+		t.Errorf("descriptor[1] DeviceRestrictions = %d, want 3", dr2.DeviceRestrictions)
+	}
+
+	// Top-level DeliveryRestrictions should match first descriptor (backward compat).
+	if decoded.DeliveryRestrictions == nil {
+		t.Fatal("top-level DeliveryRestrictions is nil")
+	}
+	if !decoded.DeliveryRestrictions.WebDeliveryAllowed {
+		t.Error("top-level WebDeliveryAllowed should match first descriptor")
+	}
+}
+
 func TestDecode_InvalidCRC(t *testing.T) {
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(1, dur, true, true)

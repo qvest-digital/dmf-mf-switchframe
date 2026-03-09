@@ -43,6 +43,8 @@ type CueMessage struct {
 	Descriptors []SegmentationDescriptor
 
 	// DeliveryRestrictions optionally specifies delivery restriction flags.
+	// Deprecated: Use per-descriptor DeliveryRestrictions instead. This field
+	// is populated from the first descriptor for backward compatibility.
 	DeliveryRestrictions *DeliveryRestrictions
 
 	// SpliceTimePTS is the optional splice time in 90 kHz PTS ticks.
@@ -82,6 +84,9 @@ type SegmentationDescriptor struct {
 	SegExpected                  uint8   `json:"segExpected,omitempty"`
 	SubSegmentNum                uint8   `json:"subSegmentNum,omitempty"`
 	SubSegmentsExpected          uint8   `json:"subSegmentsExpected,omitempty"`
+
+	// DeliveryRestrictions holds per-descriptor delivery restrictions.
+	DeliveryRestrictions         *DeliveryRestrictions `json:"deliveryRestrictions,omitempty"`
 }
 
 // AdditionalUPID represents a UPID beyond the first in a segmentation descriptor.
@@ -240,6 +245,14 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 					sd.SubSegmentNum = &sn
 					sd.SubSegmentsExpected = &se
 				}
+				if d.DeliveryRestrictions != nil {
+					sd.DeliveryRestrictions = &scte35lib.DeliveryRestrictions{
+						WebDeliveryAllowedFlag:  d.DeliveryRestrictions.WebDeliveryAllowed,
+						NoRegionalBlackoutFlag:  d.DeliveryRestrictions.NoRegionalBlackout,
+						ArchiveAllowedFlag:      d.DeliveryRestrictions.ArchiveAllowed,
+						DeviceRestrictions:      uint32(d.DeliveryRestrictions.DeviceRestrictions),
+					}
+				}
 			}
 			sis.SpliceDescriptors = append(sis.SpliceDescriptors, sd)
 		}
@@ -371,6 +384,15 @@ func Decode(data []byte) (*CueMessage, error) {
 					Type:  uint8(extra.Type),
 					Value: []byte(extra.Value),
 				})
+			}
+		}
+		// Per-descriptor delivery restrictions.
+		if segDesc.DeliveryRestrictions != nil {
+			d.DeliveryRestrictions = &DeliveryRestrictions{
+				WebDeliveryAllowed: segDesc.DeliveryRestrictions.WebDeliveryAllowedFlag,
+				NoRegionalBlackout: segDesc.DeliveryRestrictions.NoRegionalBlackoutFlag,
+				ArchiveAllowed:     segDesc.DeliveryRestrictions.ArchiveAllowedFlag,
+				DeviceRestrictions: uint8(segDesc.DeliveryRestrictions.DeviceRestrictions),
 			}
 		}
 		msg.Descriptors = append(msg.Descriptors, d)
