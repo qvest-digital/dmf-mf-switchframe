@@ -574,6 +574,7 @@ func (s *Switcher) BuildPipeline() error {
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
+	p.epoch = s.pipelineEpoch.Add(1)
 	s.pipeline.Store(p)
 	return nil
 }

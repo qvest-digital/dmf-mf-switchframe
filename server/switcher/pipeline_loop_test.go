@@ -342,6 +342,24 @@ func TestClose_SwapsNilAndWaits(t *testing.T) {
 	require.Nil(t, sw.pipeline.Load(), "Close should swap pipeline to nil")
 }
 
+func TestBuildPipeline_SetsEpoch(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	err := sw.BuildPipeline()
+	require.NoError(t, err)
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	require.Equal(t, uint64(1), p.epoch, "initial BuildPipeline should set epoch 1")
+	require.Equal(t, uint64(1), sw.pipelineEpoch.Load())
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
