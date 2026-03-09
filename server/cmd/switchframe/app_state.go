@@ -161,6 +161,9 @@ func (a *App) wireStateCallbacks() {
 		return a.enrichState(s, nil)
 	})
 
+	// Allow macro runner to trigger state broadcast on execution changes.
+	a.api.SetBroadcastFunc(func() { a.broadcastState(nil) })
+
 	// Switcher state changes (cut, preview, transition, etc.).
 	a.sw.OnStateChange(func(state internal.ControlRoomState) {
 		a.controlPub.Publish(a.enrichState(state, nil))
