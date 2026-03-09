@@ -498,10 +498,14 @@ func (p *replayPlayer) preStretchAudio() {
 			"decoded_samples", len(allPCM), "decode_errors", decodeErrors)
 	}
 
-	// Time-stretch.
+	// Time-stretch: try WSOLA first, fall back to simple linear interpolation.
 	stretched := WSOLATimeStretch(allPCM, channels, sampleRate, p.config.Speed)
 	if len(stretched) == 0 {
-		slog.Warn("replay: WSOLA produced empty output")
+		slog.Warn("replay: WSOLA produced empty output, falling back to linear stretch")
+		stretched = linearTimeStretch(allPCM, channels, p.config.Speed)
+	}
+	if len(stretched) == 0 {
+		slog.Warn("replay: all time-stretch methods failed")
 		return
 	}
 

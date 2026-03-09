@@ -131,3 +131,40 @@ func findBestOverlap(input, output []float32, inputPos, outputPos, windowSize, c
 
 	return bestOffset
 }
+
+// linearTimeStretch stretches audio by linear interpolation between samples.
+// This changes pitch (lower at slow speeds) but guarantees continuous output
+// with no gaps. Used as a fallback when WSOLA fails.
+func linearTimeStretch(input []float32, channels int, speed float64) []float32 {
+	if len(input) == 0 || speed <= 0 {
+		return nil
+	}
+	totalSamples := len(input) / channels
+	outputSamples := int(float64(totalSamples) / speed)
+	if outputSamples <= 0 {
+		return nil
+	}
+	output := make([]float32, outputSamples*channels)
+
+	for i := 0; i < outputSamples; i++ {
+		// Map output sample position back to input position.
+		srcPos := float64(i) * speed
+		srcIdx := int(srcPos)
+		frac := float32(srcPos - float64(srcIdx))
+
+		nextIdx := srcIdx + 1
+		if nextIdx >= totalSamples {
+			nextIdx = totalSamples - 1
+		}
+		if srcIdx >= totalSamples {
+			srcIdx = totalSamples - 1
+		}
+
+		for ch := 0; ch < channels; ch++ {
+			a := input[srcIdx*channels+ch]
+			b := input[nextIdx*channels+ch]
+			output[i*channels+ch] = a + (b-a)*frac
+		}
+	}
+	return output
+}
