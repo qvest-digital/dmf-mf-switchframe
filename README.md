@@ -641,7 +641,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [Deployment Guide](docs/deployment.md) — Production setup, Docker, TLS, monitoring
 - [Architecture](docs/architecture.md) — System design, data flow, decisions
 - [Locking & Concurrency](docs/locking-and-concurrency.md) — Lock inventory, frame flow diagrams, lock ordering, deadlock-free guarantees
-- [SCTE-35 Compliance](docs/scte35-fixes.md) — Known compliance gaps and follow-up items vs ANSI/SCTE 35 2023r1
+- [SCTE-35 Features](docs/scte35.md) — Features and support for ANSI/SCTE 35 2023r1
 - [MXL Integration](docs/mxl.md) — MXL shared-memory setup, configuration, demo
 
 ## License
