@@ -29,3 +29,15 @@ func ScaleFloat32(dst *float32, scale float32, n int)
 //
 //go:noescape
 func MulAddFloat32(dst, a, x, b, y *float32, n int)
+
+// PeakAbsFloat32 returns the maximum absolute value in n contiguous float32 elements.
+// AVX path processes 8 float32s/iteration, SSE2 fallback processes 4.
+//
+//go:noescape
+func PeakAbsFloat32(data *float32, n int) float32
+
+// PeakAbsStereoFloat32 returns max |left| and max |right| from interleaved stereo
+// float32 data. n is the total number of samples (must be even).
+//
+//go:noescape
+func PeakAbsStereoFloat32(data *float32, n int) (peakL, peakR float32)

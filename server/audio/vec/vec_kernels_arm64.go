@@ -22,3 +22,16 @@ func ScaleFloat32(dst *float32, scale float32, n int)
 //
 //go:noescape
 func MulAddFloat32(dst, a, x, b, y *float32, n int)
+
+// PeakAbsFloat32 returns the maximum absolute value in n contiguous float32 elements.
+// NEON implementation processes 4 float32s per iteration with FABS+FMAX.
+//
+//go:noescape
+func PeakAbsFloat32(data *float32, n int) float32
+
+// PeakAbsStereoFloat32 returns max |left| and max |right| from interleaved stereo
+// float32 data. n is the total number of samples (must be even).
+// NEON implementation uses UZP1/UZP2 to deinterleave in-register.
+//
+//go:noescape
+func PeakAbsStereoFloat32(data *float32, n int) (peakL, peakR float32)

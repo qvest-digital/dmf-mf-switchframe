@@ -47,3 +47,50 @@ func MulAddFloat32(dst, a, x, b, y *float32, n int) {
 		dstS[i] = aS[i]*xS[i] + bS[i]*yS[i]
 	}
 }
+
+// PeakAbsFloat32 returns the maximum absolute value in n contiguous float32 elements.
+// Generic scalar fallback for non-SIMD architectures.
+func PeakAbsFloat32(data *float32, n int) float32 {
+	if n <= 0 {
+		return 0
+	}
+	s := unsafe.Slice(data, n)
+	var peak float32
+	for i := 0; i < n; i++ {
+		v := s[i]
+		if v < 0 {
+			v = -v
+		}
+		if v > peak {
+			peak = v
+		}
+	}
+	return peak
+}
+
+// PeakAbsStereoFloat32 returns max |left| and max |right| from interleaved stereo
+// float32 data. n is the total number of samples (must be even).
+// Generic scalar fallback for non-SIMD architectures.
+func PeakAbsStereoFloat32(data *float32, n int) (peakL, peakR float32) {
+	if n < 2 {
+		return 0, 0
+	}
+	s := unsafe.Slice(data, n)
+	for i := 0; i < n-1; i += 2 {
+		l := s[i]
+		if l < 0 {
+			l = -l
+		}
+		if l > peakL {
+			peakL = l
+		}
+		r := s[i+1]
+		if r < 0 {
+			r = -r
+		}
+		if r > peakR {
+			peakR = r
+		}
+	}
+	return
+}

@@ -170,3 +170,158 @@ muladd_scalar_loop:
 
 muladd_done:
 	RET
+
+// --- NEON float macros for PeakAbsFloat32 ---
+// FABS Vd.4S, Vn.4S — vector float absolute value
+#define FABS_4S(Vd, Vn) WORD $(0x4EA0F800 | ((Vn)<<5) | (Vd))
+// FMAX Vd.4S, Vn.4S, Vm.4S — vector float max (element-wise)
+#define FMAX_4S(Vd, Vn, Vm) WORD $(0x4E20F400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
+// FMAXV Sd, Vn.4S — max across all 4 lanes (horizontal reduction)
+#define FMAXV_S(Vd, Vn) WORD $(0x6E30F800 | ((Vn)<<5) | (Vd))
+
+// ============================================================================
+// func PeakAbsFloat32(data *float32, n int) float32
+// ============================================================================
+// Returns max(|data[i]|) for i in [0, n).
+// NEON path processes 4 float32s per iteration using FABS + FMAX.
+// Uses V4 as the running max accumulator.
+TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-24
+	MOVD data+0(FP), R0       // R0 = data pointer
+	MOVD n+8(FP), R1          // R1 = n
+
+	// Initialize accumulator to 0
+	VEOR V4.B16, V4.B16, V4.B16  // V4 = [0, 0, 0, 0]
+
+	CMP  $0, R1
+	BLE  peak_store
+
+	CMP  $16, R1
+	BLT  peak_scalar
+
+	// Process 16 floats per iteration (unrolled 4x)
+peak_neon16:
+	VLD1 (R0), [V0.S4, V1.S4, V2.S4, V3.S4]  // load 16 floats
+	FABS_4S(0, 0)              // V0 = |V0|
+	FABS_4S(1, 1)              // V1 = |V1|
+	FABS_4S(2, 2)              // V2 = |V2|
+	FABS_4S(3, 3)              // V3 = |V3|
+	FMAX_4S(0, 0, 1)          // V0 = max(V0, V1)
+	FMAX_4S(2, 2, 3)          // V2 = max(V2, V3)
+	FMAX_4S(4, 4, 0)          // V4 = max(V4, V0)
+	FMAX_4S(4, 4, 2)          // V4 = max(V4, V2)
+
+	ADD  $64, R0
+	SUB  $16, R1, R1
+	CMP  $16, R1
+	BGE  peak_neon16
+
+	CMP  $4, R1
+	BLT  peak_scalar
+
+	// Process 4 floats per iteration (remainder)
+peak_neon4:
+	VLD1 (R0), [V0.S4]        // load 4 floats
+	FABS_4S(0, 0)              // V0 = |V0|
+	FMAX_4S(4, 4, 0)          // V4 = max(V4, V0)
+
+	ADD  $16, R0
+	SUB  $4, R1, R1
+	CMP  $4, R1
+	BGE  peak_neon4
+
+peak_scalar:
+	// Horizontal reduction: max across V4 lanes
+	FMAXV_S(4, 4)             // S4 = max(V4[0..3])
+
+	CMP  $0, R1
+	BLE  peak_store
+
+	// Process remaining 1-3 elements scalar
+peak_scalar_loop:
+	FMOVS (R0), F0
+	FABSS F0, F0               // |val|
+	FMAXS F0, F4, F4          // S4 = max(S4, |val|)
+
+	ADD  $4, R0
+	SUB  $1, R1, R1
+	CMP  $0, R1
+	BGT  peak_scalar_loop
+
+peak_store:
+	FMOVS F4, ret+16(FP)
+	RET
+
+// --- NEON macros for stereo deinterleave ---
+// UZP1 Vd.4S, Vn.4S, Vm.4S — deinterleave even elements
+#define UZP1_4S(Vd, Vn, Vm) WORD $(0x4E801800 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
+// UZP2 Vd.4S, Vn.4S, Vm.4S — deinterleave odd elements
+#define UZP2_4S(Vd, Vn, Vm) WORD $(0x4E805800 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
+
+// ============================================================================
+// func PeakAbsStereoFloat32(data *float32, n int) (peakL, peakR float32)
+// ============================================================================
+// Returns max(|data[2i]|) and max(|data[2i+1]|) for interleaved stereo data.
+// n = total number of samples (must be even).
+// NEON path loads 8 floats [L R L R L R L R], uses UZP1/UZP2 to deinterleave
+// into left and right vectors, then FABS + FMAX.
+//
+// Register allocation:
+//   R0 = data pointer, R1 = remaining samples
+//   V4 = left max accumulator, V5 = right max accumulator
+//   V0/V1 = loaded data, V2/V3 = deinterleaved left/right
+TEXT ·PeakAbsStereoFloat32(SB), NOSPLIT, $0-24
+	MOVD data+0(FP), R0       // R0 = data pointer
+	MOVD n+8(FP), R1          // R1 = total samples
+
+	// Initialize accumulators to 0
+	VEOR V4.B16, V4.B16, V4.B16  // left max
+	VEOR V5.B16, V5.B16, V5.B16  // right max
+
+	CMP  $2, R1
+	BLT  stereo_store
+
+	CMP  $8, R1
+	BLT  stereo_scalar
+
+	// Process 8 samples per iteration (4 stereo pairs)
+stereo_neon8:
+	VLD1 (R0), [V0.S4, V1.S4]  // V0=[L0 R0 L1 R1], V1=[L2 R2 L3 R3]
+	UZP1_4S(2, 0, 1)           // V2=[L0 L1 L2 L3] (even elements)
+	UZP2_4S(3, 0, 1)           // V3=[R0 R1 R2 R3] (odd elements)
+	FABS_4S(2, 2)              // V2 = |left|
+	FABS_4S(3, 3)              // V3 = |right|
+	FMAX_4S(4, 4, 2)           // V4 = max(V4, |left|)
+	FMAX_4S(5, 5, 3)           // V5 = max(V5, |right|)
+
+	ADD  $32, R0               // advance 8 floats
+	SUB  $8, R1, R1
+	CMP  $8, R1
+	BGE  stereo_neon8
+
+stereo_scalar:
+	// Horizontal reduction
+	FMAXV_S(4, 4)             // S4 = max across V4
+	FMAXV_S(5, 5)             // S5 = max across V5
+
+	CMP  $2, R1
+	BLT  stereo_store
+
+	// Process remaining stereo pairs scalar
+stereo_scalar_loop:
+	FMOVS (R0), F0             // left sample
+	FABSS F0, F0
+	FMAXS F0, F4, F4
+
+	FMOVS 4(R0), F1            // right sample
+	FABSS F1, F1
+	FMAXS F1, F5, F5
+
+	ADD  $8, R0                // advance 2 floats
+	SUB  $2, R1, R1
+	CMP  $2, R1
+	BGE  stereo_scalar_loop
+
+stereo_store:
+	FMOVS F4, ret+16(FP)      // peakL
+	FMOVS F5, ret+20(FP)      // peakR
+	RET

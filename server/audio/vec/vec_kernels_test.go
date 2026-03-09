@@ -257,6 +257,201 @@ func TestMulAddFloat32_CrossfadeValidation(t *testing.T) {
 	}
 }
 
+// --- PeakAbsFloat32 tests ---
+
+func TestPeakAbsFloat32_Basic(t *testing.T) {
+	t.Parallel()
+	data := []float32{-0.5, 0.3, -0.8, 0.1}
+	got := PeakAbsFloat32(&data[0], 4)
+	require.Equal(t, float32(0.8), got)
+}
+
+func TestPeakAbsFloat32_AllPositive(t *testing.T) {
+	t.Parallel()
+	data := []float32{0.1, 0.5, 0.3, 0.9, 0.2}
+	got := PeakAbsFloat32(&data[0], 5)
+	require.Equal(t, float32(0.9), got)
+}
+
+func TestPeakAbsFloat32_AllNegative(t *testing.T) {
+	t.Parallel()
+	data := []float32{-0.1, -0.5, -0.3, -0.9, -0.2}
+	got := PeakAbsFloat32(&data[0], 5)
+	require.Equal(t, float32(0.9), got)
+}
+
+func TestPeakAbsFloat32_AllZero(t *testing.T) {
+	t.Parallel()
+	data := make([]float32, 16)
+	got := PeakAbsFloat32(&data[0], 16)
+	require.Equal(t, float32(0.0), got)
+}
+
+func TestPeakAbsFloat32_ZeroLength(t *testing.T) {
+	t.Parallel()
+	data := []float32{1.0}
+	got := PeakAbsFloat32(&data[0], 0)
+	require.Equal(t, float32(0.0), got)
+}
+
+func TestPeakAbsFloat32_SingleElement(t *testing.T) {
+	t.Parallel()
+	data := []float32{-0.75}
+	got := PeakAbsFloat32(&data[0], 1)
+	require.Equal(t, float32(0.75), got)
+}
+
+func TestPeakAbsFloat32_OddSizes(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int{1, 3, 5, 7, 13, 15, 17, 31, 33} {
+		data := make([]float32, n)
+		var expected float32
+		for i := 0; i < n; i++ {
+			v := float32(math.Sin(float64(i)*0.7)) * float32(i) / float32(n)
+			data[i] = v
+			if v < 0 {
+				v = -v
+			}
+			if v > expected {
+				expected = v
+			}
+		}
+		got := PeakAbsFloat32(&data[0], n)
+		require.InDelta(t, float64(expected), float64(got), 1e-6, "n=%d", n)
+	}
+}
+
+func TestPeakAbsFloat32_LargeN(t *testing.T) {
+	t.Parallel()
+	n := 2048
+	data := make([]float32, n)
+	var expected float32
+	for i := 0; i < n; i++ {
+		v := float32(math.Sin(float64(i) * 0.01))
+		data[i] = v
+		if v < 0 {
+			v = -v
+		}
+		if v > expected {
+			expected = v
+		}
+	}
+	got := PeakAbsFloat32(&data[0], n)
+	require.InDelta(t, float64(expected), float64(got), 1e-6)
+}
+
+func TestPeakAbsFloat32_PeakAtEnd(t *testing.T) {
+	t.Parallel()
+	// Ensure the peak at the very end (scalar tail) is found
+	n := 17 // 16 NEON + 1 scalar
+	data := make([]float32, n)
+	for i := 0; i < n-1; i++ {
+		data[i] = 0.1
+	}
+	data[n-1] = -0.99
+	got := PeakAbsFloat32(&data[0], n)
+	require.Equal(t, float32(0.99), got)
+}
+
+// --- PeakAbsStereoFloat32 tests ---
+
+func TestPeakAbsStereoFloat32_Basic(t *testing.T) {
+	t.Parallel()
+	// [L0=-0.5, R0=0.3, L1=0.8, R1=-0.9]
+	data := []float32{-0.5, 0.3, 0.8, -0.9}
+	l, r := PeakAbsStereoFloat32(&data[0], 4)
+	require.Equal(t, float32(0.8), l)
+	require.Equal(t, float32(0.9), r)
+}
+
+func TestPeakAbsStereoFloat32_AllZero(t *testing.T) {
+	t.Parallel()
+	data := make([]float32, 16)
+	l, r := PeakAbsStereoFloat32(&data[0], 16)
+	require.Equal(t, float32(0.0), l)
+	require.Equal(t, float32(0.0), r)
+}
+
+func TestPeakAbsStereoFloat32_LessThan2(t *testing.T) {
+	t.Parallel()
+	data := []float32{1.0}
+	l, r := PeakAbsStereoFloat32(&data[0], 0)
+	require.Equal(t, float32(0.0), l)
+	require.Equal(t, float32(0.0), r)
+}
+
+func TestPeakAbsStereoFloat32_OddSizes(t *testing.T) {
+	t.Parallel()
+	for _, pairs := range []int{1, 2, 3, 5, 7, 15, 17, 31} {
+		n := pairs * 2
+		data := make([]float32, n)
+		var expectedL, expectedR float32
+		for i := 0; i < pairs; i++ {
+			lv := float32(math.Sin(float64(i)*0.7)) * float32(i) / float32(pairs)
+			rv := float32(math.Cos(float64(i)*0.7)) * float32(i) / float32(pairs)
+			data[i*2] = lv
+			data[i*2+1] = rv
+			if lv < 0 {
+				lv = -lv
+			}
+			if lv > expectedL {
+				expectedL = lv
+			}
+			if rv < 0 {
+				rv = -rv
+			}
+			if rv > expectedR {
+				expectedR = rv
+			}
+		}
+		gotL, gotR := PeakAbsStereoFloat32(&data[0], n)
+		require.InDelta(t, float64(expectedL), float64(gotL), 1e-6, "pairs=%d left", pairs)
+		require.InDelta(t, float64(expectedR), float64(gotR), 1e-6, "pairs=%d right", pairs)
+	}
+}
+
+func TestPeakAbsStereoFloat32_LargeN(t *testing.T) {
+	t.Parallel()
+	n := 2048
+	data := make([]float32, n)
+	var expectedL, expectedR float32
+	for i := 0; i < n/2; i++ {
+		lv := float32(math.Sin(float64(i) * 0.01))
+		rv := float32(math.Cos(float64(i) * 0.01))
+		data[i*2] = lv
+		data[i*2+1] = rv
+		if lv < 0 {
+			lv = -lv
+		}
+		if lv > expectedL {
+			expectedL = lv
+		}
+		if rv < 0 {
+			rv = -rv
+		}
+		if rv > expectedR {
+			expectedR = rv
+		}
+	}
+	gotL, gotR := PeakAbsStereoFloat32(&data[0], n)
+	require.InDelta(t, float64(expectedL), float64(gotL), 1e-6)
+	require.InDelta(t, float64(expectedR), float64(gotR), 1e-6)
+}
+
+func TestPeakAbsStereoFloat32_PeakAtEnd(t *testing.T) {
+	t.Parallel()
+	n := 18 // 16 NEON + 2 scalar
+	data := make([]float32, n)
+	for i := range data {
+		data[i] = 0.1
+	}
+	data[n-2] = -0.99 // left peak
+	data[n-1] = 0.88  // right peak
+	l, r := PeakAbsStereoFloat32(&data[0], n)
+	require.Equal(t, float32(0.99), l)
+	require.Equal(t, float32(0.88), r)
+}
+
 // --- Benchmarks ---
 
 func BenchmarkAddFloat32_2048(b *testing.B) {
@@ -286,6 +481,34 @@ func BenchmarkScaleFloat32_2048(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ScaleFloat32(&dst[0], 0.891, n)
+	}
+}
+
+func BenchmarkPeakAbsFloat32_2048(b *testing.B) {
+	n := 2048
+	data := make([]float32, n)
+	for i := range data {
+		data[i] = float32(math.Sin(float64(i) * 0.01))
+	}
+	b.SetBytes(int64(n * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PeakAbsFloat32(&data[0], n)
+	}
+}
+
+func BenchmarkPeakAbsFloat32_1024(b *testing.B) {
+	n := 1024
+	data := make([]float32, n)
+	for i := range data {
+		data[i] = float32(math.Sin(float64(i) * 0.01))
+	}
+	b.SetBytes(int64(n * 4))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		PeakAbsFloat32(&data[0], n)
 	}
 }
 

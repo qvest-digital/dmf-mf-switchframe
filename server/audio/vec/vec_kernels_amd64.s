@@ -297,3 +297,177 @@ muladd_scalar_loop:
 
 muladd_done:
 	RET
+
+// ============================================================================
+// func PeakAbsFloat32(data *float32, n int) float32
+// ============================================================================
+// Returns max(|data[i]|) for i in [0, n).
+// Uses ANDPS with sign-bit mask for absolute value, MAXPS for element-wise max.
+// AVX path processes 8 float32s/iter, SSE2 fallback processes 4.
+//
+// abs_mask = 0x7FFFFFFF (clear sign bit) replicated to all lanes.
+TEXT ·PeakAbsFloat32(SB), NOSPLIT, $0-24
+	MOVQ data+0(FP), DI       // DI = data
+	MOVQ n+8(FP), CX          // CX = n
+
+	// Initialize result register to 0
+	XORPS X4, X4               // X4 = [0, 0, 0, 0] (accumulator)
+
+	TESTQ CX, CX
+	JLE   peak_store_amd64
+
+	// Build abs mask: 0x7FFFFFFF in all 4 lanes
+	PCMPEQL X5, X5             // X5 = all ones
+	PSRLL   $1, X5             // X5 = [0x7FFFFFFF, ...] (clear sign bit)
+
+	// Check AVX2 availability
+	CMPB ·avx2Available(SB), $1
+	JE   peak_avx
+
+	// --- SSE2 path ---
+	CMPQ CX, $4
+	JLT  peak_scalar_amd64
+
+peak_sse2_loop:
+	MOVUPS (DI), X0            // load 4 floats
+	ANDPS  X5, X0              // absolute value
+	MAXPS  X0, X4              // X4 = max(X4, |data|)
+
+	ADDQ $16, DI
+	SUBQ $4, CX
+	CMPQ CX, $4
+	JGE  peak_sse2_loop
+	JMP  peak_hmax_sse
+
+peak_avx:
+	// Widen abs mask to YMM
+	// Y5 already has X5 in low 128; broadcast to high 128
+	VINSERTF128 $1, X5, Y5, Y5
+	VXORPS Y4, Y4, Y4         // Y4 = accumulator
+
+	CMPQ CX, $8
+	JLT  peak_avx_cleanup
+
+peak_avx_loop:
+	VMOVUPS (DI), Y0           // load 8 floats
+	VANDPS  Y5, Y0, Y0        // absolute value
+	VMAXPS  Y0, Y4, Y4        // accumulate max
+
+	ADDQ $32, DI
+	SUBQ $8, CX
+	CMPQ CX, $8
+	JGE  peak_avx_loop
+
+peak_avx_cleanup:
+	// Reduce Y4 to X4: max of high and low 128-bit halves
+	VEXTRACTF128 $1, Y4, X0
+	VMAXPS X0, X4, X4
+	VZEROUPPER
+
+	// Fall through to SSE horizontal max
+
+peak_hmax_sse:
+	// Horizontal max: X4 has 4 candidates
+	MOVAPS X4, X0
+	SHUFPS $0x4E, X0, X0      // X0 = [X4[2], X4[3], X4[0], X4[1]]
+	MAXPS  X0, X4
+	MOVAPS X4, X0
+	SHUFPS $0xB1, X0, X0      // X0 = [X4[1], X4[0], X4[3], X4[2]]
+	MAXPS  X0, X4
+	// X4[0] now contains the max
+
+	// Process remaining < 4 elements
+peak_scalar_amd64:
+	TESTQ CX, CX
+	JLE   peak_store_amd64
+
+peak_scalar_loop_amd64:
+	MOVSS (DI), X0
+	ANDPS X5, X0              // absolute value
+	MAXSS X0, X4              // accumulate max
+
+	ADDQ $4, DI
+	DECQ CX
+	JNZ  peak_scalar_loop_amd64
+
+peak_store_amd64:
+	MOVSS X4, ret+16(FP)
+	RET
+
+// ============================================================================
+// func PeakAbsStereoFloat32(data *float32, n int) (peakL, peakR float32)
+// ============================================================================
+// Returns max(|data[2i]|) and max(|data[2i+1]|) for interleaved stereo data.
+// n = total number of samples (must be even).
+// SSE2 path uses shuffle to deinterleave left/right channels.
+TEXT ·PeakAbsStereoFloat32(SB), NOSPLIT, $0-24
+	MOVQ data+0(FP), DI       // DI = data
+	MOVQ n+8(FP), CX          // CX = total samples
+
+	// Initialize accumulators to 0
+	XORPS X4, X4               // left max
+	XORPS X5, X5               // right max
+
+	CMPQ CX, $2
+	JLT  stereo_store_amd64
+
+	// Build abs mask: 0x7FFFFFFF
+	PCMPEQL X6, X6
+	PSRLL   $1, X6             // X6 = abs mask
+
+	// Process 2 stereo pairs (4 floats) per iteration
+	CMPQ CX, $4
+	JLT  stereo_scalar_amd64
+
+stereo_sse2_loop:
+	MOVUPS (DI), X0            // X0 = [L0 R0 L1 R1]
+	MOVAPS X0, X1              // X1 = copy
+	SHUFPS $0x88, X0, X0       // X0 = [L0 L1 L0 L1] (even elements)
+	SHUFPS $0xDD, X1, X1       // X1 = [R0 R1 R0 R1] (odd elements)
+	ANDPS  X6, X0              // abs(left)
+	ANDPS  X6, X1              // abs(right)
+	MAXPS  X0, X4              // accumulate left max
+	MAXPS  X1, X5              // accumulate right max
+
+	ADDQ $16, DI
+	SUBQ $4, CX
+	CMPQ CX, $4
+	JGE  stereo_sse2_loop
+
+	// Horizontal max for left (X4)
+	MOVAPS X4, X0
+	SHUFPS $0x4E, X0, X0
+	MAXPS  X0, X4
+	MOVAPS X4, X0
+	SHUFPS $0xB1, X0, X0
+	MAXPS  X0, X4
+
+	// Horizontal max for right (X5)
+	MOVAPS X5, X0
+	SHUFPS $0x4E, X0, X0
+	MAXPS  X0, X5
+	MOVAPS X5, X0
+	SHUFPS $0xB1, X0, X0
+	MAXPS  X0, X5
+
+stereo_scalar_amd64:
+	CMPQ CX, $2
+	JLT  stereo_store_amd64
+
+stereo_scalar_loop_amd64:
+	MOVSS (DI), X0             // left
+	MOVSS 4(DI), X1            // right
+	ANDPS X6, X0
+	ANDPS X6, X1
+	MAXSS X0, X4
+	MAXSS X1, X5
+
+	ADDQ $8, DI
+	SUBQ $2, CX
+	CMPQ CX, $2
+	JGE  stereo_scalar_loop_amd64
+
+stereo_store_amd64:
+	MOVSS X4, ret+16(FP)      // peakL
+	MOVSS X5, ret+20(FP)      // peakR
+	RET
