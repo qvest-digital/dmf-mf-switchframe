@@ -2464,6 +2464,38 @@ func TestMixer_SetStingerAudio(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	audio := []float32{0.1, 0.2, 0.3}
+	m.SetStingerAudio(audio, 44100, 2) // wrong sample rate
+
+	m.mu.Lock()
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on sample rate mismatch")
+	m.mu.Unlock()
+}
+
+func TestMixer_SetStingerAudio_ChannelMismatch(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	audio := []float32{0.1, 0.2, 0.3}
+	m.SetStingerAudio(audio, 48000, 1) // wrong channel count
+
+	m.mu.Lock()
+	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on channel mismatch")
+	m.mu.Unlock()
+}
+
 func TestMixer_AddStingerAudio_Basic(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,

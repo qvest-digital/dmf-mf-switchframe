@@ -362,7 +362,8 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 	}
 	mixed := m.mixAccum
 
-	// Stinger audio overlay: add stinger PCM on top of source crossfade
+	// Stinger audio overlay: add stinger PCM on top of source crossfade.
+	// Also present in ingestCrossfadeFrame — only one path is active at a time.
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}
@@ -739,9 +740,21 @@ func (m *AudioMixer) SetProgramMute(muted bool) {
 // SetStingerAudio provides the stinger clip's audio PCM for additive overlay
 // during a stinger transition. The audio is consumed sample-by-sample during
 // mix cycles until exhausted or cleared by OnTransitionComplete.
+// If the stinger audio has a different sample rate or channel count than the
+// mixer, a warning is logged and the audio is skipped to prevent artifacts.
 func (m *AudioMixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if sampleRate != m.sampleRate {
+		m.log.Warn("stinger audio sample rate mismatch, skipping audio",
+			"stinger_rate", sampleRate, "mixer_rate", m.sampleRate)
+		return
+	}
+	if channels != m.numChannels {
+		m.log.Warn("stinger audio channel count mismatch, skipping audio",
+			"stinger_channels", channels, "mixer_channels", m.numChannels)
+		return
+	}
 	m.stingerAudio = audio
 	m.stingerOffset = 0
 	m.stingerChannels = channels
@@ -1308,7 +1321,8 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		mixed = m.crossfadePCM[m.crossfadeFrom]
 	}
 
-	// Stinger audio overlay: add stinger PCM on top of source crossfade
+	// Stinger audio overlay: add stinger PCM on top of source crossfade.
+	// Also present in collectMixCycleLocked — only one path is active at a time.
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}
