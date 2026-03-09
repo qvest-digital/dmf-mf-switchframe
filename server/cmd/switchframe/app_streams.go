@@ -12,7 +12,7 @@ import (
 // for BUG detection — all init methods complete before Run() starts the Prism
 // server, so sw/mixer should never be nil.
 func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
-	if key == "program" || key == "program-raw" || key == "replay" {
+	if key == "program" || key == "program-raw" || key == "replay" || key == "replay-raw" {
 		return
 	}
 	if strings.HasPrefix(key, "mxl:") {
@@ -42,7 +42,7 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 // onStreamUnregistered handles a removed stream. It skips "program" and
 // "replay" (internal relays) and includes a nil guard for BUG detection.
 func (a *App) onStreamUnregistered(key string) {
-	if key == "program" || key == "program-raw" || key == "replay" {
+	if key == "program" || key == "program-raw" || key == "replay" || key == "replay-raw" {
 		return
 	}
 

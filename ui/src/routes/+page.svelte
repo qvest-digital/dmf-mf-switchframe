@@ -181,10 +181,11 @@
 		onControlState: (data) => {
 			connectionManager.handleControlData(data);
 		},
-		onRawSourceReady: () => {
+		onRawSourceReady: (sourceKey: string) => {
 			// Raw YUV source catalog arrived — re-sync canvases so the pipeline
 			// manager switches from PrismRenderer to YUVRenderer.
-			if (mounted) {
+			// Only react to program-raw (not replay-raw or other raw sources).
+			if (mounted && sourceKey === 'program-raw') {
 				pipelineManager.resetProgramCanvas();
 				pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
 			}
