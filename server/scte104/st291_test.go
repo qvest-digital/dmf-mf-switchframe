@@ -129,8 +129,8 @@ func TestParseST291_ZeroLengthPayload(t *testing.T) {
 }
 
 func TestParseST291_MaxLengthPayload(t *testing.T) {
-	// 253 bytes of SCTE-104 data (max for single non-fragmented packet).
-	data := make([]byte, 253)
+	// 254 bytes of SCTE-104 data (max for single non-fragmented packet).
+	data := make([]byte, 254)
 	for i := range data {
 		data[i] = byte(i)
 	}
@@ -142,7 +142,7 @@ func TestParseST291_MaxLengthPayload(t *testing.T) {
 	}
 
 	if !bytes.Equal(got, data) {
-		t.Errorf("round-trip mismatch for 253-byte payload")
+		t.Errorf("round-trip mismatch for 254-byte payload")
 	}
 }
 
@@ -247,10 +247,10 @@ func TestWrapST291_EmptyPayload(t *testing.T) {
 }
 
 func TestWrapST291_PayloadTooLarge(t *testing.T) {
-	data := make([]byte, 254)
+	data := make([]byte, 255)
 	_, err := WrapST291(data)
 	if err == nil {
-		t.Fatal("expected error for payload > 253 bytes")
+		t.Fatal("expected error for payload > 254 bytes")
 	}
 	if !errors.Is(err, ErrST291PayloadTooLarge) {
 		t.Errorf("error = %v, want ErrST291PayloadTooLarge", err)

@@ -27,9 +27,9 @@ const (
 )
 
 // st291MaxPayload is the maximum SCTE-104 data bytes in a single non-fragmented
-// packet. DC (data count) is a single byte; with one byte reserved for the
-// payload descriptor, the max SCTE-104 payload is 253 bytes (DC=254).
-const st291MaxPayload = 253
+// packet. DC (data count) is an 8-bit field (max 255); with one byte reserved
+// for the payload descriptor, the max SCTE-104 payload is 254 bytes (DC=255).
+const st291MaxPayload = 254
 
 var (
 	// ErrST291TooShort indicates the ST 291 packet is too short to parse.
@@ -129,7 +129,7 @@ func ParseST291(packet []byte) ([]byte, error) {
 // where DC = len(scte104Data) + 1 (for the payload descriptor byte) and
 // CS = (sum of all preceding bytes) & 0xFF.
 //
-// Returns ErrST291PayloadTooLarge if scte104Data exceeds 253 bytes
+// Returns ErrST291PayloadTooLarge if scte104Data exceeds 254 bytes
 // (fragmentation not implemented).
 func WrapST291(scte104Data []byte) ([]byte, error) {
 	if len(scte104Data) > st291MaxPayload {
