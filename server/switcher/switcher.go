@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -785,6 +786,8 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 // the source relay's delivery goroutine from blocking on video processing,
 // which would starve audio delivery.
 func (s *Switcher) videoProcessingLoop() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
 	for work := range s.videoProcCh {
 		if work.yuvFrame != nil {
