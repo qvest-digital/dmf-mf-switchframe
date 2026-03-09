@@ -273,4 +273,194 @@ describe('MacroPanel', () => {
 		});
 		expect(container.textContent).toContain('Ctrl+');
 	});
+
+	it('shows duration input and auto-return checkbox for scte35_cue via picker', async () => {
+		const state = makeState({ cam1: {} });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		// Open the step picker
+		const addStepBtn = container.querySelector('.add-step-btn') as HTMLButtonElement;
+		await fireEvent.click(addStepBtn);
+		// Find the picker item for "Ad Break Cue"
+		const pickerItems = Array.from(container.querySelectorAll('.picker-item'));
+		const cueItem = pickerItems.find(el => el.querySelector('.picker-label')?.textContent === 'Ad Break Cue') as HTMLButtonElement;
+		expect(cueItem).toBeTruthy();
+		await fireEvent.click(cueItem);
+		// The new step should be expanded (it's the second step, index 1)
+		const stepCards = container.querySelectorAll('.step-card');
+		const lastCard = stepCards[stepCards.length - 1];
+		// Check for duration input displayed as seconds (30000ms / 1000 = 30)
+		const durationInput = lastCard.querySelector('.field-input[type="number"]') as HTMLInputElement;
+		expect(durationInput).toBeTruthy();
+		expect(Number(durationInput.value)).toBe(30);
+		// Check for auto-return checkbox
+		const checkbox = lastCard.querySelector('.field-checkbox') as HTMLInputElement;
+		expect(checkbox).toBeTruthy();
+		expect(checkbox.type).toBe('checkbox');
+		expect(checkbox.checked).toBe(true);
+	});
+
+	it('shows event ID input for scte35_return, scte35_cancel, and scte35_hold', async () => {
+		const state = makeState({ cam1: {} });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+
+		for (const action of ['scte35_return', 'scte35_cancel', 'scte35_hold'] as const) {
+			const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+			await fireEvent.change(actionSelect, { target: { value: action } });
+			const eventIdInput = container.querySelector('.event-id-input') as HTMLInputElement;
+			expect(eventIdInput, `event-id-input should appear for ${action}`).toBeTruthy();
+		}
+	});
+
+	it('shows event ID input and duration input for scte35_extend', async () => {
+		const state = makeState({ cam1: {} });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+		await fireEvent.change(actionSelect, { target: { value: 'scte35_extend' } });
+		const eventIdInput = container.querySelector('.event-id-input') as HTMLInputElement;
+		expect(eventIdInput).toBeTruthy();
+		// Duration input for extend is a .field-input (not .duration-input which is transition-specific)
+		const fieldInputs = container.querySelectorAll('.field-input[type="number"]');
+		// Should have at least 2: event-id-input and duration input
+		expect(fieldInputs.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it('shows source dropdown and level input for set_audio action', async () => {
+		const state = makeState({ cam1: { label: 'Camera 1' } });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+		await fireEvent.change(actionSelect, { target: { value: 'set_audio' } });
+		const sourceSelect = container.querySelector('.source-select') as HTMLSelectElement;
+		expect(sourceSelect).toBeTruthy();
+		const levelInput = container.querySelector('.level-input') as HTMLInputElement;
+		expect(levelInput).toBeTruthy();
+	});
+
+	it('shows source dropdown for preview action', async () => {
+		const state = makeState({ cam1: { label: 'Camera 1' }, cam2: { label: 'Camera 2' } });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+		await fireEvent.change(actionSelect, { target: { value: 'preview' } });
+		const sourceSelect = container.querySelector('.source-select') as HTMLSelectElement;
+		expect(sourceSelect).toBeTruthy();
+		const options = Array.from(sourceSelect.options).map(o => o.value);
+		expect(options).toContain('cam1');
+		expect(options).toContain('cam2');
+	});
+
+	it('shows validation error when saving with no steps', async () => {
+		const { container } = render(MacroPanel, { props: { state: makeState({ cam1: {} }) } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		// Remove the default step
+		const deleteBtn = container.querySelector('.step-delete') as HTMLButtonElement;
+		await fireEvent.click(deleteBtn);
+		expect(container.querySelectorAll('.step-card').length).toBe(0);
+		// Type a name so it doesn't fail on name validation first
+		const nameInput = container.querySelector('.macro-name-input') as HTMLInputElement;
+		await fireEvent.input(nameInput, { target: { value: 'Empty Macro' } });
+		// Click save
+		const saveBtn = container.querySelector('.save-btn') as HTMLButtonElement;
+		await fireEvent.click(saveBtn);
+		const error = container.querySelector('.editor-error');
+		expect(error).toBeTruthy();
+		expect(error?.textContent).toContain('At least one step is required');
+	});
+
+	it('shows error message when saveMacro rejects', async () => {
+		const { saveMacro } = await import('$lib/api/switch-api');
+		vi.mocked(saveMacro).mockRejectedValueOnce(new Error('Network error'));
+		const state = makeState({ cam1: {} });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		const nameInput = container.querySelector('.macro-name-input') as HTMLInputElement;
+		await fireEvent.input(nameInput, { target: { value: 'Failing Macro' } });
+		const saveBtn = container.querySelector('.save-btn') as HTMLButtonElement;
+		await fireEvent.click(saveBtn);
+		await vi.waitFor(() => {
+			const error = container.querySelector('.editor-error');
+			expect(error).toBeTruthy();
+			expect(error?.textContent).toContain('Network error');
+		});
+	});
+
+	it('shows error notification when runMacro rejects', async () => {
+		const { listMacros, runMacro } = await import('$lib/api/switch-api');
+		const { notify } = await import('$lib/state/notifications.svelte');
+		vi.mocked(listMacros).mockResolvedValueOnce([
+			{ name: 'Broken Macro', steps: [{ action: 'cut', params: { source: 'cam1' } }] },
+		]);
+		vi.mocked(runMacro).mockRejectedValueOnce(new Error('Run failed'));
+		const { container } = render(MacroPanel, { props: { state: makeState() } });
+		await vi.waitFor(() => {
+			expect(container.textContent).toContain('Broken Macro');
+		});
+		const macroBtn = container.querySelector('.macro-btn') as HTMLButtonElement;
+		await fireEvent.click(macroBtn);
+		await vi.waitFor(() => {
+			expect(notify).toHaveBeenCalledWith('error', expect.stringContaining('Run failed'));
+		});
+	});
+
+	it('shows error notification when deleteMacro rejects', async () => {
+		const { listMacros, deleteMacro } = await import('$lib/api/switch-api');
+		const { notify } = await import('$lib/state/notifications.svelte');
+		vi.mocked(listMacros).mockResolvedValueOnce([
+			{ name: 'Undeletable', steps: [{ action: 'cut', params: { source: 'cam1' } }] },
+		]);
+		vi.mocked(deleteMacro).mockRejectedValueOnce(new Error('Delete failed'));
+		const { container } = render(MacroPanel, { props: { state: makeState() } });
+		await vi.waitFor(() => {
+			expect(container.textContent).toContain('Undeletable');
+		});
+		const delBtn = container.querySelector('.del-btn') as HTMLButtonElement;
+		await fireEvent.click(delBtn);
+		await vi.waitFor(() => {
+			expect(notify).toHaveBeenCalledWith('error', expect.stringContaining('Delete failed'));
+		});
+	});
+
+	it('saves scte35_cue with durationMs in milliseconds not seconds', async () => {
+		const { saveMacro } = await import('$lib/api/switch-api');
+		vi.mocked(saveMacro).mockResolvedValueOnce({ name: 'Ad Cue', steps: [] });
+		const state = makeState({ cam1: {} });
+		const { container } = render(MacroPanel, { props: { state } });
+		const addBtn = container.querySelector('.add-btn') as HTMLButtonElement;
+		await fireEvent.click(addBtn);
+		// Change the default cut step to scte35_cue
+		const actionSelect = container.querySelector('.action-select') as HTMLSelectElement;
+		await fireEvent.change(actionSelect, { target: { value: 'scte35_cue' } });
+		// Enter macro name
+		const nameInput = container.querySelector('.macro-name-input') as HTMLInputElement;
+		await fireEvent.input(nameInput, { target: { value: 'Ad Cue' } });
+		// Save
+		const saveBtn = container.querySelector('.save-btn') as HTMLButtonElement;
+		await fireEvent.click(saveBtn);
+		expect(saveMacro).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: 'Ad Cue',
+				steps: [
+					expect.objectContaining({
+						action: 'scte35_cue',
+						params: expect.objectContaining({
+							durationMs: 30000,
+						}),
+					}),
+				],
+			})
+		);
+		// Ensure durationSec is NOT in the params
+		const callArgs = vi.mocked(saveMacro).mock.calls[0][0];
+		expect(callArgs.steps[0].params).not.toHaveProperty('durationSec');
+	});
 });

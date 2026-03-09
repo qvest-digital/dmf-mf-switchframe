@@ -150,7 +150,7 @@
 			params.level = 0;
 		}
 		if (action === 'scte35_cue') {
-			params.durationSec = 30;
+			params.durationMs = 30000;
 			params.autoReturn = true;
 		}
 		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) {
@@ -193,7 +193,7 @@
 		}
 		if (action === 'wait') params.ms = 500;
 		if (action === 'set_audio') params.level = 0;
-		if (action === 'scte35_cue') { params.durationSec = 30; params.autoReturn = true; }
+		if (action === 'scte35_cue') { params.durationMs = 30000; params.autoReturn = true; }
 		if (['scte35_return', 'scte35_cancel', 'scte35_hold'].includes(action)) params.eventId = 0;
 		if (action === 'scte35_extend') { params.eventId = 0; params.durationMs = 30000; }
 		editingSteps[index] = { action, params };
@@ -223,7 +223,7 @@
 				return `Audio: ${sourceLabel(step.params.source as string || '?')} → ${lvl > 0 ? '+' : ''}${lvl} dB`;
 			}
 			case 'scte35_cue':
-				return `Ad Break (${step.params.durationSec || 30}s)`;
+				return `Ad Break (${((step.params.durationMs as number) || 30000) / 1000}s)`;
 			case 'scte35_return':
 				return `Return${(step.params.eventId as number) ? ` #${step.params.eventId}` : ''}`;
 			case 'scte35_cancel':
@@ -432,8 +432,8 @@
 											min="1"
 											max="3600"
 											step="1"
-											value={step.params.durationSec as number || 30}
-											oninput={(e) => updateStepParam(i, 'durationSec', parseInt((e.target as HTMLInputElement).value) || 30)}
+											value={((step.params.durationMs as number) || 30000) / 1000}
+											oninput={(e) => updateStepParam(i, 'durationMs', (parseInt((e.target as HTMLInputElement).value) || 30) * 1000)}
 										/>
 										<span class="field-unit">sec</span>
 									</div>
