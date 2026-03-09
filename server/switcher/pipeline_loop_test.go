@@ -205,6 +205,33 @@ func TestSwapPipeline_OldPipelineDrained(t *testing.T) {
 	require.Equal(t, "new", loaded.activeNodes[0].Name())
 }
 
+func TestRebuildPipeline_NoPipeCodecsNoop(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// No pipeCodecs set — rebuildPipeline should be a no-op.
+	sw.rebuildPipeline()
+	require.Nil(t, sw.pipeline.Load())
+}
+
+func TestRebuildPipeline_IncrementsEpoch(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Set up minimal pipeCodecs so rebuild proceeds.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	before := sw.pipelineEpoch.Load()
+	sw.rebuildPipeline()
+	after := sw.pipelineEpoch.Load()
+
+	require.Equal(t, before+1, after)
+	require.NotNil(t, sw.pipeline.Load())
+}
+
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	p := &Pipeline{}
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))

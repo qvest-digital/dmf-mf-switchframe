@@ -586,6 +586,30 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 	}()
 }
 
+// rebuildPipeline builds a fresh Pipeline from current state and atomically
+// swaps it in. Logs a warning and keeps the old pipeline if Build() fails.
+// This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
+// SetRawVideoSink, SetRawMonitorSink, and external callbacks all use this.
+func (s *Switcher) rebuildPipeline() {
+	s.mu.RLock()
+	hasPipeCodecs := s.pipeCodecs != nil
+	s.mu.RUnlock()
+
+	if !hasPipeCodecs {
+		return
+	}
+
+	format := s.PipelineFormat()
+	nodes := s.buildNodeList()
+	p := &Pipeline{}
+	if err := p.Build(format, s.framePool, nodes); err != nil {
+		s.log.Warn("pipeline rebuild failed", "error", err)
+		return
+	}
+	p.epoch = s.pipelineEpoch.Add(1)
+	s.swapPipeline(p)
+}
+
 // SetFrameSync enables or disables the freerun frame synchronizer. When
 // enabled, all source video and audio frames are buffered and released at
 // a common tick rate (program frame rate) instead of flowing through the
