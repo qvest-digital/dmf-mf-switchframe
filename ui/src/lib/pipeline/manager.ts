@@ -66,6 +66,12 @@ export class PipelineManager {
 				this.pipeline.addSource(key);
 				this.pipeline.connectSource(key);
 				this.connectedSources.add(key);
+
+				// For replay, also connect the raw YUV variant (mirrors program/program-raw).
+				if (key === 'replay') {
+					this.pipeline.addSource('replay-raw');
+					this.pipeline.connectSource('replay-raw');
+				}
 			}
 		}
 
@@ -75,15 +81,24 @@ export class PipelineManager {
 				this.pipeline.removeSource(key);
 				this.connectedSources.delete(key);
 				this.attachedCanvases.delete(key);
+
+				// Clean up the raw variant when replay is removed.
+				if (key === 'replay') {
+					this.pipeline.removeSource('replay-raw');
+				}
 			}
 		}
 
 		// Attach multiview tile canvases
 		for (const key of stateSourceKeys) {
 			if (!this.attachedCanvases.has(key)) {
+				// Prefer raw YUV replay stream when available (bypasses H.264 decode).
+				const renderKey = key === 'replay' && this.pipeline.isRawYUVSource('replay-raw')
+					? 'replay-raw'
+					: key;
 				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
 				if (canvas) {
-					this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
+					this.pipeline.attachCanvas(renderKey, `tile-${key}`, canvas);
 					this.attachedCanvases.add(key);
 				}
 			}
