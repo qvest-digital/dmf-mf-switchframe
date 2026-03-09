@@ -28,14 +28,15 @@ func Encode(msg *Message) ([]byte, error) {
 		opsData = append(opsData, opBytes...)
 	}
 
-	// MOM header: messageSize(2) + protocolVersion(1) + AS_index(1) +
+	// MOM fields after messageSize: protocolVersion(1) + AS_index(1) +
 	// message_number(1) + DPI_PID_index(2) + SCTE35_protocol_version(1) +
-	// timestamp(1) + num_ops(1) = 10 bytes
-	headerSize := 10
-	messageSize := uint16(headerSize + len(opsData))
+	// timestamp(1) + num_ops(1) = 8 bytes.
+	// messageSize counts the remaining bytes after itself (excludes its own 2 bytes).
+	const fieldsAfterMsgSize = 8
+	messageSize := uint16(fieldsAfterMsgSize + len(opsData))
 
-	// Total wire size: OpID(2) + header + ops
-	buf := make([]byte, 2+int(messageSize))
+	// Total wire size: OpID(2) + messageSize(2) + fieldsAfterMsgSize + ops
+	buf := make([]byte, 2+2+int(messageSize))
 
 	// OpID = 0xFFFF (MOM)
 	binary.BigEndian.PutUint16(buf[0:2], OpMultipleOperationMessage)
@@ -58,7 +59,9 @@ func Encode(msg *Message) ([]byte, error) {
 	// SCTE35_protocol_version (always 0)
 	buf[9] = 0
 
-	// timestamp (placeholder byte)
+	// timestamp: SCTE-104 defines a multi-byte timestamp structure, but many
+	// implementations use a single zero byte (no timestamp). This simplification
+	// is widely accepted by downstream splicer equipment.
 	buf[10] = 0
 
 	// num_ops

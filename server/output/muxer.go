@@ -18,8 +18,9 @@ const (
 	videoPID uint16 = 0x100
 	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
 	audioPID uint16 = 0x101
-	// scte35PID is the MPEG-TS packet identifier for the SCTE-35 cue stream.
-	scte35PID uint16 = 0x102
+	// defaultSCTE35PID is the default MPEG-TS packet identifier for the SCTE-35 cue stream.
+	// Used by tests and as the fallback when no PID is explicitly configured.
+	defaultSCTE35PID uint16 = 0x102
 	// maxPendingAudio is the maximum number of audio frames buffered
 	// before the muxer is initialized (first keyframe). At 48kHz with
 	// 1024-sample AAC frames, 50 frames ≈ ~1 second of audio.
@@ -42,7 +43,7 @@ type TSMuxer struct {
 	pendingAudio   []*media.AudioFrame
 	annexBBuf      []byte
 	prependBuf     []byte
-	scte35Enabled  bool
+	scte35PID      uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35  [][]byte
 	lastVideoPTS   int64
 	scte35CC       uint8 // continuity counter for SCTE-35 PID
@@ -66,13 +67,14 @@ func (m *TSMuxer) SetOutput(fn func([]byte)) {
 	m.output = fn
 }
 
-// SetSCTE35Enabled enables or disables SCTE-35 cue message support.
-// When enabled, the PMT will include a SCTE-35 elementary stream (PID 0x102)
-// with a CUEI registration descriptor. Must be called before the first keyframe.
-func (m *TSMuxer) SetSCTE35Enabled(enabled bool) {
+// SetSCTE35PID configures the SCTE-35 PID for this muxer. A non-zero PID
+// enables SCTE-35 support; zero disables it. When enabled, the PMT will
+// include a SCTE-35 elementary stream with a CUEI registration descriptor.
+// Must be called before the first keyframe.
+func (m *TSMuxer) SetSCTE35PID(pid uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.scte35Enabled = enabled
+	m.scte35PID = pid
 }
 
 // CurrentPTS returns the PTS of the most recently written video frame.
@@ -92,7 +94,7 @@ func (m *TSMuxer) WriteSCTE35(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if !m.scte35Enabled {
+	if m.scte35PID == 0 {
 		return nil
 	}
 
@@ -128,11 +130,11 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 
 		// PID (13 bits) with payload_unit_start_indicator
 		if first {
-			pkt[1] = 0x40 | byte(scte35PID>>8) // PUSI=1 + PID high bits
+			pkt[1] = 0x40 | byte(m.scte35PID>>8) // PUSI=1 + PID high bits
 		} else {
-			pkt[1] = byte(scte35PID >> 8) // PUSI=0 + PID high bits
+			pkt[1] = byte(m.scte35PID >> 8) // PUSI=0 + PID high bits
 		}
-		pkt[2] = byte(scte35PID & 0xFF)
+		pkt[2] = byte(m.scte35PID & 0xFF)
 
 		// Adaptation field control (0x10 = payload only) + continuity counter
 		pkt[3] = 0x10 | (m.scte35CC & 0x0F)
@@ -172,6 +174,13 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 // cueiDescriptor builds the CUEI registration descriptor required by
 // SCTE-35 for PMT elementary stream entries. The format identifier
 // 0x43554549 corresponds to the ASCII string "CUEI".
+//
+// Spec note: SCTE-35 section 8.1 specifies that the CUEI registration
+// descriptor should appear in the PMT program_info loop (program-level),
+// not in the ES_info loop. However, go-astits only exposes descriptors
+// via PMTElementaryStream.ElementaryStreamDescriptors (ES-level); the
+// PMT.ProgramInfoDescriptors field is not publicly settable. ES_info
+// placement is widely accepted by downstream equipment and decoders.
 func cueiDescriptor() *astits.Descriptor {
 	return &astits.Descriptor{
 		Tag: astits.DescriptorTagRegistration,
@@ -343,9 +352,9 @@ func (m *TSMuxer) init() error {
 	}
 
 	// Conditionally register SCTE-35 elementary stream.
-	if m.scte35Enabled {
+	if m.scte35PID != 0 {
 		if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
-			ElementaryPID:               scte35PID,
+			ElementaryPID:               m.scte35PID,
 			StreamType:                  astits.StreamType(0x86), // SCTE-35
 			ElementaryStreamDescriptors: []*astits.Descriptor{cueiDescriptor()},
 		}); err != nil {

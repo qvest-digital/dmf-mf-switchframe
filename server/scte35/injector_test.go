@@ -1047,3 +1047,336 @@ func TestInjector_MsgSource_InEventLog(t *testing.T) {
 	}
 	t.Fatal("expected event log entry with default Source='injector'")
 }
+
+func TestInjector_TimeSignal_CueOut_TrackedAsActive(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	// time_signal with Provider Placement Opportunity Start (0x34) should track.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 42},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 1 || ids[0] != 42 {
+		t.Fatalf("expected active event 42, got %v", ids)
+	}
+}
+
+func TestInjector_TimeSignal_NonCueOut_NotTracked(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	// time_signal with Program Start (0x10) is not a cue-out.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x10, SegEventID: 42},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 0 {
+		t.Fatalf("expected no active events, got %v", ids)
+	}
+}
+
+func TestInjector_ScheduleCue_PreRollRepeat(t *testing.T) {
+	var mu sync.Mutex
+	var sinkCalls int
+	sink := func(data []byte) {
+		mu.Lock()
+		sinkCalls++
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	_, err := inj.ScheduleCue(msg, 3000) // 3s pre-roll
+	if err != nil {
+		t.Fatalf("schedule failed: %v", err)
+	}
+
+	// Wait for at least one pre-roll repeat.
+	time.Sleep(1500 * time.Millisecond)
+
+	mu.Lock()
+	calls := sinkCalls
+	mu.Unlock()
+
+	// Initial inject (1) + at least 1 repeat = >= 2
+	if calls < 2 {
+		t.Fatalf("expected at least 2 sink calls (initial + repeat), got %d", calls)
+	}
+}
+
+func TestInjector_DefaultPID(t *testing.T) {
+	inj := NewInjector(InjectorConfig{}, func([]byte) {}, func() int64 { return 0 })
+	defer inj.Close()
+
+	if inj.config.SCTE35PID != 0x102 {
+		t.Fatalf("expected default PID 0x102, got 0x%X", inj.config.SCTE35PID)
+	}
+}
+
+func TestInjector_ReturnToProgram_TimeSignal_SendsEndType(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with Provider PO Start (0x34).
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 100, UPIDType: 0x0F, UPID: []byte("test")},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Return to program — should send time_signal with End type (0x35).
+	if err := inj.ReturnToProgram(100); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	// Decode the return message (last sink call).
+	if len(sinkCalls) < 2 {
+		t.Fatalf("expected at least 2 sink calls, got %d", len(sinkCalls))
+	}
+	returnData := sinkCalls[len(sinkCalls)-1]
+	decoded, err := Decode(returnData)
+	if err != nil {
+		t.Fatalf("decode return message failed: %v", err)
+	}
+
+	if decoded.CommandType != CommandTimeSignal {
+		t.Fatalf("expected time_signal return, got command type %d", decoded.CommandType)
+	}
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor in return, got %d", len(decoded.Descriptors))
+	}
+	if decoded.Descriptors[0].SegmentationType != 0x35 {
+		t.Fatalf("expected End type 0x35, got 0x%02x", decoded.Descriptors[0].SegmentationType)
+	}
+}
+
+func TestInjector_IsSegCueOut_AllTypes(t *testing.T) {
+	// All ad insertion Start types from SCTE-35 Table 22.
+	cueOutTypes := []uint8{0x22, 0x30, 0x32, 0x34, 0x36, 0x44, 0x46}
+	for _, typeID := range cueOutTypes {
+		if !isSegCueOut(typeID) {
+			t.Errorf("expected 0x%02x to be cue-out", typeID)
+		}
+	}
+	// Corresponding End types should NOT be cue-out.
+	cueInTypes := []uint8{0x23, 0x31, 0x33, 0x35, 0x37, 0x45, 0x47}
+	for _, typeID := range cueInTypes {
+		if isSegCueOut(typeID) {
+			t.Errorf("expected 0x%02x (End type) to not be cue-out", typeID)
+		}
+	}
+	// Non-ad types should not be cue-out.
+	if isSegCueOut(0x10) { // Program Start
+		t.Error("expected 0x10 (Program Start) to not be cue-out")
+	}
+	if isSegCueOut(0x20) { // Unscheduled Event Start (excluded by design)
+		t.Error("expected 0x20 (Unscheduled Event Start) to not be cue-out")
+	}
+}
+
+func TestInjector_HoldBreak_CancelsPreRoll(t *testing.T) {
+	var mu sync.Mutex
+	var sinkCalls int
+	sink := func(data []byte) {
+		mu.Lock()
+		sinkCalls++
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	eventID, err := inj.ScheduleCue(msg, 5000) // 5s pre-roll
+	if err != nil {
+		t.Fatalf("schedule failed: %v", err)
+	}
+
+	// Hold immediately — should cancel pre-roll.
+	if err := inj.HoldBreak(eventID); err != nil {
+		t.Fatalf("hold failed: %v", err)
+	}
+
+	mu.Lock()
+	callsBefore := sinkCalls
+	mu.Unlock()
+
+	// Wait and verify no more pre-roll repeats.
+	time.Sleep(1500 * time.Millisecond)
+
+	mu.Lock()
+	callsAfter := sinkCalls
+	mu.Unlock()
+
+	if callsAfter > callsBefore {
+		t.Fatalf("expected no more sink calls after hold, got %d more", callsAfter-callsBefore)
+	}
+}
+
+func TestInjector_ScheduleCue_TimeSignal_PreRollRepeat(t *testing.T) {
+	var mu sync.Mutex
+	var sinkCalls int
+	sink := func(data []byte) {
+		mu.Lock()
+		sinkCalls++
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Schedule a time_signal with cue-out descriptor and 3s pre-roll.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 200},
+		},
+	}
+	eventID, err := inj.ScheduleCue(msg, 3000)
+	if err != nil {
+		t.Fatalf("schedule failed: %v", err)
+	}
+
+	// eventID should be the SegEventID, not 0.
+	if eventID != 200 {
+		t.Fatalf("expected eventID=200 (from SegEventID), got %d", eventID)
+	}
+
+	// Wait for at least one pre-roll repeat.
+	time.Sleep(1500 * time.Millisecond)
+
+	mu.Lock()
+	calls := sinkCalls
+	mu.Unlock()
+
+	// Initial inject (1) + at least 1 repeat = >= 2
+	if calls < 2 {
+		t.Fatalf("expected at least 2 sink calls (initial + repeat), got %d", calls)
+	}
+}
+
+func TestInjector_InjectCue_TimeSignal_ReturnsSegEventID(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 555},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Should return the SegEventID, not 0.
+	if eventID != 555 {
+		t.Fatalf("expected eventID=555, got %d", eventID)
+	}
+}
+
+func TestInjector_ReturnToProgram_TimeSignal_PreservesSegNum(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with SegNum/SegExpected.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       300,
+				UPIDType:         0x0F,
+				UPID:             []byte("test"),
+				SegNum:           2,
+				SegExpected:      4,
+			},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	if err := inj.ReturnToProgram(300); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	// Decode the return message.
+	returnData := sinkCalls[len(sinkCalls)-1]
+	decoded, err := Decode(returnData)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	d := decoded.Descriptors[0]
+	if d.SegmentationType != 0x35 {
+		t.Fatalf("expected End type 0x35, got 0x%02x", d.SegmentationType)
+	}
+	if d.SegNum != 2 {
+		t.Errorf("SegNum = %d, want 2", d.SegNum)
+	}
+	if d.SegExpected != 4 {
+		t.Errorf("SegExpected = %d, want 4", d.SegExpected)
+	}
+}
+
+func TestWebhook_DispatchAfterClose(t *testing.T) {
+	wh := NewWebhookDispatcher("http://127.0.0.1:1", 100*time.Millisecond)
+	wh.Close()
+
+	// Dispatch after Close should not panic.
+	wh.Dispatch(WebhookEvent{Type: "test", EventID: 1})
+}

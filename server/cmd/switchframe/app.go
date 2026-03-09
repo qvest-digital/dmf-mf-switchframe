@@ -700,7 +700,7 @@ func (a *App) initSCTE35() error {
 
 	a.scte35Injector = scte35.NewInjector(config, muxerSink, ptsFn)
 	a.scte35Injector.SetRuleEngine(a.scte35Rules.Engine())
-	a.outputMgr.SetSCTE35Injector(a.scte35Injector)
+	a.outputMgr.SetSCTE35Injector(a.scte35Injector, a.cfg.SCTE35PID)
 
 	slog.Info("SCTE-35 injector initialized",
 		"pid", fmt.Sprintf("0x%X", a.cfg.SCTE35PID),

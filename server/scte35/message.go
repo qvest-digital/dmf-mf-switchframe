@@ -73,6 +73,8 @@ type SegmentationDescriptor struct {
 	DurationTicks                *uint64 `json:"durationTicks,omitempty"`
 	UPIDType                     uint8   `json:"upidType"`
 	UPID                         []byte  `json:"upid"`
+	SegNum                       uint8   `json:"segNum,omitempty"`
+	SegExpected                  uint8   `json:"segExpected,omitempty"`
 	SubSegmentNum                uint8   `json:"subSegmentNum,omitempty"`
 	SubSegmentsExpected          uint8   `json:"subSegmentsExpected,omitempty"`
 }
@@ -187,11 +189,14 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 		sis.SpliceCommand = si
 
 	case CommandTimeSignal:
-		var pts uint64
+		ts := &scte35lib.TimeSignal{}
 		if m.SpliceTimePTS != nil {
-			pts = uint64(*m.SpliceTimePTS)
+			pts := uint64(*m.SpliceTimePTS)
+			ts.SpliceTime = scte35lib.SpliceTime{PTSTime: &pts}
 		}
-		sis.SpliceCommand = scte35lib.NewTimeSignal(pts)
+		// When SpliceTimePTS is nil, PTSTime stays nil → time_specified_flag=0
+		// (avoids encoding PTS=0 with time_specified_flag=1).
+		sis.SpliceCommand = ts
 
 		for _, d := range m.Descriptors {
 			sd := &scte35lib.SegmentationDescriptor{
@@ -211,6 +216,14 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 					sd.SegmentationUPIDs = []scte35lib.SegmentationUPID{
 						scte35lib.NewSegmentationUPID(uint32(d.UPIDType), d.UPID),
 					}
+				}
+				sd.SegmentNum = uint32(d.SegNum)
+				sd.SegmentsExpected = uint32(d.SegExpected)
+				if d.SubSegmentNum > 0 || d.SubSegmentsExpected > 0 {
+					sn := uint32(d.SubSegmentNum)
+					se := uint32(d.SubSegmentsExpected)
+					sd.SubSegmentNum = &sn
+					sd.SubSegmentsExpected = &se
 				}
 			}
 			sis.SpliceDescriptors = append(sis.SpliceDescriptors, sd)
@@ -324,6 +337,8 @@ func Decode(data []byte) (*CueMessage, error) {
 			dur := *segDesc.SegmentationDuration
 			d.DurationTicks = &dur
 		}
+		d.SegNum = uint8(segDesc.SegmentNum)
+		d.SegExpected = uint8(segDesc.SegmentsExpected)
 		if segDesc.SubSegmentNum != nil {
 			d.SubSegmentNum = uint8(*segDesc.SubSegmentNum)
 		}

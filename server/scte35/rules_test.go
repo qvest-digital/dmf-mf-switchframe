@@ -483,3 +483,33 @@ func TestRuleEngine_ConcurrentAccess(t *testing.T) {
 		<-done
 	}
 }
+
+func TestMatchRange_NegativeValues(t *testing.T) {
+	tests := []struct {
+		val, rangeStr string
+		want          bool
+	}{
+		// Standard positive range.
+		{"5", "0-10", true},
+		{"15", "0-10", false},
+		// Negative min, positive max.
+		{"-5", "-10-5", true},
+		{"0", "-10-5", true},
+		{"6", "-10-5", false},
+		{"-11", "-10-5", false},
+		// Both negative.
+		{"-5", "-10--1", true},
+		{"-10", "-10--1", true},
+		{"-1", "-10--1", true},
+		{"0", "-10--1", false},
+		// Single values.
+		{"3", "3-3", true},
+		{"4", "3-3", false},
+	}
+	for _, tt := range tests {
+		got := matchRange(tt.val, tt.rangeStr)
+		if got != tt.want {
+			t.Errorf("matchRange(%q, %q) = %v, want %v", tt.val, tt.rangeStr, got, tt.want)
+		}
+	}
+}

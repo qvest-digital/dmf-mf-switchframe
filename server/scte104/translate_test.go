@@ -912,3 +912,80 @@ func TestToCueMessage_SpliceRequest_ZeroBreakDuration(t *testing.T) {
 		t.Errorf("BreakDuration should be nil for zero duration, got %v", *cue.BreakDuration)
 	}
 }
+
+func TestFromCueMessage_BreakDuration_Rounding(t *testing.T) {
+	// 350ms should round to 4 (x100ms = 400ms) with rounding,
+	// not 3 (300ms) with truncation.
+	dur := 350 * time.Millisecond
+	cue := &scte35.CueMessage{
+		CommandType:   scte35.CommandSpliceInsert,
+		EventID:       1,
+		IsOut:         true,
+		BreakDuration: &dur,
+	}
+
+	msg, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("translate failed: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.BreakDuration != 4 {
+		t.Errorf("BreakDuration = %d, want 4 (rounded from 350ms)", srd.BreakDuration)
+	}
+}
+
+func TestRoundTrip_SegNum(t *testing.T) {
+	// SCTE-104 → SCTE-35 → SCTE-104 should preserve SegNum/SegExpected.
+	msg := &Message{
+		Operations: []Operation{
+			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{}},
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:         99,
+					SegmentationTypeID: 0x34,
+					SegNum:             2,
+					SegExpected:        5,
+				},
+			},
+		},
+	}
+
+	cue, err := ToCueMessage(msg)
+	if err != nil {
+		t.Fatalf("to cue: %v", err)
+	}
+	if len(cue.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(cue.Descriptors))
+	}
+	if cue.Descriptors[0].SegNum != 2 {
+		t.Errorf("SegNum = %d, want 2", cue.Descriptors[0].SegNum)
+	}
+	if cue.Descriptors[0].SegExpected != 5 {
+		t.Errorf("SegExpected = %d, want 5", cue.Descriptors[0].SegExpected)
+	}
+
+	msg2, err := FromCueMessage(cue)
+	if err != nil {
+		t.Fatalf("from cue: %v", err)
+	}
+
+	// Find the segmentation descriptor operation.
+	var sd *SegmentationDescriptorRequest
+	for _, op := range msg2.Operations {
+		if op.OpID == OpSegmentationDescriptorRequest {
+			sd = op.Data.(*SegmentationDescriptorRequest)
+			break
+		}
+	}
+	if sd == nil {
+		t.Fatal("no segmentation descriptor in round-trip result")
+	}
+	if sd.SegNum != 2 {
+		t.Errorf("round-trip SegNum = %d, want 2", sd.SegNum)
+	}
+	if sd.SegExpected != 5 {
+		t.Errorf("round-trip SegExpected = %d, want 5", sd.SegExpected)
+	}
+}

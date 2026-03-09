@@ -2,6 +2,7 @@ package scte104
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -491,5 +492,29 @@ func TestEncode_LargeDurationTicks(t *testing.T) {
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
 	if sd.DurationTicks != 0xFFFFFFFFFF {
 		t.Errorf("DurationTicks = 0x%X, want 0xFFFFFFFFFF", sd.DurationTicks)
+	}
+}
+
+func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{OpID: OpSpliceNull},
+		},
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	// Wire: OpID(2) + messageSize(2) + fields(8) + ops
+	// messageSize should equal total - 4 (excludes OpID + messageSize itself).
+	if len(data) < 4 {
+		t.Fatalf("encoded data too short: %d", len(data))
+	}
+	messageSize := binary.BigEndian.Uint16(data[2:4])
+	expectedSize := uint16(len(data) - 4) // everything after messageSize
+	if messageSize != expectedSize {
+		t.Errorf("messageSize = %d, want %d (total %d - 4)", messageSize, expectedSize, len(data))
 	}
 }

@@ -297,20 +297,30 @@ func compareNumeric(a, b string) int {
 }
 
 // matchRange checks if a numeric value is within a "min-max" range (inclusive).
+// Handles negative values by finding the last '-' preceded by a digit (the
+// separator), not a leading negative sign or the '-' after 'e'/'E' in floats.
 func matchRange(val, rangeStr string) bool {
-	parts := strings.SplitN(rangeStr, "-", 2)
-	if len(parts) != 2 {
+	// Find the separator '-': the last '-' that is preceded by a digit.
+	sepIdx := -1
+	for i := len(rangeStr) - 1; i > 0; i-- {
+		if rangeStr[i] == '-' && rangeStr[i-1] >= '0' && rangeStr[i-1] <= '9' {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 0 {
 		return false
 	}
+
 	v, err := strconv.ParseFloat(val, 64)
 	if err != nil {
 		return false
 	}
-	lo, err := strconv.ParseFloat(parts[0], 64)
+	lo, err := strconv.ParseFloat(rangeStr[:sepIdx], 64)
 	if err != nil {
 		return false
 	}
-	hi, err := strconv.ParseFloat(parts[1], 64)
+	hi, err := strconv.ParseFloat(rangeStr[sepIdx+1:], 64)
 	if err != nil {
 		return false
 	}

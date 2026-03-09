@@ -379,3 +379,99 @@ func TestDecode_InvalidCRC(t *testing.T) {
 		t.Fatal("expected CRC error on corrupt data")
 	}
 }
+
+func TestEncode_TimeSignal_NilPTS(t *testing.T) {
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 1},
+		},
+		// SpliceTimePTS intentionally nil.
+	}
+
+	encoded, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	// When PTS is nil, the decoded message should also have nil PTS
+	// (time_specified_flag=0), not PTS=0.
+	if decoded.SpliceTimePTS != nil {
+		t.Fatalf("expected nil SpliceTimePTS, got %d", *decoded.SpliceTimePTS)
+	}
+}
+
+func TestEncode_SegNum_RoundTrip(t *testing.T) {
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       100,
+				SegNum:           3,
+				SegExpected:      5,
+			},
+		},
+	}
+
+	encoded, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	d := decoded.Descriptors[0]
+	if d.SegNum != 3 {
+		t.Errorf("SegNum = %d, want 3", d.SegNum)
+	}
+	if d.SegExpected != 5 {
+		t.Errorf("SegExpected = %d, want 5", d.SegExpected)
+	}
+}
+
+func TestEncode_SubSegment_RoundTrip(t *testing.T) {
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegmentationType:    0x34,
+				SegEventID:          200,
+				SubSegmentNum:       2,
+				SubSegmentsExpected: 4,
+			},
+		},
+	}
+
+	encoded, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	d := decoded.Descriptors[0]
+	if d.SubSegmentNum != 2 {
+		t.Errorf("SubSegmentNum = %d, want 2", d.SubSegmentNum)
+	}
+	if d.SubSegmentsExpected != 4 {
+		t.Errorf("SubSegmentsExpected = %d, want 4", d.SubSegmentsExpected)
+	}
+}
