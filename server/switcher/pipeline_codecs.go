@@ -11,29 +11,12 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-const avc1BufCap = 65536 // 64KB default buffer capacity for AVC1 pool
-
-// avc1Pool recycles AVC1 output buffers to avoid 50-150KB/frame allocations
-// on every pipeline encode. Seeded with 64KB; getAVC1Buffer transparently
-// allocates larger buffers for higher bitrate frames.
-var avc1Pool = sync.Pool{
-	New: func() any {
-		return make([]byte, 0, avc1BufCap)
-	},
-}
-
-func getAVC1Buffer(size int) []byte {
-	buf, ok := avc1Pool.Get().([]byte)
-	if !ok || cap(buf) < size {
-		return make([]byte, size)
-	}
-	return buf[:size]
-}
-
-func putAVC1Buffer(buf []byte) {
-	if buf != nil {
-		avc1Pool.Put(buf[:0]) //nolint:staticcheck // slice value is intentional
-	}
+// allocAVC1Buffer allocates an owned AVC1 buffer. Each encoded frame needs
+// its own buffer because BroadcastVideo fans out to viewers via buffered
+// channels — async consumers (output muxer, SRT, WebTransport) may still
+// reference WireData when the next encode cycle runs.
+func allocAVC1Buffer(size int) []byte {
+	return make([]byte, size)
 }
 
 // defaultBitrateForResolution returns the minimum encoding bitrate for
@@ -191,7 +174,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	}
 
 	pc.avc1Buf = codec.AnnexBToAVC1Into(encoded, pc.avc1Buf[:0])
-	avc1 := getAVC1Buffer(len(pc.avc1Buf))
+	avc1 := allocAVC1Buffer(len(pc.avc1Buf))
 	copy(avc1, pc.avc1Buf)
 
 	// Phase 3: Lock for state update
@@ -249,10 +232,9 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 			switch nalu[0] & 0x1F {
 			case 7:
-				// Copy SPS — ExtractNALUs returns sub-slices of the pooled
-				// AVC1 buffer. Without a copy, putAVC1Buffer() recycles the
-				// backing memory while async viewers (output muxer,
-				// WebTransport) still reference SPS/PPS.
+				// Copy SPS — ExtractNALUs returns sub-slices of the AVC1
+				// buffer. SPS/PPS are stored separately on the frame and
+				// may outlive the WireData reference.
 				frame.SPS = append([]byte(nil), nalu...)
 			case 8:
 				frame.PPS = append([]byte(nil), nalu...)

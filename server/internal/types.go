@@ -194,9 +194,29 @@ type ControlRoomState struct {
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
 	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
+	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	Timestamp            int64                   `json:"timestamp"`
+}
+
+// MacroExecutionState represents the progress of a running macro.
+type MacroExecutionState struct {
+	Running     bool             `json:"running"`
+	MacroName   string           `json:"macroName"`
+	Steps       []MacroStepState `json:"steps"`
+	CurrentStep int              `json:"currentStep"`
+	Error       string           `json:"error,omitempty"`
+}
+
+// MacroStepState tracks the execution state of one macro step.
+type MacroStepState struct {
+	Action      string `json:"action"`
+	Summary     string `json:"summary"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+	WaitMs      int    `json:"waitMs,omitempty"`
+	WaitStartMs int64  `json:"waitStartMs,omitempty"`
 }
 
 // SCTE35State represents the current SCTE-35 signaling state.

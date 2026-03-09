@@ -159,6 +159,8 @@ type FrameSynchronizer struct {
 	mu         sync.Mutex
 	sources    map[string]*syncSource
 	tickRate   time.Duration
+	fpsNum     int // rational FPS numerator (e.g. 30000 for 29.97fps)
+	fpsDen     int // rational FPS denominator (e.g. 1001 for 29.97fps)
 	onVideo    func(sourceKey string, frame media.VideoFrame)
 	onRawVideo func(sourceKey string, pf *ProcessingFrame)
 	onAudio    func(sourceKey string, frame media.AudioFrame)
@@ -179,14 +181,54 @@ func NewFrameSynchronizer(
 	onVideo func(sourceKey string, frame media.VideoFrame),
 	onAudio func(sourceKey string, frame media.AudioFrame),
 ) *FrameSynchronizer {
+	// Derive rational FPS from tickRate as default. Callers should use
+	// SetTickRateRational for exact values when a PipelineFormat is available.
+	fpsNum, fpsDen := tickRateToRational(tickRate)
 	return &FrameSynchronizer{
 		log:      slog.With("component", "framesync"),
 		sources:  make(map[string]*syncSource),
 		tickRate: tickRate,
+		fpsNum:   fpsNum,
+		fpsDen:   fpsDen,
 		onVideo:  onVideo,
 		onAudio:  onAudio,
 		done:     make(chan struct{}),
 	}
+}
+
+// tickRateToRational maps a tick duration to the nearest standard broadcast
+// frame rate rational. Falls back to direct computation for non-standard rates.
+func tickRateToRational(d time.Duration) (int, int) {
+	type rate struct {
+		num, den int
+		ns       int64 // time.Duration(den) * time.Second / time.Duration(num)
+	}
+	standards := []rate{
+		{24000, 1001, 41708333},
+		{24, 1, 41666666},
+		{25, 1, 40000000},
+		{30000, 1001, 33366666},
+		{30, 1, 33333333},
+		{50, 1, 20000000},
+		{60000, 1001, 16683333},
+		{60, 1, 16666666},
+	}
+	ns := d.Nanoseconds()
+	for _, s := range standards {
+		// Match within 1µs to handle truncation from FrameDuration().
+		if diff := ns - s.ns; diff >= -1000 && diff <= 1000 {
+			return s.num, s.den
+		}
+	}
+	// Non-standard rate: approximate as integer FPS.
+	if ns > 0 {
+		fps := int((int64(time.Second) + ns/2) / ns)
+		if fps < 1 {
+			fps = 1
+		}
+		return fps, 1
+	}
+	return 30, 1
 }
 
 // AddSource registers a source for frame synchronization. Safe to call
@@ -199,8 +241,7 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	}
 	ss := &syncSource{}
 	if fs.frcQuality != FRCNone {
-		tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
-		ss.frc = newFRCSource(fs.frcQuality, tickIntervalPTS)
+		ss.frc = newFRCSource(fs.frcQuality, fs.tickPTSInterval())
 	}
 	fs.sources[key] = ss
 	fs.log.Debug("source added", "key", key)
@@ -259,12 +300,23 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 	ss.mu.Unlock()
 }
 
+// tickPTSInterval returns the tick interval in 90 kHz PTS units using
+// rational arithmetic. Must be called with fs.mu held.
+func (fs *FrameSynchronizer) tickPTSInterval() int64 {
+	if fs.fpsNum > 0 {
+		return int64(mpegtsClock) * int64(fs.fpsDen) / int64(fs.fpsNum)
+	}
+	// Fallback (should not happen): derive from tickRate.
+	return int64(fs.tickRate) * mpegtsClock / int64(time.Second)
+}
+
 // SetTickRate updates the tick rate. Takes effect on the next tick cycle.
 // This is used when auto-detecting frame rate from source streams.
 func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.tickRate = d
+	fs.fpsNum, fs.fpsDen = tickRateToRational(d)
 	fs.log.Debug("tick rate updated", "rate", d)
 }
 
@@ -283,8 +335,7 @@ func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 				ss.frc = nil
 			}
 		} else if ss.frc == nil {
-			tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
-			ss.frc = newFRCSource(q, tickIntervalPTS)
+			ss.frc = newFRCSource(q, fs.tickPTSInterval())
 		} else {
 			ss.frc.requestedQuality = q
 			ss.frc.effectiveQuality = q
@@ -392,7 +443,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 	fs.mu.Lock()
 	fs.tickNum++
 	// Tick interval in 90 kHz PTS units (e.g., 3003 for 29.97fps).
-	tickIntervalPTS := int64(fs.tickRate) * mpegtsClock / int64(time.Second)
+	tickIntervalPTS := fs.tickPTSInterval()
 
 	// Reuse the releases slice from previous ticks to avoid allocation.
 	fs.releases = fs.releases[:0]

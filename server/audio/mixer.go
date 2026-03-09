@@ -1253,6 +1253,16 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	// Apply brickwall limiter at -1 dBFS (always active — matches normal mix path)
 	m.limiter.Process(mixed)
 
+	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
+	pts := m.advanceOutputPTS(frame.PTS)
+
+	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
+	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
+		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
+		copy(m.mxlSinkBuf, mixed)
+		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
+	}
+
 	// Lazy-init encoder
 	if m.encoder == nil && m.config.EncoderFactory != nil {
 		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
@@ -1286,9 +1296,9 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 	m.crossfadeActive = false
 	m.crossfadePCM = nil
 
-	// Build output frame before releasing lock
+	// Build output frame before releasing lock (reuse pts from above)
 	outputFrame := &media.AudioFrame{
-		PTS:        m.advanceOutputPTS(frame.PTS),
+		PTS:        pts,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,

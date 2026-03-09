@@ -87,26 +87,78 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	return 0;
 }
 
+// Lookup tables for YUVJ420P (full-range 0-255) → YUV420P (limited-range) conversion.
+// Y:  full [0,255] → limited [16,235]:  Y_lim  = 16 + Y_full  * 219 / 255
+// UV: full [0,255] → limited [16,240]:  UV_lim = 16 + UV_full * 224 / 255
+static unsigned char full_to_limited_y[256];
+static unsigned char full_to_limited_uv[256];
+static int range_tables_initialized = 0;
+
+static void init_range_tables(void) {
+	if (range_tables_initialized) return;
+	for (int i = 0; i < 256; i++) {
+		full_to_limited_y[i]  = (unsigned char)(16 + i * 219 / 255);
+		full_to_limited_uv[i] = (unsigned char)(16 + i * 224 / 255);
+	}
+	range_tables_initialized = 1;
+}
+
+// remap_row applies a 256-byte lookup table to each pixel in a row.
+static void remap_row(unsigned char* dst, const unsigned char* src,
+                      int len, const unsigned char* lut) {
+	for (int i = 0; i < len; i++) {
+		dst[i] = lut[src[i]];
+	}
+}
+
+// ffdec_is_full_range returns 1 if the decoded frame uses full-range (JPEG) levels.
+// Checks both the deprecated YUVJ420P pixel format and the modern color_range field.
+static int ffdec_is_full_range(AVFrame* f) {
+	if (f->format == AV_PIX_FMT_YUVJ420P) return 1;
+	if (f->color_range == AVCOL_RANGE_JPEG) return 1;
+	return 0;
+}
+
 // ffdec_copy_frame copies YUV420 planes from src_frame into dst, stripping stride padding.
-// dst must have capacity >= w*h*3/2.
+// dst must have capacity >= w*h*3/2. When remap_to_limited is non-zero, pixel values
+// are converted from full-range (0-255) to limited-range (Y:16-235, UV:16-240).
 static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
-                             int w, int h_val) {
+                             int w, int h_val, int remap_to_limited) {
 	int uv_w = w / 2;
 	int uv_h = h_val / 2;
 	int y_size = w * h_val;
 	int uv_size = uv_w * uv_h;
 
-	for (int row = 0; row < h_val; row++) {
-		memcpy(dst + row * w,
-		       src_frame->data[0] + row * src_frame->linesize[0], w);
-	}
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(dst + y_size + row * uv_w,
-		       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
-	}
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(dst + y_size + uv_size + row * uv_w,
-		       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
+	if (remap_to_limited) {
+		init_range_tables();
+		for (int row = 0; row < h_val; row++) {
+			remap_row(dst + row * w,
+			          src_frame->data[0] + row * src_frame->linesize[0],
+			          w, full_to_limited_y);
+		}
+		for (int row = 0; row < uv_h; row++) {
+			remap_row(dst + y_size + row * uv_w,
+			          src_frame->data[1] + row * src_frame->linesize[1],
+			          uv_w, full_to_limited_uv);
+		}
+		for (int row = 0; row < uv_h; row++) {
+			remap_row(dst + y_size + uv_size + row * uv_w,
+			          src_frame->data[2] + row * src_frame->linesize[2],
+			          uv_w, full_to_limited_uv);
+		}
+	} else {
+		for (int row = 0; row < h_val; row++) {
+			memcpy(dst + row * w,
+			       src_frame->data[0] + row * src_frame->linesize[0], w);
+		}
+		for (int row = 0; row < uv_h; row++) {
+			memcpy(dst + y_size + row * uv_w,
+			       src_frame->data[1] + row * src_frame->linesize[1], uv_w);
+		}
+		for (int row = 0; row < uv_h; row++) {
+			memcpy(dst + y_size + uv_size + row * uv_w,
+			       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
+		}
 	}
 }
 
@@ -181,7 +233,7 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 		}
 	}
 
-	ffdec_copy_frame(src_frame, buf, w, h_val);
+	ffdec_copy_frame(src_frame, buf, w, h_val, ffdec_is_full_range(src_frame));
 
 	*out_buf = buf;
 	*out_len = total;
@@ -270,7 +322,7 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 		}
 	}
 
-	ffdec_copy_frame(src_frame, buf, w, h_val);
+	ffdec_copy_frame(src_frame, buf, w, h_val, ffdec_is_full_range(src_frame));
 
 	*out_buf = buf;
 	*out_len = total;

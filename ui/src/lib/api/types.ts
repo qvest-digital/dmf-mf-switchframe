@@ -185,6 +185,25 @@ export interface Macro {
 	steps: MacroStep[];
 }
 
+export type MacroStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface MacroStepState {
+	action: MacroAction;
+	summary: string;
+	status: MacroStepStatus;
+	error?: string;
+	waitMs?: number;
+	waitStartMs?: number;
+}
+
+export interface MacroExecutionState {
+	running: boolean;
+	macroName: string;
+	steps: MacroStepState[];
+	currentStep: number;
+	error?: string;
+}
+
 export interface KeyConfig {
 	type: 'chroma' | 'luma';
 	enabled: boolean;
@@ -366,6 +385,7 @@ export interface ControlRoomState {
 	locks?: Record<string, LockInfo>;
 	pipelineFormat?: PipelineFormatInfo;
 	scte35?: SCTE35State;
+	macro?: MacroExecutionState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;

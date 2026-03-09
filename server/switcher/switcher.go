@@ -929,7 +929,12 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		s.promMetrics.PipelineFramesProcessed.Inc()
 	}
 	s.broadcastOwnedToProgram(frame)
-	putAVC1Buffer(frame.WireData)
+	// NOTE: Do NOT putAVC1Buffer(frame.WireData) here. BroadcastVideo fans
+	// out the frame pointer to viewers via buffered channels. Those viewers
+	// (output muxer, SRT destinations, WebTransport) process frames
+	// asynchronously. Recycling the backing buffer immediately would let
+	// the next encode overwrite WireData while viewers still reference it.
+	// Let GC reclaim the buffer after all viewers release the frame.
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current

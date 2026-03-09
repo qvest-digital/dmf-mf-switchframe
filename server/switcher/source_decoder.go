@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"log/slog"
+	"math"
 	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
@@ -20,12 +21,15 @@ type sourceDecoder struct {
 	callback  func(string, *ProcessingFrame)
 	done      chan struct{}
 
-	// Frame stats (EMA of H.264 frame size/FPS for encoder params)
-	avgFrameSize float64
-	avgFPS       float64
-	lastPTS      int64
-	frameCount   int
-	lastGroupID  atomic.Uint32
+	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
+	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
+	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
+	// data race (same pattern as audio/limiter.go, audio/compressor.go).
+	avgFrameSizeBits atomic.Uint64
+	avgFPSBits       atomic.Uint64
+	lastPTS          int64
+	frameCount       int
+	lastGroupID      atomic.Uint32
 }
 
 // newSourceDecoder creates a decoder for the given source key, starts its
@@ -76,8 +80,10 @@ func (sd *sourceDecoder) Close() {
 }
 
 // Stats returns the rolling average frame size and FPS.
+// Safe for concurrent access from a different goroutine than Send().
 func (sd *sourceDecoder) Stats() (avgFrameSize, avgFPS float64) {
-	return sd.avgFrameSize, sd.avgFPS
+	return math.Float64frombits(sd.avgFrameSizeBits.Load()),
+		math.Float64frombits(sd.avgFPSBits.Load())
 }
 
 // decodeLoop reads H.264 frames from the channel, converts AVC1→AnnexB,
@@ -125,15 +131,17 @@ func (sd *sourceDecoder) decodeLoop() {
 
 // updateStats maintains rolling EMA of frame size and FPS.
 // Called from Send() which is single-writer per source viewer goroutine.
+// Stats are stored atomically so Stats() can be called from another goroutine.
 func (sd *sourceDecoder) updateStats(frame *media.VideoFrame) {
 	sd.frameCount++
 	frameSize := float64(len(frame.WireData))
 
 	const alpha = 0.1 // EMA smoothing factor
 	if sd.frameCount == 1 {
-		sd.avgFrameSize = frameSize
+		sd.avgFrameSizeBits.Store(math.Float64bits(frameSize))
 	} else {
-		sd.avgFrameSize = alpha*frameSize + (1-alpha)*sd.avgFrameSize
+		prev := math.Float64frombits(sd.avgFrameSizeBits.Load())
+		sd.avgFrameSizeBits.Store(math.Float64bits(alpha*frameSize + (1-alpha)*prev))
 	}
 
 	// FPS from PTS delta (requires at least 2 frames)
@@ -142,9 +150,10 @@ func (sd *sourceDecoder) updateStats(frame *media.VideoFrame) {
 		// PTS is in 90kHz units
 		instantFPS := 90000.0 / float64(ptsDelta)
 		if sd.frameCount == 2 {
-			sd.avgFPS = instantFPS
+			sd.avgFPSBits.Store(math.Float64bits(instantFPS))
 		} else {
-			sd.avgFPS = alpha*instantFPS + (1-alpha)*sd.avgFPS
+			prev := math.Float64frombits(sd.avgFPSBits.Load())
+			sd.avgFPSBits.Store(math.Float64bits(alpha*instantFPS + (1-alpha)*prev))
 		}
 	}
 	sd.lastPTS = frame.PTS

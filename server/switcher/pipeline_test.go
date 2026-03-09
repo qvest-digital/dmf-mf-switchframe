@@ -4,6 +4,7 @@ package switcher
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -323,10 +324,10 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	// Create a mock sourceDecoder to provide stats.
 	// The sourceDecoder's Stats() returns avgFrameSize and avgFPS.
 	mockDec := &sourceDecoder{
-		sourceKey:    "cam1",
-		avgFrameSize: 5000, // ~5KB per frame
-		avgFPS:       30,   // 30fps
+		sourceKey: "cam1",
 	}
+	mockDec.avgFrameSizeBits.Store(math.Float64bits(5000)) // ~5KB per frame
+	mockDec.avgFPSBits.Store(math.Float64bits(30))         // 30fps
 	sw.mu.RLock()
 	ss := sw.sources["cam1"]
 	sw.mu.RUnlock()

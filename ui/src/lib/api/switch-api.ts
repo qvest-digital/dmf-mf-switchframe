@@ -327,6 +327,14 @@ export function runMacro(name: string): Promise<{ status: string }> {
 	return post(`/api/macros/${encodeURIComponent(name)}/run`, {});
 }
 
+export function cancelMacro(): Promise<void> {
+	return post('/api/macros/execution/cancel', {});
+}
+
+export function dismissMacro(): Promise<void> {
+	return request('/api/macros/execution', { method: 'DELETE' });
+}
+
 // --- Upstream Key API ---
 
 export function setSourceKey(source: string, config: KeyConfig): Promise<KeyConfig> {

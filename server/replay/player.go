@@ -157,14 +157,14 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	// Estimate source FPS from all clip frames' PTS values.
 	sourceFPS := estimateFPSFromClip(clip)
-	ptsPerFrame := int64(90000 / sourceFPS)
+	fpsNum, fpsDen := fpsToRational(sourceFPS)
+	ptsPerFrame := int64(90000) * int64(fpsDen) / int64(fpsNum)
 
 	// Create encoder (optional — only needed when H.264 Output callback is set).
 	w, h := allDecoded[0][0].width, allDecoded[0][0].height
 	var encoder transition.VideoEncoder
 	if p.config.EncoderFactory != nil && p.config.Output != nil {
 		bitrate := estimateBitrate(w, h)
-		fpsNum, fpsDen := fpsToRational(sourceFPS)
 		var err error
 		encoder, err = p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
 		if err != nil {
