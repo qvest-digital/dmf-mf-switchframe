@@ -251,12 +251,13 @@ func fromTimeSignal(cue *scte35.CueMessage) []Operation {
 
 	for _, desc := range cue.Descriptors {
 		sd := &SegmentationDescriptorRequest{
-			SegEventID:         desc.SegEventID,
-			SegmentationTypeID: desc.SegmentationType,
-			UPIDType:           desc.UPIDType,
-			CancelIndicator:    desc.SegmentationEventCancelIndicator,
-			SegNum:             desc.SegNum,
-			SegExpected:        desc.SegExpected,
+			SegEventID:              desc.SegEventID,
+			SegmentationTypeID:      desc.SegmentationType,
+			UPIDType:                desc.UPIDType,
+			CancelIndicator:         desc.SegmentationEventCancelIndicator,
+			SegNum:                  desc.SegNum,
+			SegExpected:             desc.SegExpected,
+			ProgramSegmentationFlag: true,
 		}
 
 		if len(desc.UPID) > 0 {

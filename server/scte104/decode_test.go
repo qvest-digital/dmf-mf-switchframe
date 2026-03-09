@@ -210,11 +210,12 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	// Build a MOM with time_signal + segmentation_descriptor.
 	upid := []byte("AD-ID-12345")
 
-	// seg descriptor payload: seg_event_id(4) + type(1) + duration(5) +
-	// upid_type(1) + upid_length(1) + upid(11) + seg_num(1) + segs_expected(1) = 25
-	segPayload := make([]byte, 14+len(upid))
+	// Spec-compliant wire format per SCTE 104 2021 Table 8-29:
+	// seg_event_id(4) + flags(1) + duration(5) + upid_type(1) + upid_length(1) +
+	// upid(11) + type_id(1) + seg_num(1) + segs_expected(1) = 26
+	segPayload := make([]byte, 15+len(upid))
 	binary.BigEndian.PutUint32(segPayload[0:4], 500)   // seg_event_id
-	segPayload[4] = 0x34                                // segmentation_type_id (placement opportunity start)
+	segPayload[4] = 0x01                                // flags: cancel=0, reserved=0, program_seg_flag=1
 	// duration: 2700000 ticks (30 seconds at 90kHz)
 	dur := uint64(2700000)
 	segPayload[5] = byte(dur >> 32)
@@ -225,8 +226,9 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	segPayload[10] = 0x09 // upid_type (ADI)
 	segPayload[11] = byte(len(upid))
 	copy(segPayload[12:], upid)
-	segPayload[12+len(upid)] = 1 // seg_num
-	segPayload[12+len(upid)+1] = 1 // segs_expected
+	segPayload[12+len(upid)] = 0x34 // segmentation_type_id (AFTER upid)
+	segPayload[12+len(upid)+1] = 1  // seg_num
+	segPayload[12+len(upid)+2] = 1  // segs_expected
 
 	// time_signal payload: pre_roll_time(2) = 2
 	tsPayload := make([]byte, 2)
@@ -312,11 +314,12 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 
 func TestDecode_SegmentationDescriptor_Cancel(t *testing.T) {
 	// SOM with segmentation_descriptor cancel.
-	// seg_event_id(4) + type_with_cancel(1) = 5 bytes
+	// Per SCTE 104 2021: cancel format is seg_event_id(4) + flags(1) = 5 bytes.
+	// Cancel flag is bit 7 of flags byte. No type_id in cancel messages.
 	data := make([]byte, 7) // OpID(2) + payload(5)
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
 	binary.BigEndian.PutUint32(data[2:6], 777) // seg_event_id
-	data[6] = 0x34 | 0x80                       // type=0x34 with cancel bit set
+	data[6] = 0x80                              // flags: cancel=1 (no type_id)
 
 	msg, err := Decode(data)
 	if err != nil {
@@ -333,8 +336,9 @@ func TestDecode_SegmentationDescriptor_Cancel(t *testing.T) {
 	if sd.SegEventID != 777 {
 		t.Errorf("SegEventID = %d, want 777", sd.SegEventID)
 	}
-	if sd.SegmentationTypeID != 0x34 {
-		t.Errorf("SegmentationTypeID = 0x%02X, want 0x34", sd.SegmentationTypeID)
+	// type_id is not present in cancel format, should be zero.
+	if sd.SegmentationTypeID != 0 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x00 (not present in cancel)", sd.SegmentationTypeID)
 	}
 }
 
@@ -490,10 +494,10 @@ func TestDecode_SegmentationDescriptor_TooShort(t *testing.T) {
 func TestDecode_SegmentationDescriptor_NonCancel_TooShort(t *testing.T) {
 	// SOM with non-cancel segmentation_descriptor but insufficient bytes for
 	// the non-cancel fields.
-	data := make([]byte, 9) // OpID(2) + seg_event_id(4) + type(1) + 2 bytes (needs 7 more)
+	data := make([]byte, 9) // OpID(2) + seg_event_id(4) + flags(1) + 2 bytes (needs 7 more for duration+upid header)
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
 	binary.BigEndian.PutUint32(data[2:6], 100)
-	data[6] = 0x34 // no cancel bit
+	data[6] = 0x01 // flags: program_seg_flag=1, no cancel
 
 	_, err := Decode(data)
 	if err == nil {
@@ -840,16 +844,17 @@ func TestDecode_MOM_TimeType1_TooShortForTimestamp(t *testing.T) {
 
 func TestDecode_SegmentationDescriptor_EmptyUPID(t *testing.T) {
 	// Non-cancel seg descriptor with zero-length UPID.
-	// seg_event_id(4) + type(1) + duration(5) + upid_type(1) + upid_length(1) +
-	// seg_num(1) + segs_expected(1) = 14
-	payload := make([]byte, 14)
+	// Per SCTE 104 2021: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
+	// upid_length(1) + type_id(1) + seg_num(1) + segs_expected(1) = 15
+	payload := make([]byte, 15)
 	binary.BigEndian.PutUint32(payload[0:4], 123)
-	payload[4] = 0x30 // segmentation_type_id
-	// duration = 0
+	payload[4] = 0x01  // flags: program_seg_flag=1
+	// duration = 0 (bytes 5-9)
 	payload[10] = 0x01 // upid_type
 	payload[11] = 0    // upid_length = 0
-	payload[12] = 1    // seg_num
-	payload[13] = 1    // segs_expected
+	payload[12] = 0x30 // segmentation_type_id (after upid)
+	payload[13] = 1    // seg_num
+	payload[14] = 1    // segs_expected
 
 	data := make([]byte, 2+len(payload))
 	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
@@ -1091,5 +1096,120 @@ func TestDecode_SOM_FullHeader_SpliceNull(t *testing.T) {
 	}
 	if tsr.PreRollTime != 7000 {
 		t.Errorf("PreRollTime = %d, want 7000", tsr.PreRollTime)
+	}
+}
+
+func TestDecode_SegmentationDescriptor_SpecFormat(t *testing.T) {
+	// Spec-compliant wire format per SCTE 104 2021 Table 8-29.
+	// Non-cancel, program-level segmentation.
+	upid := []byte("AD-ID-99")
+	dur := uint64(2700000) // 30 seconds at 90kHz
+
+	// seg_event_id(4) + flags(1) + duration(5) + upid_type(1) + upid_len(1) +
+	// upid(8) + type_id(1) + seg_num(1) + segs_expected(1) = 23
+	segPayload := make([]byte, 15+len(upid))
+	binary.BigEndian.PutUint32(segPayload[0:4], 500) // seg_event_id
+	segPayload[4] = 0x01                              // flags: cancel=0, reserved=0, program_seg_flag=1
+	segPayload[5] = byte(dur >> 32)
+	segPayload[6] = byte(dur >> 24)
+	segPayload[7] = byte(dur >> 16)
+	segPayload[8] = byte(dur >> 8)
+	segPayload[9] = byte(dur)
+	segPayload[10] = 0x09            // upid_type
+	segPayload[11] = byte(len(upid)) // upid_length
+	copy(segPayload[12:], upid)
+	segPayload[12+len(upid)] = 0x34 // segmentation_type_id (AFTER upid!)
+	segPayload[12+len(upid)+1] = 1  // seg_num
+	segPayload[12+len(upid)+2] = 1  // segs_expected
+
+	data := make([]byte, 2+len(segPayload))
+	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
+	copy(data[2:], segPayload)
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.SegEventID != 500 {
+		t.Errorf("SegEventID = %d, want 500", sd.SegEventID)
+	}
+	if sd.SegmentationTypeID != 0x34 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x34", sd.SegmentationTypeID)
+	}
+	if sd.DurationTicks != 2700000 {
+		t.Errorf("DurationTicks = %d, want 2700000", sd.DurationTicks)
+	}
+	if sd.UPIDType != 0x09 {
+		t.Errorf("UPIDType = 0x%02X, want 0x09", sd.UPIDType)
+	}
+	if string(sd.UPID) != "AD-ID-99" {
+		t.Errorf("UPID = %q, want %q", sd.UPID, "AD-ID-99")
+	}
+	if sd.SegNum != 1 {
+		t.Errorf("SegNum = %d, want 1", sd.SegNum)
+	}
+	if sd.SegExpected != 1 {
+		t.Errorf("SegExpected = %d, want 1", sd.SegExpected)
+	}
+	if !sd.ProgramSegmentationFlag {
+		t.Error("ProgramSegmentationFlag should be true")
+	}
+	if sd.CancelIndicator {
+		t.Error("CancelIndicator should be false")
+	}
+}
+
+func TestDecode_SegmentationDescriptor_ComponentLevel(t *testing.T) {
+	// Component-level segmentation: program_seg_flag=0, component_count=2.
+	upid := []byte("X")
+	dur := uint64(900000)
+
+	// seg_event_id(4) + flags(1) + component_count(1) + tags(2) +
+	// duration(5) + upid_type(1) + upid_len(1) + upid(1) +
+	// type_id(1) + seg_num(1) + segs_expected(1) = 19
+	segPayload := make([]byte, 19)
+	binary.BigEndian.PutUint32(segPayload[0:4], 700) // seg_event_id
+	segPayload[4] = 0x00                              // flags: cancel=0, program_seg_flag=0
+	segPayload[5] = 2                                  // component_count
+	segPayload[6] = 0x01                               // component_tag 1
+	segPayload[7] = 0x02                               // component_tag 2
+	segPayload[8] = byte(dur >> 32)
+	segPayload[9] = byte(dur >> 24)
+	segPayload[10] = byte(dur >> 16)
+	segPayload[11] = byte(dur >> 8)
+	segPayload[12] = byte(dur)
+	segPayload[13] = 0x09            // upid_type
+	segPayload[14] = byte(len(upid)) // upid_length
+	copy(segPayload[15:], upid)
+	segPayload[16] = 0x22 // segmentation_type_id
+	segPayload[17] = 1    // seg_num
+	segPayload[18] = 3    // segs_expected
+
+	data := make([]byte, 2+len(segPayload))
+	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
+	copy(data[2:], segPayload)
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.ProgramSegmentationFlag {
+		t.Error("ProgramSegmentationFlag should be false for component-level")
+	}
+	if sd.SegmentationTypeID != 0x22 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x22", sd.SegmentationTypeID)
+	}
+	if sd.DurationTicks != 900000 {
+		t.Errorf("DurationTicks = %d, want 900000", sd.DurationTicks)
+	}
+	if sd.SegNum != 1 {
+		t.Errorf("SegNum = %d, want 1", sd.SegNum)
+	}
+	if sd.SegExpected != 3 {
+		t.Errorf("SegExpected = %d, want 3", sd.SegExpected)
 	}
 }

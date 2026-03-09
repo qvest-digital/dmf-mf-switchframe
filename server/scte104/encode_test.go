@@ -205,13 +205,15 @@ func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
 }
 
 func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
+	// Per SCTE 104 2021: cancel format is seg_event_id(4) + flags(1) = 5 bytes.
+	// No type_id in cancel messages.
 	original := &Message{
 		Operations: []Operation{
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
 					SegEventID:         555,
-					SegmentationTypeID: 0x35,
+					SegmentationTypeID: 0x35, // will be lost in cancel (not encoded)
 					CancelIndicator:    true,
 				},
 			},
@@ -235,8 +237,9 @@ func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
 	if sd.SegEventID != 555 {
 		t.Errorf("SegEventID = %d, want 555", sd.SegEventID)
 	}
-	if sd.SegmentationTypeID != 0x35 {
-		t.Errorf("SegmentationTypeID = 0x%02X, want 0x35", sd.SegmentationTypeID)
+	// type_id is NOT encoded in cancel format per spec, so it's zero after decode.
+	if sd.SegmentationTypeID != 0 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x00 (not in cancel)", sd.SegmentationTypeID)
 	}
 }
 
@@ -439,25 +442,39 @@ func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
 	}
 }
 
-func TestEncode_SegmentationTypeIDExceeds7Bit(t *testing.T) {
-	msg := &Message{
-		Operations: []Operation{
-			{
-				OpID: OpSegmentationDescriptorRequest,
-				Data: &SegmentationDescriptorRequest{
-					SegEventID:         1,
-					SegmentationTypeID: 0x80, // bit 7 set = invalid
-					UPIDType:           0,
-					SegNum:             0,
-					SegExpected:        0,
+func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
+	// Per SCTE 104 2021, type_id is a full 8-bit field (not packed with cancel).
+	// Verify all values 0x00-0xFF are accepted.
+	for _, typeID := range []uint8{0x00, 0x34, 0x7F, 0x80, 0xFE, 0xFF} {
+		msg := &Message{
+			Operations: []Operation{
+				{
+					OpID: OpSegmentationDescriptorRequest,
+					Data: &SegmentationDescriptorRequest{
+						SegEventID:         1,
+						SegmentationTypeID: typeID,
+						UPIDType:           0,
+						SegNum:             0,
+						SegExpected:        0,
+					},
 				},
 			},
-		},
-	}
+		}
 
-	_, err := Encode(msg)
-	if err == nil {
-		t.Fatal("expected error for SegmentationTypeID with bit 7 set")
+		data, err := Encode(msg)
+		if err != nil {
+			t.Fatalf("encode error for type_id 0x%02X: %v", typeID, err)
+		}
+
+		decoded, err := Decode(data)
+		if err != nil {
+			t.Fatalf("decode error for type_id 0x%02X: %v", typeID, err)
+		}
+
+		sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+		if sd.SegmentationTypeID != typeID {
+			t.Errorf("type_id 0x%02X round-trip: got 0x%02X", typeID, sd.SegmentationTypeID)
+		}
 	}
 }
 

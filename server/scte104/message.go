@@ -123,6 +123,10 @@ type SegmentationDescriptorRequest struct {
 
 	// CancelIndicator when true cancels the segmentation event.
 	CancelIndicator bool
+
+	// ProgramSegmentationFlag when true indicates program-level segmentation
+	// (no component-level data). Per SCTE 104 2021 Table 8-29.
+	ProgramSegmentationFlag bool
 }
 
 // String returns a human-readable description of the operation.
