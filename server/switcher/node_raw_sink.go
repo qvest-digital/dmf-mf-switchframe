@@ -12,7 +12,7 @@ type rawSinkNode struct {
 
 func (n *rawSinkNode) Name() string                          { return n.name }
 func (n *rawSinkNode) Configure(format PipelineFormat) error { return nil }
-func (n *rawSinkNode) Active() bool                          { return n.sink.Load() != nil }
+func (n *rawSinkNode) Active() bool                          { return true } // Always active; Process checks sink atomically
 func (n *rawSinkNode) Err() error                            { return nil }
 func (n *rawSinkNode) Latency() time.Duration                { return 50 * time.Microsecond }
 func (n *rawSinkNode) Close() error                          { return nil }

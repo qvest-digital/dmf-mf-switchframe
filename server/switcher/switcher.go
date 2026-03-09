@@ -272,14 +272,6 @@ type Switcher struct {
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
 
-	// Per-stage pipeline timing (nanoseconds, atomic, lock-free)
-	pipeKeyLastNano atomic.Int64
-	pipeKeyMaxNano        atomic.Int64
-	pipeCompositeLastNano atomic.Int64
-	pipeCompositeMaxNano  atomic.Int64
-	pipeEncodeLastNano    atomic.Int64
-	pipeEncodeMaxNano     atomic.Int64
-
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
 	outputFPSLastSecond  atomic.Int64 // FPS computed from previous second
@@ -853,101 +845,18 @@ func (s *Switcher) videoProcessingLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
+
 	for work := range s.videoProcCh {
-		if work.yuvFrame != nil {
-			s.encodeAndBroadcastTransition(work.yuvFrame)
+		if work.yuvFrame == nil {
+			continue
 		}
-	}
-}
+		start := time.Now()
 
+		if p := s.pipeline.Load(); p != nil {
+			work.yuvFrame = p.Run(work.yuvFrame)
+		}
+		work.yuvFrame.ReleaseYUV()
 
-// broadcastProcessed handles frames that are already decoded to YUV
-// (e.g., from the transition engine). Runs YUV processors, then encodes once.
-func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-	s.transOutputCount.Add(1)
-	s.mu.RLock()
-	keyBridge := s.keyBridge
-	compositor := s.compositorRef
-	hasPipeline := s.pipeCodecs != nil
-	var groupID uint32
-	if ss, ok := s.sources[s.programSource]; ok {
-		groupID = ss.lastGroupID.Load()
-	}
-	s.mu.RUnlock()
-
-	if !hasPipeline {
-		return
-	}
-
-	// Run YUV processors synchronously (fast, sub-millisecond).
-	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
-		yuv = keyBridge.ProcessYUV(yuv, width, height)
-	}
-	if compositor != nil && compositor.IsActive() {
-		yuv = compositor.ProcessYUV(yuv, width, height)
-	}
-
-	// Deep-copy YUV before async enqueue: the transition engine's FrameBlender
-	// reuses its output buffer, so the next IngestFrame overwrites it. The
-	// async encoder must operate on its own copy.
-	var buf []byte
-	if s.framePool != nil {
-		buf = s.framePool.Acquire()
-	} else {
-		buf = make([]byte, len(yuv))
-	}
-	copy(buf, yuv)
-
-	pf := &ProcessingFrame{
-		YUV: buf, Width: width, Height: height,
-		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-		Codec:   "h264", // only codec supported today
-		GroupID: groupID,
-		pool:    s.framePool,
-	}
-	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
-}
-
-// broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
-// pipeline. Runs YUV processors (keying, compositor), then enqueues for
-// async encode + broadcast. Similar to broadcastProcessed but takes a
-// ProcessingFrame directly (no separate yuv/w/h/pts args).
-func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
-	s.mu.RLock()
-	keyBridge := s.keyBridge
-	compositor := s.compositorRef
-	hasPipeline := s.pipeCodecs != nil
-	s.mu.RUnlock()
-
-	if !hasPipeline {
-		return
-	}
-
-	// Deep-copy YUV BEFORE in-place processing. The frame sync and FRC
-	// retain references to the original buffer for repeated/interpolated
-	// frames. Without this copy, the compositor bakes the overlay into
-	// the retained buffer, causing progressive opacity accumulation on
-	// repeated frames (visible as overlay blinking/pulsing).
-	cp := pf.DeepCopy()
-
-	// Run YUV processors synchronously on the copy (fast, sub-millisecond).
-	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
-		cp.YUV = keyBridge.ProcessYUV(cp.YUV, cp.Width, cp.Height)
-	}
-	if compositor != nil && compositor.IsActive() {
-		cp.YUV = compositor.ProcessYUV(cp.YUV, cp.Width, cp.Height)
-	}
-
-	s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
-}
-
-// encodeAndBroadcastTransition encodes a pre-decoded YUV frame from the
-// transition engine and broadcasts it to the program relay. Called from
-// the videoProcessingLoop goroutine.
-func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
-	start := time.Now()
-	defer pf.ReleaseYUV()
-	defer func() {
 		dur := time.Since(start).Nanoseconds()
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
@@ -955,60 +864,46 @@ func (s *Switcher) encodeAndBroadcastTransition(pf *ProcessingFrame) {
 		if dur > s.frameBudgetNs.Load() {
 			s.deadlineViolations.Add(1)
 		}
-	}()
+	}
+}
+
+
+// broadcastProcessed handles frames that are already decoded to YUV
+// (e.g., from the transition engine). Enqueues for pipeline processing.
+func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+	s.transOutputCount.Add(1)
+	if s.pipeline.Load() == nil {
+		return
+	}
 
 	s.mu.RLock()
-	pipeCodecs := s.pipeCodecs
+	var groupID uint32
+	if ss, ok := s.sources[s.programSource]; ok {
+		groupID = ss.lastGroupID.Load()
+	}
 	s.mu.RUnlock()
 
-	if pipeCodecs == nil {
+	buf := s.framePool.Acquire()
+	copy(buf, yuv)
+
+	pf := &ProcessingFrame{
+		YUV: buf, Width: width, Height: height,
+		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+		Codec:   "h264",
+		GroupID: groupID,
+		pool:    s.framePool,
+	}
+	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+}
+
+// broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
+// pipeline. Deep-copies and enqueues for pipeline processing.
+func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
+	if s.pipeline.Load() == nil {
 		return
 	}
-
-	// MXL output tap — deep copy YUV after all processing, before encode
-	if sinkPtr := s.rawVideoSink.Load(); sinkPtr != nil {
-		cp := pf.DeepCopy()
-		(*sinkPtr)(cp)
-	}
-
-	// Raw monitor tap — deep copy YUV for low-latency program monitor
-	if sinkPtr := s.rawMonitorSink.Load(); sinkPtr != nil {
-		cp := pf.DeepCopy()
-		(*sinkPtr)(cp)
-	}
-
-	encStart := time.Now()
-	forceIDR := pf.IsKeyframe || s.forceNextIDR.CompareAndSwap(true, false)
-	frame, err := pipeCodecs.encode(pf, forceIDR)
-	encDur := time.Since(encStart).Nanoseconds()
-	s.pipeEncodeLastNano.Store(encDur)
-	updateAtomicMax(&s.pipeEncodeMaxNano, encDur)
-	if s.promMetrics != nil {
-		s.promMetrics.PipelineEncodeDuration.Observe(float64(encDur) / 1e9)
-	}
-	if err != nil {
-		s.log.Warn("pipeline encode failed, dropping frame", "error", err, "path", "transition")
-		if s.promMetrics != nil {
-			s.promMetrics.PipelineEncodeErrorsTotal.Inc()
-		}
-		return
-	}
-	if frame == nil {
-		// Encoder buffering (e.g. VideoToolbox warmup) — no output yet.
-		s.pipeEncodeNil.Add(1)
-		return
-	}
-
-	if s.promMetrics != nil {
-		s.promMetrics.PipelineFramesProcessed.Inc()
-	}
-	s.broadcastOwnedToProgram(frame)
-	// NOTE: Do NOT putAVC1Buffer(frame.WireData) here. BroadcastVideo fans
-	// out the frame pointer to viewers via buffered channels. Those viewers
-	// (output muxer, SRT destinations, WebTransport) process frames
-	// asynchronously. Recycling the backing buffer immediately would let
-	// the next encode overwrite WireData while viewers still reference it.
-	// Let GC reclaim the buffer after all viewers release the frame.
+	cp := pf.DeepCopy()
+	s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current
@@ -1973,12 +1868,6 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"route_filtered":       s.routeFiltered.Load(),
 			"queue_len":            len(s.videoProcCh),
 			"output_fps":           s.outputFPSLastSecond.Load(),
-			"key_last_ms":          float64(s.pipeKeyLastNano.Load()) / 1e6,
-			"key_max_ms":           float64(s.pipeKeyMaxNano.Load()) / 1e6,
-			"composite_last_ms":    float64(s.pipeCompositeLastNano.Load()) / 1e6,
-			"composite_max_ms":     float64(s.pipeCompositeMaxNano.Load()) / 1e6,
-			"encode_last_ms":       float64(s.pipeEncodeLastNano.Load()) / 1e6,
-			"encode_max_ms":        float64(s.pipeEncodeMaxNano.Load()) / 1e6,
 			"trans_seam_last_ms":   float64(s.transSeamLastNano.Load()) / 1e6,
 			"trans_seam_max_ms":    float64(s.transSeamMaxNano.Load()) / 1e6,
 			"trans_seam_count":     s.transSeamCount.Load(),

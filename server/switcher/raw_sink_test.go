@@ -25,6 +25,7 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -69,6 +70,7 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -120,6 +122,7 @@ func TestSetRawVideoSink_NilDisables(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -158,6 +161,7 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()

@@ -43,6 +43,7 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -94,6 +95,7 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
@@ -139,6 +141,7 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
@@ -181,6 +184,7 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -215,6 +219,7 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 			return &failingEncoder{}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -247,6 +252,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -285,6 +291,7 @@ func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 			return &failingEncoder{}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -315,6 +322,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 			return transition.NewMockEncoder(), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -384,6 +392,7 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 			}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -426,6 +435,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 			}, nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -485,6 +495,7 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
 		},
 	)
+	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -581,6 +592,7 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
 	require.NoError(t, comp.On())
 	sw.SetCompositor(comp)
+	require.NoError(t, sw.BuildPipeline())
 
 	defer sw.Close()
 
