@@ -182,7 +182,9 @@ func (a *App) wireStateCallbacks() {
 	})
 
 	// Graphics overlay state changes: receives snapshot directly to avoid deadlock.
+	// Also triggers pipeline rebuild so Active() filtering reflects compositor state.
 	a.compositor.OnStateChange(func(gfxState graphics.State) {
+		a.sw.RebuildPipeline()
 		a.clearLastOperator()
 		a.broadcastState(&gfxState)
 	})

@@ -614,6 +614,13 @@ func (s *Switcher) rebuildPipeline() {
 	s.swapPipeline(p)
 }
 
+// RebuildPipeline rebuilds the video processing pipeline from current state.
+// Called by external components (compositor, key processor) via callbacks
+// when their Active() status may have changed.
+func (s *Switcher) RebuildPipeline() {
+	s.rebuildPipeline()
+}
+
 // SetFrameSync enables or disables the freerun frame synchronizer. When
 // enabled, all source video and audio frames are buffered and released at
 // a common tick rate (program frame rate) instead of flowing through the
