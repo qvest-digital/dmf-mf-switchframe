@@ -151,6 +151,13 @@ func TestPipelineLoop_WaitAndClose(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// createTestSwitcher creates a minimal Switcher for pipeline tests.
+// Uses nil relay — sufficient for testing pipeline swap mechanics.
+func createTestSwitcher(t *testing.T) *Switcher {
+	t.Helper()
+	return New(nil)
+}
+
 func TestPipelineLoop_SnapshotIncludesEpoch(t *testing.T) {
 	n := &countingNode{name: "a", active: true}
 	p := &Pipeline{}
@@ -159,6 +166,43 @@ func TestPipelineLoop_SnapshotIncludesEpoch(t *testing.T) {
 
 	snap := p.Snapshot()
 	require.Equal(t, uint64(42), snap["epoch"])
+}
+
+func TestSwapPipeline_NilOldPipeline(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	n := &countingNode{name: "a", active: true}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	// Swap into empty — no old pipeline to drain.
+	sw.swapPipeline(p)
+
+	loaded := sw.pipeline.Load()
+	require.NotNil(t, loaded)
+	require.Equal(t, 1, len(loaded.activeNodes))
+}
+
+func TestSwapPipeline_OldPipelineDrained(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Build and install initial pipeline.
+	n1 := &countingNode{name: "old", active: true}
+	old := &Pipeline{}
+	require.NoError(t, old.Build(DefaultFormat, nil, []PipelineNode{n1}))
+	sw.pipeline.Store(old)
+
+	// Build replacement.
+	n2 := &countingNode{name: "new", active: true}
+	newP := &Pipeline{}
+	require.NoError(t, newP.Build(DefaultFormat, nil, []PipelineNode{n2}))
+
+	sw.swapPipeline(newP)
+
+	loaded := sw.pipeline.Load()
+	require.Equal(t, "new", loaded.activeNodes[0].Name())
 }
 
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {

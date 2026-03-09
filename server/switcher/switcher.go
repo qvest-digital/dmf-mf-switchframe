@@ -572,6 +572,20 @@ func (s *Switcher) BuildPipeline() error {
 	return nil
 }
 
+// swapPipeline atomically replaces the current pipeline with newPipeline.
+// The old pipeline drains in-flight frames via WaitGroup, then closes all
+// nodes in a background goroutine. This is the primitive all rebuild triggers use.
+func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
+	old := s.pipeline.Swap(newPipeline)
+	if old == nil {
+		return
+	}
+	go func() {
+		old.Wait()
+		old.Close()
+	}()
+}
+
 // SetFrameSync enables or disables the freerun frame synchronizer. When
 // enabled, all source video and audio frames are buffered and released at
 // a common tick rate (program frame rate) instead of flowing through the
