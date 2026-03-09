@@ -42,7 +42,7 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 		alphaBlendRGBARowY(&yuv[yStart], &rgba[rgbaStart], width, alphaScale256)
 	}
 
-	// Process Cb/Cr planes in Go using integer math (quarter resolution).
+	// Process Cb/Cr planes via per-row kernel (assembly on amd64/arm64).
 	// Uses top-left pixel's RGBA for chroma blend (matching previous
 	// "last write wins" behavior, now deterministic).
 	//
@@ -50,26 +50,9 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 	//   Cb = (-29*R - 99*G + 128*B + 128) >> 8 + 128
 	//   Cr = (128*R - 116*G - 12*B + 128) >> 8 + 128
 	for row := 0; row < height; row += 2 {
-		for col := 0; col < width; col += 2 {
-			rgbaIdx := (row*width + col) * 4
-			A := int(rgba[rgbaIdx+3])
-			A += A >> 7 // map 0-255 to 0-256
-			a256 := (A * alphaScale256) >> 8
-			if a256 == 0 {
-				continue
-			}
-			R := int(rgba[rgbaIdx])
-			G := int(rgba[rgbaIdx+1])
-			B := int(rgba[rgbaIdx+2])
-
-			overlayCb := ((-29*R - 99*G + 128*B + 128) >> 8) + 128
-			overlayCr := ((128*R - 116*G - 12*B + 128) >> 8) + 128
-
-			inv := 256 - a256
-			uvIdx := (row/2)*halfW + (col / 2)
-			yuv[cbOffset+uvIdx] = byte(clampInt((int(yuv[cbOffset+uvIdx])*inv+overlayCb*a256+128)>>8, 0, 255))
-			yuv[crOffset+uvIdx] = byte(clampInt((int(yuv[crOffset+uvIdx])*inv+overlayCr*a256+128)>>8, 0, 255))
-		}
+		rgbaStart := (row * width) * 4
+		uvStart := (row / 2) * halfW
+		alphaBlendRGBAChromaRow(&yuv[cbOffset+uvStart], &yuv[crOffset+uvStart], &rgba[rgbaStart], halfW, alphaScale256)
 	}
 }
 
