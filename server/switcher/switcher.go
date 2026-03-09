@@ -256,6 +256,11 @@ type Switcher struct {
 	// format change detection. Incremented on every pipeline rebuild/swap.
 	pipelineEpoch atomic.Uint64
 
+	// Tracks background drain goroutines launched by swapPipeline().
+	// Close() waits on this before closing pipeCodecs to prevent
+	// use-after-close on the encoder by still-draining old pipelines.
+	drainWg sync.WaitGroup
+
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
 
@@ -427,6 +432,9 @@ func (s *Switcher) Close() {
 		p.Wait()
 		p.Close()
 	}
+	// Wait for any background drain goroutines from previous swaps
+	// before closing pipeCodecs (prevents use-after-close on encoder).
+	s.drainWg.Wait()
 	s.mu.Lock()
 	if s.frameSync != nil {
 		s.frameSync.Stop()
@@ -539,6 +547,8 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 }
 
 // buildNodeList constructs the ordered list of pipeline nodes.
+// Must be called with s.mu held (RLock or Lock) since it reads
+// s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
 // Node order: upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
@@ -562,6 +572,10 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 func (s *Switcher) BuildPipeline() error {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
 	s.mu.RUnlock()
 
 	if !hasPipeCodecs {
@@ -569,7 +583,6 @@ func (s *Switcher) BuildPipeline() error {
 	}
 
 	format := s.PipelineFormat()
-	nodes := s.buildNodeList()
 	p := &Pipeline{}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
@@ -587,7 +600,9 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 	if old == nil {
 		return
 	}
+	s.drainWg.Add(1)
 	go func() {
+		defer s.drainWg.Done()
 		old.Wait()
 		old.Close()
 	}()
@@ -600,6 +615,10 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 func (s *Switcher) rebuildPipeline() {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
 	s.mu.RUnlock()
 
 	if !hasPipeCodecs {
@@ -607,7 +626,6 @@ func (s *Switcher) rebuildPipeline() {
 	}
 
 	format := s.PipelineFormat()
-	nodes := s.buildNodeList()
 	p := &Pipeline{}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		s.log.Warn("pipeline rebuild failed", "error", err)
@@ -746,11 +764,15 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	}
 
 	// Build new pipeline with new pool + new format, swap atomically.
+	// Capture node list under lock to avoid race on s.compositorRef etc.
 	hasPipeCodecs := s.pipeCodecs != nil
+	var nodes []PipelineNode
+	if hasPipeCodecs {
+		nodes = s.buildNodeList()
+	}
 	s.mu.Unlock()
 
 	if hasPipeCodecs {
-		nodes := s.buildNodeList()
 		p := &Pipeline{}
 		if err := p.Build(f, s.framePool, nodes); err != nil {
 			s.log.Warn("pipeline rebuild failed on format change", "error", err)
