@@ -182,6 +182,21 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			continue
 		}
 
+		// Clamp rect to frame bounds (fly animations can go off-screen)
+		frameBounds := image.Rect(0, 0, width, height)
+		rect = rect.Intersect(frameBounds)
+		if rect.Empty() {
+			continue
+		}
+		// Even-align after clamping
+		rect.Min.X = EvenAlign(rect.Min.X)
+		rect.Min.Y = EvenAlign(rect.Min.Y)
+		rect.Max.X = EvenAlign(rect.Max.X)
+		rect.Max.Y = EvenAlign(rect.Max.Y)
+		if rect.Dx() <= 0 || rect.Dy() <= 0 {
+			continue
+		}
+
 		slotW := rect.Dx()
 		slotH := rect.Dy()
 
@@ -276,6 +291,13 @@ func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot LayoutSlot) (image.
 	return image.Rectangle{}, 0.0
 }
 
+// SlotAnimating returns true if a slot has an active animation (exported for state enrichment).
+func (c *Compositor) SlotAnimating(slotIdx int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isAnimating(slotIdx)
+}
+
 // isAnimating returns true if a slot has an active animation.
 func (c *Compositor) isAnimating(slotIdx int) bool {
 	for _, anim := range c.animations {
@@ -346,7 +368,7 @@ func (c *Compositor) SlotOn(slotIdx int) {
 		c.animations = append(c.animations, &Animation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.Duration,
+			Duration:  slot.Transition.TransitionDuration(),
 			FromRect:  slot.Rect,
 			ToRect:    slot.Rect,
 			FromAlpha: 0.0,
@@ -357,7 +379,7 @@ func (c *Compositor) SlotOn(slotIdx int) {
 		c.animations = append(c.animations, &Animation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.Duration,
+			Duration:  slot.Transition.TransitionDuration(),
 			FromRect:  origin,
 			ToRect:    slot.Rect,
 			FromAlpha: 1.0,
@@ -384,7 +406,7 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		c.animations = append(c.animations, &Animation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.Duration,
+			Duration:  slot.Transition.TransitionDuration(),
 			FromRect:  slot.Rect,
 			ToRect:    slot.Rect,
 			FromAlpha: 1.0,
@@ -404,7 +426,7 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		c.animations = append(c.animations, &Animation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.Duration,
+			Duration:  slot.Transition.TransitionDuration(),
 			FromRect:  slot.Rect,
 			ToRect:    dest,
 			FromAlpha: 1.0,

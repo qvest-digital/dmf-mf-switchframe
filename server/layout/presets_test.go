@@ -58,6 +58,18 @@ func TestQuadPreset(t *testing.T) {
 	}
 }
 
+func TestResolveBuiltinPreset(t *testing.T) {
+	for _, name := range BuiltinPresets() {
+		l := ResolveBuiltinPreset(name, 1920, 1080)
+		require.NotNil(t, l, "preset %q should resolve", name)
+		require.Equal(t, name, l.Name)
+		require.NotEmpty(t, l.Slots, "preset %q should have slots", name)
+	}
+
+	// Unknown returns nil
+	require.Nil(t, ResolveBuiltinPreset("nonexistent", 1920, 1080))
+}
+
 func TestBuiltinPresets(t *testing.T) {
 	presets := BuiltinPresets()
 	require.GreaterOrEqual(t, len(presets), 7)

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { ControlRoomState, LayoutSlotState } from '$lib/api/types';
 	import {
 		setLayout, clearLayout, layoutSlotOn, layoutSlotOff,
@@ -76,7 +77,7 @@
 
 	function handleTransitionChange(slotId: number, type: string) {
 		apiCall(
-			updateLayoutSlot(slotId, { transition: { type, duration: 300 } }),
+			updateLayoutSlot(slotId, { transition: { type, durationMs: 300 } }),
 			'Set transition'
 		);
 	}
@@ -111,7 +112,7 @@
 		presetName = '';
 	}
 
-	$effect(() => {
+	onMount(() => {
 		loadPresets();
 	});
 </script>

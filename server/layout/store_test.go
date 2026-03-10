@@ -41,6 +41,10 @@ func TestStore_CRUD(t *testing.T) {
 	// Get missing
 	_, err = s.Get("nonexistent")
 	require.Error(t, err)
+
+	// Delete missing
+	err = s.Delete("nonexistent")
+	require.Error(t, err)
 }
 
 func TestStore_Persistence(t *testing.T) {

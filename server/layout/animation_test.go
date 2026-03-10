@@ -95,7 +95,7 @@ func TestCompositor_SlotOn_Dissolve(t *testing.T) {
 		Name: "pip",
 		Slots: []LayoutSlot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: false,
-				Transition: SlotTransition{Type: "dissolve", Duration: 200 * time.Millisecond}},
+				Transition: SlotTransition{Type: "dissolve", DurationMs: 200}},
 		},
 	}
 	c.SetLayout(l)
@@ -120,7 +120,7 @@ func TestCompositor_SlotOn_Fly(t *testing.T) {
 		Name: "pip",
 		Slots: []LayoutSlot{
 			{SourceKey: "cam2", Rect: image.Rect(1440, 20, 1920, 290), Enabled: false,
-				Transition: SlotTransition{Type: "fly", Duration: 300 * time.Millisecond}},
+				Transition: SlotTransition{Type: "fly", DurationMs: 300}},
 		},
 	}
 	c.SetLayout(l)

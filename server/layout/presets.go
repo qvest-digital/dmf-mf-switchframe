@@ -80,3 +80,34 @@ func BuiltinPresets() []string {
 		"quad",
 	}
 }
+
+// ResolveBuiltinPreset returns a Layout for the given built-in preset name,
+// or nil if the name is not a built-in preset. Sources are left empty for
+// the caller to populate.
+func ResolveBuiltinPreset(name string, frameW, frameH int) *Layout {
+	switch name {
+	case "full":
+		return &Layout{
+			Name: "full",
+			Slots: []LayoutSlot{{
+				Rect:    image.Rect(0, 0, frameW, frameH),
+				ZOrder:  0,
+				Enabled: true,
+			}},
+		}
+	case "pip-top-right":
+		return PIPPreset(frameW, frameH, "", "top-right", 0.25)
+	case "pip-top-left":
+		return PIPPreset(frameW, frameH, "", "top-left", 0.25)
+	case "pip-bottom-right":
+		return PIPPreset(frameW, frameH, "", "bottom-right", 0.25)
+	case "pip-bottom-left":
+		return PIPPreset(frameW, frameH, "", "bottom-left", 0.25)
+	case "side-by-side":
+		return SideBySidePreset(frameW, frameH, "", "", 4)
+	case "quad":
+		return QuadPreset(frameW, frameH, [4]string{}, 4)
+	default:
+		return nil
+	}
+}

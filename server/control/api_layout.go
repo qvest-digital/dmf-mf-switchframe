@@ -43,14 +43,20 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	format := a.switcher.PipelineFormat()
+
 	var l *layout.Layout
 	if req.Preset != "" {
-		stored, err := a.layoutStore.Get(req.Preset)
-		if err != nil {
-			httperr.Write(w, http.StatusNotFound, "preset not found: "+req.Preset)
-			return
+		// Try built-in presets first, then user presets.
+		l = layout.ResolveBuiltinPreset(req.Preset, format.Width, format.Height)
+		if l == nil {
+			stored, err := a.layoutStore.Get(req.Preset)
+			if err != nil {
+				httperr.Write(w, http.StatusNotFound, "preset not found: "+req.Preset)
+				return
+			}
+			l = stored
 		}
-		l = stored
 	} else if len(req.Slots) > 0 {
 		l = &layout.Layout{Name: "custom", Slots: req.Slots}
 	} else {
@@ -58,13 +64,15 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	format := a.switcher.PipelineFormat()
 	if err := layout.ValidateLayout(l, format.Width, format.Height); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	a.layoutCompositor.SetLayout(l)
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(l)
 }
@@ -72,6 +80,9 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleDeleteLayout(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	a.layoutCompositor.SetLayout(nil)
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -83,6 +94,9 @@ func (a *API) handleSlotOn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.layoutCompositor.SlotOn(id)
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -94,6 +108,9 @@ func (a *API) handleSlotOff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.layoutCompositor.SlotOff(id)
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -116,14 +133,14 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 			slot.SourceKey = req.SourceKey
 		}
 		if req.X != nil {
-			w := slot.Rect.Dx()
+			curW := slot.Rect.Dx()
 			slot.Rect.Min.X = layout.EvenAlign(*req.X)
-			slot.Rect.Max.X = slot.Rect.Min.X + w
+			slot.Rect.Max.X = slot.Rect.Min.X + curW
 		}
 		if req.Y != nil {
-			h := slot.Rect.Dy()
+			curH := slot.Rect.Dy()
 			slot.Rect.Min.Y = layout.EvenAlign(*req.Y)
-			slot.Rect.Max.Y = slot.Rect.Min.Y + h
+			slot.Rect.Max.Y = slot.Rect.Min.Y + curH
 		}
 		if req.Width != nil {
 			slot.Rect.Max.X = slot.Rect.Min.X + layout.EvenAlign(*req.Width)
@@ -138,6 +155,9 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 			slot.Transition = *req.Transition
 		}
 	})
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -158,6 +178,9 @@ func (a *API) handleSlotSource(w http.ResponseWriter, r *http.Request) {
 	a.layoutCompositor.UpdateSlot(id, func(slot *layout.LayoutSlot) {
 		slot.SourceKey = req.Source
 	})
+	if a.broadcastFn != nil {
+		a.broadcastFn()
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -181,8 +204,11 @@ func (a *API) handleSaveLayoutPreset(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "provide a name")
 		return
 	}
-	saved := *l
-	saved.Name = req.Name
+	saved := layout.Layout{
+		Name:  req.Name,
+		Slots: make([]layout.LayoutSlot, len(l.Slots)),
+	}
+	copy(saved.Slots, l.Slots)
 	if err := a.layoutStore.Save(&saved); err != nil {
 		httperr.Write(w, http.StatusInternalServerError, err.Error())
 		return

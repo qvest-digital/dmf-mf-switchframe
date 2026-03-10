@@ -145,7 +145,7 @@ export interface LayoutSlotConfig {
 	zOrder: number;
 	enabled: boolean;
 	border?: { width: number; colorY: number; colorCb: number; colorCr: number };
-	transition?: { type: 'cut' | 'dissolve' | 'fly'; duration: number };
+	transition?: { type: 'cut' | 'dissolve' | 'fly'; durationMs: number };
 }
 
 export interface LayoutConfig {

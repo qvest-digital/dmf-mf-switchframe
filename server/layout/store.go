@@ -50,6 +50,9 @@ func (s *Store) Get(name string) (*Layout, error) {
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.presets[name]; !ok {
+		return fmt.Errorf("layout preset %q not found", name)
+	}
 	delete(s.presets, name)
 	return s.persist()
 }

@@ -6,6 +6,9 @@ import (
 	"time"
 )
 
+// DefaultTransitionDurationMs is the default slot transition duration.
+const DefaultTransitionDurationMs = 300
+
 // MaxSlots is the maximum number of layout slots.
 const MaxSlots = 4
 
@@ -29,8 +32,16 @@ type BorderConfig struct {
 
 // SlotTransition configures how a slot animates on/off.
 type SlotTransition struct {
-	Type     string        `json:"type"` // "cut", "dissolve", "fly"
-	Duration time.Duration `json:"duration"`
+	Type       string `json:"type"`       // "cut", "dissolve", "fly"
+	DurationMs int    `json:"durationMs"` // milliseconds
+}
+
+// TransitionDuration returns the Duration as a time.Duration.
+func (t SlotTransition) TransitionDuration() time.Duration {
+	if t.DurationMs <= 0 {
+		return time.Duration(DefaultTransitionDurationMs) * time.Millisecond
+	}
+	return time.Duration(t.DurationMs) * time.Millisecond
 }
 
 // Layout is the complete multi-source layout configuration.
