@@ -213,13 +213,11 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			// PTS went backwards (source switch or B-frame reorder) —
 			// advance by one frame duration.
 			outPTS = pc.lastOutputPTS + frameDur
-		} else if outPTS > pc.lastOutputPTS+frameDur*3 {
-			// PTS jumped far forward (source switch). Reseed to the new
-			// source's PTS timeline, matching the audio mixer's behavior
-			// (which also reseeds on large forward gaps). Capping to one
-			// frame advance would create permanent A/V desync.
-			// outPTS stays as-is (the new source's PTS).
 		}
+		// Large forward jumps (> 3 frame durations) are intentionally
+		// allowed through: the new source's PTS reseeds the timeline,
+		// matching the audio mixer's forward-gap behavior and preventing
+		// permanent A/V desync.
 	}
 	pc.lastOutputPTS = outPTS
 
