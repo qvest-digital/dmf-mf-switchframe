@@ -1200,3 +1200,237 @@ func TestFrameSync_SetTickRateNoFRC(t *testing.T) {
 	ss.mu.Unlock()
 	fs.mu.Unlock()
 }
+
+func TestFrameSync_SetTickRateResetsPtsRemAccum(t *testing.T) {
+	// Bug: SetTickRate() doesn't reset per-source Bresenham accumulators
+	// (ptsRemAccum). Stale remainder from the old rate causes PTS glitches
+	// on the first ticks after a rate change.
+	//
+	// Scenario: start at 23.976fps (non-zero remainder accumulates across ticks).
+	// Switch to 30fps (remainder=0 per tick). PTS intervals should be exactly
+	// 3000 after the switch, with no stale remainder bleeding through.
+	handler := &syncTestHandler{}
+
+	// 23.976fps: 90000*1001/24000 = 3753.75 → base interval 3753, remainder accumulates.
+	ntsc24 := time.Duration(41708333) * time.Nanosecond
+	fs := NewFrameSynchronizer(ntsc24, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {}
+	fs.AddSource("cam1")
+
+	// Ingest a raw video frame so there's content to release.
+	pf := &ProcessingFrame{
+		YUV:   make([]byte, 64*64*3/2),
+		Width: 64, Height: 64,
+		PTS: 0,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	// Fire several ticks at 23.976fps to accumulate Bresenham remainder.
+	for i := 0; i < 20; i++ {
+		fs.releaseTick()
+	}
+
+	// Verify ptsRemAccum is non-zero (23.976fps has fractional remainder).
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+	ss.mu.Lock()
+	accumBefore := ss.ptsRemAccum
+	ss.mu.Unlock()
+	require.NotZero(t, accumBefore,
+		"23.976fps should accumulate non-zero ptsRemAccum after 20 ticks")
+
+	// Switch to 30fps (exact integer: 90000/30 = 3000, remainder=0).
+	fps30 := time.Duration(33333333) * time.Nanosecond
+	fs.SetTickRate(fps30)
+
+	// Reset PTS tracking so we get clean measurements.
+	fs.mu.Lock()
+	ss2 := fs.sources["cam1"]
+	fs.mu.Unlock()
+	ss2.mu.Lock()
+	ss2.ptsInitialized = false
+	ss2.lastReleasedPTS = 0
+	ss2.mu.Unlock()
+
+	// Collect raw video callbacks with PTS values.
+	type ptsRecord struct {
+		pts int64
+	}
+	var ptsMu sync.Mutex
+	var ptsValues []ptsRecord
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		ptsMu.Lock()
+		ptsValues = append(ptsValues, ptsRecord{pts: pf.PTS})
+		ptsMu.Unlock()
+	}
+
+	// Ingest a fresh frame with known PTS.
+	pf2 := &ProcessingFrame{
+		YUV:   make([]byte, 64*64*3/2),
+		Width: 64, Height: 64,
+		PTS: 90000, // start at 1 second
+	}
+	fs.IngestRawVideo("cam1", pf2)
+
+	// Fire several ticks at 30fps.
+	for i := 0; i < 5; i++ {
+		fs.releaseTick()
+	}
+
+	ptsMu.Lock()
+	captured := make([]ptsRecord, len(ptsValues))
+	copy(captured, ptsValues)
+	ptsMu.Unlock()
+
+	// After the first fresh frame, subsequent repeats should advance by
+	// exactly 3000 (30fps). If ptsRemAccum wasn't reset, the stale
+	// accumulator from 23.976fps would cause an off-by-one on one of the ticks.
+	require.GreaterOrEqual(t, len(captured), 3,
+		"need at least 3 PTS values to verify intervals")
+
+	for i := 2; i < len(captured); i++ {
+		delta := captured[i].pts - captured[i-1].pts
+		require.Equal(t, int64(3000), delta,
+			"PTS interval at tick %d should be exactly 3000 at 30fps, got %d (stale ptsRemAccum?)", i, delta)
+	}
+}
+
+func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
+	// Bug: FRC emit*() methods return frames pointing to reusable scratch
+	// buffers (nearestOut/blendOut). The value copy in releaseTick() captures
+	// the slice header but shares the underlying array. Next tick's emit
+	// overwrites the buffer while a downstream consumer is still using the
+	// previous tick's data.
+	//
+	// We test this directly: call frcSource.emit() twice and verify the
+	// returned ProcessingFrame YUV slices are independent. Then verify
+	// that releaseTick delivers deep-copied FRC output by comparing the
+	// captured YUV with the frc scratch buffer.
+
+	// Part 1: Direct frcSource test — emit returns aliased buffer.
+	t.Run("emit_returns_scratch_buffer", func(t *testing.T) {
+		w, h := 32, 32
+		totalSize := w * h * 3 / 2
+
+		frc := newFRCSource(FRCNearest, 3000)
+
+		yuv1 := make([]byte, totalSize)
+		for i := 0; i < w*h; i++ {
+			yuv1[i] = 100
+		}
+		for i := w * h; i < totalSize; i++ {
+			yuv1[i] = 128
+		}
+		yuv2 := make([]byte, totalSize)
+		for i := 0; i < w*h; i++ {
+			yuv2[i] = 200
+		}
+		for i := w * h; i < totalSize; i++ {
+			yuv2[i] = 128
+		}
+
+		pf1 := &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000}
+		pf2 := &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000}
+		frc.ingest(pf1)
+		frc.ingest(pf2)
+
+		// Emit once — alpha that selects prevFrame (alpha < 0.5).
+		// alpha = (3600-3000)/(6000-3000) = 0.2 → selects prevFrame (Y=100).
+		emitted1 := frc.emit(3600)
+		require.NotNil(t, emitted1)
+		snap1 := make([]byte, len(emitted1.YUV))
+		copy(snap1, emitted1.YUV)
+
+		// Emit again — alpha that selects currFrame (alpha > 0.5).
+		// alpha = (5400-3000)/(6000-3000) = 0.8 → selects currFrame (Y=200).
+		emitted2 := frc.emit(5400)
+		require.NotNil(t, emitted2)
+
+		// emitted1.YUV and emitted2.YUV alias the same scratch buffer.
+		// emitted1's content should have been overwritten by emitted2.
+		// This is the underlying bug — the emit returns the scratch buffer.
+		require.NotEqual(t, snap1, emitted1.YUV,
+			"emit result should alias the scratch buffer (proves the bug exists)")
+	})
+
+	// Part 2: releaseTick must deep-copy the FRC output to prevent aliasing.
+	t.Run("releaseTick_deep_copies_frc_output", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+		fs.frcQuality = FRCNearest
+
+		type delivery struct {
+			yuvRef []byte // the YUV slice delivered to the callback
+		}
+		var callbackMu sync.Mutex
+		var deliveries []delivery
+		fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+			callbackMu.Lock()
+			deliveries = append(deliveries, delivery{yuvRef: pf.YUV})
+			callbackMu.Unlock()
+		}
+		fs.AddSource("cam1")
+
+		w, h := 32, 32
+		totalSize := w * h * 3 / 2
+
+		yuv1 := make([]byte, totalSize)
+		for i := 0; i < w*h; i++ {
+			yuv1[i] = 100
+		}
+		for i := w * h; i < totalSize; i++ {
+			yuv1[i] = 128
+		}
+		yuv2 := make([]byte, totalSize)
+		for i := 0; i < w*h; i++ {
+			yuv2[i] = 200
+		}
+		for i := w * h; i < totalSize; i++ {
+			yuv2[i] = 128
+		}
+
+		pf1 := &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000}
+		pf2 := &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000}
+		fs.IngestRawVideo("cam1", pf1)
+		fs.IngestRawVideo("cam1", pf2)
+
+		// Tick 0: pops fresh frame, primes FRC.
+		fs.releaseTick()
+
+		// Tick 1: FRC emits.
+		fs.releaseTick()
+
+		callbackMu.Lock()
+		require.GreaterOrEqual(t, len(deliveries), 2)
+		// Check if tick 1's YUV slice aliases the FRC scratch buffer.
+		frcYUV := deliveries[1].yuvRef
+		callbackMu.Unlock()
+
+		// Access the FRC's scratch buffer directly.
+		fs.mu.Lock()
+		ss := fs.sources["cam1"]
+		fs.mu.Unlock()
+		ss.mu.Lock()
+		scratchBuf := ss.frc.nearestOut
+		ss.mu.Unlock()
+
+		// If releaseTick deep-copies, frcYUV should be a different
+		// allocation than the scratch buffer. We test this by mutating the
+		// scratch buffer and checking if frcYUV is affected.
+		frcYUVSnap := make([]byte, len(frcYUV))
+		copy(frcYUVSnap, frcYUV)
+
+		// Mutate the scratch buffer.
+		if len(scratchBuf) > 0 {
+			for i := range scratchBuf {
+				scratchBuf[i] = 0xFF
+			}
+		}
+
+		// If frcYUV aliases scratchBuf, it's now all 0xFF.
+		// If frcYUV is a deep copy, it's unchanged.
+		require.Equal(t, frcYUVSnap, frcYUV,
+			"releaseTick must deep-copy FRC output; delivered YUV aliases scratch buffer")
+	})
+}

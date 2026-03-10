@@ -598,8 +598,8 @@ func (a *App) initMXL() error {
 				}
 				a.sw.IngestRawVideo(key, pf)
 			},
-			OnRawAudio: func(key string, pcm []float32, pts int64) {
-				a.mixer.IngestPCM(key, pcm, pts)
+			OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
+				a.mixer.IngestPCM(key, pcm, pts, channels)
 			},
 		}
 

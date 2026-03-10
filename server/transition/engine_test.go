@@ -369,8 +369,9 @@ func TestEngineBlackFrameFallbackWhenLatestYUVBNil(t *testing.T) {
 	}
 }
 
-func TestEngineBlackFrameFallbackWhenLatestYUVANil(t *testing.T) {
-	// Same test but FROM source didn't decode during warmup.
+func TestEngineSkipsBlendWhenSourceANil(t *testing.T) {
+	// When FROM source hasn't decoded yet (latestYUVA nil), blend should
+	// be skipped for non-FTB transitions to avoid a flash-to-black.
 	e, mu, outputs, _ := newTestEngine(t)
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
@@ -379,13 +380,13 @@ func TestEngineBlackFrameFallbackWhenLatestYUVANil(t *testing.T) {
 	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01})
 	e.WarmupComplete()
 
-	// TO P-frame should produce output (black placeholder for FROM).
+	// TO P-frame should NOT produce output (source A is nil).
 	require.NotPanics(t, func() {
 		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, false)
 	})
 
 	mu.Lock()
-	require.Equal(t, 1, len(*outputs), "should produce output with black A fallback")
+	require.Equal(t, 0, len(*outputs), "should skip blend when source A is nil")
 	mu.Unlock()
 
 	e.Stop()
@@ -560,21 +561,21 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
 
 	// Ingest cam2 first — sets target to 8x8.
-	// With black frame fallback, this produces output (A=black, B=cam2).
+	// Source A is nil so blend is skipped (no black flash).
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs), "cam2 alone should produce output with black fallback for cam1")
+	require.Equal(t, 0, len(outputs), "cam2 alone should skip blend (source A nil)")
 	mu.Unlock()
 
-	// Ingest cam1 (4x4) — should be scaled to 8x8
+	// Ingest cam1 (4x4) — should be scaled to 8x8. Stored as source A.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
-	// Now ingest cam2 again — should trigger blend (cam1 is available)
+	// Now ingest cam2 again — both sources available, blend produces output.
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
-	require.Equal(t, 2, len(outputs), "should produce output after scaling from-source")
+	require.Equal(t, 1, len(outputs), "should produce output after scaling from-source")
 	mu.Unlock()
 
 	e.Stop()
@@ -1193,17 +1194,25 @@ func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
 	e.WarmupComplete()
 
 	// Live keyframe from TO source — decode returns EAGAIN again.
-	// With hint dimensions: blender pre-initialized, black fallback works.
+	// With hint dimensions: blender pre-initialized, but source A is nil
+	// so blend is skipped (no black flash).
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs),
-		"hint dimensions should allow output even when all decodes return EAGAIN")
+	require.Equal(t, 0, len(outputs),
+		"hint dimensions pre-init blender but blend skipped when source A nil")
 	mu.Unlock()
 
-	// Verify output dimensions match hint
-	expectedSize := 4 * 4 * 3 / 2
-	require.Equal(t, expectedSize, len(outputs[0]), "output should match hint dimensions")
+	// Feed enough frames to get past EAGAIN and produce real output.
+	for i := 0; i < 4; i++ {
+		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
+		e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*33000), true)
+	}
+
+	mu.Lock()
+	gotOutput := len(outputs) > 0
+	mu.Unlock()
+	require.True(t, gotOutput, "should eventually produce output once both sources decode")
 
 	e.Stop()
 }
@@ -1781,4 +1790,114 @@ func TestEngineEasingIgnoredForManual(t *testing.T) {
 
 	e.SetPosition(0.75)
 	require.Equal(t, 0.75, e.Position(), "manual position should be exactly 0.75, not eased")
+}
+
+func TestIngestRawFrame_SkipsBlendWhenSourceANil(t *testing.T) {
+	// When a non-FTB transition starts, the "to" source frame may arrive
+	// before the "from" source frame. Previously, a black frame was
+	// substituted for source A, causing a visible flash-to-black on the
+	// first blend. The correct behavior is to skip the blend entirely
+	// until source A has a real frame.
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		HintWidth:  4,
+		HintHeight: 4,
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	// Send ONLY the TO source frame (cam2) — no FROM source frame yet.
+	// This simulates the race where "to" arrives before "from".
+	yuvB := make([]byte, yuvSize)
+	for i := range yuvB {
+		yuvB[i] = 200
+	}
+	e.IngestRawFrame("cam2", yuvB, w, h, 3000)
+
+	mu.Lock()
+	outputCount := len(outputs)
+	mu.Unlock()
+
+	// Should produce NO output — not a black flash.
+	require.Equal(t, 0, outputCount,
+		"should skip blend when source A is nil, not substitute black")
+
+	// Now send the FROM source frame — next TO frame should produce output.
+	yuvA := make([]byte, yuvSize)
+	for i := range yuvA {
+		yuvA[i] = 100
+	}
+	e.IngestRawFrame("cam1", yuvA, w, h, 3000)
+
+	mu.Lock()
+	outputCount = len(outputs)
+	mu.Unlock()
+	require.Equal(t, 0, outputCount,
+		"FROM source alone should not trigger blend")
+
+	// Second TO frame — now both sources have data, blend should produce output.
+	e.IngestRawFrame("cam2", yuvB, w, h, 6000)
+
+	mu.Lock()
+	outputCount = len(outputs)
+	mu.Unlock()
+	require.Equal(t, 1, outputCount,
+		"blend should produce output once both sources have frames")
+
+	e.Stop()
+}
+
+func TestIngestRawFrame_FTBStillUsesBlackForSourceB(t *testing.T) {
+	// FTB transitions use only source A (fading to black). Source B being
+	// nil is expected and should use getBlackFrame() — NOT skip the blend.
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewTransitionEngine(EngineConfig{
+		HintWidth:  4,
+		HintHeight: 4,
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	require.NoError(t, e.Start("cam1", "cam2", TransitionFTB, 5000))
+
+	w, h := 4, 4
+	yuvSize := w * h * 3 / 2
+
+	// FTB: only FROM source (cam1) triggers blend. Source B is irrelevant.
+	yuvA := make([]byte, yuvSize)
+	for i := range yuvA {
+		yuvA[i] = 200
+	}
+	e.IngestRawFrame("cam1", yuvA, w, h, 3000)
+
+	mu.Lock()
+	outputCount := len(outputs)
+	mu.Unlock()
+
+	// FTB should produce output from first FROM frame (blending with black).
+	require.Equal(t, 1, outputCount,
+		"FTB should produce output from first FROM frame, using black for B")
+
+	e.Stop()
 }

@@ -119,53 +119,73 @@ func (b *replayBuffer) recordAudioFrameAt(frame *media.AudioFrame, wallTime time
 	}
 
 	b.audioFrames = append(b.audioFrames, af)
+
+	// Trim if total memory (video + audio) exceeds the byte limit.
+	b.trimLocked()
 }
 
 // trimLocked removes the oldest complete GOPs until the buffer duration
 // fits within maxDuration. Must be called with mu held.
 func (b *replayBuffer) trimLocked() {
-	if len(b.gops) < 2 {
-		return // Keep at least one GOP.
-	}
-
 	trimmed := false
-	for len(b.gops) >= 2 {
-		// Use actual frame wall times for accurate duration measurement.
-		newest := b.frames[len(b.frames)-1].wallTime
-		oldest := b.frames[0].wallTime
-		overTime := newest.Sub(oldest) > b.maxDuration
-		overBytes := b.maxBytes > 0 && b.bytesUsed > b.maxBytes
-		if !overTime && !overBytes {
-			break
+
+	if len(b.gops) >= 2 {
+		for len(b.gops) >= 2 {
+			// Use actual frame wall times for accurate duration measurement.
+			newest := b.frames[len(b.frames)-1].wallTime
+			oldest := b.frames[0].wallTime
+			overTime := newest.Sub(oldest) > b.maxDuration
+			overBytes := b.maxBytes > 0 && (b.bytesUsed+b.audioBytesUsed) > b.maxBytes
+			if !overTime && !overBytes {
+				break
+			}
+			// Remove oldest GOP.
+			trimmed = true
+			removeEnd := b.gops[0].endIdx + 1
+			for i := b.gops[0].startIdx; i <= b.gops[0].endIdx && i < len(b.frames); i++ {
+				b.bytesUsed -= int64(len(b.frames[i].wireData))
+				b.bytesUsed -= int64(len(b.frames[i].sps))
+				b.bytesUsed -= int64(len(b.frames[i].pps))
+			}
+			b.frames = b.frames[removeEnd:]
+			b.gops = b.gops[1:]
+			// Reindex remaining GOPs.
+			offset := removeEnd
+			for i := range b.gops {
+				b.gops[i].startIdx -= offset
+				b.gops[i].endIdx -= offset
+			}
 		}
-		// Remove oldest GOP.
-		trimmed = true
-		removeEnd := b.gops[0].endIdx + 1
-		for i := b.gops[0].startIdx; i <= b.gops[0].endIdx && i < len(b.frames); i++ {
-			b.bytesUsed -= int64(len(b.frames[i].wireData))
-			b.bytesUsed -= int64(len(b.frames[i].sps))
-			b.bytesUsed -= int64(len(b.frames[i].pps))
-		}
-		b.frames = b.frames[removeEnd:]
-		b.gops = b.gops[1:]
-		// Reindex remaining GOPs.
-		offset := removeEnd
-		for i := range b.gops {
-			b.gops[i].startIdx -= offset
-			b.gops[i].endIdx -= offset
+
+		// Trim audio frames whose wall time falls before the oldest remaining video frame.
+		if trimmed && len(b.frames) > 0 && len(b.audioFrames) > 0 {
+			cutoff := b.frames[0].wallTime
+			trimIdx := 0
+			for trimIdx < len(b.audioFrames) && b.audioFrames[trimIdx].wallTime.Before(cutoff) {
+				b.audioBytesUsed -= int64(len(b.audioFrames[trimIdx].data))
+				trimIdx++
+			}
+			if trimIdx > 0 {
+				b.audioFrames = b.audioFrames[trimIdx:]
+			}
 		}
 	}
 
-	// Trim audio frames whose wall time falls before the oldest remaining video frame.
-	if trimmed && len(b.frames) > 0 && len(b.audioFrames) > 0 {
-		cutoff := b.frames[0].wallTime
+	// If total memory still exceeds the limit after trimming video GOPs
+	// (e.g., audio dominates and only 1 GOP remains), trim oldest audio
+	// frames directly to bring memory within budget.
+	if b.maxBytes > 0 && len(b.audioFrames) > 0 && (b.bytesUsed+b.audioBytesUsed) > b.maxBytes {
 		trimIdx := 0
-		for trimIdx < len(b.audioFrames) && b.audioFrames[trimIdx].wallTime.Before(cutoff) {
+		for trimIdx < len(b.audioFrames) && (b.bytesUsed+b.audioBytesUsed) > b.maxBytes {
 			b.audioBytesUsed -= int64(len(b.audioFrames[trimIdx].data))
 			trimIdx++
 		}
 		if trimIdx > 0 {
 			b.audioFrames = b.audioFrames[trimIdx:]
+			trimmed = true
+		}
+		if b.audioBytesUsed < 0 {
+			b.audioBytesUsed = 0
 		}
 	}
 

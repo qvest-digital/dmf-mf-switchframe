@@ -2803,3 +2803,134 @@ func TestMixerCrossfadeDuringFTBProducesSilence(t *testing.T) {
 			"sample %d should be silent during FTB crossfade, got %f", i, s)
 	}
 }
+
+// --- Fix 2: IngestPCM skips crossfade (MXL audio clicks) ---
+
+func TestMixerIngestPCM_CrossfadeOnCut(t *testing.T) {
+	// When two MXL sources are active and a cut is triggered via OnCut(),
+	// IngestPCM for both old and new source should produce a crossfaded
+	// output frame (not raw mix). Without the fix, IngestPCM ignores
+	// crossfadeActive and the output contains an abrupt switch (click).
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		// No DecoderFactory needed — IngestPCM supplies raw PCM directly.
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("mxl1")
+	m.AddChannel("mxl2")
+	m.SetActive("mxl1", true)
+	m.SetActive("mxl2", true)
+
+	// Pre-populate mxl1's lastDecodedPCM via an initial IngestPCM call.
+	// This simulates normal operation where the source has been sending
+	// audio before the cut.
+	oldPCM := make([]float32, 2048) // 1024 samples * 2 channels
+	for i := range oldPCM {
+		oldPCM[i] = 0.8
+	}
+	m.IngestPCM("mxl1", oldPCM, 1000, 2)
+
+	// Clear output from the initial frame
+	outputFrames = nil
+	capturedPCM = nil
+
+	// Trigger crossfade: mxl1 → mxl2
+	m.OnCut("mxl1", "mxl2")
+
+	// Now send PCM from the new source (mxl2). The crossfade should
+	// complete using mxl1's pre-buffered PCM + mxl2's new PCM.
+	newPCM := make([]float32, 2048) // 1024 samples * 2 channels
+	for i := range newPCM {
+		newPCM[i] = 0.0 // silence on the new source
+	}
+	m.IngestPCM("mxl2", newPCM, 2000, 2)
+
+	require.GreaterOrEqual(t, len(outputFrames), 1,
+		"crossfade should produce at least one output frame")
+	require.NotNil(t, capturedPCM,
+		"encoder should have been called with crossfaded PCM")
+
+	// The crossfaded PCM should NOT be the raw mix of old+new (which would
+	// be 0.8+0.0=0.8 everywhere). Instead, it should show a fade envelope:
+	// first samples should be mostly old source (close to 0.8), last samples
+	// should be mostly new source (close to 0.0).
+	require.True(t, len(capturedPCM) > 4,
+		"captured PCM should have enough samples to verify crossfade")
+
+	// Verify the fade shape: first sample should be higher than last sample,
+	// because the old source (0.8) is fading out and the new source (0.0) is fading in.
+	firstSample := capturedPCM[0]
+	lastSample := capturedPCM[len(capturedPCM)-1]
+	require.True(t, firstSample > lastSample,
+		"crossfade should show fade from old (0.8) to new (0.0); first=%f, last=%f",
+		firstSample, lastSample)
+
+	// The crossfade should have cleared after completion.
+	m.mu.RLock()
+	active := m.crossfadeActive
+	m.mu.RUnlock()
+	require.False(t, active, "crossfade should be cleared after completion")
+}
+
+// --- Fix 10: Decoder channel mismatch (mono→stereo upmix) ---
+
+func TestMixerIngestPCM_MonoToStereoUpmix(t *testing.T) {
+	// When an MXL source delivers mono PCM (1024 float32 samples) to a
+	// stereo mixer (numChannels=2), the mixer should upmix mono→stereo
+	// by duplicating each sample to both L and R channels.
+	// Without the fix, the mono samples are treated as interleaved stereo,
+	// meaning odd/even samples get assigned to different channels, producing
+	// garbled audio at half the expected length.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("mono_src")
+	m.SetActive("mono_src", true)
+
+	// Send mono PCM: 1024 samples (NOT 2048 for stereo). This is
+	// half the expected stereo frame size.
+	monoPCM := make([]float32, 1024) // mono: 1024 samples
+	for i := range monoPCM {
+		monoPCM[i] = 0.5
+	}
+	m.IngestPCM("mono_src", monoPCM, 1000, 1)
+
+	require.GreaterOrEqual(t, len(outputFrames), 1,
+		"should produce output frame from mono source")
+	require.NotNil(t, capturedPCM,
+		"encoder should have been called")
+
+	// After upmix, the PCM should be 2048 samples (1024 * 2 channels),
+	// with each mono sample duplicated to L and R.
+	require.Equal(t, 2048, len(capturedPCM),
+		"mono PCM should be upmixed to stereo (1024 * 2 channels)")
+
+	// Verify all samples are 0.5 (the original mono value duplicated)
+	for i, s := range capturedPCM {
+		require.InDelta(t, 0.5, s, 0.01,
+			"sample %d should be 0.5 after mono→stereo upmix, got %f", i, s)
+	}
+}

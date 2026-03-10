@@ -295,6 +295,73 @@ func TestReplayBuffer_ExtractClip_AudioIncludesLastFrameDuration(t *testing.T) {
 		"last audio frame should be at t+126ms (within display period)")
 }
 
+func TestReplayBuffer_AudioFrameDataIntegrity(t *testing.T) {
+	// Fix 8: Verify audio frame data is correctly deep-copied into the buffer.
+	// A self-copy bug (copy(af.data, af.data)) would leave the buffer with
+	// zero-filled data instead of the original audio content.
+	buf := newReplayBuffer(60, 0)
+	now := time.Now()
+
+	// Record a keyframe first (required for audio recording).
+	buf.recordFrameAt(makeVideoFrame(0, true, 100), now)
+
+	// Record an audio frame with known non-zero data.
+	audioData := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	af := &media.AudioFrame{
+		PTS:        1000,
+		Data:       audioData,
+		SampleRate: 48000,
+		Channels:   2,
+	}
+	buf.recordAudioFrameAt(af, now.Add(10*time.Millisecond))
+
+	// Extract the clip and verify audio data matches the input.
+	_, audioClip, err := buf.ExtractClip(now.Add(-1*time.Second), now.Add(1*time.Second))
+	require.NoError(t, err)
+	require.Len(t, audioClip, 1)
+	require.Equal(t, audioData, audioClip[0].data,
+		"audio data should match input, not be zeroed out")
+}
+
+func TestReplayBuffer_AudioBytesIncludedInMemoryLimit(t *testing.T) {
+	// Fix 7: trimLocked only checks bytesUsed (video bytes). audioBytesUsed
+	// never contributes to the memory limit, and recordAudioFrameAt never
+	// calls trimLocked. This means audio frames can grow unbounded.
+	maxBytes := int64(2000)
+	buf := newReplayBuffer(60, maxBytes)
+	now := time.Now()
+
+	// Record 3 small GOPs so trimming can work (need >=2 GOPs to trim).
+	for g := 0; g < 3; g++ {
+		kf := makeVideoFrame(int64(g)*90000, true, 100)
+		buf.recordFrameAt(kf, now.Add(time.Duration(g)*time.Second))
+		df := makeVideoFrame(int64(g)*90000+3003, false, 50)
+		buf.recordFrameAt(df, now.Add(time.Duration(g)*time.Second+33*time.Millisecond))
+	}
+
+	// Now record many audio frames with large data, well exceeding maxBytes.
+	for i := 0; i < 100; i++ {
+		af := &media.AudioFrame{
+			PTS:        int64(i) * 1920,
+			Data:       make([]byte, 200), // 200 bytes each, 100 frames = 20KB
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		wallTime := now.Add(time.Duration(i) * 21 * time.Millisecond)
+		buf.recordAudioFrameAt(af, wallTime)
+	}
+
+	// Total memory (video + audio) should be bounded near maxBytes.
+	buf.mu.RLock()
+	totalBytes := buf.bytesUsed + buf.audioBytesUsed
+	buf.mu.RUnlock()
+
+	// Allow some headroom (the last GOP can't be trimmed, so we allow 2x).
+	require.LessOrEqual(t, totalBytes, maxBytes*3,
+		"total memory (video=%d + audio=%d = %d) should be bounded by maxBytes=%d",
+		buf.bytesUsed, buf.audioBytesUsed, totalBytes, maxBytes)
+}
+
 func TestReplayBuffer_ConcurrentAccess(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	done := make(chan struct{})

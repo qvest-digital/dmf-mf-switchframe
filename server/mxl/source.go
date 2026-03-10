@@ -18,7 +18,8 @@ import (
 type SourceVideoSink func(key string, yuv []byte, width, height int, pts int64)
 
 // SourceAudioSink is called with interleaved float32 PCM for the mixer pipeline.
-type SourceAudioSink func(key string, pcm []float32, pts int64)
+// channels is the source's actual channel count (1=mono, 2=stereo, etc.).
+type SourceAudioSink func(key string, pcm []float32, pts int64, channels int)
 
 // MediaBroadcaster sends encoded media to viewers (browser relay).
 type MediaBroadcaster interface {
@@ -406,7 +407,7 @@ func (s *Source) processAudioGrain(grain AudioGrain) {
 
 	// 1. Deliver raw PCM to mixer.
 	if s.config.OnRawAudio != nil {
-		s.config.OnRawAudio(s.config.FlowName, interleaved, pts)
+		s.config.OnRawAudio(s.config.FlowName, interleaved, pts, grain.Channels)
 	}
 
 	// 2. Encode PCM→AAC and broadcast to relay.

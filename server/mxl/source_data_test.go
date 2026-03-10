@@ -190,7 +190,7 @@ func TestSource_AllThreeFlows(t *testing.T) {
 			videoReceived.count++
 			videoReceived.mu.Unlock()
 		},
-		OnRawAudio: func(string, []float32, int64) {
+		OnRawAudio: func(string, []float32, int64, int) {
 			audioReceived.mu.Lock()
 			audioReceived.count++
 			audioReceived.mu.Unlock()

@@ -433,11 +433,14 @@ func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	fs.tickRate = d
 	fs.fpsNum, fs.fpsDen = tickRateToRational(d)
 
-	// Update per-source FRC tick interval so interpolation positions
-	// are correct at the new frame rate.
+	// Update per-source state for the new tick rate:
+	// - Reset Bresenham accumulators to prevent stale remainder from the old
+	//   rate bleeding into PTS intervals at the new rate.
+	// - Propagate new tick interval to FRC sources.
 	newInterval := fs.tickPTSInterval()
 	for _, ss := range fs.sources {
 		ss.mu.Lock()
+		ss.ptsRemAccum = 0
 		if ss.frc != nil {
 			ss.frc.tickIntervalPTS = newInterval
 		}
@@ -638,6 +641,13 @@ func (fs *FrameSynchronizer) releaseTick() {
 			frcPTS := ss.lastReleasedPTS + int64(ss.frc.ticksSinceLastFresh)*ss.frc.tickIntervalPTS
 			if emitted := ss.frc.emit(frcPTS); emitted != nil {
 				releaseRawVideo = *emitted // value copy under lock
+				// Deep-copy the YUV buffer: emit returns a pointer into a
+				// reusable scratch buffer (nearestOut/blendOut). Without a
+				// copy, the next tick's emit overwrites the data while
+				// downstream consumers may still be reading it.
+				yuvCopy := make([]byte, len(emitted.YUV))
+				copy(yuvCopy, emitted.YUV)
+				releaseRawVideo.YUV = yuvCopy
 				hasRawVideo = true
 				freshVideo = true // FRC frames have unique PTS, treat as fresh
 			}

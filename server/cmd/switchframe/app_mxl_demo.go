@@ -89,8 +89,8 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 				}
 				a.sw.IngestRawVideo(sourceKey, pf)
 			},
-			OnRawAudio: func(sourceKey string, pcm []float32, pts int64) {
-				a.mixer.IngestPCM(sourceKey, pcm, pts)
+			OnRawAudio: func(sourceKey string, pcm []float32, pts int64, channels int) {
+				a.mixer.IngestPCM(sourceKey, pcm, pts, channels)
 			},
 		})
 

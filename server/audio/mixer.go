@@ -1126,7 +1126,36 @@ mixing:
 //
 // PCM input is interleaved float32 (e.g. 1024 samples * 2 channels = 2048 values for stereo).
 // The pts parameter is the presentation timestamp in 90 kHz clock units.
-func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
+// The channels parameter is the source's actual channel count (1=mono, 2=stereo).
+// If channels < mixer's numChannels, mono samples are upmixed to stereo.
+func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
+	// Check for active crossfade before acquiring the write lock.
+	m.mu.RLock()
+	crossfadeActive := m.crossfadeActive
+	crossfadeFrom := m.crossfadeFrom
+	crossfadeTo := m.crossfadeTo
+	crossfadeDeadline := m.crossfadeDeadline
+	m.mu.RUnlock()
+
+	isParticipant := sourceKey == crossfadeFrom || sourceKey == crossfadeTo
+
+	// Cancel expired crossfade if a non-participant source triggers it
+	if crossfadeActive && !isParticipant && !crossfadeDeadline.IsZero() && time.Now().After(crossfadeDeadline) {
+		m.mu.Lock()
+		if m.crossfadeActive {
+			m.crossfadeActive = false
+			m.crossfadePCM = nil
+		}
+		m.mu.Unlock()
+		crossfadeActive = false
+	}
+
+	// Handle crossfade mode (participants route here; timeout handled inside)
+	if crossfadeActive && isParticipant {
+		m.ingestCrossfadePCM(sourceKey, pcm, pts, channels)
+		return
+	}
+
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -1144,6 +1173,12 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64) {
 	// Force mixing mode if currently in passthrough.
 	if m.passthrough {
 		m.passthrough = false
+	}
+
+	// Mono→stereo upmix: if source delivers fewer channels than the mixer
+	// expects, duplicate each sample to fill all channels.
+	if channels > 0 && channels < m.numChannels {
+		pcm = m.upmixMono(pcm, channels)
 	}
 
 	// Update per-channel peaks (pre-fader, pre-gain)
@@ -1728,6 +1763,193 @@ func (m *AudioMixer) DebugSnapshot() map[string]any {
 		"max_inter_frame_gap_ms": maxGapMs,
 		"mode_transitions":       m.modeTransitions.Load(),
 	}
+}
+
+// upmixMono duplicates each mono sample to all mixer channels.
+// srcChannels is the source's actual channel count (must be < m.numChannels).
+// Caller must hold m.mu.
+func (m *AudioMixer) upmixMono(pcm []float32, srcChannels int) []float32 {
+	if srcChannels <= 0 || srcChannels >= m.numChannels || len(pcm) == 0 {
+		return pcm
+	}
+	// For mono→stereo: each sample is duplicated to numChannels positions.
+	// For N→M where N<M: interleave source channels into M output channels,
+	// duplicating the last source channel to fill remaining output channels.
+	samplesPerSrcFrame := len(pcm) / srcChannels
+	upmixed := make([]float32, samplesPerSrcFrame*m.numChannels)
+	for i := 0; i < samplesPerSrcFrame; i++ {
+		for outCh := 0; outCh < m.numChannels; outCh++ {
+			srcCh := outCh
+			if srcCh >= srcChannels {
+				srcCh = srcChannels - 1
+			}
+			upmixed[i*m.numChannels+outCh] = pcm[i*srcChannels+srcCh]
+		}
+	}
+	return upmixed
+}
+
+// ingestCrossfadePCM handles raw PCM frames during an active crossfade transition.
+// This is the PCM equivalent of ingestCrossfadeFrame — it collects PCM from both
+// old and new source, applies equal-power crossfade, and outputs. Unlike
+// ingestCrossfadeFrame, no AAC decode step is needed since the PCM is already
+// in float32 format.
+func (m *AudioMixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, channels int) {
+	m.mu.Lock()
+
+	if !m.crossfadeActive {
+		m.mu.Unlock()
+		return
+	}
+
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+
+	// Mono→stereo upmix (same as normal IngestPCM path).
+	if channels > 0 && channels < m.numChannels {
+		pcm = m.upmixMono(pcm, channels)
+	}
+
+	// Pipeline: Trim -> EQ -> Compressor -> Fader (reuse channel work buffers)
+	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))
+	trimmedPCM := ch.trimBuf
+	for i, s := range pcm {
+		trimmedPCM[i] = s * ch.trimLinear
+	}
+	if !ch.eq.IsBypassed() {
+		ch.eq.Process(trimmedPCM, m.numChannels)
+	}
+	if !ch.compressor.IsBypassed() {
+		ch.compressor.Process(trimmedPCM)
+	}
+	ch.gainBuf = growBuf(ch.gainBuf, len(trimmedPCM))
+	gainedPCM := ch.gainBuf
+	for i, s := range trimmedPCM {
+		gainedPCM[i] = s * ch.levelLinear
+	}
+
+	m.crossfadePCM[sourceKey] = gainedPCM
+
+	// Wait for both sources (with timeout)
+	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
+	_, hasTo := m.crossfadePCM[m.crossfadeTo]
+	timedOut := !m.crossfadeDeadline.IsZero() && time.Now().After(m.crossfadeDeadline)
+	if !hasFrom && !hasTo {
+		m.mu.Unlock()
+		return
+	}
+	if (!hasFrom || !hasTo) && !timedOut {
+		m.mu.Unlock()
+		return
+	}
+
+	// Track crossfade timeouts (timed out with only one source)
+	if timedOut && (!hasFrom || !hasTo) {
+		m.crossfadeTimeouts.Add(1)
+		missingSrc := m.crossfadeFrom
+		if hasFrom {
+			missingSrc = m.crossfadeTo
+		}
+		m.log.Warn("crossfade timeout",
+			"source", missingSrc,
+			"deadline_ms", crossfadeTimeout.Milliseconds())
+	}
+
+	// Apply equal-power crossfade (or use single source if timed out)
+	var mixed []float32
+	if hasFrom && hasTo {
+		m.crossfadeBuf = EqualPowerCrossfadeStereoInto(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
+		mixed = m.crossfadeBuf
+	} else if hasTo {
+		mixed = m.crossfadePCM[m.crossfadeTo]
+	} else {
+		mixed = m.crossfadePCM[m.crossfadeFrom]
+	}
+
+	// Stinger audio overlay
+	if m.stingerAudio != nil {
+		m.addStingerAudio(mixed)
+	}
+
+	// Apply program mute (FTB held)
+	if m.programMuted {
+		for i := range mixed {
+			mixed[i] = 0
+		}
+	}
+
+	// Apply master gain
+	for i := range mixed {
+		mixed[i] *= m.masterLinear
+	}
+
+	// Update program peak metering
+	peakL, peakR := PeakLevel(mixed, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
+
+	// Feed LUFS meter
+	m.loudness.Process(mixed)
+
+	// Apply brickwall limiter
+	m.limiter.Process(mixed)
+
+	// Monotonic PTS
+	outPTS := m.advanceOutputPTS(pts)
+
+	// MXL output tap
+	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
+		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
+		copy(m.mxlSinkBuf, mixed)
+		(*sinkPtr)(m.mxlSinkBuf, outPTS, m.sampleRate, m.numChannels)
+	}
+
+	// Lazy-init encoder
+	if m.encoder == nil && m.config.EncoderFactory != nil {
+		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+		if err != nil {
+			m.crossfadeActive = false
+			m.mu.Unlock()
+			return
+		}
+		m.encoder = enc
+	}
+	if m.encoder == nil {
+		m.crossfadeActive = false
+		m.mu.Unlock()
+		return
+	}
+
+	// Encode
+	aacData, err := m.encoder.Encode(mixed)
+	if err != nil {
+		m.encodeErrors.Add(1)
+		if m.promMetrics != nil {
+			m.promMetrics.EncodeErrorsTotal.Inc()
+		}
+		m.crossfadeActive = false
+		m.mu.Unlock()
+		m.log.Warn("encode error", "err", err)
+		return
+	}
+
+	// Clear crossfade state
+	m.crossfadeActive = false
+	m.crossfadePCM = nil
+
+	// Build output frame
+	outputFrame := &media.AudioFrame{
+		PTS:        outPTS,
+		Data:       aacData,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
+	}
+	m.mu.Unlock()
+
+	m.recordAndOutput(outputFrame)
 }
 
 // DBToLinear converts decibels to a linear gain multiplier.

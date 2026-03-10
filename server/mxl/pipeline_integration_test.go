@@ -146,7 +146,7 @@ func TestPipelineAudioRoundTrip(t *testing.T) {
 		FlowName:   "test",
 		SampleRate: 48000,
 		Channels:   2,
-		OnRawAudio: func(key string, pcm []float32, pts int64) {
+		OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 			captured.mu.Lock()
 			defer captured.mu.Unlock()
 			cp := make([]float32, len(pcm))
@@ -353,7 +353,7 @@ func TestPipelineFullLoopback(t *testing.T) {
 			outWriter.WriteVideo(yuv, w, h, pts)
 			videoOnce.Do(videoDelivered.Done)
 		},
-		OnRawAudio: func(_ string, pcm []float32, pts int64) {
+		OnRawAudio: func(_ string, pcm []float32, pts int64, channels int) {
 			outWriter.WriteAudio(pcm, pts, 48000, 2)
 			audioOnce.Do(audioDelivered.Done)
 		},

@@ -3,6 +3,7 @@ package replay
 import (
 	"cmp"
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -1632,4 +1633,63 @@ func TestComputeReplayTiming_MinDupCount(t *testing.T) {
 	dupCount, frameDuration := computeReplayTiming(2.0, 30.0, 30)
 	require.Equal(t, 1, dupCount, "dupCount should floor to 1")
 	require.Greater(t, frameDuration, time.Duration(0), "frameDuration should be positive")
+}
+
+// mockDropDecoder drops the Nth frame (0-indexed) with an error, simulating
+// a corrupt frame that the decoder rejects (not EAGAIN/buffering).
+type mockDropDecoder struct {
+	width, height int
+	decodeCount   int
+	dropIndex     int // 0-based index of the frame to drop
+}
+
+func (d *mockDropDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	idx := d.decodeCount
+	d.decodeCount++
+	if idx == d.dropIndex {
+		return nil, 0, 0, errors.New("corrupt frame")
+	}
+	yuv := make([]byte, d.width*d.height*3/2)
+	yuv[0] = byte(idx + 1) // mark for identification
+	return yuv, d.width, d.height, nil
+}
+
+func (d *mockDropDecoder) Close() {}
+
+func TestDecodeGOP_PTSAssignmentOnFrameDrop(t *testing.T) {
+	// Fix 9: When a decoder drops a frame (non-EAGAIN error), remaining
+	// frames get wrong PTS because sortedPTS[len(decoded)] uses the decoded
+	// output count as the index, not the input consumption count.
+	//
+	// GOP with 4 frames, PTS = [1000, 2000, 3000, 4000].
+	// Frame at index 1 (PTS 2000) is dropped by the decoder.
+	// Expected: 3 decoded frames with PTS [1000, 3000, 4000].
+	// Bug: decoded frames get PTS [1000, 2000, 3000] (index off-by-one).
+	gop := []bufferedFrame{
+		{wireData: makeAVC1Data(100), pts: 1000, isKeyframe: true,
+			sps: []byte{0x67, 0x42, 0xC0, 0x1E}, pps: []byte{0x68, 0xCE, 0x38, 0x80}},
+		{wireData: makeAVC1Data(100), pts: 2000, isKeyframe: false},
+		{wireData: makeAVC1Data(100), pts: 3000, isKeyframe: false},
+		{wireData: makeAVC1Data(100), pts: 4000, isKeyframe: false},
+	}
+
+	dropFactory := func() (transition.VideoDecoder, error) {
+		return &mockDropDecoder{width: 320, height: 240, dropIndex: 1}, nil
+	}
+
+	decoded, err := decodeGOP(gop, dropFactory)
+	require.NoError(t, err)
+	require.Len(t, decoded, 3, "should have 3 decoded frames (1 dropped)")
+
+	// Sort by PTS for display order (decodeGOP caller does this).
+	slices.SortFunc(decoded, func(a, b decodedFrame) int {
+		return cmp.Compare(a.pts, b.pts)
+	})
+
+	// The decoded frames should have PTS [1000, 3000, 4000], NOT [1000, 2000, 3000].
+	expectedPTS := []int64{1000, 3000, 4000}
+	for i, df := range decoded {
+		require.Equal(t, expectedPTS[i], df.pts,
+			"frame %d PTS mismatch: got %d, want %d", i, df.pts, expectedPTS[i])
+	}
 }

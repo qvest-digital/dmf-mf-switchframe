@@ -57,12 +57,17 @@ func NewMCFIState() *MCFIState {
 func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
 	frameSize := width * height * 3 / 2
 
-	// Near-threshold: skip ME/warp for extreme alpha values
+	// Near-threshold: skip ME/warp for extreme alpha values.
+	// Return copies to satisfy the "freshly allocated copy" contract.
 	if alpha < frcNearThresholdLow {
-		return frameA
+		out := make([]byte, frameSize)
+		copy(out, frameA[:frameSize])
+		return out
 	}
 	if alpha > frcNearThresholdHigh {
-		return frameB
+		out := make([]byte, frameSize)
+		copy(out, frameB[:frameSize])
+		return out
 	}
 
 	// Check if this is the same frame pair (pointer identity)

@@ -1870,6 +1870,8 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var snapshot internal.ControlRoomState
 	var oldProgram string
 	var audioCut audioCutHandler
+	var abortEngine *transition.TransitionEngine
+	var abortAudioHandler audioTransitionHandler
 	changed := false
 
 	s.mu.Lock()
@@ -1878,6 +1880,14 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	if s.programSource != sourceKey {
+		// If a transition is active, abort it first so its OnComplete
+		// callback won't overwrite our new programSource.
+		if s.state.isInTransition() {
+			abortEngine = s.transEngine
+			abortAudioHandler = s.audioTransition
+			s.transEngine = nil
+			s.transitionState(StateIdle)
+		}
 		oldProgram = s.programSource
 		s.programSource = sourceKey
 		// All sources use the raw pipeline (always-decode or MXL) —
@@ -1895,6 +1905,15 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		changed = true
 	}
 	s.mu.Unlock()
+
+	// Stop the aborted transition engine outside the lock.
+	if abortEngine != nil {
+		abortEngine.Stop()
+		s.log.Warn("transition aborted", "reason", "cut override")
+		if abortAudioHandler != nil {
+			abortAudioHandler.OnTransitionComplete()
+		}
+	}
 
 	if changed {
 		s.log.Info("cut executed", "source", sourceKey, "previous_source", oldProgram)

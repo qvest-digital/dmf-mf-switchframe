@@ -461,3 +461,144 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 	// 960 samples * 2 channels = 1920 float32 values
 	require.Equal(t, 960*2, len(clip.Audio))
 }
+
+func TestRGBAToStingerFrame_LimitedRangeWhite(t *testing.T) {
+	// White (255,255,255) should produce Y=235 in limited-range BT.709, not Y=255.
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+		}
+	}
+
+	frame := RGBAToStingerFrame(img, 4, 4)
+
+	// Every luma sample should be 235 (limited-range white)
+	for i := 0; i < 16; i++ {
+		require.Equal(t, byte(235), frame.YUV[i],
+			"pixel %d: Y should be 235 (limited-range white), got %d", i, frame.YUV[i])
+	}
+}
+
+func TestRGBAToStingerFrame_LimitedRangeBlack(t *testing.T) {
+	// Black (0,0,0) should produce Y=16 in limited-range BT.709, not Y=0.
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 0, G: 0, B: 0, A: 255})
+		}
+	}
+
+	frame := RGBAToStingerFrame(img, 4, 4)
+
+	// Every luma sample should be 16 (limited-range black)
+	for i := 0; i < 16; i++ {
+		require.Equal(t, byte(16), frame.YUV[i],
+			"pixel %d: Y should be 16 (limited-range black), got %d", i, frame.YUV[i])
+	}
+}
+
+func TestRGBAToStingerFrame_SemiTransparentUnpremultiply(t *testing.T) {
+	// Regression test: Go's img.At(x,y).RGBA() returns pre-multiplied alpha.
+	// If we don't un-premultiply before YUV conversion, semi-transparent pixels
+	// get darkened YUV values, and then alpha is applied again during compositing,
+	// causing double-darkening (dark halos on semi-transparent stinger edges).
+	//
+	// A pure red pixel (R=255) at alpha=128 should produce the same Y luma
+	// as a pure red pixel at alpha=255. Only the alpha plane should differ.
+	imgOpaque := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	imgSemiTrans := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			imgOpaque.SetNRGBA(x, y, color.NRGBA{R: 255, G: 0, B: 0, A: 255})
+			imgSemiTrans.SetNRGBA(x, y, color.NRGBA{R: 255, G: 0, B: 0, A: 128})
+		}
+	}
+
+	frameOpaque := RGBAToStingerFrame(imgOpaque, 4, 4)
+	frameSemiTrans := RGBAToStingerFrame(imgSemiTrans, 4, 4)
+
+	// Alpha planes must differ
+	require.Equal(t, byte(255), frameOpaque.Alpha[0])
+	require.Equal(t, byte(128), frameSemiTrans.Alpha[0])
+
+	// Y (luma) values must be identical — the color is the same, only alpha differs.
+	// With the bug (no un-premultiply), the semi-transparent Y would be ~35 instead of ~63.
+	require.Equal(t, frameOpaque.YUV[0], frameSemiTrans.YUV[0],
+		"Y luma must be identical regardless of alpha; opaque=%d semi=%d",
+		frameOpaque.YUV[0], frameSemiTrans.YUV[0])
+
+	// Chroma (Cb, Cr) must also be identical
+	ySize := 4 * 4
+	uvSize := 2 * 2
+	require.Equal(t, frameOpaque.YUV[ySize], frameSemiTrans.YUV[ySize],
+		"Cb must be identical regardless of alpha")
+	require.Equal(t, frameOpaque.YUV[ySize+uvSize], frameSemiTrans.YUV[ySize+uvSize],
+		"Cr must be identical regardless of alpha")
+}
+
+func TestRGBAToStingerFrame_FullyTransparentPixel(t *testing.T) {
+	// Fully transparent pixels (alpha=0) should produce black YUV (Y=16 limited range).
+	// This prevents division by zero in the un-premultiply path.
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 255, G: 128, B: 64, A: 0})
+		}
+	}
+
+	frame := RGBAToStingerFrame(img, 4, 4)
+
+	// Alpha should be 0
+	require.Equal(t, byte(0), frame.Alpha[0])
+	// Y should be limited-range black (16)
+	require.Equal(t, byte(16), frame.YUV[0],
+		"fully transparent pixel should have Y=16 (limited-range black)")
+}
+
+func BenchmarkRGBAToStingerFrame_1080p(b *testing.B) {
+	w, h := 1920, 1080
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	// Fill with semi-transparent red to exercise the un-premultiply path
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 200, G: 50, B: 100, A: 180})
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		RGBAToStingerFrame(img, w, h)
+	}
+}
+
+func TestRGBAToStingerFrame_LimitedRangeRed(t *testing.T) {
+	// Pure red (255,0,0) in limited-range BT.709:
+	//   Y  = 16 + 219 * 0.2126 ≈ 62.6 → 63
+	//   Cb = 128 + 224 * (0.0 - 0.2126) / 1.8556 ≈ 128 + 224*(-0.1146) ≈ 102.3 → 102
+	//   Cr = 128 + 224 * (1.0 - 0.2126) / 1.5748 ≈ 128 + 224*(0.5000) ≈ 240.0 → 240
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{R: 255, G: 0, B: 0, A: 255})
+		}
+	}
+
+	frame := RGBAToStingerFrame(img, 4, 4)
+
+	// Check luma
+	require.InDelta(t, 63, int(frame.YUV[0]), 1,
+		"Y for red should be ~63, got %d", frame.YUV[0])
+
+	// Check chroma (Cb and Cr are at offsets ySize and ySize+uvSize)
+	ySize := 4 * 4    // 16
+	uvSize := 2 * 2   // 4
+	cbOffset := ySize  // 16
+	crOffset := ySize + uvSize // 20
+
+	require.InDelta(t, 102, int(frame.YUV[cbOffset]), 1,
+		"Cb for red should be ~102, got %d", frame.YUV[cbOffset])
+	require.InDelta(t, 240, int(frame.YUV[crOffset]), 1,
+		"Cr for red should be ~240, got %d", frame.YUV[crOffset])
+}

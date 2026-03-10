@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 var (
@@ -378,6 +380,8 @@ func loadPNGFrame(path string) (*StingerFrame, int, int, error) {
 }
 
 // RGBAToStingerFrame converts an image to a StingerFrame with YUV420 + alpha.
+// Uses limited-range BT.709 colorspace (Y [16,235], Cb/Cr [16,240]) to match
+// the pipeline's limited-range convention.
 // Exported for testing.
 func RGBAToStingerFrame(img image.Image, w, h int) *StingerFrame {
 	ySize := w * h
@@ -385,7 +389,7 @@ func RGBAToStingerFrame(img image.Image, w, h int) *StingerFrame {
 	yuv := make([]byte, ySize+2*uvSize)
 	alpha := make([]byte, ySize)
 
-	// Convert RGBA to YUV420 (BT.709) + extract alpha plane
+	// Convert RGBA to limited-range BT.709 YUV420 + extract alpha plane
 	halfW := w / 2
 	uOffset := ySize
 	vOffset := ySize + uvSize
@@ -394,52 +398,54 @@ func RGBAToStingerFrame(img image.Image, w, h int) *StingerFrame {
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
 			r, g, b, a := img.At(bounds.Min.X+col, bounds.Min.Y+row).RGBA()
-			// RGBA() returns 16-bit values, scale to 8-bit
-			rf := float64(r >> 8)
-			gf := float64(g >> 8)
-			bf := float64(b >> 8)
+			// RGBA() returns pre-multiplied 16-bit values. Un-premultiply to get
+			// straight RGB before YUV conversion, otherwise alpha gets applied twice
+			// (once here via darkened RGB, once in the blend kernel).
 			af := uint8(a >> 8)
+			var r8, g8, b8 uint8
+			if a > 0 {
+				r8 = uint8((r * 0xFFFF / a) >> 8)
+				g8 = uint8((g * 0xFFFF / a) >> 8)
+				b8 = uint8((b * 0xFFFF / a) >> 8)
+			}
 
 			idx := row*w + col
-			// BT.709 luma
-			y := 0.2126*rf + 0.7152*gf + 0.0722*bf
-			yuv[idx] = clampByte(y)
+			// Limited-range BT.709 luma
+			yVal, _, _ := transition.RGBToYUV_BT709Limited(r8, g8, b8)
+			yuv[idx] = yVal
 			alpha[idx] = af
 		}
 	}
 
-	// Compute chroma by averaging 2x2 blocks
+	// Compute chroma by averaging 2x2 blocks of un-premultiplied RGB,
+	// then converting to limited-range Cb/Cr
 	for row := 0; row < h; row += 2 {
 		for col := 0; col < w; col += 2 {
 			var sumR, sumG, sumB float64
 			for dy := 0; dy < 2; dy++ {
 				for dx := 0; dx < 2; dx++ {
-					r, g, b, _ := img.At(bounds.Min.X+col+dx, bounds.Min.Y+row+dy).RGBA()
-					sumR += float64(r >> 8)
-					sumG += float64(g >> 8)
-					sumB += float64(b >> 8)
+					r, g, b, a := img.At(bounds.Min.X+col+dx, bounds.Min.Y+row+dy).RGBA()
+					// Un-premultiply before averaging
+					if a > 0 {
+						sumR += float64((r * 0xFFFF / a) >> 8)
+						sumG += float64((g * 0xFFFF / a) >> 8)
+						sumB += float64((b * 0xFFFF / a) >> 8)
+					}
 				}
 			}
-			avgR := sumR / 4
-			avgG := sumG / 4
-			avgB := sumB / 4
+			avgR := uint8(sumR/4 + 0.5)
+			avgG := uint8(sumG/4 + 0.5)
+			avgB := uint8(sumB/4 + 0.5)
 
-			y := 0.2126*avgR + 0.7152*avgG + 0.0722*avgB
+			// Limited-range BT.709 chroma from averaged RGB
+			_, cb, cr := transition.RGBToYUV_BT709Limited(avgR, avgG, avgB)
+
 			uvIdx := (row/2)*halfW + col/2
-			yuv[uOffset+uvIdx] = clampByte((avgB-y)/1.8556 + 128)
-			yuv[vOffset+uvIdx] = clampByte((avgR-y)/1.5748 + 128)
+			yuv[uOffset+uvIdx] = cb
+			yuv[vOffset+uvIdx] = cr
 		}
 	}
 
 	return &StingerFrame{YUV: yuv, Alpha: alpha}
 }
 
-func clampByte(v float64) byte {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return byte(v + 0.5)
-}

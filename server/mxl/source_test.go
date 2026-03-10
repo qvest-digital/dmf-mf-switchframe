@@ -106,7 +106,7 @@ func TestSource_FansOutToMixer(t *testing.T) {
 		FlowName:   "cam1",
 		SampleRate: 48000,
 		Channels:   2,
-		OnRawAudio: func(key string, pcm []float32, pts int64) {
+		OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 			received.mu.Lock()
 			defer received.mu.Unlock()
 			cp := make([]float32, len(pcm))
@@ -277,7 +277,7 @@ func TestSource_AVSyncAligned(t *testing.T) {
 			defer videoPTS.mu.Unlock()
 			videoPTS.pts = append(videoPTS.pts, pts)
 		},
-		OnRawAudio: func(key string, pcm []float32, pts int64) {
+		OnRawAudio: func(key string, pcm []float32, pts int64, channels int) {
 			// don't need to track audio PTS for this test
 		},
 	})

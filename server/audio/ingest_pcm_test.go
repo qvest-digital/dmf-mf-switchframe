@@ -36,7 +36,7 @@ func TestIngestPCM_ProcessesThroughPipeline(t *testing.T) {
 
 	// Silence PCM: 1024 samples * 2 channels = 2048 float32 values
 	pcm := make([]float32, 2048)
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputFrames), "should produce one output frame from PCM ingest")
@@ -73,7 +73,7 @@ func TestIngestPCM_AppliesTrim(t *testing.T) {
 
 	// PCM with known amplitude (0.25 on all samples)
 	pcm := []float32{0.25, 0.25, 0.25, 0.25}
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	// Trim of +6dB ≈ 1.995x gain, so 0.25 * ~2.0 ≈ 0.5
 	expectedGain := DBToLinear(6.0)
@@ -105,7 +105,7 @@ func TestIngestPCM_PeakMetering(t *testing.T) {
 
 	// PCM with known peak values: L=0.75, R=0.5 (interleaved stereo)
 	pcm := []float32{0.75, 0.5, 0.3, 0.4}
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	m.mu.RLock()
 	ch := m.channels["mxl1"]
@@ -137,7 +137,7 @@ func TestIngestPCM_StoresForCrossfade(t *testing.T) {
 	m.SetActive("mxl1", true)
 
 	pcm := []float32{0.1, 0.2, 0.3, 0.4}
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	m.mu.RLock()
 	ch := m.channels["mxl1"]
@@ -184,7 +184,7 @@ func TestIngestPCM_MutedChannelSkipped(t *testing.T) {
 	_ = m.SetMuted("mxl1", true)
 
 	pcm := make([]float32, 2048)
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	mu.Lock()
 	require.Equal(t, 0, len(outputFrames), "muted channel should produce no output")
@@ -218,7 +218,7 @@ func TestIngestPCM_InactiveChannelSkipped(t *testing.T) {
 	// Do NOT activate — channel is inactive
 
 	pcm := make([]float32, 2048)
-	m.IngestPCM("mxl1", pcm, 1000)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
 
 	mu.Lock()
 	require.Equal(t, 0, len(outputFrames), "inactive channel should produce no output")

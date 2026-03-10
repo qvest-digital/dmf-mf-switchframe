@@ -293,6 +293,14 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	e.watchdogStop = make(chan struct{})
 	e.watchdogOnce = sync.Once{}
 
+	// Pre-scale stinger frames eagerly so the first blend frame doesn't stall.
+	// Without this, lazy scaling on the first blendStinger() call can block
+	// for 15-30ms (scaling 30 frames at 1080p), causing a visible stutter.
+	e.stingerScaled = nil
+	if ttype == TransitionStinger && e.config.Stinger != nil && len(e.config.Stinger.Frames) > 0 && e.width > 0 {
+		e.stingerScaled = e.scaleStingerFrames(e.config.Stinger)
+	}
+
 	e.log.Info("engine started", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
 
 	// Start watchdog goroutine
@@ -579,10 +587,17 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 		return
 	}
 
-	// Resolve source frames, substituting black for nil sources.
+	// Resolve source frames. For non-FTB transitions, skip this blend if
+	// source A (from/program) hasn't arrived yet rather than substituting a
+	// black frame which causes a visible flash. The viewer sees the last
+	// pipeline frame for at most one frame period until source A arrives.
 	yuvA := e.latestYUVA
 	yuvB := e.latestYUVB
 	if yuvA == nil {
+		if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse {
+			e.mu.Unlock()
+			return
+		}
 		yuvA = e.getBlackFrame()
 	}
 	if yuvB == nil {
@@ -712,9 +727,14 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 		return
 	}
 
+	// Same nil-source-A guard as IngestFrame blend path (see comment there).
 	yuvA := e.latestYUVA
 	yuvB := e.latestYUVB
 	if yuvA == nil {
+		if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse {
+			e.mu.Unlock()
+			return
+		}
 		yuvA = e.getBlackFrame()
 	}
 	if yuvB == nil {

@@ -1445,3 +1445,60 @@ func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
 	require.InDelta(t, fpsAfterNormal, ss.avgFPS, 0.01,
 		"avgFPS should be unchanged after rejecting unreasonable delta")
 }
+
+func TestCutDuringActiveTransition_AbortsThenCuts(t *testing.T) {
+	// Bug: Cut() doesn't check for active transition. handleTransitionComplete
+	// later overwrites the cut's programSource with the transition's toSource.
+	//
+	// Scenario: transition A→B is active. User calls Cut(cam3). Expected:
+	// transition is aborted, programSource becomes cam3 and stays cam3 even
+	// after the transition engine fires its OnComplete callback.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	cam3Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	sw.RegisterSource("cam3", cam3Relay)
+
+	// Cut to cam1 first (set up initial program source).
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	require.Equal(t, "cam1", sw.State().ProgramSource)
+
+	// Set up a minimal pipelineCodecs so StartTransition doesn't nil-deref.
+	sw.pipeCodecs = &pipelineCodecs{}
+
+	// Configure transition support with no-op decoder factory.
+	sw.transConfig = &TransitionConfig{
+		DecoderFactory: nil, // raw YUV mode
+	}
+
+	// Start a long transition from cam1 → cam2 (60 seconds so it won't complete).
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	// Verify transition is active.
+	state := sw.State()
+	require.True(t, state.InTransition, "transition should be active")
+
+	// Now cut to cam3 mid-transition.
+	err = sw.Cut(context.Background(), "cam3")
+	require.NoError(t, err)
+
+	// programSource must be cam3.
+	state = sw.State()
+	require.Equal(t, "cam3", state.ProgramSource, "Cut should set program to cam3")
+	require.False(t, state.InTransition, "transition should be aborted after Cut")
+
+	// Simulate what would happen if the transition engine's OnComplete fires
+	// (which it would have, for the now-stopped engine). The engine calls
+	// handleTransitionComplete(aborted=false). Since we already cleared the
+	// engine, this should be a no-op. Let's verify programSource is still cam3.
+	sw.handleTransitionComplete(false)
+
+	state = sw.State()
+	require.Equal(t, "cam3", state.ProgramSource,
+		"handleTransitionComplete must not overwrite programSource after Cut aborted the transition")
+}

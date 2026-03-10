@@ -652,6 +652,12 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 			// The frame is consumed by the decoder and will be output later.
 			if !strings.Contains(decErr.Error(), "buffering") {
 				slog.Warn("replay player: decode frame failed", "pts", bf.pts, "err", decErr)
+				// Non-EAGAIN error: frame is dropped, not buffered.
+				// Remove its PTS from sortedPTS so remaining decoded
+				// frames get correct PTS assignments.
+				if idx, found := slices.BinarySearch(sortedPTS, bf.pts); found {
+					sortedPTS = slices.Delete(sortedPTS, idx, idx+1)
+				}
 			}
 			continue
 		}
