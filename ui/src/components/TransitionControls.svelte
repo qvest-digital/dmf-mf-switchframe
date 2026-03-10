@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, EasingConfig } from '$lib/api/types';
+	import type { FastControl } from '$lib/transport/fast-control';
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
@@ -10,8 +11,9 @@
 	interface Props {
 		state: ControlRoomState;
 		pendingConfirm?: string | null;
+		fastControl?: FastControl | null;
 	}
-	let { state: crState, pendingConfirm = null }: Props = $props();
+	let { state: crState, pendingConfirm = null, fastControl = null }: Props = $props();
 
 	type TransType = 'mix' | 'dip' | 'wipe' | 'stinger';
 	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
@@ -32,6 +34,13 @@
 
 	/** Local drag position for instant visual feedback during pointer drag. null = use server state. */
 	let dragPosition = $state<number | null>(null);
+
+	/** Brief hold at 1.0 after transition completes to prevent rubber-band snap. */
+	let completionHold = $state(false);
+	let prevInTransition = false;
+
+	/** Prevents re-starting a transition after one completes during the same drag gesture. */
+	let dragSessionDone = false;
 
 	// Clear guard once server confirms the transition is active
 	$effect(() => {
@@ -75,15 +84,21 @@
 
 	const tbarValue = $derived(
 		dragPosition !== null ? dragPosition :
+		completionHold ? 1.0 :
 		anim.active ? anim.position :
 		(crState.inTransition ? crState.transitionPosition : 0)
 	);
 
-	// Stop animation when server reports transition ended
+	// Detect transition completion (falling edge) and hold scrubber at 1.0 briefly
 	$effect(() => {
-		if (!crState.inTransition && anim.active) {
-			anim.stop();
+		const inTrans = crState.inTransition;
+		if (prevInTransition && !inTrans) {
+			if (anim.active) anim.stop();
+			completionHold = true;
+			dragSessionDone = true;
+			setTimeout(() => { completionHold = false; }, 300);
 		}
+		prevInTransition = inTrans;
 	});
 
 	function handleAuto() {
@@ -138,23 +153,34 @@
 		showDeleteConfirm = '';
 	}
 
-	/** Throttled scrubber position API call -- max 20 calls/sec (50ms). Visual slider updates instantly.
-	 *  Silently drops errors from trailing-edge calls that arrive after transition completes. */
+	/** Throttled scrubber position update -- 60fps (16ms) via datagrams, 20Hz (50ms) REST fallback.
+	 *  Visual slider updates instantly. Silently drops errors from trailing-edge calls that arrive
+	 *  after transition completes. */
 	const setPositionThrottled = throttle((value: number) => {
 		if (!crState.inTransition) return;
-		setTransitionPosition(value).catch(() => {
-			// Trailing-edge throttle fire after transition completed -- benign, ignore.
-		});
-	}, 50);
+		if (fastControl) {
+			fastControl.sendTransitionPosition(value);
+		} else {
+			setTransitionPosition(value).catch(() => {
+				// Trailing-edge throttle fire after transition completed -- benign, ignore.
+			});
+		}
+	}, 16);
 
 	function handleScrubberPointerDown(e: PointerEvent) {
 		const target = e.currentTarget as HTMLElement;
 		target.setPointerCapture(e.pointerId);
+		dragSessionDone = false;
 		updateScrubberFromPointer(e);
 
 		const onMove = (ev: PointerEvent) => updateScrubberFromPointer(ev);
 		const onUp = () => {
+			// Confirm final position via REST if using datagrams
+			if (fastControl && crState.inTransition && dragPosition !== null) {
+				setTransitionPosition(dragPosition).catch(() => {});
+			}
 			dragPosition = null;
+			dragSessionDone = false;
 			target.removeEventListener('pointermove', onMove);
 			target.removeEventListener('pointerup', onUp);
 		};
@@ -168,6 +194,9 @@
 		const x = scrubberPosition(e.clientX, rect.left, rect.width);
 		anim.active = false;
 		dragPosition = x;
+
+		// Don't start new transitions or send positions after one completed in this drag
+		if (dragSessionDone) return;
 
 		if (!crState.inTransition && !tbarStarting && x > 0 && crState.previewSource) {
 			tbarStarting = true;
@@ -360,26 +389,27 @@
 	.transition-controls {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		padding: 6px 10px;
-		border-top: 1px solid var(--border-subtle);
+		gap: 3px;
+		padding: 0 6px;
+		border-left: 1px solid var(--border-default);
+		margin-left: auto;
 	}
 
 	.transition-buttons {
 		display: flex;
-		gap: 4px;
+		gap: 3px;
 	}
 
 	.btn {
-		padding: 6px 14px;
+		padding: 4px 12px;
 		border: 1.5px solid var(--border-default);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
 		color: var(--text-primary);
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.8rem;
+		font-size: 0.75rem;
 		letter-spacing: 0.04em;
 		position: relative;
 		transition:
@@ -436,17 +466,17 @@
 
 	.shortcut {
 		display: block;
-		font-size: 0.5rem;
+		font-size: 0.45rem;
 		font-family: var(--font-mono);
 		font-weight: 400;
-		opacity: 0.35;
-		margin-top: 2px;
+		opacity: 0.3;
+		margin-top: 1px;
 		letter-spacing: 0;
 	}
 
 	.transition-options {
 		display: flex;
-		gap: 8px;
+		gap: 4px;
 		align-items: center;
 	}
 
@@ -461,14 +491,14 @@
 
 	.type-option {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: 0.65rem;
 		font-weight: 500;
 		color: var(--text-secondary);
 		cursor: pointer;
 		display: flex;
 		align-items: center;
 		gap: 0;
-		padding: 3px 10px;
+		padding: 2px 8px;
 		border-radius: var(--radius-sm);
 		transition:
 			background var(--transition-fast),
@@ -708,7 +738,7 @@
 	.scrubber {
 		cursor: grab;
 		touch-action: none;
-		padding: 6px 0;
+		padding: 4px 0;
 	}
 
 	.scrubber:active { cursor: grabbing; }

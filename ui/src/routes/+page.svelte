@@ -40,6 +40,7 @@
 	import { createPFLManager } from '$lib/audio/pfl';
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
+	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
 	const store = createControlRoomStore();
@@ -54,6 +55,7 @@
 	let tokenRequired = $state(false);
 	let tokenInput = $state('');
 	let showOperatorRegistration = $state(false);
+	let fastControl = $state<FastControl | null>(null);
 
 	// ARIA live region for screen reader announcements
 	let announcement = $state('');
@@ -380,6 +382,24 @@
 		prevProgramError = error;
 	});
 
+	// Create/destroy FastControl based on WebTransport connection state
+	$effect(() => {
+		if (connectionState === 'webtransport' && !fastControl) {
+			const wt = pipeline.getSourceTransport('program');
+			if (wt) {
+				try {
+					fastControl = createFastControl(wt);
+				} catch {
+					// Datagrams not supported — fall back to REST
+				}
+			}
+		}
+		if (connectionState !== 'webtransport' && fastControl) {
+			fastControl.close();
+			fastControl = null;
+		}
+	});
+
 	async function submitToken() {
 		if (!tokenInput.trim()) return;
 		setAuthToken(tokenInput.trim());
@@ -521,7 +541,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} showLayoutOverlay={layoutTabActive} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} showLayoutOverlay={layoutTabActive} {fastControl} />
 			</section>
 
 			<section class="multiview-section">
@@ -532,7 +552,7 @@
 				<LockIndicator state={store.effectiveState} subsystem="switching" />
 				<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
 				<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
-				<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} />
+				<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} {fastControl} />
 			</section>
 
 			<section class="bottom-panel">
@@ -610,7 +630,7 @@
 
 	.header {
 		background: var(--bg-surface);
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--border-default);
 	}
 
 	.monitors {
@@ -623,22 +643,22 @@
 		overflow: hidden;
 		background: var(--bg-base);
 		min-height: 0;
-		max-height: clamp(100px, 15vh, 200px);
+		max-height: clamp(80px, 14vh, 180px);
 	}
 
 	.control-strip {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		padding: 4px 10px;
-		border-top: 1px solid var(--border-subtle);
+		gap: 4px;
+		padding: 3px 8px;
+		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
 	}
 
 	.bottom-panel {
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: clamp(200px, 30vh, 320px);
+		height: clamp(180px, 28vh, 300px);
 	}
 
 	.tab-panel {
@@ -659,9 +679,9 @@
 	.header-right {
 		display: flex;
 		align-items: center;
-		gap: 8px;
+		gap: 6px;
 		margin-left: auto;
-		padding: 0 12px;
+		padding: 0 8px;
 	}
 
 	.register-btn {
@@ -682,7 +702,7 @@
 	.panel-header {
 		display: flex;
 		justify-content: flex-end;
-		padding: 2px 4px 0;
+		padding: 1px 4px 0;
 		min-height: 0;
 	}
 

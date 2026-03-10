@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, SCTE35Active } from '$lib/api/types';
+	import type { FastControl } from '$lib/transport/fast-control';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import HealthAlarm from './HealthAlarm.svelte';
 	import LayoutOverlay from './LayoutOverlay.svelte';
@@ -8,8 +9,9 @@
 		state: ControlRoomState;
 		showLayoutOverlay?: boolean;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
+		fastControl?: FastControl | null;
 	}
-	let { state: crState, showLayoutOverlay = false, onCanvasReady }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, onCanvasReady, fastControl = null }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -122,7 +124,7 @@
 			<div class="source-label">{programLabel}</div>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} variant="critical" label="PROGRAM" />
 			{#if showLayoutOverlay && crState.layout?.slots?.length}
-				<LayoutOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} />
+				<LayoutOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} {fastControl} />
 			{/if}
 		</div>
 	</div>
@@ -132,8 +134,8 @@
 	.program-preview {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 6px;
-		padding: 6px;
+		gap: 3px;
+		padding: 3px;
 		height: 100%;
 		align-content: center;
 	}
@@ -141,24 +143,24 @@
 	.monitor {
 		aspect-ratio: 16 / 9;
 		background: #050507;
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		overflow: hidden;
 		position: relative;
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border-default);
 		box-shadow: var(--shadow-inset);
 		max-height: 100%;
 	}
 
 	.monitor-label {
 		position: absolute;
-		top: 8px;
-		left: 8px;
+		top: 6px;
+		left: 6px;
 		font-family: var(--font-ui);
-		font-weight: 600;
-		font-size: 0.65rem;
-		letter-spacing: 0.06em;
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
+		font-weight: 700;
+		font-size: 0.6rem;
+		letter-spacing: 0.08em;
+		padding: 1px 7px;
+		border-radius: 2px;
 		z-index: 2;
 		text-transform: uppercase;
 	}
@@ -174,11 +176,11 @@
 	}
 
 	.preview-monitor {
-		border-color: rgba(22, 163, 74, 0.2);
+		border-color: rgba(22, 163, 74, 0.25);
 	}
 
 	.program-monitor {
-		border-color: rgba(220, 38, 38, 0.2);
+		border-color: rgba(220, 38, 38, 0.25);
 	}
 
 	.monitor-viewport {
@@ -201,15 +203,15 @@
 
 	.source-label {
 		position: absolute;
-		bottom: 8px;
-		left: 8px;
+		bottom: 6px;
+		left: 6px;
 		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: 0.7rem;
 		font-weight: 500;
-		color: #fff;
-		background: rgba(0, 0, 0, 0.6);
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
+		color: rgba(255, 255, 255, 0.9);
+		background: rgba(0, 0, 0, 0.65);
+		padding: 2px 7px;
+		border-radius: 2px;
 		pointer-events: none;
 		z-index: 2;
 		letter-spacing: 0.02em;

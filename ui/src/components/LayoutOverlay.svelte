@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, LayoutSlotState } from '$lib/api/types';
+	import type { FastControl } from '$lib/transport/fast-control';
 	import { updateLayoutSlot, apiCall } from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 
@@ -7,9 +8,10 @@
 		state: ControlRoomState;
 		containerWidth: number;
 		containerHeight: number;
+		fastControl?: FastControl | null;
 	}
 
-	let { state: crState, containerWidth, containerHeight }: Props = $props();
+	let { state: crState, containerWidth, containerHeight, fastControl = null }: Props = $props();
 
 	let slots = $derived(crState.layout?.slots ?? []);
 	let format = $derived(crState.pipelineFormat);
@@ -77,7 +79,11 @@
 			localOverrides.set(dragging.slotId, { x: newX, y: newY, w: dragging.origW, h: dragging.origH });
 			localOverrides = localOverrides; // trigger reactivity
 
-			throttledUpdate(dragging.slotId, { x: newX, y: newY });
+			if (fastControl) {
+				fastControl.sendSlotPosition(dragging.slotId, newX, newY, dragging.origW, dragging.origH);
+			} else {
+				throttledUpdate(dragging.slotId, { x: newX, y: newY });
+			}
 		} else {
 			let newW = snapEven(dragging.origW + dx);
 			let newH = snapEven(dragging.origH + dy);
@@ -88,12 +94,21 @@
 			localOverrides.set(dragging.slotId, { x: dragging.origX, y: dragging.origY, w: newW, h: newH });
 			localOverrides = localOverrides; // trigger reactivity
 
-			throttledUpdate(dragging.slotId, { width: newW, height: newH });
+			if (fastControl) {
+				fastControl.sendSlotPosition(dragging.slotId, dragging.origX, dragging.origY, newW, newH);
+			} else {
+				throttledUpdate(dragging.slotId, { width: newW, height: newH });
+			}
 		}
 	}
 
 	function handlePointerUp() {
 		if (dragging) {
+			const override = localOverrides.get(dragging.slotId);
+			if (override) {
+				// Confirm final position via REST for authoritative state
+				apiCall(updateLayoutSlot(dragging.slotId, { x: override.x, y: override.y, width: override.w, height: override.h }), 'Confirm slot position');
+			}
 			localOverrides.delete(dragging.slotId);
 			localOverrides = localOverrides; // trigger reactivity
 		}
