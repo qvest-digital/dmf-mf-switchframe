@@ -465,6 +465,7 @@
 		keyboard.detach();
 		document.removeEventListener('keydown', handleGlobalShortcuts);
 		clearInterval(syncInterval);
+		fastControl?.close();
 		pflManager.destroy();
 		pipelineManager.destroy();
 		connectionManager.stop();

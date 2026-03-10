@@ -105,7 +105,7 @@
 	function handlePointerUp() {
 		if (dragging) {
 			const override = localOverrides.get(dragging.slotId);
-			if (override) {
+			if (fastControl && override) {
 				// Confirm final position via REST for authoritative state
 				apiCall(updateLayoutSlot(dragging.slotId, { x: override.x, y: override.y, width: override.w, height: override.h }), 'Confirm slot position');
 			}

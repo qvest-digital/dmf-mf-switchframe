@@ -27,7 +27,7 @@ describe('encodeTransitionPosition', () => {
 
 describe('createFastControl', () => {
 	it('sends slot position datagram', () => {
-		const writeFn = vi.fn();
+		const writeFn = vi.fn().mockResolvedValue(undefined);
 		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
 		const mockTransport = {
 			datagrams: {
@@ -45,7 +45,7 @@ describe('createFastControl', () => {
 	});
 
 	it('sends transition position datagram', () => {
-		const writeFn = vi.fn();
+		const writeFn = vi.fn().mockResolvedValue(undefined);
 		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
 		const mockTransport = {
 			datagrams: {

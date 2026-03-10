@@ -38,11 +38,11 @@ export function createFastControl(transport: WebTransport): FastControl {
 
 	return {
 		sendSlotPosition(slotId: number, x: number, y: number, w: number, h: number) {
-			writer.write(encodeSlotPosition(slotId, x, y, w, h));
+			writer.write(encodeSlotPosition(slotId, x, y, w, h)).catch(() => {});
 		},
 
 		sendTransitionPosition(position: number) {
-			writer.write(encodeTransitionPosition(position));
+			writer.write(encodeTransitionPosition(position)).catch(() => {});
 		},
 
 		close() {

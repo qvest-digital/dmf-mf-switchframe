@@ -153,8 +153,8 @@
 		showDeleteConfirm = '';
 	}
 
-	/** Throttled scrubber position update -- 60fps (16ms) via datagrams, 20Hz (50ms) REST fallback.
-	 *  Visual slider updates instantly. Silently drops errors from trailing-edge calls that arrive
+	/** Throttled scrubber position update -- 16ms (~60fps). Uses datagrams when available,
+	 *  falls back to REST. Silently drops errors from trailing-edge calls that arrive
 	 *  after transition completes. */
 	const setPositionThrottled = throttle((value: number) => {
 		if (!crState.inTransition) return;
@@ -183,9 +183,11 @@
 			dragSessionDone = false;
 			target.removeEventListener('pointermove', onMove);
 			target.removeEventListener('pointerup', onUp);
+			target.removeEventListener('pointercancel', onUp);
 		};
 		target.addEventListener('pointermove', onMove);
 		target.addEventListener('pointerup', onUp);
+		target.addEventListener('pointercancel', onUp);
 	}
 
 	function updateScrubberFromPointer(e: PointerEvent) {
