@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"fmt"
 	"image"
 	"sort"
 	"sync"
@@ -496,6 +497,27 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*LayoutSlot)) {
 	fn(&updated.Slots[slotIdx])
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
+}
+
+// UpdateSlotRect updates only the position and size of a slot. This is the
+// fast path used by datagram handlers — it does NOT trigger a state broadcast,
+// allowing the compositor to pick up position changes at frame rate without
+// flooding the control channel.
+func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	l := c.layout.Load()
+	if l == nil || slotIdx >= len(l.Slots) {
+		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
+	}
+	if rect.Min.X < 0 || rect.Min.Y < 0 || rect.Max.X > c.frameW || rect.Max.Y > c.frameH {
+		return fmt.Errorf("rect %v exceeds frame bounds %dx%d", rect, c.frameW, c.frameH)
+	}
+	updated := c.cloneLayout(l)
+	updated.Slots[slotIdx].Rect = rect
+	c.computeSortedSlots(updated)
+	c.layout.Store(updated)
+	return nil
 }
 
 // SlotOn brings a slot on-air with its configured transition.

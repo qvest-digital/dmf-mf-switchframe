@@ -484,6 +484,55 @@ func TestCompositor_FillMode_GrayBuffer(t *testing.T) {
 	})
 }
 
+func TestCompositor_UpdateSlotRect(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam1", Rect: image.Rect(100, 100, 580, 370), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	err := c.UpdateSlotRect(0, image.Rect(200, 200, 680, 470))
+	require.NoError(t, err)
+
+	updated := c.GetLayout()
+	require.Equal(t, image.Rect(200, 200, 680, 470), updated.Slots[0].Rect)
+}
+
+func TestCompositor_UpdateSlotRect_NoLayout(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	err := c.UpdateSlotRect(0, image.Rect(0, 0, 100, 100))
+	require.Error(t, err)
+}
+
+func TestCompositor_UpdateSlotRect_OutOfRange(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 480, 270), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	err := c.UpdateSlotRect(5, image.Rect(0, 0, 100, 100))
+	require.Error(t, err)
+}
+
+func TestCompositor_UpdateSlotRect_ExceedsFrame(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 480, 270), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	err := c.UpdateSlotRect(0, image.Rect(1800, 900, 2280, 1170))
+	require.Error(t, err)
+}
+
 // Issue #11: "No signal" gray should be broadcast black, not mid-gray.
 func TestMakeGrayFrame_BroadcastBlack(t *testing.T) {
 	gray := makeGrayFrame(4, 4)
