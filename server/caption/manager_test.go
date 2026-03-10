@@ -3,6 +3,8 @@ package caption
 import (
 	"sync"
 	"testing"
+
+	"github.com/zsiec/ccx"
 )
 
 func TestManagerNewDefault(t *testing.T) {
@@ -371,6 +373,97 @@ func TestManagerConcurrency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestManagerBroadcastSink(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuthor)
+
+	var frames []*ccx.CaptionFrame
+	m.SetBroadcastSink(func(f *ccx.CaptionFrame) {
+		frames = append(frames, f)
+	})
+
+	m.IngestText("HELLO")
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 broadcast frame after IngestText, got %d", len(frames))
+	}
+	if frames[0].Channel != 1 {
+		t.Errorf("channel = %d, want 1", frames[0].Channel)
+	}
+	if frames[0].Text != "HELLO" {
+		t.Errorf("text = %q, want %q", frames[0].Text, "HELLO")
+	}
+	if len(frames[0].Regions) != 1 {
+		t.Fatalf("regions = %d, want 1", len(frames[0].Regions))
+	}
+	if len(frames[0].Regions[0].Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(frames[0].Regions[0].Rows))
+	}
+	if frames[0].Regions[0].Rows[0].Spans[0].Text != "HELLO" {
+		t.Errorf("span text = %q, want %q", frames[0].Regions[0].Rows[0].Spans[0].Text, "HELLO")
+	}
+
+	// IngestNewline should also broadcast.
+	m.IngestNewline()
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 frames after IngestNewline, got %d", len(frames))
+	}
+
+	// Clear should broadcast empty frame.
+	m.Clear()
+	if len(frames) != 3 {
+		t.Fatalf("expected 3 frames after Clear, got %d", len(frames))
+	}
+	if frames[2].Text != "" {
+		t.Errorf("clear frame text = %q, want empty", frames[2].Text)
+	}
+}
+
+func TestManagerBroadcastSinkIgnoredInWrongMode(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModePassThrough) // not author
+
+	callCount := 0
+	m.SetBroadcastSink(func(f *ccx.CaptionFrame) {
+		callCount++
+	})
+
+	m.IngestText("HELLO")
+	if callCount != 0 {
+		t.Errorf("broadcast sink called %d times in passthrough mode, want 0", callCount)
+	}
+}
+
+func TestManagerBroadcastSinkMultiline(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuthor)
+
+	var lastFrame *ccx.CaptionFrame
+	m.SetBroadcastSink(func(f *ccx.CaptionFrame) {
+		lastFrame = f
+	})
+
+	m.IngestText("LINE 1")
+	m.IngestNewline()
+	m.IngestText("LINE 2")
+
+	if lastFrame == nil {
+		t.Fatal("no broadcast frame received")
+	}
+	if len(lastFrame.Regions) != 1 {
+		t.Fatalf("regions = %d, want 1", len(lastFrame.Regions))
+	}
+	if len(lastFrame.Regions[0].Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(lastFrame.Regions[0].Rows))
+	}
+	// Rows should be at bottom of screen (CEA-608 rows 14-15).
+	if lastFrame.Regions[0].Rows[0].Row != 14 {
+		t.Errorf("row[0].Row = %d, want 14", lastFrame.Regions[0].Rows[0].Row)
+	}
+	if lastFrame.Regions[0].Rows[1].Row != 15 {
+		t.Errorf("row[1].Row = %d, want 15", lastFrame.Regions[0].Rows[1].Row)
+	}
 }
 
 func TestManagerAuthorNullPairWhenEmpty(t *testing.T) {
