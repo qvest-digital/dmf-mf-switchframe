@@ -461,6 +461,7 @@
 								class="flow-node {status}"
 								class:inactive={!node}
 								class:has-error={node?.last_error}
+								title={node ? `${nodeDisplayName(name)}: ${fmtMs(node.last_ns)}ms (max ${fmtMs(node.max_ns)}ms)` : `${nodeDisplayName(name)}: inactive`}
 							>
 								{#if node}
 									<div class="flow-node-top">
@@ -1292,6 +1293,9 @@
 	.flow-box-detail {
 		font-size: 10px;
 		color: var(--text-secondary);
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
 	}
 
 	.node-name {
