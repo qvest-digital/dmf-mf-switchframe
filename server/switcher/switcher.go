@@ -18,6 +18,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -227,6 +228,9 @@ type Switcher struct {
 
 	// Upstream key bridge — applies chroma/luma keys in YUV420 domain.
 	keyBridge *graphics.KeyProcessorBridge
+
+	// Layout compositor — applies PIP/split-screen/quad layouts in YUV420 domain.
+	layoutCompositor *layout.Compositor
 
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
@@ -483,6 +487,13 @@ func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keyBridge = kb
+}
+
+// SetLayoutCompositor sets the layout compositor for PIP/split-screen/quad.
+func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.layoutCompositor = lc
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
@@ -842,6 +853,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 	s.mu.RLock()
 	keyBridge := s.keyBridge
+	layoutComp := s.layoutCompositor
 	compositor := s.compositorRef
 	hasPipeline := s.pipeCodecs != nil
 	s.mu.RUnlock()
@@ -858,8 +870,13 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 	cp := pf.DeepCopy()
 
 	// Run YUV processors synchronously on the copy (fast, sub-millisecond).
+	// Order: upstream-key → layout (PIP) → DSK graphics
+	// PIP appears under DSK graphics (lower thirds overlay everything).
 	if keyBridge != nil && keyBridge.HasEnabledKeysWithFills() {
 		cp.YUV = keyBridge.ProcessYUV(cp.YUV, cp.Width, cp.Height)
+	}
+	if layoutComp != nil && layoutComp.Active() {
+		cp.YUV = layoutComp.ProcessFrame(cp.YUV, cp.Width, cp.Height)
 	}
 	if compositor != nil && compositor.IsActive() {
 		cp.YUV = compositor.ProcessYUV(cp.YUV, cp.Width, cp.Height)
@@ -2208,6 +2225,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	engine := s.transEngine
 	audioHandler := s.audioTransition
 	keyBridge := s.keyBridge
+	layoutComp := s.layoutCompositor
 	s.mu.RUnlock()
 
 	if !ok {
@@ -2240,6 +2258,11 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	// to pass. IngestFillYUV has its own per-source config check internally.
 	if keyBridge != nil {
 		keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
+	}
+
+	// Feed layout compositor with decoded YUV (for PIP/split-screen).
+	if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+		layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height)
 	}
 
 	// During transition (including FTB): route to engine for blending.
