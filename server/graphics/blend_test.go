@@ -311,6 +311,56 @@ func TestAlphaBlendRGBARect_ShortRGBA(t *testing.T) {
 	require.Equal(t, original, yuv)
 }
 
+func TestAlphaBlendRGBARect_PureBlueNoChromaOverflow(t *testing.T) {
+	t.Parallel()
+	// Bug 2: Pure blue (R=0,G=0,B=255) produces overlayCb = 256 via:
+	//   (-29*0 - 99*0 + 128*255 + 128) >> 8 + 128 = 128 + 128 = 256
+	// byte(256) wraps to 0, producing visually wrong chroma.
+	width, height := 4, 4
+	yuv := makeYUV420(width, height, 0, 128, 128)
+
+	// Pure blue overlay, fully opaque
+	rgba := makeRGBA(width, height, 0, 0, 255, 255)
+	rect := image.Rect(0, 0, width, height)
+
+	AlphaBlendRGBARect(yuv, rgba, width, height, width, height, rect, 1.0)
+
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+
+	// BT.709 for pure blue: Cb should be ~255 (max), NOT 0 (overflow wrap)
+	for i := 0; i < uvSize; i++ {
+		cb := yuv[ySize+i]
+		require.Greater(t, cb, byte(200),
+			"Cb[%d] = %d, should be >200 for pure blue (not wrapped to 0)", i, cb)
+	}
+}
+
+func TestAlphaBlendRGBARect_PureRedNoChromaOverflow(t *testing.T) {
+	t.Parallel()
+	// Pure red (R=255,G=0,B=0) produces overlayCr = 256 via:
+	//   (128*255 - 116*0 - 12*0 + 128) >> 8 + 128 = 128 + 128 = 256
+	// byte(256) wraps to 0, producing visually wrong chroma.
+	width, height := 4, 4
+	yuv := makeYUV420(width, height, 0, 128, 128)
+
+	// Pure red overlay, fully opaque
+	rgba := makeRGBA(width, height, 255, 0, 0, 255)
+	rect := image.Rect(0, 0, width, height)
+
+	AlphaBlendRGBARect(yuv, rgba, width, height, width, height, rect, 1.0)
+
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+
+	// BT.709 for pure red: Cr should be ~255 (max), NOT 0 (overflow wrap)
+	for i := 0; i < uvSize; i++ {
+		cr := yuv[ySize+uvSize+i]
+		require.Greater(t, cr, byte(200),
+			"Cr[%d] = %d, should be >200 for pure red (not wrapped to 0)", i, cr)
+	}
+}
+
 func TestAlphaBlendRGBARect_ShortYUV(t *testing.T) {
 	shortYUV := make([]byte, 10)
 	rgba := makeRGBA(4, 4, 255, 0, 0, 128)

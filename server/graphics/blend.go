@@ -194,6 +194,21 @@ func AlphaBlendRGBARect(yuv []byte, rgba []byte, frameW, frameH, overlayW, overl
 			// BT.709 Cr = (128*R - 116*G - 12*B + 128) >> 8 + 128
 			overlayCr := ((128*r - 116*g - 12*b + 128) >> 8) + 128
 
+			// Clamp to [0, 255] to prevent byte overflow.
+			// Pure blue (0,0,255) produces overlayCb=256; pure red (255,0,0) produces overlayCr=256.
+			if overlayCb > 255 {
+				overlayCb = 255
+			}
+			if overlayCb < 0 {
+				overlayCb = 0
+			}
+			if overlayCr > 255 {
+				overlayCr = 255
+			}
+			if overlayCr < 0 {
+				overlayCr = 0
+			}
+
 			cbIdx := cbOffset + uvDstStart + dx
 			crIdx := crOffset + uvDstStart + dx
 			yuv[cbIdx] = byte((int(yuv[cbIdx])*(256-a) + overlayCb*a + 128) >> 8)
