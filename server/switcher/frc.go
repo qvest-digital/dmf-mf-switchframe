@@ -305,6 +305,14 @@ func (fs *frcSource) emitNearest(alpha float64) *ProcessingFrame {
 
 	w, h := src.Width, src.Height
 	totalSize := w * h * 3 / 2
+
+	// Guard: the frame sync's releaseTick may have released this frame's
+	// pool buffer (via lastRawVideo.ReleaseYUV) while the FRC still holds
+	// a pointer to it. If YUV was released, we cannot emit.
+	if len(src.YUV) < totalSize {
+		return nil
+	}
+
 	fs.ensureNearestOut(totalSize)
 	copy(fs.nearestOut, src.YUV[:totalSize])
 
@@ -323,6 +331,11 @@ func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 	w := fs.prevFrame.Width
 	h := fs.prevFrame.Height
 	totalSize := w * h * 3 / 2
+
+	// Guard against released YUV buffers (see emitNearest comment).
+	if len(fs.prevFrame.YUV) < totalSize || len(fs.currFrame.YUV) < totalSize {
+		return nil
+	}
 
 	fs.ensureBlendOut(totalSize)
 
@@ -357,6 +370,11 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 	w := fs.prevFrame.Width
 	h := fs.prevFrame.Height
 	totalSize := w * h * 3 / 2
+
+	// Guard against released YUV buffers (see emitNearest comment).
+	if len(fs.prevFrame.YUV) < totalSize || len(fs.currFrame.YUV) < totalSize {
+		return nil
+	}
 
 	fs.ensureBlendOut(totalSize)
 

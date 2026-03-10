@@ -735,6 +735,49 @@ func TestFRC_EmitAlphaPTSWraparound(t *testing.T) {
 		"blend at alpha=0.5 across PTS wrap: expected ~%d, got %d", expected, actual)
 }
 
+func TestFRC_EmitAfterYUVRelease(t *testing.T) {
+	// Regression test: the frame sync's releaseTick may release a frame's
+	// pool buffer (via lastRawVideo.ReleaseYUV) while the FRC still holds
+	// a reference to it. emit must return nil instead of panicking.
+	fs := newFRCSource(FRCNearest, 3000)
+
+	f1 := makeTestFrame(64, 64, 100, 0)
+	f2 := makeTestFrame(64, 64, 200, 3000)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// Simulate what releaseTick does: release the YUV of a frame the FRC
+	// still references (prevFrame = f1, whose YUV gets nilled out).
+	f1.YUV = nil
+
+	// emit should return nil (not panic) when the selected frame's YUV
+	// has been released.
+	result := fs.emit(500) // alpha ~0.17, selects prevFrame
+	require.Nil(t, result, "emit should return nil when prevFrame YUV is released")
+
+	// Also test currFrame release.
+	f2.YUV = nil
+	result = fs.emit(2500) // alpha ~0.83, selects currFrame
+	require.Nil(t, result, "emit should return nil when currFrame YUV is released")
+}
+
+func TestFRC_EmitBlendAfterYUVRelease(t *testing.T) {
+	// Same as above but for blend quality.
+	fs := newFRCSource(FRCBlend, 3000)
+
+	f1 := makeTestFrame(64, 64, 100, 0)
+	f2 := makeTestFrame(64, 64, 200, 3000)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// Release prevFrame YUV.
+	f1.YUV = nil
+
+	// Blend path: alpha ~0.5, in the blend zone between near-thresholds.
+	result := fs.emit(1500)
+	require.Nil(t, result, "emitBlend should return nil when prevFrame YUV is released")
+}
+
 func TestFRC_EmitNearestPTSWraparound(t *testing.T) {
 	// Nearest mode should also work correctly across PTS wraparound.
 	const pts33Max = int64(1) << 33

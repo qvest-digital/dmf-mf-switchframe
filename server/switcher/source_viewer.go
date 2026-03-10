@@ -88,17 +88,14 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 }
 
 // SendAudio forwards an audio frame to the handler tagged with the source key.
-// When a FrameSynchronizer is active, audio is routed through its FIFO queue
-// so that audio release timing aligns with video release timing (fixing the
-// ~16-42ms audio lead that occurs when audio bypasses the frame sync). The
-// FIFO queue never drops frames — all audio frames are drained on each tick.
+// Audio always bypasses the FrameSynchronizer — audio is a continuous sample
+// stream (48 kHz / ~47 AAC frames/sec) that must not be quantized to the
+// video tick clock (30 fps). Routing audio through the frame sync batches
+// delivery to tick boundaries, causing bursty timing that downstream audio
+// schedulers (browser AudioContext) cannot absorb cleanly.
 // If a delay buffer is configured, frames route through it for lip-sync delay.
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
-	if fs := sv.frameSync.Load(); fs != nil {
-		fs.IngestAudio(sv.sourceKey, frame)
-		return
-	}
 	if db := sv.delayBuffer.Load(); db != nil {
 		db.handleAudioFrame(sv.sourceKey, frame)
 		return
