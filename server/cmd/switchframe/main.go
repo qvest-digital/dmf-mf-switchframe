@@ -54,6 +54,9 @@ type AppConfig struct {
 	SCTE35WebhookURL  string // Webhook URL for event notifications
 	SCTE104           bool   // Enable SCTE-104 on MXL data flows
 
+	// Closed captions.
+	Captions bool // Enable CEA-608/708 closed captioning
+
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
 	MXLOutput         string   // Flow name for program output (empty = disabled)
@@ -103,6 +106,9 @@ func run() error {
 	if err := app.initSCTE104(); err != nil {
 		return err
 	}
+	if err := app.initCaptions(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -141,6 +147,9 @@ func parseConfig() (AppConfig, error) {
 
 	// SCTE-104 flag (requires --scte35 and MXL integration).
 	scte104Flag := flag.Bool("scte104", false, "Enable SCTE-104 on MXL data flows (requires --scte35)")
+
+	// Caption flag.
+	captionsFlag := flag.Bool("captions", false, "Enable CEA-608/708 closed captioning")
 
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
@@ -197,6 +206,7 @@ func parseConfig() (AppConfig, error) {
 		SCTE35Verify:      *scte35VerifyFlag,
 		SCTE35WebhookURL:  *scte35WebhookFlag,
 		SCTE104:           *scte104Flag,
+		Captions:          *captionsFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,

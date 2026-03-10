@@ -23,18 +23,20 @@ var (
 type Role string
 
 const (
-	RoleDirector Role = "director"
-	RoleAudio    Role = "audio"
-	RoleGraphics Role = "graphics"
-	RoleViewer   Role = "viewer"
+	RoleDirector  Role = "director"
+	RoleAudio     Role = "audio"
+	RoleGraphics  Role = "graphics"
+	RoleCaptioner Role = "captioner"
+	RoleViewer    Role = "viewer"
 )
 
 // ValidRoles is the set of allowed roles.
 var ValidRoles = map[Role]bool{
-	RoleDirector: true,
-	RoleAudio:    true,
-	RoleGraphics: true,
-	RoleViewer:   true,
+	RoleDirector:  true,
+	RoleAudio:     true,
+	RoleGraphics:  true,
+	RoleCaptioner: true,
+	RoleViewer:    true,
 }
 
 // Subsystem identifies a lockable area of the switcher.
@@ -46,6 +48,7 @@ const (
 	SubsystemGraphics  Subsystem = "graphics"
 	SubsystemReplay    Subsystem = "replay"
 	SubsystemOutput    Subsystem = "output"
+	SubsystemCaptions  Subsystem = "captions"
 )
 
 // ValidSubsystems is the set of lockable subsystems.
@@ -55,6 +58,7 @@ var ValidSubsystems = map[Subsystem]bool{
 	SubsystemGraphics:  true,
 	SubsystemReplay:    true,
 	SubsystemOutput:    true,
+	SubsystemCaptions:  true,
 }
 
 // rolePermissions defines which subsystems each role can command.
@@ -65,12 +69,16 @@ var rolePermissions = map[Role]map[Subsystem]bool{
 		SubsystemGraphics:  true,
 		SubsystemReplay:    true,
 		SubsystemOutput:    true,
+		SubsystemCaptions:  true,
 	},
 	RoleAudio: {
 		SubsystemAudio: true,
 	},
 	RoleGraphics: {
 		SubsystemGraphics: true,
+	},
+	RoleCaptioner: {
+		SubsystemCaptions: true,
 	},
 	RoleViewer: {},
 }
@@ -83,12 +91,16 @@ var roleLockable = map[Role]map[Subsystem]bool{
 		SubsystemGraphics:  true,
 		SubsystemReplay:    true,
 		SubsystemOutput:    true,
+		SubsystemCaptions:  true,
 	},
 	RoleAudio: {
 		SubsystemAudio: true,
 	},
 	RoleGraphics: {
 		SubsystemGraphics: true,
+	},
+	RoleCaptioner: {
+		SubsystemCaptions: true,
 	},
 	RoleViewer: {},
 }

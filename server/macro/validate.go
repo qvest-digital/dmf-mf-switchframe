@@ -119,6 +119,14 @@ func validateStep(i int, step MacroStep, result *ValidationResult) {
 				Message: "layout_preset requires 'preset' param",
 			})
 		}
+	case ActionCaptionMode:
+		mode, _ := step.Params["mode"].(string)
+		if mode != "off" && mode != "passthrough" && mode != "author" {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("caption_mode requires 'mode' param (off|passthrough|author), got %q", mode),
+			})
+		}
 	case ActionLayoutSlotOn, ActionLayoutSlotOff, ActionLayoutSlotSource:
 		if _, ok := step.Params["slot"].(float64); !ok {
 			result.Errors = append(result.Errors, ValidationError{

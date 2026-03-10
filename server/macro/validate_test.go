@@ -583,3 +583,44 @@ func TestValidateSteps_SCTE35Cue_SpliceInsert_NoDescriptorsOK(t *testing.T) {
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
 }
+
+func TestValidateSteps_CaptionModeValid(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"off", "passthrough", "author"} {
+		steps := []MacroStep{
+			{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": mode}},
+		}
+		result := ValidateSteps(steps)
+		require.False(t, result.HasErrors(), "mode %q should be valid", mode)
+	}
+}
+
+func TestValidateSteps_CaptionModeInvalid(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "bogus"}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "caption_mode")
+}
+
+func TestValidateSteps_CaptionModeMissing(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionCaptionMode, Params: map[string]interface{}{}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+}
+
+func TestValidateSteps_CaptionTextNoParams(t *testing.T) {
+	t.Parallel()
+	// caption_text and caption_clear don't require special params — they pass validation.
+	steps := []MacroStep{
+		{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello"}},
+		{Action: ActionCaptionClear, Params: map[string]interface{}{}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+}

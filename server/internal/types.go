@@ -22,13 +22,14 @@ type SourceKeyConfig struct {
 
 // SourceInfo describes a connected video source and its current state.
 type SourceInfo struct {
-	Key       string           `json:"key"`
-	Label     string           `json:"label,omitempty"`
-	Status    string           `json:"status"`
-	Position  int              `json:"position"`
-	DelayMs   int              `json:"delayMs,omitempty"`
-	KeyConfig *SourceKeyConfig `json:"keyConfig,omitempty"`
-	IsVirtual bool             `json:"isVirtual,omitempty"`
+	Key         string           `json:"key"`
+	Label       string           `json:"label,omitempty"`
+	Status      string           `json:"status"`
+	Position    int              `json:"position"`
+	DelayMs     int              `json:"delayMs,omitempty"`
+	KeyConfig   *SourceKeyConfig `json:"keyConfig,omitempty"`
+	IsVirtual   bool             `json:"isVirtual,omitempty"`
+	HasCaptions bool             `json:"hasCaptions,omitempty"`
 }
 
 // EQBand describes the settings for a single EQ band.
@@ -197,6 +198,7 @@ type ControlRoomState struct {
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
 	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
+	Captions             *CaptionState           `json:"captions,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
@@ -220,6 +222,13 @@ type MacroStepState struct {
 	Error       string `json:"error,omitempty"`
 	WaitMs      int    `json:"waitMs,omitempty"`
 	WaitStartMs int64  `json:"waitStartMs,omitempty"`
+}
+
+// CaptionState represents the current closed captioning state.
+type CaptionState struct {
+	Mode           string          `json:"mode"`
+	AuthorBuffer   string          `json:"authorBuffer,omitempty"`
+	SourceCaptions map[string]bool `json:"sourceCaptions,omitempty"`
 }
 
 // SCTE35State represents the current SCTE-35 signaling state.

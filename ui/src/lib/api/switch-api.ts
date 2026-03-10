@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -574,6 +574,28 @@ export function saveLayoutPreset(name: string): Promise<void> {
 
 export function deleteLayoutPreset(name: string): Promise<void> {
 	return request(`/api/layout/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+// ── Captions ──
+
+export function setCaptionMode(mode: CaptionMode): Promise<CaptionState> {
+	return post('/api/captions/mode', { mode });
+}
+
+export function sendCaptionText(text: string): Promise<CaptionState> {
+	return post('/api/captions/text', { text });
+}
+
+export function sendCaptionNewline(): Promise<CaptionState> {
+	return post('/api/captions/text', { newline: true });
+}
+
+export function clearCaptions(): Promise<CaptionState> {
+	return post('/api/captions/text', { clear: true });
+}
+
+export function getCaptionState(): Promise<CaptionState> {
+	return request('/api/captions/state');
 }
 
 /**
