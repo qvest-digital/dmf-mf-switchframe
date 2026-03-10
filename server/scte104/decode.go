@@ -59,6 +59,14 @@ func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 		// Dual-convention heuristic: spec says messageSize counts bytes after
 		// the messageSize field itself. Legacy implementations set it to total length.
 		if messageSize == len(payload)-2 || messageSize == len(payload) {
+			// Additional validation: check protocol version to avoid false
+			// positives when abbreviated payload bytes accidentally match the
+			// length. Valid SCTE-104 protocol versions are 0 and 1.
+			protocolVersion := payload[2]
+			if protocolVersion > 1 {
+				// Not a valid SOM — fall through to abbreviated format.
+				goto abbreviated
+			}
 			// Full SOM format: parse the 12-byte header, then operation data.
 			msg := &Message{
 				ProtocolVersion: payload[6],
@@ -76,6 +84,7 @@ func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 		}
 	}
 
+abbreviated:
 	// Abbreviated format (VANC): payload is directly the operation data.
 	op, err := decodeOperationData(opID, payload)
 	if err != nil {

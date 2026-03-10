@@ -1635,3 +1635,84 @@ func TestDecode_SegmentationDescriptor_NoSubSegments_Backward_Compatible(t *test
 		t.Errorf("SubSegmentsExpected = %d, want 0", sd.SubSegmentsExpected)
 	}
 }
+
+// Bug 14: An abbreviated splice_request payload whose first 2 bytes accidentally
+// encode a value matching len(payload)-2 or len(payload) should NOT be falsely
+// parsed as a full SOM with header. The protocolVersion check (byte[2] <= 1)
+// guards against this.
+func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
+	// Construct an abbreviated splice_request that has its first 2 bytes
+	// accidentally matching len(payload)-2 = 12.
+	//
+	// OpID(2) + payload(14). payload[0:2] = 0x000C = 12 = len(payload)-2.
+	// In abbreviated format, payload[0] is splice_insert_type and payload[1]
+	// is the high byte of splice_event_id.
+	//
+	// Without the protocolVersion check, this would be misdetected as SOM
+	// because messageSize == len(payload)-2. With the fix, payload[2] (which
+	// would be "protocolVersion" in SOM) is checked: a value > 1 rejects SOM.
+	//
+	// We craft: splice_insert_type=0x00, splice_event_id starts with 0x0C...
+	// Since splice_insert_type 0 is invalid, this is a synthetic test.
+	// What matters is the abbreviated payload is correctly decoded despite
+	// the accidental length match.
+
+	payload := make([]byte, 16) // OpID(2) + 14 bytes
+	binary.BigEndian.PutUint16(payload[0:2], OpSpliceRequest)
+
+	// Abbreviated payload starts at payload[2:].
+	abbrev := payload[2:]
+	// Set first 2 bytes to 12 (= len(abbrev)-2 = 14-2), triggering the
+	// old false-positive SOM heuristic.
+	binary.BigEndian.PutUint16(abbrev[0:2], 12) // messageSize match!
+
+	// In SOM, abbrev[2] would be protocolVersion. Set to 0xFF (invalid
+	// protocol version) to test that the fix rejects SOM interpretation.
+	abbrev[2] = 0xFF
+
+	// Fill remaining bytes as valid splice_request_data fields:
+	// splice_insert_type is abbrev[0] = 0x00 (would be interpreted)
+	// But since we force SOM rejection, the decoder falls through to
+	// abbreviated mode: splice_insert_type=0, splice_event_id from abbrev[1:5], etc.
+	//
+	// For abbreviated decode: splice_request_data starts at abbrev[0]:
+	//   splice_insert_type = 0x00
+	//   splice_event_id = abbrev[1:5] = {0x0C, 0xFF, 0x00, 0x00} = 0x0CFF0000
+	//   unique_program_id = abbrev[5:7]
+	//   pre_roll_time = abbrev[7:9]
+	//   break_duration = abbrev[9:11]
+	//   avail_num = abbrev[11]
+	//   avails_expected = abbrev[12]
+	//   auto_return_flag byte = abbrev[13]
+
+	msg, err := Decode(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+
+	srd, ok := msg.Operations[0].Data.(*SpliceRequestData)
+	if !ok {
+		t.Fatalf("expected *SpliceRequestData, got %T", msg.Operations[0].Data)
+	}
+
+	// In abbreviated mode, splice_insert_type is the first byte of the payload.
+	// abbrev[0] = 0x00 (high byte of the 12 we wrote).
+	if srd.SpliceInsertType != 0x00 {
+		t.Errorf("SpliceInsertType = %d, want 0", srd.SpliceInsertType)
+	}
+
+	// splice_event_id = bytes [1:5] = 0x0CFF0000
+	wantEventID := uint32(0x0CFF0000)
+	if srd.SpliceEventID != wantEventID {
+		t.Errorf("SpliceEventID = 0x%08X, want 0x%08X", srd.SpliceEventID, wantEventID)
+	}
+
+	// The message should NOT have SOM header fields populated.
+	if msg.ProtocolVersion != 0 {
+		t.Errorf("ProtocolVersion = %d, want 0 (abbreviated, not SOM)", msg.ProtocolVersion)
+	}
+}
