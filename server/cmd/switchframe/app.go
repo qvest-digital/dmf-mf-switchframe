@@ -25,6 +25,7 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
+	"github.com/zsiec/switchframe/server/fastctrl"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
@@ -79,6 +80,7 @@ type App struct {
 	stingerStore     *stinger.StingerStore
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
+	fastCtrl         *fastctrl.Dispatcher
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -177,6 +179,8 @@ func (a *App) initInfra() error {
 // initPrismServer creates the Prism distribution server and registers the
 // program and replay relays.
 func (a *App) initPrismServer() error {
+	a.initFastControl()
+
 	config := distribution.ServerConfig{
 		Addr: a.cfg.Addr,
 		Cert: a.cert,
@@ -204,7 +208,12 @@ func (a *App) initPrismServer() error {
 		},
 		OnStreamRegistered:   a.onStreamRegistered,
 		OnStreamUnregistered: a.onStreamUnregistered,
-		ControlCh:            a.controlPub.Ch(),
+		ControlCh: a.controlPub.Ch(),
+		OnDatagram: func(streamKey string, data []byte) {
+			if err := a.fastCtrl.Dispatch(data); err != nil {
+				slog.Debug("fast-control datagram error", "error", err, "stream", streamKey)
+			}
+		},
 	}
 
 	server, err := distribution.NewServer(config)
