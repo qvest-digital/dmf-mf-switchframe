@@ -26,8 +26,7 @@ type LoudnessMeter struct {
 	blockAccum []float64
 	blockCount int
 
-	blockSize int // 400ms in samples per channel
-	stepSize  int // 100ms in samples per channel
+	stepSize int // 100ms in samples per channel
 
 	// Ring buffers: only written by Process() / emitBlock() (single-writer).
 	momentaryRing [4]float64
@@ -104,7 +103,6 @@ func NewLoudnessMeter(sampleRate, channels int) *LoudnessMeter {
 		preFilters: preFilters,
 		rlbFilters: rlbFilters,
 		blockAccum: make([]float64, channels),
-		blockSize:  sampleRate * 4 / 10,
 		stepSize:   stepSize,
 	}
 	m.momentaryLUFSBits.Store(negMaxFloat64Bits)
