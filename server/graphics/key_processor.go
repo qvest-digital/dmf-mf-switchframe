@@ -196,13 +196,15 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 
 		// Composite fill onto background using the generated mask.
 		// Y plane: per-pixel alpha blend at full resolution.
+		// The +0.5 before uint8 conversion rounds instead of truncating,
+		// eliminating the systematic -1 bias on blended values.
 		for i := 0; i < ySize; i++ {
 			alpha := float32(mask[i]) / 255.0
 			if alpha < 1.0/255.0 {
 				continue
 			}
 			invAlpha := 1.0 - alpha
-			bg[i] = uint8(clampFloat(float32(bg[i])*invAlpha+float32(workFill[i])*alpha, 0, 255))
+			bg[i] = uint8(clampFloat(float32(bg[i])*invAlpha+float32(workFill[i])*alpha+0.5, 0, 255))
 		}
 
 		// Cb and Cr planes: average alpha over corresponding 2x2 luma block.
@@ -228,12 +230,12 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 				// Cb
 				if ySize+uvIdx < frameSize {
 					bg[ySize+uvIdx] = uint8(clampFloat(
-						float32(bg[ySize+uvIdx])*invAlpha+float32(workFill[ySize+uvIdx])*alpha, 0, 255))
+						float32(bg[ySize+uvIdx])*invAlpha+float32(workFill[ySize+uvIdx])*alpha+0.5, 0, 255))
 				}
 				// Cr
 				if ySize+uvSize+uvIdx < frameSize {
 					bg[ySize+uvSize+uvIdx] = uint8(clampFloat(
-						float32(bg[ySize+uvSize+uvIdx])*invAlpha+float32(workFill[ySize+uvSize+uvIdx])*alpha, 0, 255))
+						float32(bg[ySize+uvSize+uvIdx])*invAlpha+float32(workFill[ySize+uvSize+uvIdx])*alpha+0.5, 0, 255))
 				}
 			}
 		}
