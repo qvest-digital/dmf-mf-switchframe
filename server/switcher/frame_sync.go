@@ -211,6 +211,7 @@ type FrameSynchronizer struct {
 	tickNum    int64            // monotonic tick counter for PTS generation
 	releases   []pendingRelease // reused across ticks to avoid allocation
 	frcQuality FRCQuality       // FRC quality level for new sources
+	framePool  *FramePool       // pool reference for FRC-emitted frames
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -281,7 +282,9 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	}
 	ss := &syncSource{}
 	if fs.frcQuality != FRCNone {
-		ss.frc = newFRCSource(fs.frcQuality, fs.tickPTSInterval())
+		frc := newFRCSource(fs.frcQuality, fs.tickPTSInterval())
+		frc.pool = fs.framePool
+		ss.frc = frc
 	}
 	fs.sources[key] = ss
 	fs.log.Debug("source added", "key", key)
@@ -404,7 +407,9 @@ func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 				ss.frc = nil
 			}
 		} else if ss.frc == nil {
-			ss.frc = newFRCSource(q, fs.tickPTSInterval())
+			frc := newFRCSource(q, fs.tickPTSInterval())
+			frc.pool = fs.framePool
+			ss.frc = frc
 		} else {
 			ss.frc.requestedQuality = q
 			ss.frc.effectiveQuality = q

@@ -518,6 +518,71 @@ func TestFRC_FPSTracking(t *testing.T) {
 	require.Equal(t, 9, fs.intervalCount, "should have 9 interval measurements from 10 frames")
 }
 
+func TestFRC_EmitBlendIncludesPoolReference(t *testing.T) {
+	// Bug 16: FRC-emitted frames have pool: nil, so DeepCopy falls back to
+	// heap allocation instead of using the pool. Verify that emitted blend
+	// frames carry the pool reference.
+	pool := NewFramePool(4, 64, 64)
+
+	fs := newFRCSource(FRCBlend, 3000)
+	fs.pool = pool // set pool reference
+
+	prevPTS := int64(3000)
+	currPTS := int64(6000)
+
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	f1.pool = pool
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	f2.pool = pool
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// Emit at alpha=0.5 -> blend -> should carry pool reference
+	tickMid := (prevPTS + currPTS) / 2
+	result := fs.emit(tickMid)
+	require.NotNil(t, result)
+	require.Equal(t, pool, result.pool,
+		"FRC blend output should carry pool reference")
+
+	// Verify DeepCopy uses pool (not heap)
+	hits0, _ := pool.Stats()
+	cp := result.DeepCopy()
+	require.NotNil(t, cp)
+	hits1, _ := pool.Stats()
+	require.Greater(t, hits1, hits0,
+		"DeepCopy of FRC frame should acquire from pool")
+
+	// Cleanup
+	cp.ReleaseYUV()
+}
+
+func TestFRC_EmitMCFIIncludesPoolReference(t *testing.T) {
+	// Bug 16: Same as blend, verify MCFI-emitted frames carry pool.
+	pool := NewFramePool(4, 64, 64)
+
+	fs := newFRCSource(FRCMCFI, 3000)
+	fs.pool = pool
+
+	// Use identical frames so MCFI doesn't detect scene change
+	prevPTS := int64(3000)
+	currPTS := int64(6000)
+
+	f1 := makeTestFrame(64, 64, 128, prevPTS)
+	f1.pool = pool
+	f2 := makeTestFrame(64, 64, 128, currPTS)
+	f2.pool = pool
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	tickMid := (prevPTS + currPTS) / 2
+	result := fs.emit(tickMid)
+	require.NotNil(t, result)
+	// MCFI may fall back to nearest if MVs are invalid, which returns the
+	// source frame directly (already has pool). Either way, pool should be set.
+	require.NotNil(t, result.pool,
+		"FRC MCFI output should have non-nil pool reference")
+}
+
 func TestFRC_EmitZeroPTSDelta(t *testing.T) {
 	fs := newFRCSource(FRCBlend, 3000)
 

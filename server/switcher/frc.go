@@ -112,6 +112,10 @@ type frcSource struct {
 	ticksSinceLastFresh int
 	tickIntervalPTS     int64 // pipeline tick interval in 90kHz PTS units
 
+	// Pool reference for emitted ProcessingFrame structs, so DeepCopy
+	// can allocate from the pool instead of falling back to heap.
+	pool *FramePool
+
 	// Reusable buffers (zero-alloc steady state)
 	blendOut []byte // final blended output
 	hme      *hierarchicalME // pyramid ME state (reused across frames)
@@ -300,6 +304,7 @@ func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 		PTS:        tickPTS,
 		IsKeyframe: false,
 		Codec:      fs.currFrame.Codec,
+		pool:       fs.pool,
 	}
 }
 
@@ -325,6 +330,7 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 		PTS:        tickPTS,
 		IsKeyframe: false,
 		Codec:      fs.currFrame.Codec,
+		pool:       fs.pool,
 	}
 }
 

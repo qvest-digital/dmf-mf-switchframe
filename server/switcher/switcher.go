@@ -743,6 +743,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 		fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
 			s.handleRawVideoFrame(sourceKey, pf)
 		}
+		fs.framePool = s.framePool
 		s.frameSync = fs
 
 		// Wire all existing source viewers to the frame sync.
