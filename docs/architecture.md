@@ -58,11 +58,16 @@ graph TD
             subgraph video["Video Path (always-decode)"]
                 delay --> hvf["handleRawVideoFrame<br/>(decoded YUV420)"]
                 hvf --> te["Transition Engine<br/>(YUV blend)"]
-                hvf --> pipeline["key → DSK compositor"]
-                te --> pipeline
-                pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p → V210)"]
-                pipeline --> enc["pipelineCodecs<br/>H.264 Encode"]
-                enc --> bv["programRelay.BroadcastVideo()"]
+                hvf --> enq["enqueueVideoWork()<br/>(videoProcCh, 8-deep)"]
+                te -->|"raw YUV callback"| bp["broadcastProcessed()"]
+                bp --> enq
+                enq --> vpl["videoProcessingLoop"]
+                vpl --> prun["Pipeline.Run(frame)<br/>PipelineNode chain"]
+                prun --> ukn["upstreamKeyNode"]
+                ukn --> cn["compositorNode"]
+                cn --> rsn["rawSinkNode(s)<br/>(MXL, raw monitor)"]
+                rsn --> encn["encodeNode<br/>(H.264 encode)"]
+                encn --> bv["programRelay.BroadcastVideo()"]
             end
 
             subgraph audio["Audio Path"]
@@ -329,7 +334,7 @@ flowchart TD
     done -->|No| wait
     done -->|Yes| cleanup["cleanup() + OnComplete(false)"]
 
-    out -.->|"Switcher receives raw YUV"| proc["broadcastProcessed() →<br/>upstream key → DSK compositor →<br/>pipelineCodecs.encode() → H.264 →<br/>programRelay.BroadcastVideo()"]
+    out -.->|"Switcher receives raw YUV"| proc["broadcastProcessed() →<br/>enqueueVideoWork() →<br/>Pipeline.Run() node chain:<br/>upstreamKey → compositor → rawSinks → encode →<br/>programRelay.BroadcastVideo()"]
 ```
 
 **Wall-clock frame pairing.** The engine stores the latest decoded YUV
@@ -438,7 +443,7 @@ hook, called on every program frame in `broadcastVideo()`.
 flowchart TD
     upload["Browser uploads RGBA overlay<br/>(SetOverlay)"] --> activate["Compositor.On() / AutoOn(duration)"]
 
-    subgraph pipeline["Called from pipelineCodecs processing loop"]
+    subgraph pipeline["Called from Pipeline.Run() via compositorNode"]
         yuvin["ProcessYUV(yuv, width, height)<br/>(called per program frame)"] --> check{"Active?"}
         check -->|No| pass["Return YUV unchanged<br/>(zero overhead)"]
         check -->|Yes| blend["AlphaBlendRGBA(yuv, overlay, w, h, fadePosition)<br/>(in-place compositing in YUV space)"]
@@ -447,10 +452,11 @@ flowchart TD
 ```
 
 **Raw YUV processing.** The compositor no longer has its own
-decoder/encoder. It operates on raw YUV420 buffers passed from the
-shared `pipelineCodecs` processing loop. Decoding and encoding are
-handled by `pipelineCodecs` — the compositor just performs in-place
-alpha blending on the YUV buffer between decode and encode.
+decoder/encoder. It operates on raw YUV420 buffers passed through the
+`Pipeline.Run()` node chain via `compositorNode`. Decoding is handled
+by per-source `sourceDecoder` goroutines and encoding by `encodeNode`
+— the compositor just performs in-place alpha blending on the YUV
+buffer between upstream keying and encoding.
 
 **Fade transitions.** `AutoOn` and `AutoOff` drive a fade from 0.0 to
 1.0 (or reverse) over a configurable duration at ~60fps. The
@@ -472,11 +478,13 @@ flowchart TD
     enrich --> gfx["Merge GraphicsState"]
     enrich --> rpl["Merge ReplayState"]
     enrich --> ops["Merge Operators + Locks"]
+    enrich --> s35["Merge SCTE35State"]
     rec --> pub["ChannelPublisher.Publish(enrichedState)"]
     srt --> pub
     gfx --> pub
     rpl --> pub
     ops --> pub
+    s35 --> pub
     pub --> json["JSON marshal → buffered channel (64 slots)"]
     json --> prism["Prism ControlCh → MoQ 'control' track"]
     prism --> wt["Browser WebTransport subscriber"]
@@ -612,7 +620,7 @@ flowchart TD
     freeze2 --> rewrite
 
     rewrite --> deliver["Deliver outside mutex<br/>(onVideo / onAudio callbacks)"]
-    deliver --> sw["Switcher.handleVideoFrame()"]
+    deliver --> sw["Switcher.handleRawVideoFrame()<br/>(or handleVideoFrame for legacy)"]
 ```
 
 **Freerun sync.** The synchronizer runs as a freewheel ticker at the
@@ -944,10 +952,16 @@ flowchart TD
     pf --> proc["Async videoProcessingLoop goroutine"]
     pf2 --> proc
 
-    proc --> key["keyBridge.ProcessYUV()<br/>(upstream chroma/luma key, in-place)"]
-    key --> dsk["compositor.ProcessYUV()<br/>(DSK graphics overlay, in-place)"]
-    dsk --> enc["pipeCodecs.encode()<br/>(YUV420 → H.264 AVC1)"]
-    enc --> out["broadcastOwnedToProgram()<br/>→ programRelay.BroadcastVideo()"]
+    proc --> prun["Pipeline.Run(frame)"]
+
+    subgraph nodes["PipelineNode chain (sequential)"]
+        prun --> ukn["upstreamKeyNode<br/>keyBridge.ProcessYUV()<br/>(chroma/luma key, in-place)"]
+        ukn --> cn["compositorNode<br/>compositor.ProcessYUV()<br/>(DSK graphics overlay, in-place)"]
+        cn --> rsn["rawSinkNode(s)<br/>(MXL output, raw monitor)"]
+        rsn --> encn["encodeNode<br/>pipeCodecs.encode()<br/>(YUV420 → H.264 AVC1)"]
+    end
+
+    encn --> out["broadcastOwnedToProgram()<br/>→ programRelay.BroadcastVideo()"]
 ```
 
 **Always-on re-encode.** Every program frame flows through
@@ -956,19 +970,38 @@ This guarantees consistent SPS/PPS parameters in the output stream,
 eliminating browser `VideoDecoder` reconfigurations at transition
 boundaries that would otherwise cause visual glitches.
 
+**Pipeline architecture.** The `Pipeline` struct holds an ordered chain
+of `PipelineNode` implementations, built via `Pipeline.Build()` on the
+main goroutine and executed via `Pipeline.Run()` on the video processing
+goroutine. The standard node chain is: `upstreamKeyNode` → `compositorNode`
+→ `rawSinkNode` (MXL output) → `rawSinkNode` (raw monitor) → `encodeNode`.
+Nodes are immutable once built — reconfiguration creates a new Pipeline
+via atomic swap (`swapPipeline()`), with a drain goroutine waiting for
+in-flight frames on the old pipeline before closing it.
+
+**Per-node instrumentation.** Each `Pipeline.Run()` call records per-node
+timing via `atomic.Int64` stores (last and max nanoseconds). When
+Prometheus metrics are wired via `Pipeline.SetMetrics()`, each node also
+observes its duration into `switchframe_pipeline_node_duration_seconds`
+(HistogramVec with `node` label). The `Snapshot()` method exposes per-node
+timing, aggregate run count, and a `lip_sync_hint_us` value (total video
+latency minus one AAC frame duration).
+
 **Encoder-only pool.** The `pipelineCodecs` struct holds a single
 encoder (decoders moved to per-source `sourceDecoder` goroutines),
 lazily initialized on the first frame. The encoder's bitrate and FPS
 are derived from rolling statistics of the program source's recent
 frames (exponential moving average). Falls back to 4 Mbps / 30fps if
-stats are unavailable.
+stats are unavailable. The encoder is wrapped by `encodeNode`, the final
+node in the pipeline chain.
 
 **Async processing.** Video frames are enqueued into a buffered
-`videoProcCh` channel and processed in a dedicated
-`videoProcessingLoop` goroutine. This prevents the source delivery
-goroutine from blocking on 30-100ms decode/encode overhead. If the
-queue is full, the oldest work item is dropped (newest-wins policy)
-to prevent runaway latency.
+`videoProcCh` channel (8 frames deep, ~267ms at 30fps) and processed
+in a dedicated `videoProcessingLoop` goroutine. This goroutine calls
+`Pipeline.Run()` for each frame. This prevents the source delivery
+goroutine from blocking on processing overhead. If the queue is full,
+the oldest work item is dropped (newest-wins policy) to prevent
+runaway latency.
 
 **B-frame handling.** The decoder may return `EAGAIN` for B-frames
 (reorder buffering). The pipeline drops these frames gracefully —
@@ -1180,12 +1213,12 @@ flowchart TD
     pgm -->|No| discard["Return (frame discarded)"]
     pgm -->|Yes| bv["enqueueVideoWork(frame)"]
 
-    te -->|"raw YUV callback"| proc["broadcastProcessed()"]
-    proc --> keycomp["keyBridge.ProcessYUV() →<br/>compositor.ProcessYUV()"]
-    keycomp --> bv
+    te -->|"raw YUV callback"| proc["broadcastProcessed()<br/>(wraps YUV → ProcessingFrame)"]
+    proc --> bv
 
-    bv --> pipeline["pipelineCodecs<br/>upstream key → DSK → encode"]
-    pipeline --> broadcast["programRelay.BroadcastVideo(frame)"]
+    bv --> vpl["videoProcessingLoop"]
+    vpl --> prun["Pipeline.Run(frame)<br/>upstreamKey → compositor →<br/>rawSinks → encode"]
+    prun --> broadcast["programRelay.BroadcastVideo(frame)"]
     broadcast --> browsers["MoQ viewers (browsers)"]
     broadcast --> output["OutputViewer (if recording/SRT active)"]
 ```
@@ -1251,9 +1284,10 @@ sequenceDiagram
         Note over TE: pos = smoothstep(elapsed / 1000ms)
         Note over TE: BlendMix(yuvA, yuvB, pos) → raw YUV
         TE->>SW: Output callback(rawYUV, w, h, pts)
-        Note over SW: broadcastProcessed():<br/>upstream key → DSK compositor
-        SW->>PC: enqueue → encode(yuv) → H.264
-        PC->>SW: broadcastOwnedToProgram(frame)
+        Note over SW: broadcastProcessed() → enqueueVideoWork()
+        Note over SW: videoProcessingLoop → Pipeline.Run(frame)
+        Note over SW: upstreamKeyNode → compositorNode →<br/>rawSinkNode(s) → encodeNode → H.264
+        SW->>SW: broadcastOwnedToProgram(frame)
     end
 
     Note over TE: pos ≥ 1.0
@@ -1602,7 +1636,7 @@ older browsers).
 | Video decode | WebCodecs API | Hardware-accelerated H.264 in browser |
 | Video render | Canvas 2D / WebGPU (future) | Frame rendering, tally borders |
 | Audio decode | WebCodecs AudioDecoder | Client-side metering and PFL |
-| Observability | Prometheus | Metrics (cuts, IDR gates, mix cycles) |
+| Observability | Prometheus | Metrics (cuts, transitions, mix cycles, per-node pipeline timing) |
 | Build | Makefile + Docker | Build chain, multi-stage container |
 | CI | GitHub Actions | Lint, test (Go + Vitest + Playwright) |
 | TLS | Auto-generated self-signed | 14-day WebTransport certificates |
