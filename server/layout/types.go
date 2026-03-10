@@ -55,9 +55,8 @@ func EvenAlign(v int) int { return v &^ 1 }
 
 // ValidateSlot checks that a slot has valid even-aligned dimensions within frame bounds.
 func ValidateSlot(slot LayoutSlot, frameW, frameH int) error {
-	if slot.SourceKey == "" {
-		return fmt.Errorf("slot source key is empty")
-	}
+	// SourceKey may be empty — user assigns sources after selecting a preset.
+	// The compositor renders broadcast black for slots with no source.
 	r := slot.Rect
 	if r.Min.X%2 != 0 || r.Min.Y%2 != 0 {
 		return fmt.Errorf("slot rect origin (%d,%d) must be even-aligned", r.Min.X, r.Min.Y)

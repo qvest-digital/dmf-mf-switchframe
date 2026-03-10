@@ -57,12 +57,12 @@ func TestValidateSlot(t *testing.T) {
 		require.Error(t, ValidateSlot(slot, 1920, 1080))
 	})
 
-	t.Run("empty source", func(t *testing.T) {
+	t.Run("empty source allowed", func(t *testing.T) {
 		slot := LayoutSlot{
 			SourceKey: "",
 			Rect:      image.Rect(100, 100, 420, 280),
 		}
-		require.Error(t, ValidateSlot(slot, 1920, 1080))
+		require.NoError(t, ValidateSlot(slot, 1920, 1080))
 	})
 }
 
