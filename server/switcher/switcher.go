@@ -249,7 +249,7 @@ type Switcher struct {
 
 	// Structured video processing pipeline. Built via BuildPipeline(),
 	// called per-frame from videoProcessingLoop. Atomic pointer for
-	// future hot-swap reconfiguration (Phase 4).
+	// hot-swap reconfiguration via swapPipeline().
 	pipeline atomic.Pointer[Pipeline]
 
 	// Pipeline epoch — monotonically increasing counter for downstream
