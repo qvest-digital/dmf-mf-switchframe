@@ -14,7 +14,7 @@
 	import SimpleMode from '../components/SimpleMode.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
-	import ServerPipelineOverlay from '../components/ServerPipelineOverlay.svelte';
+	import StatsPanel from '../components/StatsPanel.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import KeyPanel from '../components/KeyPanel.svelte';
@@ -44,6 +44,7 @@
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
+	let statsPanelVisible = $state(false);
 	let layoutTabActive = $state(false);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -241,10 +242,21 @@
 	// Program output peak levels sampled from program audio decoder (linear 0..1)
 	let programLevels = $state<{ peakL: number; peakR: number }>({ peakL: 0, peakR: 0 });
 
-	function handleDebugDump(e: KeyboardEvent) {
+	function handleGlobalShortcuts(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
 			e.preventDefault();
 			exportDebugSnapshot();
+		}
+		// Shift+P toggles stats panel
+		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyP') {
+			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+			e.preventDefault();
+			statsPanelVisible = !statsPanelVisible;
+		}
+		// Escape closes stats panel
+		if (e.code === 'Escape' && statsPanelVisible) {
+			e.preventDefault();
+			statsPanelVisible = false;
 		}
 	}
 
@@ -379,7 +391,7 @@
 
 	onMount(async () => {
 		keyboard.attach();
-		document.addEventListener('keydown', handleDebugDump);
+		document.addEventListener('keydown', handleGlobalShortcuts);
 		mounted = true;
 		syncInterval = setInterval(() => { now = Date.now(); }, 1000);
 
@@ -431,7 +443,7 @@
 
 	onDestroy(() => {
 		keyboard.detach();
-		document.removeEventListener('keydown', handleDebugDump);
+		document.removeEventListener('keydown', handleGlobalShortcuts);
 		clearInterval(syncInterval);
 		pflManager.destroy();
 		pipelineManager.destroy();
@@ -583,7 +595,7 @@
 	{/if}
 </ErrorBoundary>
 
-<ServerPipelineOverlay />
+<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>

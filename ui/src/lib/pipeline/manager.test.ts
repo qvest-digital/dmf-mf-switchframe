@@ -11,7 +11,7 @@ function createMockPipeline() {
 		disconnectSource: vi.fn(),
 		getVideoBuffer: vi.fn().mockReturnValue(null),
 		getAudioDecoder: vi.fn().mockReturnValue(null),
-		attachCanvas: vi.fn(),
+		attachCanvas: vi.fn().mockReturnValue(true),
 		detachCanvas: vi.fn(),
 		destroy: vi.fn(),
 		feedVideoFrame: vi.fn(),
@@ -269,6 +269,30 @@ describe('PipelineManager', () => {
 				'preview',
 				pvwCanvas,
 			);
+		});
+
+		it('should retry preview attachment when source not yet in pipeline', () => {
+			// Simulate the race condition: syncProgramPreviewCanvases is called
+			// before syncSources adds the preview source to the pipeline.
+			// attachCanvas returns false (source doesn't exist yet).
+			pipeline.attachCanvas.mockReturnValue(false);
+
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+
+			// attachCanvas was attempted but failed
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam2', 'preview', pvwCanvas);
+
+			// Now simulate syncSources adding cam2, then calling sync again.
+			// attachCanvas succeeds this time.
+			pipeline.attachCanvas.mockReturnValue(true);
+			pipeline.attachCanvas.mockClear();
+
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+
+			// Should retry the attachment (not skip due to stale tracking)
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam2', 'preview', pvwCanvas);
 		});
 	});
 

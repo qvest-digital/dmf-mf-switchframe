@@ -31,3 +31,6 @@ docs/plans/
 
 # Git worktrees
 .worktrees/
+claude/*
+doc/plans/*
+DocsPlans/*

@@ -17,10 +17,14 @@
 		{ key: 'Ctrl + 1-9', action: 'Run macro' },
 		// Tabs
 		{ key: 'Ctrl+Shift + 1-7', action: 'Switch bottom tab' },
+		// Layout
+		{ key: 'P', action: 'Toggle PIP layout' },
+		{ key: 'Shift + P', action: 'Pipeline stats panel' },
 		// Misc
 		{ key: '` (backtick)', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },
 		{ key: 'Esc', action: 'Close overlay' },
+		{ key: 'Ctrl+Shift + D', action: 'Export debug snapshot' },
 		// SCTE-35
 		{ key: 'Shift + B', action: 'Ad break (SCTE-35)' },
 		{ key: 'Shift + R', action: 'Return to program (SCTE-35)' },

@@ -150,14 +150,23 @@ export class PipelineManager {
 			}
 		}
 
-		// Preview canvas: render the preview source's video
+		// Preview canvas: render the preview source's video.
+		// Only update currentPreviewCanvas when attachment succeeds — if the
+		// source doesn't exist in the pipeline yet (race with syncSources),
+		// we leave currentPreviewCanvas stale so the next call retries.
 		if (previewSource !== this.currentPreviewCanvas) {
 			// Detach old preview renderer from previous source
 			if (this.currentPreviewCanvas) {
 				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
 			}
 			if (previewCanvasEl && previewSource) {
-				this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
+				const attached = this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
+				if (!attached) {
+					// Source not in pipeline yet — clear tracking so we retry
+					// on the next call (after syncSources adds it).
+					this.currentPreviewCanvas = null;
+					return;
+				}
 			}
 			this.currentPreviewCanvas = previewSource;
 		}

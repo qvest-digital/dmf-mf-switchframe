@@ -69,8 +69,9 @@ export interface MediaPipeline {
 	getVideoBuffer(sourceKey: string): VideoRenderBuffer | null;
 	/** Get the audio decoder for a source (for PFL/metering). */
 	getAudioDecoder(sourceKey: string): PrismAudioDecoder | null;
-	/** Attach a canvas to render a source's decoded video. canvasId identifies this renderer instance. */
-	attachCanvas(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): void;
+	/** Attach a canvas to render a source's decoded video. canvasId identifies this renderer instance.
+	 *  Returns true if the source exists and the canvas was attached, false otherwise. */
+	attachCanvas(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): boolean;
 	/** Detach and destroy a specific renderer for a source. */
 	detachCanvas(sourceKey: string, canvasId: string): void;
 	/** Destroy all sources and transports. */
@@ -393,9 +394,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return sources.get(sourceKey)?.audioDecoder ?? null;
 	}
 
-	function attachCanvas(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): void {
+	function attachCanvas(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): boolean {
 		const source = sources.get(sourceKey);
-		if (!source) return;
+		if (!source) return false;
 
 		// Destroy existing renderer for this canvasId if any
 		const existing = source.renderers.get(canvasId);
@@ -423,7 +424,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			if (yuvR) {
 				source.yuvRenderer = yuvR;
 			}
-			return;
+			return true;
 		}
 
 		// Create audio clock from the source's audio decoder (or a no-op clock)
@@ -449,6 +450,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// transitions to audio-driven once the decoder finishes configuring.
 		source.renderers.set(canvasId, renderer);
 		renderer.start();
+		return true;
 	}
 
 	function detachCanvas(sourceKey: string, canvasId: string): void {

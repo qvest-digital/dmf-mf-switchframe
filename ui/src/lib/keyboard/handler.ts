@@ -159,7 +159,7 @@ export class KeyboardHandler {
 		}
 
 		// Layout/PIP shortcuts (no modifier)
-		if (e.code === 'KeyP' || e.code === 'F3') {
+		if ((e.code === 'KeyP' && !e.shiftKey) || e.code === 'F3') {
 			e.preventDefault();
 			e.stopPropagation();
 			this.actions.layoutTogglePIP?.();
