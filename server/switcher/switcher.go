@@ -961,6 +961,11 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	s.programRelay.BroadcastVideo(frame)
 }
 
+// ProgramRelay returns the program relay for external broadcast (e.g. authored captions).
+func (s *Switcher) ProgramRelay() *distribution.Relay {
+	return s.programRelay
+}
+
 // SetCaptionManager attaches a caption manager for CEA-608/708 SEI injection.
 func (s *Switcher) SetCaptionManager(cm captionManager) {
 	s.mu.Lock()

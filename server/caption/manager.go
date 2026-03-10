@@ -3,6 +3,8 @@ package caption
 import (
 	"strings"
 	"sync"
+
+	"github.com/zsiec/ccx"
 )
 
 // Manager is the central caption state machine. It manages the caption mode
@@ -30,6 +32,9 @@ type Manager struct {
 
 	// VANC sink for MXL caption output.
 	vancSink func([]CCPair)
+
+	// Broadcast sink for MoQ caption track (authored captions).
+	broadcastSink func(*ccx.CaptionFrame)
 }
 
 // NewManager creates a caption manager in ModeOff.
@@ -90,10 +95,18 @@ func (m *Manager) IngestText(text string) {
 	}
 
 	cb := m.onStateChange
+	bc := m.broadcastSink
+	var frame *ccx.CaptionFrame
+	if bc != nil {
+		frame = m.buildAuthorCaptionFrame()
+	}
 	m.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+	if bc != nil && frame != nil {
+		bc(frame)
 	}
 }
 
@@ -113,10 +126,18 @@ func (m *Manager) IngestNewline() {
 	}
 
 	cb := m.onStateChange
+	bc := m.broadcastSink
+	var frame *ccx.CaptionFrame
+	if bc != nil {
+		frame = m.buildAuthorCaptionFrame()
+	}
 	m.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+	if bc != nil && frame != nil {
+		bc(frame)
 	}
 }
 
@@ -133,10 +154,18 @@ func (m *Manager) Clear() {
 	m.authorBuffer = ""
 
 	cb := m.onStateChange
+	bc := m.broadcastSink
+	var frame *ccx.CaptionFrame
+	if bc != nil {
+		frame = m.buildAuthorCaptionFrame()
+	}
 	m.mu.Unlock()
 
 	if cb != nil {
 		cb()
+	}
+	if bc != nil && frame != nil {
+		bc(frame)
 	}
 }
 
@@ -267,6 +296,68 @@ func (m *Manager) SetVANCSink(fn func([]CCPair)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.vancSink = fn
+}
+
+// SetBroadcastSink registers a callback for broadcasting authored captions
+// via the MoQ captions track. Called with a CaptionFrame whenever author
+// text changes (IngestText, IngestNewline, Clear).
+func (m *Manager) SetBroadcastSink(fn func(*ccx.CaptionFrame)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.broadcastSink = fn
+}
+
+// buildAuthorCaptionFrame constructs a CaptionFrame from the current authorBuffer.
+// Uses CEA-608 CC1 channel with standard bottom-of-screen roll-up positioning.
+// Must be called with m.mu held. Returns nil if buffer is empty and not clearing.
+func (m *Manager) buildAuthorCaptionFrame() *ccx.CaptionFrame {
+	text := m.authorBuffer
+
+	frame := &ccx.CaptionFrame{
+		Channel: 1, // CC1
+		Text:    text,
+	}
+
+	if text == "" {
+		// Empty frame signals clear.
+		return frame
+	}
+
+	// Build structured region for proper CEA-608 rendering.
+	lines := strings.Split(text, "\n")
+	// Keep last 4 lines (roll-up style).
+	if len(lines) > 4 {
+		lines = lines[len(lines)-4:]
+	}
+
+	var rows []ccx.CaptionRow
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		// CEA-608 rows 12-15 (bottom of screen, 0-indexed).
+		rowIdx := 15 - (len(lines) - 1 - i)
+		rows = append(rows, ccx.CaptionRow{
+			Row: rowIdx,
+			Spans: []ccx.CaptionSpan{{
+				Text:      line,
+				FgColor:   "ffffff",
+				BgColor:   "000000",
+				FgOpacity: 1, // solid
+				BgOpacity: 2, // semi-transparent
+			}},
+		})
+	}
+
+	if len(rows) > 0 {
+		frame.Regions = []ccx.CaptionRegion{{
+			ID:      0,
+			Justify: 2, // center
+			Rows:    rows,
+		}}
+	}
+
+	return frame
 }
 
 // ConsumeForFrameWithVANC returns caption pairs and also dispatches to the VANC sink.

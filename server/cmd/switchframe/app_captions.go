@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
+	"github.com/zsiec/ccx"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/internal"
 )
@@ -25,6 +26,13 @@ func (a *App) initCaptions() error {
 	// Wire state change callback to trigger broadcast.
 	mgr.OnStateChange(func() {
 		a.broadcastState(nil)
+	})
+
+	// Wire broadcast sink so authored captions go to the MoQ captions track.
+	mgr.SetBroadcastSink(func(frame *ccx.CaptionFrame) {
+		if relay := a.sw.ProgramRelay(); relay != nil {
+			relay.BroadcastCaptions(frame)
+		}
 	})
 
 	// Wire VANC sink if MXL output is configured.
