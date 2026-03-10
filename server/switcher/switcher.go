@@ -19,6 +19,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -228,6 +229,9 @@ type Switcher struct {
 
 	// Upstream key bridge — applies chroma/luma keys in YUV420 domain.
 	keyBridge *graphics.KeyProcessorBridge
+
+	// Layout compositor — applies PIP/split-screen/quad layouts in YUV420 domain.
+	layoutCompositor *layout.Compositor
 
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
@@ -514,6 +518,14 @@ func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.rebuildPipeline()
 }
 
+// SetLayoutCompositor sets the layout compositor for PIP/split-screen/quad.
+func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
+	s.mu.Lock()
+	s.layoutCompositor = lc
+	s.mu.Unlock()
+	s.rebuildPipeline()
+}
+
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
 // creates a per-source decoder that decodes H.264 to raw YUV at ingest time,
 // eliminating keyframe waits on cuts and transitions. Must be called before
@@ -549,10 +561,11 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
+// Node order: upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
+		&layoutCompositorNode{compositor: s.layoutCompositor},
 		&compositorNode{compositor: s.compositorRef},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
@@ -1794,6 +1807,14 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		// Record transition seam for cut timing diagnostics.
 		s.transSeamStartNano.Store(time.Now().UnixNano())
 
+		// Auto-dissolve any PIP slot showing the new program source.
+		s.mu.RLock()
+		layoutComp := s.layoutCompositor
+		s.mu.RUnlock()
+		if layoutComp != nil {
+			layoutComp.AutoDissolveSource(sourceKey)
+		}
+
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
 		if audioCut != nil {
 			if oldProgram != "" {
@@ -2301,6 +2322,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	engine := s.transEngine
 	audioHandler := s.audioTransition
 	keyBridge := s.keyBridge
+	layoutComp := s.layoutCompositor
 	s.mu.RUnlock()
 
 	if !ok {
@@ -2333,6 +2355,11 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	// to pass. IngestFillYUV has its own per-source config check internally.
 	if keyBridge != nil {
 		keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
+	}
+
+	// Feed layout compositor with decoded YUV (for PIP/split-screen).
+	if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+		layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height)
 	}
 
 	// During transition (including FTB): route to engine for blending.

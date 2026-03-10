@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -512,6 +512,60 @@ export function scte35Templates(): Promise<SCTE35Rule[]> {
 
 export function scte35CreateFromTemplate(name: string): Promise<SCTE35Rule> {
 	return post('/api/scte35/rules/from-template', { name });
+}
+
+// Layout/PIP API
+
+export function getLayout(): Promise<LayoutConfig | null> {
+	return request('/api/layout');
+}
+
+export function setLayout(config: LayoutConfig): Promise<LayoutConfig> {
+	return request('/api/layout', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
+}
+
+export function clearLayout(): Promise<void> {
+	return request('/api/layout', { method: 'DELETE' });
+}
+
+export function layoutSlotOn(slotId: number): Promise<void> {
+	return post(`/api/layout/slots/${slotId}/on`, {});
+}
+
+export function layoutSlotOff(slotId: number): Promise<void> {
+	return post(`/api/layout/slots/${slotId}/off`, {});
+}
+
+export function updateLayoutSlot(slotId: number, update: Record<string, unknown>): Promise<void> {
+	return request(`/api/layout/slots/${slotId}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(update),
+	});
+}
+
+export function setLayoutSlotSource(slotId: number, source: string): Promise<void> {
+	return request(`/api/layout/slots/${slotId}/source`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ source }),
+	});
+}
+
+export function listLayoutPresets(): Promise<string[]> {
+	return request('/api/layout/presets');
+}
+
+export function saveLayoutPreset(name: string): Promise<void> {
+	return post('/api/layout/presets', { name });
+}
+
+export function deleteLayoutPreset(name: string): Promise<void> {
+	return request(`/api/layout/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
 /**

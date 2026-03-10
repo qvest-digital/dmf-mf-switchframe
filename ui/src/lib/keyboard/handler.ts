@@ -15,6 +15,7 @@ export interface KeyboardActions {
 	scte35Return?: () => void;
 	scte35Hold?: () => void;
 	scte35Extend?: () => void;
+	layoutTogglePIP?: () => void;
 	getSourceKeys: () => string[];
 }
 
@@ -154,6 +155,14 @@ export class KeyboardHandler {
 					}
 				}
 			}
+			return;
+		}
+
+		// Layout/PIP shortcuts (no modifier)
+		if (e.code === 'KeyP' || e.code === 'F3') {
+			e.preventDefault();
+			e.stopPropagation();
+			this.actions.layoutTogglePIP?.();
 			return;
 		}
 

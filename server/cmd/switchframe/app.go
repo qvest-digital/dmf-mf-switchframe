@@ -26,6 +26,7 @@ import (
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/mxl"
@@ -74,8 +75,10 @@ type App struct {
 	compositor     *graphics.Compositor
 	keyProcessor   *graphics.KeyProcessor
 	keyBridge      *graphics.KeyProcessorBridge
-	replayMgr      *replay.Manager
-	stingerStore   *stinger.StingerStore
+	replayMgr        *replay.Manager
+	stingerStore     *stinger.StingerStore
+	layoutCompositor *layout.Compositor
+	layoutStore      *layout.Store
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -350,6 +353,15 @@ func (a *App) initSubsystems() error {
 		return vi.Width, vi.Height
 	})
 	a.sw.SetCompositor(a.compositor)
+
+	// Layout compositor (PIP / multi-layout).
+	format := a.sw.PipelineFormat()
+	a.layoutCompositor = layout.NewCompositor(format.Width, format.Height)
+	a.sw.SetLayoutCompositor(a.layoutCompositor)
+
+	layoutPresetPath := filepath.Join(homeDir, ".switchframe", "layout_presets.json")
+	a.layoutStore = layout.NewStore(layoutPresetPath)
+	slog.Info("layout store initialized", "path", layoutPresetPath)
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
@@ -782,6 +794,8 @@ func (a *App) initAPI() error {
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),
 		control.WithStingerStore(a.stingerStore),
+		control.WithLayoutCompositor(a.layoutCompositor),
+		control.WithLayoutStore(a.layoutStore),
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))

@@ -21,12 +21,13 @@
 	import ReplayPanel from '../components/ReplayPanel.svelte';
 	import PresetPanel from '../components/PresetPanel.svelte';
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
+	import LayoutPanel from '../components/LayoutPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff } from '$lib/api/switch-api';
 	import { setApiBaseUrl, resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -43,6 +44,7 @@
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
+	let layoutTabActive = $state(false);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
 	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
@@ -141,6 +143,13 @@
 		onRunMacro: (slotIndex) => {
 			if (slotIndex < macroList.length) {
 				apiCall(runMacro(macroList[slotIndex].name), 'Macro failed');
+			}
+		},
+		layoutTogglePIP: () => {
+			const slots = store.state.layout?.slots;
+			if (slots && slots.length > 0) {
+				const slot = slots[0];
+				apiCall(slot.enabled ? layoutSlotOff(0) : layoutSlotOn(0), 'PIP toggle');
 			}
 		},
 		getSourceKeys: () => store.sourceKeys,
@@ -500,7 +509,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} showLayoutOverlay={layoutTabActive} />
 			</section>
 
 			<section class="multiview-section">
@@ -515,7 +524,7 @@
 			</section>
 
 			<section class="bottom-panel">
-				<BottomTabs>
+				<BottomTabs onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; }}>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
@@ -557,6 +566,10 @@
 								{:else}
 									<div class="panel-disabled">SCTE-35 not enabled on server</div>
 								{/if}
+							</div>
+						{:else if activeTab === 'Layout'}
+							<div class="tab-panel">
+								<LayoutPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

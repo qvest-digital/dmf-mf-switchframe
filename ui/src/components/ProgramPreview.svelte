@@ -2,15 +2,20 @@
 	import type { ControlRoomState, SCTE35Active } from '$lib/api/types';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import HealthAlarm from './HealthAlarm.svelte';
+	import LayoutOverlay from './LayoutOverlay.svelte';
 
 	interface Props {
 		state: ControlRoomState;
+		showLayoutOverlay?: boolean;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
 	}
-	let { state: crState, onCanvasReady }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, onCanvasReady }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
+	let programViewport: HTMLDivElement;
+	let programViewportW = $state(0);
+	let programViewportH = $state(0);
 
 	let programSource = $derived(crState.sources[crState.programSource]);
 	let programHealth = $derived(programSource?.status ?? 'healthy');
@@ -81,6 +86,17 @@
 
 		return () => observers.forEach((obs) => obs.disconnect());
 	});
+
+	// Track program viewport dimensions for layout overlay
+	$effect(() => {
+		if (!programViewport) return;
+		const obs = new ResizeObserver(([entry]) => {
+			programViewportW = entry.contentRect.width;
+			programViewportH = entry.contentRect.height;
+		});
+		obs.observe(programViewport);
+		return () => obs.disconnect();
+	});
 </script>
 
 <div class="program-preview">
@@ -101,10 +117,13 @@
 				<span class="break-countdown">{breakCountdown(breakEvent)}</span>
 			</div>
 		{/if}
-		<div class="monitor-viewport">
+		<div class="monitor-viewport" bind:this={programViewport}>
 			<canvas bind:this={programCanvas}></canvas>
 			<div class="source-label">{programLabel}</div>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} variant="critical" label="PROGRAM" />
+			{#if showLayoutOverlay && crState.layout?.slots?.length}
+				<LayoutOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} />
+			{/if}
 		</div>
 	</div>
 </div>

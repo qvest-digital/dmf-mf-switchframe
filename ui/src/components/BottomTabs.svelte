@@ -3,10 +3,11 @@
 
 	interface Props {
 		children: import('svelte').Snippet<[string]>;
+		onTabChange?: (tab: string) => void;
 	}
-	let { children }: Props = $props();
+	let { children, onTabChange }: Props = $props();
 
-	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35'] as const;
+	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35', 'Layout'] as const;
 	type TabId = typeof tabs[number];
 
 	function loadSavedTab(): TabId {
@@ -21,12 +22,13 @@
 	function setTab(tab: TabId) {
 		activeTab = tab;
 		localStorage.setItem('sf-active-tab', tab);
+		onTabChange?.(tab);
 	}
 
 	// Keyboard shortcut: Ctrl+Shift+1-6
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
-			const match = e.code.match(/^Digit([1-7])$/);
+			const match = e.code.match(/^Digit([1-8])$/);
 			if (match) {
 				e.preventDefault();
 				e.stopPropagation();

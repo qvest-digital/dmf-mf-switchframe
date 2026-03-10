@@ -122,6 +122,38 @@ export interface GraphicsState {
 	fadePosition?: number;
 }
 
+export interface LayoutState {
+	activePreset: string;
+	slots: LayoutSlotState[];
+}
+
+export interface LayoutSlotState {
+	id: number;
+	sourceKey: string;
+	enabled: boolean;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	zOrder: number;
+	animating?: boolean;
+}
+
+export interface LayoutSlotConfig {
+	sourceKey: string;
+	rect: { min: { x: number; y: number }; max: { x: number; y: number } };
+	zOrder: number;
+	enabled: boolean;
+	border?: { width: number; colorY: number; colorCb: number; colorCr: number };
+	transition?: { type: 'cut' | 'dissolve' | 'fly'; durationMs: number };
+}
+
+export interface LayoutConfig {
+	preset?: string;
+	slots?: LayoutSlotConfig[];
+	name?: string;
+}
+
 export interface PresetInfo {
 	id: string;
 	name: string;
@@ -380,6 +412,7 @@ export interface ControlRoomState {
 	srtOutput?: SRTOutputStatus;
 	destinations?: DestinationInfo[];
 	graphics?: GraphicsState;
+	layout?: LayoutState;
 	replay?: ReplayState;
 	operators?: OperatorInfo[];
 	locks?: Record<string, LockInfo>;

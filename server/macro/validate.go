@@ -112,6 +112,26 @@ func validateStep(i int, step MacroStep, result *ValidationResult) {
 		validateWait(i, step, result)
 	case ActionSCTE35Cue:
 		validateSCTE35Cue(i, step, result)
+	case ActionLayoutPreset:
+		if !hasStringParam(step.Params, "preset") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "layout_preset requires 'preset' param",
+			})
+		}
+	case ActionLayoutSlotOn, ActionLayoutSlotOff, ActionLayoutSlotSource:
+		if _, ok := step.Params["slot"].(float64); !ok {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("%s requires 'slot' param (number)", step.Action),
+			})
+		}
+		if step.Action == ActionLayoutSlotSource && !hasStringParam(step.Params, "source") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "layout_slot_source requires 'source' param",
+			})
+		}
 	}
 }
 
