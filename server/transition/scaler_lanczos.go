@@ -312,7 +312,7 @@ func boxShrinkPlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH, factorW,
 				}
 			}
 			if count > 0 {
-				dst[dy*dstW+dx] = byte(sum / count)
+				dst[dy*dstW+dx] = byte((sum + count/2) / count)
 			}
 		}
 	}

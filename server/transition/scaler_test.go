@@ -784,3 +784,23 @@ func TestBoxShrinkPlane_Gradient(t *testing.T) {
 	require.Equal(t, byte(55), dst[2])  // avg(50,60,50,60)
 	require.Equal(t, byte(75), dst[3])  // avg(70,80,70,80)
 }
+
+func TestBoxShrinkPlane_Rounding(t *testing.T) {
+	t.Parallel()
+	// When the average is not an exact integer, boxShrinkPlane should round
+	// to the nearest value rather than truncating toward zero.
+	// Block {10, 21, 10, 21}: sum=62, count=4, avg=15.5 → should round to 16.
+	// Block {30, 41, 30, 41}: sum=142, count=4, avg=35.5 → should round to 36.
+	src := []byte{
+		10, 21, 30, 41,
+		10, 21, 30, 41,
+		50, 61, 70, 81,
+		50, 61, 70, 81,
+	}
+	dst := make([]byte, 4)
+	boxShrinkPlane(src, 4, 4, dst, 2, 2, 2, 2)
+	require.Equal(t, byte(16), dst[0], "avg(10,21,10,21)=15.5 should round to 16")
+	require.Equal(t, byte(36), dst[1], "avg(30,41,30,41)=35.5 should round to 36")
+	require.Equal(t, byte(56), dst[2], "avg(50,61,50,61)=55.5 should round to 56")
+	require.Equal(t, byte(76), dst[3], "avg(70,81,70,81)=75.5 should round to 76")
+}
