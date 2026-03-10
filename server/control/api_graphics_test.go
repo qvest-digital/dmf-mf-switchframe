@@ -3,9 +3,11 @@ package control
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,10 +28,52 @@ func setupGraphicsTestAPI(t *testing.T) (*API, *graphics.Compositor) {
 	return api, comp
 }
 
-func TestGraphicsOn_NoOverlay(t *testing.T) {
+// addLayerViaAPI creates a layer via POST /api/graphics and returns its ID.
+func addLayerViaAPI(t *testing.T, api *API) int {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/graphics", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "add layer: body: %s", rec.Body.String())
+	var result map[string]int
+	err := json.NewDecoder(rec.Body).Decode(&result)
+	require.NoError(t, err)
+	return result["id"]
+}
+
+func TestGraphicsAddLayer(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+	require.Equal(t, 0, id)
+
+	id2 := addLayerViaAPI(t, api)
+	require.Equal(t, 1, id2)
+}
+
+func TestGraphicsRemoveLayer(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	req := httptest.NewRequest("DELETE", fmt.Sprintf("/api/graphics/%d", id), nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestGraphicsRemoveLayer_NotFound(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
 
-	req := httptest.NewRequest("POST", "/api/graphics/on", nil)
+	req := httptest.NewRequest("DELETE", "/api/graphics/999", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestGraphicsOn_NoOverlay(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/on", id), nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -38,6 +82,7 @@ func TestGraphicsOn_NoOverlay(t *testing.T) {
 
 func TestGraphicsFrame_UploadAndOn(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	// Upload a small 4x4 overlay
 	w, h := 4, 4
@@ -47,15 +92,14 @@ func TestGraphicsFrame_UploadAndOn(t *testing.T) {
 		rgba[i+3] = 200 // A
 	}
 
-	// JSON encode with base64 RGBA (json.Marshal auto-encodes []byte as base64)
 	body, _ := json.Marshal(map[string]interface{}{
 		"width":    w,
 		"height":   h,
 		"template": "lower-third",
-		"rgba":     rgba, // will be base64-encoded
+		"rgba":     rgba,
 	})
 
-	req := httptest.NewRequest("POST", "/api/graphics/frame", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/frame", id), strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -63,52 +107,55 @@ func TestGraphicsFrame_UploadAndOn(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "frame upload: body: %s", rec.Body.String())
 
 	// Now activate
-	req = httptest.NewRequest("POST", "/api/graphics/on", nil)
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/on", id), nil)
 	rec = httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "on: body: %s", rec.Body.String())
 
 	status := comp.Status()
-	require.True(t, status.Active, "expected active after ON")
-	require.Equal(t, "lower-third", status.Template)
+	require.Len(t, status.Layers, 1)
+	require.True(t, status.Layers[0].Active, "expected active after ON")
+	require.Equal(t, "lower-third", status.Layers[0].Template)
 }
 
 func TestGraphicsOff(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	// Upload and activate
-	uploadOverlay(t, api, 4, 4, "test")
-	_ = comp.On()
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	// Turn off
-	req := httptest.NewRequest("POST", "/api/graphics/off", nil)
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/off", id), nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "off: body: %s", rec.Body.String())
-	require.False(t, comp.Status().Active, "expected inactive after OFF")
+	require.False(t, comp.Status().Layers[0].Active, "expected inactive after OFF")
 }
 
 func TestGraphicsAutoOn(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	// Upload overlay
-	uploadOverlay(t, api, 4, 4, "ticker")
+	uploadOverlay(t, api, id, 4, 4, "ticker")
 
 	// Auto-on
-	req := httptest.NewRequest("POST", "/api/graphics/auto-on", nil)
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/auto-on", id), nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "auto-on: body: %s", rec.Body.String())
-	require.True(t, comp.Status().Active, "expected active after AUTO ON")
+	require.True(t, comp.Status().Layers[0].Active, "expected active after AUTO ON")
 }
 
 func TestGraphicsStatus(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
 
-	req := httptest.NewRequest("GET", "/api/graphics/status", nil)
+	req := httptest.NewRequest("GET", "/api/graphics", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -117,11 +164,12 @@ func TestGraphicsStatus(t *testing.T) {
 	var status graphics.State
 	err := json.NewDecoder(rec.Body).Decode(&status)
 	require.NoError(t, err)
-	require.False(t, status.Active, "expected inactive initially")
+	require.Empty(t, status.Layers, "expected no layers initially")
 }
 
 func TestGraphicsFrame_InvalidSize(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	// Wrong RGBA size for 4x4 (should be 64 bytes, sending 10)
 	smallRGBA := make([]byte, 10)
@@ -132,7 +180,7 @@ func TestGraphicsFrame_InvalidSize(t *testing.T) {
 		"rgba":     smallRGBA,
 	})
 
-	req := httptest.NewRequest("POST", "/api/graphics/frame", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/frame", id), strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -142,6 +190,7 @@ func TestGraphicsFrame_InvalidSize(t *testing.T) {
 
 func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"width":    0,
@@ -150,7 +199,7 @@ func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
 		"rgba":     []byte{},
 	})
 
-	req := httptest.NewRequest("POST", "/api/graphics/frame", strings.NewReader(string(body)))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/frame", id), strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -164,7 +213,7 @@ func TestGraphicsNotConfigured(t *testing.T) {
 	sw := switcher.New(programRelay)
 	api := NewAPI(sw)
 
-	req := httptest.NewRequest("GET", "/api/graphics/status", nil)
+	req := httptest.NewRequest("GET", "/api/graphics", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -173,16 +222,15 @@ func TestGraphicsNotConfigured(t *testing.T) {
 		"status = %d, want 404 or 405 (route not registered)", rec.Code)
 }
 
-// uploadOverlay is a test helper that uploads an RGBA overlay frame.
-func uploadOverlay(t *testing.T, api *API, w, h int, template string) {
+// uploadOverlay is a test helper that uploads an RGBA overlay frame to a specific layer.
+func uploadOverlay(t *testing.T, api *API, layerID, w, h int, template string) {
 	t.Helper()
 	rgba := make([]byte, w*h*4)
 	for i := range rgba {
 		rgba[i] = 128
 	}
-	// Use base64 manually to match JSON encoding of []byte
-	body := `{"width":` + itoa(w) + `,"height":` + itoa(h) + `,"template":"` + template + `","rgba":"` + base64.StdEncoding.EncodeToString(rgba) + `"}`
-	req := httptest.NewRequest("POST", "/api/graphics/frame", strings.NewReader(body))
+	body := `{"width":` + strconv.Itoa(w) + `,"height":` + strconv.Itoa(h) + `,"template":"` + template + `","rgba":"` + base64.StdEncoding.EncodeToString(rgba) + `"}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/frame", layerID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -206,23 +254,24 @@ func TestGraphicsHandlers_SetLastOperator(t *testing.T) {
 	require.NoError(t, err)
 	token := op.Token
 
-	// Upload overlay so On/AutoOn succeed
-	uploadOverlay(t, api, 4, 4, "test")
+	// Create a layer and upload overlay
+	id := addLayerViaAPI(t, api)
+	uploadOverlay(t, api, id, 4, 4, "test")
 
 	endpoints := []struct {
 		name  string
 		path  string
 		setup func() // optional pre-step
 	}{
-		{"on", "/api/graphics/on", nil},
-		{"off", "/api/graphics/off", nil},
-		{"auto-on", "/api/graphics/auto-on", func() {
+		{"on", fmt.Sprintf("/api/graphics/%d/on", id), nil},
+		{"off", fmt.Sprintf("/api/graphics/%d/off", id), nil},
+		{"auto-on", fmt.Sprintf("/api/graphics/%d/auto-on", id), func() {
 			// Ensure overlay is off so AutoOn can start a fade
-			_ = comp.Off()
+			_ = comp.Off(id)
 		}},
-		{"auto-off", "/api/graphics/auto-off", func() {
+		{"auto-off", fmt.Sprintf("/api/graphics/%d/auto-off", id), func() {
 			// Ensure overlay is active so AutoOff works
-			_ = comp.On()
+			_ = comp.On(id)
 		}},
 	}
 
@@ -252,13 +301,14 @@ func TestGraphicsHandlers_SetLastOperator(t *testing.T) {
 
 func TestGraphicsAnimate_Valid(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
 	// Upload and activate
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -268,22 +318,24 @@ func TestGraphicsAnimate_Valid(t *testing.T) {
 	var status graphics.State
 	err := json.NewDecoder(rec.Body).Decode(&status)
 	require.NoError(t, err)
-	require.True(t, status.Active)
-	require.Equal(t, "pulse", status.AnimationMode)
-	require.Equal(t, 2.0, status.AnimationHz)
+	require.Len(t, status.Layers, 1)
+	require.True(t, status.Layers[0].Active)
+	require.Equal(t, "pulse", status.Layers[0].AnimationMode)
+	require.Equal(t, 2.0, status.Layers[0].AnimationHz)
 
 	// Clean up
-	require.NoError(t, comp.StopAnimation())
+	require.NoError(t, comp.StopAnimation(id))
 }
 
 func TestGraphicsAnimate_InvalidMode(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	body := `{"mode":"flash","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -293,13 +345,14 @@ func TestGraphicsAnimate_InvalidMode(t *testing.T) {
 
 func TestGraphicsAnimate_InvalidAlpha(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	// minAlpha >= maxAlpha
 	body := `{"mode":"pulse","minAlpha":0.8,"maxAlpha":0.3,"speedHz":2.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -309,13 +362,14 @@ func TestGraphicsAnimate_InvalidAlpha(t *testing.T) {
 
 func TestGraphicsAnimate_InvalidAlphaRange(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	// alpha out of [0,1]
 	body := `{"mode":"pulse","minAlpha":-0.1,"maxAlpha":1.0,"speedHz":2.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -325,13 +379,48 @@ func TestGraphicsAnimate_InvalidAlphaRange(t *testing.T) {
 
 func TestGraphicsAnimate_InvalidSpeed(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	// speedHz > 10
 	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":15.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_TransitionMissingTarget(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	// transition mode with neither toRect nor toAlpha
+	body := `{"mode":"transition","durationMs":500}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_TransitionMissingDuration(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	// transition mode with toAlpha but no durationMs
+	body := `{"mode":"transition","toAlpha":0.5}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -341,12 +430,13 @@ func TestGraphicsAnimate_InvalidSpeed(t *testing.T) {
 
 func TestGraphicsAnimate_NotActive(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
+	uploadOverlay(t, api, id, 4, 4, "test")
 	// Do NOT call On()
 
 	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
-	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate", id), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -356,9 +446,10 @@ func TestGraphicsAnimate_NotActive(t *testing.T) {
 
 func TestGraphicsAnimateStop(t *testing.T) {
 	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
 
-	uploadOverlay(t, api, 4, 4, "test")
-	require.NoError(t, comp.On())
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
 
 	// Start animation via compositor directly
 	cfg := graphics.AnimationConfig{
@@ -367,10 +458,10 @@ func TestGraphicsAnimateStop(t *testing.T) {
 		MaxAlpha: 1.0,
 		SpeedHz:  2.0,
 	}
-	require.NoError(t, comp.Animate(cfg))
+	require.NoError(t, comp.Animate(id, cfg))
 
 	// Stop via API
-	req := httptest.NewRequest("POST", "/api/graphics/animate/stop", nil)
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/animate/stop", id), nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -379,19 +470,204 @@ func TestGraphicsAnimateStop(t *testing.T) {
 	var status graphics.State
 	err := json.NewDecoder(rec.Body).Decode(&status)
 	require.NoError(t, err)
-	require.True(t, status.Active, "should still be active after stop animation")
-	require.Equal(t, 1.0, status.FadePosition, "fadePosition should be 1.0 after stop")
-	require.Empty(t, status.AnimationMode, "AnimationMode should be empty after stop")
+	require.Len(t, status.Layers, 1)
+	require.True(t, status.Layers[0].Active, "should still be active after stop animation")
+	require.Equal(t, 1.0, status.Layers[0].FadePosition, "fadePosition should be 1.0 after stop")
+	require.Empty(t, status.Layers[0].AnimationMode, "AnimationMode should be empty after stop")
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
+func TestGraphicsLayerRect(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	body := `{"x":100,"y":200,"width":400,"height":300}`
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/graphics/%d/rect", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "rect: body: %s", rec.Body.String())
+
+	status := comp.Status()
+	require.Len(t, status.Layers, 1)
+	require.Equal(t, 100, status.Layers[0].Rect.X)
+	require.Equal(t, 200, status.Layers[0].Rect.Y)
+	require.Equal(t, 400, status.Layers[0].Rect.Width)
+	require.Equal(t, 300, status.Layers[0].Rect.Height)
 }
+
+func TestGraphicsLayerZOrder(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	body := `{"zOrder":5}`
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/graphics/%d/zorder", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "zorder: body: %s", rec.Body.String())
+
+	status := comp.Status()
+	require.Len(t, status.Layers, 1)
+	require.Equal(t, 5, status.Layers[0].ZOrder)
+}
+
+func TestGraphicsFlyIn(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	body := `{"direction":"left","durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-in", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "fly-in: body: %s", rec.Body.String())
+
+	var status graphics.State
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Len(t, status.Layers, 1)
+
+	// Clean up animation
+	_ = comp.StopAnimation(id)
+}
+
+func TestGraphicsFlyIn_InvalidDirection(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	body := `{"direction":"diagonal","durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-in", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsFlyIn_LayerNotFound(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+
+	body := `{"direction":"left","durationMs":300}`
+	req := httptest.NewRequest("POST", "/api/graphics/999/fly-in", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestGraphicsFlyOut(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	body := `{"direction":"right","durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-out", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "fly-out: body: %s", rec.Body.String())
+
+	var status graphics.State
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Len(t, status.Layers, 1)
+
+	// Clean up animation
+	_ = comp.StopAnimation(id)
+}
+
+func TestGraphicsFlyOut_InvalidDirection(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	body := `{"direction":"upward","durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-out", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsSlide(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	body := `{"x":100,"y":200,"width":400,"height":300,"durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/slide", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "slide: body: %s", rec.Body.String())
+
+	var status graphics.State
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Len(t, status.Layers, 1)
+
+	// Clean up animation
+	_ = comp.StopAnimation(id)
+}
+
+func TestGraphicsSlide_LayerNotFound(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+
+	body := `{"x":100,"y":200,"width":400,"height":300,"durationMs":300}`
+	req := httptest.NewRequest("POST", "/api/graphics/999/slide", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestGraphicsFlyIn_DefaultDuration(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+	id := addLayerViaAPI(t, api)
+
+	uploadOverlay(t, api, id, 4, 4, "test")
+	require.NoError(t, comp.On(id))
+
+	// No durationMs — should default to 500
+	body := `{"direction":"top"}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-in", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "fly-in default duration: body: %s", rec.Body.String())
+
+	// Clean up animation
+	_ = comp.StopAnimation(id)
+}
+
+func TestGraphicsLayerNotFound(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/graphics/999/on", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+

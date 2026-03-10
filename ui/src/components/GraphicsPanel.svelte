@@ -1,6 +1,12 @@
 <script lang="ts">
-	import type { ControlRoomState } from '$lib/api/types';
-	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, graphicsAnimate, graphicsAnimateStop, apiCall } from '$lib/api/switch-api';
+	import type { ControlRoomState, GraphicsLayerState } from '$lib/api/types';
+	import {
+		graphicsAddLayer, graphicsRemoveLayer,
+		graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff,
+		graphicsAnimate, graphicsAnimateStop,
+		graphicsSetZOrder,
+		apiCall,
+	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
 
@@ -9,16 +15,22 @@
 	}
 	let { state: crState }: Props = $props();
 
-	let selectedTemplateId = $state('lower-third');
-	let fieldValues = $state<Record<string, string>>(getDefaultValues('lower-third'));
-	let previewCanvas: HTMLCanvasElement | null = $state(null);
+	// Per-layer template + field state, keyed by layer ID.
+	let layerTemplates = $state<Record<number, string>>({});
+	let layerFields = $state<Record<number, Record<string, string>>>({});
+	let previewCanvases = $state<Record<number, HTMLCanvasElement | null>>({});
 
 	const publisher = new GraphicsPublisher();
 
-	const selectedTemplate = $derived(builtinTemplates[selectedTemplateId]);
-	const graphicsActive = $derived(crState.graphics?.active ?? false);
-	const supportsAnimation = $derived(selectedTemplate?.supportsAnimation ?? false);
-	const animationActive = $derived(!!crState.graphics?.animationMode);
+	$effect(() => {
+		return () => publisher.destroy();
+	});
+
+	const layers = $derived<GraphicsLayerState[]>(
+		(crState.graphics?.layers ?? []).slice().sort((a, b) => a.zOrder - b.zOrder)
+	);
+
+	const anyActive = $derived(layers.some((l) => l.active));
 
 	function getDefaultValues(templateId: string): Record<string, string> {
 		const tpl = builtinTemplates[templateId];
@@ -30,133 +42,201 @@
 		return values;
 	}
 
-	// Re-render preview when fields change
+	function getLayerTemplate(id: number): string {
+		return layerTemplates[id] ?? 'lower-third';
+	}
+
+	function getLayerFields(id: number): Record<string, string> {
+		return layerFields[id] ?? getDefaultValues(getLayerTemplate(id));
+	}
+
+	// Re-render previews when fields change.
 	$effect(() => {
-		const tpl = selectedTemplate;
-		const vals = fieldValues;
-		const canvas = previewCanvas;
-		if (!tpl || !canvas) return;
-		try {
-			publisher.renderPreview(canvas, tpl, vals);
-		} catch {
-			// Canvas rendering may fail in test environments
+		for (const layer of layers) {
+			const canvas = previewCanvases[layer.id];
+			const tplId = getLayerTemplate(layer.id);
+			const tpl = builtinTemplates[tplId];
+			const vals = getLayerFields(layer.id);
+			if (!tpl || !canvas) continue;
+			try {
+				publisher.renderPreview(canvas, tpl, vals);
+			} catch {
+				// Canvas rendering may fail in test environments.
+			}
 		}
 	});
 
-	async function handlePublishAndOn() {
-		const tpl = selectedTemplate;
+	async function handleAddLayer() {
+		try {
+			const result = await graphicsAddLayer();
+			layerTemplates[result.id] = 'lower-third';
+			layerFields[result.id] = getDefaultValues('lower-third');
+		} catch (err) {
+			console.warn('Failed to add layer:', err);
+		}
+	}
+
+	function handleRemoveLayer(id: number) {
+		apiCall(graphicsRemoveLayer(id), 'Remove layer failed');
+		delete layerTemplates[id];
+		delete layerFields[id];
+		delete previewCanvases[id];
+	}
+
+	async function handlePublishAndOn(id: number) {
+		const tplId = getLayerTemplate(id);
+		const tpl = builtinTemplates[tplId];
 		if (!tpl) return;
 		try {
-			await publisher.publish(tpl, fieldValues);
-			apiCall(graphicsOn(), 'Graphics failed');
+			await publisher.publish(id, tpl, getLayerFields(id));
+			apiCall(graphicsOn(id), 'Graphics failed');
 		} catch (err) {
 			console.warn('Graphics publish failed:', err);
 		}
 	}
 
-	async function handlePublishAndAutoOn() {
-		const tpl = selectedTemplate;
+	async function handlePublishAndAutoOn(id: number) {
+		const tplId = getLayerTemplate(id);
+		const tpl = builtinTemplates[tplId];
 		if (!tpl) return;
 		try {
-			await publisher.publish(tpl, fieldValues);
-			apiCall(graphicsAutoOn(), 'Graphics failed');
+			await publisher.publish(id, tpl, getLayerFields(id));
+			apiCall(graphicsAutoOn(id), 'Graphics failed');
 		} catch (err) {
 			console.warn('Graphics publish failed:', err);
 		}
 	}
 
-	function handleOff() {
-		apiCall(graphicsOff(), 'Graphics failed');
+	function handleOff(id: number) {
+		apiCall(graphicsOff(id), 'Graphics failed');
 	}
 
-	function handleAutoOff() {
-		apiCall(graphicsAutoOff(), 'Graphics failed');
+	function handleAutoOff(id: number) {
+		apiCall(graphicsAutoOff(id), 'Graphics failed');
 	}
 
-	function handleAnimate() {
-		apiCall(graphicsAnimate({ mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0 }), 'Animation failed');
+	function handleAnimate(id: number) {
+		apiCall(graphicsAnimate(id, { mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0 }), 'Animation failed');
 	}
 
-	function handleAnimateStop() {
-		apiCall(graphicsAnimateStop(), 'Animation stop failed');
+	function handleAnimateStop(id: number) {
+		apiCall(graphicsAnimateStop(id), 'Animation stop failed');
 	}
 
-	function handleTemplateChange(e: Event) {
-		const id = (e.target as HTMLSelectElement).value;
-		selectedTemplateId = id;
-		fieldValues = getDefaultValues(id);
+	function handleZOrderUp(id: number, currentZ: number) {
+		apiCall(graphicsSetZOrder(id, currentZ + 1), 'Z-order failed');
+	}
+
+	function handleZOrderDown(id: number, currentZ: number) {
+		apiCall(graphicsSetZOrder(id, Math.max(0, currentZ - 1)), 'Z-order failed');
+	}
+
+	function handleTemplateChange(id: number, e: Event) {
+		const tplId = (e.target as HTMLSelectElement).value;
+		layerTemplates[id] = tplId;
+		layerFields[id] = getDefaultValues(tplId);
+	}
+
+	function handleFieldChange(id: number, key: string, value: string) {
+		layerFields = {
+			...layerFields,
+			[id]: { ...getLayerFields(id), [key]: value },
+		};
 	}
 </script>
 
 <div class="graphics-panel">
 	<div class="gfx-header">
-		<span class="gfx-label">DSK</span>
-		<span class="gfx-status" class:on-air={graphicsActive}>
-			{graphicsActive ? 'ON AIR' : 'OFF'}
-		</span>
-	</div>
-
-	<div class="gfx-controls">
-		<select class="template-select" value={selectedTemplateId} onchange={handleTemplateChange} aria-label="Graphics template">
-			{#each templateList as tpl}
-				<option value={tpl.id}>{tpl.name}</option>
-			{/each}
-		</select>
-
-		{#if selectedTemplate}
-			<div class="fields">
-				{#each selectedTemplate.fields as field}
-					<label class="field-row">
-						<span class="field-label">{field.label}</span>
-						<input
-							type="text"
-							class="field-input"
-							value={fieldValues[field.key] ?? ''}
-							maxlength={field.maxLength}
-							oninput={(e) => { fieldValues = { ...fieldValues, [field.key]: (e.target as HTMLInputElement).value }; }}
-						/>
-					</label>
-				{/each}
-			</div>
-		{/if}
-
-		<canvas
-			bind:this={previewCanvas}
-			class="gfx-preview"
-			width={320}
-			height={240}
-			aria-label="Graphics preview"
-		></canvas>
-
-		<div class="gfx-buttons">
-			<button class="gfx-btn on" onclick={handlePublishAndOn} disabled={graphicsActive}>
-				CUT ON
-			</button>
-			<button class="gfx-btn auto-on" onclick={handlePublishAndAutoOn} disabled={graphicsActive}>
-				AUTO ON
-			</button>
-			<button class="gfx-btn off" onclick={handleOff} disabled={!graphicsActive}>
-				CUT OFF
-			</button>
-			<button class="gfx-btn auto-off" onclick={handleAutoOff} disabled={!graphicsActive}>
-				AUTO OFF
-			</button>
+		<span class="gfx-label">DSK LAYERS</span>
+		<div class="gfx-header-right">
+			<span class="gfx-status" class:on-air={anyActive}>
+				{anyActive ? 'ON AIR' : 'OFF'}
+			</span>
+			<button class="add-layer-btn" onclick={handleAddLayer} aria-label="Add layer">+ LAYER</button>
 		</div>
-
-		{#if supportsAnimation}
-			<div class="gfx-anim-row">
-				{#if animationActive}
-					<button class="gfx-btn anim-stop" onclick={handleAnimateStop}>
-						STOP ANIM
-					</button>
-				{:else}
-					<button class="gfx-btn anim-start" onclick={handleAnimate} disabled={!graphicsActive}>
-						ANIMATE
-					</button>
-				{/if}
-			</div>
-		{/if}
 	</div>
+
+	{#if layers.length === 0}
+		<div class="empty-state">No layers. Click + LAYER to add one.</div>
+	{/if}
+
+	{#each layers as layer (layer.id)}
+		{@const tplId = getLayerTemplate(layer.id)}
+		{@const tpl = builtinTemplates[tplId]}
+		{@const fields = getLayerFields(layer.id)}
+		{@const supportsAnim = tpl?.supportsAnimation ?? false}
+		<div class="layer-card" class:active={layer.active}>
+			<div class="layer-header">
+				<span class="layer-id">L{layer.id}</span>
+				<span class="layer-z" title="Z-order">z{layer.zOrder}</span>
+				<div class="z-controls">
+					<button class="z-btn" onclick={() => handleZOrderUp(layer.id, layer.zOrder)} title="Move up" aria-label="Z-order up">&#9650;</button>
+					<button class="z-btn" onclick={() => handleZOrderDown(layer.id, layer.zOrder)} title="Move down" aria-label="Z-order down">&#9660;</button>
+				</div>
+				<button class="delete-btn" onclick={() => handleRemoveLayer(layer.id)} title="Remove layer" aria-label="Delete layer">&times;</button>
+			</div>
+
+			<select class="template-select" value={tplId} onchange={(e) => handleTemplateChange(layer.id, e)} aria-label="Template">
+				{#each templateList as t}
+					<option value={t.id}>{t.name}</option>
+				{/each}
+			</select>
+
+			{#if tpl}
+				<div class="fields">
+					{#each tpl.fields as field}
+						<label class="field-row">
+							<span class="field-label">{field.label}</span>
+							<input
+								type="text"
+								class="field-input"
+								value={fields[field.key] ?? ''}
+								maxlength={field.maxLength}
+								oninput={(e) => handleFieldChange(layer.id, field.key, (e.target as HTMLInputElement).value)}
+							/>
+						</label>
+					{/each}
+				</div>
+			{/if}
+
+			<canvas
+				bind:this={previewCanvases[layer.id]}
+				class="gfx-preview"
+				width={320}
+				height={240}
+				aria-label="Layer {layer.id} preview"
+			></canvas>
+
+			<div class="gfx-buttons">
+				<button class="gfx-btn on" onclick={() => handlePublishAndOn(layer.id)} disabled={layer.active}>
+					CUT ON
+				</button>
+				<button class="gfx-btn auto-on" onclick={() => handlePublishAndAutoOn(layer.id)} disabled={layer.active}>
+					AUTO ON
+				</button>
+				<button class="gfx-btn off" onclick={() => handleOff(layer.id)} disabled={!layer.active}>
+					CUT OFF
+				</button>
+				<button class="gfx-btn auto-off" onclick={() => handleAutoOff(layer.id)} disabled={!layer.active}>
+					AUTO OFF
+				</button>
+			</div>
+
+			{#if supportsAnim}
+				<div class="gfx-anim-row">
+					{#if layer.animationMode}
+						<button class="gfx-btn anim-stop" onclick={() => handleAnimateStop(layer.id)}>
+							STOP ANIM
+						</button>
+					{:else}
+						<button class="gfx-btn anim-start" onclick={() => handleAnimate(layer.id)} disabled={!layer.active}>
+							ANIMATE
+						</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/each}
 </div>
 
 <style>
@@ -168,6 +248,8 @@
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
 		background: var(--bg-surface);
+		max-height: 500px;
+		overflow-y: auto;
 	}
 
 	.gfx-header {
@@ -176,6 +258,12 @@
 		justify-content: space-between;
 		padding-bottom: 4px;
 		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.gfx-header-right {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.gfx-label {
@@ -207,20 +295,121 @@
 		50% { box-shadow: 0 0 8px rgba(220, 38, 38, 0.6); }
 	}
 
-	.gfx-controls {
+	.add-layer-btn {
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		padding: 2px 8px;
+		border: 1px solid var(--accent-blue, #3b82f6);
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--accent-blue, #3b82f6);
+		cursor: pointer;
+	}
+
+	.add-layer-btn:hover {
+		background: rgba(59, 130, 246, 0.15);
+	}
+
+	.empty-state {
+		font-family: var(--font-ui);
+		font-size: 0.7rem;
+		color: var(--text-secondary);
+		text-align: center;
+		padding: 12px;
+	}
+
+	.layer-card {
 		display: flex;
 		flex-direction: column;
+		gap: 4px;
+		padding: 6px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+	}
+
+	.layer-card.active {
+		border-color: var(--tally-program, #dc2626);
+		box-shadow: 0 0 4px rgba(220, 38, 38, 0.2);
+	}
+
+	.layer-header {
+		display: flex;
+		align-items: center;
 		gap: 6px;
+	}
+
+	.layer-id {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.layer-z {
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		color: var(--text-secondary);
+	}
+
+	.z-controls {
+		display: flex;
+		gap: 1px;
+		margin-left: auto;
+	}
+
+	.z-btn {
+		font-size: 0.5rem;
+		width: 16px;
+		height: 16px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--border-default);
+		border-radius: 2px;
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 0;
+		line-height: 1;
+	}
+
+	.z-btn:hover {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+	}
+
+	.delete-btn {
+		font-size: 0.85rem;
+		width: 18px;
+		height: 18px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--border-default);
+		border-radius: 2px;
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 0;
+		line-height: 1;
+	}
+
+	.delete-btn:hover {
+		border-color: var(--tally-program, #dc2626);
+		color: var(--tally-program, #dc2626);
 	}
 
 	.template-select {
 		font-family: var(--font-ui);
 		font-size: 0.7rem;
-		background: var(--bg-elevated);
+		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
-		padding: 3px 6px;
+		padding: 2px 6px;
 		cursor: pointer;
 	}
 
@@ -262,7 +451,7 @@
 
 	.gfx-preview {
 		width: 100%;
-		max-height: 60px;
+		max-height: 50px;
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
 		background: #111;

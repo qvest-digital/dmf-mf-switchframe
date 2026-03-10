@@ -81,9 +81,17 @@ func buildRealisticState(n int) internal.ControlRoomState {
 		Sources: sources,
 		Presets: presets,
 		Graphics: &internal.GraphicsState{
-			Active:       true,
-			Template:     "lower-third",
-			FadePosition: 1.0,
+			Layers: []internal.GraphicsLayerState{
+				{
+					ID:           0,
+					Template:     "lower-third",
+					Active:       true,
+					FadePosition: 1.0,
+					ZOrder:       0,
+					Width:        1920,
+					Height:       1080,
+				},
+			},
 		},
 		Seq:       42,
 		Timestamp: time.Now().UnixMilli(),

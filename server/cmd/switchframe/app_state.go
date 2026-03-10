@@ -47,14 +47,24 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	} else {
 		gfxStatus = a.compositor.Status()
 	}
-	if gfxStatus.Active {
-		state.Graphics = &internal.GraphicsState{
-			Active:        gfxStatus.Active,
-			Template:      gfxStatus.Template,
-			FadePosition:  gfxStatus.FadePosition,
-			AnimationMode: gfxStatus.AnimationMode,
-			AnimationHz:   gfxStatus.AnimationHz,
+	if len(gfxStatus.Layers) > 0 {
+		gfxState := &internal.GraphicsState{}
+		for _, l := range gfxStatus.Layers {
+			gfxState.Layers = append(gfxState.Layers, internal.GraphicsLayerState{
+				ID:            l.ID,
+				Template:      l.Template,
+				Active:        l.Active,
+				FadePosition:  l.FadePosition,
+				AnimationMode: l.AnimationMode,
+				AnimationHz:   l.AnimationHz,
+				ZOrder:        l.ZOrder,
+				X:             l.Rect.X,
+				Y:             l.Rect.Y,
+				Width:         l.Rect.Width,
+				Height:        l.Rect.Height,
+			})
 		}
+		state.Graphics = gfxState
 	}
 
 	// Enrich with operator and lock state.

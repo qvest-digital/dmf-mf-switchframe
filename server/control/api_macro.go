@@ -236,17 +236,23 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 	case macro.ActionAudioDelay:
 		return t.execAudioDelay(params)
 
-	// Graphics
+	// Graphics — layerId is required; defaults to 0 for backward compatibility
+	// with macros created before multi-layer migration, but the compositor will
+	// return ErrLayerNotFound if that layer doesn't exist.
 	case macro.ActionGraphicsOn:
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.On() })
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.On(id) })
 	case macro.ActionGraphicsOff:
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.Off() })
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.Off(id) })
 	case macro.ActionGraphicsAutoOn:
+		id := int(floatParam(params, "layerId", 0))
 		dur := time.Duration(floatParam(params, "durationMs", 500)) * time.Millisecond
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOn(dur) })
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOn(id, dur) })
 	case macro.ActionGraphicsAutoOff:
+		id := int(floatParam(params, "layerId", 0))
 		dur := time.Duration(floatParam(params, "durationMs", 500)) * time.Millisecond
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOff(dur) })
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOff(id, dur) })
 
 	// Output
 	case macro.ActionRecordingStart:

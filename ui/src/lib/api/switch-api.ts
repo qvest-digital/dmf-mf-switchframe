@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -21,7 +21,7 @@ export function setAuthToken(token: string): void {
 	sessionStorage.setItem('switchframe_operator_token', token);
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
 	const token = getAuthToken();
 	const headers: Record<string, string> = {};
 	if (token) {
@@ -277,34 +277,107 @@ export function getCompressor(source: string): Promise<CompressorResponse> {
 	return request(`/api/audio/${encodeURIComponent(source)}/compressor`);
 }
 
-// --- Graphics Overlay API ---
+// --- Graphics Layer API ---
 
-export function graphicsOn(): Promise<GraphicsState> {
-	return post('/api/graphics/on', {});
+export function graphicsAddLayer(): Promise<{ id: number }> {
+	return request('/api/graphics', { method: 'POST' });
 }
 
-export function graphicsOff(): Promise<GraphicsState> {
-	return post('/api/graphics/off', {});
+export function graphicsRemoveLayer(layerId: number): Promise<void> {
+	return request(`/api/graphics/${layerId}`, { method: 'DELETE' });
 }
 
-export function graphicsAutoOn(): Promise<GraphicsState> {
-	return post('/api/graphics/auto-on', {});
+export function graphicsOn(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/on`, {});
 }
 
-export function graphicsAutoOff(): Promise<GraphicsState> {
-	return post('/api/graphics/auto-off', {});
+export function graphicsOff(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/off`, {});
+}
+
+export function graphicsAutoOn(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/auto-on`, {});
+}
+
+export function graphicsAutoOff(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/auto-off`, {});
 }
 
 export function getGraphicsStatus(): Promise<GraphicsState> {
-	return request('/api/graphics/status');
+	return request('/api/graphics');
 }
 
-export function graphicsAnimate(config: { mode: string; minAlpha: number; maxAlpha: number; speedHz: number }): Promise<GraphicsState> {
-	return post('/api/graphics/animate', config);
+export interface GraphicsAnimateConfig {
+	mode: string;
+	minAlpha?: number;
+	maxAlpha?: number;
+	speedHz?: number;
+	toRect?: { x: number; y: number; width: number; height: number };
+	toAlpha?: number;
+	durationMs?: number;
+	easing?: string;
 }
 
-export function graphicsAnimateStop(): Promise<GraphicsState> {
-	return post('/api/graphics/animate/stop', {});
+export function graphicsAnimate(layerId: number, config: GraphicsAnimateConfig): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/animate`, config);
+}
+
+export function graphicsAnimateStop(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/animate/stop`, {});
+}
+
+export function graphicsSetRect(layerId: number, rect: { x: number; y: number; width: number; height: number }): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/rect`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(rect),
+	});
+}
+
+export function graphicsSetZOrder(layerId: number, zOrder: number): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/zorder`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ zOrder }),
+	});
+}
+
+export function graphicsUploadFrame(
+	layerId: number,
+	rgba: Uint8Array,
+	width: number,
+	height: number,
+	template: string,
+): Promise<GraphicsState> {
+	// Encode as base64 to match Go's encoding/json []byte decoding
+	// and avoid 3-4x payload bloat from JSON number arrays.
+	let binary = '';
+	for (let i = 0; i < rgba.length; i++) {
+		binary += String.fromCharCode(rgba[i]);
+	}
+	const base64 = btoa(binary);
+	return post(`/api/graphics/${layerId}/frame`, {
+		width,
+		height,
+		template,
+		rgba: base64,
+	});
+}
+
+export function graphicsFlyIn(layerId: number, direction: string, durationMs = 500): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/fly-in`, { direction, durationMs });
+}
+
+export function graphicsFlyOut(layerId: number, direction: string, durationMs = 500): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/fly-out`, { direction, durationMs });
+}
+
+export function graphicsSlide(
+	layerId: number,
+	rect: { x: number; y: number; width: number; height: number },
+	durationMs = 500,
+): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/slide`, { ...rect, durationMs });
 }
 
 // --- Macro API ---

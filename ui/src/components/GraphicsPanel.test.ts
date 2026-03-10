@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
 
@@ -68,38 +68,80 @@ const baseState = {
 	timestamp: Date.now(),
 };
 
+const oneLayer = {
+	id: 0, active: false, template: 'lower-third', fadePosition: 0,
+	zOrder: 0, x: 0, y: 0, width: 1920, height: 1080,
+};
+
+const oneLayerActive = {
+	...oneLayer, active: true, fadePosition: 1.0,
+};
+
 describe('GraphicsPanel', () => {
-	it('should render DSK label and OFF status', () => {
+	it('should render DSK LAYERS label and OFF status when no layers', () => {
 		const { container } = render(GraphicsPanel, { props: { state: baseState } });
-		expect(container.textContent).toContain('DSK');
+		expect(container.textContent).toContain('DSK LAYERS');
 		expect(container.textContent).toContain('OFF');
 	});
 
-	it('should show ON AIR when graphics active', () => {
+	it('should show empty state when no layers exist', () => {
+		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		expect(container.textContent).toContain('No layers');
+		expect(container.querySelector('.layer-card')).toBeNull();
+	});
+
+	it('should show ON AIR when any layer is active', () => {
 		const state = {
 			...baseState,
-			graphics: { active: true, template: 'lower-third', fadePosition: 1.0 },
+			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		expect(container.textContent).toContain('ON AIR');
 	});
 
-	it('should have template selector with 6 templates', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should render a layer card for each layer', () => {
+		const state = {
+			...baseState,
+			graphics: {
+				layers: [
+					{ ...oneLayer, id: 0, zOrder: 0 },
+					{ ...oneLayer, id: 1, zOrder: 1 },
+				],
+			},
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const cards = container.querySelectorAll('.layer-card');
+		expect(cards.length).toBe(2);
+	});
+
+	it('should have template selector with 6 templates per layer', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const select = container.querySelector('.template-select') as HTMLSelectElement;
 		expect(select).toBeTruthy();
 		expect(select.options.length).toBe(6);
 	});
 
-	it('should show field inputs for selected template', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should show field inputs for default lower-third template', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		// Default template is lower-third which has Name and Title fields
 		const inputs = container.querySelectorAll('.field-input');
 		expect(inputs.length).toBe(2);
 	});
 
-	it('should have CUT ON/OFF and AUTO ON/OFF buttons', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should have CUT ON/OFF and AUTO ON/OFF buttons per layer', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const buttons = container.querySelectorAll('.gfx-btn');
 		expect(buttons.length).toBe(4);
 
@@ -110,18 +152,22 @@ describe('GraphicsPanel', () => {
 		expect(labels).toContain('AUTO OFF');
 	});
 
-	it('should disable OFF buttons when not active', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should disable OFF buttons when layer not active', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const offBtn = container.querySelector('.gfx-btn.off') as HTMLButtonElement;
 		const autoOffBtn = container.querySelector('.gfx-btn.auto-off') as HTMLButtonElement;
 		expect(offBtn.disabled).toBe(true);
 		expect(autoOffBtn.disabled).toBe(true);
 	});
 
-	it('should disable ON buttons when active', () => {
+	it('should disable ON buttons when layer active', () => {
 		const state = {
 			...baseState,
-			graphics: { active: true, template: 'lower-third', fadePosition: 1.0 },
+			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const onBtn = container.querySelector('.gfx-btn.on') as HTMLButtonElement;
@@ -130,8 +176,12 @@ describe('GraphicsPanel', () => {
 		expect(autoOnBtn.disabled).toBe(true);
 	});
 
-	it('should render a preview canvas', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should render a preview canvas per layer', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const canvas = container.querySelector('.gfx-preview') as HTMLCanvasElement;
 		expect(canvas).toBeTruthy();
 		expect(canvas.width).toBe(320);
@@ -139,15 +189,19 @@ describe('GraphicsPanel', () => {
 	});
 
 	it('should not show animation button for lower-third template', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const animRow = container.querySelector('.gfx-anim-row');
 		expect(animRow).toBeNull();
 	});
 
-	it('should show ANIMATE button when network-bug selected and graphics active', async () => {
+	it('should show ANIMATE button when network-bug selected and layer active', async () => {
 		const state = {
 			...baseState,
-			graphics: { active: true, template: 'network-bug', fadePosition: 1.0 },
+			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const select = container.querySelector('.template-select') as HTMLSelectElement;
@@ -165,7 +219,14 @@ describe('GraphicsPanel', () => {
 	it('should show STOP ANIM button when animation is active', async () => {
 		const state = {
 			...baseState,
-			graphics: { active: true, template: 'network-bug', fadePosition: 0.7, animationMode: 'pulse', animationHz: 1.0 },
+			graphics: {
+				layers: [{
+					...oneLayerActive,
+					animationMode: 'pulse',
+					animationHz: 1.0,
+					fadePosition: 0.7,
+				}],
+			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const select = container.querySelector('.template-select') as HTMLSelectElement;
@@ -178,8 +239,12 @@ describe('GraphicsPanel', () => {
 		expect(stopBtn.textContent?.trim()).toBe('STOP ANIM');
 	});
 
-	it('should disable ANIMATE button when graphics not active', async () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+	it('should disable ANIMATE button when layer not active', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const select = container.querySelector('.template-select') as HTMLSelectElement;
 		await fireEvent.change(select, { target: { value: 'network-bug' } });
 		await vi.waitFor(() => {
@@ -188,5 +253,68 @@ describe('GraphicsPanel', () => {
 		});
 		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
 		expect(animBtn.disabled).toBe(true);
+	});
+
+	it('should show layer ID and z-order', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [{ ...oneLayer, id: 3, zOrder: 2 }] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		expect(container.textContent).toContain('L3');
+		expect(container.textContent).toContain('z2');
+	});
+
+	it('should have z-order up/down buttons', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const zBtns = container.querySelectorAll('.z-btn');
+		expect(zBtns.length).toBe(2);
+	});
+
+	it('should have delete button per layer', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const deleteBtn = container.querySelector('.delete-btn');
+		expect(deleteBtn).toBeTruthy();
+	});
+
+	it('should have add layer button', () => {
+		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		const addBtn = container.querySelector('.add-layer-btn');
+		expect(addBtn).toBeTruthy();
+		expect(addBtn?.textContent?.trim()).toBe('+ LAYER');
+	});
+
+	it('should highlight active layer card', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayerActive] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const card = container.querySelector('.layer-card.active');
+		expect(card).toBeTruthy();
+	});
+
+	it('should sort layers by z-order', () => {
+		const state = {
+			...baseState,
+			graphics: {
+				layers: [
+					{ ...oneLayer, id: 1, zOrder: 2 },
+					{ ...oneLayer, id: 0, zOrder: 0 },
+					{ ...oneLayer, id: 2, zOrder: 1 },
+				],
+			},
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const ids = Array.from(container.querySelectorAll('.layer-id')).map(el => el.textContent);
+		expect(ids).toEqual(['L0', 'L2', 'L1']);
 	});
 });

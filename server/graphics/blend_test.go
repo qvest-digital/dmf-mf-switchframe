@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"image"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -165,6 +166,115 @@ func TestAlphaBlendRGBA_AlphaScale(t *testing.T) {
 	}
 }
 
+// --- AlphaBlendRGBARect tests ---
+
+func TestAlphaBlendRGBARect_FullFrame(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 8
+
+	// Full-frame rect should produce same result as AlphaBlendRGBA.
+	yuv1 := makeYUV420(width, height, 0, 128, 128)
+	yuv2 := makeYUV420(width, height, 0, 128, 128)
+	rgba := makeRGBA(width, height, 255, 255, 255, 200)
+
+	AlphaBlendRGBA(yuv1, rgba, width, height, 1.0)
+	AlphaBlendRGBARect(yuv2, rgba, width, height, width, height,
+		image.Rect(0, 0, width, height), 1.0)
+
+	// Y planes should match.
+	ySize := width * height
+	for i := 0; i < ySize; i++ {
+		diff := int(yuv1[i]) - int(yuv2[i])
+		require.True(t, diff >= -1 && diff <= 1,
+			"Y[%d]: full-frame=%d rect=%d", i, yuv1[i], yuv2[i])
+	}
+}
+
+func TestAlphaBlendRGBARect_SubRegion(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 8
+	yuv := makeYUV420(width, height, 100, 128, 128)
+
+	// 4x4 white overlay in the center (2,2)→(6,6).
+	overlay := makeRGBA(4, 4, 255, 255, 255, 255)
+	rect := image.Rect(2, 2, 6, 6)
+
+	AlphaBlendRGBARect(yuv, overlay, width, height, 4, 4, rect, 1.0)
+
+	// Pixels outside rect should be unchanged (Y=100).
+	require.Equal(t, byte(100), yuv[0], "Y[0,0] outside rect should be unchanged")
+	require.Equal(t, byte(100), yuv[1], "Y[0,1] outside rect should be unchanged")
+	require.Equal(t, byte(100), yuv[width], "Y[1,0] outside rect should be unchanged")
+
+	// Pixels inside rect should be white (Y≈254).
+	insideIdx := 2*width + 2 // row=2, col=2
+	diff := int(yuv[insideIdx]) - 254
+	require.True(t, diff >= -1 && diff <= 1,
+		"Y[2,2] inside rect = %d, want ~254 (white)", yuv[insideIdx])
+}
+
+func TestAlphaBlendRGBARect_ClipBounds(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 8
+	yuv := makeYUV420(width, height, 100, 128, 128)
+
+	// Rect extends off frame: (-2,-2)→(4,4) should clip to (0,0)→(4,4).
+	overlay := makeRGBA(6, 6, 255, 255, 255, 255)
+	rect := image.Rect(-2, -2, 4, 4)
+
+	AlphaBlendRGBARect(yuv, overlay, width, height, 6, 6, rect, 1.0)
+
+	// Pixel at (0,0) should be modified (white).
+	diff := int(yuv[0]) - 254
+	require.True(t, diff >= -1 && diff <= 1,
+		"Y[0,0] should be ~254 after clipped blend, got %d", yuv[0])
+
+	// Pixel at (4,0) should be unchanged.
+	require.Equal(t, byte(100), yuv[4], "Y[0,4] outside clipped rect should be unchanged")
+}
+
+func TestAlphaBlendRGBARect_EvenAlign(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 8
+	yuv := makeYUV420(width, height, 100, 128, 128)
+
+	// Odd rect coords should get even-aligned.
+	overlay := makeRGBA(4, 4, 255, 255, 255, 255)
+	rect := image.Rect(1, 1, 5, 5) // odd → even-aligned to (0,0)→(4,4)
+
+	AlphaBlendRGBARect(yuv, overlay, width, height, 4, 4, rect, 1.0)
+
+	// (0,0) should be modified (even-aligned to 0).
+	diff := int(yuv[0]) - 254
+	require.True(t, diff >= -1 && diff <= 1,
+		"Y[0,0] should be ~254 after even-aligned blend, got %d", yuv[0])
+}
+
+func TestAlphaBlendRGBARect_OverlayScaling(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 8
+	yuv := makeYUV420(width, height, 0, 128, 128)
+
+	// 2x2 white overlay scaled into 4x4 rect.
+	overlay := makeRGBA(2, 2, 255, 255, 255, 255)
+	rect := image.Rect(0, 0, 4, 4)
+
+	AlphaBlendRGBARect(yuv, overlay, width, height, 2, 2, rect, 1.0)
+
+	// All 4x4 pixels in the rect should be white.
+	for row := 0; row < 4; row++ {
+		for col := 0; col < 4; col++ {
+			idx := row*width + col
+			diff := int(yuv[idx]) - 254
+			require.True(t, diff >= -1 && diff <= 1,
+				"Y[%d,%d] = %d, want ~254 (scaled overlay)", row, col, yuv[idx])
+		}
+	}
+
+	// Pixels outside rect should remain black.
+	require.Equal(t, byte(0), yuv[4], "Y[0,4] outside rect should be 0")
+}
+
 func BenchmarkAlphaBlendRGBA_TypicalLowerThird(b *testing.B) {
 	width, height := 1920, 1080
 	yuv := makeYUV420(width, height, 128, 128, 128)
@@ -188,4 +298,23 @@ func BenchmarkAlphaBlendRGBA_TypicalLowerThird(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		AlphaBlendRGBA(yuv, rgba, width, height, 1.0)
 	}
+}
+
+func TestAlphaBlendRGBARect_ShortRGBA(t *testing.T) {
+	yuv := makeYUV420(8, 8, 16, 128, 128)
+	original := make([]byte, len(yuv))
+	copy(original, yuv)
+
+	// Short RGBA buffer should be a no-op (no panic).
+	shortRGBA := make([]byte, 10)
+	AlphaBlendRGBARect(yuv, shortRGBA, 8, 8, 4, 4, image.Rect(0, 0, 4, 4), 1.0)
+	require.Equal(t, original, yuv)
+}
+
+func TestAlphaBlendRGBARect_ShortYUV(t *testing.T) {
+	shortYUV := make([]byte, 10)
+	rgba := makeRGBA(4, 4, 255, 0, 0, 128)
+
+	// Short YUV buffer should be a no-op (no panic).
+	AlphaBlendRGBARect(shortYUV, rgba, 8, 8, 4, 4, image.Rect(0, 0, 4, 4), 1.0)
 }

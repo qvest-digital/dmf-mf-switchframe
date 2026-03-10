@@ -3,8 +3,10 @@ package graphics
 import (
 	"errors"
 	"fmt"
+	"image"
 	"log/slog"
 	"math"
+	"sort"
 	"sync"
 	"time"
 )
@@ -16,56 +18,95 @@ var (
 	ErrNoOverlay        = errors.New("graphics: no overlay frame uploaded")
 	ErrFadeActive       = errors.New("graphics: fade transition in progress")
 	ErrCompositorClosed = errors.New("compositor: closed")
+	ErrLayerNotFound    = errors.New("graphics: layer not found")
+	ErrTooManyLayers    = errors.New("graphics: maximum layers reached")
 )
+
+// DefaultMaxLayers is the maximum number of graphics layers.
+const DefaultMaxLayers = 8
 
 // AnimationConfig describes a graphics overlay animation.
 type AnimationConfig struct {
-	Mode     string  `json:"mode"`     // "pulse"
+	Mode     string  `json:"mode"`     // "pulse", "transition"
 	MinAlpha float64 `json:"minAlpha"` // 0.0-1.0
 	MaxAlpha float64 `json:"maxAlpha"` // 0.0-1.0
 	SpeedHz  float64 `json:"speedHz"`  // oscillation frequency
+
+	// Transition mode fields.
+	ToRect     *RectState `json:"toRect,omitempty"`
+	ToAlpha    *float64   `json:"toAlpha,omitempty"`
+	DurationMs int        `json:"durationMs,omitempty"`
+	Easing     string     `json:"easing,omitempty"` // "linear", "ease-in-out", "smoothstep"
 }
 
-// State represents the current graphics overlay state.
-type State struct {
-	Active        bool    `json:"active"`
+// LayerState describes the state of a single graphics layer for serialization.
+type LayerState struct {
+	ID            int     `json:"id"`
 	Template      string  `json:"template,omitempty"`
-	FadePosition  float64 `json:"fadePosition,omitempty"` // 0.0 = invisible, 1.0 = fully visible
-	ProgramWidth  int     `json:"programWidth,omitempty"`
-	ProgramHeight int     `json:"programHeight,omitempty"`
+	Active        bool    `json:"active"`
+	FadePosition  float64 `json:"fadePosition,omitempty"`
 	AnimationMode string  `json:"animationMode,omitempty"`
 	AnimationHz   float64 `json:"animationHz,omitempty"`
+	ZOrder        int     `json:"zOrder"`
+	Rect          RectState `json:"rect"`
 }
 
-// Compositor manages the downstream keyer (DSK) graphics overlay state.
-// It stores the RGBA overlay data uploaded from the browser and tracks
-// the active/fade state. When active, program frames can be composited
-// with the overlay using the AlphaBlendRGBA function.
+// RectState describes a layer's position and size for serialization.
+type RectState struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+// State represents the current graphics compositor state.
+type State struct {
+	Layers        []LayerState `json:"layers"`
+	ProgramWidth  int          `json:"programWidth,omitempty"`
+	ProgramHeight int          `json:"programHeight,omitempty"`
+}
+
+// graphicsLayer holds per-layer overlay state.
+type graphicsLayer struct {
+	id            int
+	overlay       []byte
+	overlayWidth  int
+	overlayHeight int
+	template      string
+
+	// Position within program frame (full-frame default: {0,0,progW,progH}).
+	rect image.Rectangle
+
+	active       bool
+	fadePosition float64
+	fadeDone     chan struct{}
+	fadeCancel   chan struct{}
+
+	animConfig *AnimationConfig
+	animDone   chan struct{}
+	animCancel chan struct{}
+
+	zOrder int
+}
+
+// Compositor manages multiple downstream keyer (DSK) graphics overlay layers.
+// Each layer has independent position, fade, and animation state.
+// When active, program frames are composited with all active layers
+// in z-order using the AlphaBlendRGBA function.
 //
 // The compositor is safe for concurrent use from multiple goroutines.
 type Compositor struct {
 	log *slog.Logger
 	mu  sync.RWMutex
 
-	// Overlay RGBA pixel data (width * height * 4 bytes).
-	overlay       []byte
-	overlayWidth  int
-	overlayHeight int
-	template      string
+	layers    map[int]*graphicsLayer
+	nextID    int
+	maxLayers int
+	sortedIDs []int // z-order sorted, recomputed on change
 
-	// Active state and fade.
-	active       bool
-	fadePosition float64 // 0.0 = invisible, 1.0 = fully visible
-	fadeDone     chan struct{}
-	fadeCancel   chan struct{}
-	closed       bool
+	closed bool
 
-	// Animation state.
-	animConfig *AnimationConfig
-	animCancel chan struct{}
-	animDone   chan struct{}
-
-	// Callback invoked on state change (active/inactive/fade).
+	// Callback invoked on state change.
 	// Receives a snapshot of the current state so callers don't need
 	// to call Status() (which would deadlock under the compositor's lock).
 	onStateChange func(State)
@@ -74,17 +115,107 @@ type Compositor struct {
 	resolutionProvider func() (width, height int)
 }
 
-// NewCompositor creates a new graphics overlay compositor.
+// NewCompositor creates a new multi-layer graphics compositor.
 func NewCompositor() *Compositor {
 	return &Compositor{
-		log: slog.With("component", "graphics"),
+		log:       slog.With("component", "graphics"),
+		layers:    make(map[int]*graphicsLayer),
+		maxLayers: DefaultMaxLayers,
 	}
 }
 
-// SetOverlay stores the RGBA overlay frame data. The overlay must be
-// the given width and height (width*height*4 bytes). This can be called
-// while the overlay is active to update the graphics in real-time.
-func (c *Compositor) SetOverlay(rgba []byte, width, height int, template string) error {
+// AddLayer creates a new graphics layer with default full-frame positioning.
+// Returns the layer ID.
+func (c *Compositor) AddLayer() (int, error) {
+	c.mu.Lock()
+
+	if c.closed {
+		c.mu.Unlock()
+		return 0, ErrCompositorClosed
+	}
+	if len(c.layers) >= c.maxLayers {
+		c.mu.Unlock()
+		return 0, ErrTooManyLayers
+	}
+
+	id := c.nextID
+	c.nextID++
+
+	layer := &graphicsLayer{
+		id:     id,
+		zOrder: len(c.layers),
+	}
+	c.layers[id] = layer
+	c.recomputeSortedIDsLocked()
+
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return id, nil
+}
+
+// RemoveLayer removes a layer by ID, cancelling any active fade/animation.
+func (c *Compositor) RemoveLayer(id int) error {
+	c.mu.Lock()
+
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+
+	c.cancelLayerFadeLocked(layer)
+	c.cancelLayerAnimationLocked(layer)
+	delete(c.layers, id)
+	c.recomputeSortedIDsLocked()
+
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// SetLayerZOrder updates a layer's z-order and recomputes the sorted order.
+func (c *Compositor) SetLayerZOrder(id, zOrder int) error {
+	c.mu.Lock()
+
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+
+	layer.zOrder = zOrder
+	c.recomputeSortedIDsLocked()
+
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// SetOverlay stores the RGBA overlay frame data for a specific layer.
+func (c *Compositor) SetOverlay(id int, rgba []byte, width, height int, template string) error {
 	expected := width * height * 4
 	if len(rgba) != expected {
 		return fmt.Errorf("rgba data size mismatch: got %d bytes, want %d (%dx%dx4)", len(rgba), expected, width, height)
@@ -92,37 +223,40 @@ func (c *Compositor) SetOverlay(rgba []byte, width, height int, template string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Copy the RGBA data to avoid retaining the caller's buffer.
-	if len(c.overlay) != expected {
-		c.overlay = make([]byte, expected)
+	if c.closed {
+		return ErrCompositorClosed
 	}
-	copy(c.overlay, rgba)
-	c.overlayWidth = width
-	c.overlayHeight = height
-	c.template = template
+	layer, ok := c.layers[id]
+	if !ok {
+		return ErrLayerNotFound
+	}
+
+	if len(layer.overlay) != expected {
+		layer.overlay = make([]byte, expected)
+	}
+	copy(layer.overlay, rgba)
+	layer.overlayWidth = width
+	layer.overlayHeight = height
+	layer.template = template
 	return nil
 }
 
-// On activates the overlay immediately (CUT ON).
-func (c *Compositor) On() error {
+// SetLayerRect updates a layer's position rectangle. This triggers a state broadcast.
+func (c *Compositor) SetLayerRect(id int, rect image.Rectangle) error {
 	c.mu.Lock()
 
 	if c.closed {
 		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
-	if c.overlay == nil {
+	layer, ok := c.layers[id]
+	if !ok {
 		c.mu.Unlock()
-		return ErrNoOverlay
+		return ErrLayerNotFound
 	}
 
-	// Cancel any in-progress fade or animation.
-	c.cancelFadeLocked()
-	c.cancelAnimationLocked()
+	layer.rect = rect
 
-	c.active = true
-	c.fadePosition = 1.0
-	c.log.Debug("overlay CUT ON")
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -133,22 +267,48 @@ func (c *Compositor) On() error {
 	return nil
 }
 
-// Off deactivates the overlay immediately (CUT OFF).
-func (c *Compositor) Off() error {
+// UpdateLayerRect is a fast-path position update that does NOT trigger a
+// state broadcast. Used by fast-control datagrams during drag operations.
+func (c *Compositor) UpdateLayerRect(id int, rect image.Rectangle) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		return ErrLayerNotFound
+	}
+
+	layer.rect = rect
+	return nil
+}
+
+// On activates a layer immediately (CUT ON).
+func (c *Compositor) On(id int) error {
 	c.mu.Lock()
 
 	if c.closed {
 		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if layer.overlay == nil {
+		c.mu.Unlock()
+		return ErrNoOverlay
+	}
 
-	// Cancel any in-progress fade or animation.
-	c.cancelFadeLocked()
-	c.cancelAnimationLocked()
+	c.cancelLayerFadeLocked(layer)
+	c.cancelLayerAnimationLocked(layer)
 
-	c.active = false
-	c.fadePosition = 0.0
-	c.log.Debug("overlay CUT OFF")
+	layer.active = true
+	layer.fadePosition = 1.0
+	c.log.Debug("layer CUT ON", "layer", id)
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -159,31 +319,66 @@ func (c *Compositor) Off() error {
 	return nil
 }
 
-// AutoOn starts a fade-in transition (AUTO ON) over the given duration.
-func (c *Compositor) AutoOn(duration time.Duration) error {
+// Off deactivates a layer immediately (CUT OFF).
+func (c *Compositor) Off(id int) error {
 	c.mu.Lock()
 
 	if c.closed {
 		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
-	if c.overlay == nil {
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+
+	c.cancelLayerFadeLocked(layer)
+	c.cancelLayerAnimationLocked(layer)
+
+	layer.active = false
+	layer.fadePosition = 0.0
+	c.log.Debug("layer CUT OFF", "layer", id)
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// AutoOn starts a fade-in transition (AUTO ON) for a specific layer.
+func (c *Compositor) AutoOn(id int, duration time.Duration) error {
+	c.mu.Lock()
+
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if layer.overlay == nil {
 		c.mu.Unlock()
 		return ErrNoOverlay
 	}
-	if c.fadeDone != nil || c.animDone != nil {
+	if layer.fadeDone != nil || layer.animDone != nil {
 		c.mu.Unlock()
 		return ErrFadeActive
 	}
-	if c.active && c.fadePosition >= 1.0 {
+	if layer.active && layer.fadePosition >= 1.0 {
 		c.mu.Unlock()
 		return nil
 	}
 
-	c.active = true
-	c.fadePosition = 0.0
-	c.fadeDone = make(chan struct{})
-	c.fadeCancel = make(chan struct{})
+	layer.active = true
+	layer.fadePosition = 0.0
+	layer.fadeDone = make(chan struct{})
+	layer.fadeCancel = make(chan struct{})
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -191,29 +386,34 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runFade(0.0, 1.0, duration)
+	go c.runFade(id, 0.0, 1.0, duration)
 	return nil
 }
 
-// AutoOff starts a fade-out transition (AUTO OFF) over the given duration.
-func (c *Compositor) AutoOff(duration time.Duration) error {
+// AutoOff starts a fade-out transition (AUTO OFF) for a specific layer.
+func (c *Compositor) AutoOff(id int, duration time.Duration) error {
 	c.mu.Lock()
 
 	if c.closed {
 		c.mu.Unlock()
 		return ErrCompositorClosed
 	}
-	if !c.active {
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if !layer.active {
 		c.mu.Unlock()
 		return ErrNotActive
 	}
-	if c.fadeDone != nil || c.animDone != nil {
+	if layer.fadeDone != nil || layer.animDone != nil {
 		c.mu.Unlock()
 		return ErrFadeActive
 	}
 
-	c.fadeDone = make(chan struct{})
-	c.fadeCancel = make(chan struct{})
+	layer.fadeDone = make(chan struct{})
+	layer.fadeCancel = make(chan struct{})
 	state := c.buildStateLocked()
 	cb := c.onStateChange
 	c.mu.Unlock()
@@ -221,11 +421,79 @@ func (c *Compositor) AutoOff(duration time.Duration) error {
 	if cb != nil {
 		cb(state)
 	}
-	go c.runFade(1.0, 0.0, duration)
+	go c.runFade(id, 1.0, 0.0, duration)
 	return nil
 }
 
-// Status returns the current graphics overlay state.
+// Animate starts a looping animation on a specific layer.
+func (c *Compositor) Animate(id int, cfg AnimationConfig) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if !layer.active {
+		c.mu.Unlock()
+		return ErrNotActive
+	}
+	if layer.fadeDone != nil || layer.animDone != nil {
+		c.mu.Unlock()
+		return ErrFadeActive
+	}
+
+	layer.animConfig = &cfg
+	layer.animCancel = make(chan struct{})
+	layer.animDone = make(chan struct{})
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+
+	switch cfg.Mode {
+	case "transition":
+		go c.runTransitionAnimation(id)
+	default:
+		go c.runPulseAnimation(id)
+	}
+	return nil
+}
+
+// StopAnimation stops any running animation on a layer and restores fadePosition to 1.0.
+func (c *Compositor) StopAnimation(id int) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if layer.animDone == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.cancelLayerAnimationLocked(layer)
+	layer.fadePosition = 1.0
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// Status returns the current graphics compositor state.
 func (c *Compositor) Status() State {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -234,17 +502,6 @@ func (c *Compositor) Status() State {
 		s.ProgramWidth, s.ProgramHeight = c.resolutionProvider()
 	}
 	return s
-}
-
-// Overlay returns the current RGBA overlay data, dimensions, and alpha
-// scale (fade position). Returns nil if no overlay is set or not active.
-func (c *Compositor) Overlay() (rgba []byte, width, height int, alphaScale float64) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if !c.active || c.overlay == nil {
-		return nil, 0, 0, 0
-	}
-	return c.overlay, c.overlayWidth, c.overlayHeight, c.fadePosition
 }
 
 // SetResolutionProvider sets a callback that returns the current program
@@ -257,29 +514,83 @@ func (c *Compositor) SetResolutionProvider(fn func() (width, height int)) {
 }
 
 // OnStateChange registers a callback invoked when the overlay state changes.
-// The callback receives a snapshot of the compositor's state and is invoked
-// outside the compositor's lock, so it is safe to call any compositor method
-// or perform blocking I/O from the callback.
 func (c *Compositor) OnStateChange(fn func(State)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onStateChange = fn
 }
 
-// Close shuts down the compositor, cancelling any active fade or animation.
+// Close shuts down the compositor, cancelling all layer fades/animations.
 func (c *Compositor) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
-	c.cancelFadeLocked()
-	c.cancelAnimationLocked()
+	for _, layer := range c.layers {
+		c.cancelLayerFadeLocked(layer)
+		c.cancelLayerAnimationLocked(layer)
+	}
 }
 
-// runFade drives a fade from startAlpha to endAlpha over the given duration.
-// It updates fadePosition at ~60fps and sets the final state on completion.
-// The fadeDone channel is always closed when this function returns.
-func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duration) {
-	const tickRate = 60 // updates per second
+// ProcessYUV applies all active overlay layers to a raw YUV420 buffer in-place.
+// Layers are composited sequentially in z-order (lowest first). Each layer's
+// blend modifies the buffer before the next layer reads it, producing correct
+// layered compositing. All blending runs single-threaded under RLock.
+func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
+	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
+		return yuv
+	}
+	if len(yuv) < width*height*3/2 {
+		return yuv
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	fullFrame := fullFrameRect(width, height)
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+			continue
+		}
+		if (layer.rect == image.Rectangle{} || layer.rect == fullFrame) &&
+			layer.overlayWidth == width && layer.overlayHeight == height {
+			// Fast path: full-frame overlay (existing behavior).
+			AlphaBlendRGBA(yuv, layer.overlay, width, height, layer.fadePosition)
+		} else {
+			// Sub-frame: blend overlay into rect region.
+			rect := layer.rect
+			if (rect == image.Rectangle{}) {
+				rect = fullFrame
+			}
+			AlphaBlendRGBARect(yuv, layer.overlay, width, height,
+				layer.overlayWidth, layer.overlayHeight,
+				rect, layer.fadePosition)
+		}
+	}
+	return yuv
+}
+
+// IsActive returns whether any layer is currently active.
+func (c *Compositor) IsActive() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, layer := range c.layers {
+		if layer.active {
+			return true
+		}
+	}
+	return false
+}
+
+// fullFrameRect returns the image.Rectangle for a full-frame overlay.
+func fullFrameRect(w, h int) image.Rectangle {
+	return image.Rect(0, 0, w, h)
+}
+
+// runFade drives a fade from startAlpha to endAlpha over the given duration
+// for a specific layer.
+func (c *Compositor) runFade(layerID int, startAlpha, endAlpha float64, duration time.Duration) {
+	const tickRate = 60
 	tickDur := duration / time.Duration(tickRate)
 	if tickDur < time.Millisecond {
 		tickDur = time.Millisecond
@@ -287,32 +598,47 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 	ticker := time.NewTicker(tickDur)
 	defer ticker.Stop()
 
+	// Grab the cancel channel under lock so we know which one to select on.
+	c.mu.RLock()
+	layer, ok := c.layers[layerID]
+	if !ok {
+		c.mu.RUnlock()
+		return
+	}
+	cancelCh := layer.fadeCancel
+	c.mu.RUnlock()
+
 	start := time.Now()
 	cancelled := false
 
 	defer func() {
 		c.mu.Lock()
-		done := c.fadeDone
-		c.fadeDone = nil
-		c.fadeCancel = nil
-		var state State
-		var cb func(State)
-		if !cancelled {
-			state = c.buildStateLocked()
-			cb = c.onStateChange
-		}
-		c.mu.Unlock()
-		if cb != nil {
-			cb(state)
-		}
-		if done != nil {
-			close(done)
+		layer, ok := c.layers[layerID]
+		if ok {
+			done := layer.fadeDone
+			layer.fadeDone = nil
+			layer.fadeCancel = nil
+			var state State
+			var cb func(State)
+			if !cancelled {
+				state = c.buildStateLocked()
+				cb = c.onStateChange
+			}
+			c.mu.Unlock()
+			if cb != nil {
+				cb(state)
+			}
+			if done != nil {
+				close(done)
+			}
+		} else {
+			c.mu.Unlock()
 		}
 	}()
 
 	for {
 		select {
-		case <-c.fadeCancel:
+		case <-cancelCh:
 			cancelled = true
 			return
 		case <-ticker.C:
@@ -325,11 +651,15 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 			pos := startAlpha + (endAlpha-startAlpha)*progress
 
 			c.mu.Lock()
-			c.fadePosition = pos
+			layer, ok := c.layers[layerID]
+			if !ok {
+				c.mu.Unlock()
+				return
+			}
+			layer.fadePosition = pos
 			if progress >= 1.0 {
-				// Fade complete.
 				if endAlpha == 0.0 {
-					c.active = false
+					layer.active = false
 				}
 				c.mu.Unlock()
 				return
@@ -344,13 +674,12 @@ func (c *Compositor) runFade(startAlpha, endAlpha float64, duration time.Duratio
 	}
 }
 
-// cancelFadeLocked cancels any in-progress fade. Must be called with mu held.
-func (c *Compositor) cancelFadeLocked() {
-	if c.fadeCancel != nil {
-		close(c.fadeCancel)
-		// Save fadeDone, release lock so the goroutine can finish,
-		// then wait for it and re-acquire lock.
-		done := c.fadeDone
+// cancelLayerFadeLocked cancels any in-progress fade on a layer.
+// Must be called with mu held.
+func (c *Compositor) cancelLayerFadeLocked(layer *graphicsLayer) {
+	if layer.fadeCancel != nil {
+		close(layer.fadeCancel)
+		done := layer.fadeDone
 		c.mu.Unlock()
 		if done != nil {
 			<-done
@@ -359,64 +688,12 @@ func (c *Compositor) cancelFadeLocked() {
 	}
 }
 
-// Animate starts a looping animation on the active overlay.
-// Only "pulse" mode is currently supported.
-func (c *Compositor) Animate(cfg AnimationConfig) error {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return ErrCompositorClosed
-	}
-	if !c.active {
-		c.mu.Unlock()
-		return ErrNotActive
-	}
-	if c.fadeDone != nil || c.animDone != nil {
-		c.mu.Unlock()
-		return ErrFadeActive
-	}
-
-	c.animConfig = &cfg
-	c.animCancel = make(chan struct{})
-	c.animDone = make(chan struct{})
-	state := c.buildStateLocked()
-	cb := c.onStateChange
-	c.mu.Unlock()
-
-	if cb != nil {
-		cb(state)
-	}
-	go c.runPulseAnimation()
-	return nil
-}
-
-// StopAnimation stops any running animation and restores fadePosition to 1.0.
-func (c *Compositor) StopAnimation() error {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return ErrCompositorClosed
-	}
-	if c.animDone == nil {
-		c.mu.Unlock()
-		return nil // no animation running
-	}
-	c.cancelAnimationLocked()
-	c.fadePosition = 1.0
-	state := c.buildStateLocked()
-	cb := c.onStateChange
-	c.mu.Unlock()
-	if cb != nil {
-		cb(state)
-	}
-	return nil
-}
-
-// cancelAnimationLocked cancels any in-progress animation. Must be called with mu held.
-func (c *Compositor) cancelAnimationLocked() {
-	if c.animCancel != nil {
-		close(c.animCancel)
-		done := c.animDone
+// cancelLayerAnimationLocked cancels any in-progress animation on a layer.
+// Must be called with mu held.
+func (c *Compositor) cancelLayerAnimationLocked(layer *graphicsLayer) {
+	if layer.animCancel != nil {
+		close(layer.animCancel)
+		done := layer.animDone
 		c.mu.Unlock()
 		if done != nil {
 			<-done
@@ -425,15 +702,20 @@ func (c *Compositor) cancelAnimationLocked() {
 	}
 }
 
-// runPulseAnimation drives a sinusoidal alpha oscillation at ~60fps.
-// State callbacks are fired at ~15fps to avoid overwhelming the broadcast.
-func (c *Compositor) runPulseAnimation() {
+// runPulseAnimation drives a sinusoidal alpha oscillation at ~60fps for a layer.
+func (c *Compositor) runPulseAnimation(layerID int) {
 	const tickRate = 60
 	ticker := time.NewTicker(time.Second / tickRate)
 	defer ticker.Stop()
 
 	c.mu.RLock()
-	cfg := *c.animConfig
+	layer, ok := c.layers[layerID]
+	if !ok {
+		c.mu.RUnlock()
+		return
+	}
+	cfg := *layer.animConfig
+	cancelCh := layer.animCancel
 	c.mu.RUnlock()
 
 	start := time.Now()
@@ -441,29 +723,37 @@ func (c *Compositor) runPulseAnimation() {
 
 	defer func() {
 		c.mu.Lock()
-		done := c.animDone
-		c.animConfig = nil
-		c.animCancel = nil
-		c.animDone = nil
-		c.mu.Unlock()
-		if done != nil {
-			close(done)
+		layer, ok := c.layers[layerID]
+		if ok {
+			done := layer.animDone
+			layer.animConfig = nil
+			layer.animCancel = nil
+			layer.animDone = nil
+			c.mu.Unlock()
+			if done != nil {
+				close(done)
+			}
+		} else {
+			c.mu.Unlock()
 		}
 	}()
 
 	for {
 		select {
-		case <-c.animCancel:
+		case <-cancelCh:
 			return
 		case <-ticker.C:
 			t := time.Since(start).Seconds()
-			// sin oscillates between -1 and 1; map to [minAlpha, maxAlpha]
 			alpha := cfg.MinAlpha + (math.Sin(2*math.Pi*cfg.SpeedHz*t)+1)/2*(cfg.MaxAlpha-cfg.MinAlpha)
 
 			c.mu.Lock()
-			c.fadePosition = alpha
+			layer, ok := c.layers[layerID]
+			if !ok {
+				c.mu.Unlock()
+				return
+			}
+			layer.fadePosition = alpha
 			tickCount++
-			// Fire state callback every 4th tick (~15fps)
 			var state State
 			var cb func(State)
 			if tickCount%4 == 0 {
@@ -479,47 +769,299 @@ func (c *Compositor) runPulseAnimation() {
 	}
 }
 
-// ProcessYUV applies the overlay to a raw YUV420 buffer in-place.
-// This is the codec-free processor used by the pipeline coordinator.
-// When inactive or when the overlay resolution doesn't match, returns yuv unchanged.
-func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
-	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
-		return yuv // YUV420 requires even positive dimensions
-	}
+// runTransitionAnimation interpolates rect and/or alpha from current values
+// to target over duration with easing for a specific layer.
+func (c *Compositor) runTransitionAnimation(layerID int) {
+	const tickRate = 60
+	ticker := time.NewTicker(time.Second / tickRate)
+	defer ticker.Stop()
 
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if !c.active || c.fadePosition < 1.0/255.0 || c.overlay == nil {
-		return yuv
+	layer, ok := c.layers[layerID]
+	if !ok {
+		c.mu.RUnlock()
+		return
 	}
+	cfg := *layer.animConfig
+	cancelCh := layer.animCancel
+	fromRect := layer.rect
+	fromAlpha := layer.fadePosition
+	c.mu.RUnlock()
 
-	if c.overlayWidth != width || c.overlayHeight != height {
-		return yuv
+	duration := time.Duration(cfg.DurationMs) * time.Millisecond
+	if duration <= 0 {
+		duration = 500 * time.Millisecond
 	}
+	start := time.Now()
+	var tickCount int
 
-	AlphaBlendRGBA(yuv, c.overlay, width, height, c.fadePosition)
-	return yuv
+	defer func() {
+		c.mu.Lock()
+		layer, ok := c.layers[layerID]
+		if ok {
+			done := layer.animDone
+			layer.animConfig = nil
+			layer.animCancel = nil
+			layer.animDone = nil
+			c.mu.Unlock()
+			if done != nil {
+				close(done)
+			}
+		} else {
+			c.mu.Unlock()
+		}
+	}()
+
+	for {
+		select {
+		case <-cancelCh:
+			return
+		case <-ticker.C:
+			elapsed := time.Since(start)
+			progress := float64(elapsed) / float64(duration)
+			if progress > 1.0 {
+				progress = 1.0
+			}
+			t := applyEasing(progress, cfg.Easing)
+
+			c.mu.Lock()
+			layer, ok := c.layers[layerID]
+			if !ok {
+				c.mu.Unlock()
+				return
+			}
+
+			if cfg.ToRect != nil {
+				toRect := image.Rect(cfg.ToRect.X, cfg.ToRect.Y,
+					cfg.ToRect.X+cfg.ToRect.Width, cfg.ToRect.Y+cfg.ToRect.Height)
+				layer.rect = interpolateRect(fromRect, toRect, t)
+			}
+			if cfg.ToAlpha != nil {
+				layer.fadePosition = fromAlpha + (*cfg.ToAlpha-fromAlpha)*t
+			}
+
+			tickCount++
+			var state State
+			var cb func(State)
+			if progress >= 1.0 || tickCount%4 == 0 {
+				state = c.buildStateLocked()
+				cb = c.onStateChange
+			}
+			c.mu.Unlock()
+
+			if cb != nil {
+				cb(state)
+			}
+
+			if progress >= 1.0 {
+				return
+			}
+		}
+	}
 }
 
-// IsActive returns whether the overlay is currently active.
-func (c *Compositor) IsActive() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.active
+// FlyIn animates a layer from off-screen to its current rect position.
+// The entire setup (read target rect, set start position, start animation)
+// is performed under a single write lock to prevent TOCTOU races.
+func (c *Compositor) FlyIn(id int, from string, durationMs int) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if !layer.active {
+		c.mu.Unlock()
+		return ErrNotActive
+	}
+	if layer.fadeDone != nil || layer.animDone != nil {
+		c.mu.Unlock()
+		return ErrFadeActive
+	}
+
+	targetRect := layer.rect
+	progW, progH := 1920, 1080
+	if c.resolutionProvider != nil {
+		progW, progH = c.resolutionProvider()
+	} else {
+		c.log.Warn("FlyIn using default 1920x1080 resolution; call SetResolutionProvider for accurate off-screen positioning")
+	}
+
+	startRect := offScreenRect(from, targetRect, progW, progH)
+	layer.rect = startRect
+
+	cfg := AnimationConfig{
+		Mode:       "transition",
+		ToRect:     &RectState{X: targetRect.Min.X, Y: targetRect.Min.Y, Width: targetRect.Dx(), Height: targetRect.Dy()},
+		DurationMs: durationMs,
+		Easing:     "smoothstep",
+	}
+	layer.animConfig = &cfg
+	layer.animCancel = make(chan struct{})
+	layer.animDone = make(chan struct{})
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	go c.runTransitionAnimation(id)
+	return nil
+}
+
+// FlyOut animates a layer from its current rect to off-screen.
+// The entire setup is performed under a single write lock.
+func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if !layer.active {
+		c.mu.Unlock()
+		return ErrNotActive
+	}
+	if layer.fadeDone != nil || layer.animDone != nil {
+		c.mu.Unlock()
+		return ErrFadeActive
+	}
+
+	currentRect := layer.rect
+	progW, progH := 1920, 1080
+	if c.resolutionProvider != nil {
+		progW, progH = c.resolutionProvider()
+	} else {
+		c.log.Warn("FlyOut using default 1920x1080 resolution; call SetResolutionProvider for accurate off-screen positioning")
+	}
+
+	endRect := offScreenRect(to, currentRect, progW, progH)
+
+	cfg := AnimationConfig{
+		Mode:       "transition",
+		ToRect:     &RectState{X: endRect.Min.X, Y: endRect.Min.Y, Width: endRect.Dx(), Height: endRect.Dy()},
+		DurationMs: durationMs,
+		Easing:     "smoothstep",
+	}
+	layer.animConfig = &cfg
+	layer.animCancel = make(chan struct{})
+	layer.animDone = make(chan struct{})
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	go c.runTransitionAnimation(id)
+	return nil
+}
+
+// SlideLayer animates a layer from its current position to a new rect.
+func (c *Compositor) SlideLayer(id int, toRect image.Rectangle, durationMs int) error {
+	cfg := AnimationConfig{
+		Mode:       "transition",
+		ToRect:     &RectState{X: toRect.Min.X, Y: toRect.Min.Y, Width: toRect.Dx(), Height: toRect.Dy()},
+		DurationMs: durationMs,
+		Easing:     "smoothstep",
+	}
+	return c.Animate(id, cfg)
+}
+
+// recomputeSortedIDsLocked rebuilds sortedIDs from the layer map, sorted by z-order.
+// Must be called with mu held.
+func (c *Compositor) recomputeSortedIDsLocked() {
+	c.sortedIDs = c.sortedIDs[:0]
+	for id := range c.layers {
+		c.sortedIDs = append(c.sortedIDs, id)
+	}
+	sort.Slice(c.sortedIDs, func(i, j int) bool {
+		li := c.layers[c.sortedIDs[i]]
+		lj := c.layers[c.sortedIDs[j]]
+		if li.zOrder != lj.zOrder {
+			return li.zOrder < lj.zOrder
+		}
+		return c.sortedIDs[i] < c.sortedIDs[j]
+	})
 }
 
 // buildStateLocked returns a snapshot of the compositor's current state.
 // Must be called with mu held (read or write).
 func (c *Compositor) buildStateLocked() State {
 	s := State{
-		Active:       c.active,
-		Template:     c.template,
-		FadePosition: c.fadePosition,
+		Layers: make([]LayerState, 0, len(c.sortedIDs)),
 	}
-	if c.animConfig != nil {
-		s.AnimationMode = c.animConfig.Mode
-		s.AnimationHz = c.animConfig.SpeedHz
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		ls := LayerState{
+			ID:           layer.id,
+			Template:     layer.template,
+			Active:       layer.active,
+			FadePosition: layer.fadePosition,
+			ZOrder:       layer.zOrder,
+			Rect: RectState{
+				X:      layer.rect.Min.X,
+				Y:      layer.rect.Min.Y,
+				Width:  layer.rect.Dx(),
+				Height: layer.rect.Dy(),
+			},
+		}
+		if layer.animConfig != nil {
+			ls.AnimationMode = layer.animConfig.Mode
+			ls.AnimationHz = layer.animConfig.SpeedHz
+		}
+		s.Layers = append(s.Layers, ls)
 	}
 	return s
+}
+
+// applyEasing applies an easing function to a progress value [0,1].
+func applyEasing(t float64, easing string) float64 {
+	switch easing {
+	case "smoothstep":
+		return t * t * (3 - 2*t)
+	case "ease-in-out":
+		if t < 0.5 {
+			return 2 * t * t
+		}
+		return 1 - (-2*t+2)*(-2*t+2)/2
+	default: // "linear"
+		return t
+	}
+}
+
+// interpolateRect linearly interpolates between two rectangles.
+func interpolateRect(a, b image.Rectangle, t float64) image.Rectangle {
+	return image.Rect(
+		int(float64(a.Min.X)+float64(b.Min.X-a.Min.X)*t),
+		int(float64(a.Min.Y)+float64(b.Min.Y-a.Min.Y)*t),
+		int(float64(a.Max.X)+float64(b.Max.X-a.Max.X)*t),
+		int(float64(a.Max.Y)+float64(b.Max.Y-a.Max.Y)*t),
+	)
+}
+
+// offScreenRect computes a rect position off-screen in the given direction.
+func offScreenRect(direction string, rect image.Rectangle, progW, progH int) image.Rectangle {
+	w, h := rect.Dx(), rect.Dy()
+	switch direction {
+	case "left":
+		return image.Rect(-w, rect.Min.Y, 0, rect.Min.Y+h)
+	case "right":
+		return image.Rect(progW, rect.Min.Y, progW+w, rect.Min.Y+h)
+	case "top":
+		return image.Rect(rect.Min.X, -h, rect.Min.X+w, 0)
+	case "bottom":
+		return image.Rect(rect.Min.X, progH, rect.Min.X+w, progH+h)
+	default:
+		return rect
+	}
 }
