@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
 )
 
 func TestInjector_InjectCue_Immediate(t *testing.T) {
@@ -411,7 +413,7 @@ func TestInjector_CancelSegmentationEvent(t *testing.T) {
 	_, _ = inj.InjectCue(msg)
 
 	// Cancel segmentation event 42.
-	if err := inj.CancelSegmentationEvent(42); err != nil {
+	if err := inj.CancelSegmentationEvent(42, "api"); err != nil {
 		t.Fatalf("cancel segmentation event failed: %v", err)
 	}
 
@@ -449,6 +451,114 @@ func TestInjector_CancelSegmentationEvent(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected event log entry with eventID=42 and status=cancelled")
+	}
+}
+
+func TestInjector_CancelSegmentationEvent_SCTE104EchoPrevention(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Register an SCTE-104 sink and track whether it's called.
+	var s104Calls int
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		s104Calls++
+	})
+
+	// Cancel with source="scte104" — should NOT fire SCTE-104 sink.
+	if err := inj.CancelSegmentationEvent(100, "scte104"); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+	if s104Calls != 0 {
+		t.Fatalf("SCTE-104 sink called %d times, expected 0 (echo prevention)", s104Calls)
+	}
+
+	// Cancel with source="api" — SHOULD fire SCTE-104 sink.
+	if err := inj.CancelSegmentationEvent(200, "api"); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+	if s104Calls != 1 {
+		t.Fatalf("SCTE-104 sink called %d times, expected 1", s104Calls)
+	}
+}
+
+func TestInjector_TimeSignal_AutoAssignSegEventID(t *testing.T) {
+	var sinkCalls [][]byte
+	sink := func(data []byte) {
+		sinkCalls = append(sinkCalls, append([]byte(nil), data...))
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with SegEventID=0 — should be auto-assigned.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 0, UPIDType: 0x0F, UPID: []byte("auto")},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+	if eventID == 0 {
+		t.Fatal("expected non-zero auto-assigned eventID")
+	}
+
+	// Verify active events contain the assigned ID.
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 active event, got %d", len(ids))
+	}
+	if ids[0] != eventID {
+		t.Errorf("active eventID = %d, want %d", ids[0], eventID)
+	}
+
+	// Verify the encoded message has the assigned SegEventID (not 0).
+	decoded, err := Decode(sinkCalls[0])
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	if decoded.Descriptors[0].SegEventID == 0 {
+		t.Fatal("expected non-zero SegEventID in encoded message")
+	}
+}
+
+func TestInjector_TimeSignal_ExplicitSegEventID_Preserved(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with an explicit SegEventID.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 9999, UPIDType: 0x0F, UPID: []byte("explicit")},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+	if eventID != 9999 {
+		t.Errorf("eventID = %d, want 9999 (explicit)", eventID)
+	}
+
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 1 || ids[0] != 9999 {
+		t.Errorf("active events = %v, want [9999]", ids)
 	}
 }
 
@@ -1922,16 +2032,27 @@ func TestInjector_SyntheticBreakState_TimeSignal(t *testing.T) {
 	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
 	defer inj.Close()
 
+	// Inject with a 60-second descriptor duration.
+	dur60s := uint64(60 * 90000) // 60 seconds in 90kHz ticks
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
-			{SegmentationType: 0x34, SegEventID: 300, UPIDType: 0x0F, UPID: []byte("test")},
+			{
+				SegmentationType: 0x34,
+				SegEventID:       300,
+				UPIDType:         0x0F,
+				UPID:             []byte("test"),
+				DurationTicks:    &dur60s,
+			},
 		},
 	}
 	_, err := inj.InjectCue(msg)
 	if err != nil {
 		t.Fatalf("inject failed: %v", err)
 	}
+
+	// Small sleep to ensure some time has elapsed.
+	time.Sleep(10 * time.Millisecond)
 
 	synth := inj.SyntheticBreakState()
 	if synth == nil {
@@ -1952,6 +2073,16 @@ func TestInjector_SyntheticBreakState_TimeSignal(t *testing.T) {
 	}
 	if decoded.Descriptors[0].SegmentationType != 0x34 {
 		t.Fatalf("expected seg type 0x34, got 0x%02x", decoded.Descriptors[0].SegmentationType)
+	}
+
+	// Verify the duration ticks have been adjusted down from the original.
+	// The synthetic state should reflect remaining time, not the original duration.
+	if decoded.Descriptors[0].DurationTicks == nil {
+		t.Fatal("expected DurationTicks on synthetic descriptor")
+	}
+	synthTicks := *decoded.Descriptors[0].DurationTicks
+	if synthTicks >= dur60s {
+		t.Errorf("synthetic DurationTicks = %d, should be less than original %d", synthTicks, dur60s)
 	}
 }
 
@@ -1976,5 +2107,389 @@ func TestInjector_SyntheticBreakState_SpliceInsert(t *testing.T) {
 	}
 	if decoded.CommandType != CommandSpliceInsert {
 		t.Fatalf("expected splice_insert, got 0x%02x", decoded.CommandType)
+	}
+}
+
+// Bug 1: ReturnToProgram with multi-descriptor time_signal should clean all sibling entries.
+func TestReturnToProgram_MultiDescriptor_CleansAllEntries(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with two cue-out descriptors (0x34 and 0x36).
+	// Each descriptor gets its own active event entry.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 1000, UPIDType: 0x0F, UPID: []byte("ad1")},
+			{SegmentationType: 0x36, SegEventID: 1001, UPIDType: 0x0F, UPID: []byte("ad2")},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Both descriptors should be tracked.
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 active events, got %v", ids)
+	}
+
+	// Return to program using the first descriptor's event ID.
+	if err := inj.ReturnToProgram(1000); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	// Both sibling entries must be cleaned up — no orphaned events.
+	ids = inj.ActiveEventIDs()
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 active events after return, got %v (orphaned siblings)", ids)
+	}
+}
+
+// Bug 3: CancelEvent with multi-descriptor time_signal should clean all sibling entries.
+func TestCancelEvent_MultiDescriptor_CleansAllEntries(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with two cue-out descriptors.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 2000, UPIDType: 0x0F, UPID: []byte("ad1")},
+			{SegmentationType: 0x36, SegEventID: 2001, UPIDType: 0x0F, UPID: []byte("ad2")},
+		},
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Both descriptors should be tracked.
+	ids := inj.ActiveEventIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 active events, got %v", ids)
+	}
+
+	// Cancel using the second descriptor's event ID.
+	if err := inj.CancelEvent(2001); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	// Both sibling entries must be cleaned up — no orphaned events.
+	ids = inj.ActiveEventIDs()
+	if len(ids) != 0 {
+		t.Fatalf("expected 0 active events after cancel, got %v (orphaned siblings)", ids)
+	}
+}
+
+// Bug 2: ExtendBreak should use scte35lib.DurationToTicks for precise tick conversion.
+func TestExtendBreak_DurationTicksPrecision(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with a cue-out descriptor.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{SegmentationType: 0x34, SegEventID: 3000, UPIDType: 0x0F, UPID: []byte("test")},
+		},
+	}
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Extend with 33333ms — a value where float64 truncation vs math.Round
+	// would produce different results.
+	if err := inj.ExtendBreak(eventID, 33333); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+
+	if len(decoded.Descriptors) != 1 {
+		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
+	}
+	if decoded.Descriptors[0].DurationTicks == nil {
+		t.Fatal("expected DurationTicks on descriptor")
+	}
+
+	// scte35lib.DurationToTicks(33333ms) uses math.Round internally.
+	// 33.333s * 90000 = 2999970 ticks (both float and round agree here,
+	// but the key point is we're using the library function, not hand-rolled).
+	dur := 33333 * time.Millisecond
+	expected := scte35lib.DurationToTicks(dur)
+	got := *decoded.Descriptors[0].DurationTicks
+	if got != expected {
+		t.Fatalf("duration ticks = %d, want %d (from scte35lib.DurationToTicks)", got, expected)
+	}
+}
+
+// Bug 4: Webhook events should populate Remaining and PTS fields.
+func TestWebhook_PopulatesRemainingAndPTS(t *testing.T) {
+	var mu sync.Mutex
+	var received []WebhookEvent
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evt WebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+			t.Errorf("webhook decode error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	ptsFn := func() int64 { return 8100000 } // 90s at 90kHz
+	sink := func(data []byte) {}
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		WebhookURL:        ts.URL,
+		WebhookTimeoutMs:  5000,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a splice_insert cue-out with 60s duration.
+	dur := 60 * time.Second
+	spliceTimePTS := int64(8100000)
+	msg := &CueMessage{
+		CommandType:   CommandSpliceInsert,
+		IsOut:         true,
+		AutoReturn:    false,
+		BreakDuration: &dur,
+		SpliceTimePTS: &spliceTimePTS,
+	}
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Wait for async dispatch.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) == 0 {
+		t.Fatal("expected at least 1 webhook event")
+	}
+
+	cueOut := received[0]
+	if cueOut.Type != "cue_out" {
+		t.Fatalf("expected cue_out, got %q", cueOut.Type)
+	}
+	if cueOut.Duration != 60000 {
+		t.Fatalf("expected Duration=60000, got %d", cueOut.Duration)
+	}
+	// Remaining should be populated (equal to duration at injection time).
+	if cueOut.Remaining == 0 {
+		t.Fatal("expected non-zero Remaining in webhook event")
+	}
+	// PTS should be populated from the splice time.
+	if cueOut.PTS != 8100000 {
+		t.Fatalf("expected PTS=8100000, got %d", cueOut.PTS)
+	}
+}
+
+// Bug 6: SCTE-104 source should not echo back on ReturnToProgram.
+func TestSCTE104Source_NoEchoOnReturn(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	// Inject from SCTE-104 source.
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	msg.Source = "scte104"
+	eventID, _ := inj.InjectCue(msg)
+
+	// Reset tracker for the return call.
+	mu.Lock()
+	scte104Called = false
+	mu.Unlock()
+
+	if err := inj.ReturnToProgram(eventID); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Called {
+		t.Fatal("scte104Sink should NOT be called on ReturnToProgram when source is 'scte104'")
+	}
+}
+
+// Bug 6: SCTE-104 source should not echo back on CancelEvent.
+func TestSCTE104Source_NoEchoOnCancel(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	msg.Source = "scte104"
+	eventID, _ := inj.InjectCue(msg)
+
+	mu.Lock()
+	scte104Called = false
+	mu.Unlock()
+
+	if err := inj.CancelEvent(eventID); err != nil {
+		t.Fatalf("cancel failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Called {
+		t.Fatal("scte104Sink should NOT be called on CancelEvent when source is 'scte104'")
+	}
+}
+
+// Bug 6: SCTE-104 source should not echo back on ExtendBreak.
+func TestSCTE104Source_NoEchoOnExtend(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, true)
+	msg.Source = "scte104"
+	eventID, _ := inj.InjectCue(msg)
+
+	mu.Lock()
+	scte104Called = false
+	mu.Unlock()
+
+	if err := inj.ExtendBreak(eventID, 120000); err != nil {
+		t.Fatalf("extend failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scte104Called {
+		t.Fatal("scte104Sink should NOT be called on ExtendBreak when source is 'scte104'")
+	}
+}
+
+// Bug 6: API source SHOULD fire SCTE-104 sink on ReturnToProgram.
+func TestAPISource_DoesFireSCTE104SinkOnReturn(t *testing.T) {
+	var mu sync.Mutex
+	var scte104Called bool
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	inj.SetSCTE104Sink(func(msg *CueMessage) {
+		mu.Lock()
+		scte104Called = true
+		mu.Unlock()
+	})
+
+	msg := NewSpliceInsert(0, 60*time.Second, true, false)
+	msg.Source = "api"
+	eventID, _ := inj.InjectCue(msg)
+
+	mu.Lock()
+	scte104Called = false
+	mu.Unlock()
+
+	if err := inj.ReturnToProgram(eventID); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !scte104Called {
+		t.Fatal("scte104Sink SHOULD be called on ReturnToProgram when source is 'api'")
+	}
+}
+
+// Gap 12: Circular event log wraparound.
+func TestCircularLog_Wraparound(t *testing.T) {
+	cl := newCircularLog(3)
+
+	// Add 5 entries to a size-3 log.
+	for i := 0; i < 5; i++ {
+		cl.add(EventLogEntry{
+			EventID: uint32(i + 1),
+			Status:  "injected",
+		})
+	}
+
+	entries := cl.list()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	// Should contain entries 3, 4, 5 in order (oldest to newest).
+	if entries[0].EventID != 3 {
+		t.Fatalf("entries[0].EventID = %d, want 3", entries[0].EventID)
+	}
+	if entries[1].EventID != 4 {
+		t.Fatalf("entries[1].EventID = %d, want 4", entries[1].EventID)
+	}
+	if entries[2].EventID != 5 {
+		t.Fatalf("entries[2].EventID = %d, want 5", entries[2].EventID)
 	}
 }

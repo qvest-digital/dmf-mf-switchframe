@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/scte35"
 )
 
 func TestTSMuxer_NewMuxer(t *testing.T) {
@@ -387,4 +388,282 @@ func BenchmarkMuxerFlush(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// ---------- SCTE-35 tests (Gap 10) ----------
+//
+// These tests complement the existing tests in muxer_scte35_test.go by
+// covering additional scenarios: disabled no-op (pre+post init), internal
+// buffer state verification, PUSI bit checks, pending buffer cleanup,
+// CC increment across multiple writes, PMT stream_type 0x86 presence,
+// CUEI registration descriptor, and PMT negative case when disabled.
+
+// makeTestKeyframe2 creates a minimal keyframe for initializing the TSMuxer.
+// Named with "2" suffix to avoid collision with writeInitKeyframe in muxer_scte35_test.go.
+func makeTestKeyframe2(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS: pts, DTS: pts, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+}
+
+// makeTestSCTE35Section constructs a minimal valid splice_info_section
+// (table_id 0xFC) containing a splice_null command.
+func makeTestSCTE35Section() []byte {
+	msg := &scte35.CueMessage{CommandType: scte35.CommandSpliceNull}
+	data, err := msg.Encode(false)
+	if err != nil {
+		panic("failed to encode test SCTE-35 section: " + err.Error())
+	}
+	return data
+}
+
+func TestTSMuxer_WriteSCTE35_Disabled_Ignored(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// No SetSCTE35PID called — SCTE-35 is disabled.
+	section := makeTestSCTE35Section()
+	err := m.WriteSCTE35(section)
+	require.NoError(t, err, "WriteSCTE35 should not return error when disabled")
+	require.Empty(t, output, "WriteSCTE35 should produce no output when SCTE-35 is disabled")
+
+	// Also verify it doesn't panic even after initialization.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	output = nil
+
+	err = m.WriteSCTE35(section)
+	require.NoError(t, err, "WriteSCTE35 should not return error when disabled (after init)")
+	require.Empty(t, output, "WriteSCTE35 should produce no output when disabled (after init)")
+}
+
+func TestTSMuxer_WriteSCTE35_BeforeInit_Buffers(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35.
+	m.SetSCTE35PID(defaultSCTE35PID)
+
+	// Write SCTE-35 before any keyframe.
+	section := makeTestSCTE35Section()
+	err := m.WriteSCTE35(section)
+	require.NoError(t, err)
+	require.Empty(t, output, "WriteSCTE35 before init should produce no output (buffered)")
+
+	// Verify the section is buffered internally.
+	m.mu.Lock()
+	require.Len(t, m.pendingSCTE35, 1, "should have 1 pending SCTE-35 section")
+	require.Equal(t, section, m.pendingSCTE35[0], "buffered section should match input")
+	m.mu.Unlock()
+}
+
+func TestTSMuxer_WriteSCTE35_AfterInit_ProducesPackets(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35 and initialize with keyframe.
+	m.SetSCTE35PID(defaultSCTE35PID)
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	output = nil // clear init output
+
+	// Write SCTE-35 section after initialization.
+	section := makeTestSCTE35Section()
+	err := m.WriteSCTE35(section)
+	require.NoError(t, err)
+	require.NotEmpty(t, output, "WriteSCTE35 after init should produce TS packets")
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+
+	// Verify output contains packets with the SCTE-35 PID and PUSI=1.
+	foundSCTE35 := false
+	foundPUSI := false
+	for i := 0; i+188 <= len(output); i += 188 {
+		require.Equal(t, byte(0x47), output[i], "TS packet must start with sync byte")
+		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
+		if pid == defaultSCTE35PID {
+			foundSCTE35 = true
+			pusi := output[i+1]&0x40 != 0
+			if pusi {
+				foundPUSI = true
+			}
+		}
+	}
+	require.True(t, foundSCTE35, "output should contain packets with SCTE-35 PID 0x%04x", defaultSCTE35PID)
+	require.True(t, foundPUSI, "first SCTE-35 packet should have PUSI=1")
+}
+
+func TestTSMuxer_WriteSCTE35_BufferedFlushOnInit(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35.
+	m.SetSCTE35PID(defaultSCTE35PID)
+
+	// Buffer a SCTE-35 section before init.
+	section := makeTestSCTE35Section()
+	require.NoError(t, m.WriteSCTE35(section))
+	require.Empty(t, output, "no output before init")
+
+	// Initialize with keyframe — should flush buffered SCTE-35.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	require.NotEmpty(t, output, "output should contain PAT/PMT + video + buffered SCTE-35")
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+
+	// Verify SCTE-35 PID appears in the flushed output.
+	foundSCTE35 := false
+	for i := 0; i+188 <= len(output); i += 188 {
+		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
+		if pid == defaultSCTE35PID {
+			foundSCTE35 = true
+			break
+		}
+	}
+	require.True(t, foundSCTE35, "flushed output should contain SCTE-35 PID packets")
+
+	// Verify pending buffer is cleared.
+	m.mu.Lock()
+	require.Nil(t, m.pendingSCTE35, "pending SCTE-35 should be nil after flush")
+	m.mu.Unlock()
+}
+
+func TestTSMuxer_WriteSCTE35_ContinuityCounter_Increments(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35 and initialize.
+	m.SetSCTE35PID(defaultSCTE35PID)
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	output = nil
+
+	// Write first SCTE-35 section.
+	section := makeTestSCTE35Section()
+	require.NoError(t, m.WriteSCTE35(section))
+	firstOutput := make([]byte, len(output))
+	copy(firstOutput, output)
+	output = nil
+
+	// Write second SCTE-35 section.
+	require.NoError(t, m.WriteSCTE35(section))
+	secondOutput := make([]byte, len(output))
+	copy(secondOutput, output)
+
+	// Extract continuity counters from SCTE-35 PID packets across both writes.
+	var ccValues []uint8
+	for _, chunk := range [][]byte{firstOutput, secondOutput} {
+		for i := 0; i+188 <= len(chunk); i += 188 {
+			pid := uint16(chunk[i+1]&0x1F)<<8 | uint16(chunk[i+2])
+			if pid == defaultSCTE35PID {
+				cc := chunk[i+3] & 0x0F
+				ccValues = append(ccValues, cc)
+			}
+		}
+	}
+
+	require.GreaterOrEqual(t, len(ccValues), 2, "should have at least 2 SCTE-35 packets")
+
+	// Verify CC increments by 1 between consecutive packets.
+	for i := 1; i < len(ccValues); i++ {
+		expected := (ccValues[i-1] + 1) & 0x0F
+		require.Equal(t, expected, ccValues[i],
+			"CC should increment: packet %d CC=%d, packet %d CC=%d",
+			i-1, ccValues[i-1], i, ccValues[i])
+	}
+}
+
+func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35.
+	m.SetSCTE35PID(defaultSCTE35PID)
+
+	// Initialize with keyframe — triggers PAT/PMT generation.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	require.NotEmpty(t, output)
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+
+	// Scan all TS packets for the byte pattern representing a SCTE-35 ES entry in PMT:
+	//   stream_type: 0x86
+	//   reserved(3) + elementary_PID(13): 0xE1 0x02 for PID 0x102
+	foundSCTE35Stream := false
+	expectedStreamType := byte(0x86)
+	expectedPIDHigh := byte(0xE0 | byte((defaultSCTE35PID>>8)&0x1F))
+	expectedPIDLow := byte(defaultSCTE35PID & 0xFF)
+
+	for i := 0; i+188 <= len(output); i += 188 {
+		pkt := output[i : i+188]
+		for j := 4; j+3 <= 188; j++ {
+			if pkt[j] == expectedStreamType &&
+				pkt[j+1] == expectedPIDHigh &&
+				pkt[j+2] == expectedPIDLow {
+				foundSCTE35Stream = true
+				break
+			}
+		}
+		if foundSCTE35Stream {
+			break
+		}
+	}
+
+	require.True(t, foundSCTE35Stream,
+		"PMT should contain SCTE-35 elementary stream with stream_type=0x86 and PID=0x%04x", defaultSCTE35PID)
+
+	// Verify that a Registration descriptor (tag 0x05, length 0x04) appears
+	// after the SCTE-35 ES entry. The CUEI format_identifier 0x43554549 is
+	// encoded by go-astits, but the exact byte representation in the TS
+	// packet depends on the library's CRC placement, so we check for the
+	// descriptor tag/length pair which confirms the descriptor was registered.
+	foundRegistrationDesc := false
+	for i := 0; i+188 <= len(output); i += 188 {
+		pkt := output[i : i+188]
+		for j := 4; j+2 <= 188; j++ {
+			if pkt[j] == 0x05 && pkt[j+1] == 0x04 {
+				foundRegistrationDesc = true
+				break
+			}
+		}
+		if foundRegistrationDesc {
+			break
+		}
+	}
+	require.True(t, foundRegistrationDesc,
+		"PMT should contain registration descriptor (tag=0x05, length=0x04) for SCTE-35 ES")
+}
+
+func TestTSMuxer_SCTE35_PMT_NoStreamType_WhenDisabled(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// No SetSCTE35PID — SCTE-35 disabled.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	require.NotEmpty(t, output)
+
+	// Verify stream_type 0x86 does NOT appear in any PMT entry.
+	foundSCTE35Stream := false
+	expectedStreamType := byte(0x86)
+	expectedPIDHigh := byte(0xE0 | byte((defaultSCTE35PID>>8)&0x1F))
+	expectedPIDLow := byte(defaultSCTE35PID & 0xFF)
+
+	for i := 0; i+188 <= len(output); i += 188 {
+		pkt := output[i : i+188]
+		for j := 4; j+3 <= 188; j++ {
+			if pkt[j] == expectedStreamType &&
+				pkt[j+1] == expectedPIDHigh &&
+				pkt[j+2] == expectedPIDLow {
+				foundSCTE35Stream = true
+				break
+			}
+		}
+	}
+	require.False(t, foundSCTE35Stream,
+		"PMT should NOT contain SCTE-35 stream when disabled")
 }

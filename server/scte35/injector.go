@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
 )
 
 // InjectorConfig holds injector configuration.
@@ -50,6 +52,7 @@ type activeEvent struct {
 	Held          bool
 	SpliceTimePTS int64
 	Descriptors   []SegmentationDescriptor
+	Source          string             // origin of this cue ("api", "macro", "scte104", etc.)
 	returnTimer     *time.Timer
 	preRollCancel   context.CancelFunc // cancels pre-roll repetition goroutine
 	lastEncodedData []byte             // encoded SCTE-35 data (for pre-roll repetition)
@@ -201,16 +204,18 @@ func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int
 }
 
 // dispatchWebhook sends a webhook event if a dispatcher is configured.
-func (inj *Injector) dispatchWebhook(eventType string, eventID uint32, cmdType uint8, isOut bool, durationMs int64) {
+func (inj *Injector) dispatchWebhook(eventType string, eventID uint32, cmdType uint8, isOut bool, durationMs int64, remainingMs int64, pts int64) {
 	if inj.webhook == nil {
 		return
 	}
 	inj.webhook.Dispatch(WebhookEvent{
-		Type:     eventType,
-		EventID:  eventID,
-		Command:  commandTypeName(cmdType),
-		IsOut:    isOut,
-		Duration: durationMs,
+		Type:      eventType,
+		EventID:   eventID,
+		Command:   commandTypeName(cmdType),
+		IsOut:     isOut,
+		Duration:  durationMs,
+		Remaining: remainingMs,
+		PTS:       pts,
 	})
 }
 
@@ -291,6 +296,17 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		}
 	}
 
+	// Auto-assign SegEventID from the event ID counter when it's 0, so
+	// multiple descriptors don't collide in the activeEvents map.
+	// This must happen before encoding so the assigned IDs appear in the wire format.
+	if msg.CommandType == CommandTimeSignal {
+		for i := range msg.Descriptors {
+			if msg.Descriptors[i].SegEventID == 0 {
+				msg.Descriptors[i].SegEventID = inj.eventIDCounter.Add(1) - 1
+			}
+		}
+	}
+
 	// Encode the message.
 	data, err := msg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
@@ -313,6 +329,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			IsOut:       msg.IsOut,
 			StartedAt:   time.Now(),
 			AutoReturn:  msg.AutoReturn,
+			Source:      msg.Source,
 		}
 
 		if msg.SpliceTimePTS != nil {
@@ -340,17 +357,29 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// The first tracked SegEventID is used as the return value so ScheduleCue
 	// can locate the active event for pre-roll repetition.
 	if msg.CommandType == CommandTimeSignal {
+		// Compute effective duration from the max descriptor DurationTicks.
+		// This is needed for SyntheticBreakState to calculate remaining time
+		// for late-joiners (time_signal doesn't carry break_duration directly).
+		var maxDurationTicks uint64
+		for _, d := range msg.Descriptors {
+			if isSegCueOut(d.SegmentationType) && d.DurationTicks != nil && *d.DurationTicks > maxDurationTicks {
+				maxDurationTicks = *d.DurationTicks
+			}
+		}
+		var effectiveDuration time.Duration
+		if maxDurationTicks > 0 {
+			effectiveDuration = scte35lib.TicksToDuration(maxDurationTicks)
+		}
+
 		for _, d := range msg.Descriptors {
 			if isSegCueOut(d.SegmentationType) {
 				ae := &activeEvent{
 					EventID:     d.SegEventID,
 					CommandType: msg.CommandType,
 					IsOut:       true,
+					Duration:    effectiveDuration,
 					StartedAt:   time.Now(),
-					// time_signal events don't carry break duration or auto-return
-					// semantics directly; those are implicit in the segmentation
-					// descriptor type (Start/End pairing). Duration and auto-return
-					// are left at zero/false intentionally.
+					Source:      msg.Source,
 				}
 				if msg.SpliceTimePTS != nil {
 					ae.SpliceTimePTS = *msg.SpliceTimePTS
@@ -381,6 +410,10 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	if msg.BreakDuration != nil {
 		webhookDurMs = msg.BreakDuration.Milliseconds()
 	}
+	var webhookPTS int64
+	if msg.SpliceTimePTS != nil {
+		webhookPTS = *msg.SpliceTimePTS
+	}
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
@@ -403,7 +436,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	if !webhookIsOut {
 		webhookType = "cue_in"
 	}
-	inj.dispatchWebhook(webhookType, eventID, webhookCmdType, webhookIsOut, webhookDurMs)
+	inj.dispatchWebhook(webhookType, eventID, webhookCmdType, webhookIsOut, webhookDurMs, webhookDurMs, webhookPTS)
 
 	return eventID, nil
 }
@@ -548,12 +581,15 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 	}
 	inj.muxerSink(data)
 
-	// Remove from active.
+	// Remove from active (plus any sibling descriptors from multi-descriptor time_signals).
 	delete(inj.activeEvents, eventID)
+	inj.removeSiblingEventsLocked(eventID, ae)
 
 	// Log.
 	inj.logEventLocked(eventID, returnMsg.CommandType, false, nil, false, "returned", returnMsg)
 
+	// Capture fields before unlocking.
+	aeSource := ae.Source
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
@@ -562,11 +598,11 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 		cb()
 	}
 
-	if s104 != nil {
+	if s104 != nil && aeSource != "scte104" {
 		s104(returnMsg)
 	}
 
-	inj.dispatchWebhook("cue_in", eventID, returnMsg.CommandType, false, 0)
+	inj.dispatchWebhook("cue_in", eventID, returnMsg.CommandType, false, 0, 0, 0)
 
 	return nil
 }
@@ -628,12 +664,15 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	}
 	inj.muxerSink(data)
 
-	// Remove from active.
+	// Remove from active (plus any sibling descriptors from multi-descriptor time_signals).
 	delete(inj.activeEvents, eventID)
+	inj.removeSiblingEventsLocked(eventID, ae)
 
 	// Log.
 	inj.logEventLocked(eventID, cancelMsg.CommandType, false, nil, false, "cancelled", cancelMsg)
 
+	// Capture fields before unlocking.
+	aeSource := ae.Source
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
@@ -642,11 +681,11 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		cb()
 	}
 
-	if s104 != nil {
+	if s104 != nil && aeSource != "scte104" {
 		s104(cancelMsg)
 	}
 
-	inj.dispatchWebhook("cancel", eventID, cancelMsg.CommandType, false, 0)
+	inj.dispatchWebhook("cancel", eventID, cancelMsg.CommandType, false, 0, 0, 0)
 
 	return nil
 }
@@ -655,7 +694,9 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 // that has the segmentation_event_cancel_indicator set, per the SCTE-35 spec.
 // Unlike CancelEvent (which cancels tracked splice_insert events), this method
 // does not require the event to be tracked -- it simply emits the cancel message.
-func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
+// The source parameter indicates the origin ("api", "scte104", etc.) and is used
+// to prevent SCTE-104 echo loops.
+func (inj *Injector) CancelSegmentationEvent(segEventID uint32, source string) error {
 	inj.mu.Lock()
 
 	if inj.closed.Load() {
@@ -666,6 +707,7 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
 	// Build a time_signal with a cancel descriptor.
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
+		Source:      source,
 		Descriptors: []SegmentationDescriptor{
 			{
 				SegEventID:                      segEventID,
@@ -692,11 +734,13 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32) error {
 		cb()
 	}
 
-	if s104 != nil {
+	// Skip SCTE-104 sink when the cancel originated from SCTE-104 input
+	// to prevent echo loop (same pattern as InjectCue/ReturnToProgram/CancelEvent).
+	if s104 != nil && source != "scte104" {
 		s104(msg)
 	}
 
-	inj.dispatchWebhook("cancel_segmentation", segEventID, CommandTimeSignal, false, 0)
+	inj.dispatchWebhook("cancel_segmentation", segEventID, CommandTimeSignal, false, 0, 0, 0)
 
 	return nil
 }
@@ -735,6 +779,13 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 	// Capture fields before unlocking.
 	cmdType := ae.CommandType
 	isOut := ae.IsOut
+	var holdRemainingMs int64
+	if ae.Duration > 0 {
+		remaining := ae.Duration - time.Since(ae.StartedAt)
+		if remaining > 0 {
+			holdRemainingMs = remaining.Milliseconds()
+		}
+	}
 	cb := inj.onStateChange
 	inj.mu.Unlock()
 
@@ -742,7 +793,7 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 		cb()
 	}
 
-	inj.dispatchWebhook("hold", eventID, cmdType, isOut, 0)
+	inj.dispatchWebhook("hold", eventID, cmdType, isOut, 0, holdRemainingMs, 0)
 
 	return nil
 }
@@ -795,7 +846,7 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 		var descs []SegmentationDescriptor
 		for _, d := range ae.Descriptors {
 			desc := d // copy
-			ticks := uint64(newDur.Seconds() * 90000)
+			ticks := scte35lib.DurationToTicks(newDur)
 			desc.DurationTicks = &ticks
 			descs = append(descs, desc)
 		}
@@ -820,6 +871,7 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	// Capture fields before unlocking.
 	cmdType := ae.CommandType
 	isOut := ae.IsOut
+	aeSource := ae.Source
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
@@ -828,11 +880,11 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 		cb()
 	}
 
-	if s104 != nil {
+	if s104 != nil && aeSource != "scte104" {
 		s104(updateMsg)
 	}
 
-	inj.dispatchWebhook("extend", eventID, cmdType, isOut, newDurationMs)
+	inj.dispatchWebhook("extend", eventID, cmdType, isOut, newDurationMs, newDurationMs, 0)
 
 	return nil
 }
@@ -875,7 +927,7 @@ func (inj *Injector) SyntheticBreakState() []byte {
 		for _, d := range ae.Descriptors {
 			desc := d // copy
 			if remaining > 0 {
-				ticks := uint64(remaining.Seconds() * 90000)
+				ticks := scte35lib.DurationToTicks(remaining)
 				desc.DurationTicks = &ticks
 			}
 			descs = append(descs, desc)
@@ -1045,6 +1097,27 @@ func (inj *Injector) logEventLocked(eventID uint32, cmdType uint8, isOut bool, d
 	}
 
 	inj.eventLog.add(entry)
+}
+
+// removeSiblingEventsLocked removes sibling active events that share descriptors
+// with the given activeEvent. When a time_signal has multiple cue-out descriptors,
+// each is tracked separately by SegEventID. This helper cleans up all siblings
+// so that ReturnToProgram/CancelEvent on any one descriptor ID cleans up all.
+// Must be called with mu held, after the primary eventID has already been deleted.
+func (inj *Injector) removeSiblingEventsLocked(eventID uint32, ae *activeEvent) {
+	for _, d := range ae.Descriptors {
+		if d.SegEventID != eventID {
+			if sibling, ok := inj.activeEvents[d.SegEventID]; ok {
+				if sibling.returnTimer != nil {
+					sibling.returnTimer.Stop()
+				}
+				if sibling.preRollCancel != nil {
+					sibling.preRollCancel()
+				}
+				delete(inj.activeEvents, d.SegEventID)
+			}
+		}
+	}
 }
 
 // mostRecentActiveIDLocked returns the event ID of the most recently started

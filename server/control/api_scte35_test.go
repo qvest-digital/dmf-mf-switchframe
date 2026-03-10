@@ -84,7 +84,7 @@ func (m *mockSCTE35) CancelEvent(eventID uint32) error {
 	return m.cancelErr
 }
 
-func (m *mockSCTE35) CancelSegmentationEvent(segEventID uint32) error {
+func (m *mockSCTE35) CancelSegmentationEvent(segEventID uint32, source string) error {
 	m.cancelCalls = append(m.cancelCalls, segEventID)
 	return m.cancelErr
 }
@@ -890,6 +890,9 @@ func TestBuildCueMessage_SpliceInsert_Source(t *testing.T) {
 func TestBuildCueMessage_TimeSignal_Source(t *testing.T) {
 	req := scte35CueRequest{
 		CommandType: "time_signal",
+		Descriptors: []scte35DescriptorRequest{
+			{SegmentationType: 0x34, UPIDType: 0x09, UPID: "test"},
+		},
 	}
 	msg, err := buildCueMessage(req)
 	require.NoError(t, err)
@@ -907,4 +910,44 @@ func TestHandleSCTE35Rules_FromTemplate_EmptyName(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestBuildCueMessage_SpliceInsert_RejectsDescriptors(t *testing.T) {
+	req := scte35CueRequest{
+		CommandType: "splice_insert",
+		Descriptors: []scte35DescriptorRequest{
+			{SegmentationType: 0x34},
+		},
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "descriptors are only supported with time_signal")
+}
+
+func TestBuildCueMessage_TimeSignal_RequiresDescriptors(t *testing.T) {
+	req := scte35CueRequest{
+		CommandType: "time_signal",
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "time_signal requires at least one descriptor")
+}
+
+func TestBuildCueMessage_SegEventID_Wired(t *testing.T) {
+	segID := uint32(12345)
+	req := scte35CueRequest{
+		CommandType: "time_signal",
+		Descriptors: []scte35DescriptorRequest{
+			{
+				SegmentationType: 0x34,
+				SegEventID:       &segID,
+				UPIDType:         0x09,
+				UPID:             "test",
+			},
+		},
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Len(t, msg.Descriptors, 1)
+	require.Equal(t, uint32(12345), msg.Descriptors[0].SegEventID)
 }

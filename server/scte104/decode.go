@@ -206,7 +206,7 @@ func decodeOperationData(opID uint16, data []byte) (Operation, error) {
 			BreakDuration:    binary.BigEndian.Uint16(data[9:11]),
 			AvailNum:         data[11],
 			AvailsExpected:   data[12],
-			AutoReturnFlag:   data[13] != 0,
+			AutoReturnFlag:   data[13]&0x80 != 0,
 		}
 		op.Data = srd
 
@@ -324,6 +324,15 @@ func decodeSegmentationDescriptor(data []byte) (*SegmentationDescriptorRequest, 
 	sd.SegNum = data[offset]
 	offset++
 	sd.SegExpected = data[offset]
+	offset++
+
+	// Per SCTE 104 2021 Table 8-29, sub_segment_num and sub_segments_expected
+	// follow segs_expected for certain segmentation types. Parse gracefully
+	// only if bytes remain (older senders may omit them).
+	if offset+2 <= len(data) {
+		sd.SubSegmentNum = data[offset]
+		sd.SubSegmentsExpected = data[offset+1]
+	}
 
 	return sd, nil
 }

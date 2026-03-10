@@ -136,6 +136,8 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 			UPIDType:                         sd.UPIDType,
 			SegNum:                           sd.SegNum,
 			SegExpected:                      sd.SegExpected,
+			SubSegmentNum:                    sd.SubSegmentNum,
+			SubSegmentsExpected:              sd.SubSegmentsExpected,
 		}
 
 		if len(sd.UPID) > 0 {
@@ -257,6 +259,8 @@ func fromTimeSignal(cue *scte35.CueMessage) []Operation {
 			CancelIndicator:         desc.SegmentationEventCancelIndicator,
 			SegNum:                  desc.SegNum,
 			SegExpected:             desc.SegExpected,
+			SubSegmentNum:           desc.SubSegmentNum,
+			SubSegmentsExpected:     desc.SubSegmentsExpected,
 			ProgramSegmentationFlag: true,
 		}
 

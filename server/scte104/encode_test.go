@@ -561,3 +561,142 @@ func TestEncode_SegmentationDescriptor_ComponentLevelRejected(t *testing.T) {
 		t.Fatal("expected error for component-level segmentation encoding")
 	}
 }
+
+func TestEncode_AutoReturnFlag_Bit7(t *testing.T) {
+	// Per SCTE-104 spec, auto_return_flag is bit 7 (MSB) of byte 13
+	// in splice_request_data. Verify encoding writes 0x80, not 0x01.
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceStartImmediate,
+					SpliceEventID:    1,
+					AutoReturnFlag:   true,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	// MOM wire format: OpID(2) + messageSize(2) + fields(8) + num_ops(1=included in fields)
+	// Then operation: opID(2) + data_length(2) + splice_request_data(14)
+	// splice_request_data starts at offset 16 (after MOM header 12 + op header 4).
+	// auto_return_flag is byte 13 within the 14-byte splice_request_data.
+	spliceDataOffset := 12 + 4 // MOM header(12) + op header(4)
+	autoReturnByte := data[spliceDataOffset+13]
+
+	if autoReturnByte != 0x80 {
+		t.Errorf("auto_return_flag byte = 0x%02X, want 0x80 (bit 7)", autoReturnByte)
+	}
+
+	// Also verify that when AutoReturnFlag is false, the byte is 0x00.
+	msg.Operations[0].Data.(*SpliceRequestData).AutoReturnFlag = false
+	data2, err := Encode(msg)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+	if data2[spliceDataOffset+13] != 0x00 {
+		t.Errorf("auto_return_flag byte (false) = 0x%02X, want 0x00", data2[spliceDataOffset+13])
+	}
+}
+
+func TestEncode_SegmentationDescriptor_SubSegments_RoundTrip(t *testing.T) {
+	original := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              42,
+					SegmentationTypeID:      0x34,
+					DurationTicks:           2700000,
+					UPIDType:                0x09,
+					UPID:                    []byte("TEST"),
+					SegNum:                  1,
+					SegExpected:             4,
+					SubSegmentNum:           2,
+					SubSegmentsExpected:     3,
+					ProgramSegmentationFlag: true,
+				},
+			},
+		},
+	}
+
+	data, err := Encode(original)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.SubSegmentNum != 2 {
+		t.Errorf("SubSegmentNum = %d, want 2", sd.SubSegmentNum)
+	}
+	if sd.SubSegmentsExpected != 3 {
+		t.Errorf("SubSegmentsExpected = %d, want 3", sd.SubSegmentsExpected)
+	}
+	// Verify other fields survived.
+	if sd.SegEventID != 42 {
+		t.Errorf("SegEventID = %d, want 42", sd.SegEventID)
+	}
+	if sd.SegNum != 1 {
+		t.Errorf("SegNum = %d, want 1", sd.SegNum)
+	}
+	if sd.SegExpected != 4 {
+		t.Errorf("SegExpected = %d, want 4", sd.SegExpected)
+	}
+}
+
+func TestEncode_SegmentationDescriptor_ZeroSubSegments_NotEncoded(t *testing.T) {
+	// When SubSegmentNum and SubSegmentsExpected are both 0,
+	// the extra 2 bytes should NOT be encoded (backward compat).
+	withSub := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              1,
+					SegmentationTypeID:      0x34,
+					SubSegmentNum:           1,
+					SubSegmentsExpected:     2,
+					ProgramSegmentationFlag: true,
+				},
+			},
+		},
+	}
+	withoutSub := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              1,
+					SegmentationTypeID:      0x34,
+					ProgramSegmentationFlag: true,
+				},
+			},
+		},
+	}
+
+	dataWith, err := Encode(withSub)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+	dataWithout, err := Encode(withoutSub)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	// With sub-segments should be 2 bytes longer.
+	if len(dataWith) != len(dataWithout)+2 {
+		t.Errorf("len(withSub)=%d, len(withoutSub)=%d, expected difference of 2",
+			len(dataWith), len(dataWithout))
+	}
+}

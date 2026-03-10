@@ -99,12 +99,18 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 
 		if pusi {
 			// Pointer field indicates where the section starts.
+			if len(payload) == 0 {
+				continue
+			}
 			pointerField := int(payload[0])
 			payload = payload[1:]
 
 			if pointerField > 0 {
+				if pointerField > len(payload) {
+					continue // malformed pointer field
+				}
 				// If we were collecting a previous section, append pointer bytes.
-				if collecting && pointerField <= len(payload) {
+				if collecting {
 					sectionData = append(sectionData, payload[:pointerField]...)
 					// Check if we have enough data.
 					if expectedLen > 0 && len(sectionData) >= expectedLen {

@@ -70,7 +70,7 @@ type SCTE35API interface {
 	ScheduleCue(msg *scte35.CueMessage, preRollMs int64) (uint32, error)
 	ReturnToProgram(eventID uint32) error
 	CancelEvent(eventID uint32) error
-	CancelSegmentationEvent(segEventID uint32) error
+	CancelSegmentationEvent(segEventID uint32, source string) error
 	HoldBreak(eventID uint32) error
 	ExtendBreak(eventID uint32, newDurationMs int64) error
 	ActiveEventIDs() []uint32

@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,10 +27,11 @@ type scte35CueRequest struct {
 
 // scte35DescriptorRequest is the JSON representation of a segmentation descriptor.
 type scte35DescriptorRequest struct {
-	SegmentationType uint8  `json:"segmentationType"`
-	DurationMs       *int64 `json:"durationMs,omitempty"`
-	UPIDType         uint8  `json:"upidType"`
-	UPID             string `json:"upid"`
+	SegmentationType uint8   `json:"segmentationType"`
+	SegEventID       *uint32 `json:"segEventId,omitempty"`
+	DurationMs       *int64  `json:"durationMs,omitempty"`
+	UPIDType         uint8   `json:"upidType"`
+	UPID             string  `json:"upid"`
 }
 
 // scte35ExtendRequest is the JSON body for POST /api/scte35/extend/{eventId}.
@@ -179,7 +181,7 @@ func (a *API) handleSCTE35CancelSegmentation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := a.scte35.CancelSegmentationEvent(uint32(v)); err != nil {
+	if err := a.scte35.CancelSegmentationEvent(uint32(v), "api"); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -525,12 +527,23 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 		msg.BreakDuration = &dur
 	}
 
+	// Validate command type + descriptor combinations.
+	if msg.CommandType == scte35.CommandSpliceInsert && len(req.Descriptors) > 0 {
+		return nil, fmt.Errorf("descriptors are only supported with time_signal")
+	}
+	if msg.CommandType == scte35.CommandTimeSignal && len(req.Descriptors) == 0 {
+		return nil, fmt.Errorf("time_signal requires at least one descriptor")
+	}
+
 	// Convert descriptor requests.
 	for _, d := range req.Descriptors {
 		desc := scte35.SegmentationDescriptor{
 			SegmentationType: d.SegmentationType,
 			UPIDType:         d.UPIDType,
 			UPID:             []byte(d.UPID),
+		}
+		if d.SegEventID != nil {
+			desc.SegEventID = *d.SegEventID
 		}
 		if d.DurationMs != nil {
 			// Convert milliseconds to 90 kHz ticks.

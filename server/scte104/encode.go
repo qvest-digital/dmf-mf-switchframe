@@ -120,7 +120,7 @@ func encodeSpliceRequest(data any) ([]byte, error) {
 	buf[11] = srd.AvailNum
 	buf[12] = srd.AvailsExpected
 	if srd.AutoReturnFlag {
-		buf[13] = 1
+		buf[13] = 0x80 // bit 7 per SCTE-104 spec
 	}
 
 	return buf, nil
@@ -162,8 +162,13 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 
 	// Non-cancel: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
 	// upid_length(1) + upid[N] + type_id(1) + seg_num(1) + segs_expected(1) = 15 + N
+	// Optionally + sub_segment_num(1) + sub_segments_expected(1) = 17 + N
 	upidLen := len(sd.UPID)
-	buf := make([]byte, 15+upidLen)
+	baseLen := 15 + upidLen
+	if sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0 {
+		baseLen += 2
+	}
+	buf := make([]byte, baseLen)
 
 	binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
 	if !sd.ProgramSegmentationFlag {
@@ -190,6 +195,11 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	buf[12+upidLen] = sd.SegmentationTypeID
 	buf[12+upidLen+1] = sd.SegNum
 	buf[12+upidLen+2] = sd.SegExpected
+
+	if sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0 {
+		buf[12+upidLen+3] = sd.SubSegmentNum
+		buf[12+upidLen+4] = sd.SubSegmentsExpected
+	}
 
 	return buf, nil
 }

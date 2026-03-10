@@ -14,9 +14,9 @@ func TestDecode_SOM_SpliceRequest(t *testing.T) {
 	binary.BigEndian.PutUint16(data[7:9], 100)   // unique_program_id
 	binary.BigEndian.PutUint16(data[9:11], 5000) // pre_roll_time
 	binary.BigEndian.PutUint16(data[11:13], 300) // break_duration (100ms units)
-	data[13] = 1  // avail_num
-	data[14] = 2  // avails_expected
-	data[15] = 1  // auto_return_flag
+	data[13] = 1    // avail_num
+	data[14] = 2    // avails_expected
+	data[15] = 0x80 // auto_return_flag (bit 7 per SCTE-104 spec)
 
 	msg, err := Decode(data)
 	if err != nil {
@@ -780,7 +780,7 @@ func TestDecode_MOM_TimeType1_WithSpliceRequest(t *testing.T) {
 	binary.BigEndian.PutUint16(spliceData[9:11], 300)
 	spliceData[11] = 1
 	spliceData[12] = 2
-	spliceData[13] = 1
+	spliceData[13] = 0x80 // auto_return_flag (bit 7 per SCTE-104 spec)
 
 	// Build MOM manually with UTC timestamp + splice_request
 	fixedHeaderBeforeTS := 8
@@ -893,7 +893,7 @@ func TestDecode_SOM_FullHeader(t *testing.T) {
 	binary.BigEndian.PutUint16(spliceData[9:11], 600)   // break_duration
 	spliceData[11] = 3                                   // avail_num
 	spliceData[12] = 4                                   // avails_expected
-	spliceData[13] = 1                                   // auto_return_flag
+	spliceData[13] = 0x80                                // auto_return_flag (bit 7 per SCTE-104 spec)
 
 	headerSize := 12
 	payloadSize := headerSize + len(spliceData) // 12 + 14 = 26
@@ -1279,5 +1279,359 @@ func TestDecode_SOM_LegacyMessageSize(t *testing.T) {
 	}
 	if srd.SpliceEventID != 88 {
 		t.Errorf("SpliceEventID = %d, want 88", srd.SpliceEventID)
+	}
+}
+
+func TestDecode_AutoReturnFlag_Bit7(t *testing.T) {
+	// Per SCTE-104 spec, auto_return_flag is bit 7 (MSB) of byte 13
+	// in splice_request_data. Build a SOM with bit 7 set.
+	data := make([]byte, 16) // OpID(2) + splice_request_data(14)
+	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
+	data[2] = SpliceStartImmediate           // splice_insert_type
+	binary.BigEndian.PutUint32(data[3:7], 1) // splice_event_id
+	data[15] = 0x80                          // auto_return_flag: bit 7 set
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if !srd.AutoReturnFlag {
+		t.Error("AutoReturnFlag = false, want true (bit 7 = 0x80)")
+	}
+}
+
+func TestDecode_AutoReturnFlag_Bit0Only_IsFalse(t *testing.T) {
+	// If only bit 0 is set (0x01) but bit 7 is not, auto_return_flag should
+	// be false per the SCTE-104 spec.
+	data := make([]byte, 16) // OpID(2) + splice_request_data(14)
+	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
+	data[2] = SpliceStartImmediate           // splice_insert_type
+	binary.BigEndian.PutUint32(data[3:7], 1) // splice_event_id
+	data[15] = 0x01                          // only bit 0 set, NOT bit 7
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	srd := msg.Operations[0].Data.(*SpliceRequestData)
+	if srd.AutoReturnFlag {
+		t.Error("AutoReturnFlag = true, want false (only bit 0 set, bit 7 required)")
+	}
+}
+
+func TestDecode_SOM_FullHeader_SegmentationDescriptor(t *testing.T) {
+	// Full SOM with 12-byte header + segmentation_descriptor_request operation.
+	// This tests the full SOM detection path with a non-splice_request operation.
+	//
+	// Wire format after OpID:
+	//   messageSize(2) + result(2) + result_extension(2) +
+	//   protocol_version(1) + AS_index(1) + message_number(1) + DPI_PID_index(2) +
+	//   SCTE35_protocol_version(1) = 12 bytes header
+	//   + segmentation_descriptor_request data
+	upid := []byte("ABCD")
+	dur := uint64(1800000) // 20 seconds at 90kHz
+
+	// seg_event_id(4) + flags(1) + duration(5) + upid_type(1) + upid_length(1) +
+	// upid(4) + type_id(1) + seg_num(1) + segs_expected(1) = 19
+	segPayload := make([]byte, 15+len(upid))
+	binary.BigEndian.PutUint32(segPayload[0:4], 1234) // seg_event_id
+	segPayload[4] = 0x01                               // flags: program_seg_flag=1
+	segPayload[5] = byte(dur >> 32)
+	segPayload[6] = byte(dur >> 24)
+	segPayload[7] = byte(dur >> 16)
+	segPayload[8] = byte(dur >> 8)
+	segPayload[9] = byte(dur)
+	segPayload[10] = 0x09            // upid_type
+	segPayload[11] = byte(len(upid)) // upid_length
+	copy(segPayload[12:], upid)
+	segPayload[12+len(upid)] = 0x34 // segmentation_type_id
+	segPayload[12+len(upid)+1] = 2  // seg_num
+	segPayload[12+len(upid)+2] = 4  // segs_expected
+
+	headerSize := 12
+	payloadSize := headerSize + len(segPayload) // 12 + 19 = 31
+
+	buf := make([]byte, 2+payloadSize)
+	binary.BigEndian.PutUint16(buf[0:2], OpSegmentationDescriptorRequest) // OpID
+
+	payload := buf[2:]
+	binary.BigEndian.PutUint16(payload[0:2], uint16(payloadSize-2))  // messageSize (spec convention)
+	binary.BigEndian.PutUint16(payload[2:4], 0)                      // result
+	binary.BigEndian.PutUint16(payload[4:6], 0)                      // result_extension
+	payload[6] = 3                                                    // protocol_version
+	payload[7] = 8                                                    // AS_index
+	payload[8] = 15                                                   // message_number
+	binary.BigEndian.PutUint16(payload[9:11], 6000)                   // DPI_PID_index
+	payload[11] = 0                                                   // SCTE35_protocol_version
+	copy(payload[12:], segPayload)
+
+	msg, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify header fields are populated (full SOM path taken).
+	if msg.ProtocolVersion != 3 {
+		t.Errorf("ProtocolVersion = %d, want 3", msg.ProtocolVersion)
+	}
+	if msg.ASIndex != 8 {
+		t.Errorf("ASIndex = %d, want 8", msg.ASIndex)
+	}
+	if msg.MessageNumber != 15 {
+		t.Errorf("MessageNumber = %d, want 15", msg.MessageNumber)
+	}
+	if msg.DPIPIDIndex != 6000 {
+		t.Errorf("DPIPIDIndex = %d, want 6000", msg.DPIPIDIndex)
+	}
+
+	// Verify segmentation descriptor data.
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+	if msg.Operations[0].OpID != OpSegmentationDescriptorRequest {
+		t.Fatalf("expected OpSegmentationDescriptorRequest, got 0x%04X", msg.Operations[0].OpID)
+	}
+	sd, ok := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if !ok {
+		t.Fatalf("expected *SegmentationDescriptorRequest, got %T", msg.Operations[0].Data)
+	}
+	if sd.SegEventID != 1234 {
+		t.Errorf("SegEventID = %d, want 1234", sd.SegEventID)
+	}
+	if sd.SegmentationTypeID != 0x34 {
+		t.Errorf("SegmentationTypeID = 0x%02X, want 0x34", sd.SegmentationTypeID)
+	}
+	if sd.DurationTicks != 1800000 {
+		t.Errorf("DurationTicks = %d, want 1800000", sd.DurationTicks)
+	}
+	if string(sd.UPID) != "ABCD" {
+		t.Errorf("UPID = %q, want %q", sd.UPID, "ABCD")
+	}
+	if sd.SegNum != 2 {
+		t.Errorf("SegNum = %d, want 2", sd.SegNum)
+	}
+	if sd.SegExpected != 4 {
+		t.Errorf("SegExpected = %d, want 4", sd.SegExpected)
+	}
+	if !sd.ProgramSegmentationFlag {
+		t.Error("ProgramSegmentationFlag should be true")
+	}
+}
+
+func TestDecode_SOM_AmbiguousMessageSize(t *testing.T) {
+	// When messageSize matches neither spec (len-2) nor legacy (len) convention,
+	// decodeSOM falls through to the abbreviated format, treating the entire
+	// payload as operation data directly.
+	//
+	// Build a SOM with 14+ bytes of payload where the first 2 bytes (would-be
+	// messageSize) do NOT match either convention.
+
+	// OpID(2) + splice_request_data(14) = 16 total, payload = 14 bytes.
+	// For abbreviated path: first 2 bytes of payload = splice_insert_type(1) + first
+	// byte of event_id. We need these 2 bytes interpreted as messageSize to NOT equal
+	// 12 (= 14-2, spec) or 14 (= 14, legacy).
+	//
+	// splice_insert_type = SpliceStartImmediate (0x02), first byte of event_id = 0x00
+	// => messageSize would be 0x0200 = 512. Neither 12 nor 14, so abbreviated path.
+
+	data := make([]byte, 16)
+	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
+	data[2] = SpliceStartImmediate                       // splice_insert_type
+	binary.BigEndian.PutUint32(data[3:7], 55555)         // splice_event_id
+	binary.BigEndian.PutUint16(data[7:9], 300)           // unique_program_id
+	binary.BigEndian.PutUint16(data[9:11], 1500)         // pre_roll_time
+	binary.BigEndian.PutUint16(data[11:13], 200)         // break_duration
+	data[13] = 1                                          // avail_num
+	data[14] = 5                                          // avails_expected
+	data[15] = 0x80                                       // auto_return_flag (bit 7)
+
+	// Verify the first 2 bytes of payload (data[2:4]) do NOT match either convention.
+	payloadLen := 14
+	pseudoMsgSize := int(binary.BigEndian.Uint16(data[2:4]))
+	if pseudoMsgSize == payloadLen-2 || pseudoMsgSize == payloadLen {
+		t.Fatalf("test setup error: pseudo messageSize %d matches a convention (payload len %d)",
+			pseudoMsgSize, payloadLen)
+	}
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Abbreviated path: header fields should be zero.
+	if msg.ProtocolVersion != 0 {
+		t.Errorf("ProtocolVersion = %d, want 0 (abbreviated path)", msg.ProtocolVersion)
+	}
+	if msg.ASIndex != 0 {
+		t.Errorf("ASIndex = %d, want 0 (abbreviated path)", msg.ASIndex)
+	}
+	if msg.MessageNumber != 0 {
+		t.Errorf("MessageNumber = %d, want 0 (abbreviated path)", msg.MessageNumber)
+	}
+	if msg.DPIPIDIndex != 0 {
+		t.Errorf("DPIPIDIndex = %d, want 0 (abbreviated path)", msg.DPIPIDIndex)
+	}
+
+	// Verify operation data parsed correctly from direct payload.
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+	srd, ok := msg.Operations[0].Data.(*SpliceRequestData)
+	if !ok {
+		t.Fatalf("expected *SpliceRequestData, got %T", msg.Operations[0].Data)
+	}
+	if srd.SpliceInsertType != SpliceStartImmediate {
+		t.Errorf("SpliceInsertType = %d, want %d", srd.SpliceInsertType, SpliceStartImmediate)
+	}
+	if srd.SpliceEventID != 55555 {
+		t.Errorf("SpliceEventID = %d, want 55555", srd.SpliceEventID)
+	}
+	if srd.UniqueProgramID != 300 {
+		t.Errorf("UniqueProgramID = %d, want 300", srd.UniqueProgramID)
+	}
+	if srd.PreRollTime != 1500 {
+		t.Errorf("PreRollTime = %d, want 1500", srd.PreRollTime)
+	}
+	if srd.BreakDuration != 200 {
+		t.Errorf("BreakDuration = %d, want 200", srd.BreakDuration)
+	}
+	if srd.AvailNum != 1 {
+		t.Errorf("AvailNum = %d, want 1", srd.AvailNum)
+	}
+	if srd.AvailsExpected != 5 {
+		t.Errorf("AvailsExpected = %d, want 5", srd.AvailsExpected)
+	}
+	if !srd.AutoReturnFlag {
+		t.Error("AutoReturnFlag = false, want true")
+	}
+}
+
+func TestDecode_SOM_SpliceNull_NoHeader(t *testing.T) {
+	// splice_null with 0-byte payload after the OpID.
+	// len(payload) = 0 which is < 14, so the abbreviated path is taken.
+	// splice_null has no data, so decodeOperationData should succeed with nil Data.
+	data := make([]byte, 2)
+	binary.BigEndian.PutUint16(data[0:2], OpSpliceNull)
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Abbreviated path: header fields should all be zero.
+	if msg.ProtocolVersion != 0 {
+		t.Errorf("ProtocolVersion = %d, want 0 (abbreviated path)", msg.ProtocolVersion)
+	}
+	if msg.ASIndex != 0 {
+		t.Errorf("ASIndex = %d, want 0 (abbreviated path)", msg.ASIndex)
+	}
+	if msg.MessageNumber != 0 {
+		t.Errorf("MessageNumber = %d, want 0 (abbreviated path)", msg.MessageNumber)
+	}
+	if msg.DPIPIDIndex != 0 {
+		t.Errorf("DPIPIDIndex = %d, want 0 (abbreviated path)", msg.DPIPIDIndex)
+	}
+
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+	op := msg.Operations[0]
+	if op.OpID != OpSpliceNull {
+		t.Errorf("OpID = 0x%04X, want OpSpliceNull (0x%04X)", op.OpID, OpSpliceNull)
+	}
+	if op.Data != nil {
+		t.Errorf("Data = %v, want nil for splice_null", op.Data)
+	}
+}
+
+func TestDecode_SegmentationDescriptor_SubSegments(t *testing.T) {
+	// Build an abbreviated SOM segmentation_descriptor_request with sub-segment fields.
+	// Wire format: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
+	//   upid_length(1) + type_id(1) + seg_num(1) + segs_expected(1) +
+	//   sub_segment_num(1) + sub_segments_expected(1) = 17 bytes (no UPID)
+	payload := make([]byte, 17)
+	binary.BigEndian.PutUint32(payload[0:4], 5000) // seg_event_id
+	payload[4] = 0x01                               // flags: program_segmentation_flag=1
+	// duration: 900000 ticks (10 seconds at 90kHz) as 5-byte big-endian
+	payload[5] = 0
+	payload[6] = 0
+	binary.BigEndian.PutUint16(payload[7:9], 0x0DBA) // upper 16 bits of 900000 = 0x0DBA
+	payload[9] = 0xC0                                 // lower 8 bits: 0xC0
+	// Actually compute 900000 correctly: 0x000DBBA0
+	binary.BigEndian.PutUint32(payload[5:9], 0x000DBBA0>>8)
+	payload[9] = byte(0x000DBBA0 & 0xFF)
+	// Fix: use proper 5-byte encoding
+	dur := uint64(900000)
+	payload[5] = byte(dur >> 32)
+	payload[6] = byte(dur >> 24)
+	payload[7] = byte(dur >> 16)
+	payload[8] = byte(dur >> 8)
+	payload[9] = byte(dur)
+	payload[10] = 0x09 // upid_type
+	payload[11] = 0    // upid_length = 0
+	payload[12] = 0x34 // segmentation_type_id
+	payload[13] = 2    // seg_num
+	payload[14] = 4    // segs_expected
+	payload[15] = 3    // sub_segment_num
+	payload[16] = 6    // sub_segments_expected
+
+	// Prepend OpID for abbreviated SOM.
+	data := make([]byte, 2+len(payload))
+	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
+	copy(data[2:], payload)
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(msg.Operations) != 1 {
+		t.Fatalf("expected 1 operation, got %d", len(msg.Operations))
+	}
+
+	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.SegEventID != 5000 {
+		t.Errorf("SegEventID = %d, want 5000", sd.SegEventID)
+	}
+	if sd.SubSegmentNum != 3 {
+		t.Errorf("SubSegmentNum = %d, want 3", sd.SubSegmentNum)
+	}
+	if sd.SubSegmentsExpected != 6 {
+		t.Errorf("SubSegmentsExpected = %d, want 6", sd.SubSegmentsExpected)
+	}
+}
+
+func TestDecode_SegmentationDescriptor_NoSubSegments_Backward_Compatible(t *testing.T) {
+	// Verify that messages without sub-segment fields still decode correctly.
+	// Wire format: seg_event_id(4) + flags(1) + duration(5) + upid_type(1) +
+	//   upid_length(1) + type_id(1) + seg_num(1) + segs_expected(1) = 15 bytes
+	payload := make([]byte, 15)
+	binary.BigEndian.PutUint32(payload[0:4], 42)
+	payload[4] = 0x01 // flags: program_segmentation_flag=1
+	// zero duration
+	payload[10] = 0x09 // upid_type
+	payload[11] = 0    // upid_length = 0
+	payload[12] = 0x34 // segmentation_type_id
+	payload[13] = 1    // seg_num
+	payload[14] = 2    // segs_expected
+
+	data := make([]byte, 2+len(payload))
+	binary.BigEndian.PutUint16(data[0:2], OpSegmentationDescriptorRequest)
+	copy(data[2:], payload)
+
+	msg, err := Decode(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sd := msg.Operations[0].Data.(*SegmentationDescriptorRequest)
+	if sd.SubSegmentNum != 0 {
+		t.Errorf("SubSegmentNum = %d, want 0", sd.SubSegmentNum)
+	}
+	if sd.SubSegmentsExpected != 0 {
+		t.Errorf("SubSegmentsExpected = %d, want 0", sd.SubSegmentsExpected)
 	}
 }

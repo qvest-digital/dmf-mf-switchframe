@@ -127,6 +127,14 @@ type SegmentationDescriptorRequest struct {
 	// ProgramSegmentationFlag when true indicates program-level segmentation
 	// (no component-level data). Per SCTE 104 2021 Table 8-29.
 	ProgramSegmentationFlag bool
+
+	// SubSegmentNum is the sub-segment number within the segment.
+	// Per SCTE 104 2021 Table 8-29, present after segs_expected for
+	// certain segmentation types.
+	SubSegmentNum uint8
+
+	// SubSegmentsExpected is the expected number of sub-segments.
+	SubSegmentsExpected uint8
 }
 
 // String returns a human-readable description of the operation.
