@@ -116,6 +116,11 @@ export class MoQTransport {
 		this.callbacks = callbacks;
 	}
 
+	/** Returns the underlying WebTransport session, or null if not connected. */
+	getTransport(): WebTransport | null {
+		return this.transport;
+	}
+
 	async connect(): Promise<void> {
 		const info = await fetchServerInfo();
 		const url = `${wtBaseURL(info)}/moq?stream=${encodeURIComponent(this.streamKey)}`;

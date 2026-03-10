@@ -69,6 +69,8 @@ export interface MediaPipeline {
 	getVideoBuffer(sourceKey: string): VideoRenderBuffer | null;
 	/** Get the audio decoder for a source (for PFL/metering). */
 	getAudioDecoder(sourceKey: string): PrismAudioDecoder | null;
+	/** Get the underlying WebTransport for a source (for datagrams). */
+	getSourceTransport(sourceKey: string): WebTransport | null;
 	/** Attach a canvas to render a source's decoded video. canvasId identifies this renderer instance.
 	 *  Returns true if the source exists and the canvas was attached, false otherwise. */
 	attachCanvas(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): boolean;
@@ -555,6 +557,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return result;
 	}
 
+	function getSourceTransport(sourceKey: string): WebTransport | null {
+		const source = sources.get(sourceKey);
+		return source?.transport?.getTransport() ?? null;
+	}
+
 	return {
 		addSource,
 		removeSource,
@@ -562,6 +569,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		disconnectSource,
 		getVideoBuffer,
 		getAudioDecoder,
+		getSourceTransport,
 		setSourceMuted,
 		resumeAllAudio,
 		attachCanvas,
