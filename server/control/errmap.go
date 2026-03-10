@@ -33,6 +33,7 @@ var errorMappings = []errorMapping{
 	{stinger.ErrNotFound, http.StatusNotFound},
 	{macro.ErrNotFound, http.StatusNotFound},
 	{graphics.ErrNoOverlay, http.StatusBadRequest}, // no overlay loaded is a bad request
+	{graphics.ErrLayerNotFound, http.StatusNotFound},
 	{operator.ErrNotFound, http.StatusNotFound},
 	{operator.ErrSessionNotFound, http.StatusNotFound},
 	{replay.ErrNoSource, http.StatusNotFound},
@@ -56,6 +57,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrAlreadyActive, http.StatusConflict},
 	{graphics.ErrNotActive, http.StatusConflict},
 	{graphics.ErrFadeActive, http.StatusConflict},
+	{graphics.ErrTooManyLayers, http.StatusConflict},
 	{operator.ErrDuplicateName, http.StatusConflict},
 	{operator.ErrSubsystemLocked, http.StatusConflict},
 	{replay.ErrPlayerActive, http.StatusConflict},

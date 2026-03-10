@@ -92,8 +92,10 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 	for i := 3; i < len(rgba); i += 4 {
 		rgba[i] = 255
 	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
+	layerID, err := comp.AddLayer()
+	require.NoError(t, err)
+	require.NoError(t, comp.SetOverlay(layerID, rgba, 4, 4, "test"))
+	require.NoError(t, comp.On(layerID))
 	sw.SetCompositor(comp)
 	require.NoError(t, sw.BuildPipeline())
 
@@ -138,8 +140,10 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	for i := 3; i < len(rgba); i += 4 {
 		rgba[i] = 255
 	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
+	layerID, err := comp.AddLayer()
+	require.NoError(t, err)
+	require.NoError(t, comp.SetOverlay(layerID, rgba, 4, 4, "test"))
+	require.NoError(t, comp.On(layerID))
 	sw.SetCompositor(comp)
 	require.NoError(t, sw.BuildPipeline())
 
@@ -589,8 +593,10 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 		rgba[i+2] = 255 // B
 		rgba[i+3] = 128 // 50% alpha — partial overlay
 	}
-	require.NoError(t, comp.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, comp.On())
+	layerID, err := comp.AddLayer()
+	require.NoError(t, err)
+	require.NoError(t, comp.SetOverlay(layerID, rgba, 4, 4, "test"))
+	require.NoError(t, comp.On(layerID))
 	sw.SetCompositor(comp)
 	require.NoError(t, sw.BuildPipeline())
 

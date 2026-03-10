@@ -132,10 +132,14 @@
 		},
 		onToggleOverlay: () => { showOverlay = !showOverlay; },
 		onToggleDSK: () => {
-			if (store.state.graphics?.active) {
-				apiCall(graphicsOff(), 'Graphics failed');
-			} else {
-				apiCall(graphicsOn(), 'Graphics failed');
+			const gfxLayers = store.state.graphics?.layers ?? [];
+			if (gfxLayers.some((l) => l.active)) {
+				// Turn off all active layers.
+				const offs = gfxLayers.filter((l) => l.active).map((l) => graphicsOff(l.id));
+				apiCall(Promise.all(offs).then((r) => r[0]), 'Graphics failed');
+			} else if (gfxLayers.length > 0) {
+				// Turn on the first layer.
+				apiCall(graphicsOn(gfxLayers[0].id), 'Graphics failed');
 			}
 		},
 		onSetTransitionType: (type) => {

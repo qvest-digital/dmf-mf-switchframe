@@ -28,8 +28,10 @@ func TestCompositorNode_ActiveWhenOverlayOn(t *testing.T) {
 	for i := 3; i < len(rgba); i += 4 {
 		rgba[i] = 255
 	}
-	require.NoError(t, c.SetOverlay(rgba, 4, 4, "test"))
-	require.NoError(t, c.On())
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+	require.NoError(t, c.SetOverlay(id, rgba, 4, 4, "test"))
+	require.NoError(t, c.On(id))
 	n := &compositorNode{compositor: c}
 	require.True(t, n.Active(), "should be active when overlay is on")
 }

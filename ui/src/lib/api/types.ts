@@ -116,12 +116,22 @@ export interface EasingConfig {
 	y2?: number;
 }
 
-export interface GraphicsState {
-	active: boolean;
+export interface GraphicsLayerState {
+	id: number;
 	template?: string;
+	active: boolean;
 	fadePosition?: number;
 	animationMode?: string;
 	animationHz?: number;
+	zOrder: number;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+export interface GraphicsState {
+	layers?: GraphicsLayerState[];
 }
 
 export interface LayoutState {

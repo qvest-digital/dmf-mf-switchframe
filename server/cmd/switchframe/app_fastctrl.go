@@ -13,6 +13,7 @@ func (a *App) initFastControl() {
 
 	a.fastCtrl.Register(fastctrl.MsgLayoutSlotPosition, a.handleFastLayoutUpdate)
 	a.fastCtrl.Register(fastctrl.MsgTransitionPosition, a.handleFastTransitionUpdate)
+	a.fastCtrl.Register(fastctrl.MsgGraphicsLayerPosition, a.handleFastGraphicsUpdate)
 }
 
 func (a *App) handleFastLayoutUpdate(data []byte) error {
@@ -29,4 +30,12 @@ func (a *App) handleFastTransitionUpdate(data []byte) error {
 		return err
 	}
 	return a.sw.SetTransitionPosition(context.Background(), pos)
+}
+
+func (a *App) handleFastGraphicsUpdate(data []byte) error {
+	layerID, rect, err := fastctrl.ParseGraphicsLayerPosition(data)
+	if err != nil {
+		return err
+	}
+	return a.compositor.UpdateLayerRect(layerID, rect)
 }

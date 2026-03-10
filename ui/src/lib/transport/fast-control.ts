@@ -1,9 +1,11 @@
 const MSG_LAYOUT_SLOT_POSITION = 0x01;
 const MSG_TRANSITION_POSITION = 0x02;
+const MSG_GRAPHICS_LAYER_POSITION = 0x03;
 
 export interface FastControl {
 	sendSlotPosition(slotId: number, x: number, y: number, w: number, h: number): void;
 	sendTransitionPosition(position: number): void;
+	sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number): void;
 	close(): void;
 }
 
@@ -33,6 +35,24 @@ export function encodeTransitionPosition(position: number): Uint8Array {
 	return new Uint8Array(buf);
 }
 
+export function encodeGraphicsLayerPosition(
+	layerId: number,
+	x: number,
+	y: number,
+	w: number,
+	h: number,
+): Uint8Array {
+	const buf = new ArrayBuffer(11);
+	const view = new DataView(buf);
+	view.setUint8(0, MSG_GRAPHICS_LAYER_POSITION);
+	view.setUint16(1, layerId);
+	view.setUint16(3, x);
+	view.setUint16(5, y);
+	view.setUint16(7, w);
+	view.setUint16(9, h);
+	return new Uint8Array(buf);
+}
+
 export function createFastControl(transport: WebTransport): FastControl {
 	const writer = transport.datagrams.writable.getWriter();
 
@@ -43,6 +63,10 @@ export function createFastControl(transport: WebTransport): FastControl {
 
 		sendTransitionPosition(position: number) {
 			writer.write(encodeTransitionPosition(position)).catch(() => {});
+		},
+
+		sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number) {
+			writer.write(encodeGraphicsLayerPosition(layerId, x, y, w, h)).catch(() => {});
 		},
 
 		close() {
