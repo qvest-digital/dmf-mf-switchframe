@@ -340,6 +340,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/graphics/auto-off", a.handleGraphicsAutoOff)
 		mux.HandleFunc("GET /api/graphics/status", a.handleGraphicsStatus)
 		mux.HandleFunc("POST /api/graphics/frame", a.handleGraphicsFrame)
+		mux.HandleFunc("POST /api/graphics/animate", a.handleGraphicsAnimate)
+		mux.HandleFunc("POST /api/graphics/animate/stop", a.handleGraphicsAnimateStop)
 	}
 	if a.macroStore != nil {
 		mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)

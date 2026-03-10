@@ -98,9 +98,11 @@ type PresetInfo struct {
 // GraphicsState is the JSON-serializable state for the downstream
 // keyer (DSK) graphics overlay, included in ControlRoomState.
 type GraphicsState struct {
-	Active       bool    `json:"active"`
-	Template     string  `json:"template,omitempty"`
-	FadePosition float64 `json:"fadePosition,omitempty"`
+	Active        bool    `json:"active"`
+	Template      string  `json:"template,omitempty"`
+	FadePosition  float64 `json:"fadePosition,omitempty"`
+	AnimationMode string  `json:"animationMode,omitempty"`
+	AnimationHz   float64 `json:"animationHz,omitempty"`
 }
 
 // ReplayState is the JSON-serializable state for the instant replay system,

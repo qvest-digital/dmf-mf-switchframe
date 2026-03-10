@@ -120,6 +120,8 @@ export interface GraphicsState {
 	active: boolean;
 	template?: string;
 	fadePosition?: number;
+	animationMode?: string;
+	animationHz?: number;
 }
 
 export interface LayoutState {

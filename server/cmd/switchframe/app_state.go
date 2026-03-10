@@ -49,9 +49,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	}
 	if gfxStatus.Active {
 		state.Graphics = &internal.GraphicsState{
-			Active:       gfxStatus.Active,
-			Template:     gfxStatus.Template,
-			FadePosition: gfxStatus.FadePosition,
+			Active:        gfxStatus.Active,
+			Template:      gfxStatus.Template,
+			FadePosition:  gfxStatus.FadePosition,
+			AnimationMode: gfxStatus.AnimationMode,
+			AnimationHz:   gfxStatus.AnimationHz,
 		}
 	}
 

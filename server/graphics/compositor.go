@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -17,6 +18,14 @@ var (
 	ErrCompositorClosed = errors.New("compositor: closed")
 )
 
+// AnimationConfig describes a graphics overlay animation.
+type AnimationConfig struct {
+	Mode     string  `json:"mode"`     // "pulse"
+	MinAlpha float64 `json:"minAlpha"` // 0.0-1.0
+	MaxAlpha float64 `json:"maxAlpha"` // 0.0-1.0
+	SpeedHz  float64 `json:"speedHz"`  // oscillation frequency
+}
+
 // State represents the current graphics overlay state.
 type State struct {
 	Active        bool    `json:"active"`
@@ -24,6 +33,8 @@ type State struct {
 	FadePosition  float64 `json:"fadePosition,omitempty"` // 0.0 = invisible, 1.0 = fully visible
 	ProgramWidth  int     `json:"programWidth,omitempty"`
 	ProgramHeight int     `json:"programHeight,omitempty"`
+	AnimationMode string  `json:"animationMode,omitempty"`
+	AnimationHz   float64 `json:"animationHz,omitempty"`
 }
 
 // Compositor manages the downstream keyer (DSK) graphics overlay state.
@@ -48,6 +59,11 @@ type Compositor struct {
 	fadeDone     chan struct{}
 	fadeCancel   chan struct{}
 	closed       bool
+
+	// Animation state.
+	animConfig *AnimationConfig
+	animCancel chan struct{}
+	animDone   chan struct{}
 
 	// Callback invoked on state change (active/inactive/fade).
 	// Receives a snapshot of the current state so callers don't need
@@ -100,8 +116,9 @@ func (c *Compositor) On() error {
 		return ErrNoOverlay
 	}
 
-	// Cancel any in-progress fade.
+	// Cancel any in-progress fade or animation.
 	c.cancelFadeLocked()
+	c.cancelAnimationLocked()
 
 	c.active = true
 	c.fadePosition = 1.0
@@ -125,8 +142,9 @@ func (c *Compositor) Off() error {
 		return ErrCompositorClosed
 	}
 
-	// Cancel any in-progress fade.
+	// Cancel any in-progress fade or animation.
 	c.cancelFadeLocked()
+	c.cancelAnimationLocked()
 
 	c.active = false
 	c.fadePosition = 0.0
@@ -153,7 +171,7 @@ func (c *Compositor) AutoOn(duration time.Duration) error {
 		c.mu.Unlock()
 		return ErrNoOverlay
 	}
-	if c.fadeDone != nil {
+	if c.fadeDone != nil || c.animDone != nil {
 		c.mu.Unlock()
 		return ErrFadeActive
 	}
@@ -189,7 +207,7 @@ func (c *Compositor) AutoOff(duration time.Duration) error {
 		c.mu.Unlock()
 		return ErrNotActive
 	}
-	if c.fadeDone != nil {
+	if c.fadeDone != nil || c.animDone != nil {
 		c.mu.Unlock()
 		return ErrFadeActive
 	}
@@ -211,11 +229,7 @@ func (c *Compositor) AutoOff(duration time.Duration) error {
 func (c *Compositor) Status() State {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	s := State{
-		Active:       c.active,
-		Template:     c.template,
-		FadePosition: c.fadePosition,
-	}
+	s := c.buildStateLocked()
 	if c.resolutionProvider != nil {
 		s.ProgramWidth, s.ProgramHeight = c.resolutionProvider()
 	}
@@ -252,12 +266,13 @@ func (c *Compositor) OnStateChange(fn func(State)) {
 	c.onStateChange = fn
 }
 
-// Close shuts down the compositor, cancelling any active fade.
+// Close shuts down the compositor, cancelling any active fade or animation.
 func (c *Compositor) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
 	c.cancelFadeLocked()
+	c.cancelAnimationLocked()
 }
 
 // runFade drives a fade from startAlpha to endAlpha over the given duration.
@@ -344,6 +359,126 @@ func (c *Compositor) cancelFadeLocked() {
 	}
 }
 
+// Animate starts a looping animation on the active overlay.
+// Only "pulse" mode is currently supported.
+func (c *Compositor) Animate(cfg AnimationConfig) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	if !c.active {
+		c.mu.Unlock()
+		return ErrNotActive
+	}
+	if c.fadeDone != nil || c.animDone != nil {
+		c.mu.Unlock()
+		return ErrFadeActive
+	}
+
+	c.animConfig = &cfg
+	c.animCancel = make(chan struct{})
+	c.animDone = make(chan struct{})
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	go c.runPulseAnimation()
+	return nil
+}
+
+// StopAnimation stops any running animation and restores fadePosition to 1.0.
+func (c *Compositor) StopAnimation() error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	if c.animDone == nil {
+		c.mu.Unlock()
+		return nil // no animation running
+	}
+	c.cancelAnimationLocked()
+	c.fadePosition = 1.0
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// cancelAnimationLocked cancels any in-progress animation. Must be called with mu held.
+func (c *Compositor) cancelAnimationLocked() {
+	if c.animCancel != nil {
+		close(c.animCancel)
+		done := c.animDone
+		c.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		c.mu.Lock()
+	}
+}
+
+// runPulseAnimation drives a sinusoidal alpha oscillation at ~60fps.
+// State callbacks are fired at ~15fps to avoid overwhelming the broadcast.
+func (c *Compositor) runPulseAnimation() {
+	const tickRate = 60
+	ticker := time.NewTicker(time.Second / tickRate)
+	defer ticker.Stop()
+
+	c.mu.RLock()
+	cfg := *c.animConfig
+	c.mu.RUnlock()
+
+	start := time.Now()
+	var tickCount int
+
+	defer func() {
+		c.mu.Lock()
+		done := c.animDone
+		c.animConfig = nil
+		c.animCancel = nil
+		c.animDone = nil
+		c.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
+
+	for {
+		select {
+		case <-c.animCancel:
+			return
+		case <-ticker.C:
+			t := time.Since(start).Seconds()
+			// sin oscillates between -1 and 1; map to [minAlpha, maxAlpha]
+			alpha := cfg.MinAlpha + (math.Sin(2*math.Pi*cfg.SpeedHz*t)+1)/2*(cfg.MaxAlpha-cfg.MinAlpha)
+
+			c.mu.Lock()
+			c.fadePosition = alpha
+			tickCount++
+			// Fire state callback every 4th tick (~15fps)
+			var state State
+			var cb func(State)
+			if tickCount%4 == 0 {
+				state = c.buildStateLocked()
+				cb = c.onStateChange
+			}
+			c.mu.Unlock()
+
+			if cb != nil {
+				cb(state)
+			}
+		}
+	}
+}
+
 // ProcessYUV applies the overlay to a raw YUV420 buffer in-place.
 // This is the codec-free processor used by the pipeline coordinator.
 // When inactive or when the overlay resolution doesn't match, returns yuv unchanged.
@@ -377,9 +512,14 @@ func (c *Compositor) IsActive() bool {
 // buildStateLocked returns a snapshot of the compositor's current state.
 // Must be called with mu held (read or write).
 func (c *Compositor) buildStateLocked() State {
-	return State{
+	s := State{
 		Active:       c.active,
 		Template:     c.template,
 		FadePosition: c.fadePosition,
 	}
+	if c.animConfig != nil {
+		s.AnimationMode = c.animConfig.Mode
+		s.AnimationHz = c.animConfig.SpeedHz
+	}
+	return s
 }
