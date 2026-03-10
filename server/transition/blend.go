@@ -281,7 +281,10 @@ func (fb *FrameBlender) generateWipeAlphaHorizontal(position, softEdge float64, 
 
 	// Compute 1D alpha for the first row (used as template).
 	row0 := fb.wipeAlphaMap[:w]
-	invW := 1.0 / float64(w)
+	invW := 1.0 // guard for w <= 1
+	if w > 1 {
+		invW = 1.0 / float64(w-1)
+	}
 	for px := 0; px < w; px++ {
 		threshold := float64(px) * invW
 		if invert {
@@ -299,7 +302,7 @@ func (fb *FrameBlender) generateWipeAlphaHorizontal(position, softEdge float64, 
 	chromaW := w / 2
 	chromaH := h / 2
 	chromaRow0 := fb.wipeAlphaMapChroma[:chromaW]
-	invCW := 1.0 / float64(w) // use full-width denominator for matching thresholds
+	invCW := invW // use same denominator as luma for matching thresholds
 	for cx := 0; cx < chromaW; cx++ {
 		threshold := float64(cx*2) * invCW
 		if invert {
@@ -318,7 +321,10 @@ func (fb *FrameBlender) generateWipeAlphaHorizontal(position, softEdge float64, 
 func (fb *FrameBlender) generateWipeAlphaVertical(position, softEdge float64, invert bool) {
 	w := fb.width
 	h := fb.height
-	invH := 1.0 / float64(h)
+	invH := 1.0 // guard for h <= 1
+	if h > 1 {
+		invH = 1.0 / float64(h-1)
+	}
 
 	for py := 0; py < h; py++ {
 		threshold := float64(py) * invH
@@ -335,7 +341,7 @@ func (fb *FrameBlender) generateWipeAlphaVertical(position, softEdge float64, in
 	// Compute chroma alpha directly at half resolution (constant per row).
 	chromaW := w / 2
 	chromaH := h / 2
-	invCH := 1.0 / float64(h) // use full-height denominator for matching thresholds
+	invCH := invH // use same denominator as luma for matching thresholds
 	for cy := 0; cy < chromaH; cy++ {
 		threshold := float64(cy*2) * invCH
 		if invert {

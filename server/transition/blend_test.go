@@ -359,25 +359,63 @@ func TestBlendWipeSoftEdge(t *testing.T) {
 	t.Parallel()
 	// Verify that pixels at the wipe boundary have blended (intermediate) values.
 	// Use a wider frame so the 4px soft edge is visible.
+	// softEdge = 2/32 = 0.0625. Thresholds use x/(w-1) = x/31.
 	fb := NewFrameBlender(32, 8)
 	a := makeYUVFrame(32, 8, 200, 128, 128)
 	b := makeYUVFrame(32, 8, 50, 128, 128)
 
 	out := fb.BlendWipe(a, b, 0.5, WipeHLeft)
-	// At x=16 (threshold = 16/32 = 0.5 = position), this is exactly on the boundary.
-	// With 4px soft edge, pixels within +/-2px of the boundary should be blended.
-	// x=14: threshold = 14/32 = 0.4375, well below 0.5 -> fully B (50)
-	// x=18: threshold = 18/32 = 0.5625, well above 0.5 -> fully A (200)
-	// x=15 or x=16: near boundary -> intermediate value
-	yRow0_x14 := out[14]
-	yRow0_x18 := out[18]
-	require.Equal(t, byte(50), yRow0_x14, "x=14 should be fully B")
-	require.Equal(t, byte(200), yRow0_x18, "x=18 should be fully A")
+	// Soft edge spans [0.5-0.0625, 0.5+0.0625] = [0.4375, 0.5625].
+	// x=13: threshold = 13/31 ≈ 0.4194, below 0.4375 → fully B (50)
+	// x=19: threshold = 19/31 ≈ 0.6129, above 0.5625 → fully A (200)
+	// x=15 or x=16: near boundary → intermediate value
+	yRow0_x13 := out[13]
+	yRow0_x19 := out[19]
+	require.Equal(t, byte(50), yRow0_x13, "x=13 should be fully B")
+	require.Equal(t, byte(200), yRow0_x19, "x=19 should be fully A")
 
-	// x=16 is at threshold=0.5 = position -> should be 50% blend
+	// x=16 is at threshold=16/31≈0.516, near position 0.5 → should be blended
 	yRow0_x16 := out[16]
 	require.Greater(t, int(yRow0_x16), 50, "x=16 should be blended (not fully B)")
 	require.Less(t, int(yRow0_x16), 200, "x=16 should be blended (not fully A)")
+}
+
+func TestBlendWipeThresholdSpansFullRange(t *testing.T) {
+	t.Parallel()
+	// Bug 24: with invW = 1/w, the last column gets threshold = (w-1)/w which
+	// never reaches 1.0. With w=100, the last pixel threshold is 99/100=0.99
+	// instead of 1.0. At position=0.98, softEdge=2/100=0.02:
+	//
+	//   Bug (threshold=0.99): 0.99 is in [0.96, 1.00] soft edge region.
+	//     alpha = (0.98+0.02-0.99)/0.04 = 0.01/0.04 = 0.25, byte=64
+	//   Fix (threshold=1.0):  1.0 > 0.98+0.02=1.00? No (equal). In soft edge:
+	//     alpha = (0.98+0.02-1.0)/0.04 = 0.0/0.04 = 0.0, byte=0
+	//
+	// The last pixel should be fully A (alpha=0) at position=0.98 because
+	// the wipe hasn't reached the far edge yet.
+	w := 100
+	fb := NewFrameBlender(w, 4)
+	fb.generateWipeAlpha(0.98, WipeHLeft)
+
+	lastPixelAlpha := fb.wipeAlphaMap[w-1]
+	require.Equal(t, byte(0), lastPixelAlpha,
+		"last pixel (threshold=1.0) should be fully A (alpha=0) at position=0.98, got %d", lastPixelAlpha)
+}
+
+func TestBlendWipeVerticalThresholdSpansFullRange(t *testing.T) {
+	t.Parallel()
+	// Same logic as horizontal but for vertical wipe.
+	// With h=100, softEdge=2/100=0.02. At position=0.98:
+	//   Bug (threshold=0.99): in soft edge, alpha=64
+	//   Fix (threshold=1.0):  alpha=0 (fully A)
+	h := 100
+	fb := NewFrameBlender(4, h)
+	fb.generateWipeAlpha(0.98, WipeVTop)
+
+	// Last row, first pixel.
+	lastRowAlpha := fb.wipeAlphaMap[(h-1)*4]
+	require.Equal(t, byte(0), lastRowAlpha,
+		"last row (threshold=1.0) should be fully A (alpha=0) at position=0.98, got %d", lastRowAlpha)
 }
 
 func TestBlendWipeAllDirectionsValid(t *testing.T) {
@@ -500,12 +538,13 @@ func TestWipeAlphaLinearCorrectness(t *testing.T) {
 	fb := NewFrameBlender(w, h)
 
 	for _, pos := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
-		// Horizontal left: alpha varies along X only
+		// Horizontal left: alpha varies along X only.
+		// Thresholds span [0, 1] using x/(w-1) so the last pixel reaches threshold=1.0.
 		fb.generateWipeAlpha(pos, WipeHLeft)
 		softEdge := 2.0 / float64(w)
 		for y := 0; y < h; y++ {
 			for x := 0; x < w; x++ {
-				threshold := float64(x) / float64(w)
+				threshold := float64(x) / float64(w-1)
 				expected := wipeAlphaByte(threshold, pos, softEdge)
 				got := fb.wipeAlphaMap[y*w+x]
 				require.Equal(t, expected, got,
@@ -513,11 +552,12 @@ func TestWipeAlphaLinearCorrectness(t *testing.T) {
 			}
 		}
 
-		// Vertical top: alpha varies along Y only
+		// Vertical top: alpha varies along Y only.
+		// Thresholds span [0, 1] using y/(h-1) so the last row reaches threshold=1.0.
 		fb.generateWipeAlpha(pos, WipeVTop)
 		softEdge = 2.0 / float64(h)
 		for y := 0; y < h; y++ {
-			threshold := float64(y) / float64(h)
+			threshold := float64(y) / float64(h-1)
 			expected := wipeAlphaByte(threshold, pos, softEdge)
 			for x := 0; x < w; x++ {
 				got := fb.wipeAlphaMap[y*w+x]
