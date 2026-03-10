@@ -256,7 +256,7 @@ Benchmark results are tracked per commit and published at **[zsiec.github.io/swi
 ```
 server/                     Go module (github.com/zsiec/switchframe/server)
   cmd/switchframe/          Entry point, admin endpoints, static embed, GC/system tuning
-  switcher/                 State machine, frame routing, frame sync, delay buffer, format presets, FRC
+  switcher/                 State machine, frame routing, pipeline nodes, frame pool, frame sync, delay buffer, format presets, FRC
   audio/                    FDK AAC decode/mix/encode, EQ, compressor, crossfade, limiter, LUFS
   transition/               YUV420 blend, bilinear + Lanczos-3 scaler, smoothstep easing
   output/                   MPEG-TS recording, SRT caller/listener, confidence monitor, multi-destination
@@ -301,14 +301,17 @@ graph TD
             relay1 --> sv1["sourceViewer"]
             relay2 --> sv2["sourceViewer"]
             relayN --> svN["sourceViewer"]
+            sv1 --> sd1["sourceDecoder<br/>H.264→YUV420"]
+            sv2 --> sd2["sourceDecoder<br/>H.264→YUV420"]
+            svN --> sdN["sourceDecoder<br/>H.264→YUV420"]
             relay1 --> rv1["replayViewer"]
             relay2 --> rv2["replayViewer"]
             rv1 & rv2 --> rb["Replay Buffers<br/>(per-source,<br/>GOP-aligned)"]
         end
 
         subgraph routing["Frame Routing (mutually exclusive)"]
-            sv1 & sv2 & svN --> fs["FrameSynchronizer<br/>(freerun, optional)"]
-            sv1 & sv2 & svN -.-> delay["delayBuffer<br/>(per-source<br/>0–500ms)"]
+            sd1 & sd2 & sdN --> fs["FrameSynchronizer<br/>(freerun, optional)"]
+            sd1 & sd2 & sdN -.-> delay["delayBuffer<br/>(per-source<br/>0–500ms)"]
         end
 
         mxlSrc -->|"IngestRawVideo<br/>(bypasses routing)"| hvf
@@ -317,12 +320,15 @@ graph TD
 
         subgraph engine["Switching Engine"]
             subgraph video["Video Path"]
-                fs & delay --> hvf["handleVideoFrame"]
+                fs & delay --> hvf["handleRawVideoFrame<br/>(decoded YUV420)"]
                 hvf --> te["Transition Engine<br/>(YUV420 blend:<br/>mix / dip / wipe /<br/>FTB / stinger)"]
-                hvf --> pipeline["pipelineCodecs<br/>upstream key<br/>→ DSK compositor"]
-                te --> pipeline
-                pipeline --> mxlOut["MXL Raw Sink<br/>(YUV420p→V210)"]
-                pipeline --> enc["H.264 Encode<br/>(HW or libx264)"]
+                hvf --> enq["enqueueVideoWork"]
+                te -->|"raw YUV callback"| bp["broadcastProcessed"]
+                bp --> enq
+                enq --> prun["Pipeline.Run()<br/>PipelineNode chain"]
+                prun --> ukn["upstream key<br/>→ compositor"]
+                ukn --> rsn["rawSinkNodes<br/>(MXL, monitor)"]
+                rsn --> enc["encodeNode<br/>(HW or libx264)"]
                 enc --> bv["programRelay<br/>.BroadcastVideo()"]
             end
 
@@ -336,7 +342,8 @@ graph TD
 
         bv & ba --> pr["Program Relay"]
 
-        mxlOut & mxlAudioOut --> mxlShm["MXL Shared Memory<br/>(program output)"]
+        rsn --> mxlShm["MXL Shared Memory<br/>(program output)"]
+        mxlAudioOut --> mxlShm
 
         pr --> browser1["MoQ Viewer<br/>(Browser)"]
         pr --> browser2["MoQ Viewer<br/>(Browser)"]
@@ -370,11 +377,12 @@ graph TD
 - **Server-side switching.** The server produces the program output. The browser is a control surface and preview monitor, not the mixer.
 - **YUV420 blending in BT.709.** All transitions, keying, and compositing happen in YUV420 to avoid YUV↔RGB round-trips. This matches how hardware switchers (ATEM, Ross) work.
 - **MoQ for state and media.** Single QUIC connection carries both control state (JSON snapshots) and video/audio frames.
-- **Always-on re-encode.** Every program frame goes through process→encode (decode happens per-source at ingest). This costs CPU but guarantees consistent SPS/PPS across transition boundaries so browsers don't need to reconfigure VideoDecoder.
+- **Always-on re-encode.** Every program frame flows through `Pipeline.Run()` → encode (decode happens per-source at ingest). This costs CPU but guarantees consistent SPS/PPS across transition boundaries so browsers don't need to reconfigure VideoDecoder.
 - **Audio passthrough.** When a single source is at 0 dB with EQ and compressor bypassed, the mixer skips decode/encode entirely.
-- **Lock-free hot path.** `atomic.Pointer` for source viewers, `RLock` for frame routing. Per-source locks in frame sync, atomic `lastGroupID` eliminates `statsMu`, cache line padding prevents false sharing on source viewer counters. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
-- **Zero-allocation hot path.** Buffer-reuse APIs (`AVC1ToAnnexBInto`, `PrependSPSPPSInto`, `EqualPowerCrossfadeStereoInto`) with caller-provided buffers. `sync.Pool` for AVC1/GOP/YUV buffers. Precomputed crossfade gain tables. `GOGC=400` reduces GC frequency.
-- **Raw YUV pipeline.** Single decode at ingest, processing chain (keying → compositing) operates on raw YUV420, single encode at output. No multi-encode generation loss.
+- **Pipeline node chain.** The video processing pipeline is an explicit chain of `PipelineNode` implementations (upstream-key → compositor → raw-sinks → encode) built at startup and reconfigured at runtime via atomic swap. Nodes are immutable once built — reconfiguration creates a new pipeline, the old one drains in-flight frames in a background goroutine. Per-node Prometheus timing, lip-sync hint, and epoch versioning for downstream change detection.
+- **Lock-free hot path.** `atomic.Pointer` for source viewers and pipeline pointer, `RLock` for frame routing. Per-source locks in frame sync, atomic `lastGroupID` eliminates `statsMu`, cache line padding prevents false sharing on source viewer counters. Transitions validate under write lock, do the actual blend work without the lock, then publish under write lock.
+- **Zero-allocation hot path.** Buffer-reuse APIs (`AVC1ToAnnexBInto`, `PrependSPSPPSInto`, `EqualPowerCrossfadeStereoInto`) with caller-provided buffers. `sync.Pool` for AVC1/GOP buffers. `FramePool` (mutex-guarded LIFO free list, >99% hit rate) for YUV420 buffers. Precomputed crossfade gain tables. `GOGC=400` reduces GC frequency.
+- **Raw YUV pipeline.** Single decode at ingest, `Pipeline.Run()` node chain (keying → compositing → raw sinks → encode) operates on raw YUV420. No multi-encode generation loss.
 - **MXL shared-memory I/O.** Optional V210 video + float32 audio via shared memory (build tag `mxl`). MXL sources bypass H.264 decode — raw V210→YUV420p conversion feeds directly into the switching pipeline. Program output routes back to MXL for zero-latency interop with other broadcast tools.
 
 ## Configuration
@@ -654,6 +662,7 @@ Tested in Chrome 120+ and Safari 26.4+. The dev server sets `Cross-Origin-Opener
 - [API Reference](docs/api.md) — Endpoints with request/response examples
 - [Deployment Guide](docs/deployment.md) — Production setup, Docker, TLS, monitoring
 - [Architecture](docs/architecture.md) — System design, data flow, decisions
+- [Pipeline Architecture](docs/pipeline.md) — Video processing pipeline: node interface, FramePool, atomic swap, instrumentation
 - [Locking & Concurrency](docs/locking-and-concurrency.md) — Lock inventory, frame flow diagrams, lock ordering, deadlock-free guarantees
 - [SCTE-35 Features](docs/scte35.md) — Features and support for ANSI/SCTE 35 2023r1
 - [MXL Integration](docs/mxl.md) — MXL shared-memory setup, configuration, demo

@@ -132,6 +132,28 @@ func TestNewMetrics_IDRGateHistogram(t *testing.T) {
 	require.Fail(t, "IDRGateDuration metric not found in gathered families")
 }
 
+func TestMetrics_NodeProcessDuration(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	require.NotNil(t, m.NodeProcessDuration)
+
+	// Observe a value and verify it doesn't panic.
+	m.NodeProcessDuration.WithLabelValues("h264-encode").Observe(0.001)
+
+	// Verify the metric is registered and gatherable.
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	var found bool
+	for _, f := range families {
+		if f.GetName() == "switchframe_pipeline_node_duration_seconds" {
+			found = true
+		}
+	}
+	require.True(t, found, "NodeProcessDuration should be registered")
+}
+
 func TestNewMetrics_SeparateRegistries(t *testing.T) {
 	reg1 := prometheus.NewRegistry()
 	reg2 := prometheus.NewRegistry()

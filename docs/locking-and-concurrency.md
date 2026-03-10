@@ -39,7 +39,8 @@ graph TD
     subgraph "Async Pipeline"
         VPC[videoProcCh ‹channel›]
         VPL[videoProcessingLoop]
-        PC[pipelineCodecs]
+        PIPE["Pipeline.Run()"]
+        PC[encodeNode → pipelineCodecs]
     end
 
     subgraph "Output"
@@ -68,7 +69,8 @@ graph TD
     HRVF --> VPC
     TE -->|blend| VPC
     VPC --> VPL
-    VPL --> PC
+    VPL --> PIPE
+    PIPE --> PC
     PC --> PR
     PR --> OV
     OV -->|channel| MX
@@ -91,7 +93,7 @@ Every lock in the system, what it protects, and its characteristics:
 | syncSource | `ss.mu` | `Mutex` | per-source ring buffers (video/audio) | Yes (brief) |
 | DelayBuffer | `db.mu` | `Mutex` | sources map | Conditional |
 | sourceDecoder | (none) | — | Single goroutine per decoder, channel-based | Yes |
-| pipelineCodecs | `pc.mu` | `Mutex` | encoder state, avc1Buf | Yes (brief) |
+| pipelineCodecs | `pc.mu` | `Mutex` | encoder state (wrapped by encodeNode) | Yes (brief) |
 | TransitionEngine | `e.mu` | `RWMutex` | state, decoders, YUV buffers, blender | During transitions |
 | AudioMixer | `m.mu` | `RWMutex` | channels, mix state, crossfade | Yes |
 | TSMuxer | `m.mu` | `Mutex` | muxer, output buffer | Yes |
@@ -104,6 +106,7 @@ Every lock in the system, what it protects, and its characteristics:
 
 | Component | Field | Type | Purpose |
 |-----------|-------|------|---------|
+| Switcher | `pipeline` | `atomic.Pointer[Pipeline]` | Lock-free pipeline swap (rebuilt on compositor/key/sink/format change) |
 | sourceViewer | `delayBuffer` | `atomic.Pointer` | Hot-swap delay buffer / frame sync |
 | sourceViewer | `frameSync` | `atomic.Pointer` | Hot-swap frame synchronizer |
 | sourceViewer | `srcDecoder` | `atomic.Pointer` | Per-source H.264→YUV decoder |
@@ -119,7 +122,7 @@ Every lock in the system, what it protects, and its characteristics:
 
 | Pool | Location | Seed Size | Purpose |
 |------|----------|-----------|---------|
-| `yuvPool` | `processing_frame.go` | 1080p (3.1 MB) | YUV420 frame buffers |
+| `FramePool` | `frame_pool.go` | 32 × 1080p (97 MB) | YUV420 frame buffers (mutex-guarded LIFO, >99% hit rate) |
 | `avc1Pool` | `pipeline_codecs.go` | 64 KB | Encoded AVC1 output |
 | `tsPacketPool` | `async_adapter.go` | 64 KB | MPEG-TS packet batches |
 | `lanczosIntermPool` | `scaler_lanczos.go` | 1080p (5.5 MB) | Lanczos horizontal pass float32 intermediates |
@@ -148,12 +151,12 @@ sequenceDiagram
     participant SW as Switcher
     participant CH as videoProcCh
     participant PL as videoProcessingLoop
-    participant PC as pipelineCodecs
+    participant PIPE as Pipeline.Run()
     participant PR as programRelay
 
     Note over SV: atomic.Pointer load srcDecoder
     SV->>SD: Send(frame) [channel, cap=2]
-    Note over SD: Decode goroutine:<br/>AVC1→AnnexB<br/>decoder.Decode() → YUV420<br/>Deep-copy from pool
+    Note over SD: Decode goroutine:<br/>AVC1→AnnexB<br/>decoder.Decode() → YUV420<br/>Deep-copy from FramePool
 
     SD->>DB: handleRawVideoFrame(key, pf)
     Note over DB: atomic hasAnyDelay check<br/>If delay=0: no lock, passthrough
@@ -167,12 +170,10 @@ sequenceDiagram
     Note over CH: Buffered channel (cap=8)<br/>Newest-wins drop policy
 
     CH->>PL: work := <-videoProcCh
-    PL->>PC: encode(pf, isKF)
-    activate PC
-    Note over PC: pc.mu.Lock() — config<br/>pc.mu.Unlock()<br/>Encode (no lock)
-    deactivate PC
-
-    PL->>PR: BroadcastVideo(frame)
+    Note over PL: p := pipeline.Load()<br/>(atomic.Pointer, no lock)
+    PL->>PIPE: p.Run(frame)
+    Note over PIPE: upstreamKeyNode → compositorNode<br/>→ rawSinkNode(s) → encodeNode<br/>encodeNode: pc.mu brief lock,<br/>encode without lock (5-30ms)
+    PIPE->>PR: BroadcastVideo(frame)
     Note over PR: Copies data to each viewer's channel
 ```
 
@@ -193,7 +194,7 @@ sequenceDiagram
     participant TE as TransitionEngine
     participant CH as videoProcCh
     participant PL as videoProcessingLoop
-    participant PC as pipelineCodecs
+    participant PIPE as Pipeline.Run()
     participant PR as programRelay
 
     SD->>SW: handleRawVideoFrame(key, pf)
@@ -208,13 +209,15 @@ sequenceDiagram
 
     TE->>SW: Output(blended, w, h, pts, isKF)
     activate SW
-    Note over SW: broadcastProcessed()<br/>s.mu.RLock() — read refs<br/>s.mu.RUnlock()<br/>Deep-copy YUV (pool)
+    Note over SW: broadcastProcessed()<br/>Wrap YUV → ProcessingFrame<br/>enqueueVideoWork()
     deactivate SW
 
     SW->>CH: enqueueVideoWork
     CH->>PL: work := <-videoProcCh
-    PL->>PC: encode(pf, isKF)
-    PL->>PR: BroadcastVideo(frame)
+    Note over PL: p := pipeline.Load() (atomic)
+    PL->>PIPE: p.Run(frame)
+    Note over PIPE: Node chain → encodeNode<br/>→ BroadcastVideo
+    PIPE->>PR: BroadcastVideo(frame)
 ```
 
 **Lock sequence:** `s.mu` RLock → `e.mu` Lock → release → `s.mu` RLock → release → `pc.mu` Lock → release
@@ -298,7 +301,7 @@ sequenceDiagram
     participant SW as Switcher
     participant TE as TransitionEngine
     participant CH as videoProcCh
-    participant PC as pipelineCodecs
+    participant PIPE as Pipeline.Run()
     participant PR as programRelay
 
     MXL->>SRC: videoFanOut(grain)
@@ -311,11 +314,12 @@ sequenceDiagram
 
     alt During transition
         SW->>TE: IngestRawFrame(key, yuv, w, h, pts)
-        Note over TE: Same as Flow 2 Phase 1-3
+        Note over TE: Same as Flow 2
     else Normal
         SW->>CH: enqueueVideoWork(yuvFrame)
-        CH->>PC: encode(pf)
-        PC->>PR: BroadcastVideo(frame)
+        CH->>PIPE: Pipeline.Run(frame)
+        Note over PIPE: Node chain → encodeNode
+        PIPE->>PR: BroadcastVideo(frame)
     end
 ```
 
@@ -369,7 +373,7 @@ These rules prevent deadlocks. Every lock acquisition follows this hierarchy —
 ```mermaid
 graph TD
     A["1. Switcher s.mu"] --> B["2. TransitionEngine e.mu"]
-    A --> D["3. pipelineCodecs pc.mu"]
+    A --> D["3. pipelineCodecs pc.mu<br/>(via Pipeline.Run → encodeNode)"]
     A --> E["4. AudioMixer m.mu"]
     A --> F["5. FrameSynchronizer fs.mu"]
     F --> G["6. syncSource ss.mu"]
@@ -391,7 +395,7 @@ graph TD
 
 3. **OutputManager releases before viewer/muxer stop:** `stopMuxerLocked` releases `m.mu` before calling `viewer.Stop()` to avoid deadlock with the muxer output callback.
 
-4. **No cross-subsystem lock nesting:** The video pipeline (Switcher → pipelineCodecs) and the audio pipeline (Switcher → Mixer) never hold each other's locks simultaneously.
+4. **No cross-subsystem lock nesting:** The video pipeline (Switcher → Pipeline.Run() → encodeNode → pipelineCodecs) and the audio pipeline (Switcher → Mixer) never hold each other's locks simultaneously. The Pipeline itself uses no locks — it's immutable once built and replaced via `atomic.Pointer` swap.
 
 5. **Transition engine releases before callbacks:** `IngestFrame` releases `e.mu` before calling `Output`, preventing the engine lock from blocking the switcher's broadcast path.
 
@@ -404,7 +408,7 @@ graph TD
 The switcher hot path reads state under RLock, copies values to locals, releases the lock, then processes without any lock:
 
 ```
-handleVideoFrame:
+handleRawVideoFrame:
     s.mu.RLock()
     programSource := s.programSource     ← copy to local
     state := s.state                     ← copy to local
@@ -432,10 +436,14 @@ handleVideoFrame:
 
 ### Pattern 3: Prepare Outside, Commit Under Lock
 
-pipelineCodecs holds `pc.mu` only for config checks and state updates, not for the actual encode (5–30ms):
+pipelineCodecs holds `pc.mu` only for config checks and state updates, not for the actual encode (5–30ms). This is now invoked by `encodeNode.Process()` inside `Pipeline.Run()`:
 
 ```
-encode():
+Pipeline.Run():
+    for each node in activeNodes:         ← no locks, immutable slice
+        node.Process(frame)               ← in-place processing
+
+encodeNode.Process() → codecs.encode():
     pc.mu.Lock()                          ← brief: check encoder init
     encoder := pc.encoder
     pc.mu.Unlock()                        ← release before expensive work
@@ -446,6 +454,8 @@ encode():
     pc.groupID = ...
     pc.mu.Unlock()
 ```
+
+The same pattern extends to all pipeline nodes: nodes are configured on the main goroutine (under `s.mu`), then `Pipeline.Run()` invokes them without locks on the pipeline goroutine. The pipeline itself is immutable — reconfiguration builds a new `Pipeline` and swaps it via `atomic.Pointer`.
 
 ### Pattern 4: Atomic Pointer Swap
 

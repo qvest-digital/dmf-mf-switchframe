@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // countingNode counts Process calls and optionally modifies YUV.
@@ -530,6 +532,124 @@ func TestSwapPipeline_ConcurrentTriggers(t *testing.T) {
 	// Epoch should have incremented 11 times total (1 initial + 10 concurrent).
 	require.Equal(t, uint64(11), sw.pipelineEpoch.Load())
 	require.NotNil(t, sw.pipeline.Load())
+}
+
+func TestPipelineLoop_RunObservesPrometheus(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	n1 := &countingNode{name: "test-node", active: true, latency: time.Microsecond}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1}))
+	p.SetMetrics(m)
+
+	pf := &ProcessingFrame{
+		YUV:   make([]byte, 4*4*3/2),
+		Width: 4, Height: 4,
+	}
+	p.Run(pf)
+
+	// Gather metrics and verify observation was recorded.
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	var found bool
+	for _, f := range families {
+		if f.GetName() == "switchframe_pipeline_node_duration_seconds" {
+			found = true
+			require.GreaterOrEqual(t, len(f.GetMetric()), 1)
+			// Verify the label is "test-node".
+			metric := f.GetMetric()[0]
+			require.Equal(t, "test-node", metric.GetLabel()[0].GetValue())
+			// Verify at least 1 observation.
+			require.Equal(t, uint64(1), metric.GetHistogram().GetSampleCount())
+		}
+	}
+	require.True(t, found, "NodeProcessDuration should have observations")
+}
+
+func TestPipelineLoop_RunNilMetricsSafe(t *testing.T) {
+	n1 := &countingNode{name: "test-node", active: true}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1}))
+	// No SetMetrics call — p.metrics is nil.
+
+	pf := &ProcessingFrame{
+		YUV:   make([]byte, 4*4*3/2),
+		Width: 4, Height: 4,
+	}
+	// Should not panic.
+	p.Run(pf)
+}
+
+func TestPipelineLoop_SnapshotIncludesLipSyncHint(t *testing.T) {
+	// Node with 10ms latency — video latency will be 10ms.
+	// AAC frame at 48kHz = 1024 samples = ~21.333ms
+	// lip_sync_hint = 10ms - 21.333ms ≈ -11333us (audio leads video)
+	n := &countingNode{name: "enc", active: true, latency: 10 * time.Millisecond}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	snap := p.Snapshot()
+	hint, ok := snap["lip_sync_hint_us"]
+	require.True(t, ok, "Snapshot should include lip_sync_hint_us")
+
+	// Video latency (10ms) minus audio latency (~21.333ms) = negative (audio leads)
+	hintVal := hint.(int64)
+	require.Less(t, hintVal, int64(0), "with 10ms video latency, audio leads")
+}
+
+func TestPipelineLoop_SnapshotLipSyncHintPositive(t *testing.T) {
+	// Node with 30ms latency — exceeds AAC frame duration (~21.333ms).
+	// lip_sync_hint = 30ms - 21.333ms ≈ +8666us (video leads audio)
+	n := &countingNode{name: "enc", active: true, latency: 30 * time.Millisecond}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	snap := p.Snapshot()
+	hintVal := snap["lip_sync_hint_us"].(int64)
+	require.Greater(t, hintVal, int64(0), "with 30ms video latency, video leads")
+}
+
+func TestBuildPipeline_WiresMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.SetMetrics(m)
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	err := sw.BuildPipeline()
+	require.NoError(t, err)
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	require.Same(t, m, p.metrics, "BuildPipeline should wire promMetrics into pipeline")
+}
+
+func TestRebuildPipeline_WiresMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.SetMetrics(m)
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	sw.rebuildPipeline()
+
+	p := sw.pipeline.Load()
+	require.NotNil(t, p)
+	require.Same(t, m, p.metrics, "rebuildPipeline should wire promMetrics into pipeline")
 }
 
 func TestPipelineLoop_EmptyPipeline(t *testing.T) {

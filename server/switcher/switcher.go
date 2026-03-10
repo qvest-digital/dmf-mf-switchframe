@@ -249,7 +249,7 @@ type Switcher struct {
 
 	// Structured video processing pipeline. Built via BuildPipeline(),
 	// called per-frame from videoProcessingLoop. Atomic pointer for
-	// future hot-swap reconfiguration (Phase 4).
+	// hot-swap reconfiguration via swapPipeline().
 	pipeline atomic.Pointer[Pipeline]
 
 	// Pipeline epoch — monotonically increasing counter for downstream
@@ -572,6 +572,7 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 func (s *Switcher) BuildPipeline() error {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -587,7 +588,14 @@ func (s *Switcher) BuildPipeline() error {
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
+	p.SetMetrics(prom)
 	p.epoch = s.pipelineEpoch.Add(1)
+	s.log.Info("pipeline built",
+		"epoch", p.epoch,
+		"active_nodes", len(p.activeNodes),
+		"total_latency", p.TotalLatency(),
+		"lip_sync_hint", p.TotalLatency()-aacFrameDuration,
+	)
 	s.pipeline.Store(p)
 	return nil
 }
@@ -615,6 +623,7 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 func (s *Switcher) rebuildPipeline() {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -631,7 +640,14 @@ func (s *Switcher) rebuildPipeline() {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return
 	}
+	p.SetMetrics(prom)
 	p.epoch = s.pipelineEpoch.Add(1)
+	s.log.Info("pipeline rebuilt",
+		"epoch", p.epoch,
+		"active_nodes", len(p.activeNodes),
+		"total_latency", p.TotalLatency(),
+		"lip_sync_hint", p.TotalLatency()-aacFrameDuration,
+	)
 	s.swapPipeline(p)
 }
 
@@ -764,8 +780,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	}
 
 	// Build new pipeline with new pool + new format, swap atomically.
-	// Capture node list under lock to avoid race on s.compositorRef etc.
+	// Capture node list and metrics under lock to avoid race on s.compositorRef etc.
 	hasPipeCodecs := s.pipeCodecs != nil
+	prom := s.promMetrics
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -777,6 +794,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 		if err := p.Build(f, s.framePool, nodes); err != nil {
 			s.log.Warn("pipeline rebuild failed on format change", "error", err)
 		} else {
+			p.SetMetrics(prom)
 			p.epoch = s.pipelineEpoch.Add(1)
 			s.swapPipeline(p)
 		}

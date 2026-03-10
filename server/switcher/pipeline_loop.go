@@ -5,7 +5,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/metrics"
 )
+
+// aacFrameDuration is the duration of one AAC-LC frame at 48kHz (1024 samples).
+// Used for lip-sync hint calculation: 1024/48000 s ≈ 21.333ms.
+var aacFrameDuration = time.Second * 1024 / 48000
 
 // Pipeline holds a configured, ready-to-run processing chain.
 // Built via Build() on main goroutine. Run() called per-frame on pipeline goroutine.
@@ -15,6 +21,9 @@ type Pipeline struct {
 	activeNodes []PipelineNode // filtered by Active() at build time
 	format      PipelineFormat
 	pool        *FramePool
+
+	// Prometheus metrics (optional). Set via SetMetrics() after Build().
+	metrics *metrics.Metrics
 
 	// Per-node timing (nanoseconds). Indexed by position in activeNodes.
 	// Written by Run() (single-writer), read by Snapshot() (safe: atomic).
@@ -69,6 +78,12 @@ func (p *Pipeline) Build(format PipelineFormat, pool *FramePool, nodes []Pipelin
 	return nil
 }
 
+// SetMetrics sets the Prometheus metrics instance for per-node observations.
+// Must be called after Build() but before Run(). Nil is safe (no observations).
+func (p *Pipeline) SetMetrics(m *metrics.Metrics) {
+	p.metrics = m
+}
+
 // Run processes a single frame through all active nodes.
 // Called on pipeline goroutine (single-threaded).
 func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
@@ -82,6 +97,9 @@ func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
 		dur := time.Now().UnixNano() - t0
 		p.nodeTiming[i].Store(dur)
 		updateAtomicMax(&p.nodeMaxNs[i], dur)
+		if p.metrics != nil {
+			p.metrics.NodeProcessDuration.WithLabelValues(node.Name()).Observe(float64(dur) / 1e9)
+		}
 	}
 
 	total := time.Now().UnixNano() - start
@@ -119,6 +137,7 @@ func (p *Pipeline) Snapshot() map[string]any {
 		"last_run_ns":      p.lastRunNs.Load(),
 		"max_run_ns":       p.maxRunNs.Load(),
 		"total_latency_us": p.totalLatency.Microseconds(),
+		"lip_sync_hint_us": (p.totalLatency - aacFrameDuration).Microseconds(),
 	}
 }
 
