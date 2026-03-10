@@ -814,6 +814,41 @@ func TestFrameSync_LastRawVideoReleasedOnReplacement(t *testing.T) {
 		"old lastRawVideo buffer should be released when replaced by fresh frame")
 }
 
+func TestFrameSync_AudioPTSUsesAudioFrameDuration(t *testing.T) {
+	// Bug 4: Repeated audio frames advance PTS by tickIntervalPTS (video tick,
+	// e.g. 3003 for 29.97fps) instead of the correct audio frame duration
+	// (~1920 ticks for 1024 AAC samples at 48kHz). This test verifies that
+	// repeated audio PTS increments are ~1920, not ~3003.
+	handler := &syncTestHandler{}
+	// Use 29.97fps (tickInterval = 3003 at 90kHz) to make the wrong value
+	// distinct from the correct audio value (1920).
+	fs := NewFrameSynchronizer(33366666*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Push one audio frame, then let it repeat via freeze behavior.
+	af := &media.AudioFrame{PTS: 10000, Data: []byte{0xAA}}
+	fs.IngestAudio("cam1", af)
+
+	// Manually run enough ticks for original + 2 repeats (max allowed).
+	fs.releaseTick() // tick 1: fresh frame, PTS=10000
+	fs.releaseTick() // tick 2: repeat #1
+	fs.releaseTick() // tick 3: repeat #2
+
+	audios := handler.getAudios()
+	require.GreaterOrEqual(t, len(audios), 3, "need at least 3 audio frames")
+
+	// First frame: original PTS preserved.
+	require.Equal(t, int64(10000), audios[0].frame.PTS, "first frame PTS")
+
+	// Repeated frames should advance by audioFramePTS (~1920), NOT tickIntervalPTS (3003).
+	const expectedAudioIncrement int64 = 1920 // 1024 * 90000 / 48000
+	for i := 1; i < len(audios); i++ {
+		delta := audios[i].frame.PTS - audios[i-1].frame.PTS
+		require.Equal(t, expectedAudioIncrement, delta,
+			"audio PTS delta[%d] = %d, want %d (not video tick interval 3003)", i, delta, expectedAudioIncrement)
+	}
+}
+
 func BenchmarkReleaseTick(b *testing.B) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)

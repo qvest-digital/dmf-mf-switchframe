@@ -16,6 +16,17 @@ const (
 	// Two slots allows one frame to be consumed while the next arrives,
 	// preventing jitter from causing drops under normal conditions.
 	syncRingSize = 2
+
+	// aacSamplesPerFrame is the number of PCM samples per AAC-LC frame.
+	aacSamplesPerFrame = 1024
+
+	// defaultAudioSampleRate is the standard audio sample rate for broadcast.
+	defaultAudioSampleRate = 48000
+
+	// audioFramePTS is the PTS interval for one AAC frame in 90 kHz MPEG-TS
+	// clock units: 1024 samples * 90000 Hz / 48000 Hz = 1920 ticks.
+	// Used for advancing repeated audio frame PTS (instead of video tick interval).
+	audioFramePTS = int64(aacSamplesPerFrame) * int64(mpegtsClock) / int64(defaultAudioSampleRate)
 )
 
 // pendingRelease holds a frame pair collected under the lock for delivery
@@ -649,14 +660,17 @@ func (fs *FrameSynchronizer) releaseTick() {
 			if r.ss != nil {
 				if r.freshAudio || !r.ss.audioPTSInitialized {
 					if r.ss.audioPTSInitialized && af.PTS <= r.ss.lastReleasedAudioPTS {
-						r.ss.lastReleasedAudioPTS += tickIntervalPTS
+						r.ss.lastReleasedAudioPTS += audioFramePTS
 						af.PTS = r.ss.lastReleasedAudioPTS
 					} else {
 						r.ss.lastReleasedAudioPTS = af.PTS
 					}
 					r.ss.audioPTSInitialized = true
 				} else {
-					r.ss.lastReleasedAudioPTS += tickIntervalPTS
+					// Repeated audio frame (freeze): advance by audio frame duration,
+					// not video tick interval. AAC frames are 1024 samples at 48kHz
+					// = 1920 ticks at 90kHz, regardless of video frame rate.
+					r.ss.lastReleasedAudioPTS += audioFramePTS
 					af.PTS = r.ss.lastReleasedAudioPTS
 				}
 			}
