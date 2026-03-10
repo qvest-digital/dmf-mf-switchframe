@@ -34,9 +34,10 @@
 		origH: number;
 	} | null>(null);
 
-	// Optimistic local overrides — instant visual feedback while API round-trips.
+	// Optimistic local overrides — instant visual feedback while drag in progress.
 	// Keyed by slot ID. Cleared on pointer-up when server state catches up.
-	let localOverrides = $state<Map<number, { x: number; y: number; w: number; h: number }>>(new Map());
+	// Uses plain object (not Map) for reliable Svelte 5 $state reactivity.
+	let localOverrides = $state<Record<number, { x: number; y: number; w: number; h: number }>>({});
 
 	const SNAP_GRID = 2; // snap to even-aligned 2px grid (YUV420 minimum)
 
@@ -76,8 +77,7 @@
 			newY = Math.max(0, Math.min(frameH - dragging.origH, newY));
 
 			// Instant local preview
-			localOverrides.set(dragging.slotId, { x: newX, y: newY, w: dragging.origW, h: dragging.origH });
-			localOverrides = localOverrides; // trigger reactivity
+			localOverrides[dragging.slotId] = { x: newX, y: newY, w: dragging.origW, h: dragging.origH };
 
 			if (fastControl) {
 				fastControl.sendSlotPosition(dragging.slotId, newX, newY, dragging.origW, dragging.origH);
@@ -91,8 +91,7 @@
 			newH = Math.max(36, Math.min(frameH - dragging.origY, newH));
 
 			// Instant local preview
-			localOverrides.set(dragging.slotId, { x: dragging.origX, y: dragging.origY, w: newW, h: newH });
-			localOverrides = localOverrides; // trigger reactivity
+			localOverrides[dragging.slotId] = { x: dragging.origX, y: dragging.origY, w: newW, h: newH };
 
 			if (fastControl) {
 				fastControl.sendSlotPosition(dragging.slotId, dragging.origX, dragging.origY, newW, newH);
@@ -104,19 +103,18 @@
 
 	function handlePointerUp() {
 		if (dragging) {
-			const override = localOverrides.get(dragging.slotId);
+			const override = localOverrides[dragging.slotId];
 			if (fastControl && override) {
 				// Confirm final position via REST for authoritative state
 				apiCall(updateLayoutSlot(dragging.slotId, { x: override.x, y: override.y, width: override.w, height: override.h }), 'Confirm slot position');
 			}
-			localOverrides.delete(dragging.slotId);
-			localOverrides = localOverrides; // trigger reactivity
+			delete localOverrides[dragging.slotId];
 		}
 		dragging = null;
 	}
 
 	function slotRect(slot: LayoutSlotState): { x: number; y: number; w: number; h: number } {
-		const override = localOverrides.get(slot.id);
+		const override = localOverrides[slot.id];
 		if (override) return override;
 		return { x: slot.x, y: slot.y, w: slot.width, h: slot.height };
 	}
@@ -163,13 +161,13 @@
 		width: 100%;
 		height: 100%;
 		pointer-events: auto;
-		z-index: 5;
+		z-index: var(--z-above);
 	}
 
 	.slot-outline {
 		position: absolute;
 		border: 2px solid rgba(212, 160, 23, 0.8);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		cursor: move;
 		box-sizing: border-box;
 	}
@@ -196,9 +194,9 @@
 		font-family: var(--font-mono);
 		font-size: 0.55rem;
 		color: rgba(212, 160, 23, 0.9);
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--overlay-heavy);
 		padding: 1px 4px;
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		pointer-events: none;
 		white-space: nowrap;
 	}
@@ -210,7 +208,7 @@
 		width: 10px;
 		height: 10px;
 		background: rgba(212, 160, 23, 0.9);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		cursor: nwse-resize;
 	}
 
