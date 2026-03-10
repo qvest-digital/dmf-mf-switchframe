@@ -78,7 +78,7 @@ test.describe('Output Controls', () => {
 		await dismissOverlays(page);
 		await page.locator('.srt-btn').click();
 		await expect(page.locator('.srt-modal')).toBeVisible();
-		await page.locator('.close-btn').click();
+		await page.locator('.srt-modal .close-btn').click();
 		await expect(page.locator('.srt-modal')).not.toBeVisible();
 	});
 

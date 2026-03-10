@@ -98,6 +98,47 @@ func TestBlendRegion_ZeroAlpha(t *testing.T) {
 	require.Equal(t, byte(16), dst[0], "zero alpha should leave dst unchanged")
 }
 
+func TestFillRectBlack(t *testing.T) {
+	w, h := 16, 16
+	dst := makeYUV420(w, h, 235, 60, 200) // start with non-black
+
+	rect := image.Rect(4, 4, 12, 12) // 8×8 in the middle
+	FillRectBlack(dst, w, h, rect)
+
+	// Inside rect: Y=16
+	require.Equal(t, byte(16), dst[4*w+4], "Y inside rect should be 16")
+	require.Equal(t, byte(16), dst[11*w+11], "Y inside rect corner should be 16")
+	// Outside rect: unchanged
+	require.Equal(t, byte(235), dst[0], "Y outside rect should be unchanged")
+	require.Equal(t, byte(235), dst[3*w+3], "Y just outside rect should be unchanged")
+
+	// Chroma inside rect (chroma coords for luma 4,4 → 2,2)
+	ySize := w * h
+	chromaW := w / 2
+	require.Equal(t, byte(128), dst[ySize+2*chromaW+2], "Cb inside should be 128")
+	chromaSize := chromaW * (h / 2)
+	require.Equal(t, byte(128), dst[ySize+chromaSize+2*chromaW+2], "Cr inside should be 128")
+
+	// Chroma outside rect: unchanged
+	require.Equal(t, byte(60), dst[ySize+0], "Cb outside should be unchanged")
+	require.Equal(t, byte(200), dst[ySize+chromaSize+0], "Cr outside should be unchanged")
+}
+
+func TestFillRectBlack_ClipsToFrame(t *testing.T) {
+	w, h := 8, 8
+	dst := makeYUV420(w, h, 235, 60, 200)
+
+	// Rect extends past frame edge
+	rect := image.Rect(6, 6, 12, 12)
+	require.NotPanics(t, func() {
+		FillRectBlack(dst, w, h, rect)
+	})
+
+	// (6,6) should be black, (0,0) should be unchanged
+	require.Equal(t, byte(16), dst[6*w+6], "clipped fill Y should be 16")
+	require.Equal(t, byte(235), dst[0], "outside should be unchanged")
+}
+
 // Issue #2: ComposePIPOpaque must not panic when src dimensions don't match rect.
 func TestComposePIPOpaque_SrcSmallerThanRect(t *testing.T) {
 	dst := makeYUV420(16, 16, 16, 128, 128)

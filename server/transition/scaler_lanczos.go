@@ -53,27 +53,37 @@ func ScaleYUV420Lanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) 
 	dstUVH := dstH / 2
 	dstUVSize := dstUVW * dstUVH
 
-	// Y plane: full resolution
+	srcCbOff := srcYSize
+	dstCbOff := dstYSize
+	srcCrOff := srcYSize + srcUVSize
+	dstCrOff := dstYSize + dstUVSize
+
+	// Scale all three planes concurrently. Y is 4x the work of each
+	// chroma plane so it dominates; Cb and Cr finish in parallel.
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		scalePlaneLanczos(
+			src[srcCbOff:srcCbOff+srcUVSize], srcUVW, srcUVH,
+			dst[dstCbOff:dstCbOff+dstUVSize], dstUVW, dstUVH,
+		)
+	}()
+	go func() {
+		defer wg.Done()
+		scalePlaneLanczos(
+			src[srcCrOff:srcCrOff+srcUVSize], srcUVW, srcUVH,
+			dst[dstCrOff:dstCrOff+dstUVSize], dstUVW, dstUVH,
+		)
+	}()
+
+	// Y plane on calling goroutine (largest plane, dominates runtime)
 	scalePlaneLanczos(
 		src[:srcYSize], srcW, srcH,
 		dst[:dstYSize], dstW, dstH,
 	)
 
-	// Cb plane: half resolution
-	srcCbOff := srcYSize
-	dstCbOff := dstYSize
-	scalePlaneLanczos(
-		src[srcCbOff:srcCbOff+srcUVSize], srcUVW, srcUVH,
-		dst[dstCbOff:dstCbOff+dstUVSize], dstUVW, dstUVH,
-	)
-
-	// Cr plane: half resolution
-	srcCrOff := srcYSize + srcUVSize
-	dstCrOff := dstYSize + dstUVSize
-	scalePlaneLanczos(
-		src[srcCrOff:srcCrOff+srcUVSize], srcUVW, srcUVH,
-		dst[dstCrOff:dstCrOff+dstUVSize], dstUVW, dstUVH,
-	)
+	wg.Wait()
 }
 
 // lanczosKernel holds precomputed weights for one dimension of Lanczos-3 scaling.
@@ -211,6 +221,34 @@ func precomputeLanczosKernel(srcSize, dstSize int) *lanczosKernel {
 		}
 	}
 
+	// Trim trailing zero-weight taps to reduce the inner loop iteration count.
+	// We only trim trailing zeros (not leading) because offset adjustment
+	// would cause the vertical pass to read beyond the temp buffer when
+	// startRow + maxTaps exceeds srcH.
+	trimmedMaxTaps := 0
+	for d := 0; d < dstSize; d++ {
+		wBase := d * rawTaps
+		lastNZ := rawTaps - 1
+		for lastNZ >= 0 && weights[wBase+lastNZ] == 0 {
+			lastNZ--
+		}
+		needed := lastNZ + 1
+		if needed > trimmedMaxTaps {
+			trimmedMaxTaps = needed
+		}
+	}
+
+	// Repack weights with the tighter stride if trailing zeros were found.
+	if trimmedMaxTaps < rawTaps && trimmedMaxTaps > 0 {
+		compact := make([]float32, dstSize*trimmedMaxTaps)
+		for d := 0; d < dstSize; d++ {
+			copy(compact[d*trimmedMaxTaps:(d+1)*trimmedMaxTaps],
+				weights[d*rawTaps:d*rawTaps+trimmedMaxTaps])
+		}
+		weights = compact
+		rawTaps = trimmedMaxTaps
+	}
+
 	return &lanczosKernel{
 		size:    dstSize,
 		maxTaps: rawTaps,
@@ -270,21 +308,59 @@ func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	// Get float32 intermediate buffer from pool (dstW × srcH)
 	temp := getLanczosTempBuf(dstW * srcH)
 	defer putLanczosTempBuf(temp)
-	// Zero the buffer — stale values could corrupt results when
-	// zero-weight taps read from uninitialized regions.
-	for i := range temp {
-		temp[i] = 0
-	}
+	// No zero-fill needed: the horizontal pass writes every position in
+	// temp[y*dstW .. (y+1)*dstW) for all y in [0, srcH), so no stale
+	// values remain from previous uses of the pooled buffer.
 
-	// Horizontal pass: resample each source row from srcW to dstW
-	for y := 0; y < srcH; y++ {
-		lanczosHorizRow(
-			temp[y*dstW:(y+1)*dstW],
-			src[y*srcW:(y+1)*srcW],
-			hKernel.offsets,
-			hKernel.weights,
-			hKernel.maxTaps,
-		)
+	// Horizontal pass: resample each source row from srcW to dstW.
+	// Each row is independent, so parallelize when there are enough rows
+	// to amortize goroutine overhead.
+	const horizChunkSize = 64
+	if srcH > 128 {
+		var hwg sync.WaitGroup
+		for start := 0; start < srcH; start += horizChunkSize {
+			end := start + horizChunkSize
+			if end > srcH {
+				end = srcH
+			}
+			if start == 0 {
+				// First chunk runs on calling goroutine to avoid overhead
+				for y := start; y < end; y++ {
+					lanczosHorizRow(
+						temp[y*dstW:(y+1)*dstW],
+						src[y*srcW:(y+1)*srcW],
+						hKernel.offsets,
+						hKernel.weights,
+						hKernel.maxTaps,
+					)
+				}
+				continue
+			}
+			hwg.Add(1)
+			go func(s, e int) {
+				defer hwg.Done()
+				for y := s; y < e; y++ {
+					lanczosHorizRow(
+						temp[y*dstW:(y+1)*dstW],
+						src[y*srcW:(y+1)*srcW],
+						hKernel.offsets,
+						hKernel.weights,
+						hKernel.maxTaps,
+					)
+				}
+			}(start, end)
+		}
+		hwg.Wait()
+	} else {
+		for y := 0; y < srcH; y++ {
+			lanczosHorizRow(
+				temp[y*dstW:(y+1)*dstW],
+				src[y*srcW:(y+1)*srcW],
+				hKernel.offsets,
+				hKernel.weights,
+				hKernel.maxTaps,
+			)
+		}
 	}
 
 	// Vertical pass: resample each column from srcH to dstH

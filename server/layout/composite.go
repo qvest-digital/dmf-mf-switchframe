@@ -141,6 +141,51 @@ func fillChromaRows(dst []byte, cbBase, crBase, stride int, cb, cr byte, x0, x1,
 	}
 }
 
+// FillRectBlack fills a rectangular region with BT.709 limited-range black
+// (Y=16, Cb=128, Cr=128). Used for "no signal" slots to avoid scaling a
+// uniform gray buffer through the scaler. Clips to frame bounds.
+func FillRectBlack(dst []byte, dstW, dstH int, rect image.Rectangle) {
+	fillW := rect.Dx()
+	fillH := rect.Dy()
+	if rect.Min.X+fillW > dstW {
+		fillW = dstW - rect.Min.X
+	}
+	if rect.Min.Y+fillH > dstH {
+		fillH = dstH - rect.Min.Y
+	}
+	if fillW <= 0 || fillH <= 0 || rect.Min.X < 0 || rect.Min.Y < 0 {
+		return
+	}
+
+	// Y plane: BT.709 limited-range black
+	for y := 0; y < fillH; y++ {
+		off := (rect.Min.Y+y)*dstW + rect.Min.X
+		row := dst[off : off+fillW]
+		for i := range row {
+			row[i] = 16
+		}
+	}
+
+	// Chroma planes: neutral
+	ySize := dstW * dstH
+	chromaDstW := dstW / 2
+	chromaFillW := fillW / 2
+	chromaFillH := fillH / 2
+	chromaX := rect.Min.X / 2
+	chromaY := rect.Min.Y / 2
+
+	for plane := 0; plane < 2; plane++ {
+		base := ySize + plane*(chromaDstW*(dstH/2))
+		for y := 0; y < chromaFillH; y++ {
+			off := base + (chromaY+y)*chromaDstW + chromaX
+			row := dst[off : off+chromaFillW]
+			for i := range row {
+				row[i] = 128
+			}
+		}
+	}
+}
+
 // BlendRegion alpha-blends src onto dst for a rectangular region.
 // alpha is 0.0 (fully transparent) to 1.0 (fully opaque).
 // Used for dissolve transitions on PIP slots.

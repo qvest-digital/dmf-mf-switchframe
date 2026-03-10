@@ -144,15 +144,8 @@ lh_neon_tail_loop:
 	MOVBU	(R15), R16
 	UCVTFWS	R16, F2                  // float32(src[off+t])
 
-	// Scalar accumulate into F0 (which is V0.S[0])
-	// But F0 is part of V0 (the NEON accumulator). We need to
-	// accumulate into a separate scalar register.
-	FMULS	F1, F2, F2               // F2 = weight * pixel
-	// Add to V0.S[0]: extract, add, insert
-	// Simpler: accumulate in a scalar F4 then add to V0 at the end
-	FMOVS	ZR, F3                   // Can't easily add to V0.S[0], so...
-	// Actually just use FMADDS with a separate scalar accumulator
-	// We'll handle this below after the NEON reduce
+	// Jump to scalar tail which will reduce V0 to F0 and then
+	// accumulate F0 += F2 * F1 (pixel * weight) via FMADDS.
 	B	lh_scalar_tail_start
 
 lh_neon_reduce:
@@ -284,8 +277,78 @@ TEXT ·lanczosVertRow(SB), NOSPLIT, $0-96
 	FMOVS	R9, F18
 
 	MOVD	$0, R10                  // col = 0
-	SUB	$3, R1, R11              // dstW - 3
+	SUB	$7, R1, R20              // dstW - 7 (for 8-wide loop)
+	SUB	$3, R1, R11              // dstW - 3 (for 4-wide loop)
 
+	// --- 8-wide NEON loop: process 8 columns per iteration ---
+lv_neon8:
+	CMP	R20, R10
+	BGE	lv_neon                  // fewer than 8 columns left, fall to 4-wide
+
+	VEOR	V0.B16, V0.B16, V0.B16  // accum cols 0-3
+	VEOR	V4.B16, V4.B16, V4.B16  // accum cols 4-7
+	MOVD	$0, R12
+
+lv_neon8_tap:
+	CMP	R6, R12
+	BGE	lv_neon8_cvt
+
+	// Load weight[t], broadcast to V1
+	LSL	$2, R12, R9
+	ADD	R5, R9, R9
+	FMOVS	(R9), F1
+	VDUP_S0_4S(1, 1)
+
+	// Compute row base: temp + t * stride_bytes + col * 4
+	MUL	R12, R7, R13
+	ADD	R2, R13, R14
+	LSL	$2, R10, R9
+	ADD	R14, R9, R14
+
+	// Load 8 float32 from temp row (2 × 4-wide loads)
+	VLD1	(R14), [V2.S4]
+	ADD	$16, R14, R15
+	VLD1	(R15), [V3.S4]
+
+	FMLA_4S(0, 2, 1)            // V0 += V2 * V1 (cols 0-3)
+	FMLA_4S(4, 3, 1)            // V4 += V3 * V1 (cols 4-7)
+
+	ADD	$1, R12
+	B	lv_neon8_tap
+
+lv_neon8_cvt:
+	// Clamp and convert both accumulators
+	FMAX_4S(0, 0, 16)
+	FMIN_4S(0, 0, 17)
+	FCVTNS_4S(0, 0)
+
+	FMAX_4S(4, 4, 16)
+	FMIN_4S(4, 4, 17)
+	FCVTNS_4S(4, 4)
+
+	// Store 8 bytes
+	ADD	R0, R10, R14
+	VMOV	V0.S[0], R13
+	MOVB	R13, (R14)
+	VMOV	V0.S[1], R13
+	MOVB	R13, 1(R14)
+	VMOV	V0.S[2], R13
+	MOVB	R13, 2(R14)
+	VMOV	V0.S[3], R13
+	MOVB	R13, 3(R14)
+	VMOV	V4.S[0], R13
+	MOVB	R13, 4(R14)
+	VMOV	V4.S[1], R13
+	MOVB	R13, 5(R14)
+	VMOV	V4.S[2], R13
+	MOVB	R13, 6(R14)
+	VMOV	V4.S[3], R13
+	MOVB	R13, 7(R14)
+
+	ADD	$8, R10
+	B	lv_neon8
+
+	// --- 4-wide NEON loop: process remaining 4-7 columns ---
 lv_neon:
 	CMP	R11, R10
 	BGE	lv_scalar_setup

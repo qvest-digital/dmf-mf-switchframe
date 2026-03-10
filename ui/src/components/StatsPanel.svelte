@@ -147,9 +147,14 @@
 		'h264-encode':       { display: 'H.264 Encode',      short: 'ENC',  color: 'rgba(52, 211, 153, 0.7)' },
 	};
 
-	// Canonical pipeline order for display
-	const PIPELINE_ORDER = ['upstream-key', 'layout-compositor', 'compositor', 'raw-sink-mxl', 'h264-encode'];
-	const BRANCH_NODE = 'raw-sink-monitor';
+	// Canonical pipeline order for display (MON inline after MXL)
+	const PIPELINE_ORDER = ['upstream-key', 'layout-compositor', 'compositor', 'raw-sink-mxl', 'raw-sink-monitor', 'h264-encode'];
+
+	// Tap nodes that route to a side output destination
+	const SIDE_OUTPUT: Record<string, string> = {
+		'raw-sink-mxl': 'MXL Output',
+		'raw-sink-monitor': 'Raw Monitor',
+	};
 
 	// --- Props ---
 	interface Props {
@@ -280,7 +285,7 @@
 			? snapshot.switcher.frame_budget_ms * 1e6
 			: DEFAULT_FRAME_BUDGET_NS;
 
-		// Build dynamic display chain
+		// Build dynamic display chain (MON inline after MXL)
 		const displayChain: string[] = [];
 		for (const name of PIPELINE_ORDER) {
 			// Skip compositor when layout-compositor is active (mutually exclusive)
@@ -291,12 +296,10 @@
 		// Add any unknown active nodes (future-proof)
 		const knownSet = new Set(PIPELINE_ORDER);
 		for (const node of activeNodes) {
-			if (!knownSet.has(node.name) && node.name !== BRANCH_NODE && !displayChain.includes(node.name)) {
+			if (!knownSet.has(node.name) && !displayChain.includes(node.name)) {
 				displayChain.push(node.name);
 			}
 		}
-
-		const branchNode = activeMap.get(BRANCH_NODE) ?? null;
 
 		return {
 			epoch: pipe.epoch,
@@ -310,7 +313,6 @@
 			activeNodes,
 			activeMap,
 			displayChain,
-			branchNode,
 		};
 	});
 
@@ -434,49 +436,80 @@
 					{/if}
 				</div>
 				{#if pipelineData}
-					<div class="node-graph">
-						{#each pipelineData.displayChain as name, i}
+					<div class="pipeline-flow">
+						<!-- Input summary -->
+						<div class="flow-input">
+							<span class="flow-box-label">INPUTS</span>
+							<span class="flow-box-detail">
+								{snapshot?.switcher?.source_decoders?.active_count ?? 0} decoders
+								{#if snapshot?.switcher?.program_source}
+									· PGM: {snapshot.switcher.program_source}
+								{/if}
+								{#if snapshot?.switcher?.video_pipeline?.output_fps}
+									· {snapshot.switcher.video_pipeline.output_fps}fps
+								{/if}
+							</span>
+						</div>
+
+						<!-- Vertical node chain -->
+						{#each pipelineData.displayChain as name}
 							{@const node = pipelineData.activeMap.get(name)}
-							{#if i > 0}
-								<div class="node-arrow" aria-hidden="true">&rarr;</div>
-							{/if}
+							{@const status = node ? nodeStatus(node.last_ns, pipelineData.frameBudgetNs) : 'ok'}
+							{@const budgetRatio = node ? Math.min(node.last_ns / pipelineData.frameBudgetNs, 1) : 0}
+							{@const budgetPct = node ? ((node.last_ns / pipelineData.frameBudgetNs) * 100).toFixed(1) : '0'}
 							<div
-								class="node-box"
+								class="flow-node {status}"
 								class:inactive={!node}
 								class:has-error={node?.last_error}
-								title={node ? `${nodeDisplayName(name)}: ${fmtMs(node.last_ns)}ms (max ${fmtMs(node.max_ns)}ms)` : `${nodeDisplayName(name)}: inactive`}
 							>
-								<div class="node-name">{nodeShortName(name)}</div>
 								{#if node}
-									<div class="node-time">{fmtMs(node.last_ns)}ms</div>
-									<div class="node-dot {nodeStatus(node.last_ns, pipelineData.frameBudgetNs)}" aria-label="{nodeStatus(node.last_ns, pipelineData.frameBudgetNs)} status"></div>
+									<div class="flow-node-top">
+										<span class="flow-node-left">
+											<span class="node-name">{nodeShortName(name)}</span>
+											<span class="flow-node-fullname">{nodeDisplayName(name)}</span>
+										</span>
+										<span class="flow-node-right">
+											<span class="node-time">{fmtMs(node.last_ns)}ms</span>
+											{#if SIDE_OUTPUT[name]}
+												<span class="flow-side-output">&rarr; {SIDE_OUTPUT[name]}</span>
+											{/if}
+										</span>
+									</div>
+									<div class="flow-node-detail">
+										<span>max {fmtMs(node.max_ns)}ms · {node.latency_us}µs</span>
+										<span class="flow-budget-pct">{budgetPct}%</span>
+									</div>
+									<div class="node-micro-bar">
+										<div class="node-micro-fill {status}" style="width: {budgetRatio * 100}%"></div>
+									</div>
 								{:else}
-									<div class="node-time inactive-label">off</div>
+									<div class="flow-node-top">
+										<span class="flow-node-left">
+											<span class="node-name">{nodeShortName(name)}</span>
+											<span class="flow-node-fullname">{nodeDisplayName(name)}</span>
+										</span>
+										<span class="flow-node-right">
+											<span class="node-time inactive-label">off</span>
+										</span>
+									</div>
 								{/if}
 							</div>
-							<!-- Branch node after raw-sink-mxl (or before h264-encode if no MXL) -->
-							{#if name === 'raw-sink-mxl' && pipelineData.branchNode}
-								<div class="branch-container">
-									<div class="branch-line" aria-hidden="true"></div>
-									<div class="node-box branch-node">
-										<div class="node-name">{nodeShortName(BRANCH_NODE)}</div>
-										<div class="node-time">{fmtMs(pipelineData.branchNode.last_ns)}ms</div>
-										<div class="node-dot {nodeStatus(pipelineData.branchNode.last_ns, pipelineData.frameBudgetNs)}"></div>
-									</div>
-								</div>
-							{/if}
 						{/each}
-						<!-- Show branch node after last non-encode node if no MXL sink -->
-						{#if pipelineData.branchNode && !pipelineData.activeMap.has('raw-sink-mxl')}
-							<div class="branch-container">
-								<div class="branch-line" aria-hidden="true"></div>
-								<div class="node-box branch-node">
-									<div class="node-name">{nodeShortName(BRANCH_NODE)}</div>
-									<div class="node-time">{fmtMs(pipelineData.branchNode.last_ns)}ms</div>
-									<div class="node-dot {nodeStatus(pipelineData.branchNode.last_ns, pipelineData.frameBudgetNs)}"></div>
-								</div>
-							</div>
-						{/if}
+
+						<!-- Output summary -->
+						<div class="flow-output">
+							<span class="flow-box-label">OUTPUTS</span>
+							<span class="flow-box-detail">
+								{derivedMetrics.viewers.length} viewer{derivedMetrics.viewers.length !== 1 ? 's' : ''}
+								{#if derivedMetrics.totalViewerBytes > 0}
+									· {fmtBytes(derivedMetrics.totalViewerBytes)}
+								{/if}
+								· Rec: {snapshot?.output?.recording?.active ? 'ON' : 'off'}
+								{#if snapshot?.output?.srt?.active}
+									· SRT: LIVE
+								{/if}
+							</span>
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -1079,50 +1112,186 @@
 		margin-left: auto;
 	}
 
-	.node-graph {
-		display: flex;
-		align-items: flex-start;
-		gap: 0;
-		flex-wrap: nowrap;
-		overflow-x: auto;
-		scrollbar-width: none;
-		-ms-overflow-style: none;
-		padding-bottom: 4px;
-	}
-
-	.node-graph::-webkit-scrollbar {
-		display: none;
-	}
-
-	.node-box {
-		background: var(--bg-panel);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		padding: 6px 8px;
-		min-width: 52px;
-		max-width: 64px;
-		text-align: center;
+	/* --- Vertical Pipeline Flow --- */
+	.pipeline-flow {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
-		gap: 2px;
-		flex-shrink: 0;
+		gap: 0;
+		position: relative;
+		padding-left: 16px;
+	}
+
+	/* Vertical spine line */
+	.pipeline-flow::before {
+		content: '';
+		position: absolute;
+		left: 22px;
+		top: 0;
+		bottom: 0;
+		width: 2px;
+		background: var(--border-subtle);
+		z-index: 0;
+	}
+
+	/* Individual flow node card */
+	.flow-node {
+		position: relative;
+		background: var(--bg-panel);
+		border: 1px solid var(--border-default);
+		border-left: 3px solid var(--status-ok);
+		border-radius: var(--radius-sm);
+		padding: 6px 10px 8px;
+		margin: 3px 0 3px 20px;
+		overflow: hidden;
 		transition: border-color 0.15s, background 0.15s;
+		z-index: 1;
 	}
 
-	.node-box:not(.inactive):hover {
+	/* Tick mark connecting node to spine */
+	.flow-node::before {
+		content: '';
+		position: absolute;
+		left: -21px;
+		top: 50%;
+		width: 18px;
+		height: 2px;
+		background: var(--border-subtle);
+	}
+
+	/* Heat-based left border */
+	.flow-node.ok {
+		border-left-color: var(--status-ok);
+		background: rgba(22, 163, 74, 0.04);
+	}
+	.flow-node.warn {
+		border-left-color: var(--status-warn);
+		background: rgba(234, 179, 8, 0.06);
+	}
+	.flow-node.crit {
+		border-left-color: var(--status-crit);
+		background: rgba(220, 38, 38, 0.06);
+		animation: pulse-crit 1s ease-in-out infinite;
+	}
+
+	.flow-node:not(.inactive):hover {
 		border-color: var(--border-strong, var(--border-default));
-		background: rgba(255, 255, 255, 0.03);
 	}
+	.flow-node.ok:not(.inactive):hover { border-left-color: var(--status-ok); }
+	.flow-node.warn:not(.inactive):hover { border-left-color: var(--status-warn); }
+	.flow-node.crit:not(.inactive):hover { border-left-color: var(--status-crit); }
 
-	.node-box.inactive {
+	.flow-node.inactive {
 		border-style: dashed;
+		border-left-style: dashed;
 		border-color: var(--border-subtle);
+		border-left-color: var(--border-subtle);
+		background: transparent;
 		opacity: 0.4;
 	}
 
-	.node-box.has-error {
+	.flow-node.has-error {
 		border-color: var(--status-crit);
+		border-left-color: var(--status-crit);
+	}
+
+	.flow-node-top {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.flow-node-left {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.flow-node-fullname {
+		font-size: 10px;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.flow-node-right {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+
+	.flow-node-detail {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-top: 2px;
+		font-size: 9px;
+		color: var(--text-tertiary);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.flow-budget-pct {
+		font-weight: 500;
+	}
+
+	.flow-side-output {
+		font-size: 9px;
+		font-weight: 500;
+		color: var(--accent-blue);
+		background: var(--accent-blue-dim);
+		padding: 1px 5px;
+		border-radius: 3px;
+		white-space: nowrap;
+	}
+
+	/* Input/output summary boxes */
+	.flow-input,
+	.flow-output {
+		position: relative;
+		background: var(--bg-panel);
+		border: 1px solid var(--border-subtle);
+		border-left: 3px solid var(--accent-blue);
+		border-radius: var(--radius-sm);
+		padding: 6px 10px;
+		margin-left: 20px;
+		z-index: 1;
+	}
+
+	.flow-input {
+		margin-bottom: 2px;
+	}
+
+	.flow-output {
+		margin-top: 2px;
+	}
+
+	/* Connector from input/output to spine */
+	.flow-input::before,
+	.flow-output::before {
+		content: '';
+		position: absolute;
+		left: -21px;
+		top: 50%;
+		width: 18px;
+		height: 2px;
+		background: var(--border-subtle);
+	}
+
+	.flow-box-label {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.5px;
+		margin-right: 8px;
+	}
+
+	.flow-box-detail {
+		font-size: 10px;
+		color: var(--text-secondary);
 	}
 
 	.node-name {
@@ -1144,55 +1313,30 @@
 		font-style: italic;
 	}
 
-	.node-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		margin-top: 2px;
+	/* Micro progress bar at bottom of node */
+	.node-micro-bar {
+		position: absolute;
+		bottom: 0;
+		left: 0;
+		right: 0;
+		height: 2px;
+		background: rgba(255, 255, 255, 0.04);
 	}
 
-	.node-dot.ok { background: var(--status-ok); }
-	.node-dot.warn {
-		background: var(--status-warn);
-		box-shadow: 0 0 4px rgba(234, 179, 8, 0.5);
+	.node-micro-fill {
+		height: 100%;
+		transition: width 0.3s ease;
 	}
-	.node-dot.crit {
-		background: var(--status-crit);
-		box-shadow: 0 0 6px rgba(220, 38, 38, 0.6);
-		animation: pulse-crit 1s ease-in-out infinite;
-	}
+
+	.node-micro-fill.ok { background: var(--status-ok); }
+	.node-micro-fill.warn { background: var(--status-warn); }
+	.node-micro-fill.crit { background: var(--status-crit); }
 
 	@keyframes pulse-crit {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.6; }
 	}
 
-	.node-arrow {
-		display: flex;
-		align-items: center;
-		padding: 0 3px;
-		color: var(--text-tertiary);
-		font-size: 12px;
-		margin-top: 12px;
-	}
-
-	.branch-container {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		margin-left: -3px;
-		margin-right: -3px;
-	}
-
-	.branch-line {
-		width: 1px;
-		height: 6px;
-		background: var(--text-tertiary);
-	}
-
-	.branch-node {
-		font-size: 9px;
-	}
 
 	/* --- Frame Budget Bar --- */
 	.budget-bar {

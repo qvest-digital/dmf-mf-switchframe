@@ -106,9 +106,9 @@ func ResolveBuiltinPreset(name string, frameW, frameH int) *Layout {
 	case "pip-bottom-left":
 		return PIPPreset(frameW, frameH, "", "bottom-left", 0.25)
 	case "side-by-side":
-		return SideBySidePreset(frameW, frameH, "", "", 4)
+		return SideBySidePreset(frameW, frameH, "", "", 0)
 	case "quad":
-		return QuadPreset(frameW, frameH, [4]string{}, 4)
+		return QuadPreset(frameW, frameH, [4]string{}, 0)
 	default:
 		return nil
 	}

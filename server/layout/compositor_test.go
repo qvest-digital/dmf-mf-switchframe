@@ -6,7 +6,73 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/transition"
 )
+
+func TestCompositor_SelectScaleQuality(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+
+	// All sizes should use Lanczos after optimization
+	q := c.selectScaleQuality(1280, 720, 960, 540, 1920, 1080)
+	require.Equal(t, transition.ScaleQualityHigh, q, "quad slot should use Lanczos")
+
+	q = c.selectScaleQuality(1920, 1080, 480, 270, 1920, 1080)
+	require.Equal(t, transition.ScaleQualityHigh, q, "small PIP should use Lanczos")
+
+	q = c.selectScaleQuality(1920, 1080, 960, 1080, 1920, 1080)
+	require.Equal(t, transition.ScaleQualityHigh, q, "side-by-side should use Lanczos")
+}
+
+func TestCompositor_GraySlotDirectFill(t *testing.T) {
+	c := NewCompositor(8, 8)
+
+	// White background — gray slot should overwrite with broadcast black
+	l := &Layout{
+		Name: "pip",
+		Slots: []LayoutSlot{
+			{SourceKey: "missing", Rect: image.Rect(0, 0, 4, 4), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	bg := makeYUV420(8, 8, 235, 60, 200) // white-ish background
+	result := c.ProcessFrame(bg, 8, 8)
+
+	// Slot region should be broadcast black (Y=16, Cb=128, Cr=128)
+	require.Equal(t, byte(16), result[0], "gray slot Y should be broadcast black")
+	// Outside slot should be unchanged
+	require.Equal(t, byte(235), result[4], "outside slot should be unchanged")
+
+	// Chroma inside slot
+	ySize := 8 * 8
+	require.Equal(t, byte(128), result[ySize], "gray slot Cb should be 128")
+}
+
+func BenchmarkCompositor_ProcessFrame_Quad(b *testing.B) {
+	c := NewCompositor(1920, 1080)
+
+	l := &Layout{
+		Name: "quad",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 960, 540), Enabled: true},
+			{SourceKey: "cam2", Rect: image.Rect(960, 0, 1920, 540), Enabled: true},
+			{SourceKey: "cam3", Rect: image.Rect(0, 540, 960, 1080), Enabled: true},
+			{SourceKey: "cam4", Rect: image.Rect(960, 540, 1920, 1080), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Ingest 720p sources (requires scaling to 960×540 slots)
+	for _, name := range []string{"cam1", "cam2", "cam3", "cam4"} {
+		c.IngestSourceFrame(name, makeYUV420(1280, 720, 200, 128, 128), 1280, 720)
+	}
+
+	bg := makeYUV420(1920, 1080, 16, 128, 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.ProcessFrame(bg, 1920, 1080)
+	}
+}
 
 func TestCompositor_IngestAndNeedsSource(t *testing.T) {
 	c := NewCompositor(1920, 1080)
