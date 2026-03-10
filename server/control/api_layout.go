@@ -23,6 +23,8 @@ type slotUpdateRequest struct {
 	Height     *int                   `json:"height,omitempty"`
 	Border     *layout.BorderConfig   `json:"border,omitempty"`
 	Transition *layout.SlotTransition `json:"transition,omitempty"`
+	ScaleMode  *string                `json:"scaleMode,omitempty"`
+	CropAnchor *[2]float64            `json:"cropAnchor,omitempty"`
 }
 
 func (a *API) handleGetLayout(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +155,12 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Transition != nil {
 			slot.Transition = *req.Transition
+		}
+		if req.ScaleMode != nil {
+			slot.ScaleMode = *req.ScaleMode
+		}
+		if req.CropAnchor != nil {
+			slot.CropAnchor = *req.CropAnchor
 		}
 	})
 	if a.broadcastFn != nil {

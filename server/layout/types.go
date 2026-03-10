@@ -9,6 +9,12 @@ import (
 // DefaultTransitionDurationMs is the default slot transition duration.
 const DefaultTransitionDurationMs = 300
 
+// Scale mode constants.
+const (
+	ScaleModeStretch = "stretch" // Stretch source to fill slot (default, may distort)
+	ScaleModeFill    = "fill"    // Scale source to cover slot, crop excess (preserves aspect ratio)
+)
+
 // MaxSlots is the maximum number of layout slots.
 const MaxSlots = 4
 
@@ -20,6 +26,39 @@ type LayoutSlot struct {
 	Border     BorderConfig    `json:"border"`
 	Transition SlotTransition  `json:"transition"`
 	Enabled    bool            `json:"enabled"`
+	ScaleMode  string          `json:"scaleMode,omitempty"`  // "stretch" (default) or "fill"
+	CropAnchor [2]float64     `json:"cropAnchor,omitempty"` // [x,y] 0.0-1.0, default center
+}
+
+// EffectiveScaleMode returns the slot's scale mode, defaulting to "stretch".
+func (s LayoutSlot) EffectiveScaleMode() string {
+	if s.ScaleMode == ScaleModeFill {
+		return ScaleModeFill
+	}
+	return ScaleModeStretch
+}
+
+// EffectiveCropAnchor returns the slot's crop anchor, defaulting to center (0.5, 0.5).
+// Values are clamped to [0, 1]. Only defaults to center when ScaleMode is not "fill"
+// AND anchor is zero-value, so explicit [0,0] (top-left) works in fill mode.
+func (s LayoutSlot) EffectiveCropAnchor() (float64, float64) {
+	ax, ay := s.CropAnchor[0], s.CropAnchor[1]
+	// In fill mode, always use raw values (including [0,0] = top-left).
+	// In non-fill mode, zero-value means unset — default to center.
+	if s.ScaleMode != ScaleModeFill && ax == 0 && ay == 0 {
+		return 0.5, 0.5
+	}
+	return clamp01(ax), clamp01(ay)
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // BorderConfig describes the visual border around a PIP slot.
@@ -72,6 +111,14 @@ func ValidateSlot(slot LayoutSlot, frameW, frameH int) error {
 	}
 	if slot.Border.Width%2 != 0 {
 		return fmt.Errorf("border width %d must be even", slot.Border.Width)
+	}
+	if slot.ScaleMode != "" && slot.ScaleMode != ScaleModeStretch && slot.ScaleMode != ScaleModeFill {
+		return fmt.Errorf("unknown scaleMode %q (must be %q or %q)", slot.ScaleMode, ScaleModeStretch, ScaleModeFill)
+	}
+	for i, v := range slot.CropAnchor {
+		if v < 0 || v > 1 {
+			return fmt.Errorf("cropAnchor[%d] = %v out of range [0,1]", i, v)
+		}
 	}
 	return nil
 }

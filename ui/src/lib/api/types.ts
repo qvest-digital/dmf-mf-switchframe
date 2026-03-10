@@ -137,6 +137,8 @@ export interface LayoutSlotState {
 	height: number;
 	zOrder: number;
 	animating?: boolean;
+	scaleMode?: string;
+	cropAnchor?: [number, number];
 }
 
 export interface LayoutSlotConfig {

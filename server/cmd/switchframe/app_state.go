@@ -138,15 +138,17 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 			ls := &internal.LayoutState{ActivePreset: l.Name}
 			for i, slot := range l.Slots {
 				ls.Slots = append(ls.Slots, internal.LayoutSlotState{
-					ID:        i,
-					SourceKey: slot.SourceKey,
-					Enabled:   slot.Enabled,
-					X:         slot.Rect.Min.X,
-					Y:         slot.Rect.Min.Y,
-					Width:     slot.Rect.Dx(),
-					Height:    slot.Rect.Dy(),
-					ZOrder:    slot.ZOrder,
-					Animating: a.layoutCompositor.SlotAnimating(i),
+					ID:         i,
+					SourceKey:  slot.SourceKey,
+					Enabled:    slot.Enabled,
+					X:          slot.Rect.Min.X,
+					Y:          slot.Rect.Min.Y,
+					Width:      slot.Rect.Dx(),
+					Height:     slot.Rect.Dy(),
+					ZOrder:     slot.ZOrder,
+					Animating:  a.layoutCompositor.SlotAnimating(i),
+					ScaleMode:  slot.ScaleMode,
+					CropAnchor: slot.CropAnchor,
 				})
 			}
 			state.Layout = ls
