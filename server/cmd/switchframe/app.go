@@ -209,6 +209,9 @@ func (a *App) initPrismServer() error {
 		OnStreamRegistered:   a.onStreamRegistered,
 		OnStreamUnregistered: a.onStreamUnregistered,
 		ControlCh: a.controlPub.Ch(),
+		// NOTE: Datagrams bypass operator auth/lock middleware (acceptable for
+		// trusted-LAN single-operator use). Revisit if multi-operator security
+		// requires per-datagram authentication.
 		OnDatagram: func(streamKey string, data []byte) {
 			if err := a.fastCtrl.Dispatch(data); err != nil {
 				slog.Debug("fast-control datagram error", "error", err, "stream", streamKey)

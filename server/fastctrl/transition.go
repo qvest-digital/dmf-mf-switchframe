@@ -12,7 +12,7 @@ func ParseTransitionPosition(data []byte) (float64, error) {
 	}
 	bits := binary.BigEndian.Uint32(data[:4])
 	pos := float64(math.Float32frombits(bits))
-	if pos < 0 || pos > 1 {
+	if math.IsNaN(pos) || pos < 0 || pos > 1 {
 		return 0, fmt.Errorf("transition position %f out of range [0, 1]", pos)
 	}
 	return pos, nil

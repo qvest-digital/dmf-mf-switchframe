@@ -35,6 +35,13 @@ func TestParseTransitionPosition_Negative(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseTransitionPosition_NaN(t *testing.T) {
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, math.Float32bits(float32(math.NaN())))
+	_, err := ParseTransitionPosition(payload)
+	require.Error(t, err)
+}
+
 func TestParseTransitionPosition_Boundaries(t *testing.T) {
 	for _, val := range []float32{0.0, 1.0} {
 		payload := make([]byte, 4)
