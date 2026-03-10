@@ -665,6 +665,155 @@ func TestMonotonicTickAccuracy(t *testing.T) {
 		drift, numTicks, tickRate, elapsed, expected)
 }
 
+func TestFrameSync_PTSClampAfterFreeze(t *testing.T) {
+	// When a source freezes for several ticks, lastReleasedPTS accumulates
+	// forward. When the source resumes with a PTS behind the accumulated
+	// value, the output PTS must be clamped forward to prevent backward
+	// PTS in the MPEG-TS output (which confuses downstream decoders).
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Push one frame, let it freeze for several ticks.
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf)
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for freeze to accumulate PTS well past 2000.
+	time.Sleep(80 * time.Millisecond)
+
+	videos := handler.getVideos()
+	require.GreaterOrEqual(t, len(videos), 4, "need enough freeze frames")
+
+	// Record the last freeze PTS.
+	lastFreezePTS := videos[len(videos)-1].frame.PTS
+	require.Greater(t, lastFreezePTS, int64(1000), "freeze PTS should have advanced")
+
+	// Now push a fresh frame with PTS behind the accumulated freeze PTS.
+	// This simulates a source resuming after a stall.
+	vf2 := &media.VideoFrame{PTS: 2000, WireData: []byte{0x02}}
+	fs.IngestVideo("cam1", vf2)
+
+	time.Sleep(30 * time.Millisecond)
+
+	videos = handler.getVideos()
+	// Find the frame with WireData 0x02.
+	var resumePTS int64
+	for _, v := range videos {
+		if len(v.frame.WireData) > 0 && v.frame.WireData[0] == 0x02 {
+			resumePTS = v.frame.PTS
+			break
+		}
+	}
+	require.Greater(t, resumePTS, int64(0), "should have found resume frame")
+	require.Greater(t, resumePTS, lastFreezePTS,
+		"resume PTS %d should be > last freeze PTS %d (clamped forward)", resumePTS, lastFreezePTS)
+}
+
+func TestFrameSync_AudioPTSMonotonic(t *testing.T) {
+	// Audio repeat frames should have advancing PTS, not duplicate PTS.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	af := &media.AudioFrame{PTS: 5000, Data: []byte{0xAA}}
+	fs.IngestAudio("cam1", af)
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for the original + 2 repeats.
+	time.Sleep(60 * time.Millisecond)
+	audios := handler.getAudios()
+	require.GreaterOrEqual(t, len(audios), 2, "need at least 2 audio frames")
+
+	// All PTS values should be monotonically non-decreasing, and repeats
+	// should advance (no duplicate PTS values).
+	for i := 1; i < len(audios); i++ {
+		require.Greater(t, audios[i].frame.PTS, audios[i-1].frame.PTS,
+			"audio PTS[%d]=%d should be > PTS[%d]=%d",
+			i, audios[i].frame.PTS, i-1, audios[i-1].frame.PTS)
+	}
+}
+
+func TestFrameSync_RemoveSourceReleasesPoolBuffers(t *testing.T) {
+	// RemoveSource should release raw video pool buffers held in ring
+	// buffers and lastRawVideo to prevent FramePool starvation.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	fs.AddSource("cam1")
+
+	pool := NewFramePool(2, 4, 4) // tiny 4x4 pool with 2 buffers
+	buf := pool.Acquire()
+	pf := &ProcessingFrame{
+		PTS:  1000,
+		YUV:  buf,
+		pool: pool,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	// Let one tick release it so it becomes lastRawVideo.
+	fs.Start()
+	time.Sleep(50 * time.Millisecond)
+	fs.Stop()
+
+	// Pool should have 1 buffer (the other is held by lastRawVideo).
+	pool.mu.Lock()
+	freeBefore := len(pool.free)
+	pool.mu.Unlock()
+	require.Equal(t, 1, freeBefore, "pool should have 1 free buffer before RemoveSource")
+
+	// Remove the source — should release the pool buffer back.
+	fs.RemoveSource("cam1")
+
+	pool.mu.Lock()
+	freeAfter := len(pool.free)
+	pool.mu.Unlock()
+	require.Equal(t, 2, freeAfter, "pool should have 2 free buffers after RemoveSource")
+}
+
+func TestFrameSync_LastRawVideoReleasedOnReplacement(t *testing.T) {
+	// When a fresh raw frame replaces lastRawVideo, the old frame's pool
+	// buffer must be released to prevent FramePool starvation.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	fs.AddSource("cam1")
+
+	pool := NewFramePool(3, 4, 4) // tiny 4x4 pool with 3 buffers
+
+	// Push first frame and let it become lastRawVideo.
+	buf1 := pool.Acquire()
+	pf1 := &ProcessingFrame{PTS: 1000, YUV: buf1, pool: pool}
+	fs.IngestRawVideo("cam1", pf1)
+
+	// Run one tick so pf1 is popped and becomes lastRawVideo.
+	fs.releaseTick()
+
+	pool.mu.Lock()
+	freeAfterFirst := len(pool.free)
+	pool.mu.Unlock()
+	require.Equal(t, 2, freeAfterFirst, "pool should have 2 free after first frame held as lastRawVideo")
+
+	// Push a second frame — on next tick, it should replace lastRawVideo
+	// and the old buffer (buf1) should be released back to the pool.
+	buf2 := pool.Acquire()
+	pf2 := &ProcessingFrame{PTS: 2000, YUV: buf2, pool: pool}
+	fs.IngestRawVideo("cam1", pf2)
+
+	fs.releaseTick()
+
+	pool.mu.Lock()
+	freeAfterReplace := len(pool.free)
+	pool.mu.Unlock()
+	// buf1 released + buf2 held as new lastRawVideo = 2 free
+	require.Equal(t, 2, freeAfterReplace,
+		"old lastRawVideo buffer should be released when replaced by fresh frame")
+}
+
 func BenchmarkReleaseTick(b *testing.B) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
