@@ -122,8 +122,20 @@ func (sd *sourceDecoder) decodeLoop() {
 			continue
 		}
 		var buf []byte
+		var framePool *FramePool
 		if sd.pool != nil {
 			buf = sd.pool.Acquire()
+			if len(buf) < yuvSize {
+				// Pool buffer too small for this frame (e.g., 4K source with 1080p pool).
+				// Return the undersized buffer and fall back to heap allocation.
+				// Set framePool to nil so ReleaseYUV won't put the oversized
+				// buffer back into the pool.
+				sd.pool.Release(buf)
+				buf = make([]byte, yuvSize)
+				framePool = nil
+			} else {
+				framePool = sd.pool
+			}
 		} else {
 			buf = make([]byte, yuvSize)
 		}
@@ -138,7 +150,7 @@ func (sd *sourceDecoder) decodeLoop() {
 			IsKeyframe: frame.IsKeyframe,
 			GroupID:     frame.GroupID,
 			Codec:      frame.Codec,
-			pool:       sd.pool,
+			pool:       framePool,
 		}
 
 		sd.lastGroupID.Store(frame.GroupID)

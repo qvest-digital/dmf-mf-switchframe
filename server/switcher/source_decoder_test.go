@@ -376,3 +376,73 @@ func (d *failingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 }
 
 func (d *failingMockDecoder) Close() {}
+
+func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
+	// Bug 3: If decoded frame is larger than pool buffer (e.g., 4K source
+	// with 1080p pool), buf[:yuvSize] panics because yuvSize > cap(buf).
+	// The fix should detect undersized pool buffers and fall back to make().
+
+	// Mock decoder returns 640x480 frames (larger than pool).
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(640, 480), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	// Pool is sized for 320x240 — smaller than the 640x480 decoded frame.
+	pool := NewFramePool(4, 320, 240)
+
+	sd := newSourceDecoder("cam1", factory, callback, pool)
+	if sd == nil {
+		t.Fatal("newSourceDecoder returned nil")
+	}
+	defer sd.Close()
+
+	// Send a keyframe — decode produces 640x480, which is larger than pool buffers.
+	frame := &media.VideoFrame{
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	// This should not panic even though pool buffers are too small.
+	sd.Send(frame)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for callback")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	pf := received[0]
+	if pf.Width != 640 || pf.Height != 480 {
+		t.Errorf("dimensions = %dx%d, want 640x480", pf.Width, pf.Height)
+	}
+	expectedSize := 640 * 480 * 3 / 2
+	if len(pf.YUV) != expectedSize {
+		t.Errorf("YUV size = %d, want %d", len(pf.YUV), expectedSize)
+	}
+}
