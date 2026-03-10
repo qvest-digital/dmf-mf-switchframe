@@ -109,10 +109,6 @@
 		color: var(--accent-orange);
 	}
 
-	.mode-btn {
-		/* flows with header buttons */
-	}
-
 	.confidence-thumb {
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-xs);

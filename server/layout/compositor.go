@@ -186,8 +186,6 @@ type slotSnapshot struct {
 	srcYUV   []byte
 	srcW     int
 	srcH     int
-	grayW    int // gray buffer dimensions (may differ from slot.Rect during animation)
-	grayH    int
 	rect     image.Rectangle
 	alpha    float64
 	hasFill  bool

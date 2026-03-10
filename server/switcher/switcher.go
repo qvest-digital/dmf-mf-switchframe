@@ -434,7 +434,7 @@ func (s *Switcher) Close() {
 	// Swap pipeline to nil and synchronously drain + close.
 	if p := s.pipeline.Swap(nil); p != nil {
 		p.Wait()
-		p.Close()
+		_ = p.Close()
 	}
 	// Wait for any background drain goroutines from previous swaps
 	// before closing pipeCodecs (prevents use-after-close on encoder).
@@ -628,7 +628,7 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 	go func() {
 		defer s.drainWg.Done()
 		old.Wait()
-		old.Close()
+		_ = old.Close()
 	}()
 }
 

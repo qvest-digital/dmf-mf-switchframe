@@ -391,7 +391,7 @@ func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 			// Recurse with the smaller intermediate
 			scalePlaneLanczos(mid, midW, midH, dst, dstW, dstH)
 
-			mid = mid[:cap(mid)]
+			*bp = (*bp)[:cap(*bp)]
 			boxShrinkPool.Put(bp)
 			return
 		}

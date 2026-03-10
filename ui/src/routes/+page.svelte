@@ -640,7 +640,7 @@
 		overflow: hidden;
 		background: var(--bg-base);
 		min-height: 0;
-		max-height: clamp(60px, 12vh, 140px);
+		max-height: clamp(70px, 14vh, 160px);
 	}
 
 	.control-strip {
@@ -655,7 +655,7 @@
 	.bottom-panel {
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: clamp(150px, 22vh, 260px);
+		height: clamp(180px, 25vh, 280px);
 	}
 
 	.tab-panel {
