@@ -35,12 +35,18 @@
 	/** Local drag position for instant visual feedback during pointer drag. null = use server state. */
 	let dragPosition = $state<number | null>(null);
 
+	/** Ref to scrubber track for accurate position calculation independent of padding. */
+	let scrubberTrack = $state<HTMLElement>();
+
 	/** Brief hold at 1.0 after transition completes to prevent rubber-band snap. */
 	let completionHold = $state(false);
 	let prevInTransition = false;
 
 	/** Prevents re-starting a transition after one completes during the same drag gesture. */
 	let dragSessionDone = false;
+
+	/** Idle timer for wheel/trackpad scrub sessions. */
+	let wheelIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Clear guard once server confirms the transition is active
 	$effect(() => {
@@ -191,8 +197,8 @@
 	}
 
 	function updateScrubberFromPointer(e: PointerEvent) {
-		const target = e.currentTarget as HTMLElement;
-		const rect = target.getBoundingClientRect();
+		if (!scrubberTrack) return;
+		const rect = scrubberTrack.getBoundingClientRect();
 		const x = scrubberPosition(e.clientX, rect.left, rect.width);
 		anim.active = false;
 		dragPosition = x;
@@ -212,6 +218,53 @@
 			apiCall(p, 'Transition failed');
 		}
 		setPositionThrottled(x);
+	}
+
+	function handleWheel(e: WheelEvent) {
+		e.preventDefault();
+
+		// Use whichever axis has more motion (vertical swipe or horizontal swipe)
+		let delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+		// Normalize deltaMode: 0=pixels, 1=lines, 2=pages
+		if (e.deltaMode === 1) delta *= 16;
+		if (e.deltaMode === 2) delta *= 100;
+
+		// 400px of cumulative scroll = full 0→1 transition
+		const step = delta / 400;
+		const currentPos = dragPosition ?? tbarValue;
+		const newPos = Math.max(0, Math.min(1, currentPos + step));
+
+		anim.active = false;
+		dragPosition = newPos;
+
+		if (!dragSessionDone) {
+			if (!crState.inTransition && !tbarStarting && newPos > 0 && crState.previewSource) {
+				tbarStarting = true;
+				dragSessionDone = false;
+				const p = startTransition(
+					crState.previewSource, transType, durationMs,
+					transType === 'wipe' ? wipeDirection : undefined,
+					transType === 'stinger' ? stingerName : undefined,
+					getEasingConfig()
+				);
+				p.catch(() => { tbarStarting = false; });
+				apiCall(p, 'Transition failed');
+			}
+			if (newPos > 0) {
+				setPositionThrottled(newPos);
+			}
+		}
+
+		// Reset after scroll idle
+		if (wheelIdleTimer) clearTimeout(wheelIdleTimer);
+		wheelIdleTimer = setTimeout(() => {
+			if (fastControl && crState.inTransition && dragPosition !== null) {
+				setTransitionPosition(dragPosition).catch(() => {});
+			}
+			dragPosition = null;
+			dragSessionDone = false;
+			wheelIdleTimer = null;
+		}, 200);
 	}
 
 	function handleScrubberKeydown(e: KeyboardEvent) {
@@ -276,76 +329,79 @@
 			</label>
 		</div>
 
-		{#if transType === 'stinger'}
-			<div class="stinger-controls">
-				<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
-					{#each stingerNames as name}
-						<option value={name}>{name}</option>
-					{/each}
-					{#if stingerNames.length === 0}
-						<option value="" disabled>No stingers loaded</option>
+		<div class="type-specific">
+			{#if transType === 'stinger'}
+				<div class="stinger-controls">
+					{#if showDeleteConfirm}
+						<span class="delete-label">Del "{showDeleteConfirm}"?</span>
+						<button class="confirm-yes" onclick={() => handleDeleteStinger(showDeleteConfirm)}>Y</button>
+						<button class="confirm-no" onclick={() => showDeleteConfirm = ''}>N</button>
+					{:else}
+						<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
+							{#each stingerNames as name}
+								<option value={name}>{name}</option>
+							{/each}
+							{#if stingerNames.length === 0}
+								<option value="" disabled>None</option>
+							{/if}
+						</select>
+						<button
+							class="stinger-action-btn"
+							onclick={() => fileInput?.click()}
+							disabled={uploading}
+							title="Upload stinger (.zip)"
+							aria-label="Upload stinger"
+						>{uploading ? '…' : '↑'}</button>
+						{#if stingerName}
+							<button
+								class="stinger-action-btn stinger-delete-btn"
+								onclick={() => showDeleteConfirm = stingerName}
+								title="Delete {stingerName}"
+								aria-label="Delete stinger"
+							>✕</button>
+						{/if}
 					{/if}
-				</select>
-				<button
-					class="stinger-action-btn"
-					onclick={() => fileInput?.click()}
-					disabled={uploading}
-					title="Upload stinger (.zip)"
-					aria-label="Upload stinger"
-				>{uploading ? '...' : '\u2191'}</button>
-				{#if stingerName}
-					<button
-						class="stinger-action-btn stinger-delete-btn"
-						onclick={() => showDeleteConfirm = stingerName}
-						title="Delete {stingerName}"
-						aria-label="Delete stinger"
-					>{'\u2715'}</button>
-				{/if}
-				<input
-					bind:this={fileInput}
-					type="file"
-					accept=".zip"
-					onchange={handleUpload}
-					style="display:none"
-				/>
-			</div>
-			{#if showDeleteConfirm}
-				<div class="delete-confirm">
-					<span>Delete "{showDeleteConfirm}"?</span>
-					<button class="confirm-yes" onclick={() => handleDeleteStinger(showDeleteConfirm)}>Yes</button>
-					<button class="confirm-no" onclick={() => showDeleteConfirm = ''}>No</button>
+					<input
+						bind:this={fileInput}
+						type="file"
+						accept=".zip"
+						onchange={handleUpload}
+						style="display:none"
+					/>
 				</div>
 			{/if}
-		{/if}
 
-		{#if transType === 'wipe'}
-			<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
-				<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
-			</div>
-		{/if}
+			{#if transType === 'wipe'}
+				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
+					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
+				</div>
+			{/if}
+		</div>
 
-		<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
-			<option value={500}>0.5s</option>
-			<option value={1000}>1.0s</option>
-			<option value={1500}>1.5s</option>
-			<option value={2000}>2.0s</option>
-			<option value={3000}>3.0s</option>
-		</select>
+		<div class="timing-row">
+			<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
+				<option value={500}>0.5s</option>
+				<option value={1000}>1.0s</option>
+				<option value={1500}>1.5s</option>
+				<option value={2000}>2.0s</option>
+				<option value={3000}>3.0s</option>
+			</select>
 
-		<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
-			<option value="smoothstep">Smooth</option>
-			<option value="linear">Linear</option>
-			<option value="ease">Ease</option>
-			<option value="ease-in">Ease In</option>
-			<option value="ease-out">Ease Out</option>
-			<option value="ease-in-out">Ease In/Out</option>
-			<option value="custom">Custom</option>
-		</select>
+			<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
+				<option value="smoothstep">Smooth</option>
+				<option value="linear">Linear</option>
+				<option value="ease">Ease</option>
+				<option value="ease-in">Ease In</option>
+				<option value="ease-out">Ease Out</option>
+				<option value="ease-in-out">Ease In/Out</option>
+				<option value="custom">Custom</option>
+			</select>
+		</div>
 
 		{#if easingPreset === 'custom'}
 			<div class="custom-bezier">
@@ -369,6 +425,7 @@
 		{/if}
 	</div>
 
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="scrubber"
 		role="slider"
@@ -379,8 +436,9 @@
 		tabindex="0"
 		onpointerdown={handleScrubberPointerDown}
 		onkeydown={handleScrubberKeydown}
+		onwheel={handleWheel}
 	>
-		<div class="scrubber-track">
+		<div class="scrubber-track" bind:this={scrubberTrack}>
 			<div class="scrubber-fill" style="width: {tbarValue * 100}%"></div>
 			<div class="scrubber-thumb" style="left: {tbarValue * 100}%"></div>
 		</div>
@@ -480,7 +538,16 @@
 
 	.transition-options {
 		display: flex;
-		flex-wrap: wrap;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.type-specific:empty {
+		display: none;
+	}
+
+	.timing-row {
+		display: flex;
 		gap: 4px;
 		align-items: center;
 	}
@@ -557,15 +624,15 @@
 
 	.stinger-select {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-md);
-		padding: 3px 6px;
+		border-radius: var(--radius-sm);
+		padding: 2px 4px;
 		cursor: pointer;
-		max-width: 120px;
+		max-width: 100px;
 		transition: border-color var(--transition-fast);
 	}
 
@@ -580,16 +647,16 @@
 
 	.stinger-controls {
 		display: flex;
-		gap: 4px;
+		gap: 3px;
 		align-items: center;
 	}
 
 	.stinger-action-btn {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 600;
 		line-height: 1;
-		padding: 3px 6px;
+		padding: 2px 5px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
@@ -615,21 +682,21 @@
 		color: var(--tally-program);
 	}
 
-	.delete-confirm {
-		display: flex;
-		gap: 6px;
-		align-items: center;
+	.delete-label {
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		color: var(--text-secondary);
-		padding: 2px 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 100px;
 	}
 
 	.confirm-yes {
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		font-weight: 600;
-		padding: 2px 8px;
+		padding: 2px 6px;
 		border: 1px solid var(--tally-program);
 		border-radius: var(--radius-sm);
 		background: var(--tally-program-dim);
@@ -647,7 +714,7 @@
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		font-weight: 500;
-		padding: 2px 8px;
+		padding: 2px 6px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
@@ -662,7 +729,7 @@
 
 	.duration-select {
 		font-family: var(--font-mono);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
@@ -684,7 +751,7 @@
 
 	.easing-select {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
@@ -743,17 +810,17 @@
 	.scrubber {
 		cursor: grab;
 		touch-action: none;
-		padding: 4px 0;
+		padding: 6px 8px;
 	}
 
 	.scrubber:active { cursor: grabbing; }
 
 	.scrubber-track {
-		height: 6px;
+		height: 10px;
 		width: 100%;
 		background: var(--bg-control);
 		border: 1px solid var(--border-subtle);
-		border-radius: 3px;
+		border-radius: 5px;
 		position: relative;
 	}
 
@@ -763,19 +830,19 @@
 		left: 0;
 		bottom: 0;
 		background: var(--accent-yellow);
-		border-radius: 3px 0 0 3px;
+		border-radius: 5px 0 0 5px;
 		transition: none;
 	}
 
 	.scrubber-thumb {
 		position: absolute;
-		top: -4px;
-		width: 14px;
-		height: 14px;
+		top: -5px;
+		width: 20px;
+		height: 20px;
 		background: var(--text-primary);
 		border: 2px solid var(--bg-surface);
 		border-radius: 50%;
-		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 		transform: translateX(-50%);
 	}
 </style>

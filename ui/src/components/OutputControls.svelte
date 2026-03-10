@@ -65,21 +65,21 @@
 	.output-controls {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 5px 10px;
+		gap: 5px;
+		padding: 4px 8px;
 		font-family: var(--font-ui);
 	}
 
 	.header-btn {
-		padding: 5px 12px;
+		padding: 4px 10px;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.04em;
 		transition:
 			border-color var(--transition-fast),
@@ -100,7 +100,7 @@
 	}
 
 	.confirm-btn {
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 	}
 
 	.confirm-active {
@@ -110,12 +110,17 @@
 	}
 
 	.mode-btn {
-		margin-left: auto;
+		/* flows with header buttons */
 	}
 
 	.confidence-thumb {
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		object-fit: cover;
+		opacity: 0.85;
+	}
+
+	.confidence-thumb:hover {
+		opacity: 1;
 	}
 </style>

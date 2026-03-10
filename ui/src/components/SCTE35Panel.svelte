@@ -608,8 +608,8 @@
 	.scte35-panel {
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
-		gap: 8px;
-		padding: 4px;
+		gap: 6px;
+		padding: 6px;
 		height: 100%;
 		overflow: hidden;
 	}
@@ -633,8 +633,8 @@
 
 	.zone-title {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
-		font-weight: 600;
+		font-size: var(--text-xs);
+		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 	}
@@ -642,7 +642,7 @@
 	/* Status badge */
 	.status-badge {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		padding: 2px 6px;
@@ -650,22 +650,22 @@
 	}
 
 	.status-on-air {
-		background: rgba(22, 163, 74, 0.2);
+		background: var(--tally-preview-light);
 		color: var(--tally-preview);
-		border: 1px solid rgba(22, 163, 74, 0.3);
+		border: 1px solid var(--tally-preview-medium);
 	}
 
 	.status-break {
-		background: rgba(220, 38, 38, 0.2);
+		background: var(--tally-program-light);
 		color: var(--tally-program);
-		border: 1px solid rgba(220, 38, 38, 0.3);
+		border: 1px solid var(--tally-program-medium);
 		animation: pulse-break 1.5s ease-in-out infinite;
 	}
 
 	.status-held {
-		background: rgba(245, 158, 11, 0.2);
+		background: var(--accent-orange-light);
 		color: var(--accent-orange);
-		border: 1px solid rgba(245, 158, 11, 0.3);
+		border: 1px solid var(--accent-orange-medium);
 	}
 
 	@keyframes pulse-break {
@@ -688,7 +688,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		cursor: pointer;
 		transition: background var(--transition-fast), border-color var(--transition-fast);
@@ -713,7 +713,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		text-align: center;
 	}
 
@@ -740,14 +740,14 @@
 		align-items: center;
 		gap: 3px;
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		cursor: pointer;
 	}
 
 	.option-text {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -765,7 +765,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 	}
 
 	/* Action buttons */
@@ -776,11 +776,11 @@
 
 	.action-btn {
 		flex: 1;
-		padding: 8px 6px;
+		padding: 6px;
 		border: none;
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		cursor: pointer;
 		text-transform: uppercase;
@@ -809,9 +809,9 @@
 	}
 
 	.send-cue-btn {
-		background: rgba(59, 130, 246, 0.2);
+		background: var(--accent-blue-light);
 		color: var(--accent-blue);
-		border: 1px solid rgba(59, 130, 246, 0.3);
+		border: 1px solid var(--accent-blue-medium);
 		padding: 6px;
 	}
 
@@ -829,13 +829,13 @@
 	.active-event {
 		padding: 4px 6px;
 		background: rgba(220, 38, 38, 0.08);
-		border: 1px solid rgba(220, 38, 38, 0.2);
+		border: 1px solid var(--tally-program-light);
 		border-radius: var(--radius-sm);
 	}
 
 	.active-event.held {
 		background: rgba(245, 158, 11, 0.08);
-		border-color: rgba(245, 158, 11, 0.2);
+		border-color: var(--accent-orange-light);
 	}
 
 	.evt-header {
@@ -847,21 +847,21 @@
 
 	.evt-type {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-secondary);
 	}
 
 	.evt-id {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
 	.evt-countdown {
 		margin-left: auto;
 		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		color: var(--tally-program);
 	}
@@ -881,7 +881,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		text-transform: uppercase;
@@ -890,11 +890,11 @@
 	.hold-btn {
 		background: rgba(245, 158, 11, 0.15);
 		color: var(--accent-orange);
-		border-color: rgba(245, 158, 11, 0.3);
+		border-color: var(--accent-orange-medium);
 	}
 
 	.hold-btn:hover {
-		background: rgba(245, 158, 11, 0.3);
+		background: var(--accent-orange-medium);
 	}
 
 	.extend-group {
@@ -911,18 +911,18 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		text-align: center;
 	}
 
 	.extend-btn {
 		background: rgba(59, 130, 246, 0.15);
 		color: var(--accent-blue);
-		border-color: rgba(59, 130, 246, 0.3);
+		border-color: var(--accent-blue-medium);
 	}
 
 	.extend-btn:hover {
-		background: rgba(59, 130, 246, 0.3);
+		background: var(--accent-blue-medium);
 	}
 
 	.cancel-evt-btn {
@@ -932,7 +932,7 @@
 	}
 
 	.cancel-evt-btn:hover {
-		color: #ef4444;
+		color: var(--color-error);
 		background: var(--bg-hover);
 	}
 
@@ -951,7 +951,7 @@
 		background: var(--bg-base);
 		border: none;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-tertiary);
 		cursor: pointer;
@@ -985,7 +985,7 @@
 
 	.field-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		white-space: nowrap;
 		min-width: 65px;
@@ -999,7 +999,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		min-width: 0;
 	}
 
@@ -1011,7 +1011,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		min-width: 0;
 	}
 
@@ -1034,7 +1034,7 @@
 
 	.log-count {
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		padding: 1px 4px;
 		background: var(--bg-base);
@@ -1056,7 +1056,7 @@
 		padding: 3px 4px;
 		border-radius: var(--radius-sm);
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		width: 100%;
 		border: 1px solid transparent;
 		cursor: pointer;
@@ -1070,11 +1070,11 @@
 	}
 
 	.log-cue-out {
-		background: rgba(220, 38, 38, 0.06);
+		background: var(--tally-program-subtle);
 	}
 
 	.log-return {
-		background: rgba(22, 163, 74, 0.06);
+		background: var(--tally-preview-subtle);
 	}
 
 	.log-cancelled {
@@ -1084,20 +1084,20 @@
 
 	.log-type-badge {
 		padding: 1px 4px;
-		border-radius: 2px;
-		font-size: 0.5rem;
+		border-radius: var(--radius-xs);
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		font-family: var(--font-ui);
 		white-space: nowrap;
 	}
 
 	.log-cue-out .log-type-badge {
-		background: rgba(220, 38, 38, 0.2);
+		background: var(--tally-program-light);
 		color: var(--tally-program);
 	}
 
 	.log-return .log-type-badge {
-		background: rgba(22, 163, 74, 0.2);
+		background: var(--tally-preview-light);
 		color: var(--tally-preview);
 	}
 
@@ -1121,7 +1121,7 @@
 
 	.log-status {
 		color: var(--text-tertiary);
-		font-size: 0.5rem;
+		font-size: var(--text-2xs);
 		min-width: 40px;
 		text-align: right;
 	}
@@ -1129,7 +1129,7 @@
 	.empty-state {
 		text-align: center;
 		color: var(--text-tertiary);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-family: var(--font-ui);
 		padding: 12px 4px;
 	}
@@ -1139,7 +1139,7 @@
 		grid-column: 1 / -1;
 		padding: 8px 10px;
 		background: rgba(59, 130, 246, 0.08);
-		border: 1px solid rgba(59, 130, 246, 0.2);
+		border: 1px solid var(--accent-blue-light);
 		border-radius: var(--radius-sm);
 	}
 
@@ -1152,7 +1152,7 @@
 
 	.guide-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		color: var(--accent-blue);
 	}
@@ -1162,7 +1162,7 @@
 		border: none;
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		padding: 0 4px;
 		line-height: 1;
 	}
@@ -1173,7 +1173,7 @@
 
 	.guide-text {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		margin: 0 0 6px 0;
 		line-height: 1.4;
@@ -1183,7 +1183,7 @@
 		margin: 0 0 8px 0;
 		padding-left: 16px;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		line-height: 1.6;
 	}
@@ -1194,12 +1194,12 @@
 
 	.demo-btn {
 		padding: 5px 12px;
-		background: rgba(59, 130, 246, 0.2);
+		background: var(--accent-blue-light);
 		color: var(--accent-blue);
-		border: 1px solid rgba(59, 130, 246, 0.3);
+		border: 1px solid var(--accent-blue-medium);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
@@ -1218,7 +1218,7 @@
 		border-radius: 50%;
 		color: var(--text-tertiary);
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		cursor: pointer;
 		display: flex;
@@ -1259,8 +1259,8 @@
 	.detail-backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 100;
+		background: var(--overlay-medium);
+		z-index: var(--z-overlay);
 	}
 
 	.detail-flyout {
@@ -1272,7 +1272,7 @@
 		max-width: 90vw;
 		background: var(--bg-elevated);
 		border-left: 1px solid var(--border-default);
-		z-index: 101;
+		z-index: var(--z-overlay);
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
@@ -1290,7 +1290,7 @@
 
 	.detail-title {
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		color: var(--text-primary);
 	}
@@ -1300,7 +1300,7 @@
 		border: none;
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		padding: 2px 6px;
 		border-radius: var(--radius-sm);
 	}
@@ -1327,7 +1327,7 @@
 
 	.detail-section-title {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
@@ -1345,14 +1345,14 @@
 
 	.detail-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		white-space: nowrap;
 	}
 
 	.detail-value {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 		word-break: break-all;
 	}
@@ -1370,7 +1370,7 @@
 
 	.detail-descriptor-header {
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-secondary);
 		margin-bottom: 3px;

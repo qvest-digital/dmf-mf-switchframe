@@ -44,13 +44,16 @@ export function wtBaseURL(info: ServerInfo): string {
 }
 
 /**
- * Creates and connects a WebTransport session. When the server uses a
- * trusted certificate (e.g. mkcert), no cert pinning is needed. Otherwise
- * the self-signed certificate hash is pinned for dev mode.
+ * Creates and connects a WebTransport session. Always uses
+ * serverCertificateHashes for cert pinning — required because the
+ * Prism WebTransport server implements draft-02, which Chrome only
+ * uses in dev mode (with cert pinning). Trusted CA certs (e.g. mkcert)
+ * cause Chrome to use the final RFC protocol, which Prism doesn't
+ * support yet.
  */
-export async function connectWebTransport(url: string, certHash: Uint8Array, trusted: boolean): Promise<WebTransport> {
+export async function connectWebTransport(url: string, certHash: Uint8Array, _trusted: boolean): Promise<WebTransport> {
 	const opts: WebTransportOptions = {};
-	if (!trusted && certHash.length > 0) {
+	if (certHash.length > 0) {
 		opts.serverCertificateHashes = [
 			{
 				algorithm: "sha-256",

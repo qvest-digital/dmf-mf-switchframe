@@ -127,14 +127,14 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		padding: 4px 10px;
+		padding: 3px 8px;
 		border: 1.5px solid var(--border-default);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		min-width: 72px;
+		min-width: 64px;
 		position: relative;
 		transition:
 			border-color var(--transition-fast),
@@ -168,14 +168,14 @@
 	}
 
 	.source-tile.pip {
-		border-color: #d4a017;
-		background: rgba(212, 160, 23, 0.12);
+		border-color: var(--accent-gold);
+		background: var(--accent-gold-dim);
 		color: var(--text-on-color);
-		box-shadow: 0 0 6px rgba(212, 160, 23, 0.3);
+		box-shadow: 0 0 6px var(--accent-gold-medium);
 	}
 
 	.tile-number {
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-family: var(--font-mono);
 		font-weight: 500;
 		opacity: 0.5;
@@ -184,19 +184,20 @@
 
 	.tile-label {
 		font-weight: 600;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.01em;
-		line-height: 1.2;
+		line-height: 1.15;
+		white-space: nowrap;
 	}
 
 	.tile-label-input {
 		font-weight: 600;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.01em;
 		line-height: 1.2;
-		background: rgba(0, 0, 0, 0.3);
+		background: var(--overlay-light);
 		border: 1px solid rgba(255, 255, 255, 0.3);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		color: inherit;
 		font-family: inherit;
 		text-align: center;
@@ -211,7 +212,7 @@
 	}
 
 	.tile-status {
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		text-transform: uppercase;
 		font-weight: 500;
 		letter-spacing: 0.04em;
@@ -235,12 +236,12 @@
 		position: absolute;
 		bottom: 2px;
 		left: 3px;
-		font-size: 0.5rem;
+		font-size: var(--text-2xs);
 		font-family: var(--font-mono);
 		color: var(--accent-orange);
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--overlay-heavy);
 		padding: 0 2px;
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 	}
 
 	/* Audio level bar - right edge of tile */

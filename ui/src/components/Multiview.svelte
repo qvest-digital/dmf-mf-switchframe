@@ -129,8 +129,8 @@
 <style>
 	.multiview {
 		display: flex;
-		gap: 4px;
-		padding: 4px 6px;
+		gap: 3px;
+		padding: 2px 4px;
 		background: var(--bg-base);
 		height: 100%;
 		overflow-x: auto;
@@ -139,9 +139,9 @@
 
 	.tile {
 		aspect-ratio: 16 / 9;
-		background: #050507;
+		background: var(--bg-canvas);
 		border: 2px solid transparent;
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		cursor: pointer;
 		position: relative;
 		overflow: hidden;
@@ -178,13 +178,13 @@
 		bottom: 0;
 		left: 0;
 		right: 0;
-		background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
-		padding: 10px 6px 3px;
+		background: linear-gradient(transparent, var(--overlay-opaque));
+		padding: 8px 5px 2px;
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-primary);
 	}
@@ -193,7 +193,7 @@
 		background: var(--bg-control);
 		padding: 1px 4px;
 		border-radius: var(--radius-sm);
-		font-size: 0.5rem;
+		font-size: var(--text-2xs);
 		font-family: var(--font-mono);
 		font-weight: 700;
 		color: var(--text-secondary);
@@ -206,14 +206,14 @@
 
 	.tile-name-input {
 		flex: 1;
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		font-family: inherit;
 		letter-spacing: 0.01em;
 		color: var(--text-primary);
-		background: rgba(0, 0, 0, 0.5);
+		background: var(--overlay-medium);
 		border: 1px solid rgba(255, 255, 255, 0.3);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		padding: 0 4px;
 		outline: none;
 		min-width: 0;
@@ -226,7 +226,7 @@
 	.tile-health {
 		color: var(--accent-orange);
 		text-transform: uppercase;
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		letter-spacing: 0.05em;
 	}
@@ -238,11 +238,11 @@
 		align-items: center;
 		justify-content: center;
 		pointer-events: none;
-		z-index: 1;
+		z-index: var(--z-above);
 	}
 
 	.health-overlay.stale {
-		border: 2px solid #cc8822;
+		border: 2px solid var(--color-warning);
 		animation: pulse-stale 2s ease-in-out infinite;
 	}
 
@@ -251,12 +251,12 @@
 	}
 
 	.health-overlay.offline {
-		background: rgba(0, 0, 0, 0.7);
+		background: var(--overlay-heavy);
 	}
 
 	.health-text {
 		font-family: var(--font-ui);
-		font-size: 0.9rem;
+		font-size: var(--text-md);
 		font-weight: 700;
 		letter-spacing: 0.1em;
 		color: rgba(255, 255, 255, 0.8);
@@ -269,20 +269,20 @@
 		right: 6px;
 		width: 18px;
 		height: 18px;
-		background: #cc0000;
+		background: var(--tally-program);
 		color: #fff;
 		border-radius: 50%;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		font-weight: 700;
-		font-size: 0.7rem;
-		z-index: 2;
+		font-size: var(--text-sm);
+		z-index: var(--z-above);
 		cursor: help;
 	}
 
 	@keyframes pulse-stale {
-		0%, 100% { border-color: #cc8822; box-shadow: none; }
+		0%, 100% { border-color: var(--color-warning); box-shadow: none; }
 		50% { border-color: #ffaa33; box-shadow: 0 0 8px rgba(204, 136, 34, 0.4); }
 	}
 </style>

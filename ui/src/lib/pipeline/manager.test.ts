@@ -21,6 +21,7 @@ function createMockPipeline() {
 		getAllDiagnostics: vi.fn().mockResolvedValue({}),
 		resetRendererSync: vi.fn(),
 		isRawYUVSource: vi.fn().mockReturnValue(false),
+		getSourceTransport: vi.fn().mockReturnValue(null),
 	} satisfies MediaPipeline;
 }
 

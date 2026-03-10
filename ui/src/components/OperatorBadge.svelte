@@ -86,7 +86,7 @@
 		border-radius: 4px;
 		background: var(--bg-base, #111);
 		color: var(--text-primary, #eee);
-		font-size: 12px;
+		font-size: var(--text-sm);
 		cursor: pointer;
 	}
 
@@ -101,7 +101,7 @@
 		width: 18px;
 		height: 18px;
 		border-radius: 3px;
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		color: #fff;
 		flex-shrink: 0;
@@ -118,7 +118,7 @@
 		background: var(--border-subtle, #555);
 		border-radius: 8px;
 		padding: 1px 5px;
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-secondary, #ccc);
 	}
 
@@ -130,13 +130,13 @@
 		border: 1px solid var(--border-subtle, #444);
 		border-radius: 6px;
 		min-width: 200px;
-		z-index: 100;
+		z-index: var(--z-overlay);
 		overflow: hidden;
 	}
 
 	.dropdown-header {
 		padding: 6px 10px;
-		font-size: 10px;
+		font-size: var(--text-xs);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		color: var(--text-secondary, #888);
@@ -148,7 +148,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 6px 10px;
-		font-size: 12px;
+		font-size: var(--text-sm);
 	}
 
 	.op-row.self {
@@ -166,6 +166,6 @@
 
 	.op-role {
 		color: var(--text-secondary, #888);
-		font-size: 11px;
+		font-size: var(--text-sm);
 	}
 </style>

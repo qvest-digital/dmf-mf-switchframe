@@ -13,6 +13,7 @@
 </script>
 
 <div class="bus program-bus">
+	<span class="bus-sep"></span>
 	<span class="bus-label">PGM</span>
 	<div class="bus-buttons">
 		{#each sourceKeys as key, i}
@@ -32,23 +33,30 @@
 	.bus {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 4px 10px;
+		gap: 4px;
 	}
 
 	.bus-label {
 		font-family: var(--font-ui);
 		font-weight: 700;
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
-		min-width: 32px;
+		min-width: 28px;
 		color: var(--tally-program);
+		opacity: 0.9;
+	}
+
+	.bus-sep {
+		width: 1px;
+		height: 20px;
+		background: var(--border-default);
+		flex-shrink: 0;
 	}
 
 	.bus-buttons {
 		display: flex;
-		gap: 3px;
+		gap: 2px;
 		flex-wrap: wrap;
 	}
 </style>

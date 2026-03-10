@@ -45,7 +45,7 @@
 		top: 0;
 		left: 0;
 		right: 0;
-		z-index: 999;
+		z-index: var(--z-banner);
 		padding: 8px;
 		text-align: center;
 		font-weight: bold;
@@ -53,7 +53,7 @@
 	}
 
 	.connection-banner.polling {
-		background: #cc8822;
+		background: var(--color-warning);
 		color: #fff;
 	}
 
@@ -65,11 +65,11 @@
 	.disconnect-overlay {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.8);
+		background: var(--overlay-opaque);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 9999;
+		z-index: var(--z-fullscreen);
 	}
 
 	.disconnect-content {
@@ -81,12 +81,12 @@
 
 	.disconnect-text {
 		color: #ff4444;
-		font-size: 1.5rem;
+		font-size: var(--text-2xl);
 		font-weight: bold;
 	}
 
 	.disconnect-sub {
 		color: #aaa;
-		font-size: 1rem;
+		font-size: var(--text-base);
 	}
 </style>

@@ -33,6 +33,7 @@ describe('templates', () => {
 			fill: vi.fn(),
 			save: vi.fn(),
 			restore: vi.fn(),
+			measureText: vi.fn(() => ({ width: 50 })),
 		} as unknown as CanvasRenderingContext2D;
 
 		for (const tpl of templateList) {

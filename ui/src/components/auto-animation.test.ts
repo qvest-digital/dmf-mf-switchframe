@@ -46,13 +46,15 @@ describe('AutoAnimation', () => {
 		expect(anim.active).toBe(true);
 	});
 
-	it('stop() resets active and position', () => {
+	it('stop() resets active but preserves position', () => {
 		const anim = new AutoAnimation();
 		anim.start(1000);
 		vi.advanceTimersByTime(500);
+		const posAtStop = anim.position;
 		anim.stop();
 		expect(anim.active).toBe(false);
-		expect(anim.position).toBe(0);
+		expect(anim.position).toBe(posAtStop);
+		expect(posAtStop).toBeGreaterThan(0);
 	});
 
 	it('stop() cancels pending rAF callbacks', () => {
@@ -61,11 +63,11 @@ describe('AutoAnimation', () => {
 		vi.advanceTimersByTime(100);
 		const posAtStop = anim.position;
 		anim.stop();
-		expect(anim.position).toBe(0);
+		expect(anim.position).toBe(posAtStop);
 
-		// Advance more — position should not change
+		// Advance more — position should not change from where it was stopped
 		vi.advanceTimersByTime(500);
-		expect(anim.position).toBe(0);
+		expect(anim.position).toBe(posAtStop);
 	});
 
 	it('works with different durations', () => {

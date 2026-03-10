@@ -28,7 +28,7 @@
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff } from '$lib/api/switch-api';
-	import { setApiBaseUrl, resolveApiUrl } from '$lib/api/base-url';
+	import { resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -415,16 +415,12 @@
 		mounted = true;
 		syncInterval = setInterval(() => { now = Date.now(); }, 1000);
 
-		// Bootstrap: discover QUIC server address and set API base URL.
-		// In production (same-origin), this is a no-op (base URL stays '').
-		// In dev with mkcert (trusted cert), point API calls directly to the QUIC server.
-		// In dev with self-signed cert, keep relative URLs (Vite proxy handles them).
+		// Bootstrap: discover QUIC server address for WebTransport.
+		// API calls always use relative URLs (same-origin in prod, Vite proxy in dev).
+		// The QUIC server (:8080) is UDP-only — regular fetch() needs TCP, so we never
+		// redirect API base URL to the QUIC origin.
 		try {
-			const info = await fetchServerInfo();
-			const serverOrigin = wtBaseURL(info);
-			if (serverOrigin !== window.location.origin && info.trusted) {
-				setApiBaseUrl(serverOrigin);
-			}
+			await fetchServerInfo();
 		} catch {
 			// Will retry via connection manager
 		}
@@ -644,7 +640,7 @@
 		overflow: hidden;
 		background: var(--bg-base);
 		min-height: 0;
-		max-height: clamp(80px, 14vh, 180px);
+		max-height: clamp(60px, 12vh, 140px);
 	}
 
 	.control-strip {
@@ -659,7 +655,7 @@
 	.bottom-panel {
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: clamp(180px, 28vh, 300px);
+		height: clamp(150px, 22vh, 260px);
 	}
 
 	.tab-panel {
@@ -691,7 +687,7 @@
 		border-radius: 4px;
 		background: transparent;
 		color: var(--text-secondary, #aaa);
-		font-size: 11px;
+		font-size: var(--text-sm);
 		cursor: pointer;
 	}
 
@@ -713,8 +709,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(0, 0, 0, 0.85);
-		z-index: 10000;
+		background: var(--overlay-opaque);
+		z-index: var(--z-system);
 	}
 
 	.token-box {
@@ -728,7 +724,7 @@
 	.token-box p {
 		margin: 0 0 12px;
 		color: var(--text-primary, #eee);
-		font-size: 14px;
+		font-size: var(--text-base);
 	}
 
 	.token-box form {
@@ -743,7 +739,7 @@
 		background: var(--bg-base, #111);
 		color: var(--text-primary, #eee);
 		font-family: monospace;
-		font-size: 13px;
+		font-size: var(--text-sm);
 		width: 320px;
 	}
 
@@ -753,7 +749,7 @@
 		border-radius: 4px;
 		background: #2563eb;
 		color: #fff;
-		font-size: 13px;
+		font-size: var(--text-sm);
 		cursor: pointer;
 	}
 
@@ -768,6 +764,6 @@
 		height: 100%;
 		color: var(--text-tertiary);
 		font-family: var(--font-ui);
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 	}
 </style>

@@ -604,7 +604,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		padding: 4px;
+		padding: 6px;
 		height: 100%;
 		overflow-y: auto;
 	}
@@ -613,13 +613,13 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 2px 4px;
+		padding: 0 2px;
 	}
 
 	.macro-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
-		font-weight: 600;
+		font-size: var(--text-xs);
+		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 	}
@@ -633,7 +633,7 @@
 		background: var(--bg-elevated);
 		border: 1px solid var(--border-default);
 		color: var(--text-secondary);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		cursor: pointer;
 		padding: 1px 6px;
 		border-radius: var(--radius-sm);
@@ -661,14 +661,14 @@
 
 	.guide-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--text-primary);
 	}
 
 	.guide-text {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		margin: 0;
 		line-height: 1.4;
@@ -687,7 +687,7 @@
 
 	.guide-example-title {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
@@ -697,7 +697,7 @@
 
 	.guide-steps {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 		margin: 0;
 		padding-left: 16px;
@@ -707,10 +707,10 @@
 	.guide-dismiss {
 		align-self: flex-end;
 		background: rgba(59, 130, 246, 0.15);
-		border: 1px solid rgba(59, 130, 246, 0.3);
+		border: 1px solid var(--accent-blue-medium);
 		color: var(--accent-blue);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		padding: 3px 12px;
 		border-radius: var(--radius-sm);
@@ -743,7 +743,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		cursor: pointer;
 		text-align: left;
@@ -773,7 +773,7 @@
 	}
 
 	.macro-step-count {
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		font-family: var(--font-mono);
 	}
@@ -804,7 +804,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
@@ -816,13 +816,13 @@
 	}
 
 	.del-btn:hover {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.shortcut-tip {
 		text-align: center;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		padding: 4px;
 	}
@@ -830,7 +830,7 @@
 	.empty-state {
 		text-align: center;
 		color: var(--text-tertiary);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		padding: 12px 4px;
 	}
 
@@ -849,7 +849,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		box-sizing: border-box;
 	}
@@ -887,7 +887,7 @@
 		border: none;
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		cursor: pointer;
 		text-align: left;
 		min-width: 0;
@@ -896,7 +896,7 @@
 	.step-number {
 		color: var(--text-tertiary);
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		flex-shrink: 0;
 	}
 
@@ -908,7 +908,7 @@
 	}
 
 	.step-chevron {
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		flex-shrink: 0;
 	}
@@ -926,7 +926,7 @@
 		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
 	}
@@ -943,7 +943,7 @@
 
 	.step-delete:hover {
 		background: rgba(239, 68, 68, 0.15);
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.step-body {
@@ -965,7 +965,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
@@ -988,7 +988,7 @@
 
 	.picker-category {
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
@@ -1021,7 +1021,7 @@
 
 	.picker-label {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-primary);
 		min-width: 80px;
@@ -1029,7 +1029,7 @@
 
 	.picker-desc {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -1042,7 +1042,7 @@
 
 	.editor-warning {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: #f59e0b;
 		padding: 2px 4px;
 		background: rgba(245, 158, 11, 0.1);
@@ -1050,8 +1050,8 @@
 	}
 
 	.editor-error {
-		color: #ef4444;
-		font-size: 0.65rem;
+		color: var(--color-error);
+		font-size: var(--text-xs);
 		font-family: var(--font-ui);
 		padding: 0 2px;
 	}
@@ -1067,7 +1067,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
@@ -1075,7 +1075,7 @@
 
 	.save-btn {
 		background: rgba(34, 197, 94, 0.2);
-		color: #22c55e;
+		color: var(--color-success);
 		border-color: rgba(34, 197, 94, 0.4);
 	}
 
@@ -1111,22 +1111,22 @@
 
 	.execution-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--text-primary);
 	}
 
 	.execution-title.exec-failed {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.execution-title.exec-success {
-		color: #22c55e;
+		color: var(--color-success);
 	}
 
 	.exec-step-counter {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -1167,14 +1167,14 @@
 	}
 
 	.exec-step-icon {
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		flex-shrink: 0;
 		width: 14px;
 		text-align: center;
 	}
 
 	.step-done .exec-step-icon {
-		color: #22c55e;
+		color: var(--color-success);
 	}
 
 	.step-running .exec-step-icon {
@@ -1183,7 +1183,7 @@
 	}
 
 	.step-failed .exec-step-icon {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.step-skipped .exec-step-icon {
@@ -1202,7 +1202,7 @@
 	.exec-step-summary {
 		flex: 1;
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1212,8 +1212,8 @@
 	.exec-step-error {
 		width: 100%;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
-		color: #ef4444;
+		font-size: var(--text-xs);
+		color: var(--color-error);
 		padding: 2px 0 0 20px;
 	}
 
@@ -1221,7 +1221,7 @@
 		width: 100%;
 		height: 4px;
 		background: var(--bg-base);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		margin: 2px 0 0 20px;
 		overflow: hidden;
 	}
@@ -1229,14 +1229,14 @@
 	.exec-progress-bar {
 		height: 100%;
 		background: var(--accent-blue);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		transition: width 0.05s linear;
 	}
 
 	.exec-progress-label {
 		width: 100%;
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		padding-left: 20px;
 	}
@@ -1251,12 +1251,12 @@
 
 	.exec-result {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 	}
 
 	.exec-result.exec-success {
-		color: #22c55e;
+		color: var(--color-success);
 	}
 
 	.exec-btn {
@@ -1264,7 +1264,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
@@ -1272,7 +1272,7 @@
 
 	.exec-btn-cancel {
 		background: rgba(239, 68, 68, 0.15);
-		color: #ef4444;
+		color: var(--color-error);
 		border-color: rgba(239, 68, 68, 0.3);
 	}
 

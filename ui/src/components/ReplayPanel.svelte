@@ -171,18 +171,20 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		padding: 8px;
-		background: var(--bg-elevated);
-		border-radius: var(--radius-sm);
+		padding: 6px;
+		height: 100%;
+		overflow-y: auto;
 	}
 
 	h3 {
 		margin: 0;
-		font-size: 11px;
+		padding: 0 2px;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
+		font-weight: 700;
 		text-transform: uppercase;
-		letter-spacing: 1px;
+		letter-spacing: 0.06em;
 	}
 
 	.replay-monitor {
@@ -211,7 +213,7 @@
 		border-radius: var(--radius-sm);
 		padding: 4px 6px;
 		font-family: var(--font-ui);
-		font-size: 12px;
+		font-size: var(--text-sm);
 		flex: 1;
 	}
 
@@ -222,14 +224,15 @@
 
 	.mark-btn {
 		flex: 1;
-		padding: 6px 8px;
-		border: none;
+		padding: 5px 8px;
+		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 11px;
-		font-weight: bold;
+		font-size: var(--text-xs);
+		font-weight: 600;
 		cursor: pointer;
 		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
 	.mark-btn:disabled {
@@ -238,26 +241,28 @@
 	}
 
 	.mark-in {
-		background: rgba(22, 163, 74, 0.2);
+		background: rgba(22, 163, 74, 0.15);
+		border-color: var(--tally-preview-medium);
 		color: var(--tally-preview);
 	}
 
 	.mark-in:hover:not(:disabled) {
-		background: rgba(22, 163, 74, 0.3);
+		background: rgba(22, 163, 74, 0.25);
 	}
 
 	.mark-out {
-		background: rgba(220, 38, 38, 0.2);
+		background: rgba(220, 38, 38, 0.15);
+		border-color: var(--tally-program-medium);
 		color: var(--tally-program);
 	}
 
 	.mark-out:hover:not(:disabled) {
-		background: rgba(220, 38, 38, 0.3);
+		background: rgba(220, 38, 38, 0.25);
 	}
 
 	.mark-info {
 		font-family: var(--font-ui);
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		text-align: center;
 	}
@@ -270,7 +275,7 @@
 
 	.speed-label, .loop-label {
 		font-family: var(--font-ui);
-		font-size: 11px;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -287,23 +292,25 @@
 
 	.transport-btn {
 		flex: 1;
-		padding: 8px;
-		border: none;
+		padding: 6px;
+		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 13px;
-		font-weight: bold;
+		font-size: var(--text-sm);
+		font-weight: 600;
 		cursor: pointer;
 		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
 	.play-btn {
-		background: rgba(59, 130, 246, 0.2);
+		background: rgba(59, 130, 246, 0.15);
+		border-color: var(--accent-blue-medium);
 		color: var(--accent-blue);
 	}
 
 	.play-btn:hover:not(:disabled) {
-		background: rgba(59, 130, 246, 0.3);
+		background: rgba(59, 130, 246, 0.25);
 	}
 
 	.play-btn:disabled {
@@ -312,17 +319,18 @@
 	}
 
 	.stop-btn {
-		background: rgba(220, 38, 38, 0.25);
+		background: rgba(220, 38, 38, 0.15);
+		border-color: var(--tally-program-medium);
 		color: var(--tally-program);
 	}
 
 	.stop-btn:hover {
-		background: rgba(220, 38, 38, 0.35);
+		background: rgba(220, 38, 38, 0.25);
 	}
 
 	.playback-info {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--accent-blue);
 		text-align: center;
 	}
@@ -339,7 +347,7 @@
 		justify-content: space-between;
 		padding: 2px 4px;
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		border-radius: var(--radius-sm);
 	}
@@ -364,7 +372,7 @@
 
 	.mark-times {
 		font-family: var(--font-mono);
-		font-size: 10px;
+		font-size: var(--text-xs);
 	}
 
 	.clip-duration {

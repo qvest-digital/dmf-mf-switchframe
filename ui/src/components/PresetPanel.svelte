@@ -136,8 +136,8 @@
 	.preset-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		padding: 4px;
+		gap: 6px;
+		padding: 6px;
 		height: 100%;
 		overflow-y: auto;
 	}
@@ -146,14 +146,14 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 2px 4px;
+		padding: 0 2px;
 		gap: 6px;
 	}
 
 	.preset-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
-		font-weight: 600;
+		font-size: var(--text-xs);
+		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 		flex-shrink: 0;
@@ -164,7 +164,7 @@
 		border: 1px solid var(--border-default);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		cursor: pointer;
 		padding: 3px 8px;
@@ -189,7 +189,7 @@
 		min-width: 0;
 		padding: 3px 6px;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-subtle);
@@ -206,7 +206,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		white-space: nowrap;
@@ -214,7 +214,7 @@
 
 	.confirm-btn {
 		background: rgba(34, 197, 94, 0.2);
-		color: #22c55e;
+		color: var(--color-success);
 		border-color: rgba(34, 197, 94, 0.4);
 	}
 
@@ -266,14 +266,14 @@
 
 	.preset-name {
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: var(--text-primary);
 	}
 
 	.preset-date {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -283,14 +283,14 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		align-self: center;
 	}
 
 	.delete-btn:hover {
-		color: #ef4444;
+		color: var(--color-error);
 		background: var(--bg-hover);
 	}
 
@@ -308,7 +308,7 @@
 	.delete-text {
 		flex: 1;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		color: var(--text-primary);
 	}
 
@@ -318,14 +318,14 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 	}
 
 	.confirm-yes {
 		background: rgba(239, 68, 68, 0.2);
-		color: #ef4444;
+		color: var(--color-error);
 		border-color: rgba(239, 68, 68, 0.4);
 	}
 
@@ -345,7 +345,7 @@
 	.empty-state {
 		text-align: center;
 		color: var(--text-tertiary);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		padding: 12px 4px;
 	}
 </style>

@@ -32,23 +32,23 @@
 	.bus {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		padding: 4px 10px;
+		gap: 4px;
 	}
 
 	.bus-label {
 		font-family: var(--font-ui);
 		font-weight: 700;
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
-		min-width: 32px;
+		min-width: 28px;
 		color: var(--tally-preview);
+		opacity: 0.9;
 	}
 
 	.bus-buttons {
 		display: flex;
-		gap: 3px;
+		gap: 2px;
 		flex-wrap: wrap;
 	}
 </style>

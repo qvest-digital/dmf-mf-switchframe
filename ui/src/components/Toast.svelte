@@ -23,7 +23,7 @@
 		top: 12px;
 		left: 50%;
 		transform: translateX(-50%);
-		z-index: 1000;
+		z-index: var(--z-banner);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -38,7 +38,7 @@
 		padding: 8px 14px;
 		border-radius: 6px;
 		font-family: 'SF Mono', 'Fira Code', monospace;
-		font-size: 13px;
+		font-size: var(--text-sm);
 		color: #fff;
 		pointer-events: auto;
 		animation: slideIn 0.3s ease-out;
@@ -46,11 +46,11 @@
 	}
 
 	.toast-item.error {
-		background: #cc0000;
+		background: var(--tally-program);
 	}
 
 	.toast-item.warning {
-		background: #cc8822;
+		background: var(--color-warning);
 	}
 
 	.toast-item.info {
@@ -65,7 +65,7 @@
 		background: none;
 		border: none;
 		color: #fff;
-		font-size: 18px;
+		font-size: var(--text-lg);
 		cursor: pointer;
 		padding: 0 2px;
 		line-height: 1;

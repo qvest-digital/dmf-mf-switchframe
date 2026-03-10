@@ -192,7 +192,7 @@
 		top: 2px;
 		left: 4px;
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: rgba(212, 160, 23, 0.9);
 		background: var(--overlay-heavy);
 		padding: 1px 4px;

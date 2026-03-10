@@ -21,7 +21,7 @@
 <style>
 	.clock {
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: var(--text-secondary);
 		letter-spacing: 0.04em;

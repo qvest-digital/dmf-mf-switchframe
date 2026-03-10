@@ -385,13 +385,13 @@
 	.srt-modal-backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--overlay-heavy);
 		backdrop-filter: blur(4px);
 		-webkit-backdrop-filter: blur(4px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 100;
+		z-index: var(--z-overlay);
 	}
 
 	.srt-modal {
@@ -417,7 +417,7 @@
 
 	.modal-header h3 {
 		margin: 0;
-		font-size: 0.9rem;
+		font-size: var(--text-md);
 		font-weight: 600;
 		color: var(--text-primary);
 	}
@@ -427,7 +427,7 @@
 		border: none;
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: 0.9rem;
+		font-size: var(--text-md);
 		padding: 4px;
 		border-radius: var(--radius-sm);
 		transition: color var(--transition-fast);
@@ -438,7 +438,7 @@
 	}
 
 	.section-label {
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
@@ -462,7 +462,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 0;
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		font-weight: 500;
 		cursor: pointer;
 		color: var(--text-secondary);
@@ -494,7 +494,7 @@
 	}
 
 	.form-field label {
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
@@ -508,7 +508,7 @@
 		background: var(--bg-base);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		transition: border-color var(--transition-fast);
 	}
 
@@ -530,7 +530,7 @@
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		letter-spacing: 0.02em;
 		width: 100%;
 		margin-top: 8px;
@@ -567,12 +567,12 @@
 	.status-row {
 		display: flex;
 		justify-content: space-between;
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 	}
 
 	.status-label {
 		color: var(--text-tertiary);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -581,11 +581,11 @@
 	.status-value {
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 	}
 
 	.drop-warn-row {
-		border-top: 1px solid rgba(245, 158, 11, 0.2);
+		border-top: 1px solid var(--accent-orange-light);
 		padding-top: 6px;
 	}
 
@@ -619,7 +619,7 @@
 		color: var(--accent-blue);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		padding: 3px 10px;
 		transition:
@@ -656,13 +656,13 @@
 	}
 
 	.dest-name {
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		font-weight: 600;
 		color: var(--text-primary);
 	}
 
 	.dest-state {
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -671,14 +671,14 @@
 	.dest-item-meta {
 		display: flex;
 		gap: 10px;
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		color: var(--text-tertiary);
 		margin-bottom: 6px;
 	}
 
 	.dest-type {
 		font-family: var(--font-mono);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 	}
 
 	.dest-drops {
@@ -686,7 +686,7 @@
 	}
 
 	.dest-error {
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		color: var(--tally-program);
 		margin-bottom: 6px;
 	}
@@ -705,7 +705,7 @@
 		color: var(--text-primary);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		transition:
 			border-color var(--transition-fast),
@@ -718,7 +718,7 @@
 	}
 
 	.stop-action {
-		border-color: rgba(220, 38, 38, 0.3);
+		border-color: var(--tally-program-medium);
 		color: var(--tally-program);
 	}
 
@@ -734,6 +734,6 @@
 
 	.delete-action:hover {
 		color: var(--tally-program);
-		border-color: rgba(220, 38, 38, 0.3);
+		border-color: var(--tally-program-medium);
 	}
 </style>

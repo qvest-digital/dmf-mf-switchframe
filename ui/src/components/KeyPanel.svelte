@@ -261,19 +261,20 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		padding: 0 2px;
 	}
 
 	.panel-title {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
-		font-weight: 600;
+		font-size: var(--text-xs);
+		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 	}
 
 	.field-label {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-tertiary);
 		margin-bottom: 2px;
@@ -293,7 +294,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 	}
 
 	.key-type-select {
@@ -314,7 +315,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition:
@@ -328,7 +329,7 @@
 	}
 
 	.type-btn.active {
-		background: rgba(59, 130, 246, 0.2);
+		background: var(--accent-blue-light);
 		color: var(--accent-blue);
 		border-color: rgba(59, 130, 246, 0.4);
 	}
@@ -338,7 +339,7 @@
 		align-items: center;
 		gap: 6px;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		color: var(--text-secondary);
 		cursor: pointer;
 	}
@@ -357,7 +358,7 @@
 
 	.slider-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -386,7 +387,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		width: 100%;
 		min-width: 0;
 	}
@@ -394,11 +395,11 @@
 	.apply-btn {
 		padding: 6px;
 		background: rgba(34, 197, 94, 0.2);
-		color: #22c55e;
+		color: var(--color-success);
 		border: 1px solid rgba(34, 197, 94, 0.4);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		cursor: pointer;
 		transition:
@@ -411,7 +412,7 @@
 
 	.remove-btn {
 		background: rgba(239, 68, 68, 0.15);
-		color: #ef4444;
+		color: var(--color-error);
 		border-color: rgba(239, 68, 68, 0.3);
 	}
 
@@ -439,7 +440,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
@@ -465,7 +466,7 @@
 		border: none;
 		color: var(--text-tertiary);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		cursor: pointer;
 		text-align: left;
 		padding: 2px 0;
@@ -480,7 +481,7 @@
 		flex-direction: column;
 		gap: 1px;
 		font-family: var(--font-ui);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		flex: 1;
 	}

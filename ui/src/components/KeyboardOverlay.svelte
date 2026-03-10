@@ -66,13 +66,13 @@
 	.overlay-backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--overlay-heavy);
 		backdrop-filter: blur(4px);
 		-webkit-backdrop-filter: blur(4px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 100;
+		z-index: var(--z-overlay);
 	}
 
 	.overlay {
@@ -88,7 +88,7 @@
 	h2 {
 		margin-bottom: 16px;
 		font-family: var(--font-ui);
-		font-size: 1rem;
+		font-size: var(--text-base);
 		font-weight: 600;
 		color: var(--text-primary);
 		letter-spacing: 0.01em;
@@ -104,7 +104,7 @@
 		padding: 6px 0;
 		border-bottom: 1px solid var(--border-default);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
@@ -114,7 +114,7 @@
 	td {
 		padding: 7px 0;
 		font-family: var(--font-ui);
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		color: var(--text-secondary);
 		border-bottom: 1px solid var(--border-subtle);
 	}
@@ -134,7 +134,7 @@
 		border-radius: var(--radius-sm);
 		padding: 2px 7px;
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: var(--text-primary);
 	}
@@ -142,12 +142,12 @@
 	.dismiss {
 		margin-top: 14px;
 		text-align: center;
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		color: var(--text-tertiary);
 		font-family: var(--font-ui);
 	}
 
 	.dismiss kbd {
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 	}
 </style>

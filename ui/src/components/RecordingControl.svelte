@@ -74,13 +74,13 @@
 		gap: 6px;
 		padding: 3px 6px;
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		border-radius: var(--radius-md);
 	}
 
 	.rec-active {
 		background: var(--tally-program-dim);
-		border: 1px solid rgba(220, 38, 38, 0.3);
+		border: 1px solid var(--tally-program-medium);
 	}
 
 	.rec-dot {
@@ -101,7 +101,7 @@
 	.rec-label {
 		color: var(--tally-program);
 		font-weight: 700;
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.06em;
 	}
 
@@ -109,19 +109,19 @@
 		color: var(--text-primary);
 		font-family: var(--font-mono);
 		font-weight: 500;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 	}
 
 	.rec-start {
-		padding: 5px 12px;
+		padding: 4px 10px;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.04em;
 		transition:
 			border-color var(--transition-fast),
@@ -144,7 +144,7 @@
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		letter-spacing: 0.04em;
 		transition: background var(--transition-fast);
 	}
@@ -154,18 +154,18 @@
 	}
 
 	.rec-error {
-		border: 1px solid rgba(220, 38, 38, 0.3);
+		border: 1px solid var(--tally-program-medium);
 		border-radius: var(--radius-md);
 	}
 
 	.rec-error-text {
 		color: var(--tally-program);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 	}
 
 	.drop-warn {
 		color: var(--accent-amber, #f59e0b);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		padding: 1px 4px;

@@ -31,11 +31,11 @@
 /* ---- Breakpoint: 768-1023px (tablet) ---- */
 @media (min-width: 768px) and (max-width: 1023px) {
 	.bottom-panel {
-		height: 180px;
+		height: 160px;
 	}
 
 	.multiview-section {
-		max-height: clamp(70px, 12vh, 140px);
+		max-height: clamp(60px, 12vh, 130px);
 	}
 }
 

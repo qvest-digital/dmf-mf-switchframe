@@ -311,15 +311,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		padding: 4px;
+		padding: 6px;
 		height: 100%;
 		overflow-y: auto;
 	}
 
 	.section-title {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
-		font-weight: 600;
+		font-size: var(--text-xs);
+		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 		flex-shrink: 0;
@@ -346,7 +346,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast), border-color var(--transition-fast);
@@ -358,7 +358,7 @@
 	}
 
 	.preset-btn.active {
-		background: rgba(59, 130, 246, 0.2);
+		background: var(--accent-blue-light);
 		border-color: rgba(59, 130, 246, 0.5);
 		color: var(--accent-blue);
 	}
@@ -381,7 +381,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 	}
@@ -393,21 +393,21 @@
 
 	.save-confirm {
 		background: rgba(34, 197, 94, 0.2);
-		color: #22c55e;
+		color: var(--color-success);
 		border-color: rgba(34, 197, 94, 0.4);
 	}
 
 	.clear-btn:hover {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.save-input {
 		padding: 3px 6px;
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		outline: none;
 		width: 90px;
@@ -452,7 +452,7 @@
 
 	.slot-id {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-secondary);
 		letter-spacing: 0.04em;
@@ -463,7 +463,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		cursor: pointer;
 		background: var(--bg-base);
@@ -473,7 +473,7 @@
 
 	.slot-toggle.on {
 		background: rgba(212, 160, 23, 0.25);
-		color: #d4a017;
+		color: var(--accent-gold);
 		border-color: rgba(212, 160, 23, 0.5);
 	}
 
@@ -487,10 +487,10 @@
 		flex: 1;
 		padding: 2px 4px;
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 	}
 
@@ -511,7 +511,7 @@
 	}
 
 	.tally-dot.tally-pip {
-		background: #d4a017;
+		background: var(--accent-gold);
 	}
 
 	.slot-position {
@@ -522,7 +522,7 @@
 
 	.pos-label, .z-label {
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
@@ -535,10 +535,10 @@
 		flex: 1;
 		padding: 2px 4px;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 	}
 
@@ -551,17 +551,17 @@
 		flex: 1;
 		padding: 2px 4px;
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
-		border: 1px solid var(--border-subtle);
+		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 	}
 
 	.empty-state {
 		text-align: center;
 		color: var(--text-tertiary);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		padding: 16px 4px;
 	}
 
@@ -571,7 +571,7 @@
 		flex-direction: column;
 		gap: 4px;
 		padding: 0 4px;
-		border-top: 1px solid var(--border-subtle);
+		border-top: 1px solid var(--border-default);
 		padding-top: 6px;
 	}
 
@@ -593,7 +593,7 @@
 
 	.preset-item-name {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 	}
 
@@ -601,19 +601,19 @@
 		background: transparent;
 		border: none;
 		color: var(--text-tertiary);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		cursor: pointer;
 		padding: 0 2px;
 	}
 
 	.delete-btn:hover {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.delete-text {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 	}
 
@@ -622,14 +622,14 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 	}
 
 	.confirm-yes {
 		background: rgba(239, 68, 68, 0.2);
-		color: #ef4444;
+		color: var(--color-error);
 		border-color: rgba(239, 68, 68, 0.4);
 	}
 

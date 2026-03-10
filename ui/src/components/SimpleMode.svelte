@@ -196,7 +196,7 @@
 		background: none;
 		border: 1px solid var(--border-default);
 		color: var(--text-secondary);
-		font-size: 1.2rem;
+		font-size: var(--text-xl);
 		cursor: pointer;
 		padding: 4px 8px;
 		border-radius: var(--radius-md);
@@ -211,7 +211,7 @@
 	}
 
 	.brand {
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		letter-spacing: 0.03em;
@@ -228,7 +228,7 @@
 
 	.monitor {
 		position: relative;
-		background: #050507;
+		background: var(--bg-canvas);
 		border-radius: var(--radius-md);
 		overflow: hidden;
 		border: 1px solid var(--border-subtle);
@@ -254,11 +254,11 @@
 		top: 8px;
 		left: 8px;
 		padding: 2px 8px;
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		letter-spacing: 0.06em;
 		border-radius: var(--radius-sm);
-		z-index: 1;
+		z-index: var(--z-above);
 		text-transform: uppercase;
 	}
 
@@ -276,7 +276,7 @@
 		position: absolute;
 		bottom: 8px;
 		left: 8px;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: var(--text-secondary);
 		font-family: var(--font-mono);
@@ -303,7 +303,7 @@
 		border-radius: var(--radius-md);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		font-weight: 500;
 		text-align: center;
 		transition:
@@ -341,7 +341,7 @@
 		position: absolute;
 		top: 4px;
 		right: 6px;
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		color: var(--accent-orange, #f59e0b);
 		line-height: 1;
@@ -396,22 +396,22 @@
 	.cut-btn {
 		background: var(--tally-program);
 		color: var(--text-on-color);
-		border-color: #ef4444;
+		border-color: var(--color-error);
 	}
 
 	.cut-btn:hover:not(:disabled) {
-		background: #ef4444;
+		background: var(--color-error);
 		box-shadow: 0 0 16px rgba(220, 38, 38, 0.3);
 	}
 
 	.dissolve-btn {
-		background: rgba(59, 130, 246, 0.2);
+		background: var(--accent-blue-light);
 		color: var(--text-on-color);
 		border-color: var(--accent-blue);
 	}
 
 	.dissolve-btn:hover:not(:disabled) {
-		background: rgba(59, 130, 246, 0.3);
+		background: var(--accent-blue-medium);
 		box-shadow: 0 0 16px rgba(59, 130, 246, 0.25);
 	}
 

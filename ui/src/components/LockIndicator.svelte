@@ -79,7 +79,7 @@
 	}
 
 	.lock-btn.locked-self {
-		color: #22c55e;
+		color: var(--color-success);
 	}
 
 	.lock-btn.locked-self:hover {
@@ -87,7 +87,7 @@
 	}
 
 	.lock-btn.locked-other {
-		color: #ef4444;
+		color: var(--color-error);
 	}
 
 	.lock-btn.locked-other:not(:disabled):hover {

@@ -932,13 +932,13 @@
 		width: 370px;
 		background: rgba(9, 9, 11, 0.96);
 		border-left: 1px solid var(--border-subtle);
-		z-index: 9998;
+		z-index: var(--z-fullscreen);
 		transform: translateX(100%);
 		transition: transform 200ms ease;
 		display: flex;
 		flex-direction: column;
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: var(--text-sm);
 		color: var(--text-secondary);
 		overflow: hidden;
 	}
@@ -972,7 +972,7 @@
 	.panel-title {
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 11px;
+		font-size: var(--text-sm);
 		color: var(--text-primary);
 		letter-spacing: 0.5px;
 		transition: color 0.3s ease;
@@ -1003,7 +1003,7 @@
 
 	.shortcut-hint {
 		font-family: var(--font-mono);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		opacity: 0.5;
 	}
@@ -1013,7 +1013,7 @@
 		border: none;
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: 16px;
+		font-size: var(--text-base);
 		font-family: var(--font-ui);
 		font-weight: 300;
 		padding: 2px 6px;
@@ -1073,7 +1073,7 @@
 
 	.section-label {
 		font-family: var(--font-ui);
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		letter-spacing: 0.5px;
@@ -1097,7 +1097,7 @@
 	/* --- Pipeline Graph --- */
 	.epoch-badge {
 		font-family: var(--font-mono);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 400;
 		color: var(--accent-blue);
 		background: var(--accent-blue-dim);
@@ -1107,7 +1107,7 @@
 
 	.node-count {
 		font-family: var(--font-mono);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 400;
 		color: var(--text-tertiary);
 		margin-left: auto;
@@ -1131,7 +1131,7 @@
 		bottom: 0;
 		width: 2px;
 		background: var(--border-subtle);
-		z-index: 0;
+		z-index: var(--z-base);
 	}
 
 	/* Individual flow node card */
@@ -1145,7 +1145,7 @@
 		margin: 3px 0 3px 20px;
 		overflow: hidden;
 		transition: border-color 0.15s, background 0.15s;
-		z-index: 1;
+		z-index: var(--z-above);
 	}
 
 	/* Tick mark connecting node to spine */
@@ -1170,7 +1170,7 @@
 	}
 	.flow-node.crit {
 		border-left-color: var(--status-crit);
-		background: rgba(220, 38, 38, 0.06);
+		background: var(--tally-program-subtle);
 		animation: pulse-crit 1s ease-in-out infinite;
 	}
 
@@ -1210,7 +1210,7 @@
 	}
 
 	.flow-node-fullname {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		white-space: nowrap;
 		overflow: hidden;
@@ -1229,7 +1229,7 @@
 		justify-content: space-between;
 		align-items: center;
 		margin-top: 2px;
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		font-variant-numeric: tabular-nums;
 	}
@@ -1239,7 +1239,7 @@
 	}
 
 	.flow-side-output {
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 500;
 		color: var(--accent-blue);
 		background: var(--accent-blue-dim);
@@ -1258,7 +1258,7 @@
 		border-radius: var(--radius-sm);
 		padding: 6px 10px;
 		margin-left: 20px;
-		z-index: 1;
+		z-index: var(--z-above);
 	}
 
 	.flow-input {
@@ -1283,7 +1283,7 @@
 
 	.flow-box-label {
 		font-family: var(--font-ui);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		letter-spacing: 0.5px;
@@ -1291,7 +1291,7 @@
 	}
 
 	.flow-box-detail {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		overflow: hidden;
 		white-space: nowrap;
@@ -1300,14 +1300,14 @@
 
 	.node-name {
 		font-family: var(--font-ui);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--text-primary);
 		letter-spacing: 0.3px;
 	}
 
 	.node-time {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		font-variant-numeric: tabular-nums;
 	}
@@ -1373,7 +1373,7 @@
 	.budget-headroom.crit { background: var(--status-crit-dim); }
 
 	.seg-label {
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-family: var(--font-ui);
 		font-weight: 500;
 		color: var(--text-secondary);
@@ -1385,7 +1385,7 @@
 
 	.budget-summary {
 		text-align: right;
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		margin-top: 3px;
 		font-variant-numeric: tabular-nums;
@@ -1408,7 +1408,7 @@
 	}
 
 	.chip {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-variant-numeric: tabular-nums;
 		padding: 2px 8px;
 		border-radius: 3px;
@@ -1424,7 +1424,7 @@
 
 	.crit-chip {
 		color: var(--status-crit);
-		border-color: rgba(220, 38, 38, 0.3);
+		border-color: var(--tally-program-medium);
 	}
 
 	/* --- Sparklines --- */
@@ -1442,7 +1442,7 @@
 
 	.spark-name {
 		font-family: var(--font-ui);
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		width: 32px;
@@ -1457,7 +1457,7 @@
 	}
 
 	.spark-value {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-variant-numeric: tabular-nums;
 		color: var(--text-secondary);
 		width: 52px;
@@ -1466,7 +1466,7 @@
 	}
 
 	.spark-max {
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		font-variant-numeric: tabular-nums;
 		color: var(--text-tertiary);
 		width: 54px;
@@ -1482,7 +1482,7 @@
 	.sync-labels {
 		display: flex;
 		justify-content: space-between;
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		margin-bottom: 4px;
 	}
@@ -1537,7 +1537,7 @@
 	.sync-scale {
 		display: flex;
 		justify-content: space-between;
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		margin-top: 2px;
 	}
@@ -1553,7 +1553,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		font-size: 10px;
+		font-size: var(--text-xs);
 	}
 
 	.source-dot {
@@ -1592,12 +1592,12 @@
 
 	.source-badge {
 		font-family: var(--font-ui);
-		font-size: 8px;
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--accent-blue);
 		background: var(--accent-blue-dim);
 		padding: 0px 4px;
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		letter-spacing: 0.3px;
 	}
 
@@ -1619,21 +1619,21 @@
 
 	.stat-key {
 		font-family: var(--font-ui);
-		font-size: 10px;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		width: 70px;
 		flex-shrink: 0;
 	}
 
 	.stat-val {
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-variant-numeric: tabular-nums;
 		color: var(--text-secondary);
 		flex: 1;
 	}
 
 	.stat-detail {
-		font-size: 9px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 	}
 
@@ -1663,7 +1663,7 @@
 		display: flex;
 		align-items: baseline;
 		gap: 6px;
-		font-size: 10px;
+		font-size: var(--text-xs);
 		font-variant-numeric: tabular-nums;
 	}
 

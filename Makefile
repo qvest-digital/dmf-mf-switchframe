@@ -53,15 +53,8 @@ demo: build-server node_modules_check
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
-		CERT_FLAGS=""; \
-		if [ -f $$HOME/.switchframe/cert.pem ] && [ -f $$HOME/.switchframe/key.pem ]; then \
-			CERT_FLAGS="--tls-cert $$HOME/.switchframe/cert.pem --tls-key $$HOME/.switchframe/key.pem"; \
-			echo "  Using mkcert certificate (HTTP/3 direct)"; \
-		else \
-			CERT_FLAGS="--http-fallback"; \
-			echo "  Using self-signed cert (Vite proxy mode)"; \
-			echo "  Tip: run 'make setup-mkcert' for HTTP/3 dev mode"; \
-		fi; \
+		CERT_FLAGS="--http-fallback"; \
+		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
 			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 $$CERT_FLAGS & \

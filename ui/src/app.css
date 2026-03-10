@@ -61,8 +61,8 @@
 
 	/* ─ Borders ─ */
 	--border-subtle: rgba(255, 255, 255, 0.05);
-	--border-default: rgba(255, 255, 255, 0.08);
-	--border-strong: rgba(255, 255, 255, 0.14);
+	--border-default: rgba(255, 255, 255, 0.09);
+	--border-strong: rgba(255, 255, 255, 0.15);
 	--border-focus: rgba(255, 255, 255, 0.22);
 
 	/* ─ Text ─ */
@@ -112,6 +112,99 @@
 	--shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 	--shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3);
 
+	/* ─ Type scale ─ */
+	--text-2xs: 0.5rem;
+	--text-xs: 0.6rem;
+	--text-sm: 0.7rem;
+	--text-md: 0.8rem;
+	--text-base: 1rem;
+	--text-lg: 1.125rem;
+	--text-xl: 1.25rem;
+	--text-2xl: 1.5rem;
+
+	/* ─ Radius additions ─ */
+	--radius-xs: 2px;
+
+	/* ─ Z-index scale ─ */
+	--z-base: 0;
+	--z-above: 1;
+	--z-dropdown: 10;
+	--z-overlay: 100;
+	--z-modal: 200;
+	--z-toast: 300;
+	--z-banner: 1000;
+	--z-fullscreen: 9999;
+	--z-system: 10000;
+
+	/* ─ Overlays ─ */
+	--overlay-light: rgba(0, 0, 0, 0.3);
+	--overlay-medium: rgba(0, 0, 0, 0.5);
+	--overlay-heavy: rgba(0, 0, 0, 0.6);
+	--overlay-opaque: rgba(0, 0, 0, 0.85);
+
+	/* ─ Semantic colors ─ */
+	--color-error: #ef4444;
+	--color-error-dim: rgba(239, 68, 68, 0.12);
+	--color-success: #22c55e;
+	--color-success-dim: rgba(34, 197, 94, 0.12);
+	--color-warning: #cc8822;
+	--color-warning-dim: rgba(204, 136, 34, 0.12);
+	--color-info: var(--accent-blue);
+	--color-info-dim: var(--accent-blue-dim);
+
+	/* ─ Missing accents ─ */
+	--accent-gold: #d4a017;
+	--accent-gold-dim: rgba(212, 160, 23, 0.12);
+	--accent-indigo: #818cf8;
+	--accent-indigo-dim: rgba(129, 140, 248, 0.12);
+	--accent-green: #22c55e;
+	--accent-green-dim: rgba(34, 197, 94, 0.12);
+	--accent-red: #ef4444;
+	--accent-red-dim: rgba(239, 68, 68, 0.12);
+
+	/* ─ Precomposed opacity variants ─ */
+	--tally-program-subtle: rgba(220, 38, 38, 0.06);
+	--tally-program-light: rgba(220, 38, 38, 0.2);
+	--tally-program-medium: rgba(220, 38, 38, 0.3);
+	--tally-preview-subtle: rgba(22, 163, 74, 0.06);
+	--tally-preview-light: rgba(22, 163, 74, 0.2);
+	--tally-preview-medium: rgba(22, 163, 74, 0.3);
+	--accent-blue-subtle: rgba(59, 130, 246, 0.06);
+	--accent-blue-light: rgba(59, 130, 246, 0.2);
+	--accent-blue-medium: rgba(59, 130, 246, 0.3);
+	--accent-orange-light: rgba(245, 158, 11, 0.2);
+	--accent-orange-medium: rgba(245, 158, 11, 0.3);
+	--accent-gold-light: rgba(212, 160, 23, 0.2);
+	--accent-gold-medium: rgba(212, 160, 23, 0.3);
+	--accent-indigo-light: rgba(129, 140, 248, 0.2);
+	--accent-indigo-medium: rgba(129, 140, 248, 0.3);
+
+	/* ─ Canvas background ─ */
+	--bg-canvas: #050507;
+
+	/* ─ Component recipes: buttons ─ */
+	--btn-font: var(--text-sm);
+	--btn-weight: 500;
+	--btn-letter-spacing: 0.03em;
+	--btn-border: 1px solid var(--border-default);
+	--btn-radius: var(--radius-md);
+	--btn-bg: var(--bg-control);
+	--btn-bg-hover: var(--bg-hover);
+	--btn-transition: background var(--transition-fast), border-color var(--transition-fast);
+
+	/* ─ Component recipes: inputs ─ */
+	--input-bg: var(--bg-control);
+	--input-border: 1px solid var(--border-default);
+	--input-border-focus: 1px solid var(--border-focus);
+	--input-radius: var(--radius-sm);
+	--input-padding: 4px 8px;
+
+	/* ─ Component recipes: section headers ─ */
+	--section-header-size: var(--text-xs);
+	--section-header-weight: 600;
+	--section-header-tracking: 0.08em;
+	--section-header-color: var(--text-secondary);
+
 	/* Legacy aliases (transition period) */
 	--bg-primary: var(--bg-base);
 	--bg-secondary: var(--bg-panel);
@@ -129,7 +222,7 @@ body {
 	background: var(--bg-base);
 	color: var(--text-primary);
 	font-family: var(--font-ui);
-	font-size: 14px;
+	font-size: var(--text-base);
 	line-height: 1.4;
 	overflow: hidden;
 	height: 100vh;
@@ -173,7 +266,7 @@ input[type='range'] {
 input[type='range']::-webkit-slider-runnable-track {
 	height: 4px;
 	background: var(--bg-control);
-	border-radius: 2px;
+	border-radius: var(--radius-xs);
 	border: 1px solid var(--border-subtle);
 }
 
@@ -196,7 +289,7 @@ input[type='range']::-webkit-slider-thumb:hover {
 input[type='range']::-moz-range-track {
 	height: 4px;
 	background: var(--bg-control);
-	border-radius: 2px;
+	border-radius: var(--radius-xs);
 	border: 1px solid var(--border-subtle);
 }
 
@@ -216,7 +309,7 @@ input[type='range']::-moz-range-thumb:hover {
 
 /* Selection */
 ::selection {
-	background: rgba(59, 130, 246, 0.3);
+	background: var(--accent-blue-medium);
 	color: var(--text-primary);
 }
 

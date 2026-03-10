@@ -23,10 +23,10 @@
 	.connection-status {
 		display: inline-flex;
 		align-items: center;
-		padding: 3px 8px;
-		border-radius: var(--radius-md);
+		padding: 2px 7px;
+		border-radius: var(--radius-sm);
 		font-family: var(--font-mono);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		letter-spacing: 0.06em;
 		line-height: 1;
@@ -35,7 +35,7 @@
 
 	.status-live {
 		background: rgba(22, 163, 74, 0.15);
-		border: 1px solid rgba(22, 163, 74, 0.3);
+		border: 1px solid var(--tally-preview-medium);
 		color: var(--tally-preview);
 	}
 
@@ -47,7 +47,7 @@
 
 	.status-error {
 		background: var(--tally-program-dim);
-		border: 1px solid rgba(220, 38, 38, 0.3);
+		border: 1px solid var(--tally-program-medium);
 		color: var(--tally-program);
 		animation: pulse-error 1.5s ease-in-out infinite;
 	}

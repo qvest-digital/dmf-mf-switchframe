@@ -43,13 +43,13 @@
 	.confirm-backdrop {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--overlay-heavy);
 		backdrop-filter: blur(4px);
 		-webkit-backdrop-filter: blur(4px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 200;
+		z-index: var(--z-modal);
 	}
 
 	.confirm-dialog {
@@ -66,14 +66,14 @@
 
 	h3 {
 		margin: 0 0 8px 0;
-		font-size: 0.9rem;
+		font-size: var(--text-md);
 		font-weight: 600;
 		color: var(--text-primary);
 	}
 
 	p {
 		margin: 0 0 20px 0;
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		color: var(--text-secondary);
 		line-height: 1.4;
 	}
@@ -91,7 +91,7 @@
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		letter-spacing: 0.02em;
 		transition:
 			border-color var(--transition-fast),

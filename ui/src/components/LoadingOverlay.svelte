@@ -35,7 +35,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		z-index: 300;
+		z-index: var(--z-toast);
 	}
 
 	.loading-content {
@@ -47,7 +47,7 @@
 
 	.title {
 		font-family: var(--font-ui);
-		font-size: 1rem;
+		font-size: var(--text-base);
 		font-weight: 600;
 		color: var(--text-primary);
 		letter-spacing: 0.01em;
@@ -63,14 +63,14 @@
 		align-items: center;
 		justify-content: center;
 		font-family: var(--font-ui);
-		font-size: 1.4rem;
+		font-size: var(--text-2xl);
 		font-weight: 700;
 		color: var(--tally-program);
 	}
 
 	.error-detail {
 		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		color: var(--text-secondary);
 		max-width: 360px;
 		text-align: center;
@@ -86,7 +86,7 @@
 
 	.retry-text {
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		color: var(--text-tertiary);
 	}
 

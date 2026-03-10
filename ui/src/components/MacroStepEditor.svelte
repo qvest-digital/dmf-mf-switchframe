@@ -468,7 +468,7 @@
 
 	.field-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		min-width: 52px;
 		flex-shrink: 0;
@@ -482,7 +482,7 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		min-width: 0;
 	}
 
@@ -500,7 +500,7 @@
 
 	.field-unit {
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		flex-shrink: 0;
 	}
@@ -517,7 +517,7 @@
 
 	.step-warning {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: #f59e0b;
 		padding: 2px 4px;
 		background: rgba(245, 158, 11, 0.1);

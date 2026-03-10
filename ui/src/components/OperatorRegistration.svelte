@@ -76,8 +76,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(0, 0, 0, 0.85);
-		z-index: 10000;
+		background: var(--overlay-opaque);
+		z-index: var(--z-system);
 	}
 
 	.dialog {
@@ -92,13 +92,13 @@
 	h2 {
 		margin: 0 0 4px;
 		color: var(--text-primary, #eee);
-		font-size: 18px;
+		font-size: var(--text-lg);
 	}
 
 	.subtitle {
 		margin: 0 0 16px;
 		color: var(--text-secondary, #999);
-		font-size: 13px;
+		font-size: var(--text-sm);
 	}
 
 	form {
@@ -115,7 +115,7 @@
 
 	.field-label {
 		color: var(--text-secondary, #aaa);
-		font-size: 12px;
+		font-size: var(--text-sm);
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 	}
@@ -126,7 +126,7 @@
 		border-radius: 4px;
 		background: var(--bg-base, #111);
 		color: var(--text-primary, #eee);
-		font-size: 14px;
+		font-size: var(--text-base);
 	}
 
 	select {
@@ -140,7 +140,7 @@
 		border-radius: 4px;
 		background: #2563eb;
 		color: #fff;
-		font-size: 14px;
+		font-size: var(--text-base);
 		cursor: pointer;
 	}
 
@@ -155,14 +155,14 @@
 
 	.error {
 		margin: 0;
-		color: #ef4444;
-		font-size: 13px;
+		color: var(--color-error);
+		font-size: var(--text-sm);
 	}
 
 	.hint {
 		margin: 16px 0 0;
 		color: var(--text-secondary, #777);
-		font-size: 11px;
+		font-size: var(--text-sm);
 		text-align: center;
 	}
 </style>

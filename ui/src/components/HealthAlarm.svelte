@@ -31,14 +31,14 @@
 			border-color: rgba(220, 38, 38, 1);
 		}
 		50% {
-			border-color: rgba(220, 38, 38, 0.3);
+			border-color: var(--tally-program-medium);
 		}
 	}
 
 	.health-alarm {
 		position: absolute;
 		inset: 0;
-		z-index: 10;
+		z-index: var(--z-dropdown);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -67,7 +67,7 @@
 	.alarm-text {
 		font-family: var(--font-ui);
 		font-weight: 700;
-		font-size: 1.1rem;
+		font-size: var(--text-lg);
 		color: #fff;
 		text-transform: uppercase;
 		letter-spacing: 0.08em;

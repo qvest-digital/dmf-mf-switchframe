@@ -43,7 +43,7 @@
 		align-items: center;
 		justify-content: center;
 		background: var(--bg-base, #09090b);
-		z-index: 99999;
+		z-index: var(--z-system);
 	}
 
 	.error-boundary-card {
@@ -58,7 +58,7 @@
 
 	.error-title {
 		font-family: var(--font-ui, system-ui, sans-serif);
-		font-size: 1.25rem;
+		font-size: var(--text-xl);
 		font-weight: 600;
 		color: var(--text-primary, #e4e4e8);
 		margin-bottom: 16px;
@@ -66,7 +66,7 @@
 
 	.error-message {
 		font-family: var(--font-mono, monospace);
-		font-size: 0.8rem;
+		font-size: var(--text-md);
 		color: var(--text-secondary, #85858f);
 		background: var(--bg-base, #09090b);
 		border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
@@ -88,7 +88,7 @@
 	.error-btn {
 		padding: 10px 24px;
 		font-family: var(--font-ui, system-ui, sans-serif);
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		font-weight: 600;
 		border: 1.5px solid;
 		border-radius: var(--radius-md, 5px);

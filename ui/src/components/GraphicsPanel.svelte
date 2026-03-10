@@ -164,31 +164,30 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		padding: 8px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-md);
-		background: var(--bg-surface);
+		padding: 6px;
+		height: 100%;
+		overflow-y: auto;
 	}
 
 	.gfx-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding-bottom: 4px;
-		border-bottom: 1px solid var(--border-subtle);
+		padding: 0 2px;
 	}
 
 	.gfx-label {
 		font-family: var(--font-ui);
-		font-size: 0.75rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
-		color: var(--text-primary);
+		color: var(--text-secondary);
+		text-transform: uppercase;
 	}
 
 	.gfx-status {
 		font-family: var(--font-mono);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-secondary);
 		padding: 1px 6px;
@@ -215,7 +214,7 @@
 
 	.template-select {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		background: var(--bg-elevated);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
@@ -238,7 +237,7 @@
 
 	.field-label {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		min-width: 40px;
 		flex-shrink: 0;
@@ -247,7 +246,7 @@
 	.field-input {
 		flex: 1;
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
@@ -277,10 +276,10 @@
 
 	.gfx-btn {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		letter-spacing: 0.04em;
-		padding: 4px 8px;
+		padding: 5px 8px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);

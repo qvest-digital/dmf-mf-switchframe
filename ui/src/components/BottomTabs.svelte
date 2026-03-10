@@ -81,40 +81,42 @@
 		display: flex;
 		gap: 0;
 		background: var(--bg-base);
-		border-bottom: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--border-default);
 		flex-shrink: 0;
-		height: 28px;
+		height: 25px;
 	}
 
 	.tab {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-tertiary);
 		background: transparent;
 		border: none;
 		border-bottom: 2px solid transparent;
-		padding: 0 14px;
+		padding: 0 12px;
 		cursor: pointer;
-		transition: color var(--transition-fast), border-color var(--transition-fast);
+		transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.tab:hover {
 		color: var(--text-secondary);
+		background: rgba(255, 255, 255, 0.02);
 	}
 
 	.tab.active {
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-yellow);
+		background: rgba(255, 255, 255, 0.02);
 	}
 
 	.tab-shortcut {
 		font-family: var(--font-mono);
-		font-size: 0.5rem;
-		opacity: 0.3;
+		font-size: var(--text-2xs);
+		opacity: 0.2;
 	}
 
 	.tab-content {

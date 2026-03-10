@@ -19,20 +19,20 @@
 		top: 0;
 		left: 0;
 		right: 0;
-		background: #cc0000;
+		background: var(--tally-program);
 		color: #fff;
 		text-align: center;
 		padding: 8px 16px;
 		font-family: var(--font-ui);
 		font-weight: 700;
-		font-size: 0.85rem;
+		font-size: var(--text-md);
 		letter-spacing: 0.06em;
-		z-index: 1001;
+		z-index: var(--z-banner);
 		animation: flash-banner 1s infinite;
 	}
 
 	@keyframes flash-banner {
-		0%, 100% { background: #cc0000; }
+		0%, 100% { background: var(--tally-program); }
 		50% { background: #ff2222; }
 	}
 </style>

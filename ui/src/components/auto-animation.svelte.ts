@@ -25,7 +25,9 @@ export class AutoAnimation {
 	stop() {
 		this.cancelled = true;
 		this.active = false;
-		this.position = 0;
+		// Don't reset position — let it hold at its current value.
+		// The derived tbarValue will fall through to server state (0)
+		// once active is false, so this field is not read again.
 	}
 
 	private scheduleFrame() {

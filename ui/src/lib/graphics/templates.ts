@@ -225,30 +225,36 @@ export const networkBugTemplate: GraphicsTemplate = {
 		ctx.globalAlpha = 0.6;
 		ctx.font = `900 ${bugFontSize}px -apple-system, "Segoe UI", sans-serif`;
 		ctx.fillStyle = '#ffffff';
-		ctx.textAlign = 'right';
+		ctx.textAlign = 'center';
 		ctx.textBaseline = 'top';
-		ctx.fillText(values.text || 'SF', bugX, bugY);
+		const bugTextWidth = ctx.measureText(values.text || 'SF').width;
+		const bugCenterX = bugX - bugTextWidth / 2;
+		ctx.fillText(values.text || 'SF', bugCenterX, bugY);
 
-		// "LIVE" indicator below: red dot + text
+		// "LIVE" indicator below: red dot + text, centered under bug text
 		const liveY = bugY + bugFontSize + Math.round(height * 0.01);
 		const liveFontSize = Math.round(bugFontSize * 0.35);
 		const dotRadius = Math.round(liveFontSize * 0.4);
 
 		ctx.globalAlpha = 0.5;
 
+		// Measure LIVE text to center the dot+text group
+		ctx.font = `bold ${liveFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		const liveTextWidth = ctx.measureText('LIVE').width;
+		const liveGroupWidth = dotRadius * 2 + liveFontSize * 0.4 + liveTextWidth;
+		const liveGroupLeft = bugCenterX - liveGroupWidth / 2;
+
 		// Red dot
-		const dotX = bugX - liveFontSize * 2.2;
 		ctx.fillStyle = '#FF0000';
 		ctx.beginPath();
-		ctx.arc(dotX, liveY + liveFontSize * 0.5, dotRadius, 0, Math.PI * 2);
+		ctx.arc(liveGroupLeft + dotRadius, liveY + liveFontSize * 0.5, dotRadius, 0, Math.PI * 2);
 		ctx.fill();
 
-		// "LIVE" text in small caps
-		ctx.font = `bold ${liveFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		// "LIVE" text
 		ctx.fillStyle = '#ffffff';
-		ctx.textAlign = 'right';
+		ctx.textAlign = 'left';
 		ctx.textBaseline = 'top';
-		ctx.fillText('LIVE', bugX, liveY);
+		ctx.fillText('LIVE', liveGroupLeft + dotRadius * 2 + liveFontSize * 0.4, liveY);
 
 		ctx.restore();
 	},

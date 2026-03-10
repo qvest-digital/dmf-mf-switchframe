@@ -142,7 +142,7 @@
 
 	.monitor {
 		aspect-ratio: 16 / 9;
-		background: #050507;
+		background: var(--bg-canvas);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
 		position: relative;
@@ -157,11 +157,11 @@
 		left: 6px;
 		font-family: var(--font-ui);
 		font-weight: 700;
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		letter-spacing: 0.08em;
 		padding: 1px 7px;
-		border-radius: 2px;
-		z-index: 2;
+		border-radius: var(--radius-xs);
+		z-index: var(--z-above);
 		text-transform: uppercase;
 	}
 
@@ -206,14 +206,14 @@
 		bottom: 6px;
 		left: 6px;
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: rgba(255, 255, 255, 0.9);
-		background: rgba(0, 0, 0, 0.65);
+		background: var(--overlay-heavy);
 		padding: 2px 7px;
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		pointer-events: none;
-		z-index: 2;
+		z-index: var(--z-above);
 		letter-spacing: 0.02em;
 	}
 
@@ -228,7 +228,7 @@
 		padding: 3px 8px;
 		background: rgba(220, 38, 38, 0.85);
 		border-radius: var(--radius-sm);
-		z-index: 3;
+		z-index: var(--z-above);
 		animation: break-pulse 1.5s ease-in-out infinite;
 	}
 
@@ -244,14 +244,14 @@
 
 	.break-icon {
 		font-family: var(--font-mono);
-		font-size: 0.55rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		color: rgba(255, 255, 255, 0.7);
 	}
 
 	.break-label {
 		font-family: var(--font-ui);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		font-weight: 700;
 		color: #fff;
 		letter-spacing: 0.04em;
@@ -259,7 +259,7 @@
 
 	.break-countdown {
 		font-family: var(--font-mono);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		font-weight: 700;
 		color: #fff;
 		min-width: 2.5em;
