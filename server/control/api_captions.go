@@ -42,7 +42,7 @@ func (a *API) handleCaptionMode(w http.ResponseWriter, r *http.Request) {
 
 	state := a.captionMgr.State()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(state)
+	_ = json.NewEncoder(w).Encode(state)
 }
 
 // handleCaptionText ingests caption text, triggers a newline, or clears the display.
@@ -75,7 +75,7 @@ func (a *API) handleCaptionText(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.captionMgr.State())
+	_ = json.NewEncoder(w).Encode(a.captionMgr.State())
 }
 
 // handleCaptionState returns the current caption system state.
@@ -86,5 +86,5 @@ func (a *API) handleCaptionState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(a.captionMgr.State())
+	_ = json.NewEncoder(w).Encode(a.captionMgr.State())
 }
