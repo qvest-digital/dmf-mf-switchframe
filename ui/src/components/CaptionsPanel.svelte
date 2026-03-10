@@ -21,6 +21,84 @@
 		{ id: 'author', label: 'Author' },
 	];
 
+	// -- Test Captions --
+	const TEST_CAPTION_LINES = [
+		'>> WELCOME TO THE BROADCAST.',
+		'WE ARE COMING TO YOU LIVE',
+		'FROM THE STUDIO.',
+		'>> LET\'S CHECK IN WITH OUR',
+		'REPORTER IN THE FIELD.',
+		'>> THANKS. THE CONDITIONS HERE',
+		'ARE PERFECT TODAY.',
+		'TEMPERATURES IN THE MID 70S',
+		'WITH CLEAR SKIES.',
+		'>> COMING UP AFTER THE BREAK,',
+		'WE\'LL HAVE THE LATEST',
+		'ON THE CHAMPIONSHIP GAME.',
+		'>> STAY WITH US.',
+	];
+	const TEST_LINE_DELAY = 2500;
+	const TEST_LOOP_DELAY = 4000;
+
+	let testCaptionsActive = $state(false);
+	let testCaptionsTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function stopTestCaptions() {
+		testCaptionsActive = false;
+		if (testCaptionsTimer !== null) {
+			clearTimeout(testCaptionsTimer);
+			testCaptionsTimer = null;
+		}
+	}
+
+	function startTestCaptions() {
+		if (mode !== 'author') {
+			apiCall(setCaptionMode('author'), 'Set caption mode');
+		}
+		testCaptionsActive = true;
+		let index = 0;
+
+		function feedNext() {
+			if (!testCaptionsActive) return;
+			const line = TEST_CAPTION_LINES[index];
+			apiCall(sendCaptionText(line), 'Test caption text');
+			apiCall(sendCaptionNewline(), 'Test caption newline');
+
+			index++;
+			if (index >= TEST_CAPTION_LINES.length) {
+				index = 0;
+				testCaptionsTimer = setTimeout(feedNext, TEST_LOOP_DELAY);
+			} else {
+				testCaptionsTimer = setTimeout(feedNext, TEST_LINE_DELAY);
+			}
+		}
+
+		feedNext();
+	}
+
+	function toggleTestCaptions() {
+		if (testCaptionsActive) {
+			stopTestCaptions();
+			apiCall(clearCaptions(), 'Clear test captions');
+		} else {
+			startTestCaptions();
+		}
+	}
+
+	// Auto-stop test captions if mode changes away from author
+	$effect(() => {
+		if (mode !== 'author' && testCaptionsActive) {
+			stopTestCaptions();
+		}
+	});
+
+	// Cleanup on destroy
+	$effect(() => {
+		return () => {
+			stopTestCaptions();
+		};
+	});
+
 	function handleModeChange(newMode: CaptionMode) {
 		apiCall(setCaptionMode(newMode), 'Set caption mode');
 	}
@@ -72,9 +150,18 @@
 	<div class="zone">
 		<div class="zone-header">
 			<span class="zone-title">AUTHOR INPUT</span>
-			{#if isAuthor}
-				<button class="clear-btn" onclick={handleClear}>Clear Display</button>
-			{/if}
+			<div class="zone-actions">
+				<button
+					class="test-btn"
+					class:active={testCaptionsActive}
+					onclick={toggleTestCaptions}
+				>
+					{testCaptionsActive ? 'Stop Test' : 'Test Captions'}
+				</button>
+				{#if isAuthor}
+					<button class="clear-btn" onclick={handleClear}>Clear Display</button>
+				{/if}
+			</div>
 		</div>
 		{#if isAuthor}
 			<textarea
@@ -226,6 +313,34 @@
 
 	.buffer-text {
 		color: var(--accent-green);
+	}
+
+	.zone-actions {
+		display: flex;
+		gap: 4px;
+	}
+
+	.test-btn {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 2px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+
+	.test-btn:hover {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+	}
+
+	.test-btn.active {
+		background: var(--accent-yellow);
+		color: var(--bg-base);
+		border-color: var(--accent-yellow);
 	}
 
 	.clear-btn {

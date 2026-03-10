@@ -42,6 +42,7 @@
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
+	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
 	const store = createControlRoomStore();
@@ -57,6 +58,14 @@
 	let tokenInput = $state('');
 	let showOperatorRegistration = $state(false);
 	let fastControl = $state<FastControl | null>(null);
+
+	// Caption renderer for program monitor overlay
+	let captionRenderer: CaptionRenderer | null = null;
+
+	function onCaptionElReady(el: HTMLDivElement) {
+		captionRenderer?.destroy();
+		captionRenderer = new CaptionRenderer(el, undefined, false);
+	}
 
 	// ARIA live region for screen reader announcements
 	let announcement = $state('');
@@ -197,6 +206,9 @@
 	const pipeline = createMediaPipeline({
 		onControlState: (data) => {
 			connectionManager.handleControlData(data);
+		},
+		onProgramCaptionFrame: (caption, _timestamp) => {
+			captionRenderer?.show(caption);
 		},
 		onRawSourceReady: (sourceKey: string) => {
 			// Raw YUV source catalog arrived — re-sync canvases so the pipeline
@@ -467,6 +479,8 @@
 		document.removeEventListener('keydown', handleGlobalShortcuts);
 		clearInterval(syncInterval);
 		fastControl?.close();
+		captionRenderer?.destroy();
+		captionRenderer = null;
 		pflManager.destroy();
 		pipelineManager.destroy();
 		connectionManager.stop();
@@ -543,7 +557,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} showLayoutOverlay={layoutTabActive} {fastControl} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} {fastControl} />
 			</section>
 
 			<section class="multiview-section">
