@@ -171,4 +171,86 @@ describe('MacroStepEditor', () => {
 		const eventIdInput = container.querySelector('.event-id-input') as HTMLInputElement;
 		expect(eventIdInput).toBeTruthy();
 	});
+
+	// --- Graphics action parameter editors ---
+
+	it('shows layer ID input for graphics_on', () => {
+		const { container } = renderEditor({ action: 'graphics_on', params: { layerId: 2 } });
+		const inputs = container.querySelectorAll('.field-input');
+		const layerInput = Array.from(inputs).find(el => (el as HTMLInputElement).value === '2') as HTMLInputElement;
+		expect(layerInput).toBeTruthy();
+		expect(layerInput.type).toBe('number');
+	});
+
+	it('shows direction select and duration for graphics_fly_in', () => {
+		const { container } = renderEditor({ action: 'graphics_fly_in', params: { layerId: 0, direction: 'left', durationMs: 500 } });
+		const selects = container.querySelectorAll('.field-select');
+		// action select + direction select
+		const dirOption = container.querySelector('option[value="right"]');
+		expect(dirOption).toBeTruthy();
+		// duration input
+		const inputs = container.querySelectorAll('.field-input');
+		expect(inputs.length).toBeGreaterThanOrEqual(2); // layerId + durationMs
+	});
+
+	it('shows direction select and duration for graphics_fly_out', () => {
+		const { container } = renderEditor({ action: 'graphics_fly_out', params: { layerId: 1, direction: 'bottom', durationMs: 300 } });
+		const dirOption = container.querySelector('option[value="bottom"]');
+		expect(dirOption).toBeTruthy();
+	});
+
+	it('shows x/y/width/height for graphics_set_rect', () => {
+		const { container } = renderEditor({ action: 'graphics_set_rect', params: { layerId: 0, x: 100, y: 50, width: 960, height: 540 } });
+		const inputs = container.querySelectorAll('.field-input');
+		// layerId + x + y + width + height = 5
+		expect(inputs.length).toBe(5);
+	});
+
+	it('shows x/y/width/height + duration for graphics_slide', () => {
+		const { container } = renderEditor({ action: 'graphics_slide', params: { layerId: 0, x: 0, y: 0, width: 1920, height: 1080, durationMs: 500 } });
+		const inputs = container.querySelectorAll('.field-input');
+		// layerId + x + y + width + height + durationMs = 6
+		expect(inputs.length).toBe(6);
+	});
+
+	it('shows z-order input for graphics_set_zorder', () => {
+		const { container } = renderEditor({ action: 'graphics_set_zorder', params: { layerId: 0, zOrder: 3 } });
+		const inputs = container.querySelectorAll('.field-input');
+		// layerId + zOrder = 2
+		expect(inputs.length).toBe(2);
+	});
+
+	it('shows mode select and pulse params for graphics_animate', () => {
+		const { container } = renderEditor({ action: 'graphics_animate', params: { layerId: 0, mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0 } });
+		const selects = container.querySelectorAll('.field-select');
+		// action select + mode select
+		expect(selects.length).toBe(2);
+		const modeSelect = selects[1] as HTMLSelectElement;
+		expect(modeSelect.value).toBe('pulse');
+		// pulse params: layerId + minAlpha + maxAlpha + speedHz = 4
+		const inputs = container.querySelectorAll('.field-input');
+		expect(inputs.length).toBe(4);
+	});
+
+	it('shows transition params when graphics_animate mode is transition', () => {
+		const { container } = renderEditor({ action: 'graphics_animate', params: { layerId: 0, mode: 'transition', toAlpha: 0.5, durationMs: 500 } });
+		const inputs = container.querySelectorAll('.field-input');
+		// layerId + toAlpha + durationMs = 3
+		expect(inputs.length).toBe(3);
+	});
+
+	it('shows template select for graphics_upload_frame', () => {
+		const { container } = renderEditor({ action: 'graphics_upload_frame', params: { layerId: 0, template: 'lower-third' } });
+		const selects = container.querySelectorAll('.field-select');
+		// action select + template select
+		expect(selects.length).toBe(2);
+		const templateSelect = selects[1] as HTMLSelectElement;
+		expect(templateSelect.options.length).toBe(6);
+	});
+
+	it('shows no layer ID for graphics_add_layer', () => {
+		const { container } = renderEditor({ action: 'graphics_add_layer', params: {} });
+		const inputs = container.querySelectorAll('.field-input');
+		expect(inputs.length).toBe(0);
+	});
 });

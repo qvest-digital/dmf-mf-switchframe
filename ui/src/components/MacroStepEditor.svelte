@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { MacroAction, MacroStep } from '$lib/api/types';
-	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS } from './macro-actions';
+	import { ACTION_META, CATEGORIES, SOURCE_ACTIONS, WIPE_DIRECTIONS, GRAPHICS_LAYER_ACTIONS, FLY_DIRECTIONS } from './macro-actions';
+	import { templateList } from '$lib/graphics/templates';
 
 	interface Props {
 		step: MacroStep;
@@ -16,6 +17,8 @@
 
 	let transType = $derived((step.params.type as string) || 'mix');
 	let needsSource = $derived(SOURCE_ACTIONS.includes(step.action));
+	let needsLayerId = $derived(GRAPHICS_LAYER_ACTIONS.includes(step.action));
+	let animMode = $derived((step.params.mode as string) || 'pulse');
 
 	// Validation warnings
 	let warnings = $derived.by(() => {
@@ -62,6 +65,163 @@
 			>
 				{#each sourceKeys as key}
 					<option value={key}>{sourceLabel(key)}</option>
+				{/each}
+			</select>
+		</div>
+	{/if}
+
+	<!-- Graphics: Layer ID -->
+	{#if needsLayerId}
+		<div class="field-row">
+			<span class="field-label">Layer</span>
+			<input
+				class="field-input"
+				type="number"
+				min="0"
+				step="1"
+				value={step.params.layerId as number ?? 0}
+				oninput={(e) => onupdate('layerId', parseInt((e.target as HTMLInputElement).value) || 0)}
+			/>
+		</div>
+	{/if}
+
+	<!-- Graphics: Fly In / Fly Out direction + duration -->
+	{#if step.action === 'graphics_fly_in' || step.action === 'graphics_fly_out'}
+		<div class="field-row">
+			<span class="field-label">Direction</span>
+			<select
+				class="field-select"
+				value={step.params.direction as string || 'left'}
+				onchange={(e) => onupdate('direction', (e.target as HTMLSelectElement).value)}
+			>
+				{#each FLY_DIRECTIONS as dir}
+					<option value={dir.value}>{dir.label}</option>
+				{/each}
+			</select>
+		</div>
+		<div class="field-row">
+			<span class="field-label">Duration</span>
+			<div class="field-with-unit">
+				<input
+					class="field-input"
+					type="number"
+					min="100"
+					max="5000"
+					step="100"
+					value={step.params.durationMs as number || 500}
+					oninput={(e) => onupdate('durationMs', parseInt((e.target as HTMLInputElement).value) || 500)}
+				/>
+				<span class="field-unit">ms</span>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Graphics: Set Rect / Slide -->
+	{#if step.action === 'graphics_set_rect' || step.action === 'graphics_slide'}
+		<div class="field-row">
+			<span class="field-label">X</span>
+			<input class="field-input" type="number" min="0" step="1"
+				value={step.params.x as number ?? 0}
+				oninput={(e) => onupdate('x', parseInt((e.target as HTMLInputElement).value) || 0)} />
+			<span class="field-label">Y</span>
+			<input class="field-input" type="number" min="0" step="1"
+				value={step.params.y as number ?? 0}
+				oninput={(e) => onupdate('y', parseInt((e.target as HTMLInputElement).value) || 0)} />
+		</div>
+		<div class="field-row">
+			<span class="field-label">W</span>
+			<input class="field-input" type="number" min="1" step="1"
+				value={step.params.width as number ?? 1920}
+				oninput={(e) => onupdate('width', parseInt((e.target as HTMLInputElement).value) || 1920)} />
+			<span class="field-label">H</span>
+			<input class="field-input" type="number" min="1" step="1"
+				value={step.params.height as number ?? 1080}
+				oninput={(e) => onupdate('height', parseInt((e.target as HTMLInputElement).value) || 1080)} />
+		</div>
+		{#if step.action === 'graphics_slide'}
+			<div class="field-row">
+				<span class="field-label">Duration</span>
+				<div class="field-with-unit">
+					<input class="field-input" type="number" min="100" max="5000" step="100"
+						value={step.params.durationMs as number || 500}
+						oninput={(e) => onupdate('durationMs', parseInt((e.target as HTMLInputElement).value) || 500)} />
+					<span class="field-unit">ms</span>
+				</div>
+			</div>
+		{/if}
+	{/if}
+
+	<!-- Graphics: Set Z-Order -->
+	{#if step.action === 'graphics_set_zorder'}
+		<div class="field-row">
+			<span class="field-label">Z-Order</span>
+			<input class="field-input" type="number" min="0" step="1"
+				value={step.params.zOrder as number ?? 0}
+				oninput={(e) => onupdate('zOrder', parseInt((e.target as HTMLInputElement).value) || 0)} />
+		</div>
+	{/if}
+
+	<!-- Graphics: Animate -->
+	{#if step.action === 'graphics_animate'}
+		<div class="field-row">
+			<span class="field-label">Mode</span>
+			<select class="field-select"
+				value={animMode}
+				onchange={(e) => onupdate('mode', (e.target as HTMLSelectElement).value)}
+			>
+				<option value="pulse">Pulse</option>
+				<option value="transition">Transition</option>
+			</select>
+		</div>
+		{#if animMode === 'pulse'}
+			<div class="field-row">
+				<span class="field-label">Min α</span>
+				<input class="field-input" type="number" min="0" max="1" step="0.1"
+					value={step.params.minAlpha as number ?? 0.3}
+					oninput={(e) => { const v = parseFloat((e.target as HTMLInputElement).value); onupdate('minAlpha', Number.isNaN(v) ? 0.3 : v); }} />
+				<span class="field-label">Max α</span>
+				<input class="field-input" type="number" min="0" max="1" step="0.1"
+					value={step.params.maxAlpha as number ?? 1.0}
+					oninput={(e) => { const v = parseFloat((e.target as HTMLInputElement).value); onupdate('maxAlpha', Number.isNaN(v) ? 1.0 : v); }} />
+			</div>
+			<div class="field-row">
+				<span class="field-label">Speed</span>
+				<div class="field-with-unit">
+					<input class="field-input" type="number" min="0.1" max="5" step="0.1"
+						value={step.params.speedHz as number ?? 1.0}
+						oninput={(e) => { const v = parseFloat((e.target as HTMLInputElement).value); onupdate('speedHz', Number.isNaN(v) ? 1.0 : v); }} />
+					<span class="field-unit">Hz</span>
+				</div>
+			</div>
+		{:else}
+			<div class="field-row">
+				<span class="field-label">To α</span>
+				<input class="field-input" type="number" min="0" max="1" step="0.1"
+					value={step.params.toAlpha as number ?? 0.5}
+					oninput={(e) => { const v = parseFloat((e.target as HTMLInputElement).value); onupdate('toAlpha', Number.isNaN(v) ? 0.5 : v); }} />
+			</div>
+			<div class="field-row">
+				<span class="field-label">Duration</span>
+				<div class="field-with-unit">
+					<input class="field-input" type="number" min="100" max="5000" step="100"
+						value={step.params.durationMs as number || 500}
+						oninput={(e) => onupdate('durationMs', parseInt((e.target as HTMLInputElement).value) || 500)} />
+					<span class="field-unit">ms</span>
+				</div>
+			</div>
+		{/if}
+	{/if}
+
+	<!-- Graphics: Upload Frame (template select) -->
+	{#if step.action === 'graphics_upload_frame'}
+		<div class="field-row">
+			<span class="field-label">Template</span>
+			<select class="field-select"
+				value={step.params.template as string || 'lower-third'}
+				onchange={(e) => onupdate('template', (e.target as HTMLSelectElement).value)}
+			>
+				{#each templateList as t}
+					<option value={t.id}>{t.name}</option>
 				{/each}
 			</select>
 		</div>

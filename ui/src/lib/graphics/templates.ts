@@ -36,6 +36,7 @@ export interface TemplateField {
 export const lowerThirdTemplate: GraphicsTemplate = {
 	id: 'lower-third',
 	name: 'Lower Third',
+	supportsAnimation: true,
 	fields: [
 		{ key: 'name', label: 'Name', defaultValue: 'John Smith', maxLength: 40 },
 		{ key: 'title', label: 'Title', defaultValue: 'Speaker', maxLength: 60 },
@@ -144,6 +145,7 @@ export const tickerTemplate: GraphicsTemplate = {
 export const newsLowerThirdTemplate: GraphicsTemplate = {
 	id: 'news-lower-third',
 	name: 'News Lower Third',
+	supportsAnimation: true,
 	fields: [
 		{ key: 'name', label: 'Name', defaultValue: 'Jane Doe', maxLength: 40 },
 		{ key: 'title', label: 'Title', defaultValue: 'Senior Correspondent', maxLength: 60 },

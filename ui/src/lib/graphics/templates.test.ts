@@ -61,7 +61,11 @@ describe('templates', () => {
 		expect(builtinTemplates['score-bug'].fields).toHaveLength(6);
 	});
 
-	it('lower-third does not support animation', () => {
-		expect(builtinTemplates['lower-third'].supportsAnimation).toBeFalsy();
+	it('lower-third supports animation', () => {
+		expect(builtinTemplates['lower-third'].supportsAnimation).toBe(true);
+	});
+
+	it('news-lower-third supports animation', () => {
+		expect(builtinTemplates['news-lower-third'].supportsAnimation).toBe(true);
 	});
 });

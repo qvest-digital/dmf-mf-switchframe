@@ -136,20 +136,23 @@ describe('GraphicsPanel', () => {
 		expect(inputs.length).toBe(2);
 	});
 
-	it('should have CUT ON/OFF and AUTO ON/OFF buttons per layer', () => {
+	it('should have CUT ON/OFF, AUTO ON/OFF, FLY IN/OUT, and ANIMATE buttons per layer', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const buttons = container.querySelectorAll('.gfx-btn');
-		expect(buttons.length).toBe(4);
+		expect(buttons.length).toBe(7);
 
 		const labels = Array.from(buttons).map((b) => b.textContent?.trim());
 		expect(labels).toContain('CUT ON');
 		expect(labels).toContain('AUTO ON');
 		expect(labels).toContain('CUT OFF');
 		expect(labels).toContain('AUTO OFF');
+		expect(labels).toContain('FLY IN');
+		expect(labels).toContain('FLY OUT');
+		expect(labels).toContain('ANIMATE');
 	});
 
 	it('should disable OFF buttons when layer not active', () => {
@@ -188,35 +191,31 @@ describe('GraphicsPanel', () => {
 		expect(canvas.height).toBe(240);
 	});
 
-	it('should not show animation button for lower-third template', () => {
+	it('should show animation controls for all templates including lower-third', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const animRow = container.querySelector('.gfx-anim-row');
-		expect(animRow).toBeNull();
+		expect(animRow).toBeTruthy();
+		const animBtn = container.querySelector('.gfx-btn.anim-start');
+		expect(animBtn).toBeTruthy();
 	});
 
-	it('should show ANIMATE button when network-bug selected and layer active', async () => {
+	it('should show ANIMATE button enabled when layer active', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const select = container.querySelector('.template-select') as HTMLSelectElement;
-		await fireEvent.change(select, { target: { value: 'network-bug' } });
-		await vi.waitFor(() => {
-			const animRow = container.querySelector('.gfx-anim-row');
-			expect(animRow).toBeTruthy();
-		});
 		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
 		expect(animBtn).toBeTruthy();
 		expect(animBtn.textContent?.trim()).toBe('ANIMATE');
 		expect(animBtn.disabled).toBe(false);
 	});
 
-	it('should show STOP ANIM button when animation is active', async () => {
+	it('should show STOP ANIM button when animation is active', () => {
 		const state = {
 			...baseState,
 			graphics: {
@@ -229,29 +228,19 @@ describe('GraphicsPanel', () => {
 			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const select = container.querySelector('.template-select') as HTMLSelectElement;
-		await fireEvent.change(select, { target: { value: 'network-bug' } });
-		await vi.waitFor(() => {
-			const stopBtn = container.querySelector('.gfx-btn.anim-stop');
-			expect(stopBtn).toBeTruthy();
-		});
 		const stopBtn = container.querySelector('.gfx-btn.anim-stop') as HTMLButtonElement;
+		expect(stopBtn).toBeTruthy();
 		expect(stopBtn.textContent?.trim()).toBe('STOP ANIM');
 	});
 
-	it('should disable ANIMATE button when layer not active', async () => {
+	it('should disable ANIMATE button when layer not active', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const select = container.querySelector('.template-select') as HTMLSelectElement;
-		await fireEvent.change(select, { target: { value: 'network-bug' } });
-		await vi.waitFor(() => {
-			const animBtn = container.querySelector('.gfx-btn.anim-start');
-			expect(animBtn).toBeTruthy();
-		});
 		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
+		expect(animBtn).toBeTruthy();
 		expect(animBtn.disabled).toBe(true);
 	});
 
@@ -300,6 +289,101 @@ describe('GraphicsPanel', () => {
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const card = container.querySelector('.layer-card.active');
 		expect(card).toBeTruthy();
+	});
+
+	it('should show fly-in/out controls with direction and duration', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const flyDirSelect = container.querySelector('.fly-direction-select') as HTMLSelectElement;
+		expect(flyDirSelect).toBeTruthy();
+		expect(flyDirSelect.options.length).toBe(4);
+
+		const flyDuration = container.querySelector('.fly-duration') as HTMLInputElement;
+		expect(flyDuration).toBeTruthy();
+
+		const flyInBtn = container.querySelector('.gfx-btn.fly-in') as HTMLButtonElement;
+		const flyOutBtn = container.querySelector('.gfx-btn.fly-out') as HTMLButtonElement;
+		expect(flyInBtn).toBeTruthy();
+		expect(flyOutBtn).toBeTruthy();
+	});
+
+	it('should disable FLY IN when active, FLY OUT when inactive', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const flyIn = container.querySelector('.gfx-btn.fly-in') as HTMLButtonElement;
+		const flyOut = container.querySelector('.gfx-btn.fly-out') as HTMLButtonElement;
+		expect(flyIn.disabled).toBe(false);
+		expect(flyOut.disabled).toBe(true);
+	});
+
+	it('should show animation mode selector', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const modeSelect = container.querySelector('.anim-mode-select') as HTMLSelectElement;
+		expect(modeSelect).toBeTruthy();
+		expect(modeSelect.options.length).toBe(2);
+		expect(modeSelect.value).toBe('pulse');
+	});
+
+	it('should show pulse params (min/max/Hz) for pulse mode', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const params = container.querySelectorAll('.anim-param');
+		expect(params.length).toBe(3);
+	});
+
+	it('should show transition params (alpha/ms) when mode is transition', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const modeSelect = container.querySelector('.anim-mode-select') as HTMLSelectElement;
+		await fireEvent.change(modeSelect, { target: { value: 'transition' } });
+		const params = container.querySelectorAll('.anim-param');
+		expect(params.length).toBe(2);
+	});
+
+	it('should show animation badge when animation active', () => {
+		const state = {
+			...baseState,
+			graphics: {
+				layers: [{
+					...oneLayerActive,
+					animationMode: 'pulse',
+					animationHz: 1.0,
+				}],
+			},
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const badge = container.querySelector('.anim-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('pulse');
+		expect(badge?.textContent).toContain('1Hz');
+	});
+
+	it('should show layer position in header', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [{ ...oneLayer, x: 100, y: 50, width: 960, height: 540 }] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const rect = container.querySelector('.layer-rect');
+		expect(rect).toBeTruthy();
+		expect(rect?.textContent).toContain('960');
+		expect(rect?.textContent).toContain('540');
 	});
 
 	it('should sort layers by z-order', () => {

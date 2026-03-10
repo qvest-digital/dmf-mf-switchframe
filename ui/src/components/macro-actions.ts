@@ -26,6 +26,16 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	graphics_off: { label: 'Graphics Off', category: 'Graphics', description: 'Hide DSK overlay' },
 	graphics_auto_on: { label: 'Auto On', category: 'Graphics', description: 'Auto-transition graphics on' },
 	graphics_auto_off: { label: 'Auto Off', category: 'Graphics', description: 'Auto-transition graphics off' },
+	graphics_add_layer: { label: 'Add Layer', category: 'Graphics', description: 'Add a new graphics layer' },
+	graphics_remove_layer: { label: 'Remove Layer', category: 'Graphics', description: 'Remove a graphics layer' },
+	graphics_set_rect: { label: 'Set Position', category: 'Graphics', description: 'Set layer position and size' },
+	graphics_set_zorder: { label: 'Set Z-Order', category: 'Graphics', description: 'Set layer stacking order' },
+	graphics_fly_in: { label: 'Fly In', category: 'Graphics', description: 'Animate layer flying in from edge' },
+	graphics_fly_out: { label: 'Fly Out', category: 'Graphics', description: 'Animate layer flying out to edge' },
+	graphics_slide: { label: 'Slide', category: 'Graphics', description: 'Slide layer to new position' },
+	graphics_animate: { label: 'Animate', category: 'Graphics', description: 'Start pulse or transition animation' },
+	graphics_animate_stop: { label: 'Stop Animation', category: 'Graphics', description: 'Stop current animation' },
+	graphics_upload_frame: { label: 'Upload Frame', category: 'Graphics', description: 'Upload rendered graphic to layer' },
 	// Output
 	recording_start: { label: 'Start Recording', category: 'Output', description: 'Start recording' },
 	recording_stop: { label: 'Stop Recording', category: 'Output', description: 'Stop recording' },
@@ -66,6 +76,21 @@ export const SOURCE_ACTIONS: MacroAction[] = [
 	'source_delay', 'source_position',
 	'replay_mark_in', 'replay_mark_out', 'replay_play',
 	'replay_quick_clip', 'replay_play_clip',
+];
+
+/** Graphics actions that take a layerId parameter. */
+export const GRAPHICS_LAYER_ACTIONS: MacroAction[] = [
+	'graphics_on', 'graphics_off', 'graphics_auto_on', 'graphics_auto_off',
+	'graphics_remove_layer', 'graphics_set_rect', 'graphics_set_zorder',
+	'graphics_fly_in', 'graphics_fly_out', 'graphics_slide',
+	'graphics_animate', 'graphics_animate_stop', 'graphics_upload_frame',
+];
+
+export const FLY_DIRECTIONS = [
+	{ value: 'left', label: 'Left' },
+	{ value: 'right', label: 'Right' },
+	{ value: 'top', label: 'Top' },
+	{ value: 'bottom', label: 'Bottom' },
 ];
 
 export const WIPE_DIRECTIONS = [

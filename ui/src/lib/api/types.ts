@@ -204,6 +204,11 @@ export type MacroAction =
 	| 'audio_eq' | 'audio_compressor' | 'audio_delay'
 	// Graphics
 	| 'graphics_on' | 'graphics_off' | 'graphics_auto_on' | 'graphics_auto_off'
+	| 'graphics_add_layer' | 'graphics_remove_layer'
+	| 'graphics_set_rect' | 'graphics_set_zorder'
+	| 'graphics_fly_in' | 'graphics_fly_out' | 'graphics_slide'
+	| 'graphics_animate' | 'graphics_animate_stop'
+	| 'graphics_upload_frame'
 	// Output
 	| 'recording_start' | 'recording_stop'
 	// Presets
