@@ -114,6 +114,9 @@ func makeGrayFrame(w, h int) []byte {
 	return buf
 }
 
+// FrameSize returns the compositor's configured frame dimensions.
+func (c *Compositor) FrameSize() (int, int) { return c.frameW, c.frameH }
+
 // Active returns true if a layout is configured with at least one enabled slot.
 func (c *Compositor) Active() bool {
 	l := c.layout.Load()
@@ -194,6 +197,19 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		return yuv
 	}
 
+	// Compute scale factors if frame dimensions differ from configured dimensions.
+	// Layout rects are in configured (pipeline format) coordinates; scale them
+	// to actual frame coordinates when the source is at a different resolution.
+	scaleX, scaleY := 1.0, 1.0
+	needsScale := false
+	if width != c.frameW || height != c.frameH {
+		if c.frameW > 0 && c.frameH > 0 {
+			scaleX = float64(width) / float64(c.frameW)
+			scaleY = float64(height) / float64(c.frameH)
+			needsScale = true
+		}
+	}
+
 	// Phase 1: Under lock — tick animations, snapshot source data, release lock.
 	c.mu.Lock()
 	c.tickAnimations()
@@ -220,6 +236,16 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		rect, alpha := c.effectiveRectAndAlpha(idx, slot)
 		if rect.Dx() <= 0 || rect.Dy() <= 0 {
 			continue
+		}
+
+		// Scale rect to actual frame dimensions if needed.
+		if needsScale {
+			rect = image.Rect(
+				EvenAlign(int(float64(rect.Min.X)*scaleX)),
+				EvenAlign(int(float64(rect.Min.Y)*scaleY)),
+				EvenAlign(int(float64(rect.Max.X)*scaleX)),
+				EvenAlign(int(float64(rect.Max.Y)*scaleY)),
+			)
 		}
 
 		// Clamp rect to frame bounds (fly animations can go off-screen).
