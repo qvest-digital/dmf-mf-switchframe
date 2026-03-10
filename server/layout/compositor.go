@@ -325,6 +325,107 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*LayoutSlot)) {
 	c.layout.Store(updated)
 }
 
+// SlotOn brings a slot on-air with its configured transition.
+func (c *Compositor) SlotOn(slotIdx int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	l := c.layout.Load()
+	if l == nil || slotIdx >= len(l.Slots) {
+		return
+	}
+
+	// Clone layout and enable the slot
+	updated := c.cloneLayout(l)
+	slot := &updated.Slots[slotIdx]
+	slot.Enabled = true
+	c.layout.Store(updated)
+
+	switch slot.Transition.Type {
+	case "dissolve":
+		c.animations = append(c.animations, &Animation{
+			SlotIndex: slotIdx,
+			StartTime: time.Now(),
+			Duration:  slot.Transition.Duration,
+			FromRect:  slot.Rect,
+			ToRect:    slot.Rect,
+			FromAlpha: 0.0,
+			ToAlpha:   1.0,
+		})
+	case "fly":
+		origin := FlyInOrigin(slot.Rect, c.frameW, c.frameH)
+		c.animations = append(c.animations, &Animation{
+			SlotIndex: slotIdx,
+			StartTime: time.Now(),
+			Duration:  slot.Transition.Duration,
+			FromRect:  origin,
+			ToRect:    slot.Rect,
+			FromAlpha: 1.0,
+			ToAlpha:   1.0,
+		})
+	}
+	// "cut" = no animation, slot is just enabled
+}
+
+// SlotOff takes a slot off-air with its configured transition.
+func (c *Compositor) SlotOff(slotIdx int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	l := c.layout.Load()
+	if l == nil || slotIdx >= len(l.Slots) {
+		return
+	}
+
+	slot := l.Slots[slotIdx]
+
+	switch slot.Transition.Type {
+	case "dissolve":
+		c.animations = append(c.animations, &Animation{
+			SlotIndex: slotIdx,
+			StartTime: time.Now(),
+			Duration:  slot.Transition.Duration,
+			FromRect:  slot.Rect,
+			ToRect:    slot.Rect,
+			FromAlpha: 1.0,
+			ToAlpha:   0.0,
+			OnComplete: func() {
+				if cur := c.layout.Load(); cur != nil {
+					up := c.cloneLayout(cur)
+					if slotIdx < len(up.Slots) {
+						up.Slots[slotIdx].Enabled = false
+					}
+					c.layout.Store(up)
+				}
+			},
+		})
+	case "fly":
+		dest := FlyInOrigin(slot.Rect, c.frameW, c.frameH)
+		c.animations = append(c.animations, &Animation{
+			SlotIndex: slotIdx,
+			StartTime: time.Now(),
+			Duration:  slot.Transition.Duration,
+			FromRect:  slot.Rect,
+			ToRect:    dest,
+			FromAlpha: 1.0,
+			ToAlpha:   1.0,
+			OnComplete: func() {
+				if cur := c.layout.Load(); cur != nil {
+					up := c.cloneLayout(cur)
+					if slotIdx < len(up.Slots) {
+						up.Slots[slotIdx].Enabled = false
+					}
+					c.layout.Store(up)
+				}
+			},
+		})
+	default: // "cut"
+		updated := c.cloneLayout(l)
+		updated.Slots[slotIdx].Enabled = false
+		c.layout.Store(updated)
+	}
+}
+
 // cloneLayout creates a deep copy of a Layout.
 func (c *Compositor) cloneLayout(l *Layout) *Layout {
 	cp := &Layout{Name: l.Name, Slots: make([]LayoutSlot, len(l.Slots))}

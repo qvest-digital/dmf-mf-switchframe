@@ -52,3 +52,34 @@ func (a *Animation) InterpolateAlpha(t float64) float64 {
 func lerp(a, b int, t float64) int {
 	return a + int(float64(b-a)*t+0.5)
 }
+
+// FlyInOrigin computes the off-screen starting position for a fly-in animation.
+// The PIP flies in from the nearest frame edge based on the rectangle's position.
+func FlyInOrigin(target image.Rectangle, frameW, frameH int) image.Rectangle {
+	// Use edge distances (rectangle edge to frame edge)
+	distLeft := target.Min.X
+	distRight := frameW - target.Max.X
+	distTop := target.Min.Y
+	distBottom := frameH - target.Max.Y
+
+	minDist := distLeft
+	dx, dy := -(target.Max.X), 0 // slide fully off-screen left
+	if distRight < minDist {
+		minDist = distRight
+		dx, dy = frameW-target.Min.X, 0 // slide fully off-screen right
+	}
+	if distTop < minDist {
+		minDist = distTop
+		dx, dy = 0, -(target.Max.Y) // slide fully off-screen top
+	}
+	if distBottom < minDist {
+		dx, dy = 0, frameH-target.Min.Y // slide fully off-screen bottom
+	}
+
+	return image.Rect(
+		EvenAlign(target.Min.X+dx),
+		EvenAlign(target.Min.Y+dy),
+		EvenAlign(target.Max.X+dx),
+		EvenAlign(target.Max.Y+dy),
+	)
+}
