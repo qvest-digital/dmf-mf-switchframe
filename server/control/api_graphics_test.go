@@ -250,6 +250,140 @@ func TestGraphicsHandlers_SetLastOperator(t *testing.T) {
 	}
 }
 
+func TestGraphicsAnimate_Valid(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	// Upload and activate
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "animate: body: %s", rec.Body.String())
+
+	var status graphics.State
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.True(t, status.Active)
+	require.Equal(t, "pulse", status.AnimationMode)
+	require.Equal(t, 2.0, status.AnimationHz)
+
+	// Clean up
+	require.NoError(t, comp.StopAnimation())
+}
+
+func TestGraphicsAnimate_InvalidMode(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	body := `{"mode":"flash","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_InvalidAlpha(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	// minAlpha >= maxAlpha
+	body := `{"mode":"pulse","minAlpha":0.8,"maxAlpha":0.3,"speedHz":2.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_InvalidAlphaRange(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	// alpha out of [0,1]
+	body := `{"mode":"pulse","minAlpha":-0.1,"maxAlpha":1.0,"speedHz":2.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_InvalidSpeed(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	// speedHz > 10
+	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":15.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestGraphicsAnimate_NotActive(t *testing.T) {
+	api, _ := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	// Do NOT call On()
+
+	body := `{"mode":"pulse","minAlpha":0.3,"maxAlpha":1.0,"speedHz":2.0}`
+	req := httptest.NewRequest("POST", "/api/graphics/animate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestGraphicsAnimateStop(t *testing.T) {
+	api, comp := setupGraphicsTestAPI(t)
+
+	uploadOverlay(t, api, 4, 4, "test")
+	require.NoError(t, comp.On())
+
+	// Start animation via compositor directly
+	cfg := graphics.AnimationConfig{
+		Mode:     "pulse",
+		MinAlpha: 0.3,
+		MaxAlpha: 1.0,
+		SpeedHz:  2.0,
+	}
+	require.NoError(t, comp.Animate(cfg))
+
+	// Stop via API
+	req := httptest.NewRequest("POST", "/api/graphics/animate/stop", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "animate stop: body: %s", rec.Body.String())
+
+	var status graphics.State
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.True(t, status.Active, "should still be active after stop animation")
+	require.Equal(t, 1.0, status.FadePosition, "fadePosition should be 1.0 after stop")
+	require.Empty(t, status.AnimationMode, "AnimationMode should be empty after stop")
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

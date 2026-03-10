@@ -14,6 +14,8 @@ export interface GraphicsTemplate {
 	fields: TemplateField[];
 	/** Render the template to a canvas context at the given resolution. */
 	render(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, width: number, height: number, values: Record<string, string>): void;
+	/** Whether this template supports animation (controls ANIMATE button in GraphicsPanel). */
+	supportsAnimation?: boolean;
 }
 
 export interface TemplateField {
@@ -135,11 +137,213 @@ export const tickerTemplate: GraphicsTemplate = {
 	},
 };
 
+/**
+ * CNN/MSNBC-style news lower third: red name bar over dark charcoal title bar.
+ * Two-tone bar with accent stripe and left tag block.
+ */
+export const newsLowerThirdTemplate: GraphicsTemplate = {
+	id: 'news-lower-third',
+	name: 'News Lower Third',
+	fields: [
+		{ key: 'name', label: 'Name', defaultValue: 'Jane Doe', maxLength: 40 },
+		{ key: 'title', label: 'Title', defaultValue: 'Senior Correspondent', maxLength: 60 },
+	],
+	render(ctx, width, height, values) {
+		ctx.save();
+
+		const barHeight = Math.round(height * 0.15);
+		const barY = height - barHeight - Math.round(height * 0.05);
+		const topHeight = Math.round(barHeight * 0.55);
+		const bottomHeight = barHeight - topHeight;
+		const stripeHeight = 4;
+		const tagWidth = Math.round(width * 0.042); // ~80px at 1920
+		const padding = Math.round(width * 0.03);
+
+		// Top section: red bar
+		ctx.globalAlpha = 0.92;
+		ctx.fillStyle = '#CC0000';
+		ctx.fillRect(0, barY, width, topHeight);
+
+		// Left accent tag block (solid red, slightly darker)
+		ctx.fillStyle = '#AA0000';
+		ctx.fillRect(0, barY, tagWidth, topHeight);
+
+		// Name text on top bar
+		const nameFontSize = Math.round(topHeight * 0.55);
+		ctx.globalAlpha = 1;
+		ctx.font = `bold ${nameFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.textBaseline = 'middle';
+		ctx.fillText(values.name || '', tagWidth + padding, barY + topHeight / 2);
+
+		// Bright red accent stripe between sections
+		ctx.globalAlpha = 0.92;
+		ctx.fillStyle = '#FF1A1A';
+		ctx.fillRect(0, barY + topHeight, width, stripeHeight);
+
+		// Bottom section: dark charcoal
+		ctx.fillStyle = '#1A1A1A';
+		ctx.fillRect(0, barY + topHeight + stripeHeight, width, bottomHeight - stripeHeight);
+
+		// Left accent tag block on bottom
+		ctx.fillStyle = '#CC0000';
+		ctx.fillRect(0, barY + topHeight + stripeHeight, tagWidth, bottomHeight - stripeHeight);
+
+		// Title text on bottom bar
+		const titleFontSize = Math.round((bottomHeight - stripeHeight) * 0.55);
+		ctx.globalAlpha = 1;
+		ctx.font = `${titleFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
+		ctx.textBaseline = 'middle';
+		ctx.fillText(values.title || '', tagWidth + padding, barY + topHeight + stripeHeight + (bottomHeight - stripeHeight) / 2);
+
+		ctx.restore();
+	},
+};
+
+/**
+ * Network bug: translucent station identifier in the top-right corner
+ * with a small "LIVE" indicator below.
+ */
+export const networkBugTemplate: GraphicsTemplate = {
+	id: 'network-bug',
+	name: 'Network Bug',
+	supportsAnimation: true,
+	fields: [
+		{ key: 'text', label: 'Bug Text', defaultValue: 'SF', maxLength: 10 },
+	],
+	render(ctx, width, height, values) {
+		ctx.save();
+
+		const marginX = Math.round(width * 0.08);
+		const marginY = Math.round(height * 0.08);
+		const bugX = width - marginX;
+		const bugY = marginY;
+
+		// Bold stylized bug text
+		const bugFontSize = Math.round(height * 0.05);
+		ctx.globalAlpha = 0.6;
+		ctx.font = `900 ${bugFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'right';
+		ctx.textBaseline = 'top';
+		ctx.fillText(values.text || 'SF', bugX, bugY);
+
+		// "LIVE" indicator below: red dot + text
+		const liveY = bugY + bugFontSize + Math.round(height * 0.01);
+		const liveFontSize = Math.round(bugFontSize * 0.35);
+		const dotRadius = Math.round(liveFontSize * 0.4);
+
+		ctx.globalAlpha = 0.5;
+
+		// Red dot
+		const dotX = bugX - liveFontSize * 2.2;
+		ctx.fillStyle = '#FF0000';
+		ctx.beginPath();
+		ctx.arc(dotX, liveY + liveFontSize * 0.5, dotRadius, 0, Math.PI * 2);
+		ctx.fill();
+
+		// "LIVE" text in small caps
+		ctx.font = `bold ${liveFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'right';
+		ctx.textBaseline = 'top';
+		ctx.fillText('LIVE', bugX, liveY);
+
+		ctx.restore();
+	},
+};
+
+/**
+ * Sports score bug: compact horizontal bar in the top-left corner showing
+ * home/away teams, scores, period, and game clock.
+ */
+export const scoreBugTemplate: GraphicsTemplate = {
+	id: 'score-bug',
+	name: 'Score Bug',
+	fields: [
+		{ key: 'home', label: 'Home Team', defaultValue: 'HOME', maxLength: 20 },
+		{ key: 'away', label: 'Away Team', defaultValue: 'AWAY', maxLength: 20 },
+		{ key: 'homeScore', label: 'Home Score', defaultValue: '0', maxLength: 3 },
+		{ key: 'awayScore', label: 'Away Score', defaultValue: '0', maxLength: 3 },
+		{ key: 'period', label: 'Period', defaultValue: '1ST', maxLength: 5 },
+		{ key: 'clock', label: 'Clock', defaultValue: '12:00', maxLength: 8 },
+	],
+	render(ctx, width, height, values) {
+		ctx.save();
+
+		const barHeight = Math.round(height * 0.05);
+		const barWidth = Math.round(width * 0.45);
+		const barX = Math.round(width * 0.03);
+		const barY = Math.round(height * 0.03);
+		const padding = Math.round(barWidth * 0.02);
+
+		// Semi-transparent background
+		ctx.globalAlpha = 0.85;
+		ctx.fillStyle = '#000000';
+		ctx.fillRect(barX, barY, barWidth, barHeight);
+
+		ctx.globalAlpha = 1;
+
+		const teamFontSize = Math.round(barHeight * 0.45);
+		const scoreFontSize = Math.round(barHeight * 0.50);
+		const infoFontSize = Math.round(barHeight * 0.38);
+
+		// Layout: |  HOME  score | divider | AWAY  score | period . clock  |
+		const sectionWidth = Math.round(barWidth / 3);
+		const centerY = barY + barHeight / 2;
+
+		// Home team name (bold) + score
+		ctx.textBaseline = 'middle';
+		ctx.textAlign = 'start';
+		ctx.font = `bold ${teamFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.fillText(values.home || 'HOME', barX + padding, centerY);
+
+		// Home score (monospace)
+		ctx.textAlign = 'end';
+		ctx.font = `bold ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		ctx.fillText(values.homeScore || '0', barX + sectionWidth - padding, centerY);
+
+		// Divider line
+		ctx.fillStyle = '#CC0000';
+		ctx.fillRect(barX + sectionWidth, barY + Math.round(barHeight * 0.15), 2, Math.round(barHeight * 0.7));
+
+		// Away team name (bold) + score
+		ctx.textAlign = 'start';
+		ctx.font = `bold ${teamFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.fillText(values.away || 'AWAY', barX + sectionWidth + padding + 2, centerY);
+
+		// Away score (monospace)
+		ctx.textAlign = 'end';
+		ctx.font = `bold ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		ctx.fillText(values.awayScore || '0', barX + sectionWidth * 2 - padding, centerY);
+
+		// Divider line
+		ctx.fillStyle = '#CC0000';
+		ctx.fillRect(barX + sectionWidth * 2, barY + Math.round(barHeight * 0.15), 2, Math.round(barHeight * 0.7));
+
+		// Period and clock
+		ctx.textAlign = 'center';
+		ctx.font = `bold ${infoFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
+		const infoCenter = barX + sectionWidth * 2 + sectionWidth / 2 + 2;
+		const periodClock = `${values.period || '1ST'} ${values.clock || '12:00'}`;
+		ctx.fillText(periodClock, infoCenter, centerY);
+
+		ctx.restore();
+	},
+};
+
 /** All built-in templates indexed by ID. */
 export const builtinTemplates: Record<string, GraphicsTemplate> = {
 	'lower-third': lowerThirdTemplate,
 	'full-screen': fullScreenCardTemplate,
 	'ticker': tickerTemplate,
+	'news-lower-third': newsLowerThirdTemplate,
+	'network-bug': networkBugTemplate,
+	'score-bug': scoreBugTemplate,
 };
 
 /** Ordered list of built-in templates for UI display. */
@@ -147,4 +351,7 @@ export const templateList: GraphicsTemplate[] = [
 	lowerThirdTemplate,
 	fullScreenCardTemplate,
 	tickerTemplate,
+	newsLowerThirdTemplate,
+	networkBugTemplate,
+	scoreBugTemplate,
 ];

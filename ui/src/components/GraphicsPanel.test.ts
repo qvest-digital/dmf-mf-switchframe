@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, fireEvent } from '@testing-library/svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
 
 // Mock OffscreenCanvas since jsdom doesn't support it.
@@ -13,10 +13,14 @@ const mockCtx2d = {
 	})),
 	save: vi.fn(),
 	restore: vi.fn(),
+	beginPath: vi.fn(),
+	arc: vi.fn(),
+	fill: vi.fn(),
 	set font(_v: string) { /* noop */ },
 	set fillStyle(_v: string) { /* noop */ },
 	set textBaseline(_v: string) { /* noop */ },
 	set textAlign(_v: string) { /* noop */ },
+	set globalAlpha(_v: number) { /* noop */ },
 };
 
 class MockOffscreenCanvas {
@@ -80,11 +84,11 @@ describe('GraphicsPanel', () => {
 		expect(container.textContent).toContain('ON AIR');
 	});
 
-	it('should have template selector with 3 templates', () => {
+	it('should have template selector with 6 templates', () => {
 		const { container } = render(GraphicsPanel, { props: { state: baseState } });
 		const select = container.querySelector('.template-select') as HTMLSelectElement;
 		expect(select).toBeTruthy();
-		expect(select.options.length).toBe(3);
+		expect(select.options.length).toBe(6);
 	});
 
 	it('should show field inputs for selected template', () => {
@@ -132,5 +136,57 @@ describe('GraphicsPanel', () => {
 		expect(canvas).toBeTruthy();
 		expect(canvas.width).toBe(320);
 		expect(canvas.height).toBe(240);
+	});
+
+	it('should not show animation button for lower-third template', () => {
+		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		const animRow = container.querySelector('.gfx-anim-row');
+		expect(animRow).toBeNull();
+	});
+
+	it('should show ANIMATE button when network-bug selected and graphics active', async () => {
+		const state = {
+			...baseState,
+			graphics: { active: true, template: 'network-bug', fadePosition: 1.0 },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const select = container.querySelector('.template-select') as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: 'network-bug' } });
+		await vi.waitFor(() => {
+			const animRow = container.querySelector('.gfx-anim-row');
+			expect(animRow).toBeTruthy();
+		});
+		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
+		expect(animBtn).toBeTruthy();
+		expect(animBtn.textContent?.trim()).toBe('ANIMATE');
+		expect(animBtn.disabled).toBe(false);
+	});
+
+	it('should show STOP ANIM button when animation is active', async () => {
+		const state = {
+			...baseState,
+			graphics: { active: true, template: 'network-bug', fadePosition: 0.7, animationMode: 'pulse', animationHz: 1.0 },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const select = container.querySelector('.template-select') as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: 'network-bug' } });
+		await vi.waitFor(() => {
+			const stopBtn = container.querySelector('.gfx-btn.anim-stop');
+			expect(stopBtn).toBeTruthy();
+		});
+		const stopBtn = container.querySelector('.gfx-btn.anim-stop') as HTMLButtonElement;
+		expect(stopBtn.textContent?.trim()).toBe('STOP ANIM');
+	});
+
+	it('should disable ANIMATE button when graphics not active', async () => {
+		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		const select = container.querySelector('.template-select') as HTMLSelectElement;
+		await fireEvent.change(select, { target: { value: 'network-bug' } });
+		await vi.waitFor(() => {
+			const animBtn = container.querySelector('.gfx-btn.anim-start');
+			expect(animBtn).toBeTruthy();
+		});
+		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
+		expect(animBtn.disabled).toBe(true);
 	});
 });

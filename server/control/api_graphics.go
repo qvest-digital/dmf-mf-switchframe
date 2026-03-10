@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -158,6 +159,63 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// animateRequest is the JSON body for the graphics animation endpoint.
+type animateRequest struct {
+	Mode     string  `json:"mode"`
+	MinAlpha float64 `json:"minAlpha"`
+	MaxAlpha float64 `json:"maxAlpha"`
+	SpeedHz  float64 `json:"speedHz"`
+}
+
+// handleGraphicsAnimate starts a looping animation on the active overlay.
+func (a *API) handleGraphicsAnimate(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req animateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Mode != "pulse" {
+		httperr.Write(w, http.StatusBadRequest, "mode must be \"pulse\"")
+		return
+	}
+	if req.MinAlpha < 0 || req.MinAlpha > 1 || req.MaxAlpha < 0 || req.MaxAlpha > 1 {
+		httperr.Write(w, http.StatusBadRequest, "alpha values must be in [0,1]")
+		return
+	}
+	if req.MinAlpha >= req.MaxAlpha {
+		httperr.Write(w, http.StatusBadRequest, "minAlpha must be less than maxAlpha")
+		return
+	}
+	if req.SpeedHz <= 0 || req.SpeedHz > 10 {
+		httperr.Write(w, http.StatusBadRequest, "speedHz must be in (0,10]")
+		return
+	}
+	cfg := graphics.AnimationConfig{
+		Mode:     req.Mode,
+		MinAlpha: req.MinAlpha,
+		MaxAlpha: req.MaxAlpha,
+		SpeedHz:  req.SpeedHz,
+	}
+	if err := a.compositor.Animate(cfg); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsAnimateStop stops any running animation on the overlay.
+func (a *API) handleGraphicsAnimateStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if err := a.compositor.StopAnimation(); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // clipToStingerData converts a stinger.StingerClip to transition.StingerData.

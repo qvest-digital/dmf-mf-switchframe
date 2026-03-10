@@ -299,6 +299,14 @@ export function getGraphicsStatus(): Promise<GraphicsState> {
 	return request('/api/graphics/status');
 }
 
+export function graphicsAnimate(config: { mode: string; minAlpha: number; maxAlpha: number; speedHz: number }): Promise<GraphicsState> {
+	return post('/api/graphics/animate', config);
+}
+
+export function graphicsAnimateStop(): Promise<GraphicsState> {
+	return post('/api/graphics/animate/stop', {});
+}
+
 // --- Macro API ---
 
 export function listMacros(): Promise<Macro[]> {

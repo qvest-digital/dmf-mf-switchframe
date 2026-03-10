@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall } from '$lib/api/switch-api';
+	import { graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, graphicsAnimate, graphicsAnimateStop, apiCall } from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
 
@@ -17,6 +17,8 @@
 
 	const selectedTemplate = $derived(builtinTemplates[selectedTemplateId]);
 	const graphicsActive = $derived(crState.graphics?.active ?? false);
+	const supportsAnimation = $derived(selectedTemplate?.supportsAnimation ?? false);
+	const animationActive = $derived(!!crState.graphics?.animationMode);
 
 	function getDefaultValues(templateId: string): Record<string, string> {
 		const tpl = builtinTemplates[templateId];
@@ -69,6 +71,14 @@
 
 	function handleAutoOff() {
 		apiCall(graphicsAutoOff(), 'Graphics failed');
+	}
+
+	function handleAnimate() {
+		apiCall(graphicsAnimate({ mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0 }), 'Animation failed');
+	}
+
+	function handleAnimateStop() {
+		apiCall(graphicsAnimateStop(), 'Animation stop failed');
 	}
 
 	function handleTemplateChange(e: Event) {
@@ -132,6 +142,20 @@
 				AUTO OFF
 			</button>
 		</div>
+
+		{#if supportsAnimation}
+			<div class="gfx-anim-row">
+				{#if animationActive}
+					<button class="gfx-btn anim-stop" onclick={handleAnimateStop}>
+						STOP ANIM
+					</button>
+				{:else}
+					<button class="gfx-btn anim-start" onclick={handleAnimate} disabled={!graphicsActive}>
+						ANIMATE
+					</button>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -280,5 +304,30 @@
 	.gfx-btn.auto-off:not(:disabled):hover {
 		border-color: var(--tally-preview, #16a34a);
 		background: rgba(22, 163, 74, 0.15);
+	}
+
+	.gfx-anim-row {
+		display: flex;
+		gap: 3px;
+	}
+
+	.gfx-btn.anim-start {
+		flex: 1;
+	}
+
+	.gfx-btn.anim-start:not(:disabled):hover {
+		border-color: var(--accent-blue, #3b82f6);
+		background: rgba(59, 130, 246, 0.15);
+	}
+
+	.gfx-btn.anim-stop {
+		flex: 1;
+		border-color: var(--tally-program, #dc2626);
+		background: rgba(220, 38, 38, 0.15);
+		color: #fff;
+	}
+
+	.gfx-btn.anim-stop:hover {
+		background: rgba(220, 38, 38, 0.3);
 	}
 </style>
