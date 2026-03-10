@@ -29,6 +29,9 @@ type Compositor struct {
 	// Per-slot pre-allocated scale buffers
 	scaleBufs [][]byte
 
+	// Per-slot crop buffers (lazily allocated for fill-mode slots)
+	cropBufs [][]byte
+
 	// Per-slot gray "no signal" frames
 	grayBufs [][]byte
 
@@ -69,6 +72,7 @@ func (c *Compositor) GetLayout() *Layout {
 // allocateBuffers pre-allocates scale and gray buffers for each slot.
 func (c *Compositor) allocateBuffers(l *Layout) {
 	c.scaleBufs = make([][]byte, len(l.Slots))
+	c.cropBufs = make([][]byte, len(l.Slots))
 	c.grayBufs = make([][]byte, len(l.Slots))
 	for i, slot := range l.Slots {
 		w := slot.Rect.Dx()
@@ -76,6 +80,7 @@ func (c *Compositor) allocateBuffers(l *Layout) {
 		size := w * h * 3 / 2
 		c.scaleBufs[i] = make([]byte, size)
 		c.grayBufs[i] = makeGrayFrame(w, h)
+		// cropBufs allocated lazily in ProcessFrame when needed.
 	}
 	c.computeSortedSlots(l)
 }
@@ -176,6 +181,7 @@ type slotSnapshot struct {
 	hasFill  bool
 	hasGray  bool
 	scaleBuf []byte
+	cropBuf  []byte // non-nil when fill mode needs cropping
 }
 
 // ProcessFrame composites all enabled layout slots onto the frame.
@@ -280,23 +286,53 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			snap.scaleBuf = buf[:neededSize]
 		}
 
+		// For fill-mode slots with a real source, allocate a crop buffer.
+		if snap.hasFill && slot.EffectiveScaleMode() == ScaleModeFill {
+			cropNeeded := snap.srcW * snap.srcH * 3 / 2
+			// Extend cropBufs slice if needed.
+			for len(c.cropBufs) <= idx {
+				c.cropBufs = append(c.cropBufs, nil)
+			}
+			if len(c.cropBufs[idx]) < cropNeeded {
+				c.cropBufs[idx] = make([]byte, cropNeeded)
+			}
+			snap.cropBuf = c.cropBufs[idx][:cropNeeded]
+		}
+
 		snapshots = append(snapshots, snap)
 	}
 	c.mu.Unlock()
 
-	// Phase 2: Lock-free — scale and composite each slot.
+	// Phase 2: Lock-free — crop (if fill mode), scale, and composite each slot.
 	for i := range snapshots {
 		snap := &snapshots[i]
 		slotW := snap.rect.Dx()
 		slotH := snap.rect.Dy()
 
+		srcYUV := snap.srcYUV
+		srcW := snap.srcW
+		srcH := snap.srcH
+
+		// Crop-to-fill: extract aspect-matching sub-region before scaling.
+		if snap.cropBuf != nil {
+			anchorX, anchorY := snap.slot.EffectiveCropAnchor()
+			cropX, cropY, cropW, cropH := ComputeCropRect(srcW, srcH, slotW, slotH, anchorX, anchorY)
+			if cropW > 0 && cropH > 0 && (cropW != srcW || cropH != srcH) {
+				cropSize := cropW * cropH * 3 / 2
+				CropYUV420Region(snap.cropBuf[:cropSize], srcYUV, srcW, srcH, cropX, cropY, cropW, cropH)
+				srcYUV = snap.cropBuf[:cropSize]
+				srcW = cropW
+				srcH = cropH
+			}
+		}
+
 		// Scale source to slot dimensions.
 		var scaled []byte
-		if snap.srcW == slotW && snap.srcH == slotH {
-			scaled = snap.srcYUV
+		if srcW == slotW && srcH == slotH {
+			scaled = srcYUV
 		} else {
-			quality := c.selectScaleQuality(snap.srcW, snap.srcH, slotW, slotH, width, height)
-			transition.ScaleYUV420WithQuality(snap.srcYUV, snap.srcW, snap.srcH, snap.scaleBuf, slotW, slotH, quality)
+			quality := c.selectScaleQuality(srcW, srcH, slotW, slotH, width, height)
+			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, snap.scaleBuf, slotW, slotH, quality)
 			scaled = snap.scaleBuf
 		}
 

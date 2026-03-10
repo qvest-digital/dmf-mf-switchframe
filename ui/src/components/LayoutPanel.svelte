@@ -82,6 +82,47 @@
 		);
 	}
 
+	function handleScaleModeChange(slotId: number, mode: string) {
+		apiCall(
+			updateLayoutSlot(slotId, { scaleMode: mode }),
+			'Set scale mode'
+		);
+	}
+
+	function handleCropAnchorChange(slotId: number, preset: string) {
+		const anchors: Record<string, [number, number]> = {
+			'center': [0.5, 0.5],
+			'top': [0.5, 0.0],
+			'bottom': [0.5, 1.0],
+			'left': [0.0, 0.5],
+			'right': [1.0, 0.5],
+			'top-left': [0.0, 0.0],
+			'top-right': [1.0, 0.0],
+			'bottom-left': [0.0, 1.0],
+			'bottom-right': [1.0, 1.0],
+		};
+		const anchor = anchors[preset] ?? [0.5, 0.5];
+		apiCall(
+			updateLayoutSlot(slotId, { cropAnchor: anchor }),
+			'Set crop anchor'
+		);
+	}
+
+	function anchorKey(anchor?: [number, number]): string {
+		if (!anchor) return 'center';
+		const [x, y] = anchor;
+		if (x === 0.5 && y === 0.5) return 'center';
+		if (x === 0.5 && y === 0) return 'top';
+		if (x === 0.5 && y === 1) return 'bottom';
+		if (x === 0 && y === 0.5) return 'left';
+		if (x === 1 && y === 0.5) return 'right';
+		if (x === 0 && y === 0) return 'top-left';
+		if (x === 1 && y === 0) return 'top-right';
+		if (x === 0 && y === 1) return 'bottom-left';
+		if (x === 1 && y === 1) return 'bottom-right';
+		return 'center';
+	}
+
 	async function handleSave() {
 		const name = presetName.trim();
 		if (!name) return;
@@ -207,6 +248,34 @@
 							<option value="dissolve">Dissolve</option>
 							<option value="fly">Fly</option>
 						</select>
+					</div>
+
+					<div class="slot-scale">
+						<select
+							class="scale-select"
+							value={slot.scaleMode || 'stretch'}
+							onchange={(e) => handleScaleModeChange(slot.id, (e.target as HTMLSelectElement).value)}
+						>
+							<option value="stretch">Stretch</option>
+							<option value="fill">Fill (Crop)</option>
+						</select>
+						{#if (slot.scaleMode || 'stretch') === 'fill'}
+							<select
+								class="anchor-select"
+								value={anchorKey(slot.cropAnchor)}
+								onchange={(e) => handleCropAnchorChange(slot.id, (e.target as HTMLSelectElement).value)}
+							>
+								<option value="center">Center</option>
+								<option value="top">Top</option>
+								<option value="bottom">Bottom</option>
+								<option value="left">Left</option>
+								<option value="right">Right</option>
+								<option value="top-left">Top-Left</option>
+								<option value="top-right">Top-Right</option>
+								<option value="bottom-left">Bottom-Left</option>
+								<option value="bottom-right">Bottom-Right</option>
+							</select>
+						{/if}
 					</div>
 				</div>
 			{/each}
@@ -463,6 +532,22 @@
 	}
 
 	.transition-select {
+		flex: 1;
+		padding: 2px 4px;
+		font-family: var(--font-ui);
+		font-size: 0.6rem;
+		background: var(--bg-base);
+		color: var(--text-primary);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+	}
+
+	.slot-scale {
+		display: flex;
+		gap: 4px;
+	}
+
+	.scale-select, .anchor-select {
 		flex: 1;
 		padding: 2px 4px;
 		font-family: var(--font-ui);

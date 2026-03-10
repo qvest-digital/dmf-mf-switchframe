@@ -21,17 +21,25 @@
 	let scaleY = $derived(containerHeight / frameH);
 
 	// Dragging state
-	let dragging = $state<{ slotId: number; type: 'move' | 'resize'; startX: number; startY: number; origX: number; origY: number; origW: number; origH: number } | null>(null);
+	let dragging = $state<{
+		slotId: number;
+		type: 'move' | 'resize';
+		startX: number;
+		startY: number;
+		origX: number;
+		origY: number;
+		origW: number;
+		origH: number;
+	} | null>(null);
 
-	const SNAP_GRID = 0.05; // 5% snap
+	// Optimistic local overrides — instant visual feedback while API round-trips.
+	// Keyed by slot ID. Cleared on pointer-up when server state catches up.
+	let localOverrides = $state<Map<number, { x: number; y: number; w: number; h: number }>>(new Map());
 
-	function snapToGrid(val: number, total: number): number {
-		const step = total * SNAP_GRID;
-		return Math.round(val / step) * step;
-	}
+	const SNAP_GRID = 2; // snap to even-aligned 2px grid (YUV420 minimum)
 
-	function evenAlign(v: number): number {
-		return v & ~1;
+	function snapEven(val: number): number {
+		return Math.round(val / 2) * 2;
 	}
 
 	const throttledUpdate = throttle((slotId: number, update: Record<string, unknown>) => {
@@ -60,22 +68,42 @@
 		const dy = (e.clientY - dragging.startY) / scaleY;
 
 		if (dragging.type === 'move') {
-			let newX = evenAlign(Math.round(snapToGrid(dragging.origX + dx, frameW)));
-			let newY = evenAlign(Math.round(snapToGrid(dragging.origY + dy, frameH)));
+			let newX = snapEven(dragging.origX + dx);
+			let newY = snapEven(dragging.origY + dy);
 			newX = Math.max(0, Math.min(frameW - dragging.origW, newX));
 			newY = Math.max(0, Math.min(frameH - dragging.origH, newY));
+
+			// Instant local preview
+			localOverrides.set(dragging.slotId, { x: newX, y: newY, w: dragging.origW, h: dragging.origH });
+			localOverrides = localOverrides; // trigger reactivity
+
 			throttledUpdate(dragging.slotId, { x: newX, y: newY });
 		} else {
-			let newW = evenAlign(Math.round(snapToGrid(dragging.origW + dx, frameW)));
-			let newH = evenAlign(Math.round(snapToGrid(dragging.origH + dy, frameH)));
+			let newW = snapEven(dragging.origW + dx);
+			let newH = snapEven(dragging.origH + dy);
 			newW = Math.max(64, Math.min(frameW - dragging.origX, newW));
 			newH = Math.max(36, Math.min(frameH - dragging.origY, newH));
+
+			// Instant local preview
+			localOverrides.set(dragging.slotId, { x: dragging.origX, y: dragging.origY, w: newW, h: newH });
+			localOverrides = localOverrides; // trigger reactivity
+
 			throttledUpdate(dragging.slotId, { width: newW, height: newH });
 		}
 	}
 
 	function handlePointerUp() {
+		if (dragging) {
+			localOverrides.delete(dragging.slotId);
+			localOverrides = localOverrides; // trigger reactivity
+		}
 		dragging = null;
+	}
+
+	function slotRect(slot: LayoutSlotState): { x: number; y: number; w: number; h: number } {
+		const override = localOverrides.get(slot.id);
+		if (override) return override;
+		return { x: slot.x, y: slot.y, w: slot.width, h: slot.height };
 	}
 </script>
 
@@ -88,14 +116,16 @@
 >
 	{#each slots as slot (slot.id)}
 		{#if slot.enabled || slot.animating}
-			{@const left = slot.x * scaleX}
-			{@const top = slot.y * scaleY}
-			{@const width = slot.width * scaleX}
-			{@const height = slot.height * scaleY}
+			{@const r = slotRect(slot)}
+			{@const left = r.x * scaleX}
+			{@const top = r.y * scaleY}
+			{@const width = r.w * scaleX}
+			{@const height = r.h * scaleY}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="slot-outline"
 				class:animating={slot.animating}
+				class:dragging={dragging?.slotId === slot.id}
 				style="left:{left}px;top:{top}px;width:{width}px;height:{height}px"
 				onpointerdown={(e) => handlePointerDown(e, slot, 'move')}
 			>
@@ -127,12 +157,16 @@
 		border-radius: 2px;
 		cursor: move;
 		box-sizing: border-box;
-		transition: border-color 0.15s;
 	}
 
 	.slot-outline:hover {
 		border-color: rgba(212, 160, 23, 1);
 		background: rgba(212, 160, 23, 0.05);
+	}
+
+	.slot-outline.dragging {
+		border-color: rgba(212, 160, 23, 1);
+		background: rgba(212, 160, 23, 0.08);
 	}
 
 	.slot-outline.animating {

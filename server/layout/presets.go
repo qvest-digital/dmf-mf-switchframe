@@ -45,8 +45,8 @@ func SideBySidePreset(frameW, frameH int, leftSource, rightSource string, gap in
 	return &Layout{
 		Name: "side-by-side",
 		Slots: []LayoutSlot{
-			{SourceKey: leftSource, Rect: image.Rect(0, 0, leftW, frameH), ZOrder: 0, Enabled: true},
-			{SourceKey: rightSource, Rect: image.Rect(leftW+gap, 0, leftW+gap+rightW, frameH), ZOrder: 0, Enabled: true},
+			{SourceKey: leftSource, Rect: image.Rect(0, 0, leftW, frameH), ZOrder: 0, Enabled: true, ScaleMode: ScaleModeFill, CropAnchor: [2]float64{0.5, 0.5}},
+			{SourceKey: rightSource, Rect: image.Rect(leftW+gap, 0, leftW+gap+rightW, frameH), ZOrder: 0, Enabled: true, ScaleMode: ScaleModeFill, CropAnchor: [2]float64{0.5, 0.5}},
 		},
 	}
 }
@@ -57,13 +57,15 @@ func QuadPreset(frameW, frameH int, sources [4]string, gap int) *Layout {
 	slotW := EvenAlign((frameW - gap) / 2)
 	slotH := EvenAlign((frameH - gap) / 2)
 
+	fill := ScaleModeFill
+	center := [2]float64{0.5, 0.5}
 	return &Layout{
 		Name: "quad",
 		Slots: []LayoutSlot{
-			{SourceKey: sources[0], Rect: image.Rect(0, 0, slotW, slotH), ZOrder: 0, Enabled: true},
-			{SourceKey: sources[1], Rect: image.Rect(slotW+gap, 0, slotW+gap+slotW, slotH), ZOrder: 0, Enabled: true},
-			{SourceKey: sources[2], Rect: image.Rect(0, slotH+gap, slotW, slotH+gap+slotH), ZOrder: 0, Enabled: true},
-			{SourceKey: sources[3], Rect: image.Rect(slotW+gap, slotH+gap, slotW+gap+slotW, slotH+gap+slotH), ZOrder: 0, Enabled: true},
+			{SourceKey: sources[0], Rect: image.Rect(0, 0, slotW, slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
+			{SourceKey: sources[1], Rect: image.Rect(slotW+gap, 0, slotW+gap+slotW, slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
+			{SourceKey: sources[2], Rect: image.Rect(0, slotH+gap, slotW, slotH+gap+slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
+			{SourceKey: sources[3], Rect: image.Rect(slotW+gap, slotH+gap, slotW+gap+slotW, slotH+gap+slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
 		},
 	}
 }

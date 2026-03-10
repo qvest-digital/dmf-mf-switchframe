@@ -285,6 +285,139 @@ func TestCompositor_DissolveEndpoint_NoVisualPop(t *testing.T) {
 	require.Equal(t, byte(235), result[0], "completed dissolve should be fully opaque")
 }
 
+// Fill mode: crop-to-fill preserves aspect ratio and does not distort.
+func TestCompositor_FillMode_CropsBeforeScale(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	// Slot is 4x8 (portrait) — a 16:9 source (8x4) should be cropped.
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{
+				SourceKey:  "cam1",
+				Rect:       image.Rect(0, 0, 4, 8),
+				Enabled:    true,
+				ScaleMode:  ScaleModeFill,
+				CropAnchor: [2]float64{0.5, 0.5},
+			},
+		},
+	}
+	c.SetLayout(l)
+
+	// Source is 8x4 (wider than slot aspect).
+	// Left half: Y=200, right half: Y=100
+	src := make([]byte, 8*4*3/2)
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 4; x++ {
+			src[y*8+x] = 200 // left half
+		}
+		for x := 4; x < 8; x++ {
+			src[y*8+x] = 100 // right half
+		}
+	}
+	// Set chroma to neutral.
+	ySize := 8 * 4
+	for i := ySize; i < len(src); i++ {
+		src[i] = 128
+	}
+	c.IngestSourceFrame("cam1", src, 8, 4)
+
+	bg := makeYUV420(16, 16, 16, 128, 128)
+	result := c.ProcessFrame(bg, 16, 16)
+
+	// The crop should take a center 2x4 region from 8x4 source,
+	// which straddles left/right halves. The rendered slot should not be
+	// all-black (16) — it should have content.
+	hasContent := false
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 4; x++ {
+			if result[y*16+x] != 16 {
+				hasContent = true
+				break
+			}
+		}
+		if hasContent {
+			break
+		}
+	}
+	require.True(t, hasContent, "fill mode slot should render cropped content")
+}
+
+// Fill mode with matching aspect ratio should not distort.
+func TestCompositor_FillMode_MatchingAspect(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{
+				SourceKey: "cam1",
+				Rect:      image.Rect(0, 0, 8, 4),
+				Enabled:   true,
+				ScaleMode: ScaleModeFill,
+			},
+		},
+	}
+	c.SetLayout(l)
+
+	// Source exactly matches slot aspect (16:9 → 8:4 = 2:1 both).
+	src := makeYUV420(8, 4, 200, 100, 150)
+	c.IngestSourceFrame("cam1", src, 8, 4)
+
+	bg := makeYUV420(16, 16, 16, 128, 128)
+	result := c.ProcessFrame(bg, 16, 16)
+
+	// No crop needed — exact match renders directly.
+	require.Equal(t, byte(200), result[0], "matching aspect should render source directly")
+}
+
+// Stretch default is unchanged by fill mode code.
+func TestCompositor_StretchDefault_Unchanged(t *testing.T) {
+	c := NewCompositor(8, 8)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	src := makeYUV420(4, 4, 235, 128, 128)
+	c.IngestSourceFrame("cam2", src, 4, 4)
+
+	bg := makeYUV420(8, 8, 16, 128, 128)
+	result := c.ProcessFrame(bg, 8, 8)
+
+	// Default stretch mode: same as before.
+	require.Equal(t, byte(235), result[0*8+4], "stretch mode unchanged")
+}
+
+// Fill mode with gray (missing source) should still render.
+func TestCompositor_FillMode_GrayBuffer(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	l := &Layout{
+		Name: "test",
+		Slots: []LayoutSlot{
+			{
+				SourceKey: "missing",
+				Rect:      image.Rect(0, 0, 4, 8),
+				Enabled:   true,
+				ScaleMode: ScaleModeFill,
+			},
+		},
+	}
+	c.SetLayout(l)
+
+	bg := makeYUV420(16, 16, 30, 128, 128)
+	require.NotPanics(t, func() {
+		result := c.ProcessFrame(bg, 16, 16)
+		// Gray buffer should be rendered (Y=16 broadcast black).
+		require.Equal(t, byte(16), result[0], "gray buffer should render for missing source in fill mode")
+	})
+}
+
 // Issue #11: "No signal" gray should be broadcast black, not mid-gray.
 func TestMakeGrayFrame_BroadcastBlack(t *testing.T) {
 	gray := makeGrayFrame(4, 4)
