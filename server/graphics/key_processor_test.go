@@ -270,36 +270,21 @@ func TestKeyProcessor_OnChangeCalledOnRemoveKey(t *testing.T) {
 func TestKeyProcessor_BlendRoundingNotTruncated(t *testing.T) {
 	t.Parallel()
 	// Bug 10: uint8(clampFloat(...)) truncates instead of rounding.
-	// Blending bg=127 and fill=128 at alpha=0.5 should produce 128 (rounded),
-	// not 127 (truncated). We use a luma key with softness to produce ~50% alpha.
+	// Without +0.5, fractional blend results always round down (systematic -1 bias).
 	//
-	// With softness=0.5 and LowClip=0.5, HighClip=0.5:
-	// For Y=191 (0.749 normalized), which is 0.249 above highClip(0.5):
-	//   alpha = 0.249/0.5 = 0.498 ~= mask byte 127
-	// We want alpha ~= 0.502 (mask=128).
-	// For Y=192 (0.753): alpha = 0.253/0.5 = 0.506 -> mask byte = 129
-	// Close enough to 0.5 to show the rounding issue.
+	// Strategy: Use a luma key with softness to generate a fractional alpha mask,
+	// then verify the blend result is rounded, not truncated.
 	//
-	// Instead, let's test at full alpha which makes the math simpler and
-	// still validates the +0.5 rounding is applied. The real value is
-	// that the fix applies +0.5 before uint8 conversion in the blend operation.
+	// Keyer setup: lowClip=0.8, highClip=1.0, softness=0.3
+	// Fill Y=153 → luma=153/255=0.6 → in softness zone below lowClip
+	//   alpha = (0.8 - 0.6) / 0.3 = 0.6667 → 1.0 - 0.6667 = 0.3333
+	//   lut[153] = uint8(0.3333 * 255) = uint8(85.0) = 85
 	//
-	// At full alpha (mask=255): alpha = 1.0, invAlpha = 0.0
-	//   result = bg*0 + fill*1.0 = fill
-	// But alpha = 255/255 = 1.0 exactly in float32. The fill value passes through.
-	//
-	// The truncation bias appears when alpha is fractional (e.g. mask=170):
-	//   alpha = 170/255 = 0.6667
-	//   bg=100, fill=200: result = 100*0.3333 + 200*0.6667 = 33.33 + 133.33 = 166.67
-	//   Without +0.5: uint8(166.67) = 166 (truncated)
-	//   With +0.5: uint8(167.17) = 167 (rounded correctly)
-	//
-	// So we need a keyer that generates mask=170. Use luma key with softness to hit it.
-	// Alternatively, we can verify the rounding fix at the unit level by calling
-	// clampFloat directly and verifying the +0.5 is applied.
-
-	// Practical approach: test that the blend result is within 0.5 of the exact value
-	// by using full-opacity key and verifying values match exactly.
+	// Blend at mask=85: alpha = 85/255 ≈ 0.3333
+	// bg=40, fill=153:
+	//   40 * 0.6667 + 153 * 0.3333 = 26.667 + 51.0 = 77.667
+	//   Without +0.5: uint8(77.667) = 77 (truncated)
+	//   With +0.5: uint8(78.167) = 78 (rounded correctly)
 	kp := NewKeyProcessor()
 	w, h := 4, 4
 	ySize := w * h
@@ -309,51 +294,43 @@ func TestKeyProcessor_BlendRoundingNotTruncated(t *testing.T) {
 	kp.SetKey("fill", KeyConfig{
 		Type:     KeyTypeLuma,
 		Enabled:  true,
-		LowClip:  0.0,
+		LowClip:  0.8,
 		HighClip: 1.0,
-		Softness: 0.0,
+		Softness: 0.3,
 	})
 
-	// Background: Y=127, Cb=127, Cr=127
+	// Background: Y=40, Cb=40, Cr=40
 	bg := make([]byte, frameSize)
 	for i := 0; i < ySize; i++ {
-		bg[i] = 127
+		bg[i] = 40
 	}
 	for i := 0; i < uvSize; i++ {
-		bg[ySize+i] = 127
-		bg[ySize+uvSize+i] = 127
+		bg[ySize+i] = 40
+		bg[ySize+uvSize+i] = 40
 	}
 
-	// Fill: Y=128, Cb=128, Cr=128 (one more than bg in each channel)
+	// Fill: Y=153, Cb=153, Cr=153
 	fill := make([]byte, frameSize)
 	for i := 0; i < ySize; i++ {
-		fill[i] = 128
+		fill[i] = 153
 	}
 	for i := 0; i < uvSize; i++ {
-		fill[ySize+i] = 128
-		fill[ySize+uvSize+i] = 128
+		fill[ySize+i] = 153
+		fill[ySize+uvSize+i] = 153
 	}
 
 	result := kp.Process(bg, map[string][]byte{"fill": fill}, w, h)
 
-	// With full alpha (mask=255), fill should pass through.
-	// The exact math: alpha = 255/255 = 1.0, invAlpha = 0.0
-	// Y: 127 * 0.0 + 128 * 1.0 = 128.0
-	// Without +0.5: uint8(128.0) = 128 -- this works at full alpha.
-	// But at alpha=1.0 the float32 product 128.0*1.0 is exact.
-	//
-	// The truncation is more precisely testable through observing that
-	// clampFloat gives exact values that lose the 0.5 to truncation.
-	// We verify the result is at least the fill value (not bg-biased).
+	// With +0.5 rounding: expect 78, not 77 (truncated).
 	for i := 0; i < ySize; i++ {
-		require.Equal(t, byte(128), result[i],
-			"Y[%d] should be 128 (fill value at full alpha), got %d", i, result[i])
+		require.Equal(t, byte(78), result[i],
+			"Y[%d] should be 78 (rounded), got %d — truncation bias present", i, result[i])
 	}
 	for i := 0; i < uvSize; i++ {
-		require.Equal(t, byte(128), result[ySize+i],
-			"Cb[%d] should be 128, got %d", i, result[ySize+i])
-		require.Equal(t, byte(128), result[ySize+uvSize+i],
-			"Cr[%d] should be 128, got %d", i, result[ySize+uvSize+i])
+		require.Equal(t, byte(78), result[ySize+i],
+			"Cb[%d] should be 78 (rounded), got %d", i, result[ySize+i])
+		require.Equal(t, byte(78), result[ySize+uvSize+i],
+			"Cr[%d] should be 78 (rounded), got %d", i, result[ySize+uvSize+i])
 	}
 }
 
@@ -362,4 +339,45 @@ func TestKeyProcessor_OnChangeNilSafe(t *testing.T) {
 	// No OnChange registered — should not panic.
 	kp.SetKey("cam1", KeyConfig{Enabled: true, Type: KeyTypeChroma})
 	kp.RemoveKey("cam1")
+}
+
+// B3: Process() writes to spillWorkBuf under RLock, which allows concurrent
+// writes if multiple goroutines call Process(). This test detects the race.
+func TestKeyProcessor_ConcurrentProcess_NoRace(t *testing.T) {
+	kp := NewKeyProcessor()
+	w, h := 8, 8
+	frameSize := w*h + 2*(w/2)*(h/2)
+
+	// Configure a chroma key with spill suppression (triggers spillWorkBuf write)
+	kp.SetKey("cam1", KeyConfig{
+		Type:          KeyTypeChroma,
+		Enabled:       true,
+		KeyColorY:     182,
+		KeyColorCb:    30,
+		KeyColorCr:    12,
+		Similarity:    0.4,
+		SpillSuppress: 0.5,
+	})
+
+	fill := makeYUV420Frame(w, h, 182, 30, 12)
+	fills := map[string][]byte{"cam1": fill}
+
+	// Run concurrent Process() calls — with -race, this detects the data race
+	// on spillWorkBuf when Process() uses RLock instead of Lock.
+	done := make(chan struct{})
+	for g := 0; g < 4; g++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			for i := 0; i < 200; i++ {
+				bg := make([]byte, frameSize)
+				for j := range bg {
+					bg[j] = 128
+				}
+				kp.Process(bg, fills, w, h)
+			}
+		}()
+	}
+	for g := 0; g < 4; g++ {
+		<-done
+	}
 }
