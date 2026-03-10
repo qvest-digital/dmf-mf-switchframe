@@ -146,20 +146,24 @@ func (db *DelayBuffer) handleVideoFrame(sourceKey string, frame *media.VideoFram
 
 // handleRawVideoFrame implements frameHandler for decoded YUV frames.
 // Uses the same delay mechanism as handleVideoFrame.
+// Releases the pool buffer after delivery or on early return (stopped/stale).
 func (db *DelayBuffer) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	if !db.hasAnyDelay.Load() {
 		db.handler.handleRawVideoFrame(sourceKey, pf)
+		pf.ReleaseYUV()
 		return
 	}
 	db.mu.Lock()
 	if db.stopped.Load() {
 		db.mu.Unlock()
+		pf.ReleaseYUV()
 		return
 	}
 	sd := db.sources[sourceKey]
 	if sd == nil || sd.delay == 0 {
 		db.mu.Unlock()
 		db.handler.handleRawVideoFrame(sourceKey, pf)
+		pf.ReleaseYUV()
 		return
 	}
 	delay := sd.delay
@@ -168,12 +172,15 @@ func (db *DelayBuffer) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame
 
 	time.AfterFunc(delay, func() {
 		if db.stopped.Load() {
+			pf.ReleaseYUV()
 			return
 		}
 		if sd.generation.Load() != gen {
+			pf.ReleaseYUV()
 			return
 		}
 		db.handler.handleRawVideoFrame(sourceKey, pf)
+		pf.ReleaseYUV()
 	})
 }
 

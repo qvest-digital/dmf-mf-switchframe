@@ -195,7 +195,13 @@
 	// the canvas renderer before onMount (which connects the MoQ transport).
 	pipeline.setSourceMuted('program', false);
 	pipeline.addSource('program');
-	pipeline.addSource('program-raw');
+	// Only add program-raw if WebGL is available (needed for YUV rendering).
+	// Without WebGL, subscribing to program-raw wastes bandwidth (~1.5 MB/frame).
+	const _testCanvas = document.createElement('canvas');
+	const hasWebGL = !!(_testCanvas.getContext('webgl2') || _testCanvas.getContext('webgl'));
+	if (hasWebGL) {
+		pipeline.addSource('program-raw');
+	}
 
 	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys, (src, pgm) => {
 		sourceLevels = src;
@@ -385,7 +391,9 @@
 		// Connect the "program" MoQ stream (source was added during init
 		// so the canvas can attach before onMount via ProgramPreview's $effect).
 		pipeline.connectSource('program');
-		pipeline.connectSource('program-raw');
+		if (hasWebGL) {
+			pipeline.connectSource('program-raw');
+		}
 
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
 		const resumeAudio = () => {

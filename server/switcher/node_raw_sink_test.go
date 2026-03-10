@@ -28,9 +28,13 @@ func TestRawSinkNode_ActiveWhenSinkSet(t *testing.T) {
 
 func TestRawSinkNode_ProcessDeepCopies(t *testing.T) {
 	var sink atomic.Pointer[RawVideoSink]
-	var received *ProcessingFrame
+	var receivedByte byte
+	var receivedPTS int64
+	var called bool
 	fn := RawVideoSink(func(pf *ProcessingFrame) {
-		received = pf
+		called = true
+		receivedByte = pf.YUV[0]
+		receivedPTS = pf.PTS
 	})
 	sink.Store(&fn)
 
@@ -47,12 +51,13 @@ func TestRawSinkNode_ProcessDeepCopies(t *testing.T) {
 	out := n.Process(nil, pf)
 	require.Same(t, pf, out, "Process should return src (passthrough)")
 
-	require.NotNil(t, received, "sink should have been called")
-	require.Equal(t, byte(0xAA), received.YUV[0])
+	require.True(t, called, "sink should have been called")
+	require.Equal(t, byte(0xAA), receivedByte, "sink should receive correct data via deep copy")
+	require.Equal(t, int64(1000), receivedPTS)
 
-	// Verify deep copy — modifying original should not affect received
+	// Verify deep copy — modifying original should not have affected received data
 	pf.YUV[0] = 0xBB
-	require.Equal(t, byte(0xAA), received.YUV[0], "sink should receive a deep copy")
+	require.Equal(t, byte(0xAA), receivedByte, "sink should have received a deep copy")
 }
 
 func TestRawSinkNode_ProcessSkipsNilSink(t *testing.T) {

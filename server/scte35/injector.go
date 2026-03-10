@@ -39,6 +39,11 @@ type InjectorConfig struct {
 
 	// WebhookTimeoutMs is the timeout for webhook POST requests in milliseconds.
 	WebhookTimeoutMs int64
+
+	// DefaultTier is the default 12-bit tier value for injected cues
+	// (0x000-0xFFF). 0 means unrestricted (0xFFF). Applied to cues
+	// that don't specify their own tier.
+	DefaultTier uint16
 }
 
 // activeEvent tracks an in-progress SCTE-35 event (internal, not exported).
@@ -307,6 +312,11 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		}
 	}
 
+	// Apply default tier if the message doesn't specify one.
+	if msg.Tier == 0 && inj.config.DefaultTier != 0 {
+		msg.Tier = inj.config.DefaultTier
+	}
+
 	// Encode the message.
 	data, err := msg.Encode(inj.config.VerifyEncoding)
 	if err != nil {
@@ -371,6 +381,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			effectiveDuration = scte35lib.TicksToDuration(maxDurationTicks)
 		}
 
+		// Track the first cue-out SegEventID so we can start a single
+		// auto-return timer for the entire group of sibling descriptors.
+		var firstCueOutID uint32
 		for _, d := range msg.Descriptors {
 			if isSegCueOut(d.SegmentationType) {
 				ae := &activeEvent{
@@ -392,7 +405,22 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 				if eventID == 0 {
 					eventID = d.SegEventID
 				}
+				if firstCueOutID == 0 {
+					firstCueOutID = d.SegEventID
+				}
 			}
+		}
+
+		// Start auto-return timer for time_signal events with a known duration.
+		// The timer fires ReturnToProgram on the first cue-out descriptor, which
+		// cleans up all sibling events via removeSiblingEventsLocked.
+		if firstCueOutID != 0 && effectiveDuration > 0 {
+			eid := firstCueOutID
+			ae := inj.activeEvents[eid]
+			ae.AutoReturn = true
+			ae.returnTimer = time.AfterFunc(effectiveDuration, func() {
+				_ = inj.ReturnToProgram(eid)
+			})
 		}
 	}
 
@@ -549,15 +577,16 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 		for _, d := range ae.Descriptors {
 			if isSegCueOut(d.SegmentationType) {
 				endDescs = append(endDescs, SegmentationDescriptor{
-					SegEventID:          d.SegEventID,
-					SegmentationType:    d.SegmentationType + 1, // Start→End
-					UPIDType:            d.UPIDType,
-					UPID:                d.UPID,
-					AdditionalUPIDs:     d.AdditionalUPIDs,
-					SegNum:              d.SegNum,
-					SegExpected:         d.SegExpected,
-					SubSegmentNum:       d.SubSegmentNum,
-					SubSegmentsExpected: d.SubSegmentsExpected,
+					SegEventID:           d.SegEventID,
+					SegmentationType:     d.SegmentationType + 1, // Start→End
+					UPIDType:             d.UPIDType,
+					UPID:                 d.UPID,
+					AdditionalUPIDs:      d.AdditionalUPIDs,
+					SegNum:               d.SegNum,
+					SegExpected:          d.SegExpected,
+					SubSegmentNum:        d.SubSegmentNum,
+					SubSegmentsExpected:  d.SubSegmentsExpected,
+					DeliveryRestrictions: d.DeliveryRestrictions,
 				})
 			}
 		}
@@ -1151,8 +1180,8 @@ func commandTypeName(cmdType uint8) string {
 // isSegCueOut returns true if the segmentation_type_id represents a cue-out
 // (ad insertion boundary). Covers all Start types from SCTE-35 Table 22 that
 // follow the Start+1=End pairing convention for ad/placement opportunities.
-// Intentionally excludes 0x20 (Unscheduled Event Start) and 0x24 (Network
-// Start) as those are not ad insertion signals.
+// Intentionally excludes 0x20 (Chapter Start) and 0x50 (Network Start) as
+// those are not ad insertion signals.
 func isSegCueOut(typeID uint8) bool {
 	switch typeID {
 	case 0x22, // Break Start
@@ -1164,6 +1193,8 @@ func isSegCueOut(typeID uint8) bool {
 		0x3A, // Distributor Overlay Placement Opportunity Start
 		0x3C, // Provider Promo Start
 		0x3E, // Distributor Promo Start
+		0x40, // Unscheduled Event Start
+		0x42, // Alternate Content Opportunity Start
 		0x44, // Provider Ad Block Start
 		0x46: // Distributor Ad Block Start
 		return true

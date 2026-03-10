@@ -5,7 +5,9 @@ package output
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"sync"
+	"unsafe"
 
 	astits "github.com/asticode/go-astits"
 	"github.com/zsiec/prism/media"
@@ -172,26 +174,32 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 }
 
 // cueiDescriptor builds the CUEI registration descriptor required by
-// SCTE-35 for PMT elementary stream entries. The format identifier
+// SCTE-35 section 8.1 in the PMT program_info loop. The format identifier
 // 0x43554549 corresponds to the ASCII string "CUEI".
-//
-// Spec note: SCTE-35 section 8.1 specifies that the CUEI registration
-// descriptor should appear in the PMT program_info loop (program-level),
-// not in the ES_info loop. However, go-astits v1.15.0 Muxer has the
-// pmt field as private — PMTData.ProgramDescriptors exists but is not
-// settable through the public Muxer API. A future go-astits version or
-// fork could expose program-level descriptor insertion. ES_info
-// placement is widely accepted by downstream equipment and decoders.
-//
-// TODO(go-astits): Move CUEI descriptor to PMT program_info loop when
-// go-astits exposes program-level descriptor insertion via public API.
 func cueiDescriptor() *astits.Descriptor {
 	return &astits.Descriptor{
-		Tag: astits.DescriptorTagRegistration,
+		Tag:    astits.DescriptorTagRegistration,
+		Length: 4, // format_identifier is 4 bytes; go-astits skips body if Length==0
 		Registration: &astits.DescriptorRegistration{
 			FormatIdentifier: 0x43554549, // "CUEI"
 		},
 	}
+}
+
+// setProgramDescriptors sets PMT program-level descriptors on the go-astits
+// Muxer. go-astits v1.15.0 stores PMT data in the private `pmt` field of
+// type PMTData. PMTData.ProgramDescriptors is properly encoded by
+// writePMTSection, but no public API exposes it. This function uses reflect
+// to access the private field. Pinned to go-astits v1.15.0 via go.mod.
+//
+// Must be called after AddElementaryStream and before WriteTables.
+func setProgramDescriptors(muxer *astits.Muxer, descriptors []*astits.Descriptor) {
+	v := reflect.ValueOf(muxer).Elem()
+	pmtField := v.FieldByName("pmt")
+	pdField := pmtField.FieldByName("ProgramDescriptors")
+	// ProgramDescriptors ([]*Descriptor) is exported, but lives inside the
+	// unexported `pmt` field — reflect won't let us Set() it directly.
+	*(*[]*astits.Descriptor)(unsafe.Pointer(pdField.UnsafeAddr())) = descriptors
 }
 
 // WriteVideo muxes a video frame into MPEG-TS packets. If the muxer is
@@ -358,13 +366,19 @@ func (m *TSMuxer) init() error {
 	// Conditionally register SCTE-35 elementary stream.
 	if m.scte35PID != 0 {
 		if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
-			ElementaryPID:               m.scte35PID,
-			StreamType:                  astits.StreamType(0x86), // SCTE-35
-			ElementaryStreamDescriptors: []*astits.Descriptor{cueiDescriptor()},
+			ElementaryPID: m.scte35PID,
+			StreamType:    astits.StreamType(0x86), // SCTE-35
 		}); err != nil {
 			cancel()
 			return err
 		}
+
+		// Place CUEI registration descriptor in the PMT program_info loop
+		// per SCTE-35 section 8.1 ("shall be included in the program_info
+		// loop of the TS_program_map_section"). go-astits has no public API
+		// for program-level descriptors, so we use reflect to set the
+		// private pmt.ProgramDescriptors field.
+		setProgramDescriptors(m.muxer, []*astits.Descriptor{cueiDescriptor()})
 	}
 
 	// Set video PID as the PCR source.

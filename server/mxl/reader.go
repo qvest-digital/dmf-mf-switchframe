@@ -10,10 +10,11 @@ import (
 
 // VideoGrain carries a raw V210 video frame read from an MXL flow.
 type VideoGrain struct {
-	V210   []byte // V210 packed pixel data
-	Width  int
-	Height int
-	PTS    int64 // Monotonic frame counter (1, 2, 3, ...)
+	V210     []byte    // V210 packed pixel data
+	Width    int
+	Height   int
+	PTS      int64     // Monotonic frame counter (1, 2, 3, ...)
+	ReadTime time.Time // Wall-clock time when grain was read (for AV sync)
 }
 
 // AudioGrain carries raw float32 PCM audio read from an MXL flow.
@@ -21,7 +22,8 @@ type AudioGrain struct {
 	PCM        [][]float32 // De-interleaved channels
 	SampleRate int
 	Channels   int
-	PTS        int64 // Monotonic sample counter from 0
+	PTS        int64     // Monotonic sample counter from 0
+	ReadTime   time.Time // Wall-clock time when grain was read (for AV sync)
 }
 
 // DataGrain carries raw metadata/ancillary data read from an MXL flow.
@@ -210,12 +212,14 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 		videoPTSCounter++
 		pts := videoPTSCounter
+		readTime := time.Now()
 
 		grain := VideoGrain{
-			V210:   data,
-			Width:  r.config.Width,
-			Height: r.config.Height,
-			PTS:    pts,
+			V210:     data,
+			Width:    r.config.Width,
+			Height:   r.config.Height,
+			PTS:      pts,
+			ReadTime: readTime,
 		}
 
 		// If width/height not configured, derive from config.
@@ -316,6 +320,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			SampleRate: sampleRate,
 			Channels:   channels,
 			PTS:        ptsCounter,
+			ReadTime:   time.Now(),
 		}
 
 		select {

@@ -326,10 +326,11 @@ func decodeSegmentationDescriptor(data []byte) (*SegmentationDescriptorRequest, 
 	sd.SegExpected = data[offset]
 	offset++
 
-	// Per SCTE 104 2021 Table 8-29, sub_segment_num and sub_segments_expected
-	// follow segs_expected for certain segmentation types. Parse gracefully
-	// only if bytes remain (older senders may omit them).
-	if offset+2 <= len(data) {
+	// Per SCTE 104 2021 Table 8-29 and SCTE-35 Table 22, sub_segment_num
+	// and sub_segments_expected follow segs_expected only for certain
+	// segmentation types. Parse gracefully only if the type carries
+	// sub-segment fields and bytes remain (older senders may omit them).
+	if hasSubSegmentFields(sd.SegmentationTypeID) && offset+2 <= len(data) {
 		sd.SubSegmentNum = data[offset]
 		sd.SubSegmentsExpected = data[offset+1]
 	}

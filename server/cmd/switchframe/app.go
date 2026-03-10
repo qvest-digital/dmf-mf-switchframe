@@ -599,8 +599,15 @@ func (a *App) initMXL() error {
 					return
 				}
 				cue.Source = "scte104"
-				if _, err := a.scte35Injector.InjectCue(cue); err != nil {
-					slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
+				preRollMs := scte104.PreRollMs(msg)
+				if preRollMs > 0 {
+					if _, err := a.scte35Injector.ScheduleCue(cue, preRollMs); err != nil {
+						slog.Warn("scte104: failed to schedule cue", "source", key, "preRollMs", preRollMs, "error", err)
+					}
+				} else {
+					if _, err := a.scte35Injector.InjectCue(cue); err != nil {
+						slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
+					}
 				}
 			}
 		}

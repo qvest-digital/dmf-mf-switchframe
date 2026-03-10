@@ -491,6 +491,7 @@ func parseEventID(r *http.Request) (uint32, error) {
 func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 	msg := &scte35.CueMessage{
 		Source: "api",
+		Timing: "immediate",
 	}
 
 	switch req.CommandType {
@@ -546,6 +547,9 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 			desc.SegEventID = *d.SegEventID
 		}
 		if d.DurationMs != nil {
+			if *d.DurationMs < 0 {
+				return nil, fmt.Errorf("descriptor duration_ms must be non-negative, got %d", *d.DurationMs)
+			}
 			// Convert milliseconds to 90 kHz ticks.
 			ticks := uint64(*d.DurationMs) * 90
 			desc.DurationTicks = &ticks

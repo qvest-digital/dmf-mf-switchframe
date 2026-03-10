@@ -312,6 +312,61 @@ func TestStartSources_WithVideoDir(t *testing.T) {
 	assert.Equal(t, "real_video", snap["mode"])
 }
 
+func TestGenerateFramesFromFile_GroupIDMonotonicAcrossLoop(t *testing.T) {
+	// Bug: when vidIdx resets to 0 at loop boundary, the condition
+	// "vf.IsKeyframe && vidIdx > 0" prevents GroupID increment on the
+	// first frame of the new loop. This causes downstream Prism viewers
+	// to see a non-monotonic GroupID (same as last frame of previous loop).
+	relay := distribution.NewRelay()
+	viewer := &frameCollector{}
+	relay.AddViewer(viewer)
+
+	// Create a minimal 3-frame clip: [keyframe, delta, delta].
+	// With 3 frames the loop wraps quickly.
+	videoFrames := []media.VideoFrame{
+		{PTS: 0, DTS: 0, IsKeyframe: true, WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00}, SPS: demoSPS, PPS: demoPPS, Codec: "h264"},
+		{PTS: 3003, DTS: 3003, IsKeyframe: false, WireData: []byte{0x00, 0x00, 0x00, 0x03, 0x41, 0x9A, 0x24}, Codec: "h264"},
+		{PTS: 6006, DTS: 6006, IsKeyframe: false, WireData: []byte{0x00, 0x00, 0x00, 0x03, 0x41, 0x9A, 0x24}, Codec: "h264"},
+	}
+	audioFrames := []media.AudioFrame{
+		{PTS: 0, Data: []byte{0xDE, 0x04}, SampleRate: 48000, Channels: 2},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go generateFramesFromFile(ctx, relay, videoFrames, audioFrames, "test", nil)
+
+	// Wait for at least 2 loops (each loop is ~3 frames at ~33ms each = ~100ms).
+	time.Sleep(350 * time.Millisecond)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	viewer.mu.Lock()
+	defer viewer.mu.Unlock()
+
+	require.Greater(t, len(viewer.videoFrames), 3, "should have looped at least once")
+
+	// Check GroupID monotonicity across all frames.
+	var lastGroupID uint32
+	for i, vf := range viewer.videoFrames {
+		if i == 0 {
+			lastGroupID = vf.GroupID
+			continue
+		}
+		if vf.IsKeyframe {
+			// Every keyframe must increment GroupID.
+			assert.Greater(t, vf.GroupID, lastGroupID,
+				"keyframe at index %d has GroupID %d, expected > %d (previous GroupID)",
+				i, vf.GroupID, lastGroupID)
+			lastGroupID = vf.GroupID
+		} else {
+			// Delta frames must have same GroupID as their keyframe.
+			assert.Equal(t, lastGroupID, vf.GroupID,
+				"delta frame at index %d has GroupID %d, expected %d",
+				i, vf.GroupID, lastGroupID)
+		}
+	}
+}
+
 func TestDemoStats_DebugSnapshot(t *testing.T) {
 	stats := NewDemoStats()
 	stats.SetFileInfo("real_video", "test.ts", 100, 200)

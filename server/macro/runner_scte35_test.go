@@ -14,10 +14,12 @@ type mockSCTE35Target struct {
 	scte35ExtendCalled bool
 	lastEventID        uint32
 	lastDurationMs     int64
+	lastCueParams      map[string]interface{}
 }
 
 func (m *mockSCTE35Target) SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error) {
 	m.scte35CueCalled = true
+	m.lastCueParams = params
 	return 42, nil
 }
 
@@ -142,6 +144,34 @@ func TestMacro_SCTE35Extend(t *testing.T) {
 	}
 	if target.lastDurationMs != 120000 {
 		t.Fatalf("expected 120000ms, got %d", target.lastDurationMs)
+	}
+}
+
+func TestMacro_SCTE35Cue_WithPreRoll(t *testing.T) {
+	target := &mockSCTE35Target{}
+	m := Macro{
+		Name: "preroll_break",
+		Steps: []MacroStep{
+			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+				"commandType": "splice_insert",
+				"isOut":       true,
+				"durationMs":  float64(60000),
+				"autoReturn":  true,
+				"preRollMs":   float64(5000),
+			}},
+		},
+	}
+	err := Run(context.Background(), m, target, nil)
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if !target.scte35CueCalled {
+		t.Fatal("SCTE35Cue not called")
+	}
+	// Verify preRollMs was passed through in params.
+	v, ok := target.lastCueParams["preRollMs"].(float64)
+	if !ok || v != 5000 {
+		t.Fatalf("expected preRollMs=5000 in params, got %v", target.lastCueParams["preRollMs"])
 	}
 }
 

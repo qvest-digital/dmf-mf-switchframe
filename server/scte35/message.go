@@ -62,6 +62,18 @@ type CueMessage struct {
 	// AvailsExpected is the total number of avails in the group.
 	AvailsExpected uint8
 
+	// Tier is the 12-bit authorization tier (0x000-0xFFF) from the
+	// splice_info_section. Per SCTE-35 section 9.6, 0xFFF (4095) means
+	// the cue is unrestricted. A zero value is treated as 0xFFF for
+	// backward compatibility.
+	Tier uint16
+
+	// PTSAdjustment is the 33-bit pts_adjustment value from the
+	// splice_info_section header. Used in pass-through scenarios where
+	// the PTS base has been shifted (e.g., remuxing). Default 0 means
+	// no adjustment.
+	PTSAdjustment uint64
+
 	// Source tracks the origin of this cue: "api", "macro", "scte104", "passthrough".
 	// Internal only — not serialized to SCTE-35 binary.
 	Source string
@@ -155,9 +167,14 @@ func NewTimeSignalMulti(descriptors []SegmentationDescriptor) *CueMessage {
 // decoder bug in Comcast/scte35-go where unique_program_id/avail_num/
 // avails_expected are read outside the cancel indicator guard.
 func (m *CueMessage) Encode(verify bool) ([]byte, error) {
+	tier := uint32(m.Tier)
+	if tier == 0 {
+		tier = 4095 // 0xFFF = unrestricted (SCTE-35 section 9.6)
+	}
 	sis := &scte35lib.SpliceInfoSection{
-		Tier:    4095,
-		SAPType: scte35lib.SAPTypeNotSpecified,
+		Tier:          tier,
+		PTSAdjustment: m.PTSAdjustment,
+		SAPType:       scte35lib.SAPTypeNotSpecified,
 	}
 
 	switch m.CommandType {
@@ -293,7 +310,10 @@ func Decode(data []byte) (*CueMessage, error) {
 		return nil, fmt.Errorf("scte35 decode: %w", err)
 	}
 
-	msg := &CueMessage{}
+	msg := &CueMessage{
+		Tier:          uint16(sis.Tier),
+		PTSAdjustment: sis.PTSAdjustment,
+	}
 
 	switch cmd := sis.SpliceCommand.(type) {
 	case *scte35lib.SpliceNull:

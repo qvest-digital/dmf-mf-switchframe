@@ -617,10 +617,9 @@ func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
 		"PMT should contain SCTE-35 elementary stream with stream_type=0x86 and PID=0x%04x", defaultSCTE35PID)
 
 	// Verify that a Registration descriptor (tag 0x05, length 0x04) appears
-	// after the SCTE-35 ES entry. The CUEI format_identifier 0x43554549 is
-	// encoded by go-astits, but the exact byte representation in the TS
-	// packet depends on the library's CRC placement, so we check for the
-	// descriptor tag/length pair which confirms the descriptor was registered.
+	// in the PMT (program_info loop per SCTE-35 section 8.1). The CUEI
+	// format_identifier 0x43554549 is encoded by go-astits. We check for
+	// the descriptor tag/length pair which confirms the descriptor was registered.
 	foundRegistrationDesc := false
 	for i := 0; i+188 <= len(output); i += 188 {
 		pkt := output[i : i+188]
@@ -636,6 +635,91 @@ func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
 	}
 	require.True(t, foundRegistrationDesc,
 		"PMT should contain registration descriptor (tag=0x05, length=0x04) for SCTE-35 ES")
+}
+
+func TestTSMuxer_SCTE35_CUEI_InProgramInfoLoop(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Enable SCTE-35.
+	m.SetSCTE35PID(defaultSCTE35PID)
+
+	// Initialize with keyframe — triggers PAT/PMT generation.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+
+	// Find the PMT packet (PID 0x1000 = 4096, go-astits default PMT PID).
+	// PMT has table_id=0x02.
+	var pmtPayload []byte
+	for i := 0; i+188 <= len(output); i += 188 {
+		pkt := output[i : i+188]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		// Check for table_id 0x02 in the payload (PMT).
+		pusi := pkt[1]&0x40 != 0
+		if !pusi {
+			continue
+		}
+		// Skip header, check adaptation field
+		headerLen := 4
+		afc := (pkt[3] >> 4) & 0x03
+		if afc == 0x03 || afc == 0x02 {
+			if headerLen < 188 {
+				afLen := int(pkt[headerLen])
+				headerLen += 1 + afLen
+			}
+		}
+		if headerLen >= 188 {
+			continue
+		}
+		// PUSI: pointer field
+		ptr := int(pkt[headerLen])
+		start := headerLen + 1 + ptr
+		if start >= 188 {
+			continue
+		}
+		if pkt[start] == 0x02 { // table_id = PMT
+			pmtPayload = pkt[start:]
+			break
+		}
+	}
+	require.NotNil(t, pmtPayload, "should find PMT packet with table_id=0x02")
+
+	// PMT structure after table_id:
+	//   section_syntax_indicator(1) + '0'(1) + reserved(2) + section_length(12) = 2 bytes
+	//   program_number(16) = 2 bytes
+	//   reserved(2) + version(5) + current_next(1) = 1 byte
+	//   section_number(8) = 1 byte
+	//   last_section_number(8) = 1 byte
+	//   reserved(3) + PCR_PID(13) = 2 bytes
+	//   reserved(4) + program_info_length(12) = 2 bytes
+	// Total fixed header after table_id: 10 bytes
+	require.True(t, len(pmtPayload) > 11, "PMT payload too short")
+
+	// Extract program_info_length (last 12 bits of bytes at offset 10-11 from table_id).
+	progInfoLen := int(pmtPayload[10]&0x0F)<<8 | int(pmtPayload[11])
+	require.Greater(t, progInfoLen, 0,
+		"program_info_length should be > 0 (CUEI descriptor in program_info loop)")
+
+	// The CUEI registration descriptor is: tag=0x05, length=0x04, format_id=0x43554549
+	// Total 6 bytes. Verify it fits and is present in the program_info region.
+	require.GreaterOrEqual(t, progInfoLen, 6,
+		"program_info_length should be >= 6 for CUEI descriptor")
+
+	// Check that the descriptor is in the program_info data (starts at offset 12).
+	progInfoData := pmtPayload[12 : 12+progInfoLen]
+	foundCUEI := false
+	for j := 0; j+5 < len(progInfoData); j++ {
+		if progInfoData[j] == 0x05 && progInfoData[j+1] == 0x04 &&
+			progInfoData[j+2] == 0x43 && progInfoData[j+3] == 0x55 &&
+			progInfoData[j+4] == 0x45 && progInfoData[j+5] == 0x49 {
+			foundCUEI = true
+			break
+		}
+	}
+	require.True(t, foundCUEI,
+		"CUEI registration descriptor (0x43554549) should be in PMT program_info loop")
 }
 
 func TestTSMuxer_SCTE35_PMT_NoStreamType_WhenDisabled(t *testing.T) {

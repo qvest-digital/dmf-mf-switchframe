@@ -163,3 +163,20 @@ func isKnownSingleOpID(opID uint16) bool {
 		return false
 	}
 }
+
+// hasSubSegmentFields returns true if the segmentation_type_id carries
+// sub_segment_num and sub_segments_expected fields per SCTE-35 Table 22
+// and SCTE-104 2021 Table 8-29.
+func hasSubSegmentFields(typeID uint8) bool {
+	switch typeID {
+	case 0x34, // Provider Placement Opportunity Start
+		0x36, // Distributor Placement Opportunity Start
+		0x38, // Provider Overlay Placement Opportunity Start
+		0x3A, // Distributor Overlay Placement Opportunity Start
+		0x44, // Provider Ad Block Start
+		0x46: // Distributor Ad Block Start
+		return true
+	default:
+		return false
+	}
+}

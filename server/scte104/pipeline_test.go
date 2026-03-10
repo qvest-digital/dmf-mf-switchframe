@@ -448,6 +448,110 @@ func TestPipeline_SpliceNull_FullRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPipeline_PreRollMs_SurvivesRoundTrip verifies that PreRollMs is preserved
+// through encode→decode round-trips for both splice_request and time_signal.
+func TestPipeline_PreRollMs_SurvivesRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		msg     *Message
+		wantMs  int64
+	}{
+		{
+			name: "splice_request_scheduled",
+			msg: &Message{
+				Operations: []Operation{
+					{
+						OpID: OpSpliceRequest,
+						Data: &SpliceRequestData{
+							SpliceInsertType: SpliceStartNormal,
+							SpliceEventID:    100,
+							PreRollTime:      4000,
+							BreakDuration:    300,
+						},
+					},
+				},
+			},
+			wantMs: 4000,
+		},
+		{
+			name: "time_signal_request",
+			msg: &Message{
+				Operations: []Operation{
+					{
+						OpID: OpTimeSignalRequest,
+						Data: &TimeSignalRequestData{
+							PreRollTime: 3000,
+						},
+					},
+					{
+						OpID: OpSegmentationDescriptorRequest,
+						Data: &SegmentationDescriptorRequest{
+							SegEventID:              500,
+							SegmentationTypeID:      0x34,
+							ProgramSegmentationFlag: true,
+						},
+					},
+				},
+			},
+			wantMs: 3000,
+		},
+		{
+			name: "splice_request_immediate_zero",
+			msg: &Message{
+				Operations: []Operation{
+					{
+						OpID: OpSpliceRequest,
+						Data: &SpliceRequestData{
+							SpliceInsertType: SpliceStartImmediate,
+							SpliceEventID:    200,
+							PreRollTime:      5000, // should be ignored
+						},
+					},
+				},
+			},
+			wantMs: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Encode → Decode round-trip.
+			encoded, err := Encode(tt.msg)
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			decoded, err := Decode(encoded)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+
+			got := PreRollMs(decoded)
+			if got != tt.wantMs {
+				t.Errorf("PreRollMs after encode→decode = %d, want %d", got, tt.wantMs)
+			}
+
+			// Also test with ST 291 wrapping.
+			vanc, err := WrapST291(encoded)
+			if err != nil {
+				t.Fatalf("WrapST291: %v", err)
+			}
+			payload, err := ParseST291(vanc)
+			if err != nil {
+				t.Fatalf("ParseST291: %v", err)
+			}
+			decoded2, err := Decode(payload)
+			if err != nil {
+				t.Fatalf("Decode after ST291: %v", err)
+			}
+
+			got2 := PreRollMs(decoded2)
+			if got2 != tt.wantMs {
+				t.Errorf("PreRollMs after ST291 round-trip = %d, want %d", got2, tt.wantMs)
+			}
+		})
+	}
+}
+
 // TestPipeline_SubSegments_FullRoundTrip exercises the complete pipeline with
 // sub-segment fields (sub_segment_num, sub_segments_expected) per SCTE 104 2021.
 func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
@@ -559,5 +663,106 @@ func TestPipeline_SubSegments_FullRoundTrip(t *testing.T) {
 	if desc2.SubSegmentsExpected != desc1.SubSegmentsExpected {
 		t.Errorf("round-trip: SubSegmentsExpected = %d, want %d",
 			desc2.SubSegmentsExpected, desc1.SubSegmentsExpected)
+	}
+}
+
+// TestPipeline_SubSegments_NotParsedForNonSubSegmentTypes verifies that
+// sub_segment_num and sub_segments_expected are NOT parsed for segmentation
+// types that don't carry them per SCTE-35 Table 22 (e.g., 0x30 Program Start).
+// Even if trailing bytes exist, they should be ignored for non-sub-segment types.
+func TestPipeline_SubSegments_NotParsedForNonSubSegmentTypes(t *testing.T) {
+	// Use type 0x34 (Provider Placement Opportunity Start) which HAS sub-segments.
+	msgWith := &Message{
+		Operations: []Operation{
+			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{PreRollTime: 0}},
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              0x00005678,
+					SegmentationTypeID:      0x34,
+					UPIDType:                0x09,
+					UPID:                    []byte("X"),
+					SegNum:                  1,
+					SegExpected:             2,
+					SubSegmentNum:           3,
+					SubSegmentsExpected:     4,
+					ProgramSegmentationFlag: true,
+				},
+			},
+		},
+	}
+
+	encoded, err := Encode(msgWith)
+	if err != nil {
+		t.Fatalf("Encode (sub-seg type): %v", err)
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("Decode (sub-seg type): %v", err)
+	}
+	sd := decoded.Operations[1].Data.(*SegmentationDescriptorRequest)
+	if sd.SubSegmentNum != 3 {
+		t.Errorf("type 0x34: SubSegmentNum = %d, want 3", sd.SubSegmentNum)
+	}
+	if sd.SubSegmentsExpected != 4 {
+		t.Errorf("type 0x34: SubSegmentsExpected = %d, want 4", sd.SubSegmentsExpected)
+	}
+
+	// Now use type 0x30 (Provider Advertisement Start) which does NOT have sub-segments.
+	msgWithout := &Message{
+		Operations: []Operation{
+			{OpID: OpTimeSignalRequest, Data: &TimeSignalRequestData{PreRollTime: 0}},
+			{
+				OpID: OpSegmentationDescriptorRequest,
+				Data: &SegmentationDescriptorRequest{
+					SegEventID:              0x00009ABC,
+					SegmentationTypeID:      0x30,
+					UPIDType:                0x09,
+					UPID:                    []byte("Y"),
+					SegNum:                  1,
+					SegExpected:             2,
+					SubSegmentNum:           3, // Should NOT be encoded for 0x30
+					SubSegmentsExpected:     4, // Should NOT be encoded for 0x30
+					ProgramSegmentationFlag: true,
+				},
+			},
+		},
+	}
+
+	encoded2, err := Encode(msgWithout)
+	if err != nil {
+		t.Fatalf("Encode (non-sub-seg type): %v", err)
+	}
+	decoded2, err := Decode(encoded2)
+	if err != nil {
+		t.Fatalf("Decode (non-sub-seg type): %v", err)
+	}
+	sd2 := decoded2.Operations[1].Data.(*SegmentationDescriptorRequest)
+	// For 0x30, sub-segment fields should be zero (not parsed).
+	if sd2.SubSegmentNum != 0 {
+		t.Errorf("type 0x30: SubSegmentNum = %d, want 0 (should not be parsed)", sd2.SubSegmentNum)
+	}
+	if sd2.SubSegmentsExpected != 0 {
+		t.Errorf("type 0x30: SubSegmentsExpected = %d, want 0 (should not be parsed)", sd2.SubSegmentsExpected)
+	}
+}
+
+// TestPipeline_HasSubSegmentFields verifies the hasSubSegmentFields function
+// correctly classifies segmentation types per SCTE-35 Table 22.
+func TestPipeline_HasSubSegmentFields(t *testing.T) {
+	// Types that SHOULD have sub-segment fields.
+	subSegTypes := []uint8{0x34, 0x36, 0x38, 0x3A, 0x44, 0x46}
+	for _, typeID := range subSegTypes {
+		if !hasSubSegmentFields(typeID) {
+			t.Errorf("hasSubSegmentFields(0x%02X) = false, want true", typeID)
+		}
+	}
+
+	// Types that should NOT have sub-segment fields.
+	nonSubSegTypes := []uint8{0x22, 0x30, 0x32, 0x3C, 0x3E, 0x40, 0x42, 0x50, 0x00, 0xFF}
+	for _, typeID := range nonSubSegTypes {
+		if hasSubSegmentFields(typeID) {
+			t.Errorf("hasSubSegmentFields(0x%02X) = true, want false", typeID)
+		}
 	}
 }

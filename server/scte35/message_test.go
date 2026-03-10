@@ -765,6 +765,103 @@ func TestSingleUPID_BackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestEncode_Tier_RoundTrip(t *testing.T) {
+	dur := 30 * time.Second
+	msg := NewSpliceInsert(1, dur, true, true)
+	msg.Tier = 500 // restricted tier
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.Tier != 500 {
+		t.Fatalf("expected Tier=500, got %d", decoded.Tier)
+	}
+}
+
+func TestEncode_Tier_DefaultsTo4095(t *testing.T) {
+	// Tier=0 should default to 4095 (unrestricted) in the encoded output.
+	msg := &CueMessage{CommandType: CommandSpliceNull}
+
+	encoded, err := msg.Encode(false)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.Tier != 4095 {
+		t.Fatalf("expected Tier=4095 (default), got %d", decoded.Tier)
+	}
+}
+
+func TestEncode_PTSAdjustment_RoundTrip(t *testing.T) {
+	dur := 30 * time.Second
+	msg := NewSpliceInsert(1, dur, true, true)
+	msg.PTSAdjustment = 183003 // example: PTS shifted by ~2 seconds
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.PTSAdjustment != 183003 {
+		t.Fatalf("expected PTSAdjustment=183003, got %d", decoded.PTSAdjustment)
+	}
+}
+
+func TestEncode_PTSAdjustment_DefaultZero(t *testing.T) {
+	// Default PTSAdjustment should be 0 when not explicitly set.
+	msg := NewSpliceInsert(1, 30*time.Second, true, true)
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.PTSAdjustment != 0 {
+		t.Fatalf("expected PTSAdjustment=0, got %d", decoded.PTSAdjustment)
+	}
+}
+
+func TestEncode_TierAndPTSAdjustment_Combined(t *testing.T) {
+	// Both tier and PTSAdjustment should survive round-trip together.
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
+	msg.Tier = 100
+	msg.PTSAdjustment = 8100000 // 90s
+
+	encoded, err := msg.Encode(true)
+	if err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.Tier != 100 {
+		t.Fatalf("expected Tier=100, got %d", decoded.Tier)
+	}
+	if decoded.PTSAdjustment != 8100000 {
+		t.Fatalf("expected PTSAdjustment=8100000, got %d", decoded.PTSAdjustment)
+	}
+}
+
 func TestEncode_SubSegment_RoundTrip(t *testing.T) {
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,

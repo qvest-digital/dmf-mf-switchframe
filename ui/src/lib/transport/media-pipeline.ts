@@ -51,6 +51,8 @@ interface SourceMedia {
 	yuvRenderer: YUVRenderer | null;
 	/** True if this source uses raw/yuv420 codec instead of H.264. */
 	isRawYUV: boolean;
+	/** Count of raw YUV frames dropped because yuvRenderer was null. */
+	rawDropCount: number;
 }
 
 /** Orchestrates MoQ media subscriptions and per-source decode pipelines. */
@@ -140,6 +142,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			videoInitData: null,
 			yuvRenderer: null,
 			isRawYUV: false,
+			rawDropCount: 0,
 		};
 	}
 
@@ -264,6 +267,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (source.isRawYUV) {
 			if (source.yuvRenderer) {
 				source.yuvRenderer.render(data);
+				source.rawDropCount = 0;
+			} else {
+				// No renderer — track drops and disconnect after 1s (~30 frames)
+				// to stop wasting bandwidth on data we can't render.
+				source.rawDropCount++;
+				if (source.rawDropCount >= 30) {
+					console.warn(`[MediaPipeline] Disconnecting "${sourceKey}": no YUV renderer after ${source.rawDropCount} frames`);
+					disconnectSource(sourceKey);
+				}
 			}
 			return;
 		}

@@ -340,7 +340,7 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 		vf := videoFrames[vidIdx]
 		vf.PTS = vf.PTS - baseDTS + tsOffset
 		vf.DTS = vf.DTS - baseDTS + tsOffset
-		if vf.IsKeyframe && vidIdx > 0 {
+		if vf.IsKeyframe {
 			groupID++
 		}
 		vf.GroupID = groupID

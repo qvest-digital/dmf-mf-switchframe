@@ -224,6 +224,132 @@ func TestInterleaveChannels(t *testing.T) {
 	}
 }
 
+func TestSource_AVSyncAligned(t *testing.T) {
+	// Bug: video and audio use independent counter-based PTS starting from 0.
+	// When video takes longer to produce its first grain (ring buffer errors,
+	// codec warmup, etc.), its PTS starts at 3003 (~33ms) while audio has
+	// been running for 200ms with PTS at ~18000. The browser sees the PTS
+	// values as the canonical timeline and computes a ~167ms AV sync offset
+	// that persists for the entire session.
+	//
+	// Fix: PTS should reflect wall-clock time relative to a shared epoch,
+	// so video starting 200ms late gets a PTS of ~18000 (matching audio).
+
+	const videoDelay = 200 * time.Millisecond
+
+	// Audio flow: produces immediately. Provide plenty of grains.
+	audioSamples := make([]mockSamples, 30)
+	for i := range audioSamples {
+		audioSamples[i] = mockSamples{pcm: [][]float32{{0.1, 0.2}, {0.3, 0.4}}}
+	}
+	audioFlow := newMockContinuousReader(audioSamples, FlowConfig{
+		Format:       DataFormatAudio,
+		GrainRate:    Rational{48000, 1},
+		ChannelCount: 2,
+	})
+
+	// Video flow: delays 200ms before producing first grain.
+	v210Data := makeV210Frame(12, 2)
+	videoGrains := []mockGrain{
+		{data: v210Data, info: GrainInfo{Index: 1, GrainSize: uint32(len(v210Data)), TotalSlices: 1, ValidSlices: 1}},
+		{data: v210Data, info: GrainInfo{Index: 2, GrainSize: uint32(len(v210Data)), TotalSlices: 1, ValidSlices: 1}},
+	}
+	videoFlow := &delayedDiscreteReader{
+		inner: newMockDiscreteReader(videoGrains, FlowConfig{Format: DataFormatVideo, GrainRate: Rational{30, 1}}),
+		delay: videoDelay,
+	}
+
+	var videoPTS struct {
+		mu  sync.Mutex
+		pts []int64
+	}
+
+	src := NewSource(SourceConfig{
+		FlowName:   "test",
+		Width:      12,
+		Height:     2,
+		SampleRate: 48000,
+		Channels:   2,
+		FPSNum:     30000,
+		FPSDen:     1001,
+		OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
+			videoPTS.mu.Lock()
+			defer videoPTS.mu.Unlock()
+			videoPTS.pts = append(videoPTS.pts, pts)
+		},
+		OnRawAudio: func(key string, pcm []float32, pts int64) {
+			// don't need to track audio PTS for this test
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	src.Start(ctx, videoFlow, audioFlow)
+
+	// Wait for video to produce at least one frame.
+	deadline := time.After(2 * time.Second)
+	for {
+		videoPTS.mu.Lock()
+		vn := len(videoPTS.pts)
+		videoPTS.mu.Unlock()
+		if vn >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout: no video PTS received")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	cancel()
+	src.Stop()
+
+	videoPTS.mu.Lock()
+	defer videoPTS.mu.Unlock()
+
+	firstVideoPTS := videoPTS.pts[0]
+
+	// The first video PTS should reflect the ~200ms wall-clock delay.
+	// In 90kHz ticks: 200ms = 18000 ticks.
+	// With the bug, PTS = grain.PTS(1) * 90000 * 1001/30000 = 3003 ticks (~33ms).
+	// With the fix, PTS ≈ 18000 ticks (200ms, from wall-clock).
+	//
+	// We check that PTS > 9000 ticks (100ms) — proving it accounts for the
+	// delay rather than using the counter-based 3003.
+	const minExpectedPTS int64 = 9000 // 100ms — conservative lower bound for 200ms delay
+	if firstVideoPTS < minExpectedPTS {
+		t.Errorf("first video PTS = %d ticks (%.1f ms), want >= %d ticks (100 ms); "+
+			"PTS should reflect wall-clock time, not counter-based %d",
+			firstVideoPTS, float64(firstVideoPTS)/90.0, minExpectedPTS, 3003)
+	}
+}
+
+// delayedDiscreteReader wraps a discrete reader and blocks for the
+// specified delay duration before delegating to the inner reader.
+// This simulates hardware warmup / ring buffer initialization delay.
+type delayedDiscreteReader struct {
+	inner   DiscreteReader
+	delay   time.Duration
+	started time.Time
+	once    sync.Once
+}
+
+func (d *delayedDiscreteReader) ReadGrain(index uint64, timeout uint64) ([]byte, GrainInfo, error) {
+	d.once.Do(func() { d.started = time.Now() })
+	remaining := d.delay - time.Since(d.started)
+	if remaining > 0 {
+		time.Sleep(remaining) // block until delay expires
+	}
+	return d.inner.ReadGrain(index, timeout)
+}
+
+func (d *delayedDiscreteReader) ConfigInfo() FlowConfig { return d.inner.ConfigInfo() }
+func (d *delayedDiscreteReader) HeadIndex() (uint64, error) { return d.inner.HeadIndex() }
+func (d *delayedDiscreteReader) Close() error { return d.inner.Close() }
+
 func TestSource_NilFlowsNoOp(t *testing.T) {
 	src := NewSource(SourceConfig{FlowName: "cam1"})
 

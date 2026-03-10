@@ -997,11 +997,12 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	}
 	s.mu.RUnlock()
 
+	expectedSize := width * height * 3 / 2
 	buf := s.framePool.Acquire()
-	copy(buf, yuv)
+	copy(buf, yuv[:expectedSize])
 
 	pf := &ProcessingFrame{
-		YUV: buf, Width: width, Height: height,
+		YUV: buf[:expectedSize], Width: width, Height: height,
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
 		Codec:   "h264",
 		GroupID: groupID,
@@ -1600,17 +1601,19 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 		ss := s.sources[sourceKey]
 		s.mu.RUnlock()
 		if ss == nil || ss.viewer == nil {
+			pf.ReleaseYUV()
 			return
 		}
 		if fs := ss.viewer.frameSync.Load(); fs != nil {
 			fs.IngestRawVideo(sourceKey, pf)
-			return
+			return // frame sync owns the buffer (FRC or ring buffer handles release)
 		}
 		if db := ss.viewer.delayBuffer.Load(); db != nil {
 			db.handleRawVideoFrame(sourceKey, pf)
-			return
+			return // delay buffer handles release internally
 		}
 		s.handleRawVideoFrame(sourceKey, pf)
+		pf.ReleaseYUV() // direct path: frame consumed synchronously, safe to release
 	}
 }
 

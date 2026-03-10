@@ -52,6 +52,79 @@ func TestInjector_InjectCue_Immediate(t *testing.T) {
 	}
 }
 
+func TestInjector_DefaultTier(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		DefaultTier:       500, // restricted tier
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Message has Tier=0 (unset) — injector should apply DefaultTier.
+	msg := NewSpliceInsert(1, 30*time.Second, true, true)
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.Tier != 500 {
+		t.Fatalf("expected Tier=500 from DefaultTier, got %d", decoded.Tier)
+	}
+}
+
+func TestInjector_DefaultTier_NotOverrideExplicit(t *testing.T) {
+	var captured []byte
+	var mu sync.Mutex
+	sink := func(data []byte) {
+		mu.Lock()
+		captured = append([]byte(nil), data...)
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		DefaultTier:       500,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Message has explicit Tier=200 — should NOT be overridden by DefaultTier.
+	msg := NewSpliceInsert(1, 30*time.Second, true, true)
+	msg.Tier = 200
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	mu.Lock()
+	data := captured
+	mu.Unlock()
+
+	decoded, err := Decode(data)
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.Tier != 200 {
+		t.Fatalf("expected Tier=200 (explicit), got %d", decoded.Tier)
+	}
+}
+
 func TestInjector_InjectCue_Scheduled(t *testing.T) {
 	var mu sync.Mutex
 	var captured []byte
@@ -1359,6 +1432,8 @@ func TestInjector_IsSegCueOut_AllTypes(t *testing.T) {
 		0x3A, // Distributor Overlay Placement Opportunity Start
 		0x3C, // Provider Promo Start
 		0x3E, // Distributor Promo Start
+		0x40, // Unscheduled Event Start
+		0x42, // Alternate Content Opportunity Start
 		0x44, // Provider Ad Block Start
 		0x46, // Distributor Ad Block Start
 	}
@@ -1368,7 +1443,7 @@ func TestInjector_IsSegCueOut_AllTypes(t *testing.T) {
 		}
 	}
 	// Corresponding End types should NOT be cue-out.
-	cueInTypes := []uint8{0x23, 0x31, 0x33, 0x35, 0x37, 0x39, 0x3B, 0x3D, 0x3F, 0x45, 0x47}
+	cueInTypes := []uint8{0x23, 0x31, 0x33, 0x35, 0x37, 0x39, 0x3B, 0x3D, 0x3F, 0x41, 0x43, 0x45, 0x47}
 	for _, typeID := range cueInTypes {
 		if isSegCueOut(typeID) {
 			t.Errorf("expected 0x%02x (End type) to not be cue-out", typeID)
@@ -1378,8 +1453,189 @@ func TestInjector_IsSegCueOut_AllTypes(t *testing.T) {
 	if isSegCueOut(0x10) { // Program Start
 		t.Error("expected 0x10 (Program Start) to not be cue-out")
 	}
-	if isSegCueOut(0x20) { // Unscheduled Event Start (excluded by design)
-		t.Error("expected 0x20 (Unscheduled Event Start) to not be cue-out")
+	if isSegCueOut(0x20) { // Chapter Start
+		t.Error("expected 0x20 (Chapter Start) to not be cue-out")
+	}
+	if isSegCueOut(0x50) { // Network Start
+		t.Error("expected 0x50 (Network Start) to not be cue-out")
+	}
+}
+
+func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
+	var mu sync.Mutex
+	var sinkCalls int
+	sink := func(data []byte) {
+		mu.Lock()
+		sinkCalls++
+		mu.Unlock()
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with a short duration (100ms) so auto-return fires quickly.
+	ticks := scte35lib.DurationToTicks(100 * time.Millisecond)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Timing:      "immediate",
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:       500,
+				SegmentationType: 0x34, // Provider Placement Opportunity Start
+				DurationTicks:    &ticks,
+			},
+		},
+	}
+
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+	if eventID == 0 {
+		t.Fatal("expected non-zero event ID")
+	}
+
+	// Verify event is active and has AutoReturn set.
+	ids := inj.ActiveEventIDs()
+	if len(ids) == 0 {
+		t.Fatal("expected active events")
+	}
+
+	state := inj.State()
+	ae, ok := state.ActiveEvents[eventID]
+	if !ok {
+		t.Fatalf("event %d not in active events", eventID)
+	}
+	if !ae.AutoReturn {
+		t.Error("AutoReturn should be true for time_signal with duration")
+	}
+
+	// Wait for auto-return to fire.
+	time.Sleep(300 * time.Millisecond)
+
+	// Event should be cleared.
+	ids = inj.ActiveEventIDs()
+	if len(ids) != 0 {
+		t.Errorf("expected no active events after auto-return, got %d", len(ids))
+	}
+
+	// Check the log contains both "injected" and "returned" entries.
+	log := inj.EventLog()
+	var foundInjected, foundReturned bool
+	for _, e := range log {
+		if e.Status == "injected" {
+			foundInjected = true
+		}
+		if e.Status == "returned" {
+			foundReturned = true
+		}
+	}
+	if !foundInjected {
+		t.Error("expected 'injected' log entry")
+	}
+	if !foundReturned {
+		t.Error("expected 'returned' log entry from auto-return timer")
+	}
+}
+
+func TestInjector_TimeSignal_NoDuration_NoAutoReturn(t *testing.T) {
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	// Time_signal without duration should NOT get auto-return.
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Timing:      "immediate",
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:       600,
+				SegmentationType: 0x34,
+				// No DurationTicks
+			},
+		},
+	}
+
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	state := inj.State()
+	ae, ok := state.ActiveEvents[600]
+	if !ok {
+		t.Fatal("event should be active")
+	}
+	if ae.AutoReturn {
+		t.Error("AutoReturn should be false when no duration specified")
+	}
+}
+
+func TestInjector_ReturnToProgram_DeliveryRestrictions(t *testing.T) {
+	var lastData []byte
+	sink := func(data []byte) {
+		lastData = append([]byte(nil), data...)
+	}
+	ptsFn := func() int64 { return 90000 }
+
+	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
+	defer inj.Close()
+
+	ticks := scte35lib.DurationToTicks(30 * time.Second)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Timing:      "immediate",
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:       700,
+				SegmentationType: 0x34,
+				DurationTicks:    &ticks,
+				DeliveryRestrictions: &DeliveryRestrictions{
+					WebDeliveryAllowed: true,
+					NoRegionalBlackout: true,
+					ArchiveAllowed:     false,
+					DeviceRestrictions: 2,
+				},
+			},
+		},
+	}
+
+	eventID, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Return to program — the End descriptor should carry DeliveryRestrictions.
+	if err := inj.ReturnToProgram(eventID); err != nil {
+		t.Fatalf("return failed: %v", err)
+	}
+
+	// Decode the return message.
+	decoded, err := Decode(lastData)
+	if err != nil {
+		t.Fatalf("decode return failed: %v", err)
+	}
+	if len(decoded.Descriptors) == 0 {
+		t.Fatal("expected descriptors in return message")
+	}
+	dr := decoded.Descriptors[0].DeliveryRestrictions
+	if dr == nil {
+		t.Fatal("expected DeliveryRestrictions on End descriptor")
+	}
+	if !dr.WebDeliveryAllowed {
+		t.Error("WebDeliveryAllowed should be true")
+	}
+	if !dr.NoRegionalBlackout {
+		t.Error("NoRegionalBlackout should be true")
+	}
+	if dr.ArchiveAllowed {
+		t.Error("ArchiveAllowed should be false")
+	}
+	if dr.DeviceRestrictions != 2 {
+		t.Errorf("DeviceRestrictions = %d, want 2", dr.DeviceRestrictions)
 	}
 }
 

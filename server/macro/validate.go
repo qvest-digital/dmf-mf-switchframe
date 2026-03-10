@@ -110,6 +110,8 @@ func validateStep(i int, step MacroStep, result *ValidationResult) {
 		validateTransition(i, step, result)
 	case ActionWait:
 		validateWait(i, step, result)
+	case ActionSCTE35Cue:
+		validateSCTE35Cue(i, step, result)
 	}
 }
 
@@ -174,6 +176,26 @@ func validateWait(i int, step MacroStep, result *ValidationResult) {
 			Step:    i,
 			Message: "wait requires 'ms' param > 0",
 		})
+	}
+}
+
+// validateSCTE35Cue checks that preRollMs is non-negative if present and
+// that time_signal commands include at least one descriptor.
+func validateSCTE35Cue(i int, step MacroStep, result *ValidationResult) {
+	if v, ok := step.Params["preRollMs"].(float64); ok && v < 0 {
+		result.Errors = append(result.Errors, ValidationError{
+			Step:    i,
+			Message: fmt.Sprintf("preRollMs must be non-negative, got %.0f", v),
+		})
+	}
+	if ct, ok := step.Params["commandType"].(string); ok && ct == "time_signal" {
+		descs, _ := step.Params["descriptors"].([]interface{})
+		if len(descs) == 0 {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "time_signal requires at least one descriptor",
+			})
+		}
 	}
 }
 

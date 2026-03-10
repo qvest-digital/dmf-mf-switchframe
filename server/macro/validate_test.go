@@ -495,9 +495,91 @@ func TestValidateSteps_TransitionAcceptsValidStinger(t *testing.T) {
 	require.False(t, result.HasErrors())
 }
 
+func TestValidateSteps_SCTE35Cue_RejectsNegativePreRollMs(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "splice_insert",
+			"preRollMs":   float64(-1000),
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "preRollMs")
+	require.Contains(t, result.Errors[0].Message, "non-negative")
+}
+
+func TestValidateSteps_SCTE35Cue_AcceptsPositivePreRollMs(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "splice_insert",
+			"preRollMs":   float64(5000),
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+}
+
+func TestValidateSteps_SCTE35Cue_AcceptsNoPreRollMs(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "splice_insert",
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+}
+
 func TestValidateSteps_EmptySteps(t *testing.T) {
 	t.Parallel()
 	result := ValidateSteps([]MacroStep{})
 	require.False(t, result.HasErrors())
 	require.Empty(t, result.Warnings)
+}
+
+func TestValidateSteps_SCTE35Cue_TimeSignal_RequiresDescriptors(t *testing.T) {
+	t.Parallel()
+	// time_signal without descriptors should be an error.
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "time_signal",
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "time_signal")
+	require.Contains(t, result.Errors[0].Message, "descriptor")
+}
+
+func TestValidateSteps_SCTE35Cue_TimeSignal_WithDescriptors(t *testing.T) {
+	t.Parallel()
+	// time_signal with descriptors should pass validation.
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "time_signal",
+			"descriptors": []interface{}{
+				map[string]interface{}{
+					"segmentationType": float64(0x34),
+					"upidType":         float64(0x09),
+					"upid":             "TEST-SIGNAL",
+				},
+			},
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+}
+
+func TestValidateSteps_SCTE35Cue_SpliceInsert_NoDescriptorsOK(t *testing.T) {
+	t.Parallel()
+	// splice_insert without descriptors is valid.
+	steps := []MacroStep{
+		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			"commandType": "splice_insert",
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
 }

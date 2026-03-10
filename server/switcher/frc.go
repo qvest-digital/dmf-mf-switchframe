@@ -134,6 +134,12 @@ func newFRCSource(quality FRCQuality, tickIntervalPTS int64) *frcSource {
 // quality is FRCMCFI, runs motion estimation (cached until next frame pair).
 // Detects scene changes via subsampled SAD.
 func (fs *frcSource) ingest(pf *ProcessingFrame) {
+	// Release old prevFrame's pool buffer — it's no longer referenced
+	// by the ring buffer (cleared on pop) or lastRawVideo (updated to newer).
+	if fs.prevFrame != nil {
+		fs.prevFrame.ReleaseYUV()
+	}
+
 	// Shift frames: prev = curr, curr = new
 	fs.prevFrame = fs.currFrame
 	fs.prevPTS = fs.currPTS
@@ -323,7 +329,14 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 }
 
 // reset clears all state (called when source is removed).
+// Releases any held pool buffers before clearing references.
 func (fs *frcSource) reset() {
+	if fs.prevFrame != nil {
+		fs.prevFrame.ReleaseYUV()
+	}
+	if fs.currFrame != nil {
+		fs.currFrame.ReleaseYUV()
+	}
 	fs.prevFrame = nil
 	fs.currFrame = nil
 	fs.prevPTS = 0

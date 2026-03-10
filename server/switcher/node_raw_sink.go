@@ -23,6 +23,7 @@ func (n *rawSinkNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	if sinkPtr := n.sink.Load(); sinkPtr != nil {
 		cp := src.DeepCopy()
 		(*sinkPtr)(cp)
+		cp.ReleaseYUV()
 	}
 	return src
 }

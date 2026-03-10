@@ -130,7 +130,7 @@ func (sd *sourceDecoder) decodeLoop() {
 		copy(buf, yuv[:yuvSize])
 
 		pf := &ProcessingFrame{
-			YUV:        buf,
+			YUV:        buf[:yuvSize],
 			Width:      w,
 			Height:     h,
 			PTS:        frame.PTS,

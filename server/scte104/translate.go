@@ -156,6 +156,39 @@ func translateTimeSignal(data any, segDescs []*SegmentationDescriptorRequest) (*
 	return cue, nil
 }
 
+// PreRollMs extracts the pre-roll time in milliseconds from the primary
+// operation in a decoded SCTE-104 message. Returns 0 for immediate splice
+// types (SpliceStartImmediate, SpliceEndImmediate, SpliceCancel), when no
+// pre-roll is present, or for nil/empty messages.
+func PreRollMs(msg *Message) int64 {
+	if msg == nil {
+		return 0
+	}
+	for i := range msg.Operations {
+		op := &msg.Operations[i]
+		switch op.OpID {
+		case OpSpliceRequest:
+			srd, ok := op.Data.(*SpliceRequestData)
+			if !ok || srd == nil {
+				return 0
+			}
+			// Immediate and cancel types don't use pre-roll.
+			switch srd.SpliceInsertType {
+			case SpliceStartImmediate, SpliceEndImmediate, SpliceCancel:
+				return 0
+			}
+			return int64(srd.PreRollTime)
+		case OpTimeSignalRequest:
+			tsr, ok := op.Data.(*TimeSignalRequestData)
+			if !ok || tsr == nil {
+				return 0
+			}
+			return int64(tsr.PreRollTime)
+		}
+	}
+	return 0
+}
+
 // FromCueMessage translates an SCTE-35 CueMessage into an SCTE-104 Message.
 //
 // Translation rules:

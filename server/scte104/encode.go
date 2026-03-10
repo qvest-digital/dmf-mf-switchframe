@@ -165,7 +165,9 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	// Optionally + sub_segment_num(1) + sub_segments_expected(1) = 17 + N
 	upidLen := len(sd.UPID)
 	baseLen := 15 + upidLen
-	if sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0 {
+	includeSubSeg := hasSubSegmentFields(sd.SegmentationTypeID) &&
+		(sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0)
+	if includeSubSeg {
 		baseLen += 2
 	}
 	buf := make([]byte, baseLen)
@@ -196,7 +198,7 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 	buf[12+upidLen+1] = sd.SegNum
 	buf[12+upidLen+2] = sd.SegExpected
 
-	if sd.SubSegmentNum > 0 || sd.SubSegmentsExpected > 0 {
+	if includeSubSeg {
 		buf[12+upidLen+3] = sd.SubSegmentNum
 		buf[12+upidLen+4] = sd.SubSegmentsExpected
 	}

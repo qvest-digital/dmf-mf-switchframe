@@ -327,6 +327,46 @@ func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]interfac
 	if v, ok := params["eventId"].(float64); ok {
 		msg.EventID = uint32(v)
 	}
+	if v, ok := params["uniqueProgramId"].(float64); ok {
+		msg.UniqueProgramID = uint16(v)
+	}
+	if v, ok := params["availNum"].(float64); ok {
+		msg.AvailNum = uint8(v)
+	}
+	if v, ok := params["availsExpected"].(float64); ok {
+		msg.AvailsExpected = uint8(v)
+	}
+	// Parse descriptors for time_signal commands.
+	if descs, ok := params["descriptors"].([]interface{}); ok {
+		for _, raw := range descs {
+			dm, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			desc := scte35.SegmentationDescriptor{}
+			if v, ok := dm["segmentationType"].(float64); ok {
+				desc.SegmentationType = uint8(v)
+			}
+			if v, ok := dm["segEventId"].(float64); ok {
+				desc.SegEventID = uint32(v)
+			}
+			if v, ok := dm["upidType"].(float64); ok {
+				desc.UPIDType = uint8(v)
+			}
+			if v, ok := dm["upid"].(string); ok {
+				desc.UPID = []byte(v)
+			}
+			if v, ok := dm["durationMs"].(float64); ok && v > 0 {
+				ticks := uint64(v) * 90
+				desc.DurationTicks = &ticks
+			}
+			msg.Descriptors = append(msg.Descriptors, desc)
+		}
+	}
+	msg.Source = "macro"
+	if v, ok := params["preRollMs"].(float64); ok && v > 0 {
+		return t.scte35.ScheduleCue(msg, int64(v))
+	}
 	return t.scte35.InjectCue(msg)
 }
 

@@ -933,6 +933,24 @@ func TestBuildCueMessage_TimeSignal_RequiresDescriptors(t *testing.T) {
 	require.Contains(t, err.Error(), "time_signal requires at least one descriptor")
 }
 
+func TestBuildCueMessage_NegativeDescriptorDuration(t *testing.T) {
+	negDur := int64(-1)
+	req := scte35CueRequest{
+		CommandType: "time_signal",
+		Descriptors: []scte35DescriptorRequest{
+			{
+				SegmentationType: 0x34,
+				DurationMs:       &negDur,
+				UPIDType:         0x09,
+				UPID:             "test",
+			},
+		},
+	}
+	_, err := buildCueMessage(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-negative")
+}
+
 func TestBuildCueMessage_SegEventID_Wired(t *testing.T) {
 	segID := uint32(12345)
 	req := scte35CueRequest{
@@ -950,4 +968,50 @@ func TestBuildCueMessage_SegEventID_Wired(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, msg.Descriptors, 1)
 	require.Equal(t, uint32(12345), msg.Descriptors[0].SegEventID)
+}
+
+func TestBuildCueMessage_TimingIsImmediate(t *testing.T) {
+	// Verify that buildCueMessage always sets Timing to "immediate" so
+	// API-originated time_signals don't silently get PTS assigned.
+	isOut := true
+	req := scte35CueRequest{
+		CommandType: "splice_insert",
+		IsOut:       &isOut,
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Equal(t, "immediate", msg.Timing)
+
+	// Also verify for time_signal.
+	req2 := scte35CueRequest{
+		CommandType: "time_signal",
+		Descriptors: []scte35DescriptorRequest{
+			{SegmentationType: 0x34, UPIDType: 0x09, UPID: "test"},
+		},
+	}
+	msg2, err := buildCueMessage(req2)
+	require.NoError(t, err)
+	require.Equal(t, "immediate", msg2.Timing)
+}
+
+func TestBuildCueMessage_OptionalFields(t *testing.T) {
+	// Verify uniqueProgramId, availNum, availsExpected are wired through.
+	isOut := true
+	dur := int64(30000)
+	upid := uint16(500)
+	anum := uint8(1)
+	aexp := uint8(3)
+	req := scte35CueRequest{
+		CommandType:     "splice_insert",
+		IsOut:           &isOut,
+		DurationMs:      &dur,
+		UniqueProgramID: &upid,
+		AvailNum:        &anum,
+		AvailsExpected:  &aexp,
+	}
+	msg, err := buildCueMessage(req)
+	require.NoError(t, err)
+	require.Equal(t, uint16(500), msg.UniqueProgramID)
+	require.Equal(t, uint8(1), msg.AvailNum)
+	require.Equal(t, uint8(3), msg.AvailsExpected)
 }

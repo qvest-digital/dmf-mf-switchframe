@@ -364,6 +364,162 @@ func TestToCueMessage_SegDescCancel(t *testing.T) {
 	}
 }
 
+// ---- PreRollMs tests ----
+
+func TestPreRollMs_NilMessage(t *testing.T) {
+	if got := PreRollMs(nil); got != 0 {
+		t.Errorf("PreRollMs(nil) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_EmptyMessage(t *testing.T) {
+	if got := PreRollMs(&Message{}); got != 0 {
+		t.Errorf("PreRollMs(empty) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_SpliceStartNormal(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceStartNormal,
+					PreRollTime:      5000,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 5000 {
+		t.Errorf("PreRollMs = %d, want 5000", got)
+	}
+}
+
+func TestPreRollMs_SpliceEndNormal(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceEndNormal,
+					PreRollTime:      3000,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 3000 {
+		t.Errorf("PreRollMs = %d, want 3000", got)
+	}
+}
+
+func TestPreRollMs_SpliceStartImmediate_ReturnsZero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceStartImmediate,
+					PreRollTime:      5000, // should be ignored
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(SpliceStartImmediate) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_SpliceEndImmediate_ReturnsZero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceEndImmediate,
+					PreRollTime:      2000,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(SpliceEndImmediate) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_SpliceCancel_ReturnsZero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: &SpliceRequestData{
+					SpliceInsertType: SpliceCancel,
+					PreRollTime:      1000,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(SpliceCancel) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_TimeSignalRequest(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpTimeSignalRequest,
+				Data: &TimeSignalRequestData{
+					PreRollTime: 4000,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 4000 {
+		t.Errorf("PreRollMs(TimeSignalRequest) = %d, want 4000", got)
+	}
+}
+
+func TestPreRollMs_TimeSignalRequest_Zero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpTimeSignalRequest,
+				Data: &TimeSignalRequestData{
+					PreRollTime: 0,
+				},
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(TimeSignalRequest zero) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_SpliceNull_ReturnsZero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{OpID: OpSpliceNull},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(SpliceNull) = %d, want 0", got)
+	}
+}
+
+func TestPreRollMs_BadDataType_ReturnsZero(t *testing.T) {
+	msg := &Message{
+		Operations: []Operation{
+			{
+				OpID: OpSpliceRequest,
+				Data: "not a SpliceRequestData",
+			},
+		},
+	}
+	if got := PreRollMs(msg); got != 0 {
+		t.Errorf("PreRollMs(bad data type) = %d, want 0", got)
+	}
+}
+
 // ---- FromCueMessage tests ----
 
 func TestFromCueMessage_NilMessage(t *testing.T) {

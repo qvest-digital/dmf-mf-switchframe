@@ -20,12 +20,15 @@ const (
 
 // pendingRelease holds a frame pair collected under the lock for delivery
 // outside the lock. The slice is reused across ticks to avoid allocation.
+// rawVideo is stored by value (not pointer) to prevent races with
+// frcSource.ingest() which may concurrently modify the original struct.
 type pendingRelease struct {
-	sourceKey string
-	ss        *syncSource // for PTS tracking during delivery
-	video     *media.VideoFrame
-	rawVideo  *ProcessingFrame
-	audio     *media.AudioFrame
+	sourceKey   string
+	ss          *syncSource // for PTS tracking during delivery
+	video       *media.VideoFrame
+	rawVideo    ProcessingFrame // value copy — safe from concurrent modification
+	hasRawVideo bool            // true when rawVideo is set
+	audio       *media.AudioFrame
 }
 
 // syncSource holds per-source buffering state for the FrameSynchronizer.
@@ -98,7 +101,15 @@ func (ss *syncSource) popNewestVideo() *media.VideoFrame {
 }
 
 // pushRawVideo adds a decoded YUV frame to the ring buffer.
+// When no FRC is active and the ring is full, the overwritten frame's
+// pool buffer is released. With FRC, frame releases are handled by
+// frcSource.ingest/reset instead.
 func (ss *syncSource) pushRawVideo(pf *ProcessingFrame) {
+	if ss.frc == nil && ss.rawVideoCount >= syncRingSize {
+		if old := ss.pendingRawVideo[ss.rawVideoHead]; old != nil {
+			old.ReleaseYUV()
+		}
+	}
 	ss.pendingRawVideo[ss.rawVideoHead] = pf
 	ss.rawVideoHead = (ss.rawVideoHead + 1) % syncRingSize
 	if ss.rawVideoCount < syncRingSize {
@@ -107,6 +118,8 @@ func (ss *syncSource) pushRawVideo(pf *ProcessingFrame) {
 }
 
 // popNewestRawVideo returns the most recently pushed raw video frame.
+// When no FRC is active, non-newest frames' pool buffers are released.
+// With FRC, frame releases are handled by frcSource.ingest/reset instead.
 func (ss *syncSource) popNewestRawVideo() *ProcessingFrame {
 	if ss.rawVideoCount == 0 {
 		return nil
@@ -114,6 +127,9 @@ func (ss *syncSource) popNewestRawVideo() *ProcessingFrame {
 	newest := (ss.rawVideoHead - 1 + syncRingSize) % syncRingSize
 	frame := ss.pendingRawVideo[newest]
 	for i := range ss.pendingRawVideo {
+		if ss.frc == nil && i != newest && ss.pendingRawVideo[i] != nil {
+			ss.pendingRawVideo[i].ReleaseYUV()
+		}
 		ss.pendingRawVideo[i] = nil
 	}
 	ss.rawVideoHead = 0
@@ -450,7 +466,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 
 	for key, ss := range fs.sources {
 		var releaseVideo *media.VideoFrame
-		var releaseRawVideo *ProcessingFrame
+		var releaseRawVideo ProcessingFrame
+		var hasRawVideo bool
 		var releaseAudio *media.AudioFrame
 
 		ss.mu.Lock()
@@ -460,7 +477,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 		// sourceDecoder produce raw frames; H.264 frames are for legacy path.
 		if newest := ss.popNewestRawVideo(); newest != nil {
 			ss.lastRawVideo = newest
-			releaseRawVideo = newest
+			releaseRawVideo = *newest // value copy under lock — safe from concurrent frc.ingest
+			hasRawVideo = true
 			// Reset FRC interpolation counter — fresh frame arrived
 			if ss.frc != nil {
 				ss.frc.ticksSinceLastFresh = 0
@@ -470,13 +488,17 @@ func (fs *FrameSynchronizer) releaseTick() {
 			// Advance from the last released PTS by one tick interval per missed tick.
 			ss.frc.ticksSinceLastFresh++
 			frcPTS := ss.lastReleasedPTS + int64(ss.frc.ticksSinceLastFresh)*ss.frc.tickIntervalPTS
-			releaseRawVideo = ss.frc.emit(frcPTS)
+			if emitted := ss.frc.emit(frcPTS); emitted != nil {
+				releaseRawVideo = *emitted // value copy under lock
+				hasRawVideo = true
+			}
 		} else if ss.lastRawVideo != nil {
-			releaseRawVideo = ss.lastRawVideo
+			releaseRawVideo = *ss.lastRawVideo // value copy under lock
+			hasRawVideo = true
 		}
 
 		// H.264 video: only if no raw video frame was released.
-		if releaseRawVideo == nil {
+		if !hasRawVideo {
 			if newest := ss.popNewestVideo(); newest != nil {
 				ss.lastVideo = newest
 				releaseVideo = newest
@@ -501,13 +523,14 @@ func (fs *FrameSynchronizer) releaseTick() {
 
 		ss.mu.Unlock()
 
-		if releaseVideo != nil || releaseRawVideo != nil || releaseAudio != nil {
+		if releaseVideo != nil || hasRawVideo || releaseAudio != nil {
 			fs.releases = append(fs.releases, pendingRelease{
-				sourceKey: key,
-				ss:        ss,
-				video:     releaseVideo,
-				rawVideo:  releaseRawVideo,
-				audio:     releaseAudio,
+				sourceKey:   key,
+				ss:          ss,
+				video:       releaseVideo,
+				rawVideo:    releaseRawVideo,
+				hasRawVideo: hasRawVideo,
+				audio:       releaseAudio,
 			})
 		}
 	}
@@ -522,9 +545,10 @@ func (fs *FrameSynchronizer) releaseTick() {
 	//
 	// Audio bypasses frame sync entirely (continuous sample stream), so keeping
 	// video PTS on the source timeline maintains A/V sync in the muxer.
-	for _, r := range fs.releases {
-		if r.rawVideo != nil {
-			pf := *r.rawVideo
+	for i := range fs.releases {
+		r := &fs.releases[i]
+		if r.hasRawVideo {
+			pf := r.rawVideo // already a value copy from under the lock
 			if r.ss != nil {
 				if pf.PTS != r.ss.lastReleasedPTS || !r.ss.ptsInitialized {
 					// Fresh frame or FRC-interpolated: preserve source PTS

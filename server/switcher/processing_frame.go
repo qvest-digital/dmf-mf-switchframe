@@ -34,7 +34,7 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 	cp := *pf
 	if pf.pool != nil {
-		cp.YUV = pf.pool.Acquire()
+		cp.YUV = pf.pool.Acquire()[:len(pf.YUV)]
 	} else {
 		cp.YUV = make([]byte, len(pf.YUV))
 	}

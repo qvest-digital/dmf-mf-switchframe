@@ -26,14 +26,23 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 		},
 	)
 
+	type sinkSnapshot struct {
+		Width, Height int
+		PTS           int64
+		YUVLen        int
+	}
 	var mu sync.Mutex
-	var received []*ProcessingFrame
+	var received []sinkSnapshot
 
 	// Set sink BEFORE BuildPipeline so rawSinkNode.Active() == true at build time.
+	// Capture data inside the callback — the frame's YUV is released after callback returns.
 	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
 		mu.Lock()
 		defer mu.Unlock()
-		received = append(received, pf)
+		received = append(received, sinkSnapshot{
+			Width: pf.Width, Height: pf.Height,
+			PTS: pf.PTS, YUVLen: len(pf.YUV),
+		})
 	})
 	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
@@ -56,8 +65,7 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	require.Equal(t, 4, got.Width)
 	require.Equal(t, 4, got.Height)
 	require.Equal(t, int64(12345), got.PTS)
-	require.NotNil(t, got.YUV)
-	require.Equal(t, 4*4*3/2, len(got.YUV))
+	require.Equal(t, 4*4*3/2, got.YUVLen)
 }
 
 func TestSetRawVideoSink_DeepCopy(t *testing.T) {
@@ -165,14 +173,22 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 		},
 	)
 
+	type sinkSnapshot struct {
+		Width, Height int
+		HasYUV        bool
+	}
 	var mu sync.Mutex
-	var received []*ProcessingFrame
+	var received []sinkSnapshot
 
 	// Set sink BEFORE BuildPipeline so rawSinkNode.Active() == true at build time.
+	// Capture data inside the callback — the frame's YUV is released after callback returns.
 	sw.SetRawVideoSink(func(pf *ProcessingFrame) {
 		mu.Lock()
 		defer mu.Unlock()
-		received = append(received, pf)
+		received = append(received, sinkSnapshot{
+			Width: pf.Width, Height: pf.Height,
+			HasYUV: pf.YUV != nil,
+		})
 	})
 	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
@@ -202,7 +218,7 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 	got := received[0]
 	mu.Unlock()
 
-	require.NotNil(t, got.YUV, "transition frame should have YUV data")
+	require.True(t, got.HasYUV, "transition frame should have YUV data")
 	require.Greater(t, got.Width, 0, "transition frame should have positive width")
 	require.Greater(t, got.Height, 0, "transition frame should have positive height")
 
