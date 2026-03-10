@@ -212,7 +212,7 @@ func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect im
 		return
 	}
 
-	pos := int(alpha * 256)
+	pos := int(alpha*256 + 0.5)
 
 	// Y plane: dispatch SIMD kernel per-row (each row is contiguous in memory).
 	// BlendUniformBytes computes: dst[i] = (a[i]*(256-pos) + b[i]*pos) >> 8
