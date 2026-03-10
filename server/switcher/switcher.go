@@ -523,6 +523,9 @@ func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
 	s.mu.Lock()
 	s.layoutCompositor = lc
 	s.mu.Unlock()
+	if lc != nil {
+		lc.OnActiveChange = func() { s.rebuildPipeline() }
+	}
 	s.rebuildPipeline()
 }
 

@@ -40,6 +40,10 @@ type Compositor struct {
 
 	// Frame dimensions
 	frameW, frameH int
+
+	// OnActiveChange is called when SetLayout changes the Active() state.
+	// Used by the switcher to trigger pipeline rebuilds.
+	OnActiveChange func()
 }
 
 // NewCompositor creates a new layout compositor.
@@ -53,11 +57,15 @@ func NewCompositor(frameW, frameH int) *Compositor {
 
 // SetLayout atomically sets the current layout. nil clears the layout.
 func (c *Compositor) SetLayout(l *Layout) {
+	wasBefore := c.Active()
 	c.layout.Store(l)
 	if l != nil {
 		c.mu.Lock()
 		c.allocateBuffers(l)
 		c.mu.Unlock()
+	}
+	if wasBefore != c.Active() && c.OnActiveChange != nil {
+		c.OnActiveChange()
 	}
 }
 
@@ -421,11 +429,12 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*LayoutSlot)) {
 
 // SlotOn brings a slot on-air with its configured transition.
 func (c *Compositor) SlotOn(slotIdx int) {
+	wasBefore := c.Active()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	l := c.layout.Load()
 	if l == nil || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
 
@@ -458,16 +467,22 @@ func (c *Compositor) SlotOn(slotIdx int) {
 			ToAlpha:   1.0,
 		})
 	}
+	c.mu.Unlock()
 	// "cut" = no animation, slot is just enabled
+
+	if wasBefore != c.Active() && c.OnActiveChange != nil {
+		c.OnActiveChange()
+	}
 }
 
 // SlotOff takes a slot off-air with its configured transition.
 func (c *Compositor) SlotOff(slotIdx int) {
+	wasBefore := c.Active()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	l := c.layout.Load()
 	if l == nil || slotIdx >= len(l.Slots) {
+		c.mu.Unlock()
 		return
 	}
 
@@ -517,6 +532,11 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		updated := c.cloneLayout(l)
 		updated.Slots[slotIdx].Enabled = false
 		c.layout.Store(updated)
+	}
+	c.mu.Unlock()
+
+	if wasBefore != c.Active() && c.OnActiveChange != nil {
+		c.OnActiveChange()
 	}
 }
 
