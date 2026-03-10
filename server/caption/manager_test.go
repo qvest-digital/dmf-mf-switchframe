@@ -473,7 +473,7 @@ func TestManagerAuthorNullPairWhenEmpty(t *testing.T) {
 	// Drain any init pairs.
 	for i := 0; i < 10; i++ {
 		pairs := m.ConsumeForFrame()
-		if pairs != nil && len(pairs) == 1 && pairs[0].IsNull() {
+		if len(pairs) == 1 && pairs[0].IsNull() {
 			// Good — null pair emitted when queue is empty.
 			return
 		}

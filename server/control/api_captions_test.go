@@ -44,7 +44,7 @@ func TestHandleCaptionMode_Valid(t *testing.T) {
 	require.Equal(t, caption.ModeAuthor, mcm.mode)
 
 	var state caption.State
-	json.NewDecoder(rr.Body).Decode(&state)
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&state))
 	require.Equal(t, "author", state.Mode)
 }
 
@@ -134,7 +134,7 @@ func TestHandleCaptionState(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code)
 
 	var state caption.State
-	json.NewDecoder(rr.Body).Decode(&state)
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&state))
 	require.Equal(t, "passthrough", state.Mode)
 }
 

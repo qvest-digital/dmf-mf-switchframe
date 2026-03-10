@@ -21,9 +21,6 @@ const (
 
 	// Control byte prefix for CC1 (channel 1, field 1).
 	cc608Ctrl byte = 0x14
-
-	// Special characters prefix for CC1.
-	cc608Special byte = 0x11
 )
 
 // oddParity sets bit 7 to produce odd parity for CEA-608 data bytes.
