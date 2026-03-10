@@ -1638,7 +1638,7 @@ func TestDecode_SegmentationDescriptor_NoSubSegments_Backward_Compatible(t *test
 
 // Bug 14: An abbreviated splice_request payload whose first 2 bytes accidentally
 // encode a value matching len(payload)-2 or len(payload) should NOT be falsely
-// parsed as a full SOM with header. The protocolVersion check (byte[2] <= 1)
+// parsed as a full SOM with header. The protocolVersion check (byte[6] > 15)
 // guards against this.
 func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	// Construct an abbreviated splice_request that has its first 2 bytes
@@ -1649,8 +1649,9 @@ func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	// is the high byte of splice_event_id.
 	//
 	// Without the protocolVersion check, this would be misdetected as SOM
-	// because messageSize == len(payload)-2. With the fix, payload[2] (which
-	// would be "protocolVersion" in SOM) is checked: a value > 1 rejects SOM.
+	// because messageSize == len(payload)-2. With the fix, payload[6] (which
+	// is protocol_version in a real SOM header) is checked: a value > 15
+	// rejects SOM interpretation.
 	//
 	// We craft: splice_insert_type=0x00, splice_event_id starts with 0x0C...
 	// Since splice_insert_type 0 is invalid, this is a synthetic test.
@@ -1663,12 +1664,12 @@ func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	// Abbreviated payload starts at payload[2:].
 	abbrev := payload[2:]
 	// Set first 2 bytes to 12 (= len(abbrev)-2 = 14-2), triggering the
-	// old false-positive SOM heuristic.
+	// messageSize length-match heuristic.
 	binary.BigEndian.PutUint16(abbrev[0:2], 12) // messageSize match!
 
-	// In SOM, abbrev[2] would be protocolVersion. Set to 0xFF (invalid
-	// protocol version) to test that the fix rejects SOM interpretation.
-	abbrev[2] = 0xFF
+	// In a real SOM, abbrev[6] is protocol_version. Set to 0xFF (invalid
+	// protocol version, > 15) to test that the fix rejects SOM interpretation.
+	abbrev[6] = 0xFF
 
 	// Fill remaining bytes as valid splice_request_data fields:
 	// splice_insert_type is abbrev[0] = 0x00 (would be interpreted)
@@ -1677,7 +1678,7 @@ func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 	//
 	// For abbreviated decode: splice_request_data starts at abbrev[0]:
 	//   splice_insert_type = 0x00
-	//   splice_event_id = abbrev[1:5] = {0x0C, 0xFF, 0x00, 0x00} = 0x0CFF0000
+	//   splice_event_id = abbrev[1:5] = {0x0C, 0x00, 0x00, 0x00} = 0x0C000000
 	//   unique_program_id = abbrev[5:7]
 	//   pre_roll_time = abbrev[7:9]
 	//   break_duration = abbrev[9:11]
@@ -1705,8 +1706,8 @@ func TestDecode_SOM_AbbreviatedNotFalsePositiveSOM(t *testing.T) {
 		t.Errorf("SpliceInsertType = %d, want 0", srd.SpliceInsertType)
 	}
 
-	// splice_event_id = bytes [1:5] = 0x0CFF0000
-	wantEventID := uint32(0x0CFF0000)
+	// splice_event_id = bytes [1:5] = 0x0C000000
+	wantEventID := uint32(0x0C000000)
 	if srd.SpliceEventID != wantEventID {
 		t.Errorf("SpliceEventID = 0x%08X, want 0x%08X", srd.SpliceEventID, wantEventID)
 	}

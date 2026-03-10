@@ -264,6 +264,69 @@ func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
 	}
 }
 
+// ---------- C3: Premature reporting tests ----------
+
+func TestLoudnessMeter_MomentaryRequiresFullWindow(t *testing.T) {
+	m := NewLoudnessMeter(48000, 2)
+
+	// The momentary window is 400ms, which requires 4 blocks of 100ms each.
+	// Feed only 200ms of audio (2 blocks) -- momentary should return sentinel.
+	// stepSize at 48kHz = 4800 samples/channel, so 2 blocks = 9600 samples/channel.
+	samples := make([]float32, 9600*2) // 200ms stereo interleaved
+	for i := 0; i < 9600; i++ {
+		v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+		samples[i*2] = v
+		samples[i*2+1] = v
+	}
+	m.Process(samples)
+
+	lufs := m.MomentaryLUFS()
+	if lufs != -math.MaxFloat64 {
+		t.Errorf("momentary LUFS after 200ms = %f, want -MaxFloat64 (window not full)", lufs)
+	}
+
+	// Feed another 200ms (total 400ms = 4 blocks) -- now momentary should be valid.
+	m.Process(samples)
+	lufs = m.MomentaryLUFS()
+	if lufs == -math.MaxFloat64 {
+		t.Errorf("momentary LUFS after 400ms should be valid, got -MaxFloat64")
+	}
+	if lufs < -5 || lufs > 1 {
+		t.Errorf("momentary LUFS after 400ms = %f, want between -5 and 1", lufs)
+	}
+}
+
+func TestLoudnessMeter_ShortTermRequiresFullWindow(t *testing.T) {
+	m := NewLoudnessMeter(48000, 2)
+
+	// Short-term window is 3s (30 blocks of 100ms each).
+	// Feed 1s of audio (10 blocks) -- short-term should return sentinel.
+	samples := make([]float32, 48000*2) // 1s stereo interleaved
+	for i := 0; i < 48000; i++ {
+		v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+		samples[i*2] = v
+		samples[i*2+1] = v
+	}
+	m.Process(samples)
+
+	lufs := m.ShortTermLUFS()
+	if lufs != -math.MaxFloat64 {
+		t.Errorf("short-term LUFS after 1s = %f, want -MaxFloat64 (window not full)", lufs)
+	}
+
+	// Feed 2 more seconds (total 3s = 30 blocks) -- now short-term should be valid.
+	for i := 0; i < 2; i++ {
+		m.Process(samples)
+	}
+	lufs = m.ShortTermLUFS()
+	if lufs == -math.MaxFloat64 {
+		t.Errorf("short-term LUFS after 3s should be valid, got -MaxFloat64")
+	}
+	if lufs < -5 || lufs > 1 {
+		t.Errorf("short-term LUFS after 3s = %f, want between -5 and 1", lufs)
+	}
+}
+
 func TestLoudnessMeterSampleRateWarning(t *testing.T) {
 	// Creating a meter with a non-48kHz sample rate should warn (not panic).
 	// The meter is functional but LUFS readings may be inaccurate.

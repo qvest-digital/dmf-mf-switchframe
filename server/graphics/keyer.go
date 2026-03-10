@@ -36,12 +36,27 @@ func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoo
 //
 // Returns an alpha mask with one byte per pixel (0 = transparent, 255 = opaque).
 func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32, spillReplaceCb, spillReplaceCr uint8) []byte {
+	return ChromaKeyWithSpillColorInto(nil, nil, frame, width, height, keyColor, similarity, smoothness, spillSuppress, spillReplaceCb, spillReplaceCr)
+}
+
+// ChromaKeyWithSpillColorInto is like ChromaKeyWithSpillColor but writes into
+// pre-allocated mask and chromaMask buffers to avoid per-frame allocation.
+// If mask or chromaMask are nil or too small, new buffers are allocated.
+func ChromaKeyWithSpillColorInto(mask, chromaMask, frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32, spillReplaceCb, spillReplaceCr uint8) []byte {
 	pixelCount := width * height
 	if pixelCount == 0 {
 		return nil
 	}
 
-	mask := make([]byte, pixelCount)
+	if cap(mask) >= pixelCount {
+		mask = mask[:pixelCount]
+		// Zero the mask — keyer writes only non-opaque values in some paths.
+		for i := range mask {
+			mask[i] = 0
+		}
+	} else {
+		mask = make([]byte, pixelCount)
+	}
 	ySize := width * height
 	uvWidth := width / 2
 	uvHeight := height / 2
@@ -82,7 +97,14 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 	// The chroma key distance is identical for all 4 luma pixels in a 2x2 block
 	// (they share the same Cb/Cr values), so computing at chroma resolution is
 	// both correct and 4x fewer distance computations.
-	chromaMask := make([]byte, uvSize)
+	if cap(chromaMask) >= uvSize {
+		chromaMask = chromaMask[:uvSize]
+		for i := range chromaMask {
+			chromaMask[i] = 0
+		}
+	} else {
+		chromaMask = make([]byte, uvSize)
+	}
 	chromaKeyMaskChroma(&chromaMask[0], &frame[ySize], &frame[ySize+uvSize],
 		int(keyColor.Cb), int(keyColor.Cr), simThreshSq, totalThreshSq, invRange, uvSize)
 
@@ -130,6 +152,12 @@ func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, si
 //
 // Returns an alpha mask with one byte per pixel (0 = transparent, 255 = opaque).
 func LumaKey(frame []byte, width, height int, lowClip, highClip, softness float32) []byte {
+	return LumaKeyInto(nil, frame, width, height, lowClip, highClip, softness)
+}
+
+// LumaKeyInto is like LumaKey but writes into a pre-allocated mask buffer
+// to avoid per-frame allocation. If mask is nil or too small, a new buffer is allocated.
+func LumaKeyInto(mask, frame []byte, width, height int, lowClip, highClip, softness float32) []byte {
 	pixelCount := width * height
 	if pixelCount == 0 {
 		return nil
@@ -141,7 +169,11 @@ func LumaKey(frame []byte, width, height int, lowClip, highClip, softness float3
 		n = len(frame)
 	}
 
-	mask := make([]byte, pixelCount)
+	if cap(mask) >= pixelCount {
+		mask = mask[:pixelCount]
+	} else {
+		mask = make([]byte, pixelCount)
+	}
 
 	// Build the 256-byte LUT: lut[y] = alpha byte for Y value y.
 	var lut [256]byte

@@ -350,6 +350,105 @@ func (d *delayedDiscreteReader) ConfigInfo() FlowConfig { return d.inner.ConfigI
 func (d *delayedDiscreteReader) HeadIndex() (uint64, error) { return d.inner.HeadIndex() }
 func (d *delayedDiscreteReader) Close() error { return d.inner.Close() }
 
+// makeV210FrameWithY creates a V210 frame where all Y samples are set to the given value.
+// Cb/Cr are set to 128 (neutral chroma). Width must be divisible by 6, height must be even.
+func makeV210FrameWithY(width, height int, yVal byte) []byte {
+	ySize := width * height
+	chromaW := width / 2
+	cSize := chromaW * (height / 2)
+	yuv := make([]byte, ySize+2*cSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = yVal
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+	v210, _ := YUV420pToV210(yuv, width, height)
+	return v210
+}
+
+func TestSource_OnRawVideoBufferNotAliased(t *testing.T) {
+	// Bug: processVideoGrain passes s.v210Bufs.yuvOut directly to OnRawVideo.
+	// The next frame's V210→YUV420 conversion overwrites this buffer, corrupting
+	// any data retained by the OnRawVideo consumer. The encoder path was previously
+	// fixed (copies to s.encoderYUV), but the raw video sink was not.
+	//
+	// This test captures the buffer reference from OnRawVideo (without copying),
+	// then processes a second frame with different pixel content, and verifies
+	// the first buffer was NOT overwritten.
+
+	const (
+		width  = 12
+		height = 2
+		yVal1  = 64  // Y value for frame 1
+		yVal2  = 200 // Y value for frame 2 (distinctly different)
+	)
+
+	v210Frame1 := makeV210FrameWithY(width, height, yVal1)
+	v210Frame2 := makeV210FrameWithY(width, height, yVal2)
+
+	var capturedBuf []byte
+	var capturedSnapshot []byte
+
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    width,
+		Height:   height,
+		OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
+			if capturedBuf == nil {
+				// First call: capture the buffer reference (no copy!)
+				capturedBuf = yuv
+				// Also snapshot the content for comparison.
+				capturedSnapshot = make([]byte, len(yuv))
+				copy(capturedSnapshot, yuv)
+			}
+		},
+	})
+
+	now := time.Now()
+
+	// Process frame 1.
+	src.processVideoGrain(VideoGrain{
+		V210:     v210Frame1,
+		Width:    width,
+		Height:   height,
+		PTS:      1,
+		ReadTime: now,
+	})
+
+	if capturedBuf == nil {
+		t.Fatal("OnRawVideo was not called for frame 1")
+	}
+
+	// Verify the Y plane of captured frame 1 contains yVal1.
+	for i := 0; i < width*height; i++ {
+		if capturedSnapshot[i] != yVal1 {
+			t.Fatalf("frame 1 Y[%d] = %d, want %d", i, capturedSnapshot[i], yVal1)
+		}
+	}
+
+	// Process frame 2 with distinctly different Y values.
+	src.processVideoGrain(VideoGrain{
+		V210:     v210Frame2,
+		Width:    width,
+		Height:   height,
+		PTS:      2,
+		ReadTime: now.Add(33 * time.Millisecond),
+	})
+
+	// The captured buffer from frame 1 should still contain its original data.
+	// With the bug, v210Bufs.yuvOut is reused, so capturedBuf now contains
+	// frame 2's data (yVal2 instead of yVal1).
+	for i := 0; i < width*height; i++ {
+		if capturedBuf[i] != capturedSnapshot[i] {
+			t.Fatalf("OnRawVideo buffer was mutated by subsequent frame: "+
+				"Y[%d] = %d (frame 2 value), want %d (frame 1 value); "+
+				"buffer passed to OnRawVideo must not alias v210Bufs.yuvOut",
+				i, capturedBuf[i], capturedSnapshot[i])
+		}
+	}
+}
+
 func TestSource_NilFlowsNoOp(t *testing.T) {
 	src := NewSource(SourceConfig{FlowName: "cam1"})
 

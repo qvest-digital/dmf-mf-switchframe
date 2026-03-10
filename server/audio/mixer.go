@@ -79,7 +79,8 @@ type Channel struct {
 	peakR       float64           // linear amplitude [0,1]
 	eq          *EQ               // 3-band parametric EQ (always initialized)
 	compressor  *Compressor       // single-band compressor (always initialized)
-	audioDelay  *AudioDelayBuffer // per-source audio delay for lip-sync correction
+	audioDelay        *AudioDelayBuffer // per-source audio delay for lip-sync correction
+	sampleRateWarned  bool              // true after first sample rate mismatch warning (log once)
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -303,24 +304,15 @@ func (m *AudioMixer) frameDuration90k() int64 {
 // from the input PTS. This keeps audio on the same PTS timeline as the source
 // (and therefore the video pipeline), maintaining A/V sync. The only adjustment
 // is a monotonic guard: if the input PTS goes backward (e.g., source switch),
-// the counter advances by one frame duration instead. On large forward jumps
-// (> 5 seconds), it reseeds to the input PTS to recover from timeline resets.
+// the counter advances by one frame duration instead.
 // Caller must hold m.mu.
 func (m *AudioMixer) advanceOutputPTS(inputPTS int64) int64 {
-	const ptsGapThreshold = 5 * 90000
 	if !m.outputPTSInited {
 		m.outputPTS = inputPTS
 		m.outputPTSInited = true
 	} else if inputPTS > m.outputPTS {
-		// Normal forward progression: use input PTS directly (stays on source clock)
-		diff := inputPTS - m.outputPTS
-		if diff > ptsGapThreshold {
-			// Large jump — likely source change or loop wrap. Reseed.
-			m.outputPTS = inputPTS
-		} else {
-			// Follow source PTS exactly
-			m.outputPTS = inputPTS
-		}
+		// Normal forward progression (including large jumps): follow source PTS
+		m.outputPTS = inputPTS
 	} else {
 		// Backward or duplicate — advance by one frame to stay monotonic
 		m.outputPTS += m.frameDuration90k()
@@ -1018,6 +1010,17 @@ mixing:
 		return
 	}
 
+	// Warn once per channel if the decoded frame's sample rate doesn't match
+	// the mixer's configured rate. Wrong rates cause incorrect EQ, compressor,
+	// and LUFS behavior because filter coefficients are sample-rate dependent.
+	if frame.SampleRate > 0 && frame.SampleRate != m.sampleRate && !ch.sampleRateWarned {
+		ch.sampleRateWarned = true
+		m.log.Warn("audio: source sample rate mismatch",
+			"source", sourceKey,
+			"expected", m.sampleRate,
+			"actual", frame.SampleRate)
+	}
+
 	// Update per-channel peaks (pre-fader, pre-gain)
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
@@ -1332,10 +1335,23 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 		m.addStingerAudio(mixed)
 	}
 
+	// Apply program mute (FTB held): zero the buffer so output is silent.
+	// This matches the collectMixCycleLocked path which also zeroes on programMuted.
+	if m.programMuted {
+		for i := range mixed {
+			mixed[i] = 0
+		}
+	}
+
 	// Apply master gain
 	for i := range mixed {
 		mixed[i] *= m.masterLinear
 	}
+
+	// Update program peak metering (after mute so meters show silence during FTB)
+	peakL, peakR := PeakLevel(mixed, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
 
 	// Feed LUFS meter (after master fader, before limiter — matches normal mix path)
 	m.loudness.Process(mixed)

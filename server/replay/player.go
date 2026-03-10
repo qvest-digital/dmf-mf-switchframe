@@ -176,9 +176,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	// Count total frames for progress tracking.
 	totalClipFrames := len(clip)
-	dupCount := int(math.Ceil(1.0 / p.config.Speed))
+	dupCount, frameDuration := computeReplayTiming(p.config.Speed, sourceFPS, totalClipFrames)
 	totalFrames := totalClipFrames * dupCount
-	frameDuration := time.Duration(float64(time.Second) / sourceFPS)
 
 	// Set total output frames for proportional audio distribution.
 	// Both WSOLA-stretched and non-stretched paths use proportional
@@ -204,6 +203,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 	p.playbackStart = time.Now()
 	var pacingIdx int // Monotonic frame counter for absolute-time pacing (never resets).
 	for {
+		p.outputAudioPTS = outputPTS // resync audio PTS to video PTS at loop boundary
 		firstFrame := true
 		outputIdx := 0
 		p.audioIdx = 0
@@ -716,6 +716,23 @@ func estimateBitrate(w, h int) int {
 	default:
 		return 4_000_000
 	}
+}
+
+// computeReplayTiming computes frame duplication and pacing for slow-motion replay.
+// It uses math.Round (not Ceil) to avoid A/V drift at fractional speeds, and adjusts
+// frameDuration so that total video time matches the audio stretch factor exactly.
+func computeReplayTiming(speed, sourceFPS float64, totalClipFrames int) (dupCount int, frameDuration time.Duration) {
+	dupCount = int(math.Round(1.0 / speed))
+	if dupCount < 1 {
+		dupCount = 1
+	}
+	// Adjust frame duration so total video matches audio stretch exactly:
+	// totalVideoTime = totalFrames * frameDuration = originalDuration / speed
+	// frameDuration = originalDuration / (speed * totalFrames)
+	//              = (totalClipFrames / sourceFPS) / (speed * totalClipFrames * dupCount)
+	//              = 1.0 / (sourceFPS * speed * dupCount)
+	frameDuration = time.Duration(float64(time.Second) / (sourceFPS * speed * float64(dupCount)))
+	return
 }
 
 // fpsToRational converts a float64 FPS to a rational fpsNum/fpsDen pair.

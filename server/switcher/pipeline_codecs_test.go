@@ -1,7 +1,9 @@
 package switcher
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/transition"
@@ -143,10 +145,10 @@ func TestPipelineCodecs_MonotonicPTS(t *testing.T) {
 	}
 }
 
-func TestPipelineCodecs_ForwardPTSJumpCapped(t *testing.T) {
+func TestPipelineCodecs_ForwardPTSJumpReseeds(t *testing.T) {
 	// When switching sources, the new source may have a much larger PTS origin.
-	// A large forward PTS jump causes downstream MPEG-TS decoders to stall
-	// while "buffering" the gap. The enforcer must cap forward jumps.
+	// Video PTS must reseed to the new source's timeline (matching the audio
+	// mixer's behavior) to prevent permanent A/V desync.
 	pc := &pipelineCodecs{
 		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -174,21 +176,21 @@ func TestPipelineCodecs_ForwardPTSJumpCapped(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1_000_000)+frameDur, f2.PTS)
 
-	// Simulate source switch: new source has PTS 100 million ticks ahead
+	// Simulate source switch: new source has PTS 100 million ticks ahead.
+	// Should reseed to the new source's PTS (not cap to one frame advance).
 	f3, err := pc.encode(mkFrame(100_000_000), true)
 	require.NoError(t, err)
 	require.NotNil(t, f3)
 
-	// Should be capped to lastOutputPTS + frameDur, NOT 100_000_000
-	expectedPTS := f2.PTS + frameDur
-	require.Equal(t, expectedPTS, f3.PTS,
-		"large forward PTS jump should be capped to one frame duration")
+	// Should reseed to 100_000_000 (the new source's PTS)
+	require.Equal(t, int64(100_000_000), f3.PTS,
+		"large forward PTS jump should reseed to new source PTS")
 
-	// Subsequent frames should continue from the capped value
+	// Subsequent frames should continue from the reseeded value
 	f4, err := pc.encode(mkFrame(100_000_000+frameDur), true)
 	require.NoError(t, err)
-	require.Equal(t, expectedPTS+frameDur, f4.PTS,
-		"next frame should continue from capped PTS")
+	require.Equal(t, int64(100_000_000)+frameDur, f4.PTS,
+		"next frame should continue from reseeded PTS")
 }
 
 func TestPipelineCodecs_DefaultBitrateForResolution(t *testing.T) {
@@ -383,6 +385,156 @@ func (e *mockAnnexBEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte
 }
 
 func (e *mockAnnexBEncoder) Close() {}
+
+func TestPipelineCodecs_EncodeAfterCloseReturnsError(t *testing.T) {
+	// Bug A3: After close(), encode() should return errPipelineClosed
+	// instead of lazily creating a new encoder. Without this guard,
+	// a racing goroutine can call encode() after close() has released
+	// the encoder, creating a new one that is never cleaned up.
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	// Prime the encoder with an initial encode.
+	pf := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		PTS: 1000, IsKeyframe: true, Codec: "h264",
+	}
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, pc.encoder)
+
+	// Close — sets closed flag and nils the encoder.
+	pc.close()
+	require.True(t, pc.closed)
+	require.Nil(t, pc.encoder)
+
+	// Subsequent encode must return errPipelineClosed.
+	pf2 := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		PTS: 2000, IsKeyframe: true, Codec: "h264",
+	}
+	frame, err := pc.encode(pf2, true)
+	require.ErrorIs(t, err, errPipelineClosed,
+		"encode() after close() should return errPipelineClosed")
+	require.Nil(t, frame)
+
+	// The encoder should NOT have been re-created.
+	require.Nil(t, pc.encoder, "encoder should remain nil after close()")
+}
+
+func TestPipelineCodecs_EncodeAfterCloseWithoutPriorEncode(t *testing.T) {
+	// Edge case: close() called before any encode(), then encode().
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+	pc.close()
+
+	pf := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		PTS: 1000, IsKeyframe: true, Codec: "h264",
+	}
+	frame, err := pc.encode(pf, true)
+	require.ErrorIs(t, err, errPipelineClosed)
+	require.Nil(t, frame)
+}
+
+// slowMockEncoder simulates a real encoder that takes time to encode.
+// Close() records whether it was called, allowing the test to verify
+// that invalidateEncoder() waits for encode() to finish before closing.
+type slowMockEncoder struct {
+	encodeStarted chan struct{} // closed when Encode() begins
+	encodeFinish  chan struct{} // Encode() blocks until this is closed
+	closedAt      int64        // unix nano when Close() was called (atomic)
+}
+
+func (e *slowMockEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	// Signal that encoding has started
+	close(e.encodeStarted)
+	// Block to simulate slow encoding (~33ms in production)
+	<-e.encodeFinish
+	return []byte{0x00, 0x00, 0x00, 0x01, 0x65}, forceIDR, nil
+}
+
+func (e *slowMockEncoder) Close() {
+	atomic.StoreInt64(&e.closedAt, time.Now().UnixNano())
+}
+
+func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
+	// Verifies that invalidateEncoder() cannot close the encoder while
+	// encode() is using it. The fix holds the mutex for the entire encode,
+	// so invalidateEncoder() blocks until encode() completes.
+	//
+	// Without the fix, the old 3-phase locking pattern released the mutex
+	// before calling encoder.Encode(), allowing invalidateEncoder() to
+	// call encoder.Close() concurrently — a use-after-free with real
+	// FFmpeg encoders (C.avcodec_free_context while C.avcodec_encode_video2
+	// is running).
+
+	slowEnc := &slowMockEncoder{
+		encodeStarted: make(chan struct{}),
+		encodeFinish:  make(chan struct{}),
+	}
+
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return slowEnc, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		YUV:        make([]byte, 4*4*3/2),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+	}
+
+	// Start encode in a goroutine — it will block inside Encode()
+	encodeDone := make(chan error, 1)
+	go func() {
+		_, err := pc.encode(pf, true)
+		encodeDone <- err
+	}()
+
+	// Wait for Encode() to start (encoder is actively in use)
+	<-slowEnc.encodeStarted
+
+	// Start invalidateEncoder in another goroutine — with the fix, it
+	// blocks on pc.mu until encode() finishes and releases the lock.
+	invalidateDone := make(chan struct{})
+	go func() {
+		pc.invalidateEncoder()
+		close(invalidateDone)
+	}()
+
+	// Give invalidateEncoder time to block on the mutex. If the old
+	// (broken) code were in place, it would acquire the lock immediately
+	// and close the encoder while Encode() is still running.
+	time.Sleep(10 * time.Millisecond)
+
+	// The encoder should NOT have been closed yet — encode() still holds the lock
+	if atomic.LoadInt64(&slowEnc.closedAt) != 0 {
+		t.Fatal("encoder was closed while Encode() was still in progress — race condition!")
+	}
+
+	// Now let encode() finish
+	close(slowEnc.encodeFinish)
+
+	// Both goroutines should complete
+	err := <-encodeDone
+	require.NoError(t, err)
+	<-invalidateDone
+
+	// After both complete, the encoder should have been closed by invalidateEncoder
+	require.NotZero(t, atomic.LoadInt64(&slowEnc.closedAt),
+		"invalidateEncoder should have closed the encoder after encode() finished")
+}
 
 func BenchmarkPipelineEncode(b *testing.B) {
 	pc := &pipelineCodecs{

@@ -12,15 +12,19 @@ import (
 func TestCompositor_SelectScaleQuality(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 
-	// All sizes should use Lanczos after optimization
+	// Large slots (>= 25% of frame area) use Lanczos for quality
 	q := c.selectScaleQuality(1280, 720, 960, 540, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityHigh, q, "quad slot should use Lanczos")
-
-	q = c.selectScaleQuality(1920, 1080, 480, 270, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityHigh, q, "small PIP should use Lanczos")
+	require.Equal(t, transition.ScaleQualityHigh, q, "quad slot (25%) should use Lanczos")
 
 	q = c.selectScaleQuality(1920, 1080, 960, 1080, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityHigh, q, "side-by-side should use Lanczos")
+	require.Equal(t, transition.ScaleQualityHigh, q, "side-by-side (50%) should use Lanczos")
+
+	// Small PIP slots (< 25% of frame area) use bilinear for speed
+	q = c.selectScaleQuality(1920, 1080, 480, 270, 1920, 1080)
+	require.Equal(t, transition.ScaleQualityFast, q, "small PIP (6%) should use bilinear")
+
+	q = c.selectScaleQuality(1920, 1080, 320, 180, 1920, 1080)
+	require.Equal(t, transition.ScaleQualityFast, q, "tiny PIP (3%) should use bilinear")
 }
 
 func TestCompositor_GraySlotDirectFill(t *testing.T) {
@@ -46,6 +50,27 @@ func TestCompositor_GraySlotDirectFill(t *testing.T) {
 	// Chroma inside slot
 	ySize := 8 * 8
 	require.Equal(t, byte(128), result[ySize], "gray slot Cb should be 128")
+}
+
+func BenchmarkCompositor_ProcessFrame_PIP(b *testing.B) {
+	c := NewCompositor(1920, 1080)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam2", Rect: image.Rect(1440, 0, 1920, 270), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Ingest 1080p source (requires scaling to 480×270 PIP slot)
+	c.IngestSourceFrame("cam2", makeYUV420(1920, 1080, 200, 128, 128), 1920, 1080)
+
+	bg := makeYUV420(1920, 1080, 16, 128, 128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.ProcessFrame(bg, 1920, 1080)
+	}
 }
 
 func BenchmarkCompositor_ProcessFrame_Quad(b *testing.B) {
@@ -570,6 +595,44 @@ func TestBlendRegion_AlphaRounding(t *testing.T) {
 				"Y[%d,%d] = %d, expected ~127 at alpha=0.5 blend of 0 and 254", y, x, got)
 		}
 	}
+}
+
+// B2: Concurrent IngestSourceFrame and ProcessFrame must not race on fill data.
+// The fill entry's yuv slice was aliased into slotSnapshot without copying,
+// allowing IngestSourceFrame to write while ProcessFrame reads in Phase 2.
+func TestCompositor_FillDataRace(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []LayoutSlot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Seed with an initial frame so ProcessFrame has something to snapshot.
+	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 128, 128, 128), 8, 8)
+
+	done := make(chan struct{})
+
+	// Writer goroutine: continuously ingest new frames
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			c.IngestSourceFrame("cam1", makeYUV420(8, 8, byte(i%256), 128, 128), 8, 8)
+		}
+	}()
+
+	// Reader goroutine: continuously process frames
+	bg := makeYUV420(16, 16, 16, 128, 128)
+	for i := 0; i < 1000; i++ {
+		bgCopy := make([]byte, len(bg))
+		copy(bgCopy, bg)
+		c.ProcessFrame(bgCopy, 16, 16)
+	}
+
+	<-done
 }
 
 func TestMakeGrayFrame_BroadcastBlack(t *testing.T) {

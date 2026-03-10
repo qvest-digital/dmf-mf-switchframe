@@ -54,6 +54,26 @@ func ParseFRCQuality(s string) FRCQuality {
 	}
 }
 
+// ptsDelta computes the forward distance from older to newer in 33-bit PTS
+// space, handling the wraparound at 2^33 (~26.5 hours at 90 kHz).
+// The result is always non-negative (unsigned modular distance).
+func ptsDelta(newer, older int64) int64 {
+	return (newer - older) & ptsMask33
+}
+
+// ptsSignedDelta computes the signed distance from ref to pts in 33-bit PTS
+// space. Returns a negative value when pts is "before" ref (within half the
+// 33-bit range), positive when "after". Used for alpha computation where
+// the tick may be slightly before or after the source frame window.
+func ptsSignedDelta(pts, ref int64) int64 {
+	d := (pts - ref) & ptsMask33
+	if d >= (1 << 32) {
+		// Upper half of 33-bit range: interpret as negative
+		return d - (int64(1) << 33)
+	}
+	return d
+}
+
 // frcMEBlockSize is the block size for motion estimation (matches frc_me.go).
 const frcMEBlockSize = 16
 
@@ -117,8 +137,9 @@ type frcSource struct {
 	pool *FramePool
 
 	// Reusable buffers (zero-alloc steady state)
-	blendOut []byte // final blended output
-	hme      *hierarchicalME // pyramid ME state (reused across frames)
+	blendOut   []byte         // final blended output
+	nearestOut []byte         // reusable buffer for emitNearest (avoids aliasing live frames)
+	hme        *hierarchicalME // pyramid ME state (reused across frames)
 
 	// FPS tracking from PTS deltas
 	avgIntervalTicks int64 // EMA of source PTS interval (90kHz units)
@@ -158,8 +179,8 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 		return
 	}
 
-	// Update FPS tracking: EMA of PTS intervals
-	interval := fs.currPTS - fs.prevPTS
+	// Update FPS tracking: EMA of PTS intervals (wrap-aware)
+	interval := ptsDelta(fs.currPTS, fs.prevPTS)
 	if interval > 0 {
 		if fs.intervalCount == 0 {
 			fs.avgIntervalTicks = interval
@@ -233,12 +254,13 @@ func (fs *frcSource) emit(tickPTS int64) *ProcessingFrame {
 	// Compute alpha from PTS. The tickPTS must be on the source PTS timeline
 	// (not the synthetic tick counter). The frame sync passes
 	// lastReleasedPTS + tickIntervalPTS for interpolation ticks.
-	ptsDelta := fs.currPTS - fs.prevPTS
-	if ptsDelta <= 0 {
-		return fs.currFrame
+	// Both deltas are wrap-aware for the 33-bit PTS boundary.
+	frameDelta := ptsDelta(fs.currPTS, fs.prevPTS)
+	if frameDelta <= 0 {
+		return fs.emitNearest(1.0) // select currFrame via safe copy
 	}
 
-	alpha := float64(tickPTS-fs.prevPTS) / float64(ptsDelta)
+	alpha := float64(ptsSignedDelta(tickPTS, fs.prevPTS)) / float64(frameDelta)
 
 	// Clamp alpha to [0, 1]
 	if alpha < 0 {
@@ -248,12 +270,12 @@ func (fs *frcSource) emit(tickPTS int64) *ProcessingFrame {
 		alpha = 1
 	}
 
-	// Near-threshold: return source frame directly (no blend)
+	// Near-threshold: use emitNearest to get a safe copy
 	if alpha < frcNearThresholdLow {
-		return fs.prevFrame
+		return fs.emitNearest(0.0) // select prevFrame
 	}
 	if alpha > frcNearThresholdHigh {
-		return fs.currFrame
+		return fs.emitNearest(1.0) // select currFrame
 	}
 
 	switch fs.effectiveQuality {
@@ -270,12 +292,30 @@ func (fs *frcSource) emit(tickPTS int64) *ProcessingFrame {
 	}
 }
 
-// emitNearest returns the nearest frame by alpha distance.
+// emitNearest returns a deep copy of the nearest frame by alpha distance.
+// Copies into a reusable buffer to avoid aliasing live frames that ingest()
+// may release on the next call.
 func (fs *frcSource) emitNearest(alpha float64) *ProcessingFrame {
+	var src *ProcessingFrame
 	if alpha < 0.5 {
-		return fs.prevFrame
+		src = fs.prevFrame
+	} else {
+		src = fs.currFrame
 	}
-	return fs.currFrame
+
+	w, h := src.Width, src.Height
+	totalSize := w * h * 3 / 2
+	fs.ensureNearestOut(totalSize)
+	copy(fs.nearestOut, src.YUV[:totalSize])
+
+	return &ProcessingFrame{
+		YUV:        fs.nearestOut,
+		Width:      w,
+		Height:     h,
+		PTS:        src.PTS,
+		IsKeyframe: false,
+		Codec:      src.Codec,
+	}
 }
 
 // emitBlend produces a linear blend of prevFrame and currFrame.
@@ -304,7 +344,6 @@ func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 		PTS:        tickPTS,
 		IsKeyframe: false,
 		Codec:      fs.currFrame.Codec,
-		pool:       fs.pool,
 	}
 }
 
@@ -330,7 +369,6 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 		PTS:        tickPTS,
 		IsKeyframe: false,
 		Codec:      fs.currFrame.Codec,
-		pool:       fs.pool,
 	}
 }
 
@@ -379,20 +417,25 @@ func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 	}
 	avgSAD := totalSAD / uint64(rows*width)
 
-	// Update history
-	fs.sadHistory[fs.sadHistoryIdx] = avgSAD
-	fs.sadHistoryIdx = (fs.sadHistoryIdx + 1) % frcSADHistorySize
-	if fs.sadHistoryCount < frcSADHistorySize {
-		fs.sadHistoryCount++
-	}
-
 	median := fs.medianSAD()
 	threshold := median * 5
 	if threshold < frcMinSceneThreshold {
 		threshold = frcMinSceneThreshold
 	}
 
-	return avgSAD > threshold
+	isSceneChange := avgSAD > threshold
+
+	// Only update history for non-scene-change frames to avoid
+	// polluting the adaptive threshold with outlier SAD values.
+	if !isSceneChange {
+		fs.sadHistory[fs.sadHistoryIdx] = avgSAD
+		fs.sadHistoryIdx = (fs.sadHistoryIdx + 1) % frcSADHistorySize
+		if fs.sadHistoryCount < frcSADHistorySize {
+			fs.sadHistoryCount++
+		}
+	}
+
+	return isSceneChange
 }
 
 // medianSAD computes the median of the SAD history buffer.
@@ -431,5 +474,14 @@ func (fs *frcSource) ensureBlendOut(size int) {
 		return
 	}
 	fs.blendOut = make([]byte, size)
+}
+
+// ensureNearestOut allocates or reuses the nearest output buffer.
+func (fs *frcSource) ensureNearestOut(size int) {
+	if len(fs.nearestOut) >= size {
+		fs.nearestOut = fs.nearestOut[:size]
+		return
+	}
+	fs.nearestOut = make([]byte, size)
 }
 

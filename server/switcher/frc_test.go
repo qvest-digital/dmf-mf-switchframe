@@ -518,14 +518,15 @@ func TestFRC_FPSTracking(t *testing.T) {
 	require.Equal(t, 9, fs.intervalCount, "should have 9 interval measurements from 10 frames")
 }
 
-func TestFRC_EmitBlendIncludesPoolReference(t *testing.T) {
-	// Bug 16: FRC-emitted frames have pool: nil, so DeepCopy falls back to
-	// heap allocation instead of using the pool. Verify that emitted blend
-	// frames carry the pool reference.
+func TestFRC_EmitBlendNoPoolReference(t *testing.T) {
+	// Bug 3: FRC emitBlend/emitMCFI must NOT set pool on the returned frame
+	// because YUV data points to fs.blendOut (a reusable make()-allocated
+	// buffer), not a pool buffer. If pool were set, ReleaseYUV() would
+	// return the internal buffer to the pool, causing data corruption.
 	pool := NewFramePool(4, 64, 64)
 
 	fs := newFRCSource(FRCBlend, 3000)
-	fs.pool = pool // set pool reference
+	fs.pool = pool // set pool reference on frcSource
 
 	prevPTS := int64(3000)
 	currPTS := int64(6000)
@@ -537,27 +538,18 @@ func TestFRC_EmitBlendIncludesPoolReference(t *testing.T) {
 	fs.ingest(f1)
 	fs.ingest(f2)
 
-	// Emit at alpha=0.5 -> blend -> should carry pool reference
+	// Emit at alpha=0.5 -> blend -> should NOT carry pool reference
 	tickMid := (prevPTS + currPTS) / 2
 	result := fs.emit(tickMid)
 	require.NotNil(t, result)
-	require.Equal(t, pool, result.pool,
-		"FRC blend output should carry pool reference")
-
-	// Verify DeepCopy uses pool (not heap)
-	hits0, _ := pool.Stats()
-	cp := result.DeepCopy()
-	require.NotNil(t, cp)
-	hits1, _ := pool.Stats()
-	require.Greater(t, hits1, hits0,
-		"DeepCopy of FRC frame should acquire from pool")
-
-	// Cleanup
-	cp.ReleaseYUV()
+	require.Nil(t, result.pool,
+		"FRC blend output must not carry pool reference (YUV is internal blendOut buffer)")
 }
 
-func TestFRC_EmitMCFIIncludesPoolReference(t *testing.T) {
-	// Bug 16: Same as blend, verify MCFI-emitted frames carry pool.
+func TestFRC_EmitMCFINoPoolReference(t *testing.T) {
+	// Bug 3: Same as blend, verify MCFI-emitted frames do NOT carry pool.
+	// MCFI uses fs.blendOut which is not a pool buffer. If MCFI falls back
+	// to nearest (emitNearest), the result also uses fs.nearestOut (not pool).
 	pool := NewFramePool(4, 64, 64)
 
 	fs := newFRCSource(FRCMCFI, 3000)
@@ -577,10 +569,10 @@ func TestFRC_EmitMCFIIncludesPoolReference(t *testing.T) {
 	tickMid := (prevPTS + currPTS) / 2
 	result := fs.emit(tickMid)
 	require.NotNil(t, result)
-	// MCFI may fall back to nearest if MVs are invalid, which returns the
-	// source frame directly (already has pool). Either way, pool should be set.
-	require.NotNil(t, result.pool,
-		"FRC MCFI output should have non-nil pool reference")
+	// Whether MCFI runs or falls back to nearest, pool must be nil
+	// because the YUV data comes from internal reusable buffers.
+	require.Nil(t, result.pool,
+		"FRC MCFI output must not carry pool reference (YUV is internal buffer)")
 }
 
 func TestFRC_EmitZeroPTSDelta(t *testing.T) {
@@ -596,4 +588,178 @@ func TestFRC_EmitZeroPTSDelta(t *testing.T) {
 	result := fs.emit(3000)
 	require.NotNil(t, result)
 	require.Equal(t, byte(200), result.YUV[0], "zero PTS delta should return currFrame")
+}
+
+func TestFRC_EmitNearest_ReturnsCopy(t *testing.T) {
+	// B1: emitNearest must return a deep copy, not a pointer to the live buffer.
+	// After ingest() releases prevFrame, the previously returned data must be unchanged.
+	fs := newFRCSource(FRCNearest, 3000)
+
+	prevPTS := int64(3000)
+	currPTS := int64(6000)
+
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// Emit with alpha < 0.5 -> selects prevFrame
+	result := fs.emitNearest(0.3)
+	require.NotNil(t, result)
+	require.Equal(t, byte(100), result.YUV[0], "should select prevFrame content")
+
+	// Store the returned YUV data for comparison
+	savedYUV := make([]byte, len(result.YUV))
+	copy(savedYUV, result.YUV)
+
+	// Ingest a new frame — this calls prevFrame.ReleaseYUV() which frees the old buffer.
+	f3 := makeTestFrame(64, 64, 50, 9000)
+	fs.ingest(f3)
+
+	// The previously returned result's YUV data must still be intact (independent copy).
+	require.Equal(t, savedYUV, result.YUV,
+		"emitNearest result must be independent of live buffer lifecycle")
+	require.Equal(t, byte(100), result.YUV[0],
+		"emitNearest result must not be corrupted after ingest releases prevFrame")
+}
+
+func TestFRC_EmitNearThreshold_ReturnsCopy(t *testing.T) {
+	// B1: near-threshold early returns in emit() must also return copies.
+	fs := newFRCSource(FRCBlend, 3000)
+
+	prevPTS := int64(3000)
+	currPTS := int64(6000)
+
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// alpha < frcNearThresholdLow (0.05) -> should return copy of prevFrame
+	tickNearPrev := prevPTS + 100 // alpha = 100/3000 ≈ 0.033
+	result := fs.emit(tickNearPrev)
+	require.NotNil(t, result)
+	require.Equal(t, byte(100), result.YUV[0])
+
+	savedYUV := make([]byte, len(result.YUV))
+	copy(savedYUV, result.YUV)
+
+	// Ingest new frame (releases prevFrame)
+	f3 := makeTestFrame(64, 64, 50, 9000)
+	fs.ingest(f3)
+
+	// Result must still be intact
+	require.Equal(t, savedYUV, result.YUV,
+		"near-threshold emit result must be independent of live buffer lifecycle")
+
+	// Test the high threshold path too
+	fs2 := newFRCSource(FRCBlend, 3000)
+	f4 := makeTestFrame(64, 64, 100, prevPTS)
+	f5 := makeTestFrame(64, 64, 200, currPTS)
+	fs2.ingest(f4)
+	fs2.ingest(f5)
+
+	// alpha > frcNearThresholdHigh (0.95) -> should return copy of currFrame
+	tickNearCurr := currPTS - 100 // alpha = 2900/3000 ≈ 0.967
+	result2 := fs2.emit(tickNearCurr)
+	require.NotNil(t, result2)
+	require.Equal(t, byte(200), result2.YUV[0])
+
+	savedYUV2 := make([]byte, len(result2.YUV))
+	copy(savedYUV2, result2.YUV)
+
+	// Ingest new frame
+	f6 := makeTestFrame(64, 64, 50, 9000)
+	fs2.ingest(f6)
+
+	require.Equal(t, savedYUV2, result2.YUV,
+		"near-threshold high emit result must be independent of live buffer lifecycle")
+}
+
+// --- PTS 33-bit wraparound tests ---
+
+func TestFRC_IngestPTSWraparound(t *testing.T) {
+	// 33-bit PTS wraps at 2^33 = 8589934592 (~26.5 hours at 90kHz).
+	// When PTS crosses this boundary, the interval computation in ingest()
+	// must still produce a correct positive interval.
+	const pts33Max = int64(1) << 33 // 8589934592
+
+	fs := newFRCSource(FRCBlend, 3000)
+
+	// Frame just before the 33-bit boundary
+	prevPTS := pts33Max - 3000 // 8589931592
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	fs.ingest(f1)
+
+	// Frame just after the wrap (small positive PTS value)
+	currPTS := int64(1000) // wraps past 0
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	fs.ingest(f2)
+
+	// The true interval should be 3000 + 1000 = 4000 ticks (not negative).
+	// Without wrap handling, currPTS - prevPTS = 1000 - 8589931592 = -8589930592
+	// which is negative and would be rejected by the "if interval > 0" check.
+	require.Equal(t, 1, fs.intervalCount,
+		"ingest should have counted one valid interval across PTS wrap")
+	require.Equal(t, int64(4000), fs.avgIntervalTicks,
+		"ingest should compute correct interval across PTS wrap")
+}
+
+func TestFRC_EmitAlphaPTSWraparound(t *testing.T) {
+	// emit() computes alpha = (tickPTS - prevPTS) / (currPTS - prevPTS).
+	// When PTS wraps at 2^33, both deltas must be wrap-aware.
+	const pts33Max = int64(1) << 33
+
+	fs := newFRCSource(FRCBlend, 3000)
+
+	prevPTS := pts33Max - 3000 // just before wrap
+	currPTS := int64(1000)     // just after wrap (true delta = 4000)
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// Request a tick at the midpoint: prevPTS + 2000 ticks, which wraps to
+	// (pts33Max - 3000 + 2000) = pts33Max - 1000
+	tickPTS := pts33Max - 1000
+
+	result := fs.emit(tickPTS)
+	require.NotNil(t, result, "emit should produce a frame across PTS wrap")
+
+	// Expected alpha = 2000 / 4000 = 0.5.
+	// With FRCBlend at alpha=0.5, BlendUniformBytes at pos=128:
+	// dst = (100*(256-128) + 200*128) >> 8 = 150
+	expected := byte(150)
+	actual := result.YUV[0]
+	require.InDelta(t, float64(expected), float64(actual), 2.0,
+		"blend at alpha=0.5 across PTS wrap: expected ~%d, got %d", expected, actual)
+}
+
+func TestFRC_EmitNearestPTSWraparound(t *testing.T) {
+	// Nearest mode should also work correctly across PTS wraparound.
+	const pts33Max = int64(1) << 33
+
+	fs := newFRCSource(FRCNearest, 3000)
+
+	prevPTS := pts33Max - 3000
+	currPTS := int64(1000) // true delta = 4000
+	f1 := makeTestFrame(64, 64, 100, prevPTS)
+	f2 := makeTestFrame(64, 64, 200, currPTS)
+	fs.ingest(f1)
+	fs.ingest(f2)
+
+	// alpha = 1000/4000 = 0.25 -> should select prevFrame (alpha < 0.5)
+	tickLow := prevPTS + 1000 // = pts33Max - 2000, before the wrap
+	result := fs.emit(tickLow)
+	require.NotNil(t, result)
+	require.Equal(t, byte(100), result.YUV[0],
+		"alpha=0.25 across PTS wrap should select prevFrame")
+
+	// alpha = 3000/4000 = 0.75 -> should select currFrame (alpha > 0.5)
+	// prevPTS + 3000 = pts33Max - 3000 + 3000 = pts33Max -> wraps to 0
+	tickHigh := int64(0) // prevPTS + 3000 wraps to 0
+	result = fs.emit(tickHigh)
+	require.NotNil(t, result)
+	require.Equal(t, byte(200), result.YUV[0],
+		"alpha=0.75 across PTS wrap should select currFrame")
 }

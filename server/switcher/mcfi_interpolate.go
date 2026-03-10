@@ -53,8 +53,7 @@ func NewMCFIState() *MCFIState {
 // is cached. Subsequent calls with different alpha values only perform the
 // smooth warp (~8-18ms). Falls back to linear blend on scene change.
 //
-// The returned slice references internal state and is valid until the next
-// call to Interpolate.
+// The returned slice is a freshly allocated copy, safe for async consumers.
 func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
 	frameSize := width * height * 3 / 2
 
@@ -113,7 +112,11 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 	// Motion-compensated interpolation with per-pixel warping (fixed-point, row-parallel)
 	if s.mvValid && !s.sceneChange {
 		mcfiInterpolateFast(s.blendOut, frameA, frameB, width, height, s.mvf, alpha)
-		return s.blendOut[:frameSize]
+		// Return a copy so callers can hold the result across calls without
+		// it being overwritten by the next Interpolate() invocation.
+		out := make([]byte, frameSize)
+		copy(out, s.blendOut[:frameSize])
+		return out
 	}
 
 	// Fallback: linear blend (scene change or invalid MVs)
@@ -127,7 +130,10 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 	for i := 0; i < frameSize && i < len(frameA) && i < len(frameB); i++ {
 		s.fallbackBuf[i] = byte(float64(frameA[i])*invAlpha + float64(frameB[i])*alpha + 0.5)
 	}
-	return s.fallbackBuf[:frameSize]
+	// Return a copy so callers can hold the result across calls.
+	out := make([]byte, frameSize)
+	copy(out, s.fallbackBuf[:frameSize])
+	return out
 }
 
 // mcfiInterpolateSmooth produces an interpolated frame using per-pixel

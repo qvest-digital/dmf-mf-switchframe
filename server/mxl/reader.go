@@ -184,13 +184,23 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			// instead of dying. The ring buffer moved past our position.
 			if strings.Contains(errStr, "too late") {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
-					gap := headIdx - index
+					oldIndex := index
+					if headIdx >= 2 {
+						index = headIdx - 2
+					} else {
+						index = headIdx
+					}
 					log.Warn("mxl video reader: ring buffer wrapped, re-syncing",
-						"gap", gap, "old_index", index, "new_index", headIdx-2)
-					index = headIdx - 2
+						"gap", headIdx-oldIndex, "old_index", oldIndex, "new_index", index)
 					consecutiveErrors = 0
 					continue
 				}
+			}
+
+			// Timeout and too-early are transient — don't count as fatal errors.
+			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+				time.Sleep(time.Millisecond)
+				continue
 			}
 
 			consecutiveErrors++
@@ -199,7 +209,7 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 					"errors", consecutiveErrors, "last_error", err)
 				return
 			}
-			// Brief backoff on timeout/too-early errors.
+			// Brief backoff on other errors.
 			time.Sleep(time.Millisecond)
 			continue
 		}
@@ -369,13 +379,23 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 			// instead of dying. The ring buffer moved past our position.
 			if strings.Contains(errStr, "too late") {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
-					gap := headIdx - index
+					oldIndex := index
+					if headIdx >= 2 {
+						index = headIdx - 2
+					} else {
+						index = headIdx
+					}
 					log.Warn("mxl data reader: ring buffer wrapped, re-syncing",
-						"gap", gap, "old_index", index, "new_index", headIdx-2)
-					index = headIdx - 2
+						"gap", headIdx-oldIndex, "old_index", oldIndex, "new_index", index)
 					consecutiveErrors = 0
 					continue
 				}
+			}
+
+			// Timeout and too-early are transient — don't count as fatal errors.
+			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+				time.Sleep(time.Millisecond)
+				continue
 			}
 
 			consecutiveErrors++
@@ -384,7 +404,7 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 					"errors", consecutiveErrors, "last_error", err)
 				return
 			}
-			// Brief backoff on timeout/too-early errors.
+			// Brief backoff on other errors.
 			time.Sleep(time.Millisecond)
 			continue
 		}

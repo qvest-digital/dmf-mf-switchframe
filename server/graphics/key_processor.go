@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 )
@@ -48,6 +49,8 @@ type KeyProcessor struct {
 	keys         map[string]KeyConfig // source key → config
 	onChange     func()               // called after SetKey/RemoveKey for pipeline rebuild
 	spillWorkBuf []byte               // reused across frames for spill suppression copy
+	maskBuf      []byte               // reused luma-resolution mask buffer (width*height)
+	chromaMaskBuf []byte              // reused chroma-resolution mask buffer (w/2*h/2)
 }
 
 // NewKeyProcessor creates a new key processor with no keys configured.
@@ -131,8 +134,12 @@ func (kp *KeyProcessor) EnabledSources() map[string]KeyConfig {
 //
 // If no keys are configured or enabled, the background is returned unchanged.
 func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, height int) []byte {
-	kp.mu.RLock()
-	defer kp.mu.RUnlock()
+	if width%2 != 0 || height%2 != 0 {
+		panic(fmt.Sprintf("YUV420 requires even dimensions, got %dx%d", width, height))
+	}
+
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
 
 	if len(kp.keys) == 0 {
 		return bg
@@ -174,7 +181,15 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 			workFill = fill
 		}
 
-		// Generate alpha mask
+		// Generate alpha mask using pre-allocated buffers to avoid per-frame allocation.
+		// Ensure buffers are large enough for current resolution.
+		if cap(kp.maskBuf) < ySize {
+			kp.maskBuf = make([]byte, ySize)
+		}
+		if cap(kp.chromaMaskBuf) < uvSize {
+			kp.chromaMaskBuf = make([]byte, uvSize)
+		}
+
 		var mask []byte
 		switch cfg.Type {
 		case KeyTypeChroma:
@@ -183,9 +198,9 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 			if spillCb == 0 && spillCr == 0 {
 				spillCb, spillCr = 128, 128 // default to neutral
 			}
-			mask = ChromaKeyWithSpillColor(workFill, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress, spillCb, spillCr)
+			mask = ChromaKeyWithSpillColorInto(kp.maskBuf, kp.chromaMaskBuf, workFill, width, height, keyColor, cfg.Similarity, cfg.Smoothness, cfg.SpillSuppress, spillCb, spillCr)
 		case KeyTypeLuma:
-			mask = LumaKey(workFill, width, height, cfg.LowClip, cfg.HighClip, cfg.Softness)
+			mask = LumaKeyInto(kp.maskBuf, workFill, width, height, cfg.LowClip, cfg.HighClip, cfg.Softness)
 		default:
 			continue
 		}
@@ -195,51 +210,44 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 		}
 
 		// Composite fill onto background using the generated mask.
+		// Uses integer fixed-point arithmetic with SIMD acceleration
+		// (arm64 NEON / amd64 SSE2). All blend paths in the codebase
+		// use the same pattern: w = alpha + (alpha>>7) maps 0-255 → 0-256,
+		// result = (bg*(256-w) + fill*w + 128) >> 8.
+
 		// Y plane: per-pixel alpha blend at full resolution.
-		// The +0.5 before uint8 conversion rounds instead of truncating,
-		// eliminating the systematic -1 bias on blended values.
-		for i := 0; i < ySize; i++ {
-			alpha := float32(mask[i]) / 255.0
-			if alpha < 1.0/255.0 {
-				continue
-			}
-			invAlpha := 1.0 - alpha
-			bg[i] = uint8(clampFloat(float32(bg[i])*invAlpha+float32(workFill[i])*alpha+0.5, 0, 255))
-		}
+		blendMaskY(&bg[0], &workFill[0], &mask[0], ySize)
 
-		// Cb and Cr planes: average alpha over corresponding 2x2 luma block.
-		// Each UV sample covers a 2x2 block of luma pixels. The alpha for the
-		// chroma blend is the average of the 4 luma alphas in that block.
-		// This matches the pattern in transition/blend.go BlendStinger.
-		for py := 0; py < height/2; py++ {
-			for px := 0; px < uvWidth; px++ {
-				ly := py * 2
-				lx := px * 2
-				a00 := float32(mask[ly*width+lx])
-				a01 := float32(mask[ly*width+lx+1])
-				a10 := float32(mask[(ly+1)*width+lx])
-				a11 := float32(mask[(ly+1)*width+lx+1])
-				alpha := (a00 + a01 + a10 + a11) / (4.0 * 255.0)
+		// Chroma planes: downsample mask to chroma resolution (average
+		// 2x2 luma block), then blend Cb and Cr with the same kernel.
+		chromaMask := kp.chromaMaskBuf[:uvSize]
+		downsampleMask2x2(chromaMask, mask, width, height)
 
-				if alpha < 1.0/255.0 {
-					continue
-				}
-				invAlpha := 1.0 - alpha
-
-				uvIdx := py*uvWidth + px
-				// Cb
-				if ySize+uvIdx < frameSize {
-					bg[ySize+uvIdx] = uint8(clampFloat(
-						float32(bg[ySize+uvIdx])*invAlpha+float32(workFill[ySize+uvIdx])*alpha+0.5, 0, 255))
-				}
-				// Cr
-				if ySize+uvSize+uvIdx < frameSize {
-					bg[ySize+uvSize+uvIdx] = uint8(clampFloat(
-						float32(bg[ySize+uvSize+uvIdx])*invAlpha+float32(workFill[ySize+uvSize+uvIdx])*alpha+0.5, 0, 255))
-				}
-			}
-		}
+		blendMaskY(&bg[ySize], &workFill[ySize], &chromaMask[0], uvSize)
+		blendMaskY(&bg[ySize+uvSize], &workFill[ySize+uvSize], &chromaMask[0], uvSize)
 	}
 
 	return bg
+}
+
+// downsampleMask2x2 averages each 2x2 block of the luma-resolution mask
+// into one chroma-resolution sample. dst must be at least (width/2)*(height/2)
+// bytes. src must be at least width*height bytes.
+//
+// Used to convert per-pixel luma alpha masks to chroma resolution for
+// YUV420 blending, matching the pattern in transition/blend.go BlendStinger.
+func downsampleMask2x2(dst, src []byte, width, height int) {
+	chromaWidth := width / 2
+	chromaHeight := height / 2
+	for py := 0; py < chromaHeight; py++ {
+		row0 := py * 2 * width
+		row1 := row0 + width
+		dstOff := py * chromaWidth
+		for px := 0; px < chromaWidth; px++ {
+			lx := px * 2
+			sum := int(src[row0+lx]) + int(src[row0+lx+1]) +
+				int(src[row1+lx]) + int(src[row1+lx+1])
+			dst[dstOff+px] = byte((sum + 2) >> 2)
+		}
+	}
 }

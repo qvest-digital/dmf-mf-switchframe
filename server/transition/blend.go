@@ -1,5 +1,16 @@
 package transition
 
+import "fmt"
+
+// assertEvenDimensions panics if width or height is odd. YUV420 chroma
+// subsampling requires even dimensions; odd values would cause incorrect
+// buffer sizes and plane offsets throughout the pipeline.
+func assertEvenDimensions(width, height int) {
+	if width%2 != 0 || height%2 != 0 {
+		panic(fmt.Sprintf("YUV420 requires even dimensions, got %dx%d", width, height))
+	}
+}
+
 // FrameBlender alpha-blends two YUV420 planar byte slices directly,
 // avoiding the cost and chroma resampling error of a YUV->RGB->YUV round-trip.
 // This matches how hardware broadcast mixers (ATEM, Ross, Datavideo) and
@@ -37,6 +48,7 @@ type FrameBlender struct {
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
 // sized for the given resolution in YUV420 format.
 func NewFrameBlender(width, height int) *FrameBlender {
+	assertEvenDimensions(width, height)
 	ySize := width * height
 	uvSize := (width / 2) * (height / 2)
 	return &FrameBlender{

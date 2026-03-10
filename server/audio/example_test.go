@@ -34,13 +34,14 @@ func ExampleEqualPowerCrossfade() {
 	result := audio.EqualPowerCrossfade(old, new)
 
 	// The new source fades in following a sin curve: sin(t * pi/2).
-	// At t=0 the new source is silent; at t=1 it would be full volume.
+	// At t=0 the new source is silent; at t=1 it reaches full volume.
+	// With 4 samples and 3 intervals, positions are t=0, 1/3, 2/3, 1.
 	for i, v := range result {
 		fmt.Printf("sample[%d] = %.4f\n", i, v)
 	}
 	// Output:
 	// sample[0] = 0.0000
-	// sample[1] = 0.3816
-	// sample[2] = 0.7066
-	// sample[3] = 0.9237
+	// sample[1] = 0.5000
+	// sample[2] = 0.8660
+	// sample[3] = 1.0000
 }

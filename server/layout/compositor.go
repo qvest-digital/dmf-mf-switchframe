@@ -36,6 +36,9 @@ type Compositor struct {
 	// Per-slot gray "no signal" frames
 	grayBufs [][]byte
 
+	// Per-slot snapshot buffers for safe fill data copies (avoids aliasing fills map entries)
+	snapBufs [][]byte
+
 	// Pre-computed z-order sorted slot indices (avoids per-frame allocation)
 	sortedSlots []int
 
@@ -83,6 +86,7 @@ func (c *Compositor) allocateBuffers(l *Layout) {
 	c.scaleBufs = make([][]byte, len(l.Slots))
 	c.cropBufs = make([][]byte, len(l.Slots))
 	c.grayBufs = make([][]byte, len(l.Slots))
+	c.snapBufs = make([][]byte, len(l.Slots))
 	for i, slot := range l.Slots {
 		w := slot.Rect.Dx()
 		h := slot.Rect.Dy()
@@ -276,7 +280,17 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {
-			snap.srcYUV = entry.yuv
+			yuvSize := entry.width * entry.height * 3 / 2
+			// Deep-copy fill data into per-slot snapshot buffer under lock
+			// to avoid racing with IngestSourceFrame writes to entry.yuv.
+			for len(c.snapBufs) <= idx {
+				c.snapBufs = append(c.snapBufs, nil)
+			}
+			if len(c.snapBufs[idx]) < yuvSize {
+				c.snapBufs[idx] = make([]byte, yuvSize)
+			}
+			copy(c.snapBufs[idx][:yuvSize], entry.yuv[:yuvSize])
+			snap.srcYUV = c.snapBufs[idx][:yuvSize]
 			snap.srcW = entry.width
 			snap.srcH = entry.height
 			snap.hasFill = true
@@ -397,11 +411,15 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	return yuv
 }
 
-// selectScaleQuality always uses Lanczos-3 for broadcast-quality scaling.
-// With parallelized plane scaling, row-parallel horizontal pass, and narrowed
-// kernels, Lanczos costs ~6.5ms for 1080→720 (down from ~22ms), making it
-// affordable for all PIP sizes.
-func (c *Compositor) selectScaleQuality(_, _, _, _, _, _ int) transition.ScaleQuality {
+// selectScaleQuality picks bilinear for small PIP slots and Lanczos-3 for
+// larger slots where the quality difference is visible. Threshold: 25% of
+// frame area. Below that, bilinear is 5-15x faster and visually identical
+// at small on-screen sizes.
+func (c *Compositor) selectScaleQuality(_, _, dstW, dstH, frameW, frameH int) transition.ScaleQuality {
+	frameArea := frameW * frameH
+	if frameArea > 0 && dstW*dstH*4 < frameArea {
+		return transition.ScaleQualityFast
+	}
 	return transition.ScaleQualityHigh
 }
 

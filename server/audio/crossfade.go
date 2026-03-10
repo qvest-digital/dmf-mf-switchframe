@@ -81,7 +81,8 @@ func EqualPowerCrossfadeStereoInto(dst, oldPCM, newPCM []float32, channels int) 
 		return nil
 	}
 
-	pairCount := float64(n / channels)
+	totalPairs := n / channels
+	pairCount := float64(totalPairs - 1)
 	if pairCount < 1 {
 		pairCount = 1
 	}

@@ -39,8 +39,14 @@ func alphaBlendRGBAChromaRow(cbRow *byte, crRow *byte, rgba *byte, chromaWidth i
 		inv := 256 - a256
 		cb := (int(cbS[i])*inv + overlayCb*a256 + 128) >> 8
 		cr := (int(crS[i])*inv + overlayCr*a256 + 128) >> 8
+		if cb < 0 {
+			cb = 0
+		}
 		if cb > 255 {
 			cb = 255
+		}
+		if cr < 0 {
+			cr = 0
 		}
 		if cr > 255 {
 			cr = 255

@@ -138,6 +138,10 @@ type Source struct {
 
 	// Pre-allocated V210 conversion buffers (used from single videoFanOut goroutine).
 	v210Bufs v210Buffers
+
+	// Reusable buffer for YUV data passed to the encoder, avoiding aliasing
+	// with v210Bufs.yuvOut which may be retained by OnRawVideo consumers.
+	encoderYUV []byte
 }
 
 // NewSource creates an MXL source.
@@ -261,13 +265,26 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	pts := int64(grain.ReadTime.Sub(s.startTime).Seconds() * 90000)
 
 	// 2. Deliver raw YUV to switcher pipeline.
+	// Allocate a fresh copy because v210Bufs.yuvOut is overwritten on the
+	// next frame conversion, and the consumer (switcher pipeline) retains
+	// the buffer reference asynchronously via ProcessingFrame.YUV.
 	if s.config.OnRawVideo != nil {
-		s.config.OnRawVideo(s.config.FlowName, yuv, grain.Width, grain.Height, pts)
+		rawCopy := make([]byte, len(yuv))
+		copy(rawCopy, yuv)
+		s.config.OnRawVideo(s.config.FlowName, rawCopy, grain.Width, grain.Height, pts)
 	}
 
 	// 3. Encode YUV→H.264 and broadcast to relay for browsers + replay.
+	// Use a copy because OnRawVideo may retain a reference to yuv for
+	// async pipeline processing, and v210Bufs.yuvOut is reused per frame.
 	if s.config.Relay != nil && s.config.EncoderFactory != nil {
-		s.encodeAndBroadcastVideo(yuv, grain.Width, grain.Height, pts)
+		needed := len(yuv)
+		if cap(s.encoderYUV) < needed {
+			s.encoderYUV = make([]byte, needed)
+		}
+		s.encoderYUV = s.encoderYUV[:needed]
+		copy(s.encoderYUV, yuv)
+		s.encodeAndBroadcastVideo(s.encoderYUV, grain.Width, grain.Height, pts)
 	}
 }
 

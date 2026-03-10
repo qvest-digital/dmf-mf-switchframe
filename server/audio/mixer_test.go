@@ -2719,3 +2719,87 @@ func TestMixer_StingerAudioInMixPath(t *testing.T) {
 			"sample %d: with silent source, output should be stinger audio", i)
 	}
 }
+
+func TestMixerCrossfadeUpdatesProgramPeakMetering(t *testing.T) {
+	pcm := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoder{}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Trigger crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Ingest frames
+	f1 := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	f2 := &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", f1)
+	m.IngestFrame("cam2", f2)
+
+	// Program peak should have been updated (not stale/silence)
+	peak := m.ProgramPeak()
+	require.Greater(t, peak[0], -96.0, "left peak should reflect crossfade output, not be silent")
+	require.Greater(t, peak[1], -96.0, "right peak should reflect crossfade output, not be silent")
+}
+
+func TestMixerCrossfadeDuringFTBProducesSilence(t *testing.T) {
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	pcm := []float32{1.0, 1.0, 1.0, 1.0}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Activate FTB (program mute)
+	m.SetProgramMute(true)
+
+	// Trigger a crossfade (simulates a cut during FTB)
+	m.OnCut("cam1", "cam2")
+
+	// Ingest frames from both sources to trigger crossfade path
+	frame1 := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	frame2 := &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame1)
+	m.IngestFrame("cam2", frame2)
+
+	require.GreaterOrEqual(t, len(outputFrames), 1, "should produce output frame")
+	require.NotNil(t, capturedPCM, "encoder should have been called")
+
+	// All samples should be silent because FTB is held
+	for i, s := range capturedPCM {
+		require.InDelta(t, 0.0, s, 0.001,
+			"sample %d should be silent during FTB crossfade, got %f", i, s)
+	}
+}

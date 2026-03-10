@@ -71,7 +71,12 @@ chroma_loop_amd64:
 	IMULQ AX, R12               // overlayCb * a256
 	ADDQ R12, R15
 	ADDQ $128, R15
-	SHRQ $8, R15
+	SARQ $8, R15                // arithmetic shift (preserves sign)
+	TESTQ R15, R15
+	JGE  chroma_cb_nonneg_amd64
+	XORQ R15, R15               // clamp to 0
+	JMP  chroma_cb_ok_amd64
+chroma_cb_nonneg_amd64:
 	CMPQ R15, $255
 	JLE  chroma_cb_ok_amd64
 	MOVQ $255, R15
@@ -84,7 +89,12 @@ chroma_cb_ok_amd64:
 	IMULQ AX, R13               // overlayCr * a256
 	ADDQ R13, R15
 	ADDQ $128, R15
-	SHRQ $8, R15
+	SARQ $8, R15                // arithmetic shift (preserves sign)
+	TESTQ R15, R15
+	JGE  chroma_cr_nonneg_amd64
+	XORQ R15, R15               // clamp to 0
+	JMP  chroma_cr_ok_amd64
+chroma_cr_nonneg_amd64:
 	CMPQ R15, $255
 	JLE  chroma_cr_ok_amd64
 	MOVQ $255, R15

@@ -381,3 +381,44 @@ func TestKeyProcessor_ConcurrentProcess_NoRace(t *testing.T) {
 		<-done
 	}
 }
+
+// BenchmarkKeyProcessor_Process_1080p benchmarks Process() with a luma key
+// that produces partial alpha (soft edges) on a 1080p frame.
+func BenchmarkKeyProcessor_Process_1080p(b *testing.B) {
+	kp := NewKeyProcessor()
+	w, h := 1920, 1080
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	frameSize := ySize + 2*uvSize
+
+	kp.SetKey("fill", KeyConfig{
+		Type:     KeyTypeLuma,
+		Enabled:  true,
+		LowClip:  0.3,
+		HighClip: 0.7,
+		Softness: 0.2,
+	})
+
+	fill := make([]byte, frameSize)
+	for i := 0; i < ySize; i++ {
+		fill[i] = byte(i % 256)
+	}
+	for i := ySize; i < frameSize; i++ {
+		fill[i] = 128
+	}
+	fills := map[string][]byte{"fill": fill}
+
+	bg := make([]byte, frameSize)
+	bgTemplate := make([]byte, frameSize)
+	for i := range bgTemplate {
+		bgTemplate[i] = 128
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(frameSize))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(bg, bgTemplate)
+		kp.Process(bg, fills, w, h)
+	}
+}

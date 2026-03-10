@@ -11,6 +11,9 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+// errPipelineClosed is returned by encode() when called after close().
+var errPipelineClosed = fmt.Errorf("pipeline codecs: closed")
+
 // allocAVC1Buffer allocates an owned AVC1 buffer. Each encoded frame needs
 // its own buffer because BroadcastVideo fans out to viewers via buffered
 // channels — async consumers (output muxer, SRT, WebTransport) may still
@@ -96,12 +99,19 @@ func (pc *pipelineCodecs) invalidateEncoder() {
 // encode converts a ProcessingFrame back to a media.VideoFrame by encoding
 // YUV420 to H.264. Lazy-initializes the encoder on first call.
 //
-// The lock is only held for config checks and state updates, not for the
-// actual encode (30-100ms). This is safe because the pipeline is
-// single-threaded (one videoProcessingLoop goroutine).
+// The lock is held for the entire encode to prevent invalidateEncoder() from
+// closing the encoder while Encode() is in progress (use-after-free).
+// This is safe because:
+//   - The pipeline is single-threaded (one videoProcessingLoop goroutine)
+//   - invalidateEncoder() is rare (resolution change, SetPipelineFormat)
+//   - Blocking invalidateEncoder for one frame time (~33ms) is acceptable
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
-	// Phase 1: Lock for config + init
 	pc.mu.Lock()
+	defer pc.mu.Unlock()
+
+	if pc.closed {
+		return nil, errPipelineClosed
+	}
 
 	// Invalidate encoder on resolution change.
 	if pc.encoder != nil && (pf.Width != pc.encWidth || pf.Height != pc.encHeight) {
@@ -151,7 +161,6 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		}
 		enc, err := pc.encoderFactory(pf.Width, pf.Height, bitrate, fpsNum, fpsDen)
 		if err != nil {
-			pc.mu.Unlock()
 			return nil, fmt.Errorf("pipeline: encoder init: %w", err)
 		}
 		pc.encoder = enc
@@ -159,11 +168,10 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		pc.encHeight = pf.Height
 		pc.createdBitrate = bitrate
 	}
-	encoder := pc.encoder
-	pc.mu.Unlock()
 
-	// Phase 2: Encode OUTSIDE lock
-	encoded, isKeyframe, err := encoder.Encode(pf.YUV, pf.PTS, forceIDR)
+	// Encode under lock — prevents invalidateEncoder() from closing the
+	// encoder while Encode() is using it.
+	encoded, isKeyframe, err := pc.encoder.Encode(pf.YUV, pf.PTS, forceIDR)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: encode: %w", err)
 	}
@@ -177,8 +185,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	avc1 := allocAVC1Buffer(len(pc.avc1Buf))
 	copy(avc1, pc.avc1Buf)
 
-	// Phase 3: Lock for state update
-	pc.mu.Lock()
+	// Update group ID state.
 	if pf.GroupID > pc.groupID {
 		pc.groupID = pf.GroupID
 	}
@@ -186,7 +193,6 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		pc.groupID++
 	}
 	groupID := pc.groupID
-	pc.mu.Unlock()
 
 	// Normalize output timestamps. The pipeline encoder has max_b_frames=0
 	// (no B-frames), so DTS must always equal PTS. Sources have independent
@@ -208,10 +214,11 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			// advance by one frame duration.
 			outPTS = pc.lastOutputPTS + frameDur
 		} else if outPTS > pc.lastOutputPTS+frameDur*3 {
-			// PTS jumped too far forward (source switch to a source with
-			// a much larger PTS origin). Cap to one frame duration to
-			// prevent downstream MPEG-TS decoders from stalling on the gap.
-			outPTS = pc.lastOutputPTS + frameDur
+			// PTS jumped far forward (source switch). Reseed to the new
+			// source's PTS timeline, matching the audio mixer's behavior
+			// (which also reseeds on large forward gaps). Capping to one
+			// frame advance would create permanent A/V desync.
+			// outPTS stays as-is (the new source's PTS).
 		}
 	}
 	pc.lastOutputPTS = outPTS
@@ -241,14 +248,14 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 			}
 		}
 		if frame.SPS != nil && frame.PPS != nil && pc.onVideoInfoChange != nil {
-			pc.mu.Lock()
 			if !bytes.Equal(frame.SPS, pc.lastSPS) || !bytes.Equal(frame.PPS, pc.lastPPS) {
 				pc.lastSPS = append(pc.lastSPS[:0], frame.SPS...)
 				pc.lastPPS = append(pc.lastPPS[:0], frame.PPS...)
+				// Release lock before callback to avoid holding it during
+				// potentially slow onVideoInfoChange processing.
 				pc.mu.Unlock()
 				pc.onVideoInfoChange(frame.SPS, frame.PPS, pf.Width, pf.Height)
-			} else {
-				pc.mu.Unlock()
+				pc.mu.Lock()
 			}
 		}
 	}

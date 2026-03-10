@@ -61,9 +61,10 @@ func decodeSOM(opID uint16, payload []byte) (*Message, error) {
 		if messageSize == len(payload)-2 || messageSize == len(payload) {
 			// Additional validation: check protocol version to avoid false
 			// positives when abbreviated payload bytes accidentally match the
-			// length. Valid SCTE-104 protocol versions are 0 and 1.
-			protocolVersion := payload[2]
-			if protocolVersion > 1 {
+			// length. SCTE-104 protocol versions are small integers (0-3 in
+			// current revisions); anything above 15 is clearly not a SOM header.
+			protocolVersion := payload[6]
+			if protocolVersion > 15 {
 				// Not a valid SOM — fall through to abbreviated format.
 				goto abbreviated
 			}

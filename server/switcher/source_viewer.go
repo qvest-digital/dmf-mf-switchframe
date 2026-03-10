@@ -38,10 +38,10 @@ type sourceViewer struct {
 	delayBuffer atomic.Pointer[DelayBuffer]
 	frameSync   atomic.Pointer[FrameSynchronizer]
 	srcDecoder  atomic.Pointer[sourceDecoder]
-	videoSent   atomic.Int64
-	_pad1       [56]byte //nolint:unused // cache line padding between atomic counters
-	audioSent   atomic.Int64
-	_pad2       [56]byte //nolint:unused // cache line padding between atomic counters
+	videoSent atomic.Int64
+	_pad1     [56]byte //lint:ignore U1000 cache line padding between atomic counters
+	audioSent atomic.Int64
+	_pad2     [56]byte //lint:ignore U1000 cache line padding between atomic counters
 	captionSent atomic.Int64
 }
 
@@ -88,14 +88,17 @@ func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
 }
 
 // SendAudio forwards an audio frame to the handler tagged with the source key.
-// Audio always bypasses the FrameSynchronizer — audio is a continuous sample
-// stream (48kHz / ~47 AAC frames/sec) that must not be quantized to the video
-// tick clock (30fps). Routing audio through frame sync drops ~40-50% of frames
-// due to the 2-frame ring buffer's newest-wins policy. The audio mixer handles
-// timing independently via its own sample clock.
+// When a FrameSynchronizer is active, audio is routed through its FIFO queue
+// so that audio release timing aligns with video release timing (fixing the
+// ~16-42ms audio lead that occurs when audio bypasses the frame sync). The
+// FIFO queue never drops frames — all audio frames are drained on each tick.
 // If a delay buffer is configured, frames route through it for lip-sync delay.
 func (sv *sourceViewer) SendAudio(frame *media.AudioFrame) {
 	sv.audioSent.Add(1)
+	if fs := sv.frameSync.Load(); fs != nil {
+		fs.IngestAudio(sv.sourceKey, frame)
+		return
+	}
 	if db := sv.delayBuffer.Load(); db != nil {
 		db.handleAudioFrame(sv.sourceKey, frame)
 		return

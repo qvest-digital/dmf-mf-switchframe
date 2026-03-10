@@ -281,7 +281,7 @@ func extractFieldValues(field string, msg *CueMessage) []string {
 		return []string{"false"}
 	case "segmentation_type_id":
 		if len(msg.Descriptors) == 0 {
-			return []string{"0"}
+			return nil
 		}
 		vals := make([]string, len(msg.Descriptors))
 		for i, d := range msg.Descriptors {
@@ -295,7 +295,7 @@ func extractFieldValues(field string, msg *CueMessage) []string {
 		}
 		// Return duration from each descriptor (time_signal).
 		if len(msg.Descriptors) == 0 {
-			return []string{"0"}
+			return nil
 		}
 		vals := make([]string, len(msg.Descriptors))
 		for i, d := range msg.Descriptors {

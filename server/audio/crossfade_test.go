@@ -77,10 +77,10 @@ func TestCrossfadeDifferentLengths(t *testing.T) {
 	result := audio.EqualPowerCrossfade(old, new)
 	// Should output len(old) samples -- shorter buffer zero-padded
 	require.Equal(t, 4, len(result), "output should be length of longer buffer")
-	// Last sample: t=3/4, cos(0.75*pi/2)~0.383, sin(0.75*pi/2)~0.924
-	// old=1.0*0.383, new=0 (zero-padded) -> ~0.383
-	expected := float32(math.Cos(3.0 / 4.0 * math.Pi / 2))
-	require.InDelta(t, expected, result[3], 0.01, "last sample should be cos(3pi/8)~0.383")
+	// Last sample: t=1.0 (3 intervals, last sample at endpoint),
+	// cos(pi/2)~0, sin(pi/2)~1. old=1.0*0, new=0 (zero-padded) -> ~0.0
+	expected := float32(math.Cos(1.0 * math.Pi / 2))
+	require.InDelta(t, expected, result[3], 0.01, "last sample should be cos(pi/2)~0.0")
 }
 
 func TestCrossfadeEmptySlices(t *testing.T) {

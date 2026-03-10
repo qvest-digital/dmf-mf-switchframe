@@ -621,3 +621,81 @@ func TestRuleEngine_SingleDescriptor_Unchanged(t *testing.T) {
 		t.Fatalf("expected delete for single descriptor match, got %s", action)
 	}
 }
+
+func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
+	// A message with no descriptors should NOT match rules on segmentation_type_id
+	// or duration. Previously, extractFieldValues returned []string{"0"} for these
+	// fields when no descriptors existed, causing rules like "< 50" or "= 0" to
+	// incorrectly match descriptor-less messages.
+
+	t.Run("segmentation_type_id equals zero", func(t *testing.T) {
+		re := NewRuleEngine()
+		re.AddRule(Rule{
+			ID:         "r1",
+			Name:       "match seg type 0",
+			Enabled:    true,
+			Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "=", Value: "0"}},
+			Action:     ActionDelete,
+		})
+
+		// splice_insert has no descriptors
+		msg := NewSpliceInsert(1, 30*time.Second, true, true)
+		action, _ := re.Evaluate(msg, "")
+		if action != ActionPass {
+			t.Fatalf("expected pass for descriptor-less message, got %s", action)
+		}
+	})
+
+	t.Run("segmentation_type_id less than 50", func(t *testing.T) {
+		re := NewRuleEngine()
+		re.AddRule(Rule{
+			ID:         "r1",
+			Name:       "match seg type < 50",
+			Enabled:    true,
+			Conditions: []RuleCondition{{Field: "segmentation_type_id", Operator: "<", Value: "50"}},
+			Action:     ActionDelete,
+		})
+
+		msg := NewSpliceInsert(1, 30*time.Second, true, true)
+		action, _ := re.Evaluate(msg, "")
+		if action != ActionPass {
+			t.Fatalf("expected pass for descriptor-less message, got %s", action)
+		}
+	})
+
+	t.Run("duration equals zero no break_duration", func(t *testing.T) {
+		re := NewRuleEngine()
+		re.AddRule(Rule{
+			ID:         "r1",
+			Name:       "match duration 0",
+			Enabled:    true,
+			Conditions: []RuleCondition{{Field: "duration", Operator: "=", Value: "0"}},
+			Action:     ActionDelete,
+		})
+
+		// splice_insert with no duration and no descriptors
+		msg := NewSpliceInsert(1, 0, false, false)
+		action, _ := re.Evaluate(msg, "")
+		if action != ActionPass {
+			t.Fatalf("expected pass for descriptor-less message with no duration, got %s", action)
+		}
+	})
+
+	t.Run("duration less than 15000 no break_duration", func(t *testing.T) {
+		re := NewRuleEngine()
+		re.AddRule(Rule{
+			ID:         "r1",
+			Name:       "short breaks",
+			Enabled:    true,
+			Conditions: []RuleCondition{{Field: "duration", Operator: "<", Value: "15000"}},
+			Action:     ActionDelete,
+		})
+
+		// splice_insert with no duration and no descriptors
+		msg := NewSpliceInsert(1, 0, false, false)
+		action, _ := re.Evaluate(msg, "")
+		if action != ActionPass {
+			t.Fatalf("expected pass for descriptor-less message with no duration, got %s", action)
+		}
+	})
+}

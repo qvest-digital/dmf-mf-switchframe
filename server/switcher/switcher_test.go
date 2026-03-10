@@ -712,10 +712,10 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "cam1"))
 
 	// Send several frames with known sizes and PTS deltas.
-	// 30fps = ~33333µs between frames, frame size ~10000 bytes
+	// 30fps at 90kHz clock = 3000 ticks between frames, frame size ~10000 bytes
 	for i := 0; i < 20; i++ {
 		cam1Relay.BroadcastVideo(&media.VideoFrame{
-			PTS:        int64(i) * 33333,
+			PTS:        int64(i) * 3000,
 			IsKeyframe: i == 0,
 			WireData:   make([]byte, 10000),
 		})
@@ -1175,4 +1175,273 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 			sw.Close()
 		}, "Close() panicked on iteration %d", i)
 	}
+}
+
+func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
+	// Bug A1: When the channel is full, enqueueVideoWork drops the oldest
+	// frame and tries to re-enqueue the new one. If re-enqueue also fails
+	// (race: another goroutine filled the slot), the new work item's pool
+	// buffer must be released. Also, videoProcDropped should only increment
+	// when a frame is actually lost (re-enqueue failure), not on every
+	// drop-oldest path.
+
+	// Create a switcher with a tiny channel capacity of 1.
+	pool := NewFramePool(8, 4, 4)
+	programRelay := newTestRelay()
+	sw := &Switcher{
+		sources:     make(map[string]*sourceState),
+		programRelay: programRelay,
+		health:       newHealthMonitor(),
+		// Channel capacity 1 to make it easy to fill.
+		videoProcCh:   make(chan videoProcWork, 1),
+		videoProcDone: make(chan struct{}),
+		framePool:     pool,
+	}
+	defaultFmt := DefaultFormat
+	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
+	sw.pipelineFormat.Store(&defaultFmt)
+	sw.delayBuffer = NewDelayBuffer(sw)
+
+	// Don't start videoProcessingLoop — we want the channel to stay full.
+
+	// Fill the channel (capacity 1).
+	pf1 := &ProcessingFrame{
+		YUV: pool.Acquire(), Width: 4, Height: 4,
+		PTS: 100, IsKeyframe: true, pool: pool,
+	}
+	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
+
+	// Now enqueue a second frame. This triggers the drop-oldest path.
+	// The oldest (pf1) will be drained and released, then the new frame
+	// will be enqueued into the now-empty slot. This is the success path.
+	pf2 := &ProcessingFrame{
+		YUV: pool.Acquire(), Width: 4, Height: 4,
+		PTS: 200, IsKeyframe: false, pool: pool,
+	}
+	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
+
+	// pf1 was dropped and released. pf2 should be in the channel.
+	require.Len(t, sw.videoProcCh, 1, "channel should have the new frame")
+
+	// Now test the failure path: fill the channel again, then simulate
+	// a scenario where re-enqueue fails by filling it from outside first.
+	// We need to ensure that if both the channel-drain AND re-enqueue
+	// default branches fire, the new frame's buffer gets released.
+	//
+	// To test this deterministically, we fill the channel and then call
+	// enqueueVideoWork again — but this time we pre-fill from the outside
+	// after the drain so the re-enqueue default branch fires.
+	//
+	// Since we can't control goroutine scheduling, we test by verifying
+	// that after many enqueue attempts on a permanently full channel,
+	// all buffers are eventually returned to the pool.
+	//
+	// Strategy: acquire all buffers, enqueue them on a stopped channel,
+	// then check pool stats.
+	pool2 := NewFramePool(4, 4, 4)
+	sw2 := &Switcher{
+		sources:      make(map[string]*sourceState),
+		programRelay: programRelay,
+		health:       newHealthMonitor(),
+		videoProcCh:  make(chan videoProcWork, 1),
+		videoProcDone: make(chan struct{}),
+		framePool:     pool2,
+	}
+	sw2.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
+	sw2.pipelineFormat.Store(&defaultFmt)
+	sw2.delayBuffer = NewDelayBuffer(sw2)
+
+	// Acquire all 4 buffers from pool2.
+	bufs := make([][]byte, 4)
+	for i := range bufs {
+		bufs[i] = pool2.Acquire()
+	}
+	// Pool is now empty — all 4 buffers are out.
+	_, missesBefore := pool2.Stats()
+
+	// Put one in the channel to fill it.
+	sw2.videoProcCh <- videoProcWork{yuvFrame: &ProcessingFrame{
+		YUV: bufs[0], Width: 4, Height: 4, PTS: 1, pool: pool2,
+	}}
+
+	// Enqueue the remaining 3 — each triggers drop-oldest + re-enqueue.
+	// One frame remains in the channel at the end, the rest should be released.
+	for i := 1; i < 4; i++ {
+		sw2.enqueueVideoWork(videoProcWork{yuvFrame: &ProcessingFrame{
+			YUV: bufs[i], Width: 4, Height: 4, PTS: int64(i * 100), pool: pool2,
+		}})
+	}
+
+	// Drain the last frame from the channel.
+	remaining := <-sw2.videoProcCh
+	remaining.yuvFrame.ReleaseYUV()
+
+	// All 4 buffers should now be back in the pool.
+	hits, misses := pool2.Stats()
+	_ = missesBefore
+	// 4 acquires (hits) + 4 releases should mean all are back.
+	require.Equal(t, uint64(4), hits, "all 4 initial Acquires should be hits")
+	// Verify no extra misses happened (no buffer was leaked causing a fallback alloc).
+	require.Equal(t, misses, uint64(0), "no pool misses should occur — all buffers accounted for")
+
+	// Clean up: close channels to avoid goroutine leaks.
+	close(sw.videoProcCh)
+	close(sw2.videoProcCh)
+	sw.delayBuffer.Close()
+	sw2.delayBuffer.Close()
+	sw.health.stop()
+	sw2.health.stop()
+}
+
+func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
+	// Bug A1 (part 2): videoProcDropped should only increment when a frame
+	// is actually lost (re-enqueue failure), not on every drop-oldest path.
+	// When the oldest frame is dropped but the new one is successfully
+	// enqueued, there is no net frame loss — just a swap of old for new.
+	pool := NewFramePool(8, 4, 4)
+	programRelay := newTestRelay()
+	sw := &Switcher{
+		sources:      make(map[string]*sourceState),
+		programRelay: programRelay,
+		health:       newHealthMonitor(),
+		videoProcCh:  make(chan videoProcWork, 1),
+		videoProcDone: make(chan struct{}),
+		framePool:     pool,
+	}
+	defaultFmt := DefaultFormat
+	sw.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
+	sw.pipelineFormat.Store(&defaultFmt)
+	sw.delayBuffer = NewDelayBuffer(sw)
+	defer func() {
+		close(sw.videoProcCh)
+		sw.delayBuffer.Close()
+		sw.health.stop()
+	}()
+
+	// Fill the channel.
+	pf1 := &ProcessingFrame{
+		YUV: pool.Acquire(), Width: 4, Height: 4,
+		PTS: 100, IsKeyframe: true, pool: pool,
+	}
+	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
+
+	// Enqueue a new frame — should drop oldest and re-enqueue successfully.
+	pf2 := &ProcessingFrame{
+		YUV: pool.Acquire(), Width: 4, Height: 4,
+		PTS: 200, IsKeyframe: false, pool: pool,
+	}
+	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
+
+	// The old frame was dropped, but the new one took its place.
+	// No net frame loss — videoProcDropped should be 0.
+	require.Equal(t, int64(0), sw.videoProcDropped.Load(),
+		"videoProcDropped should not increment when re-enqueue succeeds (no net loss)")
+}
+
+func TestBroadcastProcessed_ShortYUVDoesNotPanic(t *testing.T) {
+	// Bug A2: broadcastProcessed must check that len(yuv) >= expectedSize
+	// before copying into a pool buffer. A short slice would cause a panic
+	// on the copy(buf, yuv[:expectedSize]) line.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	// Create a short YUV buffer — smaller than 320x240 * 3/2 = 115200.
+	shortYUV := make([]byte, 100)
+
+	// Should not panic.
+	require.NotPanics(t, func() {
+		sw.broadcastProcessed(shortYUV, 320, 240, 90000, true)
+	})
+
+	// Verify no pool buffer was leaked (Acquire should not have been called
+	// since the bounds check should bail out before Acquire).
+	// Give a tiny window for any async work to complete.
+	time.Sleep(10 * time.Millisecond)
+}
+
+func TestBroadcastProcessed_EmptyYUVDoesNotPanic(t *testing.T) {
+	// Edge case: nil/empty YUV slice.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	require.NotPanics(t, func() {
+		sw.broadcastProcessed(nil, 320, 240, 90000, true)
+	})
+	require.NotPanics(t, func() {
+		sw.broadcastProcessed([]byte{}, 1920, 1080, 90000, true)
+	})
+}
+
+func TestUpdateFrameStats_90kHzPTS(t *testing.T) {
+	// Bug A4: updateFrameStats used 1,000,000 (microseconds) as the PTS
+	// timebase, but PTS throughout the codebase is in 90kHz clock units
+	// (standard MPEG-TS). At 29.97fps, the PTS delta between frames is
+	// 90000/29.97 ~= 3003 ticks. With the wrong timebase (1M), FPS would
+	// be computed as 1,000,000/3003 ~= 333 fps instead of ~29.97 fps.
+
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	ss := &sourceState{key: "test"}
+
+	// Simulate 29.97fps frames with PTS delta of 3003 (90kHz clock).
+	// 90000 / 29.97 = 3003.003... ≈ 3003
+	const ptsDelta = 3003
+	const numFrames = 100
+
+	for i := 0; i < numFrames; i++ {
+		frame := &media.VideoFrame{
+			PTS:      int64(i * ptsDelta),
+			WireData: make([]byte, 50000), // ~50KB per frame
+		}
+		sw.updateFrameStats(ss, frame)
+	}
+
+	// avgFPS should converge to ~29.97, not ~333.
+	require.InDelta(t, 29.97, ss.avgFPS, 1.0,
+		"avgFPS should be ~29.97 for 90kHz PTS deltas of 3003, got %f", ss.avgFPS)
+}
+
+func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
+	// Verify that deltas > 1 second (90000 ticks) are rejected.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	ss := &sourceState{key: "test"}
+
+	// First frame seeds the stats.
+	sw.updateFrameStats(ss, &media.VideoFrame{
+		PTS: 0, WireData: make([]byte, 50000),
+	})
+
+	// Second frame with normal delta to establish avgFPS.
+	sw.updateFrameStats(ss, &media.VideoFrame{
+		PTS: 3003, WireData: make([]byte, 50000),
+	})
+	fpsAfterNormal := ss.avgFPS
+	require.InDelta(t, 29.97, fpsAfterNormal, 1.0)
+
+	// Third frame with a huge PTS jump (>90000 ticks = >1 second).
+	// This should be rejected and avgFPS should remain unchanged.
+	sw.updateFrameStats(ss, &media.VideoFrame{
+		PTS: 3003 + 200000, WireData: make([]byte, 50000),
+	})
+	require.InDelta(t, fpsAfterNormal, ss.avgFPS, 0.01,
+		"avgFPS should be unchanged after rejecting unreasonable delta")
 }

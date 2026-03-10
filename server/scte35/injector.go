@@ -354,6 +354,16 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		// Start auto-return timer if configured.
 		if msg.AutoReturn && msg.BreakDuration != nil && *msg.BreakDuration > 0 {
 			dur := *msg.BreakDuration
+			// If the splice point is in the future (scheduled with pre-roll),
+			// add the pre-roll time to the auto-return delay so the return
+			// fires relative to the splice point, not the injection time.
+			if msg.SpliceTimePTS != nil {
+				currentPTS := inj.ptsFn()
+				if currentPTS > 0 && *msg.SpliceTimePTS > currentPTS {
+					preRollTicks := *msg.SpliceTimePTS - currentPTS
+					dur += time.Duration(preRollTicks) * time.Second / 90000
+				}
+			}
 			eid := msg.EventID
 			ae.returnTimer = time.AfterFunc(dur, func() {
 				_ = inj.ReturnToProgram(eid)

@@ -613,3 +613,237 @@ func TestReader_AudioChannelNilForVideo(t *testing.T) {
 		t.Fatal("expected non-nil Video() channel for video reader")
 	}
 }
+
+// underflowDiscreteReader simulates a "too late" error followed by HeadIndex
+// returning a small value (0 or 1), which previously caused uint64 underflow
+// in the `index = headIdx - 2` re-sync logic.
+type underflowDiscreteReader struct {
+	mu        sync.Mutex
+	headIdx   uint64
+	callCount int
+	indices   []uint64 // record all indices passed to ReadGrain
+}
+
+func (r *underflowDiscreteReader) ReadGrain(index uint64, _ uint64) ([]byte, GrainInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.indices = append(r.indices, index)
+	r.callCount++
+
+	// First call: return "too late" to trigger re-sync.
+	if r.callCount == 1 {
+		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: too late (index %d)", index)
+	}
+
+	// After re-sync, return timeout to let context cancel cleanly.
+	return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+}
+
+func (r *underflowDiscreteReader) ConfigInfo() FlowConfig {
+	return FlowConfig{Format: DataFormatVideo, GrainRate: Rational{30, 1}}
+}
+
+func (r *underflowDiscreteReader) HeadIndex() (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.headIdx, nil
+}
+
+func (r *underflowDiscreteReader) Close() error { return nil }
+
+func (r *underflowDiscreteReader) getIndices() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]uint64, len(r.indices))
+	copy(result, r.indices)
+	return result
+}
+
+func TestVideoLoop_HeadIndexZero_NoUnderflow(t *testing.T) {
+	// When headIdx is 0, the old code does `index = headIdx - 2` which wraps
+	// uint64 to 18446744073709551614. The fix should clamp to headIdx (0).
+	flow := &underflowDiscreteReader{headIdx: 0}
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+		Width:     320,
+		Height:    240,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+	reader.Wait()
+
+	// Check that no index was a huge underflowed value.
+	indices := flow.getIndices()
+	for _, idx := range indices {
+		if idx > 1000 {
+			t.Fatalf("index underflowed to %d; expected small value after re-sync with headIdx=0", idx)
+		}
+	}
+}
+
+func TestVideoLoop_HeadIndexOne_NoUnderflow(t *testing.T) {
+	// headIdx=1: old code does `index = 1 - 2` which wraps.
+	// Fix should clamp to headIdx (1).
+	flow := &underflowDiscreteReader{headIdx: 1}
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+		Width:     320,
+		Height:    240,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+	reader.Wait()
+
+	indices := flow.getIndices()
+	for _, idx := range indices {
+		if idx > 1000 {
+			t.Fatalf("index underflowed to %d; expected small value after re-sync with headIdx=1", idx)
+		}
+	}
+}
+
+func TestDataLoop_HeadIndexZero_NoUnderflow(t *testing.T) {
+	// Same underflow bug exists in dataLoop.
+	flow := &underflowDiscreteReader{headIdx: 0}
+
+	reader := NewDataReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	reader.StartData(ctx, flow)
+	reader.Wait()
+
+	indices := flow.getIndices()
+	for _, idx := range indices {
+		if idx > 1000 {
+			t.Fatalf("index underflowed to %d; expected small value after re-sync with headIdx=0", idx)
+		}
+	}
+}
+
+func TestDataLoop_HeadIndexOne_NoUnderflow(t *testing.T) {
+	flow := &underflowDiscreteReader{headIdx: 1}
+
+	reader := NewDataReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	reader.StartData(ctx, flow)
+	reader.Wait()
+
+	indices := flow.getIndices()
+	for _, idx := range indices {
+		if idx > 1000 {
+			t.Fatalf("index underflowed to %d; expected small value after re-sync with headIdx=1", idx)
+		}
+	}
+}
+
+// timeoutCountingReader always returns timeout errors.
+// Used to verify that timeout/too-early errors are NOT counted as fatal.
+type timeoutCountingReader struct {
+	mu        sync.Mutex
+	headIdx   uint64
+	readCount int
+}
+
+func (r *timeoutCountingReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.readCount++
+	return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+}
+
+func (r *timeoutCountingReader) ConfigInfo() FlowConfig {
+	return FlowConfig{Format: DataFormatVideo, GrainRate: Rational{30, 1}}
+}
+
+func (r *timeoutCountingReader) HeadIndex() (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.headIdx, nil
+}
+
+func (r *timeoutCountingReader) Close() error { return nil }
+
+func TestVideoLoop_TimeoutNotCountedAsFatalError(t *testing.T) {
+	// In the buggy code, timeout errors increment consecutiveErrors,
+	// causing premature termination after maxConsecutiveErrors (50).
+	// After the fix, timeout and too-early are transient and should
+	// NOT count as consecutive errors.
+	flow := &timeoutCountingReader{headIdx: 10}
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+		Width:     320,
+		Height:    240,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+	reader.Wait()
+
+	flow.mu.Lock()
+	count := flow.readCount
+	flow.mu.Unlock()
+
+	// The reader should have made many reads without dying from consecutive errors.
+	// With maxConsecutiveErrors=50 and timeout counting as errors, it would die
+	// after exactly 50 reads. Without counting, it should continue until context
+	// cancels, making far more than 50 reads.
+	if count <= 50 {
+		t.Fatalf("timeout errors were counted as fatal: reader stopped after %d reads (max consecutive = 50)", count)
+	}
+}
+
+func TestVideoLoop_TooLateResync_LargeHeadIdx(t *testing.T) {
+	// When headIdx >= 2, headIdx - 2 is fine (no underflow). Verify it
+	// correctly re-syncs to headIdx-2 = 98.
+	flow := &underflowDiscreteReader{headIdx: 100}
+
+	reader := NewVideoReader(ReaderConfig{
+		BufSize:   4,
+		TimeoutMs: 1,
+		Width:     320,
+		Height:    240,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	reader.StartVideo(ctx, flow)
+	reader.Wait()
+
+	indices := flow.getIndices()
+	found98 := false
+	for _, idx := range indices {
+		if idx == 98 {
+			found98 = true
+			break
+		}
+	}
+	if !found98 {
+		t.Fatalf("expected index 98 (headIdx-2) after resync with headIdx=100; indices: %v", indices)
+	}
+}

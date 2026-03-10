@@ -24,10 +24,10 @@ func ExampleAlphaBlendRGBA() {
 
 	graphics.AlphaBlendRGBA(yuv, rgba, 2, 2, 1.0)
 
-	// After blending, the frame should be white: Y=254 (integer BT.709
-	// coefficients 54+183+18=255 produce 254 for pure white), Cb=128, Cr=128.
+	// After blending, the frame should be white: Y=255 (integer BT.709
+	// coefficients 54+183+19=256 produce 255 for pure white), Cb=128, Cr=128.
 	fmt.Printf("Y=[%d %d %d %d] Cb=%d Cr=%d\n",
 		yuv[0], yuv[1], yuv[2], yuv[3], yuv[4], yuv[5])
 	// Output:
-	// Y=[254 254 254 254] Cb=128 Cr=128
+	// Y=[255 255 255 255] Cb=128 Cr=128
 }

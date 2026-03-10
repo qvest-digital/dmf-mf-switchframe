@@ -28,6 +28,8 @@
 #define USHLL_8H(Vd, Vn) WORD $(0x2F08A400 | ((Vn)<<5) | (Vd))
 // USHLL Vd.4S, Vn.4H, #0 — zero-extend uint16 to uint32
 #define USHLL_4S(Vd, Vn) WORD $(0x2F10A400 | ((Vn)<<5) | (Vd))
+// SMAX Vd.4S, Vn.4S, Vm.4S — signed maximum (clamp negatives to 0 using zero vector)
+#define VSMAX_4S(Vd, Vn, Vm) WORD $(0x4EA06400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 
 // Registers:
 //   R0 = cbRow, R1 = crRow, R2 = rgba, R3 = chromaWidth, R4 = alphaScale256
@@ -64,6 +66,8 @@ TEXT ·alphaBlendRGBAChromaRow(SB), NOSPLIT, $0-40
 	MOVD  $12, R5
 	VDUP_4S(31, 5)
 	VDUP_4S(23, 4)
+	// V22 = zero vector for negative clamping
+	VEOR V22.B16, V22.B16, V22.B16
 
 	CMP  $4, R3
 	BLT  chroma_scalar
@@ -136,13 +140,15 @@ chroma_neon4:
 	VMUL_4S(11, 11, 10)
 	VMLA_4S(11, 8, 6)
 	VADD V11.S4, V25.S4, V11.S4
-	USHR_4S(11, 11, 8)
+	SSHR_4S(11, 11, 8)             // signed shift to preserve negative
+	VSMAX_4S(11, 11, 22)           // clamp negatives to 0
 
 	// Blend Cr
 	VMUL_4S(16, 16, 10)
 	VMLA_4S(16, 9, 6)
 	VADD V16.S4, V25.S4, V16.S4
-	USHR_4S(16, 16, 8)
+	SSHR_4S(16, 16, 8)             // signed shift to preserve negative
+	VSMAX_4S(16, 16, 22)           // clamp negatives to 0
 
 	// Saturating narrow: uint32 → uint16 → uint8
 	UQXTN_4H(11, 11)
@@ -217,7 +223,9 @@ chroma_scalar_loop:
 	MUL   R5, R9, R9
 	ADD   R9, R12, R12
 	ADD   $128, R12, R12
-	LSR   $8, R12, R12
+	ASR   $8, R12, R12
+	CMP   $0, R12
+	CSEL  LT, ZR, R12, R12
 	MOVD  $255, R13
 	CMP   R13, R12
 	CSEL  HI, R13, R12, R12
@@ -228,7 +236,9 @@ chroma_scalar_loop:
 	MUL   R5, R10, R10
 	ADD   R10, R12, R12
 	ADD   $128, R12, R12
-	LSR   $8, R12, R12
+	ASR   $8, R12, R12
+	CMP   $0, R12
+	CSEL  LT, ZR, R12, R12
 	CMP   R13, R12
 	CSEL  HI, R13, R12, R12
 	MOVB  R12, (R1)

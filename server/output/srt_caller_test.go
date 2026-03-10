@@ -633,7 +633,72 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 	_ = c.Close()
 }
 
-func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
+// ---------- C4: pendingIDR on all reconnects, not just overflow ----------
+
+func TestSRTCaller_IDRGating_AlwaysSetOnReconnect(t *testing.T) {
+	// Even without overflow, the remote decoder has lost state after a
+	// reconnect and needs a keyframe before it can decode delta frames.
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096, // large buffer -- no overflow
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(ptrTo(StateReconnecting))
+
+	// Write small data (no overflow).
+	_, _ = c.ringBuf.Write(make([]byte, 188))
+
+	var callbackCalled atomic.Bool
+	c.onReconnect = func(overflowed bool) {
+		callbackCalled.Store(true)
+	}
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return callbackCalled.Load()
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// pendingIDR should be set even without overflow.
+	require.True(t, c.pendingIDR.Load(),
+		"pendingIDR should be set after ANY reconnect, not just overflow")
+
+	// Delta frames should be gated.
+	deltaPkt := makeTSPacket(0x100, false)
+	n, err := c.Write(deltaPkt)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt), n)
+	// No data should be flushed — buffered delta frames are discarded
+	// because the remote decoder has no state after reconnect.
+	require.Equal(t, int64(0), mock.written.Load(),
+		"delta packet should be dropped while IDR gate is active")
+
+	// Keyframe should clear the gate.
+	keyframePkt := makeTSPacket(0x100, true)
+	_, err = c.Write(keyframePkt)
+	require.NoError(t, err)
+	require.False(t, c.pendingIDR.Load(),
+		"pendingIDR should be cleared after keyframe")
+
+	// Overflow count should still be 0 (no overflow occurred).
+	require.Equal(t, int64(0), c.overflowCount.Load(),
+		"overflow count should be 0 when no overflow occurred")
+
+	_ = c.Close()
+}
+
+func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
+	// After the C4 fix, pendingIDR is always set on reconnect, even without
+	// overflow. The remote decoder has lost state and needs a keyframe.
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -664,22 +729,31 @@ func TestSRTCaller_IDRGating_NotSetWithoutOverflow(t *testing.T) {
 		return callbackCalled.Load()
 	}, 5*time.Second, 50*time.Millisecond)
 
-	// No overflow — pendingIDR should NOT be set
-	require.False(t, c.pendingIDR.Load(), "pendingIDR should not be set when no overflow occurred")
+	// pendingIDR should be set on any reconnect (C4 fix).
+	require.True(t, c.pendingIDR.Load(), "pendingIDR should be set after any reconnect")
 
-	// Delta packets should pass through immediately
+	// Delta packets should be gated.
 	deltaPkt := makeTSPacket(0x100, false)
 	n, err := c.Write(deltaPkt)
 	require.NoError(t, err)
 	require.Equal(t, len(deltaPkt), n)
-	// Written bytes = flushed buffer (188) + delta packet (188)
-	require.Equal(t, int64(188+188), mock.written.Load(),
-		"delta should pass through when no IDR gate is active")
+	// No data should be flushed — buffered data is discarded on reconnect.
+	require.Equal(t, int64(0), mock.written.Load(),
+		"delta should be gated after reconnect")
+
+	// Keyframe clears the gate.
+	keyframePkt := makeTSPacket(0x100, true)
+	_, err = c.Write(keyframePkt)
+	require.NoError(t, err)
+	require.False(t, c.pendingIDR.Load(), "pendingIDR should be cleared after keyframe")
+
+	// No overflow, so overflow count should remain 0.
+	require.Equal(t, int64(0), c.overflowCount.Load())
 
 	_ = c.Close()
 }
 
-func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
+func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -711,8 +785,14 @@ func TestSRTCaller_ReconnectFlushesBuffer(t *testing.T) {
 		return c.Status().State == StateActive
 	}, 5*time.Second, 50*time.Millisecond)
 
-	// Buffer data should have been flushed to the mock connection
-	require.Equal(t, int64(len(testData)), mock.written.Load())
+	// Buffered data should be discarded, not flushed — the remote decoder
+	// has no state after reconnect, so delta frames would cause errors.
+	require.Equal(t, int64(0), mock.written.Load(),
+		"buffered data should be discarded on reconnect, not flushed")
+
+	// pendingIDR should be set, waiting for a keyframe.
+	require.True(t, c.pendingIDR.Load(),
+		"pendingIDR should be set after reconnect")
 
 	_ = c.Close()
 }

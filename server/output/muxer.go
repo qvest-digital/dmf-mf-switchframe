@@ -48,6 +48,7 @@ type TSMuxer struct {
 	scte35PID      uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35  [][]byte
 	lastVideoPTS   int64
+	lastPCRPTS     int64
 	scte35CC       uint8 // continuity counter for SCTE-35 PID
 }
 
@@ -250,6 +251,15 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		RandomAccessIndicator: frame.IsKeyframe,
 	}
 
+	// Insert PCR on keyframes and at least every 30ms (under the 40ms MPEG-TS requirement).
+	// PCR base uses the same 90kHz timebase as PTS.
+	const pcrInterval = 2700 // 30ms at 90kHz — ensures PCR on every frame at 30fps (33.3ms > 30ms)
+	if frame.IsKeyframe || frame.PTS-m.lastPCRPTS >= pcrInterval {
+		af.HasPCR = true
+		af.PCR = &astits.ClockReference{Base: frame.PTS}
+		m.lastPCRPTS = frame.PTS
+	}
+
 	md := &astits.MuxerData{
 		PID:             videoPID,
 		AdaptationField: af,
@@ -333,6 +343,7 @@ func (m *TSMuxer) Close() error {
 	m.initialized = false
 	m.pendingAudio = nil
 	m.pendingSCTE35 = nil
+	m.lastPCRPTS = 0
 	return nil
 }
 

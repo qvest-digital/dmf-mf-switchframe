@@ -82,10 +82,11 @@ type Writer struct {
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
 
-	// Double-buffered V210 output to avoid per-frame allocation.
-	// WriteVideo alternates between buf[0] and buf[1]; one is being
-	// consumed by the ticker while the other is being filled.
-	v210Bufs      [2][]byte
+	// Triple-buffered V210 output to avoid per-frame allocation.
+	// WriteVideo writes to a buffer that is NOT the currently-published one.
+	// With 3 buffers, the ticker can safely read the published buffer while
+	// WriteVideo fills the next one, even at high throughput.
+	v210Bufs      [3][]byte
 	v210BufIdx    int
 	v210BufWidth  int
 	v210BufHeight int
@@ -167,20 +168,23 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		}
 	}
 
-	// Convert YUV420p → V210 using double-buffered output.
-	// We alternate between two pre-allocated buffers so the ticker goroutine
-	// can safely read one while we fill the other.
+	// Convert YUV420p → V210 using triple-buffered output.
+	// We select the next buffer that isn't the currently-published one,
+	// so the ticker goroutine can safely read the published buffer.
 	stride := V210LineStride(width)
 	outSize := stride * height
 	if w.v210BufWidth != width || w.v210BufHeight != height {
 		w.v210Bufs[0] = make([]byte, outSize)
 		w.v210Bufs[1] = make([]byte, outSize)
+		w.v210Bufs[2] = make([]byte, outSize)
 		w.v210BufIdx = 0
 		w.v210BufWidth = width
 		w.v210BufHeight = height
 	}
 
-	buf := w.v210Bufs[w.v210BufIdx]
+	// Select next buffer that isn't the currently-published one.
+	nextIdx := (w.v210BufIdx + 1) % 3
+	buf := w.v210Bufs[nextIdx]
 	if err := YUV420pToV210Into(yuv, buf, width, height); err != nil {
 		w.log.Error("mxl writer: YUV420p→V210 conversion failed",
 			"error", err, "width", width, "height", height)
@@ -188,7 +192,7 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 	}
 
 	w.latestV210.Store(&v210Frame{data: buf})
-	w.v210BufIdx ^= 1
+	w.v210BufIdx = nextIdx
 }
 
 // videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.

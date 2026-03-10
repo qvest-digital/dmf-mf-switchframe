@@ -53,11 +53,40 @@ func TestAlphaBlendRGBARowY_FullOpaqueWhite(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
-	// BT.709: Y = (54*255 + 183*255 + 18*255 + 128) >> 8
-	// = (13770 + 46665 + 4590 + 128) >> 8 = 65153 >> 8 = 254
-	// Integer approximation: 54+183+18=255, so (255*255+128)>>8 = 254
+	// BT.709: Y = (54*255 + 183*255 + 19*255 + 128) >> 8
+	// = (13770 + 46665 + 4845 + 128) >> 8 = 65408 >> 8 = 255
+	// Integer approximation: 54+183+19=256, so (256*255+128)>>8 = 255
 	for i := 0; i < width; i++ {
-		assert.InDelta(t, 254, int(yRow[i]), 1, "Y[%d] should be ~254 for white", i)
+		assert.InDelta(t, 255, int(yRow[i]), 1, "Y[%d] should be ~255 for white", i)
+	}
+}
+
+// TestAlphaBlendRGBARowY_WhiteMapsTo255 verifies that full-range white
+// (R=G=B=255) maps to Y=255, not Y=254. BT.709 integer coefficients must
+// sum to 256 (not 255) so that (256*255+128)>>8 = 255.
+//
+// With blue coefficient 18: 54+183+18=255 → (255*255+128)>>8=254 (WRONG)
+// With blue coefficient 19: 54+183+19=256 → (256*255+128)>>8=255 (CORRECT)
+func TestAlphaBlendRGBARowY_WhiteMapsTo255(t *testing.T) {
+	t.Parallel()
+	width := 16
+	yRow := make([]byte, width)
+
+	// Fully opaque white overlay on black background
+	rgba := make([]byte, width*4)
+	for i := 0; i < width; i++ {
+		rgba[i*4] = 255
+		rgba[i*4+1] = 255
+		rgba[i*4+2] = 255
+		rgba[i*4+3] = 255
+	}
+
+	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
+
+	// Full-range white MUST map to Y=255, not Y=254.
+	for i := 0; i < width; i++ {
+		assert.Equal(t, byte(255), yRow[i],
+			"Y[%d] = %d, want 255 for full-range white (coefficient sum must be 256)", i, yRow[i])
 	}
 }
 
@@ -102,7 +131,7 @@ func TestAlphaBlendRGBARowY_HalfAlpha(t *testing.T) {
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
 	// a256 = (128*256+128)>>8 = 128
-	// overlayY = (54*255 + 183*255 + 18*255 + 128) >> 8 = 254
+	// overlayY = (54*255 + 183*255 + 19*255 + 128) >> 8 = 255
 	// result = (0*128 + 254*128 + 128) >> 8 = 32640>>8 = 127
 	for i := 0; i < width; i++ {
 		assert.InDelta(t, 127, int(yRow[i]), 2, "Y[%d] should be ~127 for half-alpha white on black", i)
@@ -127,8 +156,8 @@ func TestAlphaBlendRGBARowY_AlphaScale(t *testing.T) {
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 128) // 50% alpha scale
 
 	// a256 = (255*128+128)>>8 = 32768>>8 = 128
-	// overlayY = 254
-	// result = (0*128 + 254*128 + 128) >> 8 = 32640>>8 = 127
+	// overlayY = 255
+	// result = (0*128 + 255*128 + 128) >> 8 = 32768>>8 = 128
 	for i := 0; i < width; i++ {
 		assert.InDelta(t, 127, int(yRow[i]), 2, "Y[%d] should be ~127 for 50%% alpha scale", i)
 	}
@@ -271,8 +300,8 @@ func TestAlphaBlendRGBARowY_PureColors(t *testing.T) {
 	}{
 		{"pure red", 255, 0, 0, 54},     // 54*255/256 ~ 53-54
 		{"pure green", 0, 255, 0, 182},  // 183*255/256 ~ 182
-		{"pure blue", 0, 0, 255, 17},    // 18*255/256 ~ 17-18
-		{"mid gray", 128, 128, 128, 127}, // (54+183+18)*128/256 ~ 127
+		{"pure blue", 0, 0, 255, 18},    // 19*255/256 ~ 18-19
+		{"mid gray", 128, 128, 128, 128}, // (54+183+19)*128/256 = 128
 	}
 
 	for _, tc := range tests {

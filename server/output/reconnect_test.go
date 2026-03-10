@@ -12,8 +12,8 @@ import (
 
 // Integration-level SRT reconnection tests. The unit tests in srt_caller_test.go
 // cover basic reconnect flow and overflow callbacks. These tests verify:
-// 1. Data written during disconnect is preserved in the ring buffer and flushed on reconnect.
-// 2. After overflow, the first write post-reconnect is gated until a keyframe (IDR).
+// 1. Data written during disconnect is buffered but discarded on reconnect (remote decoder has no state).
+// 2. After reconnect, writes are gated until a keyframe (IDR).
 // 3. The onReconnect callback fires with overflowed=true after buffer overflow.
 
 func TestReconnect_RingBufferPreservesData(t *testing.T) {
@@ -68,18 +68,40 @@ func TestReconnect_RingBufferPreservesData(t *testing.T) {
 		return c.Status().State == StateActive
 	}, 5*time.Second, 50*time.Millisecond)
 
-	// Phase 4: Verify the buffered data was flushed to the new connection.
-	require.Equal(t, int64(188*3), mock2.written.Load(),
-		"buffered data should be flushed to the new connection")
+	// Phase 4: Buffered data should be discarded — the remote decoder has no
+	// state after reconnect, so flushing delta frames would cause errors.
+	require.Equal(t, int64(0), mock2.written.Load(),
+		"buffered data should be discarded on reconnect, not flushed")
 
-	// Verify the ring buffer is now empty.
-	require.Equal(t, 0, c.ringBuf.Len(), "ring buffer should be empty after flush")
+	// Verify the ring buffer is now empty (ReadAll clears it).
+	require.Equal(t, 0, c.ringBuf.Len(), "ring buffer should be empty after reconnect")
 
-	// Phase 5: New writes go directly to the new connection.
+	// Phase 5: After reconnect, pendingIDR is set — always gate until
+	// keyframe after any reconnect. Delta frames should be gated.
+	require.True(t, c.pendingIDR.Load(),
+		"pendingIDR should be set after any reconnect")
+
+	// Write a delta -- should be gated.
 	n, err := c.Write(pkt)
 	require.NoError(t, err)
 	require.Equal(t, 188, n)
-	require.Equal(t, int64(188*4), mock2.written.Load(),
+	require.Equal(t, int64(0), mock2.written.Load(),
+		"delta write should be gated after reconnect")
+
+	// Write a keyframe to clear the gate.
+	keyPkt := makeTSPacket(0x100, true)
+	n, err = c.Write(keyPkt)
+	require.NoError(t, err)
+	require.Equal(t, 188, n)
+	require.Equal(t, int64(188), mock2.written.Load(),
+		"keyframe should pass through and clear IDR gate")
+	require.False(t, c.pendingIDR.Load(), "pendingIDR should be cleared after keyframe")
+
+	// Now a delta goes directly to the new connection.
+	n, err = c.Write(pkt)
+	require.NoError(t, err)
+	require.Equal(t, 188, n)
+	require.Equal(t, int64(188*2), mock2.written.Load(),
 		"new write should go directly to the reconnected connection")
 
 	_ = c.Close()
@@ -212,7 +234,7 @@ func TestReconnect_OverflowCallback(t *testing.T) {
 	_ = c.Close()
 }
 
-func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
+func TestReconnect_NoOverflowDiscardsAndGates(t *testing.T) {
 	// Setup: large buffer that will NOT overflow.
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -255,26 +277,43 @@ func TestReconnect_NoOverflowFlushesProperly(t *testing.T) {
 		return callbackFired
 	}, 5*time.Second, 50*time.Millisecond)
 
-	// No overflow: data should have been flushed.
-	require.Equal(t, int64(188*3), mock.written.Load(),
-		"buffered data should be flushed when no overflow")
+	// Buffered data should be discarded — remote decoder has no state.
+	require.Equal(t, int64(0), mock.written.Load(),
+		"buffered data should be discarded on reconnect, not flushed")
 
 	mu.Lock()
 	require.False(t, callbackOverflowed,
 		"onReconnect callback should report overflowed=false")
 	mu.Unlock()
 
-	// pendingIDR should NOT be set (no overflow).
-	require.False(t, c.pendingIDR.Load(),
-		"pendingIDR should not be set when no overflow occurred")
+	// pendingIDR is always set after reconnect.
+	// The remote decoder has lost state and needs a keyframe.
+	require.True(t, c.pendingIDR.Load(),
+		"pendingIDR should be set after any reconnect")
 
-	// Delta frames should pass through immediately.
+	// Delta frames should be gated.
 	deltaPkt := makeTSPacket(0x100, false)
 	n, err := c.Write(deltaPkt)
 	require.NoError(t, err)
 	require.Equal(t, 188, n)
-	require.Equal(t, int64(188*4), mock.written.Load(),
-		"delta frame should pass through without IDR gate")
+	require.Equal(t, int64(0), mock.written.Load(),
+		"delta frame should be gated after reconnect")
+
+	// Keyframe clears the gate.
+	keyframePkt := makeTSPacket(0x100, true)
+	n, err = c.Write(keyframePkt)
+	require.NoError(t, err)
+	require.Equal(t, 188, n)
+	require.Equal(t, int64(188), mock.written.Load(),
+		"keyframe should pass through")
+	require.False(t, c.pendingIDR.Load(), "gate should be cleared after keyframe")
+
+	// Subsequent delta frames pass through.
+	n, err = c.Write(deltaPkt)
+	require.NoError(t, err)
+	require.Equal(t, 188, n)
+	require.Equal(t, int64(188*2), mock.written.Load(),
+		"delta frame should pass through after gate cleared")
 
 	_ = c.Close()
 }

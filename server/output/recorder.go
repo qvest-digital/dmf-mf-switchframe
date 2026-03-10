@@ -172,6 +172,55 @@ func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 	}
 }
 
+// setTSDiscontinuityIndicator sets the MPEG-TS discontinuity_indicator flag
+// on each 188-byte TS packet in the buffer. This is the standard way to signal
+// that continuity counter tracking resets at this point, used when writing
+// cached PAT/PMT packets at the start of a rotated recording file.
+//
+// For packets with no adaptation field (payload only, AFC=01), an adaptation
+// field is inserted: AFC is changed to 11 (adaptation + payload), with
+// adaptation_field_length=1 and the discontinuity_indicator bit set.
+//
+// For packets that already have an adaptation field (AFC=10 or 11), the
+// discontinuity_indicator bit (bit 7 of the flags byte) is set in the
+// existing adaptation field.
+func setTSDiscontinuityIndicator(tsData []byte) {
+	for i := 0; i+tsPacketSize <= len(tsData); i += tsPacketSize {
+		if tsData[i] != 0x47 {
+			continue // not a valid sync byte
+		}
+
+		afc := (tsData[i+3] >> 4) & 0x03
+
+		switch {
+		case afc >= 2:
+			// Adaptation field already exists (AFC=10 or AFC=11).
+			// Verify there is a flags byte (adaptation_field_length >= 1).
+			if tsData[i+4] >= 1 {
+				// Set discontinuity_indicator (bit 7 of flags byte at byte 5).
+				tsData[i+5] |= 0x80
+			}
+
+		case afc == 1:
+			// Payload only (AFC=01). We need to insert a minimal adaptation field.
+			// Change AFC from 01 to 11 (adaptation + payload), preserving CC.
+			tsData[i+3] = (tsData[i+3] & 0x0F) | 0x30
+
+			// Shift existing payload right by 2 bytes to make room for the
+			// adaptation field header (length + flags). The last 2 bytes of
+			// the original payload are dropped, which is acceptable for
+			// PAT/PMT packets whose trailing bytes are typically 0xFF stuffing.
+			copy(tsData[i+6:i+tsPacketSize], tsData[i+4:i+tsPacketSize-2])
+
+			// Set adaptation_field_length = 1 (just the flags byte).
+			tsData[i+4] = 1
+
+			// Set flags byte with discontinuity_indicator (bit 7).
+			tsData[i+5] = 0x80
+		}
+	}
+}
+
 // Write sends muxed MPEG-TS data to the file. If a rotation threshold
 // has been reached, the current file is closed and a new one is opened
 // before writing. Rotation is deferred until a keyframe arrives to
@@ -201,10 +250,12 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 
 		// Write cached PAT/PMT at the start of the new file.
 		if len(r.cachedPATMPT) > 0 {
+			setTSDiscontinuityIndicator(r.cachedPATMPT)
 			patN, err := r.file.Write(r.cachedPATMPT)
 			r.fileBytes += int64(patN)
 			r.bytes.Add(int64(patN))
 			if err != nil {
+				r.state = StateError
 				r.errMsg = err.Error()
 				return 0, err
 			}
@@ -215,6 +266,7 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	r.fileBytes += int64(n)
 	r.bytes.Add(int64(n))
 	if err != nil {
+		r.state = StateError
 		r.errMsg = err.Error()
 		return n, err
 	}

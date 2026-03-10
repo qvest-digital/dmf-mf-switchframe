@@ -51,6 +51,7 @@ type OutputManager struct {
 	onState    func() // triggers ControlRoomState broadcast
 	onMuxStart func() // triggers IDR keyframe request when muxer starts
 	closed     bool
+	stopping   bool   // true while stopMuxerLocked is draining the viewer (lock released)
 	ctx     context.Context    // cancelled on Close()
 	cancel  context.CancelFunc // cancels ctx
 
@@ -785,6 +786,11 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 		// Already running.
 		return false
 	}
+	if m.stopping {
+		// A stop is in progress (lock temporarily released during viewer drain).
+		// Don't create a new muxer — the stop will re-acquire the lock shortly.
+		return false
+	}
 
 	muxer := NewTSMuxer()
 	if m.scte35PID != 0 {
@@ -843,6 +849,12 @@ func (m *OutputManager) stopMuxerLocked() {
 	m.viewer = nil
 	m.muxer = nil
 
+	// Guard against concurrent ensureMuxerLocked() calls while the lock is
+	// released below. Without this, a concurrent start could create a new
+	// muxer/viewer and increment viewerWg, causing the Wait() below to
+	// block on the *new* viewer (which won't stop until the next shutdown).
+	m.stopping = true
+
 	// Remove viewer from relay first so no new frames arrive.
 	m.relay.RemoveViewer(viewer.ID())
 
@@ -864,6 +876,22 @@ func (m *OutputManager) stopMuxerLocked() {
 
 	// Re-acquire the lock (callers expect it held on return).
 	m.mu.Lock()
+	m.stopping = false
+
+	// If adapters were added while we were draining (ensureMuxerLocked
+	// would have been a no-op due to the stopping flag), start a new
+	// muxer now so they can receive data.
+	if len(*m.adapters.Load()) > 0 && m.ensureMuxerLocked() {
+		// Fire the muxer-start callback outside the lock. We capture the
+		// callback here; the caller of stopMuxerLocked will handle its own
+		// mux start notification separately if needed.
+		muxFn := m.onMuxStart
+		if muxFn != nil {
+			m.mu.Unlock()
+			muxFn()
+			m.mu.Lock()
+		}
+	}
 
 	m.log.Info("output pipeline stopped")
 }

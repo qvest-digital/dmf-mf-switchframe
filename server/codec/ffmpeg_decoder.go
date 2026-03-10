@@ -171,6 +171,12 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 	*out_width = 0;
 	*out_height = 0;
 
+	// Reset the packet before reuse. av_packet_unref frees side_data arrays
+	// and unrefs any attached buf references from the previous decode call.
+	// Without this, side_data accumulates across calls since we directly
+	// assign data/size below (bypassing av_packet_make_writable).
+	av_packet_unref(h->pkt);
+
 	h->pkt->data = data;
 	h->pkt->size = data_len;
 
@@ -394,6 +400,10 @@ func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
 
 // Decode decodes Annex B encoded H.264 data into packed YUV420 planar bytes.
 // Returns the YUV buffer (Y: w*h, U: w/2*h/2, V: w/2*h/2), width, height, and any error.
+//
+// WARNING: The returned YUV byte slice aliases the decoder's internal buffer.
+// It is only valid until the next call to Decode or ReceiveFrame. Callers
+// that need the data beyond that point must copy it before the next decode.
 func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.closed {
 		return nil, 0, 0, fmt.Errorf("decoder is closed")
@@ -487,6 +497,10 @@ func (d *FFmpegDecoder) SendEOS() error {
 // ReceiveFrame receives a decoded frame without sending new input.
 // Returns the YUV buffer, width, height, and any error.
 // Returns an error when no more frames are available (EAGAIN/EOF).
+//
+// WARNING: The returned YUV byte slice aliases the decoder's internal buffer.
+// It is only valid until the next call to Decode or ReceiveFrame. Callers
+// that need the data beyond that point must copy it before the next decode.
 func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	if d.closed {
 		return nil, 0, 0, fmt.Errorf("decoder is closed")

@@ -30,7 +30,13 @@ func (b *blendInterpolator) Interpolate(frameA, frameB []byte, width, height int
 	for i := 0; i < size && i < len(frameA) && i < len(frameB); i++ {
 		b.buf[i] = byte(float64(frameA[i])*invAlpha + float64(frameB[i])*alpha + 0.5)
 	}
-	return b.buf[:size]
+	// Return a copy so callers can hold the result across calls without
+	// it being overwritten by the next Interpolate() invocation. The replay
+	// player passes interpolated frames to RawVideoOutput which may consume
+	// them asynchronously.
+	out := make([]byte, size)
+	copy(out, b.buf[:size])
+	return out
 }
 
 // newInterpolator creates a FrameInterpolator for the given mode.

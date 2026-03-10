@@ -204,7 +204,7 @@ type sourceState struct {
 	// matches the source stream quality.
 	avgFrameSize float64       // exponential moving average of len(WireData) in bytes
 	avgFPS       float64       // exponential moving average of fps from PTS deltas
-	lastPTS      int64         // PTS of the most recent video frame (microseconds)
+	lastPTS      int64         // PTS of the most recent video frame (90kHz clock units)
 	frameCount   int           // total video frames received (for EMA warmup)
 	lastGroupID  atomic.Uint32 // most recent GroupID from this source's video frames
 }
@@ -1046,8 +1046,13 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 		select {
 		case s.videoProcCh <- work:
 		default:
+			// Re-enqueue failed (race: another writer filled the slot).
+			// Release the new frame's buffer to prevent pool exhaustion.
+			if work.yuvFrame != nil {
+				work.yuvFrame.ReleaseYUV()
+			}
+			s.videoProcDropped.Add(1)
 		}
-		s.videoProcDropped.Add(1)
 	}
 }
 
@@ -1098,6 +1103,9 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	s.mu.RUnlock()
 
 	expectedSize := width * height * 3 / 2
+	if len(yuv) < expectedSize {
+		return
+	}
 	buf := s.framePool.Acquire()
 	copy(buf, yuv[:expectedSize])
 
@@ -2284,10 +2292,10 @@ func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	// Update FPS EMA from PTS delta
 	if frame.PTS > ss.lastPTS {
 		deltaPTS := frame.PTS - ss.lastPTS
-		// PTS is in microseconds (90kHz clock is common, but Prism uses µs)
+		// PTS is in 90kHz clock units (standard MPEG-TS timebase).
 		// Protect against unreasonable deltas (>1 second or negative)
-		if deltaPTS > 0 && deltaPTS < 1_000_000 {
-			instantFPS := 1_000_000.0 / float64(deltaPTS)
+		if deltaPTS > 0 && deltaPTS < 90000 {
+			instantFPS := 90000.0 / float64(deltaPTS)
 			if ss.avgFPS == 0 {
 				ss.avgFPS = instantFPS
 			} else {

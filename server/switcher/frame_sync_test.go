@@ -978,3 +978,225 @@ func BenchmarkFrameSyncIngest(b *testing.B) {
 		fs.IngestAudio("cam1", aframe)
 	}
 }
+
+func TestTickPTSWithRemainder_NTSCDrift(t *testing.T) {
+	// At 59.94fps (60000/1001), tickPTSInterval truncates:
+	// 90000 * 1001 / 60000 = 1501.5 → 1501 (loses 0.5 ticks/frame).
+	// Over 1 hour at 59.94fps (~215827 frames), the truncation drift is
+	// 215827 * 0.5 = ~107913 ticks = ~1.2 seconds.
+	// The Bresenham accumulator must eliminate this drift.
+	fpsNum := int64(60000)
+	fpsDen := int64(1001)
+	baseInterval := int64(mpegtsClock) * fpsDen / fpsNum // 1501
+	remNum := (int64(mpegtsClock) * fpsDen) % fpsNum     // 90090000 % 60000 = 30000
+	remDen := fpsNum                                      // 60000
+
+	require.Equal(t, int64(1501), baseInterval, "base interval for 59.94fps")
+	require.Equal(t, int64(30000), remNum, "remainder numerator")
+
+	ss := &syncSource{}
+
+	// Simulate 1 hour of frames at 59.94fps
+	oneHourFrames := int(60000 * 3600 / 1001) // ~215784 frames
+	var totalPTS int64
+	for i := 0; i < oneHourFrames; i++ {
+		totalPTS += tickPTSWithRemainder(ss, baseInterval, remNum, remDen)
+	}
+
+	// Expected PTS for exactly oneHourFrames at exact 59.94fps:
+	// oneHourFrames * 90000 * 1001 / 60000
+	expectedPTS := int64(oneHourFrames) * int64(mpegtsClock) * fpsDen / fpsNum
+	// The Bresenham remainder handles the sub-tick portion, so we also
+	// need to account for the remainder that would have accumulated:
+	expectedRem := (int64(oneHourFrames) * int64(mpegtsClock) * fpsDen) % fpsNum
+
+	// The accumulated PTS should match the exact integer division
+	require.Equal(t, expectedPTS, totalPTS,
+		"Bresenham PTS must match exact computation over 1 hour")
+
+	// Verify the accumulator state is consistent
+	require.Equal(t, expectedRem, ss.ptsRemAccum,
+		"accumulator remainder should match expected")
+}
+
+func TestTickPTSWithRemainder_IntegerFPS(t *testing.T) {
+	// At integer FPS (e.g., 30fps), remainder is 0 — no correction needed.
+	fpsNum := int64(30)
+	fpsDen := int64(1)
+	baseInterval := int64(mpegtsClock) * fpsDen / fpsNum // 3000
+	remNum := (int64(mpegtsClock) * fpsDen) % fpsNum     // 0
+
+	require.Equal(t, int64(3000), baseInterval)
+	require.Equal(t, int64(0), remNum, "integer FPS should have zero remainder")
+
+	ss := &syncSource{}
+
+	// 1000 frames should produce exactly 3000*1000 = 3_000_000 PTS
+	var totalPTS int64
+	for i := 0; i < 1000; i++ {
+		totalPTS += tickPTSWithRemainder(ss, baseInterval, remNum, fpsNum)
+	}
+	require.Equal(t, int64(3_000_000), totalPTS)
+	require.Equal(t, int64(0), ss.ptsRemAccum, "no remainder for integer FPS")
+}
+
+func TestTickPTSWithRemainder_2997(t *testing.T) {
+	// 29.97fps (30000/1001): 90000*1001/30000 = 3003.0 exactly.
+	// Remainder is 0, so no Bresenham correction needed.
+	fpsNum := int64(30000)
+	fpsDen := int64(1001)
+	baseInterval := int64(mpegtsClock) * fpsDen / fpsNum
+	remNum := (int64(mpegtsClock) * fpsDen) % fpsNum
+
+	require.Equal(t, int64(3003), baseInterval, "29.97fps interval")
+	require.Equal(t, int64(0), remNum, "29.97fps has exact integer interval")
+}
+
+func TestTickPTSWithRemainder_23976(t *testing.T) {
+	// 23.976fps (24000/1001): 90000*1001/24000 = 3753.75 → truncates to 3753.
+	fpsNum := int64(24000)
+	fpsDen := int64(1001)
+	baseInterval := int64(mpegtsClock) * fpsDen / fpsNum // 3753
+	remNum := (int64(mpegtsClock) * fpsDen) % fpsNum     // should be non-zero
+
+	require.Equal(t, int64(3753), baseInterval, "23.976fps base interval")
+	require.Greater(t, remNum, int64(0), "23.976fps should have non-zero remainder")
+
+	ss := &syncSource{}
+
+	// Over 24000 frames (exactly 1001 seconds at 23.976fps), PTS should be exact.
+	// Expected: 24000 * 90000 * 1001 / 24000 = 90000 * 1001 = 90_090_000
+	var totalPTS int64
+	for i := 0; i < 24000; i++ {
+		totalPTS += tickPTSWithRemainder(ss, baseInterval, remNum, fpsNum)
+	}
+	require.Equal(t, int64(90_090_000), totalPTS,
+		"23.976fps Bresenham must be exact over 1001 seconds")
+	require.Equal(t, int64(0), ss.ptsRemAccum,
+		"accumulator should be zero after exact period")
+}
+
+func TestFrameSync_SetTickRateUpdatesFRCTickIntervalPTS(t *testing.T) {
+	// Bug: SetTickRate() updates the global tick interval but does not
+	// propagate the new value to existing frcSource.tickIntervalPTS fields.
+	// FRC interpolation computes wrong alpha positions until the source is
+	// removed and re-added.
+	handler := &syncTestHandler{}
+
+	// 30fps tick rate: tickPTSInterval = 90000 / 30 = 3000
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.frcQuality = FRCBlend
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+
+	// Verify initial tickIntervalPTS = 3000 (30fps)
+	fs.mu.Lock()
+	initialInterval := fs.tickPTSInterval()
+	for key, ss := range fs.sources {
+		ss.mu.Lock()
+		require.NotNil(t, ss.frc, "source %s should have FRC", key)
+		require.Equal(t, initialInterval, ss.frc.tickIntervalPTS,
+			"source %s initial tickIntervalPTS", key)
+		ss.mu.Unlock()
+	}
+	fs.mu.Unlock()
+	require.Equal(t, int64(3000), initialInterval, "30fps should be 3000 PTS ticks")
+
+	// Change to 60fps: tickPTSInterval = 90000 / 60 = 1500
+	fs.SetTickRate(16666666 * time.Nanosecond)
+
+	// Verify all sources' FRC tickIntervalPTS updated to the new value
+	fs.mu.Lock()
+	newInterval := fs.tickPTSInterval()
+	require.Equal(t, int64(1500), newInterval, "60fps should be 1500 PTS ticks")
+	for key, ss := range fs.sources {
+		ss.mu.Lock()
+		require.NotNil(t, ss.frc, "source %s should still have FRC after SetTickRate", key)
+		require.Equal(t, newInterval, ss.frc.tickIntervalPTS,
+			"source %s tickIntervalPTS should be updated to %d after SetTickRate, got %d",
+			key, newInterval, ss.frc.tickIntervalPTS)
+		ss.mu.Unlock()
+	}
+	fs.mu.Unlock()
+}
+
+func TestFrameSync_AudioFIFODrainsAllOnTick(t *testing.T) {
+	// Audio frames must never be dropped. Between ticks, multiple audio frames
+	// may arrive (~47 AAC frames/sec vs 30 video frames/sec). All of them must
+	// be released on the next tick in FIFO order — not just the newest.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Ingest 3 audio frames between ticks (more than the 2-slot ring buffer).
+	af1 := &media.AudioFrame{PTS: 1000, Data: []byte{0x01}}
+	af2 := &media.AudioFrame{PTS: 2000, Data: []byte{0x02}}
+	af3 := &media.AudioFrame{PTS: 3000, Data: []byte{0x03}}
+	fs.IngestAudio("cam1", af1)
+	fs.IngestAudio("cam1", af2)
+	fs.IngestAudio("cam1", af3)
+
+	// No frames should be released yet (no tick has fired).
+	require.Equal(t, 0, handler.audioCount(), "audio should not be released before tick")
+
+	// Fire one tick manually.
+	fs.releaseTick()
+
+	// ALL 3 audio frames must be released, in FIFO order.
+	audios := handler.getAudios()
+	require.Equal(t, 3, len(audios), "all 3 audio frames must be released on tick (FIFO, no drop)")
+	require.Equal(t, byte(0x01), audios[0].frame.Data[0], "first audio frame")
+	require.Equal(t, byte(0x02), audios[1].frame.Data[0], "second audio frame")
+	require.Equal(t, byte(0x03), audios[2].frame.Data[0], "third audio frame")
+}
+
+func TestFrameSync_AudioFIFOPreservesPTS(t *testing.T) {
+	// FIFO-drained audio frames should preserve their original PTS values
+	// (they are fresh frames, not repeats).
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	fs.IngestAudio("cam1", &media.AudioFrame{PTS: 10000, Data: []byte{0x01}})
+	fs.IngestAudio("cam1", &media.AudioFrame{PTS: 11920, Data: []byte{0x02}})
+
+	fs.releaseTick()
+
+	audios := handler.getAudios()
+	require.Equal(t, 2, len(audios), "both audio frames should be released")
+	require.Equal(t, int64(10000), audios[0].frame.PTS, "first frame PTS preserved")
+	require.Equal(t, int64(11920), audios[1].frame.PTS, "second frame PTS preserved")
+}
+
+func TestFrameSync_AudioFIFOEmptyOnTick(t *testing.T) {
+	// When no audio frames are queued and no lastAudio exists, tick should
+	// not release any audio.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Ingest only video, no audio.
+	fs.IngestVideo("cam1", &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}})
+	fs.releaseTick()
+
+	require.Equal(t, 0, handler.audioCount(), "no audio should be released when queue is empty")
+}
+
+func TestFrameSync_SetTickRateNoFRC(t *testing.T) {
+	// SetTickRate when FRC is disabled should not panic.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+	// frcQuality defaults to FRCNone, so sources won't have frc
+	fs.AddSource("cam1")
+
+	// Should not panic when frc is nil
+	fs.SetTickRate(16666666 * time.Nanosecond)
+
+	// Verify source exists but has no FRC
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	ss.mu.Lock()
+	require.Nil(t, ss.frc, "source should not have FRC when quality is FRCNone")
+	ss.mu.Unlock()
+	fs.mu.Unlock()
+}

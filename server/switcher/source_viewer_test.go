@@ -171,3 +171,42 @@ func TestSourceViewer_ConcurrentFrameSyncToggle(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestSourceViewer_AudioRoutedThroughFrameSync(t *testing.T) {
+	// When a FrameSynchronizer is set on the sourceViewer, SendAudio
+	// should route audio through it (not directly to the handler).
+	// This ensures audio is held until the tick fires, aligning it
+	// with video release timing.
+	handler := &mockFrameHandler{}
+	sv := newSourceViewer("camera1", handler)
+
+	audioOut := func(key string, f media.AudioFrame) {
+		handler.handleAudioFrame(key, &f)
+	}
+	videoOut := func(key string, f media.VideoFrame) {
+		handler.handleVideoFrame(key, &f)
+	}
+	fs := NewFrameSynchronizer(33*time.Millisecond, videoOut, audioOut)
+	fs.AddSource("camera1")
+	sv.frameSync.Store(fs)
+
+	// Send an audio frame — it should be buffered in the FrameSynchronizer,
+	// NOT delivered immediately to the handler.
+	af := &media.AudioFrame{PTS: 5000, Data: []byte{0xAA}}
+	sv.SendAudio(af)
+
+	handler.mu.Lock()
+	audioCountBeforeTick := len(handler.audios)
+	handler.mu.Unlock()
+	require.Equal(t, 0, audioCountBeforeTick,
+		"audio should NOT be delivered immediately when FrameSynchronizer is active")
+
+	// Fire a tick — audio should now be released.
+	fs.releaseTick()
+
+	handler.mu.Lock()
+	audioCountAfterTick := len(handler.audios)
+	handler.mu.Unlock()
+	require.Equal(t, 1, audioCountAfterTick,
+		"audio should be released after tick fires")
+}

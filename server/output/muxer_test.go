@@ -751,3 +751,129 @@ func TestTSMuxer_SCTE35_PMT_NoStreamType_WhenDisabled(t *testing.T) {
 	require.False(t, foundSCTE35Stream,
 		"PMT should NOT contain SCTE-35 stream when disabled")
 }
+
+// ---------- C1: PCR in MPEG-TS output ----------
+
+func TestTSMuxer_WriteVideo_PCROnKeyframe(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Write a keyframe to initialize the muxer.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+	require.NotEmpty(t, output)
+
+	// Scan output for video PID (0x100) packets with PCR flag set.
+	foundPCR := false
+	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
+		if output[i] != 0x47 {
+			continue
+		}
+		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
+		if pid != videoPID {
+			continue
+		}
+		// Check adaptation field control (bits 5-4 of byte 3).
+		afc := (output[i+3] >> 4) & 0x03
+		if afc < 2 {
+			continue // no adaptation field
+		}
+		afLen := output[i+4]
+		if afLen == 0 {
+			continue
+		}
+		// PCR flag is bit 4 of the adaptation field flags byte (byte 5).
+		if output[i+5]&0x10 != 0 {
+			foundPCR = true
+			break
+		}
+	}
+	require.True(t, foundPCR, "keyframe should have PCR flag set in adaptation field")
+}
+
+func TestTSMuxer_WriteVideo_PCRInterval(t *testing.T) {
+	m := NewTSMuxer()
+	var allOutput []byte
+	m.SetOutput(func(data []byte) { allOutput = append(allOutput, data...) })
+
+	// Write a keyframe to initialize the muxer.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	// Write 30 P-frames at 30fps (PTS increments of 3000 = 33.3ms).
+	// pcrInterval = 2700 (30ms), so every frame triggers PCR (3000 >= 2700).
+	for i := 1; i <= 30; i++ {
+		pts := int64(90000 + i*3000)
+		pFrame := &media.VideoFrame{
+			PTS: pts, DTS: pts, IsKeyframe: false,
+			WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x01},
+		}
+		require.NoError(t, m.WriteVideo(pFrame))
+	}
+
+	// Count PCR flags across all video PID packets.
+	pcrCount := 0
+	for i := 0; i+tsPacketSize <= len(allOutput); i += tsPacketSize {
+		if allOutput[i] != 0x47 {
+			continue
+		}
+		pid := uint16(allOutput[i+1]&0x1F)<<8 | uint16(allOutput[i+2])
+		if pid != videoPID {
+			continue
+		}
+		afc := (allOutput[i+3] >> 4) & 0x03
+		if afc < 2 {
+			continue
+		}
+		afLen := allOutput[i+4]
+		if afLen == 0 {
+			continue
+		}
+		if allOutput[i+5]&0x10 != 0 {
+			pcrCount++
+		}
+	}
+
+	// At 30fps with 33.3ms per frame and 30ms PCR interval (2700 ticks):
+	// - Frame 0 (keyframe): PCR at PTS=90000
+	// - Frame 1: delta=3000 >= 2700 → PCR
+	// - Frame 2: delta=3000 >= 2700 → PCR
+	// - ...every frame triggers PCR
+	// Pattern: PCR on every frame → 31 PCRs for 31 frames.
+	// This satisfies the ISO 13818-1 40ms max PCR interval requirement
+	// at all frame rates (30fps: 33ms gap, 60fps: 33ms gap every 2 frames).
+	require.GreaterOrEqual(t, pcrCount, 25,
+		"PCR should appear on every frame at 30fps; got %d PCRs over 31 frames (~1s)", pcrCount)
+}
+
+func TestTSMuxer_Close_ResetsPCRState(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetOutput(func(data []byte) {})
+
+	// Initialize and write a frame.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	// Close should reset PCR tracking state.
+	require.NoError(t, m.Close())
+	require.Equal(t, int64(0), m.lastPCRPTS)
+}

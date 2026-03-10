@@ -226,6 +226,75 @@ func TestReplayBuffer_ByteLimit(t *testing.T) {
 	buf.mu.RUnlock()
 }
 
+func TestReplayBuffer_ExtractClip_AudioIncludesLastFrameDuration(t *testing.T) {
+	// Regression test: audio frames that fall within the last video frame's
+	// display period (up to one frame duration after the last video frame)
+	// must be included in the extracted clip. Previously, clipEndTime was set
+	// to the last video frame's wall time, dropping ~21ms of audio (one AAC
+	// frame) at the end of every clip.
+	buf := newReplayBuffer(60, 0)
+	now := time.Now()
+
+	// Record 4 video frames at 30fps (~33ms apart).
+	// Frame 0: t+0ms   (keyframe)
+	// Frame 1: t+33ms
+	// Frame 2: t+66ms
+	// Frame 3: t+99ms
+	frameDuration := 33 * time.Millisecond
+	for i := 0; i < 4; i++ {
+		kf := i == 0
+		pts := int64(i) * 3003 // 90kHz PTS at 30fps
+		wallTime := now.Add(time.Duration(i) * frameDuration)
+		buf.recordFrameAt(makeVideoFrame(pts, kf, 500), wallTime)
+	}
+
+	// Record audio frames at ~21ms AAC intervals.
+	// Audio 0: t+0ms
+	// Audio 1: t+21ms
+	// Audio 2: t+42ms
+	// Audio 3: t+63ms
+	// Audio 4: t+84ms
+	// Audio 5: t+105ms  <-- within frame 3's display period (t+99ms to t+132ms)
+	// Audio 6: t+126ms  <-- within frame 3's display period
+	// Audio 7: t+147ms  <-- beyond frame 3's display period
+	aacDuration := 21 * time.Millisecond
+	for i := 0; i < 8; i++ {
+		af := &media.AudioFrame{
+			PTS:        int64(i) * 1920, // 90kHz PTS for ~21ms AAC frames
+			Data:       []byte{0xAA, byte(i)},
+			SampleRate: 48000,
+			Channels:   2,
+		}
+		wallTime := now.Add(time.Duration(i) * aacDuration)
+		buf.recordAudioFrameAt(af, wallTime)
+	}
+
+	// Extract clip covering all 4 video frames.
+	clip, audioClip, err := buf.ExtractClip(
+		now.Add(-1*time.Millisecond),
+		now.Add(200*time.Millisecond),
+	)
+	require.NoError(t, err)
+	require.Len(t, clip, 4, "should extract all 4 video frames")
+
+	// Last video frame is at t+99ms. Its display period extends to t+132ms
+	// (one frame duration later). Audio frames at t+105ms and t+126ms both
+	// fall within this display period and must be included.
+	// Audio at t+147ms is beyond the display period and should be excluded.
+	//
+	// Expected audio frames: 0,1,2,3,4,5,6 (indices 0 through 6)
+	// Audio 7 at t+147ms should be excluded (beyond t+99ms + 33ms = t+132ms)
+	require.Len(t, audioClip, 7,
+		"audio frames within the last video frame's display period should be included; "+
+			"got %d audio frames instead of 7", len(audioClip))
+
+	// Verify the last included audio frame is the one at t+126ms.
+	lastAudio := audioClip[len(audioClip)-1]
+	expectedLastAudioTime := now.Add(6 * aacDuration) // t+126ms
+	require.Equal(t, expectedLastAudioTime, lastAudio.wallTime,
+		"last audio frame should be at t+126ms (within display period)")
+}
+
 func TestReplayBuffer_ConcurrentAccess(t *testing.T) {
 	buf := newReplayBuffer(60, 0)
 	done := make(chan struct{})

@@ -733,6 +733,99 @@ func TestBlendInterpolator_BufferReuse(t *testing.T) {
 	assert.InDelta(t, 50, int(result2[0]), 1)
 }
 
+func TestBlendInterpolator_AliasedBufferCorruption(t *testing.T) {
+	// Regression test: blendInterpolator.Interpolate() returns a slice backed
+	// by an internal reusable buffer. If a consumer holds onto the first result
+	// while the interpolator is called again, the first result's data gets
+	// corrupted because the second call overwrites the same buffer.
+	interp := &blendInterpolator{}
+
+	w, h := 8, 8
+	size := w * h * 3 / 2
+
+	// Frame A: all zeros
+	frameA := make([]byte, size)
+	// Frame B: all 200
+	frameB := make([]byte, size)
+	for i := range frameB {
+		frameB[i] = 200
+	}
+
+	// First interpolation at alpha=0.5 → expect ~100 for all bytes
+	result1 := interp.Interpolate(frameA, frameB, w, h, 0.5)
+	require.Len(t, result1, size)
+	snapshot1 := byte(100) // 0*0.5 + 200*0.5 = 100
+
+	// Verify the first result is correct before the second call
+	assert.InDelta(t, int(snapshot1), int(result1[0]), 1, "result1 should be ~100 before second Interpolate call")
+
+	// Now create different input frames for the second call
+	// Frame C: all 50, Frame D: all 250
+	frameC := make([]byte, size)
+	frameD := make([]byte, size)
+	for i := range frameC {
+		frameC[i] = 50
+	}
+	for i := range frameD {
+		frameD[i] = 250
+	}
+
+	// Second interpolation at alpha=0.5 → expect ~150
+	result2 := interp.Interpolate(frameC, frameD, w, h, 0.5)
+	require.Len(t, result2, size)
+
+	// BUG: If result1 is aliased to the internal buffer, it now contains ~150
+	// instead of the original ~100. An async consumer holding result1 would
+	// see corrupted data.
+	assert.InDelta(t, int(snapshot1), int(result1[0]), 1,
+		"result1 should still be ~100 after second Interpolate call; aliased buffer corruption detected")
+	_ = result2
+}
+
+func TestMCFIInterpolator_AliasedBufferCorruption(t *testing.T) {
+	// Regression test: MCFIState.Interpolate() returns a slice backed by
+	// internal reusable buffers (blendOut or fallbackBuf). If a consumer holds
+	// onto the first result while the interpolator is called again with
+	// different frame pair, the first result's data gets corrupted.
+	interp := newInterpolator(InterpolationMCFI)
+	require.NotNil(t, interp)
+
+	w, h := 32, 32
+	size := w * h * 3 / 2
+
+	// First pair: frame A = all 60, frame B = all 180
+	frameA := make([]byte, size)
+	frameB := make([]byte, size)
+	for i := 0; i < size; i++ {
+		frameA[i] = 60
+		frameB[i] = 180
+	}
+
+	// MCFI with uniform frames will detect "scene change" (or low-confidence MVs)
+	// and fall back to linear blend. alpha=0.5 → expect ~120 for all bytes.
+	result1 := interp.Interpolate(frameA, frameB, w, h, 0.5)
+	require.Len(t, result1, size)
+	val1 := result1[0]
+	require.InDelta(t, 120, int(val1), 2, "first result should be ~120")
+
+	// Second pair: entirely different values
+	frameC := make([]byte, size)
+	frameD := make([]byte, size)
+	for i := 0; i < size; i++ {
+		frameC[i] = 10
+		frameD[i] = 250
+	}
+
+	result2 := interp.Interpolate(frameC, frameD, w, h, 0.5)
+	require.Len(t, result2, size)
+
+	// BUG: If result1 is aliased to the internal buffer, it now contains ~130
+	// instead of the original ~120.
+	assert.InDelta(t, int(val1), int(result1[0]), 2,
+		"result1 should still be ~120 after second Interpolate call; aliased buffer corruption detected")
+	_ = result2
+}
+
 func TestNewInterpolator(t *testing.T) {
 	// InterpolationNone returns nil.
 	assert.Nil(t, newInterpolator(InterpolationNone))
@@ -1460,4 +1553,83 @@ func TestReplayPlayer_AudioWithoutWSOLA(t *testing.T) {
 	// 3 source frames -> each gets some audio frames on first dup only.
 	require.Greater(t, count, int64(0), "should emit some audio frames")
 	require.LessOrEqual(t, count, int64(4), "without WSOLA, should not exceed original audio frame count")
+}
+
+func TestComputeReplayTiming_FractionalSpeed(t *testing.T) {
+	// At 0.33x speed, math.Ceil(1/0.33) = 4 but math.Round(1/0.33) = 3.
+	// Using Ceil causes video to run 4/3.03 = 1.32x too long vs audio stretch.
+	// The fix uses Round and adjusts frameDuration so total video time matches
+	// the audio stretch factor exactly.
+	tests := []struct {
+		name            string
+		speed           float64
+		sourceFPS       float64
+		totalClipFrames int
+		wantDupCount    int
+	}{
+		{
+			name:            "0.33x speed uses Round not Ceil",
+			speed:           0.33,
+			sourceFPS:       30.0,
+			totalClipFrames: 90,
+			wantDupCount:    3, // Round(1/0.33) = Round(3.03) = 3, not Ceil = 4
+		},
+		{
+			name:            "0.5x speed unchanged",
+			speed:           0.5,
+			sourceFPS:       30.0,
+			totalClipFrames: 60,
+			wantDupCount:    2,
+		},
+		{
+			name:            "0.25x speed unchanged",
+			speed:           0.25,
+			sourceFPS:       30.0,
+			totalClipFrames: 30,
+			wantDupCount:    4,
+		},
+		{
+			name:            "1.0x speed",
+			speed:           1.0,
+			sourceFPS:       30.0,
+			totalClipFrames: 30,
+			wantDupCount:    1,
+		},
+		{
+			name:            "0.1x speed (near boundary)",
+			speed:           0.1,
+			sourceFPS:       30.0,
+			totalClipFrames: 30,
+			wantDupCount:    10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dupCount, frameDuration := computeReplayTiming(tt.speed, tt.sourceFPS, tt.totalClipFrames)
+
+			// Verify dupCount uses Round.
+			require.Equal(t, tt.wantDupCount, dupCount, "dupCount mismatch")
+
+			// Verify total video time matches audio stretch time within 1%.
+			// Audio stretch time = originalDuration / speed
+			// Video time = totalClipFrames * dupCount * frameDuration
+			originalDuration := float64(tt.totalClipFrames) / tt.sourceFPS
+			expectedTotalTime := originalDuration / tt.speed
+			totalFrames := tt.totalClipFrames * dupCount
+			actualTotalTime := float64(totalFrames) * frameDuration.Seconds()
+
+			ratio := actualTotalTime / expectedTotalTime
+			assert.InDelta(t, 1.0, ratio, 0.01,
+				"video/audio duration ratio should be ~1.0, got %.4f (video=%.4fs, audio=%.4fs)",
+				ratio, actualTotalTime, expectedTotalTime)
+		})
+	}
+}
+
+func TestComputeReplayTiming_MinDupCount(t *testing.T) {
+	// Extremely high speed shouldn't produce dupCount < 1.
+	dupCount, frameDuration := computeReplayTiming(2.0, 30.0, 30)
+	require.Equal(t, 1, dupCount, "dupCount should floor to 1")
+	require.Greater(t, frameDuration, time.Duration(0), "frameDuration should be positive")
 }

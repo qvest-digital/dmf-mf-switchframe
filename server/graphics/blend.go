@@ -71,13 +71,22 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 //   - alphaScale: global alpha modulator (0.0-1.0)
 func AlphaBlendRGBARect(yuv []byte, rgba []byte, frameW, frameH, overlayW, overlayH int,
 	rect image.Rectangle, alphaScale float64) {
+	_ = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, alphaScale, nil)
+}
+
+// AlphaBlendRGBARectInto is like AlphaBlendRGBARect but accepts a reusable
+// scratch buffer to avoid per-frame allocation. If scratch is nil or too small,
+// a new buffer is allocated internally. Returns the scratch buffer (possibly
+// grown) so callers can retain it for subsequent calls.
+func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, overlayH int,
+	rect image.Rectangle, alphaScale float64, scratch []byte) []byte {
 
 	// Validate buffer lengths.
 	if len(rgba) < overlayW*overlayH*4 {
-		return
+		return scratch
 	}
 	if len(yuv) < frameW*frameH*3/2 {
-		return
+		return scratch
 	}
 
 	// Even-align the rect for YUV420 compatibility.
@@ -103,15 +112,38 @@ func AlphaBlendRGBARect(yuv []byte, rgba []byte, frameW, frameH, overlayW, overl
 	rectW := rect.Dx()
 	rectH := rect.Dy()
 	if rectW <= 0 || rectH <= 0 {
-		return
+		return scratch
 	}
 
 	alphaScale256 := int(alphaScale*256 + 0.5)
 	if alphaScale256 <= 0 {
-		return
+		return scratch
 	}
 	if alphaScale256 > 256 {
 		alphaScale256 = 256
+	}
+
+	// Pre-scale overlay RGBA rows to rect width, then dispatch to SIMD
+	// row kernels. This avoids per-pixel nearest-neighbor lookup interleaved
+	// with blend math, enabling the same SIMD path used by full-frame
+	// AlphaBlendRGBA (alphaBlendRGBARowY / alphaBlendRGBAChromaRow).
+	rowBufSize := rectW * 4
+	if cap(scratch) >= rowBufSize {
+		scratch = scratch[:rowBufSize]
+	} else {
+		scratch = make([]byte, rowBufSize)
+	}
+	rowBuf := scratch[:rowBufSize]
+
+	// Build column lookup table: for each dest column dx, the source RGBA
+	// pixel offset. Avoids recomputing nearest-neighbor per row.
+	colLUT := make([]int, rectW)
+	for dx := 0; dx < rectW; dx++ {
+		srcCol := (dx*overlayW + rectW/2) / rectW
+		if srcCol >= overlayW {
+			srcCol = overlayW - 1
+		}
+		colLUT[dx] = srcCol * 4
 	}
 
 	ySize := frameW * frameH
@@ -119,100 +151,59 @@ func AlphaBlendRGBARect(yuv []byte, rgba []byte, frameW, frameH, overlayW, overl
 	crOffset := ySize + (frameW/2)*(frameH/2)
 	halfFrameW := frameW / 2
 
-	// Blend Y plane: iterate over rows in the rect region.
+	// Blend Y plane: pre-scale each row then dispatch to SIMD kernel.
 	for dy := 0; dy < rectH; dy++ {
 		frameRow := rect.Min.Y + dy
-		// Map dy → overlay row via centered nearest-neighbor.
 		srcRow := (dy*overlayH + rectH/2) / rectH
 		if srcRow >= overlayH {
 			srcRow = overlayH - 1
 		}
+		srcRowOff := srcRow * overlayW * 4
 
-		yDstStart := frameRow*frameW + rect.Min.X
+		// Nearest-neighbor scale overlay row into rowBuf.
 		for dx := 0; dx < rectW; dx++ {
-			srcCol := (dx*overlayW + rectW/2) / rectW
-			if srcCol >= overlayW {
-				srcCol = overlayW - 1
-			}
-			rgbaIdx := (srcRow*overlayW + srcCol) * 4
-
-			a := int(rgba[rgbaIdx+3])
-			if a == 0 {
-				continue
-			}
-			a = (a * alphaScale256) >> 8
-			if a == 0 {
-				continue
-			}
-
-			r := int(rgba[rgbaIdx])
-			g := int(rgba[rgbaIdx+1])
-			b := int(rgba[rgbaIdx+2])
-
-			// BT.709 Y = (54*R + 183*G + 18*B + 128) >> 8
-			overlayY := (54*r + 183*g + 18*b + 128) >> 8
-
-			yIdx := yDstStart + dx
-			yuv[yIdx] = byte((int(yuv[yIdx])*(256-a) + overlayY*a + 128) >> 8)
+			srcOff := srcRowOff + colLUT[dx]
+			dstOff := dx * 4
+			rowBuf[dstOff] = rgba[srcOff]
+			rowBuf[dstOff+1] = rgba[srcOff+1]
+			rowBuf[dstOff+2] = rgba[srcOff+2]
+			rowBuf[dstOff+3] = rgba[srcOff+3]
 		}
+
+		// Dispatch to SIMD Y blend kernel (same as full-frame path).
+		yStart := frameRow*frameW + rect.Min.X
+		alphaBlendRGBARowY(&yuv[yStart], &rowBuf[0], rectW, alphaScale256)
 	}
 
-	// Blend Cb/Cr planes: iterate over chroma rows in the rect region.
+	// Blend Cb/Cr planes: pre-scale each chroma row then dispatch to SIMD kernel.
 	halfRectW := rectW / 2
 	halfRectH := rectH / 2
 	for dy := 0; dy < halfRectH; dy++ {
-		frameChromaRow := (rect.Min.Y/2) + dy
-		// Map to overlay pixel (top-left of 2x2 block) via centered nearest-neighbor.
-		srcRow := ((dy*2)*overlayH + rectH/2) / rectH
+		frameChromaRow := (rect.Min.Y / 2) + dy
+		srcRow := ((dy * 2) * overlayH + rectH/2) / rectH
 		if srcRow >= overlayH {
 			srcRow = overlayH - 1
 		}
+		srcRowOff := srcRow * overlayW * 4
 
-		uvDstStart := frameChromaRow*halfFrameW + rect.Min.X/2
+		// Scale at chroma resolution (every other pixel).
 		for dx := 0; dx < halfRectW; dx++ {
-			srcCol := ((dx*2)*overlayW + rectW/2) / rectW
+			srcCol := ((dx * 2) * overlayW + rectW/2) / rectW
 			if srcCol >= overlayW {
 				srcCol = overlayW - 1
 			}
-			rgbaIdx := (srcRow*overlayW + srcCol) * 4
-
-			a := int(rgba[rgbaIdx+3])
-			if a == 0 {
-				continue
-			}
-			a = (a * alphaScale256) >> 8
-			if a == 0 {
-				continue
-			}
-
-			r := int(rgba[rgbaIdx])
-			g := int(rgba[rgbaIdx+1])
-			b := int(rgba[rgbaIdx+2])
-
-			// BT.709 Cb = (-29*R - 99*G + 128*B + 128) >> 8 + 128
-			overlayCb := ((-29*r - 99*g + 128*b + 128) >> 8) + 128
-			// BT.709 Cr = (128*R - 116*G - 12*B + 128) >> 8 + 128
-			overlayCr := ((128*r - 116*g - 12*b + 128) >> 8) + 128
-
-			// Clamp to [0, 255] to prevent byte overflow.
-			// Pure blue (0,0,255) produces overlayCb=256; pure red (255,0,0) produces overlayCr=256.
-			if overlayCb > 255 {
-				overlayCb = 255
-			}
-			if overlayCb < 0 {
-				overlayCb = 0
-			}
-			if overlayCr > 255 {
-				overlayCr = 255
-			}
-			if overlayCr < 0 {
-				overlayCr = 0
-			}
-
-			cbIdx := cbOffset + uvDstStart + dx
-			crIdx := crOffset + uvDstStart + dx
-			yuv[cbIdx] = byte((int(yuv[cbIdx])*(256-a) + overlayCb*a + 128) >> 8)
-			yuv[crIdx] = byte((int(yuv[crIdx])*(256-a) + overlayCr*a + 128) >> 8)
+			srcOff := srcRowOff + srcCol*4
+			dstOff := dx * 4
+			rowBuf[dstOff] = rgba[srcOff]
+			rowBuf[dstOff+1] = rgba[srcOff+1]
+			rowBuf[dstOff+2] = rgba[srcOff+2]
+			rowBuf[dstOff+3] = rgba[srcOff+3]
 		}
+
+		// Dispatch to SIMD chroma blend kernel.
+		uvStart := frameChromaRow*halfFrameW + rect.Min.X/2
+		alphaBlendRGBAChromaRow(&yuv[cbOffset+uvStart], &yuv[crOffset+uvStart], &rowBuf[0], halfRectW, alphaScale256)
 	}
+
+	return scratch
 }

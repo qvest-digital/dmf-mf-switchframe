@@ -42,8 +42,10 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 
 	n := len(p)
 	// If writing more than available space, mark overflow and advance readPos.
+	didOverflow := false
 	if r.count+n > r.capacity {
 		r.overflowed = true
+		didOverflow = true
 		overflow := r.count + n - r.capacity
 		r.readPos = (r.readPos + overflow) % r.capacity
 		r.count -= overflow
@@ -59,6 +61,20 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	}
 	r.writePos = (r.writePos + n) % r.capacity
 	r.count += n
+
+	// After overflow, align readPos UP to the next TS packet boundary so
+	// ReadAll never returns data starting mid-packet, and trim count DOWN
+	// to a TS packet multiple so partial trailing packets are excluded.
+	if didOverflow {
+		if rem := r.readPos % tsPacketSize; rem != 0 {
+			align := tsPacketSize - rem
+			r.readPos = (r.readPos + align) % r.capacity
+			r.count -= align
+		}
+		if tail := r.count % tsPacketSize; tail != 0 {
+			r.count -= tail
+		}
+	}
 
 	return total, nil
 }

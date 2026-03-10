@@ -75,6 +75,50 @@ func RGBToYUV420(rgb []byte, width, height int, yuv []byte) {
 	}
 }
 
+// RGBToYUV_BT709Limited converts an RGB pixel to limited-range BT.709 YCbCr.
+// Output ranges: Y [16, 235], Cb [16, 240], Cr [16, 240].
+func RGBToYUV_BT709Limited(r, g, b uint8) (y, cb, cr uint8) {
+	rr := float64(r) / 255.0
+	gg := float64(g) / 255.0
+	bb := float64(b) / 255.0
+
+	// BT.709 luma
+	yLin := 0.2126*rr + 0.7152*gg + 0.0722*bb
+
+	// Chroma (normalized to [-0.5, 0.5])
+	cbLin := (bb - yLin) / 1.8556
+	crLin := (rr - yLin) / 1.5748
+
+	// Scale to limited range
+	yOut := 16.0 + 219.0*yLin
+	cbOut := 128.0 + 224.0*cbLin
+	crOut := 128.0 + 224.0*crLin
+
+	return clampByteRange(yOut, 16, 235),
+		clampByteRange(cbOut, 16, 240),
+		clampByteRange(crOut, 16, 240)
+}
+
+// YUVToRGB_BT709Limited converts a limited-range BT.709 YCbCr pixel to RGB.
+// Input ranges: Y [16, 235], Cb [16, 240], Cr [16, 240].
+// Values outside these ranges (super-white, super-black) are handled gracefully
+// via clamping on the RGB output.
+func YUVToRGB_BT709Limited(y, cb, cr uint8) (r, g, b uint8) {
+	// Normalize to [0,1] / [-0.5, 0.5]
+	yLin := (float64(y) - 16.0) / 219.0
+	cbLin := (float64(cb) - 128.0) / 224.0
+	crLin := (float64(cr) - 128.0) / 224.0
+
+	// BT.709 inverse matrix
+	rr := yLin + 1.5748*crLin
+	gg := yLin - 0.1873*cbLin - 0.4681*crLin
+	bb := yLin + 1.8556*cbLin
+
+	return clampByte(rr * 255.0),
+		clampByte(gg * 255.0),
+		clampByte(bb * 255.0)
+}
+
 // clampByte clamps a float64 value to [0, 255] and returns as byte.
 func clampByte(v float64) byte {
 	if v < 0 {
@@ -82,6 +126,17 @@ func clampByte(v float64) byte {
 	}
 	if v > 255 {
 		return 255
+	}
+	return byte(v + 0.5) // round to nearest
+}
+
+// clampByteRange clamps a float64 value to [lo, hi] and returns as byte.
+func clampByteRange(v float64, lo, hi float64) byte {
+	if v < lo {
+		return byte(lo)
+	}
+	if v > hi {
+		return byte(hi)
 	}
 	return byte(v + 0.5) // round to nearest
 }

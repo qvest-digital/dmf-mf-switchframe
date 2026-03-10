@@ -7,6 +7,11 @@ import (
 	"github.com/zsiec/switchframe/server/switcher/frcasm"
 )
 
+// Compile-time assertion: diamondSearch's computeSAD closure calls
+// frcasm.SadBlock16x16, which is hardcoded to 16x16. This must match.
+var _ [frcMEBlockSize - 16]struct{} // compile error if frcMEBlockSize < 16
+var _ [16 - frcMEBlockSize]struct{} // compile error if frcMEBlockSize > 16
+
 // motionVectorField holds per-block motion vectors for forward and backward estimation.
 type motionVectorField struct {
 	blockSize int // 16

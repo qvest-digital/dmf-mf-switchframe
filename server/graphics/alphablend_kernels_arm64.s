@@ -5,7 +5,7 @@
 // func alphaBlendRGBARowY(yRow *byte, rgba *byte, width int, alphaScale256 int)
 //
 // NEON path processes 8 pixels per iteration using LD4 deinterleave.
-// overlayY computed at uint16 width (fits: 54*255+183*255+18*255+128=65153 < 65535).
+// overlayY computed at uint16 width (fits: 54*255+183*255+19*255+128=65408 < 65535).
 // Blend computed at uint32 width (Y*inv + overlayY*a256 can reach 130560).
 
 // --- NEON instruction macros ---
@@ -58,8 +58,8 @@ TEXT ·alphaBlendRGBARowY(SB), NOSPLIT, $0-32
 	VDUP_8H(24, 4)            // V24.8H = 54
 	MOVD $183, R4
 	VDUP_8H(25, 4)            // V25.8H = 183
-	MOVD $18, R4
-	VDUP_8H(26, 4)            // V26.8H = 18
+	MOVD $19, R4
+	VDUP_8H(26, 4)            // V26.8H = 19
 	MOVD $128, R4
 	VDUP_8H(27, 4)            // V27.8H = 128
 	VDUP_4S(29, 4)            // V29.4S = 128
@@ -81,10 +81,10 @@ aby_neon8:
 	USHLL_8H(8, 3)            // V8.8H = A
 	USHLL_8H(9, 4)            // V9.8H = Y
 
-	// overlayY.8H = (54*R + 183*G + 18*B + 128) >> 8
+	// overlayY.8H = (54*R + 183*G + 19*B + 128) >> 8
 	VMUL_8H(10, 5, 24)        // V10 = 54*R
 	VMLA_8H(10, 6, 25)        // V10 += 183*G
-	VMLA_8H(10, 7, 26)        // V10 += 18*B
+	VMLA_8H(10, 7, 26)        // V10 += 19*B
 	VADD_8H(10, 10, 27)       // V10 += 128
 	VUSHR_8H(10, 10, 8)       // V10 = overlayY.8H
 
@@ -153,13 +153,13 @@ aby_loop:
 	MOVBU 1(R1), R6            // R6 = G
 	MOVBU 2(R1), R7            // R7 = B
 
-	// overlayY = (54*R + 183*G + 18*B + 128) >> 8
+	// overlayY = (54*R + 183*G + 19*B + 128) >> 8
 	MOVD  $54, R8
 	MUL   R8, R5, R8           // R8 = 54*R
 	MOVD  $183, R9
 	MADD  R9, R8, R6, R8       // R8 = 54*R + 183*G
-	MOVD  $18, R9
-	MADD  R9, R8, R7, R8       // R8 = 54*R + 183*G + 18*B
+	MOVD  $19, R9
+	MADD  R9, R8, R7, R8       // R8 = 54*R + 183*G + 19*B
 	ADD   $128, R8, R8
 	LSR   $8, R8, R8           // R8 = overlayY
 

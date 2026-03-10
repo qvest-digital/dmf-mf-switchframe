@@ -106,6 +106,9 @@ type Compositor struct {
 
 	closed bool
 
+	// Reusable scratch buffer for AlphaBlendRGBARectInto (avoids per-frame allocation).
+	blendScratch []byte
+
 	// Callback invoked on state change.
 	// Receives a snapshot of the current state so callers don't need
 	// to call Status() (which would deadlock under the compositor's lock).
@@ -557,14 +560,14 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
 			// Fast path: full-frame overlay (existing behavior).
 			AlphaBlendRGBA(yuv, layer.overlay, width, height, layer.fadePosition)
 		} else {
-			// Sub-frame: blend overlay into rect region.
+			// Sub-frame: blend overlay into rect region using scratch buffer.
 			rect := layer.rect
 			if (rect == image.Rectangle{}) {
 				rect = fullFrame
 			}
-			AlphaBlendRGBARect(yuv, layer.overlay, width, height,
+			c.blendScratch = AlphaBlendRGBARectInto(yuv, layer.overlay, width, height,
 				layer.overlayWidth, layer.overlayHeight,
-				rect, layer.fadePosition)
+				rect, layer.fadePosition, c.blendScratch)
 		}
 	}
 	return yuv

@@ -11,6 +11,17 @@ import (
 // mpegtsClock is the MPEG-TS 90 kHz clock rate used for PTS values.
 const mpegtsClock = 90000
 
+// ptsMask33 masks a PTS value to 33 bits (MPEG-TS PTS range).
+const ptsMask33 = (int64(1) << 33) - 1
+
+// ptsAfter returns true if a is "after" b in 33-bit PTS space,
+// handling wraparound. Uses signed comparison on the delta.
+func ptsAfter(a, b int64) bool {
+	delta := (a - b) & ptsMask33
+	// If delta is in the lower half of the 33-bit range, a is after b.
+	return delta > 0 && delta < (1<<32)
+}
+
 const (
 	// syncRingSize is the number of slots in the per-source ring buffer.
 	// Two slots allows one frame to be consumed while the next arrives,
@@ -40,8 +51,9 @@ type pendingRelease struct {
 	rawVideo    ProcessingFrame // value copy — safe from concurrent modification
 	hasRawVideo bool            // true when rawVideo is set
 	freshVideo  bool            // true when a new frame was popped from ring (not repeated)
-	audio       *media.AudioFrame
-	freshAudio  bool // true when a new audio frame was popped from ring (not repeated)
+	audio       *media.AudioFrame   // single audio frame (freeze/repeat or sole queued frame)
+	audioQueue  []*media.AudioFrame // FIFO-drained audio frames (all fresh)
+	freshAudio  bool                // true when audio frame(s) are fresh (not repeated)
 }
 
 // syncSource holds per-source buffering state for the FrameSynchronizer.
@@ -53,10 +65,16 @@ type syncSource struct {
 	videoHead    int // write index into pendingVideo
 	videoCount   int // number of valid frames in ring
 
-	// pendingAudio mirrors video buffering for audio frames.
+	// pendingAudio mirrors video buffering for audio frames (used for freeze repeat).
 	pendingAudio [syncRingSize]*media.AudioFrame
 	audioHead    int
 	audioCount   int
+
+	// audioQueue is a FIFO queue for incoming audio frames. Unlike video
+	// (which uses a ring buffer with newest-wins), audio frames must never
+	// be dropped. All queued frames are drained on each tick release.
+	// Between 30fps ticks, ~1-2 audio frames accumulate (48kHz/1024 ≈ 47fps).
+	audioQueue []*media.AudioFrame
 
 	// pendingRawVideo is a ring buffer for decoded YUV frames (from sourceDecoder).
 	pendingRawVideo [syncRingSize]*ProcessingFrame
@@ -88,6 +106,11 @@ type syncSource struct {
 	// in the MPEG-TS muxer.
 	lastReleasedAudioPTS int64
 	audioPTSInitialized  bool
+
+	// Bresenham accumulator for sub-tick PTS remainder.
+	// Prevents drift at NTSC rates where tickPTSInterval truncates
+	// (e.g., 59.94fps: 90000*1001/60000 = 1501.5, truncates to 1501).
+	ptsRemAccum int64 // accumulated remainder (numerator)
 
 	// frc holds per-source frame rate conversion state. nil when FRC is disabled.
 	frc *frcSource
@@ -343,6 +366,9 @@ func (fs *FrameSynchronizer) IngestVideo(sourceKey string, frame *media.VideoFra
 }
 
 // IngestAudio buffers an incoming audio frame for the specified source.
+// Audio frames are appended to a FIFO queue (never dropped) and also
+// pushed into the ring buffer (for freeze/repeat behavior when the queue
+// is empty). All queued frames are drained on the next tick release.
 // Takes a pointer to avoid value copy heap escape on the hot path.
 func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFrame) {
 	fs.mu.Lock()
@@ -352,7 +378,8 @@ func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFra
 		return
 	}
 	ss.mu.Lock()
-	ss.pushAudio(frame)
+	ss.audioQueue = append(ss.audioQueue, frame)
+	ss.pushAudio(frame) // ring buffer for freeze/repeat fallback
 	ss.mu.Unlock()
 }
 
@@ -382,13 +409,41 @@ func (fs *FrameSynchronizer) tickPTSInterval() int64 {
 	return int64(fs.tickRate) * mpegtsClock / int64(time.Second)
 }
 
+// tickPTSWithRemainder returns the PTS interval for this tick, distributing
+// the sub-tick remainder from integer truncation using a Bresenham-style
+// accumulator. This prevents drift at NTSC rates (59.94fps, 23.976fps, etc.)
+// where 90000*fpsDen/fpsNum has a non-zero remainder.
+func tickPTSWithRemainder(ss *syncSource, baseInterval, remNum, remDen int64) int64 {
+	interval := baseInterval
+	ss.ptsRemAccum += remNum
+	if ss.ptsRemAccum >= remDen {
+		interval++
+		ss.ptsRemAccum -= remDen
+	}
+	return interval
+}
+
 // SetTickRate updates the tick rate. Takes effect on the next tick cycle.
 // This is used when auto-detecting frame rate from source streams.
+// Also propagates the new tick interval to all existing FRC sources so
+// their interpolation alpha computations use the correct PTS spacing.
 func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.tickRate = d
 	fs.fpsNum, fs.fpsDen = tickRateToRational(d)
+
+	// Update per-source FRC tick interval so interpolation positions
+	// are correct at the new frame rate.
+	newInterval := fs.tickPTSInterval()
+	for _, ss := range fs.sources {
+		ss.mu.Lock()
+		if ss.frc != nil {
+			ss.frc.tickIntervalPTS = newInterval
+		}
+		ss.mu.Unlock()
+	}
+
 	fs.log.Debug("tick rate updated", "rate", d)
 }
 
@@ -542,6 +597,9 @@ func (fs *FrameSynchronizer) releaseTick() {
 	fs.tickNum++
 	// Tick interval in 90 kHz PTS units (e.g., 3003 for 29.97fps).
 	tickIntervalPTS := fs.tickPTSInterval()
+	// Bresenham remainder for sub-tick drift correction at NTSC rates.
+	ptsRemNum := (int64(mpegtsClock) * int64(fs.fpsDen)) % int64(fs.fpsNum)
+	ptsRemDen := int64(fs.fpsNum)
 
 	// Reuse the releases slice from previous ticks to avoid allocation.
 	fs.releases = fs.releases[:0]
@@ -599,25 +657,43 @@ func (fs *FrameSynchronizer) releaseTick() {
 			}
 		}
 
-		// Audio: pop newest from ring, or repeat last (max 2 repeats to avoid glitch loop).
-		// Repeating encoded AAC frames produces an audible stutter; after 2 repeats
-		// we stop emitting and let downstream handle silence instead.
+		// Audio: drain FIFO queue (all fresh frames), or repeat last from ring
+		// (max 2 repeats to avoid glitch loop). The FIFO queue ensures no audio
+		// frames are ever dropped — all are released on each tick in order.
 		var freshAudio bool
-		if newest := ss.popNewestAudio(); newest != nil {
-			ss.lastAudio = newest
+		var audioQueue []*media.AudioFrame
+		if len(ss.audioQueue) > 0 {
+			// Drain the entire FIFO queue. Update lastAudio from the ring
+			// buffer (which tracks the newest for freeze/repeat).
+			audioQueue = make([]*media.AudioFrame, len(ss.audioQueue))
+			copy(audioQueue, ss.audioQueue)
+			ss.audioQueue = ss.audioQueue[:0]
 			ss.audioMissCount = 0
-			releaseAudio = newest
 			freshAudio = true
-		} else if ss.lastAudio != nil {
-			ss.audioMissCount++
-			if ss.audioMissCount <= 2 {
-				releaseAudio = ss.lastAudio
+			// Update lastAudio from ring buffer for freeze/repeat fallback.
+			if newest := ss.popNewestAudio(); newest != nil {
+				ss.lastAudio = newest
+			}
+			releaseAudio = nil // all frames in audioQueue
+		} else {
+			// No fresh audio — try freeze/repeat from ring buffer.
+			if newest := ss.popNewestAudio(); newest != nil {
+				ss.lastAudio = newest
+				ss.audioMissCount = 0
+				releaseAudio = newest
+				freshAudio = true
+			} else if ss.lastAudio != nil {
+				ss.audioMissCount++
+				if ss.audioMissCount <= 2 {
+					releaseAudio = ss.lastAudio
+				}
 			}
 		}
 
 		ss.mu.Unlock()
 
-		if releaseVideo != nil || hasRawVideo || releaseAudio != nil {
+		hasAudio := releaseAudio != nil || len(audioQueue) > 0
+		if releaseVideo != nil || hasRawVideo || hasAudio {
 			fs.releases = append(fs.releases, pendingRelease{
 				sourceKey:   key,
 				ss:          ss,
@@ -626,6 +702,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 				hasRawVideo: hasRawVideo,
 				freshVideo:  freshVideo,
 				audio:       releaseAudio,
+				audioQueue:  audioQueue,
 				freshAudio:  freshAudio,
 			})
 		}
@@ -650,8 +727,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 					// Fresh frame: preserve source PTS, but clamp forward
 					// if behind accumulated freeze PTS to prevent backward
 					// PTS in the MPEG-TS output.
-					if r.ss.ptsInitialized && pf.PTS <= r.ss.lastReleasedPTS {
-						r.ss.lastReleasedPTS += tickIntervalPTS
+					if r.ss.ptsInitialized && !ptsAfter(pf.PTS, r.ss.lastReleasedPTS) {
+						r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 						pf.PTS = r.ss.lastReleasedPTS
 					} else {
 						r.ss.lastReleasedPTS = pf.PTS
@@ -659,7 +736,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 					r.ss.ptsInitialized = true
 				} else {
 					// Repeated frame (freeze): advance by tick interval for monotonic output
-					r.ss.lastReleasedPTS += tickIntervalPTS
+					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					pf.PTS = r.ss.lastReleasedPTS
 				}
 			}
@@ -670,25 +747,45 @@ func (fs *FrameSynchronizer) releaseTick() {
 			vf := *r.video
 			if r.ss != nil {
 				if r.freshVideo || !r.ss.ptsInitialized {
-					if r.ss.ptsInitialized && vf.PTS <= r.ss.lastReleasedPTS {
-						r.ss.lastReleasedPTS += tickIntervalPTS
+					if r.ss.ptsInitialized && !ptsAfter(vf.PTS, r.ss.lastReleasedPTS) {
+						r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 						vf.PTS = r.ss.lastReleasedPTS
 					} else {
 						r.ss.lastReleasedPTS = vf.PTS
 					}
 					r.ss.ptsInitialized = true
 				} else {
-					r.ss.lastReleasedPTS += tickIntervalPTS
+					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					vf.PTS = r.ss.lastReleasedPTS
 				}
 			}
 			fs.onVideo(r.sourceKey, vf)
 		}
-		if r.audio != nil {
+		// Audio: drain FIFO queue first (all fresh), then single frame (freeze/repeat).
+		if len(r.audioQueue) > 0 {
+			// FIFO drain: deliver all queued audio frames in order.
+			// Each frame preserves its original PTS (fresh frames).
+			for _, qaf := range r.audioQueue {
+				af := *qaf
+				if r.ss != nil {
+					if !r.ss.audioPTSInitialized {
+						r.ss.lastReleasedAudioPTS = af.PTS
+						r.ss.audioPTSInitialized = true
+					} else if !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
+						// PTS behind accumulated value — clamp forward.
+						r.ss.lastReleasedAudioPTS += audioFramePTS
+						af.PTS = r.ss.lastReleasedAudioPTS
+					} else {
+						r.ss.lastReleasedAudioPTS = af.PTS
+					}
+				}
+				fs.onAudio(r.sourceKey, af)
+			}
+		} else if r.audio != nil {
 			af := *r.audio
 			if r.ss != nil {
 				if r.freshAudio || !r.ss.audioPTSInitialized {
-					if r.ss.audioPTSInitialized && af.PTS <= r.ss.lastReleasedAudioPTS {
+					if r.ss.audioPTSInitialized && !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
 						r.ss.lastReleasedAudioPTS += audioFramePTS
 						af.PTS = r.ss.lastReleasedAudioPTS
 					} else {

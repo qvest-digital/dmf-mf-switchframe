@@ -64,7 +64,7 @@ func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
 	AlphaBlendRGBA(yuv, rgba, width, height, 1.0)
 
 	// White in BT.709 YUV: Y = 0.2126*255 + 0.7152*255 + 0.0722*255 = 255
-	// Integer approx: (54+183+18)*255/256 = 254 (coefficients sum to 255, not 256)
+	// Integer approx: (54+183+19)*255/256 = 255 (coefficients sum to 256)
 	// Cb = -0.1146*255 - 0.3854*255 + 0.5*255 + 128 = 128
 	// Cr = 0.5*255 - 0.4542*255 - 0.0458*255 + 128 = 128
 	ySize := width * height
@@ -361,10 +361,150 @@ func TestAlphaBlendRGBARect_PureRedNoChromaOverflow(t *testing.T) {
 	}
 }
 
+func TestAlphaBlendRGBARect_OpaqueNoBackgroundLeak(t *testing.T) {
+	t.Parallel()
+	// Bug: AlphaBlendRGBARect skips the `a += a >> 7` mapping that converts
+	// alpha 255 → 256. Without it, inv = 256 - 255 = 1, leaking ~0.4% of
+	// the background through fully opaque pixels. AlphaBlendRGBA (full-frame)
+	// does this correctly via its assembly/generic kernel.
+	//
+	// We use a bright background (Y=200) and a dark overlay (Y≈18 for pure blue)
+	// at alpha=255 to maximize the leak visibility. Without the fix, the leaked
+	// background adds ~0.78 to the output Y (200 * 1/256 ≈ 0.78), rounding
+	// to Y=19 instead of the correct Y=18.
+	width, height := 4, 4
+
+	// Bright background so any leak is detectable.
+	yuv := makeYUV420(width, height, 200, 128, 128)
+
+	// Pure blue overlay, fully opaque. BT.709 Y for blue: (19*255+128)>>8 = 19.
+	rgba := makeRGBA(width, height, 0, 0, 255, 255)
+	rect := image.Rect(0, 0, width, height)
+
+	AlphaBlendRGBARect(yuv, rgba, width, height, width, height, rect, 1.0)
+
+	// Compute the expected Y value using the full-frame variant as reference.
+	yuvRef := makeYUV420(width, height, 200, 128, 128)
+	AlphaBlendRGBA(yuvRef, rgba, width, height, 1.0)
+
+	// Both should produce identical Y values for every pixel.
+	ySize := width * height
+	for i := 0; i < ySize; i++ {
+		require.Equal(t, yuvRef[i], yuv[i],
+			"Y[%d]: rect=%d, full-frame=%d — background leaked through opaque overlay", i, yuv[i], yuvRef[i])
+	}
+
+	// Also verify chroma planes match (Cb/Cr).
+	uvSize := (width / 2) * (height / 2)
+	for i := 0; i < uvSize; i++ {
+		cbRect := yuv[ySize+i]
+		cbRef := yuvRef[ySize+i]
+		require.Equal(t, cbRef, cbRect,
+			"Cb[%d]: rect=%d, full-frame=%d — background leaked through opaque chroma", i, cbRect, cbRef)
+
+		crRect := yuv[ySize+uvSize+i]
+		crRef := yuvRef[ySize+uvSize+i]
+		require.Equal(t, crRef, crRect,
+			"Cr[%d]: rect=%d, full-frame=%d — background leaked through opaque chroma", i, crRect, crRef)
+	}
+}
+
 func TestAlphaBlendRGBARect_ShortYUV(t *testing.T) {
 	shortYUV := make([]byte, 10)
 	rgba := makeRGBA(4, 4, 255, 0, 0, 128)
 
 	// Short YUV buffer should be a no-op (no panic).
 	AlphaBlendRGBARect(shortYUV, rgba, 8, 8, 4, 4, image.Rect(0, 0, 4, 4), 1.0)
+}
+
+// BenchmarkAlphaBlendRGBARect_ScoreBug benchmarks a typical score bug overlay
+// (320x80 overlay positioned at top-right of 1080p frame).
+func BenchmarkAlphaBlendRGBARect_ScoreBug(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
+
+	overlayW, overlayH := 320, 80
+	rgba := makeRGBA(overlayW, overlayH, 200, 50, 50, 220)
+	rect := image.Rect(1580, 20, 1900, 100) // top-right corner
+
+	b.SetBytes(int64(overlayW * overlayH))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		AlphaBlendRGBARect(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0)
+	}
+}
+
+// BenchmarkAlphaBlendRGBARect_LowerThird benchmarks a lower-third overlay
+// (1920x200 overlay positioned at bottom of 1080p frame).
+func BenchmarkAlphaBlendRGBARect_LowerThird(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
+
+	overlayW, overlayH := 1920, 200
+	rgba := makeRGBA(overlayW, overlayH, 30, 30, 30, 230)
+	rect := image.Rect(0, 880, 1920, 1080)
+
+	b.SetBytes(int64(overlayW * overlayH))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		AlphaBlendRGBARect(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0)
+	}
+}
+
+// BenchmarkAlphaBlendRGBARectInto_ScoreBug benchmarks the Into variant with a
+// pre-allocated scratch buffer (simulating Compositor steady-state).
+func BenchmarkAlphaBlendRGBARectInto_ScoreBug(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
+
+	overlayW, overlayH := 320, 80
+	rgba := makeRGBA(overlayW, overlayH, 200, 50, 50, 220)
+	rect := image.Rect(1580, 20, 1900, 100)
+
+	// Pre-allocate scratch buffer (as Compositor would).
+	scratch := make([]byte, rect.Dx()*4)
+
+	b.SetBytes(int64(overlayW * overlayH))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scratch = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch)
+	}
+}
+
+// BenchmarkAlphaBlendRGBARectInto_LowerThird benchmarks the Into variant with
+// pre-allocated scratch for a lower-third overlay.
+func BenchmarkAlphaBlendRGBARectInto_LowerThird(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
+
+	overlayW, overlayH := 1920, 200
+	rgba := makeRGBA(overlayW, overlayH, 30, 30, 30, 230)
+	rect := image.Rect(0, 880, 1920, 1080)
+
+	scratch := make([]byte, rect.Dx()*4)
+
+	b.SetBytes(int64(overlayW * overlayH))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scratch = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch)
+	}
+}
+
+// BenchmarkAlphaBlendRGBA_FullFrame_ForComparison benchmarks the SIMD full-frame
+// path for comparison with the rect path.
+func BenchmarkAlphaBlendRGBA_FullFrame_ForComparison(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
+	rgba := makeRGBA(frameW, frameH, 200, 50, 50, 220)
+
+	b.SetBytes(int64(frameW * frameH))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		AlphaBlendRGBA(yuv, rgba, frameW, frameH, 1.0)
+	}
 }

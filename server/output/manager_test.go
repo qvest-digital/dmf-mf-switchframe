@@ -242,6 +242,144 @@ func TestOutputManager_Close(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestOutputManager_StopMuxerLocked_RaceWithStart verifies that a concurrent
+// StartRecording() call during the drain window in stopMuxerLocked() does not
+// hang or create a corrupted viewerWg state.
+//
+// stopMuxerLocked() temporarily releases m.mu while waiting for the viewer
+// goroutine to exit via viewerWg.Wait(). Without a guard, a concurrent start
+// call can slip through during the unlock window, call ensureMuxerLocked(),
+// and increment viewerWg with a new viewer goroutine. The original
+// viewerWg.Wait() then blocks on the *new* viewer — causing a hang because
+// that viewer won't stop until the next explicit shutdown.
+func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+
+	// Start recording so the muxer/viewer are created.
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Feed a keyframe so the viewer has work to drain.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	relay.BroadcastVideo(idrFrame)
+	time.Sleep(20 * time.Millisecond) // let the viewer ingest
+
+	// Race stop + start. The stop will enter stopMuxerLocked which releases
+	// the lock during viewer drain. If the start sneaks in during that window,
+	// it would increment viewerWg for a new viewer, causing the stop's
+	// viewerWg.Wait() to hang on the new viewer.
+	errCh := make(chan error, 2)
+
+	go func() {
+		errCh <- mgr.StopRecording()
+	}()
+
+	// Tiny delay so stop likely enters the unlock window.
+	time.Sleep(1 * time.Millisecond)
+
+	go func() {
+		dir2 := t.TempDir()
+		errCh <- mgr.StartRecording(RecorderConfig{Dir: dir2})
+	}()
+
+	// Both operations must complete within a reasonable time.
+	// Without the fix, this can hang if viewerWg.Wait() blocks on the new viewer.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-errCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out — likely hung in viewerWg.Wait() due to concurrent start during stop")
+		}
+	}
+
+	// After both settle, state must be consistent.
+	mgr.mu.Lock()
+	hasViewer := mgr.viewer != nil
+	hasMuxer := mgr.muxer != nil
+	mgr.mu.Unlock()
+
+	require.Equal(t, hasViewer, hasMuxer,
+		"viewer/muxer mismatch: viewer=%v, muxer=%v", hasViewer, hasMuxer)
+}
+
+// TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping verifies
+// that ensureMuxerLocked() returns an error (or is a no-op) while a stop
+// is in progress. This tests the stopping guard directly.
+func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	// Simulate many concurrent stop+start cycles. With -race, this catches
+	// unsynchronized access to muxer/viewer/viewerWg fields.
+	for i := 0; i < 20; i++ {
+		dir := t.TempDir()
+		require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = mgr.StopRecording()
+		}()
+
+		time.Sleep(500 * time.Microsecond)
+
+		dir2 := t.TempDir()
+		_ = mgr.StartRecording(RecorderConfig{Dir: dir2})
+
+		<-done
+
+		// Consistent state: viewer and muxer must both be nil or both non-nil.
+		mgr.mu.Lock()
+		hasViewer := mgr.viewer != nil
+		hasMuxer := mgr.muxer != nil
+		mgr.mu.Unlock()
+
+		require.Equal(t, hasViewer, hasMuxer,
+			"iteration %d: viewer/muxer mismatch (viewer=%v, muxer=%v)", i, hasViewer, hasMuxer)
+
+		// Cleanup for next iteration.
+		_ = mgr.StopRecording()
+	}
+}
+
+// TestOutputManager_StoppingGuardBlocksEnsureMuxer directly verifies that
+// the stopping flag prevents ensureMuxerLocked from creating a new muxer.
+func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewOutputManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	// Simulate the stopping state.
+	mgr.mu.Lock()
+	mgr.stopping = true
+	created := mgr.ensureMuxerLocked()
+	mgr.mu.Unlock()
+
+	require.False(t, created, "ensureMuxerLocked should not create muxer while stopping")
+	require.Nil(t, mgr.viewer, "viewer should not be created while stopping")
+	require.Nil(t, mgr.muxer, "muxer should not be created while stopping")
+
+	// Clear stopping and verify it works again.
+	mgr.mu.Lock()
+	mgr.stopping = false
+	created = mgr.ensureMuxerLocked()
+	mgr.mu.Unlock()
+
+	require.True(t, created, "ensureMuxerLocked should create muxer when not stopping")
+	require.NotNil(t, mgr.viewer, "viewer should be created")
+	require.NotNil(t, mgr.muxer, "muxer should be created")
+}
+
 func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewOutputManager(relay)

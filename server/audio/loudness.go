@@ -181,37 +181,30 @@ func (m *LoudnessMeter) emitBlock() {
 // updateCachedLUFS recomputes and atomically stores all three LUFS readouts.
 // Called from emitBlock() which is called from Process() (single-writer).
 func (m *LoudnessMeter) updateCachedLUFS() {
-	// Momentary
-	count := m.momentaryIdx
-	if m.momentaryFull {
-		count = len(m.momentaryRing)
-	}
-	if count == 0 {
+	// Momentary: requires full 400ms window (4 blocks) per BS.1770-4.
+	// Reporting partial results gives incorrect loudness readings.
+	if !m.momentaryFull {
 		m.momentaryLUFSBits.Store(negMaxFloat64Bits)
 	} else {
 		var sum float64
-		for i := 0; i < count; i++ {
+		for i := 0; i < len(m.momentaryRing); i++ {
 			sum += m.momentaryRing[i]
 		}
-		m.momentaryLUFSBits.Store(math.Float64bits(energyToLUFS(sum / float64(count))))
+		m.momentaryLUFSBits.Store(math.Float64bits(energyToLUFS(sum / float64(len(m.momentaryRing)))))
 	}
 
-	// Short-term
-	count = m.shortTermIdx
-	if m.shortTermFull {
-		count = len(m.shortTermRing)
-	}
-	if count == 0 {
+	// Short-term: requires full 3s window (30 blocks) per BS.1770-4.
+	if !m.shortTermFull {
 		m.shortTermLUFSBits.Store(negMaxFloat64Bits)
 	} else {
 		var sum float64
-		for i := 0; i < count; i++ {
+		for i := 0; i < len(m.shortTermRing); i++ {
 			sum += m.shortTermRing[i]
 		}
-		m.shortTermLUFSBits.Store(math.Float64bits(energyToLUFS(sum / float64(count))))
+		m.shortTermLUFSBits.Store(math.Float64bits(energyToLUFS(sum / float64(len(m.shortTermRing)))))
 	}
 
-	// Integrated (two-pass gating)
+	// Integrated (two-pass gating) -- unchanged.
 	m.integratedLUFSBits.Store(math.Float64bits(m.computeIntegratedLUFS()))
 }
 

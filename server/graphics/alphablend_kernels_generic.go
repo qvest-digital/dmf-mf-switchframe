@@ -9,7 +9,7 @@ import "unsafe"
 //
 //	A' = A + (A >> 7)                       (map 0-255 to 0-256 range)
 //	a256 = (A' * alphaScale256) >> 8        (effective alpha, 0-256 range)
-//	overlayY = (54*R + 183*G + 18*B + 128) >> 8
+//	overlayY = (54*R + 183*G + 19*B + 128) >> 8
 //	yRow[i] = (yRow[i]*(256-a256) + overlayY*a256 + 128) >> 8
 //
 // Transparent pixels (a256 == 0) are skipped for speed.
@@ -30,7 +30,7 @@ func alphaBlendRGBARowY(yRow *byte, rgba *byte, width int, alphaScale256 int) {
 		R := int(rgbaS[ri])
 		G := int(rgbaS[ri+1])
 		B := int(rgbaS[ri+2])
-		overlayY := (54*R + 183*G + 18*B + 128) >> 8
+		overlayY := (54*R + 183*G + 19*B + 128) >> 8
 		inv := 256 - a256
 		yS[i] = byte((int(yS[i])*inv + overlayY*a256 + 128) >> 8)
 	}

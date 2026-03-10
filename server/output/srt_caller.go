@@ -245,24 +245,16 @@ func (c *SRTCaller) reconnectLoop() {
 		c.conn = conn
 
 		overflowed := c.ringBuf.Overflowed()
-		buffered := c.ringBuf.ReadAll()
+		c.ringBuf.ReadAll() // discard buffered data
 		c.mu.Unlock()
 
-		// Only flush buffered data if no overflow occurred.
-		// On overflow the data is stale and the OutputManager
-		// should wait for the next keyframe before sending.
-		if !overflowed && len(buffered) > 0 {
-			if _, err := conn.Write(buffered); err != nil {
-				slog.Warn("SRT flush failed after reconnect", "error", err)
-			}
-		}
+		// Always gate writes until a keyframe after reconnect.
+		// The remote decoder has lost state — flushing buffered delta
+		// frames would cause decode errors. Discard the ring buffer
+		// and wait for the next keyframe.
+		c.pendingIDR.Store(true)
 
-		// When overflow occurred, gate subsequent writes until a keyframe
-		// arrives. This prevents sending delta frames that reference
-		// data lost during the overflow, which would cause decoder
-		// artifacts on the remote SRT receiver.
 		if overflowed {
-			c.pendingIDR.Store(true)
 			c.overflowCount.Add(1)
 		}
 

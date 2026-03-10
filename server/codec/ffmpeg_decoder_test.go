@@ -180,3 +180,59 @@ func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 	// At least some frames should decode successfully.
 	require.Greater(t, successCount, 0, "at least one frame should decode successfully")
 }
+
+func TestFFmpegDecoderPacketReuse(t *testing.T) {
+	// Regression test: the decoder reuses a single AVPacket across Decode() calls.
+	// av_packet_unref must be called before each reuse to free side_data and buf
+	// references from the previous call. Without it, side_data accumulates and
+	// the packet's internal buffers leak. This test decodes 200 frames through
+	// a single decoder instance — enough iterations to surface memory issues
+	// from missing cleanup under AddressSanitizer or valgrind, and to verify
+	// correct output under the race detector.
+	w, h := 160, 120
+
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	dec, err := NewFFmpegDecoder(nil)
+	require.NoError(t, err)
+	defer dec.Close()
+
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	frameSize := ySize + 2*uvSize
+	yuv := make([]byte, frameSize)
+
+	const totalFrames = 200
+	successCount := 0
+
+	for i := 0; i < totalFrames; i++ {
+		// Vary the pattern each frame to generate different encoded payloads.
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*3 + i*17) % 256)
+		}
+		for j := ySize; j < frameSize; j++ {
+			yuv[j] = byte(128 + (i % 10))
+		}
+
+		forceIDR := (i % 30) == 0 // periodic IDR frames
+		encoded, _, encErr := enc.Encode(yuv, int64(i*3000), forceIDR)
+		require.NoError(t, encErr, "encode frame %d", i)
+		if encoded == nil {
+			continue
+		}
+
+		decoded, dw, dh, decErr := dec.Decode(encoded)
+		if decErr == nil {
+			require.Equal(t, w, dw, "frame %d width", i)
+			require.Equal(t, h, dh, "frame %d height", i)
+			require.Equal(t, frameSize, len(decoded), "frame %d YUV size", i)
+			successCount++
+		}
+	}
+
+	// With 200 frames and periodic IDRs, we should decode many frames.
+	require.Greater(t, successCount, 10,
+		"expected many decoded frames from %d encoded frames", totalFrames)
+}

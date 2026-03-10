@@ -273,8 +273,19 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 	}
 
 	// Determine the wall-clock range of the video clip for audio extraction.
+	// Extend clipEndTime by one video frame duration so audio frames that fall
+	// within the last video frame's display period are included. Without this,
+	// approximately one AAC frame (~21ms) is dropped from every extracted clip.
 	clipStartTime := clip[0].wallTime
 	clipEndTime := clip[len(clip)-1].wallTime
+	if len(clip) >= 2 {
+		// Estimate frame duration from the last two frames.
+		frameDur := clip[len(clip)-1].wallTime.Sub(clip[len(clip)-2].wallTime)
+		clipEndTime = clipEndTime.Add(frameDur)
+	} else {
+		// Single frame: assume 30fps (~33ms).
+		clipEndTime = clipEndTime.Add(33 * time.Millisecond)
+	}
 
 	// Deep-copy audio frames that fall within the video clip's time range.
 	var audioClip []bufferedAudioFrame

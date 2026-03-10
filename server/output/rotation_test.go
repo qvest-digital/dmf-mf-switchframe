@@ -24,9 +24,9 @@ func TestRotation_TimeBasedCreatesMultipleFiles(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	// Write TS-aligned data for ~200ms to trigger multiple rotations.
-	packet := make([]byte, 188)
-	packet[0] = 0x47 // TS sync byte
+	// Write TS-aligned keyframe packets for ~200ms to trigger multiple rotations.
+	// Keyframes are required since rotation defers until a keyframe arrives.
+	packet := makeTSPacket(0x100, true)
 
 	start := time.Now()
 	for time.Since(start) < 200*time.Millisecond {
@@ -63,10 +63,10 @@ func TestRotation_SizeBasedCreatesMultipleFiles(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	// Write 30 TS packets. With maxSize=188*10, after 10 packets the file
-	// is at the limit, and the 11th write triggers rotation.
-	packet := make([]byte, 188)
-	packet[0] = 0x47
+	// Write 30 keyframe TS packets. With maxSize=188*10, after 10 packets
+	// the file is at the limit, and the 11th write triggers rotation.
+	// Keyframes are required since rotation defers until a keyframe arrives.
+	packet := makeTSPacket(0x100, true)
 	for i := 0; i < 30; i++ {
 		_, err := r.Write(packet)
 		require.NoError(t, err)
@@ -107,8 +107,8 @@ func TestRotation_SequentialNamingAcrossThreeRotations(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	packet := make([]byte, 188)
-	packet[0] = 0x47
+	// Keyframe packets required since rotation defers until a keyframe arrives.
+	packet := makeTSPacket(0x100, true)
 
 	// Collect filenames. With MaxFileSize=188:
 	// - Initial file is _001
@@ -192,4 +192,144 @@ func TestRotation_NewFileContainsParsableTS(t *testing.T) {
 		}
 	}
 	require.Equal(t, 10, totalPackets, "total packets across all files should be 10")
+}
+
+func TestRotation_RotatedPATMPTHasDiscontinuityIndicator(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 188 * 3, // Rotate after 3 packets.
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Build a TS payload that includes PAT (PID 0), PMT (PID 0x1000),
+	// and video data. The PAT/PMT are payload-only packets (no adaptation field).
+	pat := makeTSPacket(0x0000, false) // PAT: adaptation_field_control = 01 (payload only)
+	pmt := makeTSPacket(0x1000, false) // PMT: adaptation_field_control = 01 (payload only)
+	video := makeTSPacket(0x0100, false)
+
+	// Set non-zero CC values on PAT and PMT to verify they are preserved (not reset to 0).
+	pat[3] = (pat[3] & 0xF0) | 0x05 // CC = 5
+	pmt[3] = (pmt[3] & 0xF0) | 0x0A // CC = 10
+
+	// Write PAT+PMT+video (fills file to limit).
+	data := append(append(pat, pmt...), video...)
+	_, err := r.Write(data)
+	require.NoError(t, err)
+
+	// Write a keyframe to trigger rotation.
+	keyframe := makeTSPacket(0x0100, true)
+	_, err = r.Write(keyframe)
+	require.NoError(t, err)
+
+	secondFile := r.Filename()
+
+	// Close recorder to flush.
+	require.NoError(t, r.Close())
+
+	// Read the rotated file.
+	content, err := os.ReadFile(filepath.Join(dir, secondFile))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(content), 188*2,
+		"rotated file should contain at least PAT+PMT")
+
+	// Verify the first two TS packets (PAT and PMT) have discontinuity_indicator set.
+	for i := 0; i < 2; i++ {
+		offset := i * tsPacketSize
+		pkt := content[offset : offset+tsPacketSize]
+
+		require.Equal(t, byte(0x47), pkt[0], "packet %d: sync byte", i)
+
+		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		require.True(t, pid == 0x0000 || pid == 0x1000,
+			"packet %d: expected PAT or PMT PID, got 0x%04X", i, pid)
+
+		// Check adaptation_field_control (bits 5-4 of byte 3).
+		// Must be 11 (both adaptation field and payload) or 10 (adaptation only).
+		afc := (pkt[3] >> 4) & 0x03
+		require.GreaterOrEqual(t, afc, byte(2),
+			"packet %d (PID 0x%04X): adaptation_field_control must indicate adaptation field present (got %d)",
+			i, pid, afc)
+
+		// Adaptation field length at byte 4 must be >= 1 to hold the flags byte.
+		afLen := pkt[4]
+		require.GreaterOrEqual(t, afLen, byte(1),
+			"packet %d (PID 0x%04X): adaptation_field_length must be >= 1 (got %d)",
+			i, pid, afLen)
+
+		// Discontinuity indicator is bit 7 of the adaptation flags byte (byte 5).
+		discFlag := pkt[5] & 0x80
+		require.NotZero(t, discFlag,
+			"packet %d (PID 0x%04X): discontinuity_indicator (bit 7 of byte 5) must be set",
+			i, pid)
+	}
+}
+
+func TestSetTSDiscontinuityIndicator_PayloadOnly(t *testing.T) {
+	// Test with a payload-only packet (adaptation_field_control = 01).
+	pkt := makeTSPacket(0x0000, false) // PAT, payload only
+	pkt[3] = 0x15                      // AFC=01 (payload only), CC=5
+	require.Equal(t, byte(0x01), (pkt[3]>>4)&0x03,
+		"precondition: AFC should be 01 (payload only)")
+
+	setTSDiscontinuityIndicator(pkt)
+
+	// AFC should now be 11 (adaptation + payload).
+	afc := (pkt[3] >> 4) & 0x03
+	require.Equal(t, byte(3), afc,
+		"AFC should be changed to 11 (adaptation + payload)")
+
+	// CC should be preserved.
+	cc := pkt[3] & 0x0F
+	require.Equal(t, byte(5), cc, "CC should be preserved")
+
+	// Adaptation field length should be 1.
+	require.Equal(t, byte(1), pkt[4], "adaptation_field_length should be 1")
+
+	// Discontinuity indicator should be set (bit 7 of flags byte).
+	require.NotZero(t, pkt[5]&0x80, "discontinuity_indicator should be set")
+}
+
+func TestSetTSDiscontinuityIndicator_AdaptationFieldPresent(t *testing.T) {
+	// Test with a packet that already has an adaptation field (e.g., keyframe packet).
+	pkt := makeTSPacket(0x0100, true) // Video, adaptation + payload
+	require.Equal(t, byte(0x03), (pkt[3]>>4)&0x03,
+		"precondition: AFC should be 11 (adaptation + payload)")
+	require.Equal(t, byte(0x40), pkt[5]&0x40,
+		"precondition: RAI flag should be set")
+
+	// Discontinuity flag should NOT be set initially.
+	require.Zero(t, pkt[5]&0x80, "precondition: discontinuity should not be set")
+
+	setTSDiscontinuityIndicator(pkt)
+
+	// AFC should remain 11.
+	afc := (pkt[3] >> 4) & 0x03
+	require.Equal(t, byte(3), afc, "AFC should remain 11")
+
+	// Discontinuity indicator should now be set.
+	require.NotZero(t, pkt[5]&0x80, "discontinuity_indicator should be set")
+
+	// RAI flag should still be set (other flags preserved).
+	require.NotZero(t, pkt[5]&0x40, "RAI flag should be preserved")
+}
+
+func TestSetTSDiscontinuityIndicator_MultiplePackets(t *testing.T) {
+	// Test that it handles a buffer containing multiple TS packets.
+	pat := makeTSPacket(0x0000, false)
+	pmt := makeTSPacket(0x1000, false)
+	buf := append(pat, pmt...)
+
+	setTSDiscontinuityIndicator(buf)
+
+	// Both packets should have discontinuity flag set.
+	for i := 0; i < 2; i++ {
+		offset := i * tsPacketSize
+		afc := (buf[offset+3] >> 4) & 0x03
+		require.GreaterOrEqual(t, afc, byte(2),
+			"packet %d: AFC should indicate adaptation field present", i)
+		require.NotZero(t, buf[offset+5]&0x80,
+			"packet %d: discontinuity_indicator should be set", i)
+	}
 }
