@@ -397,6 +397,54 @@ func TestPhaseVocoderTimeStretch_WhiteNoiseRMSImproved(t *testing.T) {
 		outputRMS, inputRMS, ratio)
 }
 
+func TestSynthPhase_StaysBounded(t *testing.T) {
+	t.Parallel()
+	// Bug 7: synthPhase[k] accumulates without wrapping. After many iterations,
+	// float32 precision degrades at high-frequency bins, causing phase artifacts.
+	// After the fix, all synthPhase values must stay within [-pi, pi].
+	fftSize := pvFFTSize
+	hop := fftSize / pvHopDivisor
+	numBins := fftSize/2 + 1
+	sampleRate := 48000
+
+	pv := newPhaseVocoder(fftSize, hop, sampleRate)
+
+	// Simulate 1000 frames of phase accumulation (enough to overflow float32
+	// precision without wrapping).
+	synthPhase := make([]float32, numBins)
+	prevPhase := make([]float32, numBins)
+	curPhase := make([]float32, numBins)
+
+	// Simulate analysis phases: constant phase advance per bin
+	for k := 0; k < numBins; k++ {
+		prevPhase[k] = 0
+		curPhase[k] = float32(2 * math.Pi * float64(k) * float64(hop) / float64(fftSize))
+	}
+
+	synthHop := hop * 2 // simulate 0.5x speed
+
+	for frame := 0; frame < 1000; frame++ {
+		for k := 0; k < numBins; k++ {
+			instFreq := pv.instantaneousFrequency(prevPhase[k], curPhase[k], k)
+			phaseAdvance := 2 * math.Pi * instFreq * float64(synthHop) / float64(sampleRate)
+			synthPhase[k] = float32(math.Remainder(float64(synthPhase[k])+phaseAdvance, 2*math.Pi))
+		}
+		// Advance analysis phases for next frame
+		copy(prevPhase, curPhase)
+		for k := 0; k < numBins; k++ {
+			curPhase[k] += float32(2 * math.Pi * float64(k) * float64(hop) / float64(fftSize))
+		}
+	}
+
+	// Verify all synthPhase values are within [-pi, pi]
+	for k := 0; k < numBins; k++ {
+		require.GreaterOrEqual(t, float64(synthPhase[k]), -math.Pi-0.001,
+			"synthPhase[%d] = %f, should be >= -pi", k, synthPhase[k])
+		require.LessOrEqual(t, float64(synthPhase[k]), math.Pi+0.001,
+			"synthPhase[%d] = %f, should be <= pi", k, synthPhase[k])
+	}
+}
+
 func TestPhaseVocoderTimeStretch_OutputNotClipped(t *testing.T) {
 	input := make([]float32, 48000)
 	for i := range input {

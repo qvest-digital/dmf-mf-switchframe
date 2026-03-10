@@ -510,9 +510,10 @@ func stretchChannel(data []float32, fftSize, analysisHop, synthHop, sampleRate i
 				// Phase accumulation with instantaneous frequency
 				for k := 0; k < numBins; k++ {
 					instFreq := pv.instantaneousFrequency(prevAnalysisPhase[k], pv.phaseCopy[k], k)
-					// Accumulate synthesis phase
+					// Accumulate synthesis phase, wrapping to [-pi, pi] to prevent
+					// float32 precision degradation after many frames.
 					phaseAdvance := 2 * math.Pi * instFreq * float64(synthHop) / float64(sampleRate)
-					synthPhase[k] += float32(phaseAdvance)
+					synthPhase[k] = float32(math.Remainder(float64(synthPhase[k])+phaseAdvance, 2*math.Pi))
 				}
 
 				// Phase locking via O(n) nearest-peak lookup
