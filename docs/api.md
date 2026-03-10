@@ -53,13 +53,33 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [DELETE /api/output/destinations/{id}](#delete-apioutputdestinationsid)
   - [POST /api/output/destinations/{id}/start](#post-apioutputdestinationsidstart)
   - [POST /api/output/destinations/{id}/stop](#post-apioutputdestinationsidstop)
-- [Graphics Overlay (DSK)](#graphics-overlay-dsk)
-  - [POST /api/graphics/on](#post-apigraphicson)
-  - [POST /api/graphics/off](#post-apigraphicsoff)
-  - [POST /api/graphics/auto-on](#post-apigraphicsauto-on)
-  - [POST /api/graphics/auto-off](#post-apigraphicsauto-off)
-  - [GET /api/graphics/status](#get-apigraphicsstatus)
-  - [POST /api/graphics/frame](#post-apigraphicsframe)
+- [Graphics (Multi-Layer DSK)](#graphics-multi-layer-dsk)
+  - [POST /api/graphics](#post-apigraphics)
+  - [GET /api/graphics](#get-apigraphics)
+  - [DELETE /api/graphics/{id}](#delete-apigraphicsid)
+  - [POST /api/graphics/{id}/on](#post-apigraphicsidon)
+  - [POST /api/graphics/{id}/off](#post-apigraphicsidoff)
+  - [POST /api/graphics/{id}/auto-on](#post-apigraphicsidauto-on)
+  - [POST /api/graphics/{id}/auto-off](#post-apigraphicsidauto-off)
+  - [POST /api/graphics/{id}/frame](#post-apigraphicsidframe)
+  - [POST /api/graphics/{id}/animate](#post-apigraphicsidanimate)
+  - [POST /api/graphics/{id}/animate/stop](#post-apigraphicsidanimatestop)
+  - [PUT /api/graphics/{id}/rect](#put-apigraphicsidrect)
+  - [PUT /api/graphics/{id}/zorder](#put-apigraphicsidzorder)
+  - [POST /api/graphics/{id}/fly-in](#post-apigraphicsidfly-in)
+  - [POST /api/graphics/{id}/fly-out](#post-apigraphicsidfly-out)
+  - [POST /api/graphics/{id}/slide](#post-apigraphicsidslide)
+- [Layout / PIP](#layout--pip)
+  - [GET /api/layout](#get-apilayout)
+  - [PUT /api/layout](#put-apilayout)
+  - [DELETE /api/layout](#delete-apilayout)
+  - [PUT /api/layout/slots/{id}](#put-apilayoutslotsid)
+  - [POST /api/layout/slots/{id}/on](#post-apilayoutslotsidon)
+  - [POST /api/layout/slots/{id}/off](#post-apilayoutslotsidoff)
+  - [PUT /api/layout/slots/{id}/source](#put-apilayoutslotsidsource)
+  - [GET /api/layout/presets](#get-apilayoutpresets)
+  - [POST /api/layout/presets](#post-apilayoutpresets)
+  - [DELETE /api/layout/presets/{name}](#delete-apilayoutpresetsname)
 - [Presets](#presets)
   - [GET /api/presets](#get-apipresets)
   - [POST /api/presets](#post-apipresets)
@@ -288,9 +308,20 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
     { "id": "550e8400-e29b-41d4-a716-446655440000", "name": "Opening" }
   ],
   "graphics": {
-    "active": true,
-    "template": "lower-third",
-    "fadePosition": 1.0
+    "layers": [
+      {
+        "id": 0,
+        "active": true,
+        "template": "lower-third",
+        "fadePosition": 1.0,
+        "animationMode": "",
+        "animationHz": 0,
+        "zOrder": 0,
+        "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+      }
+    ],
+    "programWidth": 1920,
+    "programHeight": 1080
   },
   "replay": {
     "state": "idle",
@@ -330,7 +361,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `srtOutput` | `object` or `null` | SRT output status. Omitted when not active. |
 | `sources` | `object` | Map of source key to `SourceInfo` |
 | `presets` | `array` | List of saved preset summaries `[{id, name}]`. Omitted when empty. |
-| `graphics` | `object` or `null` | Graphics overlay state. Omitted when not active. |
+| `graphics` | `object` or `null` | Multi-layer graphics state with `layers` array. See [GraphicsState Fields](#graphicsstate-fields). |
 | `replay` | `object` or `null` | Instant replay state. Omitted when replay manager is not configured. |
 | `operators` | `array` | List of registered operators. Omitted when empty. |
 | `locks` | `object` | Map of subsystem name to `LockInfo`. Omitted when no locks are held. |
@@ -1720,188 +1751,277 @@ Stop a specific destination.
 
 ---
 
-## Graphics Overlay (DSK)
+## Graphics (Multi-Layer DSK)
 
-The downstream keyer (DSK) composites an RGBA overlay (lower thirds, logos, score bugs, etc.) onto the program output. The overlay is rendered in the browser and uploaded as raw RGBA pixel data. The server decodes program frames, alpha-blends the overlay, and re-encodes. When inactive, frames pass through unchanged with zero CPU overhead.
+The downstream keyer (DSK) composites multiple RGBA overlay layers (lower thirds, logos, score bugs, etc.) onto the program output. Each layer has an independent z-order, position/size, opacity, and animation state. Overlays are rendered in the browser and uploaded as raw RGBA pixel data. The server decodes program frames, alpha-blends all active layers in z-order, and re-encodes. When no layers are active, frames pass through unchanged with zero CPU overhead.
 
-### POST /api/graphics/on
+All graphics endpoints return the full `GraphicsState` (all layers) on success.
 
-Activate the overlay immediately (CUT ON). The overlay appears on the program output at full opacity in a single frame. Requires that an overlay frame has been previously uploaded via `POST /api/graphics/frame`.
+### POST /api/graphics
 
-**Request Body:** Empty JSON object `{}`
-
-**Response:** `200 OK` with `GraphicsState`:
-
-```json
-{
-  "active": true,
-  "template": "lower-third",
-  "fadePosition": 1.0
-}
-```
-
-**Errors:**
-
-| Status | Condition |
-|--------|-----------|
-| `400` | No overlay frame has been uploaded |
-| `409` | Overlay is already active |
-
-**Example:**
-
-```bash
-curl -X POST http://localhost:8081/api/graphics/on \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
----
-
-### POST /api/graphics/off
-
-Deactivate the overlay immediately (CUT OFF). The overlay disappears from the program output in a single frame.
+Add a new graphics layer. Returns the created layer with its assigned ID and the full graphics state.
 
 **Request Body:** Empty JSON object `{}`
 
-**Response:** `200 OK` with `GraphicsState`:
+**Response:** `200 OK` with full `GraphicsState`:
 
 ```json
 {
-  "active": false
-}
-```
-
-**Errors:**
-
-| Status | Condition |
-|--------|-----------|
-| `409` | Overlay is not active |
-
-**Example:**
-
-```bash
-curl -X POST http://localhost:8081/api/graphics/off \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
----
-
-### POST /api/graphics/auto-on
-
-Start a 500ms fade-in transition (AUTO ON). The overlay fades in smoothly from invisible to fully opaque over 500ms. Requires that an overlay frame has been previously uploaded.
-
-**Request Body:** Empty JSON object `{}`
-
-**Response:** `200 OK` with `GraphicsState`:
-
-```json
-{
-  "active": true,
-  "template": "lower-third",
-  "fadePosition": 0.0
-}
-```
-
-The `fadePosition` will progress from `0.0` to `1.0` over the 500ms duration. State updates are broadcast via MoQ at ~60fps during the fade.
-
-**Errors:**
-
-| Status | Condition |
-|--------|-----------|
-| `400` | No overlay frame has been uploaded |
-| `409` | A fade transition is already in progress |
-
-**Example:**
-
-```bash
-curl -X POST http://localhost:8081/api/graphics/auto-on \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
----
-
-### POST /api/graphics/auto-off
-
-Start a 500ms fade-out transition (AUTO OFF). The overlay fades out smoothly from fully opaque to invisible over 500ms. The overlay becomes inactive when the fade completes.
-
-**Request Body:** Empty JSON object `{}`
-
-**Response:** `200 OK` with `GraphicsState`:
-
-```json
-{
-  "active": true,
-  "template": "lower-third",
-  "fadePosition": 1.0
-}
-```
-
-The `fadePosition` will progress from `1.0` to `0.0` over the 500ms duration.
-
-**Errors:**
-
-| Status | Condition |
-|--------|-----------|
-| `409` | Overlay is not active, or a fade transition is already in progress |
-
-**Example:**
-
-```bash
-curl -X POST http://localhost:8081/api/graphics/auto-off \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
----
-
-### GET /api/graphics/status
-
-Get the current graphics overlay state.
-
-**Request Body:** None
-
-**Response:** `200 OK` with `GraphicsState`:
-
-```json
-{
-  "active": true,
-  "template": "lower-third",
-  "fadePosition": 1.0,
+  "layers": [
+    {
+      "id": 0,
+      "active": false,
+      "template": "",
+      "fadePosition": 0.0,
+      "animationMode": "",
+      "animationHz": 0,
+      "zOrder": 0,
+      "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+    }
+  ],
   "programWidth": 1920,
   "programHeight": 1080
 }
 ```
 
-### GraphicsState Fields
+**Errors:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `active` | `bool` | Whether the overlay is currently composited onto program |
-| `template` | `string` | Name of the current overlay template. Omitted if not set. |
-| `fadePosition` | `float` | Opacity level: `0.0` = invisible, `1.0` = fully visible. Omitted when `0`. |
-| `programWidth` | `int` | Current program video width in pixels. Omitted when unknown. |
-| `programHeight` | `int` | Current program video height in pixels. Omitted when unknown. |
+| Status | Condition |
+|--------|-----------|
+| `409` | Maximum number of layers reached |
 
 **Example:**
 
 ```bash
-curl http://localhost:8081/api/graphics/status \
+curl -X POST http://localhost:8081/api/graphics \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### GET /api/graphics
+
+Get the current graphics state including all layers, their positions, z-order, and animation state.
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `GraphicsState`:
+
+```json
+{
+  "layers": [
+    {
+      "id": 0,
+      "active": true,
+      "template": "lower-third",
+      "fadePosition": 1.0,
+      "animationMode": "",
+      "animationHz": 0,
+      "zOrder": 0,
+      "rect": { "x": 0, "y": 810, "width": 1920, "height": 270 }
+    },
+    {
+      "id": 1,
+      "active": true,
+      "template": "logo",
+      "fadePosition": 1.0,
+      "animationMode": "pulse",
+      "animationHz": 1.0,
+      "zOrder": 1,
+      "rect": { "x": 1720, "y": 20, "width": 180, "height": 80 }
+    }
+  ],
+  "programWidth": 1920,
+  "programHeight": 1080
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/graphics \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### POST /api/graphics/frame
+### DELETE /api/graphics/{id}
 
-Upload an RGBA overlay frame from the browser. The RGBA pixel data is base64-encoded in the JSON body. The overlay resolution must match the program video resolution for compositing to work. This can be called while the overlay is active to update the graphics in real-time (e.g., animated score bug).
+Remove a graphics layer. The layer is deactivated and deleted.
 
-Maximum body size: 16MB (supports up to 4K resolution: 3840x2160x4 = ~33MB raw, but base64 overhead keeps practical limit under 16MB for 1080p).
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/graphics/1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/on
+
+Activate a layer immediately (CUT ON). The layer appears on the program output at full opacity in a single frame. Requires that an overlay frame has been previously uploaded to this layer via `POST /api/graphics/{id}/frame`.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, or no overlay frame has been uploaded |
+| `404` | Layer not found |
+| `409` | Layer is already active |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/on \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/graphics/{id}/off
+
+Deactivate a layer immediately (CUT OFF). The layer disappears from the program output in a single frame.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+| `409` | Layer is not active |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/off \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/graphics/{id}/auto-on
+
+Start a 500ms fade-in transition (AUTO ON) on a layer. The layer fades in smoothly from invisible to fully opaque over 500ms. Requires that an overlay frame has been previously uploaded to this layer.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `GraphicsState`
+
+The layer's `fadePosition` will progress from `0.0` to `1.0` over the 500ms duration. State updates are broadcast via MoQ at ~60fps during the fade.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, or no overlay frame has been uploaded |
+| `404` | Layer not found |
+| `409` | A fade transition is already in progress on this layer |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/auto-on \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/graphics/{id}/auto-off
+
+Start a 500ms fade-out transition (AUTO OFF) on a layer. The layer fades out smoothly from fully opaque to invisible over 500ms. The layer becomes inactive when the fade completes.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `GraphicsState`
+
+The layer's `fadePosition` will progress from `1.0` to `0.0` over the 500ms duration.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+| `409` | Layer is not active, or a fade transition is already in progress |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/auto-off \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/graphics/{id}/frame
+
+Upload an RGBA overlay frame to a specific layer. The RGBA pixel data is provided as a number array in the JSON body. This can be called while the layer is active to update the graphics in real-time (e.g., animated score bug).
+
+Maximum body size: 16MB. Maximum resolution: 3840x2160 (4K).
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
 
 **Request Body:**
 
@@ -1910,7 +2030,7 @@ Maximum body size: 16MB (supports up to 4K resolution: 3840x2160x4 = ~33MB raw, 
   "width": 1920,
   "height": 1080,
   "template": "lower-third",
-  "rgba": "<base64-encoded RGBA pixel data>"
+  "rgba": [255, 255, 255, 128, 0, 0, 0, 0]
 }
 ```
 
@@ -1918,25 +2038,769 @@ Maximum body size: 16MB (supports up to 4K resolution: 3840x2160x4 = ~33MB raw, 
 |-------|------|----------|-------------|
 | `width` | `int` | Yes | Overlay width in pixels. Must be `1`-`3840`. |
 | `height` | `int` | Yes | Overlay height in pixels. Must be `1`-`2160`. |
-| `template` | `string` | Yes | Template name for identification in status/state |
-| `rgba` | `string` | Yes | Base64-encoded raw RGBA pixel data. Must be exactly `width * height * 4` bytes when decoded. |
+| `rgba` | `number[]` | Yes | Raw RGBA pixel data as a number array. Must be exactly `width * height * 4` elements. |
+| `template` | `string` | No | Template name for identification in status/state |
 
-**Response:** `200 OK` with `GraphicsState`
+**Response:** `200 OK` with full `GraphicsState`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid dimensions, resolution exceeds 4K, RGBA data size mismatch, or invalid JSON |
+| `400` | Invalid layer ID, invalid dimensions, resolution exceeds 4K, RGBA data size mismatch, or invalid JSON |
+| `404` | Layer not found |
 
 **Example:**
 
 ```bash
-# Upload a 320x240 test overlay (307,200 bytes of RGBA data, base64-encoded)
-curl -X POST http://localhost:8081/api/graphics/frame \
+curl -X POST http://localhost:8081/api/graphics/0/frame \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"width": 320, "height": 240, "template": "test", "rgba": "AAAA..."}'
+  -d '{"width": 320, "height": 240, "template": "test", "rgba": [255,255,255,128,...]}'
+```
+
+---
+
+### POST /api/graphics/{id}/animate
+
+Start an animation on a layer. Two animation modes are supported: `pulse` (continuous opacity oscillation) and `transition` (one-shot position/opacity animation).
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body (pulse mode):**
+
+```json
+{
+  "mode": "pulse",
+  "minAlpha": 0.3,
+  "maxAlpha": 1.0,
+  "speedHz": 2.0
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | `string` | Yes | `"pulse"` for continuous oscillation |
+| `minAlpha` | `float` | Yes | Minimum opacity during pulse (`0.0`-`1.0`) |
+| `maxAlpha` | `float` | Yes | Maximum opacity during pulse (`0.0`-`1.0`) |
+| `speedHz` | `float` | Yes | Oscillation frequency in Hz |
+
+**Request Body (transition mode):**
+
+```json
+{
+  "mode": "transition",
+  "toRect": { "x": 100, "y": 50, "width": 800, "height": 600 },
+  "toAlpha": 0.5,
+  "durationMs": 1000,
+  "easing": "ease-in-out"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `mode` | `string` | Yes | `"transition"` for one-shot animation |
+| `toRect` | `object` | No | Target position and size `{x, y, width, height}`. At least one of `toRect` or `toAlpha` is required. |
+| `toAlpha` | `float` | No | Target opacity (`0.0`-`1.0`). At least one of `toRect` or `toAlpha` is required. |
+| `durationMs` | `int` | Yes | Animation duration in milliseconds. Must be positive. |
+| `easing` | `string` | No | Easing function. Default varies by implementation. |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, invalid mode, missing required fields for mode, or invalid parameter values |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+# Pulse animation
+curl -X POST http://localhost:8081/api/graphics/0/animate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "pulse", "minAlpha": 0.3, "maxAlpha": 1.0, "speedHz": 2.0}'
+
+# Transition animation
+curl -X POST http://localhost:8081/api/graphics/0/animate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "transition", "toRect": {"x": 100, "y": 50, "width": 800, "height": 600}, "durationMs": 1000}'
+```
+
+---
+
+### POST /api/graphics/{id}/animate/stop
+
+Stop any running animation on a layer and restore the layer's `fadePosition` to `1.0` (fully visible).
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/animate/stop \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### PUT /api/graphics/{id}/rect
+
+Set the position and size of a graphics layer. Coordinates are in pixels relative to the program resolution.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:**
+
+```json
+{
+  "x": 100,
+  "y": 800,
+  "width": 600,
+  "height": 200
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `x` | `int` | Yes | Horizontal position in pixels from left edge |
+| `y` | `int` | Yes | Vertical position in pixels from top edge |
+| `width` | `int` | Yes | Layer width in pixels |
+| `height` | `int` | Yes | Layer height in pixels |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID or invalid dimensions |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/graphics/0/rect \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"x": 100, "y": 800, "width": 600, "height": 200}'
+```
+
+---
+
+### PUT /api/graphics/{id}/zorder
+
+Set the z-order (stacking priority) of a graphics layer. Layers with higher z-order values are composited on top of layers with lower values.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:**
+
+```json
+{
+  "zOrder": 5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `zOrder` | `int` | Yes | Stacking order value (higher = on top) |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/graphics/0/zorder \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"zOrder": 5}'
+```
+
+---
+
+### POST /api/graphics/{id}/fly-in
+
+Animate a layer flying in from off-screen. The layer slides into view from the specified edge over the given duration. The layer must be active (CUT ON first).
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:**
+
+```json
+{
+  "direction": "left",
+  "durationMs": 500
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `direction` | `string` | Yes | Edge to fly in from: `"left"`, `"right"`, `"top"`, or `"bottom"` |
+| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, invalid direction, or invalid duration |
+| `404` | Layer not found |
+| `409` | Layer is not active |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/fly-in \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"direction": "left", "durationMs": 500}'
+```
+
+---
+
+### POST /api/graphics/{id}/fly-out
+
+Animate a layer flying out to off-screen. The layer slides out of view toward the specified edge over the given duration. The layer must be active.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:**
+
+```json
+{
+  "direction": "right",
+  "durationMs": 500
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `direction` | `string` | Yes | Edge to fly out to: `"left"`, `"right"`, `"top"`, or `"bottom"` |
+| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, invalid direction, or invalid duration |
+| `404` | Layer not found |
+| `409` | Layer is not active |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/fly-out \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"direction": "right", "durationMs": 500}'
+```
+
+---
+
+### POST /api/graphics/{id}/slide
+
+Slide a layer to a new position and/or size over a specified duration. This is a smooth position animation, useful for repositioning lower thirds or sliding elements across the screen.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `int` | Layer ID |
+
+**Request Body:**
+
+```json
+{
+  "x": 200,
+  "y": 850,
+  "width": 800,
+  "height": 150,
+  "durationMs": 750
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `x` | `int` | Yes | Target horizontal position in pixels |
+| `y` | `int` | Yes | Target vertical position in pixels |
+| `width` | `int` | Yes | Target width in pixels |
+| `height` | `int` | Yes | Target height in pixels |
+| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+
+**Response:** `200 OK` with full `GraphicsState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, invalid dimensions, or invalid duration |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/slide \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"x": 200, "y": 850, "width": 800, "height": 150, "durationMs": 750}'
+```
+
+---
+
+### GraphicsState Fields
+
+The `GraphicsState` object is returned by all graphics endpoints and included in the `ControlRoomState` broadcast.
+
+```json
+{
+  "layers": [
+    {
+      "id": 0,
+      "active": true,
+      "template": "lower-third",
+      "fadePosition": 1.0,
+      "animationMode": "pulse",
+      "animationHz": 1.0,
+      "zOrder": 0,
+      "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+    }
+  ],
+  "programWidth": 1920,
+  "programHeight": 1080
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `layers` | `array` | List of all graphics layers, sorted by z-order |
+| `programWidth` | `int` | Current program video width in pixels. Omitted when unknown. |
+| `programHeight` | `int` | Current program video height in pixels. Omitted when unknown. |
+
+### GraphicsLayer Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `int` | Unique layer identifier |
+| `active` | `bool` | Whether the layer is currently composited onto program |
+| `template` | `string` | Name of the overlay template. Omitted if not set. |
+| `fadePosition` | `float` | Opacity level: `0.0` = invisible, `1.0` = fully visible |
+| `animationMode` | `string` | Current animation mode: `""` (none), `"pulse"`, or `"transition"` |
+| `animationHz` | `float` | Pulse frequency in Hz. `0` when not pulsing. |
+| `zOrder` | `int` | Stacking order (higher = on top) |
+| `rect` | `object` | Layer position and size `{x, y, width, height}` in pixels |
+
+---
+
+## Layout / PIP
+
+The layout system controls picture-in-picture (PIP) and multi-source composition layouts. A layout consists of named slots, each bound to a source with a position/size rectangle. Layouts can be created from built-in presets (e.g., PIP corner, side-by-side) or defined with custom slot configurations. Layout slot positions can also be updated in real-time via WebTransport datagrams for low-latency PIP drag (see fast-control datagrams).
+
+### GET /api/layout
+
+Get the current layout state including all slots, the active preset name, and whether the layout is active.
+
+**Request Body:** None
+
+**Response:** `200 OK`:
+
+```json
+{
+  "active": true,
+  "preset": "pip-bottom-right",
+  "slots": {
+    "main": {
+      "source": "cam1",
+      "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+      "scaleMode": "fill",
+      "enabled": true
+    },
+    "pip": {
+      "source": "cam2",
+      "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
+      "scaleMode": "fit",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/layout \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/layout
+
+Set the current layout from a preset name or a custom layout definition.
+
+**Request Body (preset):**
+
+```json
+{
+  "preset": "pip-bottom-right"
+}
+```
+
+**Request Body (custom definition):**
+
+```json
+{
+  "definition": {
+    "slots": {
+      "main": {
+        "source": "cam1",
+        "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+        "scaleMode": "fill"
+      },
+      "pip": {
+        "source": "cam2",
+        "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
+        "scaleMode": "fit"
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `preset` | `string` | No | Name of a built-in or saved layout preset |
+| `definition` | `object` | No | Custom layout definition with slot configurations. One of `preset` or `definition` is required. |
+
+**Response:** `200 OK` with full layout state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON, missing both `preset` and `definition`, or invalid slot configuration |
+| `404` | Preset not found |
+
+**Example:**
+
+```bash
+# Apply a preset
+curl -X PUT http://localhost:8081/api/layout \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"preset": "pip-bottom-right"}'
+
+# Apply a custom layout
+curl -X PUT http://localhost:8081/api/layout \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"definition": {"slots": {"main": {"source": "cam1", "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080}, "scaleMode": "fill"}}}}'
+```
+
+---
+
+### DELETE /api/layout
+
+Clear the current layout. All slots are disabled and the layout is deactivated, returning to single-source program output.
+
+**Request Body:** None
+
+**Response:** `200 OK` with full layout state
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/layout \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/layout/slots/{id}
+
+Update properties of a layout slot. You can change the source, position/size, and scale mode in a single request.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Slot identifier (e.g., `"main"`, `"pip"`) |
+
+**Request Body:**
+
+```json
+{
+  "source": "cam3",
+  "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
+  "scaleMode": "fit"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | `string` | No | Source key to assign to this slot |
+| `rect` | `object` | No | Position and size `{x, y, width, height}` in pixels |
+| `scaleMode` | `string` | No | How the source is scaled to fit the slot: `"fit"` (letterbox) or `"fill"` (crop) |
+
+**Response:** `200 OK` with full layout state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or invalid slot properties |
+| `404` | Slot not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/layout/slots/pip \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "cam3", "rect": {"x": 100, "y": 100, "width": 640, "height": 480}}'
+```
+
+---
+
+### POST /api/layout/slots/{id}/on
+
+Enable a layout slot, making it visible in the composition.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Slot identifier |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full layout state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid slot ID |
+| `404` | Slot not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/layout/slots/pip/on \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/layout/slots/{id}/off
+
+Disable a layout slot, removing it from the composition.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Slot identifier |
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full layout state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid slot ID |
+| `404` | Slot not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/layout/slots/pip/off \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### PUT /api/layout/slots/{id}/source
+
+Set the source for a layout slot.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Slot identifier |
+
+**Request Body:**
+
+```json
+{
+  "source": "cam2"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `source` | `string` | Yes | Source key to assign to the slot |
+
+**Response:** `200 OK` with full layout state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `source` field or invalid JSON |
+| `404` | Slot not found or source not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/layout/slots/pip/source \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "cam2"}'
+```
+
+---
+
+### GET /api/layout/presets
+
+List all saved layout presets.
+
+**Request Body:** None
+
+**Response:** `200 OK`:
+
+```json
+[
+  { "name": "pip-bottom-right" },
+  { "name": "side-by-side" },
+  { "name": "three-up" }
+]
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/layout/presets \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/layout/presets
+
+Save the current layout as a named preset.
+
+**Request Body:**
+
+```json
+{
+  "name": "my-custom-layout"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Preset name (alphanumeric, hyphens, underscores) |
+
+**Response:** `200 OK`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing or invalid `name` |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/layout/presets \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-custom-layout"}'
+```
+
+---
+
+### DELETE /api/layout/presets/{name}
+
+Delete a saved layout preset.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | Preset name |
+
+**Response:** `200 OK`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Preset not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/layout/presets/my-custom-layout \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---

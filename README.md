@@ -84,11 +84,27 @@ The server produces the authoritative program output — the browser is a contro
 
 ### Graphics
 
-- Downstream keyer (DSK) with RGBA alpha compositing
+- Multi-layer DSK compositor (up to 8 independent layers)
+- Per-layer: RGBA overlay, cut on/off, 500ms auto fade on/off
+- Per-layer z-order, position, and size control
+- Fly-in/fly-out animation (left, right, top, bottom) with configurable duration
+- Slide animation to new position/size
+- Pulse animation (oscillating alpha with min/max/Hz)
+- Transition animation (target alpha and/or rect with easing)
+- 6 built-in templates: lower third, news lower third, full-screen card, score bug, network bug, ticker
+- Canvas-rendered template preview per layer
 - Upstream chroma key per source (Cb/Cr squared distance, spill suppression, configurable replacement color)
 - Upstream luma key per source (clip range, softness)
-- Templates: lower third, full-screen card, ticker
-- Cut on/off or 500ms fade on/off
+
+### Layout / PIP
+
+- Picture-in-picture, side-by-side, and quad-split compositions
+- Up to 4 layout slots with independent source assignment
+- Per-slot: on/off, position/size, crop-to-fill scale mode
+- PIP transitions: cut, dissolve, fly-in
+- Auto-dissolve when PIP source matches new program source
+- File-based layout preset store
+- Fast-control datagrams for smooth PIP drag (WebTransport, ~10 bytes/update)
 
 ### Multi-Operator
 
@@ -100,7 +116,7 @@ The server produces the authoritative program output — the browser is a contro
 
 ### Macros
 
-- 35 action types across 10 categories (switching, audio, graphics, output, replay, SCTE-35, etc.)
+- 45 action types across 11 categories (switching, audio, graphics, layout, output, replay, SCTE-35, etc.)
 - Sequential execution with context cancellation
 - File-based JSON storage with atomic writes
 - Keyboard triggers via Ctrl+1–9
@@ -115,6 +131,7 @@ The server produces the authoritative program output — the browser is a contro
 - Responsive: 4 CSS breakpoints (1920/1024/768px), `pointer: coarse` touch targets
 - Audio level bars on multiview tiles, LUFS metering with EBU R128 color coding
 - Tabbed bottom panel: Audio, Graphics, Macros, Keys, Replay, Presets, SCTE-35 (7 tabs)
+- Graphics tab: per-layer template selector, field editor, preview canvas, CUT/AUTO on/off, fly-in/out with direction/duration, animation mode (pulse/transition) with params
 - Preset save/recall, macro run/edit/delete, upstream key config, replay controls
 - Operator registration, subsystem lock indicators
 
@@ -247,7 +264,7 @@ cd ui && npx vitest run             # Frontend unit tests
 cd ui && npx playwright test        # E2E (builds static app, serves on :4173)
 ```
 
-~1933 Go tests, 758 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
+~2314 Go tests, 825 Vitest tests, 47 Playwright E2E tests. All pass with `-race`.
 
 Benchmark results are tracked per commit and published at **[zsiec.github.io/switchframe/dev/bench](https://zsiec.github.io/switchframe/dev/bench/)**.
 
@@ -262,9 +279,11 @@ server/                     Go module (github.com/zsiec/switchframe/server)
   output/                   MPEG-TS recording, SRT caller/listener, confidence monitor, multi-destination
   control/                  REST API handlers, auth middleware, MoQ state publisher
   codec/                    FFmpeg/OpenH264 bindings, NALU/ADTS helpers, encoder auto-detect
-  graphics/                 DSK compositor, chroma/luma keyer, upstream key processor
+  graphics/                 Multi-layer DSK compositor, animation, chroma/luma keyer, upstream key processor
+  layout/                   PIP compositor, multi-layout presets, slot transitions
+  fastctrl/                 High-frequency datagram control (PIP drag, T-bar)
   stinger/                  PNG sequence + optional WAV audio store (zip upload, path traversal prevention, memory limit)
-  macro/                    File-based JSON store, sequential runner, 35 action types, step validation, execution broadcast
+  macro/                    File-based JSON store, sequential runner, 45 action types, step validation, execution broadcast
   operator/                 Registration, sessions, role-based locking
   replay/                   GOP-aligned buffers, clip extraction, variable-speed player, phase vocoder, WSOLA, MCFI
   preset/                   File-based save/recall
@@ -548,16 +567,40 @@ All endpoints require `Authorization: Bearer <token>` except in demo mode. When 
 | `POST` | `/api/stinger/{name}/cut-point` | Set cut point (0–1) |
 | `DELETE` | `/api/stinger/{name}` | Delete stinger clip |
 
-### Graphics (DSK)
+### Graphics (Multi-Layer DSK)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/graphics/on` | Cut overlay on |
-| `POST` | `/api/graphics/off` | Cut overlay off |
-| `POST` | `/api/graphics/auto-on` | Fade overlay in (500ms) |
-| `POST` | `/api/graphics/auto-off` | Fade overlay out (500ms) |
-| `GET` | `/api/graphics/status` | Overlay status |
-| `POST` | `/api/graphics/frame` | Upload RGBA overlay (up to 4K) |
+| `POST` | `/api/graphics` | Add a new graphics layer (returns layer ID) |
+| `GET` | `/api/graphics` | Graphics status (all layers) |
+| `DELETE` | `/api/graphics/{id}` | Remove a graphics layer |
+| `POST` | `/api/graphics/{id}/on` | Cut layer on |
+| `POST` | `/api/graphics/{id}/off` | Cut layer off |
+| `POST` | `/api/graphics/{id}/auto-on` | Fade layer in (500ms) |
+| `POST` | `/api/graphics/{id}/auto-off` | Fade layer out (500ms) |
+| `POST` | `/api/graphics/{id}/frame` | Upload RGBA overlay frame to layer |
+| `POST` | `/api/graphics/{id}/animate` | Start animation (pulse or transition mode) |
+| `POST` | `/api/graphics/{id}/animate/stop` | Stop animation |
+| `PUT` | `/api/graphics/{id}/rect` | Set layer position and size |
+| `PUT` | `/api/graphics/{id}/zorder` | Set layer z-order |
+| `POST` | `/api/graphics/{id}/fly-in` | Animate layer flying in from edge |
+| `POST` | `/api/graphics/{id}/fly-out` | Animate layer flying out to edge |
+| `POST` | `/api/graphics/{id}/slide` | Slide layer to new position |
+
+### Layout / PIP
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/layout` | Get current layout state |
+| `PUT` | `/api/layout` | Set layout (preset name or custom definition) |
+| `DELETE` | `/api/layout` | Clear layout (disable all slots) |
+| `PUT` | `/api/layout/slots/{id}` | Update slot properties (source, rect, scale) |
+| `POST` | `/api/layout/slots/{id}/on` | Enable slot |
+| `POST` | `/api/layout/slots/{id}/off` | Disable slot |
+| `PUT` | `/api/layout/slots/{id}/source` | Set slot source |
+| `GET` | `/api/layout/presets` | List layout presets |
+| `POST` | `/api/layout/presets` | Save current layout as preset |
+| `DELETE` | `/api/layout/presets/{name}` | Delete layout preset |
 
 ### Instant Replay
 

@@ -64,8 +64,9 @@ graph TD
                 enq --> vpl["videoProcessingLoop"]
                 vpl --> prun["Pipeline.Run(frame)<br/>PipelineNode chain"]
                 prun --> ukn["upstreamKeyNode"]
-                ukn --> cn["compositorNode"]
-                cn --> rsn["rawSinkNode(s)<br/>(MXL, raw monitor)"]
+                ukn --> lcn["layoutCompositorNode<br/>(PIP/split)"]
+                lcn --> dcn["dskCompositorNode<br/>(graphics overlay)"]
+                dcn --> rsn["rawSinkNode(s)<br/>(MXL, raw monitor)"]
                 rsn --> encn["encodeNode<br/>(H.264 encode)"]
                 encn --> bv["programRelay.BroadcastVideo()"]
             end
@@ -217,8 +218,9 @@ use `handleVideoFrame` directly.
 3. Feed key fill bridge with decoded YUV (for upstream keying fills).
 4. If a transition is active, feed to the transition engine via
    `IngestRawFrame`. Sync audio crossfade position.
-5. If program source, run through key processor and DSK compositor,
-   then enqueue for encode and broadcast to program relay.
+5. If program source, run through key processor, layout compositor,
+   and DSK graphics compositor, then enqueue for encode and broadcast
+   to program relay.
 6. Non-program sources are filtered (dropped).
 
 **Cut operation.** `Cut(sourceKey)`:
@@ -334,7 +336,7 @@ flowchart TD
     done -->|No| wait
     done -->|Yes| cleanup["cleanup() + OnComplete(false)"]
 
-    out -.->|"Switcher receives raw YUV"| proc["broadcastProcessed() →<br/>enqueueVideoWork() →<br/>Pipeline.Run() node chain:<br/>upstreamKey → compositor → rawSinks → encode →<br/>programRelay.BroadcastVideo()"]
+    out -.->|"Switcher receives raw YUV"| proc["broadcastProcessed() →<br/>enqueueVideoWork() →<br/>Pipeline.Run() node chain:<br/>upstreamKey → layout → DSK → rawSinks → encode →<br/>programRelay.BroadcastVideo()"]
 ```
 
 **Wall-clock frame pairing.** The engine stores the latest decoded YUV
@@ -359,7 +361,8 @@ frame) during transitions. No additional cgo dependencies.
 
 **Raw YUV output.** The transition engine does not encode. It outputs
 raw YUV420 via `config.Output()` to the switcher's `broadcastProcessed`
-callback, which runs YUV processors (upstream keyer, DSK compositor)
+callback, which runs YUV processors (upstream keyer, layout compositor,
+DSK graphics compositor)
 and enqueues the frame for encoding in the shared `pipelineCodecs`
 encoder. This ensures consistent SPS/PPS across normal and transition
 frames.
@@ -435,34 +438,153 @@ ControlRoomState broadcast.
 
 ### 2.6 Graphics Compositor (`graphics/`)
 
-The DSK (Downstream Keyer) compositor overlays RGBA graphics onto the
-program output. It is wired into the switcher as a `videoProcessor`
-hook, called on every program frame in `broadcastVideo()`.
+The DSK (Downstream Keyer) compositor is a multi-layer graphics engine
+that overlays up to 8 independent RGBA layers onto the program output.
+Each layer has its own overlay image, position rect, z-order, fade
+state, animation state, and template name (for UI round-trip).
 
 ```mermaid
 flowchart TD
-    upload["Browser uploads RGBA overlay<br/>(SetOverlay)"] --> activate["Compositor.On() / AutoOn(duration)"]
+    upload["Browser uploads RGBA overlay<br/>(AddLayer + SetOverlay)"] --> activate["On() / AutoOn(duration)"]
+    activate --> animate["Animate(id, cfg) / FlyIn / FlyOut"]
 
-    subgraph pipeline["Called from Pipeline.Run() via compositorNode"]
-        yuvin["ProcessYUV(yuv, width, height)<br/>(called per program frame)"] --> check{"Active?"}
+    subgraph pipeline["Called from Pipeline.Run() via dskCompositorNode"]
+        yuvin["ProcessYUV(yuv, width, height)<br/>(called per program frame)"] --> check{"Any layer active?"}
         check -->|No| pass["Return YUV unchanged<br/>(zero overhead)"]
-        check -->|Yes| blend["AlphaBlendRGBA(yuv, overlay, w, h, fadePosition)<br/>(in-place compositing in YUV space)"]
-        blend --> ret["Return composited YUV"]
+        check -->|Yes| sort["Sort active layers by z-order"]
+        sort --> loop["For each active layer:<br/>AlphaBlendRGBA(yuv, overlay, rect, fadePosition)<br/>(in-place compositing in YUV space)"]
+        loop --> ret["Return composited YUV"]
     end
 ```
 
-**Raw YUV processing.** The compositor no longer has its own
-decoder/encoder. It operates on raw YUV420 buffers passed through the
-`Pipeline.Run()` node chain via `compositorNode`. Decoding is handled
-by per-source `sourceDecoder` goroutines and encoding by `encodeNode`
-— the compositor just performs in-place alpha blending on the YUV
-buffer between upstream keying and encoding.
+**Multi-layer architecture.** The `Compositor` manages up to 8
+(`DefaultMaxLayers`) independent graphics layers. Each `graphicsLayer`
+holds its own overlay RGBA buffer, position `image.Rectangle`, z-order,
+fade state, and animation state. Layers are sorted by z-order for
+compositing — lower z-order renders first (behind higher layers).
+Alpha compositing happens in-place in YUV420 domain. The layer
+lifecycle is: `AddLayer()` -> `SetOverlay()` -> `On()` ->
+animate/fly -> `Off()` -> `RemoveLayer()`.
+
+**Per-layer concurrency.** Each layer has its own mutex for animation
+goroutines. Pulse and transition animations run in dedicated goroutines
+per layer, allowing concurrent animations across layers without
+blocking the compositor's main lock.
+
+**Animation modes.** `AnimationConfig` supports two modes:
+- **Pulse:** Oscillating alpha between `minAlpha` and `maxAlpha` at
+  `speedHz` using a sine wave. Runs indefinitely until stopped.
+- **Transition:** Interpolates rect and/or alpha from current values
+  to target values over `durationMs` with easing (`linear`,
+  `ease-in-out`, `smoothstep`).
+
+**Fly-in/fly-out.** `FlyIn` and `FlyOut` use transition animation
+mode internally. They compute off-screen start/end rects based on the
+program resolution and a direction parameter, then animate to/from the
+target rect over the configured duration.
+
+**Raw YUV processing.** The compositor operates on raw YUV420 buffers
+passed through the `Pipeline.Run()` node chain via `dskCompositorNode`.
+Decoding is handled by per-source `sourceDecoder` goroutines and
+encoding by `encodeNode` — the compositor just performs in-place alpha
+blending on the YUV buffer between the layout compositor and encoding.
 
 **Fade transitions.** `AutoOn` and `AutoOff` drive a fade from 0.0 to
 1.0 (or reverse) over a configurable duration at ~60fps. The
 `fadePosition` scales the overlay alpha during compositing. `On` / `Off`
 provide instant cut transitions. When inactive, `ProcessYUV` returns
 the YUV buffer unchanged with zero overhead.
+
+**State serialization.** `buildStateLocked()` serializes all layer
+state for broadcast. `State` includes `Layers []LayerState` (each with
+nested `RectState` for position) plus `ProgramWidth` and
+`ProgramHeight`. Template name is stored per-layer for UI round-trip.
+
+
+### 2.6a Layout/PIP Compositor (`layout/`)
+
+The layout compositor composites up to 4 PIP (picture-in-picture) slots
+onto the program frame. It sits between upstream keying and the DSK
+graphics compositor in the pipeline node chain.
+
+```mermaid
+flowchart TD
+    cfg["PUT /api/layout<br/>(preset or custom slots)"] --> comp["layout.Compositor"]
+    drag["WebTransport datagram<br/>(0x01 layout position)"] -->|"60fps binary updates"| comp
+
+    subgraph pipeline["Called from Pipeline.Run() via layoutCompositorNode"]
+        pin["ProcessFrame(yuv, width, height)"] --> active{"Layout active?<br/>(any slot enabled?)"}
+        active -->|No| passthru["Return YUV unchanged<br/>(zero overhead)"]
+        active -->|Yes| tick["Tick animations"]
+        tick --> slots["For each enabled slot (z-order sorted):"]
+        slots --> cache["Lookup cached source frame"]
+        cache -->|Found| scale["Scale to slot rect<br/>(stretch or crop-to-fill)"]
+        cache -->|Missing| gray["Use gray 'no signal' frame"]
+        scale --> blit["Blit onto program frame<br/>(in-place YUV420)"]
+        gray --> blit
+        blit --> border["Draw border if configured"]
+        border --> ret["Return composited YUV"]
+    end
+```
+
+**Layout types.** Three built-in preset families plus custom layouts:
+- **PIP** (one slot overlaid): A single secondary source in a corner,
+  configurable size and position. 4 corner presets (top-left/right,
+  bottom-left/right).
+- **Side-by-side** (two slots): 50/50 split with configurable gap.
+- **Quad split** (four slots): 2x2 grid with configurable gap.
+- **Custom:** Arbitrary slot positions via direct `LayoutSlot` array.
+
+**Slot configuration.** Each `LayoutSlot` has: source key, enabled
+flag, position rect (`image.Rectangle`), z-order, border config
+(width + YUV color), transition type, scale mode (`stretch` or `fill`),
+and crop anchor for fill mode. All coordinates must be even-aligned
+for YUV420 compatibility (`EvenAlign()`).
+
+**Frame cache.** The compositor caches the latest decoded YUV420 frame
+per source via `IngestSourceFrame()` (called from
+`handleRawVideoFrame`). This allows immediate compositing without
+waiting for a new frame arrival — slots always show the most recent
+frame for their assigned source. Sources with no cached frame render
+as broadcast black (BT.709 limited-range: Y=16, Cb=128, Cr=128).
+
+**Scale modes.** Two scale modes handle source-to-slot dimension
+mismatch:
+- **Stretch** (default): Bilinear scale to fill the slot rect. May
+  distort aspect ratio.
+- **Fill** (`crop-to-fill`): Scale source to cover the slot rect,
+  cropping the excess. Preserves aspect ratio. Crop anchor (`[x,y]`
+  in 0.0-1.0 range) controls which portion of the source is visible.
+
+**Slot transitions.** Three transition types for showing/hiding slots:
+- **Cut:** Instant on/off.
+- **Dissolve:** Alpha blend over a configurable duration (default
+  300ms). Uses `Animation` struct with easing function.
+- **Fly:** Animate the slot rect from an off-screen position to its
+  target position (or reverse for fly-out).
+
+**Auto-dissolve.** When a PIP source matches the new program source
+after a cut, the PIP slot auto-dissolves off to avoid showing the same
+source twice on screen.
+
+**Pipeline integration.** The layout compositor is wired as
+`layoutCompositorNode` in the pipeline, between `upstreamKeyNode` and
+`dskCompositorNode`. When no layout is active (no enabled slots), the
+node returns early with zero overhead. The node's `Active()` method
+checks `compositor.Active()`, so inactive layouts are skipped entirely
+during pipeline execution.
+
+**Preset store.** Custom layout presets are persisted at
+`~/.switchframe/layout_presets.json` via `layout.Store` (file-based
+JSON CRUD, same pattern as preset and macro stores).
+
+**Fast-control datagrams.** PIP slot dragging uses WebTransport
+datagrams (message type `0x01`) for low-latency position updates at
+60fps. The binary wire format is `[0x01][slot_index][x_u16][y_u16]`
+(~7 bytes/update). The `fastctrl.Dispatcher` routes these to the
+layout compositor's `UpdateSlotRect()` (fast path, no state broadcast).
+On drag release, a single REST `PUT /api/layout/slots/{id}` confirms
+the authoritative position.
 
 
 ### 2.7 State Broadcast
@@ -500,7 +622,7 @@ the first MoQ group.
 1. **Switcher** -- cut, preview, transition start/complete, health
 2. **OutputManager** -- recording start/stop, SRT connect/disconnect,
    ring buffer overflow
-3. **Compositor** -- graphics on/off, fade position
+3. **Compositor** -- graphics layer on/off, fade position, animation state
 4. **ReplayManager** -- mark-in/out, playback start/stop, progress
 5. **SessionManager** -- operator connect/disconnect, lock acquire/release
 6. **MacroRunner** -- execution start/step progress/complete/error
@@ -518,6 +640,28 @@ patches the base switcher state with recording, SRT, graphics, replay,
 and operator/lock status from their respective managers before broadcast.
 The compositor uses a `gfxOverride` parameter to avoid calling
 `compositor.Status()` from within its own lock (which would deadlock).
+The graphics state uses a multi-layer format:
+
+```json
+{
+  "graphics": {
+    "layers": [
+      {
+        "id": 1,
+        "template": "lower-third",
+        "active": true,
+        "fadePosition": 1.0,
+        "animationMode": "",
+        "zOrder": 0,
+        "rect": {"x": 0, "y": 810, "width": 1920, "height": 270}
+      }
+    ],
+    "programWidth": 1920,
+    "programHeight": 1080
+  }
+}
+```
+
 Operator state includes a list of registered operators with connection
 status, plus a map of active subsystem locks (holder ID, holder name,
 acquired timestamp). Replay state includes player state, mark points,
@@ -956,8 +1100,9 @@ flowchart TD
 
     subgraph nodes["PipelineNode chain (sequential)"]
         prun --> ukn["upstreamKeyNode<br/>keyBridge.ProcessYUV()<br/>(chroma/luma key, in-place)"]
-        ukn --> cn["compositorNode<br/>compositor.ProcessYUV()<br/>(DSK graphics overlay, in-place)"]
-        cn --> rsn["rawSinkNode(s)<br/>(MXL output, raw monitor)"]
+        ukn --> lcn["layoutCompositorNode<br/>layoutComp.ProcessFrame()<br/>(PIP/split-screen overlay, in-place)"]
+        lcn --> dcn["dskCompositorNode<br/>compositor.ProcessYUV()<br/>(DSK graphics overlay, in-place)"]
+        dcn --> rsn["rawSinkNode(s)<br/>(MXL output, raw monitor)"]
         rsn --> encn["encodeNode<br/>pipeCodecs.encode()<br/>(YUV420 → H.264 AVC1)"]
     end
 
@@ -973,8 +1118,9 @@ boundaries that would otherwise cause visual glitches.
 **Pipeline architecture.** The `Pipeline` struct holds an ordered chain
 of `PipelineNode` implementations, built via `Pipeline.Build()` on the
 main goroutine and executed via `Pipeline.Run()` on the video processing
-goroutine. The standard node chain is: `upstreamKeyNode` → `compositorNode`
-→ `rawSinkNode` (MXL output) → `rawSinkNode` (raw monitor) → `encodeNode`.
+goroutine. The standard node chain is: `upstreamKeyNode` →
+`layoutCompositorNode` → `dskCompositorNode` → `rawSinkNode` (MXL output)
+→ `rawSinkNode` (raw monitor) → `encodeNode`.
 Nodes are immutable once built — reconfiguration creates a new Pipeline
 via atomic swap (`swapPipeline()`), with a drain goroutine waiting for
 in-flight frames on the old pipeline before closing it.
@@ -1017,7 +1163,8 @@ fires to update the program relay's MoQ catalog.
 
 **Raw program monitor tap.** When `--raw-program-monitor` is enabled, a
 `rawMonitorSink` (`atomic.Pointer[RawVideoSink]`) taps the processed
-YUV buffer after upstream keying and DSK compositing but before H.264
+YUV buffer after upstream keying, layout compositing, and DSK graphics
+overlay but before H.264
 encode. The YUV is deep-copied and published to a `"program-raw"` MoQ
 track. Browsers can subscribe to this track and render via a WebGL YUV
 shader, eliminating one encode-decode round trip for ultra-low-latency
@@ -1217,7 +1364,7 @@ flowchart TD
     proc --> bv
 
     bv --> vpl["videoProcessingLoop"]
-    vpl --> prun["Pipeline.Run(frame)<br/>upstreamKey → compositor →<br/>rawSinks → encode"]
+    vpl --> prun["Pipeline.Run(frame)<br/>upstreamKey → layout → DSK →<br/>rawSinks → encode"]
     prun --> broadcast["programRelay.BroadcastVideo(frame)"]
     broadcast --> browsers["MoQ viewers (browsers)"]
     broadcast --> output["OutputViewer (if recording/SRT active)"]
@@ -1286,7 +1433,7 @@ sequenceDiagram
         TE->>SW: Output callback(rawYUV, w, h, pts)
         Note over SW: broadcastProcessed() → enqueueVideoWork()
         Note over SW: videoProcessingLoop → Pipeline.Run(frame)
-        Note over SW: upstreamKeyNode → compositorNode →<br/>rawSinkNode(s) → encodeNode → H.264
+        Note over SW: upstreamKeyNode → layoutCompositorNode →<br/>dskCompositorNode → rawSinkNode(s) → encodeNode → H.264
         SW->>SW: broadcastOwnedToProgram(frame)
     end
 
@@ -1311,7 +1458,7 @@ sequenceDiagram
     participant Store as ControlRoomStore
 
     Event->>Enrich: sw.OnStateChange / outputMgr / compositor
-    Enrich->>Enrich: Add Recording + SRT + Graphics status
+    Enrich->>Enrich: Add Recording + SRT + Graphics (multi-layer) status
     Enrich->>Pub: Publish(enrichedState)
     Pub->>Pub: JSON.Marshal → chan []byte (64 slots)
     Note over Pub: If full: drop oldest (safe, full snapshot)
