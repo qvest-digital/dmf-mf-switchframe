@@ -5,12 +5,26 @@ import "image"
 // ComposePIPOpaque copies a scaled PIP source YUV420 buffer into a sub-region
 // of the destination frame. All three planes are copied at their native resolutions.
 // rect.Min must be even-aligned for YUV420 correctness.
+// Safe when rect extends past frame bounds — clips to destination dimensions.
 func ComposePIPOpaque(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect image.Rectangle) {
+	// Clip copy dimensions to what fits in the destination frame.
+	copyW := srcW
+	copyH := srcH
+	if rect.Min.X+copyW > dstW {
+		copyW = dstW - rect.Min.X
+	}
+	if rect.Min.Y+copyH > dstH {
+		copyH = dstH - rect.Min.Y
+	}
+	if copyW <= 0 || copyH <= 0 || rect.Min.X < 0 || rect.Min.Y < 0 {
+		return
+	}
+
 	// Y plane: row-by-row copy
-	for y := 0; y < srcH; y++ {
+	for y := 0; y < copyH; y++ {
 		dstOff := (rect.Min.Y+y)*dstW + rect.Min.X
 		srcOff := y * srcW
-		copy(dst[dstOff:dstOff+srcW], src[srcOff:srcOff+srcW])
+		copy(dst[dstOff:dstOff+copyW], src[srcOff:srcOff+copyW])
 	}
 
 	// Chroma planes
@@ -18,17 +32,18 @@ func ComposePIPOpaque(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, re
 	srcYSize := srcW * srcH
 	chromaDstW := dstW / 2
 	chromaSrcW := srcW / 2
-	chromaSrcH := srcH / 2
+	chromaCopyW := copyW / 2
+	chromaCopyH := copyH / 2
 	chromaX := rect.Min.X / 2
 	chromaY := rect.Min.Y / 2
 
 	for plane := 0; plane < 2; plane++ {
 		dstBase := dstYSize + plane*(chromaDstW*(dstH/2))
-		srcBase := srcYSize + plane*(chromaSrcW*chromaSrcH)
-		for y := 0; y < chromaSrcH; y++ {
+		srcBase := srcYSize + plane*(chromaSrcW*(srcH/2))
+		for y := 0; y < chromaCopyH; y++ {
 			dstOff := dstBase + (chromaY+y)*chromaDstW + chromaX
 			srcOff := srcBase + y*chromaSrcW
-			copy(dst[dstOff:dstOff+chromaSrcW], src[srcOff:srcOff+chromaSrcW])
+			copy(dst[dstOff:dstOff+chromaCopyW], src[srcOff:srcOff+chromaCopyW])
 		}
 	}
 }
@@ -83,6 +98,7 @@ func DrawBorderYUV(dst []byte, dstW, dstH int, rect image.Rectangle, borderColor
 // BlendRegion alpha-blends src onto dst for a rectangular region.
 // alpha is 0.0 (fully transparent) to 1.0 (fully opaque).
 // Used for dissolve transitions on PIP slots.
+// Safe when rect extends past frame bounds — clips to destination dimensions.
 func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect image.Rectangle, alpha float64) {
 	if alpha <= 0 {
 		return
@@ -92,12 +108,25 @@ func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect im
 		return
 	}
 
+	// Clip to destination bounds.
+	copyW := srcW
+	copyH := srcH
+	if rect.Min.X+copyW > dstW {
+		copyW = dstW - rect.Min.X
+	}
+	if rect.Min.Y+copyH > dstH {
+		copyH = dstH - rect.Min.Y
+	}
+	if copyW <= 0 || copyH <= 0 || rect.Min.X < 0 || rect.Min.Y < 0 {
+		return
+	}
+
 	a := uint16(alpha * 256)
 	inv := 256 - a
 
 	// Y plane
-	for y := 0; y < srcH; y++ {
-		for x := 0; x < srcW; x++ {
+	for y := 0; y < copyH; y++ {
+		for x := 0; x < copyW; x++ {
 			di := (rect.Min.Y+y)*dstW + rect.Min.X + x
 			si := y*srcW + x
 			dst[di] = byte((uint16(dst[di])*inv + uint16(src[si])*a) >> 8)
@@ -109,15 +138,16 @@ func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect im
 	srcYSize := srcW * srcH
 	chromaDstW := dstW / 2
 	chromaSrcW := srcW / 2
-	chromaSrcH := srcH / 2
+	chromaCopyW := copyW / 2
+	chromaCopyH := copyH / 2
 	chromaX := rect.Min.X / 2
 	chromaY := rect.Min.Y / 2
 
 	for plane := 0; plane < 2; plane++ {
 		dstBase := dstYSize + plane*(chromaDstW*(dstH/2))
-		srcBase := srcYSize + plane*(chromaSrcW*chromaSrcH)
-		for y := 0; y < chromaSrcH; y++ {
-			for x := 0; x < chromaSrcW; x++ {
+		srcBase := srcYSize + plane*(chromaSrcW*(srcH/2))
+		for y := 0; y < chromaCopyH; y++ {
+			for x := 0; x < chromaCopyW; x++ {
 				di := dstBase + (chromaY+y)*chromaDstW + chromaX + x
 				si := srcBase + y*chromaSrcW + x
 				dst[di] = byte((uint16(dst[di])*inv + uint16(src[si])*a) >> 8)

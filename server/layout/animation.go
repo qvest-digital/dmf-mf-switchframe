@@ -45,8 +45,17 @@ func (a *Animation) InterpolateRect(t float64) image.Rectangle {
 }
 
 // InterpolateAlpha returns the interpolated alpha at progress t.
+// Clamps to endpoint values to avoid float imprecision causing visual pops.
 func (a *Animation) InterpolateAlpha(t float64) float64 {
-	return a.FromAlpha + (a.ToAlpha-a.FromAlpha)*t
+	alpha := a.FromAlpha + (a.ToAlpha-a.FromAlpha)*t
+	// Clamp to target endpoints to prevent 255/256 blend residue.
+	if a.ToAlpha >= 1.0 && alpha > 0.99 {
+		return 1.0
+	}
+	if a.ToAlpha <= 0.0 && alpha < 0.01 {
+		return 0.0
+	}
+	return alpha
 }
 
 func lerp(a, b int, t float64) int {

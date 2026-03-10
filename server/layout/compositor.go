@@ -32,6 +32,9 @@ type Compositor struct {
 	// Per-slot gray "no signal" frames
 	grayBufs [][]byte
 
+	// Pre-computed z-order sorted slot indices (avoids per-frame allocation)
+	sortedSlots []int
+
 	// Active animations
 	animations []*Animation
 
@@ -74,18 +77,31 @@ func (c *Compositor) allocateBuffers(l *Layout) {
 		c.scaleBufs[i] = make([]byte, size)
 		c.grayBufs[i] = makeGrayFrame(w, h)
 	}
+	c.computeSortedSlots(l)
 }
 
-// makeGrayFrame creates a "no signal" YUV420 frame (Y=128, Cb=128, Cr=128).
+// computeSortedSlots pre-computes z-order sorted indices for a layout.
+func (c *Compositor) computeSortedSlots(l *Layout) {
+	c.sortedSlots = make([]int, len(l.Slots))
+	for i := range l.Slots {
+		c.sortedSlots[i] = i
+	}
+	sort.Slice(c.sortedSlots, func(a, b int) bool {
+		return l.Slots[c.sortedSlots[a]].ZOrder < l.Slots[c.sortedSlots[b]].ZOrder
+	})
+}
+
+// makeGrayFrame creates a "no signal" YUV420 frame.
+// Uses BT.709 limited range black (Y=16, Cb=128, Cr=128).
 func makeGrayFrame(w, h int) []byte {
 	ySize := w * h
 	cbSize := (w / 2) * (h / 2)
 	buf := make([]byte, ySize+cbSize*2)
 	for i := 0; i < ySize; i++ {
-		buf[i] = 128
+		buf[i] = 16 // BT.709 limited range black
 	}
 	for i := 0; i < cbSize*2; i++ {
-		buf[ySize+i] = 128
+		buf[ySize+i] = 128 // neutral chroma
 	}
 	return buf
 }
@@ -146,6 +162,22 @@ func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, heig
 	c.fills[sourceKey] = entry
 }
 
+// slotSnapshot holds source data for a single slot, captured under lock.
+type slotSnapshot struct {
+	slot     LayoutSlot
+	idx      int
+	srcYUV   []byte
+	srcW     int
+	srcH     int
+	grayW    int // gray buffer dimensions (may differ from slot.Rect during animation)
+	grayH    int
+	rect     image.Rectangle
+	alpha    float64
+	hasFill  bool
+	hasGray  bool
+	scaleBuf []byte
+}
+
 // ProcessFrame composites all enabled layout slots onto the frame.
 // Called from the pipeline goroutine (single-threaded).
 func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
@@ -154,41 +186,41 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		return yuv
 	}
 
+	// Phase 1: Under lock — tick animations, snapshot source data, release lock.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Process animations
 	c.tickAnimations()
 
-	// Sort slots by ZOrder
-	sorted := make([]int, 0, len(l.Slots))
-	for i := range l.Slots {
-		sorted = append(sorted, i)
+	sortedSlots := c.sortedSlots
+	if len(sortedSlots) == 0 {
+		// Fallback if sorted slots not yet computed (shouldn't happen).
+		sortedSlots = make([]int, len(l.Slots))
+		for i := range l.Slots {
+			sortedSlots[i] = i
+		}
 	}
-	sort.Slice(sorted, func(a, b int) bool {
-		return l.Slots[sorted[a]].ZOrder < l.Slots[sorted[b]].ZOrder
-	})
 
-	// Composite each slot
-	for _, idx := range sorted {
+	snapshots := make([]slotSnapshot, 0, len(sortedSlots))
+	for _, idx := range sortedSlots {
+		if idx >= len(l.Slots) {
+			continue
+		}
 		slot := l.Slots[idx]
 		if !slot.Enabled && !c.isAnimating(idx) {
 			continue
 		}
 
-		// Get the effective rect (may be modified by animation)
 		rect, alpha := c.effectiveRectAndAlpha(idx, slot)
 		if rect.Dx() <= 0 || rect.Dy() <= 0 {
 			continue
 		}
 
-		// Clamp rect to frame bounds (fly animations can go off-screen)
+		// Clamp rect to frame bounds (fly animations can go off-screen).
 		frameBounds := image.Rect(0, 0, width, height)
 		rect = rect.Intersect(frameBounds)
 		if rect.Empty() {
 			continue
 		}
-		// Even-align after clamping
+		// Even-align after clamping.
 		rect.Min.X = EvenAlign(rect.Min.X)
 		rect.Min.Y = EvenAlign(rect.Min.Y)
 		rect.Max.X = EvenAlign(rect.Max.X)
@@ -197,49 +229,88 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			continue
 		}
 
-		slotW := rect.Dx()
-		slotH := rect.Dy()
+		snap := slotSnapshot{
+			slot:  slot,
+			idx:   idx,
+			rect:  rect,
+			alpha: alpha,
+		}
 
-		// Get source frame or gray fallback
-		var srcYUV []byte
-		var srcW, srcH int
 		if entry, ok := c.fills[slot.SourceKey]; ok {
-			srcYUV = entry.yuv
-			srcW = entry.width
-			srcH = entry.height
+			snap.srcYUV = entry.yuv
+			snap.srcW = entry.width
+			snap.srcH = entry.height
+			snap.hasFill = true
 		} else if idx < len(c.grayBufs) {
-			srcYUV = c.grayBufs[idx]
-			srcW = slot.Rect.Dx()
-			srcH = slot.Rect.Dy()
+			snap.srcYUV = c.grayBufs[idx]
+			// Use the actual gray buffer dimensions, not the slot rect
+			// (they match at allocation but slot rect can change during animation).
+			grayW := slot.Rect.Dx()
+			grayH := slot.Rect.Dy()
+			if len(snap.srcYUV) == grayW*grayH*3/2 {
+				snap.srcW = grayW
+				snap.srcH = grayH
+			} else {
+				// Gray buffer size doesn't match — skip to avoid scaler out-of-bounds.
+				continue
+			}
+			snap.hasGray = true
 		} else {
 			continue
 		}
 
-		// Scale source to slot dimensions
-		var scaled []byte
-		if srcW == slotW && srcH == slotH {
-			scaled = srcYUV
+		// Grab the scale buffer reference (pre-allocated).
+		slotW := rect.Dx()
+		slotH := rect.Dy()
+		neededSize := slotW * slotH * 3 / 2
+		if idx < len(c.scaleBufs) && len(c.scaleBufs[idx]) >= neededSize {
+			snap.scaleBuf = c.scaleBufs[idx][:neededSize]
 		} else {
-			if idx >= len(c.scaleBufs) || len(c.scaleBufs[idx]) < slotW*slotH*3/2 {
-				c.scaleBufs = append(c.scaleBufs, make([]byte, slotW*slotH*3/2))
+			// Allocate once under lock; the buffer persists for future frames.
+			buf := make([]byte, neededSize)
+			if idx < len(c.scaleBufs) {
+				c.scaleBufs[idx] = buf
+			} else {
+				// Extend slice to accommodate this index.
+				for len(c.scaleBufs) <= idx {
+					c.scaleBufs = append(c.scaleBufs, nil)
+				}
+				c.scaleBufs[idx] = buf
 			}
-			buf := c.scaleBufs[idx][:slotW*slotH*3/2]
-			quality := c.selectScaleQuality(srcW, srcH, slotW, slotH, width, height)
-			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, buf, slotW, slotH, quality)
-			scaled = buf
+			snap.scaleBuf = buf[:neededSize]
 		}
 
-		// Composite onto frame
-		if alpha < 1.0 {
-			BlendRegion(yuv, width, height, scaled, slotW, slotH, rect, alpha)
+		snapshots = append(snapshots, snap)
+	}
+	c.mu.Unlock()
+
+	// Phase 2: Lock-free — scale and composite each slot.
+	for i := range snapshots {
+		snap := &snapshots[i]
+		slotW := snap.rect.Dx()
+		slotH := snap.rect.Dy()
+
+		// Scale source to slot dimensions.
+		var scaled []byte
+		if snap.srcW == slotW && snap.srcH == slotH {
+			scaled = snap.srcYUV
 		} else {
-			ComposePIPOpaque(yuv, width, height, scaled, slotW, slotH, rect)
+			quality := c.selectScaleQuality(snap.srcW, snap.srcH, slotW, slotH, width, height)
+			transition.ScaleYUV420WithQuality(snap.srcYUV, snap.srcW, snap.srcH, snap.scaleBuf, slotW, slotH, quality)
+			scaled = snap.scaleBuf
 		}
 
-		// Draw border
-		if slot.Border.Width > 0 {
-			color := [3]byte{slot.Border.ColorY, slot.Border.ColorCb, slot.Border.ColorCr}
-			DrawBorderYUV(yuv, width, height, rect, color, slot.Border.Width)
+		// Composite onto frame.
+		if snap.alpha < 1.0 {
+			BlendRegion(yuv, width, height, scaled, slotW, slotH, snap.rect, snap.alpha)
+		} else {
+			ComposePIPOpaque(yuv, width, height, scaled, slotW, slotH, snap.rect)
+		}
+
+		// Draw border.
+		if snap.slot.Border.Width > 0 {
+			color := [3]byte{snap.slot.Border.ColorY, snap.slot.Border.ColorCb, snap.slot.Border.ColorCr}
+			DrawBorderYUV(yuv, width, height, snap.rect, color, snap.slot.Border.Width)
 		}
 	}
 
@@ -344,6 +415,7 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*LayoutSlot)) {
 	}
 	updated := c.cloneLayout(l)
 	fn(&updated.Slots[slotIdx])
+	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
 }
 
@@ -451,12 +523,12 @@ func (c *Compositor) SlotOff(slotIdx int) {
 // AutoDissolveSource dissolves off any enabled slot whose source matches the given key.
 // Used when a program cut changes to match a PIP source.
 func (c *Compositor) AutoDissolveSource(sourceKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	l := c.layout.Load()
 	if l == nil {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	for i, slot := range l.Slots {
 		if slot.Enabled && slot.SourceKey == sourceKey {
 			idx := i // capture for closure

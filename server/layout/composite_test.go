@@ -97,3 +97,51 @@ func TestBlendRegion_ZeroAlpha(t *testing.T) {
 
 	require.Equal(t, byte(16), dst[0], "zero alpha should leave dst unchanged")
 }
+
+// Issue #2: ComposePIPOpaque must not panic when src dimensions don't match rect.
+func TestComposePIPOpaque_SrcSmallerThanRect(t *testing.T) {
+	dst := makeYUV420(16, 16, 16, 128, 128)
+	src := makeYUV420(4, 4, 235, 128, 128)
+	// Rect is 8x8 but source is only 4x4 — srcW/srcH must be used, not rect
+	rect := image.Rect(0, 0, 8, 8)
+
+	// Should not panic — composites only what src provides
+	require.NotPanics(t, func() {
+		ComposePIPOpaque(dst, 16, 16, src, 4, 4, rect)
+	})
+}
+
+// Issue #2: BlendRegion must not panic when src dimensions don't match rect.
+func TestBlendRegion_SrcSmallerThanRect(t *testing.T) {
+	dst := makeYUV420(16, 16, 16, 128, 128)
+	src := makeYUV420(4, 4, 235, 128, 128)
+	rect := image.Rect(0, 0, 8, 8)
+
+	require.NotPanics(t, func() {
+		BlendRegion(dst, 16, 16, src, 4, 4, rect, 0.5)
+	})
+}
+
+// Issue #2: ComposePIPOpaque rect extends past frame edge.
+func TestComposePIPOpaque_RectExceedsFrame(t *testing.T) {
+	dst := makeYUV420(8, 8, 16, 128, 128)
+	src := makeYUV420(4, 4, 235, 128, 128)
+	// Rect starts at (6,6) — extends to (10,10) past 8x8 frame
+	rect := image.Rect(6, 6, 10, 10)
+
+	// Should not panic — clips to frame bounds
+	require.NotPanics(t, func() {
+		ComposePIPOpaque(dst, 8, 8, src, 4, 4, rect)
+	})
+}
+
+// Issue #2: BlendRegion rect extends past frame edge.
+func TestBlendRegion_RectExceedsFrame(t *testing.T) {
+	dst := makeYUV420(8, 8, 16, 128, 128)
+	src := makeYUV420(4, 4, 235, 128, 128)
+	rect := image.Rect(6, 6, 10, 10)
+
+	require.NotPanics(t, func() {
+		BlendRegion(dst, 8, 8, src, 4, 4, rect, 0.5)
+	})
+}
