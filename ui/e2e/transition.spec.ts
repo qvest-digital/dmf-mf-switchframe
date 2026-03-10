@@ -21,10 +21,10 @@ test.describe('Transition Controls', () => {
 		await expect(ftbBtn).toBeVisible();
 	});
 
-	test('T-bar slider is rendered', async ({ page }) => {
+	test('transition scrubber is rendered', async ({ page }) => {
 		await page.goto('/');
-		const tbar = page.locator('.tbar');
-		await expect(tbar).toBeVisible();
+		const scrubber = page.locator('.scrubber');
+		await expect(scrubber).toBeVisible();
 	});
 
 	test('transition type selector is rendered', async ({ page }) => {

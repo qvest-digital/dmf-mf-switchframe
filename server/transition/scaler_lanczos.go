@@ -238,15 +238,26 @@ func precomputeLanczosKernel(srcSize, dstSize int) *lanczosKernel {
 		}
 	}
 
-	// Repack weights with the tighter stride if trailing zeros were found.
-	if trimmedMaxTaps < rawTaps && trimmedMaxTaps > 0 {
-		compact := make([]float32, dstSize*trimmedMaxTaps)
+	// Pad maxTaps up to a multiple of 4 so the NEON 4-tap inner loop
+	// processes all taps without a scalar tail. Extra positions are
+	// zero-weight (no effect on output).
+	paddedMaxTaps := (trimmedMaxTaps + 3) &^ 3
+	if paddedMaxTaps > rawTaps {
+		paddedMaxTaps = rawTaps // don't exceed original allocation
+	}
+	if paddedMaxTaps == 0 {
+		paddedMaxTaps = rawTaps
+	}
+
+	// Repack weights with the padded stride.
+	if paddedMaxTaps != rawTaps {
+		compact := make([]float32, dstSize*paddedMaxTaps)
 		for d := 0; d < dstSize; d++ {
-			copy(compact[d*trimmedMaxTaps:(d+1)*trimmedMaxTaps],
+			copy(compact[d*paddedMaxTaps:d*paddedMaxTaps+trimmedMaxTaps],
 				weights[d*rawTaps:d*rawTaps+trimmedMaxTaps])
 		}
 		weights = compact
-		rawTaps = trimmedMaxTaps
+		rawTaps = paddedMaxTaps
 	}
 
 	return &lanczosKernel{
@@ -282,9 +293,46 @@ func putLanczosTempBuf(buf []float32) {
 	lanczosIntermPool.Put(&buf)
 }
 
+// boxShrinkPlane performs fast integer box-averaging to shrink a plane by
+// an integer factor. Each output pixel is the average of a factorW×factorH
+// block. Used as a pre-pass before Lanczos for large downscales (>2x) to
+// keep the Lanczos kernel narrow (libvips "shrink then reduce" strategy).
+func boxShrinkPlane(src []byte, srcW, srcH int, dst []byte, dstW, dstH, factorW, factorH int) {
+	for dy := 0; dy < dstH; dy++ {
+		sy := dy * factorH
+		for dx := 0; dx < dstW; dx++ {
+			sx := dx * factorW
+			var sum int
+			count := 0
+			for fy := 0; fy < factorH && sy+fy < srcH; fy++ {
+				row := (sy + fy) * srcW
+				for fx := 0; fx < factorW && sx+fx < srcW; fx++ {
+					sum += int(src[row+sx+fx])
+					count++
+				}
+			}
+			if count > 0 {
+				dst[dy*dstW+dx] = byte(sum / count)
+			}
+		}
+	}
+}
+
+// boxShrinkPool recycles byte buffers for box pre-shrink intermediate results.
+var boxShrinkPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 1920*1080) // common 1080p
+		return &buf
+	},
+}
+
 // scalePlaneLanczos performs Lanczos-3 interpolation on a single plane using
 // separable filtering with precomputed kernel weights: horizontal pass into
 // a float32 intermediate buffer, then vertical pass to produce final output.
+//
+// For downscales >2x, uses box pre-shrink (libvips strategy) to get within
+// 2x of the target, then Lanczos for the final precise resize. This keeps
+// the Lanczos kernel narrow (7 taps vs ~20 for 3x downscale).
 func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 	// Fast path: same dimensions
 	if srcW == dstW && srcH == dstH {
@@ -299,6 +347,54 @@ func scalePlaneLanczos(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
 			dst[i] = val
 		}
 		return
+	}
+
+	// Box pre-shrink for very large downscales (>4x in either dimension).
+	// Uses the libvips "shrink then reduce" strategy: fast integer box
+	// averaging gets within 2x of target, then Lanczos for precise resize.
+	// Only triggered above 4x because our NEON assembly handles moderate
+	// kernel widths efficiently; the naive Go box shrink overhead exceeds
+	// the savings from narrower kernels at 2-4x ratios.
+	if srcW > dstW*4 || srcH > dstH*4 {
+		// Choose factors so that midW/dstW ≤ 2 and midH/dstH ≤ 2.
+		factorW := 1
+		if srcW > dstW*4 {
+			factorW = (srcW + 2*dstW - 1) / (2 * dstW)
+			if factorW < 2 {
+				factorW = 2
+			}
+		}
+		factorH := 1
+		if srcH > dstH*4 {
+			factorH = (srcH + 2*dstH - 1) / (2 * dstH)
+			if factorH < 2 {
+				factorH = 2
+			}
+		}
+
+		if factorW > 1 || factorH > 1 {
+			midW := srcW / factorW
+			midH := srcH / factorH
+			midSize := midW * midH
+
+			bp := boxShrinkPool.Get().(*[]byte)
+			mid := *bp
+			if cap(mid) < midSize {
+				mid = make([]byte, midSize)
+				*bp = mid
+			} else {
+				mid = mid[:midSize]
+			}
+
+			boxShrinkPlane(src, srcW, srcH, mid, midW, midH, factorW, factorH)
+
+			// Recurse with the smaller intermediate
+			scalePlaneLanczos(mid, midW, midH, dst, dstW, dstH)
+
+			mid = mid[:cap(mid)]
+			boxShrinkPool.Put(bp)
+			return
+		}
 	}
 
 	// Precompute kernels (cached for repeated same-ratio calls)

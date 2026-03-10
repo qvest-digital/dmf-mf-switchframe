@@ -1,7 +1,7 @@
 import { smoothstep } from '$lib/util/easing';
 
 /**
- * Self-contained rAF animation for T-bar auto transitions.
+ * Self-contained rAF animation for auto transitions.
  * Reactive state ($state) allows Svelte components to derive values from position.
  */
 export class AutoAnimation {

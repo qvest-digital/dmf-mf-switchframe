@@ -3,7 +3,7 @@
 	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
-	import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
+	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
 	import type { EasingPreset } from '$lib/util/easing';
 	import { getEasingFunction } from '$lib/util/easing';
 
@@ -29,6 +29,9 @@
 
 	/** Local guard: prevents duplicate startTransition() calls while awaiting server confirmation. */
 	let tbarStarting = $state(false);
+
+	/** Local drag position for instant visual feedback during pointer drag. null = use server state. */
+	let dragPosition = $state<number | null>(null);
 
 	// Clear guard once server confirms the transition is active
 	$effect(() => {
@@ -71,7 +74,9 @@
 	);
 
 	const tbarValue = $derived(
-		anim.active ? anim.position : (crState.inTransition ? crState.transitionPosition : 0)
+		dragPosition !== null ? dragPosition :
+		anim.active ? anim.position :
+		(crState.inTransition ? crState.transitionPosition : 0)
 	);
 
 	// Stop animation when server reports transition ended
@@ -133,7 +138,7 @@
 		showDeleteConfirm = '';
 	}
 
-	/** Throttled T-bar position API call -- max 20 calls/sec (50ms). Visual slider updates instantly.
+	/** Throttled scrubber position API call -- max 20 calls/sec (50ms). Visual slider updates instantly.
 	 *  Silently drops errors from trailing-edge calls that arrive after transition completes. */
 	const setPositionThrottled = throttle((value: number) => {
 		if (!crState.inTransition) return;
@@ -142,13 +147,14 @@
 		});
 	}, 50);
 
-	function handleTbarPointerDown(e: PointerEvent) {
+	function handleScrubberPointerDown(e: PointerEvent) {
 		const target = e.currentTarget as HTMLElement;
 		target.setPointerCapture(e.pointerId);
-		updateTbarFromPointer(e);
+		updateScrubberFromPointer(e);
 
-		const onMove = (ev: PointerEvent) => updateTbarFromPointer(ev);
+		const onMove = (ev: PointerEvent) => updateScrubberFromPointer(ev);
 		const onUp = () => {
+			dragPosition = null;
 			target.removeEventListener('pointermove', onMove);
 			target.removeEventListener('pointerup', onUp);
 		};
@@ -156,13 +162,14 @@
 		target.addEventListener('pointerup', onUp);
 	}
 
-	function updateTbarFromPointer(e: PointerEvent) {
+	function updateScrubberFromPointer(e: PointerEvent) {
 		const target = e.currentTarget as HTMLElement;
 		const rect = target.getBoundingClientRect();
-		const y = tbarPosition(e.clientY, rect.top, rect.height);
+		const x = scrubberPosition(e.clientX, rect.left, rect.width);
 		anim.active = false;
+		dragPosition = x;
 
-		if (!crState.inTransition && !tbarStarting && y > 0 && crState.previewSource) {
+		if (!crState.inTransition && !tbarStarting && x > 0 && crState.previewSource) {
 			tbarStarting = true;
 			const p = startTransition(
 				crState.previewSource, transType, durationMs,
@@ -173,14 +180,17 @@
 			p.catch(() => { tbarStarting = false; });
 			apiCall(p, 'Transition failed');
 		}
-		setPositionThrottled(y);
+		setPositionThrottled(x);
 	}
 
-	function handleTbarKeydown(e: KeyboardEvent) {
+	function handleScrubberKeydown(e: KeyboardEvent) {
 		const newValue = applyKeyStep(tbarValue, e.key, e.shiftKey);
 		if (newValue === tbarValue) return;
 		e.preventDefault();
 		anim.active = false;
+		dragPosition = newValue;
+		// Clear local override after a short delay so server state takes over
+		setTimeout(() => { dragPosition = null; }, 100);
 
 		if (!crState.inTransition && !tbarStarting && newValue > 0 && crState.previewSource) {
 			tbarStarting = true;
@@ -200,150 +210,148 @@
 </script>
 
 <div class="transition-controls">
-	<div class="transition-main">
-		<div class="transition-buttons">
-			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>
-				CUT
-				<span class="shortcut">Space</span>
-			</button>
-			<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>
-				AUTO
-				<span class="shortcut">Enter</span>
-			</button>
-			<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
-				FTB
-				<span class="shortcut">F1</span>
-			</button>
+	<div class="transition-buttons">
+		<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>
+			CUT
+			<span class="shortcut">Space</span>
+		</button>
+		<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>
+			AUTO
+			<span class="shortcut">Enter</span>
+		</button>
+		<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
+			FTB
+			<span class="shortcut">F1</span>
+		</button>
+	</div>
+
+	<div class="transition-options">
+		<div class="type-selector" role="radiogroup" aria-label="Transition type">
+			<label class="type-option" class:selected={transType === 'mix'}>
+				<input type="radio" name="transType" value="mix" bind:group={transType} />
+				Mix
+			</label>
+			<label class="type-option" class:selected={transType === 'dip'}>
+				<input type="radio" name="transType" value="dip" bind:group={transType} />
+				Dip
+			</label>
+			<label class="type-option" class:selected={transType === 'wipe'}>
+				<input type="radio" name="transType" value="wipe" bind:group={transType} />
+				Wipe
+			</label>
+			<label class="type-option" class:selected={transType === 'stinger'}>
+				<input type="radio" name="transType" value="stinger" bind:group={transType} />
+				Sting
+			</label>
 		</div>
 
-		<div class="transition-options">
-			<div class="type-selector" role="radiogroup" aria-label="Transition type">
-				<label class="type-option" class:selected={transType === 'mix'}>
-					<input type="radio" name="transType" value="mix" bind:group={transType} />
-					Mix
+		{#if transType === 'stinger'}
+			<div class="stinger-controls">
+				<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
+					{#each stingerNames as name}
+						<option value={name}>{name}</option>
+					{/each}
+					{#if stingerNames.length === 0}
+						<option value="" disabled>No stingers loaded</option>
+					{/if}
+				</select>
+				<button
+					class="stinger-action-btn"
+					onclick={() => fileInput?.click()}
+					disabled={uploading}
+					title="Upload stinger (.zip)"
+					aria-label="Upload stinger"
+				>{uploading ? '...' : '\u2191'}</button>
+				{#if stingerName}
+					<button
+						class="stinger-action-btn stinger-delete-btn"
+						onclick={() => showDeleteConfirm = stingerName}
+						title="Delete {stingerName}"
+						aria-label="Delete stinger"
+					>{'\u2715'}</button>
+				{/if}
+				<input
+					bind:this={fileInput}
+					type="file"
+					accept=".zip"
+					onchange={handleUpload}
+					style="display:none"
+				/>
+			</div>
+			{#if showDeleteConfirm}
+				<div class="delete-confirm">
+					<span>Delete "{showDeleteConfirm}"?</span>
+					<button class="confirm-yes" onclick={() => handleDeleteStinger(showDeleteConfirm)}>Yes</button>
+					<button class="confirm-no" onclick={() => showDeleteConfirm = ''}>No</button>
+				</div>
+			{/if}
+		{/if}
+
+		{#if transType === 'wipe'}
+			<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
+				<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
+			</div>
+		{/if}
+
+		<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
+			<option value={500}>0.5s</option>
+			<option value={1000}>1.0s</option>
+			<option value={1500}>1.5s</option>
+			<option value={2000}>2.0s</option>
+			<option value={3000}>3.0s</option>
+		</select>
+
+		<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
+			<option value="smoothstep">Smooth</option>
+			<option value="linear">Linear</option>
+			<option value="ease">Ease</option>
+			<option value="ease-in">Ease In</option>
+			<option value="ease-out">Ease Out</option>
+			<option value="ease-in-out">Ease In/Out</option>
+			<option value="custom">Custom</option>
+		</select>
+
+		{#if easingPreset === 'custom'}
+			<div class="custom-bezier">
+				<label class="bezier-input">
+					x1
+					<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x1} />
 				</label>
-				<label class="type-option" class:selected={transType === 'dip'}>
-					<input type="radio" name="transType" value="dip" bind:group={transType} />
-					Dip
+				<label class="bezier-input">
+					y1
+					<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y1} />
 				</label>
-				<label class="type-option" class:selected={transType === 'wipe'}>
-					<input type="radio" name="transType" value="wipe" bind:group={transType} />
-					Wipe
+				<label class="bezier-input">
+					x2
+					<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x2} />
 				</label>
-				<label class="type-option" class:selected={transType === 'stinger'}>
-					<input type="radio" name="transType" value="stinger" bind:group={transType} />
-					Sting
+				<label class="bezier-input">
+					y2
+					<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y2} />
 				</label>
 			</div>
-
-			{#if transType === 'stinger'}
-				<div class="stinger-controls">
-					<select class="stinger-select" aria-label="Stinger clip" bind:value={stingerName}>
-						{#each stingerNames as name}
-							<option value={name}>{name}</option>
-						{/each}
-						{#if stingerNames.length === 0}
-							<option value="" disabled>No stingers loaded</option>
-						{/if}
-					</select>
-					<button
-						class="stinger-action-btn"
-						onclick={() => fileInput?.click()}
-						disabled={uploading}
-						title="Upload stinger (.zip)"
-						aria-label="Upload stinger"
-					>{uploading ? '...' : '\u2191'}</button>
-					{#if stingerName}
-						<button
-							class="stinger-action-btn stinger-delete-btn"
-							onclick={() => showDeleteConfirm = stingerName}
-							title="Delete {stingerName}"
-							aria-label="Delete stinger"
-						>{'\u2715'}</button>
-					{/if}
-					<input
-						bind:this={fileInput}
-						type="file"
-						accept=".zip"
-						onchange={handleUpload}
-						style="display:none"
-					/>
-				</div>
-				{#if showDeleteConfirm}
-					<div class="delete-confirm">
-						<span>Delete "{showDeleteConfirm}"?</span>
-						<button class="confirm-yes" onclick={() => handleDeleteStinger(showDeleteConfirm)}>Yes</button>
-						<button class="confirm-no" onclick={() => showDeleteConfirm = ''}>No</button>
-					</div>
-				{/if}
-			{/if}
-
-			{#if transType === 'wipe'}
-				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
-				</div>
-			{/if}
-
-			<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
-				<option value={500}>0.5s</option>
-				<option value={1000}>1.0s</option>
-				<option value={1500}>1.5s</option>
-				<option value={2000}>2.0s</option>
-				<option value={3000}>3.0s</option>
-			</select>
-
-			<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
-				<option value="smoothstep">Smooth</option>
-				<option value="linear">Linear</option>
-				<option value="ease">Ease</option>
-				<option value="ease-in">Ease In</option>
-				<option value="ease-out">Ease Out</option>
-				<option value="ease-in-out">Ease In/Out</option>
-				<option value="custom">Custom</option>
-			</select>
-
-			{#if easingPreset === 'custom'}
-				<div class="custom-bezier">
-					<label class="bezier-input">
-						x1
-						<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x1} />
-					</label>
-					<label class="bezier-input">
-						y1
-						<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y1} />
-					</label>
-					<label class="bezier-input">
-						x2
-						<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x2} />
-					</label>
-					<label class="bezier-input">
-						y2
-						<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y2} />
-					</label>
-				</div>
-			{/if}
-		</div>
+		{/if}
 	</div>
 
 	<div
-		class="tbar"
+		class="scrubber"
 		role="slider"
 		aria-label="Transition position"
 		aria-valuemin={0}
 		aria-valuemax={1}
 		aria-valuenow={tbarValue}
 		tabindex="0"
-		onpointerdown={handleTbarPointerDown}
-		onkeydown={handleTbarKeydown}
+		onpointerdown={handleScrubberPointerDown}
+		onkeydown={handleScrubberKeydown}
 	>
-		<div class="tbar-track">
-			<div class="tbar-fill" style="height: {tbarValue * 100}%"></div>
-			<div class="tbar-thumb" style="top: {tbarValue * 100}%"></div>
+		<div class="scrubber-track">
+			<div class="scrubber-fill" style="width: {tbarValue * 100}%"></div>
+			<div class="scrubber-thumb" style="left: {tbarValue * 100}%"></div>
 		</div>
 	</div>
 </div>
@@ -351,17 +359,10 @@
 <style>
 	.transition-controls {
 		display: flex;
-		gap: 10px;
-		padding: 6px 10px;
-		border-top: 1px solid var(--border-subtle);
-		align-items: stretch;
-	}
-
-	.transition-main {
-		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		flex: 1;
+		padding: 6px 10px;
+		border-top: 1px solid var(--border-subtle);
 	}
 
 	.transition-buttons {
@@ -704,47 +705,42 @@
 		outline: none;
 	}
 
-	.tbar {
-		width: 40px;
-		flex-shrink: 0;
+	.scrubber {
 		cursor: grab;
 		touch-action: none;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 4px 0;
+		padding: 6px 0;
 	}
 
-	.tbar:active { cursor: grabbing; }
+	.scrubber:active { cursor: grabbing; }
 
-	.tbar-track {
-		width: 8px;
-		height: 100%;
+	.scrubber-track {
+		height: 6px;
+		width: 100%;
 		background: var(--bg-control);
 		border: 1px solid var(--border-subtle);
-		border-radius: 4px;
+		border-radius: 3px;
 		position: relative;
 	}
 
-	.tbar-fill {
+	.scrubber-fill {
 		position: absolute;
 		top: 0;
 		left: 0;
-		right: 0;
+		bottom: 0;
 		background: var(--accent-yellow);
-		border-radius: 4px 4px 0 0;
+		border-radius: 3px 0 0 3px;
 		transition: none;
 	}
 
-	.tbar-thumb {
+	.scrubber-thumb {
 		position: absolute;
-		left: -8px;
-		width: 24px;
-		height: 6px;
+		top: -4px;
+		width: 14px;
+		height: 14px;
 		background: var(--text-primary);
-		border: 1px solid var(--bg-surface);
-		border-radius: 3px;
+		border: 2px solid var(--bg-surface);
+		border-radius: 50%;
 		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
-		transform: translateY(-50%);
+		transform: translateX(-50%);
 	}
 </style>

@@ -1,29 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { tbarPosition, applyKeyStep } from '$lib/util/tbar';
+import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
 
-describe('T-bar position calculation', () => {
-	it('maps Y coordinate to 0-1 range', () => {
-		expect(tbarPosition(200, 100, 200)).toBe(0.5);
+describe('Scrubber position calculation', () => {
+	it('maps X coordinate to 0-1 range', () => {
+		expect(scrubberPosition(200, 100, 200)).toBe(0.5);
 	});
 
-	it('returns 0 at top of track', () => {
-		expect(tbarPosition(100, 100, 200)).toBe(0);
+	it('returns 0 at left of track', () => {
+		expect(scrubberPosition(100, 100, 200)).toBe(0);
 	});
 
-	it('returns 1 at bottom of track', () => {
-		expect(tbarPosition(300, 100, 200)).toBe(1);
+	it('returns 1 at right of track', () => {
+		expect(scrubberPosition(300, 100, 200)).toBe(1);
 	});
 
 	it('clamps below 0', () => {
-		expect(tbarPosition(50, 100, 200)).toBe(0);
+		expect(scrubberPosition(50, 100, 200)).toBe(0);
 	});
 
 	it('clamps above 1', () => {
-		expect(tbarPosition(400, 100, 200)).toBe(1);
+		expect(scrubberPosition(400, 100, 200)).toBe(1);
 	});
 });
 
-describe('T-bar keyboard step calculation', () => {
+describe('Scrubber keyboard step calculation', () => {
 	it('ArrowDown increments by 0.01', () => {
 		expect(applyKeyStep(0.5, 'ArrowDown', false)).toBeCloseTo(0.51);
 	});

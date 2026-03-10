@@ -1,9 +1,9 @@
-/** Map a pointer Y coordinate to a 0-1 T-bar position, clamped. */
-export function tbarPosition(clientY: number, rectTop: number, rectHeight: number): number {
-	return Math.max(0, Math.min(1, (clientY - rectTop) / rectHeight));
+/** Map a pointer X coordinate to a 0-1 scrubber position, clamped. */
+export function scrubberPosition(clientX: number, rectLeft: number, rectWidth: number): number {
+	return Math.max(0, Math.min(1, (clientX - rectLeft) / rectWidth));
 }
 
-/** Apply a keyboard step to the current T-bar value, clamped to [0, 1]. */
+/** Apply a keyboard step to the current scrubber value, clamped to [0, 1]. */
 export function applyKeyStep(currentValue: number, key: string, shiftKey: boolean): number {
 	const step = shiftKey ? 0.1 : 0.01;
 	if (key === 'ArrowDown' || key === 'ArrowRight') {

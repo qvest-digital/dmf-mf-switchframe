@@ -690,3 +690,97 @@ func BenchmarkScaleLanczos_720to1080(b *testing.B) {
 		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
+
+func BenchmarkScaleLanczos_1080to360(b *testing.B) {
+	srcW, srcH := 1920, 1080
+	dstW, dstH := 640, 360
+
+	srcSize := srcW * srcH * 3 / 2
+	dstSize := dstW * dstH * 3 / 2
+
+	src := make([]byte, srcSize)
+	dst := make([]byte, dstSize)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+
+	b.SetBytes(int64(dstSize))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
+	}
+}
+
+func TestScaleYUV420Lanczos_LargeDownscale(t *testing.T) {
+	t.Parallel()
+	// 3x downscale triggers box pre-shrink
+	srcW, srcH := 192, 108
+	dstW, dstH := 64, 36
+
+	srcYSize := srcW * srcH
+	srcUVSize := (srcW / 2) * (srcH / 2)
+	srcTotal := srcYSize + 2*srcUVSize
+
+	dstYSize := dstW * dstH
+	dstUVSize := (dstW / 2) * (dstH / 2)
+	dstTotal := dstYSize + 2*dstUVSize
+
+	src := make([]byte, srcTotal)
+	for i := 0; i < srcYSize; i++ {
+		src[i] = 150
+	}
+	for i := 0; i < srcUVSize; i++ {
+		src[srcYSize+i] = 80
+		src[srcYSize+srcUVSize+i] = 200
+	}
+
+	dst := make([]byte, dstTotal)
+	ScaleYUV420Lanczos(src, srcW, srcH, dst, dstW, dstH)
+
+	for i := 0; i < dstYSize; i++ {
+		diff := int(dst[i]) - 150
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 2, "Y pixel %d: expected ~150, got %d", i, dst[i])
+	}
+	for i := 0; i < dstUVSize; i++ {
+		diffCb := int(dst[dstYSize+i]) - 80
+		if diffCb < 0 {
+			diffCb = -diffCb
+		}
+		require.LessOrEqual(t, diffCb, 2, "Cb pixel %d: expected ~80, got %d", i, dst[dstYSize+i])
+	}
+}
+
+func TestBoxShrinkPlane_Basic(t *testing.T) {
+	t.Parallel()
+	// 8x8 uniform → 4x4 with factor 2
+	src := make([]byte, 64)
+	for i := range src {
+		src[i] = 100
+	}
+	dst := make([]byte, 16)
+	boxShrinkPlane(src, 8, 8, dst, 4, 4, 2, 2)
+	for i, v := range dst {
+		require.Equal(t, byte(100), v, "pixel %d should be 100", i)
+	}
+}
+
+func TestBoxShrinkPlane_Gradient(t *testing.T) {
+	t.Parallel()
+	// 4x4 with 2x2 blocks → 2x2, each block averages
+	src := []byte{
+		10, 20, 30, 40,
+		10, 20, 30, 40,
+		50, 60, 70, 80,
+		50, 60, 70, 80,
+	}
+	dst := make([]byte, 4)
+	boxShrinkPlane(src, 4, 4, dst, 2, 2, 2, 2)
+	require.Equal(t, byte(15), dst[0])  // avg(10,20,10,20)
+	require.Equal(t, byte(35), dst[1])  // avg(30,40,30,40)
+	require.Equal(t, byte(55), dst[2])  // avg(50,60,50,60)
+	require.Equal(t, byte(75), dst[3])  // avg(70,80,70,80)
+}

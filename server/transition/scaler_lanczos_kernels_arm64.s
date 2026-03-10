@@ -2,9 +2,9 @@
 
 // ARM64 NEON Lanczos-3 scaler kernels.
 //
-// Both horizontal and vertical passes use NEON:
-// - Horizontal: load contiguous source taps, widen to float32, FMLA, horizontal reduce
-// - Vertical: 4-wide column processing with FMLA
+// Optimizations vs naive Go:
+// - Horizontal: NEON 4-tap FMLA with direct memory→NEON loads (no GPR crossing)
+// - Vertical: 16/8/4-wide column processing, LD1R weight broadcast, XTN narrowing store
 
 // --- Float32 NEON macros ---
 // FMLA Vd.4S, Vn.4S, Vm.4S — fused multiply-add: Vd += Vn * Vm
@@ -12,9 +12,6 @@
 
 // DUP Vd.4S, Vn.S[0] — broadcast element 0 to all 4 lanes
 #define VDUP_S0_4S(Vd, Vn) WORD $(0x4E040400 | ((Vn)<<5) | (Vd))
-
-// FCVTZS Vd.4S, Vn.4S — float32 to signed int32 (truncate)
-#define FCVTZS_4S(Vd, Vn) WORD $(0x4EA1B800 | ((Vn)<<5) | (Vd))
 
 // FCVTNS Vd.4S, Vn.4S — float32 to signed int32 (round to nearest)
 #define FCVTNS_4S(Vd, Vn) WORD $(0x4E21A800 | ((Vn)<<5) | (Vd))
@@ -28,9 +25,6 @@
 // FMIN Vd.4S, Vn.4S, Vm.4S
 #define FMIN_4S(Vd, Vn, Vm) WORD $(0x4EA0F400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 
-// FMUL Vd.4S, Vn.4S, Vm.4S
-#define FMUL_4S(Vd, Vn, Vm) WORD $(0x6E20DC00 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
-
 // FADDP Vd.4S, Vn.4S, Vm.4S — pairwise add
 #define FADDP_4S(Vd, Vn, Vm) WORD $(0x6E20D400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
 
@@ -43,23 +37,29 @@
 // UXTL Vd.4S, Vn.4H — zero-extend lower 4 halfwords → 4 words (USHLL #0, size=16-bit)
 #define UXTL_4S(Vd, Vn) WORD $(0x2F10A400 | ((Vn)<<5) | (Vd))
 
-// UXTL2 Vd.4S, Vn.8H — zero-extend upper 4 halfwords → 4 words
-#define UXTL2_4S(Vd, Vn) WORD $(0x6F10A400 | ((Vn)<<5) | (Vd))
-
 // UCVTF Vd.4S, Vn.4S — unsigned int32 → float32
 #define UCVTF_4S(Vd, Vn) WORD $(0x6E21D800 | ((Vn)<<5) | (Vd))
+
+// XTN Vd.4H, Vn.4S — narrow int32 → int16 (lower half of Vd)
+#define XTN_4H(Vd, Vn) WORD $(0x0E612800 | ((Vn)<<5) | (Vd))
+
+// XTN2 Vd.8H, Vn.4S — narrow int32 → int16 (upper half of Vd)
+#define XTN2_8H(Vd, Vn) WORD $(0x4E612800 | ((Vn)<<5) | (Vd))
+
+// XTN Vd.8B, Vn.8H — narrow int16 → int8 (lower half of Vd)
+#define XTN_8B(Vd, Vn) WORD $(0x0E212800 | ((Vn)<<5) | (Vd))
+
+// XTN2 Vd.16B, Vn.8H — narrow int16 → int8 (upper half of Vd)
+#define XTN2_16B(Vd, Vn) WORD $(0x4E212800 | ((Vn)<<5) | (Vd))
+
+// LD1R {Vt.4S}, [Xn] — load one float32 and replicate to all 4 lanes
+#define LD1R_4S(Vt, Xn) WORD $(0x4D40C800 | ((Xn)<<5) | (Vt))
 
 
 // ============================================================================
 // func lanczosHorizRow(dst []float32, src []byte, offsets []int32,
 //                      weights []float32, maxTaps int)
 // ============================================================================
-// NEON horizontal pass: for each destination pixel, load contiguous source
-// taps as bytes, widen to float32, multiply by weights, horizontal sum.
-// Processes taps in groups of 4 using FMLA, then reduces to scalar.
-//
-// For maxTaps <= 8 (typical upscale): one batch of 8 bytes → 2×4 float32
-// For maxTaps > 8 (downscale): multiple batches of 4
 TEXT ·lanczosHorizRow(SB), NOSPLIT, $0-104
 	MOVD	dst_base+0(FP), R0       // dst ptr
 	MOVD	dst_len+8(FP), R1        // dstW
@@ -86,7 +86,6 @@ lh_pixel:
 	// R11 = src + offset (source base for this pixel's taps)
 	ADD	R2, R8, R11
 
-	// R12 = offset (as 64-bit, for end-of-buffer check)
 	// Safely load: ensure offset + maxTaps <= srcLen
 	ADD	R8, R6, R13              // offset + maxTaps
 	CMP	R3, R13
@@ -105,14 +104,11 @@ lh_neon_4tap:
 	CMP	R14, R12
 	BGE	lh_neon_tail
 
-	// Load 4 source bytes at src[off + t .. off + t + 3]
+	// Load 4 source bytes directly into NEON (avoids GPR→NEON crossing)
 	ADD	R11, R12, R15            // &src[off + t]
-	MOVW	(R15), R16               // load 4 bytes as uint32
+	FMOVS	(R15), F2                // V2.S[0] = 4 packed bytes (upper bits zeroed)
 
-	// Move to NEON, widen bytes → halfwords → words → float32
-	FMOVS	R16, F2                  // V2.S[0] = 4 packed bytes
-	// Unpack 4 bytes to 4 uint32 via byte→halfword→word
-	// V2 has 4 bytes in S[0]: b0,b1,b2,b3,0,0,0,0,...
+	// Widen bytes → halfwords → words → float32
 	UXTL_8H(3, 2)                   // V3.8H = zero-extend 8 bytes of V2
 	UXTL_4S(2, 3)                   // V2.4S = zero-extend lower 4 halfwords
 	UCVTF_4S(2, 2)                  // V2.4S = float32(pixels)
@@ -144,15 +140,12 @@ lh_neon_tail_loop:
 	MOVBU	(R15), R16
 	UCVTFWS	R16, F2                  // float32(src[off+t])
 
-	// Jump to scalar tail which will reduce V0 to F0 and then
-	// accumulate F0 += F2 * F1 (pixel * weight) via FMADDS.
+	// Reduce V0 to scalar, then add this tap
 	B	lh_scalar_tail_start
 
 lh_neon_reduce:
 	// Horizontal sum of V0.4S → scalar S0
-	// FADDP {a,b,c,d},{a,b,c,d} → {a+b, c+d, a+b, c+d}
 	FADDP_4S(0, 0, 0)
-	// FADDP scalar: S0 = V0.S[0] + V0.S[1] = (a+b) + (c+d)
 	FADDP_SCALAR(0, 0)
 
 	// Store dst[d] = S0
@@ -246,7 +239,8 @@ lh_done:
 // func lanczosVertRow(dst []byte, temp []float32, tempStride int,
 //                     startRow int32, weights []float32, maxTaps int)
 // ============================================================================
-// NEON vertical pass: 4-wide float32 FMLA accumulation, clamp, convert.
+// NEON vertical pass: 16/8/4-wide float32 FMLA, LD1R weight broadcast,
+// XTN narrowing store.
 TEXT ·lanczosVertRow(SB), NOSPLIT, $0-96
 	MOVD	dst_base+0(FP), R0
 	MOVD	dst_len+8(FP), R1
@@ -277,8 +271,88 @@ TEXT ·lanczosVertRow(SB), NOSPLIT, $0-96
 	FMOVS	R9, F18
 
 	MOVD	$0, R10                  // col = 0
+	SUB	$15, R1, R21             // dstW - 15 (for 16-wide loop)
 	SUB	$7, R1, R20              // dstW - 7 (for 8-wide loop)
 	SUB	$3, R1, R11              // dstW - 3 (for 4-wide loop)
+
+	// --- 16-wide NEON loop: process 16 columns per iteration ---
+lv_neon16:
+	CMP	R21, R10
+	BGE	lv_neon8                 // fewer than 16 columns left
+
+	VEOR	V0.B16, V0.B16, V0.B16  // accum cols 0-3
+	VEOR	V4.B16, V4.B16, V4.B16  // accum cols 4-7
+	VEOR	V20.B16, V20.B16, V20.B16 // accum cols 8-11
+	VEOR	V21.B16, V21.B16, V21.B16 // accum cols 12-15
+	MOVD	$0, R12
+
+lv_neon16_tap:
+	CMP	R6, R12
+	BGE	lv_neon16_cvt
+
+	// Load weight[t] and broadcast to all 4 lanes via LD1R
+	LSL	$2, R12, R9
+	ADD	R5, R9, R9
+	LD1R_4S(1, 9)                    // V1.4S = {w, w, w, w}
+
+	// Compute row base: temp + t * stride_bytes + col * 4
+	MUL	R12, R7, R13
+	ADD	R2, R13, R14
+	LSL	$2, R10, R9
+	ADD	R14, R9, R14
+
+	// Load 16 float32 from temp row (4 × 4-wide loads)
+	VLD1	(R14), [V2.S4]           // cols 0-3
+	ADD	$16, R14, R15
+	VLD1	(R15), [V3.S4]           // cols 4-7
+	ADD	$32, R14, R15
+	VLD1	(R15), [V22.S4]          // cols 8-11
+	ADD	$48, R14, R15
+	VLD1	(R15), [V23.S4]          // cols 12-15
+
+	FMLA_4S(0, 2, 1)                // V0 += V2 * V1 (cols 0-3)
+	FMLA_4S(4, 3, 1)                // V4 += V3 * V1 (cols 4-7)
+	FMLA_4S(20, 22, 1)              // V20 += V22 * V1 (cols 8-11)
+	FMLA_4S(21, 23, 1)              // V21 += V23 * V1 (cols 12-15)
+
+	ADD	$1, R12
+	B	lv_neon16_tap
+
+lv_neon16_cvt:
+	// Clamp and convert all 4 accumulators
+	FMAX_4S(0, 0, 16)
+	FMIN_4S(0, 0, 17)
+	FCVTNS_4S(0, 0)
+
+	FMAX_4S(4, 4, 16)
+	FMIN_4S(4, 4, 17)
+	FCVTNS_4S(4, 4)
+
+	FMAX_4S(20, 20, 16)
+	FMIN_4S(20, 20, 17)
+	FCVTNS_4S(20, 20)
+
+	FMAX_4S(21, 21, 16)
+	FMIN_4S(21, 21, 17)
+	FCVTNS_4S(21, 21)
+
+	// Narrow int32 → int16 → uint8 and store 16 bytes
+	XTN_4H(5, 0)                    // V5.4H = narrow V0.4S (cols 0-3)
+	XTN2_8H(5, 4)                   // V5.8H upper = narrow V4.4S (cols 4-7)
+	XTN_4H(6, 20)                   // V6.4H = narrow V20.4S (cols 8-11)
+	XTN2_8H(6, 21)                  // V6.8H upper = narrow V21.4S (cols 12-15)
+	XTN_8B(7, 5)                    // V7 lower 8B = narrow V5.8H (cols 0-7)
+	XTN2_16B(7, 6)                  // V7 upper 8B = narrow V6.8H (cols 8-15)
+
+	// Store 16 bytes via two 8-byte writes
+	ADD	R0, R10, R14
+	FMOVD	F7, R13
+	MOVD	R13, (R14)
+	VMOV	V7.D[1], R13
+	MOVD	R13, 8(R14)
+
+	ADD	$16, R10
+	B	lv_neon16
 
 	// --- 8-wide NEON loop: process 8 columns per iteration ---
 lv_neon8:
@@ -293,11 +367,10 @@ lv_neon8_tap:
 	CMP	R6, R12
 	BGE	lv_neon8_cvt
 
-	// Load weight[t], broadcast to V1
+	// Load weight[t] and broadcast via LD1R
 	LSL	$2, R12, R9
 	ADD	R5, R9, R9
-	FMOVS	(R9), F1
-	VDUP_S0_4S(1, 1)
+	LD1R_4S(1, 9)                    // V1.4S = {w, w, w, w}
 
 	// Compute row base: temp + t * stride_bytes + col * 4
 	MUL	R12, R7, R13
@@ -326,24 +399,13 @@ lv_neon8_cvt:
 	FMIN_4S(4, 4, 17)
 	FCVTNS_4S(4, 4)
 
-	// Store 8 bytes
+	// Narrow int32 → int16 → uint8 and store 8 bytes
+	XTN_4H(5, 0)                    // V5.4H = narrow V0.4S
+	XTN2_8H(5, 4)                   // V5.8H = both halves
+	XTN_8B(6, 5)                    // V6 lower 8B = 8 bytes
 	ADD	R0, R10, R14
-	VMOV	V0.S[0], R13
-	MOVB	R13, (R14)
-	VMOV	V0.S[1], R13
-	MOVB	R13, 1(R14)
-	VMOV	V0.S[2], R13
-	MOVB	R13, 2(R14)
-	VMOV	V0.S[3], R13
-	MOVB	R13, 3(R14)
-	VMOV	V4.S[0], R13
-	MOVB	R13, 4(R14)
-	VMOV	V4.S[1], R13
-	MOVB	R13, 5(R14)
-	VMOV	V4.S[2], R13
-	MOVB	R13, 6(R14)
-	VMOV	V4.S[3], R13
-	MOVB	R13, 7(R14)
+	FMOVD	F6, R13
+	MOVD	R13, (R14)
 
 	ADD	$8, R10
 	B	lv_neon8
@@ -360,11 +422,10 @@ lv_neon_tap:
 	CMP	R6, R12
 	BGE	lv_neon_cvt
 
-	// Load weight[t], broadcast
+	// Load weight[t] and broadcast via LD1R
 	LSL	$2, R12, R9
 	ADD	R5, R9, R9
-	FMOVS	(R9), F1
-	VDUP_S0_4S(1, 1)
+	LD1R_4S(1, 9)                    // V1.4S = {w, w, w, w}
 
 	// Load 4 float32 from temp row
 	MUL	R12, R7, R13
@@ -383,16 +444,12 @@ lv_neon_cvt:
 	FMIN_4S(0, 0, 17)
 	FCVTNS_4S(0, 0)
 
-	// Store 4 bytes
+	// Narrow int32 → int16 → uint8 and store 4 bytes
+	XTN_4H(5, 0)                    // V5.4H = narrow V0.4S
+	XTN_8B(6, 5)                    // V6 lower 4B valid
 	ADD	R0, R10, R14
-	VMOV	V0.S[0], R13
-	MOVB	R13, (R14)
-	VMOV	V0.S[1], R13
-	MOVB	R13, 1(R14)
-	VMOV	V0.S[2], R13
-	MOVB	R13, 2(R14)
-	VMOV	V0.S[3], R13
-	MOVB	R13, 3(R14)
+	FMOVS	F6, R13
+	MOVW	R13, (R14)
 
 	ADD	$4, R10
 	B	lv_neon

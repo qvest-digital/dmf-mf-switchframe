@@ -84,10 +84,10 @@ describe('TransitionControls', () => {
 		expect(ftbBtn.classList.contains('active')).toBe(true);
 	});
 
-	it('should render T-bar slider', () => {
+	it('should render transition scrubber', () => {
 		const { container } = render(TransitionControls, { props: { state: baseState } });
-		const tbar = container.querySelector('.tbar[role="slider"]');
-		expect(tbar).toBeTruthy();
+		const scrubber = container.querySelector('.scrubber[role="slider"]');
+		expect(scrubber).toBeTruthy();
 	});
 
 	it('should render transition type selector', () => {
@@ -102,18 +102,18 @@ describe('TransitionControls', () => {
 		expect(select).toBeTruthy();
 	});
 
-	it('should show T-bar position during transition', () => {
+	it('should show scrubber position during transition', () => {
 		const state = { ...baseState, inTransition: true, transitionPosition: 0.5 };
 		const { container } = render(TransitionControls, { props: { state } });
-		const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
-		expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.5, 1);
+		const scrubber = container.querySelector('.scrubber[role="slider"]') as HTMLElement;
+		expect(parseFloat(scrubber.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.5, 1);
 	});
 
 	describe('ARIA labels', () => {
-		it('should have aria-label on T-bar slider', () => {
+		it('should have aria-label on scrubber', () => {
 			const { container } = render(TransitionControls, { props: { state: baseState } });
-			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
-			expect(tbar.getAttribute('aria-label')).toBe('Transition position');
+			const scrubber = container.querySelector('.scrubber[role="slider"]') as HTMLElement;
+			expect(scrubber.getAttribute('aria-label')).toBe('Transition position');
 		});
 
 		it('should have aria-label on duration select', () => {
@@ -130,7 +130,7 @@ describe('TransitionControls', () => {
 		});
 	});
 
-	describe('T-bar auto-animation wiring', () => {
+	describe('Scrubber auto-animation wiring', () => {
 		it('should call startTransition API when AUTO is clicked', async () => {
 			const { startTransition } = await import('$lib/api/switch-api');
 			const { container } = render(TransitionControls, { props: { state: baseState } });
@@ -142,18 +142,18 @@ describe('TransitionControls', () => {
 			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000, undefined, undefined, undefined);
 		});
 
-		it('should still show server-driven position for manual T-bar', () => {
-			// When no auto animation is active, server position drives the T-bar
+		it('should show server-driven position for manual scrubber', () => {
+			// When no drag or auto animation is active, server position drives the scrubber
 			const state = { ...baseState, inTransition: true, transitionPosition: 0.75 };
 			const { container } = render(TransitionControls, { props: { state } });
-			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
-			expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.75, 1);
+			const scrubber = container.querySelector('.scrubber[role="slider"]') as HTMLElement;
+			expect(parseFloat(scrubber.getAttribute('aria-valuenow') ?? '0')).toBeCloseTo(0.75, 1);
 		});
 
-		it('should show T-bar at 0 when not in transition', () => {
+		it('should show scrubber at 0 when not in transition', () => {
 			const { container } = render(TransitionControls, { props: { state: baseState } });
-			const tbar = container.querySelector('.tbar[role="slider"]') as HTMLElement;
-			expect(parseFloat(tbar.getAttribute('aria-valuenow') ?? '0')).toBe(0);
+			const scrubber = container.querySelector('.scrubber[role="slider"]') as HTMLElement;
+			expect(parseFloat(scrubber.getAttribute('aria-valuenow') ?? '0')).toBe(0);
 		});
 	});
 
