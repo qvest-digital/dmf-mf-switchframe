@@ -28,10 +28,20 @@ const (
 	ActionFTB MacroAction = "ftb"
 
 	// Graphics actions.
-	ActionGraphicsOn      MacroAction = "graphics_on"
-	ActionGraphicsOff     MacroAction = "graphics_off"
-	ActionGraphicsAutoOn  MacroAction = "graphics_auto_on"
-	ActionGraphicsAutoOff MacroAction = "graphics_auto_off"
+	ActionGraphicsOn            MacroAction = "graphics_on"
+	ActionGraphicsOff           MacroAction = "graphics_off"
+	ActionGraphicsAutoOn        MacroAction = "graphics_auto_on"
+	ActionGraphicsAutoOff       MacroAction = "graphics_auto_off"
+	ActionGraphicsAddLayer      MacroAction = "graphics_add_layer"
+	ActionGraphicsRemoveLayer   MacroAction = "graphics_remove_layer"
+	ActionGraphicsSetRect       MacroAction = "graphics_set_rect"
+	ActionGraphicsSetZOrder     MacroAction = "graphics_set_zorder"
+	ActionGraphicsFlyIn         MacroAction = "graphics_fly_in"
+	ActionGraphicsFlyOut        MacroAction = "graphics_fly_out"
+	ActionGraphicsSlide         MacroAction = "graphics_slide"
+	ActionGraphicsAnimate       MacroAction = "graphics_animate"
+	ActionGraphicsAnimateStop   MacroAction = "graphics_animate_stop"
+	ActionGraphicsUploadFrame   MacroAction = "graphics_upload_frame"
 
 	// Recording actions.
 	ActionRecordingStart MacroAction = "recording_start"
@@ -86,10 +96,20 @@ var AllActions = map[MacroAction]bool{
 	ActionAudioCompressor: true,
 	ActionAudioDelay:      true,
 	ActionFTB:             true,
-	ActionGraphicsOn:      true,
-	ActionGraphicsOff:     true,
-	ActionGraphicsAutoOn:  true,
-	ActionGraphicsAutoOff: true,
+	ActionGraphicsOn:            true,
+	ActionGraphicsOff:           true,
+	ActionGraphicsAutoOn:        true,
+	ActionGraphicsAutoOff:       true,
+	ActionGraphicsAddLayer:      true,
+	ActionGraphicsRemoveLayer:   true,
+	ActionGraphicsSetRect:       true,
+	ActionGraphicsSetZOrder:     true,
+	ActionGraphicsFlyIn:         true,
+	ActionGraphicsFlyOut:        true,
+	ActionGraphicsSlide:         true,
+	ActionGraphicsAnimate:       true,
+	ActionGraphicsAnimateStop:   true,
+	ActionGraphicsUploadFrame:   true,
 	ActionRecordingStart:  true,
 	ActionRecordingStop:   true,
 	ActionPresetRecall:    true,
@@ -206,13 +226,54 @@ func StepSummary(step MacroStep) string {
 	case ActionAudioDelay:
 		return fmt.Sprintf("Audio Delay %s", source)
 	case ActionGraphicsOn:
-		return "Graphics On"
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics On (layer %s)", layerID)
 	case ActionGraphicsOff:
-		return "Graphics Off"
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Off (layer %s)", layerID)
 	case ActionGraphicsAutoOn:
-		return "Graphics Auto On"
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Auto On (layer %s)", layerID)
 	case ActionGraphicsAutoOff:
-		return "Graphics Auto Off"
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Auto Off (layer %s)", layerID)
+	case ActionGraphicsAddLayer:
+		return "Graphics Add Layer"
+	case ActionGraphicsRemoveLayer:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Remove Layer %s", layerID)
+	case ActionGraphicsSetRect:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Set Rect (layer %s)", layerID)
+	case ActionGraphicsSetZOrder:
+		layerID := fmtLayerID(step.Params)
+		z := 0
+		if v, ok := step.Params["zOrder"].(float64); ok {
+			z = int(v)
+		}
+		return fmt.Sprintf("Graphics Z-Order %d (layer %s)", z, layerID)
+	case ActionGraphicsFlyIn:
+		layerID := fmtLayerID(step.Params)
+		dir, _ := step.Params["direction"].(string)
+		return fmt.Sprintf("Graphics Fly In %s (layer %s)", dir, layerID)
+	case ActionGraphicsFlyOut:
+		layerID := fmtLayerID(step.Params)
+		dir, _ := step.Params["direction"].(string)
+		return fmt.Sprintf("Graphics Fly Out %s (layer %s)", dir, layerID)
+	case ActionGraphicsSlide:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Slide (layer %s)", layerID)
+	case ActionGraphicsAnimate:
+		layerID := fmtLayerID(step.Params)
+		mode, _ := step.Params["mode"].(string)
+		return fmt.Sprintf("Graphics Animate %s (layer %s)", mode, layerID)
+	case ActionGraphicsAnimateStop:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Animate Stop (layer %s)", layerID)
+	case ActionGraphicsUploadFrame:
+		layerID := fmtLayerID(step.Params)
+		tmpl, _ := step.Params["template"].(string)
+		return fmt.Sprintf("Graphics Upload %s (layer %s)", tmpl, layerID)
 	case ActionRecordingStart:
 		return "Recording Start"
 	case ActionRecordingStop:
@@ -270,4 +331,12 @@ func StepSummary(step MacroStep) string {
 	default:
 		return string(step.Action)
 	}
+}
+
+// fmtLayerID extracts a layerId param as a display string.
+func fmtLayerID(params map[string]interface{}) string {
+	if v, ok := params["layerId"].(float64); ok {
+		return fmt.Sprintf("%d", int(v))
+	}
+	return "0"
 }

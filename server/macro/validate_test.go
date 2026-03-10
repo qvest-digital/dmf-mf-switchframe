@@ -326,6 +326,102 @@ func TestValidateSteps_AcceptsGraphicsNoParams(t *testing.T) {
 	}
 }
 
+func TestValidateSteps_GraphicsLayerIdWarning(t *testing.T) {
+	t.Parallel()
+	// Missing layerId should produce a warning, not an error.
+	steps := []MacroStep{
+		{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+	require.Len(t, result.Warnings, 1)
+	require.Contains(t, result.Warnings[0].Message, "layerId")
+}
+
+func TestValidateSteps_GraphicsLayerIdPresent(t *testing.T) {
+	t.Parallel()
+	// With layerId provided, no warning.
+	steps := []MacroStep{
+		{Action: ActionGraphicsOn, Params: map[string]interface{}{"layerId": float64(1)}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+	require.Empty(t, result.Warnings)
+}
+
+func TestValidateSteps_GraphicsFlyInRequiresDirection(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{"layerId": float64(0)}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "direction")
+}
+
+func TestValidateSteps_GraphicsFlyInInvalidDirection(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
+			"layerId": float64(0), "direction": "diagonal",
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "invalid direction")
+}
+
+func TestValidateSteps_GraphicsFlyInValid(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{"left", "right", "top", "bottom"} {
+		steps := []MacroStep{
+			{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
+				"layerId": float64(0), "direction": dir,
+			}},
+		}
+		result := ValidateSteps(steps)
+		require.False(t, result.HasErrors(), "expected fly-in %s to pass", dir)
+	}
+}
+
+func TestValidateSteps_GraphicsAnimateRequiresMode(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsAnimate, Params: map[string]interface{}{"layerId": float64(0)}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "mode")
+}
+
+func TestValidateSteps_GraphicsSetRectRequiresCoords(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsSetRect, Params: map[string]interface{}{"layerId": float64(0)}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+}
+
+func TestValidateSteps_GraphicsUploadFrameRequiresTemplate(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsUploadFrame, Params: map[string]interface{}{"layerId": float64(0)}},
+	}
+	result := ValidateSteps(steps)
+	require.True(t, result.HasErrors())
+	require.Contains(t, result.Errors[0].Message, "template")
+}
+
+func TestValidateSteps_GraphicsAddLayerNoParams(t *testing.T) {
+	t.Parallel()
+	steps := []MacroStep{
+		{Action: ActionGraphicsAddLayer, Params: map[string]interface{}{}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors())
+}
+
 func TestValidateSteps_AcceptsRecordingNoParams(t *testing.T) {
 	t.Parallel()
 	for _, action := range []MacroAction{ActionRecordingStart, ActionRecordingStop} {

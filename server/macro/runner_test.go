@@ -461,12 +461,12 @@ func TestStepSummary(t *testing.T) {
 		{
 			name:     "graphics_on",
 			step:     MacroStep{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
-			expected: "Graphics On",
+			expected: "Graphics On (layer 0)",
 		},
 		{
 			name:     "graphics_off",
 			step:     MacroStep{Action: ActionGraphicsOff, Params: map[string]interface{}{}},
-			expected: "Graphics Off",
+			expected: "Graphics Off (layer 0)",
 		},
 		{
 			name:     "recording_start",
@@ -724,6 +724,10 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionAudioMute, ActionAudioAFV, ActionAudioTrim, ActionAudioMaster,
 		ActionAudioEQ, ActionAudioCompressor, ActionAudioDelay,
 		ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
+		ActionGraphicsAddLayer, ActionGraphicsRemoveLayer, ActionGraphicsSetRect,
+		ActionGraphicsSetZOrder, ActionGraphicsFlyIn, ActionGraphicsFlyOut,
+		ActionGraphicsSlide, ActionGraphicsAnimate, ActionGraphicsAnimateStop,
+		ActionGraphicsUploadFrame,
 		ActionRecordingStart, ActionRecordingStop,
 		ActionPresetRecall,
 		ActionKeySet, ActionKeyDelete,

@@ -132,6 +132,20 @@ func validateStep(i int, step MacroStep, result *ValidationResult) {
 				Message: "layout_slot_source requires 'source' param",
 			})
 		}
+
+	// Graphics layer actions that require layerId.
+	case ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
+		ActionGraphicsRemoveLayer, ActionGraphicsSetRect, ActionGraphicsSetZOrder,
+		ActionGraphicsFlyIn, ActionGraphicsFlyOut, ActionGraphicsSlide,
+		ActionGraphicsAnimate, ActionGraphicsAnimateStop, ActionGraphicsUploadFrame:
+		// layerId defaults to 0 for backward compat, so it's a warning not an error.
+		if _, ok := step.Params["layerId"].(float64); !ok {
+			result.Warnings = append(result.Warnings, ValidationWarning{
+				Step:    i,
+				Message: fmt.Sprintf("%s missing 'layerId' param, will default to 0", step.Action),
+			})
+		}
+		validateGraphicsStep(i, step, result)
 	}
 }
 
@@ -214,6 +228,68 @@ func validateSCTE35Cue(i int, step MacroStep, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: "time_signal requires at least one descriptor",
+			})
+		}
+	}
+}
+
+// validFlyDirectionsSet is the set of accepted fly-in/fly-out direction values.
+var validFlyDirectionsSet = map[string]bool{
+	"left":   true,
+	"right":  true,
+	"top":    true,
+	"bottom": true,
+}
+
+// validateGraphicsStep checks graphics-specific parameter requirements.
+func validateGraphicsStep(i int, step MacroStep, result *ValidationResult) {
+	switch step.Action {
+	case ActionGraphicsFlyIn, ActionGraphicsFlyOut:
+		dir, ok := step.Params["direction"].(string)
+		if !ok || dir == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("%s requires 'direction' param", step.Action),
+			})
+		} else if !validFlyDirectionsSet[dir] {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("invalid direction %q; must be left, right, top, or bottom", dir),
+			})
+		}
+	case ActionGraphicsAnimate:
+		mode, _ := step.Params["mode"].(string)
+		if mode != "pulse" && mode != "transition" {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "graphics_animate requires 'mode' param (\"pulse\" or \"transition\")",
+			})
+		}
+	case ActionGraphicsSetRect:
+		for _, key := range []string{"x", "y", "width", "height"} {
+			if _, ok := step.Params[key].(float64); !ok {
+				result.Errors = append(result.Errors, ValidationError{
+					Step:    i,
+					Message: fmt.Sprintf("graphics_set_rect requires '%s' param (number)", key),
+				})
+				break
+			}
+		}
+	case ActionGraphicsSlide:
+		for _, key := range []string{"x", "y", "width", "height"} {
+			if _, ok := step.Params[key].(float64); !ok {
+				result.Errors = append(result.Errors, ValidationError{
+					Step:    i,
+					Message: fmt.Sprintf("graphics_slide requires '%s' param (number)", key),
+				})
+				break
+			}
+		}
+	case ActionGraphicsUploadFrame:
+		if !hasStringParam(step.Params, "template") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "graphics_upload_frame requires 'template' param",
 			})
 		}
 	}

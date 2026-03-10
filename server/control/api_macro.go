@@ -2,8 +2,10 @@ package control
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
 	"net/http"
 	"time"
 
@@ -253,6 +255,56 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		id := int(floatParam(params, "layerId", 0))
 		dur := time.Duration(floatParam(params, "durationMs", 500)) * time.Millisecond
 		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOff(id, dur) })
+	case macro.ActionGraphicsAddLayer:
+		return t.execGraphics(func(c *graphics.Compositor) error {
+			_, err := c.AddLayer()
+			return err
+		})
+	case macro.ActionGraphicsRemoveLayer:
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.RemoveLayer(id) })
+	case macro.ActionGraphicsSetRect:
+		id := int(floatParam(params, "layerId", 0))
+		x := int(floatParam(params, "x", 0))
+		y := int(floatParam(params, "y", 0))
+		w := int(floatParam(params, "width", 0))
+		h := int(floatParam(params, "height", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error {
+			return c.SetLayerRect(id, image.Rect(x, y, x+w, y+h))
+		})
+	case macro.ActionGraphicsSetZOrder:
+		id := int(floatParam(params, "layerId", 0))
+		z := int(floatParam(params, "zOrder", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.SetLayerZOrder(id, z) })
+	case macro.ActionGraphicsFlyIn:
+		id := int(floatParam(params, "layerId", 0))
+		dir, _ := params["direction"].(string)
+		dur := int(floatParam(params, "durationMs", 500))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyIn(id, dir, dur) })
+	case macro.ActionGraphicsFlyOut:
+		id := int(floatParam(params, "layerId", 0))
+		dir, _ := params["direction"].(string)
+		dur := int(floatParam(params, "durationMs", 500))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyOut(id, dir, dur) })
+	case macro.ActionGraphicsSlide:
+		id := int(floatParam(params, "layerId", 0))
+		x := int(floatParam(params, "x", 0))
+		y := int(floatParam(params, "y", 0))
+		w := int(floatParam(params, "width", 0))
+		h := int(floatParam(params, "height", 0))
+		dur := int(floatParam(params, "durationMs", 500))
+		return t.execGraphics(func(c *graphics.Compositor) error {
+			return c.SlideLayer(id, image.Rect(x, y, x+w, y+h), dur)
+		})
+	case macro.ActionGraphicsAnimate:
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphicsAnimate(id, params)
+	case macro.ActionGraphicsAnimateStop:
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.StopAnimation(id) })
+	case macro.ActionGraphicsUploadFrame:
+		id := int(floatParam(params, "layerId", 0))
+		return t.execGraphicsUploadFrame(id, params)
 
 	// Output
 	case macro.ActionRecordingStart:
@@ -493,6 +545,55 @@ func (t *apiMacroTarget) execGraphics(fn func(*graphics.Compositor) error) error
 		return nil
 	}
 	return fn(t.compositor)
+}
+
+func (t *apiMacroTarget) execGraphicsAnimate(id int, params map[string]interface{}) error {
+	if t.compositor == nil {
+		return nil
+	}
+	mode, _ := params["mode"].(string)
+	cfg := graphics.AnimationConfig{
+		Mode:     mode,
+		MinAlpha: floatParam(params, "minAlpha", 0),
+		MaxAlpha: floatParam(params, "maxAlpha", 1),
+		SpeedHz:  floatParam(params, "speedHz", 1),
+	}
+	if mode == "transition" {
+		if x, ok := params["toX"].(float64); ok {
+			y := floatParam(params, "toY", 0)
+			w := floatParam(params, "toWidth", 0)
+			h := floatParam(params, "toHeight", 0)
+			cfg.ToRect = &graphics.RectState{X: int(x), Y: int(y), Width: int(w), Height: int(h)}
+		}
+		if a, ok := params["toAlpha"].(float64); ok {
+			cfg.ToAlpha = &a
+		}
+		cfg.DurationMs = int(floatParam(params, "durationMs", 500))
+		easing, _ := params["easing"].(string)
+		cfg.Easing = easing
+	}
+	return t.compositor.Animate(id, cfg)
+}
+
+func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]interface{}) error {
+	if t.compositor == nil {
+		return nil
+	}
+	w := int(floatParam(params, "width", 0))
+	h := int(floatParam(params, "height", 0))
+	tmpl, _ := params["template"].(string)
+	rgbaB64, _ := params["rgba"].(string)
+	if w <= 0 || h <= 0 {
+		return fmt.Errorf("width and height must be positive")
+	}
+	rgba, err := base64.StdEncoding.DecodeString(rgbaB64)
+	if err != nil {
+		return fmt.Errorf("invalid base64 rgba data: %w", err)
+	}
+	if len(rgba) != w*h*4 {
+		return fmt.Errorf("rgba size mismatch: expected %d, got %d", w*h*4, len(rgba))
+	}
+	return t.compositor.SetOverlay(id, rgba, w, h, tmpl)
 }
 
 // --- Output helpers ---
