@@ -41,9 +41,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int gop_secs, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
-	// Suppress FFmpeg logging — only show fatal errors. Non-fatal decoder
-	// messages (missing references during transitions) are expected.
-	av_log_set_level(AV_LOG_FATAL);
+	// av_log_set_level is called once from Go via initFFmpegLogLevel().
 
 	const AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
 	if (!codec) {
@@ -325,6 +323,8 @@ type FFmpegEncoder struct {
 // gopSecs sets the IDR keyframe interval in seconds.
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
 func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+	initFFmpegLogLevel()
+
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
 	}

@@ -12,5 +12,20 @@ package codec
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/log.h>
 */
 import "C"
+
+import "sync"
+
+// ffmpegLogOnce ensures av_log_set_level is called exactly once, preventing
+// a data race when multiple encoders/decoders initialize concurrently.
+var ffmpegLogOnce sync.Once
+
+// initFFmpegLogLevel sets the FFmpeg log level to AV_LOG_FATAL. This is
+// called from both encoder and decoder init paths via sync.Once.
+func initFFmpegLogLevel() {
+	ffmpegLogOnce.Do(func() {
+		C.av_log_set_level(C.AV_LOG_FATAL)
+	})
+}

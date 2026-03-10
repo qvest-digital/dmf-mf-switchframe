@@ -25,12 +25,7 @@ typedef struct {
 static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffdec_t));
 
-	// Suppress FFmpeg logging for non-fatal decoder issues. During live
-	// transitions, mid-GOP decoder starts produce "reference picture missing"
-	// and "co located POCs unavailable" errors that are expected and non-fatal
-	// (the decoder recovers via error concealment). AV_LOG_FATAL keeps only
-	// truly fatal messages.
-	av_log_set_level(AV_LOG_FATAL);
+	// av_log_set_level is called once from Go via initFFmpegLogLevel().
 
 	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
 	if (!codec) {
@@ -92,15 +87,15 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 // UV: full [0,255] → limited [16,240]:  UV_lim = 16 + UV_full * 224 / 255
 static unsigned char full_to_limited_y[256];
 static unsigned char full_to_limited_uv[256];
-static int range_tables_initialized = 0;
 
+// init_range_tables populates the full→limited range lookup tables.
+// Must be called exactly once before first use. Synchronization is handled
+// on the Go side via sync.Once (initRangeTablesOnce).
 static void init_range_tables(void) {
-	if (range_tables_initialized) return;
 	for (int i = 0; i < 256; i++) {
 		full_to_limited_y[i]  = (unsigned char)(16 + i * 219 / 255);
 		full_to_limited_uv[i] = (unsigned char)(16 + i * 224 / 255);
 	}
-	range_tables_initialized = 1;
 }
 
 // remap_row applies a 256-byte lookup table to each pixel in a row.
@@ -130,7 +125,7 @@ static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
 	int uv_size = uv_w * uv_h;
 
 	if (remap_to_limited) {
-		init_range_tables();
+		// Range tables are initialized once from Go via initRangeTablesOnce.
 		for (int row = 0; row < h_val; row++) {
 			remap_row(dst + row * w,
 			          src_frame->data[0] + row * src_frame->linesize[0],
@@ -357,6 +352,7 @@ import "C"
 
 import (
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/transition"
@@ -364,6 +360,11 @@ import (
 
 // Compile-time check that FFmpegDecoder implements transition.VideoDecoder.
 var _ transition.VideoDecoder = (*FFmpegDecoder)(nil)
+
+// initRangeTablesOnce ensures the YUVJ420P→YUV420P range conversion lookup
+// tables are populated exactly once, preventing a data race when multiple
+// decoders initialize concurrently.
+var initRangeTablesOnce sync.Once
 
 // FFmpegDecoder wraps an FFmpeg libavcodec H.264 decoder and implements transition.VideoDecoder.
 // It decodes Annex B H.264 bitstream to packed YUV420 planar.
@@ -378,6 +379,11 @@ type FFmpegDecoder struct {
 // NewFFmpegDecoder creates a new FFmpeg H.264 decoder.
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
 func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	initFFmpegLogLevel()
+	initRangeTablesOnce.Do(func() {
+		C.init_range_tables()
+	})
+
 	d := &FFmpegDecoder{}
 	rc := C.ffdec_open(&d.handle, hwDeviceCtx)
 	if rc != 0 {
