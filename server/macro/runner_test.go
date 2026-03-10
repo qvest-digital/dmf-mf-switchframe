@@ -730,6 +730,8 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionSourceLabel, ActionSourceDelay, ActionSourcePosition,
 		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayStop,
 		ActionReplayQuickClip, ActionReplayPlayLast, ActionReplayPlayClip,
+		ActionLayoutPreset, ActionLayoutSlotOn, ActionLayoutSlotOff,
+		ActionLayoutSlotSource, ActionLayoutClear,
 	}
 
 	for _, action := range expectedActions {

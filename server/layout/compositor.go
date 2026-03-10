@@ -426,6 +426,40 @@ func (c *Compositor) SlotOff(slotIdx int) {
 	}
 }
 
+// AutoDissolveSource dissolves off any enabled slot whose source matches the given key.
+// Used when a program cut changes to match a PIP source.
+func (c *Compositor) AutoDissolveSource(sourceKey string) {
+	l := c.layout.Load()
+	if l == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, slot := range l.Slots {
+		if slot.Enabled && slot.SourceKey == sourceKey {
+			idx := i // capture for closure
+			c.animations = append(c.animations, &Animation{
+				SlotIndex: idx,
+				StartTime: time.Now(),
+				Duration:  200 * time.Millisecond,
+				FromRect:  slot.Rect,
+				ToRect:    slot.Rect,
+				FromAlpha: 1.0,
+				ToAlpha:   0.0,
+				OnComplete: func() {
+					if cur := c.layout.Load(); cur != nil {
+						up := c.cloneLayout(cur)
+						if idx < len(up.Slots) {
+							up.Slots[idx].Enabled = false
+						}
+						c.layout.Store(up)
+					}
+				},
+			})
+		}
+	}
+}
+
 // cloneLayout creates a deep copy of a Layout.
 func (c *Compositor) cloneLayout(l *Layout) *Layout {
 	cp := &Layout{Name: l.Name, Slots: make([]LayoutSlot, len(l.Slots))}

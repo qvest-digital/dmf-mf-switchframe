@@ -1726,6 +1726,14 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		// Record transition seam for cut timing diagnostics.
 		s.transSeamStartNano.Store(time.Now().UnixNano())
 
+		// Auto-dissolve any PIP slot showing the new program source.
+		s.mu.RLock()
+		layoutComp := s.layoutCompositor
+		s.mu.RUnlock()
+		if layoutComp != nil {
+			layoutComp.AutoDissolveSource(sourceKey)
+		}
+
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
 		if audioCut != nil {
 			if oldProgram != "" {

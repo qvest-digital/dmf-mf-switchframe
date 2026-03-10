@@ -62,6 +62,13 @@ const (
 	ActionSCTE35Cancel MacroAction = "scte35_cancel"
 	ActionSCTE35Hold   MacroAction = "scte35_hold"
 	ActionSCTE35Extend MacroAction = "scte35_extend"
+
+	// Layout/PIP actions.
+	ActionLayoutPreset    MacroAction = "layout_preset"
+	ActionLayoutSlotOn    MacroAction = "layout_slot_on"
+	ActionLayoutSlotOff   MacroAction = "layout_slot_off"
+	ActionLayoutSlotSource MacroAction = "layout_slot_source"
+	ActionLayoutClear     MacroAction = "layout_clear"
 )
 
 // AllActions is the set of all valid macro actions.
@@ -103,6 +110,11 @@ var AllActions = map[MacroAction]bool{
 	ActionSCTE35Cancel:    true,
 	ActionSCTE35Hold:      true,
 	ActionSCTE35Extend:    true,
+	ActionLayoutPreset:    true,
+	ActionLayoutSlotOn:    true,
+	ActionLayoutSlotOff:   true,
+	ActionLayoutSlotSource: true,
+	ActionLayoutClear:     true,
 }
 
 // MacroStep is a single operation within a macro sequence.
@@ -244,6 +256,17 @@ func StepSummary(step MacroStep) string {
 		return "SCTE-35 Hold"
 	case ActionSCTE35Extend:
 		return "SCTE-35 Extend"
+	case ActionLayoutPreset:
+		preset, _ := step.Params["preset"].(string)
+		return fmt.Sprintf("Layout Preset %s", preset)
+	case ActionLayoutSlotOn:
+		return fmt.Sprintf("Layout Slot On %s", source)
+	case ActionLayoutSlotOff:
+		return fmt.Sprintf("Layout Slot Off %s", source)
+	case ActionLayoutSlotSource:
+		return fmt.Sprintf("Layout Slot Source %s", source)
+	case ActionLayoutClear:
+		return "Layout Clear"
 	default:
 		return string(step.Action)
 	}
