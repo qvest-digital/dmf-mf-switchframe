@@ -3,8 +3,9 @@
 
 	interface Props {
 		children: import('svelte').Snippet<[string]>;
+		onTabChange?: (tab: string) => void;
 	}
-	let { children }: Props = $props();
+	let { children, onTabChange }: Props = $props();
 
 	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35', 'Layout'] as const;
 	type TabId = typeof tabs[number];
@@ -21,6 +22,7 @@
 	function setTab(tab: TabId) {
 		activeTab = tab;
 		localStorage.setItem('sf-active-tab', tab);
+		onTabChange?.(tab);
 	}
 
 	// Keyboard shortcut: Ctrl+Shift+1-6

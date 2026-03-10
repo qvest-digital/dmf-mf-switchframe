@@ -1,16 +1,19 @@
 <script lang="ts">
-	import type { SourceInfo, TallyStatus } from '$lib/api/types';
+	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
 
 	interface Props {
 		source: SourceInfo;
 		tally: TallyStatus;
 		index: number;
 		audioLevelDb?: number;
+		layoutSlots?: LayoutSlotState[];
 		onclick?: () => void;
 		onLabelChange?: (key: string, label: string) => void;
 	}
 
-	let { source, tally, index, audioLevelDb = -96, onclick, onLabelChange }: Props = $props();
+	let { source, tally, index, audioLevelDb = -96, layoutSlots, onclick, onLabelChange }: Props = $props();
+
+	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
 
 	let editing = $state(false);
 	let editValue = $state('');
@@ -80,6 +83,7 @@
 	class="source-tile"
 	class:program={tally === 'program'}
 	class:preview={tally === 'preview'}
+	class:pip={isPIP && tally !== 'program' && tally !== 'preview'}
 	{onclick}
 >
 	<span class="tile-number">{index + 1}</span>
@@ -161,6 +165,13 @@
 		background: var(--tally-preview-dim);
 		color: var(--text-on-color);
 		box-shadow: var(--tally-preview-glow);
+	}
+
+	.source-tile.pip {
+		border-color: #d4a017;
+		background: rgba(212, 160, 23, 0.12);
+		color: var(--text-on-color);
+		box-shadow: 0 0 6px rgba(212, 160, 23, 0.3);
 	}
 
 	.tile-number {
