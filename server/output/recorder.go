@@ -35,6 +35,8 @@ type FileRecorder struct {
 	baseTimestamp string    // shared timestamp across rotated files
 	bytes         atomic.Int64
 	errMsg        string
+	pendingRotate bool   // true when rotation threshold reached but awaiting keyframe
+	cachedPATMPT  []byte // cached PAT+PMT packets from stream for rotated files
 }
 
 // NewFileRecorder creates a FileRecorder with the given configuration.
@@ -144,9 +146,36 @@ func (r *FileRecorder) rotateLocked() error {
 	return nil
 }
 
+// cachePATandPMT scans TS data for PAT (PID 0) and PMT (PID 0x1000) packets
+// and caches them for writing at the start of rotated files.
+func (r *FileRecorder) cachePATandPMT(tsData []byte) {
+	var patPkt, pmtPkt []byte
+	for i := 0; i+tsPacketSize <= len(tsData); i += tsPacketSize {
+		if tsData[i] != 0x47 {
+			continue
+		}
+		pid := uint16(tsData[i+1]&0x1F)<<8 | uint16(tsData[i+2])
+		if pid == 0 && patPkt == nil {
+			patPkt = make([]byte, tsPacketSize)
+			copy(patPkt, tsData[i:i+tsPacketSize])
+		}
+		if pid == 0x1000 && pmtPkt == nil {
+			pmtPkt = make([]byte, tsPacketSize)
+			copy(pmtPkt, tsData[i:i+tsPacketSize])
+		}
+		if patPkt != nil && pmtPkt != nil {
+			break
+		}
+	}
+	if patPkt != nil && pmtPkt != nil {
+		r.cachedPATMPT = append(patPkt, pmtPkt...)
+	}
+}
+
 // Write sends muxed MPEG-TS data to the file. If a rotation threshold
 // has been reached, the current file is closed and a new one is opened
-// before writing.
+// before writing. Rotation is deferred until a keyframe arrives to
+// ensure the new file starts with a decodable GOP.
 func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -155,10 +184,30 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 		return 0, ErrRecorderNotActive
 	}
 
-	// Check if rotation is needed before writing.
-	if r.shouldRotate() {
+	// Cache PAT/PMT for use after rotation.
+	r.cachePATandPMT(tsData)
+
+	// Check if rotation is needed -- defer until we see a keyframe.
+	if !r.pendingRotate && r.shouldRotate() {
+		r.pendingRotate = true
+	}
+
+	// Rotate only when we have a keyframe to start the new file.
+	if r.pendingRotate && containsKeyframe(tsData) {
 		if err := r.rotateLocked(); err != nil {
 			return 0, fmt.Errorf("rotate file: %w", err)
+		}
+		r.pendingRotate = false
+
+		// Write cached PAT/PMT at the start of the new file.
+		if len(r.cachedPATMPT) > 0 {
+			patN, err := r.file.Write(r.cachedPATMPT)
+			r.fileBytes += int64(patN)
+			r.bytes.Add(int64(patN))
+			if err != nil {
+				r.errMsg = err.Error()
+				return 0, err
+			}
 		}
 	}
 

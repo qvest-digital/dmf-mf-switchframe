@@ -145,8 +145,8 @@ func TestFileRecorder_RotateAfterDuration(t *testing.T) {
 
 	firstFile := r.Filename()
 
-	// Write before rotation time.
-	data := make([]byte, 188)
+	// Write before rotation time (keyframe packet so rotation can trigger).
+	data := makeTSPacket(0x100, true)
 	_, err := r.Write(data)
 	require.NoError(t, err)
 	require.Equal(t, firstFile, r.Filename(), "should not rotate yet")
@@ -154,7 +154,7 @@ func TestFileRecorder_RotateAfterDuration(t *testing.T) {
 	// Wait past rotation threshold.
 	time.Sleep(60 * time.Millisecond)
 
-	// Next write should trigger rotation.
+	// Next write with keyframe should trigger rotation.
 	_, err = r.Write(data)
 	require.NoError(t, err)
 
@@ -179,7 +179,7 @@ func TestFileRecorder_RotateAfterFileSize(t *testing.T) {
 	defer func() { _ = r.Close() }()
 
 	firstFile := r.Filename()
-	data := make([]byte, 188)
+	data := makeTSPacket(0x100, true) // keyframe so rotation can trigger
 
 	// Write up to the limit (3 packets = 564 bytes, at the limit).
 	for i := 0; i < 3; i++ {
@@ -188,7 +188,7 @@ func TestFileRecorder_RotateAfterFileSize(t *testing.T) {
 	}
 	require.Equal(t, firstFile, r.Filename(), "should not rotate at exactly the limit")
 
-	// One more write should trigger rotation.
+	// One more write with keyframe should trigger rotation.
 	_, err := r.Write(data)
 	require.NoError(t, err)
 
@@ -211,7 +211,7 @@ func TestFileRecorder_SequentialNaming(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	data := make([]byte, 188)
+	data := makeTSPacket(0x100, true) // keyframe so rotation can trigger
 	files := []string{r.Filename()}
 
 	// Write 3 packets. First write fills file _001 to the limit.
@@ -266,7 +266,7 @@ func TestFileRecorder_RotationProducesValidFilenameFormat(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	data := make([]byte, 188)
+	data := makeTSPacket(0x100, true) // keyframe so rotation can trigger
 
 	// Collect filenames across several rotations.
 	names := map[string]bool{}
@@ -293,7 +293,7 @@ func TestFileRecorder_RotationResetsFileBytes(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	data := make([]byte, 188)
+	data := makeTSPacket(0x100, true) // keyframe so rotation can trigger
 
 	// Write 2 packets to fill first file.
 	_, _ = r.Write(data)
@@ -324,7 +324,7 @@ func TestFileRecorder_TotalBytesAcrossRotations(t *testing.T) {
 	require.NoError(t, r.Start(context.TODO()))
 	defer func() { _ = r.Close() }()
 
-	data := make([]byte, 188)
+	data := makeTSPacket(0x100, true) // keyframe so rotation can trigger
 	for i := 0; i < 5; i++ {
 		_, _ = r.Write(data)
 	}
@@ -332,6 +332,37 @@ func TestFileRecorder_TotalBytesAcrossRotations(t *testing.T) {
 	status := r.Status()
 	require.Equal(t, int64(188*5), status.BytesWritten,
 		"total bytes should accumulate across rotations")
+}
+
+func TestFileRecorder_PATMPTBytesCountedAfterRotation(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 188 * 3, // Rotate after 3 packets.
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Write PAT + PMT + video to establish cachedPATMPT and fill the file.
+	pat := makeTSPacket(0x0000, false)
+	pmt := makeTSPacket(0x1000, false)
+	video := makeTSPacket(0x0100, false)
+	data := append(append(pat, pmt...), video...)
+	_, err := r.Write(data)
+	require.NoError(t, err)
+
+	// Write a keyframe to trigger rotation.
+	keyframe := makeTSPacket(0x0100, true)
+	_, err = r.Write(keyframe)
+	require.NoError(t, err)
+
+	// After rotation, the PAT/PMT (2 * 188 = 376 bytes) is written to the
+	// new file, plus the keyframe (188 bytes). Total = 3*188 + 188 + 376 = 1128.
+	status := r.Status()
+	patPmtBytes := int64(len(pat) + len(pmt))
+	expectedTotal := int64(len(data)) + int64(len(keyframe)) + patPmtBytes
+	require.Equal(t, expectedTotal, status.BytesWritten,
+		"total bytes should include PAT/PMT written after rotation")
 }
 
 func TestFileRecorder_ZeroConfigDisablesRotation(t *testing.T) {
@@ -343,4 +374,111 @@ func TestFileRecorder_ZeroConfigDisablesRotation(t *testing.T) {
 		"zero RotateAfter means rotation disabled")
 	require.Equal(t, int64(0), r.config.MaxFileSize,
 		"zero MaxFileSize means no size limit")
+}
+
+// ---------- C2: Keyframe-aligned rotation tests ----------
+
+func TestFileRecorder_RotationDefersUntilKeyframe(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 188, // Rotate after 1 TS packet.
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	firstFile := r.Filename()
+
+	// Write first packet (fills to the limit).
+	delta := makeTSPacket(0x100, false)
+	_, err := r.Write(delta)
+	require.NoError(t, err)
+	require.Equal(t, firstFile, r.Filename(), "should not rotate yet")
+
+	// Write a second delta packet. Rotation should be pending but not
+	// executed because this is not a keyframe.
+	_, err = r.Write(delta)
+	require.NoError(t, err)
+	require.Equal(t, firstFile, r.Filename(),
+		"should not rotate on delta frame -- must wait for keyframe")
+
+	// Write a third delta packet -- still no keyframe, no rotation.
+	_, err = r.Write(delta)
+	require.NoError(t, err)
+	require.Equal(t, firstFile, r.Filename(),
+		"should still not rotate without keyframe")
+
+	// Write a keyframe packet -- NOW rotation should occur.
+	keyframe := makeTSPacket(0x100, true)
+	_, err = r.Write(keyframe)
+	require.NoError(t, err)
+
+	secondFile := r.Filename()
+	require.NotEqual(t, firstFile, secondFile,
+		"should rotate when keyframe arrives after pending rotation")
+}
+
+func TestFileRecorder_RotatedFileStartsWithPATandPMT(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 188 * 3, // Rotate after 3 packets.
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Build a TS payload that includes PAT (PID 0), PMT (PID 0x1000),
+	// and video data. This simulates what the TSMuxer produces.
+	pat := makeTSPacket(0x0000, false)    // PAT
+	pmt := makeTSPacket(0x1000, false)    // PMT
+	video := makeTSPacket(0x0100, false)  // Video data
+
+	// Write PAT+PMT+video (fills file to limit).
+	data := append(append(pat, pmt...), video...)
+	_, err := r.Write(data)
+	require.NoError(t, err)
+
+	firstFile := r.Filename()
+
+	// Write another delta packet to mark rotation as pending.
+	_, err = r.Write(video)
+	require.NoError(t, err)
+	require.Equal(t, firstFile, r.Filename(), "should not rotate on delta")
+
+	// Write a keyframe to trigger rotation.
+	keyframe := makeTSPacket(0x0100, true)
+	_, err = r.Write(keyframe)
+	require.NoError(t, err)
+
+	secondFile := r.Filename()
+	require.NotEqual(t, firstFile, secondFile, "should have rotated")
+
+	// Read the second file and verify it starts with PAT (PID 0) and PMT (PID 0x1000).
+	secondPath := filepath.Join(dir, secondFile)
+
+	// Close recorder to flush.
+	require.NoError(t, r.Close())
+
+	content, err := os.ReadFile(secondPath)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(content), 188*2,
+		"rotated file should contain at least PAT+PMT")
+
+	// Verify first two packets are PAT and PMT.
+	foundPAT := false
+	foundPMT := false
+	for i := 0; i+tsPacketSize <= len(content) && i < tsPacketSize*2; i += tsPacketSize {
+		if content[i] != 0x47 {
+			continue
+		}
+		pid := uint16(content[i+1]&0x1F)<<8 | uint16(content[i+2])
+		if pid == 0x0000 {
+			foundPAT = true
+		}
+		if pid == 0x1000 {
+			foundPMT = true
+		}
+	}
+	require.True(t, foundPAT, "rotated file should start with PAT (PID 0)")
+	require.True(t, foundPMT, "rotated file should contain PMT (PID 0x1000)")
 }
