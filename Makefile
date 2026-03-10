@@ -50,6 +50,7 @@ demo: build-server node_modules_check
 	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV pipeline)"
 	@echo "  Keying: mxl:raw2 is a green screen with chroma key pre-configured (Keys tab)"
 	@echo "  SCTE-35: Enabled (SCTE-35 tab in bottom panel)"
+	@echo "  Captions: Enabled (Captions tab in bottom panel)"
 	@echo "  Press Ctrl+C to stop"
 	@echo ""
 	@trap 'kill 0' EXIT; \
@@ -57,9 +58,9 @@ demo: build-server node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 --captions $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 $$CERT_FLAGS & \
+			./bin/switchframe --demo --frame-sync --frc-quality mcfi --decode-all-sources --raw-program-monitor --scte35 --captions $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
