@@ -21,6 +21,7 @@
 	import ReplayPanel from '../components/ReplayPanel.svelte';
 	import PresetPanel from '../components/PresetPanel.svelte';
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
+	import LayoutPanel from '../components/LayoutPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
@@ -549,6 +550,10 @@
 								{:else}
 									<div class="panel-disabled">SCTE-35 not enabled on server</div>
 								{/if}
+							</div>
+						{:else if activeTab === 'Layout'}
+							<div class="tab-panel">
+								<LayoutPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

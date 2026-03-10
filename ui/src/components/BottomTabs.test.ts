@@ -19,7 +19,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Replay');
 		expect(tabLabels).toContain('Presets');
 		expect(tabLabels).toContain('SCTE-35');
-		expect(tabs.length).toBe(7);
+		expect(tabLabels).toContain('Layout');
+		expect(tabs.length).toBe(8);
 	});
 
 	it('renders Presets tab', () => {
