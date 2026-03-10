@@ -4,6 +4,7 @@ import { VideoRenderBuffer } from '$lib/prism/video-render-buffer';
 import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
+import type { CaptionData } from '$lib/prism/protocol';
 import { createYUVRenderer, type YUVRenderer } from '$lib/video/yuv-renderer';
 
 /** Configuration for the media pipeline. */
@@ -12,6 +13,8 @@ export interface MediaPipelineConfig {
 	onControlState?: (data: Uint8Array) => void;
 	/** Called when a source is identified as raw YUV (after catalog arrives). */
 	onRawSourceReady?: (sourceKey: string) => void;
+	/** Called when a caption frame arrives on the program stream. */
+	onProgramCaptionFrame?: (caption: CaptionData, timestamp: number) => void;
 }
 
 /** Diagnostics snapshot for a single source. */
@@ -218,8 +221,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				feedAudioFrame(key, data, timestampUs);
 			},
 
-			onCaptionFrame() {
-				// Captions not used in switcher multiview
+			onCaptionFrame(caption: CaptionData, timestamp: number) {
+				if (key === 'program' && config?.onProgramCaptionFrame) {
+					config.onProgramCaptionFrame(caption, timestamp);
+				}
 			},
 
 			onServerStats() {

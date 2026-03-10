@@ -9,13 +9,15 @@
 		state: ControlRoomState;
 		showLayoutOverlay?: boolean;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
+		onCaptionElReady?: (el: HTMLDivElement) => void;
 		fastControl?: FastControl | null;
 	}
-	let { state: crState, showLayoutOverlay = false, onCanvasReady, fastControl = null }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
 	let programViewport: HTMLDivElement;
+	let captionOverlay: HTMLDivElement;
 	let programViewportW = $state(0);
 	let programViewportH = $state(0);
 
@@ -54,6 +56,12 @@
 	$effect(() => {
 		if (previewCanvas && programCanvas && onCanvasReady) {
 			onCanvasReady(previewCanvas, programCanvas);
+		}
+	});
+
+	$effect(() => {
+		if (captionOverlay && onCaptionElReady) {
+			onCaptionElReady(captionOverlay);
 		}
 	});
 
@@ -121,6 +129,7 @@
 		{/if}
 		<div class="monitor-viewport" bind:this={programViewport}>
 			<canvas bind:this={programCanvas}></canvas>
+			<div class="caption-overlay" bind:this={captionOverlay}></div>
 			<div class="source-label">{programLabel}</div>
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} variant="critical" label="PROGRAM" />
 			{#if showLayoutOverlay && crState.layout?.slots?.length}
@@ -199,6 +208,49 @@
 		width: 100%;
 		height: 100%;
 		object-fit: contain;
+	}
+
+	.caption-overlay {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+		z-index: var(--z-above);
+		font-family: 'Courier New', monospace;
+		font-size: clamp(12px, 2.2vw, 22px);
+		line-height: 1.3;
+		overflow: hidden;
+	}
+
+	/* Prism CaptionRenderer injects .cc-line and .cc-region children */
+	.caption-overlay :global(.cc-line) {
+		padding: 1px 4px;
+	}
+
+	.caption-overlay :global(.cc-608-line) {
+		text-align: center;
+	}
+
+	.caption-overlay :global(.cc-608-line span),
+	.caption-overlay :global(.cc-708-region span) {
+		background: rgba(0, 0, 0, 0.75);
+		color: #fff;
+		padding: 0 2px;
+	}
+
+	.caption-overlay :global(.cc-region) {
+		position: absolute;
+		padding: 2px 4px;
+	}
+
+	.caption-overlay :global(.cc-flash) {
+		animation: cc-blink 1s step-end infinite;
+	}
+
+	@keyframes cc-blink {
+		50% { opacity: 0; }
 	}
 
 	.source-label {
