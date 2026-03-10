@@ -435,6 +435,8 @@ func (fs *FrameSynchronizer) Start() {
 }
 
 // Stop halts the background ticker. Safe to call multiple times.
+// Releases all pool buffers held by sources (pendingRawVideo, lastRawVideo,
+// FRC state) to prevent FramePool starvation.
 func (fs *FrameSynchronizer) Stop() {
 	fs.mu.Lock()
 	if fs.stopped {
@@ -447,6 +449,28 @@ func (fs *FrameSynchronizer) Stop() {
 
 	// Wait for the tickLoop goroutine to exit.
 	fs.wg.Wait()
+
+	// Release all pool buffers held by sources. Safe after wg.Wait()
+	// guarantees the tick loop is no longer accessing source state.
+	fs.mu.Lock()
+	for _, ss := range fs.sources {
+		ss.mu.Lock()
+		for i := range ss.pendingRawVideo {
+			if ss.pendingRawVideo[i] != nil {
+				ss.pendingRawVideo[i].ReleaseYUV()
+				ss.pendingRawVideo[i] = nil
+			}
+		}
+		if ss.lastRawVideo != nil {
+			ss.lastRawVideo.ReleaseYUV()
+			ss.lastRawVideo = nil
+		}
+		if ss.frc != nil {
+			ss.frc.reset()
+		}
+		ss.mu.Unlock()
+	}
+	fs.mu.Unlock()
 }
 
 // tickLoop is the background goroutine that runs the ticker.

@@ -741,6 +741,7 @@ func TestFrameSync_AudioPTSMonotonic(t *testing.T) {
 func TestFrameSync_RemoveSourceReleasesPoolBuffers(t *testing.T) {
 	// RemoveSource should release raw video pool buffers held in ring
 	// buffers and lastRawVideo to prevent FramePool starvation.
+	// Test without Stop() to isolate RemoveSource behavior.
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
@@ -755,10 +756,8 @@ func TestFrameSync_RemoveSourceReleasesPoolBuffers(t *testing.T) {
 	}
 	fs.IngestRawVideo("cam1", pf)
 
-	// Let one tick release it so it becomes lastRawVideo.
-	fs.Start()
-	time.Sleep(50 * time.Millisecond)
-	fs.Stop()
+	// Run one tick manually so the frame becomes lastRawVideo (no Start/Stop).
+	fs.releaseTick()
 
 	// Pool should have 1 buffer (the other is held by lastRawVideo).
 	pool.mu.Lock()
@@ -812,6 +811,99 @@ func TestFrameSync_LastRawVideoReleasedOnReplacement(t *testing.T) {
 	// buf1 released + buf2 held as new lastRawVideo = 2 free
 	require.Equal(t, 2, freeAfterReplace,
 		"old lastRawVideo buffer should be released when replaced by fresh frame")
+}
+
+func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
+	// Bug 8: Stop() doesn't release pool buffers held in sources' pendingRawVideo,
+	// lastRawVideo, and FRC state. After Stop(), all pool buffers should be returned.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+
+	pool := NewFramePool(6, 4, 4) // tiny 4x4 pool with 6 buffers
+
+	// Acquire 4 buffers, put them into the frame sync as raw video frames.
+	for i := 0; i < 2; i++ {
+		for _, key := range []string{"cam1", "cam2"} {
+			buf := pool.Acquire()
+			pf := &ProcessingFrame{
+				PTS:  int64(i * 3000),
+				YUV:  buf,
+				pool: pool,
+			}
+			fs.IngestRawVideo(key, pf)
+		}
+	}
+
+	// Run one tick so frames become lastRawVideo.
+	fs.Start()
+	time.Sleep(50 * time.Millisecond)
+
+	// Some buffers are held by the frame sync (lastRawVideo, pending ring slots).
+	pool.mu.Lock()
+	freeBefore := len(pool.free)
+	pool.mu.Unlock()
+	require.Less(t, freeBefore, 6, "pool should have fewer than 6 free buffers before Stop")
+
+	// Stop should release all held pool buffers.
+	fs.Stop()
+
+	pool.mu.Lock()
+	freeAfter := len(pool.free)
+	pool.mu.Unlock()
+	// All buffers should be back in the pool (some may have been consumed by
+	// the ring buffer overwrite release, so we check that at least the
+	// lastRawVideo buffers are released).
+	require.Greater(t, freeAfter, freeBefore,
+		"Stop() should release pool buffers: before=%d after=%d", freeBefore, freeAfter)
+}
+
+func TestFrameSync_StopReleasesPoolBuffersWithFRC(t *testing.T) {
+	// Bug 8 + Bug 16: Stop() should also release FRC state buffers.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.frcQuality = FRCBlend
+	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	fs.AddSource("cam1")
+
+	pool := NewFramePool(4, 64, 64)
+
+	// Ingest frames so FRC has prevFrame and currFrame populated.
+	for i := 0; i < 3; i++ {
+		buf := pool.Acquire()
+		yuvSize := 64 * 64 * 3 / 2
+		for j := range buf[:yuvSize] {
+			buf[j] = byte(100 + i)
+		}
+		pf := &ProcessingFrame{
+			PTS:    int64(i * 3000),
+			YUV:    buf[:yuvSize],
+			Width:  64,
+			Height: 64,
+			pool:   pool,
+		}
+		fs.IngestRawVideo("cam1", pf)
+	}
+
+	fs.Start()
+	time.Sleep(50 * time.Millisecond)
+
+	pool.mu.Lock()
+	freeBefore := len(pool.free)
+	pool.mu.Unlock()
+
+	fs.Stop()
+
+	pool.mu.Lock()
+	freeAfter := len(pool.free)
+	pool.mu.Unlock()
+
+	// FRC holds prevFrame and currFrame (2 buffers), plus lastRawVideo (1 buffer).
+	// Stop should release all of them.
+	require.Greater(t, freeAfter, freeBefore,
+		"Stop() should release FRC pool buffers: before=%d after=%d", freeBefore, freeAfter)
 }
 
 func TestFrameSync_AudioPTSUsesAudioFrameDuration(t *testing.T) {
