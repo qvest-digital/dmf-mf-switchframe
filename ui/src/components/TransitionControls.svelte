@@ -395,6 +395,8 @@
 		padding: 0 6px;
 		border-left: 1px solid var(--border-default);
 		margin-left: auto;
+		width: 220px;
+		flex-shrink: 0;
 	}
 
 	.transition-buttons {
@@ -411,7 +413,7 @@
 		cursor: pointer;
 		font-family: var(--font-ui);
 		font-weight: 600;
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		letter-spacing: 0.04em;
 		position: relative;
 		transition:
@@ -468,7 +470,7 @@
 
 	.shortcut {
 		display: block;
-		font-size: 0.45rem;
+		font-size: var(--text-2xs);
 		font-family: var(--font-mono);
 		font-weight: 400;
 		opacity: 0.3;
@@ -478,6 +480,7 @@
 
 	.transition-options {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 4px;
 		align-items: center;
 	}
@@ -493,7 +496,7 @@
 
 	.type-option {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		color: var(--text-secondary);
 		cursor: pointer;
@@ -530,7 +533,7 @@
 	}
 
 	.wipe-dir-btn {
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		line-height: 1;
 		padding: 3px 6px;
 		border: none;
@@ -554,7 +557,7 @@
 
 	.stinger-select {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
@@ -583,7 +586,7 @@
 
 	.stinger-action-btn {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		line-height: 1;
 		padding: 3px 6px;
@@ -617,14 +620,14 @@
 		gap: 6px;
 		align-items: center;
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		padding: 2px 0;
 	}
 
 	.confirm-yes {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		padding: 2px 8px;
 		border: 1px solid var(--tally-program);
@@ -642,7 +645,7 @@
 
 	.confirm-no {
 		font-family: var(--font-ui);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		font-weight: 500;
 		padding: 2px 8px;
 		border: 1px solid var(--border-default);
@@ -659,7 +662,7 @@
 
 	.duration-select {
 		font-family: var(--font-mono);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
@@ -681,7 +684,7 @@
 
 	.easing-select {
 		font-family: var(--font-ui);
-		font-size: 0.7rem;
+		font-size: var(--text-sm);
 		font-weight: 500;
 		background: var(--bg-elevated);
 		color: var(--text-secondary);
@@ -712,14 +715,14 @@
 		align-items: center;
 		gap: 2px;
 		font-family: var(--font-mono);
-		font-size: 0.6rem;
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 	}
 
 	.bezier-input input {
 		width: 48px;
 		font-family: var(--font-mono);
-		font-size: 0.65rem;
+		font-size: var(--text-xs);
 		background: var(--bg-elevated);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
