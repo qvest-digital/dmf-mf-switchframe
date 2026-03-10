@@ -575,8 +575,13 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	// Determine if we should trigger blend+output.
 	// For Mix/Dip/Wipe: triggered by incoming TO source frame.
 	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
+	// For Stinger: triggered by EITHER source to maximize frame cadence.
+	// Stingers have complex per-frame animation that benefits from higher output
+	// rates; the blend function's cut-point logic picks the correct base source.
 	shouldBlend := false
 	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+		shouldBlend = true
+	} else if e.transitionType == TransitionStinger && (isFrom || isTo) {
 		shouldBlend = true
 	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
 		shouldBlend = true
@@ -714,9 +719,11 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 		e.needsFlushB = false
 	}
 
-	// Same blend triggering logic as IngestFrame.
+	// Same blend triggering logic as IngestFrame (see comments there).
 	shouldBlend := false
 	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+		shouldBlend = true
+	} else if e.transitionType == TransitionStinger && (isFrom || isTo) {
 		shouldBlend = true
 	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
 		shouldBlend = true

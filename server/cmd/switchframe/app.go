@@ -943,21 +943,43 @@ func (a *App) Run(ctx context.Context) error {
 
 		needsScale := rawW != pf.Width || rawH != pf.Height
 
+		// Pre-allocate reusable buffers for the raw monitor hot path.
+		// Scale buffer: reused every frame (consumed immediately by copy into pack buffer).
+		var scaleBuf []byte
+		if needsScale {
+			scaleBuf = make([]byte, rawW*rawH*3/2)
+		}
+		// Triple-buffered pack buffers: BroadcastVideoNoCache doesn't retain
+		// WireData, but viewer SendVideo may still be serializing the previous
+		// frame to QUIC while we fill the next buffer. 3 buffers ensure the
+		// one being written is never the one being read by the transport.
+		packSize := 8 + rawW*rawH*3/2
+		packBufs := [3][]byte{
+			make([]byte, packSize),
+			make([]byte, packSize),
+			make([]byte, packSize),
+		}
+		packIdx := 0
+		// Reusable VideoFrame to avoid per-frame allocation.
+		monitorFrame := &media.VideoFrame{
+			IsKeyframe: true,
+			Codec:      "raw/yuv420",
+		}
+
 		a.sw.SetRawMonitorSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
 			yuv := frame.YUV
 			w, h := frame.Width, frame.Height
 
-			// Scale if needed.
+			// Scale if needed (into pre-allocated buffer).
 			if needsScale {
-				scaledSize := rawW * rawH * 3 / 2
-				scaled := make([]byte, scaledSize)
-				transition.ScaleYUV420(yuv, w, h, scaled, rawW, rawH)
-				yuv = scaled
+				transition.ScaleYUV420(yuv, w, h, scaleBuf, rawW, rawH)
+				yuv = scaleBuf
 				w, h = rawW, rawH
 			}
 
-			// Pack: 4-byte width (big-endian) + 4-byte height (big-endian) + YUV420 planar data
-			packed := make([]byte, 8+len(yuv))
+			// Pack into next triple-buffer slot.
+			packed := packBufs[packIdx]
+			packIdx = (packIdx + 1) % 3
 			packed[0] = byte(w >> 24)
 			packed[1] = byte(w >> 16)
 			packed[2] = byte(w >> 8)
@@ -968,14 +990,10 @@ func (a *App) Run(ctx context.Context) error {
 			packed[7] = byte(h)
 			copy(packed[8:], yuv)
 
-			vf := &media.VideoFrame{
-				PTS:        frame.PTS,
-				DTS:        frame.DTS,
-				IsKeyframe: true,
-				WireData:   packed,
-				Codec:      "raw/yuv420",
-			}
-			a.rawProgramRelay.BroadcastVideo(vf)
+			monitorFrame.PTS = frame.PTS
+			monitorFrame.DTS = frame.DTS
+			monitorFrame.WireData = packed
+			a.rawProgramRelay.BroadcastVideoNoCache(monitorFrame)
 		}))
 
 		slog.Info("raw program monitor enabled",
@@ -991,8 +1009,21 @@ func (a *App) Run(ctx context.Context) error {
 				Height: rawH,
 			})
 
+			// Triple-buffered pack buffers for replay-raw (same pattern as program-raw).
+			replayPackBufs := [3][]byte{
+				make([]byte, packSize),
+				make([]byte, packSize),
+				make([]byte, packSize),
+			}
+			replayPackIdx := 0
+			replayFrame := &media.VideoFrame{
+				IsKeyframe: true,
+				Codec:      "raw/yuv420",
+			}
+
 			a.replayMgr.SetRawMonitorOutput(func(yuv []byte, w, h int, pts int64) {
-				packed := make([]byte, 8+len(yuv))
+				packed := replayPackBufs[replayPackIdx]
+				replayPackIdx = (replayPackIdx + 1) % 3
 				packed[0] = byte(w >> 24)
 				packed[1] = byte(w >> 16)
 				packed[2] = byte(w >> 8)
@@ -1003,13 +1034,10 @@ func (a *App) Run(ctx context.Context) error {
 				packed[7] = byte(h)
 				copy(packed[8:], yuv)
 
-				rawReplayRelay.BroadcastVideo(&media.VideoFrame{
-					PTS:        pts,
-					DTS:        pts,
-					IsKeyframe: true,
-					WireData:   packed,
-					Codec:      "raw/yuv420",
-				})
+				replayFrame.PTS = pts
+				replayFrame.DTS = pts
+				replayFrame.WireData = packed
+				rawReplayRelay.BroadcastVideoNoCache(replayFrame)
 			})
 
 			slog.Info("raw replay monitor enabled", "width", rawW, "height", rawH)

@@ -917,12 +917,14 @@ func TestEngineStingerTransition(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
 	require.Equal(t, TransitionStinger, e.TransitionType())
 
-	// Ingest from both sources
+	// Ingest from both sources. Stinger triggers blend on BOTH from+to frames
+	// to maximize frame cadence (complex per-frame animation benefits from
+	// higher output rates). First from-frame uses black fallback for B source.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs), "stinger transition should produce output")
+	require.Equal(t, 2, len(outputs), "stinger transition should produce output for both from+to frames")
 	mu.Unlock()
 
 	e.Stop()
@@ -991,11 +993,12 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 60000))
 
+	// Stinger triggers on both from+to, so 2 outputs per pair.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs))
+	require.Equal(t, 2, len(outputs))
 	out := outputs[0]
 	mu.Unlock()
 
@@ -1009,7 +1012,7 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
-	require.Equal(t, 2, len(outputs), "should still produce output after mutation")
+	require.Equal(t, 4, len(outputs), "should still produce output after mutation")
 	mu.Unlock()
 
 	e.Stop()
@@ -1062,11 +1065,12 @@ func TestEngineStingerNoData(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
 
+	// Stinger triggers on both from+to, so 2 outputs per pair.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 1, len(outputs), "stinger without data should still produce output")
+	require.Equal(t, 2, len(outputs), "stinger without data should still produce output for both sources")
 	mu.Unlock()
 
 	e.Stop()

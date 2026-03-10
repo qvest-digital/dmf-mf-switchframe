@@ -645,9 +645,17 @@ func (fs *FrameSynchronizer) releaseTick() {
 				// reusable scratch buffer (nearestOut/blendOut). Without a
 				// copy, the next tick's emit overwrites the data while
 				// downstream consumers may still be reading it.
-				yuvCopy := make([]byte, len(emitted.YUV))
-				copy(yuvCopy, emitted.YUV)
-				releaseRawVideo.YUV = yuvCopy
+				// Use the frame pool when available to avoid heap allocation.
+				if fs.framePool != nil && len(emitted.YUV) <= fs.framePool.bufSize {
+					yuvCopy := fs.framePool.Acquire()[:len(emitted.YUV)]
+					copy(yuvCopy, emitted.YUV)
+					releaseRawVideo.YUV = yuvCopy
+					releaseRawVideo.pool = fs.framePool
+				} else {
+					yuvCopy := make([]byte, len(emitted.YUV))
+					copy(yuvCopy, emitted.YUV)
+					releaseRawVideo.YUV = yuvCopy
+				}
 				hasRawVideo = true
 				freshVideo = true // FRC frames have unique PTS, treat as fresh
 			}

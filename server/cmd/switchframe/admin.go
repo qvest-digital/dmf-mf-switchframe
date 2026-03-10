@@ -7,12 +7,21 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers on http.DefaultServeMux.
+	"runtime"
 	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/metrics"
 )
+
+func init() {
+	// Enable mutex and block profiling for pprof analysis.
+	// Fraction=5 means ~20% of mutex contention events are sampled.
+	runtime.SetMutexProfileFraction(5)
+	// Rate=1000 means block events >= 1µs are recorded.
+	runtime.SetBlockProfileRate(1000)
+}
 
 // readyFlag is set to true once all components are initialized and the server
 // is ready to accept traffic. The /ready endpoint returns 503 until this is set.
