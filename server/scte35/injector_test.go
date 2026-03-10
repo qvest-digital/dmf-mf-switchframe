@@ -2749,3 +2749,142 @@ func TestCircularLog_Wraparound(t *testing.T) {
 		t.Fatalf("entries[2].EventID = %d, want 5", entries[2].EventID)
 	}
 }
+
+// Bug 13: time_signal with cue-out descriptor should produce "cue_out" webhook type.
+// Previously, webhookIsOut was always false for time_signal commands because
+// msg.IsOut is never set for time_signal (it's only used by splice_insert).
+func TestInjector_WebhookDispatch_TimeSignal_CueOutType(t *testing.T) {
+	var mu sync.Mutex
+	var received []WebhookEvent
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evt WebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+			t.Errorf("webhook decode error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		WebhookURL:        ts.URL,
+		WebhookTimeoutMs:  5000,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with a cue-out segmentation descriptor
+	// (0x34 = Provider Placement Opportunity Start).
+	dur := scte35lib.DurationToTicks(30 * time.Second)
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:       100,
+				SegmentationType: 0x34, // Provider Placement Opportunity Start (cue-out)
+				DurationTicks:    &dur,
+			},
+		},
+	}
+
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Wait for async dispatches to complete.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) == 0 {
+		t.Fatal("expected at least 1 webhook event")
+	}
+
+	// The webhook type should be "cue_out" for a time_signal with cue-out descriptor.
+	evt := received[0]
+	if evt.Type != "cue_out" {
+		t.Errorf("webhook type = %q, want \"cue_out\" for time_signal with cue-out descriptor", evt.Type)
+	}
+	if evt.Command != "time_signal" {
+		t.Errorf("webhook command = %q, want \"time_signal\"", evt.Command)
+	}
+	if !evt.IsOut {
+		t.Error("webhook isOut should be true for time_signal with cue-out descriptor")
+	}
+}
+
+// Bug 13: time_signal with cue-in descriptor should produce "cue_in" webhook type.
+func TestInjector_WebhookDispatch_TimeSignal_CueInType(t *testing.T) {
+	var mu sync.Mutex
+	var received []WebhookEvent
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evt WebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+			t.Errorf("webhook decode error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		WebhookURL:        ts.URL,
+		WebhookTimeoutMs:  5000,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject a time_signal with a cue-in descriptor
+	// (0x35 = Provider Placement Opportunity End).
+	msg := &CueMessage{
+		CommandType: CommandTimeSignal,
+		Descriptors: []SegmentationDescriptor{
+			{
+				SegEventID:       200,
+				SegmentationType: 0x35, // Provider Placement Opportunity End (cue-in)
+			},
+		},
+	}
+
+	_, err := inj.InjectCue(msg)
+	if err != nil {
+		t.Fatalf("inject failed: %v", err)
+	}
+
+	// Wait for async dispatches to complete.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) == 0 {
+		t.Fatal("expected at least 1 webhook event")
+	}
+
+	// The webhook type should be "cue_in" for a time_signal with cue-in descriptor.
+	evt := received[0]
+	if evt.Type != "cue_in" {
+		t.Errorf("webhook type = %q, want \"cue_in\" for time_signal with cue-in descriptor", evt.Type)
+	}
+	if evt.IsOut {
+		t.Error("webhook isOut should be false for time_signal with cue-in descriptor")
+	}
+}

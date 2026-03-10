@@ -433,6 +433,16 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	inj.logEventLocked(msg.EventID, msg.CommandType, msg.IsOut, durMs, msg.AutoReturn, "injected", msg)
 
 	webhookIsOut := msg.IsOut
+	// For time_signal commands, msg.IsOut is never set (it's a splice_insert
+	// concept). Determine cue-out status from segmentation descriptors.
+	if msg.CommandType == CommandTimeSignal {
+		for _, d := range msg.Descriptors {
+			if isSegCueOut(d.SegmentationType) {
+				webhookIsOut = true
+				break
+			}
+		}
+	}
 	webhookCmdType := msg.CommandType
 	var webhookDurMs int64
 	if msg.BreakDuration != nil {
