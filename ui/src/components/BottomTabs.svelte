@@ -7,7 +7,7 @@
 	}
 	let { children, onTabChange }: Props = $props();
 
-	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35', 'Layout'] as const;
+	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35', 'Layout', 'Captions'] as const;
 	type TabId = typeof tabs[number];
 
 	function loadSavedTab(): TabId {
@@ -28,7 +28,7 @@
 	// Keyboard shortcut: Ctrl+Shift+1-6
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
-			const match = e.code.match(/^Digit([1-8])$/);
+			const match = e.code.match(/^Digit([1-9])$/);
 			if (match) {
 				e.preventDefault();
 				e.stopPropagation();

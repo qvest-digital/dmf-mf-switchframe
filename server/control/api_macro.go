@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -98,6 +99,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		outputMgr:    a.outputMgr,
 		stingerStore: a.stingerStore,
 		scte35:       a.scte35,
+		captionMgr:   a.captionMgr,
 	}
 
 	onProgress := func(state macro.ExecutionState) {
@@ -185,6 +187,7 @@ type apiMacroTarget struct {
 	outputMgr    OutputManagerAPI
 	stingerStore *stinger.StingerStore
 	scte35       SCTE35API
+	captionMgr   CaptionManagerAPI
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
@@ -339,6 +342,14 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execReplayPlay(params)
 	case macro.ActionReplayStop:
 		return t.execReplayStop()
+
+	// Captions
+	case macro.ActionCaptionMode:
+		return t.execCaptionMode(params)
+	case macro.ActionCaptionText:
+		return t.execCaptionText(params)
+	case macro.ActionCaptionClear:
+		return t.execCaptionClear()
 
 	// Replay (clip-based — from replay UX plan)
 	case macro.ActionReplayQuickClip:
@@ -807,6 +818,43 @@ func (t *apiMacroTarget) execReplayPlayClip(params map[string]interface{}) error
 	}
 	// Will call replayMgr.PlayClip(clipId) once the replay UX plan lands.
 	_ = params["clipId"]
+	return nil
+}
+
+// --- Caption helpers ---
+
+func (t *apiMacroTarget) execCaptionMode(params map[string]interface{}) error {
+	if t.captionMgr == nil {
+		return fmt.Errorf("captions not enabled")
+	}
+	mode, _ := params["mode"].(string)
+	m, ok := caption.ParseMode(mode)
+	if !ok {
+		return fmt.Errorf("invalid caption mode %q", mode)
+	}
+	t.captionMgr.SetMode(m)
+	return nil
+}
+
+func (t *apiMacroTarget) execCaptionText(params map[string]interface{}) error {
+	if t.captionMgr == nil {
+		return fmt.Errorf("captions not enabled")
+	}
+	text, _ := params["text"].(string)
+	if text != "" {
+		t.captionMgr.IngestText(text)
+	}
+	if newline, ok := params["newline"].(bool); ok && newline {
+		t.captionMgr.IngestNewline()
+	}
+	return nil
+}
+
+func (t *apiMacroTarget) execCaptionClear() error {
+	if t.captionMgr == nil {
+		return fmt.Errorf("captions not enabled")
+	}
+	t.captionMgr.Clear()
 	return nil
 }
 

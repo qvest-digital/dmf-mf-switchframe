@@ -386,6 +386,9 @@ func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 		ActionReplayQuickClip,
 		ActionReplayPlayLast,
 		ActionReplayPlayClip,
+		ActionCaptionMode,
+		ActionCaptionText,
+		ActionCaptionClear,
 	}
 
 	for _, action := range newActions {
@@ -507,6 +510,21 @@ func TestStepSummary(t *testing.T) {
 			name:     "scte35_cue",
 			step:     MacroStep{Action: ActionSCTE35Cue, Params: map[string]interface{}{}},
 			expected: "SCTE-35 Cue",
+		},
+		{
+			name:     "caption_mode",
+			step:     MacroStep{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "author"}},
+			expected: "Caption Mode author",
+		},
+		{
+			name:     "caption_text",
+			step:     MacroStep{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello world"}},
+			expected: `Caption Text "Hello world"`,
+		},
+		{
+			name:     "caption_clear",
+			step:     MacroStep{Action: ActionCaptionClear, Params: map[string]interface{}{}},
+			expected: "Caption Clear",
 		},
 		{
 			name:     "unknown_action_fallback",
@@ -736,6 +754,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionReplayQuickClip, ActionReplayPlayLast, ActionReplayPlayClip,
 		ActionLayoutPreset, ActionLayoutSlotOn, ActionLayoutSlotOff,
 		ActionLayoutSlotSource, ActionLayoutClear,
+		ActionCaptionMode, ActionCaptionText, ActionCaptionClear,
 	}
 
 	for _, action := range expectedActions {

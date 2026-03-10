@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -148,6 +149,14 @@ type audioTransitionHandler interface {
 	OnTransitionComplete()
 	SetProgramMute(muted bool)
 	SetStingerAudio(audio []float32, sampleRate, channels int)
+}
+
+// captionManager is the interface the Switcher needs from the caption system
+// to embed CEA-608/708 captions in the H.264 output bitstream.
+type captionManager interface {
+	ConsumeForFrameWithVANC() []caption.CCPair
+	SetPassThroughText(text string)
+	NotifySourceCaptions(sourceKey string, has bool)
 }
 
 // RawVideoSink receives a deep copy of the processed YUV420p frame
@@ -330,6 +339,15 @@ type Switcher struct {
 
 	// Raw monitor output — sends YUV copy to program-raw MoQ track.
 	rawMonitorSink atomic.Pointer[RawVideoSink]
+
+	// Caption manager — handles CEA-608/708 caption encoding, pass-through,
+	// and SEI injection into encoded video frames. Optional (nil = no captions).
+	captionMgr captionManager
+
+	// Pre-allocated buffers for caption SEI injection (avoids per-frame alloc).
+	captionAnnexBBuf []byte
+	captionInsertBuf []byte
+	captionAVC1Buf   []byte
 
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
@@ -577,7 +595,7 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 			forceIDR:       &s.forceNextIDR,
 			promMetrics:    s.promMetrics,
 			encodeNilCount: &s.pipeEncodeNil,
-			onEncoded:      s.broadcastOwnedToProgram,
+			onEncoded:      s.broadcastWithCaptions,
 		},
 	}
 }
@@ -943,6 +961,52 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	s.programRelay.BroadcastVideo(frame)
 }
 
+// SetCaptionManager attaches a caption manager for CEA-608/708 SEI injection.
+func (s *Switcher) SetCaptionManager(cm captionManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.captionMgr = cm
+}
+
+// broadcastWithCaptions injects caption SEI NALUs into the encoded video frame
+// before broadcasting to the program relay. This is the post-encode callback
+// used by the pipeline's encodeNode when captions are enabled.
+func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
+	s.mu.RLock()
+	cm := s.captionMgr
+	s.mu.RUnlock()
+
+	if cm == nil {
+		s.broadcastOwnedToProgram(frame)
+		return
+	}
+
+	pairs := cm.ConsumeForFrameWithVANC()
+	if len(pairs) == 0 {
+		s.broadcastOwnedToProgram(frame)
+		return
+	}
+
+	// Build SEI NALU containing cc_data.
+	seiNALU := caption.BuildSEINALU(pairs)
+	if len(seiNALU) == 0 {
+		s.broadcastOwnedToProgram(frame)
+		return
+	}
+
+	// Convert AVC1 → Annex B → insert SEI → convert back to AVC1.
+	s.captionAnnexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, s.captionAnnexBBuf[:0])
+	s.captionInsertBuf = caption.InsertSEIBeforeVCLInto(seiNALU, s.captionAnnexBBuf, s.captionInsertBuf[:0])
+	s.captionAVC1Buf = codec.AnnexBToAVC1Into(s.captionInsertBuf, s.captionAVC1Buf[:0])
+
+	// Clone the AVC1 buffer — captionAVC1Buf is reused across frames, but
+	// downstream async consumers (SRT, muxer) hold WireData references across
+	// frame boundaries. Without this copy, the next frame overwrites their data.
+	avc1Copy := make([]byte, len(s.captionAVC1Buf))
+	copy(avc1Copy, s.captionAVC1Buf)
+	frame.WireData = avc1Copy
+	s.broadcastOwnedToProgram(frame)
+}
 
 // enqueueVideoWork sends a work item to the async video processing goroutine
 // with newest-wins drop policy when the channel is full.
@@ -2396,14 +2460,31 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 
 // handleCaptionFrame implements frameHandler. Only the current program
 // source's captions are forwarded to the program Relay.
+// When a caption manager is attached, the caption text is re-encoded
+// as CEA-608 pairs for SEI injection into the encoded video output.
 func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame) {
 	s.mu.RLock()
 	_, ok := s.sources[sourceKey]
 	isProgram := ok && s.programSource == sourceKey
+	cm := s.captionMgr
 	s.mu.RUnlock()
+
+	// Notify caption manager that this source has captions.
+	if cm != nil {
+		cm.NotifySourceCaptions(sourceKey, true)
+	}
 
 	if !isProgram {
 		return
 	}
+
+	// Re-encode caption text as CEA-608 pairs for SEI re-embedding.
+	// Uses the manager's pass-through encoder for proper CEA-608 formatting
+	// (parity, control codes, rate limiting).
+	if cm != nil && frame != nil {
+		text := frame.PlainText()
+		cm.SetPassThroughText(text)
+	}
+
 	s.programRelay.BroadcastCaptions(frame)
 }

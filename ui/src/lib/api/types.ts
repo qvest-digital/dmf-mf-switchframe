@@ -9,6 +9,7 @@ export interface SourceInfo {
 	position?: number;
 	delayMs?: number;
 	isVirtual?: boolean;
+	hasCaptions?: boolean;
 }
 
 export interface EQBand {
@@ -224,7 +225,9 @@ export type MacroAction =
 	// Timing
 	| 'wait'
 	// SCTE-35
-	| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend';
+	| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend'
+	// Captions
+	| 'caption_mode' | 'caption_text' | 'caption_clear';
 
 export interface MacroStep {
 	action: MacroAction;
@@ -292,7 +295,7 @@ export interface ReplayState {
 	buffers?: ReplayBufferInfo[];
 }
 
-export type OperatorRole = 'director' | 'audio' | 'graphics' | 'viewer';
+export type OperatorRole = 'director' | 'audio' | 'graphics' | 'captioner' | 'viewer';
 
 export interface OperatorInfo {
 	id: string;
@@ -313,6 +316,14 @@ export interface PipelineFormatInfo {
 	fpsNum: number;
 	fpsDen: number;
 	name: string;
+}
+
+export type CaptionMode = 'off' | 'passthrough' | 'author';
+
+export interface CaptionState {
+	mode: CaptionMode;
+	authorBuffer?: string;
+	sourceCaptions?: Record<string, boolean>;
 }
 
 export interface SCTE35State {
@@ -437,6 +448,7 @@ export interface ControlRoomState {
 	locks?: Record<string, LockInfo>;
 	pipelineFormat?: PipelineFormatInfo;
 	scte35?: SCTE35State;
+	captions?: CaptionState;
 	macro?: MacroExecutionState;
 	lastChangedBy?: string;
 	seq: number;

@@ -64,9 +64,13 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	scte35_cancel: { label: 'Cancel', category: 'SCTE-35', description: 'Cancel a pending splice' },
 	scte35_hold: { label: 'Hold', category: 'SCTE-35', description: 'Hold break indefinitely' },
 	scte35_extend: { label: 'Extend', category: 'SCTE-35', description: 'Extend break duration' },
+	// Captions
+	caption_mode: { label: 'Caption Mode', category: 'Captions', description: 'Set caption mode' },
+	caption_text: { label: 'Caption Text', category: 'Captions', description: 'Send caption text' },
+	caption_clear: { label: 'Clear Captions', category: 'Captions', description: 'Clear caption display' },
 };
 
-export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35'] as const;
+export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions'] as const;
 
 export const SOURCE_ACTIONS: MacroAction[] = [
 	'cut', 'preview', 'transition', 'set_audio',

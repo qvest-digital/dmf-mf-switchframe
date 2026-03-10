@@ -39,9 +39,11 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/output/srt/stop", SubsystemOutput, true},
 		{"/api/presets/abc/recall", SubsystemSwitching, true}, // preset recall
 		{"/api/presets/abc", SubsystemSwitching, true},        // preset mutation (update/delete)
-		{"/api/switch/state", "", false},                      // GET endpoint
-		{"/api/operator/register", "", false},                 // operator management
-		{"/api/presets", "", false},                           // list endpoint (no trailing slash)
+		{"/api/captions/mode", SubsystemCaptions, true},         // caption mode
+		{"/api/captions/text", SubsystemCaptions, true},         // caption text
+		{"/api/switch/state", "", false},                        // GET endpoint
+		{"/api/operator/register", "", false},                   // operator management
+		{"/api/presets", "", false},                             // list endpoint (no trailing slash)
 		{"/api/unknown", "", false},
 	}
 
@@ -191,6 +193,65 @@ func TestMiddleware_LockOwnerAllowed(t *testing.T) {
 	wrapped.ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for lock owner")
+}
+
+func TestMiddleware_CaptionerAllowedOnCaptions(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	op, _ := store.Register("Carol", RoleCaptioner)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	req := httptest.NewRequest("POST", "/api/captions/text", nil)
+	req.Header.Set("Authorization", "Bearer "+op.Token)
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "expected 200 for captioner on captions")
+}
+
+func TestMiddleware_CaptionerForbiddenOnSwitching(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	op, _ := store.Register("Carol", RoleCaptioner)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	req := httptest.NewRequest("POST", "/api/switch/cut", nil)
+	req.Header.Set("Authorization", "Bearer "+op.Token)
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code, "expected 403 for captioner on switching")
+}
+
+func TestCanCommand_Captioner(t *testing.T) {
+	require.True(t, CanCommand(RoleCaptioner, SubsystemCaptions))
+	require.False(t, CanCommand(RoleCaptioner, SubsystemSwitching))
+	require.False(t, CanCommand(RoleCaptioner, SubsystemAudio))
+	require.True(t, CanCommand(RoleDirector, SubsystemCaptions))
+}
+
+func TestCanLock_Captioner(t *testing.T) {
+	require.True(t, CanLock(RoleCaptioner, SubsystemCaptions))
+	require.False(t, CanLock(RoleCaptioner, SubsystemSwitching))
+	require.True(t, CanLock(RoleDirector, SubsystemCaptions))
 }
 
 func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {

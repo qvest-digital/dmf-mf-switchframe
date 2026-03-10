@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -170,6 +171,21 @@ func WithLayoutStore(ls *layout.Store) APIOption {
 	return func(a *API) { a.layoutStore = ls }
 }
 
+// CaptionManagerAPI is the interface for caption management operations.
+type CaptionManagerAPI interface {
+	SetMode(mode caption.Mode)
+	Mode() caption.Mode
+	IngestText(text string)
+	IngestNewline()
+	Clear()
+	State() caption.State
+}
+
+// WithCaptionManager attaches a caption manager to the API.
+func WithCaptionManager(cm CaptionManagerAPI) APIOption {
+	return func(a *API) { a.captionMgr = cm }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -189,6 +205,7 @@ type API struct {
 	scte35Rules      SCTE35RulesAPI
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
+	captionMgr       CaptionManagerAPI
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -398,6 +415,11 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
 		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
 		mux.HandleFunc("DELETE /api/scte35/rules/{id}", a.handleSCTE35DeleteRule)
+	}
+	if a.captionMgr != nil {
+		mux.HandleFunc("POST /api/captions/mode", a.handleCaptionMode)
+		mux.HandleFunc("POST /api/captions/text", a.handleCaptionText)
+		mux.HandleFunc("GET /api/captions/state", a.handleCaptionState)
 	}
 	if a.layoutCompositor != nil {
 		mux.HandleFunc("GET /api/layout", a.handleGetLayout)

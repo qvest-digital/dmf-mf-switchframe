@@ -21,6 +21,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
@@ -81,6 +82,9 @@ type App struct {
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	fastCtrl         *fastctrl.Dispatcher
+
+	// Closed captions
+	captionMgr *caption.Manager
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -814,6 +818,9 @@ func (a *App) initAPI() error {
 	}
 	if a.scte35Injector != nil {
 		apiOpts = append(apiOpts, control.WithSCTE35(a.scte35Injector, a.scte35Rules))
+	}
+	if a.captionMgr != nil {
+		apiOpts = append(apiOpts, control.WithCaptionManager(a.captionMgr))
 	}
 	a.api = control.NewAPI(a.sw, apiOpts...)
 

@@ -172,6 +172,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		state.Macro = ms
 	}
 
+	// Caption state.
+	state = a.enrichCaptionState(state)
+
 	return state
 }
 

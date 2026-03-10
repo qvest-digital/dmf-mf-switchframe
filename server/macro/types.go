@@ -79,6 +79,11 @@ const (
 	ActionLayoutSlotOff   MacroAction = "layout_slot_off"
 	ActionLayoutSlotSource MacroAction = "layout_slot_source"
 	ActionLayoutClear     MacroAction = "layout_clear"
+
+	// Caption actions.
+	ActionCaptionMode  MacroAction = "caption_mode"
+	ActionCaptionText  MacroAction = "caption_text"
+	ActionCaptionClear MacroAction = "caption_clear"
 )
 
 // AllActions is the set of all valid macro actions.
@@ -135,6 +140,9 @@ var AllActions = map[MacroAction]bool{
 	ActionLayoutSlotOff:   true,
 	ActionLayoutSlotSource: true,
 	ActionLayoutClear:     true,
+	ActionCaptionMode:     true,
+	ActionCaptionText:     true,
+	ActionCaptionClear:    true,
 }
 
 // MacroStep is a single operation within a macro sequence.
@@ -328,6 +336,17 @@ func StepSummary(step MacroStep) string {
 		return fmt.Sprintf("Layout Slot Source %s", source)
 	case ActionLayoutClear:
 		return "Layout Clear"
+	case ActionCaptionMode:
+		mode, _ := step.Params["mode"].(string)
+		return fmt.Sprintf("Caption Mode %s", mode)
+	case ActionCaptionText:
+		text, _ := step.Params["text"].(string)
+		if len(text) > 30 {
+			text = text[:30] + "..."
+		}
+		return fmt.Sprintf("Caption Text %q", text)
+	case ActionCaptionClear:
+		return "Caption Clear"
 	default:
 		return string(step.Action)
 	}

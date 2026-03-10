@@ -1,0 +1,312 @@
+<script lang="ts">
+	import type { ControlRoomState, CaptionMode } from '$lib/api/types';
+	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, apiCall } from '$lib/api/switch-api';
+
+	interface Props {
+		state: ControlRoomState;
+	}
+	let { state: crState }: Props = $props();
+
+	let textInput = $state('');
+
+	let captionState = $derived(crState.captions);
+	let mode = $derived(captionState?.mode ?? 'off');
+	let authorBuffer = $derived(captionState?.authorBuffer ?? '');
+	let sourceCaptions = $derived(captionState?.sourceCaptions ?? {});
+	let isAuthor = $derived(mode === 'author');
+
+	const modes: { id: CaptionMode; label: string }[] = [
+		{ id: 'off', label: 'Off' },
+		{ id: 'passthrough', label: 'Pass-through' },
+		{ id: 'author', label: 'Author' },
+	];
+
+	function handleModeChange(newMode: CaptionMode) {
+		apiCall(setCaptionMode(newMode), 'Set caption mode');
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			if (textInput.trim()) {
+				apiCall(sendCaptionText(textInput), 'Send caption text');
+				textInput = '';
+			}
+			apiCall(sendCaptionNewline(), 'Caption newline');
+		}
+	}
+
+	function handleClear() {
+		apiCall(clearCaptions(), 'Clear captions');
+		textInput = '';
+	}
+
+	// Sources with captions detected.
+	let captionSources = $derived(
+		Object.entries(crState.sources ?? {})
+			.filter(([key]) => sourceCaptions[key])
+			.map(([key, info]) => ({ key, label: info.label || key }))
+	);
+</script>
+
+<div class="captions-panel">
+	<!-- Mode bar -->
+	<div class="zone">
+		<div class="zone-header">
+			<span class="zone-title">MODE</span>
+		</div>
+		<div class="mode-bar">
+			{#each modes as m}
+				<button
+					class="mode-btn"
+					class:active={mode === m.id}
+					onclick={() => handleModeChange(m.id)}
+				>
+					{m.label}
+				</button>
+			{/each}
+		</div>
+	</div>
+
+	<!-- Author input -->
+	<div class="zone">
+		<div class="zone-header">
+			<span class="zone-title">AUTHOR INPUT</span>
+			{#if isAuthor}
+				<button class="clear-btn" onclick={handleClear}>Clear Display</button>
+			{/if}
+		</div>
+		{#if isAuthor}
+			<textarea
+				class="caption-input"
+				placeholder="Type captions here. Press Enter to send + new line."
+				bind:value={textInput}
+				onkeydown={handleKeydown}
+			></textarea>
+			{#if authorBuffer}
+				<div class="author-buffer">
+					<span class="buffer-label">On screen:</span>
+					<span class="buffer-text">{authorBuffer}</span>
+				</div>
+			{/if}
+		{:else}
+			<div class="disabled-notice">
+				{#if mode === 'passthrough'}
+					Captions forwarded from program source.
+				{:else}
+					Enable Author mode to type live captions.
+				{/if}
+			</div>
+		{/if}
+	</div>
+
+	<!-- Source detection -->
+	<div class="zone">
+		<div class="zone-header">
+			<span class="zone-title">SOURCE DETECTION</span>
+		</div>
+		<div class="source-list">
+			{#if captionSources.length === 0}
+				<div class="no-sources">No sources with embedded captions detected.</div>
+			{:else}
+				{#each captionSources as src}
+					<div class="source-badge">
+						<span class="cc-badge">CC</span>
+						<span class="source-name">{src.label}</span>
+					</div>
+				{/each}
+			{/if}
+		</div>
+	</div>
+</div>
+
+<style>
+	.captions-panel {
+		display: grid;
+		grid-template-columns: 1fr 2fr 1fr;
+		gap: 6px;
+		padding: 6px;
+		height: 100%;
+		overflow: hidden;
+	}
+
+	.zone {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 6px;
+		background: var(--bg-elevated);
+		border-radius: var(--radius-sm);
+		overflow-y: auto;
+	}
+
+	.zone-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.zone-title {
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--text-secondary);
+	}
+
+	.mode-bar {
+		display: flex;
+		gap: 4px;
+	}
+
+	.mode-btn {
+		flex: 1;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		padding: 6px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all var(--transition-fast);
+	}
+
+	.mode-btn:hover {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+	}
+
+	.mode-btn.active {
+		background: var(--accent-yellow);
+		color: var(--bg-base);
+		border-color: var(--accent-yellow);
+	}
+
+	.caption-input {
+		flex: 1;
+		min-height: 60px;
+		resize: none;
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 8px;
+		outline: none;
+	}
+
+	.caption-input:focus {
+		border-color: var(--accent-yellow);
+	}
+
+	.caption-input::placeholder {
+		color: var(--text-tertiary);
+	}
+
+	.author-buffer {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+		padding: 4px 8px;
+		background: var(--bg-base);
+		border-radius: var(--radius-sm);
+		white-space: pre-wrap;
+		word-break: break-word;
+		max-height: 48px;
+		overflow-y: auto;
+	}
+
+	.buffer-label {
+		color: var(--text-tertiary);
+		margin-right: 4px;
+	}
+
+	.buffer-text {
+		color: var(--accent-green);
+	}
+
+	.clear-btn {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 2px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+
+	.clear-btn:hover {
+		background: var(--status-error);
+		color: white;
+		border-color: var(--status-error);
+	}
+
+	.disabled-notice {
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+		padding: 12px;
+		text-align: center;
+	}
+
+	.source-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.no-sources {
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+		padding: 8px;
+	}
+
+	.source-badge {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 8px;
+		background: var(--bg-base);
+		border-radius: var(--radius-sm);
+	}
+
+	.cc-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		background: var(--accent-yellow);
+		color: var(--bg-base);
+		padding: 1px 4px;
+		border-radius: 2px;
+	}
+
+	.source-name {
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		color: var(--text-primary);
+	}
+
+	@media (max-width: 1024px) {
+		.captions-panel {
+			grid-template-columns: 1fr 1fr;
+		}
+		.zone:last-child {
+			grid-column: span 2;
+		}
+	}
+
+	@media (max-width: 768px) {
+		.captions-panel {
+			grid-template-columns: 1fr;
+		}
+		.zone:last-child {
+			grid-column: span 1;
+		}
+	}
+</style>

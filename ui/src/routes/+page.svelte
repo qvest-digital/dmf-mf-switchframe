@@ -22,6 +22,7 @@
 	import PresetPanel from '../components/PresetPanel.svelte';
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
 	import LayoutPanel from '../components/LayoutPanel.svelte';
+	import CaptionsPanel from '../components/CaptionsPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
@@ -603,6 +604,13 @@
 						{:else if activeTab === 'Layout'}
 							<div class="tab-panel">
 								<LayoutPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Captions'}
+							<div class="tab-panel">
+								<div class="panel-header">
+									<LockIndicator state={store.effectiveState} subsystem="captions" />
+								</div>
+								<CaptionsPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

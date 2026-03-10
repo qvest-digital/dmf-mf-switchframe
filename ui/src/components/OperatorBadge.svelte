@@ -15,6 +15,7 @@
 		director: 'D',
 		audio: 'A',
 		graphics: 'G',
+		captioner: 'C',
 		viewer: 'V',
 	};
 
@@ -22,6 +23,7 @@
 		director: '#ef4444',
 		audio: '#3b82f6',
 		graphics: '#a855f7',
+		captioner: '#eab308',
 		viewer: '#6b7280',
 	};
 </script>

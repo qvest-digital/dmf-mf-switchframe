@@ -20,7 +20,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Presets');
 		expect(tabLabels).toContain('SCTE-35');
 		expect(tabLabels).toContain('Layout');
-		expect(tabs.length).toBe(8);
+		expect(tabLabels).toContain('Captions');
+		expect(tabs.length).toBe(9);
 	});
 
 	it('renders Presets tab', () => {
