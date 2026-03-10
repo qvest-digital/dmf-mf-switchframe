@@ -1133,3 +1133,46 @@ func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
 		sw.IngestReplayVideo("replay", pf)
 	})
 }
+
+func TestCloseWithFrameSyncActive(t *testing.T) {
+	// Bug 1: Close() closes videoProcCh before stopping the frame sync.
+	// If frame sync ticks in that window, enqueueVideoWork sends on a
+	// closed channel, causing a panic. This test enables frame sync with
+	// active sources and calls Close() repeatedly to trigger the race.
+	for i := 0; i < 20; i++ {
+		programRelay := newTestRelay()
+		sw := New(programRelay)
+
+		cam1Relay := newTestRelay()
+		sw.RegisterSource("camera1", cam1Relay)
+		_ = sw.Cut(context.Background(), "camera1")
+
+		// Enable frame sync — creates a FrameSynchronizer with background ticker.
+		sw.SetFrameSync(true, 10*time.Millisecond)
+
+		// Feed some raw frames through the frame sync so it has data to tick.
+		for j := 0; j < 5; j++ {
+			pf := &ProcessingFrame{
+				YUV:        make([]byte, 320*240*3/2),
+				Width:      320,
+				Height:     240,
+				PTS:        int64(j * 3000),
+				IsKeyframe: j == 0,
+			}
+			sw.mu.RLock()
+			fs := sw.frameSync
+			sw.mu.RUnlock()
+			if fs != nil {
+				fs.IngestRawVideo("camera1", pf)
+			}
+		}
+
+		// Let the frame sync tick a few times.
+		time.Sleep(30 * time.Millisecond)
+
+		// Close() must not panic even though frame sync is actively ticking.
+		require.NotPanics(t, func() {
+			sw.Close()
+		}, "Close() panicked on iteration %d", i)
+	}
+}

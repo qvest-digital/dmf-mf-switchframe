@@ -441,6 +441,23 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
+
+	// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
+	// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,
+	// which calls enqueueVideoWork. If we close videoProcCh while the ticker is
+	// still running, a send on the closed channel causes a panic.
+	//
+	// We grab the pointer under the lock but call Stop() outside the lock,
+	// because Stop() waits for the tick loop goroutine to exit, and that
+	// goroutine's delivery callbacks acquire s.mu.RLock() — holding s.mu.Lock()
+	// here would deadlock.
+	s.mu.Lock()
+	fs := s.frameSync
+	s.mu.Unlock()
+	if fs != nil {
+		fs.Stop()
+	}
+
 	// Shut down async video processing goroutine.
 	close(s.videoProcCh)
 	<-s.videoProcDone
@@ -458,9 +475,6 @@ func (s *Switcher) Close() {
 	// before closing pipeCodecs (prevents use-after-close on encoder).
 	s.drainWg.Wait()
 	s.mu.Lock()
-	if s.frameSync != nil {
-		s.frameSync.Stop()
-	}
 	pipeCodecs := s.pipeCodecs
 	s.mu.Unlock()
 	if pipeCodecs != nil {
