@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
@@ -159,6 +160,16 @@ func WithSessionManager(sm *operator.SessionManager) APIOption {
 	return func(a *API) { a.sessionMgr = sm }
 }
 
+// WithLayoutCompositor attaches a layout compositor to the API.
+func WithLayoutCompositor(lc *layout.Compositor) APIOption {
+	return func(a *API) { a.layoutCompositor = lc }
+}
+
+// WithLayoutStore attaches a layout preset store to the API.
+func WithLayoutStore(ls *layout.Store) APIOption {
+	return func(a *API) { a.layoutStore = ls }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -174,8 +185,10 @@ type API struct {
 	replayMgr     *replay.Manager
 	operatorStore *operator.Store
 	sessionMgr    *operator.SessionManager
-	scte35        SCTE35API
-	scte35Rules   SCTE35RulesAPI
+	scte35           SCTE35API
+	scte35Rules      SCTE35RulesAPI
+	layoutCompositor *layout.Compositor
+	layoutStore      *layout.Store
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -376,6 +389,18 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
 		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
 		mux.HandleFunc("DELETE /api/scte35/rules/{id}", a.handleSCTE35DeleteRule)
+	}
+	if a.layoutCompositor != nil {
+		mux.HandleFunc("GET /api/layout", a.handleGetLayout)
+		mux.HandleFunc("PUT /api/layout", a.handleSetLayout)
+		mux.HandleFunc("DELETE /api/layout", a.handleDeleteLayout)
+		mux.HandleFunc("PUT /api/layout/slots/{id}", a.handleSlotUpdate)
+		mux.HandleFunc("POST /api/layout/slots/{id}/on", a.handleSlotOn)
+		mux.HandleFunc("POST /api/layout/slots/{id}/off", a.handleSlotOff)
+		mux.HandleFunc("PUT /api/layout/slots/{id}/source", a.handleSlotSource)
+		mux.HandleFunc("GET /api/layout/presets", a.handleListLayoutPresets)
+		mux.HandleFunc("POST /api/layout/presets", a.handleSaveLayoutPreset)
+		mux.HandleFunc("DELETE /api/layout/presets/{name}", a.handleDeleteLayoutPreset)
 	}
 }
 

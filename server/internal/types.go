@@ -189,6 +189,7 @@ type ControlRoomState struct {
 	Sources              map[string]SourceInfo   `json:"sources"`
 	Presets              []PresetInfo            `json:"presets,omitempty"`
 	Graphics             *GraphicsState          `json:"graphics,omitempty"`
+	Layout               *LayoutState            `json:"layout,omitempty"`
 	Replay               *ReplayState            `json:"replay,omitempty"`
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
@@ -282,4 +283,23 @@ type SCTE35Config struct {
 	PID                 uint16 `json:"pid"`
 	VerifyEncoding      bool   `json:"verifyEncoding"`
 	WebhookURL          string `json:"webhookUrl,omitempty"`
+}
+
+// LayoutState represents the current layout configuration for state broadcast.
+type LayoutState struct {
+	ActivePreset string            `json:"activePreset"`
+	Slots        []LayoutSlotState `json:"slots"`
+}
+
+// LayoutSlotState represents a single layout slot in the state broadcast.
+type LayoutSlotState struct {
+	ID        int    `json:"id"`
+	SourceKey string `json:"sourceKey"`
+	Enabled   bool   `json:"enabled"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	ZOrder    int    `json:"zOrder"`
+	Animating bool   `json:"animating,omitempty"`
 }
