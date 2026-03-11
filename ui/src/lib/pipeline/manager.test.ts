@@ -272,6 +272,23 @@ describe('PipelineManager', () => {
 			);
 		});
 
+		it('should clear preview canvas when switching sources to prevent stale frames', () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			const clearRectSpy = vi.fn();
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			vi.spyOn(pvwCanvas, 'getContext').mockReturnValue({
+				clearRect: clearRectSpy,
+			} as any);
+
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			// Switch to cam2 — should clear the canvas before attaching
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+
+			expect(clearRectSpy).toHaveBeenCalledWith(0, 0, pvwCanvas.width, pvwCanvas.height);
+		});
+
 		it('should retry preview attachment when source not yet in pipeline', () => {
 			// Simulate the race condition: syncProgramPreviewCanvases is called
 			// before syncSources adds the preview source to the pipeline.

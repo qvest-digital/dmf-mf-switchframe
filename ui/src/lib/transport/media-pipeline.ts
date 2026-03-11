@@ -11,6 +11,12 @@ import { createYUVRenderer, type YUVRenderer } from '$lib/video/yuv-renderer';
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
 	onControlState?: (data: Uint8Array) => void;
+	/**
+	 * Called when a per-source MoQ transport has successfully connected
+	 * and received its catalog. This proves the WebTransport + MoQ
+	 * handshake succeeded, so REST polling can be stopped.
+	 */
+	onMoQActive?: () => void;
 	/** Called when a source is identified as raw YUV (after catalog arrives). */
 	onRawSourceReady?: (sourceKey: string) => void;
 	/** Called when a caption frame arrives on the program stream. */
@@ -152,11 +158,21 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		};
 	}
 
+	/** Set once after the first MoQ catalog is received. */
+	let moqActiveNotified = false;
+
 	function makeCallbacks(key: string): MoQTransportCallbacks {
 		return {
 			onTrackInfo(tracks: TrackInfo[]) {
 				const source = sources.get(key);
 				if (!source) return;
+
+				// Notify once that MoQ is active (catalog received = WebTransport
+				// + MoQ handshake succeeded, control data will flow on state changes).
+				if (!moqActiveNotified) {
+					moqActiveNotified = true;
+					config?.onMoQActive?.();
+				}
 
 				// Store codec info from catalog for lazy configure
 				for (const track of tracks) {

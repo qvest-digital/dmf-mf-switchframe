@@ -1059,6 +1059,24 @@ func (a *App) Run(ctx context.Context) error {
 		slog.Info("HTTP/1.1 fallback disabled (use --http-fallback to enable)")
 	}
 
+	// Periodic audio metering state broadcast (~10Hz). Server-side peaks
+	// are updated on every audio frame, but state broadcasts are normally
+	// event-driven (only on user actions). This ticker ensures VU meters
+	// in the browser update smoothly for sources that lack client-side
+	// audio decoders (e.g. MXL/raw PCM sources).
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.broadcastState(nil)
+			}
+		}
+	}()
+
 	// All components initialized -- mark ready for readiness probe.
 	readyFlag.Store(true)
 

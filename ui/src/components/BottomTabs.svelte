@@ -7,7 +7,7 @@
 	}
 	let { children, onTabChange }: Props = $props();
 
-	const tabs = ['Audio', 'Graphics', 'Macros', 'Keys', 'Replay', 'Presets', 'SCTE-35', 'Layout', 'Captions'] as const;
+	const tabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets'] as const;
 	type TabId = typeof tabs[number];
 
 	function loadSavedTab(): TabId {

@@ -921,13 +921,23 @@ func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	m.mu.RLock()
 	ch, ok := m.channels[sourceKey]
-	if !ok || !ch.active {
+	if !ok {
 		m.mu.RUnlock()
 		return
 	}
 
-	if ch.muted {
+	// For inactive/muted channels, decode for input metering only (no mixing).
+	if !ch.active || ch.muted {
 		m.mu.RUnlock()
+		m.mu.Lock()
+		m.initChannelDecoder(ch)
+		if ch.decoder != nil {
+			adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
+			if pcm, err := ch.decoder.Decode(adtsFrame); err == nil && len(pcm) > 0 {
+				ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
+			}
+		}
+		m.mu.Unlock()
 		return
 	}
 
@@ -1159,12 +1169,21 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64, chann
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
-	if !ok || !ch.active {
+	if !ok {
 		m.mu.Unlock()
 		return
 	}
 
-	if ch.muted {
+	// Mono→stereo upmix: if source delivers fewer channels than the mixer
+	// expects, duplicate each sample to fill all channels.
+	if channels > 0 && channels < m.numChannels {
+		pcm = m.upmixMono(pcm, channels)
+	}
+
+	// Always compute peak levels for input metering, even for inactive/muted channels.
+	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
+
+	if !ch.active || ch.muted {
 		m.mu.Unlock()
 		return
 	}
@@ -1174,15 +1193,6 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64, chann
 	if m.passthrough {
 		m.passthrough = false
 	}
-
-	// Mono→stereo upmix: if source delivers fewer channels than the mixer
-	// expects, duplicate each sample to fill all channels.
-	if channels > 0 && channels < m.numChannels {
-		pcm = m.upmixMono(pcm, channels)
-	}
-
-	// Update per-channel peaks (pre-fader, pre-gain)
-	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
 	// Store a copy of PCM for instant crossfade on future cuts.
 	ch.storedBuf = growBuf(ch.storedBuf, len(pcm))

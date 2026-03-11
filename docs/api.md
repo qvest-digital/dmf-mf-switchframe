@@ -38,6 +38,7 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [GET /api/audio/{source}/eq](#get-apiaudiosourceeq)
   - [PUT /api/audio/{source}/compressor](#put-apiaudiosourcecompressor)
   - [GET /api/audio/{source}/compressor](#get-apiaudiosourcecompressor)
+  - [PUT /api/audio/{source}/audio-delay](#put-apiaudiosourceaudio-delay)
 - [Recording](#recording)
   - [POST /api/recording/start](#post-apirecordingstart)
   - [POST /api/recording/stop](#post-apirecordingstop)
@@ -107,6 +108,8 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [PUT /api/macros/{name}](#put-apimacrosname)
   - [DELETE /api/macros/{name}](#delete-apimacrosname)
   - [POST /api/macros/{name}/run](#post-apimacrosnamerun)
+  - [DELETE /api/macros/execution](#delete-apimacrosexecution)
+  - [POST /api/macros/execution/cancel](#post-apimacrosexecutioncancel)
 - [Operators](#operators)
   - [POST /api/operator/register](#post-apioperatorregister)
   - [POST /api/operator/reconnect](#post-apioperatorreconnect)
@@ -135,6 +138,10 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/scte35/rules/reorder](#post-apiscte35rulesreorder)
   - [GET /api/scte35/rules/templates](#get-apiscte35rulestemplates)
   - [POST /api/scte35/rules/from-template](#post-apiscte35rulesfrom-template)
+- [Captions](#captions)
+  - [POST /api/captions/mode](#post-apicaptionsmode)
+  - [POST /api/captions/text](#post-apicaptionstext)
+  - [GET /api/captions/state](#get-apicaptionsstate)
 - [Format](#format)
   - [GET /api/format](#get-apiformat)
   - [PUT /api/format](#put-apiformat)
@@ -249,6 +256,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
   "transitionType": "mix",
   "transitionDurationMs": 1000,
   "transitionPosition": 0.0,
+  "transitionEasing": "smoothstep",
   "inTransition": false,
   "ftbActive": false,
   "audioChannels": {
@@ -261,23 +269,16 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
         { "frequency": 8000.0, "gain": 0.0, "q": 1.0, "enabled": false }
       ],
       "compressor": { "threshold": -20.0, "ratio": 4.0, "attack": 10.0, "release": 100.0, "makeupGain": 0.0 },
-      "gainReduction": 0.0
-    },
-    "cam2": {
-      "level": -6.0, "trim": 0.0, "muted": false, "afv": true,
-      "peakL": -22.1, "peakR": -21.8,
-      "eq": [
-        { "frequency": 100.0, "gain": 0.0, "q": 1.0, "enabled": false },
-        { "frequency": 1000.0, "gain": 0.0, "q": 1.0, "enabled": false },
-        { "frequency": 8000.0, "gain": 0.0, "q": 1.0, "enabled": false }
-      ],
-      "compressor": { "threshold": -20.0, "ratio": 4.0, "attack": 10.0, "release": 100.0, "makeupGain": 0.0 },
-      "gainReduction": 0.0
+      "gainReduction": 0.0,
+      "audioDelayMs": 80
     }
   },
   "masterLevel": 0.0,
   "programPeak": [-18.5, -19.2],
   "gainReduction": 0.0,
+  "momentaryLufs": -23.1,
+  "shortTermLufs": -22.8,
+  "integratedLufs": -23.0,
   "tallyState": {
     "cam1": "program",
     "cam2": "preview",
@@ -288,7 +289,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
     "filename": "program_20260305_143022_001.ts",
     "bytesWritten": 52428800,
     "durationSecs": 120.5,
-    "error": ""
+    "droppedPackets": 0
   },
   "srtOutput": {
     "active": true,
@@ -298,11 +299,15 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
     "state": "active",
     "connections": 1,
     "bytesWritten": 104857600,
-    "error": ""
+    "droppedPackets": 0,
+    "overflowCount": 0
   },
+  "destinations": [
+    { "id": "d1", "name": "YouTube", "type": "srt-caller", "address": "ingest.yt.com", "port": 9000, "state": "active" }
+  ],
   "sources": {
-    "cam1": { "key": "cam1", "label": "Stage Left", "status": "healthy", "delayMs": 0 },
-    "cam2": { "key": "cam2", "label": "Stage Right", "status": "healthy", "delayMs": 100 }
+    "cam1": { "key": "cam1", "label": "Stage Left", "status": "healthy", "position": 1 },
+    "cam2": { "key": "cam2", "label": "Stage Right", "status": "healthy", "position": 2, "delayMs": 100 }
   },
   "presets": [
     { "id": "550e8400-e29b-41d4-a716-446655440000", "name": "Opening" }
@@ -314,14 +319,16 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
         "active": true,
         "template": "lower-third",
         "fadePosition": 1.0,
-        "animationMode": "",
-        "animationHz": 0,
         "zOrder": 0,
-        "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+        "x": 0, "y": 0, "width": 1920, "height": 1080
       }
-    ],
-    "programWidth": 1920,
-    "programHeight": 1080
+    ]
+  },
+  "layout": {
+    "activePreset": "pip-bottom-right",
+    "slots": [
+      { "id": 0, "sourceKey": "cam2", "enabled": true, "x": 1440, "y": 720, "width": 480, "height": 360, "zOrder": 1 }
+    ]
   },
   "replay": {
     "state": "idle",
@@ -329,6 +336,20 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
       { "source": "cam1", "frameCount": 1800, "gopCount": 60, "durationSecs": 60.0, "bytesUsed": 52428800 }
     ]
   },
+  "pipelineFormat": {
+    "width": 1920, "height": 1080, "fpsNum": 30000, "fpsDen": 1001, "name": "1080p29.97"
+  },
+  "scte35": {
+    "enabled": true,
+    "activeEvents": {},
+    "eventLog": [],
+    "heartbeatOk": true,
+    "config": { "heartbeatIntervalMs": 5000, "defaultPreRollMs": 4000, "pid": 258, "verifyEncoding": false }
+  },
+  "captions": {
+    "mode": "passthrough"
+  },
+  "macro": null,
   "operators": [
     { "id": "op_abc123", "name": "Director", "role": "director", "connected": true },
     { "id": "op_def456", "name": "Audio Eng", "role": "audio", "connected": true }
@@ -336,6 +357,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
   "locks": {
     "audio": { "holderId": "op_def456", "holderName": "Audio Eng", "acquiredAt": 1709654300000 }
   },
+  "lastChangedBy": "Director",
   "seq": 42,
   "timestamp": 1709654400000
 }
@@ -348,23 +370,34 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `programSource` | `string` | Key of the source currently on program (live) output |
 | `previewSource` | `string` | Key of the source currently on preview |
 | `transitionType` | `string` | Default transition type: `"mix"`, `"dip"`, `"wipe"`, or `"stinger"` |
-| `transitionDurationMs` | `int` | Default transition duration in milliseconds |
+| `transitionDurationMs` | `int` | Default transition duration in milliseconds. Omitted when `0`. |
 | `transitionPosition` | `float` | Current T-bar position during a transition (`0.0` to `1.0`). Omitted when `0`. |
+| `transitionEasing` | `string` | Easing curve name for transitions. Omitted when not set. |
 | `inTransition` | `bool` | `true` while a dissolve/dip/wipe transition is in progress. Omitted when `false`. |
 | `ftbActive` | `bool` | `true` while Fade to Black is active. Omitted when `false`. |
 | `audioChannels` | `object` | Map of source key to `AudioChannel` state |
 | `masterLevel` | `float` | Master output level in dB |
 | `programPeak` | `[float, float]` | Stereo peak levels in dBFS for the program output `[left, right]` |
 | `gainReduction` | `float` | Brickwall limiter gain reduction in dB. Omitted when `0`. |
+| `momentaryLufs` | `float` | BS.1770-4 momentary loudness in LUFS (400ms window). Omitted when `0`. |
+| `shortTermLufs` | `float` | BS.1770-4 short-term loudness in LUFS (3s window). Omitted when `0`. |
+| `integratedLufs` | `float` | BS.1770-4 integrated loudness in LUFS (dual-gated). Omitted when `0`. |
 | `tallyState` | `object` | Map of source key to tally status: `"program"`, `"preview"`, or `"idle"` |
-| `recording` | `object` or `null` | Recording status. Omitted when not recording. |
+| `recording` | `object` or `null` | Recording status. Omitted when not configured. |
 | `srtOutput` | `object` or `null` | SRT output status. Omitted when not active. |
+| `destinations` | `array` | List of `DestinationInfo` for multi-destination SRT outputs. Omitted when empty. |
 | `sources` | `object` | Map of source key to `SourceInfo` |
 | `presets` | `array` | List of saved preset summaries `[{id, name}]`. Omitted when empty. |
 | `graphics` | `object` or `null` | Multi-layer graphics state with `layers` array. See [GraphicsState Fields](#graphicsstate-fields). |
+| `layout` | `object` or `null` | PIP/multi-layout state. Omitted when no layout is active. |
 | `replay` | `object` or `null` | Instant replay state. Omitted when replay manager is not configured. |
+| `pipelineFormat` | `object` or `null` | Current video pipeline format (`width`, `height`, `fpsNum`, `fpsDen`, `name`). Omitted when not set. |
+| `scte35` | `object` or `null` | SCTE-35 ad insertion state. Omitted when SCTE-35 is not enabled. |
+| `captions` | `object` or `null` | Closed caption state (`mode`, `authorBuffer`, `sourceCaptions`). Omitted when captions not enabled. |
+| `macro` | `object` or `null` | Macro execution state (`running`, `macroName`, `steps`, `currentStep`). `null` when no macro has run. |
 | `operators` | `array` | List of registered operators. Omitted when empty. |
 | `locks` | `object` | Map of subsystem name to `LockInfo`. Omitted when no locks are held. |
+| `lastChangedBy` | `string` | Name of the operator who last made a change. Omitted when not set. |
 | `seq` | `int` | Monotonically increasing sequence number |
 | `timestamp` | `int` | Unix timestamp in milliseconds |
 
@@ -375,8 +408,11 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `key` | `string` | Unique identifier for the source (e.g., `"cam1"`) |
 | `label` | `string` | Human-readable label. Omitted if not set. |
 | `status` | `string` | Health status: `"healthy"`, `"stale"`, `"no_signal"`, or `"offline"` |
+| `position` | `int` | Display position index (1-based). Always present. |
 | `delayMs` | `int` | Input delay in milliseconds. Omitted when `0`. |
 | `keyConfig` | `object` or `null` | Upstream key configuration. Omitted when no key is configured. See [Source Keying](#put-apisourceskeykey). |
+| `isVirtual` | `bool` | `true` for virtual sources (e.g., replay). Omitted when `false`. |
+| `hasCaptions` | `bool` | `true` when this source has upstream captions. Omitted when `false`. |
 
 ### AudioChannel
 
@@ -391,6 +427,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `eq` | `[3]EQBand` | 3-band parametric EQ settings (Low/Mid/High) |
 | `compressor` | `CompressorSettings` | Single-band compressor settings |
 | `gainReduction` | `float` | Compressor gain reduction in dB. `0` when no compression active. |
+| `audioDelayMs` | `int` | Lip-sync audio delay in milliseconds (0-500). Omitted when `0`. |
 
 ### EQBand
 
@@ -441,7 +478,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 |-------|------|-------------|
 | `id` | `string` | Unique operator identifier |
 | `name` | `string` | Operator display name |
-| `role` | `string` | Operator role: `"director"`, `"audio"`, `"graphics"`, or `"viewer"` |
+| `role` | `string` | Operator role: `"director"`, `"audio"`, `"graphics"`, `"captioner"`, or `"viewer"` |
 | `connected` | `bool` | Whether the operator has an active session |
 
 ### LockInfo
@@ -539,7 +576,8 @@ Start a dissolve, dip-to-black, or wipe transition to the specified source. The 
   "source": "cam2",
   "type": "mix",
   "durationMs": 1000,
-  "wipeDirection": "h-left"
+  "wipeDirection": "h-left",
+  "easing": { "type": "smoothstep" }
 }
 ```
 
@@ -550,6 +588,17 @@ Start a dissolve, dip-to-black, or wipe transition to the specified source. The 
 | `durationMs` | `int` | Yes | Duration in milliseconds. Must be `100`-`5000`. |
 | `wipeDirection` | `string` | Wipe only | Direction for wipe transitions. Required when `type` is `"wipe"`. |
 | `stingerName` | `string` | Stinger only | Name of the loaded stinger clip. Required when `type` is `"stinger"`. |
+| `easing` | `object` | No | Easing curve configuration. Defaults to `smoothstep`. |
+
+**Easing object fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `string` | Yes | Easing type: `"linear"`, `"ease"`, `"ease-in"`, `"ease-out"`, `"ease-in-out"`, `"smoothstep"`, or `"custom"` |
+| `x1` | `float` | Custom only | Cubic bezier control point X1. Required when `type` is `"custom"`. |
+| `y1` | `float` | Custom only | Cubic bezier control point Y1. Required when `type` is `"custom"`. |
+| `x2` | `float` | Custom only | Cubic bezier control point X2. Required when `type` is `"custom"`. |
+| `y2` | `float` | Custom only | Cubic bezier control point Y2. Required when `type` is `"custom"`. |
 
 **Valid `wipeDirection` values:**
 
@@ -570,9 +619,10 @@ The returned state will have `inTransition: true` and `transitionPosition` updat
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid `type`, `durationMs` out of range, source already on program, or invalid `wipeDirection` |
-| `404` | Source not found |
+| `400` | Invalid `type`, `durationMs` out of range, source already on program, invalid `wipeDirection`, invalid easing type/params, or missing `stingerName` for stinger type |
+| `404` | Source not found, or stinger clip not found |
 | `409` | Another transition or FTB is already active |
+| `501` | Stinger store not configured (when `type` is `"stinger"`) |
 
 **Example:**
 
@@ -625,7 +675,7 @@ curl -X POST http://localhost:8081/api/switch/transition/position \
 
 Start or toggle a Fade to Black transition. When called while the program is live, it fades the output to black. When called while FTB is active, it performs a smooth reverse fade back to the program source.
 
-**Request Body:** Empty JSON object `{}`
+**Request Body:** None (body is ignored if sent)
 
 **Response:** `200 OK` with full `ControlRoomState`
 
@@ -680,16 +730,19 @@ List all registered video sources with their current info and health status.
   "cam1": {
     "key": "cam1",
     "label": "Stage Left",
-    "status": "healthy"
+    "status": "healthy",
+    "position": 1
   },
   "cam2": {
     "key": "cam2",
     "status": "healthy",
+    "position": 2,
     "delayMs": 100
   },
   "cam3": {
     "key": "cam3",
-    "status": "stale"
+    "status": "stale",
+    "position": 3
   }
 }
 ```
@@ -816,7 +869,7 @@ Set the display position (sort order) for a source in the multiview and source b
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `position` | `int` | Yes | Display position index (0-based) |
+| `position` | `int` | Yes | Display position index (1-based, must be >= 1) |
 
 **Response:** `200 OK` with full `ControlRoomState`
 
@@ -824,7 +877,7 @@ Set the display position (sort order) for a source in the multiview and source b
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid JSON |
+| `400` | Invalid JSON or invalid position (must be >= 1) |
 | `404` | Source not found |
 
 **Example:**
@@ -885,6 +938,8 @@ Configure an upstream key (chroma or luma) for a source. Upstream keys are appli
 | `similarity` | `float` | Chroma only | Color distance threshold for key generation |
 | `smoothness` | `float` | Chroma only | Edge softness for key feathering |
 | `spillSuppress` | `float` | Chroma only | Amount of spill suppression to apply |
+| `spillReplaceCb` | `uint8` | No | Cb value for spill replacement (default 128 = neutral). Omitted when `0`. |
+| `spillReplaceCr` | `uint8` | No | Cr value for spill replacement (default 128 = neutral). Omitted when `0`. |
 | `lowClip` | `float` | Luma only | Low luminance clip point (0.0-1.0) |
 | `highClip` | `float` | Luma only | High luminance clip point (0.0-1.0) |
 | `softness` | `float` | Luma only | Edge softness for the luma key |
@@ -1356,6 +1411,49 @@ curl http://localhost:8081/api/audio/cam1/compressor \
 
 ---
 
+### PUT /api/audio/{source}/audio-delay
+
+Set the audio delay in milliseconds for a source channel. Used for lip-sync correction in multi-camera setups where audio and video from different sources may be offset.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `cam1`) |
+
+**Request Body:**
+
+```json
+{
+  "delayMs": 80
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `delayMs` | `int` | Yes | Audio delay in milliseconds (0-500) |
+
+**Response:** `200 OK` with updated `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing source or invalid JSON |
+| `404` | Source audio channel not found |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/audio/cam1/audio-delay \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"delayMs": 80}'
+```
+
+---
+
 ## Recording
 
 Record the program output to MPEG-TS files on disk. MPEG-TS is used for crash resilience (no moov atom to finalize). Files are named `program_YYYYMMDD_HHMMSS_NNN.ts` with sequential numbering across rotations.
@@ -1389,9 +1487,19 @@ Begin recording the program output to a file. File rotation occurs based on time
   "active": true,
   "filename": "program_20260305_143022_001.ts",
   "bytesWritten": 0,
-  "durationSecs": 0.0
+  "durationSecs": 0.0,
+  "droppedPackets": 0
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active` | `bool` | Whether recording is in progress |
+| `filename` | `string` | Current output filename. Omitted when not recording. |
+| `bytesWritten` | `int` | Bytes written to current file. Omitted when `0`. |
+| `durationSecs` | `float` | Recording duration in seconds. Omitted when `0`. |
+| `droppedPackets` | `int` | Number of dropped packets. Omitted when `0`. |
+| `error` | `string` | Error message if recording failed. Omitted when empty. |
 
 **Errors:**
 
@@ -1521,15 +1629,32 @@ Start SRT output in either caller (push) or listener (pull) mode.
 
 ```json
 {
-  "active": true,
+  "active": false,
   "mode": "caller",
   "address": "ingest.example.com",
   "port": 9000,
   "state": "starting",
   "connections": 0,
-  "bytesWritten": 0
+  "bytesWritten": 0,
+  "droppedPackets": 0,
+  "overflowCount": 0
 }
 ```
+
+> **Note:** The `active` field is `true` only when `state` is `"active"` or `"reconnecting"`. During `"starting"`, `active` is `false`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active` | `bool` | `true` when state is `"active"` or `"reconnecting"` |
+| `mode` | `string` | `"caller"` or `"listener"`. Omitted when not active. |
+| `address` | `string` | Remote address (caller mode). Omitted when not set. |
+| `port` | `int` | Port number. Omitted when `0`. |
+| `state` | `string` | Connection state: `"starting"`, `"active"`, `"reconnecting"`, `"stopped"`. Omitted when not set. |
+| `connections` | `int` | Number of active connections (listener mode). Omitted when `0`. |
+| `bytesWritten` | `int` | Total bytes written. Omitted when `0`. |
+| `droppedPackets` | `int` | Number of dropped packets. Omitted when `0`. |
+| `overflowCount` | `int` | Number of ring buffer overflows (caller mode). Omitted when `0`. |
+| `error` | `string` | Error message if SRT failed. Omitted when empty. |
 
 **Errors:**
 
@@ -1650,7 +1775,7 @@ Add a new SRT destination.
 ```json
 {
   "name": "Platform A",
-  "mode": "caller",
+  "type": "srt-caller",
   "address": "ingest.example.com",
   "port": 9000,
   "latency": 200,
@@ -1660,12 +1785,17 @@ Add a new SRT destination.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | `string` | Yes | Human-readable name for the destination |
-| `mode` | `string` | Yes | `"caller"` (push) or `"listener"` (pull) |
+| `name` | `string` | No | Human-readable name for the destination |
+| `type` | `string` | Yes | `"srt-caller"` (push) or `"srt-listener"` (pull) |
 | `address` | `string` | Caller only | Remote hostname or IP |
 | `port` | `int` | Yes | Port number |
 | `latency` | `int` | No | SRT latency in milliseconds |
 | `streamID` | `string` | No | SRT stream ID |
+| `encryption` | `string` | No | SRT encryption mode. Omitted when not set. |
+| `passphrase` | `string` | No | SRT passphrase for encryption. Omitted when not set. |
+| `maxBandwidth` | `int` | No | Maximum bandwidth in bytes/sec. Omitted when `0`. |
+| `maxConns` | `int` | No | Maximum listener connections. Omitted when `0`. |
+| `scte35Enabled` | `bool` | No | Enable SCTE-35 for this destination. Omitted when `false`. |
 
 **Response:** `201 Created` with the destination status
 
@@ -1673,7 +1803,7 @@ Add a new SRT destination.
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid mode, missing port, or missing address for caller |
+| `400` | Invalid `type` (must be `"srt-caller"` or `"srt-listener"`), missing `port`, or missing `address` for caller |
 | `501` | Output manager not configured |
 
 ---
@@ -1703,12 +1833,13 @@ Get the status of a specific destination.
 | Status | Condition |
 |--------|-----------|
 | `404` | Destination not found |
+| `501` | Output manager not configured |
 
 ---
 
 ### DELETE /api/output/destinations/{id}
 
-Remove a destination. The destination must be stopped first.
+Remove a destination. If the destination is currently active, it is automatically stopped before removal.
 
 **Response:** `204 No Content`
 
@@ -1717,7 +1848,7 @@ Remove a destination. The destination must be stopped first.
 | Status | Condition |
 |--------|-----------|
 | `404` | Destination not found |
-| `409` | Destination is currently active |
+| `501` | Output manager not configured |
 
 ---
 
@@ -1733,6 +1864,7 @@ Start a specific destination.
 |--------|-----------|
 | `404` | Destination not found |
 | `409` | Destination is already active |
+| `501` | Output manager not configured |
 
 ---
 
@@ -1748,6 +1880,7 @@ Stop a specific destination.
 |--------|-----------|
 | `404` | Destination not found |
 | `409` | Destination is not active |
+| `501` | Output manager not configured |
 
 ---
 
@@ -1759,28 +1892,15 @@ All graphics endpoints return the full `GraphicsState` (all layers) on success.
 
 ### POST /api/graphics
 
-Add a new graphics layer. Returns the created layer with its assigned ID and the full graphics state.
+Add a new graphics layer. Returns the assigned layer ID.
 
 **Request Body:** Empty JSON object `{}`
 
-**Response:** `200 OK` with full `GraphicsState`:
+**Response:** `201 Created`:
 
 ```json
 {
-  "layers": [
-    {
-      "id": 0,
-      "active": false,
-      "template": "",
-      "fadePosition": 0.0,
-      "animationMode": "",
-      "animationHz": 0,
-      "zOrder": 0,
-      "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
-    }
-  ],
-  "programWidth": 1920,
-  "programHeight": 1080
+  "id": 0
 }
 ```
 
@@ -1857,7 +1977,7 @@ Remove a graphics layer. The layer is deactivated and deleted.
 |-----------|------|-------------|
 | `id` | `int` | Layer ID |
 
-**Response:** `200 OK` with full `GraphicsState`
+**Response:** `204 No Content`
 
 **Errors:**
 
@@ -1895,7 +2015,6 @@ Activate a layer immediately (CUT ON). The layer appears on the program output a
 |--------|-----------|
 | `400` | Invalid layer ID, or no overlay frame has been uploaded |
 | `404` | Layer not found |
-| `409` | Layer is already active |
 
 **Example:**
 
@@ -1928,7 +2047,6 @@ Deactivate a layer immediately (CUT OFF). The layer disappears from the program 
 |--------|-----------|
 | `400` | Invalid layer ID |
 | `404` | Layer not found |
-| `409` | Layer is not active |
 
 **Example:**
 
@@ -2117,6 +2235,7 @@ Start an animation on a layer. Two animation modes are supported: `pulse` (conti
 |--------|-----------|
 | `400` | Invalid layer ID, invalid mode, missing required fields for mode, or invalid parameter values |
 | `404` | Layer not found |
+| `409` | Layer is not active, or a fade/animation is already in progress |
 
 **Example:**
 
@@ -2280,7 +2399,7 @@ Animate a layer flying in from off-screen. The layer slides into view from the s
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `direction` | `string` | Yes | Edge to fly in from: `"left"`, `"right"`, `"top"`, or `"bottom"` |
-| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+| `durationMs` | `int` | No | Animation duration in milliseconds. Defaults to `500`. |
 
 **Response:** `200 OK` with full `GraphicsState`
 
@@ -2290,7 +2409,7 @@ Animate a layer flying in from off-screen. The layer slides into view from the s
 |--------|-----------|
 | `400` | Invalid layer ID, invalid direction, or invalid duration |
 | `404` | Layer not found |
-| `409` | Layer is not active |
+| `409` | Layer is not active, or a fade/animation is already in progress |
 
 **Example:**
 
@@ -2325,7 +2444,7 @@ Animate a layer flying out to off-screen. The layer slides out of view toward th
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `direction` | `string` | Yes | Edge to fly out to: `"left"`, `"right"`, `"top"`, or `"bottom"` |
-| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+| `durationMs` | `int` | No | Animation duration in milliseconds. Defaults to `500`. |
 
 **Response:** `200 OK` with full `GraphicsState`
 
@@ -2335,7 +2454,7 @@ Animate a layer flying out to off-screen. The layer slides out of view toward th
 |--------|-----------|
 | `400` | Invalid layer ID, invalid direction, or invalid duration |
 | `404` | Layer not found |
-| `409` | Layer is not active |
+| `409` | Layer is not active, or a fade/animation is already in progress |
 
 **Example:**
 
@@ -2376,7 +2495,7 @@ Slide a layer to a new position and/or size over a specified duration. This is a
 | `y` | `int` | Yes | Target vertical position in pixels |
 | `width` | `int` | Yes | Target width in pixels |
 | `height` | `int` | Yes | Target height in pixels |
-| `durationMs` | `int` | Yes | Animation duration in milliseconds |
+| `durationMs` | `int` | No | Animation duration in milliseconds. Defaults to `500`. |
 
 **Response:** `200 OK` with full `GraphicsState`
 
@@ -2386,6 +2505,7 @@ Slide a layer to a new position and/or size over a specified duration. This is a
 |--------|-----------|
 | `400` | Invalid layer ID, invalid dimensions, or invalid duration |
 | `404` | Layer not found |
+| `409` | Layer is not active, or a fade/animation is already in progress |
 
 **Example:**
 
@@ -2400,7 +2520,7 @@ curl -X POST http://localhost:8081/api/graphics/0/slide \
 
 ### GraphicsState Fields
 
-The `GraphicsState` object is returned by all graphics endpoints and included in the `ControlRoomState` broadcast.
+The `GraphicsState` object is returned by all graphics endpoints. The `ControlRoomState` broadcast uses a flattened variant (see note below).
 
 ```json
 {
@@ -2434,46 +2554,78 @@ The `GraphicsState` object is returned by all graphics endpoints and included in
 | `id` | `int` | Unique layer identifier |
 | `active` | `bool` | Whether the layer is currently composited onto program |
 | `template` | `string` | Name of the overlay template. Omitted if not set. |
-| `fadePosition` | `float` | Opacity level: `0.0` = invisible, `1.0` = fully visible |
-| `animationMode` | `string` | Current animation mode: `""` (none), `"pulse"`, or `"transition"` |
-| `animationHz` | `float` | Pulse frequency in Hz. `0` when not pulsing. |
+| `fadePosition` | `float` | Opacity level: `0.0` = invisible, `1.0` = fully visible. Omitted when `0`. |
+| `animationMode` | `string` | Current animation mode: `"pulse"` or `"transition"`. Omitted when no animation. |
+| `animationHz` | `float` | Pulse frequency in Hz. Omitted when not pulsing. |
 | `zOrder` | `int` | Stacking order (higher = on top) |
 | `rect` | `object` | Layer position and size `{x, y, width, height}` in pixels |
+
+> **Note:** In the `ControlRoomState` broadcast, graphics layers use flat fields (`x`, `y`, `width`, `height`) instead of a nested `rect` object, and the `programWidth`/`programHeight` fields are omitted. See the [ControlRoomState](#controlroomstate) example.
 
 ---
 
 ## Layout / PIP
 
-The layout system controls picture-in-picture (PIP) and multi-source composition layouts. A layout consists of named slots, each bound to a source with a position/size rectangle. Layouts can be created from built-in presets (e.g., PIP corner, side-by-side) or defined with custom slot configurations. Layout slot positions can also be updated in real-time via WebTransport datagrams for low-latency PIP drag (see fast-control datagrams).
+The layout system controls picture-in-picture (PIP) and multi-source composition layouts. A layout consists of up to 4 indexed slots (0–3), each bound to a source with a position/size rectangle. Layouts can be created from built-in presets (e.g., PIP corner, side-by-side) or defined with custom slot configurations. Layout slot positions can also be updated in real-time via WebTransport datagrams for low-latency PIP drag (see fast-control datagrams).
+
+Slot rectangles use Go's `image.Rectangle` format with `Min` (top-left) and `Max` (bottom-right) points. All coordinates must be even-aligned (YUV420 requirement).
 
 ### GET /api/layout
 
-Get the current layout state including all slots, the active preset name, and whether the layout is active.
+Get the current layout state including all slots.
 
 **Request Body:** None
 
 **Response:** `200 OK`:
 
+When a layout is active:
+
 ```json
 {
-  "active": true,
-  "preset": "pip-bottom-right",
-  "slots": {
-    "main": {
-      "source": "cam1",
-      "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
-      "scaleMode": "fill",
-      "enabled": true
+  "name": "pip-bottom-right",
+  "slots": [
+    {
+      "sourceKey": "cam1",
+      "rect": { "Min": { "X": 0, "Y": 0 }, "Max": { "X": 1920, "Y": 1080 } },
+      "zOrder": 0,
+      "border": { "width": 0, "colorY": 0, "colorCb": 0, "colorCr": 0 },
+      "transition": { "type": "", "durationMs": 0 },
+      "enabled": true,
+      "scaleMode": "fill"
     },
-    "pip": {
-      "source": "cam2",
-      "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
-      "scaleMode": "fit",
-      "enabled": true
+    {
+      "sourceKey": "cam2",
+      "rect": { "Min": { "X": 1440, "Y": 720 }, "Max": { "X": 1920, "Y": 1080 } },
+      "zOrder": 1,
+      "border": { "width": 2, "colorY": 235, "colorCb": 128, "colorCr": 128 },
+      "transition": { "type": "dissolve", "durationMs": 300 },
+      "enabled": true,
+      "scaleMode": "stretch"
     }
-  }
+  ]
 }
 ```
+
+When no layout is active:
+
+```json
+{
+  "layout": null
+}
+```
+
+#### LayoutSlot Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sourceKey` | `string` | Source key assigned to this slot |
+| `rect` | `object` | Position rectangle `{"Min": {"X", "Y"}, "Max": {"X", "Y"}}` in pixels |
+| `zOrder` | `int` | Stacking order (higher = on top) |
+| `border` | `object` | Border config: `width` (even pixels), `colorY`/`colorCb`/`colorCr` (BT.709) |
+| `transition` | `object` | Slot transition: `type` (`"cut"`, `"dissolve"`, `"fly"`) and `durationMs` |
+| `enabled` | `bool` | Whether the slot is visible in the composition |
+| `scaleMode` | `string` | `"stretch"` (default, may distort) or `"fill"` (crop to cover, preserves aspect ratio). Omitted when empty. |
+| `cropAnchor` | `[2]float` | `[x, y]` anchor for fill crop, range 0.0–1.0. Default center `[0.5, 0.5]`. Omitted when zero. |
 
 **Example:**
 
@@ -2486,7 +2638,7 @@ curl http://localhost:8081/api/layout \
 
 ### PUT /api/layout
 
-Set the current layout from a preset name or a custom layout definition.
+Set the current layout from a preset name or a custom slot array.
 
 **Request Body (preset):**
 
@@ -2496,39 +2648,39 @@ Set the current layout from a preset name or a custom layout definition.
 }
 ```
 
-**Request Body (custom definition):**
+**Request Body (custom slots):**
 
 ```json
 {
-  "definition": {
-    "slots": {
-      "main": {
-        "source": "cam1",
-        "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
-        "scaleMode": "fill"
-      },
-      "pip": {
-        "source": "cam2",
-        "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
-        "scaleMode": "fit"
-      }
+  "slots": [
+    {
+      "sourceKey": "cam1",
+      "rect": { "Min": { "X": 0, "Y": 0 }, "Max": { "X": 1920, "Y": 1080 } },
+      "enabled": true,
+      "scaleMode": "fill"
+    },
+    {
+      "sourceKey": "cam2",
+      "rect": { "Min": { "X": 1440, "Y": 720 }, "Max": { "X": 1920, "Y": 1080 } },
+      "enabled": true
     }
-  }
+  ]
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `preset` | `string` | No | Name of a built-in or saved layout preset |
-| `definition` | `object` | No | Custom layout definition with slot configurations. One of `preset` or `definition` is required. |
+| `slots` | `array` | No | Array of `LayoutSlot` objects (max 4). One of `preset` or `slots` is required. |
+| `name` | `string` | No | Optional name for the custom layout |
 
-**Response:** `200 OK` with full layout state
+**Response:** `200 OK` with the applied `Layout` object
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid JSON, missing both `preset` and `definition`, or invalid slot configuration |
+| `400` | Invalid JSON, missing both `preset` and `slots`, invalid slot configuration (odd-aligned rect, exceeds frame bounds, >4 slots, unknown scaleMode) |
 | `404` | Preset not found |
 
 **Example:**
@@ -2544,7 +2696,7 @@ curl -X PUT http://localhost:8081/api/layout \
 curl -X PUT http://localhost:8081/api/layout \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"definition": {"slots": {"main": {"source": "cam1", "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080}, "scaleMode": "fill"}}}}'
+  -d '{"slots": [{"sourceKey": "cam1", "rect": {"Min": {"X": 0, "Y": 0}, "Max": {"X": 1920, "Y": 1080}}, "enabled": true, "scaleMode": "fill"}]}'
 ```
 
 ---
@@ -2555,7 +2707,7 @@ Clear the current layout. All slots are disabled and the layout is deactivated, 
 
 **Request Body:** None
 
-**Response:** `200 OK` with full layout state
+**Response:** `204 No Content`
 
 **Example:**
 
@@ -2568,46 +2720,57 @@ curl -X DELETE http://localhost:8081/api/layout \
 
 ### PUT /api/layout/slots/{id}
 
-Update properties of a layout slot. You can change the source, position/size, and scale mode in a single request.
+Update properties of a layout slot. All fields are optional; only provided fields are updated. Coordinates are even-aligned automatically.
 
 **URL Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `string` | Slot identifier (e.g., `"main"`, `"pip"`) |
+| `id` | `int` | Slot index (0–3) |
 
 **Request Body:**
 
 ```json
 {
-  "source": "cam3",
-  "rect": { "x": 1440, "y": 720, "width": 480, "height": 360 },
-  "scaleMode": "fit"
+  "sourceKey": "cam3",
+  "x": 1440,
+  "y": 720,
+  "width": 480,
+  "height": 360,
+  "scaleMode": "fill",
+  "cropAnchor": [0.5, 0.0],
+  "border": { "width": 2, "colorY": 235, "colorCb": 128, "colorCr": 128 },
+  "transition": { "type": "dissolve", "durationMs": 500 }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `source` | `string` | No | Source key to assign to this slot |
-| `rect` | `object` | No | Position and size `{x, y, width, height}` in pixels |
-| `scaleMode` | `string` | No | How the source is scaled to fit the slot: `"fit"` (letterbox) or `"fill"` (crop) |
+| `sourceKey` | `string` | No | Source key to assign to this slot |
+| `x` | `int` | No | New X position (even-aligned) |
+| `y` | `int` | No | New Y position (even-aligned) |
+| `width` | `int` | No | New width (even-aligned) |
+| `height` | `int` | No | New height (even-aligned) |
+| `scaleMode` | `string` | No | `"stretch"` or `"fill"` |
+| `cropAnchor` | `[2]float` | No | `[x, y]` anchor for fill mode, range 0.0–1.0 |
+| `border` | `object` | No | Border config: `width`, `colorY`, `colorCb`, `colorCr` |
+| `transition` | `object` | No | Slot transition: `type` and `durationMs` |
 
-**Response:** `200 OK` with full layout state
+**Response:** `204 No Content`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid JSON or invalid slot properties |
-| `404` | Slot not found |
+| `400` | Invalid JSON or non-integer slot ID |
 
 **Example:**
 
 ```bash
-curl -X PUT http://localhost:8081/api/layout/slots/pip \
+curl -X PUT http://localhost:8081/api/layout/slots/1 \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"source": "cam3", "rect": {"x": 100, "y": 100, "width": 640, "height": 480}}'
+  -d '{"sourceKey": "cam3", "x": 100, "y": 100, "width": 640, "height": 480}'
 ```
 
 ---
@@ -2620,26 +2783,23 @@ Enable a layout slot, making it visible in the composition.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `string` | Slot identifier |
+| `id` | `int` | Slot index (0–3) |
 
-**Request Body:** Empty JSON object `{}`
+**Request Body:** None (body is ignored if sent)
 
-**Response:** `200 OK` with full layout state
+**Response:** `204 No Content`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid slot ID |
-| `404` | Slot not found |
+| `400` | Non-integer slot ID |
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8081/api/layout/slots/pip/on \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
+curl -X POST http://localhost:8081/api/layout/slots/1/on \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -2652,26 +2812,23 @@ Disable a layout slot, removing it from the composition.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `string` | Slot identifier |
+| `id` | `int` | Slot index (0–3) |
 
-**Request Body:** Empty JSON object `{}`
+**Request Body:** None (body is ignored if sent)
 
-**Response:** `200 OK` with full layout state
+**Response:** `204 No Content`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid slot ID |
-| `404` | Slot not found |
+| `400` | Non-integer slot ID |
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8081/api/layout/slots/pip/off \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}'
+curl -X POST http://localhost:8081/api/layout/slots/1/off \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -2684,7 +2841,7 @@ Set the source for a layout slot.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `string` | Slot identifier |
+| `id` | `int` | Slot index (0–3) |
 
 **Request Body:**
 
@@ -2698,19 +2855,18 @@ Set the source for a layout slot.
 |-------|------|----------|-------------|
 | `source` | `string` | Yes | Source key to assign to the slot |
 
-**Response:** `200 OK` with full layout state
+**Response:** `204 No Content`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Missing `source` field or invalid JSON |
-| `404` | Slot not found or source not found |
+| `400` | Missing `source` field, invalid JSON, or non-integer slot ID |
 
 **Example:**
 
 ```bash
-curl -X PUT http://localhost:8081/api/layout/slots/pip/source \
+curl -X PUT http://localhost:8081/api/layout/slots/1/source \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source": "cam2"}'
@@ -2720,18 +2876,14 @@ curl -X PUT http://localhost:8081/api/layout/slots/pip/source \
 
 ### GET /api/layout/presets
 
-List all saved layout presets.
+List all saved layout presets (user-saved presets only; built-in presets are resolved by name in PUT /api/layout).
 
 **Request Body:** None
 
-**Response:** `200 OK`:
+**Response:** `200 OK` with an array of preset name strings:
 
 ```json
-[
-  { "name": "pip-bottom-right" },
-  { "name": "side-by-side" },
-  { "name": "three-up" }
-]
+["my-pip-layout", "interview-split", "three-up"]
 ```
 
 **Example:**
@@ -2745,7 +2897,7 @@ curl http://localhost:8081/api/layout/presets \
 
 ### POST /api/layout/presets
 
-Save the current layout as a named preset.
+Save the current active layout as a named preset.
 
 **Request Body:**
 
@@ -2757,15 +2909,15 @@ Save the current layout as a named preset.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | `string` | Yes | Preset name (alphanumeric, hyphens, underscores) |
+| `name` | `string` | Yes | Preset name |
 
-**Response:** `200 OK`
+**Response:** `201 Created`
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Missing or invalid `name` |
+| `400` | Missing or empty `name`, or no active layout to save |
 
 **Example:**
 
@@ -2788,7 +2940,7 @@ Delete a saved layout preset.
 |-----------|------|-------------|
 | `name` | `string` | Preset name |
 
-**Response:** `200 OK`
+**Response:** `204 No Content`
 
 **Errors:**
 
@@ -2965,7 +3117,7 @@ Update a preset's name. The preset's captured state (program, preview, audio) is
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | `string` | Yes | New name for the preset. Must not be empty. |
+| `name` | `string` | No | New name for the preset. If empty or omitted, the preset is returned unchanged. |
 
 **Response:** `200 OK` with updated `Preset`
 
@@ -2973,7 +3125,6 @@ Update a preset's name. The preset's captured state (program, preview, audio) is
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Empty name |
 | `404` | Preset not found |
 
 **Example:**
@@ -3166,7 +3317,7 @@ Maximum upload size: 256MB. Maximum clips in memory: 16 (configurable). Each 108
 | Status | Condition |
 |--------|-----------|
 | `400` | Invalid clip name (path traversal, empty, or invalid characters) |
-| `409` | A clip with this name already exists |
+| `409` | A clip with this name already exists, or maximum clip limit reached (`ErrMaxClipsReached`, default 16) |
 | `413` | Upload exceeds 256MB size limit |
 | `500` | Failed to decode PNG frames or internal error |
 
@@ -3415,8 +3566,8 @@ Get the full replay system status including player state, mark points, and per-s
   "speed": 0.5,
   "loop": false,
   "position": 0.35,
-  "markIn": "2026-03-05T14:30:10.000Z",
-  "markOut": "2026-03-05T14:30:20.000Z",
+  "markIn": 1741185010000,
+  "markOut": 1741185020000,
   "markSource": "cam1",
   "buffers": [
     {
@@ -3446,8 +3597,8 @@ Get the full replay system status including player state, mark points, and per-s
 | `speed` | `float` | Playback speed. Omitted when idle. |
 | `loop` | `bool` | Whether playback loops. Omitted when idle. |
 | `position` | `float` | Playback progress from `0.0` to `1.0`. Omitted when idle. |
-| `markIn` | `string` | Mark-in time (ISO 8601). Omitted when not set. |
-| `markOut` | `string` | Mark-out time (ISO 8601). Omitted when not set. |
+| `markIn` | `int64` | Mark-in time as Unix milliseconds. Omitted when not set. |
+| `markOut` | `int64` | Mark-out time as Unix milliseconds. Omitted when not set. |
 | `markSource` | `string` | Source key for the current mark points. Omitted when not set. |
 | `buffers` | `array` | Per-source buffer info. See `SourceBufferInfo`. Omitted when empty. |
 
@@ -3597,13 +3748,112 @@ Create or update a macro. The name in the URL path takes precedence over any nam
 
 ### Valid Macro Actions
 
+48 action types across 12 categories:
+
+**Switching**
+
 | Action | Params | Description |
 |--------|--------|-------------|
 | `"cut"` | `{ "source": "cam1" }` | Hard cut to source |
 | `"preview"` | `{ "source": "cam2" }` | Set preview source |
-| `"transition"` | `{ "source": "cam2", "type": "mix", "durationMs": 1000 }` | Start a transition |
-| `"wait"` | `{ "durationMs": 2000 }` | Pause execution for the specified duration |
-| `"set_audio"` | `{ "source": "cam1", "level": -6.0 }` | Set audio fader level |
+| `"transition"` | `{ "source": "cam2", "type": "mix", "durationMs": 1000, "wipeDirection": "", "stingerName": "" }` | Start a transition |
+| `"ftb"` | `{}` | Fade to black |
+| `"wait"` | `{ "ms": 2000 }` | Pause execution for the specified duration |
+
+**Audio**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"set_audio"` | `{ "source": "cam1", "level": -6.0 }` | Set audio fader level (legacy) |
+| `"audio_mute"` | `{ "source": "cam1", "muted": true }` | Mute/unmute a source |
+| `"audio_afv"` | `{ "source": "cam1", "afv": true }` | Enable/disable audio-follow-video |
+| `"audio_trim"` | `{ "source": "cam1", "trim": 3.0 }` | Set input trim (dB) |
+| `"audio_master"` | `{ "level": -3.0 }` | Set master audio level (dB) |
+| `"audio_eq"` | `{ "source": "cam1", "band": 0, "frequency": 1000, "gain": 3.0, "q": 1.0, "enabled": true }` | Configure per-channel EQ band |
+| `"audio_compressor"` | `{ "source": "cam1", "threshold": -20, "ratio": 4, "attack": 10, "release": 100, "makeupGain": 0 }` | Configure per-channel compressor |
+| `"audio_delay"` | `{ "source": "cam1", "delayMs": 100 }` | Set per-channel audio delay (lip-sync) |
+
+**Graphics**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"graphics_on"` | `{ "layerId": 0 }` | Cut graphics layer on |
+| `"graphics_off"` | `{ "layerId": 0 }` | Cut graphics layer off |
+| `"graphics_auto_on"` | `{ "layerId": 0, "durationMs": 500 }` | Fade graphics layer on |
+| `"graphics_auto_off"` | `{ "layerId": 0, "durationMs": 500 }` | Fade graphics layer off |
+| `"graphics_add_layer"` | `{}` | Add a new graphics layer |
+| `"graphics_remove_layer"` | `{ "layerId": 0 }` | Remove a graphics layer |
+| `"graphics_set_rect"` | `{ "layerId": 0, "x": 0, "y": 0, "width": 1920, "height": 1080 }` | Set layer position/size |
+| `"graphics_set_zorder"` | `{ "layerId": 0, "zOrder": 1 }` | Set layer stacking order |
+| `"graphics_fly_in"` | `{ "layerId": 0, "direction": "left", "durationMs": 500 }` | Fly layer in from direction |
+| `"graphics_fly_out"` | `{ "layerId": 0, "direction": "right", "durationMs": 500 }` | Fly layer out to direction |
+| `"graphics_slide"` | `{ "layerId": 0, "x": 100, "y": 100, "width": 640, "height": 480, "durationMs": 500 }` | Slide layer to new position |
+| `"graphics_animate"` | `{ "layerId": 0, "mode": "pulse", "minAlpha": 0, "maxAlpha": 1, "speedHz": 1 }` | Start layer animation |
+| `"graphics_animate_stop"` | `{ "layerId": 0 }` | Stop layer animation |
+| `"graphics_upload_frame"` | `{ "layerId": 0, "width": 1920, "height": 1080, "template": "lower-third", "rgba": "<base64>" }` | Upload RGBA overlay frame |
+
+**Output**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"recording_start"` | `{ "directory": "/path" }` | Start recording (directory optional) |
+| `"recording_stop"` | `{}` | Stop recording |
+
+**Presets**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"preset_recall"` | `{ "id": "<uuid>" }` | Recall a saved preset |
+
+**Source / Keying**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"key_set"` | `{ "source": "cam1", "config": { "type": "chroma", ... } }` | Set upstream key config |
+| `"key_delete"` | `{ "source": "cam1" }` | Remove upstream key |
+| `"source_label"` | `{ "source": "cam1", "label": "Camera 1" }` | Set source display label |
+| `"source_delay"` | `{ "source": "cam1", "delayMs": 100 }` | Set source video delay |
+| `"source_position"` | `{ "source": "cam1", "position": 1 }` | Set source ordering position |
+
+**Replay**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"replay_mark_in"` | `{ "source": "cam1" }` | Set replay mark-in point |
+| `"replay_mark_out"` | `{ "source": "cam1" }` | Set replay mark-out point |
+| `"replay_play"` | `{ "source": "cam1", "speed": 0.5, "loop": false }` | Play marked replay clip |
+| `"replay_stop"` | `{}` | Stop replay playback |
+| `"replay_quick_clip"` | `{ "source": "cam1", "speed": 0.5 }` | Quick mark + play |
+| `"replay_play_last"` | `{}` | Play last clip (stub) |
+| `"replay_play_clip"` | `{ "clipId": "..." }` | Play specific clip (stub) |
+
+**Layout / PIP**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"layout_preset"` | `{ "preset": "pip-bottom-right" }` | Apply layout preset |
+| `"layout_slot_on"` | `{ "source": "0" }` | Enable layout slot |
+| `"layout_slot_off"` | `{ "source": "0" }` | Disable layout slot |
+| `"layout_slot_source"` | `{ "source": "0" }` | Set layout slot source |
+| `"layout_clear"` | `{}` | Clear layout |
+
+**SCTE-35**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"scte35_cue"` | `{ "commandType": "splice_insert", "isOut": true, "durationMs": 30000, ... }` | Inject SCTE-35 cue |
+| `"scte35_return"` | `{ "eventId": 42 }` | Return event to program |
+| `"scte35_cancel"` | `{ "eventId": 42 }` | Cancel active event |
+| `"scte35_hold"` | `{ "eventId": 42 }` | Hold event auto-return |
+| `"scte35_extend"` | `{ "eventId": 42, "durationMs": 30000 }` | Extend event duration |
+
+**Captions**
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `"caption_mode"` | `{ "mode": "author" }` | Set caption mode (off/passthrough/author) |
+| `"caption_text"` | `{ "text": "Hello", "newline": false }` | Ingest caption text |
+| `"caption_clear"` | `{}` | Clear caption display |
 
 **Response:** `200 OK` with the saved `Macro`
 
@@ -3674,6 +3924,7 @@ Execute a macro. Steps are executed sequentially. Wait steps pause execution for
 | Status | Condition |
 |--------|-----------|
 | `404` | Macro not found |
+| `409` | Another macro is already running |
 | `500` | A step in the macro failed (error message includes the failing step) |
 
 **Example:**
@@ -3683,6 +3934,46 @@ curl -X POST http://localhost:8081/api/macros/Opening%20Sequence/run \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'
+```
+
+---
+
+### DELETE /api/macros/execution
+
+Dismiss the macro execution state. Clears the last execution result from the state broadcast so it is no longer shown in the UI. Does not affect a currently running macro.
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/macros/execution \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/macros/execution/cancel
+
+Cancel a currently running macro. The macro will stop after its current step completes. Has no effect if no macro is running.
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | No macro is currently running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/macros/execution/cancel \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -3698,6 +3989,7 @@ The operator system provides multi-operator support with role-based subsystem lo
 | `"director"` | Full access to all subsystems. Can force-unlock any subsystem. |
 | `"audio"` | Can command and lock the `audio` subsystem only. |
 | `"graphics"` | Can command and lock the `graphics` subsystem only. |
+| `"captioner"` | Can command and lock the `captions` subsystem only. |
 | `"viewer"` | Read-only. Cannot command or lock any subsystem. |
 
 ### Lockable Subsystems
@@ -3709,6 +4001,7 @@ The operator system provides multi-operator support with role-based subsystem lo
 | `"graphics"` | DSK graphics overlay |
 | `"replay"` | Instant replay system |
 | `"output"` | Recording and SRT output |
+| `"captions"` | Caption system controls |
 
 ### POST /api/operator/register
 
@@ -3726,7 +4019,7 @@ Register a new operator. Returns a unique operator ID and bearer token. The toke
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | `string` | Yes | Operator display name. Must not be empty and must be unique. |
-| `role` | `string` | Yes | Operator role: `"director"`, `"audio"`, `"graphics"`, or `"viewer"` |
+| `role` | `string` | Yes | Operator role: `"director"`, `"audio"`, `"graphics"`, `"captioner"`, or `"viewer"` |
 
 **Response:** `200 OK`
 
@@ -4027,6 +4320,8 @@ Remove a registered operator. The operator's session is disconnected and any loc
 | Status | Condition |
 |--------|-----------|
 | `400` | Missing operator ID |
+| `401` | Missing or invalid token (when operators are registered) |
+| `403` | Only self or director can delete operators |
 | `404` | Operator not found |
 
 **Example:**
@@ -4074,7 +4369,7 @@ Inject an SCTE-35 cue message into the MPEG-TS output. Supports both `splice_ins
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `commandType` | `string` | Yes | Command type: `"splice_insert"` or `"time_signal"` |
+| `commandType` | `string` | Yes | Command type: `"splice_insert"`, `"time_signal"`, or `"splice_null"` |
 | `isOut` | `bool` | No | Out-of-network indicator. `true` for ad break start, `false` for return. Default `false`. |
 | `durationMs` | `int` | No | Break duration in milliseconds. Used for auto-return timing. |
 | `autoReturn` | `bool` | No | Automatically return to program when the break expires. Default `false`. |
@@ -4090,6 +4385,7 @@ Inject an SCTE-35 cue message into the MPEG-TS output. Supports both `splice_ins
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `segmentationType` | `uint8` | Yes | Segmentation type ID (e.g., `52` for provider placement opportunity start) |
+| `segEventId` | `uint32` | No | Segmentation event ID. Auto-assigned if omitted. |
 | `durationMs` | `int` | No | Descriptor duration in milliseconds |
 | `upidType` | `uint8` | Yes | UPID type (e.g., `15` for URI) |
 | `upid` | `string` | Yes | UPID value |
@@ -4355,14 +4651,7 @@ Get the full SCTE-35 subsystem status including configuration, active events, ev
       "status": "injected"
     }
   ],
-  "heartbeatOk": true,
-  "config": {
-    "heartbeatIntervalMs": 5000,
-    "defaultPreRollMs": 4000,
-    "pid": 258,
-    "verifyEncoding": false,
-    "webhookUrl": ""
-  }
+  "heartbeatOk": true
 }
 ```
 
@@ -4374,7 +4663,6 @@ Get the full SCTE-35 subsystem status including configuration, active events, ev
 | `activeEvents` | `object` | Map of event ID (as string key) to `ActiveEventState` |
 | `eventLog` | `array` | Array of recent `EventLogEntry` objects (most recent first, up to 256) |
 | `heartbeatOk` | `bool` | Whether the splice_null heartbeat goroutine is running |
-| `config` | `object` | Current SCTE-35 configuration |
 
 ### ActiveEventState Fields
 
@@ -4408,16 +4696,6 @@ Get the full SCTE-35 subsystem status including configuration, active events, ev
 | `source` | `string` | Event source identifier. Omitted when not set. |
 | `availNum` | `uint8` | Avail number. Omitted when `0`. |
 | `availsExpected` | `uint8` | Total avails expected. Omitted when `0`. |
-
-### SCTE35Config Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `heartbeatIntervalMs` | `int` | Interval between splice_null heartbeat messages in milliseconds |
-| `defaultPreRollMs` | `int` | Default pre-roll time for scheduled cues in milliseconds |
-| `pid` | `uint16` | MPEG-TS PID used for SCTE-35 data (default 258 / 0x102) |
-| `verifyEncoding` | `bool` | Whether encoded SCTE-35 is decoded back for CRC verification |
-| `webhookUrl` | `string` | URL for async event webhook notifications. Omitted when not set. |
 
 **Example:**
 
@@ -4894,6 +5172,139 @@ curl -X POST http://localhost:8081/api/scte35/rules/from-template \
 
 ---
 
+## Captions
+
+Closed captioning support with three operating modes: `off` (no captions), `passthrough` (relay captions from upstream sources), and `author` (manually type caption text via the API). Captions are encoded as CEA-608 data embedded in the program output.
+
+Caption endpoints are only registered when the caption manager is enabled. If captions are not enabled, these routes return `404 Not Found` (unregistered).
+
+### POST /api/captions/mode
+
+Set the caption operating mode.
+
+**Request Body:**
+
+```json
+{
+  "mode": "author"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `string` | Caption mode: `"off"`, `"passthrough"`, or `"author"` |
+
+**Response:** `200 OK` with current caption state:
+
+```json
+{
+  "mode": "author"
+}
+```
+
+Fields `authorBuffer` and `sourceCaptions` are omitted when empty.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or invalid mode value |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/captions/mode \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "author"}'
+```
+
+---
+
+### POST /api/captions/text
+
+Ingest caption text, trigger a newline, or clear the caption display. Requires `author` mode to be active. Exactly one of `text`, `newline`, or `clear` must be provided.
+
+**Request Body:**
+
+```json
+{
+  "text": "Hello, viewers!"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | `string` | Caption text to append (optional) |
+| `newline` | `bool` | Trigger a new caption line (optional) |
+| `clear` | `bool` | Clear the caption display (optional) |
+
+**Response:** `200 OK` with updated caption state
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON, not in author mode, or no action specified |
+
+**Examples:**
+
+```bash
+# Send text
+curl -X POST http://localhost:8081/api/captions/text \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello, viewers!"}'
+
+# New line
+curl -X POST http://localhost:8081/api/captions/text \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"newline": true}'
+
+# Clear display
+curl -X POST http://localhost:8081/api/captions/text \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"clear": true}'
+```
+
+---
+
+### GET /api/captions/state
+
+Get the current caption system state, including operating mode, author buffer contents, and which sources have active upstream captions.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "mode": "passthrough",
+  "authorBuffer": "",
+  "sourceCaptions": {
+    "cam1": true,
+    "cam3": true
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `string` | Current caption mode (`"off"`, `"passthrough"`, `"author"`) |
+| `authorBuffer` | `string` | Pending author text not yet sent (only in `author` mode) |
+| `sourceCaptions` | `object` | Map of source keys to `true` for sources with active upstream captions |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/captions/state \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## Format
 
 The format API allows querying and changing the pipeline video format (resolution and frame rate). Changes take effect on the next keyframe.
@@ -4915,7 +5326,7 @@ Retrieve the current pipeline format and available presets.
     "fpsDen": 1001,
     "name": "1080p29.97"
   },
-  "presets": ["720p25", "720p29.97", "720p50", "720p59.94", "1080p25", "1080p29.97", "1080p50", "1080p59.94"]
+  "presets": ["720p25", "720p29.97", "720p30", "720p50", "720p59.94", "720p60", "1080p23.976", "1080p24", "1080p25", "1080p29.97", "1080p30", "1080p50", "1080p59.94", "1080p60", "2160p25", "2160p29.97", "2160p30", "2160p50", "2160p59.94", "2160p60"]
 }
 ```
 
@@ -5024,9 +5435,9 @@ Return a comprehensive diagnostic snapshot of all subsystems. This is intended f
   },
   "events": [
     {
-      "time": "2026-03-05T14:30:20.000Z",
-      "event": "cut",
-      "details": {"from": "cam2", "to": "cam1"}
+      "ts": "2026-03-05T14:30:20.000Z",
+      "type": "cut",
+      "detail": {"from": "cam2", "to": "cam1"}
     }
   ]
 }
@@ -5083,8 +5494,8 @@ HTTP/1.1 503 Service Unavailable
 
 Prometheus metrics endpoint. Returns metrics in Prometheus text exposition format. Includes:
 
-- `http_requests_total` -- Counter by method, route, status
-- `http_request_duration_seconds` -- Histogram by method, route
+- `switchframe_http_requests_total` -- Counter by method, pattern, status
+- `switchframe_http_request_duration_seconds` -- Histogram by method, pattern
 - Switcher, mixer, and output subsystem metrics
 
 ---

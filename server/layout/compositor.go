@@ -63,14 +63,31 @@ func NewCompositor(frameW, frameH int) *Compositor {
 }
 
 // SetLayout atomically sets the current layout. nil clears the layout.
+// Clears stale source fills that are no longer needed by any slot to
+// prevent flashes of old frame data when layouts change.
 func (c *Compositor) SetLayout(l *Layout) {
 	wasBefore := c.Active()
 	c.layout.Store(l)
+	c.mu.Lock()
 	if l != nil {
-		c.mu.Lock()
 		c.allocateBuffers(l)
-		c.mu.Unlock()
+		// Prune fills for sources not in the new layout.
+		needed := make(map[string]bool, len(l.Slots))
+		for _, slot := range l.Slots {
+			if slot.SourceKey != "" {
+				needed[slot.SourceKey] = true
+			}
+		}
+		for key := range c.fills {
+			if !needed[key] {
+				delete(c.fills, key)
+			}
+		}
+	} else {
+		// Layout cleared — drop all fills.
+		c.fills = make(map[string]*fillEntry)
 	}
+	c.mu.Unlock()
 	if wasBefore != c.Active() && c.OnActiveChange != nil {
 		c.OnActiveChange()
 	}

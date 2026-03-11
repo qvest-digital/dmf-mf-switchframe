@@ -327,6 +327,13 @@ type Switcher struct {
 	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
 
+	// Program epoch — monotonically increasing counter incremented on every
+	// program source change (Cut, transition complete). Frames stamped with
+	// a stale epoch are discarded in videoProcessingLoop to prevent wrong-source
+	// frames from reaching the pipeline during concurrent Cut/transition races.
+	programEpoch      atomic.Uint64
+	programEpochStale atomic.Int64 // count of frames discarded as stale
+
 	// forceNextIDR is set when a new output viewer joins the program relay
 	// (e.g., SRT output starts). The next encode call forces an IDR keyframe
 	// so the TSMuxer can initialize immediately instead of waiting up to
@@ -362,6 +369,11 @@ type Switcher struct {
 type videoProcWork struct {
 	// yuvFrame: pre-decoded YUV from source decoder or transition engine, needing encode only
 	yuvFrame *ProcessingFrame
+	// epoch: program epoch at enqueue time. Frames with stale epoch are
+	// discarded in videoProcessingLoop to prevent wrong-source flashes
+	// during concurrent Cut/transition races. Zero means "always process"
+	// (used by transition engine output which is always valid).
+	epoch uint64
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -1069,6 +1081,14 @@ func (s *Switcher) videoProcessingLoop() {
 		if work.yuvFrame == nil {
 			continue
 		}
+		// Discard frames stamped with a stale program epoch. This prevents
+		// wrong-source frames from reaching the pipeline when a Cut or
+		// transition complete races with frame delivery.
+		if work.epoch != 0 && work.epoch != s.programEpoch.Load() {
+			work.yuvFrame.ReleaseYUV()
+			s.programEpochStale.Add(1)
+			continue
+		}
 		start := time.Now()
 
 		if p := s.pipeline.Load(); p != nil {
@@ -1131,18 +1151,19 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 	if s.pipeline.Load() == nil {
 		return
 	}
+	epoch := s.programEpoch.Load()
 	if pf.refs != nil {
 		// Managed frame: Ref for pipeline, shallow copy shares YUV + refs.
 		// Pipeline.Run calls MakeWritable before in-place processing.
 		pf.Ref()
 		cp := new(ProcessingFrame)
 		*cp = *pf
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch})
 	} else {
 		// Unmanaged frame (FRC scratch buffer): must deep-copy.
 		cp := pf.DeepCopy()
 		cp.SetRefs(1)
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch})
 	}
 }
 
@@ -1540,6 +1561,9 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	if newProgram != "" {
 		s.programSource = newProgram
 		s.previewSource = oldProgram
+		// Bump program epoch so in-flight frames from the transition
+		// engine or old program source are discarded.
+		s.programEpoch.Add(1)
 	}
 
 	// Record transition seam start — the gap from now until the first
@@ -1858,6 +1882,7 @@ func (s *Switcher) UnregisterSource(key string) {
 	}
 	if s.programSource == key {
 		s.programSource = ""
+		s.programEpoch.Add(1)
 	}
 	if s.previewSource == key {
 		s.previewSource = ""
@@ -1907,6 +1932,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		}
 		oldProgram = s.programSource
 		s.programSource = sourceKey
+		// Bump program epoch so in-flight frames from the old program
+		// source are discarded in videoProcessingLoop.
+		s.programEpoch.Add(1)
 		// All sources use the raw pipeline (always-decode or MXL) —
 		// no IDR gating needed. Frames flow immediately after cut.
 		s.cutsTotal.Add(1)
@@ -2126,6 +2154,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"frames_processed":     s.videoProcCount.Load(),
 			"frames_broadcast":     s.videoBroadcastCount.Load(),
 			"frames_dropped":       s.videoProcDropped.Load(),
+			"epoch_stale":          s.programEpochStale.Load(),
 			"encode_nil":           s.pipeEncodeNil.Load(),
 			"trans_output":         s.transOutputCount.Load(),
 			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
@@ -2276,9 +2305,9 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		state.MasterLevel = s.mixer.MasterLevel()
 		state.ProgramPeak = s.mixer.ProgramPeak()
 		state.GainReduction = s.mixer.GainReduction()
-		state.MomentaryLUFS = s.mixer.MomentaryLUFS()
-		state.ShortTermLUFS = s.mixer.ShortTermLUFS()
-		state.IntegratedLUFS = s.mixer.IntegratedLUFS()
+		state.MomentaryLUFS = clampLUFS(s.mixer.MomentaryLUFS())
+		state.ShortTermLUFS = clampLUFS(s.mixer.ShortTermLUFS())
+		state.IntegratedLUFS = clampLUFS(s.mixer.IntegratedLUFS())
 	}
 
 	// Include pipeline format
@@ -2293,6 +2322,16 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 
 	return state
+}
+
+// clampLUFS clamps extreme LUFS values (e.g. -math.MaxFloat64 from an
+// uninitialized meter) to -100, which is safely JSON-serializable and
+// represents effective silence for UI display.
+func clampLUFS(v float64) float64 {
+	if v < -100 {
+		return -100
+	}
+	return v
 }
 
 // notifyStateChange calls all registered state callbacks.

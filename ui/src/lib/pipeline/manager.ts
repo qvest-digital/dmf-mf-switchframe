@@ -159,6 +159,14 @@ export class PipelineManager {
 			if (this.currentPreviewCanvas) {
 				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
 			}
+			// Clear the canvas to prevent stale frames from the old source
+			// showing while the new source's decoder delivers its first frame.
+			if (previewCanvasEl) {
+				const ctx = previewCanvasEl.getContext('2d');
+				if (ctx) {
+					ctx.clearRect(0, 0, previewCanvasEl.width, previewCanvasEl.height);
+				}
+			}
 			if (previewCanvasEl && previewSource) {
 				const attached = this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
 				if (!attached) {

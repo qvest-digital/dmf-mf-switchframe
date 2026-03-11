@@ -18,7 +18,7 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Keys');
 		expect(tabLabels).toContain('Replay');
 		expect(tabLabels).toContain('Presets');
-		expect(tabLabels).toContain('SCTE-35');
+		expect(tabLabels).toContain('SCTE');
 		expect(tabLabels).toContain('Layout');
 		expect(tabLabels).toContain('Captions');
 		expect(tabs.length).toBe(9);
@@ -31,12 +31,12 @@ describe('BottomTabs', () => {
 		expect(presetsTab!.textContent).toContain('Presets');
 	});
 
-	it('responds to Ctrl+Shift+6 for Presets tab', async () => {
+	it('responds to Ctrl+Shift+9 for Presets tab', async () => {
 		const { container } = render(BottomTabs);
 
-		// Presets is the 6th tab, triggered by Ctrl+Shift+6
+		// Presets is the 9th tab, triggered by Ctrl+Shift+9
 		const event = new KeyboardEvent('keydown', {
-			code: 'Digit6',
+			code: 'Digit9',
 			ctrlKey: true,
 			shiftKey: true,
 			altKey: false,

@@ -74,6 +74,21 @@ export class ConnectionManager {
 	/** Called when MoQ control track delivers state data via the media pipeline. */
 	handleControlData(data: Uint8Array): void {
 		this.config.onStateUpdate(data);
+		this.notifyMoQActive();
+	}
+
+	/**
+	 * Called when a per-source MoQ transport has connected and subscribed
+	 * to its tracks (including the control track). Stops REST polling
+	 * since control data will arrive via MoQ when state changes.
+	 *
+	 * The ControlBroadcaster in Prism has no "latest state replay" for
+	 * new subscribers — it only delivers NEW state changes. So we can't
+	 * wait for actual control data to arrive; we must trust that the MoQ
+	 * connection is alive once the catalog is received.
+	 */
+	notifyMoQActive(): void {
+		if (this.hasMoQPipeline) return;
 		this.hasMoQPipeline = true;
 		this.stopPolling();
 		this.setConnectionState('webtransport');

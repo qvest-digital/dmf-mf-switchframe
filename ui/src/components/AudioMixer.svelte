@@ -107,15 +107,16 @@
 
 	/**
 	 * Compute the effective peak level in dBFS for a channel meter.
-	 * Prefers server-side per-channel peaks (dBFS, floor -96); falls back to
-	 * client-side PFL levels (linear amplitude, converted via linearToDb which
-	 * floors at -60 dB). The different floors are both below the meter's visible
-	 * range so the visual result is identical.
+	 * Prefers client-side levels (linear amplitude from rAF-sampled audio
+	 * decoders at 60Hz) for smooth real-time animation. Falls back to
+	 * server-side peaks (dBFS, updated on state broadcasts) for sources
+	 * without client-side audio decoders.
 	 */
 	function channelPeakDb(serverPeak: number | undefined, clientLinear: number | undefined): number {
+		if (clientLinear !== undefined && clientLinear > 0) return linearToDb(clientLinear);
 		const sp = serverPeak ?? -96;
 		if (sp > -96) return sp;
-		return linearToDb(clientLinear ?? 0);
+		return -60;
 	}
 
 	/** Map gain reduction (0..20+ dB) to a percentage (0..100) for GR meter. */

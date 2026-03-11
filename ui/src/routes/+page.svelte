@@ -207,6 +207,9 @@
 		onControlState: (data) => {
 			connectionManager.handleControlData(data);
 		},
+		onMoQActive: () => {
+			connectionManager.notifyMoQActive();
+		},
 		onProgramCaptionFrame: (caption, _timestamp) => {
 			captionRenderer?.show(caption);
 		},
@@ -216,7 +219,7 @@
 			// Only react to program-raw (not replay-raw or other raw sources).
 			if (mounted && sourceKey === 'program-raw') {
 				pipelineManager.resetProgramCanvas();
-				pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+				pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
 			}
 		},
 	});
@@ -312,7 +315,7 @@
 		if (!mounted) return;
 		tick().then(() => {
 			pipelineManager.syncSources(store.state.sources);
-			pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+			pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
 		});
 	});
 
@@ -320,7 +323,9 @@
 	let prevProgramSource: string | undefined;
 	$effect(() => {
 		const _program = store.state.programSource;
-		const _preview = store.state.previewSource;
+		// Use effectiveState for preview so canvas switches instantly on user
+		// click (optimistic update) instead of waiting for MoQ round-trip.
+		const _preview = store.effectiveState.previewSource;
 		const _pgmCanvas = programCanvas;
 		const _pvwCanvas = previewCanvas;
 		if (!mounted) return;
@@ -333,7 +338,7 @@
 		}
 		prevProgramSource = _program;
 
-		pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+		pipelineManager.syncProgramPreviewCanvases(_preview, programCanvas, previewCanvas);
 	});
 
 	// Re-attach canvases when layout mode changes (DOM is replaced).
@@ -352,7 +357,7 @@
 			tick().then(() => {
 				if (!mounted) return;
 				pipelineManager.syncSources(store.state.sources);
-				pipelineManager.syncProgramPreviewCanvases(store.state.previewSource, programCanvas, previewCanvas);
+				pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
 			});
 		}
 		prevLayoutMode = mode;
@@ -607,7 +612,7 @@
 							<div class="tab-panel">
 								<PresetPanel />
 							</div>
-						{:else if activeTab === 'SCTE-35'}
+						{:else if activeTab === 'SCTE'}
 							<div class="tab-panel">
 								{#if store.effectiveState.scte35?.enabled}
 									<SCTE35Panel state={store.effectiveState} onStateUpdate={store.applyUpdate} />
