@@ -142,3 +142,54 @@ The video pipeline is a chain of immutable processing nodes, built once and atom
 ### Timing
 
 The hot path holds locks for under 1us per frame. The async handoff between the switcher and pipeline uses an 8-frame buffered channel (~267ms at 30fps), decoupling source delivery jitter from encode latency. Always-on re-encode ensures consistent SPS/PPS across transition boundaries, so downstream decoders never need reconfiguration.
+
+## 3. A Cut Happens
+
+A cut is the simplest and most frequent operation: swap the program source instantly with no transition frames. Because every source is continuously decoded by its own goroutine, there is no keyframe wait -- the new source always has a current YUV420 frame ready.
+
+```mermaid
+sequenceDiagram
+    participant Operator
+    participant Browser
+    participant Server
+    participant Switcher
+    participant Mixer
+    participant SP as StatePublisher
+    participant All as All Browsers
+
+    Operator->>Browser: press Space / click CUT
+    Browser->>Browser: optimistic update (instant UI response)
+    Browser->>Server: POST /api/cut {source: "cam2"} (HTTP/3)
+    Server->>Switcher: Cut("cam2")
+    Note over Switcher: write lock: swap program ↔ preview,<br/>increment sequence number
+    Switcher->>Mixer: OnCut(old, new)
+    Note over Mixer: equal-power crossfade (cos/sin), ~23ms
+    Switcher->>Mixer: OnProgramChange(new)
+    Note over Mixer: AFV: activate new source channel,<br/>deactivate others
+    Switcher->>SP: broadcast state change
+    SP->>SP: enrich (merge recording, SRT,<br/>graphics, replay, operator status)
+    SP->>All: MoQ control track (full JSON snapshot)
+    Note over All: reconcile optimistic update<br/>with server confirmation
+```
+
+### Switcher State Machine
+
+The switcher has a small state machine governing what operations are valid at any moment. A cut bypasses the transitioning state entirely -- it is a direct program/preview swap within the idle state.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Transitioning : StartTransition()
+    Transitioning --> Idle : complete / abort
+    Idle --> FTBActive : FadeToBlack()
+    FTBActive --> FTBReversing : FadeToBlack() (toggle)
+    FTBReversing --> Idle : complete
+```
+
+### Why Cuts Are Instant
+
+The always-decode architecture is what makes cuts zero-latency. Every source has a dedicated `sourceDecoder` goroutine continuously producing YUV420 frames, so the new source already has a decoded frame in its ring buffer. On the next tick after `Cut()`, cam2's decoded frame flows through `handleRawVideoFrame` into the pipeline node chain and out to encode. There is no GOP replay, no IDR gating, no decoder warmup.
+
+The audio mixer applies a one-frame (~23ms) equal-power crossfade between the old and new source to prevent audible clicks. The crossfade uses precomputed cos/sin lookup tables (1024 entries) to avoid per-sample `math.Cos` calls. Channels in AFV mode automatically activate or deactivate to match the new program source.
+
+The browser applies the cut optimistically before the server confirms -- the UI swaps tally colors and source labels immediately on keypress. If the server rejects the cut (e.g., source offline, operator lacks permission), the pending action expires after 2 seconds and reverts to server state. In practice, the server confirms within a few milliseconds over the shared QUIC connection, and the MoQ control track update arrives before the timeout is relevant.
