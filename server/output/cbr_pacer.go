@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 // ComputeMuxrate calculates the TS muxrate from video and audio bitrates.
@@ -58,7 +60,13 @@ type CBRPacer struct {
 	// Pre-allocated null slab (one tick's worth of null packets).
 	nullSlab []byte
 
-	// Metrics
+	// Reusable output buffer for tick() — avoids allocation per tick.
+	outBuf []byte
+
+	// Prometheus metrics (optional).
+	prom *metrics.Metrics
+
+	// Metrics (atomic counters for lock-free reads via CBRStatus).
 	nullPktsTotal  atomic.Int64
 	realBytesTotal atomic.Int64
 	burstTicks     atomic.Int64
@@ -97,10 +105,16 @@ func NewCBRPacer(muxrateBps int64, tickInterval time.Duration) *CBRPacer {
 		tickInterval: tickInterval,
 		buf:          make([]byte, 0, initialCap),
 		swapBuf:      make([]byte, 0, initialCap),
+		outBuf:       make([]byte, 0, initialCap*2),
 		nullSlab:     nullSlab,
 		stopCh:       make(chan struct{}),
 		doneCh:       make(chan struct{}),
 	}
+}
+
+// SetMetrics attaches Prometheus metrics to the pacer.
+func (p *CBRPacer) SetMetrics(pm *metrics.Metrics) {
+	p.prom = pm
 }
 
 // SetAdapters sets the SRT adapters that receive paced output.
@@ -123,7 +137,11 @@ func (p *CBRPacer) Stop() {
 
 // Enqueue appends TS data to the accumulation buffer. Called from the
 // muxer output callback. Lock hold time is minimal (~50ns for append).
+// Input must be TS-packet-aligned (multiple of 188 bytes).
 func (p *CBRPacer) Enqueue(tsData []byte) {
+	if len(tsData)%tsPacketSize != 0 {
+		slog.Warn("CBR pacer: enqueued non-TS-aligned data", "len", len(tsData))
+	}
 	p.mu.Lock()
 	p.buf = append(p.buf, tsData...)
 	p.mu.Unlock()
@@ -171,7 +189,8 @@ func (p *CBRPacer) tick() {
 	p.buf, p.swapBuf = p.swapBuf, p.buf
 	p.mu.Unlock()
 
-	// Reset the read buffer (keep capacity).
+	// After swap, swapBuf holds the producer's accumulated data.
+	// Take ownership and reset for next swap cycle.
 	realData := p.swapBuf
 	p.swapBuf = p.swapBuf[:0]
 
@@ -194,6 +213,10 @@ func (p *CBRPacer) tick() {
 		p.bytesSent += realLen
 		p.realBytesTotal.Add(realLen)
 		p.burstTicks.Add(1)
+		if pm := p.prom; pm != nil {
+			pm.CBRRealBytesTotal.Add(float64(realLen))
+			pm.CBRBurstTicksTotal.Inc()
+		}
 		return
 	}
 
@@ -203,16 +226,15 @@ func (p *CBRPacer) tick() {
 	nullBytes = (nullBytes / tsPacketSize) * tsPacketSize
 
 	if nullBytes <= 0 && realLen == 0 {
-		// Nothing to send — but we should still maintain rate.
-		// Send at least one tick's worth of nulls.
-		nullBytes = int64(len(p.nullSlab))
+		// No debt and no data — nothing to send. Byte-debt will
+		// accumulate naturally and self-correct on the next tick.
+		return
 	}
 
-	// Build output: real data + null padding.
-	totalLen := realLen + nullBytes
-	out := make([]byte, 0, totalLen)
+	// Build output into reusable buffer: real data + null padding.
+	p.outBuf = p.outBuf[:0]
 	if realLen > 0 {
-		out = append(out, realData...)
+		p.outBuf = append(p.outBuf, realData...)
 		p.realBytesTotal.Add(realLen)
 	}
 
@@ -223,22 +245,35 @@ func (p *CBRPacer) tick() {
 		if chunk > nullRemaining {
 			chunk = nullRemaining
 		}
-		out = append(out, p.nullSlab[:chunk]...)
+		p.outBuf = append(p.outBuf, p.nullSlab[:chunk]...)
 		nullRemaining -= chunk
 	}
 
 	nullPkts := nullBytes / tsPacketSize
 	p.nullPktsTotal.Add(nullPkts)
-	p.bytesSent += int64(len(out))
-	p.emit(out)
+	if pm := p.prom; pm != nil {
+		if realLen > 0 {
+			pm.CBRRealBytesTotal.Add(float64(realLen))
+		}
+		if nullPkts > 0 {
+			pm.CBRNullPacketsTotal.Add(float64(nullPkts))
+			pm.CBRPadBytesTotal.Add(float64(nullBytes))
+		}
+	}
+	p.bytesSent += int64(len(p.outBuf))
+	p.emit(p.outBuf)
 }
 
 // drainRemaining flushes any data left in the buffer on stop.
+// Uses the swap pattern to get an independent copy, preventing
+// corruption from a late Enqueue call racing with the drain.
 func (p *CBRPacer) drainRemaining() {
 	p.mu.Lock()
-	remaining := p.buf
-	p.buf = p.buf[:0]
+	p.buf, p.swapBuf = p.swapBuf, p.buf
 	p.mu.Unlock()
+
+	remaining := p.swapBuf
+	p.swapBuf = p.swapBuf[:0]
 
 	if len(remaining) > 0 {
 		p.realBytesTotal.Add(int64(len(remaining)))

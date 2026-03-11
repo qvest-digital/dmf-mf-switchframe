@@ -165,6 +165,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		if (cbr) {
 			// CBR: constant bitrate mode.
 			av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
+			h->ctx->rc_min_rate = bitrate;
+			h->ctx->rc_max_rate = bitrate;
+			h->ctx->rc_buffer_size = bitrate; // 1s VBV
 			// temporal-aq is incompatible with CBR.
 			av_opt_set_int(h->ctx->priv_data, "temporal-aq", 0, 0);
 		} else {
@@ -180,8 +183,10 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		h->ctx->level = level;
 
 		if (cbr) {
-			// CBR: set min rate = target for constant bitrate.
+			// CBR: pin min/max rate to target for constant bitrate.
 			h->ctx->rc_min_rate = bitrate;
+			h->ctx->rc_max_rate = bitrate;
+			h->ctx->rc_buffer_size = bitrate; // 1s VBV
 		}
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
@@ -196,6 +201,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		if (cbr) {
 			// CBR: enable constant bitrate mode.
 			av_opt_set(h->ctx->priv_data, "constant_bit_rate", "true", 0);
+			h->ctx->rc_max_rate = bitrate;
+			h->ctx->rc_buffer_size = bitrate; // 1s VBV
 		} else {
 			// Constant quality via capped VBR — higher quality than pure ABR.
 			av_opt_set(h->ctx->priv_data, "constant_bit_rate", "false", 0);

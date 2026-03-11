@@ -234,12 +234,18 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 	var adapter Adapter
 	switch config.Mode {
 	case "caller":
-		caller := NewSRTCaller(SRTCallerConfig{
+		callerCfg := SRTCallerConfig{
 			Address:  config.Address,
 			Port:     config.Port,
 			Latency:  config.Latency,
 			StreamID: config.StreamID,
-		})
+		}
+		// Set SRT bandwidth hints from CBR muxrate.
+		if m.cbrMuxrate > 0 {
+			callerCfg.InputBW = m.cbrMuxrate / 8 // bps → bytes/sec
+			callerCfg.OverheadBW = 5              // SRT protocol overhead on top of TS muxrate
+		}
+		caller := NewSRTCaller(callerCfg)
 		if m.srtConnectFn != nil {
 			caller.connectFn = m.srtConnectFn
 		}
@@ -264,10 +270,16 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		}
 		adapter = caller
 	case "listener":
-		listener := NewSRTListener(SRTListenerConfig{
+		listenerCfg := SRTListenerConfig{
 			Port:    config.Port,
 			Latency: config.Latency,
-		})
+		}
+		// Set SRT bandwidth hints from CBR muxrate.
+		if m.cbrMuxrate > 0 {
+			listenerCfg.InputBW = m.cbrMuxrate / 8
+			listenerCfg.OverheadBW = 5
+		}
+		listener := NewSRTListener(listenerCfg)
 		if m.srtAcceptFn != nil {
 			lCfg := listener.config
 			listener.acceptFn = func(ctx context.Context, _ SRTListenerConfig) error {
@@ -447,16 +459,30 @@ func (m *Manager) StartDestination(id string) error {
 		return ErrDestinationActive
 	}
 
+	// Derive SRT bandwidth: per-destination MaxBW overrides CBR muxrate.
+	srtInputBW := int64(0)
+	srtOverheadBW := 0
+	if dest.config.MaxBW > 0 {
+		srtInputBW = dest.config.MaxBW / 8 // bps → bytes/sec
+		srtOverheadBW = 5
+	} else if m.cbrMuxrate > 0 {
+		srtInputBW = m.cbrMuxrate / 8
+		srtOverheadBW = 5
+	}
+
 	// Create adapter based on config type.
 	var adapter Adapter
 	switch dest.config.Type {
 	case "srt-caller":
-		caller := NewSRTCaller(SRTCallerConfig{
-			Address:  dest.config.Address,
-			Port:     dest.config.Port,
-			Latency:  dest.config.Latency,
-			StreamID: dest.config.StreamID,
-		})
+		callerCfg := SRTCallerConfig{
+			Address:    dest.config.Address,
+			Port:       dest.config.Port,
+			Latency:    dest.config.Latency,
+			StreamID:   dest.config.StreamID,
+			InputBW:    srtInputBW,
+			OverheadBW: srtOverheadBW,
+		}
+		caller := NewSRTCaller(callerCfg)
 		if m.srtConnectFn != nil {
 			caller.connectFn = m.srtConnectFn
 		}
@@ -487,9 +513,11 @@ func (m *Manager) StartDestination(id string) error {
 			maxConns = defaultMaxConns
 		}
 		listener := NewSRTListener(SRTListenerConfig{
-			Port:     dest.config.Port,
-			Latency:  dest.config.Latency,
-			MaxConns: maxConns,
+			Port:       dest.config.Port,
+			Latency:    dest.config.Latency,
+			MaxConns:   maxConns,
+			InputBW:    srtInputBW,
+			OverheadBW: srtOverheadBW,
 		})
 		if m.srtAcceptFn != nil {
 			lCfg := listener.config
@@ -875,6 +903,9 @@ func (m *Manager) ensureMuxerLocked() bool {
 	// Create CBR pacer if muxrate is configured.
 	if m.cbrMuxrate > 0 {
 		pacer := NewCBRPacer(m.cbrMuxrate, 0)
+		if m.promMetrics != nil {
+			pacer.SetMetrics(m.promMetrics)
+		}
 		m.cbrPacer.Store(pacer)
 		// Re-rebuild to populate pacer adapter list (pacer now exists).
 		_ = m.rebuildAdaptersLocked()
