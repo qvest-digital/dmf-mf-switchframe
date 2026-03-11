@@ -503,3 +503,121 @@ The primary audio path uses a phase vocoder for pitch-preserved slow-motion: STF
 ### Loop and Relay
 
 The player supports loop mode, automatically restarting from the beginning of the clip after the last frame is emitted, and continuing until the director explicitly stops playback. Replay output is broadcast to a "replay" relay registered as a separate MoQ stream via `server.RegisterStream("replay")`. Browsers subscribe to this relay independently of the program stream, displaying replay in a dedicated monitor panel. This separation ensures that replay playback -- including looping, speed changes, and stop/start -- never interferes with the live program output or its recording and SRT destinations.
+
+## 9. The Browser
+
+The frontend is a Svelte 5 SPA (SvelteKit with static adapter) that serves as a thin control surface and monitoring display. It does not produce the program output -- it subscribes to source and program MoQ streams for monitoring, and sends REST commands over the shared QUIC connection. For production deployment, the built UI is embedded into the Go binary as static files via `//go:embed`, serving a single-binary appliance.
+
+### Media Pipeline
+
+Each source gets its own MoQ subscription with independent video and audio decode paths. Video decode runs in Web Workers to keep the main thread free for UI rendering. The same decoded frames feed multiple canvases (multiview tile, program monitor, preview monitor) through a clone callback in the decoder, avoiding redundant decode work.
+
+```mermaid
+flowchart TD
+    CM["ConnectionManager<br/>(auto-retry WebTransport,<br/>2s → 30s backoff)"]
+
+    CM --> S1["MoQ Subscription<br/>(source 1)"]
+    CM --> S2["MoQ Subscription<br/>(source 2)"]
+    CM --> SN["MoQ Subscription<br/>(source N)"]
+    CM --> SP["MoQ Subscription<br/>(program)"]
+
+    subgraph persource ["Per-Source Decode (repeated for each source)"]
+        direction TB
+
+        subgraph video ["Video Path"]
+            direction LR
+            MT["MoQTransport"] --> VD["PrismVideoDecoder<br/>(WebCodecs,<br/>Web Worker)"]
+            VD --> VRB["VideoRenderBuffer<br/>(primary)"]
+            VRB --> MV["Multiview<br/>tile canvas"]
+            VD -.->|"clone callback"| VRB2["VideoRenderBuffer<br/>(secondary)"]
+            VRB2 --> PP["Program / Preview<br/>monitor canvas"]
+        end
+
+        subgraph audio ["Audio Path"]
+            direction LR
+            MTA["MoQTransport"] --> AD["PrismAudioDecoder<br/>(WebCodecs)"]
+            AD --> PM["Peak Metering<br/>(VU meters)"]
+            AD -.->|"PFL enabled"| AC["AudioContext<br/>(operator headphones)"]
+        end
+    end
+
+    S1 --> persource
+    S2 --> persource
+    SN --> persource
+
+    subgraph raw ["Raw YUV Path (optional)"]
+        direction LR
+        SPR["MoQ program-raw<br/>(8-byte header +<br/>planar YUV420)"] --> YUV["WebGL YUV→RGB<br/>shader (BT.709)"]
+        YUV --> PMON["Program monitor<br/>(~4ms vs ~15ms<br/>with codec)"]
+    end
+
+    SP --> raw
+```
+
+### Connection and State Management
+
+The browser maintains two parallel communication paths with the server. On startup, both attempt to connect simultaneously -- REST provides an immediate fallback, while WebTransport upgrades the connection to event-driven MoQ updates once established.
+
+```mermaid
+flowchart LR
+    subgraph startup ["Startup"]
+        direction TB
+        REST["REST fetch<br/>initial state"]
+        WT["WebTransport<br/>connect attempt"]
+    end
+
+    REST --> POLL["REST Polling<br/>(500ms interval)"]
+    WT -->|success| MOQ["MoQ Control Track<br/>(event-driven)"]
+    WT -->|failure| POLL
+
+    MOQ -->|"stop polling"| POLL
+
+    subgraph stateflow ["State Flow"]
+        direction TB
+        SRC["MoQ control track<br/>or REST poll"]
+        SRC --> STORE["ControlRoomStore<br/>(Svelte 5 $state)"]
+        STORE --> UI["UI renders"]
+    end
+
+    subgraph commands ["Command Flow"]
+        direction TB
+        USER["User action<br/>(key / click)"] --> OPT["Optimistic update<br/>(instant UI)"]
+        OPT --> POST["REST POST<br/>(HTTP/3 over QUIC)"]
+        POST --> CONFIRM["Server confirms"]
+        CONFIRM --> RECONCILE["Reconcile with<br/>server state<br/>(2s timeout)"]
+    end
+
+    MOQ --> stateflow
+    POLL --> stateflow
+```
+
+### Keyboard Shortcuts
+
+All keyboard shortcuts use capture-phase `keydown` listeners with `event.code` for layout-independent keybinding. Shortcuts are suppressed when focus is in text inputs or contenteditable elements. A confirm mode (toggled via the UI) requires double-press for destructive actions like cut and hot-punch.
+
+| Key | Action |
+|-----|--------|
+| `1`--`9` | Set preview source (by position) |
+| `Shift`+`1`--`9` | Hot-punch to program |
+| `Ctrl`+`1`--`9` | Run macro |
+| `Space` | Cut (preview to program) |
+| `Enter` | Auto transition |
+| `F1` | Fade to black (toggle) |
+| `F2` | Toggle DSK graphics |
+| `F3` / `P` | Toggle PIP |
+| `Alt`+`1` / `Alt`+`2` | Set transition type (mix / dip) |
+| `Shift`+`B` / `R` / `H` / `E` | SCTE-35: ad break / return / hold / extend |
+| `` ` `` | Toggle fullscreen |
+| `?` | Shortcut overlay |
+
+### Layout Modes
+
+Two layout modes serve different operator skill levels. Traditional mode provides the full control surface -- multiview grid, preview/program monitors, audio mixer, transition controls, and tabbed panels for graphics, macros, replay, presets, SCTE-35, keying, and layouts. Simple mode is a volunteer-friendly layout with just preview/program windows, source buttons, CUT/DISSOLVE/FTB, and basic health indicators. Layout mode is detected from URL parameter (`?mode=simple`), falling back to localStorage, then defaulting to traditional. The URL parameter auto-persists to localStorage so bookmarked URLs are sticky.
+
+### Rendering
+
+WebCodecs provides hardware-accelerated H.264 decode in the browser. Each source's decoder runs in a Web Worker to avoid blocking the main thread. Multi-canvas rendering uses a clone callback in the decoder -- the primary `VideoRenderBuffer` feeds the multiview tile, and cloned frames feed the program/preview monitors via secondary buffers. This avoids redundant decodes when the same source appears in multiple places. For sources using the raw YUV monitor path (`program-raw` MoQ track), a WebGL shader converts BT.709 limited-range YUV420 to RGB directly, bypassing the H.264 encode/decode round-trip entirely for approximately 4ms total latency versus 15ms with the codec path.
+
+### PFL (Pre-Fade Listen)
+
+Per-operator headphone monitoring is implemented entirely client-side. Each PFL-enabled source gets its own `AudioContext` that decodes the source's audio stream independently of the server mixer. This means PFL has zero server overhead and each operator hears their own solo selection without affecting anyone else. All sources have their audio decoded for peak metering regardless of PFL state, so VU meters always have data. The `AudioContext` is created lazily and requires a user gesture to resume, satisfying browser autoplay policies.
