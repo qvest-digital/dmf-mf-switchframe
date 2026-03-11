@@ -59,6 +59,7 @@ type OutputManagerAPI interface {
 	StopDestination(id string) error
 	ListDestinations() []output.DestinationStatus
 	GetDestination(id string) (output.DestinationStatus, error)
+	CBRStatus() *output.CBRPacerStatus
 }
 
 // DebugAPI is the interface for the debug snapshot endpoint.
@@ -327,6 +328,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
 	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
 	mux.HandleFunc("GET /api/output/confidence", a.handleConfidence)
+	mux.HandleFunc("GET /api/output/cbr", a.handleCBRStatus)
 	mux.HandleFunc("POST /api/output/destinations", a.handleAddDestination)
 	mux.HandleFunc("GET /api/output/destinations", a.handleListDestinations)
 	mux.HandleFunc("GET /api/output/destinations/{id}", a.handleGetDestination)

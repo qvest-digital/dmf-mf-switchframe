@@ -611,6 +611,32 @@ func TestManager_NoCBR_AllAdaptersDirect(t *testing.T) {
 	require.Len(t, *allAdapters, 2, "combined list should match direct list")
 }
 
+func TestManager_CBRStatus_Disabled(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	status := mgr.CBRStatus()
+	require.Nil(t, status, "CBRStatus must be nil when CBR is disabled")
+}
+
+func TestManager_CBRStatus_Enabled(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(10_000_000) // 10 Mbps
+
+	// Start recording to trigger muxer + pacer creation.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	status := mgr.CBRStatus()
+	require.NotNil(t, status)
+	require.True(t, status.Enabled)
+	require.Equal(t, int64(10_000_000), status.MuxrateBps)
+}
+
 func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewManager(relay)

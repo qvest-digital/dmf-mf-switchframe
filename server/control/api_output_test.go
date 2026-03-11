@@ -159,6 +159,10 @@ func (m *mockOutputManager) GetDestination(id string) (output.DestinationStatus,
 	return output.DestinationStatus{}, output.ErrDestinationNotFound
 }
 
+func (m *mockOutputManager) CBRStatus() *output.CBRPacerStatus {
+	return nil
+}
+
 func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
@@ -805,6 +809,33 @@ func TestDestinationEndpointsNoManager(t *testing.T) {
 				"path=%s body=%s", tt.path, rec.Body.String())
 		})
 	}
+}
+
+// --- CBR status tests ---
+
+func TestCBRStatus_Disabled(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/output/cbr", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var result map[string]interface{}
+	err := json.NewDecoder(rec.Body).Decode(&result)
+	require.NoError(t, err)
+	require.Equal(t, false, result["enabled"])
+}
+
+func TestCBRStatus_NoManager(t *testing.T) {
+	api := setupOutputTestAPINoManager(t)
+
+	req := httptest.NewRequest("GET", "/api/output/cbr", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 func TestSRTStartCallerMissingAddress(t *testing.T) {

@@ -178,6 +178,16 @@ type PipelineFormatInfo struct {
 	Name   string `json:"name"`
 }
 
+// CBRStatus describes the CBR pacer state for ControlRoomState broadcast.
+type CBRStatus struct {
+	Enabled          bool  `json:"enabled"`
+	MuxrateBps       int64 `json:"muxrateBps"`
+	NullPacketsTotal int64 `json:"nullPacketsTotal"`
+	RealBytesTotal   int64 `json:"realBytesTotal"`
+	PadBytesTotal    int64 `json:"padBytesTotal"`
+	BurstTicksTotal  int64 `json:"burstTicksTotal"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -209,6 +219,7 @@ type ControlRoomState struct {
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
 	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
+	CBR                  *CBRStatus              `json:"cbr,omitempty"`
 	Captions             *CaptionState           `json:"captions,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`

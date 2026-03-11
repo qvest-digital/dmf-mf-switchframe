@@ -1067,6 +1067,41 @@ func (m *Manager) CBRMuxrate() int64 {
 	return m.cbrMuxrate
 }
 
+// CBRStatus returns the current CBR pacer status. Returns nil if CBR is disabled.
+func (m *Manager) CBRStatus() *CBRPacerStatus {
+	m.mu.Lock()
+	muxrate := m.cbrMuxrate
+	m.mu.Unlock()
+
+	if muxrate == 0 {
+		return nil
+	}
+
+	status := &CBRPacerStatus{
+		Enabled:    true,
+		MuxrateBps: muxrate,
+	}
+
+	if p := m.cbrPacer.Load(); p != nil {
+		status.NullPacketsTotal = p.NullPacketsTotal()
+		status.RealBytesTotal = p.RealBytesTotal()
+		status.PadBytesTotal = p.NullPacketsTotal() * tsPacketSize
+		status.BurstTicksTotal = p.BurstTicks()
+	}
+
+	return status
+}
+
+// CBRPacerStatus holds the current CBR pacer state for API/state broadcast.
+type CBRPacerStatus struct {
+	Enabled          bool  `json:"enabled"`
+	MuxrateBps       int64 `json:"muxrateBps"`
+	NullPacketsTotal int64 `json:"nullPacketsTotal"`
+	RealBytesTotal   int64 `json:"realBytesTotal"`
+	PadBytesTotal    int64 `json:"padBytesTotal"`
+	BurstTicksTotal  int64 `json:"burstTicksTotal"`
+}
+
 // HasActiveOutputs returns true if at least one output is active.
 func (m *Manager) HasActiveOutputs() bool {
 	return len(*m.adapters.Load()) > 0

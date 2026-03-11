@@ -73,6 +73,12 @@ type Metrics struct {
 	RecordingBytesTotal   prometheus.Counter
 	SRTBytesTotal         prometheus.Counter
 
+	// CBR pacer
+	CBRNullPacketsTotal prometheus.Counter
+	CBRRealBytesTotal   prometheus.Counter
+	CBRPadBytesTotal    prometheus.Counter
+	CBRBurstTicksTotal  prometheus.Counter
+
 	// Pipeline
 	PipelineDecodeErrorsTotal prometheus.Counter
 	PipelineEncodeErrorsTotal prometheus.Counter
@@ -160,6 +166,32 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Total bytes sent over SRT connections.",
 		}),
 
+		// CBR pacer
+		CBRNullPacketsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cbr",
+			Name:      "null_packets_total",
+			Help:      "Total null TS packets inserted by CBR pacer.",
+		}),
+		CBRRealBytesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cbr",
+			Name:      "real_bytes_total",
+			Help:      "Total real (non-null) bytes sent through CBR pacer.",
+		}),
+		CBRPadBytesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cbr",
+			Name:      "pad_bytes_total",
+			Help:      "Total null padding bytes inserted by CBR pacer.",
+		}),
+		CBRBurstTicksTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cbr",
+			Name:      "burst_ticks_total",
+			Help:      "Total tick cycles where real data exceeded CBR budget.",
+		}),
+
 		// Pipeline
 		PipelineDecodeErrorsTotal: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "switchframe",
@@ -236,6 +268,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.PipelineBlendDuration,
 		m.NodeProcessDuration,
 		m.SourceStatusChangesTotal,
+		m.CBRNullPacketsTotal,
+		m.CBRRealBytesTotal,
+		m.CBRPadBytesTotal,
+		m.CBRBurstTicksTotal,
 	)
 
 	return m

@@ -126,6 +126,18 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	// CBR pacer status.
+	if cbrStatus := a.outputMgr.CBRStatus(); cbrStatus != nil {
+		state.CBR = &internal.CBRStatus{
+			Enabled:          cbrStatus.Enabled,
+			MuxrateBps:       cbrStatus.MuxrateBps,
+			NullPacketsTotal: cbrStatus.NullPacketsTotal,
+			RealBytesTotal:   cbrStatus.RealBytesTotal,
+			PadBytesTotal:    cbrStatus.PadBytesTotal,
+			BurstTicksTotal:  cbrStatus.BurstTicksTotal,
+		}
+	}
+
 	if a.scte35Injector != nil {
 		s := a.scte35Injector.State()
 		state.SCTE35 = &internal.SCTE35State{
