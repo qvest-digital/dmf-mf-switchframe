@@ -570,8 +570,8 @@ func (h *hierarchicalME) estimate(prev, curr *ProcessingFrame, mvf *motionVector
 		h.prevPyr[1] = make([]byte, w1*h1)
 		h.currPyr[1] = make([]byte, w1*h1)
 	}
-	downsampleY2x(h.prevPyr[1][:w1*h1], prevY, w, h0)
-	downsampleY2x(h.currPyr[1][:w1*h1], currY, w, h0)
+	frcasm.DownsampleY2x(&h.prevPyr[1][0], &prevY[0], w, h0)
+	frcasm.DownsampleY2x(&h.currPyr[1][0], &currY[0], w, h0)
 
 	// Level 2: quarter resolution
 	w2, h2 := w1/2, h1/2
@@ -579,8 +579,8 @@ func (h *hierarchicalME) estimate(prev, curr *ProcessingFrame, mvf *motionVector
 		h.prevPyr[2] = make([]byte, w2*h2)
 		h.currPyr[2] = make([]byte, w2*h2)
 	}
-	downsampleY2x(h.prevPyr[2][:w2*h2], h.prevPyr[1][:w1*h1], w1, h1)
-	downsampleY2x(h.currPyr[2][:w2*h2], h.currPyr[1][:w1*h1], w1, h1)
+	frcasm.DownsampleY2x(&h.prevPyr[2][0], &h.prevPyr[1][0], w1, h1)
+	frcasm.DownsampleY2x(&h.currPyr[2][0], &h.currPyr[1][0], w1, h1)
 
 	// --- Level 2 (coarsest): full search, no predictor from above ---
 	cols2 := w2 / bs
@@ -789,24 +789,6 @@ func parentPredictor(mvX, mvY []int16, parentCols, parentRows, col, row int) (in
 	return int(mvX[idx]) * 2, int(mvY[idx]) * 2
 }
 
-// downsampleY2x downsamples a Y plane by 2× using box filter (average of 2×2 blocks).
-// dst must be at least (w/2)*(h/2) bytes. src must be at least w*h bytes.
-func downsampleY2x(dst, src []byte, w, h int) {
-	dstW := w / 2
-	for row := 0; row < h/2; row++ {
-		srcRow0 := row * 2 * w
-		srcRow1 := srcRow0 + w
-		dstOff := row * dstW
-		for col := 0; col < dstW; col++ {
-			sc := col * 2
-			a := int(src[srcRow0+sc])
-			b := int(src[srcRow0+sc+1])
-			c := int(src[srcRow1+sc])
-			d := int(src[srcRow1+sc+1])
-			dst[dstOff+col] = byte((a + b + c + d + 2) / 4)
-		}
-	}
-}
 
 // halfPelRefine performs half-pixel refinement on all MVs in the field.
 // For each block, tests 8 half-pel positions around the integer-pel result

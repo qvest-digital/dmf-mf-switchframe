@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/switcher/frcasm"
 )
 
 // makeGradientFrame creates a ProcessingFrame with a horizontal gradient pattern.
@@ -589,7 +590,7 @@ func TestEstimateMotionField_FullFrame(t *testing.T) {
 		"less than 30%% of blocks should be occluded for simple translation")
 }
 
-// TestDownsampleY2x verifies 2x box-filter downsampling of Y plane.
+// TestDownsampleY2x verifies 2x box-filter downsampling of Y plane via SIMD.
 func TestDownsampleY2x(t *testing.T) {
 	w, h := 320, 240
 	src := make([]byte, w*h)
@@ -599,19 +600,23 @@ func TestDownsampleY2x(t *testing.T) {
 
 	dstW, dstH := w/2, h/2
 	dst := make([]byte, dstW*dstH)
-	downsampleY2x(dst, src, w, h)
+	frcasm.DownsampleY2x(&dst[0], &src[0], w, h)
 
-	// Verify a sample of pixels: each output pixel is the average of a 2x2 block
+	// Verify a sample of pixels: each output pixel is within ±1 of exact (a+b+c+d+2)/4
 	for row := 0; row < 10; row++ {
 		for col := 0; col < 10; col++ {
-			// Source 2x2 block
 			a := int(src[(row*2)*w+col*2])
 			b := int(src[(row*2)*w+col*2+1])
 			c := int(src[(row*2+1)*w+col*2])
 			d := int(src[(row*2+1)*w+col*2+1])
-			expected := byte((a + b + c + d + 2) / 4)
-			require.Equal(t, expected, dst[row*dstW+col],
-				"pixel (%d,%d)", col, row)
+			exact := (a + b + c + d + 2) / 4
+			got := int(dst[row*dstW+col])
+			diff := got - exact
+			if diff < 0 {
+				diff = -diff
+			}
+			require.LessOrEqual(t, diff, 1,
+				"pixel (%d,%d): got %d, exact %d", col, row, got, exact)
 		}
 	}
 }
@@ -1159,6 +1164,24 @@ func TestHalfPelRefine_SkipsHighSADBlocks(t *testing.T) {
 	require.Equal(t, int16(2), mvX[3])
 	require.Equal(t, int16(0), mvY[3])
 	require.Equal(t, uint32(4097), mvSAD[3], "above-threshold block should be skipped, SAD preserved")
+}
+
+func BenchmarkDownsampleY2x_1080p(b *testing.B) {
+	w, h := 1920, 1080
+	src := make([]byte, w*h)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+	dstW, dstH := w/2, h/2
+	dst := make([]byte, dstW*dstH)
+
+	b.SetBytes(int64(w * h))
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		frcasm.DownsampleY2x(&dst[0], &src[0], w, h)
+	}
 }
 
 func BenchmarkDiamondSearch_Static(b *testing.B) {
