@@ -453,3 +453,53 @@ Two modes via zsiec/srtgo (pure Go, no cgo). Caller mode pushes to a remote endp
 ### SCTE-35
 
 Splice_insert and time_signal injection into the MPEG-TS stream, PTS-synchronized to the program video clock via `Switcher.LastBroadcastVideoPTS()` (atomic load, 90 kHz MPEG-TS timebase). Auto-return timers end breaks at scheduled duration; hold and extend commands allow manual break management. A splice_null heartbeat goroutine runs at configurable intervals to signal continued presence. Signal conditioning via a rules engine with first-match-wins evaluation supports pass, delete, and replace actions using 8 comparison operators and AND/OR compound conditions. Bidirectional SCTE-104 translation over MXL data flows enables automation system integration -- incoming SCTE-104 messages are translated to SCTE-35 cues for injection, and injected cues are translated back to SCTE-104 for output to downstream automation (with echo suppression for SCTE-104-sourced events).
+
+## 8. Instant Replay
+
+The replay system continuously captures source frames into per-source circular buffers, independent of any operator action. When the director marks in and out points, the system extracts the clip and plays it back at variable speed with pitch-preserved audio. Replay output is routed to a dedicated "replay" relay so browsers can monitor playback without affecting the program.
+
+```mermaid
+sequenceDiagram
+    participant Director
+    participant Server
+    participant Buffer as Circular Buffer
+    participant Player
+    participant ReplayRelay as Replay Relay
+    participant Browser
+
+    Note over Buffer: continuously capturing<br/>(replayViewer → deep copy → circular buffer)
+    Director->>Server: POST /api/replay/mark-in {source: "cam1"}
+    Note over Buffer: mark-in timestamp recorded (wall clock)
+    Director->>Server: POST /api/replay/mark-out {source: "cam1"}
+    Note over Buffer: mark-out timestamp recorded
+    Director->>Server: POST /api/replay/play {source: "cam1", speed: 0.5}
+    Server->>Buffer: ExtractClip(inTime, outTime)
+    Note over Buffer: find GOP-aligned frame range<br/>spanning interval
+    Buffer->>Player: video frames + audio frames
+    Note over Player: decode → sort by PTS → estimate FPS
+
+    loop for each output frame
+        Player->>Player: interpolate frames (blend or MCFI for slow-mo)
+        Player->>Player: time-stretch audio (phase vocoder)
+        Player->>ReplayRelay: pace at source FPS
+    end
+
+    ReplayRelay->>Browser: MoQ "replay" track
+    Director->>Server: POST /api/replay/stop
+```
+
+### Circular Buffers
+
+Per-source GOP-aligned buffers store H.264 frames continuously, configurable from 1 to 300 seconds (default 60s, `--replay-buffer-secs` flag). Frames are deep-copied on capture to prevent race conditions with live processing -- the `replayViewer` attached to each source's relay receives frames via `SendVideo` and copies them into its ring buffer on every call, regardless of whether replay is active. Buffer trimming removes the oldest complete GOP when the buffer exceeds its configured duration. Wall-clock timestamps (`time.Now`) are stored alongside each frame rather than relying on source PTS, simplifying the operator workflow: mark-in and mark-out are just wall-clock instants, and `ExtractClip` finds the GOP-aligned frame range that spans the requested interval.
+
+### Playback Pipeline
+
+The player decodes all extracted frames, sorts by PTS to handle B-frame reorder, and estimates the source FPS from inter-frame timing. For slow-motion playback (speeds below 1.0x), frames are duplicated to fill the time gap -- at 0.25x speed, each source frame is emitted four times. An optional MCFI (motion-compensated frame interpolation) interpolator can synthesize intermediate frames instead of duplicating, using the same motion estimation engine and SIMD SAD kernels as the frame rate conversion system. This produces visually smoother slow-motion at the cost of additional CPU. A simpler alpha-blend interpolator is also available as a lighter alternative. Output is paced at the source FPS via timers, so a 30fps source plays back at 30fps regardless of the speed multiplier.
+
+### Audio Time-Stretching
+
+The primary audio path uses a phase vocoder for pitch-preserved slow-motion: STFT decomposes audio into spectral bins, phase advance is scaled by the stretch factor with spectral peak locking to reduce phasing artifacts, and COLA-normalized overlap-add resynthesizes the output. A WSOLA (Waveform Similarity Overlap-Add) implementation with normalized cross-correlation search serves as fallback if the phase vocoder encounters edge cases. Both paths rely on an FFT implementation with SIMD butterfly kernels on amd64 and arm64 (generic Go fallback on other platforms). At 1.0x speed, audio passes through unmodified -- no time-stretching is applied.
+
+### Loop and Relay
+
+The player supports loop mode, automatically restarting from the beginning of the clip after the last frame is emitted, and continuing until the director explicitly stops playback. Replay output is broadcast to a "replay" relay registered as a separate MoQ stream via `server.RegisterStream("replay")`. Browsers subscribe to this relay independently of the program stream, displaying replay in a dedicated monitor panel. This separation ensures that replay playback -- including looping, speed changes, and stop/start -- never interferes with the live program output or its recording and SRT destinations.
