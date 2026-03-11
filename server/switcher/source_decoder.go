@@ -152,6 +152,7 @@ func (sd *sourceDecoder) decodeLoop() {
 			Codec:      frame.Codec,
 			pool:       framePool,
 		}
+		pf.SetRefs(1) // frame_sync ownership — shared across value copies
 
 		sd.lastGroupID.Store(frame.GroupID)
 		sd.callback(sd.sourceKey, pf)

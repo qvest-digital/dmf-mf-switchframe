@@ -954,3 +954,239 @@ func BenchmarkDiamondSearch_SingleBlock(b *testing.B) {
 		diamondSearch(prevY, w, currY, w, bx, by, w, h, 32, 16, 0, 0)
 	}
 }
+
+// --- Static block early exit tests ---
+
+func TestDiamondSearch_StaticBlockEarlyExit(t *testing.T) {
+	w, h := 320, 240
+	frame := makeGradientFrame(w, h)
+	frameY := frame.YUV[:w*h]
+
+	// Identical frames: SAD(0,0) = 0, which is < staticBlockSADThreshold.
+	// Should return (0,0) with SAD=0 without running diamond iterations.
+	mvx, mvy, sad := diamondSearch(frameY, w, frameY, w, 32, 32, w, h, 32, 16, 0, 0)
+	require.Equal(t, int16(0), mvx)
+	require.Equal(t, int16(0), mvy)
+	require.Equal(t, uint32(0), sad)
+}
+
+func TestDiamondSearch_NearStaticBlockEarlyExit(t *testing.T) {
+	w, h := 320, 240
+	frame := makeGradientFrame(w, h)
+
+	// Create a copy with tiny noise (avg diff < 1 per pixel → SAD < 256)
+	noisy := make([]byte, w*h)
+	copy(noisy, frame.YUV[:w*h])
+	// Add +1 to every other pixel in a 16x16 block at (32,32)
+	for row := 32; row < 48; row++ {
+		for col := 32; col < 48; col += 2 {
+			noisy[row*w+col] = noisy[row*w+col] + 1
+		}
+	}
+	// SAD for this block = 128 (half of 256 pixels differ by 1), well under threshold
+
+	mvx, mvy, sad := diamondSearch(frame.YUV[:w*h], w, noisy, w, 32, 32, w, h, 32, 16, 0, 0)
+	require.Equal(t, int16(0), mvx)
+	require.Equal(t, int16(0), mvy)
+	require.Equal(t, uint32(128), sad)
+}
+
+func TestDiamondSearch_AboveThresholdNoEarlyExit(t *testing.T) {
+	w, h := 320, 240
+
+	// Create two frames with real motion — the early exit should NOT trigger
+	prev := makeGradientFrame(w, h)
+	curr := makeShiftedFrame(w, h, 8, 0)
+
+	// Test interior block where motion is clearly detectable
+	bx, by := 80, 80
+	mvx, mvy, sad := diamondSearch(prev.YUV[:w*h], w, curr.YUV[:w*h], w, bx, by, w, h, 32, 16, 0, 0)
+
+	// The block shifted 8px right, so fwd MV should be (8,0)
+	require.Equal(t, int16(8), mvx, "should find real motion, not early-exit")
+	require.Equal(t, int16(0), mvy)
+	require.Equal(t, uint32(0), sad, "perfect match at correct MV")
+}
+
+func TestDiamondSearch_StaticWithNonZeroPredictor(t *testing.T) {
+	w, h := 320, 240
+	frame := makeGradientFrame(w, h)
+	frameY := frame.YUV[:w*h]
+
+	// Even with a non-zero predictor, identical frames have SAD(0,0) = 0.
+	// The early exit should fire and return (0,0), not the predictor.
+	mvx, mvy, sad := diamondSearch(frameY, w, frameY, w, 64, 64, w, h, 32, 16, 5, 3)
+	require.Equal(t, int16(0), mvx)
+	require.Equal(t, int16(0), mvy)
+	require.Equal(t, uint32(0), sad)
+}
+
+func TestEstimateMotionField_StaticFrameAllZero(t *testing.T) {
+	// Full-frame test: with identical frames, every block should early-exit
+	// and produce MV=(0,0), SAD=0.
+	w, h := 320, 240
+	frame := makeGradientFrame(w, h)
+
+	mvf := newMotionVectorField(w, h, 16)
+	estimateMotionField(frame, frame, mvf, 32)
+
+	for row := 0; row < mvf.rows; row++ {
+		for col := 0; col < mvf.cols; col++ {
+			idx := row*mvf.cols + col
+			require.Equal(t, int16(0), mvf.fwdX[idx], "fwdX at (%d,%d)", col, row)
+			require.Equal(t, int16(0), mvf.fwdY[idx], "fwdY at (%d,%d)", col, row)
+			require.Equal(t, uint32(0), mvf.fwdSAD[idx], "fwdSAD at (%d,%d)", col, row)
+		}
+	}
+}
+
+func TestDiamondSearch_JustBelowThreshold(t *testing.T) {
+	w, h := 320, 240
+	frame := makeGradientFrame(w, h)
+
+	// Create a copy where the block at (32,32) has SAD exactly 255 (just below 256)
+	modified := make([]byte, w*h)
+	copy(modified, frame.YUV[:w*h])
+	// Set 255 pixels to differ by 1 each, last pixel identical → SAD = 255
+	count := 0
+	for row := 32; row < 48 && count < 255; row++ {
+		for col := 32; col < 48 && count < 255; col++ {
+			modified[row*w+col] = modified[row*w+col] + 1
+			count++
+		}
+	}
+
+	mvx, mvy, sad := diamondSearch(frame.YUV[:w*h], w, modified, w, 32, 32, w, h, 32, 16, 0, 0)
+	require.Equal(t, int16(0), mvx)
+	require.Equal(t, int16(0), mvy)
+	require.Equal(t, uint32(255), sad)
+	// SAD=255 < 256, should early-exit with (0,0)
+}
+
+func TestDiamondSearch_AtThresholdNoEarlyExit(t *testing.T) {
+	w, h := 320, 240
+
+	// Use a random-ish frame to avoid gradient periodicity artifacts.
+	// Fill with pseudo-random values so no MV shift can reduce SAD.
+	src := make([]byte, w*h)
+	rng := uint32(42)
+	for i := range src {
+		rng = rng*1664525 + 1013904223 // LCG
+		src[i] = byte(rng >> 24)
+	}
+
+	// Create a copy where block at (32,32) differs by exactly 1 per pixel → SAD=256
+	modified := make([]byte, w*h)
+	copy(modified, src)
+	for row := 32; row < 48; row++ {
+		for col := 32; col < 48; col++ {
+			if modified[row*w+col] < 255 {
+				modified[row*w+col]++
+			} else {
+				modified[row*w+col]--
+			}
+		}
+	}
+
+	_, _, sad := diamondSearch(src, w, modified, w, 32, 32, w, h, 32, 16, 0, 0)
+	// SAD(0,0) = 256, which is NOT < 256, so early exit should NOT trigger.
+	// Diamond search runs. With random data, no other MV should beat (0,0),
+	// so the final SAD should still be 256.
+	require.Equal(t, uint32(256), sad)
+}
+
+func TestHalfPelRefine_SkipsHighSADBlocks(t *testing.T) {
+	// A block with very high integer-pel SAD should skip half-pel refinement
+	// entirely, just converting MVs to half-pel units (multiply by 2).
+	//
+	// Test strategy: use identical cur/ref frames with MV=(1,0). The integer-
+	// pel position (1,0) has nonzero SAD (~1792 for the 7-step pattern). The
+	// half-pel position (1,0) in half-pel units has lower SAD (~768). When
+	// refinement runs, it discovers this improvement and updates the SAD.
+	// When skipped, the artificial SAD is preserved exactly.
+
+	w, h := 320, 240
+	bs := 16
+	cols := w / bs
+
+	// Deterministic pattern — adjacent pixels differ by 7
+	frame := make([]byte, w*h)
+	for i := range frame {
+		frame[i] = byte((i*7 + 13) % 256)
+	}
+
+	n := cols * (h / bs)
+	mvX := make([]int16, n)
+	mvY := make([]int16, n)
+	mvSAD := make([]uint32, n)
+
+	// Block 0: MV=(1,0), SAD=5000 > threshold. Should be SKIPPED.
+	mvX[0] = 1
+	mvY[0] = 0
+	mvSAD[0] = 5000
+
+	// Block 1: MV=(1,0), SAD=4000 < threshold. Refinement runs, finds
+	// half-pel improvement and updates SAD to < 4000.
+	mvX[1] = 1
+	mvY[1] = 0
+	mvSAD[1] = 4000
+
+	// Block 2: MV=(1,0), SAD=4096 (at threshold). Should NOT skip (> not >=).
+	mvX[2] = 1
+	mvY[2] = 0
+	mvSAD[2] = 4096
+
+	// Block 3: MV=(1,0), SAD=4097 (just above). Should be SKIPPED.
+	mvX[3] = 1
+	mvY[3] = 0
+	mvSAD[3] = 4097
+
+	halfPelRefineRows(mvX, mvY, mvSAD, frame, frame, w, h, bs, cols, 0, 1)
+
+	// Block 0 (SAD=5000 > 4096): should be SKIPPED
+	// MV converted to half-pel: (1,0) → (2,0), SAD unchanged at 5000
+	require.Equal(t, int16(2), mvX[0])
+	require.Equal(t, int16(0), mvY[0])
+	require.Equal(t, uint32(5000), mvSAD[0], "high-SAD block should be skipped, SAD preserved")
+
+	// Block 1 (SAD=4000 < 4096): half-pel RUNS, finds improvement
+	require.Less(t, mvSAD[1], uint32(4000), "low-SAD block should be refined, SAD improved")
+
+	// Block 2 (SAD=4096, at threshold): half-pel RUNS (> not >=)
+	require.Less(t, mvSAD[2], uint32(4096), "at-threshold block should be refined, SAD improved")
+
+	// Block 3 (SAD=4097 > 4096): should be SKIPPED, SAD unchanged
+	require.Equal(t, int16(2), mvX[3])
+	require.Equal(t, int16(0), mvY[3])
+	require.Equal(t, uint32(4097), mvSAD[3], "above-threshold block should be skipped, SAD preserved")
+}
+
+func BenchmarkDiamondSearch_Static(b *testing.B) {
+	w, h := 1920, 1080
+	frame := makeGradientFrame(w, h)
+	frameY := frame.YUV[:w*h]
+	bx, by := 960, 540
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		diamondSearch(frameY, w, frameY, w, bx, by, w, h, 32, 16, 0, 0)
+	}
+}
+
+func BenchmarkDiamondSearch_Moving(b *testing.B) {
+	w, h := 1920, 1080
+	prev := makeGradientFrame(w, h)
+	curr := makeShiftedFrame(w, h, 8, 0)
+	prevY := prev.YUV[:w*h]
+	currY := curr.YUV[:w*h]
+	bx, by := 960, 540
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		diamondSearch(prevY, w, currY, w, bx, by, w, h, 32, 16, 0, 0)
+	}
+}

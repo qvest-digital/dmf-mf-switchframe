@@ -203,7 +203,7 @@ func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 }
 
 // Fix 4: rawSinkNode.Process should release the DeepCopy'd frame after sink callback.
-func TestRawSinkNode_ReleasesDeepCopy(t *testing.T) {
+func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
 
@@ -218,12 +218,13 @@ func TestRawSinkNode_ReleasesDeepCopy(t *testing.T) {
 
 	node := &rawSinkNode{sink: &atomicSink, name: "test-sink"}
 
-	// Create a source frame.
+	// Create a refcounted source frame (as pipeline frames are).
 	src := &ProcessingFrame{
 		YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool,
 	}
+	src.SetRefs(1)
 
-	// Process creates a DeepCopy and passes to sink.
+	// Process uses zero-copy: Ref before sink, ReleaseYUV after.
 	result := node.Process(nil, src)
 	if result != src {
 		t.Fatal("Process should return src unchanged")
@@ -232,21 +233,27 @@ func TestRawSinkNode_ReleasesDeepCopy(t *testing.T) {
 		t.Fatal("sink should have received a frame")
 	}
 
-	// The DeepCopy'd frame passed to the sink should have its YUV released
-	// after the sink callback returns.
-	if sinkReceived.YUV != nil {
-		t.Error("sinkReceived.YUV should be nil (DeepCopy released after sink)")
+	// Zero-copy: sink received the same frame (same pointer).
+	if sinkReceived != src {
+		t.Error("sink should receive the same frame (zero-copy)")
 	}
 
-	// Pool should have gotten the DeepCopy's buffer back.
-	// 4 initial - 1 (src) - 1 (deep copy) + 1 (released copy) = 3 free.
-	// Acquire 3 more to verify.
-	for i := 0; i < 3; i++ {
-		pool.Acquire()
+	// Frame stays alive — pipeline still holds refs=1.
+	if src.YUV == nil {
+		t.Error("src.YUV should still be alive (pipeline ref outstanding)")
 	}
+
+	// No pool misses: zero-copy means no buffer was acquired for a deep copy.
+	// Only 1 acquire total (the src frame).
 	_, misses := pool.Stats()
 	if misses != 0 {
-		t.Errorf("pool misses = %d, want 0 (DeepCopy buffer should be returned)", misses)
+		t.Errorf("pool misses = %d, want 0 (no DeepCopy allocation)", misses)
+	}
+
+	// Final release by pipeline owner.
+	src.ReleaseYUV()
+	if src.YUV != nil {
+		t.Error("src.YUV should be nil after final release")
 	}
 }
 

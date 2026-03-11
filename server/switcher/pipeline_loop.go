@@ -86,9 +86,17 @@ func (p *Pipeline) SetMetrics(m *metrics.Metrics) {
 
 // Run processes a single frame through all active nodes.
 // Called on pipeline goroutine (single-threaded).
+//
+// MakeWritable ensures the pipeline owns its YUV buffer before any node
+// modifies it in-place. Source frames delivered via shallow copy (Ref) from
+// frame_sync remain untouched — critical for PIP fill cache correctness.
 func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
 	p.inflight.Add(1)
 	defer p.inflight.Done()
+
+	// Ensure exclusive ownership before in-place processing.
+	// No-op when frame is already sole owner (unmanaged or refs==1).
+	frame.MakeWritable(p.pool)
 
 	start := time.Now().UnixNano()
 	for i, node := range p.activeNodes {

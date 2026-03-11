@@ -21,9 +21,9 @@ func (n *rawSinkNode) Close() error                          { return nil }
 
 func (n *rawSinkNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	if sinkPtr := n.sink.Load(); sinkPtr != nil {
-		cp := src.DeepCopy()
-		(*sinkPtr)(cp)
-		cp.ReleaseYUV()
+		src.Ref()        // +1 for sink
+		(*sinkPtr)(src)  // sink reads YUV synchronously
+		src.ReleaseYUV() // -1 for sink (pipeline's ref remains)
 	}
 	return src
 }

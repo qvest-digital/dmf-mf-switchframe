@@ -36,6 +36,65 @@ func referenceSadRow(a, b []byte) uint64 {
 	return sad
 }
 
+// referenceHpelH computes horizontal half-pel SAD using PAVGB/URHADD rounding.
+func referenceHpelH(cur, ref []byte, curStride, refStride int) uint32 {
+	var sad uint32
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			a := int(ref[row*refStride+col])
+			b := int(ref[row*refStride+col+1])
+			interp := (a + b + 1) >> 1
+			d := int(cur[row*curStride+col]) - interp
+			if d < 0 {
+				d = -d
+			}
+			sad += uint32(d)
+		}
+	}
+	return sad
+}
+
+// referenceHpelV computes vertical half-pel SAD using PAVGB/URHADD rounding.
+func referenceHpelV(cur, ref []byte, curStride, refStride int) uint32 {
+	var sad uint32
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			a := int(ref[row*refStride+col])
+			b := int(ref[(row+1)*refStride+col])
+			interp := (a + b + 1) >> 1
+			d := int(cur[row*curStride+col]) - interp
+			if d < 0 {
+				d = -d
+			}
+			sad += uint32(d)
+		}
+	}
+	return sad
+}
+
+// referenceHpelD computes diagonal half-pel SAD using cascaded PAVGB/URHADD rounding.
+// Uses avg(avg(a,b), avg(c,d)) to match hardware behavior.
+func referenceHpelD(cur, ref []byte, curStride, refStride int) uint32 {
+	var sad uint32
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			a := int(ref[row*refStride+col])
+			b := int(ref[row*refStride+col+1])
+			c := int(ref[(row+1)*refStride+col])
+			d := int(ref[(row+1)*refStride+col+1])
+			avgTop := (a + b + 1) >> 1
+			avgBot := (c + d + 1) >> 1
+			interp := (avgTop + avgBot + 1) >> 1
+			diff := int(cur[row*curStride+col]) - interp
+			if diff < 0 {
+				diff = -diff
+			}
+			sad += uint32(diff)
+		}
+	}
+	return sad
+}
+
 // --- SadBlock16x16 tests ---
 
 func TestSadBlock16x16_Identical(t *testing.T) {
@@ -273,5 +332,502 @@ func BenchmarkSadRow_960(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		SadRow(&a[0], &bb[0], n)
+	}
+}
+
+// --- SadBlock16x16HpelH tests ---
+
+func TestHpelH_Identical(t *testing.T) {
+	// ref is uniform → avg(val, val) = val → SAD vs identical cur = 0
+	stride := 32 // need 17 bytes per row, use 32 for alignment
+	cur := make([]byte, 16*stride)
+	ref := make([]byte, 16*stride)
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 17; col++ {
+			cur[row*stride+col] = 128
+			ref[row*stride+col] = 128
+		}
+	}
+	got := SadBlock16x16HpelH(&cur[0], &ref[0], stride, stride)
+	require.Equal(t, uint32(0), got, "identical uniform blocks should give SAD=0")
+}
+
+func TestHpelH_KnownPattern(t *testing.T) {
+	// ref[x]=100, ref[x+1]=200 → interp = (100+200+1)>>1 = 150
+	// cur = 150 → SAD = 0
+	stride := 32
+	cur := make([]byte, 16*stride)
+	ref := make([]byte, 16*stride)
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			ref[row*stride+col] = 100
+			ref[row*stride+col+1] = 200 // will be overwritten for col < 15, that's fine
+			cur[row*stride+col] = 150
+		}
+		// Fix: ref needs alternating 100, 200 for the whole row
+		for col := 0; col < 17; col++ {
+			if col%2 == 0 {
+				ref[row*stride+col] = 100
+			} else {
+				ref[row*stride+col] = 200
+			}
+		}
+	}
+	got := SadBlock16x16HpelH(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelH(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "known horizontal half-pel pattern")
+}
+
+func TestHpelH_CrossValidate(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 16*stride)
+	ref := make([]byte, 16*stride)
+	for i := range cur {
+		cur[i] = byte((i*7 + 13) % 256)
+		ref[i] = byte((i*11 + 37) % 256)
+	}
+	got := SadBlock16x16HpelH(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelH(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelH cross-validation with pseudo-random data")
+}
+
+func TestHpelH_NonContiguous(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 16*stride)
+	ref := make([]byte, 16*stride)
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 17; col++ {
+			cur[row*stride+col] = byte(row*16 + col)
+			ref[row*stride+col] = byte((row*16 + col + 5) % 256)
+		}
+		// Poison bytes beyond block that should not be touched
+		for col := 18; col < 32; col++ {
+			cur[row*stride+col] = 255
+			ref[row*stride+col] = 0
+		}
+	}
+	got := SadBlock16x16HpelH(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelH(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelH non-contiguous stride=%d", stride)
+}
+
+// --- SadBlock16x16HpelV tests ---
+
+func TestHpelV_Identical(t *testing.T) {
+	stride := 32
+	cur := make([]byte, 17*stride) // 17 rows for ref
+	ref := make([]byte, 17*stride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 16; col++ {
+			if row < 16 {
+				cur[row*stride+col] = 128
+			}
+			ref[row*stride+col] = 128
+		}
+	}
+	got := SadBlock16x16HpelV(&cur[0], &ref[0], stride, stride)
+	require.Equal(t, uint32(0), got, "identical uniform blocks should give SAD=0")
+}
+
+func TestHpelV_KnownPattern(t *testing.T) {
+	// ref row Y = 100, ref row Y+1 = 200 → interp = 150
+	stride := 32
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 16; col++ {
+			if row%2 == 0 {
+				ref[row*stride+col] = 100
+			} else {
+				ref[row*stride+col] = 200
+			}
+			if row < 16 {
+				cur[row*stride+col] = 150
+			}
+		}
+	}
+	got := SadBlock16x16HpelV(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelV(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "known vertical half-pel pattern")
+}
+
+func TestHpelV_CrossValidate(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for i := range cur {
+		cur[i] = byte((i*7 + 13) % 256)
+	}
+	for i := range ref {
+		ref[i] = byte((i*11 + 37) % 256)
+	}
+	got := SadBlock16x16HpelV(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelV(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelV cross-validation with pseudo-random data")
+}
+
+func TestHpelV_NonContiguous(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 16; col++ {
+			ref[row*stride+col] = byte((row*16 + col + 5) % 256)
+			if row < 16 {
+				cur[row*stride+col] = byte(row*16 + col)
+			}
+		}
+	}
+	got := SadBlock16x16HpelV(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelV(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelV non-contiguous stride=%d", stride)
+}
+
+// --- SadBlock16x16HpelD tests ---
+
+func TestHpelD_Identical(t *testing.T) {
+	stride := 32
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 17; col++ {
+			ref[row*stride+col] = 128
+			if row < 16 && col < 16 {
+				cur[row*stride+col] = 128
+			}
+		}
+	}
+	got := SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	require.Equal(t, uint32(0), got, "identical uniform blocks should give SAD=0")
+}
+
+func TestHpelD_CrossValidate(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for i := range cur {
+		cur[i] = byte((i*7 + 13) % 256)
+	}
+	for i := range ref {
+		ref[i] = byte((i*11 + 37) % 256)
+	}
+	got := SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelD(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelD cross-validation with pseudo-random data")
+}
+
+func TestHpelD_NonContiguous(t *testing.T) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 17; col++ {
+			ref[row*stride+col] = byte((row*17 + col + 3) % 256)
+			if row < 16 && col < 16 {
+				cur[row*stride+col] = byte(row*16 + col)
+			}
+		}
+	}
+	got := SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	expected := referenceHpelD(cur, ref, stride, stride)
+	require.Equal(t, expected, got, "HpelD non-contiguous stride=%d", stride)
+}
+
+func TestHpelD_KnownCorners(t *testing.T) {
+	// All ref pixels = 0, cur = 0 → SAD = 0
+	stride := 32
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	got := SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	require.Equal(t, uint32(0), got, "all-zero blocks")
+
+	// All ref pixels = 255, cur = 255 → interp = avg(avg(255,255),avg(255,255)) = 255 → SAD = 0
+	for i := range cur {
+		cur[i] = 255
+	}
+	for i := range ref {
+		ref[i] = 255
+	}
+	got = SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	require.Equal(t, uint32(0), got, "all-255 blocks")
+}
+
+func TestHpelD_Asymmetric(t *testing.T) {
+	// Test with different cur/ref strides
+	curStride := 32
+	refStride := 64
+	cur := make([]byte, 16*curStride)
+	ref := make([]byte, 17*refStride)
+	for row := 0; row < 17; row++ {
+		for col := 0; col < 17; col++ {
+			ref[row*refStride+col] = byte((row*17 + col*3) % 256)
+			if row < 16 && col < 16 {
+				cur[row*curStride+col] = byte((row*16 + col*5) % 256)
+			}
+		}
+	}
+	got := SadBlock16x16HpelD(&cur[0], &ref[0], curStride, refStride)
+	expected := referenceHpelD(cur, ref, curStride, refStride)
+	require.Equal(t, expected, got, "HpelD asymmetric strides cur=%d ref=%d", curStride, refStride)
+}
+
+// --- Half-pel benchmarks ---
+
+func BenchmarkSadBlock16x16HpelH(b *testing.B) {
+	stride := 1920
+	cur := make([]byte, 16*stride)
+	ref := make([]byte, 16*stride)
+	for i := range cur {
+		cur[i] = byte(i % 256)
+		ref[i] = byte((i * 3) % 256)
+	}
+	b.SetBytes(16 * 16 * 2)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SadBlock16x16HpelH(&cur[0], &ref[0], stride, stride)
+	}
+}
+
+func BenchmarkSadBlock16x16HpelV(b *testing.B) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for i := range cur {
+		cur[i] = byte(i % 256)
+	}
+	for i := range ref {
+		ref[i] = byte((i * 3) % 256)
+	}
+	b.SetBytes(16 * 16 * 2)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SadBlock16x16HpelV(&cur[0], &ref[0], stride, stride)
+	}
+}
+
+func BenchmarkSadBlock16x16HpelD(b *testing.B) {
+	stride := 1920
+	cur := make([]byte, 17*stride)
+	ref := make([]byte, 17*stride)
+	for i := range cur {
+		cur[i] = byte(i % 256)
+	}
+	for i := range ref {
+		ref[i] = byte((i * 3) % 256)
+	}
+	b.SetBytes(16 * 16 * 2)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SadBlock16x16HpelD(&cur[0], &ref[0], stride, stride)
+	}
+}
+
+// --- SadBlock16x16x4 tests ---
+
+// referenceSadBlock16x16x4 computes 4 SADs independently using the scalar reference.
+func referenceSadBlock16x16x4(cur []byte, refs [4][]byte, curStride, refStride int) [4]uint32 {
+	var result [4]uint32
+	for i := 0; i < 4; i++ {
+		result[i] = referenceSadBlock16x16(cur, refs[i], curStride, refStride)
+	}
+	return result
+}
+
+func TestSadBlock16x16x4_Identical(t *testing.T) {
+	block := make([]byte, 16*16)
+	for i := range block {
+		block[i] = byte(i % 256)
+	}
+	refs := [4]*byte{&block[0], &block[0], &block[0], &block[0]}
+	got := SadBlock16x16x4(&block[0], refs, 16, 16)
+	require.Equal(t, [4]uint32{0, 0, 0, 0}, got, "all refs identical to cur should give all zeros")
+}
+
+func TestSadBlock16x16x4_KnownDiffs(t *testing.T) {
+	cur := make([]byte, 16*16)
+	for i := range cur {
+		cur[i] = 100
+	}
+	// 4 reference blocks with different per-pixel offsets
+	refs := [4][]byte{
+		make([]byte, 16*16), // diff=1 → SAD=256
+		make([]byte, 16*16), // diff=5 → SAD=1280
+		make([]byte, 16*16), // diff=10 → SAD=2560
+		make([]byte, 16*16), // diff=50 → SAD=12800
+	}
+	for i := range refs[0] {
+		refs[0][i] = 101
+		refs[1][i] = 105
+		refs[2][i] = 110
+		refs[3][i] = 150
+	}
+	refPtrs := [4]*byte{&refs[0][0], &refs[1][0], &refs[2][0], &refs[3][0]}
+	got := SadBlock16x16x4(&cur[0], refPtrs, 16, 16)
+	require.Equal(t, [4]uint32{256, 1280, 2560, 12800}, got)
+}
+
+func TestSadBlock16x16x4_NonContiguous(t *testing.T) {
+	stride := 1920
+	frame := make([]byte, 16*stride)
+	for i := range frame {
+		frame[i] = 100
+	}
+	// 4 reference blocks at different offsets within a frame-sized buffer
+	refFrames := [4][]byte{
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+	}
+	diffs := [4]byte{3, 7, 15, 30}
+	for r := 0; r < 4; r++ {
+		for row := 0; row < 16; row++ {
+			for col := 0; col < 16; col++ {
+				refFrames[r][row*stride+col] = 100 + diffs[r]
+			}
+		}
+	}
+	refPtrs := [4]*byte{&refFrames[0][0], &refFrames[1][0], &refFrames[2][0], &refFrames[3][0]}
+	got := SadBlock16x16x4(&frame[0], refPtrs, stride, stride)
+	expected := [4]uint32{
+		16 * 16 * uint32(diffs[0]),
+		16 * 16 * uint32(diffs[1]),
+		16 * 16 * uint32(diffs[2]),
+		16 * 16 * uint32(diffs[3]),
+	}
+	require.Equal(t, expected, got, "non-contiguous with stride=%d", stride)
+}
+
+func TestSadBlock16x16x4_AsymmetricStrides(t *testing.T) {
+	curStride := 32
+	refStride := 64
+	cur := make([]byte, 16*curStride)
+	refs := [4][]byte{
+		make([]byte, 16*refStride),
+		make([]byte, 16*refStride),
+		make([]byte, 16*refStride),
+		make([]byte, 16*refStride),
+	}
+	for row := 0; row < 16; row++ {
+		for col := 0; col < 16; col++ {
+			cur[row*curStride+col] = byte(row + col)
+		}
+	}
+	for r := 0; r < 4; r++ {
+		for row := 0; row < 16; row++ {
+			for col := 0; col < 16; col++ {
+				refs[r][row*refStride+col] = byte(row + col + r + 1)
+			}
+		}
+	}
+	refPtrs := [4]*byte{&refs[0][0], &refs[1][0], &refs[2][0], &refs[3][0]}
+	got := SadBlock16x16x4(&cur[0], refPtrs, curStride, refStride)
+	expected := referenceSadBlock16x16x4(cur, refs, curStride, refStride)
+	require.Equal(t, expected, got, "asymmetric strides cur=%d ref=%d", curStride, refStride)
+}
+
+func TestSadBlock16x16x4_CrossValidate(t *testing.T) {
+	// Cross-validate batched x4 against 4 individual SadBlock16x16 calls
+	stride := 48
+	cur := make([]byte, 16*stride)
+	refs := [4][]byte{
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+	}
+	for i := range cur {
+		cur[i] = byte((i*7 + 13) % 256)
+	}
+	for r := 0; r < 4; r++ {
+		for i := range refs[r] {
+			refs[r][i] = byte((i*(11+r*3) + 37 + r*17) % 256)
+		}
+	}
+
+	refPtrs := [4]*byte{&refs[0][0], &refs[1][0], &refs[2][0], &refs[3][0]}
+	got := SadBlock16x16x4(&cur[0], refPtrs, stride, stride)
+
+	// Compare against individual calls
+	for i := 0; i < 4; i++ {
+		individual := SadBlock16x16(&cur[0], refPtrs[i], stride, stride)
+		require.Equal(t, individual, got[i], "x4[%d] should match individual SadBlock16x16", i)
+	}
+}
+
+func TestSadBlock16x16x4_MatchesReference(t *testing.T) {
+	// Cross-validate against pure Go reference implementation
+	cur := make([]byte, 16*16)
+	refs := [4][]byte{
+		make([]byte, 16*16),
+		make([]byte, 16*16),
+		make([]byte, 16*16),
+		make([]byte, 16*16),
+	}
+	for i := range cur {
+		cur[i] = byte((i*13 + 7) % 256)
+	}
+	for r := 0; r < 4; r++ {
+		for i := range refs[r] {
+			refs[r][i] = byte((i*(17+r*5) + 41 + r*23) % 256)
+		}
+	}
+	refPtrs := [4]*byte{&refs[0][0], &refs[1][0], &refs[2][0], &refs[3][0]}
+	got := SadBlock16x16x4(&cur[0], refPtrs, 16, 16)
+	expected := referenceSadBlock16x16x4(cur, refs, 16, 16)
+	require.Equal(t, expected, got, "batched should match reference")
+}
+
+func BenchmarkSadBlock16x16x4(b *testing.B) {
+	stride := 1920
+	cur := make([]byte, 16*stride)
+	refBufs := [4][]byte{
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+	}
+	for i := range cur {
+		cur[i] = byte(i % 256)
+	}
+	for r := 0; r < 4; r++ {
+		for i := range refBufs[r] {
+			refBufs[r][i] = byte((i*(3+r) + r*17) % 256)
+		}
+	}
+	refs := [4]*byte{&refBufs[0][0], &refBufs[1][0], &refBufs[2][0], &refBufs[3][0]}
+	b.SetBytes(16 * 16 * 5) // cur + 4 refs
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SadBlock16x16x4(&cur[0], refs, stride, stride)
+	}
+}
+
+func BenchmarkSadBlock16x16x4_vs_4xSingle(b *testing.B) {
+	// Baseline: 4 individual SadBlock16x16 calls (what batching replaces)
+	stride := 1920
+	cur := make([]byte, 16*stride)
+	refBufs := [4][]byte{
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+		make([]byte, 16*stride),
+	}
+	for i := range cur {
+		cur[i] = byte(i % 256)
+	}
+	for r := 0; r < 4; r++ {
+		for i := range refBufs[r] {
+			refBufs[r][i] = byte((i*(3+r) + r*17) % 256)
+		}
+	}
+	refs := [4]*byte{&refBufs[0][0], &refBufs[1][0], &refBufs[2][0], &refBufs[3][0]}
+	b.SetBytes(16 * 16 * 5)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		SadBlock16x16(&cur[0], refs[0], stride, stride)
+		SadBlock16x16(&cur[0], refs[1], stride, stride)
+		SadBlock16x16(&cur[0], refs[2], stride, stride)
+		SadBlock16x16(&cur[0], refs[3], stride, stride)
 	}
 }

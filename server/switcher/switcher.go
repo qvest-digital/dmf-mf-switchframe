@@ -1116,17 +1116,34 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		GroupID: groupID,
 		pool:    s.framePool,
 	}
+	pf.SetRefs(1)
 	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
 }
 
 // broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
-// pipeline. Deep-copies and enqueues for pipeline processing.
+// pipeline. For refcounted frames (from source_decoder via frame_sync), uses
+// Ref + shallow copy for zero-copy delivery to the pipeline goroutine. The
+// pipeline's MakeWritable call ensures exclusive buffer ownership before any
+// in-place modification, so source frames retained by frame_sync (lastRawVideo)
+// are never mutated. For unmanaged frames (FRC scratch buffers), falls back to
+// DeepCopy since FRC reuses its internal scratch buffers between calls.
 func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 	if s.pipeline.Load() == nil {
 		return
 	}
-	cp := pf.DeepCopy()
-	s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
+	if pf.refs != nil {
+		// Managed frame: Ref for pipeline, shallow copy shares YUV + refs.
+		// Pipeline.Run calls MakeWritable before in-place processing.
+		pf.Ref()
+		cp := new(ProcessingFrame)
+		*cp = *pf
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
+	} else {
+		// Unmanaged frame (FRC scratch buffer): must deep-copy.
+		cp := pf.DeepCopy()
+		cp.SetRefs(1)
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp})
+	}
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current

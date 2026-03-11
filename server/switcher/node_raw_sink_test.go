@@ -26,38 +26,41 @@ func TestRawSinkNode_ActiveWhenSinkSet(t *testing.T) {
 	require.True(t, n.Active())
 }
 
-func TestRawSinkNode_ProcessDeepCopies(t *testing.T) {
+func TestRawSinkNode_ProcessZeroCopy(t *testing.T) {
 	var sink atomic.Pointer[RawVideoSink]
-	var receivedByte byte
+	var receivedYUV []byte
 	var receivedPTS int64
 	var called bool
 	fn := RawVideoSink(func(pf *ProcessingFrame) {
 		called = true
-		receivedByte = pf.YUV[0]
+		receivedYUV = pf.YUV
 		receivedPTS = pf.PTS
 	})
 	sink.Store(&fn)
 
 	n := &rawSinkNode{sink: &sink, name: "raw-sink-test"}
 
+	srcYUV := make([]byte, 8*8*3/2)
+	srcYUV[0] = 0xAA
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 8*8*3/2),
+		YUV:    srcYUV,
 		Width:  8,
 		Height: 8,
 		PTS:    1000,
 	}
-	pf.YUV[0] = 0xAA
+	pf.SetRefs(1) // pipeline frames are refcounted
 
 	out := n.Process(nil, pf)
 	require.Same(t, pf, out, "Process should return src (passthrough)")
 
 	require.True(t, called, "sink should have been called")
-	require.Equal(t, byte(0xAA), receivedByte, "sink should receive correct data via deep copy")
 	require.Equal(t, int64(1000), receivedPTS)
 
-	// Verify deep copy — modifying original should not have affected received data
-	pf.YUV[0] = 0xBB
-	require.Equal(t, byte(0xAA), receivedByte, "sink should have received a deep copy")
+	// Zero-copy: sink received the same YUV buffer, not a deep copy
+	require.Same(t, &srcYUV[0], &receivedYUV[0], "sink should receive same YUV buffer (zero-copy)")
+	// Frame stays alive for the pipeline (refs=1 after Ref+ReleaseYUV cycle)
+	require.NotNil(t, out.YUV)
+	require.Equal(t, int32(1), pf.Refs())
 }
 
 func TestRawSinkNode_ProcessSkipsNilSink(t *testing.T) {

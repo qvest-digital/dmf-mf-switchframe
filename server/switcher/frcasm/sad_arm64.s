@@ -28,6 +28,11 @@
 // Encoding: 0x6EB03800 | Rn<<5 | Rd
 #define UADDLV_S4(Vd, Vn) WORD $(0x6EB03800 | ((Vn)<<5) | (Vd))
 
+// URHADD Vd.16B, Vn.16B, Vm.16B — unsigned rounding halving add
+// Computes (a + b + 1) >> 1 per byte (same semantics as x86 PAVGB).
+// Encoding: 0x6E201400 | Rm<<16 | Rn<<5 | Rd
+#define URHADD_16B(Vd, Vn, Vm) WORD $(0x6E201400 | ((Vm)<<16) | ((Vn)<<5) | (Vd))
+
 
 // ============================================================================
 // func SadBlock16x16(a, b *byte, aStride, bStride int) uint32
@@ -63,6 +68,93 @@ sad16x16_loop:
 	UADDLV_H8(3, 3)            // V3.S[0] = sum of 8 halfwords
 	VMOV V3.S[0], R0
 	MOVW R0, ret+32(FP)
+	RET
+
+
+// ============================================================================
+// func SadBlock16x16x4(cur *byte, refs [4]*byte, curStride, refStride int) [4]uint32
+// ============================================================================
+// Computes 4 SADs in one pass: loads each current-block row once, computes
+// UABD against 4 reference rows, accumulates into 4 independent halfword
+// accumulators (V4-V7.8H). Reduces each with UADDLV at the end.
+//
+// Stack layout (Go ABI0):
+//   cur        +0(FP)     *byte
+//   refs[0]    +8(FP)     *byte
+//   refs[1]    +16(FP)    *byte
+//   refs[2]    +24(FP)    *byte
+//   refs[3]    +32(FP)    *byte
+//   curStride  +40(FP)    int
+//   refStride  +48(FP)    int
+//   ret[0]     +56(FP)    uint32
+//   ret[1]     +60(FP)    uint32
+//   ret[2]     +64(FP)    uint32
+//   ret[3]     +68(FP)    uint32
+//
+// Registers:
+//   R0 = cur, R5-R8 = ref0-ref3, R2 = curStride, R3 = refStride, R4 = counter
+//   V0 = cur row, V1 = ref row (temp), V2 = absdiff (temp)
+//   V4-V7.8H = accumulators for refs 0-3
+TEXT ·SadBlock16x16x4(SB), NOSPLIT, $0-72
+	MOVD cur+0(FP), R0          // current block pointer
+	MOVD refs+8(FP), R5         // ref0
+	MOVD refs+16(FP), R6        // ref1
+	MOVD refs+24(FP), R7        // ref2
+	MOVD refs+32(FP), R8        // ref3
+	MOVD curStride+40(FP), R2   // cur stride
+	MOVD refStride+48(FP), R3   // ref stride
+
+	// Zero accumulators
+	VEOR V4.B16, V4.B16, V4.B16 // acc0
+	VEOR V5.B16, V5.B16, V5.B16 // acc1
+	VEOR V6.B16, V6.B16, V6.B16 // acc2
+	VEOR V7.B16, V7.B16, V7.B16 // acc3
+
+	MOVD $16, R4                // row counter
+
+sadx4_neon_loop:
+	VLD1 (R0), [V0.B16]        // load current row (shared)
+
+	VLD1 (R5), [V1.B16]        // load ref0 row
+	UABD_16B(2, 0, 1)          // V2 = |cur - ref0|
+	UADALP_8H(4, 2)            // V4.8H += pairwise_add(V2)
+
+	VLD1 (R6), [V1.B16]        // load ref1 row
+	UABD_16B(2, 0, 1)          // V2 = |cur - ref1|
+	UADALP_8H(5, 2)            // V5.8H += pairwise_add(V2)
+
+	VLD1 (R7), [V1.B16]        // load ref2 row
+	UABD_16B(2, 0, 1)          // V2 = |cur - ref2|
+	UADALP_8H(6, 2)            // V6.8H += pairwise_add(V2)
+
+	VLD1 (R8), [V1.B16]        // load ref3 row
+	UABD_16B(2, 0, 1)          // V2 = |cur - ref3|
+	UADALP_8H(7, 2)            // V7.8H += pairwise_add(V2)
+
+	ADD  R2, R0                 // advance cur
+	ADD  R3, R5                 // advance ref0
+	ADD  R3, R6                 // advance ref1
+	ADD  R3, R7                 // advance ref2
+	ADD  R3, R8                 // advance ref3
+	SUB  $1, R4, R4
+	CBNZ R4, sadx4_neon_loop
+
+	// Reduce each accumulator: sum 8 halfwords → 32-bit result
+	UADDLV_H8(4, 4)
+	VMOV V4.S[0], R0
+	MOVW R0, ret+56(FP)
+
+	UADDLV_H8(5, 5)
+	VMOV V5.S[0], R0
+	MOVW R0, ret+60(FP)
+
+	UADDLV_H8(6, 6)
+	VMOV V6.S[0], R0
+	MOVW R0, ret+64(FP)
+
+	UADDLV_H8(7, 7)
+	VMOV V7.S[0], R0
+	MOVW R0, ret+68(FP)
 	RET
 
 
@@ -147,4 +239,119 @@ sadrow_tail_loop:
 
 sadrow_done:
 	MOVD R5, ret+24(FP)
+	RET
+
+
+// ============================================================================
+// func SadBlock16x16HpelH(cur, ref *byte, curStride, refStride int) uint32
+// ============================================================================
+// Horizontal half-pel SAD: interp = URHADD(ref[x], ref[x+1]), then UABD vs cur.
+// ref must have 17 valid bytes per row (16 + 1 for the horizontal neighbor).
+TEXT ·SadBlock16x16HpelH(SB), NOSPLIT, $0-36
+	MOVD cur+0(FP), R0            // current block pointer
+	MOVD ref+8(FP), R1            // reference block pointer
+	MOVD curStride+16(FP), R2     // current stride
+	MOVD refStride+24(FP), R3     // reference stride
+
+	VEOR V3.B16, V3.B16, V3.B16  // halfword accumulator = 0
+	MOVD $16, R4                  // row counter
+
+hpelh_neon_loop:
+	VLD1 (R0), [V0.B16]          // load 16 bytes of cur row
+	VLD1 (R1), [V1.B16]          // load ref[x..x+15]
+	ADD  $1, R1, R5               // R5 = ref + 1
+	VLD1 (R5), [V2.B16]          // load ref[x+1..x+16]
+	URHADD_16B(1, 1, 2)          // V1 = (ref[x] + ref[x+1] + 1) >> 1
+	UABD_16B(2, 0, 1)            // V2 = |cur - interp|
+	UADALP_8H(3, 2)              // V3.8H += pairwise(V2)
+	ADD  R2, R0                   // advance cur
+	ADD  R3, R1                   // advance ref
+	SUB  $1, R4, R4
+	CBNZ R4, hpelh_neon_loop
+
+	UADDLV_H8(3, 3)              // reduce to scalar
+	VMOV V3.S[0], R0
+	MOVW R0, ret+32(FP)
+	RET
+
+
+// ============================================================================
+// func SadBlock16x16HpelV(cur, ref *byte, curStride, refStride int) uint32
+// ============================================================================
+// Vertical half-pel SAD: interp = URHADD(ref[y], ref[y+stride]), then UABD vs cur.
+// ref must have 17 valid rows (16 + 1 for the vertical neighbor).
+TEXT ·SadBlock16x16HpelV(SB), NOSPLIT, $0-36
+	MOVD cur+0(FP), R0            // current block pointer
+	MOVD ref+8(FP), R1            // reference block pointer
+	MOVD curStride+16(FP), R2     // current stride
+	MOVD refStride+24(FP), R3     // reference stride
+
+	VEOR V3.B16, V3.B16, V3.B16  // halfword accumulator = 0
+	MOVD $16, R4                  // row counter
+
+	// R5 = ref + refStride (next row pointer)
+	ADD  R3, R1, R5
+
+hpelv_neon_loop:
+	VLD1 (R0), [V0.B16]          // load 16 bytes of cur row
+	VLD1 (R1), [V1.B16]          // load ref row Y
+	VLD1 (R5), [V2.B16]          // load ref row Y+1
+	URHADD_16B(1, 1, 2)          // V1 = (ref[y] + ref[y+stride] + 1) >> 1
+	UABD_16B(2, 0, 1)            // V2 = |cur - interp|
+	UADALP_8H(3, 2)              // V3.8H += pairwise(V2)
+	ADD  R2, R0                   // advance cur
+	ADD  R3, R1                   // advance ref row Y
+	ADD  R3, R5                   // advance ref row Y+1
+	SUB  $1, R4, R4
+	CBNZ R4, hpelv_neon_loop
+
+	UADDLV_H8(3, 3)              // reduce to scalar
+	VMOV V3.S[0], R0
+	MOVW R0, ret+32(FP)
+	RET
+
+
+// ============================================================================
+// func SadBlock16x16HpelD(cur, ref *byte, curStride, refStride int) uint32
+// ============================================================================
+// Diagonal half-pel SAD: interp = URHADD(URHADD(ref[0],ref[1]), URHADD(ref[s],ref[s+1])).
+// Uses cascaded URHADD which may differ by ±1 LSB from (a+b+c+d+2)>>2.
+// ref must have 17 valid bytes per row and 17 valid rows.
+TEXT ·SadBlock16x16HpelD(SB), NOSPLIT, $0-36
+	MOVD cur+0(FP), R0            // current block pointer
+	MOVD ref+8(FP), R1            // reference block pointer
+	MOVD curStride+16(FP), R2     // current stride
+	MOVD refStride+24(FP), R3     // reference stride
+
+	VEOR V6.B16, V6.B16, V6.B16  // halfword accumulator = 0
+	MOVD $16, R4                  // row counter
+
+	// R5 = ref + refStride (next row pointer)
+	ADD  R3, R1, R5
+
+hpeld_neon_loop:
+	VLD1 (R0), [V0.B16]          // load 16 bytes of cur row
+	// Top row horizontal average
+	VLD1 (R1), [V1.B16]          // ref[y][x..x+15]
+	ADD  $1, R1, R6               // R6 = ref row Y + 1
+	VLD1 (R6), [V2.B16]          // ref[y][x+1..x+16]
+	URHADD_16B(1, 1, 2)          // V1 = avg(top_left, top_right)
+	// Bottom row horizontal average
+	VLD1 (R5), [V3.B16]          // ref[y+1][x..x+15]
+	ADD  $1, R5, R6               // R6 = ref row Y+1 + 1
+	VLD1 (R6), [V4.B16]          // ref[y+1][x+1..x+16]
+	URHADD_16B(3, 3, 4)          // V3 = avg(bot_left, bot_right)
+	// Diagonal average
+	URHADD_16B(1, 1, 3)          // V1 = avg(top_avg, bot_avg)
+	UABD_16B(2, 0, 1)            // V2 = |cur - interp|
+	UADALP_8H(6, 2)              // V6.8H += pairwise(V2)
+	ADD  R2, R0                   // advance cur
+	ADD  R3, R1                   // advance ref row Y
+	ADD  R3, R5                   // advance ref row Y+1
+	SUB  $1, R4, R4
+	CBNZ R4, hpeld_neon_loop
+
+	UADDLV_H8(6, 6)              // reduce to scalar
+	VMOV V6.S[0], R0
+	MOVW R0, ret+32(FP)
 	RET
