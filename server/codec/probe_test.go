@@ -3,6 +3,7 @@
 package codec
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -269,6 +270,31 @@ func TestHWDecode_ChromaPreserved(t *testing.T) {
 	// Verify they're not equal (would indicate both planes got the same data)
 	require.NotEqual(t, cbCenter, crCenter,
 		"Cb and Cr should be distinct; equal values suggest de-interleave error")
+}
+
+func TestCandidateOrder_DarwinPrefersLibx264(t *testing.T) {
+	// Find the positions of libx264 and h264_videotoolbox in the candidate list.
+	libx264Pos := -1
+	vtPos := -1
+	for i, c := range candidates {
+		switch c.name {
+		case "libx264":
+			libx264Pos = i
+		case "h264_videotoolbox":
+			vtPos = i
+		}
+	}
+
+	require.NotEqual(t, -1, libx264Pos, "libx264 should be in candidates")
+	require.NotEqual(t, -1, vtPos, "h264_videotoolbox should be in candidates")
+
+	if runtime.GOOS == "darwin" {
+		require.Less(t, libx264Pos, vtPos,
+			"on macOS, libx264 should be probed before VideoToolbox")
+	} else {
+		require.Less(t, vtPos, libx264Pos,
+			"on non-macOS, VideoToolbox should be probed before libx264")
+	}
 }
 
 func TestCreateHWDeviceCtx_InvalidType(t *testing.T) {
