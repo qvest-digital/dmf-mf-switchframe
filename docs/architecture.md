@@ -193,3 +193,66 @@ The always-decode architecture is what makes cuts zero-latency. Every source has
 The audio mixer applies a one-frame (~23ms) equal-power crossfade between the old and new source to prevent audible clicks. The crossfade uses precomputed cos/sin lookup tables (1024 entries) to avoid per-sample `math.Cos` calls. Channels in AFV mode automatically activate or deactivate to match the new program source.
 
 The browser applies the cut optimistically before the server confirms -- the UI swaps tally colors and source labels immediately on keypress. If the server rejects the cut (e.g., source offline, operator lacks permission), the pending action expires after 2 seconds and reverts to server state. In practice, the server confirms within a few milliseconds over the shared QUIC connection, and the MoQ control track update arrives before the timeout is relevant.
+
+## 4. A Transition Dissolves
+
+Unlike a cut, transitions blend between two sources over time. A fresh `TransitionEngine` is created for each transition and destroyed on completion -- no persistent codec resources or blending state exist between transitions. Since both sources are already decoded to YUV420 by their per-source decoder goroutines, the engine receives raw frames directly and blends in BT.709 colorspace, matching how hardware broadcast mixers operate internally.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Server
+    participant TE as TransitionEngine
+    participant SrcA as Source A
+    participant SrcB as Source B
+    participant SW as Switcher
+    participant Pipe as Pipeline
+
+    Browser->>Server: POST /api/transition/start {type: "mix", duration: 1000}
+    Server->>TE: create TransitionEngine(from, to, mix, 1000ms)
+    Note over TE: fresh engine, no persistent state
+
+    loop every frame (~33ms at 30fps)
+        SrcA->>TE: IngestRawFrame(yuvA)
+        SrcB->>TE: IngestRawFrame(yuvB)
+        TE->>TE: position = smoothstep(elapsed / duration)
+        TE->>TE: BlendMix(yuvA, yuvB, position)
+        TE->>SW: raw YUV callback
+        SW->>Pipe: enqueue → node chain → encode
+    end
+
+    TE->>SW: OnComplete
+    Note over TE: engine destroyed
+    SW->>Browser: state broadcast (idle)
+```
+
+The transition engine supports five blend types, each operating directly on YUV420 planes:
+
+```mermaid
+flowchart TD
+    Start{"Transition type?"}
+
+    Start -->|mix| Mix["A×(1−t) + B×t per pixel<br/>(equal-power crossfade)"]
+    Start -->|dip| Dip["A → black → B in two halves<br/>(configurable dip color)"]
+    Start -->|wipe| Wipe["Threshold mask with 4px soft edge"]
+    Start -->|stinger| Stinger["Pre-decoded PNG sequence overlay"]
+    Start -->|ftb| FTB["Program → black<br/>(toggle reverses: smooth fade-in)"]
+
+    Wipe --> WipeDir["6 directions: horizontal L/R,<br/>vertical T/B, box center-out,<br/>box edges-in"]
+
+    Stinger --> StingerAlpha["Per-pixel alpha compositing<br/>in YUV420"]
+    Stinger --> StingerCut["Configurable cut point<br/>(when base switches A→B)"]
+    Stinger --> StingerAudio["Optional audio overlay<br/>(WAV, additive mix)"]
+```
+
+### Wall-Clock Frame Pairing
+
+The engine stores the latest decoded frame from each source. Output is driven by the incoming "to" source's frame rate -- each arriving frame triggers a blend with whatever the "from" source's latest frame is. This means no buffering and minimal latency: the blend happens the instant a new frame arrives, using the freshest available partner frame. If sources run at different frame rates, the faster source simply reuses the slower source's latest frame.
+
+### Smoothstep Easing and Manual Control
+
+Automatic transitions use smoothstep easing: `t²(3 - 2t)`, which produces zero-derivative endpoints for a perceptually smooth start and stop with no abrupt jumps. T-bar manual control overrides automatic timing entirely -- the browser sends position updates via WebTransport datagrams at up to 60fps, and the engine uses the received position directly instead of computing from elapsed time. On T-bar release, one REST call confirms the final authoritative position.
+
+### Resolution Mismatch and Watchdog
+
+If sources have different resolutions, a scaler normalizes both to the program resolution during blending. Lanczos-3 is used for quality-critical paths (auto transitions), bilinear for speed-critical paths (T-bar scrubbing). A 10-second watchdog aborts stuck transitions if no frames arrive from either source, preventing the switcher from freezing in a transitioning state indefinitely.
