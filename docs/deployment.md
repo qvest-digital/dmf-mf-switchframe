@@ -1,122 +1,141 @@
-# Switchframe Production Deployment Guide
+# Deployment
 
-This guide covers building, configuring, and deploying Switchframe in production environments.
+Production deployment guide covering build, configuration, networking, monitoring, and security.
 
-## Table of Contents
-
-- [Building](#building)
-- [Docker](#docker)
-- [Configuration](#configuration)
-- [Network and Ports](#network-and-ports)
-- [TLS](#tls)
-- [Authentication](#authentication)
-- [Monitoring](#monitoring)
-- [Hardware Acceleration](#hardware-acceleration)
-- [SRT Output](#srt-output)
-- [Recording](#recording)
-- [Reverse Proxy](#reverse-proxy)
-- [Production Logging](#production-logging)
-- [Security Hardening](#security-hardening)
+**Contents:** [Building](#1-building) · [Docker](#2-docker) · [Configuration](#3-configuration) · [Network & Ports](#4-network--ports) · [TLS](#5-tls) · [Authentication](#6-authentication) · [Monitoring](#7-monitoring) · [Hardware Acceleration](#8-hardware-acceleration) · [Output](#9-output) · [Reverse Proxy](#10-reverse-proxy) · [Logging](#11-logging) · [Security](#12-security) · [Production Checklist](#13-production-checklist)
 
 ---
 
-## Building
+## 1. Building
 
 ### Single Binary (Recommended)
-
-The `make build` target produces a single self-contained binary with the UI embedded:
 
 ```bash
 make build
 # Output: bin/switchframe
 ```
 
-This:
-1. Runs `npm ci && npm run build` in the `ui/` directory to produce the SvelteKit static build.
-2. Creates a symlink at `server/cmd/switchframe/ui` pointing to `ui/build/`.
-3. Compiles the Go binary with `-tags embed_ui`, which activates `//go:embed ui` in `embed_prod.go`.
+```mermaid
+flowchart LR
+    subgraph ui ["UI Build"]
+        style ui fill:#1a1a2e,color:#fff,stroke:#16213e
+        NPM["npm ci\nnpm run build"]
+        SVELTE["SvelteKit\nstatic adapter"]
+    end
 
-The resulting binary serves the entire application (API + UI + WebTransport) with no external file dependencies.
+    subgraph link ["Embed Link"]
+        style link fill:#16213e,color:#fff,stroke:#0f3460
+        SYM["symlink\nserver/cmd/switchframe/ui\n→ ui/build/"]
+    end
+
+    subgraph go ["Go Build"]
+        style go fill:#0f3460,color:#fff,stroke:#533483
+        CGO["cgo + FFmpeg\nlibavcodec · libx264 · libfdk-aac"]
+        EMBED["go build -tags embed_ui\n//go:embed ui"]
+    end
+
+    subgraph out ["Output"]
+        style out fill:#533483,color:#fff,stroke:#e94560
+        BIN["bin/switchframe\nAPI + UI + WebTransport"]
+    end
+
+    NPM --> SVELTE --> SYM --> EMBED
+    CGO --> EMBED --> BIN
+```
+
+The resulting binary serves the entire application — REST API, embedded UI, WebTransport/MoQ, and QUIC — with zero external file dependencies.
 
 ### Build Tags
 
 | Tag | Effect |
 |-----|--------|
-| `embed_ui` | Embeds the SvelteKit build into the binary. Without this tag, `uiHandler()` returns nil and no static files are served. |
-| `noffmpeg` | Disables FFmpeg cgo bindings. Transitions and codec probing become no-ops. |
-| `openh264` | Enables the OpenH264 fallback encoder/decoder (requires OpenH264 shared library). |
-| `mxl` | Enables MXL shared-memory transport (requires MXL SDK). Without this tag, MXL features return `ErrMXLNotAvailable`. |
+| `embed_ui` | Embeds the SvelteKit build via `//go:embed`. Without it, `uiHandler()` returns nil (no static files served). |
+| `noffmpeg` | Disables FFmpeg cgo bindings. Codec probing and hardware acceleration become no-ops. |
+| `openh264` | Enables OpenH264 fallback encoder/decoder (requires the OpenH264 shared library at runtime). |
+| `mxl` | Enables MXL shared-memory transport (requires MXL SDK at `MXL_ROOT`). Without it, MXL functions return `ErrMXLNotAvailable`. |
 
-### MXL Build (Shared-Memory Transport)
+### C Dependencies
 
-To build with MXL SDK support for shared-memory video/audio I/O:
+The Go build requires cgo and these libraries:
 
+| Library | Purpose |
+|---------|---------|
+| `libavcodec` + `libavutil` | FFmpeg video encode/decode (H.264 HW + SW) |
+| `libx264` | H.264 software encoding |
+| `libfdk-aac` | AAC audio encode/decode |
+| `pkg-config` | cgo flag resolution |
+
+**Debian/Ubuntu:**
 ```bash
-export MXL_ROOT=$HOME/dev/mxl/install/Darwin-Clang-Release  # macOS
-# export MXL_ROOT=$HOME/dev/mxl/install/Linux-GCC-Release   # Linux
-
-make build-server-mxl
-# Output: bin/switchframe (with MXL support, no embedded UI)
+# fdk-aac is in non-free
+sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list.d/debian.sources
+apt-get update && apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
 ```
 
-This adds `-tags "cgo mxl"` and sets `PKG_CONFIG_PATH` to resolve `libmxl`. The MXL SDK must be built and installed at `MXL_ROOT`. See the [MXL Integration Guide](mxl.md) for full details.
-
-### Dev Build (No UI Embed)
-
-For development iteration where the Vite dev server proxies to Go:
-
-```bash
-make build-server
-# Output: bin/switchframe (API only, no embedded UI)
-```
-
-### Build Dependencies
-
-The Go build requires cgo and the following C libraries:
-
-- **libavcodec** and **libavutil** (FFmpeg) -- video encode/decode
-- **libx264** -- H.264 software encoding
-- **libfdk-aac** -- AAC audio encode/decode
-- **pkg-config** -- for cgo flag resolution
-
-On Debian/Ubuntu:
-```bash
-apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
-```
-
-On macOS (Homebrew):
+**macOS (Homebrew):**
 ```bash
 brew install ffmpeg fdk-aac pkg-config
 ```
 
+### Dev Build (No UI Embed)
+
+For development with the Vite dev server proxying to Go:
+
+```bash
+make build-server       # API only, no embedded UI
+make dev                # Builds + runs Go server + Vite dev server concurrently
+```
+
+### MXL Build
+
+For shared-memory video/audio I/O via the MXL SDK:
+
+```bash
+export MXL_ROOT=$HOME/dev/mxl/install/Linux-GCC-Release
+make build-server-mxl
+```
+
+Adds `-tags "cgo mxl"` and sets `PKG_CONFIG_PATH` to resolve `libmxl`.
+
 ---
 
-## Docker
+## 2. Docker
 
-### Building the Image
+### Three-Stage Build
+
+```mermaid
+flowchart LR
+    subgraph s1 ["Stage 1: ui-builder"]
+        style s1 fill:#1a1a2e,color:#fff,stroke:#16213e
+        N22["node:22-bookworm-slim"]
+        NB["npm ci + npm run build"]
+    end
+
+    subgraph s2 ["Stage 2: go-builder"]
+        style s2 fill:#16213e,color:#fff,stroke:#0f3460
+        G125["golang:1.25-bookworm"]
+        CDEPS["apt: libavcodec-dev\nlibx264-dev · libfdk-aac-dev"]
+        GOBUILD["go build -tags embed_ui"]
+    end
+
+    subgraph s3 ["Stage 3: runtime"]
+        style s3 fill:#0f3460,color:#fff,stroke:#533483
+        DEB["debian:bookworm-slim"]
+        RT["libavcodec59 · libx264-164\nlibfdk-aac2 · ca-certificates"]
+        USR["USER switchframe"]
+    end
+
+    N22 --> NB -->|"COPY ui/build"| GOBUILD
+    G125 --> CDEPS --> GOBUILD -->|"COPY /switchframe"| RT
+    DEB --> RT --> USR
+```
 
 ```bash
 make docker
-# or directly:
-docker build -t switchframe .
+# or: docker build -t switchframe .
 ```
 
-The Dockerfile uses a three-stage build:
-
-1. **ui-builder** (`node:22-bookworm-slim`) -- Builds the SvelteKit frontend.
-2. **go-builder** (`golang:1.25-bookworm`) -- Installs cgo dependencies and compiles the Go binary with `embed_ui`.
-3. **runtime** (`debian:bookworm-slim`) -- Minimal image with only runtime libraries, runs as non-root `switchframe` user.
-
-### Exposed Ports
-
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| `8080` | UDP (QUIC) | HTTP/3 + WebTransport + MoQ + REST API + embedded UI |
-| `8080` | TCP | HTTP/3 Alt-Svc advertisement (same port) |
-| `9090` | TCP | Admin server (metrics, health, cert-hash, pprof) |
-| `9000` | UDP | SRT listener mode (when enabled) |
-
-Note: Port 8081 (plain HTTP API, enabled via `--http-fallback`) is not exposed in the Dockerfile by default. Add it if you need TCP-based API access.
+The runtime image contains only shared libraries and the binary — no compilers, no Node.js, no source code.
 
 ### Docker Run
 
@@ -125,22 +144,20 @@ docker run -d \
   --name switchframe \
   -p 8080:8080/udp \
   -p 8080:8080/tcp \
-  -p 8081:8081/tcp \
   -p 9090:9090/tcp \
   -p 9000:9000/udp \
-  -e SWITCHFRAME_API_TOKEN=your-secret-token-here \
+  -e SWITCHFRAME_API_TOKEN=your-secret-token \
   -e APP_ENV=production \
   -v /data/recordings:/recordings \
+  -v switchframe-data:/home/switchframe/.switchframe \
   switchframe \
     --log-level info \
-    --admin-addr :9090
+    --http-fallback
 ```
 
-### Docker Compose Example
+### Docker Compose
 
 ```yaml
-version: "3.8"
-
 services:
   switchframe:
     image: switchframe:latest
@@ -148,7 +165,7 @@ services:
     ports:
       - "8080:8080/udp"    # QUIC / WebTransport / MoQ
       - "8080:8080/tcp"    # HTTP/3 Alt-Svc
-      - "8081:8081/tcp"    # Plain HTTP API
+      - "8081:8081/tcp"    # Plain HTTP API (--http-fallback)
       - "9090:9090/tcp"    # Admin (metrics, health, pprof)
       - "9000:9000/udp"    # SRT listener
     environment:
@@ -156,13 +173,14 @@ services:
       APP_ENV: production
     volumes:
       - recordings:/recordings
+      - config:/home/switchframe/.switchframe
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
       timeout: 5s
       retries: 3
     restart: unless-stopped
-    # GPU passthrough for NVENC (NVIDIA):
+    # NVIDIA GPU passthrough for NVENC:
     # deploy:
     #   resources:
     #     reservations:
@@ -173,209 +191,212 @@ services:
 
 volumes:
   recordings:
+  config:
 ```
 
 ---
 
-## Configuration
+## 3. Configuration
 
 ### CLI Flags
 
+#### Core
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--demo` | `false` | Start with 4 simulated camera sources (disables auth) |
-| `--demo-video <dir>` | `""` | Directory of MPEG-TS clips for real video in demo mode (requires `--demo`) |
-| `--log-level <level>` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `--admin-addr <addr>` | `:9090` | Admin/metrics server listen address |
-| `--api-token <token>` | auto-generated | Bearer token for API authentication |
-| `--http-fallback` | `false` | Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts |
-| `--tls-cert <path>` | `""` | Path to TLS certificate PEM file (e.g., from mkcert) |
-| `--tls-key <path>` | `""` | Path to TLS private key PEM file |
-| `--format <preset>` | `1080p29.97` | Video standard (e.g., `1080p29.97`, `1080p25`, `720p59.94`) |
-| `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick boundary) |
-| `--frc-quality <mode>` | `""` | Frame rate conversion quality (e.g., `mcfi` for motion-compensated) |
-| `--decode-all-sources` | `false` | Enable always-on per-source H.264 decoders (instant cuts, no IDR gating) |
-| `--raw-program-monitor` | `false` | Enable raw YUV program monitor on `"program-raw"` MoQ track |
-| `--raw-monitor-scale <res>` | `""` | Downscale raw monitor output (e.g., `720p`, `480p`, `360p`) |
-| `--replay-buffer-secs <n>` | `60` | Per-source replay buffer duration in seconds (0 to disable, max 300) |
-| `--mxl-sources <specs>` | `""` | Comma-separated MXL source specs: `videoUUID`, `videoUUID:audioUUID`, or `videoUUID:audioUUID:dataUUID` (requires `mxl` build tag) |
-| `--mxl-output <name>` | `""` | MXL flow name for program output (empty = disabled) |
-| `--mxl-output-video-def <path>` | `""` | Path to NMOS IS-04 video flow definition JSON for program output |
-| `--mxl-output-audio-def <path>` | `""` | Path to NMOS IS-04 audio flow definition JSON for program output |
-| `--mxl-domain <path>` | `/dev/shm/mxl` | MXL shared memory domain directory path |
-| `--mxl-discover` | `false` | List available MXL flows and exit (diagnostic tool) |
-| `--scte35` | `false` | Enable SCTE-35 splice_insert and time_signal injection into MPEG-TS output |
-| `--scte35-pid` | `258` | SCTE-35 PID in MPEG-TS output (decimal, default 0x102) |
-| `--scte35-preroll` | `4000` | Default pre-roll time in milliseconds for scheduled cues |
-| `--scte35-heartbeat` | `5000` | Heartbeat interval in ms (splice_null, 0 to disable) |
-| `--scte35-verify` | `true` | Verify SCTE-35 encoding by round-trip decode |
-| `--scte35-webhook` | `""` | Webhook URL for async SCTE-35 event notifications |
-| `--scte104` | `false` | Enable SCTE-104 on MXL data flows (requires `--scte35` and MXL build) |
+| `--demo` | `false` | Start with 4 simulated H.264 cameras + 2 raw MXL sources. Disables auth. |
+| `--demo-video <dir>` | — | Directory of MPEG-TS clips for realistic demo video (requires `--demo`) |
+| `--log-level` | `info` | `debug` · `info` · `warn` · `error` |
+| `--admin-addr` | `:9090` | Admin/metrics server listen address |
+| `--api-token` | auto | Bearer token for API auth (see [Authentication](#6-authentication)) |
+| `--http-fallback` | `false` | Start plain HTTP/1.1 API on TCP `:8081` for curl/scripts |
+| `--tls-cert <path>` | — | TLS certificate PEM (e.g., from mkcert or Let's Encrypt) |
+| `--tls-key <path>` | — | TLS private key PEM |
+
+#### Video Pipeline
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format` | `1080p29.97` | Video standard preset (see [Format Presets](#format-presets) below) |
+| `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick) |
+| `--frc-quality` | `none` | Frame rate conversion: `none` · `nearest` · `blend` · `mcfi` |
+| `--decode-all-sources` | `false` | Always-on per-source H.264→YUV420 decoders (instant cuts, no IDR gating) |
+| `--raw-program-monitor` | `false` | Enable raw YUV420 program monitor on `program-raw` MoQ track |
+| `--raw-monitor-scale` | native | Downscale raw monitor: `720p` · `480p` · `360p` |
+| `--replay-buffer-secs` | `60` | Per-source replay buffer in seconds (0 = disabled, max 300) |
+| `--captions` | `false` | Enable CEA-608/708 closed captioning |
+
+#### SCTE-35 / SCTE-104
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scte35` | `false` | Enable SCTE-35 splice_insert / time_signal injection into MPEG-TS |
+| `--scte35-pid` | `258` (0x102) | MPEG-TS PID for SCTE-35 data |
+| `--scte35-preroll` | `4000` | Default pre-roll in milliseconds |
+| `--scte35-heartbeat` | `5000` | splice_null heartbeat interval in ms (0 = disabled) |
+| `--scte35-verify` | `true` | Round-trip encode verification of SCTE-35 messages |
+| `--scte35-webhook` | — | URL for async HTTP POST notifications on SCTE-35 events |
+| `--scte104` | `false` | Enable SCTE-104 on MXL data flows (requires `--scte35` + MXL build) |
+
+#### MXL Shared Memory
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mxl-sources` | — | Comma-separated source specs: `videoUUID[:audioUUID[:dataUUID]]` |
+| `--mxl-output` | — | MXL flow name for program output |
+| `--mxl-output-video-def` | — | NMOS IS-04 video flow definition JSON path |
+| `--mxl-output-audio-def` | — | NMOS IS-04 audio flow definition JSON path |
+| `--mxl-domain` | `/dev/shm/mxl` | MXL shared memory domain directory |
+| `--mxl-discover` | `false` | List available MXL flows and exit |
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `SWITCHFRAME_API_TOKEN` | API authentication token. Overridden by `--api-token` flag if both are set. If neither is set, a random 64-character hex token is auto-generated and printed to stdout. |
-| `SWITCHFRAME_MXL_SOURCES` | MXL source specs (same format as `--mxl-sources`). Overridden by the flag if both are set. |
-| `APP_ENV` | Set to `production` for JSON-formatted log output (structured logging). Any other value (or unset) produces human-readable text logs. |
+| `SWITCHFRAME_API_TOKEN` | API token. Overridden by `--api-token` if both set. |
+| `SWITCHFRAME_MXL_SOURCES` | MXL source specs. Overridden by `--mxl-sources` if both set. |
+| `APP_ENV` | Set to `production` for JSON-formatted structured logs. |
+| `GOGC` | Go GC target percentage. Switchframe defaults to `400` if unset. |
+| `GOMEMLIMIT` | Go memory limit. Switchframe defaults to `2GB` if unset. |
 
-### Token Resolution Order
+### Format Presets
 
-1. `--api-token` flag (highest priority)
-2. `SWITCHFRAME_API_TOKEN` environment variable
-3. Auto-generated 32-byte random hex token (printed to stdout at startup)
+The `--format` flag accepts any of these standard broadcast presets:
+
+| 2160p (4K) | 1080p | 720p |
+|------------|-------|------|
+| `2160p60` · `2160p59.94` | `1080p60` · `1080p59.94` | `720p60` · `720p59.94` |
+| `2160p50` | `1080p50` | `720p50` |
+| `2160p30` · `2160p29.97` | `1080p30` · **`1080p29.97`** (default) | `720p30` · `720p29.97` |
+| `2160p25` | `1080p25` | `720p25` |
+| — | `1080p24` · `1080p23.976` | — |
+
+Frame rates use rational numbers for broadcast correctness (e.g., 30000/1001 for 29.97fps NTSC). The format can also be changed at runtime via `PUT /api/format`.
+
+### Token Resolution
+
+```
+--api-token flag  →  SWITCHFRAME_API_TOKEN env  →  auto-generated (printed to stdout)
+    (highest)              (middle)                       (lowest)
+```
+
+Auto-generated tokens are 32 random bytes (64 hex characters) via `crypto/rand`.
 
 ### Fixed Addresses
 
-These listen addresses are not currently configurable via flags:
-
 | Address | Purpose |
 |---------|---------|
-| `:8080` | Main server (QUIC/HTTP3 + WebTransport + REST API) |
-| `:8081` | Plain HTTP/TCP API mirror (opt-in via `--http-fallback`) |
+| `:8080` | Main server — QUIC/HTTP3 + WebTransport + MoQ + REST API + embedded UI |
+| `:8081` | Plain HTTP/1.1 API mirror (opt-in via `--http-fallback`) |
+
+These listen addresses are not currently configurable via flags.
 
 ---
 
-## Network and Ports
+## 4. Network & Ports
 
 ### Port Summary
 
 | Port | Protocol | Direction | Purpose |
 |------|----------|-----------|---------|
 | **8080** | UDP | Inbound | QUIC/HTTP3, WebTransport, MoQ subscriptions, REST API, embedded UI |
-| **8080** | TCP | Inbound | HTTP/3 Alt-Svc advertisement |
-| **8081** | TCP | Inbound | Plain HTTP REST API (opt-in via `--http-fallback`, same endpoints as 8080) |
-| **9090** | TCP | Inbound | Admin: Prometheus `/metrics`, `/health`, `/ready`, `/api/cert-hash`, `/debug/pprof/*` |
+| **8080** | TCP | Inbound | HTTP/3 Alt-Svc advertisement (browsers discover QUIC via TCP first) |
+| **8081** | TCP | Inbound | Plain HTTP REST API (opt-in via `--http-fallback`) |
+| **9090** | TCP | Inbound | Admin: `/metrics` · `/health` · `/ready` · `/api/cert-hash` · `/debug/pprof/*` |
 | **9000** | UDP | Inbound | SRT listener mode (pull connections from downstream) |
-| **Ephemeral** | UDP | Outbound | SRT caller mode (push to upstream/platform) |
+| *Ephemeral* | UDP | Outbound | SRT caller mode (push to platform — no inbound rule needed) |
 
 ### Firewall Rules
 
-Minimal production firewall (assuming operators access via reverse proxy on 443):
-
 ```bash
-# WebTransport / MoQ (required for browser clients)
+# Required: WebTransport / MoQ (browser clients)
 iptables -A INPUT -p udp --dport 8080 -j ACCEPT
-
-# HTTP/3 Alt-Svc (browsers discover QUIC via TCP first)
 iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
 
-# Plain HTTP API (only if --http-fallback is enabled)
+# Optional: Plain HTTP API (only if --http-fallback)
 iptables -A INPUT -p tcp --dport 8081 -j ACCEPT
 
-# Admin (restrict to monitoring network)
+# Restrict: Admin (monitoring network only — exposes pprof)
 iptables -A INPUT -p tcp --dport 9090 -s 10.0.0.0/8 -j ACCEPT
 
-# SRT listener (only when using pull mode)
+# Optional: SRT listener
 iptables -A INPUT -p udp --dport 9000 -j ACCEPT
 ```
 
-For SRT caller mode (push), no inbound rule is needed -- the server initiates the outbound UDP connection.
-
 ---
 
-## TLS
+## 5. TLS
 
 ### Self-Signed Certificates (Default)
 
-At startup, Switchframe generates a self-signed TLS certificate using Prism's `certs.Generate()`:
+At startup, Switchframe generates a self-signed TLS certificate via Prism's `certs.Generate()`:
 
 - **Validity:** 14 days (WebTransport requires short-lived self-signed certs)
-- **Fingerprint:** Logged at startup and available via `GET /api/cert-hash`
-- **Usage:** Browsers use the fingerprint to trust the self-signed cert for WebTransport connections
-
-The certificate fingerprint is served unauthenticated at `/api/cert-hash` on the admin server (port 9090) and the QUIC server (port 8080):
+- **Fingerprint:** Logged at startup and available unauthenticated at `/api/cert-hash`
 
 ```bash
 curl http://localhost:9090/api/cert-hash
 # {"hash":"abc123...","addr":":8080","trusted":false}
 ```
 
-### Trusted Certificates with mkcert (Recommended for Development)
+Browsers use the fingerprint in `serverCertificateHashes` to trust the self-signed cert for WebTransport.
 
-[mkcert](https://github.com/FiloSottile/mkcert) generates locally-trusted certificates, enabling direct HTTP/3 access from browsers without fingerprint pinning. This is the recommended setup for development:
+### Trusted Certificates with mkcert
+
+[mkcert](https://github.com/FiloSottile/mkcert) generates locally-trusted certificates, enabling direct HTTP/3 without fingerprint pinning:
 
 ```bash
-# One-time setup
-make setup-mkcert
-
-# Start with trusted cert
-./bin/switchframe --tls-cert ~/.switchframe/cert.pem --tls-key ~/.switchframe/key.pem
+make setup-mkcert                 # one-time: install CA + generate cert
+./bin/switchframe \
+  --tls-cert ~/.switchframe/cert.pem \
+  --tls-key ~/.switchframe/key.pem
 ```
 
-The `make setup-mkcert` target:
-1. Installs the mkcert CA into the system trust store (`mkcert -install`)
-2. Generates a certificate for `localhost`, `127.0.0.1`, and `::1`
-3. Saves to `~/.switchframe/cert.pem` and `~/.switchframe/key.pem`
-
-When `--tls-cert` and `--tls-key` are provided, Switchframe uses the specified certificate instead of generating a self-signed one. The `trusted` field in the `/api/cert-hash` response will be `true`, and browsers can connect over HTTP/3 directly without needing the certificate hash.
-
-The `make demo` target automatically detects mkcert certificates and uses them if present. Otherwise it falls back to `--http-fallback` mode with a self-signed cert.
+When a trusted cert is used, `/api/cert-hash` returns `"trusted": true` and browsers skip `serverCertificateHashes` — connecting over HTTP/3 directly.
 
 ### Production TLS
 
-For production with real TLS certificates (e.g., from Let's Encrypt), you have two options:
+**Option 1 — Direct:** Provide CA-signed certificates via `--tls-cert` / `--tls-key`. Browsers connect over HTTP/3 without fingerprint pinning.
 
-**Option 1: Direct certificate provisioning.** Use `--tls-cert` and `--tls-key` to provide CA-signed certificates directly to Switchframe. Browsers connect over HTTP/3 (QUIC) without fingerprint pinning.
-
-**Option 2: Reverse proxy.** Place a reverse proxy (Caddy, nginx) in front of Switchframe. The reverse proxy terminates TLS and forwards traffic:
-
-- HTTPS on port 443 proxies to Switchframe's port 8081 (REST API, requires `--http-fallback`)
-- WebTransport/QUIC requires direct UDP access to port 8080 (the browser uses the self-signed cert fingerprint)
+**Option 2 — Reverse proxy:** Terminate TLS at the proxy (Caddy, nginx) and forward REST API traffic to `:8081` (requires `--http-fallback`). WebTransport/QUIC still requires direct UDP access to `:8080`.
 
 ### Certificate Renewal
 
-Self-signed certificates are regenerated every time the server restarts. For long-running deployments, restart the server at least every 14 days to refresh the certificate. Browsers will re-fetch the fingerprint from `/api/cert-hash` automatically.
-
-When using `--tls-cert`/`--tls-key`, certificate renewal is your responsibility. Restart the server after updating the certificate files.
+Self-signed certs regenerate on every server restart. For long-running deployments, restart at least every 14 days. With `--tls-cert`/`--tls-key`, renewal is your responsibility — restart after updating cert files.
 
 ---
 
-## Authentication
+## 6. Authentication
 
-### Token-Based Auth
+### Bearer Token
 
-All `/api/*` endpoints (except `/api/cert-hash`) require a Bearer token:
+All `/api/*` endpoints (except exempt paths) require a Bearer token:
 
 ```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" https://localhost:8080/api/switch/state
+curl -H "Authorization: Bearer $TOKEN" https://localhost:8080/api/switch/state
 ```
 
-Authentication uses `crypto/subtle.ConstantTimeCompare` for timing-safe token validation.
+Validation uses `crypto/subtle.ConstantTimeCompare` (timing-safe against side-channel attacks). Invalid tokens receive `401` with `WWW-Authenticate: Bearer realm="switchframe"`.
 
 ### Exempt Paths
 
-These paths bypass authentication:
-- `/api/cert-hash` -- Required for WebTransport bootstrapping
-- `/health` -- Liveness probe (admin server, port 9090)
-- `/metrics` -- Prometheus scraping (admin server, port 9090)
+| Path | Server | Purpose |
+|------|--------|---------|
+| `/api/cert-hash` | Admin (9090) + Main (8080) | WebTransport bootstrapping |
+| `/health` | Admin (9090) | Liveness probe |
+| `/metrics` | Admin (9090) | Prometheus scraping |
+| `/ready` | Admin (9090) | Readiness probe |
 
-### Generating a Token
+### Token Generation
 
-**Option 1: Let the server auto-generate one.**
-Start without `--api-token` or `SWITCHFRAME_API_TOKEN`. The token is printed to stdout:
-
-```
-  API Token: a1b2c3d4e5f6...
-```
-
-Capture it from stdout (not stderr, so it does not leak into log files):
+**Auto-generate** (default): start without `--api-token`. The token prints to **stdout** (not stderr) so it doesn't leak into log files:
 
 ```bash
 switchframe 2>/var/log/switchframe.log | head -5
+#   API Token: a1b2c3d4e5f6...
 ```
 
-**Option 2: Generate ahead of time.**
-Use any method to create a random hex string:
-
-```bash
-# 32 bytes = 64 hex characters (same format as auto-generated)
-openssl rand -hex 32
-```
-
-Then pass it via environment variable or flag:
-
+**Pre-generate:**
 ```bash
 export SWITCHFRAME_API_TOKEN=$(openssl rand -hex 32)
 switchframe
@@ -383,45 +404,68 @@ switchframe
 
 ### Demo Mode
 
-When started with `--demo`, authentication is completely disabled. All API requests are accepted without a token. This is intended for local testing only -- never use `--demo` in production.
+`--demo` disables authentication entirely. All requests pass through without a token. Never use `--demo` in production.
 
 ---
 
-## Monitoring
+## 7. Monitoring
 
 ### Prometheus Metrics
 
-Metrics are served at `http://localhost:9090/metrics` (admin server) with OpenMetrics format enabled.
+Scraped at `http://localhost:9090/metrics` on the admin server.
 
-**HTTP metrics** (all API requests):
-- `switchframe_http_requests_total{method, pattern, status}` -- Request counter
-- `switchframe_http_request_duration_seconds{method, pattern}` -- Latency histogram
+#### HTTP
 
-**Switcher metrics:**
-- `switchframe_cuts_total` -- Hard cuts performed
-- `switchframe_transitions_completed_total{type}` -- Completed transitions (mix, dip, ftb)
-- `switchframe_idr_gate_events_total` -- IDR gate activations after cuts
-- `switchframe_idr_gate_duration_seconds` -- Time spent waiting for keyframes
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_http_requests_total` | Counter | `method`, `pattern`, `status` |
+| `switchframe_http_request_duration_seconds` | Histogram | `method`, `pattern` |
 
-**Audio mixer metrics:**
-- `switchframe_mixer_frames_mixed_total` -- Audio frames decoded/mixed/encoded
-- `switchframe_mixer_encode_errors_total` -- Audio encode failures
-- `switchframe_mixer_passthrough_bypass_total` -- Frames bypassed (zero-CPU passthrough)
+#### Switcher
 
-**Output metrics:**
-- `switchframe_output_ringbuf_overflows_total` -- SRT ring buffer overflows
-- `switchframe_output_srt_reconnects_total` -- SRT reconnection attempts
-- `switchframe_output_recording_bytes_total` -- Bytes written to recordings
-- `switchframe_output_srt_bytes_total` -- Bytes sent via SRT
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_cuts_total` | Counter | — |
+| `switchframe_transitions_completed_total` | Counter | `type` (mix, dip, ftb, wipe, stinger) |
+| `switchframe_idr_gate_events_total` | Counter | — |
+| `switchframe_idr_gate_duration_seconds` | Histogram | — |
 
-**Source health metrics:**
-- `switchframe_source_status_changes_total{source, from_status, to_status}` -- Health transitions
+#### Audio Mixer
 
-**Go runtime metrics** (via `collectors.NewGoCollector()`):
-- `go_goroutines`, `go_memstats_*`, `go_gc_*`, etc.
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_mixer_frames_mixed_total` | Counter | — |
+| `switchframe_mixer_encode_errors_total` | Counter | — |
+| `switchframe_mixer_passthrough_bypass_total` | Counter | — |
 
-**Process metrics** (via `collectors.NewProcessCollector()`):
-- `process_cpu_seconds_total`, `process_resident_memory_bytes`, `process_open_fds`, etc.
+#### Output
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_output_ringbuf_overflows_total` | Counter | — |
+| `switchframe_output_srt_reconnects_total` | Counter | — |
+| `switchframe_output_recording_bytes_total` | Counter | — |
+| `switchframe_output_srt_bytes_total` | Counter | — |
+
+#### Pipeline
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_pipeline_decode_errors_total` | Counter | — |
+| `switchframe_pipeline_encode_errors_total` | Counter | — |
+| `switchframe_pipeline_frames_processed_total` | Counter | — |
+| `switchframe_pipeline_decode_duration_seconds` | Histogram | — |
+| `switchframe_pipeline_encode_duration_seconds` | Histogram | — |
+| `switchframe_pipeline_blend_duration_seconds` | Histogram | — |
+| `switchframe_pipeline_node_duration_seconds` | Histogram | `node` |
+
+#### Source Health
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `switchframe_source_status_changes_total` | Counter | `source`, `from_status`, `to_status` |
+
+Go runtime (`go_goroutines`, `go_memstats_*`, `go_gc_*`) and process (`process_cpu_seconds_total`, `process_resident_memory_bytes`, `process_open_fds`) collectors are included automatically.
 
 ### Prometheus Scrape Config
 
@@ -435,26 +479,32 @@ scrape_configs:
 
 ### Health Checks
 
-**Liveness probe** -- always returns 200 if the process is running:
+```mermaid
+flowchart LR
+    subgraph admin ["Admin Server :9090"]
+        style admin fill:#1a1a2e,color:#fff,stroke:#16213e
+        H["/health\nalways 200"]
+        R["/ready\n503 → 200"]
+    end
+
+    LB["Load Balancer\nOrchestrator"] -->|liveness| H
+    LB -->|readiness| R
+```
+
+**Liveness** — always 200 if the process is running:
 ```bash
 curl http://localhost:9090/health
 # {"status":"ok"}
 ```
 
-**Readiness probe** -- returns 503 during startup, 200 once all components are initialized:
+**Readiness** — 503 during startup, 200 once all components are initialized:
 ```bash
 curl http://localhost:9090/ready
 # {"status":"ready"}    (200)
-# {"status":"not_ready"} (503, during startup)
+# {"status":"not_ready"} (503)
 ```
 
-The Docker HEALTHCHECK uses the liveness endpoint:
-```dockerfile
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:9090/health || exit 1
-```
-
-For Kubernetes, use the readiness probe for service routing:
+**Kubernetes probes:**
 ```yaml
 livenessProbe:
   httpGet:
@@ -468,253 +518,226 @@ readinessProbe:
   initialDelaySeconds: 3
 ```
 
+**Docker HEALTHCHECK** (built into the image):
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:9090/health || exit 1
+```
+
 ### pprof
 
-Go profiling endpoints are available at the admin server:
+Go profiling endpoints on the admin server:
 
 ```bash
-# CPU profile (30 seconds)
-go tool pprof http://localhost:9090/debug/pprof/profile?seconds=30
-
-# Heap profile
-go tool pprof http://localhost:9090/debug/pprof/heap
-
-# Goroutine dump
-curl http://localhost:9090/debug/pprof/goroutine?debug=2
-
-# All registered profiles
-curl http://localhost:9090/debug/pprof/
+go tool pprof http://localhost:9090/debug/pprof/profile?seconds=30  # CPU
+go tool pprof http://localhost:9090/debug/pprof/heap                # Heap
+curl http://localhost:9090/debug/pprof/goroutine?debug=2            # Goroutines
+curl http://localhost:9090/debug/pprof/                             # All profiles
 ```
+
+Mutex profiling samples at 20% (`runtime.SetMutexProfileFraction(5)`). Block profiling records events ≥ 1μs (`runtime.SetBlockProfileRate(1000)`).
 
 ### Debug Snapshot
 
-A comprehensive system snapshot is available via the API (requires auth):
+Full system state dump (requires API auth):
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8081/api/debug/snapshot
+curl -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8080/api/debug/snapshot
 ```
 
-Returns JSON with state from all subsystems: switcher, mixer, output, and demo stats.
+Returns JSON with subsystem state from all registered providers (switcher, mixer, output, etc.), plus a circular event log (100 entries) and uptime.
 
 ---
 
-## Hardware Acceleration
+## 8. Hardware Acceleration
 
 ### Codec Auto-Detection
 
-At startup, Switchframe probes available H.264 encoder backends in priority order:
+At startup, Switchframe probes H.264 encoder backends by creating a tiny 64×64 test encoder and verifying output:
 
-1. **NVENC** (`h264_nvenc`) -- NVIDIA GPU (requires CUDA)
-2. **VA-API** (`h264_vaapi`) -- Intel/AMD GPU (Linux)
-3. **VideoToolbox** (`h264_videotoolbox`) -- macOS (Apple Silicon/Intel)
-4. **libx264** -- Software fallback (always available with FFmpeg)
-5. **OpenH264** -- Last resort (requires `openh264` build tag and shared library)
+```mermaid
+flowchart LR
+    subgraph probe ["Startup Probe"]
+        style probe fill:#1a1a2e,color:#fff,stroke:#16213e
+        NV["NVENC\nh264_nvenc"]
+        VA["VA-API\nh264_vaapi"]
+        VT["VideoToolbox\nh264_videotoolbox"]
+        X264["libx264\nsoftware"]
+        OH["OpenH264\nfallback"]
+    end
 
-The probe creates a tiny 64x64 test encoder, encodes one gray frame, and verifies output. The first successful candidate is cached for the process lifetime.
+    NV -->|fail| VA -->|fail| VT -->|fail| X264 -->|fail| OH
+    NV -->|"✓"| DONE["Selected encoder\ncached for process lifetime"]
+    VA -->|"✓"| DONE
+    VT -->|"✓"| DONE
+    X264 -->|"✓"| DONE
+    OH -->|"✓"| DONE
+```
 
 The selected codec is logged at startup:
 ```
 level=INFO msg="video codec selected" encoder=h264_videotoolbox decoder=h264
 ```
 
-### NVIDIA GPU Setup
+Hardware encoding is strongly recommended for 1080p+. Software-only (libx264) is marginal above 720p.
 
-For NVENC acceleration in Docker:
+### NVIDIA GPU (NVENC)
 
-1. Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
 2. Run with GPU access:
 
 ```bash
-docker run --gpus 1 \
-  -p 8080:8080/udp -p 8080:8080/tcp -p 9090:9090 \
-  switchframe
+docker run --gpus 1 -p 8080:8080/udp -p 8080:8080/tcp -p 9090:9090 switchframe
 ```
 
-Or in Compose:
+The runtime image may need `libnvidia-encode` — extend the Dockerfile or use an NVIDIA base image.
 
-```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: 1
-          capabilities: [gpu]
-```
-
-The runtime image needs NVIDIA driver libraries. You may need to extend the Dockerfile to install `libnvidia-encode` or use an NVIDIA base image.
-
-### Intel VA-API Setup
-
-For VA-API on Linux (Intel Quick Sync or AMD):
+### Intel VA-API (Linux)
 
 ```bash
-# Install runtime libraries
 apt-get install -y vainfo libva2 intel-media-va-driver-non-free
-
-# Verify
-vainfo
+vainfo  # verify
 ```
 
 In Docker, pass the render device:
 ```bash
-docker run --device /dev/dri/renderD128:/dev/dri/renderD128 \
-  switchframe
+docker run --device /dev/dri/renderD128:/dev/dri/renderD128 switchframe
 ```
 
 ### macOS VideoToolbox
 
-VideoToolbox is automatically available on macOS (both Intel and Apple Silicon). No additional setup is needed when building natively.
-
-### Disabling Hardware Acceleration
-
-To force software-only encoding, build with the `noffmpeg` tag and `openh264` tag, or ensure no GPU drivers are installed. The probe will fall through to libx264 or OpenH264.
+Automatically available on macOS (Intel and Apple Silicon). No setup needed for native builds.
 
 ---
 
-## SRT Output
+## 9. Output
 
-Switchframe supports two SRT modes for streaming the program output:
+### SRT Caller (Push)
 
-### Caller Mode (Push)
-
-Pushes MPEG-TS to a remote SRT receiver (e.g., a streaming platform or media server). The server initiates the outbound connection.
+Pushes MPEG-TS to a remote SRT receiver. The server initiates the outbound UDP connection.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -d '{"mode":"caller","address":"ingest.example.com","port":9000,"latency":120}' \
-  http://localhost:8081/api/output/srt/start
+  https://localhost:8080/api/output/srt/start
 ```
 
-- **Reconnection:** Exponential backoff from 1s to 30s max.
-- **Ring buffer:** 4 MB buffer during reconnection. If it overflows, buffered data is discarded and output waits for the next keyframe.
-- **No inbound firewall rule needed.**
+| Behavior | Detail |
+|----------|--------|
+| Reconnection | Exponential backoff: 1s → 30s max, ±20% jitter |
+| Ring buffer | 4 MB during reconnection |
+| Overflow | Buffer discarded, waits for next keyframe (IDR gating) |
+| Callback | `onReconnect(overflowed bool)` triggers state broadcast |
 
-### Listener Mode (Pull)
+### SRT Listener (Pull)
 
-Accepts incoming SRT connections (up to 8 simultaneous by default). Downstream clients pull the program stream.
+Accepts incoming SRT connections. Downstream clients pull the program stream.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -d '{"mode":"listener","port":9000,"latency":120}' \
-  http://localhost:8081/api/output/srt/start
+  https://localhost:8080/api/output/srt/start
 ```
 
-- **Port:** Requires UDP port 9000 (or configured port) to be open inbound.
-- **Fan-out:** Each connected client gets its own buffered channel. Slow clients are dropped rather than stalling the pipeline.
-- **Max connections:** 8 (hardcoded default).
+| Behavior | Detail |
+|----------|--------|
+| Max connections | 8 simultaneous |
+| Channel buffer | 64 TS chunks per connection |
+| Slow clients | Dropped (no backpressure to pipeline) |
 
-### SRT Configuration
+### SRT Fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | required | `"caller"` or `"listener"` |
-| `address` | string | required (caller) | Remote host for caller mode |
-| `port` | int | required | Remote port (caller) or local listen port (listener) |
+| `mode` | string | *required* | `"caller"` or `"listener"` |
+| `address` | string | *required* (caller) | Remote host |
+| `port` | int | *required* | Remote (caller) or local listen (listener) port |
 | `latency` | int | `120` | SRT latency in milliseconds |
-| `streamID` | string | `""` | SRT stream ID (caller mode only) |
+| `streamID` | string | — | SRT stream ID (caller mode only) |
 
-### Stopping SRT Output
+### Multi-Destination SRT
+
+Add multiple independent SRT outputs with per-destination lifecycle:
 
 ```bash
+# Add a destination
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8081/api/output/srt/stop
+  -d '{"name":"Platform A","mode":"caller","address":"ingest.example.com","port":9000}' \
+  https://localhost:8080/api/output/destinations
+
+# Start it
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8080/api/output/destinations/{id}/start
+
+# Stop it
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8080/api/output/destinations/{id}/stop
 ```
 
----
+Each destination gets its own `AsyncAdapter`, ring buffer, and reconnection logic.
 
-## Recording
-
-### Starting a Recording
+### Recording
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   -d '{"outputDir":"/recordings","rotateAfterMins":60,"maxFileSizeMB":2048}' \
-  http://localhost:8081/api/recording/start
+  https://localhost:8080/api/recording/start
 ```
-
-### Configuration
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `outputDir` | string | OS temp dir + `switchframe-recordings/` | Absolute path for output files |
-| `rotateAfterMins` | int | `60` (1 hour) | Time-based file rotation in minutes. 0 disables. |
-| `maxFileSizeMB` | int | `0` (unlimited) | Size-based file rotation in megabytes. 0 disables. |
+| `outputDir` | string | OS temp dir | Absolute path for output files |
+| `rotateAfterMins` | int | `0` (disabled) | Time-based file rotation |
+| `maxFileSizeMB` | int | `0` (unlimited) | Size-based file rotation |
 
-### File Naming
+**File naming:** `program_YYYYMMDD_HHMMSS_NNN.ts` — timestamp fixed at start, index increments on rotation. Rotation is keyframe-gated (waits for next IDR before closing the file).
 
-Files are written as MPEG-TS (`.ts`) with the naming pattern:
+**Format:** MPEG-TS (`.ts`) — crash-resilient with no moov atom or file header. If the process crashes mid-recording, the file is playable up to the last written frame. `fsync()` called before close for data durability.
 
-```
-program_YYYYMMDD_HHMMSS_001.ts
-program_YYYYMMDD_HHMMSS_002.ts  (after rotation)
-program_YYYYMMDD_HHMMSS_003.ts  (etc.)
-```
-
-The timestamp is fixed at recording start; only the index increments on rotation.
-
-### Why MPEG-TS?
-
-MPEG-TS is crash-resilient -- there is no moov atom or file header that must be finalized on clean shutdown. If the process crashes mid-recording, the file is still playable up to the last written frame. This is the same format used for SRT output.
-
-### Docker Volume for Recordings
-
-Mount a host directory or named volume at the recording path:
-
+**Docker:** Mount a host directory or named volume at the recording path:
 ```bash
 docker run -v /data/recordings:/recordings switchframe
 ```
 
-Then start recording with `"outputDir": "/recordings"`.
+### Confidence Monitor
 
-### Stopping a Recording
+When any output is active, a 320×180 JPEG thumbnail of the program output is generated at ≤1fps from keyframes:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8081/api/recording/stop
+curl -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8080/api/output/confidence > thumbnail.jpg
 ```
 
 ---
 
-## Reverse Proxy
+## 10. Reverse Proxy
 
-### Considerations for WebTransport/QUIC
+### Architecture
 
-Switchframe uses HTTP/3 (QUIC) for WebTransport and MoQ. This has important implications for reverse proxies:
-
-1. **QUIC is UDP.** Most reverse proxies are TCP-only. You need a proxy that supports UDP passthrough or HTTP/3 termination.
-2. **WebTransport requires direct QUIC access.** The browser connects to the QUIC endpoint directly using a certificate fingerprint.
-3. **REST API works over plain HTTP.** Port 8081 (enabled via `--http-fallback`) serves the same API over regular TCP and can be proxied normally.
-
-### Recommended Approach
-
-Use the reverse proxy for the REST API and static UI only. Let browsers connect to the QUIC endpoint directly:
+WebTransport requires direct QUIC (UDP) access — most reverse proxies are TCP-only. The recommended architecture splits traffic:
 
 ```
-Browser --> Reverse Proxy (443/TCP) --> Switchframe :8081 (REST API)
-Browser --> Switchframe :8080 (UDP, direct QUIC/WebTransport)
+Browser ──TCP 443──→ Reverse Proxy ──TCP──→ Switchframe :8081 (REST API + embedded UI)
+Browser ──UDP 8080──────────────────────→ Switchframe :8080 (QUIC / WebTransport / MoQ)
 ```
 
-### Caddy Example
+Browsers fetch the cert fingerprint from the proxied REST API (`/api/cert-hash`), then establish WebTransport directly to `:8080`.
+
+### Caddy
 
 ```caddyfile
 switchframe.example.com {
-    # REST API proxy
     handle /api/* {
         reverse_proxy localhost:8081
     }
-
-    # Serve UI from the same binary (if using embed_ui build)
-    # If separate, proxy to port 8081 for the embedded UI
     handle {
         reverse_proxy localhost:8081
     }
 }
 ```
 
-Browsers fetch the cert fingerprint from `https://switchframe.example.com/api/cert-hash`, then establish a WebTransport connection directly to `switchframe.example.com:8080` using that fingerprint.
-
-### nginx Example
+### nginx
 
 ```nginx
 server {
@@ -724,15 +747,12 @@ server {
     ssl_certificate     /etc/letsencrypt/live/switchframe.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/switchframe.example.com/privkey.pem;
 
-    # REST API
     location /api/ {
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Request-ID $request_id;
     }
 
-    # Embedded UI (SPA fallback)
     location / {
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
@@ -740,55 +760,63 @@ server {
 }
 ```
 
-**Note:** nginx does not support HTTP/3 upstream proxying for WebTransport. The QUIC endpoint must be accessed directly by clients on port 8080.
+nginx does not support HTTP/3 upstream proxying — QUIC must be accessed directly by clients.
 
 ### CORS
 
-All `/api/*` endpoints include CORS headers (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`) via `CORSMiddleware`. This enables cross-origin access from the Vite dev server (port 5173) to the Go server (port 8080) during development. Preflight `OPTIONS` requests are handled automatically. In production behind a reverse proxy, the proxy's CORS configuration takes precedence.
+All `/api/*` endpoints include CORS headers via [`CORSMiddleware`](../server/control/cors.go):
+
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+```
+
+`OPTIONS` preflight requests return `204 No Content` immediately. In production behind a reverse proxy, the proxy's CORS configuration takes precedence.
 
 ---
 
-## Production Logging
+## 11. Logging
 
-### Structured JSON Logging
+### Structured JSON
 
-Set `APP_ENV=production` for JSON-formatted structured logs on stderr:
+Set `APP_ENV=production` for JSON-formatted logs on stderr:
 
 ```bash
 APP_ENV=production switchframe --log-level info
 ```
 
-Output:
 ```json
-{"time":"2026-03-05T10:00:00Z","level":"INFO","msg":"switchframe starting","log_level":"info"}
-{"time":"2026-03-05T10:00:00Z","level":"INFO","msg":"certificate generated","fingerprint":"abc123...","expires":"2026-03-19T10:00:00Z"}
+{"time":"2026-03-11T10:00:00Z","level":"INFO","msg":"switchframe starting","log_level":"info"}
+{"time":"2026-03-11T10:00:00Z","level":"INFO","msg":"video codec selected","encoder":"h264_videotoolbox","decoder":"h264"}
 ```
 
-Without `APP_ENV=production`, logs use human-readable text format:
+Without `APP_ENV=production`, logs use human-readable text:
 ```
-time=2026-03-05T10:00:00Z level=INFO msg="switchframe starting" log_level=info
+time=2026-03-11T10:00:00Z level=INFO msg="switchframe starting" log_level=info
 ```
 
 ### Log Levels
 
-| Level | Use |
-|-------|-----|
-| `debug` | Verbose: every HTTP request (including polled endpoints like `/api/switch/state`), codec probe details |
-| `info` | Normal operation: startup, cuts, source registration, SRT connect/disconnect |
-| `warn` | Recoverable issues: SRT write failures, ring buffer overflow, stream registered before init |
-| `error` | Failures: admin server bind, shutdown errors |
+| Level | Content |
+|-------|---------|
+| `debug` | Every HTTP request (including polled endpoints), codec probe details |
+| `info` | Startup, cuts, source registration, SRT connect/disconnect |
+| `warn` | SRT write failures, ring buffer overflow, stream registered before init |
+| `error` | Admin server bind failure, shutdown errors |
 
-### Noisy Path Suppression
+### Path Suppression
 
-The logger automatically downgrades frequently-polled paths to `debug` level:
-- `GET /api/switch/state` -- Polled by browsers as REST fallback
-- `GET /metrics` -- Prometheus scrape
+Frequently-polled paths are downgraded to `debug` automatically:
+- `GET /api/switch/state` (browser REST fallback polling)
+- `GET /metrics` (Prometheus scrape)
 
-At `info` level, these requests do not appear in logs.
+At `info` level, these do not appear in logs.
 
-### Separating Token from Logs
+### Token Separation
 
-The API token is printed to **stdout** (not stderr) at startup. Route stderr to your log aggregator and capture stdout separately:
+The API token prints to **stdout**, logs go to **stderr**:
 
 ```bash
 switchframe 2>/var/log/switchframe.log 1>/var/run/switchframe-token.txt
@@ -796,77 +824,119 @@ switchframe 2>/var/log/switchframe.log 1>/var/run/switchframe-token.txt
 
 ---
 
-## Security Hardening
+## 12. Security
 
-### Non-Root Docker User
+### Docker
 
-The Docker image creates and runs as a dedicated `switchframe` system user:
-
-```dockerfile
-RUN useradd --system --no-create-home switchframe
-USER switchframe
-```
-
-The binary runs without root privileges. Ensure mounted volumes are writable by the `switchframe` user (UID assigned by the system, typically 999).
+The image runs as a non-root `switchframe` system user (`--create-home`):
 
 ```bash
-# Make recording directory writable
+# Make recording directory writable by the container user
 chown 999:999 /data/recordings
-# or use a named volume (Docker handles permissions)
+# or use a named Docker volume (permissions handled automatically)
 ```
-
-### Token Management
-
-- **Never commit tokens to version control.** Use environment variables or secret management (Vault, AWS Secrets Manager, Kubernetes Secrets).
-- **Rotate tokens** by restarting with a new `SWITCHFRAME_API_TOKEN`. All existing API clients must update.
-- **Use long tokens.** The auto-generated token is 64 hex characters (256 bits of entropy). Match this if generating your own.
-- **Timing-safe comparison.** The auth middleware uses `crypto/subtle.ConstantTimeCompare`, preventing timing side-channel attacks.
 
 ### Network Isolation
 
-- **Admin server (9090):** Restrict to your monitoring network. It exposes pprof, which can leak heap contents and goroutine stacks. Never expose to the public internet.
-- **Plain HTTP API (8081):** Only active when `--http-fallback` is enabled. If exposed externally, always place behind a TLS-terminating reverse proxy.
-- **SRT ports:** Open only the specific port you configure. Listener mode accepts up to 8 connections by default.
+| Concern | Recommendation |
+|---------|---------------|
+| **Admin port (9090)** | Restrict to monitoring network. Exposes pprof (heap contents, goroutine stacks). Never expose publicly. |
+| **HTTP fallback (8081)** | Only active with `--http-fallback`. Always place behind TLS proxy if external. |
+| **SRT ports** | Open only the specific port configured. Listener accepts up to 8 connections. |
+| **QUIC (8080)** | Required for browser clients. Self-signed cert fingerprint protects against MITM. |
 
-### Preset Storage
+### Persistent Data
 
-Persistent data is stored as JSON files in `~/.switchframe/`:
+JSON files stored in `~/.switchframe/`:
 
 | File | Contents |
 |------|----------|
 | `presets.json` | Saved switcher presets (program/preview/audio state) |
 | `macros.json` | Macro definitions (sequential action lists) |
-| `operators.json` | Registered operators (name, role, token) |
-| `scte35_rules.json` | SCTE-35 signal conditioning rules and default action |
+| `operators.json` | Registered operators (name, role, bearer token) |
+| `scte35_rules.json` | SCTE-35 signal conditioning rules |
+| `layout_presets.json` | PIP/multi-layout preset definitions |
+| `stingers/` | Uploaded stinger transition clips (PNG sequences + WAV audio) |
 
-In Docker (non-root user with no home dir), these paths resolve based on the `switchframe` user. Mount a volume if data needs to persist across container restarts:
+In Docker, mount a volume at `/home/switchframe/.switchframe` to persist across restarts.
 
-```bash
-docker run -v switchframe-data:/home/switchframe/.switchframe switchframe
-```
+### Runtime Tuning
 
-### GC and System Tuning
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `GOGC=400` | Set in `init()` if unset | Reduces GC frequency (5× live heap trigger vs default 2×) |
+| `GOMEMLIMIT=2GB` | Set in `init()` if unset | Soft memory limit for Go runtime |
+| `RLIMIT_NOFILE` | Checked at startup | Warns if below 65536 file descriptors |
 
-Switchframe sets `GOGC=400` by default (if the `GOGC` environment variable is not already set). This reduces GC frequency by triggering collection at 5x live heap instead of the default 2x, trading memory for fewer latency spikes during real-time frame processing. Override with `GOGC=100` (Go default) or `GOGC=off` to disable.
-
-At startup, `logSystemTuning()` checks `RLIMIT_NOFILE` and logs a warning if the file descriptor limit is below 65536. On Linux:
+Override `GOGC` and `GOMEMLIMIT` via environment variables. For Linux, increase file descriptors:
 
 ```bash
 ulimit -n 65536
 ```
 
-### Recommended Production Checklist
+---
+
+## 13. Production Checklist
 
 - [ ] Set `SWITCHFRAME_API_TOKEN` explicitly (do not rely on auto-generation)
 - [ ] Set `APP_ENV=production` for structured JSON logging
 - [ ] Set `--log-level info` (avoid `debug` in production)
+- [ ] Use `--tls-cert` / `--tls-key` with CA-signed certs, or use a TLS reverse proxy with `--http-fallback`
 - [ ] Restrict port 9090 to internal/monitoring networks
-- [ ] Use `--tls-cert`/`--tls-key` with CA-signed certs, or place behind a TLS reverse proxy with `--http-fallback`
-- [ ] Mount persistent storage for `/recordings` if recording is used
-- [ ] Verify hardware acceleration probe at startup (`"video codec selected"` log line)
+- [ ] Mount persistent storage for recordings and `~/.switchframe/` config data
+- [ ] Verify hardware acceleration at startup (`"video codec selected"` log line)
 - [ ] Configure Prometheus scraping on port 9090
-- [ ] Set up alerting on `switchframe_output_ringbuf_overflows_total` and `switchframe_output_srt_reconnects_total`
-- [ ] Test the readiness probe (`/ready`) in your orchestrator
-- [ ] Size replay buffer memory appropriately (`--replay-buffer-secs` × N sources × ~bitrate)
-- [ ] Configure operator tokens if using multi-operator mode (tokens persist in `operators.json`)
-- [ ] Plan for server restart every 14 days (self-signed TLS certificate renewal) or use `--tls-cert`/`--tls-key` with CA-signed certs
+- [ ] Set up alerts on `switchframe_output_ringbuf_overflows_total` and `switchframe_output_srt_reconnects_total`
+- [ ] Test readiness probe (`/ready`) in your orchestrator
+- [ ] Size replay buffer memory: `--replay-buffer-secs` × sources × ~bitrate
+- [ ] Plan certificate renewal (restart every 14 days for self-signed, or use `--tls-cert`)
+- [ ] Set `ulimit -n 65536` or higher on Linux hosts
+- [ ] Review operator tokens if using multi-operator mode (persisted in `operators.json`)
+
+---
+
+## CI Pipeline
+
+```mermaid
+flowchart TD
+    subgraph parallel ["Parallel Jobs"]
+        style parallel fill:#1a1a2e,color:#fff,stroke:#16213e
+        LINT["lint\nsvelte-check"]
+        LINTGO["lint-go\ngo vet + golangci-lint v2.10.1"]
+        TESTGO["test-go\ngo test ./... -race\n+ coverage artifact"]
+        NOCGO["test-go-nocgo\nCGO_ENABLED=0\ngo build + go test -short"]
+        TESTUI["test-ui\nvitest + playwright"]
+    end
+
+    subgraph gate ["Gated"]
+        style gate fill:#0f3460,color:#fff,stroke:#533483
+        DOCKER["docker\nbuild image + smoke test\n(30s health check poll)"]
+    end
+
+    TESTGO --> DOCKER
+    TESTUI --> DOCKER
+```
+
+Triggered on push to `main` and all pull requests. The `setup-cgo-deps` custom action installs FFmpeg, libx264, and libfdk-aac for Go test and lint jobs. The Docker smoke test starts the image in `--demo` mode and polls `/health` for up to 30 seconds.
+
+**Files:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) · [`.github/actions/setup-cgo-deps/action.yml`](../.github/actions/setup-cgo-deps/action.yml)
+
+---
+
+## File Reference
+
+| File | Purpose |
+|------|---------|
+| [`Dockerfile`](../Dockerfile) | 3-stage build: node → golang → debian runtime |
+| [`Makefile`](../Makefile) | Build targets: `build`, `dev`, `demo`, `docker`, `setup-mkcert` |
+| [`main.go`](../server/cmd/switchframe/main.go) | CLI flag definitions, GC/memory tuning defaults |
+| [`app.go`](../server/cmd/switchframe/app.go) | Application init, subsystem wiring, `Run()` lifecycle |
+| [`app_http.go`](../server/cmd/switchframe/app_http.go) | HTTP/1.1 fallback server on `:8081` |
+| [`embed_prod.go`](../server/cmd/switchframe/embed_prod.go) | `//go:embed ui` with SPA fallback and immutable cache headers |
+| [`embed_dev.go`](../server/cmd/switchframe/embed_dev.go) | No-op handler (dev mode, Vite serves UI) |
+| [`admin.go`](../server/cmd/switchframe/admin.go) | Admin server: metrics, health, ready, pprof, cert-hash |
+| [`auth.go`](../server/control/auth.go) | Bearer token auth middleware with timing-safe comparison |
+| [`cors.go`](../server/control/cors.go) | CORS middleware for cross-origin API access |
+| [`metrics.go`](../server/metrics/metrics.go) | Prometheus metric definitions and registry |
+| [`collector.go`](../server/debug/collector.go) | Debug snapshot provider registry and event log |
+| [`ci.yml`](../.github/workflows/ci.yml) | GitHub Actions: lint, test, Docker smoke test |
