@@ -621,3 +621,70 @@ WebCodecs provides hardware-accelerated H.264 decode in the browser. Each source
 ### PFL (Pre-Fade Listen)
 
 Per-operator headphone monitoring is implemented entirely client-side. Each PFL-enabled source gets its own `AudioContext` that decodes the source's audio stream independently of the server mixer. This means PFL has zero server overhead and each operator hears their own solo selection without affecting anyone else. All sources have their audio decoded for peak metering regardless of PFL state, so VU meters always have data. The `AudioContext` is created lazily and requires a user gesture to resume, satisfying browser autoplay policies.
+
+## 10. Control & Coordination
+
+Commands flow from browsers to the server as REST POST requests over HTTP/3, sharing the same QUIC connection used for media transport. State flows back to all browsers via a MoQ "control" track carrying full JSON snapshots -- not deltas -- so any browser connecting mid-session receives complete state immediately. This design was chosen because the MoQ specification says unknown message types cause `PROTOCOL_VIOLATION`, making custom control messages over MoQ fragile.
+
+### Command and State Flow
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Server
+    participant MW as Middleware
+    participant Handler
+    participant SW as Switcher
+    participant SP as StatePublisher
+    participant All as All Browsers
+
+    Browser->>Server: POST /api/cut {source: "cam2"} (HTTP/3)
+    Server->>MW: CORS → logger → metrics → auth → operator
+    MW->>Handler: authorized
+    Handler->>SW: Cut("cam2")
+    SW->>SP: state changed
+    SP->>SP: enrichState (merge recording, SRT, graphics,<br/>replay, operator, SCTE-35 status)
+    SP->>All: MoQ control track (full JSON snapshot, monotonic seq)
+    Note over All: seq dedup prevents stale REST polls<br/>from overwriting newer MoQ state
+```
+
+### Operator Middleware Decision Tree
+
+```mermaid
+flowchart TD
+    REQ["Request arrives"] --> REG{"Operators<br/>registered?"}
+    REG -->|No| PASS1["Pass through<br/>(backward compatible)"]
+    REG -->|Yes| GET{"GET request?"}
+    GET -->|Yes| PASS2["Pass through<br/>(read-only always allowed)"]
+    GET -->|No| OPROUTE{"/api/operator/*<br/>route?"}
+    OPROUTE -->|Yes| PASS3["Pass through<br/>(registration always allowed)"]
+    OPROUTE -->|No| TOKEN["Extract bearer token"]
+    TOKEN --> IDENT["Identify operator"]
+    IDENT --> ROLE{"Role has<br/>permission?"}
+    ROLE -->|No| R403["403 Forbidden"]
+    ROLE -->|Yes| LOCK{"Subsystem locked<br/>by another?"}
+    LOCK -->|Yes| R409["409 Conflict"]
+    LOCK -->|No| EXEC["Handler executes"]
+```
+
+### Operator Roles and Permissions
+
+| Role | Switching | Audio | Graphics | Replay | Output | Captions |
+|------|-----------|-------|----------|--------|--------|----------|
+| Director | &#10003; | &#10003; | &#10003; | &#10003; | &#10003; | &#10003; |
+| Audio | -- | &#10003; | -- | -- | -- | -- |
+| Graphics | -- | -- | &#10003; | -- | -- | -- |
+| Captioner | -- | -- | -- | -- | -- | &#10003; |
+| Viewer | -- | -- | -- | -- | -- | -- |
+
+### State Broadcast
+
+Every state update is a full JSON snapshot enriched with status from six subsystems: switcher, output (recording/SRT), graphics, replay, operator/locks, and SCTE-35. The `ChannelPublisher` handles backpressure by draining the oldest queued message when the channel is full -- safe because every message is a complete snapshot, so a dropped message is always superseded by the next one. A monotonic sequence number enables deduplication: browsers ignore any state with a sequence lower than what they have already seen, preventing stale REST polling responses from overwriting newer MoQ-delivered state.
+
+### Multi-Operator System
+
+Five roles map to six lockable subsystems. Each operator receives a 64-character hex bearer token at registration, included as an `Authorization: Bearer` header on every command. A `SessionManager` tracks heartbeats with a 60-second stale timeout -- if an operator stops heartbeating, their session is cleaned up and their locks are released automatically by a background goroutine running at 15-second intervals. Directors can force-release any lock, providing an escape hatch when an operator disconnects ungracefully. The system is fully opt-in: when no operators are registered, all requests pass through without authentication, preserving single-operator simplicity.
+
+### Macro System
+
+55 action types across 11 categories (switching, transitions, audio, graphics, stinger, recording, replay, SCTE-35, presets, keying/source, layout, captions). Macros are validated before save via `ValidateSteps()` -- errors block the save, while warnings are informational. The sequential executor runs steps with configurable delays and supports cancellation via context. Execution state is broadcast in real-time through the `ControlRoomState` so the UI can display step-by-step progress with per-step status (pending, running, done, failed, skipped). Only one macro can run at a time; attempting to start a second returns 409 Conflict.
