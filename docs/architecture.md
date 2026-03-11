@@ -306,3 +306,74 @@ A BS.1770-4 loudness meter runs after the master fader, before the limiter. It a
 ### AFV and Per-Source Delay
 
 Channels default to AFV (Audio Follows Video) -- when the program source changes via a cut, the new source's audio channel activates and all other AFV channels deactivate. The `OnProgramChange` callback fires before the state broadcast so browsers see the updated audio state in the same snapshot as the video change. Per-source audio delay (0-500ms) provides lip-sync correction, buffering audio frames in a ring buffer so they arrive at the mixer time-aligned with their corresponding video frames downstream in the pipeline.
+
+## 6. Compositing the Picture
+
+Between the switching engine and the H.264 encoder sits a chain of compositing nodes that layer visual elements onto the program frame. Each node operates in-place on the same YUV420 buffer, adding upstream keys, PIP overlays, or graphics before the frame reaches the encoder. Inactive nodes are excluded at build time -- there is zero per-frame overhead for disabled features.
+
+### Pipeline Node Chain
+
+```mermaid
+flowchart LR
+    PF["ProcessingFrame<br/>(from FramePool)"]
+    USK["upstreamKeyNode"]
+    LYT["layoutCompositorNode"]
+    DSK["compositorNode"]
+    RS1["rawSinkNode<br/>(MXL output)"]
+    RS2["rawSinkNode<br/>(raw monitor)"]
+    ENC["encodeNode"]
+    BV["BroadcastVideo"]
+
+    PF --> USK
+    USK --> LYT
+    LYT --> DSK
+    DSK --> RS1
+    RS1 --> RS2
+    RS2 --> ENC
+    ENC --> BV
+
+    USK -.- USKn["Per-source chroma/luma key mask<br/>(Cb/Cr distance, Y threshold, feathering)"]
+    LYT -.- LYTn["PIP, side-by-side, quad split<br/>(up to 4 slots, scale + blit + border)"]
+    DSK -.- DSKn["8 independent graphics layers<br/>(RGBA → YUV alpha blend, z-ordered)"]
+    RS1 -.- RS1n["Deep-copy for MXL shared-memory<br/>output (before encode)"]
+    RS2 -.- RS2n["Deep-copy for raw YUV monitor<br/>(before encode)"]
+    ENC -.- ENCn["H.264 encode<br/>(NVENC / VA-API / VideoToolbox / x264)"]
+```
+
+### Visual Layer Stack
+
+```mermaid
+flowchart TD
+    TOP["Final Composited Output → Encode"]
+    GFX["DSK Graphics<br/>8 layers, z-ordered<br/>(fade / fly / slide / pulse animations)"]
+    PIP["PIP / Layout Overlay<br/>1–4 slots composited onto program"]
+    KEY["Upstream Key<br/>Chroma/luma key applied per-source, before mix point"]
+    BASE["Program Frame<br/>YUV420 from selected source"]
+
+    BASE --> KEY
+    KEY --> PIP
+    PIP --> GFX
+    GFX --> TOP
+
+    style BASE fill:#1a1a2e,color:#fff
+    style KEY fill:#16213e,color:#fff
+    style PIP fill:#0f3460,color:#fff
+    style GFX fill:#533483,color:#fff
+    style TOP fill:#e94560,color:#fff
+```
+
+### Atomic Pipeline Swap
+
+The pipeline is immutable once built. When configuration changes -- compositor toggled, key added, graphics layer enabled -- a new pipeline is built on the main goroutine and swapped in via atomic pointer. The old pipeline drains in-flight frames in a background goroutine before closing. This guarantees zero frame drops during reconfiguration. Triggers include `SetCompositor`, `SetKeyBridge`, `SetRawVideoSink`, and any compositor or key state change that might alter a node's `Active()` result.
+
+### Upstream Keying
+
+Per-source chroma and luma key generation operates in YUV420 domain, matching the colorspace of hardware broadcast mixers. Chroma keying uses Cb/Cr squared distance with configurable spill replacement color. Luma keying uses Y threshold with smoothness feathering. The `KeyProcessor` runs a chain of key configs per source, applied via `KeyProcessorBridge` before the mix point -- meaning keys are composited onto the source frame before it enters the transition engine or pipeline, not after.
+
+### PIP and Layouts
+
+The layout compositor supports PIP (corner overlay), side-by-side (50/50 split), and quad (2x2 grid) presets, plus arbitrary custom layouts. Each slot has source assignment, on/off state, position rect, z-order, border config, and scale mode (stretch or crop-to-fill). Slot transitions support cut, dissolve, and fly-in animations. Fast-control datagrams enable live PIP drag at 60fps via WebTransport binary protocol (~7 bytes per update) -- the browser sends position updates as datagrams, the layout compositor applies them directly on its fast path without state broadcast, and a single REST call on mouse release confirms the authoritative position.
+
+### DSK Graphics
+
+Up to 8 independent graphics layers are composited in z-order onto the program frame. Each layer holds an RGBA overlay, position rect, and animation state. Animations include fade (in/out over configurable duration), fly-in/out (4 directions computed from program dimensions), slide, and pulse (oscillating alpha between min and max values at a configurable frequency). Six built-in broadcast templates -- lower-third, news lower-third, full-screen card, score bug, network bug, and ticker -- render on an OffscreenCanvas in the browser and upload as RGBA via the REST API. Per-layer mutexes allow concurrent animation goroutines without blocking the pipeline's hot path.
