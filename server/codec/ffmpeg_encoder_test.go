@@ -10,14 +10,14 @@ import (
 )
 
 func TestFFmpegEncoderCreate(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	enc.Close()
 }
 
 func TestFFmpegEncoderDoubleClose(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	enc.Close()
 	enc.Close() // should not panic
@@ -25,39 +25,39 @@ func TestFFmpegEncoderDoubleClose(t *testing.T) {
 
 func TestFFmpegEncoderInvalidParams(t *testing.T) {
 	// 0 width
-	_, err := NewFFmpegEncoder("libx264", 0, 480, 1000000, 30, 1, 2, nil)
+	_, err := NewFFmpegEncoder("libx264", 0, 480, 1000000, 30, 1, 2, false, nil)
 	require.Error(t, err)
 
 	// 0 height
-	_, err = NewFFmpegEncoder("libx264", 640, 0, 1000000, 30, 1, 2, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 0, 1000000, 30, 1, 2, false, nil)
 	require.Error(t, err)
 
 	// 0 bitrate
-	_, err = NewFFmpegEncoder("libx264", 640, 480, 0, 30, 1, 2, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 480, 0, 30, 1, 2, false, nil)
 	require.Error(t, err)
 
 	// 0 fpsNum
-	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 0, 1, 2, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 0, 1, 2, false, nil)
 	require.Error(t, err)
 
 	// 0 fpsDen
-	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 0, 2, nil)
+	_, err = NewFFmpegEncoder("libx264", 640, 480, 1000000, 30, 0, 2, false, nil)
 	require.Error(t, err)
 
 	// Negative dimensions
-	_, err = NewFFmpegEncoder("libx264", -1, 480, 1000000, 30, 1, 2, nil)
+	_, err = NewFFmpegEncoder("libx264", -1, 480, 1000000, 30, 1, 2, false, nil)
 	require.Error(t, err)
 }
 
 func TestFFmpegEncoderInvalidCodec(t *testing.T) {
-	_, err := NewFFmpegEncoder("nonexistent_codec", 640, 480, 1000000, 30, 1, 2, nil)
+	_, err := NewFFmpegEncoder("nonexistent_codec", 640, 480, 1000000, 30, 1, 2, false, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nonexistent_codec")
 }
 
 func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 	w, h := 320, 240
-	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -99,7 +99,7 @@ func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 
 func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -135,7 +135,7 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 
 func TestFFmpegEncoderForceIDR(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -169,7 +169,7 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 }
 
 func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -180,7 +180,7 @@ func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
 }
 
 func TestFFmpegEncoderClosedEncode(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	enc.Close()
 
@@ -193,7 +193,7 @@ func TestFFmpegEncoderClosedEncode(t *testing.T) {
 func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 	w, h := 320, 240
 	bitrate := 500000 // 500kbps
-	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -228,7 +228,7 @@ func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 	// Encode 30 frames at 360p to exercise the encoder under realistic load.
 	w, h := 640, 360
-	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -272,7 +272,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			enc, err := NewFFmpegEncoder("libx264", tc.width, tc.height, 4_000_000, tc.fpsNum, tc.fpsDen, 2, nil)
+			enc, err := NewFFmpegEncoder("libx264", tc.width, tc.height, 4_000_000, tc.fpsNum, tc.fpsDen, 2, false, nil)
 			require.NoError(t, err)
 			defer enc.Close()
 
@@ -311,7 +311,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 }
 
 func TestFFmpegEncoderIncludesAUD(t *testing.T) {
-	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -345,7 +345,7 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 
 func TestEncoderPTSPassthrough(t *testing.T) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -363,7 +363,7 @@ func TestEncoderPTSPassthrough(t *testing.T) {
 
 func BenchmarkEncoderOutput(b *testing.B) {
 	w, h := 160, 120
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, false, nil)
 	require.NoError(b, err)
 	defer enc.Close()
 
@@ -387,9 +387,156 @@ func BenchmarkEncoderOutput(b *testing.B) {
 func TestFFmpegEncoderInterface(t *testing.T) {
 	// Verify FFmpegEncoder implements transition.VideoEncoder.
 	var enc transition.VideoEncoder
-	e, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, nil)
+	e, err := NewFFmpegEncoder("libx264", 320, 240, 500000, 30, 1, 2, false, nil)
 	require.NoError(t, err)
 	enc = e
 	require.NotNil(t, enc)
 	enc.Close()
+}
+
+func TestFFmpegEncoderCBRMode(t *testing.T) {
+	// Verify CBR mode creates a working encoder and produces output.
+	w, h := 320, 240
+	bitrate := 500000
+	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30, 1, 2, true, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	// Feed enough frames to get output (pipeline delay from threading).
+	var encoded []byte
+	var isKey bool
+	for i := 0; i < 30; i++ {
+		encoded, isKey, err = enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, err)
+		if encoded != nil {
+			break
+		}
+	}
+	require.NotEmpty(t, encoded, "CBR encoder should produce output within 30 frames")
+	require.True(t, isKey, "first output should be a keyframe")
+}
+
+func TestFFmpegEncoderCBRProducesFillerNALUs(t *testing.T) {
+	// CBR mode with nal-hrd=cbr should produce filler NALUs (type 12)
+	// to maintain constant bitrate during low-complexity scenes.
+	w, h := 320, 240
+	bitrate := 2_000_000 // high bitrate for simple content → should force fillers
+	enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30, 1, 2, true, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	// Fill with uniform gray — low complexity forces filler NALUs at high bitrate.
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	foundFiller := false
+	for i := 0; i < 60; i++ {
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, err)
+		if data == nil {
+			continue
+		}
+		// Search for filler NALU (type 12) in Annex B output.
+		avc1 := AnnexBToAVC1(data)
+		for _, nalu := range ExtractNALUs(avc1) {
+			if len(nalu) > 0 && nalu[0]&0x1F == 12 {
+				foundFiller = true
+				break
+			}
+		}
+		if foundFiller {
+			break
+		}
+	}
+	require.True(t, foundFiller,
+		"CBR encoder should produce filler NALUs (type 12) for low-complexity content at high bitrate")
+}
+
+func TestFFmpegEncoderCBRVsBRBitrateVariance(t *testing.T) {
+	// CBR should produce more consistent frame sizes than VBR/CRF.
+	w, h := 320, 240
+	bitrate := 500000
+
+	// Helper to collect frame sizes from an encoder.
+	collectSizes := func(cbr bool) []int {
+		enc, err := NewFFmpegEncoder("libx264", w, h, bitrate, 30, 1, 2, cbr, nil)
+		require.NoError(t, err)
+		defer enc.Close()
+
+		yuv := make([]byte, w*h*3/2)
+		var sizes []int
+		for i := 0; i < 90; i++ {
+			// Vary content slightly each frame.
+			for j := 0; j < w*h; j++ {
+				yuv[j] = byte((j*3 + i*7) % 256)
+			}
+			for j := w * h; j < len(yuv); j++ {
+				yuv[j] = 128
+			}
+			data, _, err := enc.Encode(yuv, int64(i*3000), i%30 == 0)
+			require.NoError(t, err)
+			if data != nil {
+				sizes = append(sizes, len(data))
+			}
+		}
+		return sizes
+	}
+
+	cbrSizes := collectSizes(true)
+	vbrSizes := collectSizes(false)
+
+	require.NotEmpty(t, cbrSizes, "CBR should produce frames")
+	require.NotEmpty(t, vbrSizes, "VBR should produce frames")
+
+	// Compute coefficient of variation (stddev/mean) for non-IDR frames.
+	// Skip the first frame (IDR) as it's always larger.
+	cv := func(sizes []int) float64 {
+		if len(sizes) < 2 {
+			return 0
+		}
+		// Skip first element (likely IDR).
+		s := sizes[1:]
+		sum := 0.0
+		for _, v := range s {
+			sum += float64(v)
+		}
+		mean := sum / float64(len(s))
+		if mean == 0 {
+			return 0
+		}
+		varSum := 0.0
+		for _, v := range s {
+			d := float64(v) - mean
+			varSum += d * d
+		}
+		stddev := 0.0
+		if varSum > 0 {
+			stddev = varSum / float64(len(s))
+			// sqrt approximation via Newton's method (avoid math import)
+			x := stddev
+			for range 10 {
+				x = (x + stddev/x) / 2
+			}
+			stddev = x
+		}
+		return stddev / mean
+	}
+
+	cbrCV := cv(cbrSizes)
+	vbrCV := cv(vbrSizes)
+
+	t.Logf("CBR coefficient of variation: %.4f (%d frames)", cbrCV, len(cbrSizes))
+	t.Logf("VBR coefficient of variation: %.4f (%d frames)", vbrCV, len(vbrSizes))
+
+	// CBR should have lower variance than VBR. This is a soft assertion
+	// since encoder behavior varies, but CBR should generally be more uniform.
+	require.Less(t, cbrCV, vbrCV,
+		"CBR frame sizes should have lower variance than VBR")
 }

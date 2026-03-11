@@ -392,7 +392,7 @@ func (a *App) initSubsystems() error {
 	})
 
 	// Pipeline encoder for the video processing chain.
-	a.sw.SetPipelineCodecs(encoderFactory())
+	a.sw.SetPipelineCodecs(encoderFactory(false))
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 	if err := a.sw.BuildPipeline(); err != nil {
 		return fmt.Errorf("build pipeline: %w", err)
@@ -405,7 +405,7 @@ func (a *App) initSubsystems() error {
 			a.replayRelay,
 			replay.Config{BufferDurationSecs: a.cfg.ReplayBufferSecs},
 			decoderFactory(),
-			encoderFactory(),
+			encoderFactory(false),
 		)
 		a.debugCollector.Register("replay", a.replayMgr)
 
@@ -572,7 +572,7 @@ func (a *App) initMXL() error {
 			Height:              pf.Height,
 			FPSNum:              pf.FPSNum,
 			FPSDen:              pf.FPSDen,
-			EncoderFactory:      encoderFactory(),
+			EncoderFactory:      encoderFactory(false),
 			AudioEncoderFactory: audioEncoderFactoryForMXL(),
 			Relay:               relay,
 			OnVideoInfo: func(sps, pps []byte, w, h int) {
