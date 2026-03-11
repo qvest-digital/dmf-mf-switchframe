@@ -1675,12 +1675,18 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
 
+	// Prime source A so latestYUVA is non-nil before parallel ingest.
+	// The engine skips blends when source A hasn't delivered a frame yet
+	// (to avoid a black flash), so without this the test is racy: all
+	// cam2 frames can arrive before cam1's first frame is stored.
+	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		for i := 0; i < iterations; i++ {
+		for i := 1; i <= iterations; i++ {
 			e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, int64(i*3000), true)
 		}
 	}()
@@ -1703,8 +1709,8 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 
 	timing := e.Timing()
 	framesIngested := timing["frames_ingested"].(int64)
-	require.Equal(t, int64(2*iterations), framesIngested,
-		"all frames from both sources should be counted")
+	require.Equal(t, int64(2*iterations+1), framesIngested,
+		"all frames from both sources (plus priming frame) should be counted")
 
 	ingestMaxMs, ok := timing["ingest_max_ms"].(float64)
 	require.True(t, ok, "ingest_max_ms should be float64")
