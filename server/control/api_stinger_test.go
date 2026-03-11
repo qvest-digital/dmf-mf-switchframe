@@ -21,7 +21,7 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
+func setupStingerTestAPI(t *testing.T) (*API, *stinger.Store) {
 	t.Helper()
 
 	// Create temp dir with a test stinger
@@ -45,7 +45,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.StingerStore) {
 		require.NoError(t, err)
 	}
 
-	store, err := stinger.NewStingerStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0)
 	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()

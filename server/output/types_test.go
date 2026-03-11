@@ -21,8 +21,8 @@ func TestRecordingStatus_Defaults(t *testing.T) {
 	require.Zero(t, s.BytesWritten)
 }
 
-func TestSRTOutputStatus_Defaults(t *testing.T) {
-	s := SRTOutputStatus{}
+func TestSRTStatus_Defaults(t *testing.T) {
+	s := SRTStatus{}
 	require.False(t, s.Active)
 	require.Empty(t, s.Mode)
 	require.Zero(t, s.Connections)

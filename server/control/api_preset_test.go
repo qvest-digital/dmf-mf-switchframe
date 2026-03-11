@@ -15,7 +15,7 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
-func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.PresetStore) {
+func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.Store) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
 	sw := switcher.New(programRelay)
@@ -27,7 +27,7 @@ func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.PresetS
 	_ = sw.SetPreview(context.Background(), "camera2")
 
 	dir := t.TempDir()
-	ps, err := preset.NewPresetStore(filepath.Join(dir, "presets.json"))
+	ps, err := preset.NewStore(filepath.Join(dir, "presets.json"))
 	require.NoError(t, err)
 
 	mock := newMockMixer("camera1", "camera2")

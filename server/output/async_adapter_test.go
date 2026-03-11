@@ -215,8 +215,8 @@ func TestAsyncAdapter_StopDrainsRemaining(t *testing.T) {
 }
 
 func TestAsyncAdapter_ImplementsInterface(t *testing.T) {
-	// Compile-time check that AsyncAdapter satisfies OutputAdapter.
-	var _ OutputAdapter = (*AsyncAdapter)(nil)
+	// Compile-time check that AsyncAdapter satisfies Adapter.
+	var _ Adapter = (*AsyncAdapter)(nil)
 }
 
 func TestAsyncAdapterDropLogRateLimit(t *testing.T) {

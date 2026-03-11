@@ -1493,10 +1493,10 @@ func TestReplayPlayer_WSOLAPreStretch(t *testing.T) {
 		AudioOutput: func(frame *media.AudioFrame) {
 			atomic.AddInt64(&audioCount, 1)
 		},
-		AudioDecoderFactory: func(sampleRate, channels int) (audio.AudioDecoder, error) {
+		AudioDecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
 			return &mockAudioDecoder{}, nil
 		},
-		AudioEncoderFactory: func(sampleRate, channels int) (audio.AudioEncoder, error) {
+		AudioEncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
 			return &mockAudioEncoder{}, nil
 		},
 		OnDone:  func() {},

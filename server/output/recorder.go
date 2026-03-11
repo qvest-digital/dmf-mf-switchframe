@@ -18,7 +18,7 @@ type RecorderConfig struct {
 	MaxFileSize int64         // Rotate after this many bytes; default 0 (unlimited).
 }
 
-// FileRecorder is an OutputAdapter that writes muxed MPEG-TS data to a file.
+// FileRecorder is an Adapter that writes muxed MPEG-TS data to a file.
 // Files are named program_{date}_{time}_{index}.ts in the configured directory.
 // Rotation occurs based on time elapsed and/or file size thresholds.
 type FileRecorder struct {
@@ -58,7 +58,7 @@ func (r *FileRecorder) ID() string {
 // Start creates a new MPEG-TS file and begins accepting writes.
 //
 // The context parameter is accepted for API compatibility with the
-// OutputAdapter interface but is not currently checked; file creation
+// Adapter interface but is not currently checked; file creation
 // is a fast local operation.
 func (r *FileRecorder) Start(_ context.Context) error {
 	r.mu.Lock()
@@ -341,5 +341,5 @@ func (r *FileRecorder) RecordingStatusSnapshot() RecordingStatus {
 	}
 }
 
-// Compile-time check that FileRecorder satisfies the OutputAdapter interface.
-var _ OutputAdapter = (*FileRecorder)(nil)
+// Compile-time check that FileRecorder satisfies the Adapter interface.
+var _ Adapter = (*FileRecorder)(nil)

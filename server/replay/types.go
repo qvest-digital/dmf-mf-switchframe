@@ -79,9 +79,9 @@ type gopDescriptor struct {
 	wallTime time.Time // Wall time of the keyframe
 }
 
-// ReplayStatus is the JSON-serializable status for the replay system,
+// Status is the JSON-serializable status for the replay system,
 // included in ControlRoomState for the browser.
-type ReplayStatus struct {
+type Status struct {
 	State      PlayerState        `json:"state"`
 	Source     string             `json:"source,omitempty"`
 	Speed      float64            `json:"speed,omitempty"`
@@ -94,7 +94,7 @@ type ReplayStatus struct {
 }
 
 // MarkInUnixMs returns the mark-in time as Unix milliseconds, or nil if not set.
-func (rs ReplayStatus) MarkInUnixMs() *int64 {
+func (rs Status) MarkInUnixMs() *int64 {
 	if rs.MarkIn == nil {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (rs ReplayStatus) MarkInUnixMs() *int64 {
 }
 
 // MarkOutUnixMs returns the mark-out time as Unix milliseconds, or nil if not set.
-func (rs ReplayStatus) MarkOutUnixMs() *int64 {
+func (rs Status) MarkOutUnixMs() *int64 {
 	if rs.MarkOut == nil {
 		return nil
 	}

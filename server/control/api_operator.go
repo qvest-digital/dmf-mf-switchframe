@@ -95,9 +95,9 @@ func (a *API) handleOperatorList(w http.ResponseWriter, _ *http.Request) {
 		connectedSet[s.OperatorID] = true
 	}
 
-	result := make([]operator.OperatorInfo, len(operators))
+	result := make([]operator.Info, len(operators))
 	for i, op := range operators {
-		result[i] = operator.OperatorInfo{
+		result[i] = operator.Info{
 			ID:        op.ID,
 			Name:      op.Name,
 			Role:      op.Role,

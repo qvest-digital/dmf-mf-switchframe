@@ -44,12 +44,12 @@ type DestinationStatus struct {
 	StartedAt      *time.Time        `json:"startedAt,omitempty"`
 }
 
-// OutputDestination represents a single configured output destination.
-type OutputDestination struct {
+// Destination represents a single configured output destination.
+type Destination struct {
 	mu        sync.Mutex
 	id        string
 	config    DestinationConfig
-	adapter   OutputAdapter
+	adapter   Adapter
 	async     *AsyncAdapter
 	active    bool
 	createdAt time.Time
@@ -64,7 +64,7 @@ func generateDestinationID() string {
 }
 
 // status returns the current DestinationStatus snapshot.
-func (d *OutputDestination) status() DestinationStatus {
+func (d *Destination) status() DestinationStatus {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

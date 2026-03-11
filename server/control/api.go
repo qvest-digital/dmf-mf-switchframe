@@ -49,9 +49,9 @@ type OutputManagerAPI interface {
 	StartRecording(config output.RecorderConfig) error
 	StopRecording() error
 	RecordingStatus() output.RecordingStatus
-	StartSRTOutput(config output.SRTOutputConfig) error
+	StartSRTOutput(config output.SRTConfig) error
 	StopSRTOutput() error
-	SRTOutputStatus() output.SRTOutputStatus
+	SRTOutputStatus() output.SRTStatus
 	ConfidenceThumbnail() []byte
 	AddDestination(config output.DestinationConfig) (string, error)
 	RemoveDestination(id string) error
@@ -112,7 +112,7 @@ func WithDebugCollector(d DebugAPI) APIOption {
 }
 
 // WithPresetStore attaches a preset store to the API.
-func WithPresetStore(ps *preset.PresetStore) APIOption {
+func WithPresetStore(ps *preset.Store) APIOption {
 	return func(a *API) { a.presetStore = ps }
 }
 
@@ -122,7 +122,7 @@ func WithCompositor(c *graphics.Compositor) APIOption {
 }
 
 // WithStingerStore attaches a stinger clip store to the API.
-func WithStingerStore(s *stinger.StingerStore) APIOption {
+func WithStingerStore(s *stinger.Store) APIOption {
 	return func(a *API) { a.stingerStore = s }
 }
 
@@ -192,9 +192,9 @@ type API struct {
 	mixer         AudioMixerAPI
 	outputMgr     OutputManagerAPI
 	debug         DebugAPI
-	presetStore   *preset.PresetStore
+	presetStore   *preset.Store
 	compositor    *graphics.Compositor
-	stingerStore  *stinger.StingerStore
+	stingerStore  *stinger.Store
 	macroStore    *macro.Store
 	keyer         *graphics.KeyProcessor
 	keyBridge     *graphics.KeyProcessorBridge

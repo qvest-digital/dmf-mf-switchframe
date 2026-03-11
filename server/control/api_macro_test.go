@@ -78,7 +78,7 @@ func TestHandleRunMacro_ConcurrentRun(t *testing.T) {
 	// Save a macro with a long wait step so the first run blocks.
 	err := store.Save(macro.Macro{
 		Name: "long-wait",
-		Steps: []macro.MacroStep{
+		Steps: []macro.Step{
 			{Action: macro.ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
 		},
 	})

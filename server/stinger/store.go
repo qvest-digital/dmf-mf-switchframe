@@ -40,16 +40,16 @@ func validateName(name string) error {
 	return nil
 }
 
-// StingerFrame holds a pre-decoded frame with YUV420 data and a per-pixel alpha map.
-type StingerFrame struct {
+// Frame holds a pre-decoded frame with YUV420 data and a per-pixel alpha map.
+type Frame struct {
 	YUV   []byte // YUV420 planar: Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]
 	Alpha []byte // per-luma-pixel alpha [0-255], w*h bytes
 }
 
-// StingerClip is a pre-loaded stinger transition clip.
-type StingerClip struct {
+// Clip is a pre-loaded stinger transition clip.
+type Clip struct {
 	Name            string
-	Frames          []StingerFrame
+	Frames          []Frame
 	Width           int
 	Height          int
 	CutPoint        float64   // 0.0-1.0, where A->B switch happens (default 0.5)
@@ -59,7 +59,7 @@ type StingerClip struct {
 }
 
 // FrameAt returns the stinger frame for a given transition position [0.0, 1.0].
-func (c *StingerClip) FrameAt(position float64) *StingerFrame {
+func (c *Clip) FrameAt(position float64) *Frame {
 	if len(c.Frames) == 0 {
 		return nil
 	}
@@ -73,27 +73,27 @@ func (c *StingerClip) FrameAt(position float64) *StingerFrame {
 	return &c.Frames[idx]
 }
 
-// StingerStore manages stinger clips stored as PNG sequences on disk.
-type StingerStore struct {
+// Store manages stinger clips stored as PNG sequences on disk.
+type Store struct {
 	dir      string
 	mu       sync.RWMutex
-	clips    map[string]*StingerClip
+	clips    map[string]*Clip
 	maxClips int
 }
 
-// NewStingerStore creates a store backed by the given directory.
+// NewStore creates a store backed by the given directory.
 // Pre-loads any existing stinger directories.
 // maxClips limits the number of clips that can be loaded; <= 0 defaults to 16.
-func NewStingerStore(dir string, maxClips int) (*StingerStore, error) {
+func NewStore(dir string, maxClips int) (*Store, error) {
 	if maxClips <= 0 {
 		maxClips = 16
 	}
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create stinger dir: %w", err)
 	}
-	s := &StingerStore{
+	s := &Store{
 		dir:      dir,
-		clips:    make(map[string]*StingerClip),
+		clips:    make(map[string]*Clip),
 		maxClips: maxClips,
 	}
 	// Pre-load existing stingers
@@ -118,7 +118,7 @@ func NewStingerStore(dir string, maxClips int) (*StingerStore, error) {
 }
 
 // List returns all loaded stinger names.
-func (s *StingerStore) List() []string {
+func (s *Store) List() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	names := make([]string, 0, len(s.clips))
@@ -130,7 +130,7 @@ func (s *StingerStore) List() []string {
 }
 
 // Get returns a stinger clip by name.
-func (s *StingerStore) Get(name string) (*StingerClip, bool) {
+func (s *Store) Get(name string) (*Clip, bool) {
 	if validateName(name) != nil {
 		return nil, false
 	}
@@ -141,7 +141,7 @@ func (s *StingerStore) Get(name string) (*StingerClip, bool) {
 }
 
 // Delete removes a stinger clip and its directory.
-func (s *StingerStore) Delete(name string) error {
+func (s *Store) Delete(name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalidName, name)
 	}
@@ -155,7 +155,7 @@ func (s *StingerStore) Delete(name string) error {
 }
 
 // SetCutPoint updates the cut point for a stinger clip.
-func (s *StingerStore) SetCutPoint(name string, cutPoint float64) error {
+func (s *Store) SetCutPoint(name string, cutPoint float64) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalidName, name)
 	}
@@ -174,7 +174,7 @@ func (s *StingerStore) SetCutPoint(name string, cutPoint float64) error {
 
 // LoadFromDir loads a stinger from a directory of PNG files.
 // The directory must already exist under the store's base dir.
-func (s *StingerStore) LoadFromDir(name string) error {
+func (s *Store) LoadFromDir(name string) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalidName, name)
 	}
@@ -194,7 +194,7 @@ func (s *StingerStore) LoadFromDir(name string) error {
 
 // Upload extracts a zip of PNG files into the store directory and loads the clip.
 // The zip must contain PNG files at the root level (no subdirectories).
-func (s *StingerStore) Upload(name string, zipData []byte) error {
+func (s *Store) Upload(name string, zipData []byte) error {
 	if err := validateName(name); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalidName, name)
 	}
@@ -289,7 +289,7 @@ func (s *StingerStore) Upload(name string, zipData []byte) error {
 	return nil
 }
 
-func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
+func (s *Store) loadClip(name string) (*Clip, error) {
 	dir := filepath.Join(s.dir, name)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -316,7 +316,7 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 		return nil, fmt.Errorf("stinger %q has no PNG files", name)
 	}
 
-	clip := &StingerClip{
+	clip := &Clip{
 		Name:     name,
 		CutPoint: 0.5,
 	}
@@ -353,8 +353,8 @@ func (s *StingerStore) loadClip(name string) (*StingerClip, error) {
 	return clip, nil
 }
 
-// loadPNGFrame loads a PNG file and converts it to a StingerFrame (YUV420 + alpha).
-func loadPNGFrame(path string) (*StingerFrame, int, int, error) {
+// loadPNGFrame loads a PNG file and converts it to a Frame (YUV420 + alpha).
+func loadPNGFrame(path string) (*Frame, int, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, 0, err
@@ -375,15 +375,15 @@ func loadPNGFrame(path string) (*StingerFrame, int, int, error) {
 		return nil, 0, 0, fmt.Errorf("dimensions must be even for YUV420, got %dx%d", w, h)
 	}
 
-	frame := RGBAToStingerFrame(img, w, h)
+	frame := RGBAToFrame(img, w, h)
 	return frame, w, h, nil
 }
 
-// RGBAToStingerFrame converts an image to a StingerFrame with YUV420 + alpha.
+// RGBAToFrame converts an image to a Frame with YUV420 + alpha.
 // Uses limited-range BT.709 colorspace (Y [16,235], Cb/Cr [16,240]) to match
 // the pipeline's limited-range convention.
 // Exported for testing.
-func RGBAToStingerFrame(img image.Image, w, h int) *StingerFrame {
+func RGBAToFrame(img image.Image, w, h int) *Frame {
 	ySize := w * h
 	uvSize := (w / 2) * (h / 2)
 	yuv := make([]byte, ySize+2*uvSize)
@@ -446,6 +446,6 @@ func RGBAToStingerFrame(img image.Image, w, h int) *StingerFrame {
 		}
 	}
 
-	return &StingerFrame{YUV: yuv, Alpha: alpha}
+	return &Frame{YUV: yuv, Alpha: alpha}
 }
 

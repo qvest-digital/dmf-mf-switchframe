@@ -38,7 +38,7 @@ flowchart LR
         fsync["Frame Sync<br/>(align mixed rates)"]
         delay["Delay Buffer<br/>(lip-sync)"]
         core["Switcher Core<br/>(cut / preview /<br/>frame routing)"]
-        trans["Transition Engine<br/>(mix, dip, wipe,<br/>stinger, FTB)"]
+        trans["Engine<br/>(mix, dip, wipe,<br/>stinger, FTB)"]
 
         fsync --> delay --> core
         core --> trans
@@ -210,20 +210,20 @@ The browser applies the cut optimistically before the server confirms -- the UI 
 
 ## 4. A Transition Dissolves
 
-Unlike a cut, transitions blend between two sources over time. A fresh `TransitionEngine` is created for each transition and destroyed on completion -- no persistent codec resources or blending state exist between transitions. Since both sources are already decoded to YUV420 by their per-source decoder goroutines, the engine receives raw frames directly and blends in BT.709 colorspace, matching how hardware broadcast mixers operate internally.
+Unlike a cut, transitions blend between two sources over time. A fresh `transition.Engine` is created for each transition and destroyed on completion -- no persistent codec resources or blending state exist between transitions. Since both sources are already decoded to YUV420 by their per-source decoder goroutines, the engine receives raw frames directly and blends in BT.709 colorspace, matching how hardware broadcast mixers operate internally.
 
 ```mermaid
 sequenceDiagram
     participant Browser
     participant Server
-    participant TE as TransitionEngine
+    participant TE as Engine
     participant SrcA as Source A
     participant SrcB as Source B
     participant SW as Switcher
     participant Pipe as Pipeline
 
     Browser->>Server: POST /api/transition/start {type: "mix", duration: 1000}
-    Server->>TE: create TransitionEngine(from, to, mix, 1000ms)
+    Server->>TE: create Engine(from, to, mix, 1000ms)
     Note over TE: fresh engine, no persistent state
 
     loop every frame (~33ms at 30fps)
@@ -454,7 +454,7 @@ flowchart LR
 
 ### Lazy Viewer Lifecycle
 
-OutputManager creates the OutputViewer, TSMuxer, and ConfidenceMonitor and registers on the program relay only when the first output adapter starts (recording or any SRT destination). When the last adapter stops, everything tears down -- the viewer is removed from the relay, the muxer is closed, and the confidence monitor stops decoding. This ensures zero overhead when both recording and SRT are inactive. On startup, the manager fires an `OnMuxerStart` callback that requests an IDR keyframe from the encoder so the muxer can initialize immediately rather than waiting for the next GOP boundary.
+`output.Manager` creates the OutputViewer, TSMuxer, and ConfidenceMonitor and registers on the program relay only when the first output adapter starts (recording or any SRT destination). When the last adapter stops, everything tears down -- the viewer is removed from the relay, the muxer is closed, and the confidence monitor stops decoding. This ensures zero overhead when both recording and SRT are inactive. On startup, the manager fires an `OnMuxerStart` callback that requests an IDR keyframe from the encoder so the muxer can initialize immediately rather than waiting for the next GOP boundary.
 
 ### Recording
 

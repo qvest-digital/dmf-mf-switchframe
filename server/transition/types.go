@@ -4,20 +4,20 @@ import "errors"
 
 // Sentinel errors for the transition package.
 var (
-	ErrTransitionActive = errors.New("transition: already active")
-	ErrFTBActive        = errors.New("transition: FTB is active")
+	ErrActive    = errors.New("transition: already active")
+	ErrFTBActive = errors.New("transition: FTB is active")
 )
 
-// TransitionType identifies the visual transition effect.
-type TransitionType string
+// Type identifies the visual transition effect.
+type Type string
 
 const (
-	TransitionMix        TransitionType = "mix"
-	TransitionDip        TransitionType = "dip"
-	TransitionFTB        TransitionType = "ftb"
-	TransitionFTBReverse TransitionType = "ftb_reverse"
-	TransitionWipe       TransitionType = "wipe"
-	TransitionStinger    TransitionType = "stinger"
+	Mix        Type = "mix"
+	Dip        Type = "dip"
+	FTB        Type = "ftb"
+	FTBReverse Type = "ftb_reverse"
+	Wipe       Type = "wipe"
+	Stinger    Type = "stinger"
 )
 
 // WipeDirection specifies the direction for a wipe transition.
@@ -51,10 +51,10 @@ type EasingConfig struct {
 	Y2   float64 `json:"y2,omitempty"`
 }
 
-// TransitionState tracks whether a transition is currently running.
-type TransitionState int
+// State tracks whether a transition is currently running.
+type State int
 
 const (
-	StateIdle   TransitionState = 0
-	StateActive TransitionState = 1
+	StateIdle   State = 0
+	StateActive State = 1
 )

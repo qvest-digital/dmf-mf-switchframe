@@ -15,7 +15,7 @@ func TestLayoutCompositor_InSwitcher(t *testing.T) {
 	// Set a layout with a PIP slot
 	l := &layout.Layout{
 		Name: "pip",
-		Slots: []layout.LayoutSlot{
+		Slots: []layout.Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: true},
 		},
 	}

@@ -41,7 +41,7 @@ func (s *Store) Get(name string) (*Layout, error) {
 		return nil, fmt.Errorf("layout preset %q not found", name)
 	}
 	cp := *l
-	cp.Slots = make([]LayoutSlot, len(l.Slots))
+	cp.Slots = make([]Slot, len(l.Slots))
 	copy(cp.Slots, l.Slots)
 	return &cp, nil
 }

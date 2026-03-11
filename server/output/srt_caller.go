@@ -27,7 +27,7 @@ type SRTCallerConfig struct {
 }
 
 // SRTCaller pushes MPEG-TS data to a remote SRT receiver.
-// It implements the OutputAdapter interface.
+// It implements the Adapter interface.
 type SRTCaller struct {
 	config SRTCallerConfig
 
@@ -195,10 +195,10 @@ func (c *SRTCaller) Status() AdapterStatus {
 	}
 }
 
-// SRTStatusSnapshot returns an SRTOutputStatus for ControlRoomState.
-func (c *SRTCaller) SRTStatusSnapshot() SRTOutputStatus {
+// SRTStatusSnapshot returns an SRTStatus for ControlRoomState.
+func (c *SRTCaller) SRTStatusSnapshot() SRTStatus {
 	status := c.Status()
-	return SRTOutputStatus{
+	return SRTStatus{
 		Active:        status.State == StateActive || status.State == StateReconnecting,
 		Mode:          "caller",
 		Address:       c.config.Address,
@@ -213,7 +213,7 @@ func (c *SRTCaller) SRTStatusSnapshot() SRTOutputStatus {
 // reconnectLoop retries SRT connection with exponential backoff.
 // On success, if the ring buffer did not overflow, buffered data is
 // flushed to the new connection. If it did overflow, the data is
-// discarded (the OutputManager should wait for a keyframe).
+// discarded (the Manager should wait for a keyframe).
 func (c *SRTCaller) reconnectLoop() {
 	defer c.reconnecting.Store(false)
 	for {
@@ -356,5 +356,5 @@ func containsKeyframe(data []byte) bool {
 	return false
 }
 
-// Compile-time check that SRTCaller satisfies the OutputAdapter interface.
-var _ OutputAdapter = (*SRTCaller)(nil)
+// Compile-time check that SRTCaller satisfies the Adapter interface.
+var _ Adapter = (*SRTCaller)(nil)

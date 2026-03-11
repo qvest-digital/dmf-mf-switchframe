@@ -34,11 +34,11 @@ type mockAudioTransHandler struct {
 type audioTransStartCall struct {
 	oldSrc     string
 	newSrc     string
-	mode       audio.AudioTransitionMode
+	mode       audio.TransitionMode
 	durationMs int
 }
 
-func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.AudioTransitionMode, durationMs int) {
+func (m *mockAudioTransHandler) OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalls = append(m.startCalls, audioTransStartCall{oldSource, newSource, mode, durationMs})

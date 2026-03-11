@@ -2,16 +2,16 @@ package output
 
 import "context"
 
-// scte35Filter wraps an OutputAdapter and strips MPEG-TS packets
+// scte35Filter wraps an Adapter and strips MPEG-TS packets
 // carrying the SCTE-35 PID before forwarding to the inner adapter.
 // Used when a destination has SCTE35Enabled == false.
 type scte35Filter struct {
-	inner OutputAdapter
+	inner Adapter
 	pid   uint16
 }
 
 // newSCTE35Filter creates a filter that strips TS packets with the given PID.
-func newSCTE35Filter(inner OutputAdapter, pid uint16) *scte35Filter {
+func newSCTE35Filter(inner Adapter, pid uint16) *scte35Filter {
 	return &scte35Filter{inner: inner, pid: pid}
 }
 
@@ -76,5 +76,5 @@ func (f *scte35Filter) Close() error { return f.inner.Close() }
 
 func (f *scte35Filter) Status() AdapterStatus { return f.inner.Status() }
 
-// Compile-time check that scte35Filter satisfies OutputAdapter.
-var _ OutputAdapter = (*scte35Filter)(nil)
+// Compile-time check that scte35Filter satisfies Adapter.
+var _ Adapter = (*scte35Filter)(nil)

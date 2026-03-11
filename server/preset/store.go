@@ -52,8 +52,8 @@ type AudioChannelSnapshot struct {
 	AFV   bool
 }
 
-// PresetUpdate holds optional fields for updating a preset.
-type PresetUpdate struct {
+// Update holds optional fields for updating a preset.
+type Update struct {
 	Name *string `json:"name,omitempty"`
 }
 
@@ -65,18 +65,18 @@ var (
 	ErrEmptyName = errors.New("preset: name must not be empty")
 )
 
-// PresetStore manages CRUD operations and file persistence for presets.
-type PresetStore struct {
+// Store manages CRUD operations and file persistence for presets.
+type Store struct {
 	mu       sync.RWMutex
 	presets  []Preset
 	filePath string
 }
 
-// NewPresetStore creates a PresetStore that persists to the given file path.
+// NewStore creates a Store that persists to the given file path.
 // If the file exists, presets are loaded from it. If it does not exist, the
 // store starts empty and the file is created on first mutation.
-func NewPresetStore(filePath string) (*PresetStore, error) {
-	ps := &PresetStore{
+func NewStore(filePath string) (*Store, error) {
+	ps := &Store{
 		filePath: filePath,
 		presets:  []Preset{},
 	}
@@ -100,7 +100,7 @@ func NewPresetStore(filePath string) (*PresetStore, error) {
 }
 
 // List returns all presets, ordered by creation time (oldest first).
-func (ps *PresetStore) List() []Preset {
+func (ps *Store) List() []Preset {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
@@ -110,7 +110,7 @@ func (ps *PresetStore) List() []Preset {
 }
 
 // Get returns a preset by ID, or false if not found.
-func (ps *PresetStore) Get(id string) (Preset, bool) {
+func (ps *Store) Get(id string) (Preset, bool) {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 
@@ -124,7 +124,7 @@ func (ps *PresetStore) Get(id string) (Preset, bool) {
 
 // Create saves a new preset from the given name and state snapshot.
 // Returns the created preset with a generated UUID and timestamp.
-func (ps *PresetStore) Create(name string, state ControlRoomSnapshot) (Preset, error) {
+func (ps *Store) Create(name string, state ControlRoomSnapshot) (Preset, error) {
 	if name == "" {
 		return Preset{}, ErrEmptyName
 	}
@@ -158,7 +158,7 @@ func (ps *PresetStore) Create(name string, state ControlRoomSnapshot) (Preset, e
 }
 
 // Update modifies a preset's mutable fields. Currently only Name can be updated.
-func (ps *PresetStore) Update(id string, updates PresetUpdate) (Preset, error) {
+func (ps *Store) Update(id string, updates Update) (Preset, error) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -180,7 +180,7 @@ func (ps *PresetStore) Update(id string, updates PresetUpdate) (Preset, error) {
 }
 
 // Delete removes a preset by ID.
-func (ps *PresetStore) Delete(id string) error {
+func (ps *Store) Delete(id string) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
@@ -198,7 +198,7 @@ func (ps *PresetStore) Delete(id string) error {
 
 // save writes the current presets to disk atomically (temp file + rename).
 // Must be called with ps.mu held (either read or write lock).
-func (ps *PresetStore) save() error {
+func (ps *Store) save() error {
 	data, err := json.MarshalIndent(ps.presets, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal presets: %w", err)

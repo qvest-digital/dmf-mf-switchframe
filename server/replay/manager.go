@@ -13,8 +13,8 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-// ReplayRelay is the interface for the replay output relay.
-type ReplayRelay interface {
+// Relay is the interface for the replay output relay.
+type Relay interface {
 	BroadcastVideo(frame *media.VideoFrame)
 	BroadcastAudio(frame *media.AudioFrame)
 }
@@ -24,7 +24,7 @@ type ReplayRelay interface {
 type Manager struct {
 	log            *slog.Logger
 	mu             sync.Mutex
-	relay          ReplayRelay
+	relay          Relay
 	config         Config
 	decoderFactory transition.DecoderFactory
 	encoderFactory transition.EncoderFactory
@@ -61,7 +61,7 @@ type Manager struct {
 }
 
 // NewManager creates a replay manager.
-func NewManager(relay ReplayRelay, cfg Config, decoderFactory transition.DecoderFactory, encoderFactory transition.EncoderFactory) *Manager {
+func NewManager(relay Relay, cfg Config, decoderFactory transition.DecoderFactory, encoderFactory transition.EncoderFactory) *Manager {
 	if cfg.BufferDurationSecs <= 0 {
 		cfg.BufferDurationSecs = 60
 	}
@@ -316,11 +316,11 @@ func (m *Manager) Stop() error {
 }
 
 // Status returns the current replay status for state broadcasts.
-func (m *Manager) Status() ReplayStatus {
+func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	status := ReplayStatus{
+	status := Status{
 		State:      m.playerState,
 		Source:     m.playerSource,
 		Speed:      m.playerSpeed,

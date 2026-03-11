@@ -48,7 +48,7 @@ func makeAudioFrame(pts int64) *media.AudioFrame {
 }
 
 // TestIntegration_RecordingProducesValidTS verifies the full pipeline:
-// program relay → OutputViewer → TSMuxer → FileRecorder → .ts file.
+// program relay → Viewer → TSMuxer → FileRecorder → .ts file.
 // The resulting file must be a valid MPEG-TS container with 188-byte aligned
 // packets, each starting with the 0x47 sync byte.
 func TestIntegration_RecordingProducesValidTS(t *testing.T) {
@@ -56,7 +56,7 @@ func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 		t.Skip("integration test")
 	}
 	relay := distribution.NewRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -91,14 +91,14 @@ func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 	}
 }
 
-// TestIntegration_OutputManagerLifecycle verifies that the muxer and viewer
+// TestIntegration_ManagerLifecycle verifies that the muxer and viewer
 // are created on first output and torn down when the last output stops.
-func TestIntegration_OutputManagerLifecycle(t *testing.T) {
+func TestIntegration_ManagerLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
 	relay := distribution.NewRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 
 	// Before any output, the viewer should not exist.
 	require.Nil(t, mgr.viewer, "viewer must be nil before any output is started")
@@ -126,7 +126,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 		t.Skip("integration test")
 	}
 	relay := distribution.NewRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -144,7 +144,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 		},
 	}
 	current := *mgr.adapters.Load()
-	newAdapters := make([]OutputAdapter, len(current)+1)
+	newAdapters := make([]Adapter, len(current)+1)
 	copy(newAdapters, current)
 	newAdapters[len(current)] = mock
 	mgr.adapters.Store(&newAdapters)
@@ -170,7 +170,7 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 		t.Skip("integration test")
 	}
 	relay := distribution.NewRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
@@ -211,7 +211,7 @@ func TestIntegration_PreKeyframeDropped(t *testing.T) {
 		t.Skip("integration test")
 	}
 	relay := distribution.NewRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -237,7 +237,7 @@ func TestIntegration_PreKeyframeDropped(t *testing.T) {
 		"TS data should flow after the first keyframe")
 }
 
-// testAdapter is a simple OutputAdapter for integration test fan-out verification.
+// testAdapter is a simple Adapter for integration test fan-out verification.
 type testAdapter struct {
 	id      string
 	writeFn func([]byte) (int, error)
@@ -254,5 +254,5 @@ func (a *testAdapter) Write(data []byte) (int, error) {
 func (a *testAdapter) Close() error          { return nil }
 func (a *testAdapter) Status() AdapterStatus { return AdapterStatus{State: StateActive} }
 
-// Compile-time check that testAdapter satisfies OutputAdapter.
-var _ OutputAdapter = (*testAdapter)(nil)
+// Compile-time check that testAdapter satisfies Adapter.
+var _ Adapter = (*testAdapter)(nil)

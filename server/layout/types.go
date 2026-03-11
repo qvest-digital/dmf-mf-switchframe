@@ -18,8 +18,8 @@ const (
 // MaxSlots is the maximum number of layout slots.
 const MaxSlots = 4
 
-// LayoutSlot defines one source's position within a layout.
-type LayoutSlot struct {
+// Slot defines one source's position within a layout.
+type Slot struct {
 	SourceKey  string          `json:"sourceKey"`
 	Rect       image.Rectangle `json:"rect"`
 	ZOrder     int             `json:"zOrder"`
@@ -31,7 +31,7 @@ type LayoutSlot struct {
 }
 
 // EffectiveScaleMode returns the slot's scale mode, defaulting to "stretch".
-func (s LayoutSlot) EffectiveScaleMode() string {
+func (s Slot) EffectiveScaleMode() string {
 	if s.ScaleMode == ScaleModeFill {
 		return ScaleModeFill
 	}
@@ -41,7 +41,7 @@ func (s LayoutSlot) EffectiveScaleMode() string {
 // EffectiveCropAnchor returns the slot's crop anchor, defaulting to center (0.5, 0.5).
 // Values are clamped to [0, 1]. Only defaults to center when ScaleMode is not "fill"
 // AND anchor is zero-value, so explicit [0,0] (top-left) works in fill mode.
-func (s LayoutSlot) EffectiveCropAnchor() (float64, float64) {
+func (s Slot) EffectiveCropAnchor() (float64, float64) {
 	ax, ay := s.CropAnchor[0], s.CropAnchor[1]
 	// In fill mode, always use raw values (including [0,0] = top-left).
 	// In non-fill mode, zero-value means unset — default to center.
@@ -86,14 +86,14 @@ func (t SlotTransition) TransitionDuration() time.Duration {
 // Layout is the complete multi-source layout configuration.
 type Layout struct {
 	Name  string       `json:"name"`
-	Slots []LayoutSlot `json:"slots"`
+	Slots []Slot `json:"slots"`
 }
 
 // EvenAlign rounds down to the nearest even number (YUV420 alignment).
 func EvenAlign(v int) int { return v &^ 1 }
 
 // ValidateSlot checks that a slot has valid even-aligned dimensions within frame bounds.
-func ValidateSlot(slot LayoutSlot, frameW, frameH int) error {
+func ValidateSlot(slot Slot, frameW, frameH int) error {
 	// SourceKey may be empty — user assigns sources after selecting a preset.
 	// The compositor renders broadcast black for slots with no source.
 	r := slot.Rect

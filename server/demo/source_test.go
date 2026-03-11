@@ -65,7 +65,7 @@ func TestStartSources_LabelsAndState(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(4)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
+	stop := StartSources(ctx, sw, relays, NewStats(), "", 33*time.Millisecond)
 	defer stop()
 
 	sw.mu.Lock()
@@ -87,7 +87,7 @@ func TestStartSources_GeneratesFrames(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(1)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
+	stop := StartSources(ctx, sw, relays, NewStats(), "", 33*time.Millisecond)
 
 	// Add a viewer to cam1's relay to capture frames.
 	viewer := &frameCollector{}
@@ -118,7 +118,7 @@ func TestStartSources_StopCancels(t *testing.T) {
 	ctx := context.Background()
 	relays := makeRelays(2)
 
-	stop := StartSources(ctx, sw, relays, NewDemoStats(), "", 33*time.Millisecond)
+	stop := StartSources(ctx, sw, relays, NewStats(), "", 33*time.Millisecond)
 
 	viewer := &frameCollector{}
 	relays[0].AddViewer(viewer)
@@ -244,7 +244,7 @@ func TestGenerateFramesFromFile(t *testing.T) {
 	viewer := &frameCollector{}
 	relay.AddViewer(viewer)
 
-	stats := NewDemoStats()
+	stats := NewStats()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go generateFramesFromFile(ctx, relay, result.Video, result.Audio, "cam1", stats)
@@ -284,7 +284,7 @@ func TestStartSources_WithVideoDir(t *testing.T) {
 	sw := newMockSwitcher()
 	ctx := context.Background()
 	relays := makeRelays(4)
-	stats := NewDemoStats()
+	stats := NewStats()
 
 	stop := StartSources(ctx, sw, relays, stats, dir, 33*time.Millisecond)
 
@@ -367,8 +367,8 @@ func TestGenerateFramesFromFile_GroupIDMonotonicAcrossLoop(t *testing.T) {
 	}
 }
 
-func TestDemoStats_DebugSnapshot(t *testing.T) {
-	stats := NewDemoStats()
+func TestStats_DebugSnapshot(t *testing.T) {
+	stats := NewStats()
 	stats.SetFileInfo("real_video", "test.ts", 100, 200)
 
 	src := stats.Source("cam1")

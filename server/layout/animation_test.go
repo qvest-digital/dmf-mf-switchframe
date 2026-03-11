@@ -61,7 +61,7 @@ func TestCompositor_SlotOn(t *testing.T) {
 	c := NewCompositor(8, 8)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: false,
 				Transition: SlotTransition{Type: "cut"}},
 		},
@@ -77,7 +77,7 @@ func TestCompositor_SlotOff(t *testing.T) {
 	c := NewCompositor(8, 8)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: true,
 				Transition: SlotTransition{Type: "cut"}},
 		},
@@ -93,7 +93,7 @@ func TestCompositor_SlotOn_Dissolve(t *testing.T) {
 	c := NewCompositor(8, 8)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: false,
 				Transition: SlotTransition{Type: "dissolve", DurationMs: 200}},
 		},
@@ -118,7 +118,7 @@ func TestCompositor_SlotOn_Fly(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(1440, 20, 1920, 290), Enabled: false,
 				Transition: SlotTransition{Type: "fly", DurationMs: 300}},
 		},

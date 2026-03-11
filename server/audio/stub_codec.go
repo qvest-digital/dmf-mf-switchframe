@@ -14,11 +14,11 @@ func init() {
 }
 
 // NewFDKDecoder returns an error when cgo is not available.
-func NewFDKDecoder(sampleRate, channels int) (AudioDecoder, error) {
+func NewFDKDecoder(sampleRate, channels int) (Decoder, error) {
 	return nil, errCGODisabled
 }
 
 // NewFDKEncoder returns an error when cgo is not available.
-func NewFDKEncoder(sampleRate, channels int) (AudioEncoder, error) {
+func NewFDKEncoder(sampleRate, channels int) (Encoder, error) {
 	return nil, errCGODisabled
 }

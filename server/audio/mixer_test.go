@@ -88,10 +88,10 @@ func TestMixerCloseConcurrentNoDoubleClose(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(_ *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &closeCountDecoder{closes: &decoderCloses, samples: make([]float32, 1024)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &closeCountEncoder{closes: &encoderCloses}, nil
 		},
 	})
@@ -234,11 +234,11 @@ func TestMixerMultiChannelMixing(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			// Each call returns a new decoder; we'll set samples per-channel below
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -287,10 +287,10 @@ func TestMixerMasterLevel(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -347,10 +347,10 @@ func TestMixerChannelGainApplied(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -383,10 +383,10 @@ func TestMixerMutedChannelInMixMode(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -423,10 +423,10 @@ func TestMixerOnCutCrossfade(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			var captured []float32
 			allCapturedPCM = append(allCapturedPCM, captured)
 			idx := len(allCapturedPCM) - 1
@@ -482,10 +482,10 @@ func TestMixerCrossfadeClears(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -524,10 +524,10 @@ func TestMixerCrossfadeTimeout(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -688,7 +688,7 @@ func TestMixerOnTransitionStart(t *testing.T) {
 	require.False(t, m.IsInTransitionCrossfade())
 
 	// Start transition
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 
 	require.True(t, m.IsInTransitionCrossfade(), "transition crossfade should be active")
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should start at 0")
@@ -714,7 +714,7 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 
 	// Update position
 	m.OnTransitionPosition(0.25)
@@ -736,7 +736,7 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	require.True(t, m.IsInTransitionCrossfade())
 
@@ -758,7 +758,7 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 
 	// At position 0.0: old=1.0, new=0.0
 	m.OnTransitionPosition(0.0)
@@ -809,10 +809,10 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -831,7 +831,7 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 
 	// Start transition at 50% with audio position pre-set to 0.5 so both
 	// audioPos and cyclePos are at 0.5, giving flat gain (no per-sample ramp).
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	m.mu.Lock()
 	m.transCrossfadeAudioPos = 0.5 // simulate audio already advanced to 0.5
@@ -879,10 +879,10 @@ func TestMixerTransitionGainContinuityAcrossFrames(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
 		},
 	})
@@ -905,7 +905,7 @@ func TestMixerTransitionGainContinuityAcrossFrames(t *testing.T) {
 	m.mu.Unlock()
 
 	// Start transition
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 
 	// === Audio frame 1: position at 0.1 ===
 	m.OnTransitionPosition(0.1)
@@ -959,10 +959,10 @@ func TestMixerTransitionCompleteFlushes(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -978,7 +978,7 @@ func TestMixerTransitionCompleteFlushes(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: pcm}
 	m.mu.Unlock()
 
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 
 	// Ingest one frame from cam1 only — starts a mix cycle but doesn't flush
@@ -1028,7 +1028,7 @@ func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// FTB reverse: fade the "from" source IN from silence
-	m.OnTransitionStart("cam1", "", AudioFadeIn, 1000)
+	m.OnTransitionStart("cam1", "", FadeIn, 1000)
 
 	// At position 0.0: audio should be silent (starting from black)
 	m.OnTransitionPosition(0.0)
@@ -1061,7 +1061,7 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// FTB forward: fade the "from" source OUT to silence
-	m.OnTransitionStart("cam1", "", AudioFadeOut, 1000)
+	m.OnTransitionStart("cam1", "", FadeOut, 1000)
 
 	// At position 0.0: audio should be full
 	m.OnTransitionPosition(0.0)
@@ -1093,10 +1093,10 @@ func TestMixerProgramMute(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -1153,7 +1153,7 @@ func TestMixerTransitionDipGains(t *testing.T) {
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
 
-	m.OnTransitionStart("cam1", "cam2", AudioDipToSilence, 1000)
+	m.OnTransitionStart("cam1", "cam2", DipToSilence, 1000)
 
 	// Position 0.0: fully source A
 	m.OnTransitionPosition(0.0)
@@ -1200,10 +1200,10 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -1220,7 +1220,7 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 	m.mu.Unlock()
 
 	// Start dip at 0.5 (midpoint = silence), set audio position to match
-	m.OnTransitionStart("cam1", "cam2", AudioDipToSilence, 1000)
+	m.OnTransitionStart("cam1", "cam2", DipToSilence, 1000)
 	m.OnTransitionPosition(0.5)
 	m.mu.Lock()
 	m.transCrossfadeAudioPos = 0.5 // simulate audio already advanced to 0.5
@@ -1257,10 +1257,10 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -1274,7 +1274,7 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 	m.mu.Unlock()
 
 	// FTB forward from position 0.0 to 0.5 — gain should ramp from 1.0 to 0.707
-	m.OnTransitionStart("cam1", "", AudioFadeOut, 1000)
+	m.OnTransitionStart("cam1", "", FadeOut, 1000)
 	m.OnTransitionPosition(0.5) // audioPos=0.0 (from start), cyclePos will snapshot 0.5
 
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
@@ -1315,10 +1315,10 @@ func TestMixerDeadlockPrevention(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: cam1PCM}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1362,11 +1362,11 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			factoryCalls.Add(1)
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1422,10 +1422,10 @@ func TestMixerCrossfadePreSeedAppliesGain(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			var captured []float32
 			allCapturedPCM = append(allCapturedPCM, captured)
 			idx := len(allCapturedPCM) - 1
@@ -1481,10 +1481,10 @@ func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1523,10 +1523,10 @@ func TestMixerTrimAppliedBeforeFader(t *testing.T) {
 		Output: func(f *media.AudioFrame) {
 			outputFrames = append(outputFrames, f)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -1608,10 +1608,10 @@ func TestMixerPerChannelPeaks(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1649,10 +1649,10 @@ func TestMixerTransitionCrossfadeWithTrim(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -1673,7 +1673,7 @@ func TestMixerTransitionCrossfadeWithTrim(t *testing.T) {
 	m.mu.Unlock()
 
 	// Start transition at 50% with stable position (no per-sample ramp)
-	m.OnTransitionStart("cam1", "cam2", AudioCrossfade, 1000)
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
 	m.OnTransitionPosition(0.5)
 	m.OnTransitionPosition(0.5)
 
@@ -1730,10 +1730,10 @@ func TestMixerCrossfadeUsesPreBufferedPCM(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1782,11 +1782,11 @@ func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			factoryCalls.Add(1)
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -1938,10 +1938,10 @@ func TestMixer_MonotonicOutputPTS(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -2016,10 +2016,10 @@ func BenchmarkMixerMixingPath(b *testing.B) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -2064,10 +2064,10 @@ func TestMixer_MonotonicPTS_ArrivalOrderIndependent(t *testing.T) {
 					outputFrames = append(outputFrames, frame)
 					mu.Unlock()
 				},
-				DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+				DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 					return &mockDecoder{samples: nil}, nil
 				},
-				EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+				EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 					return &mockEncoder{data: []byte{0xFF}}, nil
 				},
 			})
@@ -2127,10 +2127,10 @@ func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -2196,10 +2196,10 @@ func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcmSamples}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -2233,7 +2233,7 @@ func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
 		}
 
 		// Phase B: transition crossfade (mixing mode)
-		m.OnTransitionStart(fromCam, toCam, AudioCrossfade, 500)
+		m.OnTransitionStart(fromCam, toCam, Crossfade, 500)
 		m.OnTransitionPosition(0.5)
 		for i := 0; i < 5; i++ {
 			m.IngestFrame(fromCam, &media.AudioFrame{
@@ -2283,7 +2283,7 @@ func TestStereoGainInterpolation(t *testing.T) {
 	m.transCrossfadeActive = true
 	m.transCrossfadeFrom = "cam1"
 	m.transCrossfadeTo = "cam2"
-	m.transCrossfadeMode = AudioCrossfade
+	m.transCrossfadeMode = Crossfade
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 1.0
 	m.mixStarted = true
@@ -2386,10 +2386,10 @@ func TestMixerCrossfadeLimiterApplied(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			var captured []float32
 			allCapturedPCM = append(allCapturedPCM, captured)
 			idx := len(allCapturedPCM) - 1
@@ -2670,10 +2670,10 @@ func TestMixer_StingerAudioInMixPath(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: sourcePCM}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -2727,10 +2727,10 @@ func TestMixerCrossfadeUpdatesProgramPeakMetering(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{}, nil
 		},
 	})
@@ -2768,10 +2768,10 @@ func TestMixerCrossfadeDuringFTBProducesSilence(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: pcm}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -2821,7 +2821,7 @@ func TestMixerIngestPCM_CrossfadeOnCut(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 		},
 		// No DecoderFactory needed — IngestPCM supplies raw PCM directly.
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -2901,7 +2901,7 @@ func TestMixerIngestPCM_MonoToStereoUpmix(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})

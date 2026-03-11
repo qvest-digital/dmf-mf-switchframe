@@ -62,15 +62,15 @@ type App struct {
 
 	// Core engine
 	sw    *switcher.Switcher
-	mixer *audio.AudioMixer
+	mixer *audio.Mixer
 
 	// Output
-	outputMgr     *output.OutputManager
+	outputMgr     *output.Manager
 	confidenceMon *output.ConfidenceMonitor
 
 	// Subsystems
 	debugCollector *debug.Collector
-	presetStore    *preset.PresetStore
+	presetStore    *preset.Store
 	macroStore     *macro.Store
 	operatorStore  *operator.Store
 	sessionMgr     *operator.SessionManager
@@ -78,7 +78,7 @@ type App struct {
 	keyProcessor   *graphics.KeyProcessor
 	keyBridge      *graphics.KeyProcessorBridge
 	replayMgr        *replay.Manager
-	stingerStore     *stinger.StingerStore
+	stingerStore     *stinger.Store
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	fastCtrl         *fastctrl.Dispatcher
@@ -294,7 +294,7 @@ func (a *App) initCoreEngine() error {
 // initOutput creates the output manager, wires SRT, and attaches the
 // confidence monitor.
 func (a *App) initOutput() error {
-	a.outputMgr = output.NewOutputManager(a.programRelay)
+	a.outputMgr = output.NewManager(a.programRelay)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
@@ -329,7 +329,7 @@ func (a *App) initSubsystems() error {
 	}
 
 	presetPath := filepath.Join(homeDir, ".switchframe", "presets.json")
-	a.presetStore, err = preset.NewPresetStore(presetPath)
+	a.presetStore, err = preset.NewStore(presetPath)
 	if err != nil {
 		return fmt.Errorf("create preset store: %w", err)
 	}
@@ -350,7 +350,7 @@ func (a *App) initSubsystems() error {
 	slog.Info("operator store initialized", "path", operatorPath)
 
 	stingerDir := filepath.Join(homeDir, ".switchframe", "stingers")
-	a.stingerStore, err = stinger.NewStingerStore(stingerDir, 0)
+	a.stingerStore, err = stinger.NewStore(stingerDir, 0)
 	if err != nil {
 		return fmt.Errorf("create stinger store: %w", err)
 	}
@@ -854,7 +854,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.sw.StartHealthMonitor(1 * time.Second)
 
-	demoStats := demo.NewDemoStats()
+	demoStats := demo.NewStats()
 	if a.cfg.Demo {
 		const nCams = 4
 		slog.Info("demo mode: starting simulated camera sources", "count", nCams, "videoDir", a.cfg.DemoVideoDir)

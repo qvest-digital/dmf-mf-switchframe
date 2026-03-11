@@ -23,7 +23,7 @@ type mockOutputManager struct {
 	startSRTErr       error
 	stopSRTErr        error
 	lastRecConfig     output.RecorderConfig
-	lastSRTConfig     output.SRTOutputConfig
+	lastSRTConfig     output.SRTConfig
 	thumbnail         []byte
 	recDroppedPackets int64
 
@@ -64,7 +64,7 @@ func (m *mockOutputManager) RecordingStatus() output.RecordingStatus {
 	}
 }
 
-func (m *mockOutputManager) StartSRTOutput(config output.SRTOutputConfig) error {
+func (m *mockOutputManager) StartSRTOutput(config output.SRTConfig) error {
 	if m.startSRTErr != nil {
 		return m.startSRTErr
 	}
@@ -81,8 +81,8 @@ func (m *mockOutputManager) StopSRTOutput() error {
 	return nil
 }
 
-func (m *mockOutputManager) SRTOutputStatus() output.SRTOutputStatus {
-	return output.SRTOutputStatus{
+func (m *mockOutputManager) SRTOutputStatus() output.SRTStatus {
+	return output.SRTStatus{
 		Active:  m.srtActive,
 		Mode:    "caller",
 		Address: "192.168.1.100",
@@ -439,7 +439,7 @@ func TestSRTStatus(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var status output.SRTOutputStatus
+	var status output.SRTStatus
 	err := json.NewDecoder(rec.Body).Decode(&status)
 	require.NoError(t, err)
 	require.True(t, status.Active)

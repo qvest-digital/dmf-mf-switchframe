@@ -4,16 +4,16 @@ import (
 	"testing"
 )
 
-func TestOutputManager_InjectSCTE35_NoMuxer(t *testing.T) {
+func TestManager_InjectSCTE35_NoMuxer(t *testing.T) {
 	// InjectSCTE35 with no muxer should be a no-op (no panic)
-	m := &OutputManager{}
+	m := &Manager{}
 	if err := m.InjectSCTE35([]byte{0x00}); err != nil {
 		t.Fatalf("expected nil error with no muxer, got: %v", err)
 	}
 }
 
-func TestOutputManager_SetSCTE35Injector(t *testing.T) {
-	m := &OutputManager{}
+func TestManager_SetSCTE35Injector(t *testing.T) {
+	m := &Manager{}
 	mock := &mockSCTE35Injector{}
 	m.SetSCTE35Injector(mock, 0x102)
 	if m.scte35Injector == nil {
@@ -32,19 +32,19 @@ func (m *mockSCTE35Injector) SyntheticBreakState() []byte {
 	return m.synthBytes
 }
 
-func TestOutputManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
+func TestManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
 	// Verify that rebuildAdaptersLocked wraps destination adapters with
 	// scte35Filter when SCTE35Enabled is false.
-	m := NewOutputManager(nil)
+	m := NewManager(nil)
 
 	// Create two destinations: one with SCTE-35 enabled, one without.
-	destEnabled := &OutputDestination{
+	destEnabled := &Destination{
 		id:     "enabled",
 		config: DestinationConfig{SCTE35Enabled: true},
 		adapter: &mockFilterWriter{},
 		active: true,
 	}
-	destDisabled := &OutputDestination{
+	destDisabled := &Destination{
 		id:     "disabled",
 		config: DestinationConfig{SCTE35Enabled: false},
 		adapter: &mockFilterWriter{},

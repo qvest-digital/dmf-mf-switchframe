@@ -82,7 +82,7 @@ func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updates := preset.PresetUpdate{}
+	updates := preset.Update{}
 	if req.Name != "" {
 		updates.Name = &req.Name
 	}

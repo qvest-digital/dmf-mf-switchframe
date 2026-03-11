@@ -35,10 +35,10 @@ type AdapterStatus struct {
 	Error        string
 }
 
-// OutputAdapter is the interface that all output destinations implement.
-// Adapters receive muxed MPEG-TS bytes from the OutputManager and write
+// Adapter is the interface that all output destinations implement.
+// Adapters receive muxed MPEG-TS bytes from the Manager and write
 // them to their destination (file, SRT stream, etc.).
-type OutputAdapter interface {
+type Adapter interface {
 	// ID returns a unique identifier for this adapter instance.
 	ID() string
 	// Start initializes the adapter and begins accepting writes.
@@ -54,11 +54,11 @@ type OutputAdapter interface {
 // RecordingStatus is an alias for the canonical type in internal.
 type RecordingStatus = internal.RecordingStatus
 
-// SRTOutputStatus is an alias for the canonical type in internal.
-type SRTOutputStatus = internal.SRTOutputStatus
+// SRTStatus is an alias for the canonical type in internal.
+type SRTStatus = internal.SRTOutputStatus
 
-// SRTOutputConfig holds configuration for creating an SRT output adapter.
-type SRTOutputConfig struct {
+// SRTConfig holds configuration for creating an SRT output adapter.
+type SRTConfig struct {
 	Mode     string `json:"mode"`
 	Address  string `json:"address,omitempty"`
 	Port     int    `json:"port"`

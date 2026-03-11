@@ -33,7 +33,7 @@ func TestCompositor_GraySlotDirectFill(t *testing.T) {
 	// White background — gray slot should overwrite with broadcast black
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "missing", Rect: image.Rect(0, 0, 4, 4), Enabled: true},
 		},
 	}
@@ -57,7 +57,7 @@ func BenchmarkCompositor_ProcessFrame_PIP(b *testing.B) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(1440, 0, 1920, 270), Enabled: true},
 		},
 	}
@@ -78,7 +78,7 @@ func BenchmarkCompositor_ProcessFrame_Quad(b *testing.B) {
 
 	l := &Layout{
 		Name: "quad",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(0, 0, 960, 540), Enabled: true},
 			{SourceKey: "cam2", Rect: image.Rect(960, 0, 1920, 540), Enabled: true},
 			{SourceKey: "cam3", Rect: image.Rect(0, 540, 960, 1080), Enabled: true},
@@ -104,7 +104,7 @@ func TestCompositor_IngestAndNeedsSource(t *testing.T) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(1440, 0, 1920, 270), Enabled: true},
 		},
 	}
@@ -126,7 +126,7 @@ func TestCompositor_ProcessFrame(t *testing.T) {
 	// Layout: 4x4 PIP at (4,0)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: true},
 		},
 	}
@@ -150,7 +150,7 @@ func TestCompositor_InactiveWhenEmpty(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	require.False(t, c.Active())
 
-	l := &Layout{Name: "pip", Slots: []LayoutSlot{
+	l := &Layout{Name: "pip", Slots: []Slot{
 		{SourceKey: "cam2", Rect: image.Rect(0, 0, 480, 270), Enabled: true},
 	}}
 	c.SetLayout(l)
@@ -165,7 +165,7 @@ func TestCompositor_NilSourceRendersGray(t *testing.T) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "missing", Rect: image.Rect(4, 0, 8, 4), Enabled: true},
 		},
 	}
@@ -184,7 +184,7 @@ func TestCompositor_DisabledSlotSkipped(t *testing.T) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: false},
 		},
 	}
@@ -205,7 +205,7 @@ func TestCompositor_ZOrderSorting(t *testing.T) {
 
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			// Higher z-order but listed first — should still render on top
 			{SourceKey: "top", Rect: image.Rect(2, 2, 6, 6), ZOrder: 2, Enabled: true},
 			{SourceKey: "bottom", Rect: image.Rect(0, 0, 8, 8), ZOrder: 0, Enabled: true},
@@ -235,7 +235,7 @@ func TestCompositor_FlyInPartiallyOffScreen(t *testing.T) {
 	// PIP at right edge — fly-in starts off-screen right
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(8, 0, 16, 8), Enabled: false,
 				Transition: SlotTransition{Type: "fly", DurationMs: 500}},
 		},
@@ -264,7 +264,7 @@ func TestCompositor_FlyInClampedDoesNotCorrupt(t *testing.T) {
 	// Place a slot that when animated from off-screen, gets clamped
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(8, 4, 16, 12), Enabled: true},
 		},
 	}
@@ -306,7 +306,7 @@ func TestCompositor_AutoDissolveSource_NoRace(t *testing.T) {
 	c := NewCompositor(8, 8)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(0, 0, 4, 4), Enabled: true},
 		},
 	}
@@ -335,7 +335,7 @@ func TestCompositor_GrayBuffer_ScaledSlot(t *testing.T) {
 	// Slot is 8x8 at position (4,4)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "missing", Rect: image.Rect(4, 4, 12, 12), Enabled: true},
 		},
 	}
@@ -353,7 +353,7 @@ func TestCompositor_DissolveEndpoint_NoVisualPop(t *testing.T) {
 	c := NewCompositor(8, 8)
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(0, 0, 4, 4), Enabled: false,
 				Transition: SlotTransition{Type: "dissolve", DurationMs: 10}},
 		},
@@ -383,7 +383,7 @@ func TestCompositor_FillMode_CropsBeforeScale(t *testing.T) {
 	// Slot is 4x8 (portrait) — a 16:9 source (8x4) should be cropped.
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{
 				SourceKey:  "cam1",
 				Rect:       image.Rect(0, 0, 4, 8),
@@ -440,7 +440,7 @@ func TestCompositor_FillMode_MatchingAspect(t *testing.T) {
 
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{
 				SourceKey: "cam1",
 				Rect:      image.Rect(0, 0, 8, 4),
@@ -468,7 +468,7 @@ func TestCompositor_StretchDefault_Unchanged(t *testing.T) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(4, 0, 8, 4), Enabled: true},
 		},
 	}
@@ -490,7 +490,7 @@ func TestCompositor_FillMode_GrayBuffer(t *testing.T) {
 
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{
 				SourceKey: "missing",
 				Rect:      image.Rect(0, 0, 4, 8),
@@ -513,7 +513,7 @@ func TestCompositor_UpdateSlotRect(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(100, 100, 580, 370), Enabled: true},
 		},
 	}
@@ -536,7 +536,7 @@ func TestCompositor_UpdateSlotRect_OutOfRange(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(0, 0, 480, 270), Enabled: true},
 		},
 	}
@@ -549,7 +549,7 @@ func TestCompositor_UpdateSlotRect_ExceedsFrame(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{
 		Name: "test",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(0, 0, 480, 270), Enabled: true},
 		},
 	}
@@ -605,7 +605,7 @@ func TestCompositor_FillDataRace(t *testing.T) {
 
 	l := &Layout{
 		Name: "pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: true},
 		},
 	}

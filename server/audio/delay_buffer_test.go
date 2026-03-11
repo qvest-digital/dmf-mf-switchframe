@@ -9,16 +9,16 @@ import (
 	"github.com/zsiec/prism/media"
 )
 
-func TestAudioDelayBuffer_ZeroDelay(t *testing.T) {
-	buf := NewAudioDelayBuffer(0)
+func TestDelayBuffer_ZeroDelay(t *testing.T) {
+	buf := NewDelayBuffer(0)
 	frame := &media.AudioFrame{Data: []byte{1, 2, 3}, PTS: 100}
 	out := buf.Ingest(frame)
 	require.NotNil(t, out)
 	assert.Equal(t, frame, out)
 }
 
-func TestAudioDelayBuffer_DelayedOutput(t *testing.T) {
-	buf := NewAudioDelayBuffer(50)
+func TestDelayBuffer_DelayedOutput(t *testing.T) {
+	buf := NewDelayBuffer(50)
 	now := time.Now()
 
 	f1 := &media.AudioFrame{Data: []byte{1}, PTS: 100}
@@ -31,24 +31,24 @@ func TestAudioDelayBuffer_DelayedOutput(t *testing.T) {
 	assert.Equal(t, f1.Data, out.Data, "should output first frame after delay")
 }
 
-func TestAudioDelayBuffer_SetDelay(t *testing.T) {
-	buf := NewAudioDelayBuffer(0)
+func TestDelayBuffer_SetDelay(t *testing.T) {
+	buf := NewDelayBuffer(0)
 	buf.SetDelayMs(100)
 	assert.Equal(t, 100, buf.DelayMs())
 }
 
-func TestAudioDelayBuffer_ClampMax(t *testing.T) {
-	buf := NewAudioDelayBuffer(600)
+func TestDelayBuffer_ClampMax(t *testing.T) {
+	buf := NewDelayBuffer(600)
 	assert.Equal(t, 500, buf.DelayMs())
 }
 
-func TestAudioDelayBuffer_ClampMin(t *testing.T) {
-	buf := NewAudioDelayBuffer(-10)
+func TestDelayBuffer_ClampMin(t *testing.T) {
+	buf := NewDelayBuffer(-10)
 	assert.Equal(t, 0, buf.DelayMs())
 }
 
-func TestAudioDelayBuffer_SetDelayClamp(t *testing.T) {
-	buf := NewAudioDelayBuffer(100)
+func TestDelayBuffer_SetDelayClamp(t *testing.T) {
+	buf := NewDelayBuffer(100)
 
 	buf.SetDelayMs(999)
 	assert.Equal(t, 500, buf.DelayMs())
@@ -57,8 +57,8 @@ func TestAudioDelayBuffer_SetDelayClamp(t *testing.T) {
 	assert.Equal(t, 0, buf.DelayMs())
 }
 
-func TestAudioDelayBuffer_MultipleFrames(t *testing.T) {
-	buf := NewAudioDelayBuffer(100)
+func TestDelayBuffer_MultipleFrames(t *testing.T) {
+	buf := NewDelayBuffer(100)
 	now := time.Now()
 
 	// Ingest 5 frames at 20ms intervals
@@ -74,9 +74,9 @@ func TestAudioDelayBuffer_MultipleFrames(t *testing.T) {
 	assert.Equal(t, byte(0), out.Data[0], "first frame should come out")
 }
 
-func TestAudioDelayBuffer_DrainOnZero(t *testing.T) {
+func TestDelayBuffer_DrainOnZero(t *testing.T) {
 	// When delay is set to 0, frames pass through immediately.
-	buf := NewAudioDelayBuffer(0)
+	buf := NewDelayBuffer(0)
 	now := time.Now()
 
 	for i := 0; i < 3; i++ {
@@ -87,9 +87,9 @@ func TestAudioDelayBuffer_DrainOnZero(t *testing.T) {
 	}
 }
 
-func TestAudioDelayBuffer_SequentialOutput(t *testing.T) {
+func TestDelayBuffer_SequentialOutput(t *testing.T) {
 	// Verify frames come out in FIFO order.
-	buf := NewAudioDelayBuffer(40)
+	buf := NewDelayBuffer(40)
 	now := time.Now()
 
 	// Ingest 4 frames at 20ms intervals (0, 20, 40, 60ms)
@@ -106,9 +106,9 @@ func TestAudioDelayBuffer_SequentialOutput(t *testing.T) {
 	}
 }
 
-func TestAudioDelayRingBufferWrap(t *testing.T) {
+func TestDelayRingBufferWrap(t *testing.T) {
 	// Fill past the ring capacity and verify correct FIFO behavior.
-	buf := NewAudioDelayBuffer(10)
+	buf := NewDelayBuffer(10)
 	now := time.Now()
 
 	// Ingest audioDelayRingSize+10 frames at 1ms intervals.
@@ -133,9 +133,9 @@ func TestAudioDelayRingBufferWrap(t *testing.T) {
 	}
 }
 
-func TestAudioDelayRingBufferNoLeak(t *testing.T) {
+func TestDelayRingBufferNoLeak(t *testing.T) {
 	// Process many frames and verify the internal ring stays bounded.
-	buf := NewAudioDelayBuffer(20)
+	buf := NewDelayBuffer(20)
 	now := time.Now()
 
 	for i := 0; i < 10000; i++ {

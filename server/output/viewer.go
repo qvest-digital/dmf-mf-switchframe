@@ -21,11 +21,11 @@ const (
 	captionChSize = 32
 )
 
-// OutputViewer implements distribution.Viewer and sits on the program relay.
+// Viewer implements distribution.Viewer and sits on the program relay.
 // It receives video, audio, and caption frames via buffered channels and
 // feeds them to the TSMuxer in a separate goroutine, avoiding blocking the
 // relay's broadcast calls.
-type OutputViewer struct {
+type Viewer struct {
 	videoCh   chan *media.VideoFrame
 	audioCh   chan *media.AudioFrame
 	captionCh chan *ccx.CaptionFrame
@@ -45,12 +45,12 @@ type OutputViewer struct {
 	done     chan struct{}
 }
 
-// NewOutputViewer creates an OutputViewer that feeds frames to the given
+// NewViewer creates a Viewer that feeds frames to the given
 // TSMuxer. The optional onVideo callback is invoked for each video frame
 // after muxing (used by the confidence monitor). It must be set at
 // construction time; it is read without synchronization in Run().
-func NewOutputViewer(muxer *TSMuxer, onVideo func(*media.VideoFrame)) *OutputViewer {
-	return &OutputViewer{
+func NewViewer(muxer *TSMuxer, onVideo func(*media.VideoFrame)) *Viewer {
+	return &Viewer{
 		videoCh:   make(chan *media.VideoFrame, videoChSize),
 		audioCh:   make(chan *media.AudioFrame, audioChSize),
 		captionCh: make(chan *ccx.CaptionFrame, captionChSize),
@@ -62,13 +62,13 @@ func NewOutputViewer(muxer *TSMuxer, onVideo func(*media.VideoFrame)) *OutputVie
 }
 
 // ID returns the viewer identifier.
-func (v *OutputViewer) ID() string {
+func (v *Viewer) ID() string {
 	return "switchframe:output"
 }
 
 // SendVideo enqueues a video frame. Non-blocking: drops the frame if the
 // channel is full to avoid stalling the relay broadcast.
-func (v *OutputViewer) SendVideo(frame *media.VideoFrame) {
+func (v *Viewer) SendVideo(frame *media.VideoFrame) {
 	v.videoSent.Add(1)
 	select {
 	case v.videoCh <- frame:
@@ -80,7 +80,7 @@ func (v *OutputViewer) SendVideo(frame *media.VideoFrame) {
 
 // SendAudio enqueues an audio frame. Non-blocking: drops the frame if the
 // channel is full.
-func (v *OutputViewer) SendAudio(frame *media.AudioFrame) {
+func (v *Viewer) SendAudio(frame *media.AudioFrame) {
 	v.audioSent.Add(1)
 	select {
 	case v.audioCh <- frame:
@@ -92,7 +92,7 @@ func (v *OutputViewer) SendAudio(frame *media.AudioFrame) {
 
 // SendCaptions enqueues a caption frame. Non-blocking: drops the frame if
 // the channel is full.
-func (v *OutputViewer) SendCaptions(frame *ccx.CaptionFrame) {
+func (v *Viewer) SendCaptions(frame *ccx.CaptionFrame) {
 	v.captionSent.Add(1)
 	select {
 	case v.captionCh <- frame:
@@ -103,7 +103,7 @@ func (v *OutputViewer) SendCaptions(frame *ccx.CaptionFrame) {
 }
 
 // Stats returns delivery metrics for this viewer.
-func (v *OutputViewer) Stats() distribution.ViewerStats {
+func (v *Viewer) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{
 		ID:             v.ID(),
 		VideoSent:      v.videoSent.Load(),
@@ -120,7 +120,7 @@ func (v *OutputViewer) Stats() distribution.ViewerStats {
 //
 // Video frames are given priority: before each select on all channels,
 // video is drained first to prevent audio bursts from starving video.
-func (v *OutputViewer) Run() {
+func (v *Viewer) Run() {
 	defer close(v.done)
 
 	for {
@@ -166,13 +166,13 @@ func (v *OutputViewer) Run() {
 
 // Stop signals the drain goroutine to exit and waits for it to finish.
 // It is safe to call multiple times.
-func (v *OutputViewer) Stop() {
+func (v *Viewer) Stop() {
 	v.stopOnce.Do(func() { close(v.stopCh) })
 	<-v.done
 }
 
 // drain flushes any remaining video and audio frames from the channels.
-func (v *OutputViewer) drain() {
+func (v *Viewer) drain() {
 	for {
 		select {
 		case frame := <-v.videoCh:
@@ -191,7 +191,7 @@ func (v *OutputViewer) drain() {
 }
 
 // DebugSnapshot returns viewer metrics for debug snapshots.
-func (v *OutputViewer) DebugSnapshot() map[string]any {
+func (v *Viewer) DebugSnapshot() map[string]any {
 	return map[string]any{
 		"video_sent":      v.videoSent.Load(),
 		"audio_sent":      v.audioSent.Load(),
@@ -202,5 +202,5 @@ func (v *OutputViewer) DebugSnapshot() map[string]any {
 	}
 }
 
-// Compile-time check that OutputViewer satisfies the Viewer interface.
-var _ distribution.Viewer = (*OutputViewer)(nil)
+// Compile-time check that Viewer satisfies the Viewer interface.
+var _ distribution.Viewer = (*Viewer)(nil)

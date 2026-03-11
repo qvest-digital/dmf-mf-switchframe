@@ -200,10 +200,10 @@ func (l *SRTListener) Status() AdapterStatus {
 	}
 }
 
-// SRTStatusSnapshot returns an SRTOutputStatus for ControlRoomState.
-func (l *SRTListener) SRTStatusSnapshot() SRTOutputStatus {
+// SRTStatusSnapshot returns an SRTStatus for ControlRoomState.
+func (l *SRTListener) SRTStatusSnapshot() SRTStatus {
 	status := l.Status()
-	return SRTOutputStatus{
+	return SRTStatus{
 		Active:       status.State == StateActive,
 		Mode:         "listener",
 		Port:         l.config.Port,
@@ -236,5 +236,5 @@ func (l *SRTListener) connWriter(ctx context.Context, lc *listenerConn) {
 	}
 }
 
-// Compile-time check that SRTListener satisfies the OutputAdapter interface.
-var _ OutputAdapter = (*SRTListener)(nil)
+// Compile-time check that SRTListener satisfies the Adapter interface.
+var _ Adapter = (*SRTListener)(nil)

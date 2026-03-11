@@ -15,13 +15,13 @@ func newTestRelay() *distribution.Relay {
 
 func TestOutputManager_New(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	require.NotNil(t, mgr)
 }
 
 func TestOutputManager_StartRecording(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -35,7 +35,7 @@ func TestOutputManager_StartRecording(t *testing.T) {
 
 func TestOutputManager_StopRecording(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -48,7 +48,7 @@ func TestOutputManager_StopRecording(t *testing.T) {
 
 func TestOutputManager_DoubleStartRecording(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -59,7 +59,7 @@ func TestOutputManager_DoubleStartRecording(t *testing.T) {
 
 func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.StopRecording()
@@ -68,7 +68,7 @@ func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
 
 func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	require.Nil(t, mgr.viewer)
@@ -82,7 +82,7 @@ func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
 
 func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -96,7 +96,7 @@ func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
 
 func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -121,7 +121,7 @@ func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 
 func TestOutputManager_StateCallback(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
@@ -140,7 +140,7 @@ func TestOutputManager_StateCallback(t *testing.T) {
 
 func TestOutputManager_MuxStartCallback(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	muxStartCount := 0
@@ -166,7 +166,7 @@ func TestOutputManager_MuxStartCallback(t *testing.T) {
 
 func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	status := mgr.SRTOutputStatus()
@@ -175,7 +175,7 @@ func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 
 func TestOutputManager_DebugSnapshot(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	snap := mgr.DebugSnapshot()
@@ -187,7 +187,7 @@ func TestOutputManager_DebugSnapshot(t *testing.T) {
 
 func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -208,7 +208,7 @@ func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
 
 func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -234,7 +234,7 @@ func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
 
 func TestOutputManager_Close(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 
 	dir := t.TempDir()
 	_ = mgr.StartRecording(RecorderConfig{Dir: dir})
@@ -254,7 +254,7 @@ func TestOutputManager_Close(t *testing.T) {
 // that viewer won't stop until the next explicit shutdown.
 func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -316,7 +316,7 @@ func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
 // is in progress. This tests the stopping guard directly.
 func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	// Simulate many concurrent stop+start cycles. With -race, this catches
@@ -356,7 +356,7 @@ func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testi
 // the stopping flag prevents ensureMuxerLocked from creating a new muxer.
 func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	// Simulate the stopping state.
@@ -382,7 +382,7 @@ func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
 
 func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()

@@ -39,7 +39,7 @@ func TestStingerStore_LoadAndList(t *testing.T) {
 	createTestPNG(t, stingerDir, "002.png", 8, 8, color.NRGBA{R: 255, A: 255})
 	createTestPNG(t, stingerDir, "003.png", 8, 8, color.NRGBA{R: 255, A: 0})
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	names := store.List()
@@ -60,7 +60,7 @@ func TestStingerStore_Delete(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(store.List()))
 
@@ -72,7 +72,7 @@ func TestStingerStore_Delete(t *testing.T) {
 
 func TestStingerStore_DeleteNotFound(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	err = store.Delete("nonexistent")
@@ -85,7 +85,7 @@ func TestStingerStore_SetCutPoint(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	err = store.SetCutPoint("wipe1", 0.75)
@@ -98,12 +98,12 @@ func TestStingerStore_SetCutPoint(t *testing.T) {
 	require.Error(t, store.SetCutPoint("wipe1", 1.1))
 }
 
-func TestStingerClip_FrameAt(t *testing.T) {
-	clip := &StingerClip{
-		Frames: make([]StingerFrame, 10),
+func TestClip_FrameAt(t *testing.T) {
+	clip := &Clip{
+		Frames: make([]Frame, 10),
 	}
 	for i := range clip.Frames {
-		clip.Frames[i] = StingerFrame{
+		clip.Frames[i] = Frame{
 			YUV:   []byte{byte(i)},
 			Alpha: []byte{byte(i)},
 		}
@@ -119,12 +119,12 @@ func TestStingerClip_FrameAt(t *testing.T) {
 	require.Equal(t, byte(9), clip.FrameAt(1.0).YUV[0])
 }
 
-func TestStingerClip_FrameAtEmpty(t *testing.T) {
-	clip := &StingerClip{}
+func TestClip_FrameAtEmpty(t *testing.T) {
+	clip := &Clip{}
 	require.Nil(t, clip.FrameAt(0.5))
 }
 
-func TestRGBAToStingerFrame(t *testing.T) {
+func TestRGBAToFrame(t *testing.T) {
 	// Create a 4x4 red image with 50% alpha
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
@@ -133,7 +133,7 @@ func TestRGBAToStingerFrame(t *testing.T) {
 		}
 	}
 
-	frame := RGBAToStingerFrame(img, 4, 4)
+	frame := RGBAToFrame(img, 4, 4)
 	require.Len(t, frame.Alpha, 16)   // 4x4
 	require.Len(t, frame.YUV, 16+4+4) // Y(16) + Cb(4) + Cr(4)
 
@@ -153,7 +153,7 @@ func TestStingerStore_MismatchedDimensions(t *testing.T) {
 	createTestPNG(t, stingerDir, "001.png", 8, 8, color.NRGBA{A: 255})
 	createTestPNG(t, stingerDir, "002.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded the bad stinger
 	_, ok := store.Get("bad")
@@ -166,7 +166,7 @@ func TestStingerStore_OddDimensions(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 3, 3, color.NRGBA{A: 255})
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded (odd dimensions)
 	_, ok := store.Get("odd")
@@ -178,7 +178,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 	stingerDir := filepath.Join(dir, "empty")
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 	// Should not have loaded (no PNGs)
 	_, ok := store.Get("empty")
@@ -187,7 +187,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 
 func TestStingerStore_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	// These names should all be rejected
@@ -221,7 +221,7 @@ func TestStingerStore_PathTraversal(t *testing.T) {
 
 func TestStingerStore_SentinelErrors(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	// Delete non-existent should return ErrNotFound
@@ -238,7 +238,7 @@ func TestStingerStore_SentinelErrors(t *testing.T) {
 
 func TestStingerStore_Upload(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	// Create a zip with a small 2x2 PNG
@@ -290,7 +290,7 @@ func createTestZip(t *testing.T, width, height, numFrames int) []byte {
 
 func TestStingerStore_MaxClipsLimit(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 2) // limit to 2 clips
+	store, err := NewStore(dir, 2) // limit to 2 clips
 	require.NoError(t, err)
 
 	// Create 3 stinger directories with small even-dimension PNGs
@@ -318,7 +318,7 @@ func TestStingerStore_MaxClipsLimit(t *testing.T) {
 
 func TestStingerStore_MaxClipsLimitUpload(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 2) // limit to 2 clips
+	store, err := NewStore(dir, 2) // limit to 2 clips
 	require.NoError(t, err)
 
 	zipData := createTestZip(t, 2, 2, 1) // 1 frame
@@ -337,7 +337,7 @@ func TestStingerStore_MaxClipsLimitUpload(t *testing.T) {
 func TestStingerStore_DefaultMaxClips(t *testing.T) {
 	dir := t.TempDir()
 	// maxClips <= 0 should default to 16
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 	require.Equal(t, 16, store.maxClips)
 }
@@ -387,7 +387,7 @@ func createTestZipWithAudio(t *testing.T, width, height, numFrames, sampleRate, 
 
 func TestStingerStore_UploadWithAudio(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	// Create a zip with PNGs + WAV
@@ -414,7 +414,7 @@ func TestStingerStore_UploadWithAudio(t *testing.T) {
 
 func TestStingerStore_UploadWithoutAudio(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	// Create a zip with only PNGs (no WAV)
@@ -445,7 +445,7 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 	createTestWAV(t, stingerDir, "audio.wav", 48000, 2, 960)
 
 	// Create store - should auto-load the clip with audio
-	store, err := NewStingerStore(dir, 0)
+	store, err := NewStore(dir, 0)
 	require.NoError(t, err)
 
 	clip, ok := store.Get("audio-clip")
@@ -462,7 +462,7 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 	require.Equal(t, 960*2, len(clip.Audio))
 }
 
-func TestRGBAToStingerFrame_LimitedRangeWhite(t *testing.T) {
+func TestRGBAToFrame_LimitedRangeWhite(t *testing.T) {
 	// White (255,255,255) should produce Y=235 in limited-range BT.709, not Y=255.
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
@@ -471,7 +471,7 @@ func TestRGBAToStingerFrame_LimitedRangeWhite(t *testing.T) {
 		}
 	}
 
-	frame := RGBAToStingerFrame(img, 4, 4)
+	frame := RGBAToFrame(img, 4, 4)
 
 	// Every luma sample should be 235 (limited-range white)
 	for i := 0; i < 16; i++ {
@@ -480,7 +480,7 @@ func TestRGBAToStingerFrame_LimitedRangeWhite(t *testing.T) {
 	}
 }
 
-func TestRGBAToStingerFrame_LimitedRangeBlack(t *testing.T) {
+func TestRGBAToFrame_LimitedRangeBlack(t *testing.T) {
 	// Black (0,0,0) should produce Y=16 in limited-range BT.709, not Y=0.
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
@@ -489,7 +489,7 @@ func TestRGBAToStingerFrame_LimitedRangeBlack(t *testing.T) {
 		}
 	}
 
-	frame := RGBAToStingerFrame(img, 4, 4)
+	frame := RGBAToFrame(img, 4, 4)
 
 	// Every luma sample should be 16 (limited-range black)
 	for i := 0; i < 16; i++ {
@@ -498,7 +498,7 @@ func TestRGBAToStingerFrame_LimitedRangeBlack(t *testing.T) {
 	}
 }
 
-func TestRGBAToStingerFrame_SemiTransparentUnpremultiply(t *testing.T) {
+func TestRGBAToFrame_SemiTransparentUnpremultiply(t *testing.T) {
 	// Regression test: Go's img.At(x,y).RGBA() returns pre-multiplied alpha.
 	// If we don't un-premultiply before YUV conversion, semi-transparent pixels
 	// get darkened YUV values, and then alpha is applied again during compositing,
@@ -515,8 +515,8 @@ func TestRGBAToStingerFrame_SemiTransparentUnpremultiply(t *testing.T) {
 		}
 	}
 
-	frameOpaque := RGBAToStingerFrame(imgOpaque, 4, 4)
-	frameSemiTrans := RGBAToStingerFrame(imgSemiTrans, 4, 4)
+	frameOpaque := RGBAToFrame(imgOpaque, 4, 4)
+	frameSemiTrans := RGBAToFrame(imgSemiTrans, 4, 4)
 
 	// Alpha planes must differ
 	require.Equal(t, byte(255), frameOpaque.Alpha[0])
@@ -537,7 +537,7 @@ func TestRGBAToStingerFrame_SemiTransparentUnpremultiply(t *testing.T) {
 		"Cr must be identical regardless of alpha")
 }
 
-func TestRGBAToStingerFrame_FullyTransparentPixel(t *testing.T) {
+func TestRGBAToFrame_FullyTransparentPixel(t *testing.T) {
 	// Fully transparent pixels (alpha=0) should produce black YUV (Y=16 limited range).
 	// This prevents division by zero in the un-premultiply path.
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
@@ -547,7 +547,7 @@ func TestRGBAToStingerFrame_FullyTransparentPixel(t *testing.T) {
 		}
 	}
 
-	frame := RGBAToStingerFrame(img, 4, 4)
+	frame := RGBAToFrame(img, 4, 4)
 
 	// Alpha should be 0
 	require.Equal(t, byte(0), frame.Alpha[0])
@@ -556,7 +556,7 @@ func TestRGBAToStingerFrame_FullyTransparentPixel(t *testing.T) {
 		"fully transparent pixel should have Y=16 (limited-range black)")
 }
 
-func BenchmarkRGBAToStingerFrame_1080p(b *testing.B) {
+func BenchmarkRGBAToFrame_1080p(b *testing.B) {
 	w, h := 1920, 1080
 	img := image.NewNRGBA(image.Rect(0, 0, w, h))
 	// Fill with semi-transparent red to exercise the un-premultiply path
@@ -569,11 +569,11 @@ func BenchmarkRGBAToStingerFrame_1080p(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		RGBAToStingerFrame(img, w, h)
+		RGBAToFrame(img, w, h)
 	}
 }
 
-func TestRGBAToStingerFrame_LimitedRangeRed(t *testing.T) {
+func TestRGBAToFrame_LimitedRangeRed(t *testing.T) {
 	// Pure red (255,0,0) in limited-range BT.709:
 	//   Y  = 16 + 219 * 0.2126 ≈ 62.6 → 63
 	//   Cb = 128 + 224 * (0.0 - 0.2126) / 1.8556 ≈ 128 + 224*(-0.1146) ≈ 102.3 → 102
@@ -585,7 +585,7 @@ func TestRGBAToStingerFrame_LimitedRangeRed(t *testing.T) {
 		}
 	}
 
-	frame := RGBAToStingerFrame(img, 4, 4)
+	frame := RGBAToFrame(img, 4, 4)
 
 	// Check luma
 	require.InDelta(t, 63, int(frame.YUV[0]), 1,

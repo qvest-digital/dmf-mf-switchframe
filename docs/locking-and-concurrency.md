@@ -48,7 +48,7 @@ flowchart TD
     subgraph core ["Switcher Core"]
         hrvf["handleRawVideoFrame"]
         haf["handleAudioFrame"]
-        te["TransitionEngine<br/>(per-transition lifecycle)"]
+        te["Engine<br/>(per-transition lifecycle)"]
     end
 
     subgraph pipeline ["Video Pipeline Goroutine"]
@@ -58,7 +58,7 @@ flowchart TD
     end
 
     subgraph audio ["Audio Goroutines"]
-        mix["AudioMixer<br/>(decode → process → encode)"]
+        mix["Mixer<br/>(decode → process → encode)"]
         tick["mixDeadlineTicker<br/>(25ms flush timeout)"]
     end
 
@@ -193,7 +193,7 @@ sequenceDiagram
     participant API as HTTP Handler
     participant SW as Switcher
     participant LC as Layout Compositor
-    participant MX as AudioMixer
+    participant MX as Mixer
 
     API->>SW: Cut(ctx, sourceKey)
     activate SW
@@ -233,7 +233,7 @@ sequenceDiagram
     participant SDA as sourceDecoder A
     participant SDB as sourceDecoder B
     participant SW as Switcher
-    participant TE as TransitionEngine
+    participant TE as Engine
     participant CH as videoProcCh
     participant PIPE as Pipeline.Run()
     participant PR as programRelay
@@ -284,7 +284,7 @@ Audio flows through the mixer on a path independent of video. The mixer accumula
 sequenceDiagram
     participant SV as sourceViewer
     participant SW as Switcher
-    participant MX as AudioMixer
+    participant MX as Mixer
     participant PR as programRelay
 
     SV->>SW: handleAudioFrame(key, frame)
@@ -362,7 +362,7 @@ sequenceDiagram
 mux.mu Lock → release → (atomic load, no lock) → adapter-specific lock → release
 ```
 
-The `AsyncAdapter` decouples the muxer from slow outputs. The adapter list uses `atomic.Pointer` so the muxer callback never needs the `OutputManager` lock -- adapters are rebuilt under `OutputManager.mu` and atomically swapped into the pointer that the callback reads lock-free.
+The `AsyncAdapter` decouples the muxer from slow outputs. The adapter list uses `atomic.Pointer` so the muxer callback never needs the `output.Manager` lock -- adapters are rebuilt under `output.Manager.mu` and atomically swapped into the pointer that the callback reads lock-free.
 
 ### OutputViewer Priority Select
 
@@ -401,22 +401,22 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 | [syncSource](../server/switcher/frame_sync.go) | `ss.mu` | `Mutex` | per-source video/audio ring buffers, PTS tracking, audioQueue | Yes |
 | [DelayBuffer](../server/switcher/delay_buffer.go) | `db.mu` | `Mutex` | sources map (delay configs per source) | Conditional |
 | [pipelineCodecs](../server/switcher/pipeline_codecs.go) | `pc.mu` | `Mutex` | encoder, groupID, encWidth/Height, lastOutputPTS, avc1Buf, SPS/PPS | Yes |
-| [TransitionEngine](../server/transition/engine.go) | `e.mu` | `RWMutex` | state, position, decoders, YUV buffers, blender | During transitions |
+| [Engine](../server/transition/engine.go) | `e.mu` | `RWMutex` | state, position, decoders, YUV buffers, blender | During transitions |
 | [healthMonitor](../server/switcher/health.go) | `hm.mu` | `RWMutex` | source status map, pending status, consecutive counts | Periodic |
 
 ### Audio
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [AudioMixer](../server/audio/mixer.go) | `m.mu` | `RWMutex` | channels, masterLevel, mixBuffer, crossfade state, stinger audio, outputPTS | Yes |
+| [Mixer](../server/audio/mixer.go) | `m.mu` | `RWMutex` | channels, masterLevel, mixBuffer, crossfade state, stinger audio, outputPTS | Yes |
 | [AudioDelayBuffer](../server/audio/delay_buffer.go) | `db.mu` | `Mutex` | delayMs, ring buffer (head/tail/count/frames) | Yes |
 
 ### Output
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [OutputManager](../server/output/manager.go) | `m.mu` | `Mutex` | viewer, muxer, recorder, destinations, asyncWrappers, lifecycle flags | Config only |
-| [OutputDestination](../server/output/destination.go) | `dest.mu` | `Mutex` | config, adapter, active flag | Config only |
+| [Manager](../server/output/manager.go) | `m.mu` | `Mutex` | viewer, muxer, recorder, destinations, asyncWrappers, lifecycle flags | Config only |
+| [Destination](../server/output/destination.go) | `dest.mu` | `Mutex` | config, adapter, active flag | Config only |
 | [TSMuxer](../server/output/muxer.go) | `m.mu` | `Mutex` | muxer state, output buffer, SCTE-35 pending sections, annexB/prepend buffers | Yes |
 | [FileRecorder](../server/output/recorder.go) | `rec.mu` | `Mutex` | file handle, filename, state, fileBytes, fileIndex | Yes |
 | [ConfidenceMonitor](../server/output/confidence.go) | `cm.mu` | `RWMutex` | JPEG thumbnail, lastUpdate, decoder | 1 fps |
@@ -451,9 +451,9 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [PresetStore](../server/preset/store.go) | `s.mu` | `RWMutex` | presets slice, filePath | CRUD |
+| [Store](../server/preset/store.go) | `s.mu` | `RWMutex` | presets slice, filePath | CRUD |
 | [MacroStore](../server/macro/store.go) | `s.mu` | `RWMutex` | macros slice, filePath | CRUD |
-| [StingerStore](../server/stinger/store.go) | `s.mu` | `RWMutex` | clips map, dir path | CRUD |
+| [Store](../server/stinger/store.go) | `s.mu` | `RWMutex` | clips map, dir path | CRUD |
 | [LayoutStore](../server/layout/store.go) | `s.mu` | `RWMutex` | presets map | CRUD |
 | [OperatorStore](../server/operator/store.go) | `s.mu` | `RWMutex` | operators, tokenIdx, filePath | CRUD |
 | [SessionManager](../server/operator/session.go) | `sm.mu` | `Mutex` | sessions, locks, onStateChange | Session mgmt |
@@ -486,9 +486,9 @@ These enable runtime reconfiguration without blocking the frame-processing gorou
 | sourceViewer | `srcDecoder` | `atomic.Pointer[sourceDecoder]` | Per-source H.264 → YUV decoder | Yes |
 | sourceViewer | `delayBuffer` | `atomic.Pointer[DelayBuffer]` | Hot-swap delay buffer | Yes |
 | sourceViewer | `frameSync` | `atomic.Pointer[FrameSynchronizer]` | Hot-swap frame synchronizer | Yes |
-| OutputManager | `adapters` | `atomic.Pointer[[]OutputAdapter]` | Lock-free read in muxer callback | Yes |
+| output.Manager | `adapters` | `atomic.Pointer[[]Adapter]` | Lock-free read in muxer callback | Yes |
 | Layout Compositor | `layout` | `atomic.Pointer[Layout]` | Lock-free layout config read | Yes |
-| AudioMixer | `rawAudioSink` | `atomic.Pointer[RawAudioSink]` | MXL raw audio output tap | Yes |
+| audio.Mixer | `rawAudioSink` | `atomic.Pointer[RawAudioSink]` | MXL raw audio output tap | Yes |
 | Compressor | `params` | `atomic.Pointer[compressorParams]` | Lock-free parameter updates | Yes |
 | MXL Writer | `videoRef` | `atomic.Pointer[videoWriterRef]` | Lock-free video writer ref | Yes |
 | MXL Writer | `dataRef` | `atomic.Pointer[dataWriterRef]` | Lock-free data grain writer ref | Yes |
@@ -575,17 +575,17 @@ flowchart TD
     subgraph tier1 ["Tier 1 — Core State"]
         smu["Switcher s.mu<br/>(RWMutex)"]
         fsmu["FrameSynchronizer fs.mu<br/>(Mutex)"]
-        ommu["OutputManager m.mu<br/>(Mutex)"]
+        ommu["output.Manager m.mu<br/>(Mutex)"]
     end
 
     subgraph tier2 ["Tier 2 — Nested State"]
         ssmu["syncSource ss.mu<br/>(per-source, Mutex)"]
-        destmu["OutputDestination dest.mu<br/>(per-destination, Mutex)"]
+        destmu["Destination dest.mu<br/>(per-destination, Mutex)"]
     end
 
     subgraph tier3 ["Tier 3 — Subsystem State"]
-        emu["TransitionEngine e.mu<br/>(RWMutex)"]
-        mmu["AudioMixer m.mu<br/>(RWMutex)"]
+        emu["Engine e.mu<br/>(RWMutex)"]
+        mmu["Mixer m.mu<br/>(RWMutex)"]
     end
 
     subgraph tier4 ["Tier 4 — Resource Pools"]
@@ -596,7 +596,7 @@ flowchart TD
     end
 
     subgraph tier5 ["Tier 5 — Configuration Stores"]
-        stores["PresetStore, MacroStore,<br/>LayoutStore, RulesStore,<br/>OperatorStore, StingerStore"]
+        stores["preset.Store, macro.Store,<br/>layout.Store, RulesStore,<br/>operator.Store, stinger.Store"]
     end
 
     subgraph tier6 ["Tier 6 — Leaf (No Callbacks)"]
@@ -622,13 +622,13 @@ flowchart TD
 
 2. **FrameSynchronizer uses two-level locking.** `fs.mu` (global) is held briefly to look up the per-source `syncSource`, then released. `ss.mu` (per-source) is acquired for ring buffer operations. Frame delivery callbacks fire after both locks are released.
 
-3. **OutputManager releases before stopping.** `stopMuxerLocked` explicitly releases `m.mu` before calling `viewer.Stop()` to avoid deadlock with the muxer output callback (which reads the adapter list via atomic pointer). The lock ordering (`OutputManager.mu` → `OutputDestination.mu`) is documented in the struct comment.
+3. **`output.Manager` releases before stopping.** `stopMuxerLocked` explicitly releases `m.mu` before calling `viewer.Stop()` to avoid deadlock with the muxer output callback (which reads the adapter list via atomic pointer). The lock ordering (`output.Manager.mu` → `output.Destination.mu`) is documented in the struct comment.
 
 4. **No cross-subsystem lock nesting.** Video (Switcher → Pipeline → pipelineCodecs) and audio (Switcher → Mixer) never hold each other's locks simultaneously. The Pipeline itself uses no locks -- it's immutable once built and replaced via `atomic.Pointer` swap.
 
 5. **Transition engine releases before callbacks.** `IngestRawFrame` processes the blend under `e.mu`, then releases before the output callback fires, preventing the engine lock from blocking the switcher's broadcast path.
 
-6. **All state callbacks fire outside locks.** Every component captures the callback function pointer under lock, releases, then invokes it. This applies to Switcher state broadcast, OutputManager state changes, graphics compositor state changes, operator session changes, and SCTE-35 event notifications.
+6. **All state callbacks fire outside locks.** Every component captures the callback function pointer under lock, releases, then invokes it. This applies to Switcher state broadcast, `output.Manager` state changes, graphics compositor state changes, operator session changes, and SCTE-35 event notifications.
 
 ---
 
@@ -701,7 +701,7 @@ swapPipeline:
     }()
 ```
 
-**Adapter list swap** -- OutputManager rebuilds the adapter slice under its mutex, then stores it atomically. The muxer callback reads it lock-free:
+**Adapter list swap** -- `output.Manager` rebuilds the adapter slice under its mutex, then stores it atomically. The muxer callback reads it lock-free:
 
 ```go
 rebuildAdaptersLocked:                   // called under m.mu

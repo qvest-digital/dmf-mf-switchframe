@@ -29,10 +29,10 @@ func TestSetRawAudioSink_ReceivesMixedPCM(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			outputFrames = append(outputFrames, frame)
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -101,10 +101,10 @@ func TestSetRawAudioSink_AfterLimiter(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -156,10 +156,10 @@ func TestSetRawAudioSink_NilDisables(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})

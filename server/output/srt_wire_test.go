@@ -25,7 +25,7 @@ func TestSRTConnect_InvalidAddress(t *testing.T) {
 }
 
 func TestManagerSetSRTWiring(t *testing.T) {
-	mgr := NewOutputManager(nil)
+	mgr := NewManager(nil)
 
 	mgr.SetSRTWiring(
 		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {

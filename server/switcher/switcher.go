@@ -53,13 +53,13 @@ func updateAtomicMax(field *atomic.Int64, val int64) {
 	}
 }
 
-// SwitcherState represents the global state of the switching engine.
+// State represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
 // explicit enum that makes every valid state and transition auditable.
-type SwitcherState int
+type State int
 
 const (
-	StateIdle             SwitcherState = iota // No transition, normal frame routing
+	StateIdle             State = iota // No transition, normal frame routing
 	StateTransitioning                         // Mix/dip/wipe in progress
 	StateFTBTransitioning                      // FTB forward in progress (transitioning to black)
 	StateFTB                                   // Faded to black (holding black)
@@ -67,7 +67,7 @@ const (
 )
 
 // String returns the human-readable name of the switcher state.
-func (s SwitcherState) String() string {
+func (s State) String() string {
 	switch s {
 	case StateIdle:
 		return "idle"
@@ -87,20 +87,20 @@ func (s SwitcherState) String() string {
 // isInTransition returns true if the switcher is in any transitioning state
 // (mix/dip/wipe, FTB forward, or FTB reverse). This maps to the
 // ControlRoomState.InTransition API field.
-func (s SwitcherState) isInTransition() bool {
+func (s State) isInTransition() bool {
 	return s == StateTransitioning || s == StateFTBTransitioning || s == StateFTBReversing
 }
 
 // isFTBActive returns true if the switcher is in any FTB-related state
 // (transitioning to black, holding at black, or reversing from black).
 // This maps to the ControlRoomState.FTBActive API field.
-func (s SwitcherState) isFTBActive() bool {
+func (s State) isFTBActive() bool {
 	return s == StateFTBTransitioning || s == StateFTB || s == StateFTBReversing
 }
 
 // validTransitions defines the allowed state transitions. Any transition not
 // in this map is logged as a warning but still executed (no panics in production).
-var validTransitions = map[SwitcherState][]SwitcherState{
+var validTransitions = map[State][]State{
 	StateIdle:             {StateTransitioning, StateFTBTransitioning},
 	StateTransitioning:    {StateIdle},
 	StateFTBTransitioning: {StateFTB, StateIdle},
@@ -111,7 +111,7 @@ var validTransitions = map[SwitcherState][]SwitcherState{
 // transitionState changes the switcher state, logging a warning if the transition
 // is not in the valid transitions map. Never panics in production.
 // Caller must hold s.mu (write lock).
-func (s *Switcher) transitionState(to SwitcherState) {
+func (s *Switcher) transitionState(to State) {
 	from := s.state
 	if from == to {
 		return
@@ -123,7 +123,7 @@ func (s *Switcher) transitionState(to SwitcherState) {
 	s.state = to
 }
 
-// audioStateProvider is the interface the Switcher needs from the AudioMixer
+// audioStateProvider is the interface the Switcher needs from the audio.Mixer
 // to populate audio fields in state broadcasts.
 type audioStateProvider interface {
 	ProgramPeak() [2]float64
@@ -144,7 +144,7 @@ type audioCutHandler interface {
 // audioTransitionHandler is called during transitions to sync audio crossfade
 // with video dissolve progress.
 type audioTransitionHandler interface {
-	OnTransitionStart(oldSource, newSource string, mode audio.AudioTransitionMode, durationMs int)
+	OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int)
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
 	SetProgramMute(muted bool)
@@ -164,7 +164,7 @@ type captionManager interface {
 // Used by MXL output to write raw video to shared memory.
 type RawVideoSink func(pf *ProcessingFrame)
 
-// TransitionConfig holds the codec factories needed to create TransitionEngines.
+// TransitionConfig holds the codec factories needed to create transition engines.
 type TransitionConfig struct {
 	DecoderFactory transition.DecoderFactory
 }
@@ -226,8 +226,8 @@ type Switcher struct {
 	mixer           audioStateProvider
 	audioCut        audioCutHandler
 	transConfig     *TransitionConfig
-	transEngine     *transition.TransitionEngine
-	state           SwitcherState
+	transEngine     *transition.Engine
+	state           State
 	audioTransition audioTransitionHandler
 	delayBuffer *DelayBuffer
 	frameSync       *FrameSynchronizer
@@ -1169,7 +1169,7 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current
 // program source to the given target source. Frames from both sources are
-// routed to the TransitionEngine which produces blended output on the program
+// routed to the transition engine which produces blended output on the program
 // relay. wipeDirection is only used when transType is "wipe"; pass empty
 // string otherwise.
 //
@@ -1187,7 +1187,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 	if s.state.isInTransition() {
 		s.mu.Unlock()
-		return fmt.Errorf("transition: %w", transition.ErrTransitionActive)
+		return fmt.Errorf("transition: %w", transition.ErrActive)
 	}
 	if s.state.isFTBActive() {
 		s.mu.Unlock()
@@ -1217,20 +1217,20 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		opt(&topts)
 	}
 
-	tt := transition.TransitionType(transType)
-	if tt != transition.TransitionMix && tt != transition.TransitionDip && tt != transition.TransitionWipe && tt != transition.TransitionStinger {
+	tt := transition.Type(transType)
+	if tt != transition.Mix && tt != transition.Dip && tt != transition.Wipe && tt != transition.Stinger {
 		s.mu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
 	}
 
-	if tt == transition.TransitionStinger && topts.stingerData == nil {
+	if tt == transition.Stinger && topts.stingerData == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("stinger transition requires stinger data")
 	}
 
 	// Validate wipe direction when type is wipe
 	var wipeDir transition.WipeDirection
-	if tt == transition.TransitionWipe {
+	if tt == transition.Wipe {
 		wipeDir = transition.WipeDirection(wipeDirection)
 		if !transition.ValidWipeDirections[wipeDir] {
 			s.mu.Unlock()
@@ -1267,7 +1267,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("start transition: %w", err)
 	}
 
-	engine := transition.NewTransitionEngine(transition.EngineConfig{
+	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
 		Stinger:        topts.stingerData,
@@ -1299,14 +1299,14 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.mu.Unlock()
 
 	if audioHandler != nil {
-		audioMode := audio.AudioCrossfade
-		if tt == transition.TransitionDip {
-			audioMode = audio.AudioDipToSilence
+		audioMode := audio.Crossfade
+		if tt == transition.Dip {
+			audioMode = audio.DipToSilence
 		}
 		audioHandler.OnTransitionStart(fromSource, sourceKey, audioMode, durationMs)
 
 		// Pass stinger audio to mixer for additive overlay
-		if tt == transition.TransitionStinger && topts.stingerData != nil && topts.stingerData.Audio != nil {
+		if tt == transition.Stinger && topts.stingerData != nil && topts.stingerData.Audio != nil {
 			audioHandler.SetStingerAudio(topts.stingerData.Audio, topts.stingerData.AudioSampleRate, topts.stingerData.AudioChannels)
 		}
 	}
@@ -1369,7 +1369,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	// Reject if a non-FTB transition is active (mix/dip/wipe)
 	if s.state == StateTransitioning {
 		s.mu.Unlock()
-		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrTransitionActive)
+		return fmt.Errorf("cannot FTB while mix/dip transition is active: %w", transition.ErrActive)
 	}
 
 	// Toggle off: FTB is active but transition is complete (fully black).
@@ -1389,7 +1389,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.Unlock()
 
 		// No decoder warmup needed — sources provide raw YUV.
-		engine := transition.NewTransitionEngine(transition.EngineConfig{
+		engine := transition.NewEngine(transition.EngineConfig{
 			DecoderFactory: ftbRevDecoderFactory,
 			HintWidth:      ftbHintW,
 			HintHeight:     ftbHintH,
@@ -1401,7 +1401,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			},
 		})
 
-		if err := engine.Start(fromSource, "", transition.TransitionFTBReverse, defaultFTBDurMs); err != nil {
+		if err := engine.Start(fromSource, "", transition.FTBReverse, defaultFTBDurMs); err != nil {
 			s.mu.Lock()
 			s.transitionState(StateFTB) // Roll back to StateFTB
 			s.mu.Unlock()
@@ -1414,7 +1414,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.RUnlock()
 		if audioHandler != nil {
 			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeIn, defaultFTBDurMs)
+			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, defaultFTBDurMs)
 		}
 
 		// Now publish the engine.
@@ -1447,7 +1447,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.mu.Unlock()
 
 	// No decoder warmup needed — sources provide raw YUV.
-	engine := transition.NewTransitionEngine(transition.EngineConfig{
+	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: ftbFwdDecoderFactory,
 		HintWidth:      ftbFwdHintW,
 		HintHeight:     ftbFwdHintH,
@@ -1459,7 +1459,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		},
 	})
 
-	if err := engine.Start(fromSource, "", transition.TransitionFTB, defaultFTBDurMs); err != nil {
+	if err := engine.Start(fromSource, "", transition.FTB, defaultFTBDurMs); err != nil {
 		s.mu.Lock()
 		s.transitionState(StateIdle)
 		s.mu.Unlock()
@@ -1471,7 +1471,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", audio.AudioFadeOut, defaultFTBDurMs)
+		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, defaultFTBDurMs)
 	}
 
 	// Now publish the engine.
@@ -1528,7 +1528,7 @@ func (s *Switcher) AbortTransition() {
 	}
 }
 
-// handleTransitionComplete is called by the TransitionEngine when a mix/dip
+// handleTransitionComplete is called by the transition engine when a mix/dip
 // transition finishes. If completed (not aborted), it swaps program/preview
 // sources. All sources use the raw pipeline (always-decode), so no GOP
 // replay or IDR gating is needed — frames flow immediately.
@@ -1601,7 +1601,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.notifyStateChange(snapshot)
 }
 
-// handleFTBComplete is called by the TransitionEngine when an FTB transition
+// handleFTBComplete is called by the transition engine when an FTB transition
 // finishes. FTB stays active (screen is black) unless aborted.
 func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.mu.Lock()
@@ -1641,7 +1641,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	s.notifyStateChange(snapshot)
 }
 
-// handleFTBReverseComplete is called by the TransitionEngine when a reverse
+// handleFTBReverseComplete is called by the transition engine when a reverse
 // FTB transition finishes. If completed (not aborted), it transitions to
 // StateIdle (screen is now fully visible). If aborted, it transitions to
 // StateFTB (screen stays black). All sources use the raw pipeline
@@ -1912,7 +1912,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 	var snapshot internal.ControlRoomState
 	var oldProgram string
 	var audioCut audioCutHandler
-	var abortEngine *transition.TransitionEngine
+	var abortEngine *transition.Engine
 	var abortAudioHandler audioTransitionHandler
 	changed := false
 

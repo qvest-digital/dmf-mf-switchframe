@@ -12,7 +12,7 @@ import (
 func TestOutputViewerStopIdempotent(t *testing.T) {
 	t.Parallel()
 	muxer := &TSMuxer{}
-	v := NewOutputViewer(muxer, func(_ *media.VideoFrame) {})
+	v := NewViewer(muxer, func(_ *media.VideoFrame) {})
 	go v.Run()
 	v.Stop()
 	v.Stop() // must not panic
@@ -27,7 +27,7 @@ func TestOutputViewerVideoPriority(t *testing.T) {
 	muxer := NewTSMuxer()
 	muxer.SetOutput(func(_ []byte) {})
 
-	v := NewOutputViewer(muxer, func(_ *media.VideoFrame) {
+	v := NewViewer(muxer, func(_ *media.VideoFrame) {
 		videoMuxed.Add(1)
 	})
 

@@ -21,7 +21,7 @@ var (
 )
 
 // Store manages CRUD operations and file persistence for macros.
-// It mirrors the preset.PresetStore pattern: file-based JSON with
+// It mirrors the preset.Store pattern: file-based JSON with
 // sync.RWMutex and atomic temp-file + rename writes.
 type Store struct {
 	mu       sync.RWMutex

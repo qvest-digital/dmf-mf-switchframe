@@ -92,7 +92,7 @@ func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return
 	}
-	var config output.SRTOutputConfig
+	var config output.SRTConfig
 	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return

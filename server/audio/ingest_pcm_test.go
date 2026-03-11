@@ -22,10 +22,10 @@ func TestIngestPCM_ProcessesThroughPipeline(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{data: []byte{0xFF}}, nil
 		},
 	})
@@ -55,10 +55,10 @@ func TestIngestPCM_AppliesTrim(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 4)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
 		},
 	})
@@ -91,10 +91,10 @@ func TestIngestPCM_PeakMetering(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 4)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{}, nil
 		},
 	})
@@ -124,10 +124,10 @@ func TestIngestPCM_StoresForCrossfade(t *testing.T) {
 		SampleRate: 48000,
 		Channels:   2,
 		Output:     func(frame *media.AudioFrame) {},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 4)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{}, nil
 		},
 	})
@@ -170,10 +170,10 @@ func TestIngestPCM_MutedChannelSkipped(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{}, nil
 		},
 	})
@@ -205,10 +205,10 @@ func TestIngestPCM_InactiveChannelSkipped(t *testing.T) {
 			outputFrames = append(outputFrames, frame)
 			mu.Unlock()
 		},
-		DecoderFactory: func(sampleRate, channels int) (AudioDecoder, error) {
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: make([]float32, 2048)}, nil
 		},
-		EncoderFactory: func(sampleRate, channels int) (AudioEncoder, error) {
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
 			return &mockEncoder{}, nil
 		},
 	})

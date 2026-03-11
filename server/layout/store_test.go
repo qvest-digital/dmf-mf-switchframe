@@ -17,7 +17,7 @@ func TestStore_CRUD(t *testing.T) {
 	// Save
 	l := &Layout{
 		Name: "custom-pip",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: "cam2", Rect: image.Rect(100, 100, 500, 370), Enabled: true},
 		},
 	}
@@ -52,7 +52,7 @@ func TestStore_Persistence(t *testing.T) {
 	path := filepath.Join(dir, "layout_presets.json")
 
 	s1 := NewStore(path)
-	l := &Layout{Name: "test", Slots: []LayoutSlot{
+	l := &Layout{Name: "test", Slots: []Slot{
 		{SourceKey: "cam1", Rect: image.Rect(0, 0, 480, 270)},
 	}}
 	require.NoError(t, s1.Save(l))
@@ -76,6 +76,6 @@ func TestStore_NilFile(t *testing.T) {
 
 	// Create parent dir and save
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-	l := &Layout{Name: "test", Slots: []LayoutSlot{}}
+	l := &Layout{Name: "test", Slots: []Slot{}}
 	require.NoError(t, s.Save(l))
 }

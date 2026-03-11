@@ -25,7 +25,7 @@ func PIPPreset(frameW, frameH int, source, position string, size float64) *Layou
 
 	return &Layout{
 		Name: "pip-" + position,
-		Slots: []LayoutSlot{{
+		Slots: []Slot{{
 			SourceKey:  source,
 			Rect:       rect,
 			ZOrder:     1,
@@ -44,7 +44,7 @@ func SideBySidePreset(frameW, frameH int, leftSource, rightSource string, gap in
 
 	return &Layout{
 		Name: "side-by-side",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: leftSource, Rect: image.Rect(0, 0, leftW, frameH), ZOrder: 0, Enabled: true, ScaleMode: ScaleModeFill, CropAnchor: [2]float64{0.5, 0.5}},
 			{SourceKey: rightSource, Rect: image.Rect(leftW+gap, 0, leftW+gap+rightW, frameH), ZOrder: 0, Enabled: true, ScaleMode: ScaleModeFill, CropAnchor: [2]float64{0.5, 0.5}},
 		},
@@ -61,7 +61,7 @@ func QuadPreset(frameW, frameH int, sources [4]string, gap int) *Layout {
 	center := [2]float64{0.5, 0.5}
 	return &Layout{
 		Name: "quad",
-		Slots: []LayoutSlot{
+		Slots: []Slot{
 			{SourceKey: sources[0], Rect: image.Rect(0, 0, slotW, slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
 			{SourceKey: sources[1], Rect: image.Rect(slotW+gap, 0, slotW+gap+slotW, slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
 			{SourceKey: sources[2], Rect: image.Rect(0, slotH+gap, slotW, slotH+gap+slotH), ZOrder: 0, Enabled: true, ScaleMode: fill, CropAnchor: center},
@@ -91,7 +91,7 @@ func ResolveBuiltinPreset(name string, frameW, frameH int) *Layout {
 	case "full":
 		return &Layout{
 			Name: "full",
-			Slots: []LayoutSlot{{
+			Slots: []Slot{{
 				Rect:    image.Rect(0, 0, frameW, frameH),
 				ZOrder:  0,
 				Enabled: true,

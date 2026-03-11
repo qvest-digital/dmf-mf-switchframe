@@ -10,7 +10,7 @@
 // Key types:
 //   - [Manager]: Replay orchestration (mark-in/out, play, stop, buffer management)
 //   - [Config]: Buffer duration, codec factories, replay relay reference
-//   - [ReplayStatus]: Current player state, mark points, active source
+//   - [Status]: Current player state, mark points, active source
 //   - [SourceBufferInfo]: Per-source buffer fill level and time range
 //
 // Replay output is routed to a dedicated "replay" relay so browsers can

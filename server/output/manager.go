@@ -23,26 +23,26 @@ type scte35InjectorInterface interface {
 	SyntheticBreakState() []byte
 }
 
-// OutputManager orchestrates the outputViewer, TSMuxer, and output adapters.
+// Manager orchestrates the outputViewer, TSMuxer, and output adapters.
 // It auto-starts the viewer (registers on the program relay) when the first
 // output is enabled and removes it when the last output is disabled, ensuring
 // zero CPU overhead when no outputs are active.
 //
-// Lock ordering: OutputManager.mu must be acquired before OutputDestination.mu.
-// Never acquire OutputManager.mu while holding a destination lock.
-type OutputManager struct {
+// Lock ordering: Manager.mu must be acquired before Destination.mu.
+// Never acquire Manager.mu while holding a destination lock.
+type Manager struct {
 	log   *slog.Logger
 	relay *distribution.Relay
 
 	mu       sync.Mutex
-	viewer   *OutputViewer
+	viewer   *Viewer
 	muxer    *TSMuxer
 	viewerWg sync.WaitGroup // tracks the viewer Run goroutine
 
 	recorder     *FileRecorder
-	srtOutput    OutputAdapter // SRTCaller or SRTListener (legacy single output)
-	destinations map[string]*OutputDestination
-	adapters     atomic.Pointer[[]OutputAdapter]
+	srtOutput    Adapter // SRTCaller or SRTListener (legacy single output)
+	destinations map[string]*Destination
+	adapters     atomic.Pointer[[]Adapter]
 
 	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
 	// so they can be stopped when adapters are removed.
@@ -72,24 +72,24 @@ type OutputManager struct {
 	scte35PID uint16
 }
 
-// NewOutputManager creates an OutputManager bound to the given program relay.
-func NewOutputManager(relay *distribution.Relay) *OutputManager {
+// NewManager creates a Manager bound to the given program relay.
+func NewManager(relay *distribution.Relay) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &OutputManager{
+	m := &Manager{
 		log:          slog.With("component", "output"),
 		relay:        relay,
-		destinations: make(map[string]*OutputDestination),
+		destinations: make(map[string]*Destination),
 		ctx:          ctx,
 		cancel:       cancel,
 	}
-	empty := make([]OutputAdapter, 0)
+	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
 	return m
 }
 
 // SetSRTWiring injects real SRT connection functions. Called from main.go
 // after construction so the output package stays testable without srtgo.
-func (m *OutputManager) SetSRTWiring(
+func (m *Manager) SetSRTWiring(
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error),
 	acceptFn func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error,
 ) {
@@ -100,7 +100,7 @@ func (m *OutputManager) SetSRTWiring(
 }
 
 // SetMetrics attaches Prometheus metrics to the output manager.
-func (m *OutputManager) SetMetrics(pm *metrics.Metrics) {
+func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
@@ -109,7 +109,7 @@ func (m *OutputManager) SetMetrics(pm *metrics.Metrics) {
 // OnStateChange registers a callback fired when output state changes.
 // The callback is invoked outside the manager's lock to avoid deadlock
 // with the state publisher.
-func (m *OutputManager) OnStateChange(fn func()) {
+func (m *Manager) OnStateChange(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onState = fn
@@ -119,7 +119,7 @@ func (m *OutputManager) OnStateChange(fn func()) {
 // (i.e., when the first output is enabled and the viewer joins the relay).
 // Used to request an IDR keyframe from the encoder so the muxer can
 // initialize immediately instead of waiting for the next GOP boundary.
-func (m *OutputManager) OnMuxerStart(fn func()) {
+func (m *Manager) OnMuxerStart(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMuxStart = fn
@@ -127,7 +127,7 @@ func (m *OutputManager) OnMuxerStart(fn func()) {
 
 // StartRecording begins recording program output to a file.
 // Returns an error if recording is already active.
-func (m *OutputManager) StartRecording(config RecorderConfig) error {
+func (m *Manager) StartRecording(config RecorderConfig) error {
 	m.mu.Lock()
 	if m.recorder != nil {
 		m.mu.Unlock()
@@ -166,7 +166,7 @@ func (m *OutputManager) StartRecording(config RecorderConfig) error {
 
 // StopRecording stops the active recording. Returns an error if no
 // recording is active.
-func (m *OutputManager) StopRecording() error {
+func (m *Manager) StopRecording() error {
 	m.mu.Lock()
 	if m.recorder == nil {
 		m.mu.Unlock()
@@ -201,14 +201,14 @@ func (m *OutputManager) StopRecording() error {
 
 // StartSRTOutput begins SRT output with the given configuration.
 // Returns an error if SRT output is already active.
-func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
+func (m *Manager) StartSRTOutput(config SRTConfig) error {
 	m.mu.Lock()
 	if m.srtOutput != nil {
 		m.mu.Unlock()
 		return ErrSRTActive
 	}
 
-	var adapter OutputAdapter
+	var adapter Adapter
 	switch config.Mode {
 	case "caller":
 		caller := NewSRTCaller(SRTCallerConfig{
@@ -288,7 +288,7 @@ func (m *OutputManager) StartSRTOutput(config SRTOutputConfig) error {
 
 // StopSRTOutput stops the active SRT output. Returns an error if no
 // SRT output is active.
-func (m *OutputManager) StopSRTOutput() error {
+func (m *Manager) StopSRTOutput() error {
 	m.mu.Lock()
 	if m.srtOutput == nil {
 		m.mu.Unlock()
@@ -326,7 +326,7 @@ func (m *OutputManager) StopSRTOutput() error {
 // AddDestination creates a new output destination with the given config.
 // The destination is created in stopped state and must be started explicitly.
 // Returns the generated destination ID.
-func (m *OutputManager) AddDestination(config DestinationConfig) (string, error) {
+func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 	// Validate config.
 	switch config.Type {
 	case "srt-caller":
@@ -343,7 +343,7 @@ func (m *OutputManager) AddDestination(config DestinationConfig) (string, error)
 	}
 
 	id := generateDestinationID()
-	dest := &OutputDestination{
+	dest := &Destination{
 		id:        id,
 		config:    config,
 		createdAt: time.Now(),
@@ -359,7 +359,7 @@ func (m *OutputManager) AddDestination(config DestinationConfig) (string, error)
 
 // RemoveDestination removes a destination by ID. If the destination is active,
 // it is stopped first. Returns ErrDestinationNotFound if the ID doesn't exist.
-func (m *OutputManager) RemoveDestination(id string) error {
+func (m *Manager) RemoveDestination(id string) error {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	if !ok {
@@ -368,7 +368,7 @@ func (m *OutputManager) RemoveDestination(id string) error {
 	}
 
 	// If active, stop it.
-	var adapterToClose OutputAdapter
+	var adapterToClose Adapter
 	var stale []*AsyncAdapter
 	if dest.active {
 		dest.mu.Lock()
@@ -409,7 +409,7 @@ func (m *OutputManager) RemoveDestination(id string) error {
 // StartDestination starts the adapter for the given destination ID.
 // Returns ErrDestinationNotFound if the ID doesn't exist, or
 // ErrDestinationActive if already running.
-func (m *OutputManager) StartDestination(id string) error {
+func (m *Manager) StartDestination(id string) error {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	if !ok {
@@ -425,7 +425,7 @@ func (m *OutputManager) StartDestination(id string) error {
 	}
 
 	// Create adapter based on config type.
-	var adapter OutputAdapter
+	var adapter Adapter
 	switch dest.config.Type {
 	case "srt-caller":
 		caller := NewSRTCaller(SRTCallerConfig{
@@ -516,7 +516,7 @@ func (m *OutputManager) StartDestination(id string) error {
 // The destination remains in the list and can be restarted.
 // Returns ErrDestinationNotFound if the ID doesn't exist, or
 // ErrDestinationStopped if not currently active.
-func (m *OutputManager) StopDestination(id string) error {
+func (m *Manager) StopDestination(id string) error {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	if !ok {
@@ -563,9 +563,9 @@ func (m *OutputManager) StopDestination(id string) error {
 }
 
 // ListDestinations returns the status of all configured destinations.
-func (m *OutputManager) ListDestinations() []DestinationStatus {
+func (m *Manager) ListDestinations() []DestinationStatus {
 	m.mu.Lock()
-	dests := make([]*OutputDestination, 0, len(m.destinations))
+	dests := make([]*Destination, 0, len(m.destinations))
 	for _, d := range m.destinations {
 		dests = append(dests, d)
 	}
@@ -580,7 +580,7 @@ func (m *OutputManager) ListDestinations() []DestinationStatus {
 
 // GetDestination returns the status of a single destination by ID.
 // Returns ErrDestinationNotFound if the ID doesn't exist.
-func (m *OutputManager) GetDestination(id string) (DestinationStatus, error) {
+func (m *Manager) GetDestination(id string) (DestinationStatus, error) {
 	m.mu.Lock()
 	dest, ok := m.destinations[id]
 	m.mu.Unlock()
@@ -593,7 +593,7 @@ func (m *OutputManager) GetDestination(id string) (DestinationStatus, error) {
 
 // RecordingStatus returns the current recording status for inclusion in
 // ControlRoomState. Safe to call at any time.
-func (m *OutputManager) RecordingStatus() RecordingStatus {
+func (m *Manager) RecordingStatus() RecordingStatus {
 	m.mu.Lock()
 	rec := m.recorder
 	var wrapper *AsyncAdapter
@@ -614,7 +614,7 @@ func (m *OutputManager) RecordingStatus() RecordingStatus {
 
 // SRTOutputStatus returns the current SRT output status for inclusion in
 // ControlRoomState. Safe to call at any time.
-func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
+func (m *Manager) SRTOutputStatus() SRTStatus {
 	m.mu.Lock()
 	adapter := m.srtOutput
 	var wrapper *AsyncAdapter
@@ -624,17 +624,17 @@ func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
 	m.mu.Unlock()
 
 	if adapter == nil {
-		return SRTOutputStatus{Active: false}
+		return SRTStatus{Active: false}
 	}
 
-	var status SRTOutputStatus
+	var status SRTStatus
 	switch a := adapter.(type) {
 	case *SRTCaller:
 		status = a.SRTStatusSnapshot()
 	case *SRTListener:
 		status = a.SRTStatusSnapshot()
 	default:
-		return SRTOutputStatus{Active: false}
+		return SRTStatus{Active: false}
 	}
 	if wrapper != nil {
 		status.DroppedPackets = wrapper.Dropped()
@@ -644,7 +644,7 @@ func (m *OutputManager) SRTOutputStatus() SRTOutputStatus {
 
 // Close stops all outputs, the muxer, and the viewer. Safe to call
 // multiple times.
-func (m *OutputManager) Close() error {
+func (m *Manager) Close() error {
 	m.cancel() // signal all adapters started with m.ctx
 
 	m.mu.Lock()
@@ -658,11 +658,11 @@ func (m *OutputManager) Close() error {
 	srt := m.srtOutput
 	m.recorder = nil
 	m.srtOutput = nil
-	empty := make([]OutputAdapter, 0)
+	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
 
 	// Snapshot active destinations and clear them.
-	var destAdapters []OutputAdapter
+	var destAdapters []Adapter
 	for _, dest := range m.destinations {
 		dest.mu.Lock()
 		if dest.active && dest.adapter != nil {
@@ -673,7 +673,7 @@ func (m *OutputManager) Close() error {
 		}
 		dest.mu.Unlock()
 	}
-	m.destinations = make(map[string]*OutputDestination)
+	m.destinations = make(map[string]*Destination)
 
 	// Snapshot and clear async wrappers so we can stop them outside the lock.
 	wrappers := m.asyncWrappers
@@ -721,9 +721,9 @@ func (m *OutputManager) Close() error {
 // rebuildAdaptersLocked rebuilds the adapter slice and returns any stale
 // async wrappers that should be stopped. Callers MUST stop the returned
 // wrappers outside the lock to avoid blocking the muxer output callback.
-func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
+func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 	// Collect the current set of raw adapters.
-	raw := make(map[string]OutputAdapter)
+	raw := make(map[string]Adapter)
 	if m.recorder != nil {
 		raw[m.recorder.ID()] = m.recorder
 	}
@@ -760,7 +760,7 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 	}
 
 	// Create wrappers for new adapters, reuse existing ones.
-	var adapters []OutputAdapter
+	var adapters []Adapter
 	for id, adapter := range raw {
 		wrapper, exists := m.asyncWrappers[id]
 		if !exists {
@@ -781,7 +781,7 @@ func (m *OutputManager) rebuildAdaptersLocked() []*AsyncAdapter {
 // on the relay if they don't already exist. Must be called with m.mu held.
 // Returns true if a new muxer was created (caller should fire onMuxStart
 // outside the lock).
-func (m *OutputManager) ensureMuxerLocked() bool {
+func (m *Manager) ensureMuxerLocked() bool {
 	if m.viewer != nil {
 		// Already running.
 		return false
@@ -809,7 +809,7 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 	if m.confidence != nil {
 		onVideo = m.confidence.IngestVideo
 	}
-	viewer := NewOutputViewer(muxer, onVideo)
+	viewer := NewViewer(muxer, onVideo)
 	m.muxer = muxer
 	m.viewer = viewer
 
@@ -829,7 +829,7 @@ func (m *OutputManager) ensureMuxerLocked() bool {
 
 // stopMuxerIfNoAdaptersLocked tears down the muxer and viewer if no
 // adapters remain. Must be called with m.mu held.
-func (m *OutputManager) stopMuxerIfNoAdaptersLocked() {
+func (m *Manager) stopMuxerIfNoAdaptersLocked() {
 	if len(*m.adapters.Load()) > 0 || m.viewer == nil {
 		return
 	}
@@ -839,7 +839,7 @@ func (m *OutputManager) stopMuxerIfNoAdaptersLocked() {
 // stopMuxerLocked tears down the muxer and viewer unconditionally.
 // Must be called with m.mu held. Temporarily releases the lock while
 // waiting for the viewer goroutine to exit.
-func (m *OutputManager) stopMuxerLocked() {
+func (m *Manager) stopMuxerLocked() {
 	if m.viewer == nil {
 		return
 	}
@@ -898,21 +898,21 @@ func (m *OutputManager) stopMuxerLocked() {
 
 // Status returns a summary of all active outputs. This is a convenience
 // method for diagnostics.
-func (m *OutputManager) Status() OutputManagerStatus {
-	return OutputManagerStatus{
+func (m *Manager) Status() ManagerStatus {
+	return ManagerStatus{
 		Recording: m.RecordingStatus(),
 		SRT:       m.SRTOutputStatus(),
 	}
 }
 
-// OutputManagerStatus is the combined status of all outputs.
-type OutputManagerStatus struct {
+// ManagerStatus is the combined status of all outputs.
+type ManagerStatus struct {
 	Recording RecordingStatus `json:"recording"`
-	SRT       SRTOutputStatus `json:"srt"`
+	SRT       SRTStatus       `json:"srt"`
 }
 
 // DebugSnapshot implements debug.SnapshotProvider.
-func (m *OutputManager) DebugSnapshot() map[string]any {
+func (m *Manager) DebugSnapshot() map[string]any {
 	m.mu.Lock()
 	var viewerSnap map[string]any
 	if m.viewer != nil {
@@ -937,7 +937,7 @@ func (m *OutputManager) DebugSnapshot() map[string]any {
 // The monitor will receive video frames from the output viewer when active.
 // Must be called before any outputs are started (the callback is set at
 // viewer construction time for thread safety).
-func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
+func (m *Manager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.confidence = cm
@@ -946,7 +946,7 @@ func (m *OutputManager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 // SetSCTE35Injector attaches a SCTE-35 injector to the output manager.
 // The injector provides synthetic break state for late-joining viewers.
 // pid is the MPEG-TS PID for SCTE-35 data (e.g., 0x102).
-func (m *OutputManager) SetSCTE35Injector(inj scte35InjectorInterface, pid uint16) {
+func (m *Manager) SetSCTE35Injector(inj scte35InjectorInterface, pid uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scte35Injector = inj
@@ -955,7 +955,7 @@ func (m *OutputManager) SetSCTE35Injector(inj scte35InjectorInterface, pid uint1
 
 // InjectSCTE35 writes a SCTE-35 section to the output MPEG-TS stream.
 // If no muxer is active (no outputs running), the call is a no-op.
-func (m *OutputManager) InjectSCTE35(data []byte) error {
+func (m *Manager) InjectSCTE35(data []byte) error {
 	m.mu.Lock()
 	muxer := m.muxer
 	m.mu.Unlock()
@@ -967,7 +967,7 @@ func (m *OutputManager) InjectSCTE35(data []byte) error {
 
 // ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence
 // monitor, or nil if unavailable.
-func (m *OutputManager) ConfidenceThumbnail() []byte {
+func (m *Manager) ConfidenceThumbnail() []byte {
 	m.mu.Lock()
 	cm := m.confidence
 	m.mu.Unlock()
@@ -978,12 +978,12 @@ func (m *OutputManager) ConfidenceThumbnail() []byte {
 }
 
 // HasActiveOutputs returns true if at least one output is active.
-func (m *OutputManager) HasActiveOutputs() bool {
+func (m *Manager) HasActiveOutputs() bool {
 	return len(*m.adapters.Load()) > 0
 }
 
 // StartedAt returns when recording started (zero value if not recording).
-func (m *OutputManager) StartedAt() time.Time {
+func (m *Manager) StartedAt() time.Time {
 	m.mu.Lock()
 	rec := m.recorder
 	m.mu.Unlock()

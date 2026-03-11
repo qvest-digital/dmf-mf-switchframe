@@ -40,7 +40,7 @@ var validWipeDirections = map[string]bool{
 }
 
 // actionsRequiringSource is the set of actions that require a "source" string param.
-var actionsRequiringSource = map[MacroAction]bool{
+var actionsRequiringSource = map[Action]bool{
 	ActionCut:             true,
 	ActionPreview:         true,
 	ActionSetAudio:        true,
@@ -64,7 +64,7 @@ var actionsRequiringSource = map[MacroAction]bool{
 
 // ValidateSteps validates the steps of a macro and returns errors and warnings.
 // Errors block save; warnings are informational only.
-func ValidateSteps(steps []MacroStep) *ValidationResult {
+func ValidateSteps(steps []Step) *ValidationResult {
 	result := &ValidationResult{}
 
 	for i, step := range steps {
@@ -93,7 +93,7 @@ func ValidateSteps(steps []MacroStep) *ValidationResult {
 }
 
 // validateStep checks action-specific parameter requirements.
-func validateStep(i int, step MacroStep, result *ValidationResult) {
+func validateStep(i int, step Step, result *ValidationResult) {
 	// Check source requirement for applicable actions.
 	if actionsRequiringSource[step.Action] {
 		if !hasStringParam(step.Params, "source") {
@@ -159,7 +159,7 @@ func validateStep(i int, step MacroStep, result *ValidationResult) {
 
 // validateTransition checks transition-specific params (source is already checked
 // by the actionsRequiringSource map above — transition requires source via that path too).
-func validateTransition(i int, step MacroStep, result *ValidationResult) {
+func validateTransition(i int, step Step, result *ValidationResult) {
 	// Source is required (already checked if in actionsRequiringSource, but transition
 	// needs it too — add to the map or check here). We rely on the map lookup above
 	// since ActionTransition is not in actionsRequiringSource. Check it here instead.
@@ -211,7 +211,7 @@ func validateTransition(i int, step MacroStep, result *ValidationResult) {
 }
 
 // validateWait checks that ms > 0.
-func validateWait(i int, step MacroStep, result *ValidationResult) {
+func validateWait(i int, step Step, result *ValidationResult) {
 	ms, ok := step.Params["ms"].(float64)
 	if !ok || ms <= 0 {
 		result.Errors = append(result.Errors, ValidationError{
@@ -223,7 +223,7 @@ func validateWait(i int, step MacroStep, result *ValidationResult) {
 
 // validateSCTE35Cue checks that preRollMs is non-negative if present and
 // that time_signal commands include at least one descriptor.
-func validateSCTE35Cue(i int, step MacroStep, result *ValidationResult) {
+func validateSCTE35Cue(i int, step Step, result *ValidationResult) {
 	if v, ok := step.Params["preRollMs"].(float64); ok && v < 0 {
 		result.Errors = append(result.Errors, ValidationError{
 			Step:    i,
@@ -250,7 +250,7 @@ var validFlyDirectionsSet = map[string]bool{
 }
 
 // validateGraphicsStep checks graphics-specific parameter requirements.
-func validateGraphicsStep(i int, step MacroStep, result *ValidationResult) {
+func validateGraphicsStep(i int, step Step, result *ValidationResult) {
 	switch step.Action {
 	case ActionGraphicsFlyIn, ActionGraphicsFlyOut:
 		dir, ok := step.Params["direction"].(string)

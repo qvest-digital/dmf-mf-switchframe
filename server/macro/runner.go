@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// MacroTarget is the interface that a macro runner uses to execute steps.
+// Target is the interface that a macro runner uses to execute steps.
 // It abstracts the switcher/mixer so macro execution is testable without
 // real hardware or relays.
-type MacroTarget interface {
+type Target interface {
 	// Cut switches the program source.
 	Cut(ctx context.Context, source string) error
 
@@ -50,7 +50,7 @@ type MacroTarget interface {
 //
 // If onProgress is non-nil, it is called with the current ExecutionState
 // at each state transition (initial, step running, step done/failed).
-func Run(ctx context.Context, m Macro, target MacroTarget, onProgress OnProgress) error {
+func Run(ctx context.Context, m Macro, target Target, onProgress OnProgress) error {
 	// Build initial state with all steps pending.
 	state := ExecutionState{
 		Running:   true,
@@ -120,7 +120,7 @@ func Run(ctx context.Context, m Macro, target MacroTarget, onProgress OnProgress
 	return nil
 }
 
-func executeStep(ctx context.Context, step MacroStep, target MacroTarget) error {
+func executeStep(ctx context.Context, step Step, target Target) error {
 	switch step.Action {
 	case ActionCut:
 		source, _ := step.Params["source"].(string)

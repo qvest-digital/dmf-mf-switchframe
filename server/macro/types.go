@@ -5,89 +5,89 @@ package macro
 
 import "fmt"
 
-// MacroAction identifies the type of operation a macro step performs.
-type MacroAction string
+// Action identifies the type of operation a macro step performs.
+type Action string
 
 const (
-	ActionCut        MacroAction = "cut"
-	ActionPreview    MacroAction = "preview"
-	ActionTransition MacroAction = "transition"
-	ActionWait       MacroAction = "wait"
-	ActionSetAudio   MacroAction = "set_audio"
+	ActionCut        Action = "cut"
+	ActionPreview    Action = "preview"
+	ActionTransition Action = "transition"
+	ActionWait       Action = "wait"
+	ActionSetAudio   Action = "set_audio"
 
 	// Audio actions.
-	ActionAudioMute       MacroAction = "audio_mute"
-	ActionAudioAFV        MacroAction = "audio_afv"
-	ActionAudioTrim       MacroAction = "audio_trim"
-	ActionAudioMaster     MacroAction = "audio_master"
-	ActionAudioEQ         MacroAction = "audio_eq"
-	ActionAudioCompressor MacroAction = "audio_compressor"
-	ActionAudioDelay      MacroAction = "audio_delay"
+	ActionAudioMute       Action = "audio_mute"
+	ActionAudioAFV        Action = "audio_afv"
+	ActionAudioTrim       Action = "audio_trim"
+	ActionAudioMaster     Action = "audio_master"
+	ActionAudioEQ         Action = "audio_eq"
+	ActionAudioCompressor Action = "audio_compressor"
+	ActionAudioDelay      Action = "audio_delay"
 
 	// Transition / program actions.
-	ActionFTB MacroAction = "ftb"
+	ActionFTB Action = "ftb"
 
 	// Graphics actions.
-	ActionGraphicsOn            MacroAction = "graphics_on"
-	ActionGraphicsOff           MacroAction = "graphics_off"
-	ActionGraphicsAutoOn        MacroAction = "graphics_auto_on"
-	ActionGraphicsAutoOff       MacroAction = "graphics_auto_off"
-	ActionGraphicsAddLayer      MacroAction = "graphics_add_layer"
-	ActionGraphicsRemoveLayer   MacroAction = "graphics_remove_layer"
-	ActionGraphicsSetRect       MacroAction = "graphics_set_rect"
-	ActionGraphicsSetZOrder     MacroAction = "graphics_set_zorder"
-	ActionGraphicsFlyIn         MacroAction = "graphics_fly_in"
-	ActionGraphicsFlyOut        MacroAction = "graphics_fly_out"
-	ActionGraphicsSlide         MacroAction = "graphics_slide"
-	ActionGraphicsAnimate       MacroAction = "graphics_animate"
-	ActionGraphicsAnimateStop   MacroAction = "graphics_animate_stop"
-	ActionGraphicsUploadFrame   MacroAction = "graphics_upload_frame"
+	ActionGraphicsOn            Action = "graphics_on"
+	ActionGraphicsOff           Action = "graphics_off"
+	ActionGraphicsAutoOn        Action = "graphics_auto_on"
+	ActionGraphicsAutoOff       Action = "graphics_auto_off"
+	ActionGraphicsAddLayer      Action = "graphics_add_layer"
+	ActionGraphicsRemoveLayer   Action = "graphics_remove_layer"
+	ActionGraphicsSetRect       Action = "graphics_set_rect"
+	ActionGraphicsSetZOrder     Action = "graphics_set_zorder"
+	ActionGraphicsFlyIn         Action = "graphics_fly_in"
+	ActionGraphicsFlyOut        Action = "graphics_fly_out"
+	ActionGraphicsSlide         Action = "graphics_slide"
+	ActionGraphicsAnimate       Action = "graphics_animate"
+	ActionGraphicsAnimateStop   Action = "graphics_animate_stop"
+	ActionGraphicsUploadFrame   Action = "graphics_upload_frame"
 
 	// Recording actions.
-	ActionRecordingStart MacroAction = "recording_start"
-	ActionRecordingStop  MacroAction = "recording_stop"
+	ActionRecordingStart Action = "recording_start"
+	ActionRecordingStop  Action = "recording_stop"
 
 	// Preset actions.
-	ActionPresetRecall MacroAction = "preset_recall"
+	ActionPresetRecall Action = "preset_recall"
 
 	// Source actions.
-	ActionKeySet         MacroAction = "key_set"
-	ActionKeyDelete      MacroAction = "key_delete"
-	ActionSourceLabel    MacroAction = "source_label"
-	ActionSourceDelay    MacroAction = "source_delay"
-	ActionSourcePosition MacroAction = "source_position"
+	ActionKeySet         Action = "key_set"
+	ActionKeyDelete      Action = "key_delete"
+	ActionSourceLabel    Action = "source_label"
+	ActionSourceDelay    Action = "source_delay"
+	ActionSourcePosition Action = "source_position"
 
 	// Replay actions.
-	ActionReplayMarkIn    MacroAction = "replay_mark_in"
-	ActionReplayMarkOut   MacroAction = "replay_mark_out"
-	ActionReplayPlay      MacroAction = "replay_play"
-	ActionReplayStop      MacroAction = "replay_stop"
-	ActionReplayQuickClip MacroAction = "replay_quick_clip"
-	ActionReplayPlayLast  MacroAction = "replay_play_last"
-	ActionReplayPlayClip  MacroAction = "replay_play_clip"
+	ActionReplayMarkIn    Action = "replay_mark_in"
+	ActionReplayMarkOut   Action = "replay_mark_out"
+	ActionReplayPlay      Action = "replay_play"
+	ActionReplayStop      Action = "replay_stop"
+	ActionReplayQuickClip Action = "replay_quick_clip"
+	ActionReplayPlayLast  Action = "replay_play_last"
+	ActionReplayPlayClip  Action = "replay_play_clip"
 
 	// SCTE-35 actions for ad break automation.
-	ActionSCTE35Cue    MacroAction = "scte35_cue"
-	ActionSCTE35Return MacroAction = "scte35_return"
-	ActionSCTE35Cancel MacroAction = "scte35_cancel"
-	ActionSCTE35Hold   MacroAction = "scte35_hold"
-	ActionSCTE35Extend MacroAction = "scte35_extend"
+	ActionSCTE35Cue    Action = "scte35_cue"
+	ActionSCTE35Return Action = "scte35_return"
+	ActionSCTE35Cancel Action = "scte35_cancel"
+	ActionSCTE35Hold   Action = "scte35_hold"
+	ActionSCTE35Extend Action = "scte35_extend"
 
 	// Layout/PIP actions.
-	ActionLayoutPreset    MacroAction = "layout_preset"
-	ActionLayoutSlotOn    MacroAction = "layout_slot_on"
-	ActionLayoutSlotOff   MacroAction = "layout_slot_off"
-	ActionLayoutSlotSource MacroAction = "layout_slot_source"
-	ActionLayoutClear     MacroAction = "layout_clear"
+	ActionLayoutPreset    Action = "layout_preset"
+	ActionLayoutSlotOn    Action = "layout_slot_on"
+	ActionLayoutSlotOff   Action = "layout_slot_off"
+	ActionLayoutSlotSource Action = "layout_slot_source"
+	ActionLayoutClear     Action = "layout_clear"
 
 	// Caption actions.
-	ActionCaptionMode  MacroAction = "caption_mode"
-	ActionCaptionText  MacroAction = "caption_text"
-	ActionCaptionClear MacroAction = "caption_clear"
+	ActionCaptionMode  Action = "caption_mode"
+	ActionCaptionText  Action = "caption_text"
+	ActionCaptionClear Action = "caption_clear"
 )
 
 // AllActions is the set of all valid macro actions.
-var AllActions = map[MacroAction]bool{
+var AllActions = map[Action]bool{
 	ActionCut:             true,
 	ActionPreview:         true,
 	ActionTransition:      true,
@@ -145,16 +145,16 @@ var AllActions = map[MacroAction]bool{
 	ActionCaptionClear:    true,
 }
 
-// MacroStep is a single operation within a macro sequence.
-type MacroStep struct {
-	Action MacroAction            `json:"action"`
+// Step is a single operation within a macro sequence.
+type Step struct {
+	Action Action            `json:"action"`
 	Params map[string]interface{} `json:"params"`
 }
 
 // Macro is a named sequence of steps that can be saved and replayed.
 type Macro struct {
 	Name  string      `json:"name"`
-	Steps []MacroStep `json:"steps"`
+	Steps []Step `json:"steps"`
 }
 
 // StepStatus indicates the execution state of a single macro step.
@@ -170,7 +170,7 @@ const (
 
 // StepState tracks the runtime state of a single step during execution.
 type StepState struct {
-	Action      MacroAction `json:"action"`
+	Action      Action `json:"action"`
 	Summary     string      `json:"summary"`
 	Status      StepStatus  `json:"status"`
 	Error       string      `json:"error,omitempty"`
@@ -192,7 +192,7 @@ type ExecutionState struct {
 type OnProgress func(state ExecutionState)
 
 // StepSummary generates a human-readable summary string for a macro step.
-func StepSummary(step MacroStep) string {
+func StepSummary(step Step) string {
 	source, _ := step.Params["source"].(string)
 
 	switch step.Action {

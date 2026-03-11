@@ -15,8 +15,8 @@ func TestFDKDecoderCreation(t *testing.T) {
 	require.NotNil(t, dec)
 	defer func() { _ = dec.Close() }()
 
-	// Verify it implements AudioDecoder.
-	var _ AudioDecoder = dec
+	// Verify it implements Decoder.
+	var _ Decoder = dec
 }
 
 func TestFDKDecoderCreationMono(t *testing.T) {
@@ -43,8 +43,8 @@ func TestFDKEncoderCreation(t *testing.T) {
 	require.NotNil(t, enc)
 	defer func() { _ = enc.Close() }()
 
-	// Verify it implements AudioEncoder.
-	var _ AudioEncoder = enc
+	// Verify it implements Encoder.
+	var _ Encoder = enc
 }
 
 func TestFDKEncoderCreationMono(t *testing.T) {

@@ -102,7 +102,7 @@ sequenceDiagram
 
 Every source is continuously decoded (always-decode architecture), but only the current program source's frames enter the pipeline via [`broadcastProcessedFromPF()`](../server/switcher/switcher.go). Non-program sources contribute to the key bridge fill cache and layout compositor fill cache, then are filtered out.
 
-During transitions, the [`TransitionEngine`](../server/transition/engine.go) blends frames from both sources and outputs through [`broadcastProcessed()`](../server/switcher/switcher.go), which also enters the pipeline via `videoProcCh`.
+During transitions, the [`Engine`](../server/transition/engine.go) blends frames from both sources and outputs through [`broadcastProcessed()`](../server/switcher/switcher.go), which also enters the pipeline via `videoProcCh`.
 
 ---
 

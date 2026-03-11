@@ -11,7 +11,7 @@ import (
 
 // GenerateStingerZip creates a zip of PNG frames for a diagonal-wipe stinger.
 // A dark blue-gray diagonal bar sweeps from top-left to bottom-right.
-// Returns zip bytes compatible with StingerStore.Upload().
+// Returns zip bytes compatible with stinger.Store.Upload().
 func GenerateStingerZip(width, height, numFrames int) ([]byte, error) {
 	if width <= 0 || height <= 0 || numFrames <= 0 {
 		return nil, fmt.Errorf("invalid dimensions: %dx%d, %d frames", width, height, numFrames)

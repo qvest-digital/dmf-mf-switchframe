@@ -44,7 +44,7 @@ var (
 // raw audio to shared memory.
 type RawAudioSink func(pcm []float32, pts int64, sampleRate, channels int)
 
-// MixerConfig configures the AudioMixer.
+// MixerConfig configures the Mixer.
 type MixerConfig struct {
 	SampleRate     int
 	Channels       int
@@ -73,13 +73,13 @@ type Channel struct {
 	muted       bool
 	afv         bool
 	active      bool
-	decoder     AudioDecoder      // lazy init, nil in passthrough
+	decoder     Decoder      // lazy init, nil in passthrough
 	decoderOnce sync.Once         // ensures decoder factory is called at most once
 	peakL       float64           // linear amplitude [0,1] — updated on every decoded frame
 	peakR       float64           // linear amplitude [0,1]
 	eq          *EQ               // 3-band parametric EQ (always initialized)
 	compressor  *Compressor       // single-band compressor (always initialized)
-	audioDelay        *AudioDelayBuffer // per-source audio delay for lip-sync correction
+	audioDelay        *DelayBuffer // per-source audio delay for lip-sync correction
 	sampleRateWarned  bool              // true after first sample rate mismatch warning (log once)
 
 	// Reusable work buffers (hot-path allocation elimination)
@@ -88,8 +88,8 @@ type Channel struct {
 	storedBuf []float32
 }
 
-// AudioMixer mixes audio from multiple sources.
-type AudioMixer struct {
+// Mixer mixes audio from multiple sources.
+type Mixer struct {
 	log          *slog.Logger
 	mu           sync.RWMutex
 	channels     map[string]*Channel
@@ -97,7 +97,7 @@ type AudioMixer struct {
 	masterLinear float32 // cached linear gain from masterLevel
 	sampleRate   int
 	numChannels  int
-	encoder      AudioEncoder
+	encoder      Encoder
 	output       func(*media.AudioFrame)
 	passthrough  bool
 	config       MixerConfig
@@ -130,7 +130,7 @@ type AudioMixer struct {
 	transCrossfadeFrom     string              // outgoing source key
 	transCrossfadeTo       string              // incoming source key
 	transCrossfadePosition float64             // 0.0 = fully old, 1.0 = fully new
-	transCrossfadeMode     AudioTransitionMode // gain curve selection
+	transCrossfadeMode     TransitionMode // gain curve selection
 	transCrossfadeAudioPos float64             // position at end of last audio output (for smooth interpolation)
 	mixCycleTransPos       float64             // snapshotted transition position for current mix cycle
 
@@ -188,9 +188,9 @@ type AudioMixer struct {
 // Prevents deadlock when a source stops sending audio.
 const mixCycleDeadline = 50 * time.Millisecond
 
-// NewMixer creates an AudioMixer.
-func NewMixer(config MixerConfig) *AudioMixer {
-	m := &AudioMixer{
+// NewMixer creates a Mixer.
+func NewMixer(config MixerConfig) *Mixer {
+	m := &Mixer{
 		log:            slog.With("component", "audio"),
 		channels:       make(map[string]*Channel),
 		masterLevel:    0.0,
@@ -212,7 +212,7 @@ func NewMixer(config MixerConfig) *AudioMixer {
 }
 
 // SetMetrics attaches Prometheus metrics to the mixer.
-func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
+func (m *Mixer) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
@@ -222,7 +222,7 @@ func (m *AudioMixer) SetMetrics(pm *metrics.Metrics) {
 // The sink receives a copy of the mixed PCM after master processing
 // (fader + limiter) but before AAC encode. This is used by MXL output
 // to write raw audio to shared memory. Pass nil to disable.
-func (m *AudioMixer) SetRawAudioSink(sink RawAudioSink) {
+func (m *Mixer) SetRawAudioSink(sink RawAudioSink) {
 	if sink != nil {
 		m.rawAudioSink.Store(&sink)
 	} else {
@@ -232,7 +232,7 @@ func (m *AudioMixer) SetRawAudioSink(sink RawAudioSink) {
 
 // Close releases all codec resources and stops the background ticker.
 // It is safe to call multiple times.
-func (m *AudioMixer) Close() error {
+func (m *Mixer) Close() error {
 	m.closeOnce.Do(func() {
 		close(m.stopTicker)
 		m.tickerWg.Wait()
@@ -255,7 +255,7 @@ func (m *AudioMixer) Close() error {
 // and callers must handle that (all call sites already check ch.decoder != nil).
 // If ch.decoder was set externally (e.g., in tests), this is a no-op.
 // Caller must hold m.mu (read or write).
-func (m *AudioMixer) initChannelDecoder(ch *Channel) {
+func (m *Mixer) initChannelDecoder(ch *Channel) {
 	if ch.decoder != nil || m.config.DecoderFactory == nil {
 		return
 	}
@@ -272,7 +272,7 @@ func (m *AudioMixer) initChannelDecoder(ch *Channel) {
 // mixDeadlineTicker runs in the background and forces a mix cycle flush
 // when the per-cycle deadline expires. This prevents deadlock when a source
 // stops sending audio while the mixer waits for all channels to contribute.
-func (m *AudioMixer) mixDeadlineTicker() {
+func (m *Mixer) mixDeadlineTicker() {
 	defer m.tickerWg.Done()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -296,7 +296,7 @@ func (m *AudioMixer) mixDeadlineTicker() {
 }
 
 // frameDuration90k returns the duration of one AAC frame (1024 samples) in 90 kHz PTS ticks.
-func (m *AudioMixer) frameDuration90k() int64 {
+func (m *Mixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
@@ -306,7 +306,7 @@ func (m *AudioMixer) frameDuration90k() int64 {
 // is a monotonic guard: if the input PTS goes backward (e.g., source switch),
 // the counter advances by one frame duration instead.
 // Caller must hold m.mu.
-func (m *AudioMixer) advanceOutputPTS(inputPTS int64) int64 {
+func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 	if !m.outputPTSInited {
 		m.outputPTS = inputPTS
 		m.outputPTSInited = true
@@ -326,7 +326,7 @@ func (m *AudioMixer) advanceOutputPTS(inputPTS int64) int64 {
 //
 // Caller must hold m.mu write lock. The lock is held for the entire call.
 // Callers are responsible for calling m.output() after releasing the lock.
-func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
+func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 	if len(m.mixBuffer) == 0 {
 		m.resetMixCycleLocked()
 		return nil
@@ -446,14 +446,14 @@ func (m *AudioMixer) collectMixCycleLocked() *media.AudioFrame {
 
 // resetMixCycleLocked clears the mix accumulation state for the next cycle.
 // Caller must hold m.mu write lock.
-func (m *AudioMixer) resetMixCycleLocked() {
+func (m *Mixer) resetMixCycleLocked() {
 	clear(m.mixBuffer)
 	m.mixStarted = false
 	m.mixDeadline = time.Time{}
 }
 
 // AddChannel registers a source with the mixer.
-func (m *AudioMixer) AddChannel(sourceKey string) {
+func (m *Mixer) AddChannel(sourceKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.channels[sourceKey] = &Channel{
@@ -462,13 +462,13 @@ func (m *AudioMixer) AddChannel(sourceKey string) {
 		trimLinear:  1.0, // 0 dB = unity
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
-		audioDelay:  NewAudioDelayBuffer(0),
+		audioDelay:  NewDelayBuffer(0),
 	}
 	m.recalcPassthrough()
 }
 
 // RemoveChannel unregisters a source.
-func (m *AudioMixer) RemoveChannel(sourceKey string) {
+func (m *Mixer) RemoveChannel(sourceKey string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
@@ -482,7 +482,7 @@ func (m *AudioMixer) RemoveChannel(sourceKey string) {
 }
 
 // SetActive activates or deactivates a channel.
-func (m *AudioMixer) SetActive(sourceKey string, active bool) {
+func (m *Mixer) SetActive(sourceKey string, active bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
@@ -493,7 +493,7 @@ func (m *AudioMixer) SetActive(sourceKey string, active bool) {
 
 // SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
 // Trim is applied before the fader in the mix pipeline.
-func (m *AudioMixer) SetTrim(sourceKey string, trimDB float64) error {
+func (m *Mixer) SetTrim(sourceKey string, trimDB float64) error {
 	if trimDB < -20 || trimDB > 20 {
 		return ErrInvalidTrim
 	}
@@ -510,7 +510,7 @@ func (m *AudioMixer) SetTrim(sourceKey string, trimDB float64) error {
 }
 
 // SetLevel sets the gain in dB for a channel.
-func (m *AudioMixer) SetLevel(sourceKey string, levelDB float64) error {
+func (m *Mixer) SetLevel(sourceKey string, levelDB float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
@@ -524,7 +524,7 @@ func (m *AudioMixer) SetLevel(sourceKey string, levelDB float64) error {
 }
 
 // SetMuted sets the mute state for a channel.
-func (m *AudioMixer) SetMuted(sourceKey string, muted bool) error {
+func (m *Mixer) SetMuted(sourceKey string, muted bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
@@ -537,7 +537,7 @@ func (m *AudioMixer) SetMuted(sourceKey string, muted bool) error {
 }
 
 // SetMasterLevel sets the master output level in dB.
-func (m *AudioMixer) SetMasterLevel(levelDB float64) {
+func (m *Mixer) SetMasterLevel(levelDB float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.masterLevel = levelDB
@@ -548,7 +548,7 @@ func (m *AudioMixer) SetMasterLevel(levelDB float64) {
 // SetAFV enables or disables audio-follows-video for a channel.
 // When AFV is enabled, the channel activates when its source goes to program
 // and deactivates when it leaves program.
-func (m *AudioMixer) SetAFV(sourceKey string, afv bool) error {
+func (m *Mixer) SetAFV(sourceKey string, afv bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
@@ -560,7 +560,7 @@ func (m *AudioMixer) SetAFV(sourceKey string, afv bool) error {
 }
 
 // IsChannelActive returns whether a channel is currently active.
-func (m *AudioMixer) IsChannelActive(sourceKey string) bool {
+func (m *Mixer) IsChannelActive(sourceKey string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
@@ -573,7 +573,7 @@ func (m *AudioMixer) IsChannelActive(sourceKey string) bool {
 // OnProgramChange updates AFV channel states based on the new program source.
 // Channels with AFV enabled activate when they match the program source and
 // deactivate when they don't. Non-AFV channels are unaffected.
-func (m *AudioMixer) OnProgramChange(newProgramSource string) {
+func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, ch := range m.channels {
@@ -588,7 +588,7 @@ func (m *AudioMixer) OnProgramChange(newProgramSource string) {
 // OnCut initiates a one-frame equal-power crossfade between old and new source.
 // Called by the switcher when a cut occurs. A timeout ensures the crossfade
 // completes even if the outgoing source stops sending frames.
-func (m *AudioMixer) OnCut(oldSource, newSource string) {
+func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.crossfadeFrom = oldSource
@@ -624,13 +624,13 @@ func (m *AudioMixer) OnCut(oldSource, newSource string) {
 
 // OnTransitionStart begins a multi-frame crossfade between old and new source,
 // synchronized with a video transition. The mode selects the gain curve:
-//   - AudioCrossfade: equal-power A→B (mix/dissolve)
-//   - AudioDipToSilence: A→silence→B (dip through black)
-//   - AudioFadeOut: A→silence (fade to black)
-//   - AudioFadeIn: silence→A (fade from black)
+//   - Crossfade: equal-power A→B (mix/dissolve)
+//   - DipToSilence: A→silence→B (dip through black)
+//   - FadeOut: A→silence (fade to black)
+//   - FadeIn: silence→A (fade from black)
 //
 // The new source channel is activated so its audio frames are accepted.
-func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTransitionMode, durationMs int) {
+func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMode, durationMs int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -683,7 +683,7 @@ func (m *AudioMixer) OnTransitionStart(oldSource, newSource string, mode AudioTr
 // OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
 // Called by the switcher as the video transition progresses. Tracks the previous position
 // for per-sample gain interpolation within audio frames.
-func (m *AudioMixer) OnTransitionPosition(position float64) {
+func (m *Mixer) OnTransitionPosition(position float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transCrossfadePosition = position
@@ -691,7 +691,7 @@ func (m *AudioMixer) OnTransitionPosition(position float64) {
 
 // OnTransitionComplete clears the transition crossfade state.
 // Called by the switcher when the video transition finishes.
-func (m *AudioMixer) OnTransitionComplete() {
+func (m *Mixer) OnTransitionComplete() {
 	m.mu.Lock()
 	// Flush any pending mix cycle before switching modes.
 	// Without this, partially-accumulated frames are abandoned when
@@ -719,7 +719,7 @@ func (m *AudioMixer) OnTransitionComplete() {
 
 // SetProgramMute sets the program output mute state. When muted, the mixer
 // produces silent output (FTB held). Metering reflects silence.
-func (m *AudioMixer) SetProgramMute(muted bool) {
+func (m *Mixer) SetProgramMute(muted bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.programMuted = muted
@@ -737,7 +737,7 @@ func (m *AudioMixer) SetProgramMute(muted bool) {
 // mix cycles until exhausted or cleared by OnTransitionComplete.
 // If the stinger audio has a different sample rate or channel count than the
 // mixer, a warning is logged and the audio is skipped to prevent artifacts.
-func (m *AudioMixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
+func (m *Mixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if sampleRate != m.sampleRate {
@@ -758,7 +758,7 @@ func (m *AudioMixer) SetStingerAudio(audio []float32, sampleRate, channels int) 
 // addStingerAudio adds stinger PCM to the mixed output buffer. It applies a
 // fade envelope (10ms fade-in at start, 50ms fade-out at end) to avoid clicks.
 // Caller must hold m.mu.
-func (m *AudioMixer) addStingerAudio(mixed []float32) {
+func (m *Mixer) addStingerAudio(mixed []float32) {
 	remaining := len(m.stingerAudio) - m.stingerOffset
 	if remaining <= 0 {
 		m.stingerAudio = nil
@@ -798,21 +798,21 @@ func (m *AudioMixer) addStingerAudio(mixed []float32) {
 }
 
 // IsProgramMuted returns whether program output is muted (FTB held).
-func (m *AudioMixer) IsProgramMuted() bool {
+func (m *Mixer) IsProgramMuted() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.programMuted
 }
 
 // IsInTransitionCrossfade returns whether a multi-frame transition crossfade is active.
-func (m *AudioMixer) IsInTransitionCrossfade() bool {
+func (m *Mixer) IsInTransitionCrossfade() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.transCrossfadeActive
 }
 
 // TransitionPosition returns the current transition crossfade position (0.0–1.0).
-func (m *AudioMixer) TransitionPosition() float64 {
+func (m *Mixer) TransitionPosition() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.transCrossfadePosition
@@ -821,7 +821,7 @@ func (m *AudioMixer) TransitionPosition() float64 {
 // TransitionGains returns the crossfade gains for the old and new sources based
 // on the current transition position and mode. When no transition is active,
 // returns (1.0, 0.0).
-func (m *AudioMixer) TransitionGains() (oldGain, newGain float64) {
+func (m *Mixer) TransitionGains() (oldGain, newGain float64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if !m.transCrossfadeActive {
@@ -833,19 +833,19 @@ func (m *AudioMixer) TransitionGains() (oldGain, newGain float64) {
 
 // transitionFromGain computes the gain for the outgoing ("from") source at the
 // given position and mode.
-func transitionFromGain(mode AudioTransitionMode, pos float64) float64 {
+func transitionFromGain(mode TransitionMode, pos float64) float64 {
 	switch mode {
-	case AudioCrossfade:
+	case Crossfade:
 		return math.Cos(pos * math.Pi / 2)
-	case AudioDipToSilence:
+	case DipToSilence:
 		if pos < 0.5 {
 			// Phase 1: fade out A (equal-power over the first half)
 			return math.Cos(pos * 2 * math.Pi / 2)
 		}
 		return 0
-	case AudioFadeOut:
+	case FadeOut:
 		return math.Cos(pos * math.Pi / 2)
-	case AudioFadeIn:
+	case FadeIn:
 		// FTB reverse: fade the "from" source IN from silence
 		return math.Sin(pos * math.Pi / 2)
 	}
@@ -854,17 +854,17 @@ func transitionFromGain(mode AudioTransitionMode, pos float64) float64 {
 
 // transitionToGain computes the gain for the incoming ("to") source at the
 // given position and mode.
-func transitionToGain(mode AudioTransitionMode, pos float64) float64 {
+func transitionToGain(mode TransitionMode, pos float64) float64 {
 	switch mode {
-	case AudioCrossfade:
+	case Crossfade:
 		return math.Sin(pos * math.Pi / 2)
-	case AudioDipToSilence:
+	case DipToSilence:
 		if pos >= 0.5 {
 			// Phase 2: fade in B (equal-power over the second half)
 			return math.Sin((pos*2 - 1) * math.Pi / 2)
 		}
 		return 0
-	case AudioFadeOut, AudioFadeIn:
+	case FadeOut, FadeIn:
 		// FTB has no "to" source
 		return 0
 	}
@@ -872,14 +872,14 @@ func transitionToGain(mode AudioTransitionMode, pos float64) float64 {
 }
 
 // IsPassthrough returns whether the mixer is in passthrough mode.
-func (m *AudioMixer) IsPassthrough() bool {
+func (m *Mixer) IsPassthrough() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.passthrough
 }
 
 // IngestFrame processes an audio frame from a source.
-func (m *AudioMixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
+func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Apply per-source audio delay for lip-sync correction.
 	// Done before all processing so PFL monitoring reflects corrected timing.
 	m.mu.RLock()
@@ -1138,7 +1138,7 @@ mixing:
 // The pts parameter is the presentation timestamp in 90 kHz clock units.
 // The channels parameter is the source's actual channel count (1=mono, 2=stereo).
 // If channels < mixer's numChannels, mono samples are upmixed to stereo.
-func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
+func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
 	// Check for active crossfade before acquiring the write lock.
 	m.mu.RLock()
 	crossfadeActive := m.crossfadeActive
@@ -1282,7 +1282,7 @@ func (m *AudioMixer) IngestPCM(sourceKey string, pcm []float32, pts int64, chann
 
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
 // It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
-func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
+func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mu.Lock()
 
 	if !m.crossfadeActive {
@@ -1462,7 +1462,7 @@ func (m *AudioMixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFr
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
 // Logs when the mode actually changes (rare — only on cuts, mute toggles, etc.).
-func (m *AudioMixer) recalcPassthrough() {
+func (m *Mixer) recalcPassthrough() {
 	prev := m.passthrough
 
 	// Program mute or active transition crossfade require the mixing path.
@@ -1515,14 +1515,14 @@ func (m *AudioMixer) recalcPassthrough() {
 
 // ProgramPeak returns the current program output peak levels in dBFS.
 // Returns [leftDBFS, rightDBFS]. Silence is -Inf.
-func (m *AudioMixer) ProgramPeak() [2]float64 {
+func (m *Mixer) ProgramPeak() [2]float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return [2]float64{LinearToDBFS(m.programPeakL), LinearToDBFS(m.programPeakR)}
 }
 
 // ChannelStates returns a snapshot of all channel states for state broadcast.
-func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
+func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	result := make(map[string]internal.AudioChannel, len(m.channels))
@@ -1566,7 +1566,7 @@ func (m *AudioMixer) ChannelStates() map[string]internal.AudioChannel {
 }
 
 // SetEQ sets a single EQ band on a channel.
-func (m *AudioMixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error {
+func (m *Mixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error {
 	m.mu.Lock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
@@ -1585,7 +1585,7 @@ func (m *AudioMixer) SetEQ(sourceKey string, band int, frequency, gain, q float6
 }
 
 // GetEQ returns the current EQ settings for a channel.
-func (m *AudioMixer) GetEQ(sourceKey string) ([3]EQBandSettings, error) {
+func (m *Mixer) GetEQ(sourceKey string) ([3]EQBandSettings, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
@@ -1596,7 +1596,7 @@ func (m *AudioMixer) GetEQ(sourceKey string) ([3]EQBandSettings, error) {
 }
 
 // SetCompressor sets all compressor parameters for a channel.
-func (m *AudioMixer) SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error {
+func (m *Mixer) SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error {
 	m.mu.Lock()
 	ch, ok := m.channels[sourceKey]
 	if !ok {
@@ -1615,7 +1615,7 @@ func (m *AudioMixer) SetCompressor(sourceKey string, threshold, ratio, attack, r
 }
 
 // GetCompressor returns the current compressor settings and gain reduction for a channel.
-func (m *AudioMixer) GetCompressor(sourceKey string) (CompressorState, error) {
+func (m *Mixer) GetCompressor(sourceKey string) (CompressorState, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
@@ -1635,7 +1635,7 @@ func (m *AudioMixer) GetCompressor(sourceKey string) (CompressorState, error) {
 
 // SetAudioDelay sets the audio delay in milliseconds for a source channel.
 // Used for lip-sync correction in multi-camera setups.
-func (m *AudioMixer) SetAudioDelay(sourceKey string, delayMs int) error {
+func (m *Mixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ch, ok := m.channels[sourceKey]
@@ -1647,7 +1647,7 @@ func (m *AudioMixer) SetAudioDelay(sourceKey string, delayMs int) error {
 }
 
 // AudioDelayMs returns the current audio delay in milliseconds for a source channel.
-func (m *AudioMixer) AudioDelayMs(sourceKey string) int {
+func (m *Mixer) AudioDelayMs(sourceKey string) int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ch, ok := m.channels[sourceKey]
@@ -1659,39 +1659,39 @@ func (m *AudioMixer) AudioDelayMs(sourceKey string) int {
 
 // GainReduction returns the current limiter gain reduction in dB.
 // 0 means no limiting; positive values indicate dB of reduction applied.
-func (m *AudioMixer) GainReduction() float64 {
+func (m *Mixer) GainReduction() float64 {
 	return m.limiter.GainReduction()
 }
 
 // MasterLevel returns the current master level in dB.
-func (m *AudioMixer) MasterLevel() float64 {
+func (m *Mixer) MasterLevel() float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.masterLevel
 }
 
 // MomentaryLUFS returns the BS.1770-4 momentary loudness (400ms window).
-func (m *AudioMixer) MomentaryLUFS() float64 {
+func (m *Mixer) MomentaryLUFS() float64 {
 	return m.loudness.MomentaryLUFS()
 }
 
 // ShortTermLUFS returns the BS.1770-4 short-term loudness (3s window).
-func (m *AudioMixer) ShortTermLUFS() float64 {
+func (m *Mixer) ShortTermLUFS() float64 {
 	return m.loudness.ShortTermLUFS()
 }
 
 // IntegratedLUFS returns the BS.1770-4 integrated loudness (gated, since last reset).
-func (m *AudioMixer) IntegratedLUFS() float64 {
+func (m *Mixer) IntegratedLUFS() float64 {
 	return m.loudness.IntegratedLUFS()
 }
 
 // ResetLoudness clears the integrated loudness measurement.
-func (m *AudioMixer) ResetLoudness() {
+func (m *Mixer) ResetLoudness() {
 	m.loudness.Reset()
 }
 
 // recordAndOutput tracks output timing diagnostics and delivers the frame.
-func (m *AudioMixer) recordAndOutput(frame *media.AudioFrame) {
+func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
 	now := time.Now().UnixNano()
 	prev := m.lastOutputNano.Swap(now)
 	m.outputFrameCount.Add(1)
@@ -1713,12 +1713,12 @@ func (m *AudioMixer) recordAndOutput(frame *media.AudioFrame) {
 
 // ResetMaxInterFrameGap resets the max inter-frame gap counter, allowing
 // fresh measurement after a transition or other event.
-func (m *AudioMixer) ResetMaxInterFrameGap() {
+func (m *Mixer) ResetMaxInterFrameGap() {
 	m.maxInterFrameNano.Store(0)
 }
 
 // DebugSnapshot implements debug.SnapshotProvider.
-func (m *AudioMixer) DebugSnapshot() map[string]any {
+func (m *Mixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
 	mode := "mixing"
 	if m.passthrough {
@@ -1778,7 +1778,7 @@ func (m *AudioMixer) DebugSnapshot() map[string]any {
 // upmixMono duplicates each mono sample to all mixer channels.
 // srcChannels is the source's actual channel count (must be < m.numChannels).
 // Caller must hold m.mu.
-func (m *AudioMixer) upmixMono(pcm []float32, srcChannels int) []float32 {
+func (m *Mixer) upmixMono(pcm []float32, srcChannels int) []float32 {
 	if srcChannels <= 0 || srcChannels >= m.numChannels || len(pcm) == 0 {
 		return pcm
 	}
@@ -1804,7 +1804,7 @@ func (m *AudioMixer) upmixMono(pcm []float32, srcChannels int) []float32 {
 // old and new source, applies equal-power crossfade, and outputs. Unlike
 // ingestCrossfadeFrame, no AAC decode step is needed since the PCM is already
 // in float32 format.
-func (m *AudioMixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, channels int) {
+func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, channels int) {
 	m.mu.Lock()
 
 	if !m.crossfadeActive {

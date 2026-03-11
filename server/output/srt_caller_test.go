@@ -306,9 +306,9 @@ func TestSRTCaller_DefaultConfig(t *testing.T) {
 	require.NotNil(t, c.ringBuf)
 }
 
-func TestSRTCaller_ImplementsOutputAdapter(t *testing.T) {
+func TestSRTCaller_ImplementsAdapter(t *testing.T) {
 	t.Parallel()
-	var _ OutputAdapter = (*SRTCaller)(nil)
+	var _ Adapter = (*SRTCaller)(nil)
 }
 
 func TestSRTCaller_WriteWhenStopped(t *testing.T) {

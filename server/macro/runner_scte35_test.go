@@ -52,7 +52,7 @@ func TestMacro_SCTE35Cue(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "ad_break",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 				"commandType": "splice_insert",
 				"isOut":       true,
@@ -74,7 +74,7 @@ func TestMacro_SCTE35Return(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "return",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Return, Params: map[string]interface{}{}},
 		},
 	}
@@ -94,7 +94,7 @@ func TestMacro_SCTE35Cancel(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "cancel",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Cancel, Params: map[string]interface{}{"eventId": float64(42)}},
 		},
 	}
@@ -111,7 +111,7 @@ func TestMacro_SCTE35Hold(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "hold",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Hold, Params: map[string]interface{}{"eventId": float64(42)}},
 		},
 	}
@@ -128,7 +128,7 @@ func TestMacro_SCTE35Extend(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "extend",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Extend, Params: map[string]interface{}{
 				"eventId":    float64(42),
 				"durationMs": float64(120000),
@@ -151,7 +151,7 @@ func TestMacro_SCTE35Cue_WithPreRoll(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "preroll_break",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 				"commandType": "splice_insert",
 				"isOut":       true,
@@ -179,7 +179,7 @@ func TestMacro_SCTE35_FullWorkflow(t *testing.T) {
 	target := &mockSCTE35Target{}
 	m := Macro{
 		Name: "full_break",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 				"commandType": "splice_insert",
 				"isOut":       true,

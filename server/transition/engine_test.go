@@ -8,13 +8,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestEngine(t *testing.T) (*TransitionEngine, *sync.Mutex, *[][]byte, *[]bool) {
+func newTestEngine(t *testing.T) (*Engine, *sync.Mutex, *[][]byte, *[]bool) {
 	t.Helper()
 	var mu sync.Mutex
 	var outputs [][]byte
 	var completions []bool // true=completed, false=aborted
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -39,7 +39,7 @@ func TestEngineStartStop(t *testing.T) {
 
 	require.Equal(t, StateIdle, e.State())
 
-	err := e.Start("cam1", "cam2", TransitionMix, 1000)
+	err := e.Start("cam1", "cam2", Mix, 1000)
 	require.NoError(t, err)
 	require.Equal(t, StateActive, e.State())
 
@@ -50,8 +50,8 @@ func TestEngineStartStop(t *testing.T) {
 func TestEngineCannotStartWhileActive(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
-	err := e.Start("cam1", "cam3", TransitionMix, 1000)
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
+	err := e.Start("cam1", "cam3", Mix, 1000)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "already active")
 
@@ -61,7 +61,7 @@ func TestEngineCannotStartWhileActive(t *testing.T) {
 func TestEngineAutoPositionAdvances(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	err := e.Start("cam1", "cam2", TransitionMix, 200) // 200ms
+	err := e.Start("cam1", "cam2", Mix, 200) // 200ms
 	require.NoError(t, err)
 
 	pos := e.Position()
@@ -77,7 +77,7 @@ func TestEngineAutoPositionAdvances(t *testing.T) {
 func TestEngineManualPosition(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 
 	e.SetPosition(0.3)
 	require.InDelta(t, 0.3, e.Position(), 0.01)
@@ -91,7 +91,7 @@ func TestEngineManualPosition(t *testing.T) {
 func TestEngineManualPositionCompletes(t *testing.T) {
 	e, mu, _, completions := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 
 	e.SetPosition(1.0)
 
@@ -108,7 +108,7 @@ func TestEngineManualPositionCompletes(t *testing.T) {
 func TestEngineManualPositionAborts(t *testing.T) {
 	e, mu, _, completions := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 	e.SetPosition(0.5)
 
 	e.SetPosition(0.0)
@@ -126,7 +126,7 @@ func TestEngineManualPositionAborts(t *testing.T) {
 func TestEngineStopCleansUp(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 	e.Stop()
 
 	require.Equal(t, StateIdle, e.State())
@@ -136,18 +136,18 @@ func TestEngineStopCleansUp(t *testing.T) {
 func TestEngineFTBStart(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	err := e.Start("cam1", "", TransitionFTB, 1000)
+	err := e.Start("cam1", "", FTB, 1000)
 	require.NoError(t, err)
 	require.Equal(t, StateActive, e.State())
 
 	e.Stop()
 }
 
-func TestEngineTransitionType(t *testing.T) {
+func TestEngineType(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionDip, 1000))
-	require.Equal(t, TransitionDip, e.TransitionType())
+	require.NoError(t, e.Start("cam1", "cam2", Dip, 1000))
+	require.Equal(t, Dip, e.TransitionType())
 
 	e.Stop()
 }
@@ -155,7 +155,7 @@ func TestEngineTransitionType(t *testing.T) {
 func TestEngineIngestProducesOutput(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 
 	// Ingest from source A (stored but doesn't trigger output)
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -177,7 +177,7 @@ func TestEngineIngestProducesOutput(t *testing.T) {
 func TestEngineIngestOnlyFromParticipants(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 1000))
 
 	e.IngestFrame("cam3", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -203,7 +203,7 @@ func TestEngineIngestWhileIdle(t *testing.T) {
 func TestEngineFTBIngestTriggersOnFromSource(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "", TransitionFTB, 1000))
+	require.NoError(t, e.Start("cam1", "", FTB, 1000))
 
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
@@ -217,7 +217,7 @@ func TestEngineFTBIngestTriggersOnFromSource(t *testing.T) {
 func TestEngineMultipleFrames(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	for i := 0; i < 5; i++ {
 		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -234,7 +234,7 @@ func TestEngineMultipleFrames(t *testing.T) {
 func TestEngineAutoCompletes(t *testing.T) {
 	e, mu, _, completions := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50)) // 50ms
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 50)) // 50ms
 
 	for i := 0; i < 20; i++ {
 		e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -254,10 +254,10 @@ func TestEngineAutoCompletes(t *testing.T) {
 func TestEngineFTBReverseStart(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	err := e.Start("cam1", "", TransitionFTBReverse, 1000)
+	err := e.Start("cam1", "", FTBReverse, 1000)
 	require.NoError(t, err)
 	require.Equal(t, StateActive, e.State())
-	require.Equal(t, TransitionFTBReverse, e.TransitionType())
+	require.Equal(t, FTBReverse, e.TransitionType())
 
 	e.Stop()
 }
@@ -265,7 +265,7 @@ func TestEngineFTBReverseStart(t *testing.T) {
 func TestEngineFTBReverseIngestTriggersOnFromSource(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 1000))
+	require.NoError(t, e.Start("cam1", "", FTBReverse, 1000))
 
 	// FTBReverse triggers on fromSource (same as FTB)
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -280,7 +280,7 @@ func TestEngineFTBReverseIngestTriggersOnFromSource(t *testing.T) {
 func TestEngineFTBReverseNoDecoderB(t *testing.T) {
 	// FTBReverse should not create a decoder B (same as FTB)
 	var decoderCount int
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			decoderCount++
 			return &mockDecoder{width: 4, height: 4}, nil
@@ -289,7 +289,7 @@ func TestEngineFTBReverseNoDecoderB(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 1000))
+	require.NoError(t, e.Start("cam1", "", FTBReverse, 1000))
 	require.Equal(t, 1, decoderCount, "FTBReverse should only create one decoder (A)")
 
 	e.Stop()
@@ -311,7 +311,7 @@ func TestEngineFTBReverseBlendInvertsPosition(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
 	// Long duration so position stays near 0.0
-	require.NoError(t, e.Start("cam1", "", TransitionFTBReverse, 60000))
+	require.NoError(t, e.Start("cam1", "", FTBReverse, 60000))
 
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
@@ -328,7 +328,7 @@ func TestEngineFTBNoPanicWhenBlenderNil(t *testing.T) {
 	// because no successful decode has occurred yet.
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "", TransitionFTB, 1000))
+	require.NoError(t, e.Start("cam1", "", FTB, 1000))
 	e.WarmupComplete()
 
 	// Send a P-frame (not keyframe). This should NOT panic.
@@ -344,7 +344,7 @@ func TestEngineBlackFrameFallbackWhenLatestYUVBNil(t *testing.T) {
 	// reorder EAGAIN during warmup), the engine should still produce blended
 	// output using a black frame as placeholder for the missing source.
 	// This prevents ~0.5s output gaps at transition start.
-	for _, tt := range []TransitionType{TransitionMix, TransitionWipe, TransitionDip} {
+	for _, tt := range []Type{Mix, Wipe, Dip} {
 		t.Run(string(tt), func(t *testing.T) {
 			e, mu, outputs, _ := newTestEngine(t)
 
@@ -374,7 +374,7 @@ func TestEngineSkipsBlendWhenSourceANil(t *testing.T) {
 	// be skipped for non-FTB transitions to avoid a flash-to-black.
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	// Warm up only the TO source.
 	e.WarmupDecode("cam2", []byte{0x00, 0x00, 0x00, 0x01})
@@ -395,7 +395,7 @@ func TestEngineSkipsBlendWhenSourceANil(t *testing.T) {
 func TestEngineWarmupPopulatesState(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Warmup both sources — no output produced
 	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
@@ -419,7 +419,7 @@ func TestEngineWarmupPopulatesState(t *testing.T) {
 func TestEngineWarmupNoOutput(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Feed many warmup frames — none should produce output
 	for i := 0; i < 24; i++ {
@@ -448,7 +448,7 @@ func TestEngineWarmupWhileIdle(t *testing.T) {
 func TestEngineWarmupConcurrentWithIngest(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -484,7 +484,7 @@ func TestEngineResolutionMismatchScales(t *testing.T) {
 
 	// Track which decoder is which by call order: first = cam1 (1080p), second = cam2 (720p)
 	decoderCount := 0
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			decoderCount++
 			if decoderCount == 1 {
@@ -504,7 +504,7 @@ func TestEngineResolutionMismatchScales(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Ingest from cam1 (8x8) — sets target resolution
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -538,7 +538,7 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 	var outputs [][]byte
 
 	decoderCount := 0
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			decoderCount++
 			if decoderCount == 1 {
@@ -558,7 +558,7 @@ func TestEngineResolutionMismatchScalesFromSource(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Ingest cam2 first — sets target to 8x8.
 	// Source A is nil so blend is skipped (no black flash).
@@ -585,10 +585,10 @@ func TestEngineWipeStart(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
 	e.config.WipeDirection = WipeHLeft
-	err := e.Start("cam1", "cam2", TransitionWipe, 1000)
+	err := e.Start("cam1", "cam2", Wipe, 1000)
 	require.NoError(t, err)
 	require.Equal(t, StateActive, e.State())
-	require.Equal(t, TransitionWipe, e.TransitionType())
+	require.Equal(t, Wipe, e.TransitionType())
 
 	e.Stop()
 }
@@ -597,7 +597,7 @@ func TestEngineWipeIngestProducesOutput(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
 	e.config.WipeDirection = WipeVTop
-	require.NoError(t, e.Start("cam1", "cam2", TransitionWipe, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Wipe, 5000))
 
 	// Ingest from source A (stored but doesn't trigger output)
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -619,7 +619,7 @@ func TestEngineWipeIngestProducesOutput(t *testing.T) {
 func TestPositionClampedAboveOne(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	e.SetPosition(0.5) // move past zero first
 	e.SetPosition(1.5) // should be clamped — triggers completion since >= 0.999
@@ -633,7 +633,7 @@ func TestPositionClampedAboveOne(t *testing.T) {
 func TestPositionClampedBelowZero(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	// SetPosition(-0.5) without moving past zero first — should not abort,
 	// just clamp to 0.0 and stay active.
@@ -646,7 +646,7 @@ func TestPositionClampedBelowZero(t *testing.T) {
 func TestCompletionThreshold(t *testing.T) {
 	e, mu, _, completions := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	e.SetPosition(0.5) // move past zero
 	e.SetPosition(0.999)
@@ -664,7 +664,7 @@ func TestCompletionThreshold(t *testing.T) {
 func TestCompletionThresholdBelowThreshold(t *testing.T) {
 	e, mu, _, completions := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	e.SetPosition(0.5) // move past zero
 	e.SetPosition(0.99)
@@ -687,7 +687,7 @@ func TestTransitionTimeoutAbort(t *testing.T) {
 	var mu sync.Mutex
 	var completions []bool
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -701,7 +701,7 @@ func TestTransitionTimeoutAbort(t *testing.T) {
 
 	e.SetTimeout(100 * time.Millisecond)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 	require.Equal(t, StateActive, e.State())
 
 	// Wait for watchdog to trigger (timeout=100ms, check interval=25ms)
@@ -721,7 +721,7 @@ func TestTransitionNoTimeoutWhenFramesArrive(t *testing.T) {
 	var mu sync.Mutex
 	var completions []bool
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -735,7 +735,7 @@ func TestTransitionNoTimeoutWhenFramesArrive(t *testing.T) {
 
 	e.SetTimeout(150 * time.Millisecond)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Send frames every 50ms for 400ms — well beyond the timeout window.
 	// Each frame resets the timer so the watchdog should never fire.
@@ -768,7 +768,7 @@ func TestTransitionWatchdogStopsOnComplete(t *testing.T) {
 	var mu sync.Mutex
 	var completions []bool
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -783,7 +783,7 @@ func TestTransitionWatchdogStopsOnComplete(t *testing.T) {
 	e.SetTimeout(100 * time.Millisecond)
 
 	// Use a very short duration so it auto-completes quickly
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 50))
 
 	// Feed frames until auto-complete
 	for i := 0; i < 30; i++ {
@@ -816,7 +816,7 @@ func TestTransitionWatchdogStopsOnAbort(t *testing.T) {
 	var mu sync.Mutex
 	var completions []bool
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -830,7 +830,7 @@ func TestTransitionWatchdogStopsOnAbort(t *testing.T) {
 
 	e.SetTimeout(200 * time.Millisecond)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Stop immediately (before watchdog fires)
 	e.Stop()
@@ -847,7 +847,7 @@ func TestTransitionWatchdogStopsOnAbort(t *testing.T) {
 
 func TestTransitionDefaultTimeout(t *testing.T) {
 	// Verify the default timeout is 10 seconds.
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -859,7 +859,7 @@ func TestTransitionDefaultTimeout(t *testing.T) {
 }
 
 func TestTransitionSetTimeoutOverrides(t *testing.T) {
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -894,7 +894,7 @@ func TestEngineStingerTransition(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: w, height: h}, nil
 		},
@@ -914,8 +914,8 @@ func TestEngineStingerTransition(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
-	require.Equal(t, TransitionStinger, e.TransitionType())
+	require.NoError(t, e.Start("cam1", "cam2", Stinger, 1000))
+	require.Equal(t, Stinger, e.TransitionType())
 
 	// Ingest from both sources. Stinger triggers blend on BOTH from+to frames
 	// to maximize frame cadence (complex per-frame animation benefits from
@@ -946,7 +946,7 @@ func TestEngineStingerCutPoint(t *testing.T) {
 		}
 	}
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: w, height: h}, nil
 		},
@@ -960,7 +960,7 @@ func TestEngineStingerCutPoint(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Stinger, 5000))
 
 	// Ingest both sources
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -978,7 +978,7 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -991,7 +991,7 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 		// No Stinger data → triggers fallback path
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Stinger, 60000))
 
 	// Stinger triggers on both from+to, so 2 outputs per pair.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -1023,7 +1023,7 @@ func TestEngineNilBlendedGuard(t *testing.T) {
 	// the Output callback is NOT called with nil data.
 	outputCalled := false
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1035,7 +1035,7 @@ func TestEngineNilBlendedGuard(t *testing.T) {
 	})
 
 	// Start a mix transition and feed frames normally — should work fine
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
@@ -1048,7 +1048,7 @@ func TestEngineStingerNoData(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1063,7 +1063,7 @@ func TestEngineStingerNoData(t *testing.T) {
 		// No Stinger data
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionStinger, 1000))
+	require.NoError(t, e.Start("cam1", "cam2", Stinger, 1000))
 
 	// Stinger triggers on both from+to, so 2 outputs per pair.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -1085,7 +1085,7 @@ func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {
 	var outputs [][]byte
 
 	decoderCount := 0
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			decoderCount++
 			if decoderCount == 2 {
@@ -1105,7 +1105,7 @@ func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Warmup: decode both sources to initialize blender and latestYUVA.
 	// Decoder A succeeds immediately. Decoder B gets EAGAIN on first call.
@@ -1125,7 +1125,7 @@ func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {
 	// Reset with a decoder that buffers 2 calls (1 warmup + 1 live)
 	decoderCount = 0
 	outputs = nil
-	e = NewTransitionEngine(EngineConfig{
+	e = NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			decoderCount++
 			if decoderCount == 2 {
@@ -1144,7 +1144,7 @@ func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Warmup: A succeeds (sets blender), B gets EAGAIN #1
 	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
@@ -1173,7 +1173,7 @@ func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			// Both decoders: first 3 decodes return EAGAIN
 			return &bufferingMockDecoder{width: 4, height: 4, bufferLeft: 3}, nil
@@ -1190,7 +1190,7 @@ func TestEngineHintDimensionsPreInitBlender(t *testing.T) {
 		HintHeight: 4,
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Warmup: both return EAGAIN. Without hint, blender stays nil.
 	e.WarmupDecode("cam1", []byte{0x00, 0x00, 0x00, 0x01})
@@ -1229,7 +1229,7 @@ func TestIngestRawFrame_ProducesOutput(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1243,7 +1243,7 @@ func TestIngestRawFrame_ProducesOutput(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
@@ -1278,7 +1278,7 @@ func TestIngestRawFrame_IgnoresNonParticipants(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1290,7 +1290,7 @@ func TestIngestRawFrame_IgnoresNonParticipants(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	yuv := make([]byte, 4*4*3/2)
 	e.IngestRawFrame("cam3", yuv, 4, 4, 0)
@@ -1306,7 +1306,7 @@ func TestIngestRawFrame_WhileIdle(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1330,7 +1330,7 @@ func TestIngestRawFrame_ResolutionMismatchScales(t *testing.T) {
 	var outputs [][]byte
 	var outWidths []int
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 8, height: 8}, nil
 		},
@@ -1345,7 +1345,7 @@ func TestIngestRawFrame_ResolutionMismatchScales(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// FROM at 8x8 sets engine resolution
 	e.IngestRawFrame("cam1", make([]byte, 8*8*3/2), 8, 8, 0)
@@ -1366,7 +1366,7 @@ func TestIngestRawFrame_AutoCompletes(t *testing.T) {
 	var mu sync.Mutex
 	var completions []bool
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1378,7 +1378,7 @@ func TestIngestRawFrame_AutoCompletes(t *testing.T) {
 		},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 50)) // 50ms
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 50)) // 50ms
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
@@ -1403,7 +1403,7 @@ func TestIngestRawFrame_MixedWithIngestFrame(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1417,7 +1417,7 @@ func TestIngestRawFrame_MixedWithIngestFrame(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// FROM via encoded H.264
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
@@ -1444,7 +1444,7 @@ func TestIngestRawFrame_DeepCopiesInput(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1458,7 +1458,7 @@ func TestIngestRawFrame_DeepCopiesInput(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
@@ -1497,7 +1497,7 @@ func TestIngestRawFrame_DeepCopiesInput(t *testing.T) {
 func TestIngestRawFrame_ConcurrentSafe(t *testing.T) {
 	e, _, _, _ := newTestEngine(t)
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
@@ -1527,7 +1527,7 @@ func TestEngineTimingInstrumentation(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
 	// Start a Mix transition with a long duration so it stays active
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Ingest several frames from both sources
 	for i := 0; i < 5; i++ {
@@ -1592,7 +1592,7 @@ func TestEngineTimingInstrumentation_RawFrames(t *testing.T) {
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// Ingest raw frames (skip decode path)
 	for i := 0; i < 5; i++ {
@@ -1649,7 +1649,7 @@ func TestEngineTimingInstrumentation_ZeroBeforeIngest(t *testing.T) {
 	require.Equal(t, int64(0), timing["frames_blended"])
 }
 
-func TestTransitionEngineParallelIngest(t *testing.T) {
+func TestEngineParallelIngest(t *testing.T) {
 	// Verify that two sources can ingest frames simultaneously without
 	// deadlock. With the old lock scope (decode+blend under one lock),
 	// source B's IngestFrame would block while source A was decoding.
@@ -1659,7 +1659,7 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		DecoderFactory: func() (VideoDecoder, error) {
 			return &mockDecoder{width: 4, height: 4}, nil
 		},
@@ -1673,7 +1673,7 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 60000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 60000))
 
 	// Prime source A so latestYUVA is non-nil before parallel ingest.
 	// The engine skips blends when source A hasn't delivered a frame yet
@@ -1723,12 +1723,12 @@ func TestTransitionEngineParallelIngest(t *testing.T) {
 
 func TestEngineEasingDefault(t *testing.T) {
 	// nil Easing should default to smoothstep behavior.
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
-	err := e.Start("cam1", "cam2", TransitionMix, 1000)
+	err := e.Start("cam1", "cam2", Mix, 1000)
 	require.NoError(t, err)
 	defer e.Stop()
 
@@ -1748,13 +1748,13 @@ func TestEngineEasingDefault(t *testing.T) {
 }
 
 func TestEngineEasingLinear(t *testing.T) {
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		Easing:     NewEasingCurve(EasingLinear),
 		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
-	err := e.Start("cam1", "cam2", TransitionMix, 100)
+	err := e.Start("cam1", "cam2", Mix, 100)
 	require.NoError(t, err)
 	defer e.Stop()
 
@@ -1770,13 +1770,13 @@ func TestEngineEasingCustom(t *testing.T) {
 	ec, err := NewCustomEasingCurve(0.42, 0, 0.58, 1.0) // ease-in-out
 	require.NoError(t, err)
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		Easing:     ec,
 		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
-	err = e.Start("cam1", "cam2", TransitionMix, 500)
+	err = e.Start("cam1", "cam2", Mix, 500)
 	require.NoError(t, err)
 	defer e.Stop()
 
@@ -1784,13 +1784,13 @@ func TestEngineEasingCustom(t *testing.T) {
 }
 
 func TestEngineEasingIgnoredForManual(t *testing.T) {
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		Easing:     NewEasingCurve(EasingLinear),
 		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
 		OnComplete: func(aborted bool) {},
 	})
 
-	err := e.Start("cam1", "cam2", TransitionMix, 2000)
+	err := e.Start("cam1", "cam2", Mix, 2000)
 	require.NoError(t, err)
 	defer e.Stop()
 
@@ -1811,7 +1811,7 @@ func TestIngestRawFrame_SkipsBlendWhenSourceANil(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		HintWidth:  4,
 		HintHeight: 4,
 		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
@@ -1824,7 +1824,7 @@ func TestIngestRawFrame_SkipsBlendWhenSourceANil(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionMix, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2
@@ -1876,7 +1876,7 @@ func TestIngestRawFrame_FTBStillUsesBlackForSourceB(t *testing.T) {
 	var mu sync.Mutex
 	var outputs [][]byte
 
-	e := NewTransitionEngine(EngineConfig{
+	e := NewEngine(EngineConfig{
 		HintWidth:  4,
 		HintHeight: 4,
 		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
@@ -1889,7 +1889,7 @@ func TestIngestRawFrame_FTBStillUsesBlackForSourceB(t *testing.T) {
 		OnComplete: func(aborted bool) {},
 	})
 
-	require.NoError(t, e.Start("cam1", "cam2", TransitionFTB, 5000))
+	require.NoError(t, e.Start("cam1", "cam2", FTB, 5000))
 
 	w, h := 4, 4
 	yuvSize := w * h * 3 / 2

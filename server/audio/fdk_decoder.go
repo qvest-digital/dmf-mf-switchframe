@@ -69,7 +69,7 @@ import (
 	"unsafe"
 )
 
-// FDKDecoder wraps the FDK AAC decoder (ADTS mode) and implements AudioDecoder.
+// FDKDecoder wraps the FDK AAC decoder (ADTS mode) and implements Decoder.
 // It decodes ADTS-framed AAC data to interleaved float32 PCM.
 //
 // The decoder reuses internal buffers across calls. Callers must copy or

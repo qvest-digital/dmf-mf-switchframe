@@ -608,10 +608,10 @@ func TestReplayManager_SetAudioCodecFactories(t *testing.T) {
 	defer m.Close()
 
 	m.SetAudioCodecFactories(
-		func(sampleRate, channels int) (audio.AudioDecoder, error) {
+		func(sampleRate, channels int) (audio.Decoder, error) {
 			return &mockAudioDecoder{}, nil
 		},
-		func(sampleRate, channels int) (audio.AudioEncoder, error) {
+		func(sampleRate, channels int) (audio.Encoder, error) {
 			return &mockAudioEncoder{}, nil
 		},
 	)

@@ -43,7 +43,7 @@ var errorMappings = []errorMapping{
 	// 409 Conflict
 	{switcher.ErrFormatDuringTransition, http.StatusConflict},
 	{switcher.ErrNoTransition, http.StatusConflict},
-	{transition.ErrTransitionActive, http.StatusConflict},
+	{transition.ErrActive, http.StatusConflict},
 	{transition.ErrFTBActive, http.StatusConflict},
 	{output.ErrRecorderActive, http.StatusConflict},
 	{output.ErrRecorderNotActive, http.StatusConflict},

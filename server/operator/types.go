@@ -131,8 +131,8 @@ type Operator struct {
 	Token string `json:"token"`
 }
 
-// OperatorInfo is the JSON-serializable summary broadcast in ControlRoomState.
-type OperatorInfo struct {
+// Info is the JSON-serializable summary broadcast in ControlRoomState.
+type Info struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Role      Role   `json:"role"`

@@ -21,7 +21,7 @@ const (
 const DefaultTimeout = 10 * time.Second
 
 // StingerData holds pre-decoded stinger overlay frames for use during a
-// stinger transition. Populated by the switcher from a StingerClip.
+// stinger transition. Populated by the switcher from a stinger.Clip.
 type StingerData struct {
 	// Frames holds YUV420 + alpha data for each stinger frame.
 	Frames []StingerFrameData
@@ -41,18 +41,18 @@ type StingerFrameData struct {
 	Alpha []byte // per-luma-pixel alpha [0-255]
 }
 
-// EngineConfig configures the TransitionEngine.
+// EngineConfig configures the Engine.
 type EngineConfig struct {
 	DecoderFactory DecoderFactory
 	Output         func(yuv []byte, width, height int, pts int64, isKeyframe bool)
 	OnComplete     func(aborted bool)
 
-	// WipeDirection specifies the wipe direction when TransitionType is "wipe".
+	// WipeDirection specifies the wipe direction when Type is "wipe".
 	// Ignored for other transition types.
 	WipeDirection WipeDirection
 
 	// Stinger holds the pre-decoded stinger overlay data. Required when
-	// TransitionType is "stinger", ignored for other types.
+	// Type is "stinger", ignored for other types.
 	Stinger *StingerData
 
 	// Easing sets the easing curve for the transition. If nil, the engine
@@ -67,13 +67,13 @@ type EngineConfig struct {
 	HintHeight int
 }
 
-// TransitionEngine manages the dissolve pipeline lifecycle.
+// Engine manages the dissolve pipeline lifecycle.
 // Created when a transition starts, destroyed when it completes or aborts.
-type TransitionEngine struct {
+type Engine struct {
 	log            *slog.Logger
 	mu             sync.RWMutex
-	state          TransitionState
-	transitionType TransitionType
+	state          State
+	transitionType Type
 	wipeDirection  WipeDirection
 	fromSource     string
 	toSource       string // empty for FTB
@@ -137,9 +137,9 @@ type TransitionEngine struct {
 	config EngineConfig
 }
 
-// NewTransitionEngine creates a new engine with the given configuration.
-func NewTransitionEngine(config EngineConfig) *TransitionEngine {
-	return &TransitionEngine{
+// NewEngine creates a new engine with the given configuration.
+func NewEngine(config EngineConfig) *Engine {
+	return &Engine{
 		log:     slog.With("component", "transition"),
 		state:   StateIdle,
 		timeout: DefaultTimeout,
@@ -163,7 +163,7 @@ func updateAtomicMax(field *atomic.Int64, val int64) {
 
 // Timing returns a snapshot of the engine's timing instrumentation.
 // Safe to call from any goroutine (all fields are atomic).
-func (e *TransitionEngine) Timing() map[string]any {
+func (e *Engine) Timing() map[string]any {
 	return map[string]any{
 		"decode_last_ms":  float64(e.decodeLastNano.Load()) / 1e6,
 		"decode_max_ms":   float64(e.decodeMaxNano.Load()) / 1e6,
@@ -179,49 +179,49 @@ func (e *TransitionEngine) Timing() map[string]any {
 // SetTimeout configures the watchdog timeout. If no frames arrive from
 // either source for this duration during an active transition, the
 // transition is aborted. Must be called before Start().
-func (e *TransitionEngine) SetTimeout(d time.Duration) {
+func (e *Engine) SetTimeout(d time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.timeout = d
 }
 
 // Timeout returns the current watchdog timeout.
-func (e *TransitionEngine) Timeout() time.Duration {
+func (e *Engine) Timeout() time.Duration {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.timeout
 }
 
 // State returns the current engine state.
-func (e *TransitionEngine) State() TransitionState {
+func (e *Engine) State() State {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.state
 }
 
 // TransitionType returns the current transition type.
-func (e *TransitionEngine) TransitionType() TransitionType {
+func (e *Engine) TransitionType() Type {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.transitionType
 }
 
 // FromSource returns the outgoing source key.
-func (e *TransitionEngine) FromSource() string {
+func (e *Engine) FromSource() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.fromSource
 }
 
 // ToSource returns the incoming source key.
-func (e *TransitionEngine) ToSource() string {
+func (e *Engine) ToSource() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.toSource
 }
 
 // Easing returns the current easing type, or "smoothstep" if nil.
-func (e *TransitionEngine) Easing() EasingType {
+func (e *Engine) Easing() EasingType {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	if e.easing != nil {
@@ -232,12 +232,12 @@ func (e *TransitionEngine) Easing() EasingType {
 
 // Start initializes the transition pipeline. Creates decoders and blender.
 // Returns error if already active.
-func (e *TransitionEngine) Start(from, to string, ttype TransitionType, durationMs int) error {
+func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.state == StateActive {
-		return ErrTransitionActive
+		return ErrActive
 	}
 
 	// Create decoders (optional — nil factory means raw YUV only via IngestRawFrame).
@@ -249,7 +249,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 			return fmt.Errorf("create decoder A: %w", err)
 		}
 
-		if ttype != TransitionFTB && ttype != TransitionFTBReverse {
+		if ttype != FTB && ttype != FTBReverse {
 			decB, err = e.config.DecoderFactory()
 			if err != nil {
 				decA.Close()
@@ -297,7 +297,7 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 	// Without this, lazy scaling on the first blendStinger() call can block
 	// for 15-30ms (scaling 30 frames at 1080p), causing a visible stutter.
 	e.stingerScaled = nil
-	if ttype == TransitionStinger && e.config.Stinger != nil && len(e.config.Stinger.Frames) > 0 && e.width > 0 {
+	if ttype == Stinger && e.config.Stinger != nil && len(e.config.Stinger.Frames) > 0 && e.width > 0 {
 		e.stingerScaled = e.scaleStingerFrames(e.config.Stinger)
 	}
 
@@ -310,14 +310,14 @@ func (e *TransitionEngine) Start(from, to string, ttype TransitionType, duration
 }
 
 // Position returns the current transition position (0.0 to 1.0).
-func (e *TransitionEngine) Position() float64 {
+func (e *Engine) Position() float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.currentPosition()
 }
 
 // currentPosition calculates position. Caller must hold e.mu.
-func (e *TransitionEngine) currentPosition() float64 {
+func (e *Engine) currentPosition() float64 {
 	if e.state != StateActive {
 		return 0
 	}
@@ -339,7 +339,7 @@ func (e *TransitionEngine) currentPosition() float64 {
 // SetPosition sets the T-bar manual position (0.0-1.0).
 // Switches to manual control mode. pos>=1.0 triggers completion.
 // pos<=0.0 triggers abort (only if previously moved past 0).
-func (e *TransitionEngine) SetPosition(pos float64) {
+func (e *Engine) SetPosition(pos float64) {
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -379,7 +379,7 @@ func (e *TransitionEngine) SetPosition(pos float64) {
 // decodeAndStore decodes a video frame and stores the result as the latest
 // YUV420 data for the given source side. Returns true if the decode and store
 // succeeded. Caller must hold e.mu.
-func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) bool {
+func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) bool {
 	var decoder VideoDecoder
 	if isFrom {
 		decoder = e.decoderA
@@ -450,7 +450,7 @@ func (e *TransitionEngine) decodeAndStore(sourceKey string, wireData []byte, isF
 // Lock scope is minimized: decode happens outside the lock so that two
 // sources sending frames near-simultaneously don't block each other during
 // the 3-16ms decode step.
-func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
+func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
 	// No decoders — raw-only mode. IngestRawFrame is the only active path.
 	if e.decoderA == nil && e.decoderB == nil {
 		return
@@ -579,11 +579,11 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	// Stingers have complex per-frame animation that benefits from higher output
 	// rates; the blend function's cut-point logic picks the correct base source.
 	shouldBlend := false
-	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType == TransitionStinger && (isFrom || isTo) {
+	} else if e.transitionType == Stinger && (isFrom || isTo) {
 		shouldBlend = true
-	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
+	} else if e.transitionType != FTB && e.transitionType != FTBReverse && isTo {
 		shouldBlend = true
 	}
 
@@ -599,7 +599,7 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	yuvA := e.latestYUVA
 	yuvB := e.latestYUVB
 	if yuvA == nil {
-		if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse {
+		if e.transitionType != FTB && e.transitionType != FTBReverse {
 			e.mu.Unlock()
 			return
 		}
@@ -614,17 +614,17 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 	blendStart := time.Now()
 	var blended []byte
 	switch e.transitionType {
-	case TransitionMix:
+	case Mix:
 		blended = e.blender.BlendMix(yuvA, yuvB, pos)
-	case TransitionDip:
+	case Dip:
 		blended = e.blender.BlendDip(yuvA, yuvB, pos)
-	case TransitionFTB:
+	case FTB:
 		blended = e.blender.BlendFTB(yuvA, pos)
-	case TransitionFTBReverse:
+	case FTBReverse:
 		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
-	case TransitionWipe:
+	case Wipe:
 		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
-	case TransitionStinger:
+	case Stinger:
 		blended = e.blendStinger(pos)
 	default:
 		blended = yuvA
@@ -661,7 +661,7 @@ func (e *TransitionEngine) IngestFrame(sourceKey string, wireData []byte, pts in
 // IngestRawFrame accepts a pre-decoded YUV420 frame (e.g., from MXL sources).
 // Skips H.264 decode — stores YUV directly and triggers blend. The frame is
 // scaled to the engine's resolution if dimensions don't match.
-func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
+func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
 	ingestStart := time.Now()
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
@@ -721,11 +721,11 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 
 	// Same blend triggering logic as IngestFrame (see comments there).
 	shouldBlend := false
-	if (e.transitionType == TransitionFTB || e.transitionType == TransitionFTBReverse) && isFrom {
+	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType == TransitionStinger && (isFrom || isTo) {
+	} else if e.transitionType == Stinger && (isFrom || isTo) {
 		shouldBlend = true
-	} else if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse && isTo {
+	} else if e.transitionType != FTB && e.transitionType != FTBReverse && isTo {
 		shouldBlend = true
 	}
 
@@ -738,7 +738,7 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 	yuvA := e.latestYUVA
 	yuvB := e.latestYUVB
 	if yuvA == nil {
-		if e.transitionType != TransitionFTB && e.transitionType != TransitionFTBReverse {
+		if e.transitionType != FTB && e.transitionType != FTBReverse {
 			e.mu.Unlock()
 			return
 		}
@@ -753,17 +753,17 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 	blendStart := time.Now()
 	var blended []byte
 	switch e.transitionType {
-	case TransitionMix:
+	case Mix:
 		blended = e.blender.BlendMix(yuvA, yuvB, pos)
-	case TransitionDip:
+	case Dip:
 		blended = e.blender.BlendDip(yuvA, yuvB, pos)
-	case TransitionFTB:
+	case FTB:
 		blended = e.blender.BlendFTB(yuvA, pos)
-	case TransitionFTBReverse:
+	case FTBReverse:
 		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
-	case TransitionWipe:
+	case Wipe:
 		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
-	case TransitionStinger:
+	case Stinger:
 		blended = e.blendStinger(pos)
 	default:
 		blended = yuvA
@@ -798,7 +798,7 @@ func (e *TransitionEngine) IngestRawFrame(sourceKey string, yuv []byte, width, h
 // populating latestYUVA/latestYUVB so the first live IngestFrame can
 // produce blended output immediately. Produces no output callbacks.
 // No-op if the engine is not active.
-func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
+func (e *Engine) WarmupDecode(sourceKey string, wireData []byte) {
 	// No-op when decoders are nil (raw-only mode).
 	if e.decoderA == nil && e.decoderB == nil {
 		return
@@ -824,7 +824,7 @@ func (e *TransitionEngine) WarmupDecode(sourceKey string, wireData []byte) {
 // first live frame from either source is a keyframe, the decoder is flushed
 // to discard stale warmup references before decoding the fresh IDR.
 // No-op when decoders are nil (raw-only mode).
-func (e *TransitionEngine) WarmupComplete() {
+func (e *Engine) WarmupComplete() {
 	if e.decoderA == nil && e.decoderB == nil {
 		return
 	}
@@ -838,7 +838,7 @@ func (e *TransitionEngine) WarmupComplete() {
 // dimensions. Used as a placeholder when a source hasn't produced decoded
 // output yet (e.g., B-frame reorder EAGAIN during warmup). BT.709 limited
 // range: Y=16, U=V=128. Caller must hold e.mu.
-func (e *TransitionEngine) getBlackFrame() []byte {
+func (e *Engine) getBlackFrame() []byte {
 	ySize := e.width * e.height
 	uvSize := (e.width / 2) * (e.height / 2)
 	total := ySize + 2*uvSize
@@ -858,7 +858,7 @@ func (e *TransitionEngine) getBlackFrame() []byte {
 
 // Abort cancels the active transition and invokes OnComplete(aborted=true).
 // Safe to call from any goroutine. Idempotent — calling on an idle engine is a no-op.
-func (e *TransitionEngine) Abort() {
+func (e *Engine) Abort() {
 	e.mu.Lock()
 	if e.state != StateActive {
 		e.mu.Unlock()
@@ -874,7 +874,7 @@ func (e *TransitionEngine) Abort() {
 }
 
 // Stop tears down decoders and resets state.
-func (e *TransitionEngine) Stop() {
+func (e *Engine) Stop() {
 	e.mu.Lock()
 	e.cleanup()
 	e.mu.Unlock()
@@ -883,7 +883,7 @@ func (e *TransitionEngine) Stop() {
 // runWatchdog periodically checks for frame starvation. If no frames have
 // arrived within the configured timeout, it aborts the transition.
 // Exits when the stop channel is closed.
-func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration) {
+func (e *Engine) runWatchdog(stop chan struct{}, timeout time.Duration) {
 	interval := timeout / 4
 	if interval < time.Millisecond {
 		interval = time.Millisecond
@@ -913,7 +913,7 @@ func (e *TransitionEngine) runWatchdog(stop chan struct{}, timeout time.Duration
 
 // blendStinger composites the stinger overlay over source A (before cut point)
 // or source B (after cut point). Caller must hold e.mu.
-func (e *TransitionEngine) blendStinger(pos float64) []byte {
+func (e *Engine) blendStinger(pos float64) []byte {
 	sd := e.config.Stinger
 	if sd == nil || len(sd.Frames) == 0 {
 		// Fallback: if no stinger data, do a hard cut at the cut point.
@@ -954,7 +954,7 @@ func (e *TransitionEngine) blendStinger(pos float64) []byte {
 
 // scaleStingerFrames scales stinger frames to match the engine's video dimensions.
 // If dimensions already match, returns the original frames. Caller must hold e.mu.
-func (e *TransitionEngine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
+func (e *Engine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
 	if sd.Width == e.width && sd.Height == e.height {
 		return sd.Frames
 	}
@@ -989,7 +989,7 @@ func (e *TransitionEngine) scaleStingerFrames(sd *StingerData) []StingerFrameDat
 }
 
 // cleanup releases codec resources and resets state. Caller must hold e.mu.
-func (e *TransitionEngine) cleanup() {
+func (e *Engine) cleanup() {
 	// Stop watchdog goroutine (idempotent via sync.Once)
 	if e.watchdogStop != nil {
 		e.watchdogOnce.Do(func() {

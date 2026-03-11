@@ -15,8 +15,8 @@ import (
 	"github.com/zsiec/prism/moq"
 )
 
-// DemoStats tracks per-source frame counts for debug snapshots.
-type DemoStats struct {
+// Stats tracks per-source frame counts for debug snapshots.
+type Stats struct {
 	mode              string
 	file              string
 	videoFramesLoaded int64
@@ -31,13 +31,13 @@ type SourceStats struct {
 	LoopsCompleted atomic.Int64
 }
 
-// NewDemoStats creates a new DemoStats instance.
-func NewDemoStats() *DemoStats {
-	return &DemoStats{}
+// NewStats creates a new Stats instance.
+func NewStats() *Stats {
+	return &Stats{}
 }
 
 // SetFileInfo records the mode and file info after demuxing.
-func (d *DemoStats) SetFileInfo(mode, file string, videoFrames, audioFrames int) {
+func (d *Stats) SetFileInfo(mode, file string, videoFrames, audioFrames int) {
 	d.mode = mode
 	d.file = file
 	d.videoFramesLoaded = int64(videoFrames)
@@ -45,7 +45,7 @@ func (d *DemoStats) SetFileInfo(mode, file string, videoFrames, audioFrames int)
 }
 
 // Source returns the SourceStats for a given key, creating one if needed.
-func (d *DemoStats) Source(key string) *SourceStats {
+func (d *Stats) Source(key string) *SourceStats {
 	if val, ok := d.sources.Load(key); ok {
 		return val.(*SourceStats)
 	}
@@ -55,7 +55,7 @@ func (d *DemoStats) Source(key string) *SourceStats {
 }
 
 // DebugSnapshot returns a snapshot of all demo stats for the debug endpoint.
-func (d *DemoStats) DebugSnapshot() map[string]any {
+func (d *Stats) DebugSnapshot() map[string]any {
 	perSource := make(map[string]any)
 	d.sources.Range(func(key, val any) bool {
 		s := val.(*SourceStats)
@@ -103,7 +103,7 @@ var clipFiles = []string{
 // The caller is responsible for registering the relays with Prism's
 // server (so MoQ clients can subscribe) and with the switcher/mixer (via
 // OnStreamRegistered). Returns a stop function that cancels all generators.
-func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Relay, stats *DemoStats, videoDir string, frameDuration time.Duration) func() {
+func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Relay, stats *Stats, videoDir string, frameDuration time.Duration) func() {
 	ctx, cancel := context.WithCancel(ctx)
 
 	n := len(relays)
@@ -149,7 +149,7 @@ func StartSources(ctx context.Context, sw SwitcherAPI, relays []*distribution.Re
 }
 
 // startFileBasedSources demuxes clips from videoDir and starts real-time playback.
-func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, stats *DemoStats, videoDir string) {
+func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, stats *Stats, videoDir string) {
 	for i, relay := range relays {
 		key := fmt.Sprintf("cam%d", i+1)
 		filename := clipFiles[i%len(clipFiles)]
@@ -195,7 +195,7 @@ func startFileBasedSources(ctx context.Context, relays []*distribution.Relay, st
 // generateFrames pumps synthetic video+audio frames into a relay at the
 // configured frame rate. Every 30th frame is a keyframe (~1 per second at 30fps).
 // PTS uses 90kHz clock.
-func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *DemoStats, frameDuration time.Duration) {
+func generateFrames(ctx context.Context, relay *distribution.Relay, key string, stats *Stats, frameDuration time.Duration) {
 	ticker := time.NewTicker(frameDuration)
 	defer ticker.Stop()
 
@@ -262,7 +262,7 @@ func generateFrames(ctx context.Context, relay *distribution.Relay, key string, 
 // in decode order, unlike PTS which may reorder due to B-frames).
 // On loop wrap, a timestamp offset increases by the clip duration to keep
 // timestamps monotonically increasing.
-func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, videoFrames []media.VideoFrame, audioFrames []media.AudioFrame, key string, stats *DemoStats) {
+func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, videoFrames []media.VideoFrame, audioFrames []media.AudioFrame, key string, stats *Stats) {
 	if len(videoFrames) == 0 {
 		slog.Warn("demo: no video frames to play", "key", key)
 		return

@@ -9,9 +9,9 @@ import (
 	"github.com/zsiec/prism/media"
 )
 
-func TestSwitcherStateString(t *testing.T) {
+func TestStateString(t *testing.T) {
 	tests := []struct {
-		state SwitcherState
+		state State
 		want  string
 	}{
 		{StateIdle, "idle"},
@@ -19,7 +19,7 @@ func TestSwitcherStateString(t *testing.T) {
 		{StateFTBTransitioning, "ftb_transitioning"},
 		{StateFTB, "ftb"},
 		{StateFTBReversing, "ftb_reversing"},
-		{SwitcherState(99), "unknown(99)"},
+		{State(99), "unknown(99)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
@@ -28,9 +28,9 @@ func TestSwitcherStateString(t *testing.T) {
 	}
 }
 
-func TestSwitcherStateIsInTransition(t *testing.T) {
+func TestStateIsInTransition(t *testing.T) {
 	tests := []struct {
-		state SwitcherState
+		state State
 		want  bool
 	}{
 		{StateIdle, false},
@@ -46,9 +46,9 @@ func TestSwitcherStateIsInTransition(t *testing.T) {
 	}
 }
 
-func TestSwitcherStateIsFTBActive(t *testing.T) {
+func TestStateIsFTBActive(t *testing.T) {
 	tests := []struct {
-		state SwitcherState
+		state State
 		want  bool
 	}{
 		{StateIdle, false},
@@ -66,7 +66,7 @@ func TestSwitcherStateIsFTBActive(t *testing.T) {
 
 func TestValidTransitions(t *testing.T) {
 	// Verify the valid transition map is complete (every state has an entry)
-	allStates := []SwitcherState{StateIdle, StateTransitioning, StateFTBTransitioning, StateFTB, StateFTBReversing}
+	allStates := []State{StateIdle, StateTransitioning, StateFTBTransitioning, StateFTB, StateFTBReversing}
 	for _, s := range allStates {
 		_, ok := validTransitions[s]
 		require.True(t, ok, "validTransitions missing entry for %s", s)
@@ -84,7 +84,7 @@ func TestSwitcherStartsInIdleState(t *testing.T) {
 	require.False(t, state.FTBActive)
 }
 
-func TestSwitcherStateTransitions_MixCycle(t *testing.T) {
+func TestStateTransitions_MixCycle(t *testing.T) {
 	// Idle -> StateTransitioning -> StateIdle (after completion)
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
@@ -114,7 +114,7 @@ func TestSwitcherStateTransitions_MixCycle(t *testing.T) {
 	require.False(t, state.FTBActive)
 }
 
-func TestSwitcherStateTransitions_MixAbort(t *testing.T) {
+func TestStateTransitions_MixAbort(t *testing.T) {
 	// Idle -> StateTransitioning -> StateIdle (after abort)
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
@@ -133,7 +133,7 @@ func TestSwitcherStateTransitions_MixAbort(t *testing.T) {
 	sw.mu.RUnlock()
 }
 
-func TestSwitcherStateTransitions_FTBCycle(t *testing.T) {
+func TestStateTransitions_FTBCycle(t *testing.T) {
 	// Idle -> StateFTBTransitioning -> StateFTB -> StateFTBReversing -> StateIdle
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
@@ -192,7 +192,7 @@ func TestSwitcherStateTransitions_FTBCycle(t *testing.T) {
 	require.False(t, state.FTBActive)
 }
 
-func TestSwitcherStateTransitions_FTBAbort(t *testing.T) {
+func TestStateTransitions_FTBAbort(t *testing.T) {
 	// Idle -> StateFTBTransitioning -> StateIdle (abort during FTB forward)
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
@@ -215,7 +215,7 @@ func TestSwitcherStateTransitions_FTBAbort(t *testing.T) {
 	require.False(t, state.FTBActive)
 }
 
-func TestSwitcherStateTransitions_FTBReverseAbort(t *testing.T) {
+func TestStateTransitions_FTBReverseAbort(t *testing.T) {
 	// StateFTB -> StateFTBReversing -> StateFTB (abort during reverse)
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
@@ -251,7 +251,7 @@ func TestSwitcherStateTransitions_FTBReverseAbort(t *testing.T) {
 	require.True(t, state.FTBActive)
 }
 
-func TestSwitcherStateRejectsTransitionDuringFTB(t *testing.T) {
+func TestStateRejectsTransitionDuringFTB(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
@@ -273,7 +273,7 @@ func TestSwitcherStateRejectsTransitionDuringFTB(t *testing.T) {
 	sw.mu.RUnlock()
 }
 
-func TestSwitcherStateRejectsFTBDuringTransition(t *testing.T) {
+func TestStateRejectsFTBDuringTransition(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
@@ -286,7 +286,7 @@ func TestSwitcherStateRejectsFTBDuringTransition(t *testing.T) {
 	require.Contains(t, err.Error(), "cannot FTB while mix/dip transition is active")
 }
 
-func TestSwitcherStateRejectsDoubleTransition(t *testing.T) {
+func TestStateRejectsDoubleTransition(t *testing.T) {
 	sw, _ := setupSwitcherWithTransition(t)
 	defer sw.Close()
 
@@ -299,7 +299,7 @@ func TestSwitcherStateRejectsDoubleTransition(t *testing.T) {
 	require.Contains(t, err.Error(), "already active")
 }
 
-func TestSwitcherStateFTBBlocksPassthrough(t *testing.T) {
+func TestStateFTBBlocksPassthrough(t *testing.T) {
 	// When in StateFTB, video frames should not be passed through
 	programRelay := newTestRelay()
 	viewer := newMockProgramViewer("test-viewer")

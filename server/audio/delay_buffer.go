@@ -19,10 +19,10 @@ type delayedAudioFrame struct {
 	arrivedAt time.Time
 }
 
-// AudioDelayBuffer delays audio frames by a configurable number of milliseconds.
+// DelayBuffer delays audio frames by a configurable number of milliseconds.
 // At 0ms delay, frames pass through immediately with no allocation.
 // Uses a fixed-size circular buffer to avoid unbounded slice growth.
-type AudioDelayBuffer struct {
+type DelayBuffer struct {
 	mu      sync.Mutex
 	delayMs int
 	ring    [audioDelayRingSize]delayedAudioFrame
@@ -31,20 +31,20 @@ type AudioDelayBuffer struct {
 	count   int // number of valid frames in ring
 }
 
-// NewAudioDelayBuffer creates a new AudioDelayBuffer with the given delay in ms.
+// NewDelayBuffer creates a new DelayBuffer with the given delay in ms.
 // Delay is clamped to [0, 500].
-func NewAudioDelayBuffer(delayMs int) *AudioDelayBuffer {
+func NewDelayBuffer(delayMs int) *DelayBuffer {
 	if delayMs > maxAudioDelayMs {
 		delayMs = maxAudioDelayMs
 	}
 	if delayMs < 0 {
 		delayMs = 0
 	}
-	return &AudioDelayBuffer{delayMs: delayMs}
+	return &DelayBuffer{delayMs: delayMs}
 }
 
 // SetDelayMs updates the delay. Values are clamped to [0, 500].
-func (b *AudioDelayBuffer) SetDelayMs(ms int) {
+func (b *DelayBuffer) SetDelayMs(ms int) {
 	if ms > maxAudioDelayMs {
 		ms = maxAudioDelayMs
 	}
@@ -57,7 +57,7 @@ func (b *AudioDelayBuffer) SetDelayMs(ms int) {
 }
 
 // DelayMs returns the current delay in milliseconds.
-func (b *AudioDelayBuffer) DelayMs() int {
+func (b *DelayBuffer) DelayMs() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.delayMs
@@ -65,12 +65,12 @@ func (b *AudioDelayBuffer) DelayMs() int {
 
 // Ingest stores a frame and returns the oldest frame that has aged past the delay.
 // At 0ms delay, the input frame is returned immediately with no buffering.
-func (b *AudioDelayBuffer) Ingest(frame *media.AudioFrame) *media.AudioFrame {
+func (b *DelayBuffer) Ingest(frame *media.AudioFrame) *media.AudioFrame {
 	return b.ingestAt(frame, time.Now())
 }
 
 // ingestAt is the testable core of Ingest, accepting a clock parameter.
-func (b *AudioDelayBuffer) ingestAt(frame *media.AudioFrame, now time.Time) *media.AudioFrame {
+func (b *DelayBuffer) ingestAt(frame *media.AudioFrame, now time.Time) *media.AudioFrame {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

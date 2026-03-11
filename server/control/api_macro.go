@@ -175,7 +175,7 @@ func (a *API) handleCancelMacro(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// apiMacroTarget adapts the API's subsystems to the macro.MacroTarget
+// apiMacroTarget adapts the API's subsystems to the macro.Target
 // interface so Run() can execute macro steps without knowing concrete types.
 type apiMacroTarget struct {
 	switcher     *switcher.Switcher
@@ -183,9 +183,9 @@ type apiMacroTarget struct {
 	compositor   *graphics.Compositor
 	keyer        *graphics.KeyProcessor
 	replayMgr    *replay.Manager
-	presetStore  *preset.PresetStore
+	presetStore  *preset.Store
 	outputMgr    OutputManagerAPI
-	stingerStore *stinger.StingerStore
+	stingerStore *stinger.Store
 	scte35       SCTE35API
 	captionMgr   CaptionManagerAPI
 }
@@ -220,7 +220,7 @@ func (t *apiMacroTarget) SetLevel(ctx context.Context, source string, level floa
 
 // Execute dispatches all new macro actions to the appropriate subsystem.
 func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[string]interface{}) error {
-	switch macro.MacroAction(action) {
+	switch macro.Action(action) {
 	// Switching
 	case macro.ActionFTB:
 		return t.switcher.FadeToBlack(ctx)

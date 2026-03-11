@@ -24,11 +24,11 @@ func testSnapshot() ControlRoomSnapshot {
 	}
 }
 
-func newTestStore(t *testing.T) *PresetStore {
+func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "presets.json")
-	ps, err := NewPresetStore(fp)
+	ps, err := NewStore(fp)
 	require.NoError(t, err)
 	return ps
 }
@@ -94,7 +94,7 @@ func TestUpdatePreset(t *testing.T) {
 	created, _ := ps.Create("Original", testSnapshot())
 
 	newName := "Updated"
-	updated, err := ps.Update(created.ID, PresetUpdate{Name: &newName})
+	updated, err := ps.Update(created.ID, Update{Name: &newName})
 	require.NoError(t, err)
 	require.Equal(t, "Updated", updated.Name)
 
@@ -104,12 +104,12 @@ func TestUpdatePreset(t *testing.T) {
 	require.Equal(t, "Updated", got.Name)
 
 	// Update nonexistent
-	_, err = ps.Update("nonexistent-id", PresetUpdate{Name: &newName})
+	_, err = ps.Update("nonexistent-id", Update{Name: &newName})
 	require.ErrorIs(t, err, ErrNotFound)
 
 	// Update with empty name
 	emptyName := ""
-	_, err = ps.Update(created.ID, PresetUpdate{Name: &emptyName})
+	_, err = ps.Update(created.ID, Update{Name: &emptyName})
 	require.ErrorIs(t, err, ErrEmptyName)
 }
 
@@ -136,13 +136,13 @@ func TestPersistenceRoundTrip(t *testing.T) {
 	fp := filepath.Join(dir, "presets.json")
 
 	// Create store and add presets
-	ps1, err := NewPresetStore(fp)
+	ps1, err := NewStore(fp)
 	require.NoError(t, err)
 	_, _ = ps1.Create("Preset 1", testSnapshot())
 	_, _ = ps1.Create("Preset 2", testSnapshot())
 
 	// Load from same file in a new store
-	ps2, err := NewPresetStore(fp)
+	ps2, err := NewStore(fp)
 	require.NoError(t, err)
 
 	presets := ps2.List()
@@ -197,12 +197,12 @@ func TestConcurrency(t *testing.T) {
 	require.Len(t, presets, goroutines)
 }
 
-func TestNewPresetStoreNonexistentFile(t *testing.T) {
+func TestNewStoreNonexistentFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "subdir", "presets.json")
 
-	ps, err := NewPresetStore(fp)
+	ps, err := NewStore(fp)
 	require.NoError(t, err)
 	require.Empty(t, ps.List())
 

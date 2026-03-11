@@ -1,11 +1,11 @@
 package audio
 
-// AudioTransitionMode describes how audio should behave during a video transition.
-type AudioTransitionMode int
+// TransitionMode describes how audio should behave during a video transition.
+type TransitionMode int
 
 const (
-	AudioCrossfade    AudioTransitionMode = iota // Mix: equal-power A→B
-	AudioDipToSilence                            // Dip: A→silence→B
-	AudioFadeOut                                 // FTB: A→silence
-	AudioFadeIn                                  // FTB Reverse: silence→A
+	Crossfade    TransitionMode = iota // Mix: equal-power A→B
+	DipToSilence                       // Dip: A→silence→B
+	FadeOut                            // FTB: A→silence
+	FadeIn                             // FTB Reverse: silence→A
 )

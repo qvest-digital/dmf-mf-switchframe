@@ -196,7 +196,7 @@ func TestOperatorList(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
-	var result []operator.OperatorInfo
+	var result []operator.Info
 	err := json.NewDecoder(rec.Body).Decode(&result)
 	require.NoError(t, err)
 	require.Len(t, result, 2)

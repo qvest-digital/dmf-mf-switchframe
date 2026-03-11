@@ -466,8 +466,8 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// clipToStingerData converts a stinger.StingerClip to transition.StingerData.
-func clipToStingerData(clip *stinger.StingerClip) *transition.StingerData {
+// clipToStingerData converts a stinger.Clip to transition.StingerData.
+func clipToStingerData(clip *stinger.Clip) *transition.StingerData {
 	frames := make([]transition.StingerFrameData, len(clip.Frames))
 	for i, f := range clip.Frames {
 		frames[i] = transition.StingerFrameData{

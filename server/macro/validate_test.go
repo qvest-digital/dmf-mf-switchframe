@@ -9,7 +9,7 @@ import (
 
 func TestValidateSteps_RejectsUnknownAction(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: "bogus_action", Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -22,7 +22,7 @@ func TestValidateSteps_RejectsUnknownAction(t *testing.T) {
 
 func TestValidateSteps_RejectsCutWithoutSource(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCut, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -30,7 +30,7 @@ func TestValidateSteps_RejectsCutWithoutSource(t *testing.T) {
 	require.Contains(t, result.Errors[0].Message, "source")
 
 	// Also test with nil params
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionCut, Params: nil},
 	}
 	result2 := ValidateSteps(steps2)
@@ -39,7 +39,7 @@ func TestValidateSteps_RejectsCutWithoutSource(t *testing.T) {
 
 func TestValidateSteps_RejectsPreviewWithoutSource(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionPreview, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -49,7 +49,7 @@ func TestValidateSteps_RejectsPreviewWithoutSource(t *testing.T) {
 
 func TestValidateSteps_RejectsTransitionWithoutSource(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{"type": "mix"}},
 	}
 	result := ValidateSteps(steps)
@@ -59,7 +59,7 @@ func TestValidateSteps_RejectsTransitionWithoutSource(t *testing.T) {
 
 func TestValidateSteps_RejectsWipeWithoutDirection(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source": "cam1",
 			"type":   "wipe",
@@ -72,7 +72,7 @@ func TestValidateSteps_RejectsWipeWithoutDirection(t *testing.T) {
 
 func TestValidateSteps_RejectsWipeWithInvalidDirection(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":        "cam1",
 			"type":          "wipe",
@@ -89,7 +89,7 @@ func TestValidateSteps_AcceptsWipeWithValidDirections(t *testing.T) {
 	t.Parallel()
 	validDirs := []string{"h-left", "h-right", "v-top", "v-bottom", "box-center-out", "box-edges-in"}
 	for _, dir := range validDirs {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{
 				"source":        "cam1",
 				"type":          "wipe",
@@ -103,7 +103,7 @@ func TestValidateSteps_AcceptsWipeWithValidDirections(t *testing.T) {
 
 func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source": "cam1",
 			"type":   "stinger",
@@ -114,7 +114,7 @@ func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 	require.Contains(t, result.Errors[0].Message, "stingerName")
 
 	// Empty string stingerName should also fail.
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":      "cam1",
 			"type":        "stinger",
@@ -128,7 +128,7 @@ func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 
 func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(0)}},
 	}
 	result := ValidateSteps(steps)
@@ -136,14 +136,14 @@ func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 	require.Contains(t, result.Errors[0].Message, "ms")
 
 	// Negative value
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(-100)}},
 	}
 	result2 := ValidateSteps(steps2)
 	require.True(t, result2.HasErrors())
 
 	// Missing ms param
-	steps3 := []MacroStep{
+	steps3 := []Step{
 		{Action: ActionWait, Params: map[string]interface{}{}},
 	}
 	result3 := ValidateSteps(steps3)
@@ -152,7 +152,7 @@ func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 
 func TestValidateSteps_RejectsSetAudioWithoutSource(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSetAudio, Params: map[string]interface{}{"level": float64(0.5)}},
 	}
 	result := ValidateSteps(steps)
@@ -162,7 +162,7 @@ func TestValidateSteps_RejectsSetAudioWithoutSource(t *testing.T) {
 
 func TestValidateSteps_AcceptsValidMacroWithNewActions(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(500)}},
 		{Action: ActionAudioMute, Params: map[string]interface{}{"source": "cam2"}},
@@ -197,7 +197,7 @@ func TestValidateSteps_AcceptsValidMacroWithNewActions(t *testing.T) {
 func TestValidateSteps_AcceptsOldMacrosBackwardCompat(t *testing.T) {
 	t.Parallel()
 	// Macros using only the original 5 actions should still pass.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
 		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix"}},
@@ -210,7 +210,7 @@ func TestValidateSteps_AcceptsOldMacrosBackwardCompat(t *testing.T) {
 
 func TestValidateSteps_WarnsConsecutiveTransitions(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1"}},
 		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2"}},
 	}
@@ -220,7 +220,7 @@ func TestValidateSteps_WarnsConsecutiveTransitions(t *testing.T) {
 	require.Contains(t, result.Warnings[0].Message, "consecutive")
 
 	// If there's a wait between them, no warning.
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1"}},
 		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
 		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2"}},
@@ -233,7 +233,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	t.Parallel()
 
 	// Too short
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":     "cam1",
 			"durationMs": float64(50),
@@ -244,7 +244,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	require.Contains(t, result.Errors[0].Message, "durationMs")
 
 	// Too long
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":     "cam1",
 			"durationMs": float64(6000),
@@ -255,7 +255,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	require.Contains(t, result2.Errors[0].Message, "durationMs")
 
 	// Valid bounds - exactly 100 and 5000
-	steps3 := []MacroStep{
+	steps3 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":     "cam1",
 			"durationMs": float64(100),
@@ -264,7 +264,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	result3 := ValidateSteps(steps3)
 	require.False(t, result3.HasErrors())
 
-	steps4 := []MacroStep{
+	steps4 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":     "cam1",
 			"durationMs": float64(5000),
@@ -274,7 +274,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	require.False(t, result4.HasErrors())
 
 	// No durationMs param is fine (uses default)
-	steps5 := []MacroStep{
+	steps5 := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source": "cam1",
 		}},
@@ -285,10 +285,10 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 
 func TestValidateSteps_RejectsReplayMarkInWithoutSource(t *testing.T) {
 	t.Parallel()
-	for _, action := range []MacroAction{
+	for _, action := range []Action{
 		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayPlayClip, ActionReplayQuickClip,
 	} {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: action, Params: map[string]interface{}{}},
 		}
 		result := ValidateSteps(steps)
@@ -299,14 +299,14 @@ func TestValidateSteps_RejectsReplayMarkInWithoutSource(t *testing.T) {
 
 func TestValidateSteps_AcceptsFTBNoParams(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionFTB, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
 
 	// Nil params should also work
-	steps2 := []MacroStep{
+	steps2 := []Step{
 		{Action: ActionFTB, Params: nil},
 	}
 	result2 := ValidateSteps(steps2)
@@ -315,10 +315,10 @@ func TestValidateSteps_AcceptsFTBNoParams(t *testing.T) {
 
 func TestValidateSteps_AcceptsGraphicsNoParams(t *testing.T) {
 	t.Parallel()
-	for _, action := range []MacroAction{
+	for _, action := range []Action{
 		ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 	} {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: action, Params: map[string]interface{}{}},
 		}
 		result := ValidateSteps(steps)
@@ -329,7 +329,7 @@ func TestValidateSteps_AcceptsGraphicsNoParams(t *testing.T) {
 func TestValidateSteps_GraphicsLayerIdWarning(t *testing.T) {
 	t.Parallel()
 	// Missing layerId should produce a warning, not an error.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -341,7 +341,7 @@ func TestValidateSteps_GraphicsLayerIdWarning(t *testing.T) {
 func TestValidateSteps_GraphicsLayerIdPresent(t *testing.T) {
 	t.Parallel()
 	// With layerId provided, no warning.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsOn, Params: map[string]interface{}{"layerId": float64(1)}},
 	}
 	result := ValidateSteps(steps)
@@ -351,7 +351,7 @@ func TestValidateSteps_GraphicsLayerIdPresent(t *testing.T) {
 
 func TestValidateSteps_GraphicsFlyInRequiresDirection(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
@@ -361,7 +361,7 @@ func TestValidateSteps_GraphicsFlyInRequiresDirection(t *testing.T) {
 
 func TestValidateSteps_GraphicsFlyInInvalidDirection(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
 			"layerId": float64(0), "direction": "diagonal",
 		}},
@@ -374,7 +374,7 @@ func TestValidateSteps_GraphicsFlyInInvalidDirection(t *testing.T) {
 func TestValidateSteps_GraphicsFlyInValid(t *testing.T) {
 	t.Parallel()
 	for _, dir := range []string{"left", "right", "top", "bottom"} {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
 				"layerId": float64(0), "direction": dir,
 			}},
@@ -386,7 +386,7 @@ func TestValidateSteps_GraphicsFlyInValid(t *testing.T) {
 
 func TestValidateSteps_GraphicsAnimateRequiresMode(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsAnimate, Params: map[string]interface{}{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
@@ -396,7 +396,7 @@ func TestValidateSteps_GraphicsAnimateRequiresMode(t *testing.T) {
 
 func TestValidateSteps_GraphicsSetRectRequiresCoords(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsSetRect, Params: map[string]interface{}{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
@@ -405,7 +405,7 @@ func TestValidateSteps_GraphicsSetRectRequiresCoords(t *testing.T) {
 
 func TestValidateSteps_GraphicsUploadFrameRequiresTemplate(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsUploadFrame, Params: map[string]interface{}{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
@@ -415,7 +415,7 @@ func TestValidateSteps_GraphicsUploadFrameRequiresTemplate(t *testing.T) {
 
 func TestValidateSteps_GraphicsAddLayerNoParams(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionGraphicsAddLayer, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -424,8 +424,8 @@ func TestValidateSteps_GraphicsAddLayerNoParams(t *testing.T) {
 
 func TestValidateSteps_AcceptsRecordingNoParams(t *testing.T) {
 	t.Parallel()
-	for _, action := range []MacroAction{ActionRecordingStart, ActionRecordingStop} {
-		steps := []MacroStep{
+	for _, action := range []Action{ActionRecordingStart, ActionRecordingStop} {
+		steps := []Step{
 			{Action: action, Params: nil},
 		}
 		result := ValidateSteps(steps)
@@ -435,7 +435,7 @@ func TestValidateSteps_AcceptsRecordingNoParams(t *testing.T) {
 
 func TestValidateSteps_AcceptsReplayStopNoParams(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionReplayStop, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -444,7 +444,7 @@ func TestValidateSteps_AcceptsReplayStopNoParams(t *testing.T) {
 
 func TestValidateSteps_AcceptsReplayPlayLastNoParams(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionReplayPlayLast, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -453,7 +453,7 @@ func TestValidateSteps_AcceptsReplayPlayLastNoParams(t *testing.T) {
 
 func TestValidateSteps_MultipleErrors(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCut, Params: map[string]interface{}{}},            // missing source
 		{Action: ActionPreview, Params: map[string]interface{}{}},        // missing source
 		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(0)}}, // zero ms
@@ -469,10 +469,10 @@ func TestValidateSteps_MultipleErrors(t *testing.T) {
 func TestValidateSteps_SCTE35ActionsNoSourceRequired(t *testing.T) {
 	t.Parallel()
 	// SCTE-35 actions don't require source param at validation time.
-	for _, action := range []MacroAction{
+	for _, action := range []Action{
 		ActionSCTE35Cue, ActionSCTE35Return, ActionSCTE35Cancel, ActionSCTE35Hold, ActionSCTE35Extend,
 	} {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: action, Params: map[string]interface{}{}},
 		}
 		result := ValidateSteps(steps)
@@ -482,7 +482,7 @@ func TestValidateSteps_SCTE35ActionsNoSourceRequired(t *testing.T) {
 
 func TestValidateSteps_AudioMasterNoSourceRequired(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionAudioMaster, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -492,7 +492,7 @@ func TestValidateSteps_AudioMasterNoSourceRequired(t *testing.T) {
 func TestValidateSteps_SourceRequiredActions(t *testing.T) {
 	t.Parallel()
 	// All these actions require a "source" param.
-	sourceRequiredActions := []MacroAction{
+	sourceRequiredActions := []Action{
 		ActionCut, ActionPreview, ActionSetAudio,
 		ActionAudioMute, ActionAudioAFV, ActionAudioTrim,
 		ActionAudioEQ, ActionAudioCompressor, ActionAudioDelay,
@@ -502,7 +502,7 @@ func TestValidateSteps_SourceRequiredActions(t *testing.T) {
 		ActionReplayPlay, ActionReplayPlayClip, ActionReplayQuickClip,
 	}
 	for _, action := range sourceRequiredActions {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: action, Params: map[string]interface{}{}},
 		}
 		result := ValidateSteps(steps)
@@ -527,7 +527,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	// Try to save a macro with an unknown action.
 	m := Macro{
 		Name: "bad-macro",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: "nonexistent", Params: map[string]interface{}{}},
 		},
 	}
@@ -538,7 +538,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	// Try to save a macro with cut missing source.
 	m2 := Macro{
 		Name: "bad-cut",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{}},
 		},
 	}
@@ -555,7 +555,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	// Verify valid macros still save fine.
 	m3 := Macro{
 		Name: "good-macro",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		},
 	}
@@ -568,7 +568,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 
 func TestValidateSteps_TransitionAcceptsMixNoExtras(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source": "cam1",
 			"type":   "mix",
@@ -580,7 +580,7 @@ func TestValidateSteps_TransitionAcceptsMixNoExtras(t *testing.T) {
 
 func TestValidateSteps_TransitionAcceptsValidStinger(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionTransition, Params: map[string]interface{}{
 			"source":      "cam1",
 			"type":        "stinger",
@@ -593,7 +593,7 @@ func TestValidateSteps_TransitionAcceptsValidStinger(t *testing.T) {
 
 func TestValidateSteps_SCTE35Cue_RejectsNegativePreRollMs(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "splice_insert",
 			"preRollMs":   float64(-1000),
@@ -607,7 +607,7 @@ func TestValidateSteps_SCTE35Cue_RejectsNegativePreRollMs(t *testing.T) {
 
 func TestValidateSteps_SCTE35Cue_AcceptsPositivePreRollMs(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "splice_insert",
 			"preRollMs":   float64(5000),
@@ -619,7 +619,7 @@ func TestValidateSteps_SCTE35Cue_AcceptsPositivePreRollMs(t *testing.T) {
 
 func TestValidateSteps_SCTE35Cue_AcceptsNoPreRollMs(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "splice_insert",
 		}},
@@ -630,7 +630,7 @@ func TestValidateSteps_SCTE35Cue_AcceptsNoPreRollMs(t *testing.T) {
 
 func TestValidateSteps_EmptySteps(t *testing.T) {
 	t.Parallel()
-	result := ValidateSteps([]MacroStep{})
+	result := ValidateSteps([]Step{})
 	require.False(t, result.HasErrors())
 	require.Empty(t, result.Warnings)
 }
@@ -638,7 +638,7 @@ func TestValidateSteps_EmptySteps(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_TimeSignal_RequiresDescriptors(t *testing.T) {
 	t.Parallel()
 	// time_signal without descriptors should be an error.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "time_signal",
 		}},
@@ -652,7 +652,7 @@ func TestValidateSteps_SCTE35Cue_TimeSignal_RequiresDescriptors(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_TimeSignal_WithDescriptors(t *testing.T) {
 	t.Parallel()
 	// time_signal with descriptors should pass validation.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "time_signal",
 			"descriptors": []interface{}{
@@ -671,7 +671,7 @@ func TestValidateSteps_SCTE35Cue_TimeSignal_WithDescriptors(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_SpliceInsert_NoDescriptorsOK(t *testing.T) {
 	t.Parallel()
 	// splice_insert without descriptors is valid.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
 			"commandType": "splice_insert",
 		}},
@@ -683,7 +683,7 @@ func TestValidateSteps_SCTE35Cue_SpliceInsert_NoDescriptorsOK(t *testing.T) {
 func TestValidateSteps_CaptionModeValid(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"off", "passthrough", "author"} {
-		steps := []MacroStep{
+		steps := []Step{
 			{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": mode}},
 		}
 		result := ValidateSteps(steps)
@@ -693,7 +693,7 @@ func TestValidateSteps_CaptionModeValid(t *testing.T) {
 
 func TestValidateSteps_CaptionModeInvalid(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "bogus"}},
 	}
 	result := ValidateSteps(steps)
@@ -703,7 +703,7 @@ func TestValidateSteps_CaptionModeInvalid(t *testing.T) {
 
 func TestValidateSteps_CaptionModeMissing(t *testing.T) {
 	t.Parallel()
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCaptionMode, Params: map[string]interface{}{}},
 	}
 	result := ValidateSteps(steps)
@@ -713,7 +713,7 @@ func TestValidateSteps_CaptionModeMissing(t *testing.T) {
 func TestValidateSteps_CaptionTextNoParams(t *testing.T) {
 	t.Parallel()
 	// caption_text and caption_clear don't require special params — they pass validation.
-	steps := []MacroStep{
+	steps := []Step{
 		{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello"}},
 		{Action: ActionCaptionClear, Params: map[string]interface{}{}},
 	}

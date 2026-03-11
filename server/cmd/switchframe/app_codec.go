@@ -24,21 +24,21 @@ func encoderFactory() transition.EncoderFactory {
 }
 
 // audioDecoderFactory returns a factory that creates FDK AAC decoders.
-func audioDecoderFactory() func(sampleRate, channels int) (audio.AudioDecoder, error) {
-	return func(sampleRate, channels int) (audio.AudioDecoder, error) {
+func audioDecoderFactory() func(sampleRate, channels int) (audio.Decoder, error) {
+	return func(sampleRate, channels int) (audio.Decoder, error) {
 		return audio.NewFDKDecoder(sampleRate, channels)
 	}
 }
 
 // audioEncoderFactory returns a factory that creates FDK AAC encoders.
-func audioEncoderFactory() func(sampleRate, channels int) (audio.AudioEncoder, error) {
-	return func(sampleRate, channels int) (audio.AudioEncoder, error) {
+func audioEncoderFactory() func(sampleRate, channels int) (audio.Encoder, error) {
+	return func(sampleRate, channels int) (audio.Encoder, error) {
 		return audio.NewFDKEncoder(sampleRate, channels)
 	}
 }
 
 // audioEncoderFactoryForMXL returns a factory compatible with mxl.AudioEnc.
-// audio.AudioEncoder satisfies mxl.AudioEnc (same Encode/Close methods).
+// audio.Encoder satisfies mxl.AudioEnc (same Encode/Close methods).
 func audioEncoderFactoryForMXL() func(sampleRate, channels int) (mxl.AudioEnc, error) {
 	return func(sampleRate, channels int) (mxl.AudioEnc, error) {
 		return audio.NewFDKEncoder(sampleRate, channels)

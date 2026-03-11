@@ -101,7 +101,7 @@ func TestRunner_ExecutesStepsInOrder(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionSetAudio, Params: map[string]interface{}{"source": "cam1", "level": float64(-6)}},
@@ -122,7 +122,7 @@ func TestRunner_WaitAction(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "wait-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(50)}},
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam2"}},
@@ -144,7 +144,7 @@ func TestRunner_ContextCancellation(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "cancel-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam2"}},
@@ -172,8 +172,8 @@ func TestRunner_UnknownAction(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "unknown-test",
-		Steps: []MacroStep{
-			{Action: MacroAction("bogus"), Params: map[string]interface{}{}},
+		Steps: []Step{
+			{Action: Action("bogus"), Params: map[string]interface{}{}},
 		},
 	}
 
@@ -185,7 +185,7 @@ func TestRunner_TransitionAction(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "transition-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix", "durationMs": float64(500)}},
 		},
 	}
@@ -203,7 +203,7 @@ func TestRunner_TransitionWithSource(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "transition-source-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2", "type": "mix", "durationMs": float64(1000)}},
 		},
 	}
@@ -220,7 +220,7 @@ func TestRunner_TransitionMissingSource(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "transition-no-source",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{"type": "mix"}},
 		},
 	}
@@ -235,7 +235,7 @@ func TestRunner_ContextCancellationDuringWait(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "ctx-cancel-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam2"}},
@@ -264,7 +264,7 @@ func TestRunner_ActionError(t *testing.T) {
 	target := &mockTarget{failOn: "cut"}
 	macro := Macro{
 		Name: "fail-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
 		},
@@ -284,7 +284,7 @@ func TestRunner_TransitionWipeDirection(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "wipe-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{
 				"source":        "cam1",
 				"type":          "wipe",
@@ -306,7 +306,7 @@ func TestRunner_TransitionStingerName(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "stinger-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionTransition, Params: map[string]interface{}{
 				"source":      "cam1",
 				"type":        "stinger",
@@ -328,7 +328,7 @@ func TestRunner_ExecuteDispatch(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "execute-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionFTB, Params: map[string]interface{}{}},
 		},
 	}
@@ -345,8 +345,8 @@ func TestRunner_UnknownActionErrors(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "unknown-action-test",
-		Steps: []MacroStep{
-			{Action: MacroAction("totally_bogus"), Params: map[string]interface{}{}},
+		Steps: []Step{
+			{Action: Action("totally_bogus"), Params: map[string]interface{}{}},
 		},
 	}
 
@@ -358,7 +358,7 @@ func TestRunner_UnknownActionErrors(t *testing.T) {
 
 func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 	// Verify a selection of new actions all route through Execute
-	newActions := []MacroAction{
+	newActions := []Action{
 		ActionFTB,
 		ActionAudioMute,
 		ActionAudioAFV,
@@ -396,7 +396,7 @@ func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 			target := &mockTarget{}
 			macro := Macro{
 				Name: "dispatch-" + string(action),
-				Steps: []MacroStep{
+				Steps: []Step{
 					{Action: action, Params: map[string]interface{}{"test": "value"}},
 				},
 			}
@@ -416,7 +416,7 @@ func TestRunner_SCTE35StillUsesSpecificMethods(t *testing.T) {
 	target := &mockTarget{}
 	macro := Macro{
 		Name: "scte35-still-works",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionSCTE35Cue, Params: map[string]interface{}{"durationMs": float64(30000)}},
 		},
 	}
@@ -433,102 +433,102 @@ func TestRunner_SCTE35StillUsesSpecificMethods(t *testing.T) {
 func TestStepSummary(t *testing.T) {
 	tests := []struct {
 		name     string
-		step     MacroStep
+		step     Step
 		expected string
 	}{
 		{
 			name:     "cut",
-			step:     MacroStep{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			step:     Step{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			expected: "Cut → cam1",
 		},
 		{
 			name:     "preview",
-			step:     MacroStep{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
+			step:     Step{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
 			expected: "Preview → cam2",
 		},
 		{
 			name:     "transition",
-			step:     MacroStep{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix", "durationMs": float64(500)}},
+			step:     Step{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix", "durationMs": float64(500)}},
 			expected: "Transition mix 500ms → cam1",
 		},
 		{
 			name:     "wait",
-			step:     MacroStep{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
+			step:     Step{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
 			expected: "Wait 1000ms",
 		},
 		{
 			name:     "set_audio",
-			step:     MacroStep{Action: ActionSetAudio, Params: map[string]interface{}{"source": "cam1", "level": float64(-6)}},
+			step:     Step{Action: ActionSetAudio, Params: map[string]interface{}{"source": "cam1", "level": float64(-6)}},
 			expected: "Set Audio cam1 -6.0dB",
 		},
 		{
 			name:     "graphics_on",
-			step:     MacroStep{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
 			expected: "Graphics On (layer 0)",
 		},
 		{
 			name:     "graphics_off",
-			step:     MacroStep{Action: ActionGraphicsOff, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionGraphicsOff, Params: map[string]interface{}{}},
 			expected: "Graphics Off (layer 0)",
 		},
 		{
 			name:     "recording_start",
-			step:     MacroStep{Action: ActionRecordingStart, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionRecordingStart, Params: map[string]interface{}{}},
 			expected: "Recording Start",
 		},
 		{
 			name:     "recording_stop",
-			step:     MacroStep{Action: ActionRecordingStop, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionRecordingStop, Params: map[string]interface{}{}},
 			expected: "Recording Stop",
 		},
 		{
 			name:     "ftb",
-			step:     MacroStep{Action: ActionFTB, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionFTB, Params: map[string]interface{}{}},
 			expected: "Fade to Black",
 		},
 		{
 			name:     "audio_mute",
-			step:     MacroStep{Action: ActionAudioMute, Params: map[string]interface{}{"source": "mic1"}},
+			step:     Step{Action: ActionAudioMute, Params: map[string]interface{}{"source": "mic1"}},
 			expected: "Audio Mute mic1",
 		},
 		{
 			name:     "preset_recall",
-			step:     MacroStep{Action: ActionPresetRecall, Params: map[string]interface{}{"id": "preset-1"}},
+			step:     Step{Action: ActionPresetRecall, Params: map[string]interface{}{"id": "preset-1"}},
 			expected: "Preset Recall preset-1",
 		},
 		{
 			name:     "key_set",
-			step:     MacroStep{Action: ActionKeySet, Params: map[string]interface{}{"source": "cam3"}},
+			step:     Step{Action: ActionKeySet, Params: map[string]interface{}{"source": "cam3"}},
 			expected: "Key Set cam3",
 		},
 		{
 			name:     "replay_play",
-			step:     MacroStep{Action: ActionReplayPlay, Params: map[string]interface{}{"source": "cam1"}},
+			step:     Step{Action: ActionReplayPlay, Params: map[string]interface{}{"source": "cam1"}},
 			expected: "Replay Play cam1",
 		},
 		{
 			name:     "scte35_cue",
-			step:     MacroStep{Action: ActionSCTE35Cue, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionSCTE35Cue, Params: map[string]interface{}{}},
 			expected: "SCTE-35 Cue",
 		},
 		{
 			name:     "caption_mode",
-			step:     MacroStep{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "author"}},
+			step:     Step{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "author"}},
 			expected: "Caption Mode author",
 		},
 		{
 			name:     "caption_text",
-			step:     MacroStep{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello world"}},
+			step:     Step{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello world"}},
 			expected: `Caption Text "Hello world"`,
 		},
 		{
 			name:     "caption_clear",
-			step:     MacroStep{Action: ActionCaptionClear, Params: map[string]interface{}{}},
+			step:     Step{Action: ActionCaptionClear, Params: map[string]interface{}{}},
 			expected: "Caption Clear",
 		},
 		{
 			name:     "unknown_action_fallback",
-			step:     MacroStep{Action: MacroAction("custom_thing"), Params: map[string]interface{}{}},
+			step:     Step{Action: Action("custom_thing"), Params: map[string]interface{}{}},
 			expected: "custom_thing",
 		},
 	}
@@ -545,7 +545,7 @@ func TestRunner_OnProgressCallbacks(t *testing.T) {
 	target := &mockTarget{}
 	m := Macro{
 		Name: "progress-test",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
 		},
@@ -605,7 +605,7 @@ func TestRunner_OnProgressFailure(t *testing.T) {
 	target := &mockTarget{failOn: "cut"}
 	m := Macro{
 		Name: "fail-progress",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 			{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
 		},
@@ -640,7 +640,7 @@ func TestRunner_OnProgressWaitStep(t *testing.T) {
 	target := &mockTarget{}
 	m := Macro{
 		Name: "wait-progress",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(50)}},
 		},
 	}
@@ -678,7 +678,7 @@ func TestRunner_NilOnProgress(t *testing.T) {
 	target := &mockTarget{}
 	m := Macro{
 		Name: "nil-progress",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		},
 	}
@@ -696,7 +696,7 @@ func TestRunner_OnProgressContextCancel(t *testing.T) {
 	target := &mockTarget{}
 	m := Macro{
 		Name: "cancel-progress",
-		Steps: []MacroStep{
+		Steps: []Step{
 			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
 			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
 		},
@@ -735,7 +735,7 @@ func TestRunner_OnProgressContextCancel(t *testing.T) {
 
 func TestRunner_AllActionsMapComplete(t *testing.T) {
 	// Verify AllActions contains all expected actions
-	expectedActions := []MacroAction{
+	expectedActions := []Action{
 		ActionCut, ActionPreview, ActionTransition, ActionWait, ActionSetAudio,
 		ActionSCTE35Cue, ActionSCTE35Return, ActionSCTE35Cancel, ActionSCTE35Hold, ActionSCTE35Extend,
 		ActionFTB,

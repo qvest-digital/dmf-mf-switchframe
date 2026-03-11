@@ -164,7 +164,7 @@ import (
 	"unsafe"
 )
 
-// FDKEncoder wraps the FDK AAC encoder (ADTS output) and implements AudioEncoder.
+// FDKEncoder wraps the FDK AAC encoder (ADTS output) and implements Encoder.
 // It encodes interleaved float32 PCM to ADTS-framed AAC data.
 type FDKEncoder struct {
 	handle   C.aacenc_t

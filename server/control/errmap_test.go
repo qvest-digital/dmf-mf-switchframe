@@ -32,7 +32,7 @@ func TestErrorStatus(t *testing.T) {
 		{switcher.ErrNoTransition, http.StatusConflict},
 
 		// transition
-		{transition.ErrTransitionActive, http.StatusConflict},
+		{transition.ErrActive, http.StatusConflict},
 		{transition.ErrFTBActive, http.StatusConflict},
 
 		// audio

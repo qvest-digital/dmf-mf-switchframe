@@ -8,7 +8,7 @@ import (
 
 func TestOutputManager_AddDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -36,7 +36,7 @@ func TestOutputManager_AddDestination(t *testing.T) {
 
 func TestOutputManager_AddDestination_InvalidType(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -51,7 +51,7 @@ func TestOutputManager_AddDestination_InvalidType(t *testing.T) {
 
 func TestOutputManager_AddDestination_MissingPort(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -66,7 +66,7 @@ func TestOutputManager_AddDestination_MissingPort(t *testing.T) {
 
 func TestOutputManager_AddDestination_CallerMissingAddress(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -81,7 +81,7 @@ func TestOutputManager_AddDestination_CallerMissingAddress(t *testing.T) {
 
 func TestOutputManager_RemoveDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -103,7 +103,7 @@ func TestOutputManager_RemoveDestination(t *testing.T) {
 
 func TestOutputManager_RemoveDestination_NotFound(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.RemoveDestination("nonexistent")
@@ -112,7 +112,7 @@ func TestOutputManager_RemoveDestination_NotFound(t *testing.T) {
 
 func TestOutputManager_RemoveActiveDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -137,7 +137,7 @@ func TestOutputManager_RemoveActiveDestination(t *testing.T) {
 
 func TestOutputManager_MultipleDestinations(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	id1, err := mgr.AddDestination(DestinationConfig{
@@ -173,7 +173,7 @@ func TestOutputManager_MultipleDestinations(t *testing.T) {
 
 func TestOutputManager_GetDestination_NotFound(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	_, err := mgr.GetDestination("does-not-exist")
@@ -182,7 +182,7 @@ func TestOutputManager_GetDestination_NotFound(t *testing.T) {
 
 func TestOutputManager_StartDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -208,7 +208,7 @@ func TestOutputManager_StartDestination(t *testing.T) {
 
 func TestOutputManager_StartDestination_NotFound(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.StartDestination("nonexistent")
@@ -217,7 +217,7 @@ func TestOutputManager_StartDestination_NotFound(t *testing.T) {
 
 func TestOutputManager_StartDestination_AlreadyActive(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -236,7 +236,7 @@ func TestOutputManager_StartDestination_AlreadyActive(t *testing.T) {
 
 func TestOutputManager_StopDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -259,7 +259,7 @@ func TestOutputManager_StopDestination(t *testing.T) {
 
 func TestOutputManager_StopDestination_NotFound(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.StopDestination("nonexistent")
@@ -268,7 +268,7 @@ func TestOutputManager_StopDestination_NotFound(t *testing.T) {
 
 func TestOutputManager_StopDestination_NotActive(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -286,7 +286,7 @@ func TestOutputManager_StopDestination_NotActive(t *testing.T) {
 
 func TestOutputManager_ListDestinations_Empty(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	dests := mgr.ListDestinations()
@@ -295,7 +295,7 @@ func TestOutputManager_ListDestinations_Empty(t *testing.T) {
 
 func TestOutputManager_ListenerDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -316,7 +316,7 @@ func TestOutputManager_ListenerDestination(t *testing.T) {
 func TestOutputManager_DestinationsInRebuild(t *testing.T) {
 	// Verify that active destinations are included in the adapter fan-out.
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
@@ -337,7 +337,7 @@ func TestOutputManager_DestinationsInRebuild(t *testing.T) {
 
 func TestOutputManager_CloseWithDestinations(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 
 	config := DestinationConfig{
 		Type:    "srt-caller",
@@ -355,7 +355,7 @@ func TestOutputManager_CloseWithDestinations(t *testing.T) {
 
 func TestOutputManager_StateCallbackOnDestination(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
@@ -383,7 +383,7 @@ func TestOutputManager_StateCallbackOnDestination(t *testing.T) {
 
 func TestOutputManager_RemoveDestination_FiresStateCallback(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
@@ -408,7 +408,7 @@ func TestOutputManager_RemoveDestination_FiresStateCallback(t *testing.T) {
 
 func TestOutputManager_RemoveActiveDestination_FiresStateCallback(t *testing.T) {
 	relay := newTestRelay()
-	mgr := NewOutputManager(relay)
+	mgr := NewManager(relay)
 	defer func() { _ = mgr.Close() }()
 
 	callCount := 0

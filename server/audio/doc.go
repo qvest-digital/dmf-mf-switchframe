@@ -1,6 +1,6 @@
 // Package audio implements the server-side audio mixing engine.
 //
-// The [AudioMixer] decodes AAC audio from each source, applies per-channel
+// The [Mixer] decodes AAC audio from each source, applies per-channel
 // processing, mixes to a stereo master bus, and re-encodes to AAC for the
 // program output. A passthrough optimization bypasses decode/mix/encode
 // entirely when only one source is active at 0 dB with EQ and compressor
@@ -17,7 +17,7 @@
 //   - Encode (AAC output)
 //
 // Key types:
-//   - [AudioMixer]: Main mixer with per-channel decode/mix/encode
+//   - [Mixer]: Main mixer with per-channel decode/mix/encode
 //   - [EQ]: 3-band parametric equalizer (Direct Form II Transposed)
 //   - [Compressor]: Single-band compressor with makeup gain
 //   - [Limiter]: Brickwall limiter preventing clipping

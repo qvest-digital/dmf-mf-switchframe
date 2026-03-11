@@ -202,7 +202,7 @@ func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, heig
 
 // slotSnapshot holds source data for a single slot, captured under lock.
 type slotSnapshot struct {
-	slot     LayoutSlot
+	slot     Slot
 	idx      int
 	srcYUV   []byte
 	srcW     int
@@ -457,7 +457,7 @@ func (c *Compositor) Latency() time.Duration {
 
 // effectiveRectAndAlpha returns the current rect and alpha for a slot,
 // accounting for any active animation.
-func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot LayoutSlot) (image.Rectangle, float64) {
+func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot Slot) (image.Rectangle, float64) {
 	for _, anim := range c.animations {
 		if anim.SlotIndex == slotIdx {
 			t := anim.Progress()
@@ -519,7 +519,7 @@ func (c *Compositor) UpdateFormat(frameW, frameH int) {
 }
 
 // UpdateSlot modifies a slot in-place using the given function, then atomically swaps the layout.
-func (c *Compositor) UpdateSlot(slotIdx int, fn func(*LayoutSlot)) {
+func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	l := c.layout.Load()
@@ -702,7 +702,7 @@ func (c *Compositor) AutoDissolveSource(sourceKey string) {
 
 // cloneLayout creates a deep copy of a Layout.
 func (c *Compositor) cloneLayout(l *Layout) *Layout {
-	cp := &Layout{Name: l.Name, Slots: make([]LayoutSlot, len(l.Slots))}
+	cp := &Layout{Name: l.Name, Slots: make([]Slot, len(l.Slots))}
 	copy(cp.Slots, l.Slots)
 	return cp
 }

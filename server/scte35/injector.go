@@ -286,7 +286,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// encoded SCTE-35 payload is broadcast to all destinations. Rules with
 	// per-destination Destinations filters are effectively no-ops at injection
 	// time. Per-destination SCTE-35 enable/disable is handled downstream by
-	// OutputManager's SCTE-35 packet filter.
+	// output.Manager's SCTE-35 packet filter.
 	if inj.rules != nil {
 		action, modified := inj.rules.Evaluate(msg, "")
 		switch action {

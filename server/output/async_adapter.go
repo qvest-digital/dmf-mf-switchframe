@@ -17,12 +17,12 @@ var tsPacketPool = sync.Pool{
 	},
 }
 
-// AsyncAdapter wraps an OutputAdapter with a buffered channel for non-blocking writes.
+// AsyncAdapter wraps an Adapter with a buffered channel for non-blocking writes.
 // When the buffer is full, writes are dropped and the drop counter is incremented.
 // This prevents a slow adapter (e.g., disk I/O or network) from blocking other
 // adapters in the fan-out loop.
 type AsyncAdapter struct {
-	inner       OutputAdapter
+	inner       Adapter
 	buffer      chan *[]byte
 	dropped     atomic.Int64
 	lastDropLog atomic.Int64
@@ -33,7 +33,7 @@ type AsyncAdapter struct {
 
 // NewAsyncAdapter creates an AsyncAdapter wrapping the given inner adapter
 // with a buffered channel of the specified size.
-func NewAsyncAdapter(inner OutputAdapter, bufSize int) *AsyncAdapter {
+func NewAsyncAdapter(inner Adapter, bufSize int) *AsyncAdapter {
 	return &AsyncAdapter{
 		inner:  inner,
 		buffer: make(chan *[]byte, bufSize),
@@ -57,7 +57,7 @@ func (a *AsyncAdapter) Start(ctx context.Context) error {
 }
 
 // startDrain starts only the drain goroutine without calling inner.Start().
-// Used by OutputManager when the inner adapter has already been started.
+// Used by Manager when the inner adapter has already been started.
 func (a *AsyncAdapter) startDrain() {
 	go a.drain()
 }
@@ -158,5 +158,5 @@ func (a *AsyncAdapter) drain() {
 	}
 }
 
-// Compile-time check that AsyncAdapter satisfies the OutputAdapter interface.
-var _ OutputAdapter = (*AsyncAdapter)(nil)
+// Compile-time check that AsyncAdapter satisfies the Adapter interface.
+var _ Adapter = (*AsyncAdapter)(nil)

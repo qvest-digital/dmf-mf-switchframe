@@ -11,7 +11,7 @@ import (
 
 type layoutRequest struct {
 	Preset string              `json:"preset,omitempty"`
-	Slots  []layout.LayoutSlot `json:"slots,omitempty"`
+	Slots  []layout.Slot `json:"slots,omitempty"`
 	Name   string              `json:"name,omitempty"`
 }
 
@@ -130,7 +130,7 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.layoutCompositor.UpdateSlot(id, func(slot *layout.LayoutSlot) {
+	a.layoutCompositor.UpdateSlot(id, func(slot *layout.Slot) {
 		if req.SourceKey != "" {
 			slot.SourceKey = req.SourceKey
 		}
@@ -183,7 +183,7 @@ func (a *API) handleSlotSource(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	a.layoutCompositor.UpdateSlot(id, func(slot *layout.LayoutSlot) {
+	a.layoutCompositor.UpdateSlot(id, func(slot *layout.Slot) {
 		slot.SourceKey = req.Source
 	})
 	if a.broadcastFn != nil {
@@ -214,7 +214,7 @@ func (a *API) handleSaveLayoutPreset(w http.ResponseWriter, r *http.Request) {
 	}
 	saved := layout.Layout{
 		Name:  req.Name,
-		Slots: make([]layout.LayoutSlot, len(l.Slots)),
+		Slots: make([]layout.Slot, len(l.Slots)),
 	}
 	copy(saved.Slots, l.Slots)
 	if err := a.layoutStore.Save(&saved); err != nil {
