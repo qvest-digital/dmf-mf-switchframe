@@ -48,6 +48,18 @@ type Manager struct {
 	// so they can be stopped when adapters are removed.
 	asyncWrappers map[string]*AsyncAdapter
 
+	// CBR pacing. When cbrMuxrate > 0, SRT adapters receive null-padded
+	// CBR TS via the pacer instead of direct writes. The recorder and
+	// non-SRT adapters continue to receive raw variable-rate TS.
+	// cbrPacer is accessed from the muxer output callback (lock-free read)
+	// and from stopMuxerLocked (write under mu), so it uses atomic.Pointer.
+	cbrPacer   atomic.Pointer[CBRPacer]
+	cbrMuxrate int64 // target muxrate in bps, 0 = disabled
+
+	// directAdapters holds non-paced adapters (recorder) for the muxer
+	// output callback. When CBR is disabled, equals m.adapters.
+	directAdapters atomic.Pointer[[]Adapter]
+
 	onState    func() // triggers ControlRoomState broadcast
 	onMuxStart func() // triggers IDR keyframe request when muxer starts
 	closed     bool
@@ -84,6 +96,7 @@ func NewManager(relay *distribution.Relay) *Manager {
 	}
 	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
+	m.directAdapters.Store(&empty)
 	return m
 }
 
@@ -104,6 +117,16 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
+}
+
+// SetCBRMuxrate configures CBR pacing for SRT outputs. When muxrateBps > 0,
+// SRT adapters receive null-padded CBR TS via the pacer. The recorder
+// continues to receive raw variable-rate TS. Must be called before starting
+// any outputs.
+func (m *Manager) SetCBRMuxrate(muxrateBps int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cbrMuxrate = muxrateBps
 }
 
 // OnStateChange registers a callback fired when output state changes.
@@ -660,6 +683,7 @@ func (m *Manager) Close() error {
 	m.srtOutput = nil
 	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
+	m.directAdapters.Store(&empty)
 
 	// Snapshot active destinations and clear them.
 	var destAdapters []Adapter
@@ -721,14 +745,23 @@ func (m *Manager) Close() error {
 // rebuildAdaptersLocked rebuilds the adapter slice and returns any stale
 // async wrappers that should be stopped. Callers MUST stop the returned
 // wrappers outside the lock to avoid blocking the muxer output callback.
+//
+// When CBR is enabled (cbrMuxrate > 0), adapters are split into two paths:
+//   - Direct adapters (recorder): wrapped in AsyncAdapter, receive raw TS
+//   - Paced adapters (SRT): NOT wrapped, receive null-padded CBR TS via pacer
+//
+// When CBR is disabled, all adapters take the direct path (unchanged behavior).
 func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 	// Collect the current set of raw adapters.
 	raw := make(map[string]Adapter)
+	srtIDs := make(map[string]bool) // tracks SRT adapters (paced when CBR)
+
 	if m.recorder != nil {
 		raw[m.recorder.ID()] = m.recorder
 	}
 	if m.srtOutput != nil {
 		raw[m.srtOutput.ID()] = m.srtOutput
+		srtIDs[m.srtOutput.ID()] = true
 	}
 	// Include active destination adapters.
 	for id, dest := range m.destinations {
@@ -740,28 +773,43 @@ func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 				adapter = newSCTE35Filter(adapter, m.scte35PID)
 			}
 			// Use destination ID as key to avoid collisions with legacy adapter IDs.
-			raw["dest:"+id] = adapter
+			key := "dest:" + id
+			raw[key] = adapter
+			srtIDs[key] = true
 		}
 		dest.mu.Unlock()
+	}
+
+	// Split into direct (non-SRT) and paced (SRT) when CBR is enabled.
+	cbrEnabled := m.cbrMuxrate > 0
+	directRaw := make(map[string]Adapter)
+	var pacedAdapters []Adapter
+
+	for id, a := range raw {
+		if cbrEnabled && srtIDs[id] {
+			pacedAdapters = append(pacedAdapters, a)
+		} else {
+			directRaw[id] = a
+		}
 	}
 
 	if m.asyncWrappers == nil {
 		m.asyncWrappers = make(map[string]*AsyncAdapter)
 	}
 
-	// Collect stale wrappers for adapters that are no longer present.
+	// Collect stale wrappers for adapters no longer in the direct set.
 	// Do NOT stop them here — caller stops outside the lock.
 	var stale []*AsyncAdapter
 	for id, wrapper := range m.asyncWrappers {
-		if _, ok := raw[id]; !ok {
+		if _, ok := directRaw[id]; !ok {
 			stale = append(stale, wrapper)
 			delete(m.asyncWrappers, id)
 		}
 	}
 
-	// Create wrappers for new adapters, reuse existing ones.
-	var adapters []Adapter
-	for id, adapter := range raw {
+	// Create/reuse async wrappers for direct adapters.
+	var directAdapters []Adapter
+	for id, adapter := range directRaw {
 		wrapper, exists := m.asyncWrappers[id]
 		if !exists {
 			wrapper = NewAsyncAdapter(adapter, asyncAdapterBufSize)
@@ -770,10 +818,22 @@ func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 			wrapper.startDrain()
 			m.asyncWrappers[id] = wrapper
 		}
-		adapters = append(adapters, wrapper)
+		directAdapters = append(directAdapters, wrapper)
 	}
 
-	m.adapters.Store(&adapters)
+	m.directAdapters.Store(&directAdapters)
+
+	// Update pacer's adapter list (paced adapters bypass AsyncAdapter).
+	if p := m.cbrPacer.Load(); p != nil {
+		p.SetAdapters(&pacedAdapters)
+	}
+
+	// Combined list for HasActiveOutputs / stopMuxerIfNoAdaptersLocked.
+	allAdapters := make([]Adapter, 0, len(directAdapters)+len(pacedAdapters))
+	allAdapters = append(allAdapters, directAdapters...)
+	allAdapters = append(allAdapters, pacedAdapters...)
+	m.adapters.Store(&allAdapters)
+
 	return stale
 }
 
@@ -797,13 +857,29 @@ func (m *Manager) ensureMuxerLocked() bool {
 		muxer.SetSCTE35PID(m.scte35PID)
 	}
 	muxer.SetOutput(func(tsData []byte) {
-		adapters := m.adapters.Load()
-		for _, a := range *adapters {
-			if _, err := a.Write(tsData); err != nil {
-				m.log.Error("adapter write error", "adapter", a.ID(), "err", err)
+		// Path 1: Direct adapters (recorder, non-SRT) get raw TS.
+		directAdapters := m.directAdapters.Load()
+		if directAdapters != nil {
+			for _, a := range *directAdapters {
+				if _, err := a.Write(tsData); err != nil {
+					m.log.Error("adapter write error", "adapter", a.ID(), "err", err)
+				}
 			}
 		}
+		// Path 2: SRT adapters get null-padded CBR TS via pacer.
+		if p := m.cbrPacer.Load(); p != nil {
+			p.Enqueue(tsData)
+		}
 	})
+
+	// Create CBR pacer if muxrate is configured.
+	if m.cbrMuxrate > 0 {
+		pacer := NewCBRPacer(m.cbrMuxrate, 0)
+		m.cbrPacer.Store(pacer)
+		// Re-rebuild to populate pacer adapter list (pacer now exists).
+		_ = m.rebuildAdaptersLocked()
+		pacer.Start()
+	}
 
 	var onVideo func(*media.VideoFrame)
 	if m.confidence != nil {
@@ -846,8 +922,10 @@ func (m *Manager) stopMuxerLocked() {
 
 	viewer := m.viewer
 	muxer := m.muxer
+	pacer := m.cbrPacer.Load()
 	m.viewer = nil
 	m.muxer = nil
+	m.cbrPacer.Store(nil)
 
 	// Guard against concurrent ensureMuxerLocked() calls while the lock is
 	// released below. Without this, a concurrent start could create a new
@@ -872,6 +950,11 @@ func (m *Manager) stopMuxerLocked() {
 	// Close the muxer.
 	if err := muxer.Close(); err != nil {
 		m.log.Error("error closing muxer", "err", err)
+	}
+
+	// Stop pacer after muxer (drains residual data).
+	if pacer != nil {
+		pacer.Stop()
 	}
 
 	// Re-acquire the lock (callers expect it held on return).
@@ -975,6 +1058,13 @@ func (m *Manager) ConfidenceThumbnail() []byte {
 		return nil
 	}
 	return cm.LatestThumbnail()
+}
+
+// CBRMuxrate returns the configured CBR muxrate in bps, or 0 if disabled.
+func (m *Manager) CBRMuxrate() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cbrMuxrate
 }
 
 // HasActiveOutputs returns true if at least one output is active.

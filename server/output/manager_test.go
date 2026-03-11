@@ -1,6 +1,7 @@
 package output
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -378,6 +379,236 @@ func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
 	require.True(t, created, "ensureMuxerLocked should create muxer when not stopping")
 	require.NotNil(t, mgr.viewer, "viewer should be created")
 	require.NotNil(t, mgr.muxer, "muxer should be created")
+}
+
+// --- CBR pacer wiring tests ---
+
+func TestManager_CBRPacerCreatedOnMuxStart(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(5_000_000)
+
+	// Start recording to trigger muxer creation.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	mgr.mu.Lock()
+	hasPacer := mgr.cbrPacer.Load() != nil
+	mgr.mu.Unlock()
+
+	require.True(t, hasPacer, "CBR pacer should be created when muxer starts with CBR enabled")
+}
+
+func TestManager_NoPacerWhenDisabled(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	// No SetCBRMuxrate call — CBR disabled.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	mgr.mu.Lock()
+	hasPacer := mgr.cbrPacer.Load() != nil
+	mgr.mu.Unlock()
+
+	require.False(t, hasPacer, "CBR pacer should not exist when CBR is disabled")
+}
+
+func TestManager_RecorderIsDirectNotPaced(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(5_000_000)
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Recorder should be in directAdapters.
+	directAdapters := mgr.directAdapters.Load()
+	require.NotNil(t, directAdapters)
+	require.Len(t, *directAdapters, 1, "recorder should be a direct adapter")
+}
+
+func TestManager_SRTDestinationIsPaced(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(5_000_000)
+
+	// Mock SRT connect.
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// SRT destination should be paced, not direct.
+	directAdapters := mgr.directAdapters.Load()
+	require.NotNil(t, directAdapters)
+	require.Len(t, *directAdapters, 0, "SRT should not be in direct adapters when CBR enabled")
+
+	// But combined adapters should include the SRT adapter.
+	allAdapters := mgr.adapters.Load()
+	require.Len(t, *allAdapters, 1, "SRT should be in combined adapter list")
+
+	mgr.mu.Lock()
+	hasPacer := mgr.cbrPacer.Load() != nil
+	mgr.mu.Unlock()
+	require.True(t, hasPacer, "pacer should exist")
+}
+
+func TestManager_CBRSplitPath_RecorderAndSRT(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(5_000_000)
+
+	// Mock SRT connect.
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	// Start both recorder and SRT.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Recorder should be direct, SRT should be paced.
+	directAdapters := mgr.directAdapters.Load()
+	require.Len(t, *directAdapters, 1, "only recorder should be direct")
+
+	allAdapters := mgr.adapters.Load()
+	require.Len(t, *allAdapters, 2, "both recorder and SRT should be in combined list")
+}
+
+func TestManager_CBRPacerStoppedOnMuxerStop(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(5_000_000)
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	mgr.mu.Lock()
+	hasPacer := mgr.cbrPacer.Load() != nil
+	mgr.mu.Unlock()
+	require.True(t, hasPacer, "pacer should exist after start")
+
+	// Stop recording → should stop muxer and pacer.
+	require.NoError(t, mgr.StopRecording())
+	time.Sleep(10 * time.Millisecond)
+
+	mgr.mu.Lock()
+	hasPacer = mgr.cbrPacer.Load() != nil
+	mgr.mu.Unlock()
+	require.False(t, hasPacer, "pacer should be nil after muxer stops")
+}
+
+func TestManager_CBRPacerReceivesData(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(1_000_000) // 1 Mbps
+
+	// Mock SRT connect that tracks bytes.
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Feed a keyframe to the relay so the muxer produces TS data.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	relay.BroadcastVideo(idrFrame)
+
+	// Wait for pacer to tick and send data.
+	time.Sleep(100 * time.Millisecond)
+
+	// The SRT mock should have received data (via pacer → adapter write).
+	require.Greater(t, mock.written.Load(), int64(0),
+		"SRT should receive data through CBR pacer")
+}
+
+func TestManager_NoCBR_AllAdaptersDirect(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	// No CBR — SRT should be in direct adapters.
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Without CBR, all adapters should be direct (no split).
+	directAdapters := mgr.directAdapters.Load()
+	allAdapters := mgr.adapters.Load()
+	require.Len(t, *directAdapters, 2, "all adapters should be direct when CBR disabled")
+	require.Len(t, *allAdapters, 2, "combined list should match direct list")
 }
 
 func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {

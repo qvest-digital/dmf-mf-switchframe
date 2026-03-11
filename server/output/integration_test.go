@@ -148,6 +148,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 	copy(newAdapters, current)
 	newAdapters[len(current)] = mock
 	mgr.adapters.Store(&newAdapters)
+	mgr.directAdapters.Store(&newAdapters)
 
 	// Broadcast a keyframe so the muxer initializes and produces TS output.
 	relay.BroadcastVideo(makeKeyframe(90000))
