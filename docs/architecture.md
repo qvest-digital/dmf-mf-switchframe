@@ -1,5 +1,19 @@
 # SwitchFrame Architecture
 
+1. [System at a Glance](#1-system-at-a-glance)
+2. [A Frame's Journey](#2-a-frames-journey)
+3. [A Cut Happens](#3-a-cut-happens)
+4. [A Transition Dissolves](#4-a-transition-dissolves)
+5. [Audio Signal Chain](#5-audio-signal-chain)
+6. [Compositing the Picture](#6-compositing-the-picture)
+7. [Output Delivery](#7-output-delivery)
+8. [Instant Replay](#8-instant-replay)
+9. [The Browser](#9-the-browser)
+10. [Control & Coordination](#10-control--coordination)
+11. [Performance & Design Philosophy](#11-performance--design-philosophy)
+
+---
+
 ## 1. System at a Glance
 
 SwitchFrame is a server-authoritative live video switcher: all switching, mixing, compositing, and encoding happen on the server. Browsers connect over WebTransport as thin control surfaces -- they display source previews and send operator commands, but the server produces the definitive program output. Sources arrive via Prism MoQ ingest (H.264/AAC cameras over the internet) or MXL shared-memory transport (uncompressed V210 from local infrastructure).
@@ -753,3 +767,16 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | :8080 | QUIC/UDP | Media + API (WebTransport, MoQ, REST) |
 | :8081 | TCP/HTTP | REST fallback (opt-in via --http-fallback) |
 | :9090 | TCP/HTTP | Admin (Prometheus /metrics, pprof) |
+
+---
+
+## Further Reading
+
+| | |
+|---|---|
+| **[API Reference](api.md)** | REST endpoints with request/response examples |
+| **[Pipeline Architecture](pipeline.md)** | Processing nodes, frame pool, atomic swap internals |
+| **[Concurrency Model](locking-and-concurrency.md)** | Lock inventory, frame flow diagrams, ordering rules |
+| **[SCTE-35 Guide](scte35.md)** | Ad insertion, rules engine, SCTE-104 integration |
+| **[MXL Guide](mxl.md)** | Shared-memory transport, V210 format, NMOS discovery |
+| **[Deployment](deployment.md)** | CLI flags, Docker, TLS, monitoring |
