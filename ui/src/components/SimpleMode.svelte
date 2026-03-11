@@ -224,15 +224,18 @@
 		padding: 12px;
 		flex: 1;
 		min-height: 0;
+		align-content: center;
 	}
 
 	.monitor {
 		position: relative;
+		aspect-ratio: 16 / 9;
 		background: var(--bg-canvas);
 		border-radius: var(--radius-md);
 		overflow: hidden;
 		border: 1px solid var(--border-subtle);
 		box-shadow: var(--shadow-inset);
+		max-height: 100%;
 	}
 
 	.preview-mon {
@@ -246,7 +249,7 @@
 	.monitor canvas {
 		width: 100%;
 		height: 100%;
-		object-fit: contain;
+		display: block;
 	}
 
 	.monitor-label {

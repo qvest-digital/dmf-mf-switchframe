@@ -31,6 +31,11 @@ export class PipelineManager {
 	private currentProgramCanvas: string | null = null;
 	/** Current source key bound to the preview canvas. */
 	private currentPreviewCanvas: string | null = null;
+	/** Track the actual preview DOM element to detect canvas replacement (layout switch). */
+	private currentPreviewCanvasEl: HTMLCanvasElement | null = null;
+
+	/** Pending preview attachment that failed because the source wasn't in the pipeline yet. */
+	private pendingPreview: { source: string; canvas: HTMLCanvasElement } | null = null;
 
 	/** Per-source audio levels sampled from pipeline decoders. */
 	private sourceLevels: Record<string, PeakLevels> = {};
@@ -103,6 +108,18 @@ export class PipelineManager {
 				}
 			}
 		}
+
+		// Retry any pending preview attachment that failed because the source
+		// wasn't in the pipeline yet (race between effects and source sync).
+		if (this.pendingPreview) {
+			const { source, canvas } = this.pendingPreview;
+			const attached = this.pipeline.attachCanvas(source, 'preview', canvas);
+			if (attached) {
+				this.currentPreviewCanvas = source;
+				this.currentPreviewCanvasEl = canvas;
+				this.pendingPreview = null;
+			}
+		}
 	}
 
 	/**
@@ -151,32 +168,34 @@ export class PipelineManager {
 		}
 
 		// Preview canvas: render the preview source's video.
-		// Only update currentPreviewCanvas when attachment succeeds — if the
-		// source doesn't exist in the pipeline yet (race with syncSources),
-		// we leave currentPreviewCanvas stale so the next call retries.
-		if (previewSource !== this.currentPreviewCanvas) {
+		// Re-attach if the source changed OR the canvas element changed (layout
+		// switch creates new DOM elements). Mirrors the program canvas logic.
+		const needsPreviewAttach =
+			previewSource !== this.currentPreviewCanvas ||
+			(previewCanvasEl && previewCanvasEl !== this.currentPreviewCanvasEl);
+
+		if (needsPreviewAttach) {
 			// Detach old preview renderer from previous source
 			if (this.currentPreviewCanvas) {
 				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
 			}
-			// Clear the canvas to prevent stale frames from the old source
-			// showing while the new source's decoder delivers its first frame.
-			if (previewCanvasEl) {
-				const ctx = previewCanvasEl.getContext('2d');
-				if (ctx) {
-					ctx.clearRect(0, 0, previewCanvasEl.width, previewCanvasEl.height);
-				}
-			}
 			if (previewCanvasEl && previewSource) {
 				const attached = this.pipeline.attachCanvas(previewSource, 'preview', previewCanvasEl);
 				if (!attached) {
-					// Source not in pipeline yet — clear tracking so we retry
-					// on the next call (after syncSources adds it).
+					// Source not in pipeline yet — store pending attachment
+					// so syncSources can retry after adding the source.
+					this.pendingPreview = { source: previewSource, canvas: previewCanvasEl };
 					this.currentPreviewCanvas = null;
+					this.currentPreviewCanvasEl = null;
 					return;
 				}
+				this.pendingPreview = null;
+				this.currentPreviewCanvas = previewSource;
+				this.currentPreviewCanvasEl = previewCanvasEl;
+			} else {
+				this.currentPreviewCanvas = null;
+				this.currentPreviewCanvasEl = null;
 			}
-			this.currentPreviewCanvas = previewSource;
 		}
 	}
 
@@ -224,6 +243,8 @@ export class PipelineManager {
 		this.currentProgramCanvas = null;
 		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
+		this.currentPreviewCanvasEl = null;
+		this.pendingPreview = null;
 	}
 
 	/** Start the rAF audio metering loop. */
@@ -254,7 +275,10 @@ export class PipelineManager {
 		this.connectedSources = new Set<string>();
 		this.attachedCanvases = new Set<string>();
 		this.currentProgramCanvas = null;
+		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
+		this.currentPreviewCanvasEl = null;
+		this.pendingPreview = null;
 		this.sourceLevels = {};
 		this.programLevels = { peakL: 0, peakR: 0 };
 	}

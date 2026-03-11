@@ -103,6 +103,14 @@
 	}
 
 	function switchLayout() {
+		// Detach all canvases BEFORE the layout state change. This must run
+		// synchronously so it happens before Svelte destroys the old component
+		// and mounts the new one. If deferred to an $effect, it races with the
+		// child component's onCanvasReady $effect — the child may provide new
+		// canvas refs that the layout-change effect then immediately detaches.
+		pipelineManager.onLayoutChange();
+		programCanvas = null;
+		previewCanvas = null;
 		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
 		setLayoutMode(layoutMode);
 	}
@@ -341,23 +349,18 @@
 		pipelineManager.syncProgramPreviewCanvases(_preview, programCanvas, previewCanvas);
 	});
 
-	// Re-attach canvases when layout mode changes (DOM is replaced).
-	// Skip the initial run — ProgramPreview's onCanvasReady sets the canvas
-	// refs during mount, and resetting them here would permanently null them
-	// (ProgramPreview's $effect won't re-fire since its bind:this refs are stable).
+	// Re-attach tile canvases when layout mode changes (DOM is replaced).
+	// Program/preview canvases are handled by onCanvasReady → effect 324.
+	// onLayoutChange() and canvas nulling are done synchronously in
+	// switchLayout() to avoid racing with the child's onCanvasReady $effect.
 	let prevLayoutMode: LayoutMode | undefined;
 	$effect(() => {
 		const mode = layoutMode;
 		if (prevLayoutMode !== undefined && mode !== prevLayoutMode) {
-			pipelineManager.onLayoutChange();
-			// Reset canvas refs — new DOM elements will be provided by onCanvasReady
-			programCanvas = null;
-			previewCanvas = null;
-			// Re-sync after DOM updates
+			// Re-sync tile canvases after DOM updates (tile elements replaced).
 			tick().then(() => {
 				if (!mounted) return;
 				pipelineManager.syncSources(store.state.sources);
-				pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
 			});
 		}
 		prevLayoutMode = mode;

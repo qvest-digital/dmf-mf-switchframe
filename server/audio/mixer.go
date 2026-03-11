@@ -118,12 +118,14 @@ type Mixer struct {
 	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
 	lastDecodedPCM map[string][]float32
 
-	// Crossfade state: one AAC frame (~23ms) equal-power crossfade on cut.
-	crossfadeFrom     string // outgoing source key
-	crossfadeTo       string // incoming source key
-	crossfadeActive   bool
-	crossfadePCM      map[string][]float32 // "from" and "to" PCM buffers
-	crossfadeDeadline time.Time            // timeout for crossfade completion
+	// Crossfade state: 2-frame (~42ms) equal-power crossfade on cut.
+	crossfadeFrom            string // outgoing source key
+	crossfadeTo              string // incoming source key
+	crossfadeActive          bool
+	crossfadePCM             map[string][]float32 // "from" and "to" PCM buffers
+	crossfadeDeadline        time.Time            // timeout for crossfade completion
+	crossfadeFramesRemaining int                  // frames left in multi-frame crossfade
+	crossfadeTotalFrames     int                  // total frames in crossfade (for position calc)
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
 	transCrossfadeActive   bool
@@ -140,7 +142,8 @@ type Mixer struct {
 	stingerChannels int       // channel count of stinger audio
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
-	programMuted bool
+	programMuted          bool
+	unmuteFadeRemaining   int // samples remaining in unmute fade-in ramp (0 = inactive)
 
 	// Monotonic output PTS counter
 	outputPTS       int64
@@ -269,6 +272,30 @@ func (m *Mixer) initChannelDecoder(ch *Channel) {
 	})
 }
 
+// ensureEncoder lazy-initializes the AAC encoder if needed and primes it
+// with a silent frame to avoid MDCT warmup artifacts. A cold encoder's first
+// output frame has different spectral characteristics than a primed one,
+// causing an audible pop at the passthrough→mixing boundary.
+// Caller must hold m.mu.
+func (m *Mixer) ensureEncoder() error {
+	if m.encoder != nil {
+		return nil
+	}
+	if m.config.EncoderFactory == nil {
+		return fmt.Errorf("no encoder factory")
+	}
+	enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
+	if err != nil {
+		return err
+	}
+	// Encode a silent frame to prime the encoder's internal MDCT buffers.
+	// The output is discarded — we just need the encoder state initialized.
+	silence := make([]float32, 1024*m.numChannels)
+	_, _ = enc.Encode(silence)
+	m.encoder = enc
+	return nil
+}
+
 // mixDeadlineTicker runs in the background and forces a mix cycle flush
 // when the per-cycle deadline expires. This prevents deadlock when a source
 // stops sending audio while the mixer waits for all channels to contribute.
@@ -391,21 +418,30 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 		}
 	}
 
+	// Apply unmute fade-in ramp: prevents uncompressed burst after
+	// compressor/limiter envelopes were reset to zero during mute.
+	if m.unmuteFadeRemaining > 0 {
+		fadeSamples := m.unmuteFadeRemaining
+		for i := range mixed {
+			if fadeSamples <= 0 {
+				break
+			}
+			// Linear ramp from 0 to 1 over the remaining fade samples
+			rampTotal := m.sampleRate * m.numChannels * 5 / 1000
+			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
+			mixed[i] *= progress
+			fadeSamples--
+		}
+		m.unmuteFadeRemaining = fadeSamples
+	}
+
 	// Update program peak metering (after mute so meters show silence)
 	peakL, peakR := PeakLevel(mixed, m.numChannels)
 	m.programPeakL = peakL
 	m.programPeakR = peakR
 
-	// Lazy-init encoder
-	if m.encoder == nil && m.config.EncoderFactory != nil {
-		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.resetMixCycleLocked()
-			return nil
-		}
-		m.encoder = enc
-	}
-	if m.encoder == nil {
+	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
+	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
 		m.resetMixCycleLocked()
 		return nil
 	}
@@ -585,33 +621,28 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.recalcPassthrough()
 }
 
-// OnCut initiates a one-frame equal-power crossfade between old and new source.
-// Called by the switcher when a cut occurs. A timeout ensures the crossfade
-// completes even if the outgoing source stops sending frames.
+// OnCut initiates a 2-frame (~42ms) equal-power crossfade between old and new
+// source. Called by the switcher when a cut occurs. Two frames provide enough
+// time to mask AAC codec warmup artifacts at the passthrough→mixing boundary.
+// A timeout ensures the crossfade completes even if a source stops sending.
 func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.crossfadeFrom = oldSource
 	m.crossfadeTo = newSource
 	m.crossfadeActive = true
+	m.crossfadeFramesRemaining = 2
+	m.crossfadeTotalFrames = 2
 	m.crossfadePCM = make(map[string][]float32)
 	// Pre-seed the old source's PCM from the buffer — no waiting needed.
-	// Apply pipeline (Trim -> EQ -> Compressor -> Fader) to match
-	// what ingestCrossfadeFrame does for frames arriving from the decode path.
+	// Apply only stateless gain (Trim * Fader) to avoid advancing EQ/compressor
+	// internal state with potentially stale audio data. The crossfade is short
+	// enough that the slight EQ/compressor difference is inaudible.
 	if lastPCM, ok := m.lastDecodedPCM[oldSource]; ok && len(lastPCM) > 0 {
 		cp := make([]float32, len(lastPCM))
 		if ch, chOk := m.channels[oldSource]; chOk {
 			for i, s := range lastPCM {
-				cp[i] = s * ch.trimLinear
-			}
-			if !ch.eq.IsBypassed() {
-				ch.eq.Process(cp, m.numChannels)
-			}
-			if !ch.compressor.IsBypassed() {
-				ch.compressor.Process(cp)
-			}
-			for i := range cp {
-				cp[i] *= ch.levelLinear
+				cp[i] = s * ch.trimLinear * ch.levelLinear
 			}
 		} else {
 			copy(cp, lastPCM)
@@ -661,21 +692,9 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 		m.initChannelDecoder(ch)
 	}
 
-	// Pre-warm the encoder if it hasn't been used yet (common when
-	// transitioning out of passthrough mode). A cold encoder's first
-	// output frame has different spectral characteristics than the
-	// passthrough stream, causing an audible pop. Feed it a silent
-	// frame to prime its internal state.
-	if m.encoder == nil && m.config.EncoderFactory != nil {
-		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-		if err == nil {
-			// Encode a silent frame to prime the encoder's internal buffers.
-			// The output is discarded — we just need the encoder state initialized.
-			silence := make([]float32, 1024*m.numChannels)
-			_, _ = enc.Encode(silence)
-			m.encoder = enc
-		}
-	}
+	// Pre-warm the encoder so the first real output frame doesn't have
+	// MDCT warmup artifacts (audible pop at passthrough→mixing boundary).
+	_ = m.ensureEncoder()
 
 	m.recalcPassthrough()
 }
@@ -717,17 +736,56 @@ func (m *Mixer) OnTransitionComplete() {
 	}
 }
 
+// OnTransitionAbort handles a cancelled transition (e.g. T-bar pulled back
+// to 0). Unlike OnTransitionComplete, it snaps the crossfade position to 0.0
+// (fully original source) and flushes a final mix cycle at that position
+// before clearing state. This prevents an audio discontinuity when the
+// crossfade was at an intermediate position.
+func (m *Mixer) OnTransitionAbort() {
+	m.mu.Lock()
+	var outputFrame *media.AudioFrame
+	if m.mixStarted {
+		// Snap position to 0 (full original source) for the final mix cycle.
+		m.transCrossfadePosition = 0.0
+		m.mixCycleTransPos = 0.0
+		outputFrame = m.collectMixCycleLocked()
+	}
+	m.transCrossfadeActive = false
+	m.transCrossfadeFrom = ""
+	m.transCrossfadeTo = ""
+	m.transCrossfadePosition = 0.0
+	m.transCrossfadeMode = 0
+	m.transCrossfadeAudioPos = 0.0
+	m.mixCycleTransPos = 0.0
+	m.stingerAudio = nil
+	m.stingerOffset = 0
+	m.stingerChannels = 0
+	m.recalcPassthrough()
+	m.mu.Unlock()
+	if outputFrame != nil {
+		m.recordAndOutput(outputFrame)
+	}
+}
+
 // SetProgramMute sets the program output mute state. When muted, the mixer
 // produces silent output (FTB held). Metering reflects silence.
+// On unmute, a 5ms fade-in ramp prevents an uncompressed burst caused by
+// the compressor/limiter envelopes starting from zero.
 func (m *Mixer) SetProgramMute(muted bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	wasMuted := m.programMuted
 	m.programMuted = muted
 	if muted {
 		m.limiter.Reset()
 		for _, ch := range m.channels {
 			ch.compressor.Reset()
 		}
+		m.unmuteFadeRemaining = 0
+	} else if wasMuted {
+		// Schedule a 5ms fade-in ramp to prevent uncompressed burst
+		// after compressor/limiter envelopes were reset to zero.
+		m.unmuteFadeRemaining = m.sampleRate * m.numChannels * 5 / 1000
 	}
 	m.recalcPassthrough()
 }
@@ -1359,10 +1417,15 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 			"deadline_ms", crossfadeTimeout.Milliseconds())
 	}
 
+	// Compute crossfade position range for this frame within the multi-frame ramp.
+	frameIdx := m.crossfadeTotalFrames - m.crossfadeFramesRemaining // 0-based
+	posStart := float64(frameIdx) / float64(m.crossfadeTotalFrames)
+	posEnd := float64(frameIdx+1) / float64(m.crossfadeTotalFrames)
+
 	// Apply equal-power crossfade (or use single source if timed out)
 	var mixed []float32
 	if hasFrom && hasTo {
-		m.crossfadeBuf = EqualPowerCrossfadeStereoInto(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
+		m.crossfadeBuf = EqualPowerCrossfadeRanged(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels, posStart, posEnd)
 		mixed = m.crossfadeBuf
 	} else if hasTo {
 		// Outgoing source timed out — use incoming source only
@@ -1414,17 +1477,8 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
 	}
 
-	// Lazy-init encoder
-	if m.encoder == nil && m.config.EncoderFactory != nil {
-		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.crossfadeActive = false
-			m.mu.Unlock()
-			return
-		}
-		m.encoder = enc
-	}
-	if m.encoder == nil {
+	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
+	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
 		m.crossfadeActive = false
 		m.mu.Unlock()
 		return
@@ -1443,9 +1497,16 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 		return
 	}
 
-	// Clear crossfade state
-	m.crossfadeActive = false
-	m.crossfadePCM = nil
+	// Decrement multi-frame crossfade counter. If more frames remain,
+	// reset the PCM map and deadline so we collect another frame pair.
+	m.crossfadeFramesRemaining--
+	if m.crossfadeFramesRemaining <= 0 {
+		m.crossfadeActive = false
+		m.crossfadePCM = nil
+	} else {
+		m.crossfadePCM = make(map[string][]float32)
+		m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
+	}
 
 	// Build output frame before releasing lock (reuse pts from above)
 	outputFrame := &media.AudioFrame{
@@ -1868,10 +1929,15 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 			"deadline_ms", crossfadeTimeout.Milliseconds())
 	}
 
+	// Compute crossfade position range for this frame within the multi-frame ramp.
+	frameIdx := m.crossfadeTotalFrames - m.crossfadeFramesRemaining
+	posStart := float64(frameIdx) / float64(m.crossfadeTotalFrames)
+	posEnd := float64(frameIdx+1) / float64(m.crossfadeTotalFrames)
+
 	// Apply equal-power crossfade (or use single source if timed out)
 	var mixed []float32
 	if hasFrom && hasTo {
-		m.crossfadeBuf = EqualPowerCrossfadeStereoInto(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels)
+		m.crossfadeBuf = EqualPowerCrossfadeRanged(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels, posStart, posEnd)
 		mixed = m.crossfadeBuf
 	} else if hasTo {
 		mixed = m.crossfadePCM[m.crossfadeTo]
@@ -1917,17 +1983,8 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		(*sinkPtr)(m.mxlSinkBuf, outPTS, m.sampleRate, m.numChannels)
 	}
 
-	// Lazy-init encoder
-	if m.encoder == nil && m.config.EncoderFactory != nil {
-		enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
-		if err != nil {
-			m.crossfadeActive = false
-			m.mu.Unlock()
-			return
-		}
-		m.encoder = enc
-	}
-	if m.encoder == nil {
+	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
+	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
 		m.crossfadeActive = false
 		m.mu.Unlock()
 		return
@@ -1946,9 +2003,15 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		return
 	}
 
-	// Clear crossfade state
-	m.crossfadeActive = false
-	m.crossfadePCM = nil
+	// Decrement multi-frame crossfade counter.
+	m.crossfadeFramesRemaining--
+	if m.crossfadeFramesRemaining <= 0 {
+		m.crossfadeActive = false
+		m.crossfadePCM = nil
+	} else {
+		m.crossfadePCM = make(map[string][]float32)
+		m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
+	}
 
 	// Build output frame
 	outputFrame := &media.AudioFrame{

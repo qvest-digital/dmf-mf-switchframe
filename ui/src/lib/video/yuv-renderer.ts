@@ -167,6 +167,8 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 
 	let currentWidth = 0;
 	let currentHeight = 0;
+	// Track canvas + video dimensions to detect when letterbox bars need clearing
+	let lastVP = { cw: 0, ch: 0, vx: 0, vy: 0, vw: 0, vh: 0 };
 	let destroyed = false;
 
 	function render(packedFrame: Uint8Array): void {
@@ -179,14 +181,44 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 		const chromaW = width >> 1;
 		const chromaH = height >> 1;
 
-		// Update canvas size if resolution changed
-		if (width !== currentWidth || height !== currentHeight) {
-			canvas.width = width;
-			canvas.height = height;
-			gl.viewport(0, 0, width, height);
-			currentWidth = width;
-			currentHeight = height;
+		// Use canvas dimensions set by setupHiDPICanvas (don't override).
+		// Calculate viewport that maintains video aspect ratio, centered.
+		const cw = canvas.width;
+		const ch = canvas.height;
+		if (cw === 0 || ch === 0) return;
+
+		const videoAspect = width / height;
+		const canvasAspect = cw / ch;
+		let vx: number, vy: number, vw: number, vh: number;
+		if (Math.abs(videoAspect - canvasAspect) < 0.01) {
+			vx = 0; vy = 0; vw = cw; vh = ch;
+		} else if (videoAspect > canvasAspect) {
+			vw = cw;
+			vh = Math.round(cw / videoAspect);
+			vx = 0;
+			// WebGL viewport Y is from bottom, not top
+			vy = Math.round((ch - vh) / 2);
+		} else {
+			vh = ch;
+			vw = Math.round(ch * videoAspect);
+			vx = Math.round((cw - vw) / 2);
+			vy = 0;
 		}
+
+		// Clear letterbox/pillarbox bars when layout changes
+		const needsBars = vw !== cw || vh !== ch;
+		const vpChanged = cw !== lastVP.cw || ch !== lastVP.ch ||
+			vx !== lastVP.vx || vy !== lastVP.vy ||
+			vw !== lastVP.vw || vh !== lastVP.vh;
+		if (needsBars && vpChanged) {
+			gl.viewport(0, 0, cw, ch);
+			gl.clearColor(0, 0, 0, 1);
+			gl.clear(gl.COLOR_BUFFER_BIT);
+		}
+		lastVP = { cw, ch, vx, vy, vw, vh };
+		gl.viewport(vx, vy, vw, vh);
+		currentWidth = width;
+		currentHeight = height;
 
 		gl.useProgram(program);
 

@@ -306,24 +306,60 @@ export class PrismRenderer {
 		this.reportStats(now);
 	}
 
-	private cachedCanvasW = 0;
-	private cachedCanvasH = 0;
+	// Cached draw rect — used to avoid redundant fillRect calls for
+	// letterbox/pillarbox bars when the layout hasn't changed.
+	private lastDraw = { cw: 0, ch: 0, dx: 0, dy: 0, dw: 0, dh: 0 };
 
+	/**
+	 * Draw a video frame centered within the canvas, maintaining the
+	 * video's aspect ratio. The canvas backing store dimensions are
+	 * controlled by setupHiDPICanvas (via ResizeObserver), NOT by the
+	 * video frame — this prevents the canvas from fighting CSS layout
+	 * and ensures consistent centering across resize.
+	 */
 	private drawFrame(frame: VideoFrame): void {
-		let targetW = frame.displayWidth;
-		let targetH = frame.displayHeight;
-		if (this._maxResolution > 0) {
-			const scale = Math.min(1, this._maxResolution / Math.max(targetW, targetH));
-			targetW = Math.round(targetW * scale);
-			targetH = Math.round(targetH * scale);
+		const cw = this.canvas.width;
+		const ch = this.canvas.height;
+		if (cw === 0 || ch === 0) return;
+
+		const fw = frame.displayWidth;
+		const fh = frame.displayHeight;
+		const videoAspect = fw / fh;
+		const canvasAspect = cw / ch;
+
+		let dx: number, dy: number, dw: number, dh: number;
+		if (Math.abs(videoAspect - canvasAspect) < 0.01) {
+			// Aspect ratios match — fill entire canvas (common case)
+			dx = 0; dy = 0; dw = cw; dh = ch;
+		} else if (videoAspect > canvasAspect) {
+			// Video wider than canvas — fit to width, bars top/bottom
+			dw = cw;
+			dh = Math.round(cw / videoAspect);
+			dx = 0;
+			dy = Math.round((ch - dh) / 2);
+		} else {
+			// Video taller than canvas — fit to height, bars left/right
+			dh = ch;
+			dw = Math.round(ch * videoAspect);
+			dx = Math.round((cw - dw) / 2);
+			dy = 0;
 		}
-		if (this.cachedCanvasW !== targetW || this.cachedCanvasH !== targetH) {
-			this.canvas.width = targetW;
-			this.canvas.height = targetH;
-			this.cachedCanvasW = targetW;
-			this.cachedCanvasH = targetH;
+
+		// Clear letterbox/pillarbox bars only when the draw rect changes
+		// (canvas resize or video aspect ratio change). The video area
+		// itself is overwritten by drawImage each frame.
+		const needsBars = dw !== cw || dh !== ch;
+		if (needsBars && (
+			cw !== this.lastDraw.cw || ch !== this.lastDraw.ch ||
+			dx !== this.lastDraw.dx || dy !== this.lastDraw.dy ||
+			dw !== this.lastDraw.dw || dh !== this.lastDraw.dh
+		)) {
+			this.ctx.fillStyle = '#000';
+			this.ctx.fillRect(0, 0, cw, ch);
 		}
-		this.ctx.drawImage(frame, 0, 0, targetW, targetH);
+		this.lastDraw = { cw, ch, dx, dy, dw, dh };
+
+		this.ctx.drawImage(frame, 0, 0, fw, fh, dx, dy, dw, dh);
 	}
 
 	private reportStats(now: number): void {

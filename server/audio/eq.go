@@ -100,16 +100,15 @@ type EQBandSettings struct {
 // Parameters and coefficients are stored in an immutable eqParams snapshot
 // swapped atomically. Filter state (s1, s2) is only accessed by Process()
 // which is single-threaded (called from the mixer's processing goroutine).
-// SetBand() signals a reset via atomic flag; Process() performs the actual reset.
+// On coefficient change, filter state is NOT reset — the biquad naturally
+// converges to the new response within ~10 samples, avoiding the step
+// discontinuity (click) that zeroing s1/s2 would cause.
 type EQ struct {
 	params atomic.Pointer[eqParams]
 
 	// Filter states: only written by Process() (single-writer, no lock needed).
 	// Indexed as [band][channel].
 	filterStates [3][]BiquadFilter
-
-	// Per-band reset flags: set by SetBand(), cleared by Process().
-	pendingReset [3]atomic.Bool
 
 	sampleRate float64
 }
@@ -194,7 +193,6 @@ func (eq *EQ) SetBand(band int, frequency, gain, q float64, enabled bool) error 
 			coeffs:    coeffs,
 		}
 		if eq.params.CompareAndSwap(old, &newParams) {
-			eq.pendingReset[band].Store(true)
 			break
 		}
 	}
@@ -238,12 +236,6 @@ func (eq *EQ) Process(samples []float32, channels int) []float32 {
 	p := eq.params.Load()
 
 	for i := 0; i < 3; i++ {
-		if eq.pendingReset[i].CompareAndSwap(true, false) {
-			for ch := range eq.filterStates[i] {
-				eq.filterStates[i][ch].Reset()
-			}
-		}
-
 		band := &p.bands[i]
 		if !band.enabled || band.gain == 0 {
 			continue

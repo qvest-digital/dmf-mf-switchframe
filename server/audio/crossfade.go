@@ -148,3 +148,92 @@ func EqualPowerCrossfadeStereoInto(dst, oldPCM, newPCM []float32, channels int) 
 
 	return dst
 }
+
+// EqualPowerCrossfadeRanged applies an equal-power crossfade over a sub-range
+// of the full [0,1] position. posStart and posEnd define the range within the
+// full crossfade curve. For example, (0.0, 0.5) applies the first half, and
+// (0.5, 1.0) applies the second half. This enables multi-frame crossfades
+// where the ramp is distributed across multiple audio frames.
+func EqualPowerCrossfadeRanged(dst, oldPCM, newPCM []float32, channels int, posStart, posEnd float64) []float32 {
+	if channels < 1 {
+		channels = 1
+	}
+	n := len(oldPCM)
+	if len(newPCM) > n {
+		n = len(newPCM)
+	}
+	if n == 0 {
+		return nil
+	}
+
+	totalPairs := n / channels
+	pairCount := float64(totalPairs - 1)
+	if pairCount < 1 {
+		pairCount = 1
+	}
+
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]float32, n)
+	}
+
+	// Pre-expand gain arrays from lookup tables using ranged position.
+	cosGainsPtr := crossfadeGainPool.Get().(*[]float32)
+	sinGainsPtr := crossfadeGainPool.Get().(*[]float32)
+	cosGains := growBuf(*cosGainsPtr, n)
+	sinGains := growBuf(*sinGainsPtr, n)
+
+	for i := 0; i < n; i++ {
+		// Map sample position to the sub-range [posStart, posEnd]
+		t := float64(i/channels) / pairCount
+		pos := posStart + t*(posEnd-posStart)
+		idx := int(pos * float64(crossfadeTableSize-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= crossfadeTableSize {
+			idx = crossfadeTableSize - 1
+		}
+		cosGains[i] = crossfadeCosTable[idx]
+		sinGains[i] = crossfadeSinTable[idx]
+	}
+
+	// Ensure both input slices are at least n elements.
+	oldBuf := oldPCM
+	newBuf := newPCM
+	var paddedPtr *[]float32
+	if len(oldPCM) < n {
+		paddedPtr = crossfadePadPool.Get().(*[]float32)
+		padded := growBuf(*paddedPtr, n)
+		copy(padded[:len(oldPCM)], oldPCM)
+		for i := len(oldPCM); i < n; i++ {
+			padded[i] = 0
+		}
+		oldBuf = padded
+		*paddedPtr = padded
+	} else if len(newPCM) < n {
+		paddedPtr = crossfadePadPool.Get().(*[]float32)
+		padded := growBuf(*paddedPtr, n)
+		copy(padded[:len(newPCM)], newPCM)
+		for i := len(newPCM); i < n; i++ {
+			padded[i] = 0
+		}
+		newBuf = padded
+		*paddedPtr = padded
+	}
+
+	// SIMD kernel: dst[i] = oldBuf[i]*cosGains[i] + newBuf[i]*sinGains[i]
+	vec.MulAddFloat32(&dst[0], &oldBuf[0], &cosGains[0], &newBuf[0], &sinGains[0], n)
+
+	// Return buffers to pools.
+	*cosGainsPtr = cosGains
+	*sinGainsPtr = sinGains
+	crossfadeGainPool.Put(cosGainsPtr)
+	crossfadeGainPool.Put(sinGainsPtr)
+	if paddedPtr != nil {
+		crossfadePadPool.Put(paddedPtr)
+	}
+
+	return dst
+}

@@ -28,6 +28,7 @@ type mockAudioTransHandler struct {
 	startCalls      []audioTransStartCall
 	positionCalls   []float64
 	completionCount int
+	abortCount      int
 	programMuted    bool
 }
 
@@ -54,6 +55,12 @@ func (m *mockAudioTransHandler) OnTransitionComplete() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completionCount++
+}
+
+func (m *mockAudioTransHandler) OnTransitionAbort() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.abortCount++
 }
 
 func (m *mockAudioTransHandler) SetProgramMute(muted bool) {
@@ -376,7 +383,8 @@ func TestSwitcherAbortTransition(t *testing.T) {
 	require.Equal(t, "cam1", state.ProgramSource, "program should stay cam1 after abort")
 
 	audioTrans.mu.Lock()
-	require.Equal(t, 1, audioTrans.completionCount)
+	require.Equal(t, 1, audioTrans.abortCount, "abort should call OnTransitionAbort")
+	require.Equal(t, 0, audioTrans.completionCount, "abort should not call OnTransitionComplete")
 	audioTrans.mu.Unlock()
 }
 
@@ -836,4 +844,66 @@ func TestTransitionGroupIDMonotonicity(t *testing.T) {
 			i, f.GroupID, lastGID)
 		lastGID = f.GroupID
 	}
+}
+
+func TestSwitcherFTBAbortCallsOnTransitionAbort(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	audioTrans := &mockAudioTransHandler{}
+	sw.SetAudioTransition(audioTrans)
+
+	// Start FTB
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	// Abort the FTB transition
+	sw.AbortTransition()
+
+	audioTrans.mu.Lock()
+	require.Equal(t, 1, audioTrans.abortCount, "FTB abort should call OnTransitionAbort")
+	require.Equal(t, 0, audioTrans.completionCount, "FTB abort should not call OnTransitionComplete")
+	require.False(t, audioTrans.programMuted, "FTB abort should not mute program")
+	audioTrans.mu.Unlock()
+
+	state := sw.State()
+	require.False(t, state.InTransition)
+	require.False(t, state.FTBActive, "aborting FTB should return to idle (not hold at black)")
+}
+
+func TestSwitcherFTBReverseAbortCallsOnTransitionAbort(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	audioTrans := &mockAudioTransHandler{}
+	sw.SetAudioTransition(audioTrans)
+
+	// Start FTB and complete it
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+	err = sw.SetTransitionPosition(context.Background(), 1.0)
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+
+	// Clear counters after FTB completion
+	audioTrans.mu.Lock()
+	audioTrans.abortCount = 0
+	audioTrans.completionCount = 0
+	audioTrans.mu.Unlock()
+
+	// Toggle FTB off (starts reverse transition)
+	err = sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	// Abort the reverse FTB transition
+	sw.AbortTransition()
+
+	audioTrans.mu.Lock()
+	require.Equal(t, 1, audioTrans.abortCount, "FTB reverse abort should call OnTransitionAbort")
+	require.Equal(t, 0, audioTrans.completionCount, "FTB reverse abort should not call OnTransitionComplete")
+	audioTrans.mu.Unlock()
+
+	state := sw.State()
+	require.False(t, state.InTransition)
+	require.True(t, state.FTBActive, "aborting reverse FTB should keep FTB active (screen stays black)")
 }

@@ -186,3 +186,125 @@ func TestEqualPowerCrossfade_StereoGainSymmetry(t *testing.T) {
 		}
 	}
 }
+
+func TestEqualPowerCrossfadeRanged_FullRange_MatchesOriginal(t *testing.T) {
+	t.Parallel()
+	n := 1024
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 0.8
+		newPCM[i] = 0.4
+	}
+
+	original := audio.EqualPowerCrossfadeStereoInto(nil, old, newPCM, 2)
+	ranged := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 2, 0.0, 1.0)
+
+	require.Equal(t, len(original), len(ranged))
+	for i := range original {
+		require.InDelta(t, original[i], ranged[i], 1e-5,
+			"sample %d: full-range Ranged should match original", i)
+	}
+}
+
+func TestEqualPowerCrossfadeRanged_FirstHalf(t *testing.T) {
+	t.Parallel()
+	n := 1024
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 1.0
+		newPCM[i] = 0.0
+	}
+
+	result := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 1, 0.0, 0.5)
+
+	// At posStart=0.0: cos(0)=1, old=1.0 → result[0] ≈ 1.0
+	require.InDelta(t, 1.0, result[0], 0.01, "start of first half should be ~old")
+
+	// At posEnd=0.5: cos(π/4)≈0.707, old=1.0 → result[n-1] ≈ 0.707
+	require.InDelta(t, 0.707, result[n-1], 0.02, "end of first half should be ~cos(π/4)")
+}
+
+func TestEqualPowerCrossfadeRanged_SecondHalf(t *testing.T) {
+	t.Parallel()
+	n := 1024
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 1.0
+		newPCM[i] = 0.0
+	}
+
+	result := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 1, 0.5, 1.0)
+
+	// At posStart=0.5: cos(π/4)≈0.707, old=1.0 → result[0] ≈ 0.707
+	require.InDelta(t, 0.707, result[0], 0.02, "start of second half should be ~cos(π/4)")
+
+	// At posEnd=1.0: cos(π/2)≈0, old=1.0 → result[n-1] ≈ 0.0
+	require.InDelta(t, 0.0, result[n-1], 0.01, "end of second half should be ~0")
+}
+
+func TestEqualPowerCrossfadeRanged_Mono(t *testing.T) {
+	t.Parallel()
+	old := []float32{1.0, 1.0, 1.0, 1.0}
+	newPCM := []float32{0.0, 0.0, 0.0, 0.0}
+
+	result := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 1, 0.0, 1.0)
+	require.Equal(t, 4, len(result))
+	require.InDelta(t, 1.0, result[0], 0.01, "mono start")
+	require.InDelta(t, 0.0, result[3], 0.01, "mono end")
+}
+
+func TestEqualPowerCrossfadeRanged_DifferentLengths(t *testing.T) {
+	t.Parallel()
+	old := []float32{1.0, 1.0, 1.0, 1.0}
+	newPCM := []float32{0.5, 0.5} // shorter
+
+	result := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 1, 0.0, 1.0)
+	require.Equal(t, 4, len(result), "output should be length of longer buffer")
+}
+
+func TestEqualPowerCrossfadeRanged_Empty(t *testing.T) {
+	t.Parallel()
+	result := audio.EqualPowerCrossfadeRanged(nil, nil, nil, 2, 0.0, 1.0)
+	require.Nil(t, result)
+}
+
+func TestEqualPowerCrossfadeRanged_BufferReuse(t *testing.T) {
+	t.Parallel()
+	n := 512
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 1.0
+		newPCM[i] = 0.5
+	}
+
+	dst := make([]float32, n)
+	result := audio.EqualPowerCrossfadeRanged(dst, old, newPCM, 2, 0.0, 1.0)
+
+	require.Equal(t, n, len(result))
+	require.Equal(t, &dst[0], &result[0], "should reuse the provided buffer")
+}
+
+func TestEqualPowerCrossfadeRanged_TwoHalvesCombineToFull(t *testing.T) {
+	t.Parallel()
+	// A 2-frame crossfade: first half [0,0.5], second half [0.5,1.0].
+	// The endpoint of the first half should match the start of the second half.
+	n := 256
+	old := make([]float32, n)
+	newPCM := make([]float32, n)
+	for i := range old {
+		old[i] = 0.9
+		newPCM[i] = 0.3
+	}
+
+	firstHalf := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 2, 0.0, 0.5)
+	secondHalf := audio.EqualPowerCrossfadeRanged(nil, old, newPCM, 2, 0.5, 1.0)
+
+	// The last sample of firstHalf should ≈ first sample of secondHalf
+	// (both at position 0.5 in the overall curve)
+	require.InDelta(t, firstHalf[n-1], secondHalf[0], 0.01,
+		"endpoint of first half should match startpoint of second half")
+}

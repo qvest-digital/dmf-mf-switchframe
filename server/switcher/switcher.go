@@ -147,6 +147,7 @@ type audioTransitionHandler interface {
 	OnTransitionStart(oldSource, newSource string, mode audio.TransitionMode, durationMs int)
 	OnTransitionPosition(position float64)
 	OnTransitionComplete()
+	OnTransitionAbort()
 	SetProgramMute(muted bool)
 	SetStingerAudio(audio []float32, sampleRate, channels int)
 }
@@ -1522,7 +1523,7 @@ func (s *Switcher) AbortTransition() {
 		s.log.Warn("transition aborted", "type", transType, "reason", "manual abort")
 
 		if audioHandler != nil {
-			audioHandler.OnTransitionComplete()
+			audioHandler.OnTransitionAbort()
 		}
 		s.notifyStateChange(snapshot)
 	}
@@ -1593,7 +1594,11 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	}
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionComplete()
+		if aborted {
+			audioHandler.OnTransitionAbort()
+		} else {
+			audioHandler.OnTransitionComplete()
+		}
 	}
 	if !aborted && audioCut != nil {
 		audioCut.OnProgramChange(snapshot.ProgramSource)
@@ -1632,8 +1637,10 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 	}
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionComplete()
-		if !aborted {
+		if aborted {
+			audioHandler.OnTransitionAbort()
+		} else {
+			audioHandler.OnTransitionComplete()
 			// FTB completed — screen is black, mute program audio
 			audioHandler.SetProgramMute(true)
 		}
@@ -1679,10 +1686,12 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 	}
 
 	if audioHandler != nil {
-		audioHandler.OnTransitionComplete()
 		if aborted {
 			// FTB reverse aborted — screen stays black, re-mute audio
+			audioHandler.OnTransitionAbort()
 			audioHandler.SetProgramMute(true)
+		} else {
+			audioHandler.OnTransitionComplete()
 		}
 	}
 	s.notifyStateChange(snapshot)
@@ -1956,7 +1965,7 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		abortEngine.Stop()
 		s.log.Warn("transition aborted", "reason", "cut override")
 		if abortAudioHandler != nil {
-			abortAudioHandler.OnTransitionComplete()
+			abortAudioHandler.OnTransitionAbort()
 		}
 	}
 

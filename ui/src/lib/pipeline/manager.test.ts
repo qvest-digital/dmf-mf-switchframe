@@ -272,21 +272,34 @@ describe('PipelineManager', () => {
 			);
 		});
 
-		it('should clear preview canvas when switching sources to prevent stale frames', () => {
+		it('should detach old source and attach new source when switching preview', () => {
 			const pgmCanvas = createCanvas();
 			const pvwCanvas = createCanvas();
-			const clearRectSpy = vi.fn();
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			vi.spyOn(pvwCanvas, 'getContext').mockReturnValue({
-				clearRect: clearRectSpy,
-			} as any);
 
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
-			// Switch to cam2 — should clear the canvas before attaching
+			// Switch to cam2 — should detach cam1 and attach cam2
 			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
 
-			expect(clearRectSpy).toHaveBeenCalledWith(0, 0, pvwCanvas.width, pvwCanvas.height);
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'preview');
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam2', 'preview', pvwCanvas);
+		});
+
+		it('should re-attach preview when canvas element changes (layout switch)', () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas1 = createCanvas();
+
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas1);
+			pipeline.attachCanvas.mockClear();
+			pipeline.detachCanvas.mockClear();
+
+			// Layout switch creates a new DOM canvas element for the same source
+			const pvwCanvas2 = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas2);
+
+			// Should detach old canvas and re-attach with new element
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'preview');
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas2);
 		});
 
 		it('should retry preview attachment when source not yet in pipeline', () => {
@@ -311,6 +324,40 @@ describe('PipelineManager', () => {
 
 			// Should retry the attachment (not skip due to stale tracking)
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam2', 'preview', pvwCanvas);
+		});
+
+		it('should retry pending preview via syncSources after failed attachment', async () => {
+			// Simulate: syncProgramPreviewCanvases fails because source not in pipeline
+			pipeline.attachCanvas.mockReturnValue(false);
+
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			// Preview attachment failed, stored as pending
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+
+			// Now syncSources adds the source — should retry pending preview
+			pipeline.attachCanvas.mockReturnValue(true);
+			pipeline.attachCanvas.mockClear();
+
+			await manager.syncSources(makeSources('cam1'));
+
+			// syncSources should retry the pending preview attachment
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
+		});
+
+		it('should not record source key when called without canvas elements', () => {
+			// Simulate: tick callback runs before SimpleMode's $effect provides canvas refs
+			manager.syncProgramPreviewCanvases('cam1', null, null);
+
+			// Now call with actual canvas refs — should trigger attachment
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			// Should attach because tracking was null, not 'cam1'
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview', pvwCanvas);
 		});
 	});
 

@@ -75,11 +75,12 @@ import (
 // The decoder reuses internal buffers across calls. Callers must copy or
 // consume the returned []float32 before the next Decode() call.
 type FDKDecoder struct {
-	handle   C.aacdec_t
-	channels int
-	closed   bool
-	pcmBuf   []int16   // reusable C decode buffer
-	outBuf   []float32 // reusable float32 output buffer
+	handle     C.aacdec_t
+	channels   int
+	closed     bool
+	pcmBuf     []int16   // reusable C decode buffer
+	outBuf     []float32 // reusable float32 output buffer
+	frameCount uint32    // counts decoded frames (0-sample priming frames are expected early)
 }
 
 // NewFDKDecoder creates a new FDK AAC decoder for the given sample rate and channel count.
@@ -128,7 +129,14 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	}
 
 	n := int(decodedSamples)
+	d.frameCount++
 	if n == 0 {
+		// AAC decoders need 1-2 "priming" frames to initialize internal
+		// MDCT state. Return nil (not error) for the first 2 frames so
+		// callers can skip gracefully instead of logging decode errors.
+		if d.frameCount <= 2 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("decoder produced no samples")
 	}
 
