@@ -97,10 +97,10 @@ sad16x16_loop:
 //   V4-V7.8H = accumulators for refs 0-3
 TEXT ·SadBlock16x16x4(SB), NOSPLIT, $0-72
 	MOVD cur+0(FP), R0          // current block pointer
-	MOVD refs+8(FP), R5         // ref0
-	MOVD refs+16(FP), R6        // ref1
-	MOVD refs+24(FP), R7        // ref2
-	MOVD refs+32(FP), R8        // ref3
+	MOVD refs_0+8(FP), R5       // refs[0]
+	MOVD refs_1+16(FP), R6      // refs[1]
+	MOVD refs_2+24(FP), R7      // refs[2]
+	MOVD refs_3+32(FP), R8      // refs[3]
 	MOVD curStride+40(FP), R2   // cur stride
 	MOVD refStride+48(FP), R3   // ref stride
 
@@ -142,19 +142,19 @@ sadx4_neon_loop:
 	// Reduce each accumulator: sum 8 halfwords → 32-bit result
 	UADDLV_H8(4, 4)
 	VMOV V4.S[0], R0
-	MOVW R0, ret+56(FP)
+	MOVW R0, ret_0+56(FP)       // ret[0]
 
 	UADDLV_H8(5, 5)
 	VMOV V5.S[0], R0
-	MOVW R0, ret+60(FP)
+	MOVW R0, ret_1+60(FP)       // ret[1]
 
 	UADDLV_H8(6, 6)
 	VMOV V6.S[0], R0
-	MOVW R0, ret+64(FP)
+	MOVW R0, ret_2+64(FP)       // ret[2]
 
 	UADDLV_H8(7, 7)
 	VMOV V7.S[0], R0
-	MOVW R0, ret+68(FP)
+	MOVW R0, ret_3+68(FP)       // ret[3]
 	RET
 
 

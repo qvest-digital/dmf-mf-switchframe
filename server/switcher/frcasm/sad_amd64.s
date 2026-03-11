@@ -59,10 +59,10 @@ sad16x16_loop:
 //   ret[3]     +68(FP)    uint32
 TEXT ·SadBlock16x16x4(SB), NOSPLIT, $0-72
 	MOVQ cur+0(FP), SI         // current block pointer
-	MOVQ refs+8(FP), R10       // ref0
-	MOVQ refs+16(FP), R11      // ref1
-	MOVQ refs+24(FP), R12      // ref2
-	MOVQ refs+32(FP), R13      // ref3
+	MOVQ refs_0+8(FP), R10     // refs[0]
+	MOVQ refs_1+16(FP), R11    // refs[1]
+	MOVQ refs_2+24(FP), R12    // refs[2]
+	MOVQ refs_3+32(FP), R13    // refs[3]
 	MOVQ curStride+40(FP), R8  // cur stride
 	MOVQ refStride+48(FP), R9  // ref stride
 
@@ -106,22 +106,22 @@ sadx4_loop:
 	MOVHLPS X6, X0
 	PADDQ   X0, X6
 	MOVQ    X6, AX
-	MOVL    AX, ret+56(FP)
+	MOVL    AX, ret_0+56(FP)    // ret[0]
 
 	MOVHLPS X7, X0
 	PADDQ   X0, X7
 	MOVQ    X7, AX
-	MOVL    AX, ret+60(FP)
+	MOVL    AX, ret_1+60(FP)    // ret[1]
 
 	MOVHLPS X8, X0
 	PADDQ   X0, X8
 	MOVQ    X8, AX
-	MOVL    AX, ret+64(FP)
+	MOVL    AX, ret_2+64(FP)    // ret[2]
 
 	MOVHLPS X9, X0
 	PADDQ   X0, X9
 	MOVQ    X9, AX
-	MOVL    AX, ret+68(FP)
+	MOVL    AX, ret_3+68(FP)    // ret[3]
 	RET
 
 
