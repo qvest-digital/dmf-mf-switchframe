@@ -778,6 +778,52 @@ func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
 	_ = c.Close()
 }
 
+func TestSRTCaller_BandwidthHintsPassedToConnectFn(t *testing.T) {
+	t.Parallel()
+	var capturedConfig SRTCallerConfig
+	mock := &mockSRTConn{}
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:    "srt.example.com",
+		Port:       9998,
+		InputBW:    625000, // 5 Mbps in bytes/sec
+		OverheadBW: 15,     // 15% overhead
+	})
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		capturedConfig = config
+		return mock, nil
+	}
+
+	err := c.Start(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	require.Equal(t, int64(625000), capturedConfig.InputBW)
+	require.Equal(t, 15, capturedConfig.OverheadBW)
+}
+
+func TestSRTCaller_BandwidthHintsZeroByDefault(t *testing.T) {
+	t.Parallel()
+	var capturedConfig SRTCallerConfig
+	mock := &mockSRTConn{}
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		capturedConfig = config
+		return mock, nil
+	}
+
+	err := c.Start(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	require.Equal(t, int64(0), capturedConfig.InputBW)
+	require.Equal(t, 0, capturedConfig.OverheadBW)
+}
+
 func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {
 	t.Parallel()
 	mock := &mockSRTConn{}

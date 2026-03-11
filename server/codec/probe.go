@@ -4,6 +4,7 @@ package codec
 
 import (
 	"log/slog"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -21,12 +22,27 @@ type encoderCandidate struct {
 	hwType string // "cuda", "vaapi", "videotoolbox", or "" for software
 }
 
-// candidates lists encoder candidates in priority order (fastest first).
+// candidates lists encoder candidates in priority order.
+// On macOS, libx264 is preferred over VideoToolbox because libx264 provides
+// better CBR rate control (nal-hrd=cbr with filler NALUs) and more consistent
+// frame sizes. VideoToolbox's constant_bit_rate mode does not guarantee filler
+// NALU insertion, so the TS-level CBR pacer must do all the padding work.
 var candidates = []encoderCandidate{
 	{name: "h264_nvenc", hwType: "cuda"},
 	{name: "h264_vaapi", hwType: "vaapi"},
 	{name: "h264_videotoolbox", hwType: "videotoolbox"},
 	{name: "libx264", hwType: ""},
+}
+
+func init() {
+	if runtime.GOOS == "darwin" {
+		candidates = []encoderCandidate{
+			{name: "h264_nvenc", hwType: "cuda"},
+			{name: "h264_vaapi", hwType: "vaapi"},
+			{name: "libx264", hwType: ""},
+			{name: "h264_videotoolbox", hwType: "videotoolbox"},
+		}
+	}
 }
 
 // ProbeEncoders tests available H.264 encoder backends and caches the result.
@@ -53,7 +69,7 @@ func ProbeEncoders() (string, string) {
 			"hw_accel", hwDeviceCtxPtr != nil,
 		)
 
-		if selectedEncoder == "libx264" {
+		if selectedEncoder == "libx264" && runtime.GOOS != "darwin" {
 			slog.Warn("software-only encoder detected — transitions above 720p may drop frames; hardware encoder recommended")
 		}
 	})
@@ -87,7 +103,7 @@ func probeEncoder() string {
 // Some hardware encoders (e.g. VideoToolbox) return EAGAIN on the first
 // frame(s) while warming up, so we send up to 4 frames.
 func tryEncoder(codecName string) bool {
-	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, false, nil)
 	if err != nil {
 		return false
 	}

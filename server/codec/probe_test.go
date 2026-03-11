@@ -3,6 +3,7 @@
 package codec
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,7 +60,7 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 		t.Skip("no H.264 encoder available")
 	}
 
-	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1)
+	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1, false)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	defer enc.Close()
@@ -104,7 +105,7 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 
 	w, h := 160, 120
 
-	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1, false)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -163,16 +164,16 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 }
 
 func TestNewVideoEncoder_InvalidParams(t *testing.T) {
-	_, err := NewVideoEncoder(0, 120, 200000, 30, 1)
+	_, err := NewVideoEncoder(0, 120, 200000, 30, 1, false)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 0, 200000, 30, 1)
+	_, err = NewVideoEncoder(160, 0, 200000, 30, 1, false)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 0, 30, 1)
+	_, err = NewVideoEncoder(160, 120, 0, 30, 1, false)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 200000, 0, 1)
+	_, err = NewVideoEncoder(160, 120, 200000, 0, 1, false)
 	require.Error(t, err)
 }
 
@@ -211,7 +212,7 @@ func TestHWDecode_ChromaPreserved(t *testing.T) {
 		yuv[ySize+uvSize+i] = 200 // Cr
 	}
 
-	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1, false)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -271,6 +272,31 @@ func TestHWDecode_ChromaPreserved(t *testing.T) {
 		"Cb and Cr should be distinct; equal values suggest de-interleave error")
 }
 
+func TestCandidateOrder_DarwinPrefersLibx264(t *testing.T) {
+	// Find the positions of libx264 and h264_videotoolbox in the candidate list.
+	libx264Pos := -1
+	vtPos := -1
+	for i, c := range candidates {
+		switch c.name {
+		case "libx264":
+			libx264Pos = i
+		case "h264_videotoolbox":
+			vtPos = i
+		}
+	}
+
+	require.NotEqual(t, -1, libx264Pos, "libx264 should be in candidates")
+	require.NotEqual(t, -1, vtPos, "h264_videotoolbox should be in candidates")
+
+	if runtime.GOOS == "darwin" {
+		require.Less(t, libx264Pos, vtPos,
+			"on macOS, libx264 should be probed before VideoToolbox")
+	} else {
+		require.Less(t, vtPos, libx264Pos,
+			"on non-macOS, VideoToolbox should be probed before libx264")
+	}
+}
+
 func TestCreateHWDeviceCtx_InvalidType(t *testing.T) {
 	// An invalid hardware type should return nil, not panic.
 	ctx := CreateHWDeviceCtx("nonexistent_hw_type")
@@ -280,4 +306,34 @@ func TestCreateHWDeviceCtx_InvalidType(t *testing.T) {
 func TestCreateHWDeviceCtx_EmptyType(t *testing.T) {
 	ctx := CreateHWDeviceCtx("")
 	require.Nil(t, ctx, "empty hw type should return nil")
+}
+
+func TestNewVideoEncoder_CBRMode(t *testing.T) {
+	probedEnc, _ := ProbeEncoders()
+	if probedEnc == "none" {
+		t.Skip("no H.264 encoder available")
+	}
+
+	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1, true)
+	require.NoError(t, err)
+	require.NotNil(t, enc)
+	defer enc.Close()
+
+	// Encode a few frames to verify CBR mode works end-to-end.
+	w, h := 160, 120
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	var gotOutput bool
+	for i := range 30 {
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, err)
+		if len(data) > 0 {
+			gotOutput = true
+			break
+		}
+	}
+	require.True(t, gotOutput, "CBR encoder should produce output within 30 frames")
 }

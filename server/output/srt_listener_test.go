@@ -294,3 +294,55 @@ func TestSRTListener_DefaultConfig(t *testing.T) {
 	require.Equal(t, defaultMaxConns, l.config.MaxConns)
 	require.Equal(t, defaultSRTLatency, l.config.Latency)
 }
+
+func TestSRTListener_BandwidthHintsStored(t *testing.T) {
+	t.Parallel()
+	l := NewSRTListener(SRTListenerConfig{
+		Port:       9999,
+		InputBW:    625000, // 5 Mbps in bytes/sec
+		OverheadBW: 15,     // 15% overhead
+	})
+	require.Equal(t, int64(625000), l.config.InputBW)
+	require.Equal(t, 15, l.config.OverheadBW)
+}
+
+func TestSRTListener_BandwidthHintsZeroByDefault(t *testing.T) {
+	t.Parallel()
+	l := NewSRTListener(SRTListenerConfig{Port: 9999})
+	require.Equal(t, int64(0), l.config.InputBW)
+	require.Equal(t, 0, l.config.OverheadBW)
+}
+
+func TestSRTListener_BandwidthHintsPassedToAcceptFn(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var capturedConfig SRTListenerConfig
+
+	l := NewSRTListener(SRTListenerConfig{
+		Port:       9999,
+		InputBW:    625000,
+		OverheadBW: 15,
+	})
+	l.acceptFn = func(ctx context.Context, config SRTListenerConfig) error {
+		mu.Lock()
+		capturedConfig = config
+		mu.Unlock()
+		return nil
+	}
+
+	err := l.Start(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = l.Close() }()
+
+	// Give goroutine time to call acceptFn
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return capturedConfig.Port == 9999
+	}, time.Second, 10*time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, int64(625000), capturedConfig.InputBW)
+	require.Equal(t, 15, capturedConfig.OverheadBW)
+}

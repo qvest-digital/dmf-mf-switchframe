@@ -21,9 +21,11 @@ const (
 type SRTCallerConfig struct {
 	Address        string
 	Port           int
-	Latency        int // ms, default 120
+	Latency        int   // ms, default 120
 	StreamID       string
-	RingBufferSize int // bytes, default 4MB
+	RingBufferSize int   // bytes, default 4MB
+	InputBW        int64 // bytes/sec, 0 = auto-estimate
+	OverheadBW     int   // percent, 0 = use srtgo default (25%)
 }
 
 // SRTCaller pushes MPEG-TS data to a remote SRT receiver.

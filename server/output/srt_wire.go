@@ -44,6 +44,17 @@ func SRTConnect(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
 		ConnTimeout: 5 * time.Second,
 	}
 
+	// When InputBW is set, tell SRT the expected input rate so it can
+	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
+	// on auto-estimation which chases VBR spikes.
+	if config.InputBW > 0 {
+		cfg.InputBW = config.InputBW
+		cfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
+		if config.OverheadBW > 0 {
+			cfg.OverheadBW = config.OverheadBW
+		}
+	}
+
 	addr := fmt.Sprintf("%s:%d", config.Address, config.Port)
 	conn, err := srt.Dial(addr, cfg)
 	if err != nil {
@@ -64,6 +75,17 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 
 	cfg := srt.Config{
 		Latency: time.Duration(latency) * time.Millisecond,
+	}
+
+	// When InputBW is set, tell SRT the expected input rate so it can
+	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
+	// on auto-estimation which chases VBR spikes.
+	if config.InputBW > 0 {
+		cfg.InputBW = config.InputBW
+		cfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
+		if config.OverheadBW > 0 {
+			cfg.OverheadBW = config.OverheadBW
+		}
 	}
 
 	addr := fmt.Sprintf(":%d", config.Port)

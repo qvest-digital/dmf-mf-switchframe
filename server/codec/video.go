@@ -13,8 +13,9 @@ import (
 // available hardware and software encoders in priority order.
 //
 // fpsNum/fpsDen express the frame rate as a rational number (e.g. 30000/1001 for 29.97fps).
-// Parameters match transition.EncoderFactory signature.
-func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+// cbr enables constant bitrate mode with filler NALUs. When false, the encoder
+// uses CRF/VBR (quality-driven, variable bitrate). OpenH264 ignores cbr.
+func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int, cbr bool) (transition.VideoEncoder, error) {
 	enc, _ := ProbeEncoders()
 	gopSecs := transition.DefaultGOPSecs
 	switch enc {
@@ -23,7 +24,7 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 	case "none":
 		return nil, fmt.Errorf("no H.264 encoder available")
 	default:
-		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, HWDeviceCtx())
+		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, cbr, HWDeviceCtx())
 	}
 }
 

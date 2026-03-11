@@ -46,6 +46,12 @@ func defaultBitrateForResolution(width, height int) int {
 	}
 }
 
+// DefaultBitrateForResolution returns the minimum encoding bitrate for
+// broadcast-quality output at the given resolution.
+func DefaultBitrateForResolution(width, height int) int {
+	return defaultBitrateForResolution(width, height)
+}
+
 // pipelineCodecs manages a shared encoder for the video processing pipeline.
 // The pipeline receives raw YUV420 frames (decoded per-source by sourceDecoder)
 // and encodes them to H.264 for program output.

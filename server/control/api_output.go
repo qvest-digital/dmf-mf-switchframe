@@ -253,6 +253,22 @@ func (a *API) handleStartDestination(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(status)
 }
 
+// handleCBRStatus returns the current CBR pacer status.
+func (a *API) handleCBRStatus(w http.ResponseWriter, r *http.Request) {
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	status := a.outputMgr.CBRStatus()
+	if status == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": false})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
 // handleStopDestination stops a destination's adapter.
 func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
