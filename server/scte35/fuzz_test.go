@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // FuzzDecode exercises the Decode function with arbitrary SCTE-35 binary data.
@@ -59,9 +61,8 @@ func FuzzDecode(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Recover from panics and fail the test.
 		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("Decode panicked on input of length %d: %v", len(data), r)
-			}
+			r := recover()
+			require.Nil(t, r, "Decode panicked on input of length %d", len(data))
 		}()
 		// Must not panic. Any return value (including errors) is acceptable.
 		_, _ = Decode(data)
@@ -116,9 +117,8 @@ func FuzzParseFromTS(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("ParseFromTS panicked on input of length %d: %v", len(data), r)
-			}
+			r := recover()
+			require.Nil(t, r, "ParseFromTS panicked on input of length %d", len(data))
 		}()
 		// Test with a common PID. Must not panic.
 		_, _ = ParseFromTS(0x102, data)
@@ -162,10 +162,10 @@ func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 	// Construct a hand-crafted minimal cancel section:
 	// table_id(0xFC) + flags/length + header + splice_command_type(0x05) + event_id + cancel_indicator
 	minCancel := make([]byte, 25)
-	minCancel[0] = 0xFC            // table_id
-	minCancel[13] = 0x05           // splice_command_type = splice_insert
-	binary.BigEndian.PutUint32(minCancel[14:18], 42) // splice_event_id
-	minCancel[18] = 0x80           // splice_event_cancel_indicator = 1, reserved = 1111111
+	minCancel[0] = 0xFC                                // table_id
+	minCancel[13] = 0x05                               // splice_command_type = splice_insert
+	binary.BigEndian.PutUint32(minCancel[14:18], 42)   // splice_event_id
+	minCancel[18] = 0x80                               // splice_event_cancel_indicator = 1, reserved = 1111111
 	f.Add(minCancel)
 
 	// Seed: empty input.
@@ -176,9 +176,8 @@ func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("Decode (cancel) panicked on input of length %d: %v", len(data), r)
-			}
+			r := recover()
+			require.Nil(t, r, "Decode (cancel) panicked on input of length %d", len(data))
 		}()
 		// Must not panic. Any return value is acceptable.
 		_, _ = Decode(data)

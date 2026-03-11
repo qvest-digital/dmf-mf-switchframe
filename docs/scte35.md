@@ -492,7 +492,11 @@ SCTE-104 messages are wrapped in ST 291 ancillary data packets:
 | 4..N | Payload | SCTE-104 binary (MOM format) |
 | N+1 | Checksum | Sum of all preceding bytes, masked to 0xFF |
 
-Maximum single-packet payload is 253 bytes. Fragmented packets (`continued_pkt` or `following_pkt` set) are rejected with `ErrST291Fragmented`.
+Maximum single-packet payload is 254 bytes (DC field is 8-bit, max 255; one byte reserved for the payload descriptor). `WrapST291()` returns `ErrST291PayloadTooLarge` if the encoded SCTE-104 message exceeds this limit.
+
+### Fragmentation Limitation
+
+Only single-packet (non-fragmented) ST 291 messages are supported. `ParseST291()` rejects any packet with the `continued_pkt` or `following_pkt` bits set in the descriptor byte, returning `ErrST291Fragmented`. In practice this is rarely hit because SCTE-104 splice requests are small (~30-60 bytes), but compound messages with many segmentation descriptors could exceed the 254-byte limit and would need fragmentation that is not currently implemented.
 
 ---
 
@@ -623,7 +627,7 @@ The dispatcher is fire-and-forget with a bounded queue (64 events). Slow endpoin
 | `--scte35-pid` | `0x102` | MPEG-TS PID for the SCTE-35 elementary stream |
 | `--scte35-preroll` | `4000` | Default pre-roll time in milliseconds |
 | `--scte35-heartbeat` | `5000` | splice_null heartbeat interval (ms). `0` to disable. |
-| `--scte35-verify` | `false` | Round-trip CRC verification (encode → decode → compare) |
+| `--scte35-verify` | `true` | Round-trip CRC verification (encode → decode → compare) |
 | `--scte35-webhook` | `""` | Webhook URL for event notifications |
 | `--scte104` | `false` | Bidirectional SCTE-104 on MXL data flows (requires `--scte35` + MXL build) |
 

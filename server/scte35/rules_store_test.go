@@ -4,19 +4,18 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRulesStore_CreateAndList(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Empty store should have no rules.
-	if got := store.List(); len(got) != 0 {
-		t.Fatalf("expected empty list, got %d rules", len(got))
-	}
+	require.Len(t, store.List(), 0)
 
 	// Create a rule.
 	rule := Rule{
@@ -29,42 +28,27 @@ func TestRulesStore_CreateAndList(t *testing.T) {
 		Action: ActionDelete,
 	}
 	created, err := store.Create(rule)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
 	// ID should be assigned (8-char hex).
-	if len(created.ID) != 8 {
-		t.Fatalf("expected 8-char ID, got %q", created.ID)
-	}
+	require.Len(t, created.ID, 8)
 
 	// Name should be preserved.
-	if created.Name != "strip splice_inserts" {
-		t.Fatalf("expected name 'strip splice_inserts', got %q", created.Name)
-	}
+	require.Equal(t, "strip splice_inserts", created.Name)
 
 	// List should return the created rule.
 	rules := store.List()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(rules))
-	}
-	if rules[0].ID != created.ID {
-		t.Fatalf("expected ID %q, got %q", created.ID, rules[0].ID)
-	}
-	if rules[0].Name != "strip splice_inserts" {
-		t.Fatalf("expected name 'strip splice_inserts', got %q", rules[0].Name)
-	}
-	if rules[0].Action != ActionDelete {
-		t.Fatalf("expected action delete, got %q", rules[0].Action)
-	}
+	require.Len(t, rules, 1)
+	require.Equal(t, created.ID, rules[0].ID)
+	require.Equal(t, "strip splice_inserts", rules[0].Name)
+	require.Equal(t, ActionDelete, rules[0].Action)
 }
 
 func TestRulesStore_Update(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	created, err := store.Create(Rule{
 		Name:    "original name",
@@ -75,9 +59,7 @@ func TestRulesStore_Update(t *testing.T) {
 		Logic:  LogicAND,
 		Action: ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Update the rule.
 	updated := created
@@ -87,36 +69,24 @@ func TestRulesStore_Update(t *testing.T) {
 	}
 	updated.Action = ActionPass
 
-	if err := store.Update(created.ID, updated); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	require.NoError(t, store.Update(created.ID, updated))
 
 	rules := store.List()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(rules))
-	}
-	if rules[0].Name != "updated name" {
-		t.Fatalf("expected name 'updated name', got %q", rules[0].Name)
-	}
-	if rules[0].Action != ActionPass {
-		t.Fatalf("expected action pass, got %q", rules[0].Action)
-	}
-	if len(rules[0].Conditions) != 1 || rules[0].Conditions[0].Value != "16-17" {
-		t.Fatalf("conditions not updated: %+v", rules[0].Conditions)
-	}
+	require.Len(t, rules, 1)
+	require.Equal(t, "updated name", rules[0].Name)
+	require.Equal(t, ActionPass, rules[0].Action)
+	require.Len(t, rules[0].Conditions, 1)
+	require.Equal(t, "16-17", rules[0].Conditions[0].Value)
 
 	// Update non-existent rule should fail.
-	if err := store.Update("nonexistent", updated); err == nil {
-		t.Fatal("expected error for non-existent rule")
-	}
+	require.Error(t, store.Update("nonexistent", updated))
 }
 
 func TestRulesStore_Delete(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	r1, err := store.Create(Rule{
 		Name:       "rule1",
@@ -125,9 +95,7 @@ func TestRulesStore_Delete(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create r1: %v", err)
-	}
+	require.NoError(t, err)
 
 	r2, err := store.Create(Rule{
 		Name:       "rule2",
@@ -136,35 +104,24 @@ func TestRulesStore_Delete(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionPass,
 	})
-	if err != nil {
-		t.Fatalf("Create r2: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Delete rule1.
-	if err := store.Delete(r1.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
+	require.NoError(t, store.Delete(r1.ID))
 
 	rules := store.List()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule after delete, got %d", len(rules))
-	}
-	if rules[0].ID != r2.ID {
-		t.Fatalf("expected remaining rule to be r2 (%q), got %q", r2.ID, rules[0].ID)
-	}
+	require.Len(t, rules, 1)
+	require.Equal(t, r2.ID, rules[0].ID)
 
 	// Delete non-existent rule should fail.
-	if err := store.Delete("nonexistent"); err == nil {
-		t.Fatal("expected error for non-existent rule")
-	}
+	require.Error(t, store.Delete("nonexistent"))
 }
 
 func TestRulesStore_Reorder(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	r1, _ := store.Create(Rule{
 		Name: "first", Enabled: true,
@@ -183,72 +140,48 @@ func TestRulesStore_Reorder(t *testing.T) {
 	})
 
 	// Reorder: third, first, second.
-	if err := store.Reorder([]string{r3.ID, r1.ID, r2.ID}); err != nil {
-		t.Fatalf("Reorder: %v", err)
-	}
+	require.NoError(t, store.Reorder([]string{r3.ID, r1.ID, r2.ID}))
 
 	rules := store.List()
-	if len(rules) != 3 {
-		t.Fatalf("expected 3 rules, got %d", len(rules))
-	}
-	if rules[0].ID != r3.ID {
-		t.Fatalf("expected first rule to be r3 (%q), got %q", r3.ID, rules[0].ID)
-	}
-	if rules[1].ID != r1.ID {
-		t.Fatalf("expected second rule to be r1 (%q), got %q", r1.ID, rules[1].ID)
-	}
-	if rules[2].ID != r2.ID {
-		t.Fatalf("expected third rule to be r2 (%q), got %q", r2.ID, rules[2].ID)
-	}
+	require.Len(t, rules, 3)
+	require.Equal(t, r3.ID, rules[0].ID)
+	require.Equal(t, r1.ID, rules[1].ID)
+	require.Equal(t, r2.ID, rules[2].ID)
 
 	// Reorder with invalid ID should fail.
-	if err := store.Reorder([]string{r3.ID, "invalid", r2.ID}); err == nil {
-		t.Fatal("expected error for invalid ID in reorder")
-	}
+	require.Error(t, store.Reorder([]string{r3.ID, "invalid", r2.ID}))
 
 	// Reorder with wrong count should fail.
-	if err := store.Reorder([]string{r3.ID, r1.ID}); err == nil {
-		t.Fatal("expected error for wrong count in reorder")
-	}
+	require.Error(t, store.Reorder([]string{r3.ID, r1.ID}))
 }
 
 func TestRulesStore_DefaultAction(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Default should be ActionPass.
-	if got := store.DefaultAction(); got != ActionPass {
-		t.Fatalf("expected default action 'pass', got %q", got)
-	}
+	require.Equal(t, ActionPass, store.DefaultAction())
 
 	// Set default to delete.
-	if err := store.SetDefaultAction(ActionDelete); err != nil {
-		t.Fatalf("SetDefaultAction: %v", err)
-	}
-	if got := store.DefaultAction(); got != ActionDelete {
-		t.Fatalf("expected default action 'delete', got %q", got)
-	}
+	require.NoError(t, store.SetDefaultAction(ActionDelete))
+	require.Equal(t, ActionDelete, store.DefaultAction())
 
 	// Engine should reflect the default action.
 	engine := store.Engine()
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := engine.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("engine default action should be delete, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRulesStore_Persistence(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 
 	// Create store and add rules.
 	store1, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore (first): %v", err)
-	}
+	require.NoError(t, err)
 
 	r1, err := store1.Create(Rule{
 		Name:       "persistent rule",
@@ -257,70 +190,45 @@ func TestRulesStore_Persistence(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := store1.SetDefaultAction(ActionDelete); err != nil {
-		t.Fatalf("SetDefaultAction: %v", err)
-	}
+	require.NoError(t, store1.SetDefaultAction(ActionDelete))
 
 	// Create a new store from the same file.
 	store2, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore (second): %v", err)
-	}
+	require.NoError(t, err)
 
 	// Rules should persist.
 	rules := store2.List()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule in reloaded store, got %d", len(rules))
-	}
-	if rules[0].ID != r1.ID {
-		t.Fatalf("expected rule ID %q, got %q", r1.ID, rules[0].ID)
-	}
-	if rules[0].Name != "persistent rule" {
-		t.Fatalf("expected name 'persistent rule', got %q", rules[0].Name)
-	}
+	require.Len(t, rules, 1)
+	require.Equal(t, r1.ID, rules[0].ID)
+	require.Equal(t, "persistent rule", rules[0].Name)
 
 	// Default action should persist.
-	if got := store2.DefaultAction(); got != ActionDelete {
-		t.Fatalf("expected persisted default action 'delete', got %q", got)
-	}
+	require.Equal(t, ActionDelete, store2.DefaultAction())
 
 	// Engine should be in sync.
 	engine := store2.Engine()
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := engine.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("engine should match persisted rule (delete), got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRulesStore_PresetTemplates(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	// List templates.
 	templates := store.Templates()
-	if len(templates) < 5 {
-		t.Fatalf("expected at least 5 templates, got %d", len(templates))
-	}
+	require.GreaterOrEqual(t, len(templates), 5)
 
 	// Templates should have names but no IDs (they are templates, not persisted).
 	for _, tmpl := range templates {
-		if tmpl.ID != "" {
-			t.Fatalf("template should have empty ID, got %q", tmpl.ID)
-		}
-		if tmpl.Name == "" {
-			t.Fatal("template should have a name")
-		}
-		if tmpl.Enabled {
-			t.Fatalf("template %q should be disabled by default", tmpl.Name)
-		}
+		require.Empty(t, tmpl.ID)
+		require.NotEmpty(t, tmpl.Name)
+		require.False(t, tmpl.Enabled, "template %q should be disabled by default", tmpl.Name)
 	}
 
 	// Verify specific template names.
@@ -336,48 +244,33 @@ func TestRulesStore_PresetTemplates(t *testing.T) {
 		"Block non-SSAI signals",
 	}
 	for _, name := range expectedNames {
-		if !names[name] {
-			t.Fatalf("expected template %q not found", name)
-		}
+		require.True(t, names[name], "expected template %q not found", name)
 	}
 
 	// Create from template.
 	created, err := store.CreateFromTemplate("Strip short avails")
-	if err != nil {
-		t.Fatalf("CreateFromTemplate: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Created rule should have an ID and the template's properties.
-	if len(created.ID) != 8 {
-		t.Fatalf("expected 8-char ID, got %q", created.ID)
-	}
-	if created.Name != "Strip short avails" {
-		t.Fatalf("expected name 'Strip short avails', got %q", created.Name)
-	}
+	require.Len(t, created.ID, 8)
+	require.Equal(t, "Strip short avails", created.Name)
 	// Template-created rules start disabled.
-	if created.Enabled {
-		t.Fatal("template-created rule should be disabled")
-	}
+	require.False(t, created.Enabled, "template-created rule should be disabled")
 
 	// The rule should be in the store's list.
 	rules := store.List()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(rules))
-	}
+	require.Len(t, rules, 1)
 
 	// Create from non-existent template should fail.
 	_, err = store.CreateFromTemplate("nonexistent template")
-	if err == nil {
-		t.Fatal("expected error for non-existent template")
-	}
+	require.Error(t, err)
 }
 
 func TestRulesStore_EngineSync(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Create a rule that deletes splice_inserts.
 	_, err = store.Create(Rule{
@@ -387,24 +280,18 @@ func TestRulesStore_EngineSync(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Engine should evaluate the rule.
 	engine := store.Engine()
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := engine.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete from engine, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// Time signal should pass (no matching rule).
 	tsMsg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
 	action2, _ := engine.Evaluate(tsMsg, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for time_signal, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 // TestRulesStore_EnginePointerStableAfterCRUD verifies that the engine pointer
@@ -412,11 +299,10 @@ func TestRulesStore_EngineSync(t *testing.T) {
 // This is critical because the injector holds a pointer to the engine at startup;
 // if syncEngine() replaces the pointer, the injector becomes stale.
 func TestRulesStore_EnginePointerStableAfterCRUD(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")
 	store, err := LoadRulesStore(path)
-	if err != nil {
-		t.Fatalf("LoadRulesStore: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Grab the engine pointer before any CRUD operations.
 	engineBefore := store.Engine()
@@ -429,74 +315,48 @@ func TestRulesStore_EnginePointerStableAfterCRUD(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	require.NoError(t, err)
 
 	engineAfterCreate := store.Engine()
-	if engineAfterCreate != engineBefore {
-		t.Fatal("engine pointer changed after Create — injector would hold stale reference")
-	}
+	require.Same(t, engineBefore, engineAfterCreate, "engine pointer changed after Create — injector would hold stale reference")
 
 	// The original pointer should see the new rule take effect.
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := engineBefore.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("original engine pointer should see created rule: expected delete, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// --- Update: change the rule action to pass ---
 	updated := created
 	updated.Action = ActionPass
-	if err := store.Update(created.ID, updated); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
+	require.NoError(t, store.Update(created.ID, updated))
 
 	engineAfterUpdate := store.Engine()
-	if engineAfterUpdate != engineBefore {
-		t.Fatal("engine pointer changed after Update — injector would hold stale reference")
-	}
+	require.Same(t, engineBefore, engineAfterUpdate, "engine pointer changed after Update — injector would hold stale reference")
 
 	action, _ = engineBefore.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("original engine pointer should see updated rule: expected pass, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 
 	// --- Delete: remove the rule, should fall back to default action ---
-	if err := store.Delete(created.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
+	require.NoError(t, store.Delete(created.ID))
 
 	engineAfterDelete := store.Engine()
-	if engineAfterDelete != engineBefore {
-		t.Fatal("engine pointer changed after Delete — injector would hold stale reference")
-	}
+	require.Same(t, engineBefore, engineAfterDelete, "engine pointer changed after Delete — injector would hold stale reference")
 
 	action, _ = engineBefore.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("original engine pointer should use default action after delete: expected pass, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 
 	// --- SetDefaultAction: change default to delete ---
-	if err := store.SetDefaultAction(ActionDelete); err != nil {
-		t.Fatalf("SetDefaultAction: %v", err)
-	}
+	require.NoError(t, store.SetDefaultAction(ActionDelete))
 
 	engineAfterDefault := store.Engine()
-	if engineAfterDefault != engineBefore {
-		t.Fatal("engine pointer changed after SetDefaultAction — injector would hold stale reference")
-	}
+	require.Same(t, engineBefore, engineAfterDefault, "engine pointer changed after SetDefaultAction — injector would hold stale reference")
 
 	action, _ = engineBefore.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("original engine pointer should see new default action: expected delete, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// --- Reorder: create two rules, reorder, verify pointer stable ---
 	// Reset default to pass first.
-	if err := store.SetDefaultAction(ActionPass); err != nil {
-		t.Fatalf("SetDefaultAction reset: %v", err)
-	}
+	require.NoError(t, store.SetDefaultAction(ActionPass))
 
 	r1, err := store.Create(Rule{
 		Name:       "rule A",
@@ -505,9 +365,7 @@ func TestRulesStore_EnginePointerStableAfterCRUD(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionDelete,
 	})
-	if err != nil {
-		t.Fatalf("Create r1: %v", err)
-	}
+	require.NoError(t, err)
 	r2, err := store.Create(Rule{
 		Name:       "rule B",
 		Enabled:    true,
@@ -515,28 +373,18 @@ func TestRulesStore_EnginePointerStableAfterCRUD(t *testing.T) {
 		Logic:      LogicAND,
 		Action:     ActionPass,
 	})
-	if err != nil {
-		t.Fatalf("Create r2: %v", err)
-	}
+	require.NoError(t, err)
 
 	// First-match-wins: r1 (delete) should win since it was created first.
 	action, _ = engineBefore.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("before reorder: expected delete (r1 wins), got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// Reorder: put r2 first so pass wins.
-	if err := store.Reorder([]string{r2.ID, r1.ID}); err != nil {
-		t.Fatalf("Reorder: %v", err)
-	}
+	require.NoError(t, store.Reorder([]string{r2.ID, r1.ID}))
 
 	engineAfterReorder := store.Engine()
-	if engineAfterReorder != engineBefore {
-		t.Fatal("engine pointer changed after Reorder — injector would hold stale reference")
-	}
+	require.Same(t, engineBefore, engineAfterReorder, "engine pointer changed after Reorder — injector would hold stale reference")
 
 	action, _ = engineBefore.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("after reorder: expected pass (r2 wins), got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }

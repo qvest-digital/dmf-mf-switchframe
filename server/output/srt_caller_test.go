@@ -31,6 +31,7 @@ func (m *mockSRTConn) Close() {
 }
 
 func TestSRTCaller_ID(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -39,6 +40,7 @@ func TestSRTCaller_ID(t *testing.T) {
 }
 
 func TestSRTCaller_StatusBeforeStart(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -48,6 +50,7 @@ func TestSRTCaller_StatusBeforeStart(t *testing.T) {
 }
 
 func TestSRTCaller_WriteWithMockConn(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	mock.connected.Store(true)
 
@@ -68,6 +71,7 @@ func TestSRTCaller_WriteWithMockConn(t *testing.T) {
 }
 
 func TestSRTCaller_WriteBuffersDuringReconnect(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
 		Port:           9998,
@@ -86,6 +90,7 @@ func TestSRTCaller_WriteBuffersDuringReconnect(t *testing.T) {
 }
 
 func TestSRTCaller_Close(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
@@ -106,6 +111,7 @@ func TestSRTCaller_Close(t *testing.T) {
 }
 
 func TestSRTCaller_BackoffProgression(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -132,6 +138,7 @@ func TestSRTCaller_BackoffProgression(t *testing.T) {
 }
 
 func TestSRTCaller_BackoffHasJitter(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -148,6 +155,7 @@ func TestSRTCaller_BackoffHasJitter(t *testing.T) {
 }
 
 func TestSRTCaller_ResetBackoff(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -163,6 +171,7 @@ func TestSRTCaller_ResetBackoff(t *testing.T) {
 }
 
 func TestSRTCaller_StartWithMockConnect(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
@@ -182,6 +191,7 @@ func TestSRTCaller_StartWithMockConnect(t *testing.T) {
 }
 
 func TestSRTCaller_StartFailsEntersReconnect(t *testing.T) {
+	t.Parallel()
 	connectCount := atomic.Int32{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
@@ -214,6 +224,7 @@ func TestSRTCaller_StartFailsEntersReconnect(t *testing.T) {
 }
 
 func TestSRTCaller_WriteErrorTriggersReconnect(t *testing.T) {
+	t.Parallel()
 	writeCount := atomic.Int32{}
 	mock := &mockSRTConn{
 		writeFn: func(data []byte) (int, error) {
@@ -258,6 +269,7 @@ func TestSRTCaller_WriteErrorTriggersReconnect(t *testing.T) {
 }
 
 func TestSRTCaller_SRTStatusSnapshot(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -284,6 +296,7 @@ func TestSRTCaller_SRTStatusSnapshot(t *testing.T) {
 }
 
 func TestSRTCaller_DefaultConfig(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -294,10 +307,12 @@ func TestSRTCaller_DefaultConfig(t *testing.T) {
 }
 
 func TestSRTCaller_ImplementsOutputAdapter(t *testing.T) {
+	t.Parallel()
 	var _ OutputAdapter = (*SRTCaller)(nil)
 }
 
 func TestSRTCaller_WriteWhenStopped(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -307,6 +322,7 @@ func TestSRTCaller_WriteWhenStopped(t *testing.T) {
 }
 
 func TestSRTCaller_CloseWithoutStart(t *testing.T) {
+	t.Parallel()
 	c := NewSRTCaller(SRTCallerConfig{
 		Address: "srt.example.com",
 		Port:    9998,
@@ -316,6 +332,7 @@ func TestSRTCaller_CloseWithoutStart(t *testing.T) {
 }
 
 func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -354,6 +371,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowFalse(t *testing.T) {
 }
 
 func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -391,6 +409,7 @@ func TestSRTCaller_OnReconnectCalledWithOverflowTrue(t *testing.T) {
 }
 
 func TestSRTCaller_OverflowCountTracked(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -447,6 +466,7 @@ func TestSRTCaller_OverflowCountTracked(t *testing.T) {
 }
 
 func TestSRTCaller_OverflowCountResetOnStart(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -470,6 +490,7 @@ func TestSRTCaller_OverflowCountResetOnStart(t *testing.T) {
 }
 
 func TestSRTCaller_OnReconnectNilIsNoop(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -523,6 +544,7 @@ func makeTSPacket(pid uint16, keyframe bool) []byte {
 }
 
 func TestContainsKeyframe(t *testing.T) {
+	t.Parallel()
 	t.Run("single keyframe packet", func(t *testing.T) {
 		pkt := makeTSPacket(0x100, true)
 		require.True(t, containsKeyframe(pkt))
@@ -568,6 +590,7 @@ func TestContainsKeyframe(t *testing.T) {
 }
 
 func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",
@@ -636,6 +659,7 @@ func TestSRTCaller_IDRGating_DropsAfterOverflow(t *testing.T) {
 // ---------- C4: pendingIDR on all reconnects, not just overflow ----------
 
 func TestSRTCaller_IDRGating_AlwaysSetOnReconnect(t *testing.T) {
+	t.Parallel()
 	// Even without overflow, the remote decoder has lost state after a
 	// reconnect and needs a keyframe before it can decode delta frames.
 	mock := &mockSRTConn{}
@@ -697,6 +721,7 @@ func TestSRTCaller_IDRGating_AlwaysSetOnReconnect(t *testing.T) {
 }
 
 func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
+	t.Parallel()
 	// After the C4 fix, pendingIDR is always set on reconnect, even without
 	// overflow. The remote decoder has lost state and needs a keyframe.
 	mock := &mockSRTConn{}
@@ -754,6 +779,7 @@ func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
 }
 
 func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {
+	t.Parallel()
 	mock := &mockSRTConn{}
 	c := NewSRTCaller(SRTCallerConfig{
 		Address:        "srt.example.com",

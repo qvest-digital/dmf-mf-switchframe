@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // wrapInTS wraps SCTE-35 section data into one or more 188-byte MPEG-TS packets
@@ -143,15 +145,14 @@ type pmtStream struct {
 }
 
 func TestParseFromTS_ValidSpliceInsert(t *testing.T) {
+	t.Parallel()
 	// Create a splice_insert using the existing message.go API
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(42, dur, true, true)
 
 	// Encode to SCTE-35 binary
 	sectionData, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode splice_insert: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Wrap in TS packets on PID 0x102
 	pid := uint16(0x102)
@@ -159,32 +160,19 @@ func TestParseFromTS_ValidSpliceInsert(t *testing.T) {
 
 	// Parse it back
 	parsed, err := ParseFromTS(pid, tsData)
-	if err != nil {
-		t.Fatalf("ParseFromTS failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if parsed.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert (0x%02x), got 0x%02x", CommandSpliceInsert, parsed.CommandType)
-	}
-	if parsed.EventID != 42 {
-		t.Fatalf("expected event ID 42, got %d", parsed.EventID)
-	}
-	if !parsed.IsOut {
-		t.Fatal("expected IsOut=true")
-	}
-	if !parsed.AutoReturn {
-		t.Fatal("expected AutoReturn=true")
-	}
-	if parsed.BreakDuration == nil {
-		t.Fatal("expected break duration to be set")
-	}
+	require.Equal(t, uint8(CommandSpliceInsert), parsed.CommandType)
+	require.Equal(t, uint32(42), parsed.EventID)
+	require.True(t, parsed.IsOut, "expected IsOut=true")
+	require.True(t, parsed.AutoReturn, "expected AutoReturn=true")
+	require.NotNil(t, parsed.BreakDuration)
 	// Allow some rounding tolerance (90kHz tick resolution)
-	if diff := *parsed.BreakDuration - dur; diff < -time.Millisecond || diff > time.Millisecond {
-		t.Fatalf("expected ~30s duration, got %v", *parsed.BreakDuration)
-	}
+	require.InDelta(t, float64(dur), float64(*parsed.BreakDuration), float64(time.Millisecond))
 }
 
 func TestParseFromTS_ValidTimeSignal(t *testing.T) {
+	t.Parallel()
 	// Create a time_signal with a segmentation descriptor
 	dur := 60 * time.Second
 	upid := []byte("https://ads.example.com/avail/1")
@@ -192,9 +180,7 @@ func TestParseFromTS_ValidTimeSignal(t *testing.T) {
 
 	// Encode to SCTE-35 binary
 	sectionData, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode time_signal: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Wrap in TS packets on PID 0x102
 	pid := uint16(0x102)
@@ -202,32 +188,21 @@ func TestParseFromTS_ValidTimeSignal(t *testing.T) {
 
 	// Parse it back
 	parsed, err := ParseFromTS(pid, tsData)
-	if err != nil {
-		t.Fatalf("ParseFromTS failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if parsed.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal (0x%02x), got 0x%02x", CommandTimeSignal, parsed.CommandType)
-	}
-	if len(parsed.Descriptors) != 1 {
-		t.Fatalf("expected 1 descriptor, got %d", len(parsed.Descriptors))
-	}
+	require.Equal(t, uint8(CommandTimeSignal), parsed.CommandType)
+	require.Len(t, parsed.Descriptors, 1)
 	d := parsed.Descriptors[0]
-	if d.SegmentationType != 0x34 {
-		t.Fatalf("expected seg type 0x34, got 0x%02x", d.SegmentationType)
-	}
-	if d.UPIDType != 0x0F {
-		t.Fatalf("expected UPID type 0x0F, got 0x%02x", d.UPIDType)
-	}
+	require.Equal(t, uint8(0x34), d.SegmentationType)
+	require.Equal(t, uint8(0x0F), d.UPIDType)
 }
 
 func TestParseFromTS_InvalidCRC(t *testing.T) {
+	t.Parallel()
 	// Create a valid splice_insert
 	msg := NewSpliceInsert(1, 10*time.Second, true, false)
 	sectionData, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Corrupt the last byte (CRC-32)
 	sectionData[len(sectionData)-1] ^= 0xFF
@@ -238,69 +213,58 @@ func TestParseFromTS_InvalidCRC(t *testing.T) {
 
 	// Parse should fail due to CRC mismatch
 	_, err = ParseFromTS(pid, tsData)
-	if err == nil {
-		t.Fatal("expected CRC error on corrupt data")
-	}
+	require.Error(t, err)
 }
 
 func TestParseFromTS_EmptyData(t *testing.T) {
+	t.Parallel()
 	_, err := ParseFromTS(0x102, nil)
-	if err == nil {
-		t.Fatal("expected error for nil data")
-	}
+	require.Error(t, err)
 
 	_, err = ParseFromTS(0x102, []byte{})
-	if err == nil {
-		t.Fatal("expected error for empty data")
-	}
+	require.Error(t, err)
 }
 
 func TestParseFromTS_WrongPID(t *testing.T) {
+	t.Parallel()
 	// Create a valid splice_insert on PID 0x102
 	msg := NewSpliceInsert(1, 10*time.Second, true, false)
 	sectionData, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	tsData := wrapInTS(0x102, sectionData)
 
 	// Try to parse on a different PID
 	_, err = ParseFromTS(0x200, tsData)
-	if err == nil {
-		t.Fatal("expected error when target PID not found")
-	}
+	require.Error(t, err)
 }
 
 func TestParseFromTS_InvalidSyncByte(t *testing.T) {
+	t.Parallel()
 	// Create a valid packet but corrupt the sync byte
 	msg := NewSpliceInsert(1, 10*time.Second, true, false)
 	sectionData, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	tsData := wrapInTS(0x102, sectionData)
 	tsData[0] = 0x00 // corrupt sync byte
 
 	_, err = ParseFromTS(0x102, tsData)
-	if err == nil {
-		t.Fatal("expected error for invalid sync byte")
-	}
+	require.Error(t, err)
 }
 
 func TestParseFromTS_ShortPacket(t *testing.T) {
+	t.Parallel()
 	// Data that is less than 188 bytes
 	data := make([]byte, 100)
 	data[0] = 0x47
 
 	_, err := ParseFromTS(0x102, data)
-	if err == nil {
-		t.Fatal("expected error for short packet data")
-	}
+	require.Error(t, err)
 }
 
 func TestParseFromTS_MultiPacket(t *testing.T) {
+	t.Parallel()
 	// Create a time_signal with enough descriptors to exceed a single TS packet
 	// payload (~183 bytes). Build a large UPID to force multi-packet.
 	largeUPID := make([]byte, 200)
@@ -310,34 +274,25 @@ func TestParseFromTS_MultiPacket(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, largeUPID)
 	sectionData, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Verify section data exceeds single TS packet payload
-	if len(sectionData) <= 183 {
-		t.Fatalf("expected section data > 183 bytes for multi-packet test, got %d", len(sectionData))
-	}
+	require.Greater(t, len(sectionData), 183)
 
 	pid := uint16(0x102)
 	tsData := wrapInTS(pid, sectionData)
 
 	// Should require multiple packets
-	if len(tsData) <= 188 {
-		t.Fatalf("expected multi-packet TS data, got %d bytes", len(tsData))
-	}
+	require.Greater(t, len(tsData), 188)
 
 	parsed, err := ParseFromTS(pid, tsData)
-	if err != nil {
-		t.Fatalf("ParseFromTS multi-packet failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if parsed.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal, got 0x%02x", parsed.CommandType)
-	}
+	require.Equal(t, uint8(CommandTimeSignal), parsed.CommandType)
 }
 
 func TestDetectSCTE35PID_Found(t *testing.T) {
+	t.Parallel()
 	streams := []pmtStream{
 		{streamType: 0x1B, pid: 0x100}, // H.264 video
 		{streamType: 0x0F, pid: 0x101}, // AAC audio
@@ -346,15 +301,12 @@ func TestDetectSCTE35PID_Found(t *testing.T) {
 	pmtData := buildMinimalPMT(streams)
 
 	pids := DetectSCTE35PID(pmtData)
-	if len(pids) != 1 {
-		t.Fatalf("expected 1 SCTE-35 PID, got %d", len(pids))
-	}
-	if pids[0] != 0x102 {
-		t.Fatalf("expected PID 0x102, got 0x%04x", pids[0])
-	}
+	require.Len(t, pids, 1)
+	require.Equal(t, uint16(0x102), pids[0])
 }
 
 func TestDetectSCTE35PID_MultiplePIDs(t *testing.T) {
+	t.Parallel()
 	streams := []pmtStream{
 		{streamType: 0x1B, pid: 0x100}, // H.264 video
 		{streamType: 0x86, pid: 0x102}, // SCTE-35
@@ -364,18 +316,13 @@ func TestDetectSCTE35PID_MultiplePIDs(t *testing.T) {
 	pmtData := buildMinimalPMT(streams)
 
 	pids := DetectSCTE35PID(pmtData)
-	if len(pids) != 2 {
-		t.Fatalf("expected 2 SCTE-35 PIDs, got %d", len(pids))
-	}
-	if pids[0] != 0x102 {
-		t.Fatalf("expected first PID 0x102, got 0x%04x", pids[0])
-	}
-	if pids[1] != 0x103 {
-		t.Fatalf("expected second PID 0x103, got 0x%04x", pids[1])
-	}
+	require.Len(t, pids, 2)
+	require.Equal(t, uint16(0x102), pids[0])
+	require.Equal(t, uint16(0x103), pids[1])
 }
 
 func TestDetectSCTE35PID_NotFound(t *testing.T) {
+	t.Parallel()
 	streams := []pmtStream{
 		{streamType: 0x1B, pid: 0x100}, // H.264 video
 		{streamType: 0x0F, pid: 0x101}, // AAC audio
@@ -383,25 +330,21 @@ func TestDetectSCTE35PID_NotFound(t *testing.T) {
 	pmtData := buildMinimalPMT(streams)
 
 	pids := DetectSCTE35PID(pmtData)
-	if len(pids) != 0 {
-		t.Fatalf("expected 0 SCTE-35 PIDs, got %d", len(pids))
-	}
+	require.Len(t, pids, 0)
 }
 
 func TestDetectSCTE35PID_EmptyPMT(t *testing.T) {
+	t.Parallel()
 	// Empty/nil data should return nil
 	pids := DetectSCTE35PID(nil)
-	if len(pids) != 0 {
-		t.Fatalf("expected 0 PIDs for nil data, got %d", len(pids))
-	}
+	require.Len(t, pids, 0)
 
 	pids = DetectSCTE35PID([]byte{})
-	if len(pids) != 0 {
-		t.Fatalf("expected 0 PIDs for empty data, got %d", len(pids))
-	}
+	require.Len(t, pids, 0)
 }
 
 func TestDetectSCTE35PID_TruncatedPMT(t *testing.T) {
+	t.Parallel()
 	// Truncated PMT should not panic
 	pids := DetectSCTE35PID([]byte{0x02, 0xB0, 0x10})
 	// nil or empty is acceptable, just not a panic
@@ -409,6 +352,7 @@ func TestDetectSCTE35PID_TruncatedPMT(t *testing.T) {
 }
 
 func TestDetectSCTE35PID_WrongTableID(t *testing.T) {
+	t.Parallel()
 	// PMT must have table_id 0x02
 	streams := []pmtStream{
 		{streamType: 0x86, pid: 0x102},
@@ -417,18 +361,15 @@ func TestDetectSCTE35PID_WrongTableID(t *testing.T) {
 	pmtData[0] = 0x00 // corrupt table_id
 
 	pids := DetectSCTE35PID(pmtData)
-	if len(pids) != 0 {
-		t.Fatalf("expected 0 PIDs for wrong table_id, got %d", len(pids))
-	}
+	require.Len(t, pids, 0)
 }
 
 func TestParseFromTS_NotSCTE35TableID(t *testing.T) {
+	t.Parallel()
 	// Create valid section but change table_id to something other than 0xFC
 	msg := NewSpliceInsert(1, 10*time.Second, true, false)
 	sectionData, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Change table_id from 0xFC to 0x00
 	sectionData[0] = 0x00
@@ -437,7 +378,5 @@ func TestParseFromTS_NotSCTE35TableID(t *testing.T) {
 	tsData := wrapInTS(pid, sectionData)
 
 	_, err = ParseFromTS(pid, tsData)
-	if err == nil {
-		t.Fatal("expected error for non-SCTE-35 table_id")
-	}
+	require.Error(t, err)
 }

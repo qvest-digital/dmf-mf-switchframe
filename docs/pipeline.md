@@ -2,7 +2,7 @@
 
 The pipeline transforms decoded YUV420 frames into H.264 program output. It is a chain of immutable processing nodes, atomically swapped at runtime for zero-frame-drop reconfiguration.
 
-**Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance)
+**Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance) · [Raw Program Monitor](#12-raw-program-monitor-wire-format)
 
 ---
 
@@ -520,6 +520,38 @@ type PipelineFormat struct {
 ```
 
 The format drives FramePool buffer sizing, frame budget for deadline monitoring, frame synchronizer tick rate, encoder bitrate/FPS, and node `Configure()` calls. Frame rate is rational for broadcast correctness.
+
+---
+
+## 12. Raw Program Monitor Wire Format
+
+The `raw-sink-monitor` node feeds the `"program-raw"` MoQ track, enabled via `--raw-program-monitor`. Every frame is a keyframe (no inter-frame dependencies), so browsers can join at any point without waiting for an IDR.
+
+### Binary Layout
+
+```
+Offset  Length           Field
+──────  ──────────────   ────────────────────────
+0       4 bytes          Width  (uint32 big-endian)
+4       4 bytes          Height (uint32 big-endian)
+8       W × H bytes      Y plane  (luma, full resolution)
+8+W×H   W/2 × H/2 bytes Cb plane (chroma blue, quarter resolution)
+...     W/2 × H/2 bytes Cr plane (chroma red, quarter resolution)
+```
+
+Total frame size: `8 + W×H×3/2` bytes (e.g., 1920×1080 → 3,110,408 bytes).
+
+### Colorspace
+
+BT.709 limited range: Y=[16,235], Cb/Cr=[16,240]. Planar YUV 4:2:0 (same as the pipeline's internal format).
+
+### Downscaling
+
+`--raw-monitor-scale` accepts `720p`, `480p`, or `360p`. When set, the raw sink applies `transition.ScaleYUV420` before writing to the MoQ track, reducing bandwidth (e.g., 360p → ~194 KB/frame at 30fps ≈ 46 Mbps vs 1080p → ~3 MB/frame ≈ 720 Mbps).
+
+### Browser Rendering
+
+`ui/src/lib/video/yuv-renderer.ts` provides a WebGL2/WebGL shader that uploads Y/Cb/Cr as separate textures and converts to RGB in the fragment shader using the BT.709 limited-range matrix.
 
 ---
 

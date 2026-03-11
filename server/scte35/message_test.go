@@ -5,130 +5,95 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewSpliceInsert_CueOut(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(42, dur, true, true)
 
-	if msg.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", msg.CommandType)
-	}
-	if msg.EventID != 42 {
-		t.Fatalf("expected event ID 42, got %d", msg.EventID)
-	}
-	if !msg.IsOut {
-		t.Fatal("expected IsOut=true")
-	}
-	if !msg.AutoReturn {
-		t.Fatal("expected AutoReturn=true")
-	}
-	if msg.BreakDuration == nil || *msg.BreakDuration != dur {
-		t.Fatalf("expected 30s duration, got %v", msg.BreakDuration)
-	}
+	require.Equal(t, uint8(CommandSpliceInsert), msg.CommandType)
+	require.Equal(t, uint32(42), msg.EventID)
+	require.True(t, msg.IsOut, "expected IsOut=true")
+	require.True(t, msg.AutoReturn, "expected AutoReturn=true")
+	require.NotNil(t, msg.BreakDuration)
+	require.Equal(t, dur, *msg.BreakDuration)
 }
 
 func TestNewSpliceInsert_CueIn(t *testing.T) {
+	t.Parallel()
 	msg := NewSpliceInsert(42, 0, false, false)
 
-	if msg.IsOut {
-		t.Fatal("expected IsOut=false for cue-in")
-	}
-	if msg.BreakDuration != nil {
-		t.Fatalf("expected nil duration for cue-in, got %v", msg.BreakDuration)
-	}
+	require.False(t, msg.IsOut, "expected IsOut=false for cue-in")
+	require.Nil(t, msg.BreakDuration)
 }
 
 func TestNewTimeSignal(t *testing.T) {
+	t.Parallel()
 	dur := 60 * time.Second
 	upid := []byte("https://ads.example.com/avail/1")
 	msg := NewTimeSignal(0x34, dur, 0x0F, upid)
 
-	if msg.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal, got %d", msg.CommandType)
-	}
-	if len(msg.Descriptors) != 1 {
-		t.Fatalf("expected 1 descriptor, got %d", len(msg.Descriptors))
-	}
+	require.Equal(t, uint8(CommandTimeSignal), msg.CommandType)
+	require.Len(t, msg.Descriptors, 1)
 	d := msg.Descriptors[0]
-	if d.SegmentationType != 0x34 {
-		t.Fatalf("expected seg type 0x34, got 0x%02x", d.SegmentationType)
-	}
-	if d.UPIDType != 0x0F {
-		t.Fatalf("expected UPID type 0x0F, got 0x%02x", d.UPIDType)
-	}
+	require.Equal(t, uint8(0x34), d.SegmentationType)
+	require.Equal(t, uint8(0x0F), d.UPIDType)
 }
 
 func TestNewTimeSignalMulti(t *testing.T) {
+	t.Parallel()
 	descs := []SegmentationDescriptor{
 		{SegmentationType: 0x34, UPIDType: 0x0F, UPID: []byte("uri1")},
 		{SegmentationType: 0x36, UPIDType: 0x09, UPID: []byte("adi1")},
 	}
 	msg := NewTimeSignalMulti(descs)
 
-	if len(msg.Descriptors) != 2 {
-		t.Fatalf("expected 2 descriptors, got %d", len(msg.Descriptors))
-	}
+	require.Len(t, msg.Descriptors, 2)
 }
 
 func TestEncode_SpliceInsert_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(1, dur, true, true)
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("round-trip: expected splice_insert, got %d", decoded.CommandType)
-	}
-	if decoded.EventID != 1 {
-		t.Fatalf("round-trip: expected event ID 1, got %d", decoded.EventID)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.Equal(t, uint32(1), decoded.EventID)
 }
 
 func TestEncode_TimeSignal_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 60 * time.Second
 	msg := NewTimeSignal(0x34, dur, 0x0F, []byte("https://example.com"))
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandTimeSignal {
-		t.Fatalf("round-trip: expected time_signal, got %d", decoded.CommandType)
-	}
-	if len(decoded.Descriptors) != 1 {
-		t.Fatalf("round-trip: expected 1 descriptor, got %d", len(decoded.Descriptors))
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
 }
 
 func TestEncode_SpliceNull(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{CommandType: CommandSpliceNull}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode splice_null failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("splice_null encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 }
 
 func TestEncode_SpliceInsert_Cancel_RoundTrip(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{
 		CommandType:                 CommandSpliceInsert,
 		EventID:                    99,
@@ -136,32 +101,19 @@ func TestEncode_SpliceInsert_Cancel_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode cancel failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded cancel data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode cancel failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if decoded.EventID != 99 {
-		t.Fatalf("expected event ID 99, got %d", decoded.EventID)
-	}
-	if !decoded.SpliceEventCancelIndicator {
-		t.Fatal("expected SpliceEventCancelIndicator=true after round-trip")
-	}
-	if decoded.IsOut {
-		t.Fatal("expected IsOut=false for cancel message")
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.Equal(t, uint32(99), decoded.EventID)
+	require.True(t, decoded.SpliceEventCancelIndicator, "expected SpliceEventCancelIndicator=true after round-trip")
+	require.False(t, decoded.IsOut, "expected IsOut=false for cancel message")
 }
 
 func TestEncode_TimeSignal_CancelSegmentation_RoundTrip(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
@@ -173,33 +125,20 @@ func TestEncode_TimeSignal_CancelSegmentation_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandTimeSignal {
-		t.Fatalf("round-trip: expected time_signal, got %d", decoded.CommandType)
-	}
-	if len(decoded.Descriptors) != 1 {
-		t.Fatalf("round-trip: expected 1 descriptor, got %d", len(decoded.Descriptors))
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
 	d := decoded.Descriptors[0]
-	if !d.SegmentationEventCancelIndicator {
-		t.Fatal("round-trip: expected SegmentationEventCancelIndicator=true")
-	}
-	if d.SegEventID != 42 {
-		t.Fatalf("round-trip: expected SegEventID=42, got %d", d.SegEventID)
-	}
+	require.True(t, d.SegmentationEventCancelIndicator, "round-trip: expected SegmentationEventCancelIndicator=true")
+	require.Equal(t, uint32(42), d.SegEventID)
 }
 
 func TestEncode_TimeSignal_WithPTS(t *testing.T) {
+	t.Parallel()
 	// Create a time_signal with SpliceTimePTS set to 8100000 (90s at 90kHz).
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
@@ -215,32 +154,19 @@ func TestEncode_TimeSignal_WithPTS(t *testing.T) {
 	msg.SpliceTimePTS = &pts
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal, got %d", decoded.CommandType)
-	}
-	if decoded.SpliceTimePTS == nil {
-		t.Fatal("expected SpliceTimePTS to be set after round-trip")
-	}
-	if *decoded.SpliceTimePTS != 8100000 {
-		t.Fatalf("expected SpliceTimePTS=8100000, got %d", *decoded.SpliceTimePTS)
-	}
-	if decoded.Timing != "scheduled" {
-		t.Fatalf("expected Timing=scheduled, got %s", decoded.Timing)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.NotNil(t, decoded.SpliceTimePTS)
+	require.Equal(t, int64(8100000), *decoded.SpliceTimePTS)
+	require.Equal(t, "scheduled", decoded.Timing)
 }
 
 func TestEncode_SpliceInsert_Scheduled_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	pts := int64(8100000) // 90s at 90kHz
 	msg := &CueMessage{
@@ -254,38 +180,21 @@ func TestEncode_SpliceInsert_Scheduled_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if decoded.Timing != "scheduled" {
-		t.Fatalf("expected timing=scheduled, got %q", decoded.Timing)
-	}
-	if decoded.SpliceTimePTS == nil {
-		t.Fatal("expected SpliceTimePTS to be set")
-	}
-	if *decoded.SpliceTimePTS != 8100000 {
-		t.Fatalf("expected SpliceTimePTS=8100000, got %d", *decoded.SpliceTimePTS)
-	}
-	if decoded.EventID != 5 {
-		t.Fatalf("expected EventID=5, got %d", decoded.EventID)
-	}
-	if !decoded.IsOut {
-		t.Fatal("expected IsOut=true")
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.Equal(t, "scheduled", decoded.Timing)
+	require.NotNil(t, decoded.SpliceTimePTS)
+	require.Equal(t, int64(8100000), *decoded.SpliceTimePTS)
+	require.Equal(t, uint32(5), decoded.EventID)
+	require.True(t, decoded.IsOut, "expected IsOut=true")
 }
 
 func TestEncode_SpliceInsert_Immediate_NoSpliceTime(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := &CueMessage{
 		CommandType:   CommandSpliceInsert,
@@ -297,29 +206,18 @@ func TestEncode_SpliceInsert_Immediate_NoSpliceTime(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if decoded.Timing != "immediate" {
-		t.Fatalf("expected timing=immediate, got %q", decoded.Timing)
-	}
-	if decoded.SpliceTimePTS != nil {
-		t.Fatalf("expected SpliceTimePTS=nil, got %d", *decoded.SpliceTimePTS)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.Equal(t, "immediate", decoded.Timing)
+	require.Nil(t, decoded.SpliceTimePTS)
 }
 
 func TestEncode_SpliceInsert_AvailFields_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := &CueMessage{
 		CommandType:     CommandSpliceInsert,
@@ -334,38 +232,21 @@ func TestEncode_SpliceInsert_AvailFields_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if decoded.EventID != 10 {
-		t.Fatalf("expected event ID 10, got %d", decoded.EventID)
-	}
-	if !decoded.IsOut {
-		t.Fatal("expected IsOut=true")
-	}
-	if decoded.UniqueProgramID != 1234 {
-		t.Fatalf("expected UniqueProgramID=1234, got %d", decoded.UniqueProgramID)
-	}
-	if decoded.AvailNum != 2 {
-		t.Fatalf("expected AvailNum=2, got %d", decoded.AvailNum)
-	}
-	if decoded.AvailsExpected != 4 {
-		t.Fatalf("expected AvailsExpected=4, got %d", decoded.AvailsExpected)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.Equal(t, uint32(10), decoded.EventID)
+	require.True(t, decoded.IsOut, "expected IsOut=true")
+	require.Equal(t, uint16(1234), decoded.UniqueProgramID)
+	require.Equal(t, uint8(2), decoded.AvailNum)
+	require.Equal(t, uint8(4), decoded.AvailsExpected)
 }
 
 func TestDecode_MultiDescriptor_DeliveryRestrictions(t *testing.T) {
+	t.Parallel()
 	// Build a time_signal with two descriptors having different delivery restrictions.
 	dur1 := uint64(2700000)
 	dur2 := uint64(900000)
@@ -406,79 +287,49 @@ func TestDecode_MultiDescriptor_DeliveryRestrictions(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Descriptors) != 2 {
-		t.Fatalf("expected 2 descriptors, got %d", len(decoded.Descriptors))
-	}
+	require.Len(t, decoded.Descriptors, 2)
 
 	// Verify first descriptor's restrictions.
 	dr1 := decoded.Descriptors[0].DeliveryRestrictions
-	if dr1 == nil {
-		t.Fatal("descriptor[0] DeliveryRestrictions is nil")
-	}
-	if !dr1.WebDeliveryAllowed {
-		t.Error("descriptor[0] WebDeliveryAllowed should be true")
-	}
-	if dr1.NoRegionalBlackout {
-		t.Error("descriptor[0] NoRegionalBlackout should be false")
-	}
-	if !dr1.ArchiveAllowed {
-		t.Error("descriptor[0] ArchiveAllowed should be true")
-	}
+	require.NotNil(t, dr1, "descriptor[0] DeliveryRestrictions is nil")
+	require.True(t, dr1.WebDeliveryAllowed, "descriptor[0] WebDeliveryAllowed should be true")
+	require.False(t, dr1.NoRegionalBlackout, "descriptor[0] NoRegionalBlackout should be false")
+	require.True(t, dr1.ArchiveAllowed, "descriptor[0] ArchiveAllowed should be true")
 
 	// Verify second descriptor has DIFFERENT restrictions.
 	dr2 := decoded.Descriptors[1].DeliveryRestrictions
-	if dr2 == nil {
-		t.Fatal("descriptor[1] DeliveryRestrictions is nil")
-	}
-	if dr2.WebDeliveryAllowed {
-		t.Error("descriptor[1] WebDeliveryAllowed should be false")
-	}
-	if !dr2.NoRegionalBlackout {
-		t.Error("descriptor[1] NoRegionalBlackout should be true")
-	}
-	if dr2.ArchiveAllowed {
-		t.Error("descriptor[1] ArchiveAllowed should be false")
-	}
-	if dr2.DeviceRestrictions != 3 {
-		t.Errorf("descriptor[1] DeviceRestrictions = %d, want 3", dr2.DeviceRestrictions)
-	}
+	require.NotNil(t, dr2, "descriptor[1] DeliveryRestrictions is nil")
+	require.False(t, dr2.WebDeliveryAllowed, "descriptor[1] WebDeliveryAllowed should be false")
+	require.True(t, dr2.NoRegionalBlackout, "descriptor[1] NoRegionalBlackout should be true")
+	require.False(t, dr2.ArchiveAllowed, "descriptor[1] ArchiveAllowed should be false")
+	require.Equal(t, uint8(3), dr2.DeviceRestrictions)
 
 	// Top-level DeliveryRestrictions should match first descriptor (backward compat).
-	if decoded.DeliveryRestrictions == nil {
-		t.Fatal("top-level DeliveryRestrictions is nil")
-	}
-	if !decoded.DeliveryRestrictions.WebDeliveryAllowed {
-		t.Error("top-level WebDeliveryAllowed should match first descriptor")
-	}
+	require.NotNil(t, decoded.DeliveryRestrictions, "top-level DeliveryRestrictions is nil")
+	require.True(t, decoded.DeliveryRestrictions.WebDeliveryAllowed, "top-level WebDeliveryAllowed should match first descriptor")
 }
 
 func TestDecode_InvalidCRC(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(1, dur, true, true)
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Corrupt the last byte (CRC-32).
 	encoded[len(encoded)-1] ^= 0xFF
 
 	_, err = Decode(encoded)
-	if err == nil {
-		t.Fatal("expected CRC error on corrupt data")
-	}
+	require.Error(t, err, "expected CRC error on corrupt data")
 }
 
 func TestEncode_TimeSignal_NilPTS(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
@@ -488,23 +339,18 @@ func TestEncode_TimeSignal_NilPTS(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// When PTS is nil, the decoded message should also have nil PTS
 	// (time_specified_flag=0), not PTS=0.
-	if decoded.SpliceTimePTS != nil {
-		t.Fatalf("expected nil SpliceTimePTS, got %d", *decoded.SpliceTimePTS)
-	}
+	require.Nil(t, decoded.SpliceTimePTS)
 }
 
 func TestEncode_SegNum_RoundTrip(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
@@ -518,28 +364,19 @@ func TestEncode_SegNum_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Descriptors) != 1 {
-		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
-	}
+	require.Len(t, decoded.Descriptors, 1)
 	d := decoded.Descriptors[0]
-	if d.SegNum != 3 {
-		t.Errorf("SegNum = %d, want 3", d.SegNum)
-	}
-	if d.SegExpected != 5 {
-		t.Errorf("SegExpected = %d, want 5", d.SegExpected)
-	}
+	require.Equal(t, uint8(3), d.SegNum)
+	require.Equal(t, uint8(5), d.SegExpected)
 }
 
 func TestDecodeSpliceInsertCancel_ValidCRC(t *testing.T) {
+	t.Parallel()
 	// Encode a cancel message — the library produces correct CRC-32.
 	msg := &CueMessage{
 		CommandType:                 CommandSpliceInsert,
@@ -547,24 +384,17 @@ func TestDecodeSpliceInsertCancel_ValidCRC(t *testing.T) {
 		SpliceEventCancelIndicator: true,
 	}
 	data, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Call the fallback decoder directly.
 	decoded, err := decodeSpliceInsertCancel(data)
-	if err != nil {
-		t.Fatalf("decodeSpliceInsertCancel failed: %v", err)
-	}
-	if decoded.EventID != 12345 {
-		t.Fatalf("expected EventID=12345, got %d", decoded.EventID)
-	}
-	if !decoded.SpliceEventCancelIndicator {
-		t.Fatal("expected SpliceEventCancelIndicator=true")
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint32(12345), decoded.EventID)
+	require.True(t, decoded.SpliceEventCancelIndicator, "expected SpliceEventCancelIndicator=true")
 }
 
 func TestDecodeSpliceInsertCancel_CorruptCRC(t *testing.T) {
+	t.Parallel()
 	// Encode a cancel message with correct CRC.
 	msg := &CueMessage{
 		CommandType:                 CommandSpliceInsert,
@@ -572,23 +402,18 @@ func TestDecodeSpliceInsertCancel_CorruptCRC(t *testing.T) {
 		SpliceEventCancelIndicator: true,
 	}
 	data, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Corrupt a byte in the middle of the payload.
 	data[10] ^= 0xFF
 
 	_, err = decodeSpliceInsertCancel(data)
-	if err == nil {
-		t.Fatal("expected CRC error on corrupt data")
-	}
-	if !strings.Contains(err.Error(), "CRC-32 mismatch") {
-		t.Fatalf("expected CRC-32 mismatch error, got: %v", err)
-	}
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(), "CRC-32 mismatch"), "expected CRC-32 mismatch error, got: %v", err)
 }
 
 func TestDecodeSpliceInsertCancel_SectionLengthExceedsData(t *testing.T) {
+	t.Parallel()
 	// Construct minimal data where section_length claims more than available.
 	data := make([]byte, 25)
 	data[0] = 0xFC                // table_id
@@ -598,22 +423,17 @@ func TestDecodeSpliceInsertCancel_SectionLengthExceedsData(t *testing.T) {
 	data[2] = 0xFF
 
 	_, err := decodeSpliceInsertCancel(data)
-	if err == nil {
-		t.Fatal("expected error for section length exceeding data")
-	}
-	if !strings.Contains(err.Error(), "section length exceeds data") {
-		t.Fatalf("expected 'section length exceeds data' error, got: %v", err)
-	}
+	require.Error(t, err)
+	require.True(t, strings.Contains(err.Error(), "section length exceeds data"), "expected 'section length exceeds data' error, got: %v", err)
 }
 
 func TestCrc32MPEG2(t *testing.T) {
+	t.Parallel()
 	// Known test vector: empty input should return 0xFFFFFFFF (initial CRC, no data).
 	// Actually for MPEG-2 CRC, the initial value is 0xFFFFFFFF with no final XOR.
 	// For zero-length data the result is 0xFFFFFFFF.
 	crc := crc32MPEG2(nil)
-	if crc != 0xFFFFFFFF {
-		t.Fatalf("expected 0xFFFFFFFF for empty data, got 0x%08X", crc)
-	}
+	require.Equal(t, uint32(0xFFFFFFFF), crc)
 
 	// Test with a known SCTE-35 section: encode a message and verify
 	// the CRC of all-but-last-4-bytes matches the last 4 bytes.
@@ -623,20 +443,17 @@ func TestCrc32MPEG2(t *testing.T) {
 		SpliceEventCancelIndicator: true,
 	}
 	data, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	sectionLen := 3 + (int(data[1]&0x0F)<<8 | int(data[2]))
 	crcData := data[:sectionLen-4]
 	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
 	computedCRC := crc32MPEG2(crcData)
-	if computedCRC != expectedCRC {
-		t.Fatalf("CRC mismatch: computed 0x%08X, expected 0x%08X", computedCRC, expectedCRC)
-	}
+	require.Equal(t, expectedCRC, computedCRC)
 }
 
 func TestMultipleUPIDs_RoundTrip(t *testing.T) {
+	t.Parallel()
 	// A segmentation descriptor with 2 UPIDs should survive encode→decode.
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
@@ -654,49 +471,29 @@ func TestMultipleUPIDs_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true) // verify=true
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
-	if len(encoded) == 0 {
-		t.Fatal("encoded data is empty")
-	}
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if decoded.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal, got %d", decoded.CommandType)
-	}
-	if len(decoded.Descriptors) != 1 {
-		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
-	}
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
 
 	d := decoded.Descriptors[0]
 
 	// First UPID preserved in backward-compatible fields.
-	if d.UPIDType != 0x09 {
-		t.Fatalf("first UPID type: expected 0x09, got 0x%02x", d.UPIDType)
-	}
-	if string(d.UPID) != "SIGNAL:first-upid" {
-		t.Fatalf("first UPID value: expected %q, got %q", "SIGNAL:first-upid", string(d.UPID))
-	}
+	require.Equal(t, uint8(0x09), d.UPIDType)
+	require.Equal(t, "SIGNAL:first-upid", string(d.UPID))
 
 	// Second UPID preserved in AdditionalUPIDs.
-	if len(d.AdditionalUPIDs) != 1 {
-		t.Fatalf("expected 1 additional UPID, got %d", len(d.AdditionalUPIDs))
-	}
-	if d.AdditionalUPIDs[0].Type != 0x0F {
-		t.Fatalf("additional UPID type: expected 0x0F, got 0x%02x", d.AdditionalUPIDs[0].Type)
-	}
-	if string(d.AdditionalUPIDs[0].Value) != "https://example.com/second" {
-		t.Fatalf("additional UPID value: expected %q, got %q",
-			"https://example.com/second", string(d.AdditionalUPIDs[0].Value))
-	}
+	require.Len(t, d.AdditionalUPIDs, 1)
+	require.Equal(t, uint8(0x0F), d.AdditionalUPIDs[0].Type)
+	require.Equal(t, "https://example.com/second", string(d.AdditionalUPIDs[0].Value))
 }
 
 func TestMultipleUPIDs_ThreeUPIDs_RoundTrip(t *testing.T) {
+	t.Parallel()
 	// A segmentation descriptor with 3 UPIDs.
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
@@ -715,154 +512,107 @@ func TestMultipleUPIDs_ThreeUPIDs_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	d := decoded.Descriptors[0]
-	if d.UPIDType != 0x09 {
-		t.Fatalf("first UPID type: expected 0x09, got 0x%02x", d.UPIDType)
-	}
-	if string(d.UPID) != "first" {
-		t.Fatalf("first UPID value: expected %q, got %q", "first", string(d.UPID))
-	}
-	if len(d.AdditionalUPIDs) != 2 {
-		t.Fatalf("expected 2 additional UPIDs, got %d", len(d.AdditionalUPIDs))
-	}
-	if string(d.AdditionalUPIDs[0].Value) != "second" {
-		t.Fatalf("second UPID: expected %q, got %q", "second", string(d.AdditionalUPIDs[0].Value))
-	}
-	if string(d.AdditionalUPIDs[1].Value) != "third" {
-		t.Fatalf("third UPID: expected %q, got %q", "third", string(d.AdditionalUPIDs[1].Value))
-	}
+	require.Equal(t, uint8(0x09), d.UPIDType)
+	require.Equal(t, "first", string(d.UPID))
+	require.Len(t, d.AdditionalUPIDs, 2)
+	require.Equal(t, "second", string(d.AdditionalUPIDs[0].Value))
+	require.Equal(t, "third", string(d.AdditionalUPIDs[1].Value))
 }
 
 func TestSingleUPID_BackwardCompatible(t *testing.T) {
+	t.Parallel()
 	// A descriptor with only 1 UPID should have no AdditionalUPIDs.
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	d := decoded.Descriptors[0]
-	if d.UPIDType != 0x0F {
-		t.Fatalf("UPID type: expected 0x0F, got 0x%02x", d.UPIDType)
-	}
-	if len(d.AdditionalUPIDs) != 0 {
-		t.Fatalf("expected 0 additional UPIDs, got %d", len(d.AdditionalUPIDs))
-	}
+	require.Equal(t, uint8(0x0F), d.UPIDType)
+	require.Len(t, d.AdditionalUPIDs, 0)
 }
 
 func TestEncode_Tier_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(1, dur, true, true)
 	msg.Tier = 500 // restricted tier
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.Tier != 500 {
-		t.Fatalf("expected Tier=500, got %d", decoded.Tier)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint16(500), decoded.Tier)
 }
 
 func TestEncode_Tier_DefaultsTo4095(t *testing.T) {
+	t.Parallel()
 	// Tier=0 should default to 4095 (unrestricted) in the encoded output.
 	msg := &CueMessage{CommandType: CommandSpliceNull}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.Tier != 4095 {
-		t.Fatalf("expected Tier=4095 (default), got %d", decoded.Tier)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint16(4095), decoded.Tier)
 }
 
 func TestEncode_PTSAdjustment_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dur := 30 * time.Second
 	msg := NewSpliceInsert(1, dur, true, true)
 	msg.PTSAdjustment = 183003 // example: PTS shifted by ~2 seconds
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.PTSAdjustment != 183003 {
-		t.Fatalf("expected PTSAdjustment=183003, got %d", decoded.PTSAdjustment)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint64(183003), decoded.PTSAdjustment)
 }
 
 func TestEncode_PTSAdjustment_DefaultZero(t *testing.T) {
+	t.Parallel()
 	// Default PTSAdjustment should be 0 when not explicitly set.
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.PTSAdjustment != 0 {
-		t.Fatalf("expected PTSAdjustment=0, got %d", decoded.PTSAdjustment)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), decoded.PTSAdjustment)
 }
 
 func TestEncode_TierAndPTSAdjustment_Combined(t *testing.T) {
+	t.Parallel()
 	// Both tier and PTSAdjustment should survive round-trip together.
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
 	msg.Tier = 100
 	msg.PTSAdjustment = 8100000 // 90s
 
 	encoded, err := msg.Encode(true)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
-	if decoded.Tier != 100 {
-		t.Fatalf("expected Tier=100, got %d", decoded.Tier)
-	}
-	if decoded.PTSAdjustment != 8100000 {
-		t.Fatalf("expected PTSAdjustment=8100000, got %d", decoded.PTSAdjustment)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint16(100), decoded.Tier)
+	require.Equal(t, uint64(8100000), decoded.PTSAdjustment)
 }
 
 func TestEncode_SubSegment_RoundTrip(t *testing.T) {
+	t.Parallel()
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
@@ -876,23 +626,13 @@ func TestEncode_SubSegment_RoundTrip(t *testing.T) {
 	}
 
 	encoded, err := msg.Encode(false)
-	if err != nil {
-		t.Fatalf("encode failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(encoded)
-	if err != nil {
-		t.Fatalf("decode failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Descriptors) != 1 {
-		t.Fatalf("expected 1 descriptor, got %d", len(decoded.Descriptors))
-	}
+	require.Len(t, decoded.Descriptors, 1)
 	d := decoded.Descriptors[0]
-	if d.SubSegmentNum != 2 {
-		t.Errorf("SubSegmentNum = %d, want 2", d.SubSegmentNum)
-	}
-	if d.SubSegmentsExpected != 4 {
-		t.Errorf("SubSegmentsExpected = %d, want 4", d.SubSegmentsExpected)
-	}
+	require.Equal(t, uint8(2), d.SubSegmentNum)
+	require.Equal(t, uint8(4), d.SubSegmentsExpected)
 }

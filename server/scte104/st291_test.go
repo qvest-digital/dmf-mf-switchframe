@@ -1,17 +1,15 @@
 package scte104
 
 import (
-	"bytes"
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func mustWrap(t *testing.T, data []byte) []byte {
 	t.Helper()
 	packet, err := WrapST291(data)
-	if err != nil {
-		t.Fatalf("WrapST291 error: %v", err)
-	}
+	require.NoError(t, err, "WrapST291 error")
 	return packet
 }
 
@@ -20,13 +18,9 @@ func TestParseST291_WrapRoundTrip(t *testing.T) {
 
 	packet := mustWrap(t, testData)
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
-	if !bytes.Equal(got, testData) {
-		t.Errorf("round-trip data = %x, want %x", got, testData)
-	}
+	require.Equal(t, testData, got, "round-trip data mismatch")
 }
 
 func TestParseST291_InvalidDID(t *testing.T) {
@@ -38,12 +32,8 @@ func TestParseST291_InvalidDID(t *testing.T) {
 	packet[csIndex] = computeChecksum(packet[:csIndex])
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for invalid DID")
-	}
-	if !errors.Is(err, ErrST291InvalidDID) {
-		t.Errorf("error = %v, want ErrST291InvalidDID", err)
-	}
+	require.Error(t, err, "expected error for invalid DID")
+	require.ErrorIs(t, err, ErrST291InvalidDID)
 }
 
 func TestParseST291_InvalidSDID(t *testing.T) {
@@ -54,12 +44,8 @@ func TestParseST291_InvalidSDID(t *testing.T) {
 	packet[csIndex] = computeChecksum(packet[:csIndex])
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for invalid SDID")
-	}
-	if !errors.Is(err, ErrST291InvalidSDID) {
-		t.Errorf("error = %v, want ErrST291InvalidSDID", err)
-	}
+	require.Error(t, err, "expected error for invalid SDID")
+	require.ErrorIs(t, err, ErrST291InvalidSDID)
 }
 
 func TestParseST291_BadChecksum(t *testing.T) {
@@ -68,12 +54,8 @@ func TestParseST291_BadChecksum(t *testing.T) {
 	packet[len(packet)-1] ^= 0xFF
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for bad checksum")
-	}
-	if !errors.Is(err, ErrST291BadChecksum) {
-		t.Errorf("error = %v, want ErrST291BadChecksum", err)
-	}
+	require.Error(t, err, "expected error for bad checksum")
+	require.ErrorIs(t, err, ErrST291BadChecksum)
 }
 
 func TestParseST291_TooShort(t *testing.T) {
@@ -90,12 +72,8 @@ func TestParseST291_TooShort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParseST291(tt.packet)
-			if err == nil {
-				t.Fatal("expected error for too-short packet")
-			}
-			if !errors.Is(err, ErrST291TooShort) {
-				t.Errorf("error = %v, want ErrST291TooShort", err)
-			}
+			require.Error(t, err, "expected error for too-short packet")
+			require.ErrorIs(t, err, ErrST291TooShort)
 		})
 	}
 }
@@ -105,12 +83,8 @@ func TestParseST291_TooShort_DCExceedsLength(t *testing.T) {
 	packet := []byte{0x41, 0x07, 0x05, 0x00, 0x01}
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for insufficient data per DC")
-	}
-	if !errors.Is(err, ErrST291TooShort) {
-		t.Errorf("error = %v, want ErrST291TooShort", err)
-	}
+	require.Error(t, err, "expected error for insufficient data per DC")
+	require.ErrorIs(t, err, ErrST291TooShort)
 }
 
 func TestParseST291_ZeroLengthPayload(t *testing.T) {
@@ -119,13 +93,9 @@ func TestParseST291_ZeroLengthPayload(t *testing.T) {
 	packet := []byte{0x41, 0x07, 0x00, 0x48}
 
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
-	if len(got) != 0 {
-		t.Errorf("expected empty payload, got %d bytes: %x", len(got), got)
-	}
+	require.Empty(t, got, "expected empty payload")
 }
 
 func TestParseST291_MaxLengthPayload(t *testing.T) {
@@ -137,13 +107,9 @@ func TestParseST291_MaxLengthPayload(t *testing.T) {
 
 	packet := mustWrap(t, data)
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
-	if !bytes.Equal(got, data) {
-		t.Errorf("round-trip mismatch for 254-byte payload")
-	}
+	require.Equal(t, data, got, "round-trip mismatch for 254-byte payload")
 }
 
 func TestParseST291_PayloadDescriptorStripping(t *testing.T) {
@@ -156,14 +122,10 @@ func TestParseST291_PayloadDescriptorStripping(t *testing.T) {
 	packet[7] = computeChecksum(packet[:7])
 
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
 	expected := []byte{0xAA, 0xBB, 0xCC}
-	if !bytes.Equal(got, expected) {
-		t.Errorf("data = %x, want %x (payload descriptor should be stripped)", got, expected)
-	}
+	require.Equal(t, expected, got, "payload descriptor should be stripped")
 }
 
 func TestParseST291_FragmentedContinued(t *testing.T) {
@@ -173,12 +135,8 @@ func TestParseST291_FragmentedContinued(t *testing.T) {
 	packet[5] = computeChecksum(packet[:5])
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for continued fragment")
-	}
-	if !errors.Is(err, ErrST291Fragmented) {
-		t.Errorf("error = %v, want ErrST291Fragmented", err)
-	}
+	require.Error(t, err, "expected error for continued fragment")
+	require.ErrorIs(t, err, ErrST291Fragmented)
 }
 
 func TestParseST291_FragmentedFollowing(t *testing.T) {
@@ -188,12 +146,8 @@ func TestParseST291_FragmentedFollowing(t *testing.T) {
 	packet[5] = computeChecksum(packet[:5])
 
 	_, err := ParseST291(packet)
-	if err == nil {
-		t.Fatal("expected error for following fragment")
-	}
-	if !errors.Is(err, ErrST291Fragmented) {
-		t.Errorf("error = %v, want ErrST291Fragmented", err)
-	}
+	require.Error(t, err, "expected error for following fragment")
+	require.ErrorIs(t, err, ErrST291Fragmented)
 }
 
 func TestWrapST291_Structure(t *testing.T) {
@@ -201,31 +155,19 @@ func TestWrapST291_Structure(t *testing.T) {
 	packet := mustWrap(t, data)
 
 	// Expected: DID(1) + SDID(1) + DC(1) + payload_desc(1) + data(3) + CS(1) = 8
-	if len(packet) != 8 {
-		t.Fatalf("packet length = %d, want 8", len(packet))
-	}
+	require.Len(t, packet, 8, "packet length")
 
-	if packet[0] != ST291DID {
-		t.Errorf("DID = 0x%02X, want 0x%02X", packet[0], ST291DID)
-	}
-	if packet[1] != ST291SDID {
-		t.Errorf("SDID = 0x%02X, want 0x%02X", packet[1], ST291SDID)
-	}
-	if packet[2] != 4 { // DC = 3 data + 1 payload descriptor
-		t.Errorf("DC = %d, want 4", packet[2])
-	}
-	if packet[3] != 0x00 { // Payload descriptor
-		t.Errorf("payload descriptor = 0x%02X, want 0x00", packet[3])
-	}
-	if packet[4] != 0x10 || packet[5] != 0x20 || packet[6] != 0x30 {
-		t.Errorf("UDW data = %x, want [10 20 30]", packet[4:7])
-	}
+	require.Equal(t, byte(ST291DID), packet[0], "DID mismatch")
+	require.Equal(t, byte(ST291SDID), packet[1], "SDID mismatch")
+	require.Equal(t, byte(4), packet[2], "DC = 3 data + 1 payload descriptor")
+	require.Equal(t, byte(0x00), packet[3], "payload descriptor")
+	require.Equal(t, byte(0x10), packet[4], "UDW data[0]")
+	require.Equal(t, byte(0x20), packet[5], "UDW data[1]")
+	require.Equal(t, byte(0x30), packet[6], "UDW data[2]")
 
 	// Verify checksum.
 	expectedCS := computeChecksum(packet[:7])
-	if packet[7] != expectedCS {
-		t.Errorf("checksum = 0x%02X, want 0x%02X", packet[7], expectedCS)
-	}
+	require.Equal(t, expectedCS, packet[7], "checksum mismatch")
 }
 
 func TestWrapST291_EmptyPayload(t *testing.T) {
@@ -234,55 +176,37 @@ func TestWrapST291_EmptyPayload(t *testing.T) {
 
 	// DC = 0 + 1 = 1 (just payload descriptor).
 	// Total: DID(1) + SDID(1) + DC(1) + payload_desc(1) + CS(1) = 5
-	if len(packet) != 5 {
-		t.Fatalf("packet length = %d, want 5", len(packet))
-	}
+	require.Len(t, packet, 5, "packet length")
 
-	if packet[2] != 1 { // DC = 1 (payload descriptor only)
-		t.Errorf("DC = %d, want 1", packet[2])
-	}
-	if packet[3] != 0x00 { // Payload descriptor
-		t.Errorf("payload descriptor = 0x%02X, want 0x00", packet[3])
-	}
+	require.Equal(t, byte(1), packet[2], "DC = 1 (payload descriptor only)")
+	require.Equal(t, byte(0x00), packet[3], "payload descriptor")
 }
 
 func TestWrapST291_PayloadTooLarge(t *testing.T) {
 	data := make([]byte, 255)
 	_, err := WrapST291(data)
-	if err == nil {
-		t.Fatal("expected error for payload > 254 bytes")
-	}
-	if !errors.Is(err, ErrST291PayloadTooLarge) {
-		t.Errorf("error = %v, want ErrST291PayloadTooLarge", err)
-	}
+	require.Error(t, err, "expected error for payload > 254 bytes")
+	require.ErrorIs(t, err, ErrST291PayloadTooLarge)
 }
 
 func TestParseST291_WrapRoundTrip_EmptyPayload(t *testing.T) {
 	data := []byte{}
 	packet := mustWrap(t, data)
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
 	// WrapST291 with empty data produces DC=1 (just payload descriptor).
 	// ParseST291 strips the payload descriptor, returning empty data.
-	if len(got) != 0 {
-		t.Errorf("expected empty payload, got %d bytes: %x", len(got), got)
-	}
+	require.Empty(t, got, "expected empty payload")
 }
 
 func TestParseST291_WrapRoundTrip_SingleByte(t *testing.T) {
 	data := []byte{0xFF}
 	packet := mustWrap(t, data)
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
-	if !bytes.Equal(got, data) {
-		t.Errorf("round-trip data = %x, want %x", got, data)
-	}
+	require.Equal(t, data, got, "round-trip data mismatch")
 }
 
 func TestParseST291_DoesNotAliasInput(t *testing.T) {
@@ -290,9 +214,7 @@ func TestParseST291_DoesNotAliasInput(t *testing.T) {
 	packet := mustWrap(t, data)
 
 	got, err := ParseST291(packet)
-	if err != nil {
-		t.Fatalf("ParseST291 error: %v", err)
-	}
+	require.NoError(t, err, "ParseST291 error")
 
 	// Mutate the original packet's UDW area.
 	packet[4] = 0x00
@@ -300,9 +222,7 @@ func TestParseST291_DoesNotAliasInput(t *testing.T) {
 	packet[6] = 0x00
 
 	// The parsed result should be unaffected.
-	if !bytes.Equal(got, data) {
-		t.Errorf("parsed data was aliased to input: got %x, want %x", got, data)
-	}
+	require.Equal(t, data, got, "parsed data was aliased to input")
 }
 
 func TestComputeChecksum(t *testing.T) {
@@ -320,9 +240,7 @@ func TestComputeChecksum(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := computeChecksum(tt.data)
-			if got != tt.want {
-				t.Errorf("computeChecksum(%x) = 0x%02X, want 0x%02X", tt.data, got, tt.want)
-			}
+			require.Equal(t, tt.want, got, "computeChecksum(%x)", tt.data)
 		})
 	}
 }

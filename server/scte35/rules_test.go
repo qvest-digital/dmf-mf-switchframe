@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestRuleEngine_DeleteByCommandType(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -22,12 +25,11 @@ func TestRuleEngine_DeleteByCommandType(t *testing.T) {
 	msg := NewSpliceInsert(1, dur, true, true)
 	action, _ := re.Evaluate(msg, "")
 
-	if action != ActionDelete {
-		t.Fatalf("expected delete, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRuleEngine_PassBySegType(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -42,12 +44,11 @@ func TestRuleEngine_PassBySegType(t *testing.T) {
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test")) // 0x34 = 52
 	action, _ := re.Evaluate(msg, "")
 
-	if action != ActionPass {
-		t.Fatalf("expected pass, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_CompoundAND(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -65,19 +66,16 @@ func TestRuleEngine_CompoundAND(t *testing.T) {
 	// Matches both: seg type 52 + duration 60s
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass for matching compound AND, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 
 	// Matches only seg type, duration too short
 	msg2 := NewTimeSignal(0x34, 10*time.Second, 0x0F, []byte("test"))
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionDelete {
-		t.Fatalf("expected default delete for partial compound AND, got %s", action2)
-	}
+	require.Equal(t, ActionDelete, action2)
 }
 
 func TestRuleEngine_CompoundOR(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -94,24 +92,22 @@ func TestRuleEngine_CompoundOR(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass for OR match, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_DefaultAction(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.SetDefaultAction(ActionDelete)
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
 
-	if action != ActionDelete {
-		t.Fatalf("expected default delete, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRuleEngine_DestinationFilter(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:           "r1",
@@ -126,18 +122,15 @@ func TestRuleEngine_DestinationFilter(t *testing.T) {
 
 	// Should match for dest1
 	action, _ := re.Evaluate(msg, "dest1")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for dest1, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// Should not match for dest2 (falls through to default=pass)
 	action2, _ := re.Evaluate(msg, "dest2")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for dest2, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_DisabledRule(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -149,12 +142,11 @@ func TestRuleEngine_DisabledRule(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass (disabled rule), got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_FirstMatchWins(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -173,12 +165,11 @@ func TestRuleEngine_FirstMatchWins(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass (first match), got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_ContainsOperator(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -190,12 +181,11 @@ func TestRuleEngine_ContainsOperator(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com/ad/1"))
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for contains match, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRuleEngine_RangeOperator(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -207,18 +197,15 @@ func TestRuleEngine_RangeOperator(t *testing.T) {
 
 	msg := NewTimeSignal(20, 60*time.Second, 0x0F, []byte("test"))
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for range match, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	msg2 := NewTimeSignal(30, 60*time.Second, 0x0F, []byte("test"))
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for out-of-range, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_BackwardCompat_SingleCondition(t *testing.T) {
+	t.Parallel()
 	ruleJSON := `{
 		"id": "r1",
 		"name": "legacy",
@@ -227,15 +214,13 @@ func TestRuleEngine_BackwardCompat_SingleCondition(t *testing.T) {
 		"action": "delete"
 	}`
 	var rule Rule
-	if err := json.Unmarshal([]byte(ruleJSON), &rule); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
-	if len(rule.Conditions) != 1 {
-		t.Fatalf("expected 1 condition from singular key, got %d", len(rule.Conditions))
-	}
+	err := json.Unmarshal([]byte(ruleJSON), &rule)
+	require.NoError(t, err)
+	require.Len(t, rule.Conditions, 1)
 }
 
 func TestRuleEngine_MatchesOperator(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -247,18 +232,15 @@ func TestRuleEngine_MatchesOperator(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://ads.example.com/avail/1"))
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for matches, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	msg2 := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://other.net/avail/1"))
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for non-matching regex, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_SetRules(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -281,12 +263,11 @@ func TestRuleEngine_SetRules(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass after SetRules, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_ReplaceAction(t *testing.T) {
+	t.Parallel()
 	newDur := 15 * time.Second
 	newEventID := uint32(999)
 	re := NewRuleEngine()
@@ -304,25 +285,17 @@ func TestRuleEngine_ReplaceAction(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, modified := re.Evaluate(msg, "")
-	if action != ActionReplace {
-		t.Fatalf("expected replace, got %s", action)
-	}
-	if modified == nil {
-		t.Fatal("expected modified message for replace action")
-	}
-	if modified.EventID != 999 {
-		t.Fatalf("expected event ID 999, got %d", modified.EventID)
-	}
-	if modified.BreakDuration == nil || *modified.BreakDuration != 15*time.Second {
-		t.Fatalf("expected 15s duration, got %v", modified.BreakDuration)
-	}
+	require.Equal(t, ActionReplace, action)
+	require.NotNil(t, modified)
+	require.Equal(t, uint32(999), modified.EventID)
+	require.NotNil(t, modified.BreakDuration)
+	require.Equal(t, 15*time.Second, *modified.BreakDuration)
 	// Original should be unmodified.
-	if msg.EventID != 1 {
-		t.Fatalf("original msg event ID mutated: %d", msg.EventID)
-	}
+	require.Equal(t, uint32(1), msg.EventID)
 }
 
 func TestRuleEngine_NotEqualOperator(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -335,19 +308,16 @@ func TestRuleEngine_NotEqualOperator(t *testing.T) {
 	// splice_insert (command_type=5, != 0) should match.
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for !=0, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// splice_null (command_type=0, == 0) should not match.
 	msgNull := &CueMessage{CommandType: CommandSpliceNull}
 	action2, _ := re.Evaluate(msgNull, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for ==0, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_IsOutField(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -359,18 +329,15 @@ func TestRuleEngine_IsOutField(t *testing.T) {
 
 	msgOut := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msgOut, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for is_out=true, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	msgIn := NewSpliceInsert(1, 0, false, false)
 	action2, _ := re.Evaluate(msgIn, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for is_out=false, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_EventIDField(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -382,18 +349,15 @@ func TestRuleEngine_EventIDField(t *testing.T) {
 
 	msg := NewSpliceInsert(42, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for event_id=42, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	msg2 := NewSpliceInsert(99, 30*time.Second, true, true)
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for event_id=99, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_DurationComparison(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -407,18 +371,15 @@ func TestRuleEngine_DurationComparison(t *testing.T) {
 
 	msg := NewSpliceInsert(1, 10*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for 10s < 15s, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	msg2 := NewSpliceInsert(1, 60*time.Second, true, true)
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for 60s >= 15s, got %s", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestRuleEngine_EmptyConditions(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:      "r1",
@@ -430,12 +391,11 @@ func TestRuleEngine_EmptyConditions(t *testing.T) {
 	msg := NewSpliceInsert(1, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
 	// Rule with no conditions should not match.
-	if action != ActionPass {
-		t.Fatalf("expected pass for empty conditions, got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_BackwardCompat_DefaultLogicAND(t *testing.T) {
+	t.Parallel()
 	ruleJSON := `{
 		"id": "r1",
 		"name": "no logic field",
@@ -447,16 +407,14 @@ func TestRuleEngine_BackwardCompat_DefaultLogicAND(t *testing.T) {
 		"action": "delete"
 	}`
 	var rule Rule
-	if err := json.Unmarshal([]byte(ruleJSON), &rule); err != nil {
-		t.Fatalf("unmarshal failed: %v", err)
-	}
+	err := json.Unmarshal([]byte(ruleJSON), &rule)
+	require.NoError(t, err)
 	// Logic should default to AND.
-	if rule.Logic != LogicAND {
-		t.Fatalf("expected default logic AND, got %q", rule.Logic)
-	}
+	require.Equal(t, LogicAND, rule.Logic)
 }
 
 func TestRuleEngine_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -473,9 +431,7 @@ func TestRuleEngine_ConcurrentAccess(t *testing.T) {
 			msg := NewSpliceInsert(1, 30*time.Second, true, true)
 			for j := 0; j < 100; j++ {
 				action, _ := re.Evaluate(msg, "")
-				if action != ActionDelete {
-					t.Errorf("expected delete, got %s", action)
-				}
+				require.Equal(t, ActionDelete, action)
 			}
 		}()
 	}
@@ -485,6 +441,7 @@ func TestRuleEngine_ConcurrentAccess(t *testing.T) {
 }
 
 func TestMatchRange_NegativeValues(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		val, rangeStr string
 		want          bool
@@ -508,13 +465,12 @@ func TestMatchRange_NegativeValues(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := matchRange(tt.val, tt.rangeStr)
-		if got != tt.want {
-			t.Errorf("matchRange(%q, %q) = %v, want %v", tt.val, tt.rangeStr, got, tt.want)
-		}
+		require.Equal(t, tt.want, got, "matchRange(%q, %q)", tt.val, tt.rangeStr)
 	}
 }
 
 func TestRuleEngine_RegexCacheReuse(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -526,32 +482,25 @@ func TestRuleEngine_RegexCacheReuse(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("https://example.com"))
 
-	// Evaluate twice — second should use cached regex.
+	// Evaluate twice -- second should use cached regex.
 	action1, _ := re.Evaluate(msg, "")
 	action2, _ := re.Evaluate(msg, "")
 
-	if action1 != ActionDelete {
-		t.Fatalf("first eval: expected delete, got %s", action1)
-	}
-	if action2 != ActionDelete {
-		t.Fatalf("second eval: expected delete, got %s", action2)
-	}
+	require.Equal(t, ActionDelete, action1)
+	require.Equal(t, ActionDelete, action2)
 
 	// Verify cache contains the pattern.
 	_, found := re.regexCache.Load(`^https://`)
-	if !found {
-		t.Error("expected regex pattern to be cached")
-	}
+	require.True(t, found, "expected regex pattern to be cached")
 
 	// SetRules should clear cache.
 	re.SetRules(nil)
 	_, found = re.regexCache.Load(`^https://`)
-	if found {
-		t.Error("expected cache to be cleared after SetRules")
-	}
+	require.False(t, found, "expected cache to be cleared after SetRules")
 }
 
 func TestRuleEngine_MultiDescriptor_MatchesSecond(t *testing.T) {
+	t.Parallel()
 	// Rule matches segmentation_type_id=52 (0x34). Message has two descriptors:
 	// type 48 (0x30) and type 52 (0x34). Rule should match the second descriptor.
 	re := NewRuleEngine()
@@ -574,12 +523,11 @@ func TestRuleEngine_MultiDescriptor_MatchesSecond(t *testing.T) {
 	}
 
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete (match second descriptor), got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRuleEngine_MultiDescriptor_NoneMatch(t *testing.T) {
+	t.Parallel()
 	re := NewRuleEngine()
 	re.AddRule(Rule{
 		ID:         "r1",
@@ -599,12 +547,11 @@ func TestRuleEngine_MultiDescriptor_NoneMatch(t *testing.T) {
 	}
 
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass (no descriptor matches), got %s", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestRuleEngine_SingleDescriptor_Unchanged(t *testing.T) {
+	t.Parallel()
 	// Regression: single descriptor behavior identical to before.
 	re := NewRuleEngine()
 	re.AddRule(Rule{
@@ -617,12 +564,11 @@ func TestRuleEngine_SingleDescriptor_Unchanged(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test"))
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for single descriptor match, got %s", action)
-	}
+	require.Equal(t, ActionDelete, action)
 }
 
 func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	// A message with no descriptors should NOT match rules on segmentation_type_id
 	// or duration. Previously, extractFieldValues returned []string{"0"} for these
 	// fields when no descriptors existed, causing rules like "< 50" or "= 0" to
@@ -641,9 +587,7 @@ func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
 		// splice_insert has no descriptors
 		msg := NewSpliceInsert(1, 30*time.Second, true, true)
 		action, _ := re.Evaluate(msg, "")
-		if action != ActionPass {
-			t.Fatalf("expected pass for descriptor-less message, got %s", action)
-		}
+		require.Equal(t, ActionPass, action)
 	})
 
 	t.Run("segmentation_type_id less than 50", func(t *testing.T) {
@@ -658,9 +602,7 @@ func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
 
 		msg := NewSpliceInsert(1, 30*time.Second, true, true)
 		action, _ := re.Evaluate(msg, "")
-		if action != ActionPass {
-			t.Fatalf("expected pass for descriptor-less message, got %s", action)
-		}
+		require.Equal(t, ActionPass, action)
 	})
 
 	t.Run("duration equals zero no break_duration", func(t *testing.T) {
@@ -676,9 +618,7 @@ func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
 		// splice_insert with no duration and no descriptors
 		msg := NewSpliceInsert(1, 0, false, false)
 		action, _ := re.Evaluate(msg, "")
-		if action != ActionPass {
-			t.Fatalf("expected pass for descriptor-less message with no duration, got %s", action)
-		}
+		require.Equal(t, ActionPass, action)
 	})
 
 	t.Run("duration less than 15000 no break_duration", func(t *testing.T) {
@@ -694,8 +634,6 @@ func TestRuleEngine_NoDescriptors_SegTypeDoesNotMatch(t *testing.T) {
 		// splice_insert with no duration and no descriptors
 		msg := NewSpliceInsert(1, 0, false, false)
 		action, _ := re.Evaluate(msg, "")
-		if action != ActionPass {
-			t.Fatalf("expected pass for descriptor-less message with no duration, got %s", action)
-		}
+		require.Equal(t, ActionPass, action)
 	})
 }

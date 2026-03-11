@@ -4,12 +4,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Integration tests wire real components together (injector + rules engine)
 // to verify end-to-end SCTE-35 pipeline behavior.
 
 func TestIntegration_InjectCue_ToMuxer(t *testing.T) {
+	t.Parallel()
 	// Create injector with real muxer sink, inject cue, verify
 	// muxer sink received valid SCTE-35 bytes that decode correctly.
 	var received []byte
@@ -29,40 +32,27 @@ func TestIntegration_InjectCue_ToMuxer(t *testing.T) {
 
 	msg := NewSpliceInsert(0, 30*time.Second, true, true)
 	_, err := inj.InjectCue(msg)
-	if err != nil {
-		t.Fatalf("inject failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	mu.Lock()
 	data := received
 	mu.Unlock()
 
-	if len(data) == 0 {
-		t.Fatal("no data received by sink")
-	}
+	require.NotEmpty(t, data)
 
 	// Decode the received bytes
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode injected bytes failed: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if !decoded.IsOut {
-		t.Fatal("expected IsOut=true")
-	}
-	if decoded.BreakDuration == nil {
-		t.Fatal("expected non-nil BreakDuration")
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.True(t, decoded.IsOut, "expected IsOut=true")
+	require.NotNil(t, decoded.BreakDuration)
 	// 30 second break duration (allow small rounding tolerance)
 	dur := decoded.BreakDuration.Milliseconds()
-	if dur < 29999 || dur > 30001 {
-		t.Fatalf("expected ~30000ms break duration, got %d", dur)
-	}
+	require.True(t, dur >= 29999 && dur <= 30001, "expected ~30000ms break duration, got %d", dur)
 }
 
 func TestIntegration_RulesEngine_EvaluatesCue(t *testing.T) {
+	t.Parallel()
 	// Create rules engine that deletes splice_insert commands.
 	// Verify evaluation returns ActionDelete for a matching cue.
 	re := NewRuleEngine()
@@ -78,19 +68,16 @@ func TestIntegration_RulesEngine_EvaluatesCue(t *testing.T) {
 
 	msg := NewSpliceInsert(0, 30*time.Second, true, true)
 	action, _ := re.Evaluate(msg, "")
-	if action != ActionDelete {
-		t.Fatalf("expected delete action, got %q", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// time_signal should pass through (no matching rule)
 	tsMsg := NewTimeSignal(0x34, 30*time.Second, 0x09, []byte("AD123"))
 	action, _ = re.Evaluate(tsMsg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass action for time_signal, got %q", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestIntegration_RulesEngine_ReplaceDuration(t *testing.T) {
+	t.Parallel()
 	// Rules engine replaces break duration to a capped value.
 	re := NewRuleEngine()
 	cappedDur := 60 * time.Second
@@ -109,25 +96,19 @@ func TestIntegration_RulesEngine_ReplaceDuration(t *testing.T) {
 	// 120s break should be capped to 60s
 	msg := NewSpliceInsert(0, 120*time.Second, true, true)
 	action, modified := re.Evaluate(msg, "")
-	if action != ActionReplace {
-		t.Fatalf("expected replace action, got %q", action)
-	}
-	if modified == nil {
-		t.Fatal("expected modified message")
-	}
-	if modified.BreakDuration == nil || *modified.BreakDuration != 60*time.Second {
-		t.Fatalf("expected 60s duration, got %v", modified.BreakDuration)
-	}
+	require.Equal(t, ActionReplace, action)
+	require.NotNil(t, modified)
+	require.NotNil(t, modified.BreakDuration)
+	require.Equal(t, 60*time.Second, *modified.BreakDuration)
 
 	// 20s break should pass through (below threshold)
 	msg2 := NewSpliceInsert(0, 20*time.Second, true, true)
 	action2, _ := re.Evaluate(msg2, "")
-	if action2 != ActionPass {
-		t.Fatalf("expected pass for 20s break, got %q", action2)
-	}
+	require.Equal(t, ActionPass, action2)
 }
 
 func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
+	t.Parallel()
 	// Inject cue-out with 100ms duration, wait 300ms,
 	// verify cue-in was auto-injected (2+ sink calls).
 	var mu sync.Mutex
@@ -146,9 +127,7 @@ func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 
 	msg := NewSpliceInsert(0, 100*time.Millisecond, true, true)
 	_, err := inj.InjectCue(msg)
-	if err != nil {
-		t.Fatalf("inject failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	time.Sleep(300 * time.Millisecond)
 
@@ -157,24 +136,17 @@ func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 	data := lastData
 	mu.Unlock()
 
-	if c < 2 {
-		t.Fatalf("expected at least 2 sink calls (cue-out + cue-in), got %d", c)
-	}
-	if len(inj.ActiveEventIDs()) != 0 {
-		t.Fatal("expected no active events after auto-return")
-	}
+	require.GreaterOrEqual(t, c, 2, "expected at least 2 sink calls (cue-out + cue-in)")
+	require.Empty(t, inj.ActiveEventIDs(), "expected no active events after auto-return")
 
 	// Verify the last sink call was a cue-in (IsOut=false)
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode last sink data: %v", err)
-	}
-	if decoded.IsOut {
-		t.Fatal("expected cue-in (IsOut=false) from auto-return")
-	}
+	require.NoError(t, err)
+	require.False(t, decoded.IsOut, "expected cue-in (IsOut=false) from auto-return")
 }
 
 func TestIntegration_HoldAndExtend(t *testing.T) {
+	t.Parallel()
 	// Inject cue with auto-return, hold it, verify no auto-return
 	// after original duration. Then extend, verify new timer.
 	var mu sync.Mutex
@@ -193,45 +165,34 @@ func TestIntegration_HoldAndExtend(t *testing.T) {
 	eventID, _ := inj.InjectCue(msg)
 
 	// Hold immediately
-	if err := inj.HoldBreak(eventID); err != nil {
-		t.Fatalf("hold failed: %v", err)
-	}
+	err := inj.HoldBreak(eventID)
+	require.NoError(t, err)
 
 	// Wait past original duration
 	time.Sleep(400 * time.Millisecond)
 
 	// Should still be active (held)
-	if len(inj.ActiveEventIDs()) == 0 {
-		t.Fatal("event should still be active (held)")
-	}
+	require.NotEmpty(t, inj.ActiveEventIDs(), "event should still be active (held)")
 
 	// Verify state shows held
 	state := inj.State()
 	active, ok := state.ActiveEvents[eventID]
-	if !ok {
-		t.Fatal("event not in active events")
-	}
-	if !active.Held {
-		t.Fatal("expected Held=true in state")
-	}
+	require.True(t, ok, "event not in active events")
+	require.True(t, active.Held, "expected Held=true in state")
 
 	// Extend with new duration — this should un-hold and set a new timer
-	if err := inj.ExtendBreak(eventID, 200); err != nil {
-		t.Fatalf("extend failed: %v", err)
-	}
+	err = inj.ExtendBreak(eventID, 200)
+	require.NoError(t, err)
 
 	// Verify the event is no longer held
 	state = inj.State()
 	active, ok = state.ActiveEvents[eventID]
-	if !ok {
-		t.Fatal("event not in active events after extend")
-	}
-	if active.Held {
-		t.Fatal("expected Held=false after extend")
-	}
+	require.True(t, ok, "event not in active events after extend")
+	require.False(t, active.Held, "expected Held=false after extend")
 }
 
 func TestIntegration_SyntheticBreakState(t *testing.T) {
+	t.Parallel()
 	sink := func(data []byte) {}
 	ptsFn := func() int64 { return 0 }
 
@@ -239,39 +200,28 @@ func TestIntegration_SyntheticBreakState(t *testing.T) {
 	defer inj.Close()
 
 	// No events -> nil
-	if inj.SyntheticBreakState() != nil {
-		t.Fatal("expected nil with no active events")
-	}
+	require.Nil(t, inj.SyntheticBreakState())
 
 	msg := NewSpliceInsert(0, 60*time.Second, true, true)
 	_, _ = inj.InjectCue(msg)
 
 	synth := inj.SyntheticBreakState()
-	if len(synth) == 0 {
-		t.Fatal("expected non-empty synthetic break state")
-	}
+	require.NotEmpty(t, synth)
 
 	// Decode and verify it's a valid splice_insert
 	decoded, err := Decode(synth)
-	if err != nil {
-		t.Fatalf("decode synthetic: %v", err)
-	}
-	if decoded.CommandType != CommandSpliceInsert {
-		t.Fatalf("expected splice_insert, got %d", decoded.CommandType)
-	}
-	if !decoded.IsOut {
-		t.Fatal("expected IsOut=true in synthetic state")
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandSpliceInsert), decoded.CommandType)
+	require.True(t, decoded.IsOut, "expected IsOut=true in synthetic state")
 	// Synthetic duration should be less than original 60s (time has passed)
 	if decoded.BreakDuration != nil {
 		dur := decoded.BreakDuration.Milliseconds()
-		if dur > 60000 {
-			t.Fatalf("synthetic duration %dms should be <= 60000ms", dur)
-		}
+		require.LessOrEqual(t, dur, int64(60000), "synthetic duration %dms should be <= 60000ms", dur)
 	}
 }
 
 func TestIntegration_ConcurrentEvents(t *testing.T) {
+	t.Parallel()
 	sink := func(data []byte) {}
 	ptsFn := func() int64 { return 0 }
 
@@ -283,23 +233,19 @@ func TestIntegration_ConcurrentEvents(t *testing.T) {
 	id1, _ := inj.InjectCue(msg1)
 	id2, _ := inj.InjectCue(msg2)
 
-	if len(inj.ActiveEventIDs()) != 2 {
-		t.Fatalf("expected 2 active events, got %d", len(inj.ActiveEventIDs()))
-	}
+	require.Len(t, inj.ActiveEventIDs(), 2)
 
 	_ = inj.ReturnToProgram(id1)
 	ids := inj.ActiveEventIDs()
-	if len(ids) != 1 || ids[0] != id2 {
-		t.Fatalf("expected only event %d active, got %v", id2, ids)
-	}
+	require.Len(t, ids, 1)
+	require.Equal(t, id2, ids[0])
 
 	_ = inj.ReturnToProgram(id2)
-	if len(inj.ActiveEventIDs()) != 0 {
-		t.Fatal("expected no active events")
-	}
+	require.Empty(t, inj.ActiveEventIDs())
 }
 
 func TestIntegration_EventLogCaptures(t *testing.T) {
+	t.Parallel()
 	sink := func(data []byte) {}
 	ptsFn := func() int64 { return 0 }
 
@@ -311,9 +257,7 @@ func TestIntegration_EventLogCaptures(t *testing.T) {
 	_ = inj.ReturnToProgram(eventID)
 
 	log := inj.EventLog()
-	if len(log) < 2 {
-		t.Fatalf("expected at least 2 log entries (inject + return), got %d", len(log))
-	}
+	require.GreaterOrEqual(t, len(log), 2, "expected at least 2 log entries (inject + return)")
 
 	// Verify log entry statuses
 	foundInjected := false
@@ -328,15 +272,12 @@ func TestIntegration_EventLogCaptures(t *testing.T) {
 			}
 		}
 	}
-	if !foundInjected {
-		t.Fatal("missing 'injected' log entry")
-	}
-	if !foundReturned {
-		t.Fatal("missing 'returned' log entry")
-	}
+	require.True(t, foundInjected, "missing 'injected' log entry")
+	require.True(t, foundReturned, "missing 'returned' log entry")
 }
 
 func TestIntegration_FullLifecycle_InjectHoldExtendReturn(t *testing.T) {
+	t.Parallel()
 	// End-to-end lifecycle: inject -> hold -> extend -> manual return.
 	// Verify all state transitions are logged and sink receives correct messages.
 	var mu sync.Mutex
@@ -357,42 +298,32 @@ func TestIntegration_FullLifecycle_InjectHoldExtendReturn(t *testing.T) {
 	// Step 1: Inject cue-out
 	msg := NewSpliceInsert(0, 30*time.Second, true, true)
 	eventID, err := inj.InjectCue(msg)
-	if err != nil {
-		t.Fatalf("inject failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	ids := inj.ActiveEventIDs()
-	if len(ids) != 1 || ids[0] != eventID {
-		t.Fatalf("expected active event %d, got %v", eventID, ids)
-	}
+	require.Len(t, ids, 1)
+	require.Equal(t, eventID, ids[0])
 
 	// Step 2: Hold the break
-	if err := inj.HoldBreak(eventID); err != nil {
-		t.Fatalf("hold failed: %v", err)
-	}
+	err = inj.HoldBreak(eventID)
+	require.NoError(t, err)
 
 	// Step 3: Extend with new duration
-	if err := inj.ExtendBreak(eventID, 60000); err != nil {
-		t.Fatalf("extend failed: %v", err)
-	}
+	err = inj.ExtendBreak(eventID, 60000)
+	require.NoError(t, err)
 
 	// Step 4: Manual return
-	if err := inj.ReturnToProgram(eventID); err != nil {
-		t.Fatalf("return failed: %v", err)
-	}
+	err = inj.ReturnToProgram(eventID)
+	require.NoError(t, err)
 
-	if len(inj.ActiveEventIDs()) != 0 {
-		t.Fatal("expected no active events after return")
-	}
+	require.Empty(t, inj.ActiveEventIDs())
 
 	// Verify sink calls: inject (cue-out), extend (updated splice_insert), return (cue-in)
 	mu.Lock()
 	numCalls := len(sinkCalls)
 	mu.Unlock()
 
-	if numCalls < 3 {
-		t.Fatalf("expected at least 3 sink calls, got %d", numCalls)
-	}
+	require.GreaterOrEqual(t, numCalls, 3, "expected at least 3 sink calls")
 
 	// Verify first call is cue-out
 	mu.Lock()
@@ -401,21 +332,13 @@ func TestIntegration_FullLifecycle_InjectHoldExtendReturn(t *testing.T) {
 	mu.Unlock()
 
 	decoded, err := Decode(firstData)
-	if err != nil {
-		t.Fatalf("decode first sink call: %v", err)
-	}
-	if !decoded.IsOut {
-		t.Fatal("first sink call should be cue-out")
-	}
+	require.NoError(t, err)
+	require.True(t, decoded.IsOut, "first sink call should be cue-out")
 
 	// Verify last call is cue-in
 	decoded, err = Decode(lastData)
-	if err != nil {
-		t.Fatalf("decode last sink call: %v", err)
-	}
-	if decoded.IsOut {
-		t.Fatal("last sink call should be cue-in")
-	}
+	require.NoError(t, err)
+	require.False(t, decoded.IsOut, "last sink call should be cue-in")
 
 	// Verify all lifecycle events are logged
 	log := inj.EventLog()
@@ -426,13 +349,12 @@ func TestIntegration_FullLifecycle_InjectHoldExtendReturn(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{"injected", "held", "extended", "returned"} {
-		if !statusSet[expected] {
-			t.Fatalf("missing log entry with status %q", expected)
-		}
+		require.True(t, statusSet[expected], "missing log entry with status %q", expected)
 	}
 }
 
 func TestIntegration_StateChangeCallback(t *testing.T) {
+	t.Parallel()
 	// Verify onStateChange fires at each lifecycle step.
 	var mu sync.Mutex
 	stateChangeCount := 0
@@ -452,34 +374,27 @@ func TestIntegration_StateChangeCallback(t *testing.T) {
 	eventID, _ := inj.InjectCue(msg)
 
 	mu.Lock()
-	if stateChangeCount != 1 {
-		t.Fatalf("expected 1 state change after inject, got %d", stateChangeCount)
-	}
+	require.Equal(t, 1, stateChangeCount, "expected 1 state change after inject")
 	mu.Unlock()
 
 	_ = inj.HoldBreak(eventID)
 	mu.Lock()
-	if stateChangeCount != 2 {
-		t.Fatalf("expected 2 state changes after hold, got %d", stateChangeCount)
-	}
+	require.Equal(t, 2, stateChangeCount, "expected 2 state changes after hold")
 	mu.Unlock()
 
 	_ = inj.ExtendBreak(eventID, 120000)
 	mu.Lock()
-	if stateChangeCount != 3 {
-		t.Fatalf("expected 3 state changes after extend, got %d", stateChangeCount)
-	}
+	require.Equal(t, 3, stateChangeCount, "expected 3 state changes after extend")
 	mu.Unlock()
 
 	_ = inj.ReturnToProgram(eventID)
 	mu.Lock()
-	if stateChangeCount != 4 {
-		t.Fatalf("expected 4 state changes after return, got %d", stateChangeCount)
-	}
+	require.Equal(t, 4, stateChangeCount, "expected 4 state changes after return")
 	mu.Unlock()
 }
 
 func TestIntegration_RulesEngine_DestinationFiltering(t *testing.T) {
+	t.Parallel()
 	// Rules engine with destination-specific rules.
 	re := NewRuleEngine()
 	re.AddRule(Rule{
@@ -497,24 +412,19 @@ func TestIntegration_RulesEngine_DestinationFiltering(t *testing.T) {
 
 	// Should delete for cdn1
 	action, _ := re.Evaluate(msg, "cdn1")
-	if action != ActionDelete {
-		t.Fatalf("expected delete for cdn1, got %q", action)
-	}
+	require.Equal(t, ActionDelete, action)
 
 	// Should pass for cdn2 (not in destination list)
 	action, _ = re.Evaluate(msg, "cdn2")
-	if action != ActionPass {
-		t.Fatalf("expected pass for cdn2, got %q", action)
-	}
+	require.Equal(t, ActionPass, action)
 
 	// Should pass for empty destination
 	action, _ = re.Evaluate(msg, "")
-	if action != ActionPass {
-		t.Fatalf("expected pass for empty dest, got %q", action)
-	}
+	require.Equal(t, ActionPass, action)
 }
 
 func TestIntegration_EncodeDecodeRoundTrip(t *testing.T) {
+	t.Parallel()
 	// Verify that encoding then decoding preserves message semantics.
 	tests := []struct {
 		name string
@@ -541,29 +451,20 @@ func TestIntegration_EncodeDecodeRoundTrip(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded, err := tt.msg.Encode(true) // verify=true
-			if err != nil {
-				t.Fatalf("encode: %v", err)
-			}
+			require.NoError(t, err)
 
 			decoded, err := Decode(encoded)
-			if err != nil {
-				t.Fatalf("decode: %v", err)
-			}
+			require.NoError(t, err)
 
-			if decoded.CommandType != tt.msg.CommandType {
-				t.Fatalf("command type mismatch: %d vs %d", decoded.CommandType, tt.msg.CommandType)
-			}
-			if decoded.IsOut != tt.msg.IsOut {
-				t.Fatalf("IsOut mismatch: %v vs %v", decoded.IsOut, tt.msg.IsOut)
-			}
-			if decoded.AutoReturn != tt.msg.AutoReturn {
-				t.Fatalf("AutoReturn mismatch: %v vs %v", decoded.AutoReturn, tt.msg.AutoReturn)
-			}
+			require.Equal(t, tt.msg.CommandType, decoded.CommandType)
+			require.Equal(t, tt.msg.IsOut, decoded.IsOut)
+			require.Equal(t, tt.msg.AutoReturn, decoded.AutoReturn)
 		})
 	}
 }
 
 func TestIntegration_TimeSignal_InjectAndDecode(t *testing.T) {
+	t.Parallel()
 	// Wire a time_signal through the injector and verify the output.
 	var mu sync.Mutex
 	var received []byte
@@ -582,34 +483,23 @@ func TestIntegration_TimeSignal_InjectAndDecode(t *testing.T) {
 
 	msg := NewTimeSignal(0x34, 30*time.Second, 0x09, []byte("AD123"))
 	_, err := inj.InjectCue(msg)
-	if err != nil {
-		t.Fatalf("inject time_signal failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	mu.Lock()
 	data := received
 	mu.Unlock()
 
-	if len(data) == 0 {
-		t.Fatal("no data received by sink")
-	}
+	require.NotEmpty(t, data)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode time_signal: %v", err)
-	}
-	if decoded.CommandType != CommandTimeSignal {
-		t.Fatalf("expected time_signal, got %d", decoded.CommandType)
-	}
-	if len(decoded.Descriptors) == 0 {
-		t.Fatal("expected at least 1 segmentation descriptor")
-	}
-	if decoded.Descriptors[0].SegmentationType != 0x34 {
-		t.Fatalf("expected segmentation type 0x34, got 0x%02x", decoded.Descriptors[0].SegmentationType)
-	}
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.NotEmpty(t, decoded.Descriptors)
+	require.Equal(t, uint8(0x34), decoded.Descriptors[0].SegmentationType)
 }
 
 func TestIntegration_CancelEvent_StopsAutoReturn(t *testing.T) {
+	t.Parallel()
 	// Inject with auto-return, cancel before it fires, verify no cue-in.
 	var mu sync.Mutex
 	callCount := 0
@@ -627,9 +517,8 @@ func TestIntegration_CancelEvent_StopsAutoReturn(t *testing.T) {
 	eventID, _ := inj.InjectCue(msg)
 
 	// Cancel immediately (before auto-return fires)
-	if err := inj.CancelEvent(eventID); err != nil {
-		t.Fatalf("cancel failed: %v", err)
-	}
+	err := inj.CancelEvent(eventID)
+	require.NoError(t, err)
 
 	// Wait past original auto-return time
 	time.Sleep(500 * time.Millisecond)
@@ -639,13 +528,9 @@ func TestIntegration_CancelEvent_StopsAutoReturn(t *testing.T) {
 	mu.Unlock()
 
 	// Should have exactly 2 calls: inject + cancel (no auto-return cue-in)
-	if c != 2 {
-		t.Fatalf("expected 2 sink calls (inject + cancel), got %d", c)
-	}
+	require.Equal(t, 2, c, "expected 2 sink calls (inject + cancel)")
 
-	if len(inj.ActiveEventIDs()) != 0 {
-		t.Fatal("expected no active events")
-	}
+	require.Empty(t, inj.ActiveEventIDs())
 
 	// Verify log has "cancelled" entry
 	log := inj.EventLog()
@@ -655,7 +540,5 @@ func TestIntegration_CancelEvent_StopsAutoReturn(t *testing.T) {
 			foundCancelled = true
 		}
 	}
-	if !foundCancelled {
-		t.Fatal("missing 'cancelled' log entry")
-	}
+	require.True(t, foundCancelled, "missing 'cancelled' log entry")
 }

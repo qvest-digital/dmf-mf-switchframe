@@ -24,7 +24,7 @@ SwitchFrame processes video at 30--60 fps across dozens of goroutines. Three rul
 2. **Every lock has a tier.** A goroutine holding a tier-N lock never acquires a tier-(N-1) lock. This strict ordering makes deadlocks structurally impossible.
 3. **The hot path is sub-microsecond.** Lock hold times on the per-frame video path total under 1 us, leaving 99.997% of the 33 ms frame budget for actual processing.
 
-The system has 40 mutexes, 112 atomic variables, 47 channels, and 9 long-lived goroutines. This document maps every one to its role.
+The system has ~70 mutexes, ~130 atomic variables, ~90 channels, and 9 long-lived goroutines. This document maps the architecturally significant ones to their roles.
 
 ---
 

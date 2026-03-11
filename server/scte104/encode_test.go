@@ -1,16 +1,15 @@
 package scte104
 
 import (
-	"bytes"
 	"encoding/binary"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestEncode_NilMessage(t *testing.T) {
 	_, err := Encode(nil)
-	if err == nil {
-		t.Fatal("expected error for nil message")
-	}
+	require.Error(t, err)
 }
 
 func TestEncode_SpliceNull_RoundTrip(t *testing.T) {
@@ -25,30 +24,16 @@ func TestEncode_SpliceNull_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(msg)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if decoded.ASIndex != msg.ASIndex {
-		t.Errorf("ASIndex = %d, want %d", decoded.ASIndex, msg.ASIndex)
-	}
-	if decoded.MessageNumber != msg.MessageNumber {
-		t.Errorf("MessageNumber = %d, want %d", decoded.MessageNumber, msg.MessageNumber)
-	}
-	if decoded.DPIPIDIndex != msg.DPIPIDIndex {
-		t.Errorf("DPIPIDIndex = %d, want %d", decoded.DPIPIDIndex, msg.DPIPIDIndex)
-	}
-	if len(decoded.Operations) != 1 {
-		t.Fatalf("expected 1 operation, got %d", len(decoded.Operations))
-	}
-	if decoded.Operations[0].OpID != OpSpliceNull {
-		t.Errorf("OpID = 0x%04X, want OpSpliceNull", decoded.Operations[0].OpID)
-	}
+	require.Equal(t, msg.ASIndex, decoded.ASIndex)
+	require.Equal(t, msg.MessageNumber, decoded.MessageNumber)
+	require.Equal(t, msg.DPIPIDIndex, decoded.DPIPIDIndex)
+	require.Len(t, decoded.Operations, 1)
+	require.Equal(t, uint16(OpSpliceNull), decoded.Operations[0].OpID)
 }
 
 func TestEncode_SpliceRequest_RoundTrip(t *testing.T) {
@@ -75,49 +60,25 @@ func TestEncode_SpliceRequest_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Operations) != 1 {
-		t.Fatalf("expected 1 operation, got %d", len(decoded.Operations))
-	}
+	require.Len(t, decoded.Operations, 1)
 
-	srd, ok := decoded.Operations[0].Data.(*SpliceRequestData)
-	if !ok {
-		t.Fatalf("expected *SpliceRequestData, got %T", decoded.Operations[0].Data)
-	}
+	require.IsType(t, &SpliceRequestData{}, decoded.Operations[0].Data)
+	srd := decoded.Operations[0].Data.(*SpliceRequestData)
 
 	orig := original.Operations[0].Data.(*SpliceRequestData)
-	if srd.SpliceInsertType != orig.SpliceInsertType {
-		t.Errorf("SpliceInsertType = %d, want %d", srd.SpliceInsertType, orig.SpliceInsertType)
-	}
-	if srd.SpliceEventID != orig.SpliceEventID {
-		t.Errorf("SpliceEventID = %d, want %d", srd.SpliceEventID, orig.SpliceEventID)
-	}
-	if srd.UniqueProgramID != orig.UniqueProgramID {
-		t.Errorf("UniqueProgramID = %d, want %d", srd.UniqueProgramID, orig.UniqueProgramID)
-	}
-	if srd.PreRollTime != orig.PreRollTime {
-		t.Errorf("PreRollTime = %d, want %d", srd.PreRollTime, orig.PreRollTime)
-	}
-	if srd.BreakDuration != orig.BreakDuration {
-		t.Errorf("BreakDuration = %d, want %d", srd.BreakDuration, orig.BreakDuration)
-	}
-	if srd.AvailNum != orig.AvailNum {
-		t.Errorf("AvailNum = %d, want %d", srd.AvailNum, orig.AvailNum)
-	}
-	if srd.AvailsExpected != orig.AvailsExpected {
-		t.Errorf("AvailsExpected = %d, want %d", srd.AvailsExpected, orig.AvailsExpected)
-	}
-	if srd.AutoReturnFlag != orig.AutoReturnFlag {
-		t.Errorf("AutoReturnFlag = %v, want %v", srd.AutoReturnFlag, orig.AutoReturnFlag)
-	}
+	require.Equal(t, orig.SpliceInsertType, srd.SpliceInsertType)
+	require.Equal(t, orig.SpliceEventID, srd.SpliceEventID)
+	require.Equal(t, orig.UniqueProgramID, srd.UniqueProgramID)
+	require.Equal(t, orig.PreRollTime, srd.PreRollTime)
+	require.Equal(t, orig.BreakDuration, srd.BreakDuration)
+	require.Equal(t, orig.AvailNum, srd.AvailNum)
+	require.Equal(t, orig.AvailsExpected, srd.AvailsExpected)
+	require.Equal(t, orig.AutoReturnFlag, srd.AutoReturnFlag)
 }
 
 func TestEncode_TimeSignalRequest_RoundTrip(t *testing.T) {
@@ -133,19 +94,13 @@ func TestEncode_TimeSignalRequest_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	tsr := decoded.Operations[0].Data.(*TimeSignalRequestData)
-	if tsr.PreRollTime != 3000 {
-		t.Errorf("PreRollTime = %d, want 3000", tsr.PreRollTime)
-	}
+	require.Equal(t, uint16(3000), tsr.PreRollTime)
 }
 
 func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
@@ -155,54 +110,36 @@ func TestEncode_SegmentationDescriptor_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:         99999,
-					SegmentationTypeID: 0x34,
-					DurationTicks:      2700000,
-					UPIDType:           0x09,
-					UPID:               upid,
-					SegNum:             2,
-					SegExpected:        5,
+					SegEventID:              99999,
+					SegmentationTypeID:      0x34,
+					DurationTicks:           2700000,
+					UPIDType:                0x09,
+					UPID:                    upid,
+					SegNum:                  2,
+					SegExpected:             5,
 					ProgramSegmentationFlag: true,
-					CancelIndicator:    false,
+					CancelIndicator:         false,
 				},
 			},
 		},
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
 	orig := original.Operations[0].Data.(*SegmentationDescriptorRequest)
 
-	if sd.SegEventID != orig.SegEventID {
-		t.Errorf("SegEventID = %d, want %d", sd.SegEventID, orig.SegEventID)
-	}
-	if sd.SegmentationTypeID != orig.SegmentationTypeID {
-		t.Errorf("SegmentationTypeID = 0x%02X, want 0x%02X", sd.SegmentationTypeID, orig.SegmentationTypeID)
-	}
-	if sd.DurationTicks != orig.DurationTicks {
-		t.Errorf("DurationTicks = %d, want %d", sd.DurationTicks, orig.DurationTicks)
-	}
-	if sd.UPIDType != orig.UPIDType {
-		t.Errorf("UPIDType = 0x%02X, want 0x%02X", sd.UPIDType, orig.UPIDType)
-	}
-	if !bytes.Equal(sd.UPID, orig.UPID) {
-		t.Errorf("UPID = %q, want %q", sd.UPID, orig.UPID)
-	}
-	if sd.SegNum != orig.SegNum {
-		t.Errorf("SegNum = %d, want %d", sd.SegNum, orig.SegNum)
-	}
-	if sd.SegExpected != orig.SegExpected {
-		t.Errorf("SegExpected = %d, want %d", sd.SegExpected, orig.SegExpected)
-	}
+	require.Equal(t, orig.SegEventID, sd.SegEventID)
+	require.Equal(t, orig.SegmentationTypeID, sd.SegmentationTypeID)
+	require.Equal(t, orig.DurationTicks, sd.DurationTicks)
+	require.Equal(t, orig.UPIDType, sd.UPIDType)
+	require.Equal(t, orig.UPID, sd.UPID)
+	require.Equal(t, orig.SegNum, sd.SegNum)
+	require.Equal(t, orig.SegExpected, sd.SegExpected)
 }
 
 func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
@@ -222,26 +159,16 @@ func TestEncode_SegmentationDescriptor_Cancel_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	if !sd.CancelIndicator {
-		t.Error("CancelIndicator should be true")
-	}
-	if sd.SegEventID != 555 {
-		t.Errorf("SegEventID = %d, want 555", sd.SegEventID)
-	}
+	require.True(t, sd.CancelIndicator, "CancelIndicator should be true")
+	require.Equal(t, uint32(555), sd.SegEventID)
 	// type_id is NOT encoded in cancel format per spec, so it's zero after decode.
-	if sd.SegmentationTypeID != 0 {
-		t.Errorf("SegmentationTypeID = 0x%02X, want 0x00 (not in cancel)", sd.SegmentationTypeID)
-	}
+	require.Equal(t, uint8(0), sd.SegmentationTypeID)
 }
 
 func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
@@ -258,13 +185,13 @@ func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:         1001,
-					SegmentationTypeID: 0x34,
-					DurationTicks:      900000,
-					UPIDType:           0x01,
-					UPID:               []byte{0xAB, 0xCD},
-					SegNum:             1,
-					SegExpected:        1,
+					SegEventID:              1001,
+					SegmentationTypeID:      0x34,
+					DurationTicks:           900000,
+					UPIDType:                0x01,
+					UPID:                    []byte{0xAB, 0xCD},
+					SegNum:                  1,
+					SegExpected:             1,
 					ProgramSegmentationFlag: true,
 				},
 			},
@@ -273,28 +200,16 @@ func TestEncode_MultipleOps_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Operations) != 3 {
-		t.Fatalf("expected 3 operations, got %d", len(decoded.Operations))
-	}
+	require.Len(t, decoded.Operations, 3)
 
-	if decoded.Operations[0].OpID != OpTimeSignalRequest {
-		t.Errorf("op[0].OpID = 0x%04X, want OpTimeSignalRequest", decoded.Operations[0].OpID)
-	}
-	if decoded.Operations[1].OpID != OpSegmentationDescriptorRequest {
-		t.Errorf("op[1].OpID = 0x%04X, want OpSegmentationDescriptorRequest", decoded.Operations[1].OpID)
-	}
-	if decoded.Operations[2].OpID != OpSpliceNull {
-		t.Errorf("op[2].OpID = 0x%04X, want OpSpliceNull", decoded.Operations[2].OpID)
-	}
+	require.Equal(t, uint16(OpTimeSignalRequest), decoded.Operations[0].OpID)
+	require.Equal(t, uint16(OpSegmentationDescriptorRequest), decoded.Operations[1].OpID)
+	require.Equal(t, uint16(OpSpliceNull), decoded.Operations[2].OpID)
 }
 
 func TestEncode_UnsupportedOpID(t *testing.T) {
@@ -305,9 +220,7 @@ func TestEncode_UnsupportedOpID(t *testing.T) {
 	}
 
 	_, err := Encode(msg)
-	if err == nil {
-		t.Fatal("expected error for unsupported OpID")
-	}
+	require.Error(t, err)
 }
 
 func TestEncode_WrongDataType(t *testing.T) {
@@ -344,9 +257,7 @@ func TestEncode_WrongDataType(t *testing.T) {
 				Operations: []Operation{tt.op},
 			}
 			_, err := Encode(msg)
-			if err == nil {
-				t.Fatal("expected error for wrong data type")
-			}
+			require.Error(t, err)
 		})
 	}
 }
@@ -357,18 +268,12 @@ func TestEncode_EmptyOperations(t *testing.T) {
 	}
 
 	data, err := Encode(msg)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(decoded.Operations) != 0 {
-		t.Errorf("expected 0 operations, got %d", len(decoded.Operations))
-	}
+	require.Len(t, decoded.Operations, 0)
 }
 
 func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
@@ -377,13 +282,13 @@ func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:         42,
-					SegmentationTypeID: 0x30,
-					DurationTicks:      0,
-					UPIDType:           0x00,
-					UPID:               nil,
-					SegNum:             0,
-					SegExpected:        0,
+					SegEventID:              42,
+					SegmentationTypeID:      0x30,
+					DurationTicks:           0,
+					UPIDType:                0x00,
+					UPID:                    nil,
+					SegNum:                  0,
+					SegExpected:             0,
 					ProgramSegmentationFlag: true,
 				},
 			},
@@ -391,22 +296,14 @@ func TestEncode_SegmentationDescriptor_EmptyUPID_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	if sd.SegEventID != 42 {
-		t.Errorf("SegEventID = %d, want 42", sd.SegEventID)
-	}
-	if len(sd.UPID) != 0 {
-		t.Errorf("UPID length = %d, want 0", len(sd.UPID))
-	}
+	require.Equal(t, uint32(42), sd.SegEventID)
+	require.Len(t, sd.UPID, 0)
 }
 
 func TestEncode_TooManyOperations(t *testing.T) {
@@ -417,9 +314,7 @@ func TestEncode_TooManyOperations(t *testing.T) {
 	msg := &Message{Operations: ops}
 
 	_, err := Encode(msg)
-	if err == nil {
-		t.Fatal("expected error for >255 operations")
-	}
+	require.Error(t, err)
 }
 
 func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
@@ -428,12 +323,12 @@ func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:         1,
-					SegmentationTypeID: 0x34,
-					DurationTicks:      0x10000000000, // exceeds 40-bit
-					UPIDType:           0,
-					SegNum:             0,
-					SegExpected:        0,
+					SegEventID:              1,
+					SegmentationTypeID:      0x34,
+					DurationTicks:           0x10000000000, // exceeds 40-bit
+					UPIDType:                0,
+					SegNum:                  0,
+					SegExpected:             0,
 					ProgramSegmentationFlag: true,
 				},
 			},
@@ -441,9 +336,7 @@ func TestEncode_DurationTicksExceeds40Bit(t *testing.T) {
 	}
 
 	_, err := Encode(msg)
-	if err == nil {
-		t.Fatal("expected error for DurationTicks exceeding 40-bit maximum")
-	}
+	require.Error(t, err)
 }
 
 func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
@@ -455,31 +348,25 @@ func TestEncode_SegmentationDescriptor_FullTypeRange(t *testing.T) {
 				{
 					OpID: OpSegmentationDescriptorRequest,
 					Data: &SegmentationDescriptorRequest{
-						SegEventID:         1,
-						SegmentationTypeID: typeID,
-						UPIDType:           0,
-						SegNum:             0,
-						SegExpected:        0,
-					ProgramSegmentationFlag: true,
+						SegEventID:              1,
+						SegmentationTypeID:      typeID,
+						UPIDType:                0,
+						SegNum:                  0,
+						SegExpected:             0,
+						ProgramSegmentationFlag: true,
 					},
 				},
 			},
 		}
 
 		data, err := Encode(msg)
-		if err != nil {
-			t.Fatalf("encode error for type_id 0x%02X: %v", typeID, err)
-		}
+		require.NoError(t, err, "encode error for type_id 0x%02X", typeID)
 
 		decoded, err := Decode(data)
-		if err != nil {
-			t.Fatalf("decode error for type_id 0x%02X: %v", typeID, err)
-		}
+		require.NoError(t, err, "decode error for type_id 0x%02X", typeID)
 
 		sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-		if sd.SegmentationTypeID != typeID {
-			t.Errorf("type_id 0x%02X round-trip: got 0x%02X", typeID, sd.SegmentationTypeID)
-		}
+		require.Equal(t, typeID, sd.SegmentationTypeID)
 	}
 }
 
@@ -490,12 +377,12 @@ func TestEncode_LargeDurationTicks(t *testing.T) {
 			{
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
-					SegEventID:         1,
-					SegmentationTypeID: 0x34,
-					DurationTicks:      0xFFFFFFFFFF, // max 40-bit value
-					UPIDType:           0,
-					SegNum:             0,
-					SegExpected:        0,
+					SegEventID:              1,
+					SegmentationTypeID:      0x34,
+					DurationTicks:           0xFFFFFFFFFF, // max 40-bit value
+					UPIDType:                0,
+					SegNum:                  0,
+					SegExpected:             0,
 					ProgramSegmentationFlag: true,
 				},
 			},
@@ -503,19 +390,13 @@ func TestEncode_LargeDurationTicks(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	if sd.DurationTicks != 0xFFFFFFFFFF {
-		t.Errorf("DurationTicks = 0x%X, want 0xFFFFFFFFFF", sd.DurationTicks)
-	}
+	require.Equal(t, uint64(0xFFFFFFFFFF), sd.DurationTicks)
 }
 
 func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
@@ -526,20 +407,14 @@ func TestEncode_MessageSize_ExcludesSelf(t *testing.T) {
 	}
 
 	data, err := Encode(msg)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Wire: OpID(2) + messageSize(2) + fields(8) + ops
 	// messageSize should equal total - 4 (excludes OpID + messageSize itself).
-	if len(data) < 4 {
-		t.Fatalf("encoded data too short: %d", len(data))
-	}
+	require.True(t, len(data) >= 4, "encoded data too short: %d", len(data))
 	messageSize := binary.BigEndian.Uint16(data[2:4])
 	expectedSize := uint16(len(data) - 4) // everything after messageSize
-	if messageSize != expectedSize {
-		t.Errorf("messageSize = %d, want %d (total %d - 4)", messageSize, expectedSize, len(data))
-	}
+	require.Equal(t, expectedSize, messageSize)
 }
 
 func TestEncode_SegmentationDescriptor_ComponentLevelRejected(t *testing.T) {
@@ -557,9 +432,7 @@ func TestEncode_SegmentationDescriptor_ComponentLevelRejected(t *testing.T) {
 	}
 
 	_, err := Encode(msg)
-	if err == nil {
-		t.Fatal("expected error for component-level segmentation encoding")
-	}
+	require.Error(t, err)
 }
 
 func TestEncode_AutoReturnFlag_Bit7(t *testing.T) {
@@ -579,9 +452,7 @@ func TestEncode_AutoReturnFlag_Bit7(t *testing.T) {
 	}
 
 	data, err := Encode(msg)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// MOM wire format: OpID(2) + messageSize(2) + fields(8) + num_ops(1=included in fields)
 	// Then operation: opID(2) + data_length(2) + splice_request_data(14)
@@ -590,19 +461,13 @@ func TestEncode_AutoReturnFlag_Bit7(t *testing.T) {
 	spliceDataOffset := 12 + 4 // MOM header(12) + op header(4)
 	autoReturnByte := data[spliceDataOffset+13]
 
-	if autoReturnByte != 0x80 {
-		t.Errorf("auto_return_flag byte = 0x%02X, want 0x80 (bit 7)", autoReturnByte)
-	}
+	require.Equal(t, byte(0x80), autoReturnByte)
 
 	// Also verify that when AutoReturnFlag is false, the byte is 0x00.
 	msg.Operations[0].Data.(*SpliceRequestData).AutoReturnFlag = false
 	data2, err := Encode(msg)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
-	if data2[spliceDataOffset+13] != 0x00 {
-		t.Errorf("auto_return_flag byte (false) = 0x%02X, want 0x00", data2[spliceDataOffset+13])
-	}
+	require.NoError(t, err)
+	require.Equal(t, byte(0x00), data2[spliceDataOffset+13])
 }
 
 func TestEncode_SegmentationDescriptor_SubSegments_RoundTrip(t *testing.T) {
@@ -627,32 +492,18 @@ func TestEncode_SegmentationDescriptor_SubSegments_RoundTrip(t *testing.T) {
 	}
 
 	data, err := Encode(original)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	decoded, err := Decode(data)
-	if err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	sd := decoded.Operations[0].Data.(*SegmentationDescriptorRequest)
-	if sd.SubSegmentNum != 2 {
-		t.Errorf("SubSegmentNum = %d, want 2", sd.SubSegmentNum)
-	}
-	if sd.SubSegmentsExpected != 3 {
-		t.Errorf("SubSegmentsExpected = %d, want 3", sd.SubSegmentsExpected)
-	}
+	require.Equal(t, uint8(2), sd.SubSegmentNum)
+	require.Equal(t, uint8(3), sd.SubSegmentsExpected)
 	// Verify other fields survived.
-	if sd.SegEventID != 42 {
-		t.Errorf("SegEventID = %d, want 42", sd.SegEventID)
-	}
-	if sd.SegNum != 1 {
-		t.Errorf("SegNum = %d, want 1", sd.SegNum)
-	}
-	if sd.SegExpected != 4 {
-		t.Errorf("SegExpected = %d, want 4", sd.SegExpected)
-	}
+	require.Equal(t, uint32(42), sd.SegEventID)
+	require.Equal(t, uint8(1), sd.SegNum)
+	require.Equal(t, uint8(4), sd.SegExpected)
 }
 
 func TestEncode_SegmentationDescriptor_ZeroSubSegments_NotEncoded(t *testing.T) {
@@ -686,17 +537,10 @@ func TestEncode_SegmentationDescriptor_ZeroSubSegments_NotEncoded(t *testing.T) 
 	}
 
 	dataWith, err := Encode(withSub)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 	dataWithout, err := Encode(withoutSub)
-	if err != nil {
-		t.Fatalf("encode error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// With sub-segments should be 2 bytes longer.
-	if len(dataWith) != len(dataWithout)+2 {
-		t.Errorf("len(withSub)=%d, len(withoutSub)=%d, expected difference of 2",
-			len(dataWith), len(dataWithout))
-	}
+	require.Equal(t, len(dataWithout)+2, len(dataWith))
 }

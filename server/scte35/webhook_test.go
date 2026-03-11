@@ -7,20 +7,19 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebhook_Dispatch(t *testing.T) {
+	t.Parallel()
 	var received WebhookEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Errorf("expected application/json content type")
-		}
+		require.Equal(t, "POST", r.Method)
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		mu.Lock()
 		defer mu.Unlock()
 		_ = json.NewDecoder(r.Body).Decode(&received)
@@ -40,20 +39,17 @@ func TestWebhook_Dispatch(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("webhook not received within timeout")
+		require.Fail(t, "webhook not received within timeout")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if received.EventID != 42 {
-		t.Fatalf("expected event ID 42, got %d", received.EventID)
-	}
-	if received.Type != "cue_out" {
-		t.Fatalf("expected type cue_out, got %s", received.Type)
-	}
+	require.Equal(t, uint32(42), received.EventID)
+	require.Equal(t, "cue_out", received.Type)
 }
 
 func TestWebhook_Timeout(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second) // slow server
 	}))
@@ -65,15 +61,14 @@ func TestWebhook_Timeout(t *testing.T) {
 	start := time.Now()
 	wh.Dispatch(WebhookEvent{Type: "test", EventID: 1})
 	// Dispatch is async — should return immediately
-	if time.Since(start) > 50*time.Millisecond {
-		t.Fatal("Dispatch should not block caller")
-	}
+	require.Less(t, time.Since(start), 50*time.Millisecond, "Dispatch should not block caller")
 
 	// Wait a bit for the worker to run and timeout
 	time.Sleep(200 * time.Millisecond)
 }
 
 func TestWebhook_ServerDown(t *testing.T) {
+	t.Parallel()
 	wh := NewWebhookDispatcher("http://127.0.0.1:1", 100*time.Millisecond)
 	defer wh.Close()
 
@@ -83,6 +78,7 @@ func TestWebhook_ServerDown(t *testing.T) {
 }
 
 func TestWebhook_Disabled(t *testing.T) {
+	t.Parallel()
 	wh := NewWebhookDispatcher("", 2*time.Second)
 	defer wh.Close()
 
@@ -92,6 +88,7 @@ func TestWebhook_Disabled(t *testing.T) {
 }
 
 func TestWebhook_Close_Drains(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var count int
 
@@ -110,12 +107,11 @@ func TestWebhook_Close_Drains(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if count != 5 {
-		t.Fatalf("expected 5 events delivered after Close, got %d", count)
-	}
+	require.Equal(t, 5, count)
 }
 
 func TestWebhook_Backpressure_DropsWhenFull(t *testing.T) {
+	t.Parallel()
 	// Block the worker so the queue fills up.
 	block := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +132,7 @@ func TestWebhook_Backpressure_DropsWhenFull(t *testing.T) {
 }
 
 func TestWebhook_Close_Idempotent(t *testing.T) {
+	t.Parallel()
 	wh := NewWebhookDispatcher("http://127.0.0.1:1", 100*time.Millisecond)
 
 	// Multiple Close() calls should not panic.
