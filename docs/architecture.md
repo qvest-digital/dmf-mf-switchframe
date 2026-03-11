@@ -256,3 +256,53 @@ Automatic transitions use smoothstep easing: `t²(3 - 2t)`, which produces zero-
 ### Resolution Mismatch and Watchdog
 
 If sources have different resolutions, a scaler normalizes both to the program resolution during blending. Lanczos-3 is used for quality-critical paths (auto transitions), bilinear for speed-critical paths (T-bar scrubbing). A 10-second watchdog aborts stuck transitions if no frames arrive from either source, preventing the switcher from freezing in a transitioning state indefinitely.
+
+## 5. Audio Signal Chain
+
+Audio processing runs entirely server-side, mixing all active source channels into a stereo program output encoded as AAC. The pipeline has a critical optimization: when only one source is active at unity gain with no processing enabled, the mixer forwards raw AAC frames without decoding or re-encoding them -- zero CPU for audio in the most common case (a single camera live). Peak metering still runs in passthrough mode so VU meters always have data.
+
+```mermaid
+flowchart TD
+    AAC["Source AAC Frame"]
+    AAC --> Check{"Passthrough<br/>eligible?"}
+
+    Check -->|"Yes: single source, 0 dB fader,<br/>0 dB trim, master 0 dB,<br/>EQ bypassed, compressor bypassed,<br/>not muted, no active transition"| PT["Forward raw AAC bytes<br/>(rewrite PTS only)"]
+    PT --> Out["programRelay.BroadcastAudio()"]
+
+    Check -->|No| Decode["FDK AAC Decode<br/>→ float32 PCM"]
+    Decode --> Trim["Trim<br/>(−20 to +20 dB)"]
+    Trim --> EQ["3-Band Parametric EQ<br/>(RBJ biquad,<br/>per-channel state)"]
+    EQ --> Comp["Compressor<br/>(envelope follower,<br/>makeup gain)"]
+    Comp --> Fader["Channel Fader"]
+    Fader --> Accum["Accumulate<br/>(wait for all active<br/>unmuted channels<br/>or 25 ms deadline)"]
+    Accum --> Sum["Sum + Master Gain"]
+    Sum --> LUFS["BS.1770-4<br/>LUFS Metering"]
+    LUFS --> Lim["Brickwall Limiter<br/>(−1 dBFS)"]
+    Lim --> Enc["FDK AAC Encode"]
+    Enc --> Out
+
+    Decode --> Meter["Peak Metering<br/>(always active,<br/>even in passthrough)"]
+```
+
+### Audio Transition Modes
+
+During cuts and transitions, the mixer applies gain curves to the outgoing and incoming source to prevent audible clicks and match the visual blend. All curves use precomputed cos/sin lookup tables (1024 entries) to avoid per-sample trigonometric calls.
+
+| Mode | Old Source Gain | New Source Gain | Use Case |
+|------|----------------|-----------------|----------|
+| Crossfade | cos(t * pi/2) | sin(t * pi/2) | Normal cut (~23ms) or mix dissolve |
+| Dip to Silence | cos(2t * pi/2) then 0 | 0 then sin((2t-1) * pi/2) | Dip transition (two halves) |
+| Fade Out | cos(t * pi/2) | 0 | Fade to black |
+| Fade In | sin(t * pi/2) | 0 | FTB reverse (fade from black) |
+
+### Mix Cycle
+
+When multiple channels are active, each source's AAC frame is decoded to float32 PCM via FDK AAC. Per-channel processing applies trim, 3-band parametric EQ (RBJ biquad coefficients, Direct Form II Transposed, independent left/right filter state to prevent stereo crosstalk), and single-band compression with an exponential envelope follower. The mixer accumulates processed samples in a reusable mix buffer and flushes when all active unmuted channels have contributed -- or when a 25ms deadline expires, which prevents the pipeline from stalling if a source stops sending. The sum is scaled by the master fader, then passed through the brickwall limiter and AAC encoder.
+
+### Loudness Metering
+
+A BS.1770-4 loudness meter runs after the master fader, before the limiter. It applies two-stage K-weighting (head-related shelf filter plus an RLB high-pass) and provides three measurement windows: momentary (400ms sliding), short-term (3s sliding), and integrated (dual gating at -70 LUFS absolute and -10 LU relative to the ungated mean). LUFS values are cached as atomic float64s for lock-free reads by the state broadcast. The UI colors levels green (at or below -23 LUFS), yellow (at or below -14 LUFS), and red (above -14 LUFS), following EBU R128 conventions.
+
+### AFV and Per-Source Delay
+
+Channels default to AFV (Audio Follows Video) -- when the program source changes via a cut, the new source's audio channel activates and all other AFV channels deactivate. The `OnProgramChange` callback fires before the state broadcast so browsers see the updated audio state in the same snapshot as the video change. Per-source audio delay (0-500ms) provides lip-sync correction, buffering audio frames in a ring buffer so they arrive at the mixer time-aligned with their corresponding video frames downstream in the pipeline.
