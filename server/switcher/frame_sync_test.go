@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,15 +114,15 @@ func TestFrameSync_RingBufferOverwrite(t *testing.T) {
 	fs.IngestVideo("cam1", vf2)
 	fs.IngestVideo("cam1", vf3)
 
-	// Start and wait for one tick.
+	// Start and wait for at least one tick to release a frame.
 	fs.Start()
 	defer fs.Stop()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return handler.videoCount() > 0
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected at least 1 released video frame")
 
-	// Should release the most recent frame (vf3).
-	videos := handler.getVideos()
-	require.NotEmpty(t, videos, "expected at least 1 released video frame")
 	// The latest frame should be vf3 (PTS 3000) — oldest vf1 was overwritten.
+	videos := handler.getVideos()
 	last := videos[len(videos)-1]
 	require.Equal(t, byte(0x03), last.frame.WireData[0], "expected latest frame data 0x03")
 }
@@ -140,8 +141,9 @@ func TestFrameSync_TickReleasesFrames(t *testing.T) {
 	defer fs.Stop()
 
 	// Wait for at least one tick cycle.
-	time.Sleep(50 * time.Millisecond)
-	require.GreaterOrEqual(t, handler.videoCount(), 1, "video count after tick")
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "video count after tick")
 }
 
 func TestFrameSync_TickReleasesAudio(t *testing.T) {
@@ -155,8 +157,9 @@ func TestFrameSync_TickReleasesAudio(t *testing.T) {
 	fs.Start()
 	defer fs.Stop()
 
-	time.Sleep(50 * time.Millisecond)
-	require.GreaterOrEqual(t, handler.audioCount(), 1, "audio count after tick")
+	require.Eventually(t, func() bool {
+		return handler.audioCount() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "audio count after tick")
 }
 
 func TestFrameSync_PTSPreservedForFreshFrames(t *testing.T) {
@@ -170,7 +173,9 @@ func TestFrameSync_PTSPreservedForFreshFrames(t *testing.T) {
 	fs.Start()
 	defer fs.Stop()
 
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return handler.videoCount() > 0
+	}, 500*time.Millisecond, 5*time.Millisecond, "no video frames released")
 	videos := handler.getVideos()
 	require.NotEmpty(t, videos, "no video frames released")
 	// Fresh frame PTS should be preserved (same timeline as audio for A/V sync).
@@ -196,9 +201,9 @@ func TestFrameSync_FreezeRepeatsLastFrame(t *testing.T) {
 	defer fs.Stop()
 
 	// Wait for several ticks — frame should be repeated (freeze behavior).
-	time.Sleep(80 * time.Millisecond)
-	count := handler.videoCount()
-	require.GreaterOrEqual(t, count, 3, "video count after multiple ticks (freeze repeat)")
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 3
+	}, 500*time.Millisecond, 5*time.Millisecond, "video count after multiple ticks (freeze repeat)")
 
 	// All repeated frames should have the same WireData.
 	videos := handler.getVideos()
@@ -236,7 +241,9 @@ func TestFrameSync_MultiSourceAlignment(t *testing.T) {
 	fs.Start()
 	defer fs.Stop()
 
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 2
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected frames from both sources")
 
 	videos := handler.getVideos()
 	// Both sources should have released at least one frame.
@@ -367,12 +374,9 @@ func TestFrameSync_SetTickRate(t *testing.T) {
 	fs.IngestVideo("cam1", vf2)
 
 	// Wait for several fast ticks.
-	time.Sleep(80 * time.Millisecond)
-	countAfter := handler.videoCount()
-
-	// Should have more frames after speeding up.
-	gained := countAfter - countBefore
-	require.GreaterOrEqual(t, gained, 3, "after SetTickRate(15ms), gained only %d frames in 80ms", gained)
+	require.Eventually(t, func() bool {
+		return handler.videoCount()-countBefore >= 3
+	}, 500*time.Millisecond, 5*time.Millisecond, "after SetTickRate(15ms), expected at least 3 new frames")
 }
 
 // --- Stop tests ---
@@ -386,7 +390,9 @@ func TestFrameSync_StopCeasesTicking(t *testing.T) {
 	fs.IngestVideo("cam1", vf)
 
 	fs.Start()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected at least 1 frame before stop")
 	fs.Stop()
 
 	countAtStop := handler.videoCount()
@@ -407,7 +413,9 @@ func TestFrameSync_StopWaitsForGoroutine(t *testing.T) {
 	fs.Start()
 
 	// Let the goroutine run a few ticks.
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected at least 1 frame before stop")
 
 	// Stop must block until the tickLoop goroutine has exited.
 	fs.Stop()
@@ -517,10 +525,9 @@ func TestFrameSync_PairedAudioVideoRelease(t *testing.T) {
 	fs.Start()
 	defer fs.Stop()
 
-	time.Sleep(50 * time.Millisecond)
-
-	require.GreaterOrEqual(t, handler.videoCount(), 1, "no video frames released")
-	require.GreaterOrEqual(t, handler.audioCount(), 1, "no audio frames released")
+	require.Eventually(t, func() bool {
+		return handler.videoCount() >= 1 && handler.audioCount() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected both video and audio frames released")
 }
 
 func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
@@ -818,7 +825,8 @@ func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
 	// lastRawVideo, and FRC state. After Stop(), all pool buffers should be returned.
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
-	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	var rawCount atomic.Int32
+	fs.onRawVideo = func(string, *ProcessingFrame) { rawCount.Add(1) }
 	fs.AddSource("cam1")
 	fs.AddSource("cam2")
 
@@ -839,7 +847,9 @@ func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
 
 	// Run one tick so frames become lastRawVideo.
 	fs.Start()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return rawCount.Load() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected at least 1 tick before checking pool")
 
 	// Some buffers are held by the frame sync (lastRawVideo, pending ring slots).
 	pool.mu.Lock()
@@ -865,7 +875,8 @@ func TestFrameSync_StopReleasesPoolBuffersWithFRC(t *testing.T) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.frcQuality = FRCBlend
-	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
+	var rawCount atomic.Int32
+	fs.onRawVideo = func(string, *ProcessingFrame) { rawCount.Add(1) }
 	fs.AddSource("cam1")
 
 	pool := NewFramePool(4, 64, 64)
@@ -888,7 +899,9 @@ func TestFrameSync_StopReleasesPoolBuffersWithFRC(t *testing.T) {
 	}
 
 	fs.Start()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return rawCount.Load() >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected at least 1 tick before checking pool")
 
 	pool.mu.Lock()
 	freeBefore := len(pool.free)
