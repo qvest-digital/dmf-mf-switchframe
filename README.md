@@ -26,7 +26,7 @@
 
 SwitchFrame is a live video switcher where the server handles all switching, mixing, encoding, and compositing. Browsers connect over WebTransport as control surfaces — they view sources and send commands, but don't produce the output. Sources arrive via [Prism](https://github.com/zsiec/prism) MoQ ingest or [MXL](https://tech.ebu.ch/dmf/mxl) shared-memory transport.
 
-Every source is continuously decoded to raw YUV420. Cuts are instant. All video processing — transitions, keying, compositing, scaling — happens in BT.709 YUV420, the same colorspace hardware switchers operate in.
+Every source is continuously decoded to raw YUV420. Cuts are instant. All video processing — transitions, keying, compositing, scaling — happens in BT.709 YUV420.
 
 ## Features
 
