@@ -1,438 +1,328 @@
-# Video Processing Pipeline Architecture
+# Video Processing Pipeline
 
-## Overview
+The pipeline transforms decoded YUV420 frames into H.264 program output. It is a chain of immutable processing nodes, atomically swapped at runtime for zero-frame-drop reconfiguration.
 
-The Switchframe video processing pipeline transforms decoded YUV420 frames
-from source decoders into H.264 program output. It replaces the original
-inline procedural processing with an explicit, node-based architecture that
-enables runtime reconfiguration without frame drops.
+**Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance)
 
-The pipeline operates on a simple principle: **immutable once built, atomic
-swap to reconfigure**. Each `Pipeline` instance is constructed on the main
-goroutine, then executed on the dedicated video processing goroutine. When
-configuration changes (compositor on/off, key add/remove, sink
-connect/disconnect), a new pipeline is built and atomically swapped in. The
-old pipeline drains in-flight frames in a background goroutine before
-closing.
+---
 
-### Key Properties
+## 1. The Node Chain
 
-- **Zero-allocation hot path**: `Pipeline.Run()` iterates a slice of active
-  nodes. No maps, no channels, no interface dispatch beyond the node
-  `Process()` call.
-- **Single-writer timing**: Per-node nanosecond timing stored via atomic
-  stores. Read safely by `Snapshot()` from any goroutine.
-- **Active() filtering at build time**: Inactive nodes are excluded from the
-  `activeNodes` slice during `Build()`, not checked per-frame. Zero overhead
-  for disabled features.
-- **In-place processing**: Most nodes modify the YUV buffer and return the
-  same `ProcessingFrame`. No intermediate copies except where semantically
-  required (raw sink deep-copy, encode output).
-- **Pool-managed memory**: YUV buffers are acquired from and returned to a
-  `FramePool` with LIFO free list, achieving >99% hit rate vs 19% with
-  `sync.Pool`.
+```mermaid
+flowchart LR
+    subgraph src ["Source Decoders"]
+        style src fill:#1a1a2e,color:#fff,stroke:#16213e
+        SD["Per-Source\nH.264 → YUV420"]
+        MXL["MXL\nV210 → YUV420"]
+    end
 
-## Architecture Evolution
+    subgraph sync ["Frame Routing"]
+        style sync fill:#16213e,color:#fff,stroke:#0f3460
+        FS["FrameSync\nalign timing"]
+        DB["DelayBuffer\nlip-sync"]
+        HRV["handleRawVideoFrame()"]
+    end
 
-```
-Before (implicit pipeline):
-  broadcastProcessedFromPF()     ─ deep-copy, keying, compositing, enqueue
-  enqueueVideoWork()             ─ async handoff via videoProcCh
-  videoProcessingLoop()          ─ goroutine: dequeue + encode
-  encodeAndBroadcastTransition() ─ raw sinks, encode, broadcast
+    subgraph ch ["Async Handoff"]
+        style ch fill:#0f3460,color:#fff,stroke:#533483
+        VPC["videoProcCh\n8-frame buffer"]
+    end
 
-After (explicit pipeline):
-  broadcastProcessed()           ─ wrap YUV → ProcessingFrame, enqueue
-  enqueueVideoWork()             ─ async handoff via videoProcCh (unchanged)
-  videoProcessingLoop()          ─ goroutine: dequeue + Pipeline.Run()
-  Pipeline.Run()                 ─ iterate activeNodes: key → comp → sinks → encode
-```
+    subgraph pipeline ["Pipeline.Run()"]
+        style pipeline fill:#533483,color:#fff,stroke:#e94560
+        MW["MakeWritable\ncopy-on-write"]
+        UK["upstream-key\nchroma / luma"]
+        LC["layout-compositor\nPIP / split"]
+        DSK["compositor\nDSK graphics"]
+        RS1["raw-sink-mxl"]
+        RS2["raw-sink-monitor"]
+        ENC["h264-encode"]
+    end
 
-The refactor was structured as independently shippable phases:
+    subgraph out ["Program Output"]
+        style out fill:#e94560,color:#fff,stroke:#e94560
+        BR["programRelay\nBroadcastVideo()"]
+    end
 
-| Phase | Focus | Key Outcome |
-|-------|-------|-------------|
-| 0 | Memory fixes | AnnexB buffer reuse, GOMEMLIMIT, LockOSThread |
-| 1 | FramePool | Mutex-guarded LIFO free list replacing sync.Pool |
-| 2 | PipelineNode interface | 7-method contract for processing nodes |
-| 3 | Pipeline builder | Pipeline struct with Build/Run/Snapshot |
-| 4 | Atomic swap | Runtime reconfiguration without frame drops |
-| 6 | Instrumentation | Per-node Prometheus histogram, lip-sync hint |
-
-
-## Frame Flow
-
-```
-sourceDecoder (per-source, H.264 → YUV420)
-  │
-  ├─ FrameSynchronizer (optional, aligns multi-source timing)
-  │   or
-  ├─ delayBuffer (per-source, 0-500ms lip-sync correction)
-  │
-  ▼
-handleRawVideoFrame()
-  │
-  ├─ health.recordFrame()
-  ├─ updateFrameStats()
-  ├─ fillIngestor → keyBridge (cache raw YUV for upstream keying)
-  │
-  ├─ [transition active] → TransitionEngine.IngestRawFrame()
-  │   └─ blend output → broadcastProcessed() → enqueueVideoWork()
-  │
-  └─ [program source] → enqueueVideoWork()
-          │
-          ▼
-     videoProcCh (buffered channel, 8 frames)
-          │
-          ▼
-     videoProcessingLoop() goroutine
-          │
-          ▼
-     Pipeline.Run(frame)
-          │
-          ├─ upstreamKeyNode   ─ chroma/luma keying (in-place)
-          ├─ compositorNode    ─ DSK graphics overlay (in-place)
-          ├─ rawSinkNode       ─ MXL output (deep-copy + callback)
-          ├─ rawSinkNode       ─ raw program monitor (deep-copy + callback)
-          └─ encodeNode        ─ H.264 encode → broadcastOwnedToProgram()
-                                  │
-                                  ▼
-                            programRelay.BroadcastVideo()
+    SD --> FS
+    MXL --> DB
+    FS --> HRV
+    DB --> HRV
+    HRV --> VPC
+    VPC --> MW --> UK --> LC --> DSK --> RS1 --> RS2 --> ENC --> BR
 ```
 
+Six processing nodes execute in a fixed order on a single dedicated goroutine. Each node is a thin wrapper around an existing subsystem — the pipeline provides the sequencing, timing, and lifecycle management.
 
-## PipelineNode Interface
+| Node | Subsystem | In-Place | Latency | Active When |
+|------|-----------|----------|---------|-------------|
+| `upstream-key` | [`KeyProcessorBridge`](../server/graphics/key_processor_bridge.go) | Yes | 100μs | Keys enabled with cached fills |
+| `layout-compositor` | [`layout.Compositor`](../server/layout/compositor.go) | Yes | 1ms | Layout has enabled slots |
+| `compositor` | [`graphics.Compositor`](../server/graphics/compositor.go) | Yes | 200μs | Graphics layers active |
+| `raw-sink-mxl` | MXL shared-memory output | No (ref-counted tap) | 50μs | MXL output connected |
+| `raw-sink-monitor` | Raw YUV program monitor | No (ref-counted tap) | 50μs | `--raw-program-monitor` flag |
+| `h264-encode` | [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) | N/A (terminal) | 10ms | Always |
 
-```go
-type PipelineNode interface {
-    Name() string                           // human-readable identifier
-    Configure(PipelineFormat) error         // runs once at build time
-    Active() bool                           // checked at build time to filter
-    Process(dst, src *ProcessingFrame) *ProcessingFrame  // hot path
-    Err() error                             // last error for monitoring
-    Latency() time.Duration                 // estimated processing time
-    Close() error                           // resource cleanup
-}
+Inactive nodes are filtered out at build time — zero overhead for disabled features.
+
+---
+
+## 2. Frame Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant SD as Source Decoder
+    participant FS as FrameSync
+    participant HRV as handleRawVideoFrame
+    participant KB as KeyBridge
+    participant LC as LayoutCompositor
+    participant CH as videoProcCh
+    participant PL as Pipeline.Run
+    participant FP as FramePool
+
+    SD->>FP: Acquire() YUV buffer
+    SD->>SD: FFmpeg decode → YUV420
+    SD->>FS: IngestRawVideo(pf)
+    FS->>HRV: onRawVideo(sourceKey, pf)
+
+    Note over HRV: All sources feed key/layout caches
+    HRV->>KB: IngestFillYUV(sourceKey, yuv)
+    HRV->>LC: IngestSourceFrame(sourceKey, yuv)
+
+    Note over HRV: Only program source enters pipeline
+    HRV->>HRV: pf.Ref() + shallow copy
+    HRV->>CH: enqueueVideoWork(pf, epoch)
+
+    CH->>PL: dequeue frame
+    Note over PL: Epoch check — discard stale frames
+    PL->>PL: MakeWritable(pool)
+    PL->>PL: node[0..N].Process(frame)
+    PL->>FP: ReleaseYUV() → return buffer
 ```
 
-### Design Rationale
+Every source is continuously decoded (always-decode architecture), but only the current program source's frames enter the pipeline via [`broadcastProcessedFromPF()`](../server/switcher/switcher.go). Non-program sources contribute to the key bridge fill cache and layout compositor fill cache, then are filtered out.
 
-**`Name()`** — Used as Prometheus histogram label (`node` dimension) and in
-`Snapshot()` for debug endpoints. Must be stable across rebuilds.
+During transitions, the [`TransitionEngine`](../server/transition/engine.go) blends frames from both sources and outputs through [`broadcastProcessed()`](../server/switcher/switcher.go), which also enters the pipeline via `videoProcCh`.
 
-**`Configure(PipelineFormat)`** — Runs on the main goroutine during
-`Pipeline.Build()`. May allocate, acquire locks, or return errors. The
-pipeline format (resolution, frame rate) is passed so nodes can prepare
-format-dependent resources.
+---
 
-**`Active()`** — Checked once during `Build()` to filter the `activeNodes`
-slice. Not checked per-frame. This enables zero-overhead bypass of disabled
-features. Must be safe for concurrent reads (typically reads an atomic or
-calls a lock-free predicate).
+## 3. ProcessingFrame
 
-**`Process(dst, src)`** — The hot path. Called per-frame on the pipeline
-goroutine (single-threaded). Contract: must not allocate, must not block,
-must not acquire contested locks. In-place nodes modify `src.YUV` and return
-`src`. The `dst` parameter is reserved for future nodes needing a separate
-output buffer (e.g., scaling to a different resolution).
+The `ProcessingFrame` is the data carrier through the pipeline — a YUV420 buffer with reference counting modeled after FFmpeg's `AVBufferRef`.
 
-**`Err()`** — Returns the last error from `Process()`. Checked by monitoring
-(debug snapshot), not on the hot path. Nodes log their own errors; this
-provides a structured view for diagnostics.
+```mermaid
+flowchart TD
+    subgraph pf ["ProcessingFrame"]
+        style pf fill:#1a1a2e,color:#fff,stroke:#16213e
+        YUV["YUV []byte\nY[w×h] + Cb[w/2×h/2] + Cr[w/2×h/2]"]
+        META["Width · Height · PTS · DTS\nIsKeyframe · GroupID · Codec"]
+        POOL["pool *FramePool"]
+        REFS["refs *int32\nshared across copies"]
+    end
 
-**`Latency()`** — Estimated per-frame processing time. Summed across active
-nodes to compute `Pipeline.TotalLatency()`, used for automatic lip-sync
-compensation.
+    subgraph ops ["Operations"]
+        style ops fill:#16213e,color:#fff,stroke:#0f3460
+        REF["Ref()\n+1 refcount"]
+        REL["ReleaseYUV()\n-1 refcount → return to pool at 0"]
+        MW["MakeWritable(pool)\ncopy-on-write if refs > 1"]
+        DC["DeepCopy()\nnew buffer, independent lifecycle"]
+    end
 
-**`Close()`** — Resource cleanup. Called during pipeline drain after all
-in-flight `Run()` calls complete.
-
-
-## Node Implementations
-
-### upstreamKeyNode
-
-Wraps `graphics.KeyProcessorBridge.ProcessYUV()`. Applies per-source
-chroma/luma keying to the program frame.
-
-| Property | Value |
-|----------|-------|
-| File | `node_upstream_key.go` |
-| Name | `"upstream-key"` |
-| Active when | Bridge has enabled keys with cached fill frames |
-| Processing | In-place: modifies `src.YUV` via `bridge.ProcessYUV()` |
-| Latency | 100μs estimated |
-
-### compositorNode
-
-Wraps `graphics.Compositor.ProcessYUV()`. Overlays RGBA graphics (DSK) onto
-the program frame.
-
-| Property | Value |
-|----------|-------|
-| File | `node_compositor.go` |
-| Name | `"compositor"` |
-| Active when | `compositor.IsActive()` returns true |
-| Processing | In-place: modifies `src.YUV` via `compositor.ProcessYUV()` |
-| Latency | 200μs estimated |
-
-### rawSinkNode
-
-Wraps a `*atomic.Pointer[RawVideoSink]`. Deep-copies the frame and delivers
-it to an external consumer (MXL output or raw program monitor). Two
-instances are created with different names for observability.
-
-| Property | Value |
-|----------|-------|
-| File | `node_raw_sink.go` |
-| Names | `"raw-sink-mxl"`, `"raw-sink-monitor"` |
-| Active when | Sink pointer is non-nil |
-| Processing | Deep-copy via `src.DeepCopy()`, invoke sink callback |
-| Latency | 50μs estimated |
-
-### encodeNode
-
-Wraps `pipelineCodecs.encode()`. Encodes the YUV420 frame to H.264 AVC1.
-Always active — the encode step is mandatory for program output.
-
-| Property | Value |
-|----------|-------|
-| File | `node_encode.go` |
-| Name | `"h264-encode"` |
-| Active when | Always |
-| Processing | Encode via `codecs.encode()`, invoke `onEncoded` callback |
-| Latency | 10ms estimated (hardware encoder) |
-| Error tracking | `lastErr` atomic.Value for `Snapshot()` reads |
-| Metrics | Observes `PipelineEncodeDuration`, increments `PipelineEncodeErrorsTotal` and `PipelineFramesProcessed` |
-
-The encode node also handles force-IDR logic: if the source frame is a
-keyframe or `forceNextIDR` is set (after a cut or transition start), the
-encoder forces an IDR output.
-
-
-## Pipeline Struct
-
-```go
-type Pipeline struct {
-    allNodes    []PipelineNode    // full node list (for Close, reconfigure)
-    activeNodes []PipelineNode    // filtered by Active() at build time
-    format      PipelineFormat
-    pool        *FramePool
-
-    metrics     *metrics.Metrics  // Prometheus (optional, nil-safe)
-
-    // Per-node timing (nanoseconds). Indexed by position in activeNodes.
-    nodeTiming  []atomic.Int64    // last run duration
-    nodeMaxNs   []atomic.Int64    // max duration since pipeline creation
-
-    // Aggregate metrics
-    totalLatency time.Duration    // sum of active nodes' Latency()
-    runCount     atomic.Int64     // total Run() invocations
-    lastRunNs    atomic.Int64     // most recent Run() total duration
-    maxRunNs     atomic.Int64     // max Run() total duration
-
-    epoch        uint64           // monotonically increasing, set at build time
-    inflight     sync.WaitGroup   // in-flight Run() tracking for safe drain
-}
+    pf --> ops
 ```
 
-### Build
+### Reference Counting
 
-`Pipeline.Build(format, pool, nodes)` runs on the main goroutine:
+The `refs` field is a shared `*int32` pointer. When a `ProcessingFrame` is value-copied (e.g., for the pipeline goroutine), both copies share the same `refs` pointer and the same `YUV` slice — like FFmpeg's `AVBufferRef` model.
 
-1. Calls `Configure(format)` on every node. Returns error if any fails.
-2. Filters nodes where `Active()` returns true into `activeNodes`.
-3. Sums active nodes' `Latency()` into `totalLatency`.
-4. Allocates per-node atomic timing arrays sized to `len(activeNodes)`.
+| Operation | Effect |
+|-----------|--------|
+| `SetRefs(n)` | Allocate refs pointer, set initial count. Called once after creation. |
+| `Ref()` | Increment shared refcount. Used before handing frame to another goroutine. |
+| `ReleaseYUV()` | Decrement refcount. At zero, return buffer to `FramePool`. |
+| `MakeWritable(pool)` | If refs > 1: acquire fresh buffer, copy YUV, decrement old refs. Detaches ownership. |
+| `DeepCopy()` | New `ProcessingFrame` with copied YUV. Starts unmanaged (nil refs). |
 
-After `Build()`, `SetMetrics(m)` wires Prometheus (nil is safe). The
-pipeline is then stored via `pipeline.Store(p)` or `swapPipeline(p)`.
+### Copy-on-Write in the Pipeline
 
-### Run
-
-`Pipeline.Run(frame)` runs on the video processing goroutine (single-threaded):
+`Pipeline.Run()` calls `MakeWritable()` before the first node processes the frame. This ensures exclusive buffer ownership so in-place nodes (upstream key, layout compositor, DSK graphics) can modify `src.YUV` safely. The pattern prevents aliasing between the pipeline and `FrameSync`, which retains `lastRawVideo` with a shared refcount.
 
 ```
-inflight.Add(1)
-defer inflight.Done()
-
-start := now()
-for i, node := range activeNodes {
-    t0 := now()
-    frame = node.Process(nil, frame)
-    dur := now() - t0
-    nodeTiming[i].Store(dur)         // atomic — safe for Snapshot() reads
-    updateAtomicMax(&nodeMaxNs[i], dur)
-    if metrics != nil {
-        metrics.NodeProcessDuration.WithLabelValues(node.Name()).Observe(dur)
-    }
-}
-total := now() - start
-lastRunNs.Store(total)
-runCount.Add(1)
-updateAtomicMax(&maxRunNs, total)
+FrameSync retains pf  ←──shared refs──→  Pipeline receives shallow copy
+                                              │
+                                        MakeWritable()
+                                              │
+                                         new buffer, own refs
+                                         safe for in-place modification
 ```
 
-### Snapshot
+**Files:** [`processing_frame.go`](../server/switcher/processing_frame.go)
 
-`Pipeline.Snapshot()` returns a `map[string]any` for the debug endpoint:
+---
 
-```json
-{
-  "active_nodes": [
-    {"name": "upstream-key", "last_ns": 45000, "max_ns": 120000, "latency_us": 100},
-    {"name": "compositor",   "last_ns": 98000, "max_ns": 250000, "latency_us": 200},
-    {"name": "h264-encode",  "last_ns": 8500000, "max_ns": 12000000, "latency_us": 10000,
-     "last_error": "encoder returned nil frame"}
-  ],
-  "total_nodes": 5,
-  "epoch": 3,
-  "run_count": 14523,
-  "last_run_ns": 8643000,
-  "max_run_ns": 12370000,
-  "total_latency_us": 10350,
-  "lip_sync_hint_us": -10983
-}
+## 4. FramePool
+
+```mermaid
+flowchart LR
+    subgraph pool ["FramePool (mutex-guarded LIFO)"]
+        style pool fill:#1a1a2e,color:#fff,stroke:#16213e
+        STACK["free [][]byte\n32 pre-allocated buffers\nLIFO for cache warmth"]
+    end
+
+    ACQ["Acquire()"] -->|pop| STACK
+    STACK -->|push| REL["Release(buf)"]
+    ACQ -->|pool empty| FALLBACK["make([]byte, bufSize)\nlogged as miss"]
+    REL -->|wrong size| DISCARD["discard\nformat change drain"]
 ```
 
-The `lip_sync_hint_us` value is `(totalLatency - aacFrameDuration)` where
-`aacFrameDuration = 1024/48000 s ≈ 21.333ms`. A negative value means video
-processing is faster than one AAC frame — audio leads video. A positive
-value means video processing is slower — video leads audio.
+The `FramePool` replaced `sync.Pool` because Go's GC drains pool entries every ~570ms (with `GOGC=400`), producing only a 19% hit rate. The LIFO free list achieves **>99% hit rate** and keeps recently-used buffers cache-warm.
 
-### Wait and Close
+### Buffer Budget (1080p)
 
-`Pipeline.Wait()` blocks until all in-flight `Run()` calls complete (via
-`sync.WaitGroup`).
-
-`Pipeline.Close()` calls `Wait()` then closes all nodes (from `allNodes`,
-not just `activeNodes`). Returns the first error encountered.
-
-
-## FramePool
-
-The `FramePool` replaces `sync.Pool` for YUV420 buffer management. The
-original `sync.Pool` achieved only 19% hit rate because the GC drains pool
-entries every ~570ms (with `GOGC=400`). The replacement uses a
-mutex-guarded LIFO free list that is immune to GC drain.
-
-```go
-type FramePool struct {
-    mu      sync.Mutex
-    free    [][]byte    // stack of available buffers (LIFO for cache warmth)
-    bufSize int         // YUV420 buffer size (width * height * 3/2)
-    cap     int         // total capacity (pre-allocated count)
-    hits    uint64      // diagnostic counters
-    misses  uint64
-}
-```
-
-### Sizing
-
-At 1080p (1920×1080), each YUV420 buffer is `1920 × 1080 × 3/2 = 3,110,400
-bytes` (~3MB). The pool pre-allocates 32 buffers (~97MB). The in-flight
-budget accounts for:
+Each YUV420 buffer at 1080p is `1920 × 1080 × 3/2 ≈ 3 MB`. The pool pre-allocates 32 buffers (~97 MB).
 
 | Consumer | Buffers |
 |----------|---------|
-| 4 source decoder outputs | 4 |
-| DeepCopy in broadcastProcessed | 1 |
-| videoProcCh (being encoded) | 1 |
-| Raw sink copies (MXL + monitor) | 2 |
-| Frame sync retained references | 2-3 |
+| Source decoder outputs (4 sources) | 4 |
+| `videoProcCh` (being processed) | 1 |
+| Raw sink taps (MXL + monitor) | 2 |
+| FrameSync retained references | 2–3 |
 | FRC retained frames | 2 |
-| **Total typical** | **~12-14** |
+| Headroom | ~20 |
+| **Total** | **32** |
 
-The 32-buffer pool provides ~2x headroom. If all buffers are in use,
-`Acquire()` falls back to `make()` (logged as a pool miss).
+### Format Change
 
-### Format Change Handling
+When [`SetPipelineFormat()`](../server/switcher/format.go) changes resolution, a new `FramePool` is created at the new dimensions. The old pool drains naturally — in-flight frames return buffers to the old pool, but `Release()` discards wrong-sized buffers. No synchronization needed.
 
-When `SetPipelineFormat()` changes the resolution, a new `FramePool` is
-created at the new dimensions. The old pool drains naturally — in-flight
-frames release their buffers to the old pool, but wrong-sized buffers are
-discarded by `Release()` (cap check). No explicit synchronization needed.
+**Files:** [`frame_pool.go`](../server/switcher/frame_pool.go)
 
-### ProcessingFrame Integration
+---
 
-`ProcessingFrame` carries a `pool *FramePool` reference:
-
-- `DeepCopy()` acquires a buffer from the pool for the copy
-- `ReleaseYUV()` returns the buffer to the pool after encode
-- Both are nil-safe: falls back to `make()` / no-op for tests
+## 5. PipelineNode Interface
 
 ```go
-func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
-    cp := *pf
-    if pf.pool != nil {
-        cp.YUV = pf.pool.Acquire()
-    } else {
-        cp.YUV = make([]byte, len(pf.YUV))
-    }
-    copy(cp.YUV, pf.YUV)
-    return &cp
+type PipelineNode interface {
+    Name() string                                          // Prometheus label, debug snapshot
+    Configure(format PipelineFormat) error                 // Once at build time (may alloc, may lock)
+    Active() bool                                          // Build-time filter (must be concurrent-safe)
+    Process(dst, src *ProcessingFrame) *ProcessingFrame    // Hot path (no alloc, no block)
+    Err() error                                            // Last error for monitoring
+    Latency() time.Duration                                // Estimated cost (summed for lip-sync hint)
+    Close() error                                          // Cleanup after drain
 }
 ```
 
+| Method | When | Thread | Contract |
+|--------|------|--------|----------|
+| `Configure` | `Pipeline.Build()` | Main goroutine | May allocate, acquire locks, return errors |
+| `Active` | `Pipeline.Build()` | Main goroutine | Filters `activeNodes` slice. Not checked per-frame. |
+| `Process` | `Pipeline.Run()` | Video processing goroutine | Must not allocate. Must not block. Single-threaded. |
+| `Err` | `Pipeline.Snapshot()` | Any goroutine | Atomic read of last error |
+| `Latency` | `Pipeline.Build()` | Main goroutine | Summed into `totalLatency` for lip-sync |
+| `Close` | `Pipeline.Close()` | Background drain goroutine | After all in-flight `Run()` calls complete |
 
-## Atomic Swap
+In-place nodes modify `src.YUV` and return `src`. The `dst` parameter is reserved for future nodes needing a separate output buffer (e.g., resolution scaling).
 
-The core reconfiguration primitive is `swapPipeline()`:
+**Files:** [`pipeline_node.go`](../server/switcher/pipeline_node.go)
 
-```go
-func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
-    old := s.pipeline.Swap(newPipeline)  // atomic.Pointer swap
-    if old == nil {
-        return
-    }
-    s.drainWg.Add(1)
-    go func() {
-        defer s.drainWg.Done()
-        old.Wait()    // drain in-flight Run() calls
-        old.Close()   // close all nodes
-    }()
-}
+---
+
+## 6. Node Implementations
+
+### upstream-key
+
+Wraps [`KeyProcessorBridge.ProcessYUV()`](../server/graphics/key_processor_bridge.go). Applies per-source chroma/luma keying to the program frame before any compositing. Active only when the bridge has enabled keys with cached fill frames (`HasEnabledKeysWithFills()`).
+
+Keying operates in the YUV420 domain using Cb/Cr squared distance for chroma and Y threshold for luma, with smoothness feathering. Fill frames are ingested separately via `IngestFillYUV()` in `handleRawVideoFrame()` — the node reads from the cached fills.
+
+**File:** [`node_upstream_key.go`](../server/switcher/node_upstream_key.go) (34 lines)
+
+### layout-compositor
+
+Wraps [`layout.Compositor.ProcessFrame()`](../server/layout/compositor.go). Composites PIP, side-by-side, or quad-split overlays onto the program frame. Active only when a layout has enabled slots.
+
+The compositor maintains a fill cache (`IngestSourceFrame()`) populated by `handleRawVideoFrame()` for every source matching a slot. `ProcessFrame()` deep-copies fills into per-slot snapshot buffers under a mutex, then composites without the lock — the pipeline goroutine never contends with source delivery goroutines.
+
+**File:** [`node_layout_compositor.go`](../server/switcher/node_layout_compositor.go) (34 lines)
+
+### compositor
+
+Wraps [`graphics.Compositor.ProcessYUV()`](../server/graphics/compositor.go). Overlays up to 8 DSK graphics layers onto the program frame with per-layer animations (fade, fly, slide, pulse). Active only when `IsActive()` returns true (at least one layer on).
+
+**File:** [`node_compositor.go`](../server/switcher/node_compositor.go) (27 lines)
+
+### raw-sink
+
+Wraps an `atomic.Pointer[RawVideoSink]` for lock-free dispatch. Taps the processed YUV420 frame for external consumers before H.264 encoding. Two instances exist in the node chain:
+
+| Instance | Consumer | Purpose |
+|----------|----------|---------|
+| `raw-sink-mxl` | [`mxl.Output`](../server/mxl/output.go) | YUV420 → V210 conversion → shared memory |
+| `raw-sink-monitor` | `program-raw` MoQ track | WebGL YUV renderer in browser (~4ms vs ~15ms with codec) |
+
+The sink receives a reference-counted frame: `Ref()` before the callback, `ReleaseYUV()` after. The pipeline's own reference is unaffected.
+
+**File:** [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) (29 lines)
+
+### h264-encode
+
+Wraps [`pipelineCodecs.encode()`](../server/switcher/pipeline_codecs.go). Always active — encoding is mandatory for program output. The encoded H.264 AVC1 frame is delivered via `onEncoded` callback to [`broadcastWithCaptions()`](../server/switcher/switcher.go), which injects CEA-608 caption SEI NALUs and broadcasts to `programRelay`.
+
+```mermaid
+flowchart LR
+    subgraph enc ["encodeNode"]
+        style enc fill:#1a1a2e,color:#fff,stroke:#16213e
+        IDR{"forceIDR?\nsrc.IsKeyframe\nor flag set"}
+        ENCODE["pipelineCodecs.encode()\nFFmpeg libavcodec"]
+        SPS["Extract SPS/PPS\ndedup → callback"]
+        CB["onEncoded(frame)\n→ broadcastWithCaptions"]
+    end
+
+    IDR --> ENCODE --> SPS --> CB
 ```
 
-The `pipeline` field is an `atomic.Pointer[Pipeline]`. The swap is a single
-atomic store. The old pipeline is drained and closed in a background
-goroutine tracked by `drainWg` for orderly shutdown.
+**Force-IDR logic:** The `forceNextIDR` atomic flag is set when a new output viewer joins the program relay (e.g., SRT output starts) or after a cut/transition. The encode node checks `src.IsKeyframe || forceNextIDR.CompareAndSwap(true, false)` to force immediate keyframe output.
+
+**File:** [`node_encode.go`](../server/switcher/node_encode.go) (72 lines)
+
+---
+
+## 7. Atomic Swap
+
+```mermaid
+sequenceDiagram
+    participant Main as Main Goroutine
+    participant Old as Old Pipeline
+    participant New as New Pipeline
+    participant VP as videoProcessingLoop
+    participant BG as Background Drain
+
+    Main->>Main: rebuildPipeline()
+    Main->>Main: buildNodeList() under RLock
+    Main->>New: Build(format, pool, nodes)
+    Main->>New: SetMetrics(prom)
+    Main->>Main: pipeline.Swap(new) — atomic pointer swap
+    Note over VP: Next Run() uses new pipeline
+    Main->>BG: go drain(old)
+    BG->>Old: Wait() — in-flight frames complete
+    BG->>Old: Close() — release node resources
+```
+
+The pipeline is stored as an `atomic.Pointer[Pipeline]`. Reconfiguration builds a new pipeline, then atomically swaps the pointer. The old pipeline drains in a background goroutine tracked by `drainWg` for orderly shutdown. **Zero frames are dropped during the swap** — the processing goroutine seamlessly picks up the new pipeline on its next iteration.
 
 ### Rebuild Triggers
 
-Seven sources trigger `rebuildPipeline()`:
-
-| Trigger | How |
-|---------|-----|
-| `SetCompositor(c)` | Direct call after storing compositor reference |
-| `SetKeyBridge(kb)` | Direct call after storing key bridge reference |
-| `SetRawVideoSink(sink)` | Direct call after atomic store |
-| `SetRawMonitorSink(sink)` | Direct call after atomic store |
-| Compositor state change | `OnStateChange(fn)` callback wired in `app.go` |
-| Key processor change | `OnChange(fn)` callback wired in `app.go` |
-| `SetPipelineFormat(f)` | Rebuilds with new format, pool, and frame budget |
-
-`rebuildPipeline()` builds a fresh Pipeline from current state:
-
-```go
-func (s *Switcher) rebuildPipeline() {
-    // 1. Capture state under read lock
-    s.mu.RLock()
-    hasPipeCodecs := s.pipeCodecs != nil
-    prom := s.promMetrics
-    nodes := s.buildNodeList()  // fresh node slice from current state
-    s.mu.RUnlock()
-
-    // 2. Build new pipeline (outside lock)
-    p := &Pipeline{}
-    p.Build(format, s.framePool, nodes)
-    p.SetMetrics(prom)
-    p.epoch = s.pipelineEpoch.Add(1)
-
-    // 3. Atomic swap (old drains in background)
-    s.swapPipeline(p)
-}
-```
+| Trigger | Method | Mechanism |
+|---------|--------|-----------|
+| DSK graphics change | `SetCompositor(c)` | Direct `rebuildPipeline()` call |
+| Upstream key change | `SetKeyBridge(kb)` | Direct call |
+| PIP layout change | `SetLayoutCompositor(c)` | Direct call + `OnActiveChange` callback |
+| MXL output change | `SetRawVideoSink(sink)` | Direct call after atomic store |
+| Raw monitor change | `SetRawMonitorSink(sink)` | Direct call after atomic store |
+| Compositor state change | — | `OnStateChange(fn)` callback wired in `app.go` |
+| Key processor change | — | `OnChange(fn)` callback wired in `app.go` |
+| Format change | `SetPipelineFormat(f)` | Rebuilds with new format, pool, and frame budget |
 
 ### Pipeline Epoch
 
@@ -442,195 +332,211 @@ Each pipeline is assigned a monotonically increasing epoch at build time:
 p.epoch = s.pipelineEpoch.Add(1)
 ```
 
-The epoch is exposed in `Pipeline.Snapshot()` for downstream consumers (SRT
-output, recording, confidence monitor) to detect pipeline changes. This
-enables responses like forcing a keyframe, starting a new recording segment,
-or refreshing stream metadata.
+The epoch is exposed in [`Pipeline.Snapshot()`](../server/switcher/pipeline_loop.go) for downstream consumers (SRT output, recording, confidence monitor) to detect pipeline changes — e.g., forcing a keyframe or starting a new recording segment.
 
 ### Shutdown
 
 ```go
 // In Switcher.Close():
 if p := s.pipeline.Swap(nil); p != nil {
-    p.Wait()
-    p.Close()
+    p.Wait()   // drain in-flight Run() calls
+    p.Close()  // close all nodes
 }
 s.drainWg.Wait()  // wait for background drain goroutines
 ```
 
-The pipeline is swapped to nil (preventing new `Run()` calls), then drained
-and closed synchronously. `drainWg.Wait()` ensures all background drain
-goroutines from previous swaps have completed.
+The pipeline is swapped to nil (preventing new `Run()` calls), then drained and closed synchronously. `drainWg.Wait()` ensures all background drain goroutines from previous swaps have completed before encoder resources are freed.
 
+**Files:** [`pipeline_loop.go`](../server/switcher/pipeline_loop.go) · [`switcher.go`](../server/switcher/switcher.go) (`buildNodeList`, `BuildPipeline`, `swapPipeline`, `rebuildPipeline`)
 
-## Instrumentation
+---
+
+## 8. Encoder Management
+
+The [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) struct manages the H.264 encoder lifecycle, wrapped by `encodeNode`.
+
+```mermaid
+flowchart TD
+    subgraph codec ["pipelineCodecs"]
+        style codec fill:#1a1a2e,color:#fff,stroke:#16213e
+        LAZY["Lazy Init\ncreate encoder on first frame"]
+        RES["Resolution Check\npf.Width ≠ encWidth → recreate"]
+        BR["Bitrate Adaptive\nsource > created × 1.2 → invalidate"]
+        PTS["Monotonic PTS\nfix backward jumps from source switch"]
+        GID["Group ID\nincrement on keyframe"]
+    end
+
+    FRAME["ProcessingFrame"] --> LAZY
+    LAZY --> RES --> BR --> PTS --> GID --> OUTPUT["H.264 AVC1 + SPS/PPS"]
+```
+
+### Key Behaviors
+
+**Lazy initialization:** The encoder is not created until the first frame arrives with resolution/FPS information. This avoids creating encoders with incorrect parameters during startup.
+
+**Resolution change:** If `pf.Width != encWidth || pf.Height != encHeight`, the encoder is closed and recreated at the new resolution. This handles format preset changes and mixed-resolution source switches.
+
+**Bitrate adaptation:** Source bitrate is estimated from `sourceDecoder.Stats()` via `updateSourceStats()` (uses `TryLock()` to avoid blocking the source delivery goroutine). The encoder is only invalidated when the source bitrate exceeds the encoder's creation bitrate by >20%. Resolution-based defaults provide a floor: 4K→20 Mbps, 1080p→10 Mbps, 720p→6 Mbps.
+
+**Monotonic PTS:** Output PTS is forced monotonic — backward jumps (source switch, B-frame reorder) are clamped to `lastOutputPTS + frameDuration`. Large forward jumps (>3 frame durations) pass through to avoid accumulating drift.
+
+**SPS/PPS deduplication:** After each encode, SPS and PPS NALUs are extracted from the AVC1 output and compared against cached copies. The `onVideoInfoChange` callback fires only when they change — avoiding redundant metadata broadcasts to the program relay.
+
+**Files:** [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) (315 lines)
+
+---
+
+## 9. Program Epoch
+
+```mermaid
+stateDiagram-v2
+    [*] --> Epoch_1: startup
+    Epoch_1 --> Epoch_2: Cut(sourceB)
+    Epoch_2 --> Epoch_3: transition complete
+    Epoch_3 --> Epoch_4: Cut(sourceC)
+
+    note right of Epoch_2
+        Frames stamped epoch=1
+        are discarded
+    end note
+```
+
+Separate from the pipeline epoch (which tracks pipeline rebuilds), the **program epoch** tracks program source changes. It prevents wrong-source frames from reaching the pipeline during concurrent `Cut()` or transition complete races.
+
+| Event | Action |
+|-------|--------|
+| `Cut(newSource)` | `programEpoch.Add(1)` under write lock |
+| `handleTransitionComplete` | `programEpoch.Add(1)` under write lock |
+| `RemoveSource(programSource)` | `programEpoch.Add(1)` under write lock |
+| `broadcastProcessedFromPF` | Stamp frame with `programEpoch.Load()` |
+| `videoProcessingLoop` | Discard if `work.epoch != programEpoch.Load()` |
+
+Transition engine output uses epoch=0 (always valid) since the engine's own state machine controls its lifecycle.
+
+The `programEpochStale` counter in [`DebugSnapshot()`](../server/switcher/switcher.go) tracks how many frames have been discarded as stale — nonzero values confirm the race was hit and mitigated.
+
+**Files:** [`switcher.go`](../server/switcher/switcher.go)
+
+---
+
+## 10. Instrumentation
 
 ### Per-Node Prometheus Histogram
 
-```go
-NodeProcessDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-    Namespace: "switchframe",
-    Subsystem: "pipeline",
-    Name:      "node_duration_seconds",
-    Help:      "Per-node video processing duration.",
-    Buckets:   []float64{0.00001, 0.0001, 0.001, 0.01, 0.1},
-}, []string{"node"})
+```
+switchframe_pipeline_node_duration_seconds{node="upstream-key"}
+switchframe_pipeline_node_duration_seconds{node="layout-compositor"}
+switchframe_pipeline_node_duration_seconds{node="compositor"}
+switchframe_pipeline_node_duration_seconds{node="raw-sink-mxl"}
+switchframe_pipeline_node_duration_seconds{node="raw-sink-monitor"}
+switchframe_pipeline_node_duration_seconds{node="h264-encode"}
 ```
 
-Bucket boundaries span 5 orders of magnitude (10μs to 100ms), covering:
-- Upstream key / compositor: 50-200μs typical
-- Raw sinks: 30-100μs (dominated by memcpy)
-- H.264 encode: 5-15ms typical (hardware), 15-40ms (software)
+Bucket boundaries span 5 orders of magnitude (`10μs, 100μs, 1ms, 10ms, 100ms`), covering everything from compositor overlays to software encode.
 
-The `node` label is the node's `Name()` string. Observation happens inside
-`Pipeline.Run()` after each `Process()` call. Nil-safe: when `metrics` is
-nil (e.g., in tests), no observation occurs.
+### Pipeline Snapshot
 
-### Lip-Sync Hint
+The debug endpoint returns per-node timing, errors, and aggregate metrics:
 
-The lip-sync hint quantifies the video-audio timing relationship:
-
-```
-lip_sync_hint = totalVideoLatency - aacFrameDuration
-```
-
-Where:
-- `totalVideoLatency` = sum of active nodes' `Latency()` (estimated
-  per-frame processing time)
-- `aacFrameDuration` = 1024 samples / 48000 Hz = 21.333ms (one AAC-LC
-  frame)
-
-| Hint Value | Meaning |
-|------------|---------|
-| Negative | Video processing completes before one AAC frame is ready. Audio leads. |
-| Zero | Video and audio are perfectly synchronized. |
-| Positive | Video processing takes longer than one AAC frame. Video leads. |
-
-The hint is logged at pipeline build time and exposed in `Snapshot()` for
-the debug endpoint. It provides the raw data needed for automatic audio
-delay compensation in future work.
-
-### Build-Time Logging
-
-Every pipeline build or rebuild logs its configuration:
-
-```
-INFO pipeline built  epoch=3  active_nodes=3  total_latency=10.35ms  lip_sync_hint=-10.983ms
-```
-
-
-## PipelineFormat
-
-The `PipelineFormat` struct defines the global video pipeline format:
-
-```go
-type PipelineFormat struct {
-    Width  int    // Horizontal resolution (e.g. 1920)
-    Height int    // Vertical resolution (e.g. 1080)
-    FPSNum int    // Frame rate numerator (e.g. 30000)
-    FPSDen int    // Frame rate denominator (e.g. 1001)
-    Name   string // Human-readable name (e.g. "1080p29.97")
+```json
+{
+  "active_nodes": [
+    {"name": "upstream-key",      "last_ns": 45000,   "max_ns": 120000,   "latency_us": 100},
+    {"name": "layout-compositor", "last_ns": 150000,  "max_ns": 320000,   "latency_us": 1000},
+    {"name": "compositor",        "last_ns": 98000,   "max_ns": 250000,   "latency_us": 200},
+    {"name": "h264-encode",       "last_ns": 8500000, "max_ns": 12000000, "latency_us": 10000}
+  ],
+  "epoch": 3,
+  "run_count": 14523,
+  "last_run_ns": 8643000,
+  "max_run_ns": 12370000,
+  "total_latency_us": 11300,
+  "lip_sync_hint_us": -10033
 }
 ```
 
-Frame rate is expressed as a rational number for broadcast correctness
-(e.g., 30000/1001 for 29.97fps NTSC). Standard presets cover 720p through
-4K UHD at common broadcast frame rates. The format drives:
+### Lip-Sync Hint
 
-- FramePool buffer sizing (`Width × Height × 3/2`)
-- Frame budget for deadline monitoring (`FPSDen × 1s / FPSNum`)
-- Frame synchronizer tick rate
-- Encoder bitrate/fps parameters
-- Node `Configure()` calls (format-dependent resources)
+```
+lip_sync_hint = totalVideoLatency − aacFrameDuration
+```
 
+Where `aacFrameDuration = 1024 / 48000 s ≈ 21.3ms`. Negative means video completes before one AAC frame is ready (audio leads). Positive means video takes longer (video leads). Logged at pipeline build time and exposed in `Snapshot()`.
 
-## Performance Characteristics
+### Frame Deadline Monitoring
 
-### Memory Allocation Reduction
+`videoProcessingLoop` tracks per-frame processing time against the frame budget (`33ms` at 30fps, `16.7ms` at 60fps). Violations are counted in `deadlineViolations` and exposed in [`DebugSnapshot()`](../server/switcher/switcher.go).
 
-| Metric | Before (sync.Pool) | After (FramePool) |
-|--------|--------------------|--------------------|
-| YUV allocation rate | 546 MB/sec | ~50 MB/sec |
-| GC frequency | 1.8/sec | <0.5/sec |
-| Pool hit rate | 19% | >99% |
+**Files:** [`pipeline_loop.go`](../server/switcher/pipeline_loop.go) · [`metrics/metrics.go`](../server/metrics/metrics.go)
 
-### Pipeline Overhead
+---
 
-The pipeline abstraction itself adds negligible overhead. Live profiling
-shows keying, compositing, and blending consume **<0.3% of CPU** — below
-the pprof sampling threshold. The dominant costs are:
+## 11. Performance
 
-- H.264 encode: 10.6% of CPU (hardware encoder) / ~30% (software)
-- FRC motion estimation: 2.4% of CPU
-- Pipeline node dispatch: unmeasurable (slice iteration + interface call)
+### Memory: sync.Pool vs FramePool
+
+| Metric | sync.Pool | FramePool |
+|--------|-----------|-----------|
+| YUV allocation rate | 546 MB/s | ~50 MB/s |
+| GC frequency | 1.8/s | <0.5/s |
+| Hit rate | 19% | >99% |
 
 ### Timing Budget (1080p30)
 
-| Node | Typical | Budget |
-|------|---------|--------|
-| upstream-key | 50-200μs | 33ms frame budget |
-| compositor | 100-300μs | |
-| raw-sink-mxl | 30-100μs (memcpy) | |
-| raw-sink-monitor | 30-100μs (memcpy) | |
-| h264-encode | 5-15ms (HW) / 15-40ms (SW) | |
-| **Total** | **~6-16ms (HW)** | **33ms** |
+| Node | Typical | Max |
+|------|---------|-----|
+| upstream-key | 50–200μs | — |
+| layout-compositor | 150–320μs | — |
+| compositor | 100–300μs | — |
+| raw-sink × 2 | 30–100μs each | — |
+| h264-encode (HW) | 5–15ms | — |
+| h264-encode (SW) | 15–40ms | — |
+| **Total (HW)** | **~6–16ms** | **33ms budget** |
 
+Pipeline node dispatch (slice iteration + interface call) is below the pprof sampling threshold. The dominant cost is H.264 encoding at 10.6% CPU (hardware) or ~30% (software). Keying, compositing, and graphics blending consume <0.3% CPU combined.
 
-## Future Evolution
+### Thread Safety Summary
 
-### Automatic Lip-Sync Compensation
+| Component | Mechanism | Scope |
+|-----------|-----------|-------|
+| `Pipeline.Run()` | Single-threaded | No lock needed — one goroutine |
+| `pipelineCodecs.encode()` | `sync.Mutex` | Entire encode (safe: pipeline is single-threaded) |
+| `FramePool` | `sync.Mutex` | Per Acquire/Release |
+| `ProcessingFrame.refs` | `atomic.Int32` | Lock-free refcounting |
+| Raw sink callbacks | `atomic.Pointer` | Lock-free dispatch |
+| Pipeline pointer | `atomic.Pointer[Pipeline]` | Lock-free swap |
+| Program epoch | `atomic.Uint64` | Lock-free stamp/check |
 
-The lip-sync hint provides the raw data. Future work: feed the hint into the
-audio mixer's per-channel delay buffer to automatically compensate for video
-processing latency. When the pipeline is rebuilt (new nodes activated,
-format change), the compensation adjusts automatically.
+### PipelineFormat
 
-### Per-Destination Pipelines
+```go
+type PipelineFormat struct {
+    Width  int    // e.g., 1920
+    Height int    // e.g., 1080
+    FPSNum int    // e.g., 30000
+    FPSDen int    // e.g., 1001 (29.97fps NTSC)
+    Name   string // e.g., "1080p29.97"
+}
+```
 
-Currently all output destinations share a single encode. Future work: allow
-per-destination encoding parameters (bitrate, resolution, codec profile).
-Each SRT destination could get its own `encodeNode` configured for the
-target platform.
+The format drives FramePool buffer sizing, frame budget for deadline monitoring, frame synchronizer tick rate, encoder bitrate/FPS, and node `Configure()` calls. Frame rate is rational for broadcast correctness.
 
-### Dynamic Node Insertion
-
-The `PipelineNode` interface supports inserting new processing stages
-(color correction, burn-in timecode, watermarking) without modifying
-existing nodes. New nodes are added to `buildNodeList()` and participate in
-the standard Build/Run/Swap lifecycle.
-
-### Hardware Encoder Selection
-
-The `Configure(PipelineFormat)` method provides a hook for nodes to select
-hardware-specific resources at build time. Future work: `encodeNode` could
-select between NVENC, VA-API, VideoToolbox, and software encoding based on
-the format and available hardware, with automatic fallback on encoder
-failure.
-
-### Node DAG (Future)
-
-The current pipeline is a linear chain. The research phase explored DAG
-(directed acyclic graph) compositors used in VFX tools (Nuke, Fusion).
-The linear chain was chosen for the initial implementation because the
-current processing stages are inherently sequential (key before compositor
-before encode). The `PipelineNode` interface is compatible with a future
-DAG scheduler — nodes would declare input/output ports and the scheduler
-would topologically sort and parallelize where possible.
-
+---
 
 ## File Reference
 
 | File | Purpose |
 |------|---------|
-| `switcher/pipeline_node.go` | `PipelineNode` interface definition |
-| `switcher/pipeline_loop.go` | `Pipeline` struct: Build, Run, Snapshot, Wait, Close |
-| `switcher/node_upstream_key.go` | Upstream chroma/luma key node |
-| `switcher/node_compositor.go` | DSK graphics compositor node |
-| `switcher/node_raw_sink.go` | Raw video sink node (MXL, monitor) |
-| `switcher/node_encode.go` | H.264 encode node |
-| `switcher/frame_pool.go` | FramePool: mutex-guarded LIFO free list |
-| `switcher/processing_frame.go` | ProcessingFrame: YUV carrier with pool integration |
-| `switcher/format.go` | PipelineFormat: resolution/fps presets |
-| `switcher/pipeline_codecs.go` | Encoder-only codec pool (wrapped by encodeNode) |
-| `switcher/switcher.go` | Integration: buildNodeList, BuildPipeline, swapPipeline, rebuildPipeline |
-| `metrics/metrics.go` | NodeProcessDuration HistogramVec definition |
+| [`pipeline_node.go`](../server/switcher/pipeline_node.go) | `PipelineNode` interface (7 methods) |
+| [`pipeline_loop.go`](../server/switcher/pipeline_loop.go) | `Pipeline` struct: Build, Run, Snapshot, Wait, Close |
+| [`node_upstream_key.go`](../server/switcher/node_upstream_key.go) | Upstream chroma/luma key node |
+| [`node_layout_compositor.go`](../server/switcher/node_layout_compositor.go) | PIP/split-screen layout node |
+| [`node_compositor.go`](../server/switcher/node_compositor.go) | DSK graphics compositor node |
+| [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) | Raw video sink node (MXL, monitor) |
+| [`node_encode.go`](../server/switcher/node_encode.go) | H.264 encode node |
+| [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) | Encoder lifecycle, bitrate adaptation, PTS normalization |
+| [`frame_pool.go`](../server/switcher/frame_pool.go) | LIFO free list for YUV420 buffers |
+| [`processing_frame.go`](../server/switcher/processing_frame.go) | Reference-counted YUV carrier |
+| [`format.go`](../server/switcher/format.go) | `PipelineFormat` resolution/FPS presets |
+| [`switcher.go`](../server/switcher/switcher.go) | Integration: buildNodeList, BuildPipeline, swapPipeline, rebuildPipeline |
+| [`metrics/metrics.go`](../server/metrics/metrics.go) | `NodeProcessDuration` histogram definition |
