@@ -36,14 +36,21 @@ func TestProbeEncoders_SelectsKnownEncoder(t *testing.T) {
 		"encoder should be one of the known candidates, got %q", enc)
 }
 
-func TestHWDeviceCtx_NilForSoftware(t *testing.T) {
-	// When using software encoding, HWDeviceCtx should return nil.
-	// Ensure probe has run.
-	ProbeEncoders()
+func TestHWDeviceCtx_MatchesEncoder(t *testing.T) {
+	enc, _ := ProbeEncoders()
 	ctx := HWDeviceCtx()
-	// For software codecs (libx264, openh264), ctx should be nil.
-	// For HW codecs it could be non-nil, but on CI it will be nil.
-	_ = ctx // Just verify it doesn't panic.
+
+	hwEncoders := map[string]bool{
+		"h264_videotoolbox": true,
+		"h264_nvenc":        true,
+		"h264_vaapi":        true,
+	}
+
+	if hwEncoders[enc] {
+		require.NotNil(t, ctx, "HWDeviceCtx should be non-nil when hardware encoder %q is selected", enc)
+	} else {
+		require.Nil(t, ctx, "HWDeviceCtx should be nil for software encoder %q", enc)
+	}
 }
 
 func TestNewVideoEncoder_Works(t *testing.T) {
@@ -173,4 +180,104 @@ func TestHWDeviceCtx_Type(t *testing.T) {
 	// Verify that HWDeviceCtx returns an unsafe.Pointer (type check at compile time).
 	ptr := HWDeviceCtx()
 	_ = ptr // compile-time type assertion
+}
+
+func TestHWDecode_ChromaPreserved(t *testing.T) {
+	// Verifies that the NV12 de-interleave path (used by hardware decoders)
+	// correctly separates Cb and Cr planes. A bug in de-interleave would
+	// swap or corrupt chroma, producing wrong colors.
+	probedEnc, _ := ProbeEncoders()
+	if probedEnc == "none" {
+		t.Skip("no H.264 encoder available")
+	}
+	if HWDeviceCtx() == nil {
+		t.Skip("no hardware decode available — NV12 path not exercised")
+	}
+
+	w, h := 160, 120
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+
+	// Build a frame with distinct Cb and Cr values.
+	// Y=128 (mid gray), Cb=80 (blue-ish), Cr=200 (red-ish).
+	// After encode→decode, lossy compression will shift values, but
+	// Cb and Cr should remain clearly distinguishable — not swapped.
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 128
+	}
+	for i := 0; i < uvSize; i++ {
+		yuv[ySize+i] = 80         // Cb
+		yuv[ySize+uvSize+i] = 200 // Cr
+	}
+
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	dec, err := NewVideoDecoder()
+	require.NoError(t, err)
+	defer dec.Close()
+
+	// Encode enough frames for the pipeline to produce output.
+	var encoded []byte
+	for i := range 30 {
+		data, _, encErr := enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, encErr)
+		if len(data) > 0 {
+			encoded = data
+			break
+		}
+	}
+	require.NotEmpty(t, encoded, "encoder should produce output")
+
+	// Decode — may need multiple frames for multi-threaded decoder.
+	var decoded []byte
+	decoded, _, _, err = dec.Decode(encoded)
+	if err != nil {
+		for i := 0; i < 30; i++ {
+			more, _, encErr := enc.Encode(yuv, int64((30+i)*3000), false)
+			require.NoError(t, encErr)
+			if more == nil {
+				continue
+			}
+			decoded, _, _, err = dec.Decode(more)
+			if err == nil {
+				break
+			}
+		}
+	}
+	require.NoError(t, err, "decoder should produce output")
+	require.Equal(t, ySize+2*uvSize, len(decoded))
+
+	// Sample the center of the Cb and Cr planes.
+	// H.264 is lossy, so values won't be exact, but Cb should be
+	// clearly below 128 and Cr clearly above 128.
+	cbCenter := decoded[ySize+uvSize/2]
+	crCenter := decoded[ySize+uvSize+uvSize/2]
+
+	t.Logf("input Cb=80 Cr=200 → decoded Cb=%d Cr=%d", cbCenter, crCenter)
+
+	// Cb (input 80) should decode to something below 128 (blue channel)
+	require.Less(t, cbCenter, byte(128),
+		"Cb should be below 128 (input was 80); if above, chroma planes may be swapped")
+
+	// Cr (input 200) should decode to something above 128 (red channel)
+	require.Greater(t, crCenter, byte(128),
+		"Cr should be above 128 (input was 200); if below, chroma planes may be swapped")
+
+	// Verify they're not equal (would indicate both planes got the same data)
+	require.NotEqual(t, cbCenter, crCenter,
+		"Cb and Cr should be distinct; equal values suggest de-interleave error")
+}
+
+func TestCreateHWDeviceCtx_InvalidType(t *testing.T) {
+	// An invalid hardware type should return nil, not panic.
+	ctx := CreateHWDeviceCtx("nonexistent_hw_type")
+	require.Nil(t, ctx, "invalid hw type should return nil")
+}
+
+func TestCreateHWDeviceCtx_EmptyType(t *testing.T) {
+	ctx := CreateHWDeviceCtx("")
+	require.Nil(t, ctx, "empty hw type should return nil")
 }

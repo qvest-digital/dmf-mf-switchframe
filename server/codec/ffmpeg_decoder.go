@@ -106,6 +106,11 @@ static void remap_row(unsigned char* dst, const unsigned char* src,
 	}
 }
 
+// ffdec_is_planar_420 returns 1 if the frame is YUV420P or YUVJ420P (3-plane planar).
+static int ffdec_is_planar_420(AVFrame* f) {
+	return f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P;
+}
+
 // ffdec_is_full_range returns 1 if the decoded frame uses full-range (JPEG) levels.
 // Checks both the deprecated YUVJ420P pixel format and the modern color_range field.
 static int ffdec_is_full_range(AVFrame* f) {
@@ -114,18 +119,17 @@ static int ffdec_is_full_range(AVFrame* f) {
 	return 0;
 }
 
-// ffdec_copy_frame copies YUV420 planes from src_frame into dst, stripping stride padding.
+// ffdec_copy_planar copies 3-plane YUV420P/YUVJ420P from src_frame into dst.
 // dst must have capacity >= w*h*3/2. When remap_to_limited is non-zero, pixel values
 // are converted from full-range (0-255) to limited-range (Y:16-235, UV:16-240).
-static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
-                             int w, int h_val, int remap_to_limited) {
+static void ffdec_copy_planar(AVFrame* src_frame, unsigned char* dst,
+                              int w, int h_val, int remap_to_limited) {
 	int uv_w = w / 2;
 	int uv_h = h_val / 2;
 	int y_size = w * h_val;
 	int uv_size = uv_w * uv_h;
 
 	if (remap_to_limited) {
-		// Range tables are initialized once from Go via initRangeTablesOnce.
 		for (int row = 0; row < h_val; row++) {
 			remap_row(dst + row * w,
 			          src_frame->data[0] + row * src_frame->linesize[0],
@@ -154,6 +158,62 @@ static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
 			memcpy(dst + y_size + uv_size + row * uv_w,
 			       src_frame->data[2] + row * src_frame->linesize[2], uv_w);
 		}
+	}
+}
+
+// ffdec_copy_nv12 copies NV12 (semi-planar) from src_frame into packed YUV420P dst.
+// NV12 has Y in data[0] and interleaved UV in data[1]. This de-interleaves UV
+// into separate Cb and Cr planes.
+static void ffdec_copy_nv12(AVFrame* src_frame, unsigned char* dst,
+                            int w, int h_val, int remap_to_limited) {
+	int uv_w = w / 2;
+	int uv_h = h_val / 2;
+	int y_size = w * h_val;
+	int uv_size = uv_w * uv_h;
+	unsigned char* u_dst = dst + y_size;
+	unsigned char* v_dst = dst + y_size + uv_size;
+
+	// Copy Y plane
+	if (remap_to_limited) {
+		for (int row = 0; row < h_val; row++) {
+			remap_row(dst + row * w,
+			          src_frame->data[0] + row * src_frame->linesize[0],
+			          w, full_to_limited_y);
+		}
+	} else {
+		for (int row = 0; row < h_val; row++) {
+			memcpy(dst + row * w,
+			       src_frame->data[0] + row * src_frame->linesize[0], w);
+		}
+	}
+
+	// De-interleave UV plane (UVUVUV... → separate U and V)
+	for (int row = 0; row < uv_h; row++) {
+		const unsigned char* uv_src = src_frame->data[1] + row * src_frame->linesize[1];
+		unsigned char* u_row = u_dst + row * uv_w;
+		unsigned char* v_row = v_dst + row * uv_w;
+		if (remap_to_limited) {
+			for (int col = 0; col < uv_w; col++) {
+				u_row[col] = full_to_limited_uv[uv_src[col * 2]];
+				v_row[col] = full_to_limited_uv[uv_src[col * 2 + 1]];
+			}
+		} else {
+			for (int col = 0; col < uv_w; col++) {
+				u_row[col] = uv_src[col * 2];
+				v_row[col] = uv_src[col * 2 + 1];
+			}
+		}
+	}
+}
+
+// ffdec_copy_frame copies decoded frame into packed YUV420P dst buffer.
+// Handles both planar YUV420P/YUVJ420P and semi-planar NV12 inputs.
+static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
+                             int w, int h_val, int remap_to_limited) {
+	if (src_frame->format == AV_PIX_FMT_NV12) {
+		ffdec_copy_nv12(src_frame, dst, w, h_val, remap_to_limited);
+	} else {
+		ffdec_copy_planar(src_frame, dst, w, h_val, remap_to_limited);
 	}
 }
 
@@ -195,8 +255,7 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 
 	AVFrame* src_frame = h->frame;
 
-	if (h->frame->format != AV_PIX_FMT_YUV420P &&
-	    h->frame->format != AV_PIX_FMT_YUVJ420P) {
+	if (!ffdec_is_planar_420(h->frame) && h->frame->format != AV_PIX_FMT_NV12) {
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
@@ -204,8 +263,7 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 				return -3;
 			}
 			src_frame = h->sw_frame;
-			if (src_frame->format != AV_PIX_FMT_YUV420P &&
-			    src_frame->format != AV_PIX_FMT_YUVJ420P) {
+			if (!ffdec_is_planar_420(src_frame) && src_frame->format != AV_PIX_FMT_NV12) {
 				av_frame_unref(h->frame);
 				av_frame_unref(h->sw_frame);
 				return -4;
@@ -284,8 +342,7 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 
 	AVFrame* src_frame = h->frame;
 
-	if (h->frame->format != AV_PIX_FMT_YUV420P &&
-	    h->frame->format != AV_PIX_FMT_YUVJ420P) {
+	if (!ffdec_is_planar_420(h->frame) && h->frame->format != AV_PIX_FMT_NV12) {
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
@@ -293,8 +350,7 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 				return -3;
 			}
 			src_frame = h->sw_frame;
-			if (src_frame->format != AV_PIX_FMT_YUV420P &&
-			    src_frame->format != AV_PIX_FMT_YUVJ420P) {
+			if (!ffdec_is_planar_420(src_frame) && src_frame->format != AV_PIX_FMT_NV12) {
 				av_frame_unref(h->frame);
 				av_frame_unref(h->sw_frame);
 				return -4;
@@ -336,6 +392,22 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 	}
 
 	return 0;
+}
+
+// ffdec_create_hw_device_ctx attempts to create a hardware device context
+// for the given type name (e.g. "videotoolbox", "cuda", "vaapi").
+// Returns the AVBufferRef* (cast to void*) on success, NULL on failure.
+static void* ffdec_create_hw_device_ctx(const char* type_name) {
+	enum AVHWDeviceType type = av_hwdevice_find_type_by_name(type_name);
+	if (type == AV_HWDEVICE_TYPE_NONE) {
+		return NULL;
+	}
+	AVBufferRef* ctx = NULL;
+	int rc = av_hwdevice_ctx_create(&ctx, type, NULL, NULL, 0);
+	if (rc < 0) {
+		return NULL;
+	}
+	return (void*)ctx;
 }
 
 // ffdec_close frees all decoder resources.
@@ -542,4 +614,14 @@ func (d *FFmpegDecoder) Close() {
 		C.ffdec_close(&d.handle)
 		d.closed = true
 	}
+}
+
+// CreateHWDeviceCtx attempts to create a hardware device context for the
+// given type (e.g. "videotoolbox", "cuda", "vaapi"). Returns the context
+// pointer on success, nil on failure. The caller must not free the returned
+// pointer — it is managed by AVBufferRef reference counting.
+func CreateHWDeviceCtx(typeName string) unsafe.Pointer {
+	cType := C.CString(typeName)
+	defer C.free(unsafe.Pointer(cType))
+	return C.ffdec_create_hw_device_ctx(cType)
 }

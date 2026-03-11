@@ -43,6 +43,10 @@ func ProbeEncoders() (string, string) {
 		// FFmpeg software decoder is universally available when FFmpeg is linked.
 		selectedDecoder = "h264"
 
+		// Try to create a hardware device context matching the selected encoder.
+		// This enables hardware-accelerated decoding when available.
+		initHWDeviceCtx()
+
 		slog.Info("codec: probe complete",
 			"encoder", selectedEncoder,
 			"decoder", selectedDecoder,
@@ -127,6 +131,30 @@ func tryOpenH264Encoder() bool {
 		return false
 	}
 	return len(data) > 0
+}
+
+// initHWDeviceCtx attempts to create a hardware device context based on
+// the selected encoder's hardware type. Falls back silently to software
+// decode if hardware is unavailable.
+func initHWDeviceCtx() {
+	var hwType string
+	for _, c := range candidates {
+		if c.name == selectedEncoder {
+			hwType = c.hwType
+			break
+		}
+	}
+	if hwType == "" {
+		return // software encoder, no matching hw device
+	}
+
+	ctx := CreateHWDeviceCtx(hwType)
+	if ctx != nil {
+		hwDeviceCtxPtr = ctx
+		slog.Info("codec: hardware decode enabled", "type", hwType)
+	} else {
+		slog.Debug("codec: hardware device context unavailable, using software decode", "type", hwType)
+	}
 }
 
 // HWDeviceCtx returns the cached hardware device context pointer.
