@@ -1116,7 +1116,7 @@ func (m *Manager) CBRStatus() *CBRPacerStatus {
 	if p := m.cbrPacer.Load(); p != nil {
 		status.NullPacketsTotal = p.NullPacketsTotal()
 		status.RealBytesTotal = p.RealBytesTotal()
-		status.PadBytesTotal = p.NullPacketsTotal() * tsPacketSize
+		status.PadBytesTotal = p.PadBytesTotal()
 		status.BurstTicksTotal = p.BurstTicks()
 	}
 

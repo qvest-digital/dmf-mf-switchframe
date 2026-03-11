@@ -35,6 +35,9 @@ type mockOutputManager struct {
 	stopDestErr    error
 	lastDestConfig output.DestinationConfig
 	lastDestID     string
+
+	// CBR status.
+	cbrStatus *output.CBRPacerStatus
 }
 
 func (m *mockOutputManager) StartRecording(config output.RecorderConfig) error {
@@ -160,7 +163,7 @@ func (m *mockOutputManager) GetDestination(id string) (output.DestinationStatus,
 }
 
 func (m *mockOutputManager) CBRStatus() *output.CBRPacerStatus {
-	return nil
+	return m.cbrStatus
 }
 
 func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
@@ -826,6 +829,34 @@ func TestCBRStatus_Disabled(t *testing.T) {
 	err := json.NewDecoder(rec.Body).Decode(&result)
 	require.NoError(t, err)
 	require.Equal(t, false, result["enabled"])
+}
+
+func TestCBRStatus_Enabled(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.cbrStatus = &output.CBRPacerStatus{
+		Enabled:          true,
+		MuxrateBps:       10_000_000,
+		NullPacketsTotal: 42,
+		RealBytesTotal:   1024,
+		PadBytesTotal:    42 * 188,
+		BurstTicksTotal:  3,
+	}
+
+	req := httptest.NewRequest("GET", "/api/output/cbr", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var result output.CBRPacerStatus
+	err := json.NewDecoder(rec.Body).Decode(&result)
+	require.NoError(t, err)
+	require.True(t, result.Enabled)
+	require.Equal(t, int64(10_000_000), result.MuxrateBps)
+	require.Equal(t, int64(42), result.NullPacketsTotal)
+	require.Equal(t, int64(1024), result.RealBytesTotal)
+	require.Equal(t, int64(42*188), result.PadBytesTotal)
+	require.Equal(t, int64(3), result.BurstTicksTotal)
 }
 
 func TestCBRStatus_NoManager(t *testing.T) {

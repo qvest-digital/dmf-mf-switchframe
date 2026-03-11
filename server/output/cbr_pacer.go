@@ -69,6 +69,7 @@ type CBRPacer struct {
 	// Metrics (atomic counters for lock-free reads via CBRStatus).
 	nullPktsTotal  atomic.Int64
 	realBytesTotal atomic.Int64
+	padBytesTotal  atomic.Int64
 	burstTicks     atomic.Int64
 }
 
@@ -162,6 +163,11 @@ func (p *CBRPacer) RealBytesTotal() int64 {
 	return p.realBytesTotal.Load()
 }
 
+// PadBytesTotal returns the total null padding bytes sent.
+func (p *CBRPacer) PadBytesTotal() int64 {
+	return p.padBytesTotal.Load()
+}
+
 // tickLoop runs the pacing goroutine. It fires every tickInterval,
 // swaps the accumulation buffer, and emits data at the target rate.
 func (p *CBRPacer) tickLoop() {
@@ -251,6 +257,7 @@ func (p *CBRPacer) tick() {
 
 	nullPkts := nullBytes / tsPacketSize
 	p.nullPktsTotal.Add(nullPkts)
+	p.padBytesTotal.Add(nullBytes)
 	if pm := p.prom; pm != nil {
 		if realLen > 0 {
 			pm.CBRRealBytesTotal.Add(float64(realLen))
@@ -276,8 +283,12 @@ func (p *CBRPacer) drainRemaining() {
 	p.swapBuf = p.swapBuf[:0]
 
 	if len(remaining) > 0 {
-		p.realBytesTotal.Add(int64(len(remaining)))
-		p.bytesSent += int64(len(remaining))
+		n := int64(len(remaining))
+		p.realBytesTotal.Add(n)
+		p.bytesSent += n
+		if pm := p.prom; pm != nil {
+			pm.CBRRealBytesTotal.Add(float64(n))
+		}
 		p.emit(remaining)
 	}
 }

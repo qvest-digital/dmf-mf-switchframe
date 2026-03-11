@@ -1,14 +1,17 @@
 package output
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
-	"context"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/metrics"
 )
 
 func TestCBRPacer_NullPacketFormat(t *testing.T) {
@@ -247,6 +250,180 @@ func TestCBRPacer_ComputeMuxrate(t *testing.T) {
 		assert.Equal(t, tt.want, got,
 			"ComputeMuxrate(%d, %d)", tt.videoBps, tt.audioBps)
 	}
+}
+
+func TestCBRPacer_PrometheusCountersIncremented(t *testing.T) {
+	// Verify that Prometheus counters are incremented alongside atomic counters.
+	const muxrateBps = 1_000_000
+
+	pm := newTestMetrics(t)
+
+	var mu sync.Mutex
+	var totalBytes int64
+
+	sink := &mockSink{
+		writeFn: func(data []byte) (int, error) {
+			mu.Lock()
+			totalBytes += int64(len(data))
+			mu.Unlock()
+			return len(data), nil
+		},
+	}
+
+	p := NewCBRPacer(muxrateBps, 10*time.Millisecond)
+	p.SetMetrics(pm)
+	adapters := []Adapter{sink}
+	p.SetAdapters(&adapters)
+	p.Start()
+
+	// Enqueue some real data so both real and null counters increment.
+	realData := make([]byte, tsPacketSize*2)
+	realData[0] = 0x47
+	realData[tsPacketSize] = 0x47
+	p.Enqueue(realData)
+
+	// Let it run a few ticks.
+	time.Sleep(80 * time.Millisecond)
+	p.Stop()
+
+	// Atomic counters should be non-zero.
+	require.Greater(t, p.RealBytesTotal(), int64(0), "atomic real bytes should be positive")
+	require.Greater(t, p.NullPacketsTotal(), int64(0), "atomic null packets should be positive")
+	require.Greater(t, p.PadBytesTotal(), int64(0), "atomic pad bytes should be positive")
+
+	// Prometheus counters should match atomic counters.
+	promReal := testutil_readCounter(pm.CBRRealBytesTotal)
+	promNull := testutil_readCounter(pm.CBRNullPacketsTotal)
+	promPad := testutil_readCounter(pm.CBRPadBytesTotal)
+
+	require.InDelta(t, float64(p.RealBytesTotal()), promReal, 1.0,
+		"prometheus real bytes should match atomic counter")
+	require.InDelta(t, float64(p.NullPacketsTotal()), promNull, 1.0,
+		"prometheus null packets should match atomic counter")
+	require.InDelta(t, float64(p.PadBytesTotal()), promPad, 1.0,
+		"prometheus pad bytes should match atomic counter")
+
+	// Verify padBytesTotal == nullPktsTotal * tsPacketSize.
+	require.Equal(t, p.NullPacketsTotal()*tsPacketSize, p.PadBytesTotal(),
+		"pad bytes should equal null packets * 188")
+}
+
+func TestCBRPacer_PrometheusCountersBurstPath(t *testing.T) {
+	// Verify Prometheus counters on the burst path (real data > budget).
+	const muxrateBps = 100_000 // very low: ~12.5 KB/s
+
+	pm := newTestMetrics(t)
+
+	sink := &mockSink{
+		writeFn: func(data []byte) (int, error) { return len(data), nil },
+	}
+
+	p := NewCBRPacer(muxrateBps, 10*time.Millisecond)
+	p.SetMetrics(pm)
+	adapters := []Adapter{sink}
+	p.SetAdapters(&adapters)
+	p.Start()
+
+	// Enqueue much more than budget.
+	bigData := make([]byte, tsPacketSize*100)
+	for i := 0; i < len(bigData); i += tsPacketSize {
+		bigData[i] = 0x47
+	}
+	p.Enqueue(bigData)
+
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	promBurst := testutil_readCounter(pm.CBRBurstTicksTotal)
+	require.Greater(t, promBurst, 0.0, "prometheus burst ticks should be positive")
+	require.InDelta(t, float64(p.BurstTicks()), promBurst, 1.0,
+		"prometheus burst ticks should match atomic counter")
+}
+
+func TestCBRPacer_DrainRemainingIncrementsPrometheus(t *testing.T) {
+	// Verify that drainRemaining (called on Stop) increments Prometheus counters.
+	const muxrateBps = 10_000_000
+
+	pm := newTestMetrics(t)
+
+	sink := &mockSink{
+		writeFn: func(data []byte) (int, error) { return len(data), nil },
+	}
+
+	p := NewCBRPacer(muxrateBps, 1*time.Hour) // extremely long tick so tick() never fires
+	p.SetMetrics(pm)
+	adapters := []Adapter{sink}
+	p.SetAdapters(&adapters)
+	p.Start()
+
+	// Enqueue data — with 1hr tick interval, tick() won't fire.
+	data := make([]byte, tsPacketSize*10)
+	for i := 0; i < len(data); i += tsPacketSize {
+		data[i] = 0x47
+	}
+	p.Enqueue(data)
+
+	// Stop will drain the buffer.
+	p.Stop()
+
+	promReal := testutil_readCounter(pm.CBRRealBytesTotal)
+	require.InDelta(t, float64(len(data)), promReal, 1.0,
+		"drainRemaining should increment prometheus real bytes")
+}
+
+func TestCBRPacer_NonAlignedDataStillDelivered(t *testing.T) {
+	// Enqueue non-TS-aligned data. It should still be delivered (with a warning).
+	const muxrateBps = 10_000_000
+
+	var mu sync.Mutex
+	var totalBytes int64
+
+	sink := &mockSink{
+		writeFn: func(data []byte) (int, error) {
+			mu.Lock()
+			totalBytes += int64(len(data))
+			mu.Unlock()
+			return len(data), nil
+		},
+	}
+
+	p := NewCBRPacer(muxrateBps, 10*time.Millisecond)
+	adapters := []Adapter{sink}
+	p.SetAdapters(&adapters)
+	p.Start()
+
+	// Enqueue non-aligned data (100 bytes, not a multiple of 188).
+	nonAligned := make([]byte, 100)
+	nonAligned[0] = 0x47
+	p.Enqueue(nonAligned)
+
+	time.Sleep(50 * time.Millisecond)
+	p.Stop()
+
+	// The data should still have been sent (pacer doesn't drop).
+	require.GreaterOrEqual(t, p.RealBytesTotal(), int64(100),
+		"non-aligned data should still be delivered")
+}
+
+// newTestMetrics creates a Metrics instance with an isolated registry for testing.
+func newTestMetrics(t *testing.T) *metrics.Metrics {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	return metrics.NewMetrics(reg)
+}
+
+// testutil_readCounter reads the current value from a prometheus.Counter.
+func testutil_readCounter(c prometheus.Counter) float64 {
+	// Use prometheus's internal Write method via a metric channel.
+	ch := make(chan prometheus.Metric, 1)
+	c.Collect(ch)
+	m := <-ch
+	var dto dto.Metric
+	_ = m.Write(&dto)
+	if dto.Counter != nil {
+		return *dto.Counter.Value
+	}
+	return 0
 }
 
 // mockSink implements Adapter for testing.
