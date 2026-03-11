@@ -310,6 +310,26 @@ func (a *App) initOutput() error {
 		}
 	})
 
+	// Configure CBR pacing for SRT outputs.
+	if a.cfg.CBR {
+		videoBitrate := int64(a.cfg.CBRBitrate)
+		if videoBitrate == 0 {
+			// Auto-detect from pipeline format resolution.
+			if f, ok := switcher.FormatPresets[a.cfg.Format]; ok {
+				videoBitrate = int64(switcher.DefaultBitrateForResolution(f.Width, f.Height))
+			} else {
+				videoBitrate = 10_000_000 // fallback: 10 Mbps
+			}
+		}
+		const audioBitrate = 128_000 // AAC stereo at 128 kbps
+		muxrate := output.ComputeMuxrate(videoBitrate, audioBitrate)
+		a.outputMgr.SetCBRMuxrate(muxrate)
+		slog.Info("CBR mode enabled",
+			"videoBitrate", videoBitrate,
+			"audioBitrate", audioBitrate,
+			"muxrate", muxrate)
+	}
+
 	return nil
 }
 
@@ -392,7 +412,7 @@ func (a *App) initSubsystems() error {
 	})
 
 	// Pipeline encoder for the video processing chain.
-	a.sw.SetPipelineCodecs(encoderFactory(false))
+	a.sw.SetPipelineCodecs(encoderFactory(a.cfg.CBR))
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 	if err := a.sw.BuildPipeline(); err != nil {
 		return fmt.Errorf("build pipeline: %w", err)

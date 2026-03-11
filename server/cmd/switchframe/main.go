@@ -54,6 +54,10 @@ type AppConfig struct {
 	SCTE35WebhookURL  string // Webhook URL for event notifications
 	SCTE104           bool   // Enable SCTE-104 on MXL data flows
 
+	// CBR encoding.
+	CBR        bool // Enable constant bitrate encoding
+	CBRBitrate int  // Video bitrate in bps (0 = auto from resolution)
+
 	// Closed captions.
 	Captions bool // Enable CEA-608/708 closed captioning
 
@@ -148,6 +152,10 @@ func parseConfig() (AppConfig, error) {
 	// SCTE-104 flag (requires --scte35 and MXL integration).
 	scte104Flag := flag.Bool("scte104", false, "Enable SCTE-104 on MXL data flows (requires --scte35)")
 
+	// CBR flags.
+	cbrFlag := flag.Bool("cbr", false, "Enable constant bitrate encoding for SRT output")
+	cbrBitrateFlag := flag.Int("cbr-bitrate", 0, "Video bitrate in bps for CBR mode (0 = auto from resolution)")
+
 	// Caption flag.
 	captionsFlag := flag.Bool("captions", false, "Enable CEA-608/708 closed captioning")
 
@@ -206,6 +214,8 @@ func parseConfig() (AppConfig, error) {
 		SCTE35Verify:      *scte35VerifyFlag,
 		SCTE35WebhookURL:  *scte35WebhookFlag,
 		SCTE104:           *scte104Flag,
+		CBR:               *cbrFlag,
+		CBRBitrate:        *cbrBitrateFlag,
 		Captions:          *captionsFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
