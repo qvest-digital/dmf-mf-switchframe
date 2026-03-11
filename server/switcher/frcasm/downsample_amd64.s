@@ -149,11 +149,14 @@ ds_sse2_row_advance:
 
 	// --- AVX2 path ---
 ds_avx2_rows:
-	// Set up mask_00ff in Y15 (256-bit)
+
+ds_avx2_row_loop:
+	// Set up mask_00ff in Y15 (256-bit).
+	// Must be inside the row loop because VZEROUPPER at the row tail
+	// zeros the upper 128 bits of all YMM registers including Y15.
 	VPCMPEQD Y15, Y15, Y15     // Y15 = all 1s
 	VPSRLW   $8, Y15, Y15      // Y15 = 0x00FF repeated
 
-ds_avx2_row_loop:
 	MOVQ R10, CX                // CX = remaining output cols
 
 	CMPQ CX, $16
