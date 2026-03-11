@@ -377,3 +377,79 @@ The layout compositor supports PIP (corner overlay), side-by-side (50/50 split),
 ### DSK Graphics
 
 Up to 8 independent graphics layers are composited in z-order onto the program frame. Each layer holds an RGBA overlay, position rect, and animation state. Animations include fade (in/out over configurable duration), fly-in/out (4 directions computed from program dimensions), slide, and pulse (oscillating alpha between min and max values at a configurable frequency). Six built-in broadcast templates -- lower-third, news lower-third, full-screen card, score bug, network bug, and ticker -- render on an OffscreenCanvas in the browser and upload as RGBA via the REST API. Per-layer mutexes allow concurrent animation goroutines without blocking the pipeline's hot path.
+
+## 7. Output Delivery
+
+The program relay distributes the encoded H.264/AAC program to all consumers: browsers (MoQ), recordings (MPEG-TS files), SRT stream destinations, and optionally back to MXL shared memory. The output subsystem is completely dormant when no outputs are active -- zero CPU, zero memory, no viewer registered on the program relay. MXL output is tapped as a raw sink before encode (covered in Section 6); everything else in this section operates on the encoded H.264/AAC stream.
+
+### Output Fan-Out
+
+```mermaid
+flowchart TD
+    PR["Program Relay<br/>(H.264 / AAC)"]
+
+    PR --> OV["OutputViewer<br/>(created lazily: only when<br/>first output starts)"]
+
+    OV --> MUX["TSMuxer<br/>(MPEG-TS, 188-byte packets)"]
+    OV --> CM["ConfidenceMonitor<br/>(keyframes only, ≤1fps →<br/>320×180 JPEG)"]
+    CM -.-> API["GET /api/output/confidence"]
+
+    INJ["SCTE-35 Injector"] -->|"PID 0x102<br/>PSI section framing"| MUX
+
+    MUX --> FO{"Fan-out to<br/>AsyncAdapters"}
+
+    FO --> AA1["AsyncAdapter<br/>(256-slot buffer)"]
+    AA1 --> REC["FileRecorder<br/>(.ts files, time/size rotation)"]
+
+    FO --> AA2["AsyncAdapter"]
+    AA2 --> SF1["scte35Filter<br/>(per-destination enable/disable)"]
+    SF1 --> SRT1["SRT Destination 1"]
+
+    FO --> AA3["AsyncAdapter"]
+    AA3 --> SF2["scte35Filter"]
+    SF2 --> SRT2["SRT Destination 2"]
+
+    FO -.-> MORE["...more destinations"]
+
+    style PR fill:#1a1a2e,color:#fff
+    style OV fill:#16213e,color:#fff
+    style MUX fill:#0f3460,color:#fff
+    style INJ fill:#533483,color:#fff
+    style FO fill:#e94560,color:#fff
+```
+
+### SCTE-35 Ad Insertion Flow
+
+```mermaid
+flowchart LR
+    subgraph inputs ["Input Paths"]
+        OP["Operator →<br/>REST API<br/>(POST /api/scte35/cue)"]
+        MXL["MXL Data Grain →<br/>ST 291 →<br/>SCTE-104 Decode →<br/>Translate"]
+    end
+
+    OP --> INJ["Injector<br/>(PTS-synchronized,<br/>auto-return timer,<br/>hold / extend)"]
+    MXL --> INJ
+
+    INJ --> RE["RuleEngine<br/>(first-match-wins,<br/>AND/OR conditions)"]
+    RE --> MUX["TSMuxer<br/>(PID 0x102)"]
+    MUX --> FILT["Per-Destination<br/>SCTE-35 Filter"]
+    FILT --> SRT["SRT Output"]
+
+    INJ -.->|"SCTE-104 sink<br/>(bidirectional)"| MXLOUT["MXL Data Output"]
+```
+
+### Lazy Viewer Lifecycle
+
+OutputManager creates the OutputViewer, TSMuxer, and ConfidenceMonitor and registers on the program relay only when the first output adapter starts (recording or any SRT destination). When the last adapter stops, everything tears down -- the viewer is removed from the relay, the muxer is closed, and the confidence monitor stops decoding. This ensures zero overhead when both recording and SRT are inactive. On startup, the manager fires an `OnMuxerStart` callback that requests an IDR keyframe from the encoder so the muxer can initialize immediately rather than waiting for the next GOP boundary.
+
+### Recording
+
+MPEG-TS format is crash-resilient -- there is no moov atom to lose, so a power failure or process crash leaves a valid file up to the last written packet. Files rotate by time (default 1 hour) or size, with sequential naming: `program_YYYYMMDD_HHMMSS_NNN.ts`. Rotation waits for the next keyframe to ensure each segment starts with a clean IDR. Each output adapter is wrapped in an AsyncAdapter with a 256-slot buffered channel (~8 seconds at 30fps). Writes from the muxer are non-blocking, so a slow output (stalled SRT connection, slow disk) never blocks recording or other outputs. When the buffer fills, writes are dropped and the drop counter is incremented.
+
+### SRT
+
+Two modes via zsiec/srtgo (pure Go, no cgo). Caller mode pushes to a remote endpoint with exponential backoff reconnection (1s to 30s ceiling) and a 4MB ring buffer for data preservation during disconnects -- if the ring overflows, playback resumes from the next keyframe. Listener mode accepts up to 8 incoming pull connections. Multi-destination support allows independent lifecycle per SRT destination (add/remove/start/stop via `/api/output/destinations`), each with its own AsyncAdapter wrapper. Per-destination SCTE-35 filtering strips ad insertion packets from destinations that have `SCTE35Enabled: false`, using a lightweight 188-byte TS packet filter that matches on the configured PID.
+
+### SCTE-35
+
+Splice_insert and time_signal injection into the MPEG-TS stream, PTS-synchronized to the program video clock via `Switcher.LastBroadcastVideoPTS()` (atomic load, 90 kHz MPEG-TS timebase). Auto-return timers end breaks at scheduled duration; hold and extend commands allow manual break management. A splice_null heartbeat goroutine runs at configurable intervals to signal continued presence. Signal conditioning via a rules engine with first-match-wins evaluation supports pass, delete, and replace actions using 8 comparison operators and AND/OR compound conditions. Bidirectional SCTE-104 translation over MXL data flows enables automation system integration -- incoming SCTE-104 messages are translated to SCTE-35 cues for injection, and injected cues are translated back to SCTE-104 for output to downstream automation (with echo suppression for SCTE-104-sourced events).
