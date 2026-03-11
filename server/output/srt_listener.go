@@ -16,9 +16,11 @@ const (
 
 // SRTListenerConfig holds configuration for SRT listener (pull mode).
 type SRTListenerConfig struct {
-	Port     int
-	Latency  int // ms, default 120
-	MaxConns int // max simultaneous connections, default 8
+	Port       int
+	Latency    int   // ms, default 120
+	MaxConns   int   // max simultaneous connections, default 8
+	InputBW    int64 // bytes/sec, 0 = auto-estimate
+	OverheadBW int   // percent, 0 = use srtgo default (25%)
 }
 
 // listenerConn wraps an SRT connection with a buffered channel for non-blocking writes.
