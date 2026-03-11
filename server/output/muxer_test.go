@@ -877,3 +877,147 @@ func TestTSMuxer_Close_ResetsPCRState(t *testing.T) {
 	require.NoError(t, m.Close())
 	require.Equal(t, int64(0), m.lastPCRPTS)
 }
+
+// ---------- PAT/PMT re-emission on keyframes ----------
+//
+// go-astits retransmitTables() fires on every WriteData where
+// RandomAccessIndicator=true AND PID==PCRPID. Since we set both for
+// keyframes, PAT/PMT are automatically re-emitted before each keyframe.
+// These tests verify that behavior as a regression guard for SRT mid-stream
+// join support.
+
+func TestTSMuxer_PATRepeatedOnKeyframe(t *testing.T) {
+	m := NewTSMuxer()
+
+	// Collect output per-write so we can isolate the second keyframe's output.
+	var chunks [][]byte
+	m.SetOutput(func(data []byte) {
+		c := make([]byte, len(data))
+		copy(c, data)
+		chunks = append(chunks, c)
+	})
+
+	// First keyframe — triggers init, which writes PAT/PMT + frame.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+	require.True(t, m.initialized)
+
+	// Write a few delta frames.
+	for i := 1; i <= 3; i++ {
+		pts := int64(90000 + i*3000)
+		pFrame := &media.VideoFrame{
+			PTS: pts, DTS: pts, IsKeyframe: false,
+			WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x01},
+		}
+		require.NoError(t, m.WriteVideo(pFrame))
+	}
+
+	// Record how many chunks we have so far.
+	chunksBeforeSecondKeyframe := len(chunks)
+
+	// Second keyframe — should re-emit PAT/PMT before the frame data.
+	idrFrame2 := &media.VideoFrame{
+		PTS: 180000, DTS: 180000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame2))
+
+	// Collect all output from the second keyframe write.
+	var secondKeyframeOutput []byte
+	for i := chunksBeforeSecondKeyframe; i < len(chunks); i++ {
+		secondKeyframeOutput = append(secondKeyframeOutput, chunks[i]...)
+	}
+	require.NotEmpty(t, secondKeyframeOutput, "second keyframe should produce output")
+	require.Equal(t, 0, len(secondKeyframeOutput)%188, "output must be multiple of 188 bytes")
+
+	// Scan the second keyframe's output for PAT (PID 0x0000) and PMT (PID 0x1000).
+	const patPID uint16 = 0x0000
+	const pmtPID uint16 = 0x1000
+
+	foundPAT := false
+	foundPMT := false
+	firstPATOffset := -1
+	firstVideoOffset := -1
+	for i := 0; i+188 <= len(secondKeyframeOutput); i += 188 {
+		require.Equal(t, byte(0x47), secondKeyframeOutput[i], "TS sync byte")
+		pid := uint16(secondKeyframeOutput[i+1]&0x1F)<<8 | uint16(secondKeyframeOutput[i+2])
+		if pid == patPID {
+			foundPAT = true
+			if firstPATOffset < 0 {
+				firstPATOffset = i
+			}
+		}
+		if pid == pmtPID {
+			foundPMT = true
+		}
+		if pid == videoPID && firstVideoOffset < 0 {
+			firstVideoOffset = i
+		}
+	}
+	require.True(t, foundPAT, "second keyframe output should contain PAT (PID 0x0000)")
+	require.True(t, foundPMT, "second keyframe output should contain PMT (PID 0x1000)")
+
+	// PAT/PMT should appear BEFORE the video data so mid-stream joiners
+	// can parse the stream before receiving video.
+	require.Greater(t, firstVideoOffset, firstPATOffset,
+		"PAT should appear before video data in keyframe output")
+}
+
+func TestTSMuxer_DeltaFrameNoPATPMT(t *testing.T) {
+	m := NewTSMuxer()
+
+	var chunks [][]byte
+	m.SetOutput(func(data []byte) {
+		c := make([]byte, len(data))
+		copy(c, data)
+		chunks = append(chunks, c)
+	})
+
+	// Initialize with keyframe.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	// Record chunk count after init.
+	chunksAfterInit := len(chunks)
+
+	// Write a delta frame.
+	pFrame := &media.VideoFrame{
+		PTS: 93000, DTS: 93000, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x01},
+	}
+	require.NoError(t, m.WriteVideo(pFrame))
+
+	// Collect output from the delta frame write.
+	var deltaOutput []byte
+	for i := chunksAfterInit; i < len(chunks); i++ {
+		deltaOutput = append(deltaOutput, chunks[i]...)
+	}
+	require.NotEmpty(t, deltaOutput, "delta frame should produce output")
+
+	// Delta frames should NOT contain PAT/PMT — only video data.
+	const patPID uint16 = 0x0000
+	const pmtPID uint16 = 0x1000
+
+	for i := 0; i+188 <= len(deltaOutput); i += 188 {
+		pid := uint16(deltaOutput[i+1]&0x1F)<<8 | uint16(deltaOutput[i+2])
+		require.NotEqual(t, patPID, pid,
+			"delta frame output should not contain PAT packets")
+		require.NotEqual(t, pmtPID, pid,
+			"delta frame output should not contain PMT packets")
+	}
+}
