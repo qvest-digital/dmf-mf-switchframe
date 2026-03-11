@@ -64,7 +64,7 @@ flowchart TD
 
     subgraph output ["Output"]
         pr["programRelay"]
-        ov["OutputViewer<br/>(drain goroutine)"]
+        ov["output.Viewer<br/>(drain goroutine)"]
         mux["TSMuxer"]
         aa["AsyncAdapter<br/>(drain goroutine)"]
         srt["SRT / Recorder"]
@@ -105,7 +105,7 @@ flowchart TD
 | `videoProcessingLoop` | `New()` | `Close()` via `videoProcDone` | Drain `videoProcCh`, run pipeline, broadcast |
 | `sourceDecoder.decodeLoop` | `RegisterSource()` | Channel close → `done` signal | Per-source H.264 → YUV420 decode |
 | `mixDeadlineTicker` | `NewMixer()` | `stopTicker` close + `tickerWg.Wait()` | 25ms flush timeout for audio mix cycle |
-| `OutputViewer.Run` | First output starts | `stopCh` close + `done` signal | Drain video/audio/caption to muxer |
+| `output.Viewer.Run` | First output starts | `stopCh` close + `done` signal | Drain video/audio/caption to muxer |
 | `AsyncAdapter.drain` | `NewAsyncAdapter()` | `stopCh` close + `doneCh` signal | Non-blocking write to slow outputs |
 | `healthMonitor.checkLoop` | `start()` | `stopCh` close + `done` signal | Periodic source health with hysteresis |
 | `SessionManager.cleanupLoop` | `NewSessionManager()` | `ctx.Done()` + `done` signal | 15s stale operator session cleanup |
@@ -332,7 +332,7 @@ From program relay through MPEG-TS muxing to SRT or file recording.
 ```mermaid
 sequenceDiagram
     participant PR as programRelay
-    participant OV as OutputViewer
+    participant OV as output.Viewer
     participant MUX as TSMuxer
     participant CB as Output Callback
     participant AA as AsyncAdapter
@@ -364,7 +364,7 @@ mux.mu Lock → release → (atomic load, no lock) → adapter-specific lock →
 
 The `AsyncAdapter` decouples the muxer from slow outputs. The adapter list uses `atomic.Pointer` so the muxer callback never needs the `output.Manager` lock -- adapters are rebuilt under `output.Manager.mu` and atomically swapped into the pointer that the callback reads lock-free.
 
-### OutputViewer Priority Select
+### output.Viewer Priority Select
 
 The output viewer uses a two-stage select to prioritize video over audio, preventing video starvation when audio frames arrive at a higher rate:
 
@@ -409,7 +409,7 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
 | [Mixer](../server/audio/mixer.go) | `m.mu` | `RWMutex` | channels, masterLevel, mixBuffer, crossfade state, stinger audio, outputPTS | Yes |
-| [AudioDelayBuffer](../server/audio/delay_buffer.go) | `db.mu` | `Mutex` | delayMs, ring buffer (head/tail/count/frames) | Yes |
+| [DelayBuffer](../server/audio/delay_buffer.go) | `db.mu` | `Mutex` | delayMs, ring buffer (head/tail/count/frames) | Yes |
 
 ### Output
 
@@ -452,18 +452,18 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
 | [Store](../server/preset/store.go) | `s.mu` | `RWMutex` | presets slice, filePath | CRUD |
-| [MacroStore](../server/macro/store.go) | `s.mu` | `RWMutex` | macros slice, filePath | CRUD |
+| [Store](../server/macro/store.go) | `s.mu` | `RWMutex` | macros slice, filePath | CRUD |
 | [Store](../server/stinger/store.go) | `s.mu` | `RWMutex` | clips map, dir path | CRUD |
-| [LayoutStore](../server/layout/store.go) | `s.mu` | `RWMutex` | presets map | CRUD |
-| [OperatorStore](../server/operator/store.go) | `s.mu` | `RWMutex` | operators, tokenIdx, filePath | CRUD |
+| [Store](../server/layout/store.go) | `s.mu` | `RWMutex` | presets map | CRUD |
+| [Store](../server/operator/store.go) | `s.mu` | `RWMutex` | operators, tokenIdx, filePath | CRUD |
 | [SessionManager](../server/operator/session.go) | `sm.mu` | `Mutex` | sessions, locks, onStateChange | Session mgmt |
 
 ### Other
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [CaptionManager](../server/caption/manager.go) | `m.mu` | `Mutex` | mode, encoder, buffer, callbacks | Caption mode |
-| [CaptionEncoder](../server/caption/encoder.go) | `e.mu` | `Mutex` | queue, inited flag | Encoding |
+| [Manager](../server/caption/manager.go) | `m.mu` | `Mutex` | mode, encoder, buffer, callbacks | Caption mode |
+| [Encoder](../server/caption/encoder.go) | `e.mu` | `Mutex` | queue, inited flag | Encoding |
 | [MXL Writer](../server/mxl/writer.go) | `w.mu` | `Mutex` | audioWriter, audioRate | MXL lifecycle |
 | [DemoVideoReader](../server/mxl/demo.go) | `d.mu` | `Mutex` | index, closed | Test patterns |
 | [EventLog](../server/debug/event_log.go) | `el.mu` | `Mutex` | events ring buffer, head/idx, count | Debug |
@@ -820,7 +820,7 @@ The system is deadlock-free because five structural properties hold simultaneous
 
 3. **No lock held across goroutine boundaries.** Every lock is acquired and released within the same function call (or deferred). No lock is passed to another goroutine or held across a channel send/receive.
 
-4. **Channels never block producers on the hot path.** All hot-path channel sends use `select { default: }` for non-blocking behavior. The `videoProcCh`, `OutputViewer` channels, and `AsyncAdapter` buffer all use newest-wins or drop-on-full policies.
+4. **Channels never block producers on the hot path.** All hot-path channel sends use `select { default: }` for non-blocking behavior. The `videoProcCh`, `output.Viewer` channels, and `AsyncAdapter` buffer all use newest-wins or drop-on-full policies.
 
 5. **Timeout-based forward progress.** The audio mixer's 25ms deadline ticker prevents indefinite waits if sources stop sending. The transition engine's 10-second watchdog aborts stuck transitions. SRT reconnect uses exponential backoff with a 30-second ceiling. The operator session manager cleans up stale sessions every 15 seconds.
 

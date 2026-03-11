@@ -75,7 +75,7 @@ sequenceDiagram
     participant FS as FrameSync
     participant HRV as handleRawVideoFrame
     participant KB as KeyBridge
-    participant LC as LayoutCompositor
+    participant LC as Compositor
     participant CH as videoProcCh
     participant PL as Pipeline.Run
     participant FP as FramePool

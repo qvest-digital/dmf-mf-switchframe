@@ -402,7 +402,7 @@ The program relay distributes the encoded H.264/AAC program to all consumers: br
 flowchart TD
     PR["Program Relay<br/>(H.264 / AAC)"]
 
-    PR --> OV["OutputViewer<br/>(created lazily: only when<br/>first output starts)"]
+    PR --> OV["Viewer<br/>(created lazily: only when<br/>first output starts)"]
 
     OV --> MUX["TSMuxer<br/>(MPEG-TS, 188-byte packets)"]
     OV --> CM["ConfidenceMonitor<br/>(keyframes only, ≤1fps →<br/>320×180 JPEG)"]
@@ -454,7 +454,7 @@ flowchart LR
 
 ### Lazy Viewer Lifecycle
 
-`output.Manager` creates the OutputViewer, TSMuxer, and ConfidenceMonitor and registers on the program relay only when the first output adapter starts (recording or any SRT destination). When the last adapter stops, everything tears down -- the viewer is removed from the relay, the muxer is closed, and the confidence monitor stops decoding. This ensures zero overhead when both recording and SRT are inactive. On startup, the manager fires an `OnMuxerStart` callback that requests an IDR keyframe from the encoder so the muxer can initialize immediately rather than waiting for the next GOP boundary.
+`output.Manager` creates the Viewer, TSMuxer, and ConfidenceMonitor and registers on the program relay only when the first output adapter starts (recording or any SRT destination). When the last adapter stops, everything tears down -- the viewer is removed from the relay, the muxer is closed, and the confidence monitor stops decoding. This ensures zero overhead when both recording and SRT are inactive. On startup, the manager fires an `OnMuxerStart` callback that requests an IDR keyframe from the encoder so the muxer can initialize immediately rather than waiting for the next GOP boundary.
 
 ### Recording
 
@@ -478,7 +478,7 @@ sequenceDiagram
     participant Server
     participant Buffer as Circular Buffer
     participant Player
-    participant ReplayRelay as Replay Relay
+    participant Relay as Replay Relay
     participant Browser
 
     Note over Buffer: continuously capturing<br/>(replayViewer → deep copy → circular buffer)
@@ -495,10 +495,10 @@ sequenceDiagram
     loop for each output frame
         Player->>Player: interpolate frames (blend or MCFI for slow-mo)
         Player->>Player: time-stretch audio (phase vocoder)
-        Player->>ReplayRelay: pace at source FPS
+        Player->>Relay: pace at source FPS
     end
 
-    ReplayRelay->>Browser: MoQ "replay" track
+    Relay->>Browser: MoQ "replay" track
     Director->>Server: POST /api/replay/stop
 ```
 

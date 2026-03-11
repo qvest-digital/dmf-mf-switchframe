@@ -472,7 +472,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `durationSecs` | `float` | Duration of buffered content in seconds |
 | `bytesUsed` | `int` | Memory usage in bytes |
 
-### OperatorInfo
+### Info
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -1625,7 +1625,7 @@ Start SRT output in either caller (push) or listener (pull) mode.
 
 **Listener mode** binds a local port and accepts up to 8 incoming SRT connections. All connected clients receive the same program stream.
 
-**Response:** `200 OK` with `SRTOutputStatus`:
+**Response:** `200 OK` with `SRTStatus`:
 
 ```json
 {
@@ -1690,7 +1690,7 @@ Stop the active SRT output. In caller mode, disconnects from the remote server. 
 
 **Request Body:** Empty JSON object `{}`
 
-**Response:** `200 OK` with `SRTOutputStatus`:
+**Response:** `200 OK` with `SRTStatus`:
 
 ```json
 {
@@ -1727,7 +1727,7 @@ Get the current SRT output status without changing state.
 
 **Request Body:** None
 
-**Response:** `200 OK` with `SRTOutputStatus`:
+**Response:** `200 OK` with `SRTStatus`:
 
 ```json
 {
@@ -1740,7 +1740,7 @@ Get the current SRT output status without changing state.
 }
 ```
 
-### SRTOutputStatus Fields
+### SRTStatus Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -2614,7 +2614,7 @@ When no layout is active:
 }
 ```
 
-#### LayoutSlot Fields
+#### Slot Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -2671,7 +2671,7 @@ Set the current layout from a preset name or a custom slot array.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `preset` | `string` | No | Name of a built-in or saved layout preset |
-| `slots` | `array` | No | Array of `LayoutSlot` objects (max 4). One of `preset` or `slots` is required. |
+| `slots` | `array` | No | Array of `Slot` objects (max 4). One of `preset` or `slots` is required. |
 | `name` | `string` | No | Optional name for the custom layout |
 
 **Response:** `200 OK` with the applied `Layout` object
@@ -3557,7 +3557,7 @@ Get the full replay system status including player state, mark points, and per-s
 
 **Request Body:** None
 
-**Response:** `200 OK` with `ReplayStatus`:
+**Response:** `200 OK` with `Status`:
 
 ```json
 {
@@ -3588,7 +3588,7 @@ Get the full replay system status including player state, mark points, and per-s
 }
 ```
 
-### ReplayStatus Fields
+### Status Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -3737,9 +3737,9 @@ Create or update a macro. The name in the URL path takes precedence over any nam
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `string` | Macro name. Must not be empty. |
-| `steps` | `array` | Ordered list of `MacroStep` to execute |
+| `steps` | `array` | Ordered list of `Step` to execute |
 
-### MacroStep Fields
+### Step Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -4137,7 +4137,7 @@ List all registered operators with their connection status.
 
 **Request Body:** None
 
-**Response:** `200 OK` with array of `OperatorInfo`:
+**Response:** `200 OK` with array of `Info`:
 
 ```json
 [
