@@ -688,3 +688,68 @@ Five roles map to six lockable subsystems. Each operator receives a 64-character
 ### Macro System
 
 55 action types across 11 categories (switching, transitions, audio, graphics, stinger, recording, replay, SCTE-35, presets, keying/source, layout, captions). Macros are validated before save via `ValidateSteps()` -- errors block the save, while warnings are informational. The sequential executor runs steps with configurable delays and supports cancellation via context. Execution state is broadcast in real-time through the `ControlRoomState` so the UI can display step-by-step progress with per-step status (pending, running, done, failed, skipped). Only one macro can run at a time; attempting to start a second returns 409 Conflict.
+
+## 11. Performance & Design Philosophy
+
+Several cross-cutting design decisions shape the system's architecture. These choices prioritize real-time correctness and operational simplicity over theoretical flexibility.
+
+### Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Server-side switching | Single authoritative output for recording, SRT, and all viewers |
+| YUV420 blending (BT.709) | Matches hardware broadcast mixers; avoids costly YUV↔RGB round-trip |
+| Always-decode architecture | Instant cuts, no keyframe wait; eliminates GOP cache complexity |
+| Passthrough audio optimization | Zero CPU when single source at unity -- the common case |
+| REST commands over HTTP/3 | Standard tooling, same QUIC connection; MoQ custom messages are fragile |
+| Full state snapshots (not deltas) | Late-join support; no missed deltas, no state reconstruction |
+| Per-transition engine lifecycle | No persistent codec resources between transitions; clean create/destroy |
+| Encoder auto-detection | Same binary on GPU and CPU machines without configuration |
+| Immutable pipeline with atomic swap | Zero-frame-drop reconfiguration; no locks on the processing hot path |
+| MPEG-TS for recording | Crash-resilient (no moov atom); same muxer as SRT output |
+
+### Performance Highlights
+
+- **FramePool:** mutex-guarded LIFO free list, >99% hit rate vs ~19% with sync.Pool
+- **Pipeline hot path:** sub-microsecond lock hold, zero allocations in steady state
+- **Buffer-reuse APIs:** NALU conversion and TS muxing buffers grow once, reuse forever
+- **Crossfade lookup table:** 1024-entry precomputed cos/sin, eliminates per-sample trig
+- **Per-source frame sync locks:** global lock held only for source lookup, per-source for ring buffer
+- **Atomic source stats:** single-writer pattern, lock-free reads via atomic.Uint32
+- **Cache-line padding:** 56-byte padding on source viewer hot atomics prevents false sharing
+- **SIMD kernels:** alpha blend, chroma key, luma key, SAD (amd64 + arm64 assembly)
+- **GC tuning:** GOGC=400, GOMEMLIMIT=2G, runtime.LockOSThread on video processing goroutine
+- **Frame rate conversion:** 4 quality levels (none, nearest, blend, MCFI)
+
+### Technology Stack
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Media transport | MoQ draft-15 / WebTransport | Low-latency media distribution |
+| Server | Go 1.25+ | All switching, mixing, encoding logic |
+| Media server | Prism (Go library) | MoQ protocol, relay fan-out, stream management |
+| Video codec | FFmpeg libavcodec (cgo) | H.264 encode/decode (HW accel support) |
+| Video fallback | OpenH264 (cgo, build tag) | Fallback when FFmpeg unavailable |
+| Audio codec | FDK-AAC (cgo) | AAC decode/encode for audio mixing |
+| Shared memory | MXL SDK (cgo, optional) | V210 video + float32 audio via shared memory |
+| SRT transport | zsiec/srtgo (pure Go) | SRT caller and listener output |
+| TS muxing | go-astits | MPEG-TS container for recording/SRT |
+| Frontend | Svelte 5 + SvelteKit | Reactive SPA with static adapter |
+| Video decode (browser) | WebCodecs API | Hardware-accelerated H.264 decode |
+| Observability | Prometheus | Per-node pipeline timing, mix cycles, cuts |
+| CI | GitHub Actions | Lint, test (Go + Vitest + Playwright), Docker |
+
+### Build Tags
+
+- `embed_ui` -- embed built UI into Go binary (production)
+- `cgo && !noffmpeg` -- enable FFmpeg video codec
+- `cgo && openh264` -- enable OpenH264 fallback codec
+- `cgo && mxl` -- enable MXL shared-memory transport
+
+### Network Ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| :8080 | QUIC/UDP | Media + API (WebTransport, MoQ, REST) |
+| :8081 | TCP/HTTP | REST fallback (opt-in via --http-fallback) |
+| :9090 | TCP/HTTP | Admin (Prometheus /metrics, pprof) |
