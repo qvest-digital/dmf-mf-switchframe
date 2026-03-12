@@ -82,12 +82,15 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
 
-	// Thread count for sliced threading: determines how many slices per frame.
-	// 4 slices at 1080p = 270 lines each. Zero added pipeline latency.
-	// Above 4, gains are sublinear and slice boundary artifacts increase.
+	// Thread count for sliced threading (zerolatency tune): determines how
+	// many slices per frame. More threads = faster per-frame encode at the
+	// cost of mild slice-boundary artifacts. At 1080p, 8 slices = 135 rows
+	// each (8.4 macroblock rows) — negligible quality impact.
+	// Must be high enough to sustain real-time encode when CPU is shared
+	// with per-source decoder goroutines (3×60fps + 1×30fps = 210 decodes/sec).
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 2) ncpu = 2;
-	if (ncpu > 4) ncpu = 4;
+	if (ncpu > 8) ncpu = 8;
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
@@ -108,6 +111,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// zerolatency: sliced threading (zero frame buffer), no mbtree,
 		// sync-lookahead=0, rc-lookahead=0, force-cfr=1.
 		// Eliminates ~100ms internal encoder buffering from frame threading.
+		// Throughput relies on slice parallelism (thread_count above) instead
+		// of pipelining multiple frames.
 		av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
 		// Auto-variance AQ adapts per-frame between temporal and spatial
 		// redistribution — better than mode 2 for mixed content (static →
@@ -121,14 +126,12 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
-		// Smart weighted prediction improves dissolve quality (~5% CPU cost).
-		// Exploits linear fade relationship between frames during mix transitions.
-		av_opt_set(h->ctx->priv_data, "weightp", "2", 0);
-		// Psychovisual RD: preserves detail in graphics overlays and text.
-		// psy-trellis=0.15 keeps high-frequency detail (score bugs, lower thirds).
-		av_opt_set(h->ctx->priv_data, "psy-rd", "1.0:0.15", 0);
 		// Slightly reduce deblocking to preserve fine detail at broadcast bitrates.
 		av_opt_set(h->ctx->priv_data, "deblock", "-1:-1", 0);
+		// NOTE: weightp and psy-rd omitted. With superfast (subme=1), psy-rd
+		// has negligible quality impact but adds CPU overhead. weightp=2 does
+		// per-frame reference analysis that costs ~5-10% CPU — unaffordable
+		// when sharing cores with 4+ source decoder goroutines at 60fps.
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);

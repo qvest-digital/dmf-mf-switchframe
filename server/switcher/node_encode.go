@@ -60,7 +60,11 @@ func (n *encodeNode) Latency() time.Duration { return 10 * time.Millisecond }
 // start launches the async encode goroutine. Must be called before Process()
 // for async operation. If not called, Process() falls back to synchronous encode.
 func (n *encodeNode) start() {
-	n.encodeCh = make(chan encodeWork, 1)
+	// Buffer of 2: absorbs one frame of encode latency spike without
+	// dropping. At 30fps (33ms budget), this allows one frame where
+	// encode takes up to 66ms before drops occur. Keeps latency bounded
+	// to one extra frame (33ms) in the worst case.
+	n.encodeCh = make(chan encodeWork, 2)
 	n.wg.Add(1)
 	go n.encodeLoop()
 }

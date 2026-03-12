@@ -207,19 +207,25 @@ func TestEncodeNode_DropCounterOnBackpressure(t *testing.T) {
 	// Wait for goroutine to pick up pf1 and block on encode (deterministic).
 	<-started
 
-	// Second frame: fills the channel buffer (size 1).
+	// Second and third frames: fill the channel buffer (size 2).
 	pf2 := &ProcessingFrame{
 		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
 	}
 	pf2.SetRefs(1)
 	n.Process(nil, pf2)
 
-	// Third frame: channel full, should be dropped.
 	pf3 := &ProcessingFrame{
 		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 3000, Codec: "h264",
 	}
 	pf3.SetRefs(1)
 	n.Process(nil, pf3)
+
+	// Fourth frame: channel full, should be dropped.
+	pf4 := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 4000, Codec: "h264",
+	}
+	pf4.SetRefs(1)
+	n.Process(nil, pf4)
 
 	require.Equal(t, int64(1), dropCount.Load(), "one frame should be dropped due to backpressure")
 }
@@ -257,20 +263,26 @@ func TestEncodeNode_ForceIDRReArmedOnDrop(t *testing.T) {
 	n.Process(nil, pf1)
 	<-started
 
-	// Second frame: fills channel.
+	// Second and third frames: fill channel buffer (size 2).
 	pf2 := &ProcessingFrame{
 		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
 	}
 	pf2.SetRefs(1)
 	n.Process(nil, pf2)
 
-	// Set forceIDR, then send a third frame that will be dropped.
-	forceIDR.Store(true)
 	pf3 := &ProcessingFrame{
 		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 3000, Codec: "h264",
 	}
 	pf3.SetRefs(1)
 	n.Process(nil, pf3)
+
+	// Set forceIDR, then send a fourth frame that will be dropped.
+	forceIDR.Store(true)
+	pf4 := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 4000, Codec: "h264",
+	}
+	pf4.SetRefs(1)
+	n.Process(nil, pf4)
 
 	require.Equal(t, int64(1), dropCount.Load(), "frame should be dropped")
 	require.True(t, forceIDR.Load(), "forceIDR should be re-armed after drop")

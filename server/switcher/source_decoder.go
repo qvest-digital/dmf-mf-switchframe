@@ -151,7 +151,7 @@ func (sd *sourceDecoder) decodeLoop() {
 			// The program re-encoder operates on raw YUV — source GOP structure
 			// is irrelevant. IDR placement is controlled by: (1) encoder gop_size,
 			// (2) RequestKeyframe() on cuts/output-start, (3) transition engine
-			// first-frame flag. Propagating source keyframes caused ~5x excessive
+			// first-frame flag. Propagating source keyframes caused excessive
 			// IDRs (every source GOP boundary forced a program IDR).
 			IsKeyframe: false,
 			GroupID:     frame.GroupID,
