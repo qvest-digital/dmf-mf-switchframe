@@ -304,7 +304,7 @@ func TestEncodeNode_CloseWaitsForPending(t *testing.T) {
 	n.Process(nil, pf)
 
 	// Close() should wait for the pending encode to finish.
-	n.Close()
+	_ = n.Close()
 	require.True(t, encodeDone.Load(), "Close() should have waited for pending encode")
 }
 
@@ -339,7 +339,7 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pool := NewFramePool(1, 4, 4)
 	buf := pool.Acquire()
@@ -434,7 +434,7 @@ func TestEncodeNode_PanicRecovery(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	// First frame: will panic inside encoder.
 	pf1 := &ProcessingFrame{

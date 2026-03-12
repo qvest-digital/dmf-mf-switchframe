@@ -1952,6 +1952,11 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		// All sources use the raw pipeline (always-decode or MXL) —
 		// no IDR gating needed. Frames flow immediately after cut.
 		s.cutsTotal.Add(1)
+		// Force an IDR on the next encoded frame so downstream decoders
+		// (browser WebCodecs, SRT receivers) can sync immediately after
+		// the source change. Source H.264 keyframes are NOT propagated
+		// through the raw YUV pipeline (see source_decoder.go).
+		s.forceNextIDR.Store(true)
 		if s.promMetrics != nil {
 			s.promMetrics.CutsTotal.Inc()
 		}
