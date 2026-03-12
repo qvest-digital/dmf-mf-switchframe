@@ -78,7 +78,7 @@ type pipelineCodecs struct {
 	// produce scrambled PTS (the sourceDecoder uses input frame PTS, but the
 	// FFmpeg decoder reorders internally). We enforce monotonic output PTS.
 	//
-	// Only accessed from the videoProcessingLoop goroutine (single-writer).
+	// Protected by pc.mu (accessed from the async encodeLoop goroutine).
 	lastOutputPTS int64
 
 	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
@@ -107,11 +107,15 @@ func (pc *pipelineCodecs) invalidateEncoder() {
 //
 // The lock is held for the entire encode to prevent invalidateEncoder() from
 // closing the encoder while Encode() is in progress (use-after-free).
-// This is safe because:
-//   - The pipeline is single-threaded (one videoProcessingLoop goroutine)
-//   - invalidateEncoder() is rare (resolution change, SetPipelineFormat)
-//   - Blocking invalidateEncoder for one frame time (~33ms) is acceptable
+// Called from the async encodeLoop goroutine (one per pipeline epoch).
+// During pipeline swap, old and new encode goroutines may both call encode()
+// concurrently — the mutex serializes them. Transient PTS reordering during
+// the swap window is handled by the monotonic PTS enforcement below.
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
+	if len(pf.YUV) == 0 {
+		return nil, nil
+	}
+
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 

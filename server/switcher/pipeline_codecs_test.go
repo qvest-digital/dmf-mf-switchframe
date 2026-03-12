@@ -565,3 +565,43 @@ func BenchmarkPipelineEncode(b *testing.B) {
 		_, _ = pc.encode(pf, i%30 == 0)
 	}
 }
+
+func TestPipelineCodecs_NilYUV(t *testing.T) {
+	encoderCreated := false
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			encoderCreated = true
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	// nil YUV should return (nil, nil) — not an error, not an encoder creation.
+	pf := &ProcessingFrame{
+		YUV: nil, Width: 4, Height: 4,
+		PTS: 1000, IsKeyframe: true, Codec: "h264",
+	}
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err, "nil YUV should not produce an error")
+	require.Nil(t, frame, "nil YUV should produce nil output")
+	require.False(t, encoderCreated, "nil YUV should not create encoder")
+}
+
+func TestPipelineCodecs_EmptyYUV(t *testing.T) {
+	encoderCreated := false
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			encoderCreated = true
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	// Zero-length non-nil YUV should be treated like nil — not an error.
+	pf := &ProcessingFrame{
+		YUV: []byte{}, Width: 4, Height: 4,
+		PTS: 1000, IsKeyframe: true, Codec: "h264",
+	}
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err, "empty YUV should not produce an error")
+	require.Nil(t, frame, "empty YUV should produce nil output")
+	require.False(t, encoderCreated, "empty YUV should not create encoder")
+}

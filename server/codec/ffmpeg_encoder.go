@@ -34,13 +34,13 @@ typedef struct {
 
 // ffenc_open initializes the encoder with the given codec name and parameters.
 // hwDeviceCtx is currently unused (reserved for future HW accel).
-// When cbr is non-zero, the encoder uses constant bitrate mode with filler NALUs
-// instead of quality-driven variable bitrate (CRF/VBR).
+// The encoder always uses constrained VBR (ABR + tight VBV) for predictable
+// bitrate suitable for SRT transport, while maintaining quality flexibility.
 // Returns 0 on success, negative on error.
 static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int width, int height, int bitrate,
                       int fps_num, int fps_den,
-                      int gop_secs, int cbr, void* hwDeviceCtx) {
+                      int gop_secs, void* hwDeviceCtx) {
 	memset(h, 0, sizeof(ffenc_t));
 
 	// av_log_set_level is called once from Go via initFFmpegLogLevel().
@@ -63,22 +63,14 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->time_base = (AVRational){fps_den, fps_num};
 	h->ctx->framerate = (AVRational){fps_num, fps_den};
 
-	// Broadcast-quality rate control: target constant quality, not constant
-	// bitrate. The encoder spends whatever bits are needed for each frame's
-	// complexity — steady shots use low bitrate, transitions (wipes, stingers,
-	// dissolves) burst high. A VBV ceiling prevents runaway bitrate.
-	//
-	// bit_rate is set as a hint for HW encoders that require it, but libx264
-	// uses CRF mode which ignores it (quality-driven, not bitrate-driven).
+	// Constrained VBR (cVBR): ABR target with tight VBV ceiling.
+	// The encoder targets the specified bitrate on average, with a 1.2x peak
+	// ceiling enforced by VBV. This matches broadcast standard practice
+	// (Haivision KB, AWS MediaLive) and produces predictable output suitable
+	// for SRT transport while preserving per-frame quality flexibility.
 	h->ctx->bit_rate = bitrate;
-
-	// VBV ceiling: 2x source bitrate with 1-second buffer. Generous enough
-	// that the rate controller doesn't crush quality during transitions,
-	// but tight enough to prevent encoder-internal buffering from adding
-	// latency. Larger VBV buffers let the encoder defer bits across more
-	// frames, which helps quality but adds delay.
-	h->ctx->rc_max_rate = bitrate * 2;
-	h->ctx->rc_buffer_size = bitrate; // 1 second
+	h->ctx->rc_max_rate = bitrate + bitrate / 5; // 1.2x target
+	h->ctx->rc_buffer_size = bitrate + bitrate / 5; // 1-second VBV at peak rate
 
 	h->ctx->gop_size = fps_num * gop_secs / fps_den;
 	h->ctx->max_b_frames = 0;
@@ -90,10 +82,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
 
-	// Derive thread count from CPU cores, clamped to [2, 8].
+	// Cap thread count at 4: balances encode speed vs internal latency.
+	// x264 frame-level threading buffers (thread_count - 1) frames internally.
+	// 4 threads = max 3 frames internal buffer (~100ms at 30fps).
+	// Above 4, gains are sublinear but latency doubles.
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 2) ncpu = 2;
-	if (ncpu > 8) ncpu = 8;
+	if (ncpu > 4) ncpu = 4;
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
@@ -111,9 +106,11 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	if (strcmp(codec_name, "libx264") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "fast", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
-		// Variance-based AQ redistributes bits toward high-detail regions
-		// (wipe boundaries, stinger edges) instead of uniform areas.
-		av_opt_set(h->ctx->priv_data, "aq-mode", "2", 0);
+		// Auto-variance AQ adapts per-frame between temporal and spatial
+		// redistribution — better than mode 2 for mixed content (static →
+		// dissolve → stinger → camera motion).
+		av_opt_set(h->ctx->priv_data, "aq-mode", "3", 0);
+		av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
 		// Disable sync-lookahead (threaded lookahead adds latency).
 		av_opt_set(h->ctx->priv_data, "sync-lookahead", "0", 0);
 		// Disable mbtree — it needs deep lookahead to be effective and
@@ -126,32 +123,17 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
-
-		if (cbr) {
-			// CBR: constant bitrate with HRD signaling and filler NALUs.
-			// No CRF — incompatible with CBR rate control.
-			av_opt_set(h->ctx->priv_data, "nal-hrd", "cbr", 0);
-			h->ctx->rc_min_rate = bitrate; // floor = ceiling = target
-			h->ctx->rc_max_rate = bitrate;
-			h->ctx->rc_buffer_size = bitrate; // 1s VBV
-			// CBR rate controller needs more planning horizon than CRF.
-			av_opt_set(h->ctx->priv_data, "rc-lookahead", "10", 0);
-			// Less bit redistribution pressure under CBR budget.
-			av_opt_set(h->ctx->priv_data, "aq-strength", "1.0", 0);
-		} else {
-			// CRF (Constant Rate Factor): quality-targeted encoding.
-			// CRF 22 balances quality with realtime encode speed. Lower values
-			// (16-18) produce better quality but VideoToolbox/software encoders
-			// can't sustain them at 60fps. 22 is visually clean for broadcast
-			// while keeping encode times under the frame budget.
-			av_opt_set(h->ctx->priv_data, "crf", "22", 0);
-			av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
-			// Low-latency lookahead: 3 frames gives AQ enough context for
-			// good bit allocation without adding significant delay. The
-			// "fast" preset defaults to a higher lookahead which is
-			// unacceptable for live switching.
-			av_opt_set(h->ctx->priv_data, "rc-lookahead", "3", 0);
-		}
+		// Low-latency lookahead: 3 frames gives AQ enough context for
+		// good bit allocation without adding significant delay.
+		av_opt_set(h->ctx->priv_data, "rc-lookahead", "3", 0);
+		// Smart weighted prediction improves dissolve quality (~5% CPU cost).
+		// Exploits linear fade relationship between frames during mix transitions.
+		av_opt_set(h->ctx->priv_data, "weightp", "2", 0);
+		// Psychovisual RD: preserves detail in graphics overlays and text.
+		// psy-trellis=0.15 keeps high-frequency detail (score bugs, lower thirds).
+		av_opt_set(h->ctx->priv_data, "psy-rd", "1.0:0.15", 0);
+		// Slightly reduce deblocking to preserve fine detail at broadcast bitrates.
+		av_opt_set(h->ctx->priv_data, "deblock", "-1:-1", 0);
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
@@ -161,52 +143,23 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
-
-		if (cbr) {
-			// CBR: constant bitrate mode.
-			av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
-			h->ctx->rc_min_rate = bitrate;
-			h->ctx->rc_max_rate = bitrate;
-			h->ctx->rc_buffer_size = bitrate; // 1s VBV
-			// temporal-aq is incompatible with CBR.
-			av_opt_set_int(h->ctx->priv_data, "temporal-aq", 0, 0);
-		} else {
-			// VBR with constant quality target: NVENC's closest equivalent to CRF.
-			// cq=22 targets quality similar to x264 CRF 22.
-			av_opt_set(h->ctx->priv_data, "rc", "vbr", 0);
-			av_opt_set(h->ctx->priv_data, "cq", "22", 0);
-			// Temporal AQ for better bit distribution across frames during transitions.
-			av_opt_set_int(h->ctx->priv_data, "temporal-aq", 1, 0);
-		}
+		// NVENC CBR is hardware-native and works correctly.
+		// Note: with rc=cbr, NVENC uses bit_rate as the target and ignores
+		// rc_max_rate. The VBV buffer (rc_buffer_size) is still applied.
+		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
+		// temporal-aq is incompatible with CBR on NVENC.
+		av_opt_set_int(h->ctx->priv_data, "temporal-aq", 0, 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
 		h->ctx->level = level;
-
-		if (cbr) {
-			// CBR: pin min/max rate to target for constant bitrate.
-			h->ctx->rc_min_rate = bitrate;
-			h->ctx->rc_max_rate = bitrate;
-			h->ctx->rc_buffer_size = bitrate; // 1s VBV
-		}
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "prio_speed", 1, 0);
 		// Force frame-at-a-time output — no internal encoder frame buffering.
-		// Without this, VT can hold 1-3 frames for rate control lookahead.
 		h->ctx->max_b_frames = 0;
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
-
-		if (cbr) {
-			// CBR: enable constant bitrate mode.
-			av_opt_set(h->ctx->priv_data, "constant_bit_rate", "true", 0);
-			h->ctx->rc_max_rate = bitrate;
-			h->ctx->rc_buffer_size = bitrate; // 1s VBV
-		} else {
-			// Constant quality via capped VBR — higher quality than pure ABR.
-			av_opt_set(h->ctx->priv_data, "constant_bit_rate", "false", 0);
-		}
 	}
 
 	int rc = avcodec_open2(h->ctx, codec, NULL);
@@ -264,13 +217,13 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 
 	// Copy packed YUV420 input into the AVFrame planes, respecting linesize.
 	int w = h->width;
-	int hw = h->height;
-	int y_size = w * hw;
+	int ht = h->height;
+	int y_size = w * ht;
 	int uv_w = w / 2;
-	int uv_h = hw / 2;
+	int uv_h = ht / 2;
 
 	// Y plane
-	for (int row = 0; row < hw; row++) {
+	for (int row = 0; row < ht; row++) {
 		memcpy(h->frame->data[0] + row * h->frame->linesize[0],
 		       yuv_data + row * w, w);
 	}
@@ -362,10 +315,13 @@ type FFmpegEncoder struct {
 // width, height, bitrate, fpsNum, and fpsDen configure the output stream.
 // fpsNum/fpsDen express the frame rate as a rational number (e.g. 30000/1001 for 29.97fps).
 // gopSecs sets the IDR keyframe interval in seconds.
-// cbr enables constant bitrate mode with filler NALUs. When false, the encoder
-// uses CRF/VBR (quality-driven, variable bitrate).
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
-func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, cbr bool, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+//
+// The encoder always uses constrained VBR (cVBR): ABR with a tight 1.2x VBV
+// ceiling. This produces predictable bitrate for SRT transport while preserving
+// per-frame quality flexibility. Transport-level CBR padding is handled by the
+// CBR pacer in the output layer, not by the encoder.
+func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
 	initFFmpegLogLevel()
 
 	if width <= 0 || height <= 0 {
@@ -385,18 +341,25 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
 	}
 
-	cbrInt := C.int(0)
-	if cbr {
-		cbrInt = C.int(1)
-	}
-
 	e := &FFmpegEncoder{}
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), cbrInt, hwDeviceCtx)
+		C.int(gopSecs), hwDeviceCtx)
 	if rc != 0 {
-		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: code %d", codecName, int(rc))
+		desc := map[int]string{
+			-1: "codec not found",
+			-2: "context allocation failed",
+			-3: "avcodec_open2 failed",
+			-4: "frame allocation failed",
+			-5: "frame buffer allocation failed",
+			-6: "packet allocation failed",
+		}
+		msg := desc[int(rc)]
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: %s (code %d)", codecName, msg, int(rc))
 	}
 	return e, nil
 }

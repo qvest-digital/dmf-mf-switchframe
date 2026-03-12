@@ -302,6 +302,7 @@ type Switcher struct {
 
 	// Frame loss diagnostic counters (atomic, lock-free).
 	pipeEncodeNil    atomic.Int64 // encoder returned nil (HW warmup)
+	pipeEncodeDrop   atomic.Int64 // frames dropped due to async encoder backpressure
 	transOutputCount atomic.Int64 // frames output by transition engine
 
 	// Last broadcast PTS for replay PTS anchoring (atomic, lock-free).
@@ -352,10 +353,9 @@ type Switcher struct {
 	// and SEI injection into encoded video frames. Optional (nil = no captions).
 	captionMgr captionManager
 
-	// Pre-allocated buffers for caption SEI injection (avoids per-frame alloc).
-	captionAnnexBBuf []byte
-	captionInsertBuf []byte
-	captionAVC1Buf   []byte
+	// Caption SEI injection buffers removed — broadcastWithCaptions is now
+	// called from the async encodeLoop goroutine, so shared mutable buffers
+	// would race during pipeline swap. Per-frame allocation is negligible.
 
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
@@ -617,14 +617,23 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 		&compositorNode{compositor: s.compositorRef},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
-		&encodeNode{
-			codecs:         s.pipeCodecs,
-			forceIDR:       &s.forceNextIDR,
-			promMetrics:    s.promMetrics,
-			encodeNilCount: &s.pipeEncodeNil,
-			onEncoded:      s.broadcastWithCaptions,
-		},
+		newAsyncEncodeNode(s),
 	}
+}
+
+// newAsyncEncodeNode creates an encodeNode with its async goroutine started.
+// Must be called with s.mu held (reads pipeCodecs, promMetrics, etc.).
+func newAsyncEncodeNode(s *Switcher) *encodeNode {
+	enc := &encodeNode{
+		codecs:          s.pipeCodecs,
+		forceIDR:        &s.forceNextIDR,
+		promMetrics:     s.promMetrics,
+		encodeNilCount:  &s.pipeEncodeNil,
+		encodeDropCount: &s.pipeEncodeDrop,
+		onEncoded:       s.broadcastWithCaptions,
+	}
+	enc.start()
+	return enc
 }
 
 // BuildPipeline constructs and stores the video processing pipeline.
@@ -1028,16 +1037,12 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 	}
 
 	// Convert AVC1 → Annex B → insert SEI → convert back to AVC1.
-	s.captionAnnexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, s.captionAnnexBBuf[:0])
-	s.captionInsertBuf = caption.InsertSEIBeforeVCLInto(seiNALU, s.captionAnnexBBuf, s.captionInsertBuf[:0])
-	s.captionAVC1Buf = codec.AnnexBToAVC1Into(s.captionInsertBuf, s.captionAVC1Buf[:0])
-
-	// Clone the AVC1 buffer — captionAVC1Buf is reused across frames, but
-	// downstream async consumers (SRT, muxer) hold WireData references across
-	// frame boundaries. Without this copy, the next frame overwrites their data.
-	avc1Copy := make([]byte, len(s.captionAVC1Buf))
-	copy(avc1Copy, s.captionAVC1Buf)
-	frame.WireData = avc1Copy
+	// Buffers are local (not reused across frames) because broadcastWithCaptions
+	// is called from the async encodeLoop goroutine and would race during
+	// pipeline swap if stored on the Switcher struct.
+	annexB := codec.AVC1ToAnnexBInto(frame.WireData, nil)
+	inserted := caption.InsertSEIBeforeVCLInto(seiNALU, annexB, nil)
+	frame.WireData = codec.AnnexBToAVC1Into(inserted, nil)
 	s.broadcastOwnedToProgram(frame)
 }
 
@@ -2165,6 +2170,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"frames_dropped":       s.videoProcDropped.Load(),
 			"epoch_stale":          s.programEpochStale.Load(),
 			"encode_nil":           s.pipeEncodeNil.Load(),
+			"encode_drop":          s.pipeEncodeDrop.Load(),
 			"trans_output":         s.transOutputCount.Load(),
 			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
 			"max_proc_time_ms":     float64(s.videoProcMaxNano.Load()) / 1e6,

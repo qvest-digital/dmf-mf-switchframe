@@ -228,6 +228,9 @@
 			if (mounted && sourceKey === 'program-raw') {
 				pipelineManager.resetProgramCanvas();
 				pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
+				// Disconnect H.264 program transport — raw YUV replaces it,
+				// so decoding H.264 wastes CPU and bandwidth.
+				pipeline.disconnectSource('program');
 			}
 		},
 	});

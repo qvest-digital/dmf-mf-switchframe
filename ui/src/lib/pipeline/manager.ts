@@ -37,6 +37,11 @@ export class PipelineManager {
 	/** Pending preview attachment that failed because the source wasn't in the pipeline yet. */
 	private pendingPreview: { source: string; canvas: HTMLCanvasElement } | null = null;
 
+	/** Pending program canvas waiting for program-raw catalog to arrive. */
+	private pendingProgramCanvasEl: HTMLCanvasElement | null = null;
+	/** Fallback timer: if program-raw catalog doesn't arrive within 500ms, attach H.264 program. */
+	private programFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
 	/** Per-source audio levels sampled from pipeline decoders. */
 	private sourceLevels: Record<string, PeakLevels> = {};
 	/** Program output peak levels. */
@@ -146,24 +151,48 @@ export class PipelineManager {
 		// Prefer raw YUV program stream when available (bypasses H.264 decode).
 		const programKey = this.pipeline.isRawYUVSource('program-raw') ? 'program-raw' : 'program';
 
-		// Program canvas: render the program MoQ stream (shows transitions).
-		// Re-attach if the canvas element changed (HMR, layout switch) even if
-		// the source key hasn't changed.
-		const needsProgramAttach =
-			this.currentProgramCanvas !== programKey ||
-			(programCanvasEl && programCanvasEl !== this.currentProgramCanvasEl);
+		// If program-raw exists but catalog hasn't arrived yet, defer PROGRAM
+		// canvas attachment to avoid creating a 2D context that blocks WebGL.
+		// Preview canvas is unaffected — process it normally below.
+		const deferProgram = this.pipeline.hasSource('program-raw') &&
+			!this.pipeline.isRawYUVSource('program-raw') &&
+			!this.currentProgramCanvas;
 
-		if (needsProgramAttach) {
-			if (this.currentProgramCanvas) {
-				this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+		if (deferProgram) {
+			// Store pending canvas ref for when catalog arrives or fallback fires
+			this.pendingProgramCanvasEl = programCanvasEl ?? null;
+			if (!this.programFallbackTimer) {
+				this.programFallbackTimer = setTimeout(() => {
+					this.programFallbackTimer = null;
+					// Raw catalog didn't arrive — fall back to H.264
+					if (this.pendingProgramCanvasEl && !this.currentProgramCanvas) {
+						this.pipeline.attachCanvas('program', 'program', this.pendingProgramCanvasEl);
+						this.currentProgramCanvas = 'program';
+						this.currentProgramCanvasEl = this.pendingProgramCanvasEl;
+						this.pendingProgramCanvasEl = null;
+					}
+				}, 500);
 			}
-			if (programCanvasEl) {
-				this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
-				this.currentProgramCanvas = programKey;
-				this.currentProgramCanvasEl = programCanvasEl;
-			} else {
-				this.currentProgramCanvas = null;
-				this.currentProgramCanvasEl = null;
+		} else {
+			// Program canvas: render the program MoQ stream (shows transitions).
+			// Re-attach if the canvas element changed (HMR, layout switch) even if
+			// the source key hasn't changed.
+			const needsProgramAttach =
+				this.currentProgramCanvas !== programKey ||
+				(programCanvasEl && programCanvasEl !== this.currentProgramCanvasEl);
+
+			if (needsProgramAttach) {
+				if (this.currentProgramCanvas) {
+					this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+				}
+				if (programCanvasEl) {
+					this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
+					this.currentProgramCanvas = programKey;
+					this.currentProgramCanvasEl = programCanvasEl;
+				} else {
+					this.currentProgramCanvas = null;
+					this.currentProgramCanvasEl = null;
+				}
 			}
 		}
 
@@ -214,11 +243,19 @@ export class PipelineManager {
 	 * re-attaches the canvas. Called when a raw YUV source becomes ready.
 	 */
 	resetProgramCanvas(): void {
+		// Cancel fallback timer — raw YUV is ready
+		if (this.programFallbackTimer) {
+			clearTimeout(this.programFallbackTimer);
+			this.programFallbackTimer = null;
+		}
 		if (this.currentProgramCanvas) {
 			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 		}
 		this.currentProgramCanvas = null;
 		this.currentProgramCanvasEl = null;
+		// If we had a pending canvas waiting for catalog, clear it so the
+		// next syncProgramPreviewCanvases picks up the now-ready program-raw.
+		this.pendingProgramCanvasEl = null;
 	}
 
 	/**
@@ -239,12 +276,17 @@ export class PipelineManager {
 			this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
 		}
 		// Reset tracking
+		if (this.programFallbackTimer) {
+			clearTimeout(this.programFallbackTimer);
+			this.programFallbackTimer = null;
+		}
 		this.attachedCanvases = new Set<string>();
 		this.currentProgramCanvas = null;
 		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
 		this.currentPreviewCanvasEl = null;
 		this.pendingPreview = null;
+		this.pendingProgramCanvasEl = null;
 	}
 
 	/** Start the rAF audio metering loop. */
@@ -272,6 +314,10 @@ export class PipelineManager {
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
+		if (this.programFallbackTimer) {
+			clearTimeout(this.programFallbackTimer);
+			this.programFallbackTimer = null;
+		}
 		this.connectedSources = new Set<string>();
 		this.attachedCanvases = new Set<string>();
 		this.currentProgramCanvas = null;
@@ -279,6 +325,7 @@ export class PipelineManager {
 		this.currentPreviewCanvas = null;
 		this.currentPreviewCanvasEl = null;
 		this.pendingPreview = null;
+		this.pendingProgramCanvasEl = null;
 		this.sourceLevels = {};
 		this.programLevels = { peakL: 0, peakR: 0 };
 	}

@@ -107,6 +107,8 @@ export interface MediaPipeline {
 	resumeAllAudio(): Promise<void>;
 	/** Reset A/V sync tracking on all renderers for a source (e.g. after program source change). */
 	resetRendererSync(sourceKey: string): void;
+	/** Check if a source exists in the pipeline (added but not necessarily catalog-ready). */
+	hasSource(sourceKey: string): boolean;
 	/** Check if a source uses raw YUV420. */
 	isRawYUVSource(sourceKey: string): boolean;
 	/** Get diagnostics from all active sources for debug snapshot. */
@@ -429,23 +431,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 
 		// Raw YUV sources use WebGL renderer instead of PrismRenderer.
-		// WebGL and Canvas2D contexts are mutually exclusive, so if a
-		// PrismRenderer previously used this canvas (2D context), we must
-		// create a fresh canvas element for the WebGL YUV renderer.
+		// With deferred attachment, the canvas should never have a 2D context
+		// when we reach here. If it does, log a warning instead of replacing
+		// the DOM element (which breaks Svelte bind:this references).
 		if (source.isRawYUV) {
-			let glCanvas = canvas;
-			const testCtx = canvas.getContext('webgl2') || canvas.getContext('webgl');
-			if (!testCtx) {
-				// Canvas already has a 2D context — swap it with a fresh one.
-				glCanvas = document.createElement('canvas');
-				glCanvas.width = canvas.width;
-				glCanvas.height = canvas.height;
-				glCanvas.style.cssText = canvas.style.cssText;
-				canvas.parentElement?.replaceChild(glCanvas, canvas);
-			}
-			const yuvR = createYUVRenderer(glCanvas);
+			const yuvR = createYUVRenderer(canvas);
 			if (yuvR) {
 				source.yuvRenderer = yuvR;
+			} else {
+				console.warn(`[MediaPipeline] Cannot create WebGL renderer for "${sourceKey}" — canvas may have existing 2D context`);
 			}
 			return true;
 		}
@@ -554,6 +548,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
+	function hasSource(sourceKey: string): boolean {
+		return sources.has(sourceKey);
+	}
+
 	function isRawYUVSource(sourceKey: string): boolean {
 		return sources.get(sourceKey)?.isRawYUV === true;
 	}
@@ -561,11 +559,15 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
 		const result: Record<string, SourceDiagnostics> = {};
 		for (const [key, source] of sources) {
-			// Get diagnostics from first renderer (tile renderer)
+			// Get diagnostics from first PrismRenderer (tile renderer) or YUV renderer
 			let rendererDiag: Record<string, unknown> | null = null;
-			for (const renderer of source.renderers.values()) {
-				rendererDiag = renderer.getDiagnostics() as unknown as Record<string, unknown>;
-				break;
+			if (source.yuvRenderer) {
+				rendererDiag = source.yuvRenderer.getDiagnostics();
+			} else {
+				for (const renderer of source.renderers.values()) {
+					rendererDiag = renderer.getDiagnostics() as unknown as Record<string, unknown>;
+					break;
+				}
 			}
 
 			result[key] = {
@@ -599,6 +601,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		feedVideoFrame,
 		feedAudioFrame,
 		resetRendererSync,
+		hasSource,
 		isRawYUVSource,
 		getAllDiagnostics,
 	};

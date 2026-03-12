@@ -63,7 +63,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			SampleRate:          48000,
 			Channels:            2,
 			Relay:               relay,
-			EncoderFactory:      encoderFactory(false),
+			EncoderFactory:      encoderFactory(),
 			AudioEncoderFactory: audioEncoderFactoryForMXL(),
 			OnVideoInfo: func(sps, pps []byte, w, h int) {
 				// Set VideoInfo on the relay so browsers can init their decoder.

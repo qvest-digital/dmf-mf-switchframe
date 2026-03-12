@@ -60,7 +60,7 @@ func TestNewVideoEncoder_Works(t *testing.T) {
 		t.Skip("no H.264 encoder available")
 	}
 
-	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1, false)
+	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1)
 	require.NoError(t, err)
 	require.NotNil(t, enc)
 	defer enc.Close()
@@ -105,7 +105,7 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 
 	w, h := 160, 120
 
-	enc, err := NewVideoEncoder(w, h, 500000, 30, 1, false)
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -164,16 +164,16 @@ func TestNewVideoEncoder_FullRoundTrip(t *testing.T) {
 }
 
 func TestNewVideoEncoder_InvalidParams(t *testing.T) {
-	_, err := NewVideoEncoder(0, 120, 200000, 30, 1, false)
+	_, err := NewVideoEncoder(0, 120, 200000, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 0, 200000, 30, 1, false)
+	_, err = NewVideoEncoder(160, 0, 200000, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 0, 30, 1, false)
+	_, err = NewVideoEncoder(160, 120, 0, 30, 1)
 	require.Error(t, err)
 
-	_, err = NewVideoEncoder(160, 120, 200000, 0, 1, false)
+	_, err = NewVideoEncoder(160, 120, 200000, 0, 1)
 	require.Error(t, err)
 }
 
@@ -212,7 +212,7 @@ func TestHWDecode_ChromaPreserved(t *testing.T) {
 		yuv[ySize+uvSize+i] = 200 // Cr
 	}
 
-	enc, err := NewVideoEncoder(w, h, 500000, 30, 1, false)
+	enc, err := NewVideoEncoder(w, h, 500000, 30, 1)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -308,32 +308,3 @@ func TestCreateHWDeviceCtx_EmptyType(t *testing.T) {
 	require.Nil(t, ctx, "empty hw type should return nil")
 }
 
-func TestNewVideoEncoder_CBRMode(t *testing.T) {
-	probedEnc, _ := ProbeEncoders()
-	if probedEnc == "none" {
-		t.Skip("no H.264 encoder available")
-	}
-
-	enc, err := NewVideoEncoder(160, 120, 200000, 30, 1, true)
-	require.NoError(t, err)
-	require.NotNil(t, enc)
-	defer enc.Close()
-
-	// Encode a few frames to verify CBR mode works end-to-end.
-	w, h := 160, 120
-	yuv := make([]byte, w*h*3/2)
-	for i := range yuv {
-		yuv[i] = 128
-	}
-
-	var gotOutput bool
-	for i := range 30 {
-		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
-		require.NoError(t, err)
-		if len(data) > 0 {
-			gotOutput = true
-			break
-		}
-	}
-	require.True(t, gotOutput, "CBR encoder should produce output within 30 frames")
-}

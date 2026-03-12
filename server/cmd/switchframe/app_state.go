@@ -232,9 +232,17 @@ func (a *App) wireStateCallbacks() {
 	})
 
 	// Graphics overlay state changes: receives snapshot directly to avoid deadlock.
-	// Also triggers pipeline rebuild so Active() filtering reflects compositor state.
+	// Only rebuild the pipeline when the compositor's Active() state actually
+	// changes (e.g., first layer turned on, last layer turned off). Fade ticks
+	// fire onStateChange ~60x/sec but don't change Active() — rebuilding on
+	// every tick would create a new pipeline + encode goroutine per frame.
+	var gfxWasActive bool
 	a.compositor.OnStateChange(func(gfxState graphics.State) {
-		a.sw.RebuildPipeline()
+		nowActive := a.compositor.IsActive()
+		if nowActive != gfxWasActive {
+			gfxWasActive = nowActive
+			a.sw.RebuildPipeline()
+		}
 		a.clearLastOperator()
 		a.broadcastState(&gfxState)
 	})

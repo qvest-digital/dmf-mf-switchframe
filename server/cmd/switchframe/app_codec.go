@@ -16,11 +16,10 @@ func decoderFactory() transition.DecoderFactory {
 }
 
 // encoderFactory returns a factory that creates video encoders using the
-// auto-detected codec. When cbr is true, the encoder uses constant bitrate
-// mode with filler NALUs instead of quality-driven CRF/VBR.
-func encoderFactory(cbr bool) transition.EncoderFactory {
+// auto-detected codec. The encoder always uses cVBR (ABR + tight VBV).
+func encoderFactory() transition.EncoderFactory {
 	return func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-		return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen, cbr)
+		return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
 	}
 }
 

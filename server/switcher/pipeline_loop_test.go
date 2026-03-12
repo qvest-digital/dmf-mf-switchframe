@@ -666,3 +666,27 @@ func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	snap := p.Snapshot()
 	require.Len(t, snap["active_nodes"].([]map[string]any), 0)
 }
+
+func TestRebuildPipeline_RedundantCallsIncrementEpoch(t *testing.T) {
+	// This test documents the current behavior: every call to rebuildPipeline()
+	// creates a new pipeline and increments the epoch, even when the pipeline
+	// config hasn't changed. Callers must avoid redundant calls.
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+
+	sw.rebuildPipeline()
+	epochAfterFirst := sw.pipelineEpoch.Load()
+
+	// Second call with no state change still increments epoch.
+	sw.rebuildPipeline()
+	epochAfterSecond := sw.pipelineEpoch.Load()
+
+	require.Equal(t, epochAfterFirst+1, epochAfterSecond,
+		"redundant rebuildPipeline creates a new pipeline every time — "+
+			"callers must guard against unnecessary calls")
+}

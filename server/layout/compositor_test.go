@@ -12,19 +12,20 @@ import (
 func TestCompositor_SelectScaleQuality(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 
-	// Large slots (>= 25% of frame area) use Lanczos for quality
+	// PIP compositor always uses bilinear for speed — Lanczos-3 is 5-15x
+	// slower and imperceptible at PIP overlay scale. With 4 PIP slots scaling
+	// from 1080p sources, Lanczos-3 caused 400ms+ per frame (446ms measured).
 	q := c.selectScaleQuality(1280, 720, 960, 540, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityHigh, q, "quad slot (25%) should use Lanczos")
+	require.Equal(t, transition.ScaleQualityFast, q, "quad slot should use bilinear")
 
 	q = c.selectScaleQuality(1920, 1080, 960, 1080, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityHigh, q, "side-by-side (50%) should use Lanczos")
+	require.Equal(t, transition.ScaleQualityFast, q, "side-by-side should use bilinear")
 
-	// Small PIP slots (< 25% of frame area) use bilinear for speed
 	q = c.selectScaleQuality(1920, 1080, 480, 270, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityFast, q, "small PIP (6%) should use bilinear")
+	require.Equal(t, transition.ScaleQualityFast, q, "small PIP should use bilinear")
 
 	q = c.selectScaleQuality(1920, 1080, 320, 180, 1920, 1080)
-	require.Equal(t, transition.ScaleQualityFast, q, "tiny PIP (3%) should use bilinear")
+	require.Equal(t, transition.ScaleQualityFast, q, "tiny PIP should use bilinear")
 }
 
 func TestCompositor_GraySlotDirectFill(t *testing.T) {

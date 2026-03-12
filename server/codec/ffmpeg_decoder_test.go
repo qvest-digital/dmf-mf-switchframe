@@ -76,7 +76,7 @@ func TestFFmpegDecoderInterface(t *testing.T) {
 func TestFFmpegEncodeDecodeRoundTrip(t *testing.T) {
 	w, h := 320, 240
 
-	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, false, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 500000, 30, 1, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -138,7 +138,7 @@ func TestFFmpegEncodeDecodeRoundTrip(t *testing.T) {
 func TestFFmpegMultiFrameDecodeSequence(t *testing.T) {
 	w, h := 160, 120
 
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, false, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 
@@ -191,7 +191,7 @@ func TestFFmpegDecoderPacketReuse(t *testing.T) {
 	// correct output under the race detector.
 	w, h := 160, 120
 
-	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, false, nil)
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
 	require.NoError(t, err)
 	defer enc.Close()
 

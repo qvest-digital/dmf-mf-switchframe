@@ -23,10 +23,10 @@ type encoderCandidate struct {
 }
 
 // candidates lists encoder candidates in priority order.
-// On macOS, libx264 is preferred over VideoToolbox because libx264 provides
-// better CBR rate control (nal-hrd=cbr with filler NALUs) and more consistent
-// frame sizes. VideoToolbox's constant_bit_rate mode does not guarantee filler
-// NALU insertion, so the TS-level CBR pacer must do all the padding work.
+// On macOS, libx264 is preferred over VideoToolbox because libx264 is 1.8-2.2x
+// faster on Apple Silicon with working rate control. VT has a ~20ms fixed floor
+// from the hardware round-trip and its FFmpeg rate control is broken (outputs
+// ~20 Mbps when targeting 10 Mbps).
 var candidates = []encoderCandidate{
 	{name: "h264_nvenc", hwType: "cuda"},
 	{name: "h264_vaapi", hwType: "vaapi"},
@@ -100,10 +100,11 @@ func probeEncoder() string {
 
 // tryEncoder attempts to create a small FFmpeg encoder, encode a few frames,
 // and close it. Returns true if the codec is functional.
-// Some hardware encoders (e.g. VideoToolbox) return EAGAIN on the first
-// frame(s) while warming up, so we send up to 4 frames.
+// Frame-threaded encoders buffer (thread_count - 1) frames before producing
+// output. With 4 threads, we need at least 4 frames; 30 provides headroom
+// for hardware encoders with additional warmup latency.
 func tryEncoder(codecName string) bool {
-	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, false, nil)
+	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, nil)
 	if err != nil {
 		return false
 	}
@@ -115,7 +116,7 @@ func tryEncoder(codecName string) bool {
 		yuv[i] = 128
 	}
 
-	for i := range 8 {
+	for i := range 30 {
 		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
 		if err != nil {
 			continue // EAGAIN expected during warmup

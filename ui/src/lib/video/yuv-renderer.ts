@@ -46,6 +46,8 @@ export interface YUVRenderer {
 	render(packedFrame: Uint8Array): void;
 	/** Release WebGL resources. */
 	destroy(): void;
+	/** Get diagnostics for debug snapshot. */
+	getDiagnostics(): Record<string, unknown>;
 }
 
 // Vertex shader: fullscreen quad with texture coordinates.
@@ -170,12 +172,14 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 	// Track canvas + video dimensions to detect when letterbox bars need clearing
 	let lastVP = { cw: 0, ch: 0, vx: 0, vy: 0, vw: 0, vh: 0 };
 	let destroyed = false;
+	let framesRendered = 0;
+	let parseErrors = 0;
 
 	function render(packedFrame: Uint8Array): void {
 		if (destroyed) return;
 
 		const parsed = parseRawYUVFrame(packedFrame);
-		if (!parsed) return;
+		if (!parsed) { parseErrors++; return; }
 
 		const { width, height, y, cb, cr } = parsed;
 		const chromaW = width >> 1;
@@ -249,6 +253,7 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 
 		// Draw fullscreen quad
 		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+		framesRendered++;
 	}
 
 	function destroy(): void {
@@ -263,5 +268,16 @@ export function createYUVRenderer(canvas: HTMLCanvasElement): YUVRenderer | null
 		gl.deleteShader(fs);
 	}
 
-	return { render, destroy };
+	function getDiagnostics(): Record<string, unknown> {
+		return {
+			type: 'webgl-yuv420',
+			framesRendered,
+			parseErrors,
+			currentWidth,
+			currentHeight,
+			destroyed,
+		};
+	}
+
+	return { render, destroy, getDiagnostics };
 }

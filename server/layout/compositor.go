@@ -42,6 +42,9 @@ type Compositor struct {
 	// Pre-computed z-order sorted slot indices (avoids per-frame allocation)
 	sortedSlots []int
 
+	// Reusable snapshot slice (avoids per-frame allocation in ProcessFrame)
+	snapCache []slotSnapshot
+
 	// Active animations
 	animations []*Animation
 
@@ -249,7 +252,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 	}
 
-	snapshots := make([]slotSnapshot, 0, len(sortedSlots))
+	c.snapCache = c.snapCache[:0]
 	for _, idx := range sortedSlots {
 		if idx >= len(l.Slots) {
 			continue
@@ -363,13 +366,13 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			snap.cropBuf = c.cropBufs[idx][:cropNeeded]
 		}
 
-		snapshots = append(snapshots, snap)
+		c.snapCache = append(c.snapCache, snap)
 	}
 	c.mu.Unlock()
 
 	// Phase 2: Lock-free — crop (if fill mode), scale, and composite each slot.
-	for i := range snapshots {
-		snap := &snapshots[i]
+	for i := range c.snapCache {
+		snap := &c.snapCache[i]
 		slotW := snap.rect.Dx()
 		slotH := snap.rect.Dy()
 
@@ -428,16 +431,12 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	return yuv
 }
 
-// selectScaleQuality picks bilinear for small PIP slots and Lanczos-3 for
-// larger slots where the quality difference is visible. Threshold: 25% of
-// frame area. Below that, bilinear is 5-15x faster and visually identical
-// at small on-screen sizes.
-func (c *Compositor) selectScaleQuality(_, _, dstW, dstH, frameW, frameH int) transition.ScaleQuality {
-	frameArea := frameW * frameH
-	if frameArea > 0 && dstW*dstH*4 < frameArea {
-		return transition.ScaleQualityFast
-	}
-	return transition.ScaleQualityHigh
+// selectScaleQuality always uses bilinear for PIP compositing. Lanczos-3 is
+// 5-15x slower and imperceptible at PIP overlay scale. With 4 PIP slots
+// scaling from 1080p sources, Lanczos-3 caused 400ms+ per frame (446ms
+// measured), blowing past the 33ms frame budget and causing visual artifacts.
+func (c *Compositor) selectScaleQuality(_, _, _, _, _, _ int) transition.ScaleQuality {
+	return transition.ScaleQualityFast
 }
 
 // Latency returns the estimated processing time for the current layout.
