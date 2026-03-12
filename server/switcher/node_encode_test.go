@@ -39,7 +39,7 @@ func TestEncodeNode_ProcessEncodes(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
 		YUV:        make([]byte, 4*4*3/2),
@@ -81,7 +81,7 @@ func TestEncodeNode_ForceIDR(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
 		YUV:        make([]byte, 4*4*3/2),
@@ -118,7 +118,7 @@ func TestEncodeNode_EncodeError(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
 		YUV:    make([]byte, 4*4*3/2),
