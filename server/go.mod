@@ -9,7 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/stretchr/testify v1.11.1
 	github.com/zsiec/ccx v0.2.0
-	github.com/zsiec/prism v0.1.3
+	github.com/zsiec/prism v0.1.5
 	github.com/zsiec/srtgo v0.2.4
 	golang.org/x/sys v0.36.0
 )
