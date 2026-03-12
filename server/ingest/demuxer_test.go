@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -51,13 +52,11 @@ func TestStreamDemuxer_EmptyReader(t *testing.T) {
 	bc := &mockBroadcaster{}
 	d := NewStreamDemuxer("test", bytes.NewReader(nil), bc)
 	err := d.Run(context.Background())
-	// Empty reader should return nil (clean EOF, not an error)
 	require.NoError(t, err)
 	require.Empty(t, bc.videoFrames())
 }
 
 func TestStreamDemuxer_ContextCancellation(t *testing.T) {
-	// A reader that blocks forever
 	r, _ := io.Pipe()
 	bc := &mockBroadcaster{}
 	d := NewStreamDemuxer("test", r, bc)
@@ -69,8 +68,37 @@ func TestStreamDemuxer_ContextCancellation(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		require.NoError(t, err) // context cancellation is clean
+		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
 	}
+}
+
+func TestStreamDemuxer_RealTS(t *testing.T) {
+	f, err := os.Open("testdata/sample.ts")
+	if err != nil {
+		t.Skip("testdata/sample.ts not available")
+	}
+	defer f.Close()
+
+	bc := &mockBroadcaster{}
+	d := NewStreamDemuxer("test", f, bc)
+	err = d.Run(context.Background())
+	require.NoError(t, err)
+
+	vf := bc.videoFrames()
+	require.NotEmpty(t, vf, "expected video frames")
+
+	// First video frame should be a keyframe with SPS/PPS and AVC1 WireData.
+	require.True(t, vf[0].IsKeyframe, "first frame should be a keyframe")
+	require.NotEmpty(t, vf[0].SPS, "keyframe should have SPS")
+	require.NotEmpty(t, vf[0].PPS, "keyframe should have PPS")
+	require.NotEmpty(t, vf[0].WireData, "frame should have AVC1 WireData")
+	require.Equal(t, "h264", vf[0].Codec)
+
+	// Audio frames should have sample rate and channels parsed from ADTS.
+	af := bc.audioFrames()
+	require.NotEmpty(t, af, "expected audio frames")
+	require.Greater(t, af[0].SampleRate, 0, "sample rate should be parsed from ADTS")
+	require.Greater(t, af[0].Channels, 0, "channels should be parsed from ADTS")
 }
