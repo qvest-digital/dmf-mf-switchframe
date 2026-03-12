@@ -154,7 +154,7 @@ func TestEncodeNode_ProcessReturnsImmediately(t *testing.T) {
 		},
 	}
 	n.start()
-	defer n.Close()
+	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
 		YUV:    make([]byte, 4*4*3/2),
@@ -194,7 +194,7 @@ func TestEncodeNode_DropCounterOnBackpressure(t *testing.T) {
 	n.start()
 	defer func() {
 		close(blockCh) // unblock encoder so Close() can drain
-		n.Close()
+		_ = n.Close()
 	}()
 
 	// First frame: goes to the encoder goroutine (blocks on blockCh).
@@ -246,7 +246,7 @@ func TestEncodeNode_ForceIDRReArmedOnDrop(t *testing.T) {
 	n.start()
 	defer func() {
 		close(blockCh)
-		n.Close()
+		_ = n.Close()
 	}()
 
 	// First frame: picked up by goroutine and blocks.
