@@ -100,9 +100,8 @@ func probeEncoder() string {
 
 // tryEncoder attempts to create a small FFmpeg encoder, encode a few frames,
 // and close it. Returns true if the codec is functional.
-// Frame-threaded encoders buffer (thread_count - 1) frames before producing
-// output. With 4 threads, we need at least 4 frames; 30 provides headroom
-// for hardware encoders with additional warmup latency.
+// With sliced threading (tune zerolatency), libx264 produces output on frame 1.
+// 30 frames provides headroom for hardware encoders with warmup latency.
 func tryEncoder(codecName string) bool {
 	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, nil)
 	if err != nil {

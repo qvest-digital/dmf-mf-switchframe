@@ -88,11 +88,12 @@ func TestCVBR_BitrateConvergence(t *testing.T) {
 
 	t.Logf("target=%d actual=%.0f ratio=%.2f frames=%d", bitrate, actualBitrate, ratio, frameCount)
 
-	// cVBR should converge within ±30-40% of target. ABR with tight VBV won't
-	// hit exact target on synthetic content, but should be in the ballpark.
+	// cVBR should converge within ±40% of target. With superfast preset and
+	// rc-lookahead=0 (set by tune zerolatency), rate control has less context
+	// for bit allocation, so tolerance is slightly wider than with lookahead.
 	// Production camera content at 1080p converges much tighter (±20%).
-	require.Greater(t, ratio, 0.6, "actual bitrate %.0f too low vs target %d (ratio %.2f)", actualBitrate, bitrate, ratio)
-	require.Less(t, ratio, 1.3, "actual bitrate %.0f too high vs target %d (ratio %.2f)", actualBitrate, bitrate, ratio)
+	require.Greater(t, ratio, 0.5, "actual bitrate %.0f too low vs target %d (ratio %.2f)", actualBitrate, bitrate, ratio)
+	require.Less(t, ratio, 1.4, "actual bitrate %.0f too high vs target %d (ratio %.2f)", actualBitrate, bitrate, ratio)
 }
 
 // TestCVBR_VBVConstrainedFrameSize verifies that the VBV buffer at 1.2x target
@@ -131,9 +132,10 @@ func TestCVBR_VBVConstrainedFrameSize(t *testing.T) {
 		"max frame size %d should be less than VBV buffer %d bytes (1.2x target)", maxSize, vbvBufferBytes)
 }
 
-// TestCVBR_ThreadCapAt4 verifies the encoder works correctly with the thread
-// cap at 4 (reduced from 8) for lower pipeline latency.
-func TestCVBR_ThreadCapAt4(t *testing.T) {
+// TestCVBR_SlicedThreadingImmediate verifies the encoder with sliced threading
+// (tune zerolatency) produces output on the very first frame — zero internal
+// frame buffering, unlike frame threading which buffers (thread_count-1) frames.
+func TestCVBR_SlicedThreadingImmediate(t *testing.T) {
 	w, h := 640, 480
 	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30, 1, 2, nil)
 	require.NoError(t, err)
@@ -144,19 +146,11 @@ func TestCVBR_ThreadCapAt4(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// With thread cap at 4, internal latency is max 3 frames (~100ms at 30fps).
-	// Encoder should produce output within 10 frames (generous headroom).
-	var gotOutput bool
-	for i := 0; i < 10; i++ {
-		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
-		require.NoError(t, err)
-		if data != nil {
-			gotOutput = true
-			break
-		}
-	}
-	require.True(t, gotOutput,
-		"encoder with thread cap 4 should produce output within 10 frames (max 3-frame internal latency)")
+	// With sliced threading, output is immediate on first frame.
+	data, _, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotNil(t, data,
+		"encoder with sliced threading should produce output on first frame (zero internal latency)")
 }
 
 // TestCVBR_ProducesOutput verifies basic encoder functionality with the new
@@ -172,16 +166,10 @@ func TestCVBR_ProducesOutput(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	var encoded []byte
-	var isKey bool
-	for i := 0; i < 30; i++ {
-		encoded, isKey, err = enc.Encode(yuv, int64(i*3000), i == 0)
-		require.NoError(t, err)
-		if encoded != nil {
-			break
-		}
-	}
-	require.NotEmpty(t, encoded, "cVBR encoder should produce output within 30 frames")
+	// Sliced threading produces output on first frame.
+	encoded, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded, "cVBR encoder should produce output on first frame")
 	require.True(t, isKey, "first output should be a keyframe")
 
 	// Verify Annex B start code.
@@ -192,12 +180,10 @@ func TestCVBR_ProducesOutput(t *testing.T) {
 	require.Equal(t, byte(0x01), encoded[3])
 }
 
-// TestCVBR_ProbeFrameCount verifies the probe sends enough frames to get output
-// from threaded encoders (30 frames, not the old 8).
+// TestCVBR_ProbeFrameCount verifies the probe sends enough frames to get output.
+// With sliced threading (tune zerolatency), libx264 succeeds on frame 1.
+// The 30-frame loop provides headroom for hardware encoders with warmup latency.
 func TestCVBR_ProbeFrameCount(t *testing.T) {
-	// With thread cap at 4, tryEncoder must send enough frames to fill the
-	// pipeline. The old count of 8 was insufficient for some configurations.
-	// This test verifies the probe succeeds.
 	result := tryEncoder("libx264")
 	require.True(t, result, "tryEncoder should succeed for libx264 with sufficient frame count")
 }

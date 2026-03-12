@@ -82,10 +82,9 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
 
-	// Cap thread count at 4: balances encode speed vs internal latency.
-	// x264 frame-level threading buffers (thread_count - 1) frames internally.
-	// 4 threads = max 3 frames internal buffer (~100ms at 30fps).
-	// Above 4, gains are sublinear but latency doubles.
+	// Thread count for sliced threading: determines how many slices per frame.
+	// 4 slices at 1080p = 270 lines each. Zero added pipeline latency.
+	// Above 4, gains are sublinear and slice boundary artifacts increase.
 	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 2) ncpu = 2;
 	if (ncpu > 4) ncpu = 4;
@@ -104,18 +103,17 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 
 	// Codec-specific options.
 	if (strcmp(codec_name, "libx264") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "fast", 0);
+		av_opt_set(h->ctx->priv_data, "preset", "superfast", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
+		// zerolatency: sliced threading (zero frame buffer), no mbtree,
+		// sync-lookahead=0, rc-lookahead=0, force-cfr=1.
+		// Eliminates ~100ms internal encoder buffering from frame threading.
+		av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
 		// Auto-variance AQ adapts per-frame between temporal and spatial
 		// redistribution — better than mode 2 for mixed content (static →
 		// dissolve → stinger → camera motion).
 		av_opt_set(h->ctx->priv_data, "aq-mode", "3", 0);
 		av_opt_set(h->ctx->priv_data, "aq-strength", "1.2", 0);
-		// Disable sync-lookahead (threaded lookahead adds latency).
-		av_opt_set(h->ctx->priv_data, "sync-lookahead", "0", 0);
-		// Disable mbtree — it needs deep lookahead to be effective and
-		// adds frame-buffering latency in low-lookahead configurations.
-		av_opt_set(h->ctx->priv_data, "mbtree", "0", 0);
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
 		char level_str[8];
@@ -123,9 +121,6 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
-		// Low-latency lookahead: 3 frames gives AQ enough context for
-		// good bit allocation without adding significant delay.
-		av_opt_set(h->ctx->priv_data, "rc-lookahead", "3", 0);
 		// Smart weighted prediction improves dissolve quality (~5% CPU cost).
 		// Exploits linear fade relationship between frames during mix transitions.
 		av_opt_set(h->ctx->priv_data, "weightp", "2", 0);

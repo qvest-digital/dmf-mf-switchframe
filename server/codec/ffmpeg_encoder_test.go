@@ -73,20 +73,11 @@ func TestFFmpegEncoderEncodeFrame(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Without zerolatency tune, the encoder may buffer initial frames
-	// (frame-level threading fills the pipeline before producing output).
-	// Feed frames until we get a keyframe output.
-	var encoded []byte
-	var isKeyframe bool
-	for i := 0; i < 30; i++ {
-		forceIDR := i == 0
-		encoded, isKeyframe, err = enc.Encode(yuv, int64(i*3000), forceIDR)
-		require.NoError(t, err)
-		if encoded != nil {
-			break
-		}
-	}
-	require.NotEmpty(t, encoded, "encoder should produce output within 30 frames")
+	// With tune zerolatency (sliced threading), the encoder produces output
+	// on the very first frame — no internal frame buffering.
+	encoded, isKeyframe, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotEmpty(t, encoded, "sliced-thread encoder should produce output on first frame")
 	require.True(t, isKeyframe, "first output should be a keyframe")
 
 	// Verify Annex B start code prefix.
@@ -121,7 +112,7 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 		forceIDR := i == 0
 		data, isKey, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "frame %d", i)
-		// Without zerolatency, initial frames may return nil (EAGAIN).
+		// With sliced threading, every frame produces output immediately.
 		if data != nil {
 			outputCount++
 			if outputCount == 1 {
@@ -129,7 +120,8 @@ func TestFFmpegEncoderMultipleFrames(t *testing.T) {
 			}
 		}
 	}
-	require.Greater(t, outputCount, 0, "should produce at least one output frame")
+	// Sliced threading: all 30 frames should produce output.
+	require.Equal(t, 30, outputCount, "sliced threading should produce output for every frame")
 	require.True(t, firstOutputIsKey, "first output frame should be keyframe")
 }
 
@@ -146,26 +138,18 @@ func TestFFmpegEncoderForceIDR(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Encode frames to fill the pipeline and produce output.
-	for i := 0; i < 30; i++ {
-		forceIDR := i == 0
-		_, _, err := enc.Encode(yuv, int64(i*3000), forceIDR)
+	// Encode some initial frames.
+	for i := 0; i < 10; i++ {
+		_, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
 		require.NoError(t, err, "frame %d", i)
 	}
 
-	// Force IDR. With multi-threaded encoding, output lags input by ~15 frames,
-	// so we need to feed enough additional frames for the IDR to appear.
-	foundIDR := false
-	for i := 0; i < 30; i++ {
-		forceOnFirst := i == 0
-		data, isKeyframe, err := enc.Encode(yuv, int64((30+i)*3000), forceOnFirst)
-		require.NoError(t, err)
-		if data != nil && isKeyframe {
-			foundIDR = true
-			break
-		}
-	}
-	require.True(t, foundIDR, "forced IDR should produce a keyframe within pipeline delay")
+	// Force IDR. With sliced threading, output is immediate — the forced IDR
+	// frame should produce a keyframe on the very next encode call.
+	data, isKeyframe, err := enc.Encode(yuv, int64(10*3000), true)
+	require.NoError(t, err)
+	require.NotNil(t, data, "forced IDR should produce output immediately with sliced threading")
+	require.True(t, isKeyframe, "forced IDR should produce a keyframe")
 }
 
 func TestFFmpegEncoderWrongYUVSize(t *testing.T) {
@@ -244,8 +228,7 @@ func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 		forceIDR := i == 0
 		data, isKey, err := enc.Encode(yuv, int64(i*3000), forceIDR)
 		require.NoError(t, err, "frame %d", i)
-		// With threading/lookahead, initial frames may return nil (EAGAIN).
-		// After pipeline fills, frames should produce output.
+		// Sliced threading produces output on every frame.
 		if data != nil && isKey {
 			keyframeCount++
 		}
@@ -280,17 +263,10 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 				yuv[i] = 128
 			}
 
-			// Feed enough frames to get output (pipeline delay from threading)
-			var data []byte
-			var isKey bool
-			for i := 0; i < 30; i++ {
-				data, isKey, err = enc.Encode(yuv, int64(i*3000), i == 0)
-				require.NoError(t, err)
-				if data != nil && isKey {
-					break
-				}
-			}
-			require.NotNil(t, data, "encoder should produce output")
+			// Sliced threading produces output on first frame.
+			data, isKey, err := enc.Encode(yuv, 0, true)
+			require.NoError(t, err)
+			require.NotNil(t, data, "encoder should produce output on first frame")
 			require.True(t, isKey, "should be a keyframe")
 
 			// Find SPS NALU (type 7) in the Annex B output
@@ -319,16 +295,10 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 		yuv[i] = 128
 	}
 
-	// Feed enough frames to get output
-	var data []byte
-	for i := 0; i < 30; i++ {
-		data, _, err = enc.Encode(yuv, int64(i*3000), i == 0)
-		require.NoError(t, err)
-		if data != nil {
-			break
-		}
-	}
-	require.NotNil(t, data, "encoder should produce output")
+	// Sliced threading produces output on first frame.
+	data, _, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotNil(t, data, "encoder should produce output on first frame")
 
 	// Find AUD NALU (type 9) in Annex B output
 	avc1 := AnnexBToAVC1(data)
@@ -391,6 +361,34 @@ func TestFFmpegEncoderInterface(t *testing.T) {
 	enc = e
 	require.NotNil(t, enc)
 	enc.Close()
+}
+
+// TestFFmpegEncoderSlicedThreadingImmediate verifies that sliced threading
+// (via tune zerolatency) produces output from the very first send_frame/
+// receive_packet call. Frame threading returns EAGAIN for the first N-1 frames;
+// sliced threading splits each frame into parallel slices with zero buffering.
+func TestFFmpegEncoderSlicedThreadingImmediate(t *testing.T) {
+	w, h := 640, 480
+	enc, err := NewFFmpegEncoder("libx264", w, h, 2_000_000, 30, 1, 2, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	// The critical check: first frame must produce output immediately.
+	// If the encoder were using frame threading, this would return nil (EAGAIN).
+	data, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotNil(t, data, "first frame must produce output (confirms sliced threading, not frame threading)")
+	require.True(t, isKey, "first frame should be IDR keyframe")
+
+	// Second frame should also produce output immediately.
+	data, _, err = enc.Encode(yuv, 3000, false)
+	require.NoError(t, err)
+	require.NotNil(t, data, "second frame must also produce immediate output")
 }
 
 // Old CBR tests (TestFFmpegEncoderCBRMode, TestFFmpegEncoderCBRProducesFillerNALUs,
