@@ -25,6 +25,7 @@ type StreamDemuxer struct {
 	reader      io.Reader
 	broadcaster Broadcaster
 	log         *slog.Logger
+	annexBBuf   []byte // reusable buffer for Annex B flattening (avoids alloc per frame)
 }
 
 // NewStreamDemuxer creates a demuxer that reads MPEG-TS from reader and
@@ -52,8 +53,9 @@ func (d *StreamDemuxer) Run(ctx context.Context) error {
 
 	videoCh := dmx.Video()
 	audioCh := dmx.Audio()
+	captionCh := dmx.Captions()
 
-	for videoCh != nil || audioCh != nil {
+	for videoCh != nil || audioCh != nil || captionCh != nil {
 		select {
 		case frame, ok := <-videoCh:
 			if !ok {
@@ -67,6 +69,13 @@ func (d *StreamDemuxer) Run(ctx context.Context) error {
 				continue
 			}
 			d.broadcaster.BroadcastAudio(frame)
+		case _, ok := <-captionCh:
+			if !ok {
+				captionCh = nil
+				continue
+			}
+			// Drain captions to prevent blocking the demuxer goroutine.
+			// Caption data flows via SEI NALUs in the video stream instead.
 		case <-ctx.Done():
 			return nil
 		}
@@ -81,22 +90,47 @@ func (d *StreamDemuxer) Run(ctx context.Context) error {
 
 // convertAndBroadcastVideo converts Prism's Annex B NALUs to AVC1 WireData
 // format expected by Switchframe's sourceViewer/sourceDecoder pipeline.
+// SPS/PPS NALUs are stripped for both H.264 and H.265 since they're already
+// in the separate frame fields — including them would cause duplication when
+// sourceDecoder prepends them on keyframes. VPS is kept inline for H.265
+// because sourceDecoder doesn't re-inject it.
 func (d *StreamDemuxer) convertAndBroadcastVideo(frame *media.VideoFrame) {
 	if len(frame.NALUs) == 0 {
 		return
 	}
 
-	// Flatten Annex B NALUs into a single byte stream, then convert to AVC1.
+	// Flatten Annex B NALUs into a single byte stream, skipping parameter sets.
 	// Each NALU in frame.NALUs is [0x00 0x00 0x00 0x01 | data].
-	var size int
+	d.annexBBuf = d.annexBBuf[:0]
 	for _, n := range frame.NALUs {
-		size += len(n)
+		if len(n) > 4 && isParameterSetNALU(n[4], frame.Codec) {
+			continue
+		}
+		d.annexBBuf = append(d.annexBBuf, n...)
 	}
-	annexB := make([]byte, 0, size)
-	for _, n := range frame.NALUs {
-		annexB = append(annexB, n...)
-	}
-	frame.WireData = codec.AnnexBToAVC1(annexB)
 
+	if len(d.annexBBuf) == 0 {
+		return // no slice NALUs after stripping parameter sets
+	}
+
+	frame.WireData = codec.AnnexBToAVC1(d.annexBBuf)
 	d.broadcaster.BroadcastVideo(frame)
+}
+
+// isParameterSetNALU returns true if the first byte of a NALU (after the
+// start code) indicates a parameter set that should be stripped from WireData.
+// Only strips what sourceDecoder re-injects (SPS + PPS). VPS is NOT stripped
+// for H.265 because sourceDecoder.PrependSPSPPSInto doesn't re-inject it —
+// stripping VPS would lose it entirely, and HEVC decoders require VPS before
+// SPS to initialize.
+//
+// H.264: NAL type = byte & 0x1F → SPS=7, PPS=8
+// H.265: NAL type = (byte >> 1) & 0x3F → SPS=33, PPS=34 (VPS=32 kept inline)
+func isParameterSetNALU(firstByte byte, codec string) bool {
+	if codec == "h265" {
+		nalType := (firstByte >> 1) & 0x3F
+		return nalType == 33 || nalType == 34 // SPS, PPS only — VPS stays inline
+	}
+	nalType := firstByte & 0x1F
+	return nalType == 7 || nalType == 8 // SPS, PPS
 }
