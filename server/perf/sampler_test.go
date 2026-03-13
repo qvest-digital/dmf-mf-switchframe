@@ -378,3 +378,46 @@ func TestSampler_Snapshot_UnknownBaseline(t *testing.T) {
 		t.Errorf("expected nil baseline for unknown name, got %+v", snap.Baseline)
 	}
 }
+
+func TestSampler_SubStageBreakdown(t *testing.T) {
+	mock := &mockSwitcherPerf{
+		sample: SwitcherSample{
+			PipelineLastNs: 100_000,
+			E2ELastNs:      14_000_000,
+			DecodeQueueNs:  500_000,
+			DecodeNs:       1_000_000,
+			SyncWaitNs:     12_000_000,
+			ProcQueueNs:    200_000,
+			FrameBudgetNs:  33_333_333,
+			Sources:        map[string]SourceSample{},
+			NodeTimings:    map[string]int64{},
+		},
+	}
+	s := NewSampler(mock, &mockMixerPerf{}, &mockOutputPerf{})
+	s.tick()
+
+	snap := s.Snapshot("")
+	if snap.E2E.Stages == nil {
+		t.Fatal("E2E.Stages should not be nil")
+	}
+	stages := snap.E2E.Stages
+
+	if stages.DecodeQueue.Current.LastNs != 500_000 {
+		t.Errorf("DecodeQueue current: got %d, want 500000", stages.DecodeQueue.Current.LastNs)
+	}
+	if stages.Decode.Current.LastNs != 1_000_000 {
+		t.Errorf("Decode current: got %d, want 1000000", stages.Decode.Current.LastNs)
+	}
+	if stages.SyncWait.Current.LastNs != 12_000_000 {
+		t.Errorf("SyncWait current: got %d, want 12000000", stages.SyncWait.Current.LastNs)
+	}
+	if stages.ProcQueue.Current.LastNs != 200_000 {
+		t.Errorf("ProcQueue current: got %d, want 200000", stages.ProcQueue.Current.LastNs)
+	}
+
+	// Verify windowed stats
+	w1s := stages.SyncWait.Windows
+	if w1s.W1s.MeanNs != 12_000_000 {
+		t.Errorf("SyncWait 1s mean: got %d, want 12000000", w1s.W1s.MeanNs)
+	}
+}

@@ -84,6 +84,10 @@ type SwitcherSample struct {
 	VideoBroadcast     int64
 	DeadlineViolations int64
 	FrameBudgetNs      int64
+	DecodeQueueNs      int64
+	DecodeNs           int64
+	SyncWaitNs         int64
+	ProcQueueNs        int64
 }
 
 // SourceSample holds per-source performance data.
@@ -150,6 +154,12 @@ type Sampler struct {
 	mixCycleRing     *RingStat
 	broadcastGapRing *RingStat
 
+	// Sub-stage latency rings
+	decodeQueueRing *RingStat
+	decodeRing      *RingStat
+	syncWaitRing    *RingStat
+	procQueueRing   *RingStat
+
 	// Provider references
 	switcher SwitcherPerf
 	mixer    MixerPerf
@@ -179,6 +189,10 @@ func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 		e2eRing:          &RingStat{},
 		mixCycleRing:     &RingStat{},
 		broadcastGapRing: &RingStat{},
+		decodeQueueRing:  &RingStat{},
+		decodeRing:       &RingStat{},
+		syncWaitRing:     &RingStat{},
+		procQueueRing:    &RingStat{},
 		switcher:         sw,
 		mixer:            mx,
 		output:           out,
@@ -253,6 +267,12 @@ func (s *Sampler) tick() {
 	s.e2eRing.Push(sw.E2ELastNs)
 	s.mixCycleRing.Push(mx.MixCycleLastNs)
 	s.broadcastGapRing.Push(sw.BroadcastGapNs)
+
+	// Sub-stage breakdown
+	s.decodeQueueRing.Push(sw.DecodeQueueNs)
+	s.decodeRing.Push(sw.DecodeNs)
+	s.syncWaitRing.Push(sw.SyncWaitNs)
+	s.procQueueRing.Push(sw.ProcQueueNs)
 }
 
 const maxBaselines = 10

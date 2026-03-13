@@ -128,10 +128,30 @@ type PerfNodeCurrent struct {
 	LastNs int64 `json:"last_ns"`
 }
 
+// PerfStageCurrent holds the latest sub-stage sample.
+type PerfStageCurrent struct {
+	LastNs int64 `json:"last_ns"`
+}
+
+// PerfStageSnapshot holds a single sub-stage with current + windowed stats.
+type PerfStageSnapshot struct {
+	Current PerfStageCurrent `json:"current"`
+	Windows PerfWindows      `json:"windows"`
+}
+
+// PerfStageBreakdown holds the E2E latency decomposition.
+type PerfStageBreakdown struct {
+	DecodeQueue PerfStageSnapshot `json:"decode_queue"`
+	Decode      PerfStageSnapshot `json:"decode"`
+	SyncWait    PerfStageSnapshot `json:"sync_wait"`
+	ProcQueue   PerfStageSnapshot `json:"proc_queue"`
+}
+
 // PerfE2ESnapshot holds end-to-end latency data.
 type PerfE2ESnapshot struct {
-	Current PerfE2ECurrent `json:"current"`
-	Windows PerfWindows    `json:"windows"`
+	Current PerfE2ECurrent      `json:"current"`
+	Windows PerfWindows         `json:"windows"`
+	Stages  *PerfStageBreakdown `json:"stages,omitempty"`
 }
 
 // PerfE2ECurrent holds the latest E2E sample.
@@ -289,6 +309,24 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 		E2E: PerfE2ESnapshot{
 			Current: PerfE2ECurrent{LastNs: sw.E2ELastNs},
 			Windows: ringToWindows(s.e2eRing),
+			Stages: &PerfStageBreakdown{
+				DecodeQueue: PerfStageSnapshot{
+					Current: PerfStageCurrent{LastNs: sw.DecodeQueueNs},
+					Windows: ringToWindows(s.decodeQueueRing),
+				},
+				Decode: PerfStageSnapshot{
+					Current: PerfStageCurrent{LastNs: sw.DecodeNs},
+					Windows: ringToWindows(s.decodeRing),
+				},
+				SyncWait: PerfStageSnapshot{
+					Current: PerfStageCurrent{LastNs: sw.SyncWaitNs},
+					Windows: ringToWindows(s.syncWaitRing),
+				},
+				ProcQueue: PerfStageSnapshot{
+					Current: PerfStageCurrent{LastNs: sw.ProcQueueNs},
+					Windows: ringToWindows(s.procQueueRing),
+				},
+			},
 		},
 		Audio: PerfAudioSnapshot{
 			Mode: mx.Mode,
