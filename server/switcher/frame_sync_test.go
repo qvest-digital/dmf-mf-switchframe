@@ -1595,3 +1595,44 @@ func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
 		require.Equal(t, 2, cam2["video_count"])
 	})
 }
+
+func TestFrameSync_SyncReleaseNano(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Capture the ProcessingFrame delivered via onRawVideo.
+	var mu sync.Mutex
+	var captured *ProcessingFrame
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		cp := *pf
+		captured = &cp
+	}
+
+	// Ingest a raw video frame with a known DecodeEndNano.
+	beforeIngest := time.Now().UnixNano()
+	pf := &ProcessingFrame{
+		PTS:           1000,
+		YUV:           []byte{0x01},
+		DecodeEndNano: beforeIngest,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for the onRawVideo callback to fire.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return captured != nil
+	}, 500*time.Millisecond, 5*time.Millisecond, "expected onRawVideo callback to fire")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Greater(t, captured.SyncReleaseNano, int64(0), "SyncReleaseNano should be stamped (non-zero)")
+	require.GreaterOrEqual(t, captured.SyncReleaseNano, captured.DecodeEndNano,
+		"SyncReleaseNano should be >= DecodeEndNano")
+}

@@ -863,6 +863,7 @@ func (fs *FrameSynchronizer) releaseTick() {
 					pf.PTS = r.ss.lastReleasedPTS
 				}
 			}
+			pf.SyncReleaseNano = time.Now().UnixNano()
 			if fs.onRawVideo != nil {
 				fs.onRawVideo(r.sourceKey, &pf)
 			}
