@@ -2,6 +2,15 @@ package switcher
 
 import "time"
 
+// AsyncMetricsProvider is optionally implemented by pipeline nodes that
+// perform work asynchronously (after Process() returns). The returned map
+// is merged into the node's Snapshot() entry, giving debug tools access to
+// the real work duration instead of the near-zero enqueue time measured by
+// the pipeline loop.
+type AsyncMetricsProvider interface {
+	AsyncMetrics() map[string]any
+}
+
 // PipelineNode is the fundamental processing unit in the video pipeline.
 //
 // Lifecycle:

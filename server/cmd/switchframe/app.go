@@ -254,6 +254,10 @@ func (a *App) initCoreEngine() error {
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
 
+	// Record which codec was selected at startup for debug snapshot.
+	encName, decName := codec.ProbeEncoders()
+	a.sw.SetCodecInfo(encName, decName, codec.HWDeviceCtx() != nil)
+
 	// Apply pipeline format from config.
 	if f, ok := switcher.FormatPresets[a.cfg.Format]; ok {
 		if err := a.sw.SetPipelineFormat(f); err != nil {

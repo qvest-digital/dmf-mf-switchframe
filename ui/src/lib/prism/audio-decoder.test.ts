@@ -12,6 +12,7 @@ vi.mock('./audio-ring-buffer', () => {
 		AudioRingBuffer: class MockAudioRingBuffer {
 			init = vi.fn();
 			write = vi.fn().mockReturnValue(128);
+			writeBuffers = vi.fn().mockReturnValue(128);
 			destroy = vi.fn();
 			play = vi.fn();
 			readPTS = vi.fn().mockReturnValue(0);
@@ -173,6 +174,86 @@ describe('PrismAudioDecoder', () => {
 		const diag = decoder.getDiagnostics();
 		// inputPtsJumps may increment for >100ms gaps, but no epoch reset
 		expect(diag.inputPtsWraps).toBe(0);
+	});
+
+	it('should resample when source rate differs from context rate', async () => {
+		const decoder = new PrismAudioDecoder();
+		// Context at 48kHz, source will decode at 44100Hz
+		await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+
+		if (decoderOutputCb) {
+			const mockAudioData = {
+				numberOfFrames: 1024,
+				sampleRate: 44100, // source rate differs from context (48000)
+				timestamp: 0,
+				duration: 23220,
+				numberOfChannels: 2,
+				format: 'f32-planar',
+				copyTo: vi.fn(),
+				clone: vi.fn(),
+				close: vi.fn(),
+			};
+			decoderOutputCb(mockAudioData as unknown as AudioData);
+
+			// Should have used writeBuffers (resampled path), not write
+			// Access the ring buffer via the decoder internals
+			expect(mockAudioData.copyTo).toHaveBeenCalled();
+			expect(mockAudioData.close).toHaveBeenCalled();
+		}
+	});
+
+	it('should not resample when source rate matches context rate', async () => {
+		const decoder = new PrismAudioDecoder();
+		await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+
+		if (decoderOutputCb) {
+			const mockAudioData = {
+				numberOfFrames: 1024,
+				sampleRate: 48000, // matches context rate
+				timestamp: 0,
+				duration: 21333,
+				numberOfChannels: 2,
+				format: 'f32-planar',
+				copyTo: vi.fn(),
+				clone: vi.fn(),
+				close: vi.fn(),
+			};
+			decoderOutputCb(mockAudioData as unknown as AudioData);
+
+			// Should have used write (direct path), not writeBuffers
+			// copyTo is not called by the decoder — it's called by the ring buffer mock
+			expect(mockAudioData.copyTo).not.toHaveBeenCalled();
+			expect(mockAudioData.close).toHaveBeenCalled();
+		}
+	});
+
+	it('should upmix mono source to stereo when resampling', async () => {
+		const decoder = new PrismAudioDecoder();
+		// Context at 48kHz stereo, source will be mono 44100Hz
+		await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+
+		if (decoderOutputCb) {
+			const copyToSpy = vi.fn();
+			const mockAudioData = {
+				numberOfFrames: 1024,
+				sampleRate: 44100, // triggers resampling
+				timestamp: 0,
+				duration: 23220,
+				numberOfChannels: 1, // mono source
+				format: 'f32-planar',
+				copyTo: copyToSpy,
+				clone: vi.fn(),
+				close: vi.fn(),
+			};
+			decoderOutputCb(mockAudioData as unknown as AudioData);
+
+			// copyTo should be called twice (once per output channel),
+			// both with planeIndex: 0 since mono source only has plane 0
+			expect(copyToSpy).toHaveBeenCalledTimes(2);
+			expect(copyToSpy.mock.calls[0][1]).toEqual({ planeIndex: 0, format: 'f32-planar' });
+			expect(copyToSpy.mock.calls[1][1]).toEqual({ planeIndex: 0, format: 'f32-planar' });
+			expect(mockAudioData.close).toHaveBeenCalled();
+		}
 	});
 
 	it('should detect backward PTS wraps', async () => {

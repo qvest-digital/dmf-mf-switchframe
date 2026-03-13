@@ -357,6 +357,12 @@ type Switcher struct {
 	// called from the async encodeLoop goroutine, so shared mutable buffers
 	// would race during pipeline swap. Per-frame allocation is negligible.
 
+	// Codec info — which encoder/decoder were selected at startup.
+	// Set via SetCodecInfo(), read-only after initialization.
+	codecEncoder string
+	codecDecoder string
+	codecHWAccel bool
+
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
@@ -423,6 +429,17 @@ func (s *Switcher) SetMetrics(m *metrics.Metrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.promMetrics = m
+}
+
+// SetCodecInfo records which encoder/decoder were selected at startup and
+// whether hardware acceleration is active. Called once during init after
+// codec.ProbeEncoders(). Values are exposed in DebugSnapshot() under "codec".
+func (s *Switcher) SetCodecInfo(encoder, decoder string, hwAccel bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.codecEncoder = encoder
+	s.codecDecoder = decoder
+	s.codecHWAccel = hwAccel
 }
 
 // SetRawVideoSink sets or clears the raw video output tap.
@@ -2133,20 +2150,25 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	activeDecoders := 0
 	for key, ss := range s.sources {
 		var videoIn, audioIn int64
-		if ss.viewer != nil {
-			videoIn = ss.viewer.videoSent.Load()
-			audioIn = ss.viewer.audioSent.Load()
-			if ss.viewer.srcDecoder.Load() != nil {
-				activeDecoders++
-			}
-		}
-		sources[key] = map[string]any{
-			"video_frames_in":   videoIn,
-			"audio_frames_in":   audioIn,
+		srcInfo := map[string]any{
 			"health_status":     string(s.health.rawStatus(key)),
 			"last_frame_ago_ms": s.health.lastFrameAgoMs(key),
 			"raw_pipeline":      ss.useRawPipeline,
 		}
+		if ss.viewer != nil {
+			videoIn = ss.viewer.videoSent.Load()
+			audioIn = ss.viewer.audioSent.Load()
+			if sd := ss.viewer.srcDecoder.Load(); sd != nil {
+				activeDecoders++
+				avgSize, avgFPS := sd.Stats()
+				srcInfo["decoder_avg_frame_bytes"] = int(avgSize)
+				srcInfo["decoder_avg_fps"] = avgFPS
+				srcInfo["decoder_active"] = true
+			}
+		}
+		srcInfo["video_frames_in"] = videoIn
+		srcInfo["audio_frames_in"] = audioIn
+		sources[key] = srcInfo
 	}
 
 	// Estimate ~3MB per 1080p YUV420 decoder output buffer.
@@ -2190,6 +2212,11 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"trans_seam_max_ms":    float64(s.transSeamMaxNano.Load()) / 1e6,
 			"trans_seam_count":     s.transSeamCount.Load(),
 		},
+		"codec": map[string]any{
+			"encoder":  s.codecEncoder,
+			"decoder":  s.codecDecoder,
+			"hw_accel": s.codecHWAccel,
+		},
 	}
 
 	if s.framePool != nil {
@@ -2211,11 +2238,9 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		result["transition_engine"] = s.transEngine.Timing()
 	}
 
-	// Include FRC info when frame sync is active.
+	// Include frame sync and FRC state when frame sync is active.
 	if s.frameSync != nil {
-		result["frame_rate_converter"] = map[string]any{
-			"quality": s.frameSync.FRCQuality().String(),
-		}
+		result["frame_sync"] = s.frameSync.DebugSnapshot()
 	}
 
 	// Program relay viewer stats — reveals MoQ channel drops.

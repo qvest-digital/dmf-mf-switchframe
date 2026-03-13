@@ -114,6 +114,57 @@ func TestSplitADTSFrames_NotADTS(t *testing.T) {
 	require.Equal(t, raw, result[0])
 }
 
+func TestParseADTSInfo_48kHz_Stereo(t *testing.T) {
+	t.Parallel()
+	// Build a 48kHz stereo ADTS header.
+	header := BuildADTS(48000, 2, 100)
+	sr, ch := ParseADTSInfo(header)
+	require.Equal(t, 48000, sr)
+	require.Equal(t, 2, ch)
+}
+
+func TestParseADTSInfo_44100Hz_Stereo(t *testing.T) {
+	t.Parallel()
+	header := BuildADTS(44100, 2, 100)
+	sr, ch := ParseADTSInfo(header)
+	require.Equal(t, 44100, sr)
+	require.Equal(t, 2, ch)
+}
+
+func TestParseADTSInfo_Mono(t *testing.T) {
+	t.Parallel()
+	header := BuildADTS(32000, 1, 50)
+	sr, ch := ParseADTSInfo(header)
+	require.Equal(t, 32000, sr)
+	require.Equal(t, 1, ch)
+}
+
+func TestParseADTSInfo_TooShort(t *testing.T) {
+	t.Parallel()
+	sr, ch := ParseADTSInfo(nil)
+	require.Equal(t, 0, sr)
+	require.Equal(t, 0, ch)
+
+	sr, ch = ParseADTSInfo([]byte{0xFF, 0xF1, 0x50})
+	require.Equal(t, 0, sr)
+	require.Equal(t, 0, ch)
+}
+
+func TestParseADTSInfo_NotADTS(t *testing.T) {
+	t.Parallel()
+	sr, ch := ParseADTSInfo([]byte{0x00, 0x01, 0x02, 0x03, 0x04})
+	require.Equal(t, 0, sr)
+	require.Equal(t, 0, ch)
+}
+
+func TestSampleRateFromIndex(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, 48000, sampleRateFromIndex(3))
+	require.Equal(t, 44100, sampleRateFromIndex(4))
+	require.Equal(t, 0, sampleRateFromIndex(15))
+	require.Equal(t, 0, sampleRateFromIndex(-1))
+}
+
 func TestSampleRateIndex(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

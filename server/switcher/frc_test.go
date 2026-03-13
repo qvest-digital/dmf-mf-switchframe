@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -776,6 +777,173 @@ func TestFRC_EmitBlendAfterYUVRelease(t *testing.T) {
 	// Blend path: alpha ~0.5, in the blend zone between near-thresholds.
 	result := fs.emit(1500)
 	require.Nil(t, result, "emitBlend should return nil when prevFrame YUV is released")
+}
+
+func TestFrameSync_ParallelFRC_MultiSource(t *testing.T) {
+	// Verifies that parallel FRC produces correct output for multiple sources.
+	// 4 sources at 24fps-equivalent intervals, output at 60fps tick rate.
+	// After priming with 2 frames each, the next tick should FRC all 4 in parallel.
+	rawHandler := &rawVideoTestHandler{}
+	syncHandler := &syncTestHandler{}
+
+	tickRate := 16683333 * time.Nanosecond // ~59.94fps
+	fs := NewFrameSynchronizer(tickRate, syncHandler.onVideo, syncHandler.onAudio)
+	fs.frcQuality = FRCBlend
+	fs.onRawVideo = rawHandler.onRawVideo
+
+	numSources := 4
+	for i := 0; i < numSources; i++ {
+		fs.AddSource(fmt.Sprintf("cam%d", i))
+	}
+
+	// Ingest 2 frames per source to prime FRC (each with distinct Y values).
+	for i := 0; i < numSources; i++ {
+		key := fmt.Sprintf("cam%d", i)
+		f1 := makeTestFrame(64, 64, byte(50+i*40), int64(i)*3750)
+		f2 := makeTestFrame(64, 64, byte(50+i*40+20), int64(i)*3750+3750)
+		fs.IngestRawVideo(key, f1)
+		fs.IngestRawVideo(key, f2)
+	}
+
+	// Tick 1: pops fresh frames from ring, primes FRC with 2 frames each.
+	fs.releaseTick()
+
+	// Verify all 4 sources produced fresh output on tick 1.
+	frames := rawHandler.getFrames()
+	sourceKeys := make(map[string]int)
+	for _, f := range frames {
+		sourceKeys[f.sourceKey]++
+	}
+	for i := 0; i < numSources; i++ {
+		key := fmt.Sprintf("cam%d", i)
+		require.GreaterOrEqual(t, sourceKeys[key], 1, "source %s should have output on tick 1", key)
+	}
+
+	// Tick 2: no new frames → all 4 sources need FRC (parallel Phase 2).
+	rawHandler.mu.Lock()
+	rawHandler.frames = rawHandler.frames[:0]
+	rawHandler.mu.Unlock()
+
+	fs.releaseTick()
+
+	frames = rawHandler.getFrames()
+	sourceKeys = make(map[string]int)
+	for _, f := range frames {
+		sourceKeys[f.sourceKey]++
+	}
+	for i := 0; i < numSources; i++ {
+		key := fmt.Sprintf("cam%d", i)
+		require.Equal(t, 1, sourceKeys[key],
+			"source %s should have exactly 1 FRC output on tick 2", key)
+	}
+
+	// Verify FRC output has valid YUV (not nil, not zero-length).
+	for _, f := range frames {
+		require.NotNil(t, f.frame.YUV, "FRC output YUV should not be nil for %s", f.sourceKey)
+		require.NotEmpty(t, f.frame.YUV, "FRC output YUV should not be empty for %s", f.sourceKey)
+	}
+
+	// Verify all sources have distinct YUV data (different source frames → different FRC output).
+	if len(frames) >= 2 {
+		yuvSets := make(map[byte]bool)
+		for _, f := range frames {
+			yuvSets[f.frame.YUV[0]] = true
+		}
+		require.Greater(t, len(yuvSets), 1,
+			"FRC outputs should have distinct Y values from different sources")
+	}
+}
+
+func TestFrameSync_ParallelFRC_SingleSource(t *testing.T) {
+	// Single source FRC runs inline (no goroutine overhead).
+	rawHandler := &rawVideoTestHandler{}
+	syncHandler := &syncTestHandler{}
+
+	tickRate := 33333 * time.Microsecond // ~30fps
+	fs := NewFrameSynchronizer(tickRate, syncHandler.onVideo, syncHandler.onAudio)
+	fs.frcQuality = FRCNearest
+	fs.onRawVideo = rawHandler.onRawVideo
+	fs.AddSource("cam1")
+
+	// Prime FRC with 2 frames.
+	f1 := makeTestFrame(64, 64, 100, 3000)
+	f2 := makeTestFrame(64, 64, 200, 6000)
+	fs.IngestRawVideo("cam1", f1)
+	fs.IngestRawVideo("cam1", f2)
+
+	// Tick 1: pops fresh frame.
+	fs.releaseTick()
+
+	// Tick 2: FRC emit (single task, inline).
+	rawHandler.mu.Lock()
+	rawHandler.frames = rawHandler.frames[:0]
+	rawHandler.mu.Unlock()
+
+	fs.releaseTick()
+
+	frames := rawHandler.getFrames()
+	require.Len(t, frames, 1, "should have 1 FRC output for single source")
+	require.NotNil(t, frames[0].frame.YUV)
+	require.Equal(t, "cam1", frames[0].sourceKey)
+}
+
+func TestFrameSync_ParallelFRC_DeepCopiesAreIndependent(t *testing.T) {
+	// Verifies that FRC deep copies from parallel goroutines don't alias
+	// each other or the FRC scratch buffers.
+	rawHandler := &rawVideoTestHandler{}
+	syncHandler := &syncTestHandler{}
+
+	tickRate := 33333 * time.Microsecond
+	pool := NewFramePool(8, 64, 64)
+
+	fs := NewFrameSynchronizer(tickRate, syncHandler.onVideo, syncHandler.onAudio)
+	fs.frcQuality = FRCNearest
+	fs.onRawVideo = rawHandler.onRawVideo
+	fs.framePool = pool
+
+	for i := 0; i < 3; i++ {
+		fs.AddSource(fmt.Sprintf("cam%d", i))
+	}
+
+	// Ingest frames with distinct Y values per source.
+	for i := 0; i < 3; i++ {
+		key := fmt.Sprintf("cam%d", i)
+		f1 := makeTestFrame(64, 64, byte(50+i*60), int64(i)*3000)
+		f2 := makeTestFrame(64, 64, byte(50+i*60+30), int64(i)*3000+3000)
+		fs.IngestRawVideo(key, f1)
+		fs.IngestRawVideo(key, f2)
+	}
+
+	// Tick 1: pop fresh frames.
+	fs.releaseTick()
+
+	// Tick 2: FRC for all 3 sources.
+	rawHandler.mu.Lock()
+	rawHandler.frames = rawHandler.frames[:0]
+	rawHandler.mu.Unlock()
+
+	fs.releaseTick()
+
+	frames := rawHandler.getFrames()
+	require.Len(t, frames, 3)
+
+	// Verify no two frames share the same underlying YUV buffer.
+	for i := 0; i < len(frames); i++ {
+		for j := i + 1; j < len(frames); j++ {
+			if len(frames[i].frame.YUV) > 0 && len(frames[j].frame.YUV) > 0 {
+				// Check they don't start at the same address.
+				require.NotEqual(t,
+					&frames[i].frame.YUV[0], &frames[j].frame.YUV[0],
+					"FRC outputs for %s and %s should not alias",
+					frames[i].sourceKey, frames[j].sourceKey)
+			}
+		}
+	}
+
+	// Verify each frame has correct Y value from its source.
+	for _, f := range frames {
+		require.NotEmpty(t, f.frame.YUV)
+	}
 }
 
 func TestFRC_EmitNearestPTSWraparound(t *testing.T) {

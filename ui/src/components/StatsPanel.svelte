@@ -8,6 +8,11 @@
 		max_ns: number;
 		latency_us: number;
 		last_error?: string;
+		// Async encode metrics (present only on h264-encode node)
+		encode_last_ns?: number;
+		encode_max_ns?: number;
+		encode_total?: number;
+		encode_queue_len?: number;
 	}
 
 	interface PipelineSnapshot {
@@ -27,6 +32,70 @@
 		health_status: string;
 		last_frame_ago_ms: number;
 		raw_pipeline: boolean;
+		decoder_active?: boolean;
+		decoder_avg_frame_bytes?: number;
+		decoder_avg_fps?: number;
+	}
+
+	interface ChannelDetail {
+		active: boolean;
+		muted: boolean;
+		afv: boolean;
+		level: number;
+		trim: number;
+		eq_bypassed?: boolean;
+		compressor_bypassed?: boolean;
+		delay_ms?: number;
+		peak_l_dbfs?: number;
+		peak_r_dbfs?: number;
+	}
+
+	interface LoudnessData {
+		momentary_lufs: number;
+		short_term_lufs: number;
+		integrated_lufs: number;
+	}
+
+	interface CBRPacerStatus {
+		enabled: boolean;
+		muxrateBps: number;
+		nullPacketsTotal: number;
+		realBytesTotal: number;
+		padBytesTotal: number;
+		burstTicksTotal: number;
+	}
+
+	interface SRTStatusDetail {
+		active: boolean;
+		mode?: string;
+		address?: string;
+		port?: number;
+		state?: string;
+		connections?: number;
+		bytesWritten?: number;
+		droppedPackets?: number;
+		overflowCount?: number;
+		error?: string;
+	}
+
+	interface FrameSyncSource {
+		audio_miss_count: number;
+		video_count: number;
+		audio_count: number;
+		raw_video_count: number;
+		frc?: {
+			requested_quality: string;
+			effective_quality: string;
+			scene_change: boolean;
+			me_last_ns: number;
+			has_two_frames: boolean;
+			degraded: boolean;
+		};
+	}
+
+	interface FrameSyncData {
+		sources: Record<string, FrameSyncSource>;
+		frc_quality: string;
 	}
 
 	interface RelayViewer {
@@ -88,6 +157,8 @@
 			transitions_started?: number;
 			transitions_completed?: number;
 			deadline_violations?: number;
+			codec?: { encoder: string; decoder: string; hw_accel: boolean };
+			frame_sync?: FrameSyncData;
 			frame_rate_converter?: { quality: string };
 			program_relay_viewers?: RelayViewer[];
 		};
@@ -96,6 +167,8 @@
 			program_peak_dbfs?: [number, number];
 			channels_active?: number;
 			channels_muted?: number;
+			channels?: Record<string, ChannelDetail>;
+			loudness?: LoudnessData;
 			frames_mixed: number;
 			frames_passthrough: number;
 			frames_output_total?: number;
@@ -114,9 +187,11 @@
 		};
 		output?: {
 			recording?: { active: boolean; fileCount?: number; latestFile?: string };
-			srt?: { active: boolean; enabled?: boolean };
+			srt?: SRTStatusDetail;
 			viewer?: { video_sent: number; video_dropped: number; audio_sent: number; audio_dropped: number } | null;
 			destinations?: Array<{ name?: string; active?: boolean }>;
+			muxer_pts?: number;
+			cbr_pacer?: CBRPacerStatus;
 		};
 		replay?: {
 			state?: string;
@@ -193,7 +268,7 @@
 		const updated = new Map(nodeHistory);
 		for (const node of nodes) {
 			const arr = updated.get(node.name) ?? [];
-			arr.push(node.last_ns);
+			arr.push(effectiveLastNs(node));
 			if (arr.length > HISTORY_SIZE) arr.shift();
 			updated.set(node.name, arr);
 		}
@@ -254,11 +329,40 @@
 		return NODE_META[name]?.color ?? 'rgba(59, 130, 246, 0.7)';
 	}
 
+	/** Returns the effective timing for a node, preferring async encode metrics. */
+	function effectiveLastNs(node: PipelineNodeSnapshot): number {
+		return node.encode_last_ns ?? node.last_ns;
+	}
+
+	function effectiveMaxNs(node: PipelineNodeSnapshot): number {
+		return node.encode_max_ns ?? node.max_ns;
+	}
+
 	function nodeStatus(lastNs: number, frameBudgetNs: number): 'ok' | 'warn' | 'crit' {
 		const ratio = lastNs / frameBudgetNs;
 		if (ratio > 0.8) return 'crit';
 		if (ratio > 0.5) return 'warn';
 		return 'ok';
+	}
+
+	function lufsColor(lufs: number): string {
+		if (lufs <= -23) return 'ok';
+		if (lufs <= -14) return 'warn';
+		return 'crit';
+	}
+
+	function fmtLufs(lufs: number): string {
+		if (!isFinite(lufs) || lufs < -100) return '-inf';
+		return lufs.toFixed(1);
+	}
+
+	function fmtPtsTimecode(pts: number): string {
+		const secs = pts / 90000;
+		const h = Math.floor(secs / 3600);
+		const m = Math.floor((secs % 3600) / 60);
+		const s = Math.floor(secs % 60);
+		const f = Math.floor((secs % 1) * 30);
+		return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
 	}
 
 	function healthDot(status: string): string {
@@ -319,10 +423,12 @@
 	// --- Alarm state ---
 	const hasAlarm = $derived.by(() => {
 		if (!pipelineData) return false;
+		// Per-node check: any individual node (including async encode) over budget?
 		const hasCritNode = pipelineData.activeNodes.some(
-			n => nodeStatus(n.last_ns, pipelineData.frameBudgetNs) === 'crit'
+			n => nodeStatus(effectiveLastNs(n), pipelineData.frameBudgetNs) === 'crit'
 		);
 		const hasViolations = (snapshot?.switcher?.deadline_violations ?? 0) > 0;
+		// Pipeline loop wall time (sync nodes only — encode is async/parallel).
 		const overBudget = pipelineData.lastRunNs > pipelineData.frameBudgetNs;
 		return hasCritNode || hasViolations || overBudget;
 	});
@@ -424,6 +530,28 @@
 
 	{#if snapshot}
 		<div class="panel-body">
+			<!-- Codec Info -->
+			{#if snapshot?.switcher?.codec}
+				{@const codec = snapshot.switcher.codec}
+				<div class="section codec-section">
+					<div class="codec-badges">
+						<span class="codec-badge">
+							<span class="codec-label">ENC</span>
+							<span class="codec-value">{codec.encoder || 'none'}</span>
+							{#if codec.hw_accel}
+								<span class="hw-badge hw">HW</span>
+							{:else}
+								<span class="hw-badge sw">SW</span>
+							{/if}
+						</span>
+						<span class="codec-badge">
+							<span class="codec-label">DEC</span>
+							<span class="codec-value">{codec.decoder || 'none'}</span>
+						</span>
+					</div>
+				</div>
+			{/if}
+
 			<!-- Pipeline Graph -->
 			<div class="section">
 				<div class="section-label">
@@ -454,14 +582,16 @@
 						<!-- Vertical node chain -->
 						{#each pipelineData.displayChain as name}
 							{@const node = pipelineData.activeMap.get(name)}
-							{@const status = node ? nodeStatus(node.last_ns, pipelineData.frameBudgetNs) : 'ok'}
-							{@const budgetRatio = node ? Math.min(node.last_ns / pipelineData.frameBudgetNs, 1) : 0}
-							{@const budgetPct = node ? ((node.last_ns / pipelineData.frameBudgetNs) * 100).toFixed(1) : '0'}
+							{@const lastNs = node ? effectiveLastNs(node) : 0}
+							{@const maxNs = node ? effectiveMaxNs(node) : 0}
+							{@const status = node ? nodeStatus(lastNs, pipelineData.frameBudgetNs) : 'ok'}
+							{@const budgetRatio = node ? Math.min(lastNs / pipelineData.frameBudgetNs, 1) : 0}
+							{@const budgetPct = node ? ((lastNs / pipelineData.frameBudgetNs) * 100).toFixed(1) : '0'}
 							<div
 								class="flow-node {status}"
 								class:inactive={!node}
 								class:has-error={node?.last_error}
-								title={node ? `${nodeDisplayName(name)}: ${fmtMs(node.last_ns)}ms (max ${fmtMs(node.max_ns)}ms)` : `${nodeDisplayName(name)}: inactive`}
+								title={node ? `${nodeDisplayName(name)}: ${fmtMs(lastNs)}ms (max ${fmtMs(maxNs)}ms)` : `${nodeDisplayName(name)}: inactive`}
 							>
 								{#if node}
 									<div class="flow-node-top">
@@ -470,14 +600,14 @@
 											<span class="flow-node-fullname">{nodeDisplayName(name)}</span>
 										</span>
 										<span class="flow-node-right">
-											<span class="node-time">{fmtMs(node.last_ns)}ms</span>
+											<span class="node-time">{fmtMs(lastNs)}ms</span>
 											{#if SIDE_OUTPUT[name]}
 												<span class="flow-side-output">&rarr; {SIDE_OUTPUT[name]}</span>
 											{/if}
 										</span>
 									</div>
 									<div class="flow-node-detail">
-										<span>max {fmtMs(node.max_ns)}ms · {node.latency_us}µs</span>
+										<span>max {fmtMs(maxNs)}ms{#if node.encode_total !== undefined} · {fmtCount(node.encode_total)} enc{/if}{#if node.encode_queue_len !== undefined} · q{node.encode_queue_len}/2{/if}</span>
 										<span class="flow-budget-pct">{budgetPct}%</span>
 									</div>
 									<div class="node-micro-bar">
@@ -520,14 +650,17 @@
 				<div class="section-label">FRAME BUDGET</div>
 				{#if pipelineData}
 					{@const budgetMs = pipelineData.frameBudgetNs / 1e6}
-					{@const totalUsedNs = pipelineData.lastRunNs}
-					{@const totalUsedMs = totalUsedNs / 1e6}
-					{@const usedPct = Math.min((totalUsedNs / pipelineData.frameBudgetNs) * 100, 100)}
-					{@const headroomPct = Math.max(100 - usedPct, 0)}
+					{@const syncNodes = pipelineData.activeNodes.filter(n => n.encode_last_ns === undefined)}
+					{@const encodeNode = pipelineData.activeNodes.find(n => n.encode_last_ns !== undefined)}
+					{@const pipelineUsedNs = pipelineData.lastRunNs}
+					{@const pipelineUsedMs = pipelineUsedNs / 1e6}
+					{@const pipelinePct = Math.min((pipelineUsedNs / pipelineData.frameBudgetNs) * 100, 100)}
+					{@const headroomPct = Math.max(100 - pipelinePct, 0)}
 					{@const headroomClass = headroomPct < 10 ? 'crit' : headroomPct < 30 ? 'warn' : 'ok'}
-					{@const isOverBudget = totalUsedMs > budgetMs}
+					{@const isOverBudget = pipelineUsedMs > budgetMs}
+					<!-- Sync pipeline bar (nodes that run sequentially on the pipeline goroutine) -->
 					<div class="budget-bar">
-						{#each pipelineData.activeNodes as node}
+						{#each syncNodes as node}
 							{@const pct = (node.last_ns / pipelineData.frameBudgetNs) * 100}
 							{#if pct > MIN_SEGMENT_PCT}
 								<div
@@ -541,19 +674,46 @@
 								</div>
 							{/if}
 						{/each}
-						<div class="budget-headroom {headroomClass}" title="Headroom: {(budgetMs - totalUsedMs).toFixed(1)}ms">
+						<div class="budget-headroom {headroomClass}" title="Headroom: {(budgetMs - pipelineUsedMs).toFixed(1)}ms">
 							{#if headroomPct > MIN_HEADROOM_LABEL_PCT}
-								<span class="seg-label">{(budgetMs - totalUsedMs).toFixed(1)}ms</span>
+								<span class="seg-label">{(budgetMs - pipelineUsedMs).toFixed(1)}ms</span>
 							{/if}
 						</div>
 					</div>
 					<div class="budget-summary" class:over-budget={isOverBudget}>
 						{#if isOverBudget}
-							{totalUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms — <span class="over-label">+{(totalUsedMs - budgetMs).toFixed(1)}ms OVER</span>
+							{pipelineUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms — <span class="over-label">+{(pipelineUsedMs - budgetMs).toFixed(1)}ms OVER</span>
 						{:else}
-							{totalUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms ({usedPct.toFixed(0)}%)
+							{pipelineUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms ({pipelinePct.toFixed(0)}%)
 						{/if}
 					</div>
+					<!-- Async encode bar (runs in parallel on its own goroutine) -->
+					{#if encodeNode}
+						{@const encNs = effectiveLastNs(encodeNode)}
+						{@const encPct = Math.min((encNs / pipelineData.frameBudgetNs) * 100, 100)}
+						{@const encHeadroom = Math.max(100 - encPct, 0)}
+						{@const encStatus = nodeStatus(encNs, pipelineData.frameBudgetNs)}
+						{@const encClass = encHeadroom < 10 ? 'crit' : encHeadroom < 30 ? 'warn' : 'ok'}
+						<div class="budget-bar" style="margin-top: 3px">
+							<div
+								class="budget-segment"
+								style="width: {encPct}%; background: {nodeColor('h264-encode').replace('0.7', '0.25')}"
+								title="H.264 Encode (async): {fmtMs(encNs)}ms"
+							>
+								{#if encPct > MIN_LABEL_PCT}
+									<span class="seg-label">ENC</span>
+								{/if}
+							</div>
+							<div class="budget-headroom {encClass}" title="Encode headroom: {(budgetMs - encNs / 1e6).toFixed(1)}ms">
+								{#if encHeadroom > MIN_HEADROOM_LABEL_PCT}
+									<span class="seg-label">{(budgetMs - encNs / 1e6).toFixed(1)}ms</span>
+								{/if}
+							</div>
+						</div>
+						<div class="budget-summary" class:over-budget={encStatus === 'crit'}>
+							encode: {(encNs / 1e6).toFixed(1)}ms / {budgetMs.toFixed(1)}ms ({encPct.toFixed(0)}%) — async
+						</div>
+					{/if}
 				{/if}
 
 				{#if snapshot?.switcher?.video_pipeline}
@@ -626,8 +786,8 @@
 									<path d={sparklinePath(history, 200, 28)} fill="none"
 										stroke={color} stroke-width="1.5" />
 								</svg>
-								<span class="spark-value">{fmtMs(node.last_ns)}ms</span>
-								<span class="spark-max">pk {fmtMs(node.max_ns)}</span>
+								<span class="spark-value">{fmtMs(effectiveLastNs(node))}ms</span>
+								<span class="spark-max">pk {fmtMs(effectiveMaxNs(node))}</span>
 							</div>
 						{/each}
 					</div>
@@ -677,8 +837,16 @@
 							<div class="source-row">
 								<span class="source-dot {healthDot(src.health_status)}"></span>
 								<span class="source-name" title={key}>{key}</span>
-								<span class="source-fps">{sourceFps(src.video_frames_in, snapshot?.uptime_ms)}fps</span>
+								{#if src.decoder_active && src.decoder_avg_fps}
+									{@const expectedFps = 1000 / (snapshot?.switcher?.frame_budget_ms ?? 33.3)}
+									<span class="source-fps" class:warn-text={src.decoder_avg_fps < expectedFps * 0.85} class:crit-text={src.decoder_avg_fps < expectedFps * 0.5}>{src.decoder_avg_fps.toFixed(0)}fps</span>
+								{:else}
+									<span class="source-fps">{sourceFps(src.video_frames_in, snapshot?.uptime_ms)}fps</span>
+								{/if}
 								<span class="source-ago" class:warn-text={src.last_frame_ago_ms > 50} class:crit-text={src.last_frame_ago_ms > 100}>{src.last_frame_ago_ms}ms</span>
+								{#if src.decoder_active && src.decoder_avg_frame_bytes}
+									<span class="source-detail">{fmtBytes(src.decoder_avg_frame_bytes)}</span>
+								{/if}
 								{#if src.raw_pipeline}
 									<span class="source-badge">DEC</span>
 								{/if}
@@ -736,10 +904,10 @@
 						<span class="stat-key">Transitions</span>
 						<span class="stat-val" style="flex: 2">{snapshot?.switcher?.transitions_completed ?? 0} completed</span>
 					</div>
-					{#if snapshot?.switcher?.frame_rate_converter}
+					{#if snapshot?.switcher?.frame_sync || snapshot?.switcher?.frame_rate_converter}
 						<div class="stat-row">
 							<span class="stat-key">FRC</span>
-							<span class="stat-val" style="flex: 2">{snapshot.switcher.frame_rate_converter.quality}</span>
+							<span class="stat-val" style="flex: 2">{snapshot.switcher.frame_sync?.frc_quality ?? snapshot.switcher.frame_rate_converter?.quality ?? 'none'}</span>
 						</div>
 					{/if}
 				</div>
@@ -764,11 +932,54 @@
 						<span class="stat-val" style="flex: 2">
 							{#if snapshot?.output?.srt?.active}
 								<span class="srt-active">LIVE</span>
+								{#if snapshot.output.srt.mode}({snapshot.output.srt.mode}){/if}
 							{:else}
 								inactive
 							{/if}
 						</span>
 					</div>
+					{#if snapshot?.output?.srt?.active && snapshot.output.srt}
+						{@const srt = snapshot.output.srt}
+						{#if srt.address}
+							<div class="stat-row">
+								<span class="stat-key">SRT Addr</span>
+								<span class="stat-val" style="flex: 2">{srt.address}:{srt.port ?? ''}</span>
+							</div>
+						{/if}
+						{#if srt.bytesWritten}
+							<div class="stat-row">
+								<span class="stat-key">SRT Sent</span>
+								<span class="stat-val">{fmtBytes(srt.bytesWritten)}</span>
+								<span class="stat-val" class:crit-text={(srt.droppedPackets ?? 0) > 0}>{srt.droppedPackets ?? 0} drops</span>
+							</div>
+						{/if}
+						{#if (srt.overflowCount ?? 0) > 0}
+							<div class="stat-row crit-row">
+								<span class="stat-key">Overflow</span>
+								<span class="stat-val" style="flex: 2">{srt.overflowCount} events</span>
+							</div>
+						{/if}
+						{#if srt.state && srt.state !== 'active'}
+							<div class="stat-row warn-row">
+								<span class="stat-key">SRT State</span>
+								<span class="stat-val" style="flex: 2">{srt.state}</span>
+							</div>
+						{/if}
+					{/if}
+					{#if snapshot?.output?.muxer_pts}
+						<div class="stat-row">
+							<span class="stat-key">Muxer PTS</span>
+							<span class="stat-val" style="flex: 2">{fmtPtsTimecode(snapshot.output.muxer_pts)}</span>
+						</div>
+					{/if}
+					{#if snapshot?.output?.cbr_pacer}
+						{@const cbr = snapshot.output.cbr_pacer}
+						<div class="stat-row">
+							<span class="stat-key">CBR</span>
+							<span class="stat-val">{(cbr.muxrateBps / 1e6).toFixed(1)} Mbps</span>
+							<span class="stat-val">{fmtCount(cbr.nullPacketsTotal)} null</span>
+						</div>
+					{/if}
 					{#if derivedMetrics.viewers.length > 0}
 						<div class="stat-row">
 							<span class="stat-key">Viewers</span>
@@ -906,6 +1117,81 @@
 								<span class="stat-val" style="flex: 2">{mixer.mode_transitions} transitions</span>
 							</div>
 						{/if}
+						{#if mixer.loudness}
+							{@const lufs = mixer.loudness}
+							<div class="stat-row">
+								<span class="stat-key">LUFS M</span>
+								<span class="stat-val {lufsColor(lufs.momentary_lufs)}-text">{fmtLufs(lufs.momentary_lufs)}</span>
+								<span class="stat-key" style="width: auto">S</span>
+								<span class="stat-val {lufsColor(lufs.short_term_lufs)}-text">{fmtLufs(lufs.short_term_lufs)}</span>
+								<span class="stat-key" style="width: auto">I</span>
+								<span class="stat-val {lufsColor(lufs.integrated_lufs)}-text">{fmtLufs(lufs.integrated_lufs)}</span>
+							</div>
+						{/if}
+						{#if mixer.channels}
+							{@const channelKeys = Object.keys(mixer.channels).sort()}
+							{#each channelKeys as chKey}
+								{@const ch = mixer.channels[chKey]}
+								<div class="stat-row" class:dim-row={!ch.active}>
+									<span class="stat-key">{chKey}</span>
+									<span class="stat-val">
+										{#if ch.peak_l_dbfs !== undefined && ch.peak_r_dbfs !== undefined}
+											{fmtDbfs(Math.max(ch.peak_l_dbfs, ch.peak_r_dbfs))}dB
+											{#if Math.abs(ch.peak_l_dbfs - ch.peak_r_dbfs) > 3}
+												<span class="lr-split">L{fmtDbfs(ch.peak_l_dbfs)} R{fmtDbfs(ch.peak_r_dbfs)}</span>
+											{/if}
+										{/if}
+									</span>
+									<span class="stat-val channel-flags">
+										{#if ch.muted}<span class="flag-mute">M</span>{/if}
+										{#if ch.afv}<span class="flag-afv">AFV</span>{/if}
+										{#if !ch.eq_bypassed}<span class="flag-eq">EQ</span>{/if}
+										{#if !ch.compressor_bypassed}<span class="flag-comp">C</span>{/if}
+										{#if (ch.delay_ms ?? 0) > 0}<span class="flag-delay">{ch.delay_ms}ms</span>{/if}
+									</span>
+								</div>
+							{/each}
+						{/if}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Frame Sync & FRC -->
+			{#if snapshot?.switcher?.frame_sync}
+				{@const fsync = snapshot.switcher.frame_sync}
+				{@const fsyncKeys = Object.keys(fsync.sources ?? {}).sort()}
+				<div class="section">
+					<div class="section-label">
+						FRAME SYNC
+						<span class="node-count">FRC: {fsync.frc_quality}</span>
+					</div>
+					<div class="stats-grid">
+						{#each fsyncKeys as key}
+							{@const ss = fsync.sources[key]}
+							<div class="stat-row">
+								<span class="stat-key">{key}</span>
+								<span class="stat-val">v{ss.video_count} a{ss.audio_count} r{ss.raw_video_count}</span>
+								<span class="stat-val" class:warn-text={ss.audio_miss_count > 2} class:crit-text={ss.audio_miss_count > 5}>
+									{#if ss.audio_miss_count > 0}miss:{ss.audio_miss_count}{/if}
+								</span>
+							</div>
+							{#if ss.frc}
+								<div class="stat-row frc-detail-row">
+									<span class="stat-key"></span>
+									<span class="stat-val">
+										{ss.frc.effective_quality}
+										{#if ss.frc.effective_quality !== ss.frc.requested_quality}
+											<span class="warn-text">(req: {ss.frc.requested_quality})</span>
+										{/if}
+									</span>
+									<span class="stat-val">
+										{#if ss.frc.me_last_ns > 0}{fmtMs(ss.frc.me_last_ns)}ms ME{/if}
+										{#if ss.frc.scene_change}<span class="warn-text"> SC</span>{/if}
+										{#if ss.frc.degraded}<span class="crit-text"> DEGRADED</span>{/if}
+									</span>
+								</div>
+							{/if}
+						{/each}
 					</div>
 				</div>
 			{/if}
@@ -1699,4 +1985,126 @@
 		text-align: right;
 		margin-left: auto;
 	}
+
+	/* --- Codec Info --- */
+	.codec-section {
+		padding: 6px 0;
+	}
+
+	.codec-badges {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.codec-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: var(--text-xs);
+		background: var(--bg-panel);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		padding: 3px 8px;
+	}
+
+	.codec-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.3px;
+	}
+
+	.codec-value {
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+	}
+
+	.hw-badge {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		padding: 0px 4px;
+		border-radius: 3px;
+		letter-spacing: 0.3px;
+	}
+
+	.hw-badge.hw {
+		color: var(--status-ok);
+		background: var(--status-ok-dim);
+	}
+
+	.hw-badge.sw {
+		color: var(--status-warn);
+		background: var(--status-warn-dim);
+	}
+
+	/* --- Source detail (frame size) --- */
+	.source-detail {
+		font-size: var(--text-2xs);
+		font-variant-numeric: tabular-nums;
+		color: var(--text-tertiary);
+		width: 40px;
+		text-align: right;
+	}
+
+	/* --- LUFS coloring --- */
+	.ok-text { color: var(--status-ok); }
+
+	/* --- Channel flags --- */
+	.channel-flags {
+		display: flex;
+		gap: 3px;
+		flex-wrap: wrap;
+	}
+
+	.flag-mute, .flag-afv, .flag-eq, .flag-comp, .flag-delay {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 0px 3px;
+		border-radius: 2px;
+		letter-spacing: 0.3px;
+	}
+
+	.flag-mute {
+		color: var(--status-crit);
+		background: var(--status-crit-dim);
+	}
+
+	.flag-afv {
+		color: var(--status-warn);
+		background: var(--status-warn-dim);
+	}
+
+	.flag-eq, .flag-comp {
+		color: var(--accent-blue);
+		background: var(--accent-blue-dim);
+	}
+
+	.flag-delay {
+		color: var(--text-tertiary);
+		background: rgba(255, 255, 255, 0.06);
+	}
+
+	.dim-row {
+		opacity: 0.4;
+	}
+
+	.lr-split {
+		font-size: var(--text-2xs);
+		color: var(--status-warn);
+		margin-left: 3px;
+	}
+
+	/* --- FRC detail row --- */
+	.frc-detail-row {
+		font-size: var(--text-2xs);
+		margin-top: -2px;
+	}
+
+	/* Extra section transition delays */
+	.stats-panel.visible .section:nth-child(12) { transition-delay: 360ms; }
+	.stats-panel.visible .section:nth-child(13) { transition-delay: 390ms; }
 </style>

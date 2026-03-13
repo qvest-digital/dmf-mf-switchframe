@@ -125,6 +125,32 @@ func SplitADTSFrames(data []byte) [][]byte {
 	return frames
 }
 
+// ParseADTSInfo extracts the sample rate and channel count from an ADTS
+// header. Returns (0, 0) if data is too short or not ADTS.
+func ParseADTSInfo(data []byte) (sampleRate, channels int) {
+	if len(data) < 4 || !IsADTS(data) {
+		return 0, 0
+	}
+	// Byte 2 bits [5:2]: sampling_frequency_index (4 bits).
+	srIdx := int((data[2] >> 2) & 0x0F)
+	sampleRate = sampleRateFromIndex(srIdx)
+
+	// Channel configuration: byte 2 bit 0 (high) + byte 3 bits [7:6] (low 2).
+	channels = int((data[2]&0x01)<<2) | int((data[3]>>6)&0x03)
+
+	return sampleRate, channels
+}
+
+// sampleRateFromIndex maps an MPEG-4 Audio sampling_frequency_index
+// (0-12) back to Hz. Returns 0 for unknown/escape indices.
+func sampleRateFromIndex(idx int) int {
+	rates := [13]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+	if idx >= 0 && idx < len(rates) {
+		return rates[idx]
+	}
+	return 0
+}
+
 // sampleRateIndex maps a sample rate in Hz to the MPEG-4 Audio sample
 // rate index (0-12). Returns 15 (escape value) for unrecognized rates.
 func sampleRateIndex(rate int) int {

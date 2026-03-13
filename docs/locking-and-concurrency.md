@@ -124,6 +124,7 @@ Short-lived goroutines are spawned for specific events and guarded against dupli
 | Replay playback | `context.WithCancel()` + `sync.Once` | Until `Stop()` or clip ends |
 | Demo frame generation | `context.WithCancel()` | Until demo stops |
 | SRT per-connection writer | `context.WithCancel()` per conn | Until connection removed |
+| Parallel FRC (per-tick) | `sync.WaitGroup` per `releaseTick` | Until all FRC emits complete (≤4ms) |
 
 ---
 

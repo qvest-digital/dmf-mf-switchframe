@@ -295,3 +295,60 @@ func TestStreamDemuxer_RealTS(t *testing.T) {
 	require.Greater(t, af[0].SampleRate, 0, "sample rate should be parsed from ADTS")
 	require.Greater(t, af[0].Channels, 0, "channels should be parsed from ADTS")
 }
+
+func TestStreamDemuxer_60FPS(t *testing.T) {
+	f, err := os.Open("testdata/sample_60fps.ts")
+	if err != nil {
+		t.Skip("testdata/sample_60fps.ts not available")
+	}
+	defer f.Close()
+
+	bc := &mockBroadcaster{}
+	d := NewStreamDemuxer("test", f, bc)
+	err = d.Run(context.Background())
+	require.NoError(t, err)
+
+	vf := bc.videoFrames()
+	require.NotEmpty(t, vf, "expected video frames from 60fps stream")
+
+	// Should produce ~600 frames for a 10-second 59.94fps clip.
+	require.Greater(t, len(vf), 500, "expected at least 500 video frames for 10s @ 59.94fps")
+
+	// First frame must be a keyframe with SPS/PPS.
+	require.True(t, vf[0].IsKeyframe, "first frame should be a keyframe")
+	require.NotEmpty(t, vf[0].SPS, "keyframe should have SPS")
+	require.NotEmpty(t, vf[0].PPS, "keyframe should have PPS")
+	require.NotEmpty(t, vf[0].WireData, "frame should have AVC1 WireData")
+	require.Equal(t, "h264", vf[0].Codec)
+
+	// WireData must not contain SPS/PPS NALUs (they're stripped by convertAndBroadcastVideo).
+	for i, frame := range vf {
+		pos := 0
+		for pos+4 <= len(frame.WireData) {
+			naluLen := int(binary.BigEndian.Uint32(frame.WireData[pos : pos+4]))
+			pos += 4
+			if naluLen == 0 || pos+naluLen > len(frame.WireData) {
+				break
+			}
+			naluType := frame.WireData[pos] & 0x1F
+			require.NotEqual(t, byte(7), naluType, "frame %d WireData contains SPS", i)
+			require.NotEqual(t, byte(8), naluType, "frame %d WireData contains PPS", i)
+			pos += naluLen
+		}
+	}
+
+	// PTS from Prism's demuxer is in microseconds (PES 90kHz * 1000000 / 90000).
+	// With B-frames, PTS order != decode order, but overall range should match ~10 seconds.
+	firstPTS := vf[0].PTS
+	lastPTS := vf[len(vf)-1].PTS
+	ptsDuration := lastPTS - firstPTS
+	// 10 seconds = 10,000,000 µs. Allow 8-11 second range.
+	require.Greater(t, ptsDuration, int64(8_000_000), "PTS range should span at least 8 seconds")
+	require.Less(t, ptsDuration, int64(11_000_000), "PTS range should span at most 11 seconds")
+
+	// Audio frames should be present with valid ADTS-parsed parameters.
+	af := bc.audioFrames()
+	require.NotEmpty(t, af, "expected audio frames")
+	require.Greater(t, af[0].SampleRate, 0, "audio sample rate should be parsed")
+	require.Greater(t, af[0].Channels, 0, "audio channels should be parsed")
+}

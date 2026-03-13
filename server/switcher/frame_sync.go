@@ -56,6 +56,14 @@ type pendingRelease struct {
 	freshAudio  bool                // true when audio frame(s) are fresh (not repeated)
 }
 
+// frcTask holds parameters for a deferred FRC computation that will be
+// executed in parallel during Phase 2 of releaseTick.
+type frcTask struct {
+	releaseIdx int         // index in FrameSynchronizer.releases
+	ss         *syncSource // source needing FRC
+	frcPTS     int64       // target PTS for interpolation
+}
+
 // syncSource holds per-source buffering state for the FrameSynchronizer.
 type syncSource struct {
 	mu sync.Mutex // per-source lock; protects ring buffers and last-frame state
@@ -233,6 +241,7 @@ type FrameSynchronizer struct {
 	stopped    bool
 	tickNum    int64            // monotonic tick counter for PTS generation
 	releases   []pendingRelease // reused across ticks to avoid allocation
+	frcTasks   []frcTask        // reused across ticks for parallel FRC
 	frcQuality FRCQuality       // FRC quality level for new sources
 	framePool  *FramePool       // pool reference for FRC-emitted frames
 }
@@ -483,6 +492,42 @@ func (fs *FrameSynchronizer) FRCQuality() FRCQuality {
 	return fs.frcQuality
 }
 
+// DebugSnapshot returns a point-in-time snapshot of the frame synchronizer
+// state for diagnostic display. Includes per-source buffer counts, audio
+// miss counts, and FRC state (when enabled).
+//
+// Locking order: fs.mu → ss.mu (matches releasePending/Tick pattern).
+func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	sources := make(map[string]any, len(fs.sources))
+	for key, ss := range fs.sources {
+		ss.mu.Lock()
+		info := map[string]any{
+			"audio_miss_count": ss.audioMissCount,
+			"video_count":     ss.videoCount,
+			"audio_count":     ss.audioCount,
+			"raw_video_count": ss.rawVideoCount,
+		}
+		if ss.frc != nil {
+			info["frc"] = map[string]any{
+				"requested_quality": ss.frc.requestedQuality.String(),
+				"effective_quality": ss.frc.effectiveQuality.String(),
+				"scene_change":      ss.frc.sceneChange,
+				"me_last_ns":        ss.frc.meLastNs,
+				"has_two_frames":    ss.frc.hasTwo,
+				"degraded":          !ss.frc.degradedSince.IsZero(),
+			}
+		}
+		ss.mu.Unlock()
+		sources[key] = info
+	}
+	return map[string]any{
+		"sources":     sources,
+		"frc_quality": fs.frcQuality.String(),
+	}
+}
+
 // Start begins the background ticker goroutine that releases frames at
 // the configured tick rate. Calling Start multiple times is safe (no-op
 // after first call).
@@ -587,10 +632,48 @@ func (fs *FrameSynchronizer) tickLoop() {
 	}
 }
 
-// releaseTick releases one frame per source. For each source:
-// - If new frames are buffered, release the newest and update lastFrame.
-// - If no new frames, repeat the last frame (freeze).
-// - If no frame has ever been received, skip.
+// runFRCEmit executes a single FRC emit + deep copy. Called from releaseTick
+// either inline (single task) or from a goroutine (multiple tasks in parallel).
+// The result is written directly into the pendingRelease entry.
+func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
+	task.ss.mu.Lock()
+	emitted := task.ss.frc.emit(task.frcPTS)
+	task.ss.mu.Unlock()
+
+	if emitted == nil {
+		return // fallback (frozen frame) already in release entry
+	}
+
+	// Deep-copy YUV to avoid aliasing FRC scratch buffers (nearestOut/blendOut).
+	var result ProcessingFrame = *emitted
+	if framePool != nil && len(emitted.YUV) <= framePool.bufSize {
+		yuvCopy := framePool.Acquire()[:len(emitted.YUV)]
+		copy(yuvCopy, emitted.YUV)
+		result.YUV = yuvCopy
+		result.pool = framePool
+	} else {
+		yuvCopy := make([]byte, len(emitted.YUV))
+		copy(yuvCopy, emitted.YUV)
+		result.YUV = yuvCopy
+	}
+
+	r.rawVideo = result
+	r.hasRawVideo = true
+	r.freshVideo = true // FRC frames have unique PTS, treat as fresh
+}
+
+// releaseTick releases one frame per source using a three-phase approach:
+//
+// Phase 1 (under fs.mu + per-source ss.mu): Pop fresh frames from ring
+// buffers. Sources needing FRC interpolation are identified but NOT computed
+// here — they are deferred to Phase 2.
+//
+// Phase 2 (parallel goroutines under individual ss.mu): FRC emit + deep copy
+// runs concurrently for all sources that need interpolation. This transforms
+// tick time from O(sum(MCFI_times)) to O(max(MCFI_time)), following the
+// broadcast principle that the output clock never waits on input processing.
+//
+// Phase 3 (no locks): Deliver frames to downstream callbacks with PTS handling.
 //
 // Fresh source frames preserve their original PTS (A/V sync with audio).
 // Repeated/frozen/interpolated frames advance PTS by one tick interval to
@@ -604,9 +687,12 @@ func (fs *FrameSynchronizer) releaseTick() {
 	ptsRemNum := (int64(mpegtsClock) * int64(fs.fpsDen)) % int64(fs.fpsNum)
 	ptsRemDen := int64(fs.fpsNum)
 
-	// Reuse the releases slice from previous ticks to avoid allocation.
+	// Reuse slices from previous ticks to avoid allocation.
 	fs.releases = fs.releases[:0]
+	fs.frcTasks = fs.frcTasks[:0]
+	framePool := fs.framePool
 
+	// Phase 1: Pop fresh frames and identify FRC work.
 	for key, ss := range fs.sources {
 		var releaseVideo *media.VideoFrame
 		var releaseRawVideo ProcessingFrame
@@ -616,8 +702,10 @@ func (fs *FrameSynchronizer) releaseTick() {
 		ss.mu.Lock()
 
 		var freshVideo bool
+		var needsFRC bool
+		var frcPTS int64
 
-		// Raw video: pop newest from ring, or repeat last.
+		// Raw video: pop newest from ring, or defer FRC, or repeat last.
 		// Raw video takes priority over H.264 video — sources with a
 		// sourceDecoder produce raw frames; H.264 frames are for legacy path.
 		if newest := ss.popNewestRawVideo(); newest != nil {
@@ -635,29 +723,15 @@ func (fs *FrameSynchronizer) releaseTick() {
 				ss.frc.ticksSinceLastFresh = 0
 			}
 		} else if ss.frc != nil && ss.frc.canInterpolate() {
-			// FRC: synthesize interpolated frame on the source PTS timeline.
-			// Advance from the last released PTS by one tick interval per missed tick.
+			// FRC: defer computation to Phase 2 for parallel execution.
+			// Pre-populate release with frozen lastRawVideo as fallback
+			// in case FRC emit returns nil.
 			ss.frc.ticksSinceLastFresh++
-			frcPTS := ss.lastReleasedPTS + int64(ss.frc.ticksSinceLastFresh)*ss.frc.tickIntervalPTS
-			if emitted := ss.frc.emit(frcPTS); emitted != nil {
-				releaseRawVideo = *emitted // value copy under lock
-				// Deep-copy the YUV buffer: emit returns a pointer into a
-				// reusable scratch buffer (nearestOut/blendOut). Without a
-				// copy, the next tick's emit overwrites the data while
-				// downstream consumers may still be reading it.
-				// Use the frame pool when available to avoid heap allocation.
-				if fs.framePool != nil && len(emitted.YUV) <= fs.framePool.bufSize {
-					yuvCopy := fs.framePool.Acquire()[:len(emitted.YUV)]
-					copy(yuvCopy, emitted.YUV)
-					releaseRawVideo.YUV = yuvCopy
-					releaseRawVideo.pool = fs.framePool
-				} else {
-					yuvCopy := make([]byte, len(emitted.YUV))
-					copy(yuvCopy, emitted.YUV)
-					releaseRawVideo.YUV = yuvCopy
-				}
+			frcPTS = ss.lastReleasedPTS + int64(ss.frc.ticksSinceLastFresh)*ss.frc.tickIntervalPTS
+			needsFRC = true
+			if ss.lastRawVideo != nil {
+				releaseRawVideo = *ss.lastRawVideo // frozen fallback
 				hasRawVideo = true
-				freshVideo = true // FRC frames have unique PTS, treat as fresh
 			}
 		} else if ss.lastRawVideo != nil {
 			releaseRawVideo = *ss.lastRawVideo // value copy under lock
@@ -665,6 +739,9 @@ func (fs *FrameSynchronizer) releaseTick() {
 		}
 
 		// H.264 video: only if no raw video frame was released.
+		// When FRC is pending without a frozen fallback (lastRawVideo nil),
+		// H.264 serves as additional fallback — Phase 2 FRC result will
+		// override via hasRawVideo if it succeeds.
 		if !hasRawVideo {
 			if newest := ss.popNewestVideo(); newest != nil {
 				ss.lastVideo = newest
@@ -711,7 +788,8 @@ func (fs *FrameSynchronizer) releaseTick() {
 		ss.mu.Unlock()
 
 		hasAudio := releaseAudio != nil || len(audioQueue) > 0
-		if releaseVideo != nil || hasRawVideo || hasAudio {
+		if releaseVideo != nil || hasRawVideo || hasAudio || needsFRC {
+			idx := len(fs.releases)
 			fs.releases = append(fs.releases, pendingRelease{
 				sourceKey:   key,
 				ss:          ss,
@@ -723,11 +801,38 @@ func (fs *FrameSynchronizer) releaseTick() {
 				audioQueue:  audioQueue,
 				freshAudio:  freshAudio,
 			})
+			if needsFRC {
+				fs.frcTasks = append(fs.frcTasks, frcTask{
+					releaseIdx: idx,
+					ss:         ss,
+					frcPTS:     frcPTS,
+				})
+			}
 		}
 	}
+
+	// Phase 2: Parallel FRC computation.
+	// fs.mu is still held to prevent source add/remove during FRC.
+	// Each goroutine locks only its own ss.mu (no deadlock: fs.mu → ss.mu order).
+	// Single task runs inline to avoid goroutine overhead.
+	if len(fs.frcTasks) == 1 {
+		task := &fs.frcTasks[0]
+		runFRCEmit(task, &fs.releases[task.releaseIdx], framePool)
+	} else if len(fs.frcTasks) > 1 {
+		var wg sync.WaitGroup
+		for i := range fs.frcTasks {
+			wg.Add(1)
+			go func(task *frcTask, r *pendingRelease) {
+				defer wg.Done()
+				runFRCEmit(task, r, framePool)
+			}(&fs.frcTasks[i], &fs.releases[fs.frcTasks[i].releaseIdx])
+		}
+		wg.Wait()
+	}
+
 	fs.mu.Unlock()
 
-	// Deliver outside the lock to prevent deadlocks with downstream handlers.
+	// Phase 3: Deliver outside the lock to prevent deadlocks with downstream handlers.
 	//
 	// PTS strategy (broadcast-correct monotonic output):
 	// - Fresh source frames: preserve original PTS (A/V sync with passthrough audio),

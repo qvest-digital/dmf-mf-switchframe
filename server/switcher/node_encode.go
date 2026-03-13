@@ -13,6 +13,7 @@ import (
 )
 
 var _ PipelineNode = (*encodeNode)(nil)
+var _ AsyncMetricsProvider = (*encodeNode)(nil)
 
 // encodeWork holds a frame and encode parameters for async processing.
 type encodeWork struct {
@@ -44,6 +45,11 @@ type encodeNode struct {
 	// Diagnostic counter: frames dropped because the encoder goroutine
 	// was still busy with the previous frame.
 	encodeDropCount *atomic.Int64
+
+	// Async encode timing — written by encodeLoop, read by AsyncMetrics().
+	lastEncodeNs atomic.Int64 // most recent real encode duration (nanoseconds)
+	maxEncodeNs  atomic.Int64 // peak encode duration (nanoseconds)
+	encodeTotal  atomic.Int64 // total frames encoded successfully
 }
 
 func (n *encodeNode) Name() string                          { return "h264-encode" }
@@ -56,6 +62,22 @@ func (n *encodeNode) Err() error {
 	return nil
 }
 func (n *encodeNode) Latency() time.Duration { return 10 * time.Millisecond }
+
+// AsyncMetrics returns real encode timing measured inside the async goroutine.
+// This is the actual H.264 encode wall time, not the near-zero Process() enqueue time.
+func (n *encodeNode) AsyncMetrics() map[string]any {
+	m := map[string]any{
+		"encode_last_ns": n.lastEncodeNs.Load(),
+		"encode_max_ns":  n.maxEncodeNs.Load(),
+		"encode_total":   n.encodeTotal.Load(),
+	}
+	if n.encodeCh != nil {
+		m["encode_queue_len"] = len(n.encodeCh)
+	} else {
+		m["encode_queue_len"] = 0
+	}
+	return m
+}
 
 // start launches the async encode goroutine. Must be called before Process()
 // for async operation. If not called, Process() falls back to synchronous encode.
@@ -120,6 +142,10 @@ func (n *encodeNode) doEncode(src *ProcessingFrame, forceIDR bool) {
 	frame, err := n.codecs.encode(src, forceIDR)
 	encDur := time.Now().UnixNano() - encStart
 
+	// Store real encode timing for debug snapshot (AsyncMetrics).
+	n.lastEncodeNs.Store(encDur)
+	updateAtomicMax(&n.maxEncodeNs, encDur)
+
 	if n.promMetrics != nil {
 		n.promMetrics.PipelineEncodeDuration.Observe(float64(encDur) / 1e9)
 	}
@@ -137,6 +163,9 @@ func (n *encodeNode) doEncode(src *ProcessingFrame, forceIDR bool) {
 		}
 		return
 	}
+
+	n.encodeTotal.Add(1)
+
 	if n.promMetrics != nil {
 		n.promMetrics.PipelineFramesProcessed.Inc()
 	}

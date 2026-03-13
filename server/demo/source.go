@@ -274,7 +274,12 @@ func generateFramesFromFile(ctx context.Context, relay *distribution.Relay, vide
 		clipDuration = 90000 // 1 second fallback
 	}
 	// Add one frame duration to avoid timestamp collision on loop boundary.
-	clipDuration += 3750 // ~41ms at 90kHz (24fps frame)
+	// Compute from actual frame rate rather than hardcoding a 24fps value.
+	avgFrameDuration := int64(3750) // 24fps fallback
+	if len(videoFrames) > 1 {
+		avgFrameDuration = clipDuration / int64(len(videoFrames)-1)
+	}
+	clipDuration += avgFrameDuration
 
 	// Cap audio frames per loop to match video clip duration. Without this,
 	// audio tracks longer than video (e.g. 15.04s vs 14.46s in elephants_dream.ts)

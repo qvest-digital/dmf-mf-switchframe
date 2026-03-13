@@ -1032,12 +1032,28 @@ func (m *Manager) DebugSnapshot() map[string]any {
 	if m.viewer != nil {
 		viewerSnap = m.viewer.DebugSnapshot()
 	}
+	var muxerPTS int64
+	var hasMuxer bool
+	if m.muxer != nil {
+		muxerPTS = m.muxer.CurrentPTS()
+		hasMuxer = true
+	}
 	m.mu.Unlock()
 
 	snap := map[string]any{
 		"viewer":    viewerSnap,
 		"recording": m.RecordingStatus(),
 		"srt":       m.SRTOutputStatus(),
+	}
+
+	if hasMuxer {
+		snap["muxer_pts"] = muxerPTS
+	}
+
+	// CBRStatus() acquires m.mu internally, so call it after releasing
+	// the lock above to avoid deadlock.
+	if cbr := m.CBRStatus(); cbr != nil {
+		snap["cbr_pacer"] = cbr
 	}
 
 	if dests := m.ListDestinations(); len(dests) > 0 {

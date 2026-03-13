@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
@@ -768,5 +769,64 @@ func TestPipelineSnapshot_LastError(t *testing.T) {
 	require.Equal(t, "h264-encode", activeNodes[0]["name"])
 	require.Contains(t, activeNodes[0], "last_error")
 	require.Contains(t, activeNodes[0]["last_error"], "mock encode error")
+}
+
+func TestPipelineSnapshot_AsyncMetrics(t *testing.T) {
+	// Verify that Snapshot merges AsyncMetrics from nodes that implement
+	// AsyncMetricsProvider (e.g., encodeNode with real encode timing).
+	mockEnc := transition.NewMockEncoder()
+	codecs := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return mockEnc, nil
+		},
+	}
+
+	var forceIDR atomic.Bool
+	var encoded atomic.Pointer[media.VideoFrame]
+	n := &encodeNode{
+		codecs:   codecs,
+		forceIDR: &forceIDR,
+		onEncoded: func(frame *media.VideoFrame) {
+			encoded.Store(frame)
+		},
+	}
+	n.start()
+	defer func() { _ = n.Close() }()
+
+	p := &Pipeline{}
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
+
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 4*4*3/2),
+		Width:  4,
+		Height: 4,
+		PTS:    100,
+		Codec:  "h264",
+	}
+	pf.SetRefs(1)
+	p.Run(pf)
+
+	// Wait for async encode to complete.
+	require.Eventually(t, func() bool {
+		return encoded.Load() != nil
+	}, time.Second, time.Millisecond)
+
+	snap := p.Snapshot()
+	activeNodes := snap["active_nodes"].([]map[string]any)
+	require.Len(t, activeNodes, 1)
+
+	node := activeNodes[0]
+	require.Equal(t, "h264-encode", node["name"])
+
+	// Async metrics should be merged into the snapshot.
+	require.Contains(t, node, "encode_last_ns", "snapshot should contain async encode_last_ns")
+	require.Contains(t, node, "encode_max_ns", "snapshot should contain async encode_max_ns")
+	require.Contains(t, node, "encode_total", "snapshot should contain async encode_total")
+	require.Contains(t, node, "encode_queue_len", "snapshot should contain encode_queue_len")
+
+	// Real encode timing should be non-zero.
+	require.Greater(t, node["encode_last_ns"].(int64), int64(0), "encode_last_ns should be > 0")
+	require.Greater(t, node["encode_max_ns"].(int64), int64(0), "encode_max_ns should be > 0")
+	require.Equal(t, int64(1), node["encode_total"].(int64))
 }
 

@@ -101,6 +101,10 @@ export class PrismAudioDecoder {
 	private _ptsEpochReset = false;
 	private _configuredCodec = "";
 
+	// --- resampling (source rate → context rate) ---
+	private _resampleExtractBuf: Float32Array | null = null;
+	private _resampleOutBufs: Float32Array[] = [];
+
 	async configure(codec: string, sampleRate: number, channels: number, ctx?: AudioContext): Promise<void> {
 		this.reset();
 		this.sampleRate = sampleRate;
@@ -396,6 +400,8 @@ export class PrismAudioDecoder {
 		this._peakHoldTime = [];
 		this._smoothedPeak = [];
 		this._suspended = false;
+		this._resampleExtractBuf = null;
+		this._resampleOutBufs = [];
 		this.resetDiagnostics();
 	}
 
@@ -440,9 +446,11 @@ export class PrismAudioDecoder {
 			// sampleOffset accounts for samples already in the ring buffer
 			// from the old PTS epoch — when samplesConsumed catches up,
 			// the worklet's PTS equals `pts` (the frame being decoded now).
+			// Use context sample rate since ring buffer content is at context rate.
 			if (this.workletNode && this.ringBuffer) {
+				const contextRate = this.context.sampleRate;
 				const bufferedSamples = Math.round(
-					(this.ringBuffer.getStats().queueLengthMs / 1000) * this.sampleRate
+					(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
 				);
 				this.workletNode.port.postMessage({
 					type: "set-pts",
@@ -452,7 +460,18 @@ export class PrismAudioDecoder {
 			}
 		}
 
-		const written = this.ringBuffer.write(audioData);
+		const contextRate = this.context.sampleRate;
+		const sourceRate = audioData.sampleRate;
+
+		let written: number;
+		if (sourceRate !== contextRate && sourceRate > 0 && contextRate > 0) {
+			// Source sample rate differs from AudioContext rate (e.g. 44100Hz
+			// source played through 48kHz context). Resample via linear
+			// interpolation before writing to the ring buffer.
+			written = this.writeResampled(audioData, sourceRate, contextRate);
+		} else {
+			written = this.ringBuffer.write(audioData);
+		}
 		audioData.close();
 
 		if (written > 0) {
@@ -466,6 +485,59 @@ export class PrismAudioDecoder {
 				this.startPlayback();
 			}
 		}
+	}
+
+	/**
+	 * Extract, resample, and write audio data when source rate differs from
+	 * context rate. Uses linear interpolation which is sufficient for the
+	 * common 44100→48000 upsampling case.
+	 */
+	private writeResampled(audioData: AudioData, srcRate: number, dstRate: number): number {
+		if (!this.ringBuffer) return 0;
+
+		const srcFrames = audioData.numberOfFrames;
+		const outCh = this.numChannels;
+		const srcCh = audioData.numberOfChannels;
+		const dstFrames = Math.ceil(srcFrames * dstRate / srcRate);
+
+		// Ensure extract buffer is large enough for source frames.
+		if (!this._resampleExtractBuf || this._resampleExtractBuf.length < srcFrames) {
+			this._resampleExtractBuf = new Float32Array(srcFrames);
+		}
+
+		// Ensure output buffers exist for each output channel (grow incrementally).
+		while (this._resampleOutBufs.length < outCh) {
+			this._resampleOutBufs.push(null as unknown as Float32Array);
+		}
+		for (let c = 0; c < outCh; c++) {
+			if (!this._resampleOutBufs[c] || this._resampleOutBufs[c].length < dstFrames) {
+				this._resampleOutBufs[c] = new Float32Array(dstFrames);
+			}
+		}
+
+		const ratio = srcRate / dstRate;
+
+		for (let c = 0; c < outCh; c++) {
+			// Extract from source channel, upmixing mono by duplicating channel 0.
+			const planeIndex = c < srcCh ? c : 0;
+			audioData.copyTo(this._resampleExtractBuf, { planeIndex, format: "f32-planar" });
+			const src = this._resampleExtractBuf;
+			const dst = this._resampleOutBufs[c];
+
+			for (let i = 0; i < dstFrames; i++) {
+				const srcPos = i * ratio;
+				const idx = Math.floor(srcPos);
+				const frac = srcPos - idx;
+
+				if (idx + 1 < srcFrames) {
+					dst[i] = src[idx] * (1 - frac) + src[idx + 1] * frac;
+				} else {
+					dst[i] = src[Math.min(idx, srcFrames - 1)];
+				}
+			}
+		}
+
+		return this.ringBuffer.writeBuffers(this._resampleOutBufs, dstFrames);
 	}
 
 	/** Resume the AudioContext. Must be called from a user gesture handler. */

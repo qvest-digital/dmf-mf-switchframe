@@ -389,6 +389,126 @@ func TestEncodeNode_CloseWithoutStart(t *testing.T) {
 	require.NoError(t, n.Close())
 }
 
+func TestEncodeNode_AsyncMetrics(t *testing.T) {
+	// Verify that real encode timing is tracked via AsyncMetrics().
+	mockEnc := transition.NewMockEncoder()
+	codecs := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &delayedMockEncoder{delay: 5 * time.Millisecond}, nil
+		},
+	}
+	_ = mockEnc // suppress unused
+
+	var forceIDR atomic.Bool
+	n := &encodeNode{
+		codecs:    codecs,
+		forceIDR:  &forceIDR,
+		onEncoded: func(frame *media.VideoFrame) {},
+	}
+	n.start()
+	defer func() { _ = n.Close() }()
+
+	// Before any encode, metrics should be zero.
+	m := n.AsyncMetrics()
+	require.Equal(t, int64(0), m["encode_last_ns"])
+	require.Equal(t, int64(0), m["encode_max_ns"])
+	require.Equal(t, int64(0), m["encode_total"])
+
+	// Encode a frame.
+	pf := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+	}
+	pf.SetRefs(1)
+	n.Process(nil, pf)
+
+	// Wait for async encode to complete and metrics to appear.
+	require.Eventually(t, func() bool {
+		return n.AsyncMetrics()["encode_total"].(int64) >= 1
+	}, time.Second, time.Millisecond)
+
+	m = n.AsyncMetrics()
+	lastNs := m["encode_last_ns"].(int64)
+	maxNs := m["encode_max_ns"].(int64)
+	total := m["encode_total"].(int64)
+
+	require.Greater(t, lastNs, int64(0), "lastEncodeNs should be > 0 after real encode")
+	require.Greater(t, maxNs, int64(0), "maxEncodeNs should be > 0 after real encode")
+	require.Equal(t, int64(1), total)
+
+	// Encode timing should be at least the artificial delay (5ms = 5_000_000 ns).
+	require.Greater(t, lastNs, int64(1_000_000), "encode should take at least 1ms with 5ms delay")
+	require.Equal(t, lastNs, maxNs, "after one encode, last == max")
+
+	// Verify queue_len is present.
+	_, hasQueue := m["encode_queue_len"]
+	require.True(t, hasQueue, "AsyncMetrics should include encode_queue_len")
+}
+
+func TestEncodeNode_AsyncMetricsMaxTracksHighWater(t *testing.T) {
+	// Verify max tracks the peak encode duration across multiple frames.
+	callCount := atomic.Int64{}
+	codecs := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &callbackMockEncoder{
+				onEncode: func() {
+					n := callCount.Add(1)
+					if n == 1 {
+						time.Sleep(20 * time.Millisecond) // slow first encode
+					} else {
+						time.Sleep(2 * time.Millisecond) // fast subsequent encodes
+					}
+				},
+			}, nil
+		},
+	}
+
+	var forceIDR atomic.Bool
+	var encDone atomic.Int64
+	n := &encodeNode{
+		codecs:   codecs,
+		forceIDR: &forceIDR,
+		onEncoded: func(frame *media.VideoFrame) {
+			encDone.Add(1)
+		},
+	}
+	n.start()
+	defer func() { _ = n.Close() }()
+
+	// First frame: slow encode (20ms).
+	pf1 := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+	}
+	pf1.SetRefs(1)
+	n.Process(nil, pf1)
+	require.Eventually(t, func() bool { return encDone.Load() >= 1 }, time.Second, time.Millisecond)
+
+	maxAfterFirst := n.AsyncMetrics()["encode_max_ns"].(int64)
+
+	// Second frame: fast encode (2ms).
+	pf2 := &ProcessingFrame{
+		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
+	}
+	pf2.SetRefs(1)
+	n.Process(nil, pf2)
+	require.Eventually(t, func() bool { return encDone.Load() >= 2 }, time.Second, time.Millisecond)
+
+	m := n.AsyncMetrics()
+	lastNs := m["encode_last_ns"].(int64)
+	maxNs := m["encode_max_ns"].(int64)
+	total := m["encode_total"].(int64)
+
+	require.Equal(t, int64(2), total)
+	// Last should be smaller than max (fast frame < slow frame).
+	require.Less(t, lastNs, maxAfterFirst, "fast frame should be shorter than slow first frame")
+	// Max should still reflect the slow first frame.
+	require.Equal(t, maxAfterFirst, maxNs, "max should track peak (first slow frame)")
+}
+
+func TestEncodeNode_ImplementsAsyncMetricsProvider(t *testing.T) {
+	n := &encodeNode{}
+	var _ AsyncMetricsProvider = n // compile-time check
+}
+
 func TestEncodeNode_ProcessWithoutStart(t *testing.T) {
 	// Process() on an unstarted node should fall back to synchronous encode.
 	mockEnc := transition.NewMockEncoder()

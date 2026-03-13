@@ -113,6 +113,37 @@ export class AudioRingBuffer {
 		return toWrite;
 	}
 
+	/** Write pre-extracted Float32Array buffers (one per channel) into the ring. */
+	writeBuffers(buffers: Float32Array[], numFrames: number): number {
+		if (!this.audioBuffers || this.size <= 0) return 0;
+
+		const numCh = Math.min(buffers.length, this.numChannels);
+
+		const start = Atomics.load(this.sharedStates, SharedStates.BUFF_START);
+		const end = Atomics.load(this.sharedStates, SharedStates.BUFF_END);
+
+		const freeSlots = this.size - 1 - this.getUsedSlots(start, end);
+		if (freeSlots <= 0) return 0;
+
+		const toWrite = Math.min(numFrames, freeSlots);
+
+		for (let c = 0; c < numCh; c++) {
+			const view = this.floatViews[c];
+			const src = buffers[c];
+
+			const firstPart = Math.min(toWrite, this.size - end);
+			view.set(src.subarray(0, firstPart), end);
+			if (toWrite > firstPart) {
+				view.set(src.subarray(firstPart, toWrite), 0);
+			}
+		}
+
+		const newEnd = (end + toWrite) % this.size;
+		Atomics.store(this.sharedStates, SharedStates.BUFF_END, newEnd);
+
+		return toWrite;
+	}
+
 	getStats(): { queueLengthMs: number; totalSilenceInsertedMs: number; isPlaying: boolean } {
 		const start = Atomics.load(this.sharedStates, SharedStates.BUFF_START);
 		const end = Atomics.load(this.sharedStates, SharedStates.BUFF_END);

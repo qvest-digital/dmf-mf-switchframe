@@ -1447,3 +1447,151 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 			"releaseTick must deep-copy FRC output; delivered YUV aliases scratch buffer")
 	})
 }
+
+func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
+	t.Run("empty_synchronizer", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+
+		snap := fs.DebugSnapshot()
+		require.NotNil(t, snap)
+		require.Equal(t, "none", snap["frc_quality"])
+
+		sources, ok := snap["sources"].(map[string]any)
+		require.True(t, ok)
+		require.Empty(t, sources)
+	})
+
+	t.Run("source_with_no_frames", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.AddSource("cam1")
+
+		snap := fs.DebugSnapshot()
+		sources := snap["sources"].(map[string]any)
+		require.Len(t, sources, 1)
+
+		cam1 := sources["cam1"].(map[string]any)
+		require.Equal(t, 0, cam1["audio_miss_count"])
+		require.Equal(t, 0, cam1["video_count"])
+		require.Equal(t, 0, cam1["audio_count"])
+		require.Equal(t, 0, cam1["raw_video_count"])
+
+		// No FRC when quality is FRCNone
+		_, hasFRC := cam1["frc"]
+		require.False(t, hasFRC)
+	})
+
+	t.Run("source_after_ingesting_frames", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.AddSource("cam1")
+
+		// Ingest some video and audio frames
+		fs.IngestVideo("cam1", &media.VideoFrame{PTS: 3000, WireData: []byte{0}})
+		fs.IngestAudio("cam1", &media.AudioFrame{PTS: 3000, Data: []byte{0}})
+		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: make([]byte, 64*64*3/2), Width: 64, Height: 64, PTS: 3000})
+
+		snap := fs.DebugSnapshot()
+		sources := snap["sources"].(map[string]any)
+		cam1 := sources["cam1"].(map[string]any)
+
+		require.Equal(t, 1, cam1["video_count"])
+		require.Equal(t, 1, cam1["audio_count"])
+		require.Equal(t, 1, cam1["raw_video_count"])
+	})
+
+	t.Run("audio_miss_count_after_ticks", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.onRawVideo = func(string, *ProcessingFrame) {}
+		fs.AddSource("cam1")
+
+		// Ingest one audio frame so lastAudio is set
+		fs.IngestAudio("cam1", &media.AudioFrame{PTS: 3000, Data: []byte{0}})
+
+		// First tick consumes the audio frame
+		fs.releaseTick()
+
+		// Second tick: no new audio → audioMissCount increments
+		fs.releaseTick()
+
+		snap := fs.DebugSnapshot()
+		sources := snap["sources"].(map[string]any)
+		cam1 := sources["cam1"].(map[string]any)
+		require.Equal(t, 1, cam1["audio_miss_count"])
+	})
+
+	t.Run("with_frc_enabled", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.frcQuality = FRCBlend
+		fs.AddSource("cam1")
+
+		snap := fs.DebugSnapshot()
+		require.Equal(t, "blend", snap["frc_quality"])
+
+		sources := snap["sources"].(map[string]any)
+		cam1 := sources["cam1"].(map[string]any)
+
+		frc, hasFRC := cam1["frc"]
+		require.True(t, hasFRC)
+
+		frcMap := frc.(map[string]any)
+		require.Equal(t, "blend", frcMap["requested_quality"])
+		require.Equal(t, "blend", frcMap["effective_quality"])
+		require.Equal(t, false, frcMap["scene_change"])
+		require.Equal(t, int64(0), frcMap["me_last_ns"])
+		require.Equal(t, false, frcMap["has_two_frames"])
+		require.Equal(t, false, frcMap["degraded"])
+	})
+
+	t.Run("frc_has_two_frames_after_ingest", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.frcQuality = FRCBlend
+		pool := NewFramePool(4, 64, 64)
+		fs.framePool = pool
+		fs.AddSource("cam1")
+
+		// Ingest two frames to set hasTwo=true
+		w, h := 64, 64
+		totalSize := w * h * 3 / 2
+		yuv1 := make([]byte, totalSize)
+		yuv2 := make([]byte, totalSize)
+		for i := 0; i < totalSize; i++ {
+			yuv1[i] = 100
+			yuv2[i] = 200
+		}
+
+		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000})
+		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000})
+
+		snap := fs.DebugSnapshot()
+		sources := snap["sources"].(map[string]any)
+		cam1 := sources["cam1"].(map[string]any)
+		frc := cam1["frc"].(map[string]any)
+
+		require.Equal(t, true, frc["has_two_frames"])
+	})
+
+	t.Run("multiple_sources", func(t *testing.T) {
+		handler := &syncTestHandler{}
+		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+		fs.AddSource("cam1")
+		fs.AddSource("cam2")
+
+		fs.IngestVideo("cam1", &media.VideoFrame{PTS: 3000, WireData: []byte{0}})
+		fs.IngestVideo("cam2", &media.VideoFrame{PTS: 3000, WireData: []byte{0}})
+		fs.IngestVideo("cam2", &media.VideoFrame{PTS: 6000, WireData: []byte{0}})
+
+		snap := fs.DebugSnapshot()
+		sources := snap["sources"].(map[string]any)
+		require.Len(t, sources, 2)
+
+		cam1 := sources["cam1"].(map[string]any)
+		cam2 := sources["cam2"].(map[string]any)
+		require.Equal(t, 1, cam1["video_count"])
+		require.Equal(t, 2, cam2["video_count"])
+	})
+}

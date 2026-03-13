@@ -571,4 +571,363 @@ describe('StatsPanel', () => {
 		expect(panel?.textContent).toContain('1 connected');
 		expect(panel?.textContent).toContain('1.0MB');
 	});
+
+	it('shows codec info badges with HW/SW indicator', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				codec: { encoder: 'libx264', decoder: 'h264', hw_accel: false },
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('libx264');
+		expect(panel?.textContent).toContain('h264');
+		// Should show SW badge (not HW)
+		const swBadge = container.querySelector('.hw-badge.sw');
+		expect(swBadge).toBeTruthy();
+		expect(swBadge?.textContent).toBe('SW');
+	});
+
+	it('shows HW badge when hardware acceleration is active', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				codec: { encoder: 'h264_nvenc', decoder: 'h264', hw_accel: true },
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('h264_nvenc');
+		const hwBadge = container.querySelector('.hw-badge.hw');
+		expect(hwBadge).toBeTruthy();
+		expect(hwBadge?.textContent).toBe('HW');
+	});
+
+	it('shows per-source decoder stats when available', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				sources: {
+					cam1: { video_frames_in: 1800, audio_frames_in: 3600, health_status: 'healthy', last_frame_ago_ms: 5, raw_pipeline: true, decoder_active: true, decoder_avg_fps: 29.97, decoder_avg_frame_bytes: 45000 },
+					cam2: { video_frames_in: 1800, audio_frames_in: 3600, health_status: 'healthy', last_frame_ago_ms: 8, raw_pipeline: true },
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		// cam1 should show decoded FPS (30) instead of computed FPS
+		expect(panel?.textContent).toContain('30fps');
+		// cam1 should show frame size
+		expect(panel?.textContent).toContain('43.9KB');
+	});
+
+	it('shows SRT detail when active', async () => {
+		mockFetch(mockSnapshot({
+			output: {
+				recording: { active: false },
+				srt: { active: true, mode: 'caller', address: '192.168.1.100', port: 9000, bytesWritten: 10485760, droppedPackets: 2, overflowCount: 0 },
+				viewer: null,
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('LIVE');
+		expect(panel?.textContent).toContain('caller');
+		expect(panel?.textContent).toContain('192.168.1.100:9000');
+		expect(panel?.textContent).toContain('10.0MB');
+		expect(panel?.textContent).toContain('2 drops');
+	});
+
+	it('shows muxer PTS as timecode', async () => {
+		mockFetch(mockSnapshot({
+			output: {
+				recording: { active: true },
+				srt: { active: false },
+				viewer: null,
+				muxer_pts: 5400000, // 60s at 90kHz
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('Muxer PTS');
+		expect(panel?.textContent).toContain('00:01:00:00');
+	});
+
+	it('shows CBR pacer stats', async () => {
+		mockFetch(mockSnapshot({
+			output: {
+				recording: { active: true },
+				srt: { active: false },
+				viewer: null,
+				cbr_pacer: { enabled: true, muxrateBps: 10000000, nullPacketsTotal: 5000, realBytesTotal: 1000000, padBytesTotal: 200000, burstTicksTotal: 10 },
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('CBR');
+		expect(panel?.textContent).toContain('10.0 Mbps');
+		expect(panel?.textContent).toContain('5,000 null');
+	});
+
+	it('shows LUFS metering with EBU R128 color coding', async () => {
+		mockFetch(mockSnapshot({
+			mixer: {
+				mode: 'mixing',
+				frames_mixed: 100,
+				frames_passthrough: 0,
+				loudness: { momentary_lufs: -23.5, short_term_lufs: -24.0, integrated_lufs: -14.5 },
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('-23.5');
+		expect(panel?.textContent).toContain('-24.0');
+		expect(panel?.textContent).toContain('-14.5');
+	});
+
+	it('shows per-channel audio details', async () => {
+		mockFetch(mockSnapshot({
+			mixer: {
+				mode: 'mixing',
+				frames_mixed: 100,
+				frames_passthrough: 0,
+				channels: {
+					cam1: { active: true, muted: false, afv: true, level: 0, trim: 0, eq_bypassed: false, compressor_bypassed: true, delay_ms: 50, peak_l_dbfs: -18.5, peak_r_dbfs: -20.1 },
+					cam2: { active: true, muted: true, afv: false, level: -6, trim: 3, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0 },
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		// cam1: has EQ active (not bypassed), AFV, 50ms delay
+		expect(panel?.textContent).toContain('AFV');
+		expect(panel?.textContent).toContain('EQ');
+		expect(panel?.textContent).toContain('50ms');
+		expect(panel?.textContent).toContain('-18.5dB');
+		// cam2: muted
+		expect(container.querySelector('.flag-mute')).toBeTruthy();
+	});
+
+	it('shows frame sync section with FRC state', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				frame_sync: {
+					frc_quality: 'mcfi',
+					sources: {
+						cam1: { audio_miss_count: 0, video_count: 1, audio_count: 1, raw_video_count: 1, frc: { requested_quality: 'mcfi', effective_quality: 'mcfi', scene_change: false, me_last_ns: 2_000_000, has_two_frames: true, degraded: false } },
+						cam2: { audio_miss_count: 3, video_count: 0, audio_count: 0, raw_video_count: 0 },
+					},
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('FRAME SYNC');
+		expect(panel?.textContent).toContain('FRC: mcfi');
+		// cam1 FRC details
+		expect(panel?.textContent).toContain('2.00ms ME');
+		// cam2 audio miss
+		expect(panel?.textContent).toContain('miss:3');
+	});
+
+	it('shows FRC degradation warning', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				frame_sync: {
+					frc_quality: 'mcfi',
+					sources: {
+						cam1: { audio_miss_count: 0, video_count: 1, audio_count: 1, raw_video_count: 1, frc: { requested_quality: 'mcfi', effective_quality: 'blend', scene_change: false, me_last_ns: 20_000_000, has_two_frames: true, degraded: true } },
+					},
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('DEGRADED');
+		expect(panel?.textContent).toContain('req: mcfi');
+	});
+
+	it('shows L/R peak split when channels diverge by more than 3dB', async () => {
+		mockFetch(mockSnapshot({
+			mixer: {
+				mode: 'mixing',
+				frames_mixed: 100,
+				frames_passthrough: 0,
+				channels: {
+					cam1: { active: true, muted: false, afv: false, level: 0, trim: 0, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0, peak_l_dbfs: -12.0, peak_r_dbfs: -20.0 },
+					cam2: { active: true, muted: false, afv: false, level: 0, trim: 0, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0, peak_l_dbfs: -18.0, peak_r_dbfs: -19.5 },
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		// cam1: 8dB difference → should show L/R split
+		expect(container.querySelector('.lr-split')).toBeTruthy();
+		expect(panel?.textContent).toContain('L-12.0');
+		expect(panel?.textContent).toContain('R-20.0');
+		// cam1 combined value: max(-12, -20) = -12.0dB
+		expect(panel?.textContent).toContain('-12.0dB');
+		// cam2: 1.5dB difference → no split, just combined max(-18, -19.5) = -18.0dB
+		const splits = container.querySelectorAll('.lr-split');
+		expect(splits.length).toBe(1); // only cam1
+	});
+
+	it('uses relative FPS thresholds based on pipeline frame budget', async () => {
+		// 60fps pipeline: frame_budget_ms = 16.67
+		// Expected FPS = 60, warn at <51 (85%), crit at <30 (50%)
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				frame_budget_ms: 16.67,
+				sources: {
+					cam1: { video_frames_in: 0, audio_frames_in: 0, health_status: 'healthy', last_frame_ago_ms: 5, raw_pipeline: true, decoder_active: true, decoder_avg_fps: 55, decoder_avg_frame_bytes: 40000 },
+					cam2: { video_frames_in: 0, audio_frames_in: 0, health_status: 'healthy', last_frame_ago_ms: 5, raw_pipeline: true, decoder_active: true, decoder_avg_fps: 25, decoder_avg_frame_bytes: 40000 },
+				},
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const fpsSpans = container.querySelectorAll('.source-fps');
+		// cam1 at 55fps (>51 threshold) → no warning classes
+		const cam1Fps = Array.from(fpsSpans).find(el => el.textContent?.includes('55'));
+		expect(cam1Fps).toBeTruthy();
+		expect(cam1Fps?.classList.contains('warn-text')).toBe(false);
+		expect(cam1Fps?.classList.contains('crit-text')).toBe(false);
+		// cam2 at 25fps (<30 threshold) → crit
+		const cam2Fps = Array.from(fpsSpans).find(el => el.textContent?.includes('25'));
+		expect(cam2Fps).toBeTruthy();
+		expect(cam2Fps?.classList.contains('crit-text')).toBe(true);
+	});
+
+	it('shows real async encode timing instead of near-zero Process() timing', async () => {
+		// Simulate what the server sends: near-zero last_ns (Process() enqueue time)
+		// but real encode timing in encode_last_ns/encode_max_ns.
+		const snap = mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				pipeline: {
+					epoch: 3,
+					run_count: 100,
+					last_run_ns: 1_500_000, // 1.5ms pipeline loop (without real encode)
+					max_run_ns: 3_000_000,
+					total_latency_us: 200,
+					lip_sync_hint_us: 3000,
+					total_nodes: 2,
+					active_nodes: [
+						{ name: 'upstream-key', last_ns: 500_000, max_ns: 1_000_000, latency_us: 50 },
+						{
+							name: 'h264-encode',
+							last_ns: 500, // near-zero: Process() just enqueues
+							max_ns: 800,
+							latency_us: 10000,
+							encode_last_ns: 12_000_000, // 12ms real encode
+							encode_max_ns: 18_000_000, // 18ms peak
+							encode_total: 5000,
+							encode_queue_len: 1,
+						},
+					],
+				},
+			},
+		});
+		mockFetch(snap);
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		const text = panel?.textContent ?? '';
+
+		// Should show the real 12ms encode time in the node diagram, not 0.00ms
+		expect(text).toContain('12.00ms');
+		// Should show encode total count
+		expect(text).toContain('5,000 enc');
+		// Should show queue depth
+		expect(text).toContain('q1/2');
+
+		// Budget bars: sync pipeline bar shows 1.5ms, encode bar shows 12ms separately
+		const summaries = panel?.querySelectorAll('.budget-summary') ?? [];
+		expect(summaries.length).toBeGreaterThanOrEqual(2);
+		// First summary: sync pipeline (1.5ms)
+		expect(summaries[0]?.textContent).toContain('1.5ms');
+		// Second summary: async encode (12.0ms)
+		expect(summaries[1]?.textContent).toContain('12.0ms');
+		expect(summaries[1]?.textContent).toContain('async');
+	});
 });

@@ -1795,13 +1795,19 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		if ch.muted {
 			mutedCount++
 		}
-		channelDetails[key] = map[string]any{
-			"active": ch.active,
-			"muted":  ch.muted,
-			"afv":    ch.afv,
-			"level":  ch.level,
-			"trim":   ch.trim,
+		detail := map[string]any{
+			"active":               ch.active,
+			"muted":                ch.muted,
+			"afv":                  ch.afv,
+			"level":                ch.level,
+			"trim":                 ch.trim,
+			"eq_bypassed":          ch.eq.IsBypassed(),
+			"compressor_bypassed":  ch.compressor.IsBypassed(),
+			"delay_ms":             ch.audioDelay.DelayMs(),
+			"peak_l_dbfs":          LinearToDBFS(ch.peakL),
+			"peak_r_dbfs":          LinearToDBFS(ch.peakR),
 		}
+		channelDetails[key] = detail
 	}
 	transCrossfadeActive := m.transCrossfadeActive
 	transCrossfadePos := m.transCrossfadePosition
@@ -1812,7 +1818,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 
 	maxGapMs := m.maxInterFrameNano.Load() / 1e6
 
-	return map[string]any{
+	result := map[string]any{
 		"mode":                   mode,
 		"program_peak_dbfs":      peak,
 		"channels_active":        activeCount,
@@ -1834,6 +1840,16 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		"max_inter_frame_gap_ms": maxGapMs,
 		"mode_transitions":       m.modeTransitions.Load(),
 	}
+
+	if m.loudness != nil {
+		result["loudness"] = map[string]any{
+			"momentary_lufs":  m.loudness.MomentaryLUFS(),
+			"short_term_lufs": m.loudness.ShortTermLUFS(),
+			"integrated_lufs": m.loudness.IntegratedLUFS(),
+		}
+	}
+
+	return result
 }
 
 // upmixMono duplicates each mono sample to all mixer channels.

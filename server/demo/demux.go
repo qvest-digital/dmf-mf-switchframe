@@ -196,6 +196,16 @@ func parseAudioFrames(d *astits.DemuxerData, oh *astits.PESOptionalHeader) []med
 		basePTS = oh.PTS.Base
 	}
 
+	// Extract real sample rate and channel count from ADTS header
+	// before SplitADTSFrames strips the headers.
+	sampleRate, channels := codec.ParseADTSInfo(d.PES.Data)
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	if channels <= 0 {
+		channels = 2
+	}
+
 	// Split concatenated ADTS frames into individual raw AAC payloads.
 	payloads := codec.SplitADTSFrames(d.PES.Data)
 
@@ -203,12 +213,12 @@ func parseAudioFrames(d *astits.DemuxerData, oh *astits.PESOptionalHeader) []med
 	for i, payload := range payloads {
 		// Each AAC-LC frame is 1024 samples. PTS ticks at 90kHz.
 		// Offset = i * 1024 * 90000 / sampleRate
-		pts := basePTS + int64(i)*1024*90000/48000
+		pts := basePTS + int64(i)*1024*90000/int64(sampleRate)
 		frames[i] = media.AudioFrame{
 			PTS:        pts,
 			Data:       payload,
-			SampleRate: 48000,
-			Channels:   2,
+			SampleRate: sampleRate,
+			Channels:   channels,
 		}
 	}
 	return frames

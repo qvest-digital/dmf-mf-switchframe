@@ -611,6 +611,75 @@ func TestManager_NoCBR_AllAdaptersDirect(t *testing.T) {
 	require.Len(t, *allAdapters, 2, "combined list should match direct list")
 }
 
+func TestOutputManager_DebugSnapshot_IncludesCBRPacer(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	mgr.SetCBRMuxrate(10_000_000) // 10 Mbps
+
+	// Start recording to trigger muxer + pacer creation.
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	snap := mgr.DebugSnapshot()
+	require.Contains(t, snap, "cbr_pacer", "DebugSnapshot should include cbr_pacer when CBR is enabled")
+
+	cbrSnap, ok := snap["cbr_pacer"].(*CBRPacerStatus)
+	require.True(t, ok, "cbr_pacer should be *CBRPacerStatus")
+	require.True(t, cbrSnap.Enabled)
+	require.Equal(t, int64(10_000_000), cbrSnap.MuxrateBps)
+}
+
+func TestOutputManager_DebugSnapshot_NoCBRPacerWhenDisabled(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	snap := mgr.DebugSnapshot()
+	_, hasCBR := snap["cbr_pacer"]
+	require.False(t, hasCBR, "DebugSnapshot should not include cbr_pacer when CBR is disabled")
+}
+
+func TestOutputManager_DebugSnapshot_IncludesMuxerPTS(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Feed a keyframe so the muxer initializes and records a PTS.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	relay.BroadcastVideo(idrFrame)
+
+	// Wait for the viewer to process the frame.
+	time.Sleep(50 * time.Millisecond)
+
+	snap := mgr.DebugSnapshot()
+	require.Contains(t, snap, "muxer_pts", "DebugSnapshot should include muxer_pts when muxer is active")
+
+	muxerPTS, ok := snap["muxer_pts"].(int64)
+	require.True(t, ok, "muxer_pts should be int64")
+	require.Equal(t, int64(90000), muxerPTS)
+}
+
+func TestOutputManager_DebugSnapshot_NoMuxerPTSWhenInactive(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	snap := mgr.DebugSnapshot()
+	_, hasMuxerPTS := snap["muxer_pts"]
+	require.False(t, hasMuxerPTS, "DebugSnapshot should not include muxer_pts when no muxer is active")
+}
+
 func TestManager_CBRStatus_Disabled(t *testing.T) {
 	relay := newTestRelay()
 	mgr := NewManager(relay)

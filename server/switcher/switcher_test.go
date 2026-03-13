@@ -836,6 +836,82 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 	require.True(t, foundEncode, "encode node should be in active_nodes")
 }
 
+func TestSwitcher_SetCodecInfo(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Before SetCodecInfo, codec section should still be present with zero values.
+	snap := sw.DebugSnapshot()
+	codecInfo, ok := snap["codec"].(map[string]any)
+	require.True(t, ok, "codec section should be present in DebugSnapshot")
+	require.Equal(t, "", codecInfo["encoder"])
+	require.Equal(t, "", codecInfo["decoder"])
+	require.Equal(t, false, codecInfo["hw_accel"])
+
+	// Set codec info.
+	sw.SetCodecInfo("libx264", "h264", false)
+
+	snap = sw.DebugSnapshot()
+	codecInfo = snap["codec"].(map[string]any)
+	require.Equal(t, "libx264", codecInfo["encoder"])
+	require.Equal(t, "h264", codecInfo["decoder"])
+	require.Equal(t, false, codecInfo["hw_accel"])
+
+	// Update with hardware acceleration.
+	sw.SetCodecInfo("h264_nvenc", "h264_cuvid", true)
+
+	snap = sw.DebugSnapshot()
+	codecInfo = snap["codec"].(map[string]any)
+	require.Equal(t, "h264_nvenc", codecInfo["encoder"])
+	require.Equal(t, "h264_cuvid", codecInfo["decoder"])
+	require.Equal(t, true, codecInfo["hw_accel"])
+}
+
+func TestDebugSnapshot_PerSourceDecoderStats(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Set up a source decoder factory so RegisterSource creates decoders.
+	sw.SetSourceDecoderFactory(func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	})
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Send some frames to populate decoder stats.
+	for i := 0; i < 10; i++ {
+		cam1Relay.BroadcastVideo(&media.VideoFrame{
+			PTS:        int64(i) * 3000,
+			IsKeyframe: i == 0,
+			WireData:   make([]byte, 5000),
+		})
+	}
+
+	// Allow decode goroutine to process frames.
+	time.Sleep(50 * time.Millisecond)
+
+	snap := sw.DebugSnapshot()
+	sources := snap["sources"].(map[string]any)
+	cam1Info := sources["cam1"].(map[string]any)
+
+	// Decoder should be active.
+	require.Equal(t, true, cam1Info["decoder_active"])
+
+	// Stats should be populated (avgFrameSize > 0 after 10 frames).
+	avgBytes, ok := cam1Info["decoder_avg_frame_bytes"].(int)
+	require.True(t, ok, "decoder_avg_frame_bytes should be an int")
+	require.Greater(t, avgBytes, 0, "decoder_avg_frame_bytes should be > 0 after frames sent")
+
+	// FPS should be populated (need at least 2 frames for FPS calc).
+	avgFPS, ok := cam1Info["decoder_avg_fps"].(float64)
+	require.True(t, ok, "decoder_avg_fps should be a float64")
+	require.Greater(t, avgFPS, 0.0, "decoder_avg_fps should be > 0 after frames sent")
+}
+
 func TestOutputFPSTracking(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)

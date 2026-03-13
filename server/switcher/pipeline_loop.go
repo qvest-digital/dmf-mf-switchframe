@@ -136,6 +136,13 @@ func (p *Pipeline) Snapshot() map[string]any {
 		if err := n.Err(); err != nil {
 			nodes[i]["last_error"] = err.Error()
 		}
+		// Merge async metrics for nodes that do work after Process() returns
+		// (e.g., encodeNode's real H.264 encode timing).
+		if amp, ok := n.(AsyncMetricsProvider); ok {
+			for k, v := range amp.AsyncMetrics() {
+				nodes[i][k] = v
+			}
+		}
 	}
 	return map[string]any{
 		"active_nodes":     nodes,
