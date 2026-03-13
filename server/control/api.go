@@ -307,6 +307,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 	mux.HandleFunc("GET /api/format", a.handleGetFormat)
 	mux.HandleFunc("PUT /api/format", a.handleSetFormat)
+	mux.HandleFunc("GET /api/encoder", a.handleGetEncoder)
+	mux.HandleFunc("PUT /api/encoder", a.handleSetEncoder)
 	mux.HandleFunc("GET /api/sources", a.handleSources)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
 	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
