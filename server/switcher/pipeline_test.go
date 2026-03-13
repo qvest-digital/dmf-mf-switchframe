@@ -771,6 +771,49 @@ func TestPipelineSnapshot_LastError(t *testing.T) {
 	require.Contains(t, activeNodes[0]["last_error"], "mock encode error")
 }
 
+func TestPipelineCodecs_SetEncoderFactory(t *testing.T) {
+	callCount := atomic.Int32{}
+	factory1 := transition.EncoderFactory(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		callCount.Add(1)
+		return transition.NewMockEncoder(), nil
+	})
+	factory2 := transition.EncoderFactory(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		callCount.Add(10) // distinguishable increment
+		return transition.NewMockEncoder(), nil
+	})
+
+	format := DefaultFormat
+	formatPtr := &atomic.Pointer[PipelineFormat]{}
+	formatPtr.Store(&format)
+
+	pc := &pipelineCodecs{
+		encoderFactory: factory1,
+		formatRef:      formatPtr,
+	}
+	defer pc.close()
+
+	// First encode triggers factory1.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 1920*1080*3/2),
+		Width:  1920,
+		Height: 1080,
+		PTS:    90000,
+		Codec:  "H264",
+	}
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), callCount.Load(), "factory1 should have been called once")
+
+	// Swap factory.
+	pc.SetEncoderFactory(factory2)
+
+	// Next encode triggers factory2.
+	pf.PTS = 93003
+	_, err = pc.encode(pf, true)
+	require.NoError(t, err)
+	require.Equal(t, int32(11), callCount.Load(), "factory2 should have been called (1 + 10)")
+}
+
 func TestPipelineSnapshot_AsyncMetrics(t *testing.T) {
 	// Verify that Snapshot merges AsyncMetrics from nodes that implement
 	// AsyncMetricsProvider (e.g., encodeNode with real encode timing).

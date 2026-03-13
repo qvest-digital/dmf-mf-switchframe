@@ -92,6 +92,19 @@ type pipelineCodecs struct {
 	lastPPS []byte
 }
 
+// SetEncoderFactory replaces the encoder factory and invalidates the current
+// encoder. The next encode() call will create a new encoder using the new
+// factory. The mutex serializes this with any in-flight encode().
+func (pc *pipelineCodecs) SetEncoderFactory(f transition.EncoderFactory) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.encoder != nil {
+		pc.encoder.Close()
+		pc.encoder = nil
+	}
+	pc.encoderFactory = f
+}
+
 // invalidateEncoder forces encoder recreation on next encode call.
 func (pc *pipelineCodecs) invalidateEncoder() {
 	pc.mu.Lock()
