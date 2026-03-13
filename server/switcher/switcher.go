@@ -334,6 +334,12 @@ type Switcher struct {
 	lastE2ENs atomic.Int64
 	maxE2ENs  atomic.Int64
 
+	// Sub-stage latency breakdown (all in nanoseconds, atomic for lock-free reads)
+	lastDecodeQueueNs atomic.Int64 // T1 - T0: sourceDecoder channel wait
+	lastDecodeNs      atomic.Int64 // T2 - T1: H.264 decode duration
+	lastSyncWaitNs    atomic.Int64 // T3 - T2: frame_sync tick alignment wait
+	lastProcQueueNs   atomic.Int64 // T5 - T4: videoProcCh queue wait
+
 	// Program epoch — monotonically increasing counter incremented on every
 	// program source change (Cut, transition complete). Frames stamped with
 	// a stale epoch are discarded in videoProcessingLoop to prevent wrong-source
@@ -388,6 +394,10 @@ type videoProcWork struct {
 	// during concurrent Cut/transition races. Zero means "always process"
 	// (used by transition engine output which is always valid).
 	epoch uint64
+	// enqueueNano: UnixNano when enqueued to videoProcCh. Used to measure
+	// how long the frame waited in the videoProcCh buffer before being
+	// picked up by videoProcessingLoop.
+	enqueueNano int64
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -1232,6 +1242,21 @@ func (s *Switcher) videoProcessingLoop() {
 			continue
 		}
 		arrivalNano := work.yuvFrame.ArrivalNano // save before Run may reallocate
+
+		// Compute sub-stage breakdown from frame timestamps
+		if arrivalNano > 0 && work.yuvFrame.DecodeStartNano > 0 {
+			s.lastDecodeQueueNs.Store(work.yuvFrame.DecodeStartNano - arrivalNano)
+		}
+		if work.yuvFrame.DecodeStartNano > 0 && work.yuvFrame.DecodeEndNano > 0 {
+			s.lastDecodeNs.Store(work.yuvFrame.DecodeEndNano - work.yuvFrame.DecodeStartNano)
+		}
+		if work.yuvFrame.DecodeEndNano > 0 && work.yuvFrame.SyncReleaseNano > 0 {
+			s.lastSyncWaitNs.Store(work.yuvFrame.SyncReleaseNano - work.yuvFrame.DecodeEndNano)
+		}
+		if work.enqueueNano > 0 {
+			s.lastProcQueueNs.Store(time.Now().UnixNano() - work.enqueueNano)
+		}
+
 		start := time.Now()
 
 		if p := s.pipeline.Load(); p != nil {
@@ -1286,7 +1311,7 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		pool:    s.framePool,
 	}
 	pf.SetRefs(1)
-	s.enqueueVideoWork(videoProcWork{yuvFrame: pf})
+	s.enqueueVideoWork(videoProcWork{yuvFrame: pf, enqueueNano: time.Now().UnixNano()})
 }
 
 // broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
@@ -1301,18 +1326,19 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 		return
 	}
 	epoch := s.programEpoch.Load()
+	enqueueNano := time.Now().UnixNano()
 	if pf.refs != nil {
 		// Managed frame: Ref for pipeline, shallow copy shares YUV + refs.
 		// Pipeline.Run calls MakeWritable before in-place processing.
 		pf.Ref()
 		cp := new(ProcessingFrame)
 		*cp = *pf
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano})
 	} else {
 		// Unmanaged frame (FRC scratch buffer): must deep-copy.
 		cp := pf.DeepCopy()
 		cp.SetRefs(1)
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano})
 	}
 }
 

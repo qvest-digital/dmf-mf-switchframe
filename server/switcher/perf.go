@@ -14,6 +14,10 @@ type PerfSwitcherSample struct {
 	VideoBroadcast     int64
 	DeadlineViolations int64
 	FrameBudgetNs      int64
+	DecodeQueueNs      int64
+	DecodeNs           int64
+	SyncWaitNs         int64
+	ProcQueueNs        int64
 }
 
 // PerfSourceSample mirrors perf.SourceSample.
@@ -72,5 +76,9 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		VideoBroadcast:     s.videoBroadcastCount.Load(),
 		DeadlineViolations: s.deadlineViolations.Load(),
 		FrameBudgetNs:      s.frameBudgetNs.Load(),
+		DecodeQueueNs:      s.lastDecodeQueueNs.Load(),
+		DecodeNs:           s.lastDecodeNs.Load(),
+		SyncWaitNs:         s.lastSyncWaitNs.Load(),
+		ProcQueueNs:        s.lastProcQueueNs.Load(),
 	}
 }
