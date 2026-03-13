@@ -34,6 +34,7 @@ import (
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/perf"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte104"
@@ -94,6 +95,9 @@ type App struct {
 	mxlInstance *mxl.Instance
 	mxlSources  []*mxl.Source
 	mxlOutput   *mxl.Output
+
+	// Performance monitoring
+	perfSampler *perf.Sampler
 
 	// API + middleware
 	api        *control.API
@@ -803,6 +807,14 @@ func (a *App) initSCTE104() error {
 
 // initAPI creates the REST API and wires state callbacks.
 func (a *App) initAPI() error {
+	// Create and start the performance sampler.
+	a.perfSampler = perf.NewSampler(
+		&perf.SwitcherAdapter{SW: a.sw},
+		&perf.MixerAdapter{Mixer: a.mixer},
+		&perf.OutputAdapter{Manager: a.outputMgr},
+	)
+	a.perfSampler.Start()
+
 	apiOpts := []control.APIOption{
 		control.WithMixer(a.mixer),
 		control.WithOutputManager(a.outputMgr),
@@ -817,6 +829,7 @@ func (a *App) initAPI() error {
 		control.WithStingerStore(a.stingerStore),
 		control.WithLayoutCompositor(a.layoutCompositor),
 		control.WithLayoutStore(a.layoutStore),
+		control.WithPerfSampler(a.perfSampler),
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
@@ -1111,6 +1124,10 @@ func (a *App) Close() {
 	}
 	if a.mxlInstance != nil {
 		_ = a.mxlInstance.Close()
+	}
+
+	if a.perfSampler != nil {
+		a.perfSampler.Stop()
 	}
 
 	if a.scte35Injector != nil {

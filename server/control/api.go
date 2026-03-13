@@ -67,6 +67,13 @@ type DebugAPI interface {
 	HandleSnapshot(w http.ResponseWriter, r *http.Request)
 }
 
+// PerfAPI is the interface for performance monitoring endpoints.
+type PerfAPI interface {
+	HandlePerf(w http.ResponseWriter, r *http.Request)
+	HandleSaveBaseline(w http.ResponseWriter, r *http.Request)
+	HandleDeleteBaseline(w http.ResponseWriter, r *http.Request)
+}
+
 // SCTE35API is the interface for SCTE-35 splice event operations.
 type SCTE35API interface {
 	InjectCue(msg *scte35.CueMessage) (uint32, error)
@@ -187,6 +194,11 @@ func WithCaptionManager(cm CaptionManagerAPI) APIOption {
 	return func(a *API) { a.captionMgr = cm }
 }
 
+// WithPerfSampler attaches a performance sampler to the API.
+func WithPerfSampler(p PerfAPI) APIOption {
+	return func(a *API) { a.perf = p }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -207,6 +219,7 @@ type API struct {
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	captionMgr       CaptionManagerAPI
+	perf             PerfAPI
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -339,6 +352,11 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/output/destinations/{id}/stop", a.handleStopDestination)
 	if a.debug != nil {
 		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
+	}
+	if a.perf != nil {
+		mux.HandleFunc("GET /api/perf", a.perf.HandlePerf)
+		mux.HandleFunc("POST /api/perf/baseline", a.perf.HandleSaveBaseline)
+		mux.HandleFunc("DELETE /api/perf/baseline/{name}", a.perf.HandleDeleteBaseline)
 	}
 	if a.presetStore != nil {
 		mux.HandleFunc("GET /api/presets", a.handleListPresets)
