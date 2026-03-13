@@ -4,11 +4,20 @@ import (
 	"log/slog"
 	"math"
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// decoderInput wraps a video frame with its arrival timestamp for E2E
+// latency measurement. The arrivalNano field records when the frame
+// entered sourceViewer.SendVideo().
+type decoderInput struct {
+	frame       *media.VideoFrame
+	arrivalNano int64
+}
 
 // sourceDecoder runs a per-source decode goroutine, converting H.264 frames
 // to raw YUV420 ProcessingFrames. Each source gets its own decoder and
@@ -17,7 +26,7 @@ import (
 type sourceDecoder struct {
 	sourceKey string
 	decoder   transition.VideoDecoder
-	ch        chan *media.VideoFrame // capacity 2, newest-wins drop
+	ch        chan decoderInput // capacity 2, newest-wins drop
 	callback  func(string, *ProcessingFrame)
 	done      chan struct{}
 
@@ -39,6 +48,11 @@ type sourceDecoder struct {
 	lastPTS          int64
 	frameCount       int
 	lastGroupID      atomic.Uint32
+
+	// Decode timing instrumentation (atomic, lock-free)
+	lastDecodeNs atomic.Int64 // duration of last decoder.Decode() call
+	maxDecodeNs  atomic.Int64 // max decode duration seen
+	decodeDrops  atomic.Int64 // count of frames dropped by newest-wins policy
 }
 
 // newSourceDecoder creates a decoder for the given source key, starts its
@@ -53,7 +67,7 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 	sd := &sourceDecoder{
 		sourceKey: key,
 		decoder:   dec,
-		ch:        make(chan *media.VideoFrame, 2),
+		ch:        make(chan decoderInput, 2),
 		callback:  callback,
 		done:      make(chan struct{}),
 		pool:      pool,
@@ -63,23 +77,33 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 }
 
 // Send enqueues an H.264 frame for decoding. Uses newest-wins drop policy:
-// if the channel is full, the oldest frame is dropped.
-func (sd *sourceDecoder) Send(frame *media.VideoFrame) {
+// if the channel is full, the oldest frame is dropped. arrivalNano is the
+// UnixNano timestamp when the frame entered sourceViewer.SendVideo(),
+// propagated through the pipeline for E2E latency measurement.
+func (sd *sourceDecoder) Send(frame *media.VideoFrame, arrivalNano int64) {
 	sd.updateStats(frame)
 
+	input := decoderInput{frame: frame, arrivalNano: arrivalNano}
 	select {
-	case sd.ch <- frame:
+	case sd.ch <- input:
 	default:
 		// Channel full — drop oldest, enqueue new (newest-wins).
+		sd.decodeDrops.Add(1)
 		select {
 		case <-sd.ch:
 		default:
 		}
 		select {
-		case sd.ch <- frame:
+		case sd.ch <- input:
 		default:
 		}
 	}
+}
+
+// PerfStats returns decode timing and drop statistics.
+// Safe for concurrent access from any goroutine.
+func (sd *sourceDecoder) PerfStats() (lastDecodeNs, maxDecodeNs, drops int64) {
+	return sd.lastDecodeNs.Load(), sd.maxDecodeNs.Load(), sd.decodeDrops.Load()
 }
 
 // Close stops the decode goroutine and releases the decoder.
@@ -101,7 +125,9 @@ func (sd *sourceDecoder) Stats() (avgFrameSize, avgFPS float64) {
 func (sd *sourceDecoder) decodeLoop() {
 	defer close(sd.done)
 
-	for frame := range sd.ch {
+	for input := range sd.ch {
+		frame := input.frame
+
 		// Convert AVC1 wire format to Annex B for decoder (buffer reuse)
 		sd.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
 		if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
@@ -109,7 +135,12 @@ func (sd *sourceDecoder) decodeLoop() {
 			sd.annexBBuf, sd.prependBuf = sd.prependBuf, sd.annexBBuf
 		}
 
+		t0 := time.Now().UnixNano()
 		yuv, w, h, err := sd.decoder.Decode(sd.annexBBuf)
+		dur := time.Now().UnixNano() - t0
+		sd.lastDecodeNs.Store(dur)
+		updateAtomicMax(&sd.maxDecodeNs, dur)
+
 		if err != nil {
 			slog.Debug("source decoder: decode failed",
 				"source", sd.sourceKey, "error", err)
@@ -153,10 +184,11 @@ func (sd *sourceDecoder) decodeLoop() {
 			// (2) RequestKeyframe() on cuts/output-start, (3) transition engine
 			// first-frame flag. Propagating source keyframes caused excessive
 			// IDRs (every source GOP boundary forced a program IDR).
-			IsKeyframe: false,
-			GroupID:     frame.GroupID,
-			Codec:      frame.Codec,
-			pool:       framePool,
+			IsKeyframe:  false,
+			GroupID:      frame.GroupID,
+			Codec:       frame.Codec,
+			ArrivalNano: input.arrivalNano,
+			pool:        framePool,
 		}
 		pf.SetRefs(1) // frame_sync ownership — shared across value copies
 

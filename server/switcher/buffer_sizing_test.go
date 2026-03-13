@@ -35,7 +35,7 @@ func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 		SPS:      []byte{0x67, 0x42, 0x00, 0x1e},
 		PPS:      []byte{0x68, 0xce, 0x38, 0x80},
 		Codec:    "h264", GroupID: 1,
-	})
+	}, 0)
 
 	deadline := time.After(2 * time.Second)
 	for {

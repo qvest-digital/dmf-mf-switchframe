@@ -1163,6 +1163,60 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 	})
 }
 
+func TestSwitcher_E2ELatency(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Set up always-decode mode with mock decoder.
+	sw.SetSourceDecoderFactory(func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	})
+
+	// Set up pipeline with mock encoder so frames flow through videoProcessingLoop.
+	sw.SetPipelineCodecs(func(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	require.NoError(t, sw.BuildPipeline())
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Send a keyframe — it flows: relay → sourceViewer.SendVideo (stamps arrivalNano)
+	// → sourceDecoder → handleRawVideoFrame → broadcastProcessedFromPF →
+	// videoProcCh → videoProcessingLoop (measures E2E).
+	cam1Relay.BroadcastVideo(&media.VideoFrame{
+		PTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	})
+
+	// Wait for async pipeline to process.
+	deadline := time.After(3 * time.Second)
+	for {
+		if sw.lastE2ENs.Load() > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for E2E latency to be recorded")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	lastE2E := sw.lastE2ENs.Load()
+	maxE2E := sw.maxE2ENs.Load()
+	require.Greater(t, lastE2E, int64(0), "lastE2ENs should be > 0")
+	require.Greater(t, maxE2E, int64(0), "maxE2ENs should be > 0")
+	require.GreaterOrEqual(t, maxE2E, lastE2E, "maxE2ENs should be >= lastE2ENs")
+}
+
 func TestRegisterReplaySource(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := New(programRelay)

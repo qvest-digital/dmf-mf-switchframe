@@ -329,6 +329,10 @@ type Switcher struct {
 	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
 
+	// E2E frame latency: source arrival → pipeline processing complete
+	lastE2ENs atomic.Int64
+	maxE2ENs  atomic.Int64
+
 	// Program epoch — monotonically increasing counter incremented on every
 	// program source change (Cut, transition complete). Frames stamped with
 	// a stale epoch are discarded in videoProcessingLoop to prevent wrong-source
@@ -1195,6 +1199,7 @@ func (s *Switcher) videoProcessingLoop() {
 			s.programEpochStale.Add(1)
 			continue
 		}
+		arrivalNano := work.yuvFrame.ArrivalNano // save before Run may reallocate
 		start := time.Now()
 
 		if p := s.pipeline.Load(); p != nil {
@@ -1208,6 +1213,12 @@ func (s *Switcher) videoProcessingLoop() {
 		updateAtomicMax(&s.videoProcMaxNano, dur)
 		if dur > s.frameBudgetNs.Load() {
 			s.deadlineViolations.Add(1)
+		}
+
+		if arrivalNano > 0 {
+			e2e := time.Now().UnixNano() - arrivalNano
+			s.lastE2ENs.Store(e2e)
+			updateAtomicMax(&s.maxE2ENs, e2e)
 		}
 	}
 }

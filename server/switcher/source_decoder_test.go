@@ -73,7 +73,7 @@ func TestSourceDecoderSendAndCallback(t *testing.T) {
 		Codec:      "h264",
 		GroupID:    1,
 	}
-	sd.Send(frame)
+	sd.Send(frame, 0)
 
 	// Wait for decode goroutine to process
 	deadline := time.After(2 * time.Second)
@@ -140,7 +140,7 @@ func TestSourceDecoderNewestWinsDrop(t *testing.T) {
 			PPS:        []byte{0x68},
 			Codec:      "h264",
 			GroupID:    uint32(i + 1),
-		})
+		}, 0)
 		time.Sleep(1 * time.Millisecond) // let goroutine pick up
 	}
 
@@ -227,7 +227,7 @@ func TestSourceDecoderDecodeError(t *testing.T) {
 			PPS:        []byte{0x68},
 			Codec:      "h264",
 			GroupID:    uint32(i),
-		})
+		}, 0)
 		time.Sleep(10 * time.Millisecond) // let decode goroutine process
 	}
 
@@ -267,7 +267,7 @@ func TestSourceDecoderStats(t *testing.T) {
 			PPS:        []byte{0x68},
 			Codec:      "h264",
 			GroupID:    uint32(i / 2),
-		})
+		}, 0)
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -312,7 +312,7 @@ func TestSourceDecoderBufferReuse(t *testing.T) {
 			PPS:        []byte{0x68, 0xce, 0x38, 0x80},
 			Codec:      "h264",
 			GroupID:    uint32(i + 1),
-		})
+		}, 0)
 		time.Sleep(20 * time.Millisecond)
 	}
 
@@ -377,6 +377,139 @@ func (d *failingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 func (d *failingMockDecoder) Close() {}
 
+func TestSourceDecoder_DecodeTimingRecorded(t *testing.T) {
+	// Verify that decode timing is recorded after processing a frame.
+	factory := func() (transition.VideoDecoder, error) {
+		return &slowDecoder{delay: 1 * time.Millisecond}, nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil)
+	defer sd.Close()
+
+	sd.Send(&media.VideoFrame{
+		PTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}, time.Now().UnixNano())
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for callback")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	lastDec, maxDec, drops := sd.PerfStats()
+	if lastDec <= 0 {
+		t.Errorf("lastDecodeNs should be > 0 after decode, got %d", lastDec)
+	}
+	if maxDec <= 0 {
+		t.Errorf("maxDecodeNs should be > 0, got %d", maxDec)
+	}
+	if drops != 0 {
+		t.Errorf("drops should be 0, got %d", drops)
+	}
+	// Decode with 1ms sleep should take at least 1ms
+	if lastDec < int64(500*time.Microsecond) {
+		t.Errorf("lastDecodeNs = %d, expected at least 500us for 1ms sleep decoder", lastDec)
+	}
+}
+
+func TestSourceDecoder_DropCounting(t *testing.T) {
+	// Create a decoder that blocks so we can fill the channel and trigger drops.
+	blockCh := make(chan struct{})
+	factory := func() (transition.VideoDecoder, error) {
+		return &blockingMockDecoder{
+			width: 4, height: 4,
+			blockCh: blockCh,
+		}, nil
+	}
+
+	callback := func(sourceKey string, pf *ProcessingFrame) {}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil)
+	defer sd.Close()
+
+	// Send one frame to get the decoder loop blocked
+	sd.Send(&media.VideoFrame{
+		PTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		SPS:        []byte{0x67},
+		PPS:        []byte{0x68},
+		Codec:      "h264",
+	}, 0)
+	time.Sleep(5 * time.Millisecond) // let decode loop start blocking
+
+	// Channel capacity is 2 — fill it
+	for i := 0; i < 2; i++ {
+		sd.Send(&media.VideoFrame{
+			PTS:        int64((i + 2) * 90000),
+			IsKeyframe: true,
+			WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65},
+			SPS:        []byte{0x67},
+			PPS:        []byte{0x68},
+			Codec:      "h264",
+		}, 0)
+	}
+	time.Sleep(5 * time.Millisecond) // let channel fill
+
+	// Next send should trigger a drop (channel is full, decoder is blocked)
+	sd.Send(&media.VideoFrame{
+		PTS:        5 * 90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65},
+		SPS:        []byte{0x67},
+		PPS:        []byte{0x68},
+		Codec:      "h264",
+	}, 0)
+
+	_, _, drops := sd.PerfStats()
+	if drops < 1 {
+		t.Errorf("expected at least 1 drop, got %d", drops)
+	}
+
+	// Unblock decoder to allow clean shutdown
+	close(blockCh)
+}
+
+// slowDecoder introduces a configurable delay on Decode() for timing tests.
+type slowDecoder struct {
+	delay time.Duration
+}
+
+func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	if d.delay > 0 {
+		time.Sleep(d.delay)
+	}
+	w, h := 4, 4
+	yuv := make([]byte, w*h*3/2)
+	return yuv, w, h, nil
+}
+
+func (d *slowDecoder) Close() {}
+
 func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	// Bug 3: If decoded frame is larger than pool buffer (e.g., 4K source
 	// with 1080p pool), buf[:yuvSize] panics because yuvSize > cap(buf).
@@ -417,7 +550,7 @@ func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	}
 
 	// This should not panic even though pool buffers are too small.
-	sd.Send(frame)
+	sd.Send(frame, 0)
 
 	deadline := time.After(2 * time.Second)
 	for {

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
@@ -69,10 +70,11 @@ func (sv *sourceViewer) ID() string {
 // buffer/handler via the sourceDecoder callback. Otherwise, the legacy H.264
 // path is used: frame sync → delay buffer → handler.
 func (sv *sourceViewer) SendVideo(frame *media.VideoFrame) {
+	arrivalNano := time.Now().UnixNano()
 	sv.videoSent.Add(1)
 	// Always-decode path: H.264 → sourceDecoder → callback → raw video pipeline
 	if dec := sv.srcDecoder.Load(); dec != nil {
-		dec.Send(frame)
+		dec.Send(frame, arrivalNano)
 		return
 	}
 	// Legacy H.264 path

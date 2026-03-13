@@ -16,6 +16,19 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
+// updateAtomicMaxAudio atomically updates field to val if val > current.
+func updateAtomicMaxAudio(field *atomic.Int64, val int64) {
+	for {
+		cur := field.Load()
+		if val <= cur {
+			return
+		}
+		if field.CompareAndSwap(cur, val) {
+			return
+		}
+	}
+}
+
 // growBuf returns buf[:n] if cap(buf) >= n, otherwise allocates a new slice.
 // Used to eliminate per-frame allocations on the mixing hot path.
 func growBuf(buf []float32, n int) []float32 {
@@ -184,6 +197,10 @@ type Mixer struct {
 	maxInterFrameNano atomic.Int64 // max gap between consecutive output frames (ns)
 	modeTransitions   atomic.Int64 // number of passthrough↔mixing mode changes
 	transCrossfades   atomic.Int64 // transition crossfade start count
+
+	// Mix cycle timing (atomic, lock-free)
+	lastMixCycleNs atomic.Int64
+	maxMixCycleNs  atomic.Int64
 }
 
 // mixCycleDeadline is the maximum time to wait for all active channels to
@@ -359,6 +376,8 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 		return nil
 	}
 
+	mixStart := time.Now().UnixNano()
+
 	// Sum all channel PCM buffers using reusable accumulator
 	var mixLen int
 	for _, buf := range m.mixBuffer {
@@ -470,6 +489,11 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 
 	// Reset mix cycle for next round
 	m.resetMixCycleLocked()
+
+	// Record mix cycle timing
+	mixDur := time.Now().UnixNano() - mixStart
+	m.lastMixCycleNs.Store(mixDur)
+	updateAtomicMaxAudio(&m.maxMixCycleNs, mixDur)
 
 	// Build output frame — caller will output after releasing the lock
 	return &media.AudioFrame{

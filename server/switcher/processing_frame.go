@@ -26,6 +26,10 @@ type ProcessingFrame struct {
 	GroupID    uint32
 	Codec      string // preserved from source for output metadata
 
+	// ArrivalNano records UnixNano when the frame entered sourceViewer.SendVideo().
+	// Used for E2E latency measurement (source arrival → pipeline processing complete).
+	ArrivalNano int64
+
 	// pool is the FramePool this buffer was acquired from.
 	// nil-safe: falls back to make()/no-op for tests and transient wrappers.
 	pool *FramePool

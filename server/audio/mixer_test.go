@@ -3233,3 +3233,49 @@ func TestMixerOnCutPreSeedAppliesStatelessGainOnly(t *testing.T) {
 			"sample %d: pre-seed should apply only trim*fader (%.4f), not EQ", i, expectedGain)
 	}
 }
+
+func TestMixer_MixCycleTimingRecorded(t *testing.T) {
+	// Two active channels forces mixing mode, which goes through collectMixCycleLocked.
+	var capturedPCM []float32
+	var outputFrames []*media.AudioFrame
+
+	cam1PCM := []float32{0.5, 0.5, 0.5, 0.5}
+	cam2PCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: cam1PCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: cam2PCM}
+	m.mu.Unlock()
+
+	// Ingest frames from both channels to trigger a mix cycle
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames), "should produce one mixed output frame")
+
+	lastCycle := m.lastMixCycleNs.Load()
+	maxCycle := m.maxMixCycleNs.Load()
+	require.Greater(t, lastCycle, int64(0), "lastMixCycleNs should be > 0 after a mix cycle")
+	require.Greater(t, maxCycle, int64(0), "maxMixCycleNs should be > 0")
+	require.GreaterOrEqual(t, maxCycle, lastCycle, "maxMixCycleNs should be >= lastMixCycleNs")
+}
