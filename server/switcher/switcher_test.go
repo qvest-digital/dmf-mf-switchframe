@@ -13,6 +13,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -1577,4 +1578,73 @@ func TestCutDuringActiveTransition_AbortsThenCuts(t *testing.T) {
 	state = sw.State()
 	require.Equal(t, "cam3", state.ProgramSource,
 		"handleTransitionComplete must not overwrite programSource after Cut aborted the transition")
+}
+
+func TestSwitcher_SetEncoder(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	require.NoError(t, sw.BuildPipeline())
+
+	avail := []codec.EncoderInfo{
+		{Name: "libx264", DisplayName: "x264 (Software)", IsDefault: true},
+		{Name: "h264_nvenc", DisplayName: "NVENC (CUDA)", IsDefault: false},
+	}
+	sw.SetAvailableEncoders(avail)
+	sw.SetCodecInfo("libx264", "h264", false)
+
+	require.Equal(t, "libx264", sw.EncoderName())
+
+	// Switch to a valid encoder.
+	err := sw.SetEncoder("h264_nvenc")
+	require.NoError(t, err)
+	require.Equal(t, "h264_nvenc", sw.EncoderName())
+
+	// Switch to invalid encoder — should fail.
+	err = sw.SetEncoder("nonexistent")
+	require.Error(t, err)
+	require.Equal(t, "h264_nvenc", sw.EncoderName(), "should not have changed")
+
+	// AvailableEncoders should return the list.
+	got := sw.AvailableEncoders()
+	require.Len(t, got, 2)
+	require.Equal(t, "libx264", got[0].Name)
+}
+
+func TestSwitcher_SetEncoder_RejectsDuringTransition(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+	require.NoError(t, sw.BuildPipeline())
+
+	avail := []codec.EncoderInfo{
+		{Name: "libx264", DisplayName: "x264 (Software)", IsDefault: true},
+		{Name: "h264_nvenc", DisplayName: "NVENC (CUDA)", IsDefault: false},
+	}
+	sw.SetAvailableEncoders(avail)
+	sw.SetCodecInfo("libx264", "h264", false)
+
+	// Register sources and cut to set up program.
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+
+	// Start a long transition.
+	sw.transConfig = &TransitionConfig{DecoderFactory: nil}
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	// SetEncoder during transition should be rejected.
+	err = sw.SetEncoder("h264_nvenc")
+	require.ErrorIs(t, err, ErrFormatDuringTransition)
 }

@@ -361,7 +361,8 @@ type Switcher struct {
 	// Set via SetCodecInfo(), read-only after initialization.
 	codecEncoder string
 	codecDecoder string
-	codecHWAccel bool
+	codecHWAccel      bool
+	availableEncoders []codec.EncoderInfo
 
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
@@ -440,6 +441,88 @@ func (s *Switcher) SetCodecInfo(encoder, decoder string, hwAccel bool) {
 	s.codecEncoder = encoder
 	s.codecDecoder = decoder
 	s.codecHWAccel = hwAccel
+}
+
+// SetAvailableEncoders stores the list of encoders that are available on this
+// system. Called once at startup from the codec probe results.
+func (s *Switcher) SetAvailableEncoders(encoders []codec.EncoderInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.availableEncoders = encoders
+}
+
+// AvailableEncoders returns the list of encoders available on this system.
+func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]codec.EncoderInfo, len(s.availableEncoders))
+	copy(out, s.availableEncoders)
+	return out
+}
+
+// EncoderName returns the name of the currently active encoder.
+func (s *Switcher) EncoderName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.codecEncoder
+}
+
+// SetEncoder switches the video encoder at runtime. The name must match one
+// of the entries in AvailableEncoders. Returns ErrFormatDuringTransition if
+// a transition is in progress. The new encoder takes effect on the next
+// encoded frame (the current encoder is invalidated).
+func (s *Switcher) SetEncoder(name string) error {
+	s.mu.Lock()
+
+	if s.state.isInTransition() {
+		s.mu.Unlock()
+		return ErrFormatDuringTransition
+	}
+
+	// Validate name against available encoders.
+	found := false
+	for _, enc := range s.availableEncoders {
+		if enc.Name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.mu.Unlock()
+		return fmt.Errorf("switcher: encoder %q not available", name)
+	}
+
+	// Build factory for the requested encoder.
+	var factory transition.EncoderFactory
+	if name == "openh264" {
+		factory = func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return codec.NewOpenH264Encoder(w, h, bitrate, fpsNum, fpsDen)
+		}
+	} else {
+		codecName := name
+		factory = func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return codec.NewFFmpegEncoder(codecName, w, h, bitrate, fpsNum, fpsDen,
+				transition.DefaultGOPSecs, codec.HWDeviceCtx())
+		}
+	}
+
+	// Update codec info.
+	oldEncoder := s.codecEncoder
+	s.codecEncoder = name
+	// HW accel is true for any non-software encoder.
+	s.codecHWAccel = name != "libx264" && name != "openh264"
+
+	// Capture pipeCodecs ref before releasing lock.
+	pc := s.pipeCodecs
+	s.mu.Unlock()
+
+	// Swap factory outside s.mu to avoid holding both s.mu and pipeCodecs.mu.
+	if pc != nil {
+		pc.SetEncoderFactory(factory)
+	}
+
+	s.log.Info("encoder changed", "from", oldEncoder, "to", name)
+	return nil
 }
 
 // SetRawVideoSink sets or clears the raw video output tap.
