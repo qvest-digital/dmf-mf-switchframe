@@ -257,6 +257,7 @@ func (a *App) initCoreEngine() error {
 	// Record which codec was selected at startup for debug snapshot.
 	encName, decName := codec.ProbeEncoders()
 	a.sw.SetCodecInfo(encName, decName, codec.HWDeviceCtx() != nil)
+	a.sw.SetAvailableEncoders(codec.ListAvailableEncoders())
 
 	// Apply pipeline format from config.
 	if f, ok := switcher.FormatPresets[a.cfg.Format]; ok {

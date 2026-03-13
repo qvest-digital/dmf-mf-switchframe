@@ -178,6 +178,19 @@ type PipelineFormatInfo struct {
 	Name   string `json:"name"`
 }
 
+// EncoderInfo describes an available video encoder backend.
+type EncoderInfo struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	IsDefault   bool   `json:"isDefault"`
+}
+
+// EncoderState describes the current encoder and available alternatives.
+type EncoderState struct {
+	Current   string        `json:"current"`
+	Available []EncoderInfo `json:"available"`
+}
+
 // CBRStatus describes the CBR pacer state for ControlRoomState broadcast.
 type CBRStatus struct {
 	Enabled          bool  `json:"enabled"`
@@ -218,6 +231,7 @@ type ControlRoomState struct {
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
+	Encoder              *EncoderState           `json:"encoder,omitempty"`
 	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
 	CBR                  *CBRStatus              `json:"cbr,omitempty"`
 	Captions             *CaptionState           `json:"captions,omitempty"`
