@@ -930,4 +930,221 @@ describe('StatsPanel', () => {
 		expect(summaries[1]?.textContent).toContain('12.0ms');
 		expect(summaries[1]?.textContent).toContain('async');
 	});
+
+	// --- Perf view tests ---
+
+	function mockPerfSnapshot(overrides: Record<string, any> = {}) {
+		return {
+			timestamp: '2026-01-01T00:00:00Z',
+			uptime_ms: 60000,
+			frame_budget_ns: 33333333,
+			sources: {
+				cam1: {
+					health: 'healthy',
+					decode: {
+						current: { last_ns: 2500000, drops: 0, avg_fps: 29.97, avg_frame_bytes: 45000 },
+						windows: {
+							'1s': { min_ns: 2100000, max_ns: 3400000, mean_ns: 2600000, p95_ns: 3100000 },
+							'10s': { min_ns: 1900000, max_ns: 4200000, mean_ns: 2550000, p95_ns: 3500000 },
+							'60s': { min_ns: 1800000, max_ns: 8200000, mean_ns: 2500000, p95_ns: 3800000 },
+						},
+					},
+				},
+			},
+			pipeline: {
+				current: { last_ns: 1500000, queue_len: 0 },
+				windows: {
+					'1s': { min_ns: 1000000, max_ns: 2000000, mean_ns: 1500000, p95_ns: 1800000 },
+					'10s': { min_ns: 900000, max_ns: 3000000, mean_ns: 1400000, p95_ns: 2500000 },
+					'60s': { min_ns: 800000, max_ns: 5000000, mean_ns: 1300000, p95_ns: 3000000 },
+				},
+				nodes: {
+					'h264-encode': {
+						current: { last_ns: 9500000 },
+						windows: {
+							'1s': { min_ns: 8000000, max_ns: 11000000, mean_ns: 9500000, p95_ns: 10500000 },
+							'10s': { min_ns: 7000000, max_ns: 12000000, mean_ns: 9000000, p95_ns: 11000000 },
+							'60s': { min_ns: 6000000, max_ns: 15000000, mean_ns: 8500000, p95_ns: 13000000 },
+						},
+					},
+				},
+				deadline_violations: 3,
+				budget_pct: 4.5,
+			},
+			e2e: {
+				current: { last_ns: 15200000 },
+				windows: {
+					'1s': { min_ns: 12000000, max_ns: 18000000, mean_ns: 15000000, p95_ns: 17000000 },
+					'10s': { min_ns: 10000000, max_ns: 20000000, mean_ns: 14000000, p95_ns: 19000000 },
+					'60s': { min_ns: 8000000, max_ns: 25000000, mean_ns: 13000000, p95_ns: 22000000 },
+				},
+			},
+			audio: {
+				mode: 'passthrough',
+				mix_cycle: {
+					current: { last_ns: 0 },
+					windows: {
+						'1s': { min_ns: 0, max_ns: 0, mean_ns: 0, p95_ns: 0 },
+						'10s': { min_ns: 0, max_ns: 0, mean_ns: 0, p95_ns: 0 },
+						'60s': { min_ns: 0, max_ns: 0, mean_ns: 0, p95_ns: 0 },
+					},
+				},
+				counters: { output: 169200, passthrough: 169200, mixed: 0, decode_errors: 0, encode_errors: 0 },
+				loudness: { momentary_lufs: -23.4, short_term_lufs: -22.8, integrated_lufs: -23.1 },
+			},
+			broadcast: {
+				frames: 108000,
+				output_fps: 30,
+				gap: {
+					current: { max_ns: 35000000 },
+					windows: {
+						'1s': { min_ns: 30000000, max_ns: 36000000, mean_ns: 33000000, p95_ns: 35000000 },
+						'10s': { min_ns: 28000000, max_ns: 40000000, mean_ns: 33000000, p95_ns: 38000000 },
+						'60s': { min_ns: 25000000, max_ns: 45000000, mean_ns: 33000000, p95_ns: 40000000 },
+					},
+				},
+			},
+			output: {
+				viewer: { video_sent: 108000, video_dropped: 0, audio_dropped: 0 },
+				muxer_pts: 9720000000,
+				srt: { bytes_written: 540000000, overflow_count: 0 },
+				recording: { active: false },
+			},
+			baseline: null,
+			...overrides,
+		};
+	}
+
+	it('shows Perf/Debug view toggle when visible', async () => {
+		mockFetch(mockSnapshot());
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+		const toggleBtns = container.querySelectorAll('.toggle-btn');
+		expect(toggleBtns.length).toBe(2);
+		expect(toggleBtns[0]?.textContent).toBe('Debug');
+		expect(toggleBtns[1]?.textContent).toBe('Perf');
+	});
+
+	it('switches to perf view and fetches /api/perf', async () => {
+		const perfResponse = mockPerfSnapshot();
+
+		// First fetch: debug snapshot
+		const fetchSpy = vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSnapshot()) } as Response)
+			.mockResolvedValue({ ok: true, json: () => Promise.resolve(perfResponse) } as Response);
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Click Perf toggle
+		const perfBtn = container.querySelectorAll('.toggle-btn')[1] as HTMLButtonElement;
+		perfBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Verify it fetched /api/perf
+		const perfCalls = fetchSpy.mock.calls.filter(c => String(c[0]).includes('/api/perf'));
+		expect(perfCalls.length).toBeGreaterThan(0);
+
+		// Verify waterfall is rendered
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('PIPELINE WATERFALL');
+		expect(panel?.textContent).toContain('H.264 Encode');
+		expect(panel?.textContent).toContain('E2E LATENCY');
+		expect(panel?.textContent).toContain('AUDIO');
+		expect(panel?.textContent).toContain('passthrough');
+	});
+
+	it('shows window selector buttons in perf view', async () => {
+		const perfResponse = mockPerfSnapshot();
+		vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSnapshot()) } as Response)
+			.mockResolvedValue({ ok: true, json: () => Promise.resolve(perfResponse) } as Response);
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to perf
+		const perfBtn = container.querySelectorAll('.toggle-btn')[1] as HTMLButtonElement;
+		perfBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const windowBtns = container.querySelectorAll('.window-btn');
+		expect(windowBtns.length).toBe(3);
+		expect(windowBtns[0]?.textContent).toBe('1s');
+		expect(windowBtns[1]?.textContent).toBe('10s');
+		expect(windowBtns[2]?.textContent).toBe('60s');
+		// 10s should be active by default
+		expect(windowBtns[1]?.classList.contains('active')).toBe(true);
+	});
+
+	it('shows source decode info in perf view', async () => {
+		const perfResponse = mockPerfSnapshot();
+		vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSnapshot()) } as Response)
+			.mockResolvedValue({ ok: true, json: () => Promise.resolve(perfResponse) } as Response);
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to perf
+		const perfBtn = container.querySelectorAll('.toggle-btn')[1] as HTMLButtonElement;
+		perfBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('SOURCE DECODE');
+		expect(panel?.textContent).toContain('cam1');
+		expect(panel?.textContent).toContain('30.0fps');
+	});
+
+	it('shows broadcast and output sections in perf view', async () => {
+		const perfResponse = mockPerfSnapshot();
+		vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSnapshot()) } as Response)
+			.mockResolvedValue({ ok: true, json: () => Promise.resolve(perfResponse) } as Response);
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to perf
+		const perfBtn = container.querySelectorAll('.toggle-btn')[1] as HTMLButtonElement;
+		perfBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('BROADCAST');
+		expect(panel?.textContent).toContain('OUTPUT');
+		expect(panel?.textContent).toContain('108,000');
+		expect(panel?.textContent).toContain('BASELINE');
+	});
+
+	it('shows loading state in perf view before data arrives', async () => {
+		// Mock debug fetch to succeed, then make perf fetch hang
+		vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(mockSnapshot()) } as Response)
+			.mockImplementation(() => new Promise(() => {})); // never resolves
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to perf - data won't arrive
+		const perfBtn = container.querySelectorAll('.toggle-btn')[1] as HTMLButtonElement;
+		perfBtn?.click();
+		await vi.advanceTimersByTimeAsync(50);
+
+		expect(container.querySelector('.loading')?.textContent).toContain('Loading perf data...');
+	});
 });

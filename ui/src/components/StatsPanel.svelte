@@ -3,7 +3,68 @@
 	import { setEncoderBackend } from '$lib/api/switch-api';
 	import type { EncoderInfo } from '$lib/api/types';
 
-	// --- Types ---
+	// --- Perf Types ---
+	interface PerfWindowStats { min_ns: number; max_ns: number; mean_ns: number; p95_ns: number }
+	interface PerfWindows { "1s": PerfWindowStats; "10s": PerfWindowStats; "60s": PerfWindowStats }
+
+	interface PerfSnapshot {
+		timestamp: string;
+		uptime_ms: number;
+		frame_budget_ns: number;
+		sources: Record<string, {
+			health: string;
+			decode: {
+				current: { last_ns: number; drops: number; avg_fps: number; avg_frame_bytes: number };
+				windows: PerfWindows;
+			};
+		}>;
+		pipeline: {
+			current: { last_ns: number; queue_len: number };
+			windows: PerfWindows;
+			nodes: Record<string, {
+				current: { last_ns: number };
+				windows: PerfWindows;
+			}>;
+			deadline_violations: number;
+			budget_pct: number;
+		};
+		e2e: {
+			current: { last_ns: number };
+			windows: PerfWindows;
+		};
+		audio: {
+			mode: string;
+			mix_cycle: {
+				current: { last_ns: number };
+				windows: PerfWindows;
+			};
+			counters: { output: number; passthrough: number; mixed: number; decode_errors: number; encode_errors: number };
+			loudness: { momentary_lufs: number; short_term_lufs: number; integrated_lufs: number };
+		};
+		broadcast: {
+			frames: number;
+			output_fps: number;
+			gap: {
+				current: { max_ns: number };
+				windows: PerfWindows;
+			};
+		};
+		output: {
+			viewer: { video_sent: number; video_dropped: number; audio_dropped: number };
+			muxer_pts: number;
+			srt: { bytes_written: number; overflow_count: number };
+			recording: { active: boolean };
+		};
+		baseline: {
+			name: string;
+			saved_at: string;
+			pipeline: { mean_ns_delta: number; p95_ns_delta: number; pct_change: number };
+			e2e: { mean_ns_delta: number; p95_ns_delta: number; pct_change: number };
+			mix_cycle: { mean_ns_delta: number; p95_ns_delta: number; pct_change: number };
+		} | null;
+	}
+
+	// --- Debug Types ---
 	interface PipelineNodeSnapshot {
 		name: string;
 		last_ns: number;
@@ -280,6 +341,13 @@
 		}
 	}
 
+	// Perf view state
+	let viewMode = $state<'debug' | 'perf'>('debug');
+	let perfData = $state<PerfSnapshot | null>(null);
+	let perfWindow = $state<'1s' | '10s' | '60s'>('10s');
+	let baselineName = $state('');
+	let activeBaseline = $state('');
+
 	// --- Polling ---
 	async function poll() {
 		try {
@@ -309,12 +377,32 @@
 		nodeHistory = updated;
 	}
 
+	async function pollPerf() {
+		try {
+			abortController?.abort();
+			abortController = new AbortController();
+			const url = activeBaseline
+				? resolveApiUrl(`/api/perf?baseline=${encodeURIComponent(activeBaseline)}`)
+				: resolveApiUrl('/api/perf');
+			const resp = await fetch(url, { signal: abortController.signal });
+			if (resp.ok) {
+				perfData = await resp.json();
+				lastUpdateTime = Date.now();
+			}
+		} catch { /* ignore network + abort errors */ }
+	}
+
 	$effect(() => {
 		if (visible) {
-			nodeHistory = new Map();
-			poll();
-			fetchEncoderInfo();
-			intervalId = setInterval(poll, POLL_INTERVAL_MS);
+			if (viewMode === 'debug') {
+				nodeHistory = new Map();
+				poll();
+				fetchEncoderInfo();
+				intervalId = setInterval(poll, POLL_INTERVAL_MS);
+			} else {
+				pollPerf();
+				intervalId = setInterval(pollPerf, POLL_INTERVAL_MS);
+			}
 		} else {
 			if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
 		}
@@ -407,6 +495,106 @@
 			default: return 'crit';
 		}
 	}
+
+	// --- Perf helpers ---
+	function getWindow(windows: PerfWindows): PerfWindowStats {
+		return windows[perfWindow];
+	}
+
+	async function saveBaseline() {
+		try {
+			await fetch(resolveApiUrl('/api/perf/baseline'), {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: baselineName }),
+			});
+			activeBaseline = baselineName;
+			baselineName = '';
+		} catch { /* ignore */ }
+	}
+
+	// Waterfall data computation
+	const waterfallRows = $derived.by(() => {
+		if (!perfData) return [];
+		const budget = perfData.frame_budget_ns;
+		const w = getWindow;
+		const rows: Array<{label: string; pct: number; value: string; color: string; delta?: number}> = [];
+
+		// Source decode (max across all sources)
+		const decodeP95s = Object.values(perfData.sources).map(s => w(s.decode.windows).p95_ns);
+		const maxDecode = Math.max(0, ...decodeP95s);
+		rows.push({
+			label: 'Source Decode',
+			pct: budget > 0 ? Math.min((maxDecode / budget) * 100, 100) : 0,
+			value: `${(maxDecode / 1e6).toFixed(1)}ms`,
+			color: 'rgba(167, 139, 250, 0.7)',
+		});
+
+		// Pipeline nodes
+		const nodeOrder = ['upstream-key', 'layout-compositor', 'compositor', 'raw-sink-mxl', 'raw-sink-monitor', 'h264-encode'];
+		const nodeColors: Record<string, string> = {
+			'upstream-key': 'rgba(167, 139, 250, 0.7)',
+			'layout-compositor': 'rgba(139, 92, 246, 0.7)',
+			'compositor': 'rgba(59, 130, 246, 0.7)',
+			'raw-sink-mxl': 'rgba(234, 179, 8, 0.7)',
+			'raw-sink-monitor': 'rgba(245, 158, 11, 0.7)',
+			'h264-encode': 'rgba(52, 211, 153, 0.7)',
+		};
+		const nodeLabels: Record<string, string> = {
+			'upstream-key': 'Upstream Key',
+			'layout-compositor': 'Layout',
+			'compositor': 'DSK Graphics',
+			'raw-sink-mxl': 'MXL Sink',
+			'raw-sink-monitor': 'Raw Monitor',
+			'h264-encode': 'H.264 Encode',
+		};
+
+		// Show nodes in order, then any unknown ones
+		const shownNodes = new Set<string>();
+		for (const name of nodeOrder) {
+			if (perfData.pipeline.nodes[name]) {
+				shownNodes.add(name);
+				const p95 = w(perfData.pipeline.nodes[name].windows).p95_ns;
+				rows.push({
+					label: nodeLabels[name] ?? name,
+					pct: budget > 0 ? Math.min((p95 / budget) * 100, 100) : 0,
+					value: `${(p95 / 1e6).toFixed(1)}ms`,
+					color: nodeColors[name] ?? 'rgba(59, 130, 246, 0.7)',
+				});
+			}
+		}
+		for (const [name, node] of Object.entries(perfData.pipeline.nodes)) {
+			if (!shownNodes.has(name)) {
+				const p95 = w(node.windows).p95_ns;
+				rows.push({
+					label: name,
+					pct: budget > 0 ? Math.min((p95 / budget) * 100, 100) : 0,
+					value: `${(p95 / 1e6).toFixed(1)}ms`,
+					color: 'rgba(59, 130, 246, 0.7)',
+				});
+			}
+		}
+
+		// E2E row
+		const e2eP95 = w(perfData.e2e.windows).p95_ns;
+		rows.push({
+			label: 'E2E',
+			pct: budget > 0 ? Math.min((e2eP95 / budget) * 100, 100) : 0,
+			value: `${(e2eP95 / 1e6).toFixed(1)}ms`,
+			color: 'rgba(251, 146, 60, 0.7)',
+			delta: perfData.baseline?.e2e.p95_ns_delta,
+		});
+
+		// Budget reference row
+		rows.push({
+			label: 'Budget',
+			pct: 100,
+			value: `${(budget / 1e6).toFixed(1)}ms`,
+			color: 'rgba(100, 116, 139, 0.3)',
+		});
+
+		return rows;
+	});
 
 	function sourceFps(framesIn: number, uptimeMs: number | undefined): string {
 		if (!uptimeMs || !framesIn) return '0';
@@ -552,18 +740,183 @@
 </script>
 
 <div class="stats-panel" class:visible role="complementary" aria-label="Pipeline stats">
-	<div class="stats-header" class:alarm={hasAlarm}>
+	<div class="stats-header" class:alarm={hasAlarm && viewMode === 'debug'}>
 		<div class="title-group">
-			<span class="panel-title" class:alarm={hasAlarm}>PIPELINE MONITOR</span>
+			<span class="panel-title" class:alarm={hasAlarm && viewMode === 'debug'}>PIPELINE MONITOR</span>
 			{#if lastUpdateTime > 0}
 				<span class="update-dot" class:stale={Date.now() - lastUpdateTime > 4000} aria-hidden="true"></span>
 			{/if}
+			<div class="view-toggle">
+				<button class="toggle-btn" class:active={viewMode === 'debug'} onclick={() => viewMode = 'debug'}>Debug</button>
+				<button class="toggle-btn" class:active={viewMode === 'perf'} onclick={() => viewMode = 'perf'}>Perf</button>
+			</div>
 			<span class="shortcut-hint">Shift+P</span>
 		</div>
 		<button class="close-btn" onclick={onclose} aria-label="Close stats panel">&times;</button>
 	</div>
 
-	{#if snapshot}
+	{#if viewMode === 'perf'}
+		{#if perfData}
+			<div class="panel-body">
+				<!-- Window selector -->
+				<div class="section">
+					<div class="window-selector">
+						{#each (['1s', '10s', '60s'] as const) as w}
+							<button class="window-btn" class:active={perfWindow === w} onclick={() => perfWindow = w}>{w}</button>
+						{/each}
+					</div>
+				</div>
+
+				<!-- Pipeline Waterfall -->
+				<div class="section">
+					<div class="section-label">PIPELINE WATERFALL <span class="dim">({perfWindow} p95)</span></div>
+					<div class="waterfall">
+						{#each waterfallRows as row}
+							<div class="waterfall-row">
+								<span class="waterfall-label">{row.label}</span>
+								<div class="waterfall-bar-track">
+									<div class="waterfall-bar-fill" style="width: {row.pct}%; background: {row.color}"></div>
+								</div>
+								<span class="waterfall-value">{row.value}</span>
+								{#if row.delta !== undefined}
+									<span class="waterfall-delta" class:positive={row.delta > 0} class:negative={row.delta < 0}>
+										{row.delta > 0 ? '+' : ''}{(row.delta / 1e6).toFixed(1)}ms
+									</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+
+				<!-- Per-Source Decode -->
+				<div class="section">
+					<div class="section-label">SOURCE DECODE <span class="dim">({perfWindow} p95)</span></div>
+					{#each Object.entries(perfData.sources) as [key, src]}
+						<div class="perf-source-row">
+							<span class="perf-source-name">
+								<span class="health-dot {src.health === 'healthy' ? 'ok' : 'warn'}"></span>
+								{key}
+							</span>
+							<span class="perf-source-fps">{src.decode.current.avg_fps.toFixed(1)}fps</span>
+							<span class="perf-source-time">{fmtMs(getWindow(src.decode.windows).p95_ns)}ms p95</span>
+							{#if src.decode.current.drops > 0}
+								<span class="perf-source-drops">{src.decode.current.drops} drops</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<!-- E2E Latency -->
+				<div class="section">
+					<div class="section-label">E2E LATENCY</div>
+					<div class="perf-stat-row">
+						<span>Current</span>
+						<span>{fmtMs(perfData.e2e.current.last_ns)}ms</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>{perfWindow} p95</span>
+						<span>{fmtMs(getWindow(perfData.e2e.windows).p95_ns)}ms</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Budget usage</span>
+						<span class:over-budget={perfData.pipeline.budget_pct > 100}>
+							{perfData.pipeline.budget_pct.toFixed(1)}%
+						</span>
+					</div>
+				</div>
+
+				<!-- Audio -->
+				<div class="section">
+					<div class="section-label">AUDIO</div>
+					<div class="perf-stat-row">
+						<span>Mode</span>
+						<span class="mode-badge">{perfData.audio.mode}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Mix cycle ({perfWindow} p95)</span>
+						<span>{fmtMs(getWindow(perfData.audio.mix_cycle.windows).p95_ns)}ms</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>LUFS (momentary)</span>
+						<span>{perfData.audio.loudness.momentary_lufs.toFixed(1)}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Output frames</span>
+						<span>{fmtCount(perfData.audio.counters.output)}</span>
+					</div>
+				</div>
+
+				<!-- Broadcast -->
+				<div class="section">
+					<div class="section-label">BROADCAST</div>
+					<div class="perf-stat-row">
+						<span>Output FPS</span>
+						<span>{perfData.broadcast.output_fps}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Frames</span>
+						<span>{fmtCount(perfData.broadcast.frames)}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Max gap ({perfWindow} p95)</span>
+						<span>{fmtMs(getWindow(perfData.broadcast.gap.windows).p95_ns)}ms</span>
+					</div>
+				</div>
+
+				<!-- Output -->
+				<div class="section">
+					<div class="section-label">OUTPUT</div>
+					<div class="perf-stat-row">
+						<span>Video sent</span>
+						<span>{fmtCount(perfData.output.viewer.video_sent)}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Video dropped</span>
+						<span class:warn={perfData.output.viewer.video_dropped > 0}>{perfData.output.viewer.video_dropped}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>SRT bytes</span>
+						<span>{fmtBytes(perfData.output.srt.bytes_written)}</span>
+					</div>
+					<div class="perf-stat-row">
+						<span>Recording</span>
+						<span>{perfData.output.recording.active ? 'ACTIVE' : 'inactive'}</span>
+					</div>
+				</div>
+
+				<!-- Baseline Controls -->
+				<div class="section baseline-section">
+					<div class="section-label">BASELINE</div>
+					<div class="baseline-controls">
+						<input type="text" bind:value={baselineName} placeholder="Baseline name" class="baseline-input" />
+						<button class="baseline-btn" onclick={saveBaseline} disabled={!baselineName}>Save</button>
+					</div>
+					{#if perfData.baseline}
+						<div class="baseline-active">
+							<span>Comparing: {perfData.baseline.name}</span>
+							<button class="baseline-clear" onclick={() => { activeBaseline = ''; }}>Clear</button>
+						</div>
+						<div class="baseline-diff">
+							<div class="perf-stat-row">
+								<span>Pipeline mean</span>
+								<span class:positive={perfData.baseline.pipeline.pct_change > 0} class:negative={perfData.baseline.pipeline.pct_change < 0}>
+									{perfData.baseline.pipeline.pct_change > 0 ? '+' : ''}{perfData.baseline.pipeline.pct_change.toFixed(1)}%
+								</span>
+							</div>
+							<div class="perf-stat-row">
+								<span>E2E mean</span>
+								<span class:positive={perfData.baseline.e2e.pct_change > 0} class:negative={perfData.baseline.e2e.pct_change < 0}>
+									{perfData.baseline.e2e.pct_change > 0 ? '+' : ''}{perfData.baseline.e2e.pct_change.toFixed(1)}%
+								</span>
+							</div>
+						</div>
+					{/if}
+				</div>
+			</div>
+		{:else}
+			<div class="loading">Loading perf data...</div>
+		{/if}
+	{:else if snapshot}
 		<div class="panel-body">
 			<!-- Codec / Encoder -->
 			{#if snapshot?.switcher?.codec}
@@ -2200,4 +2553,214 @@
 	/* Extra section transition delays */
 	.stats-panel.visible .section:nth-child(12) { transition-delay: 360ms; }
 	.stats-panel.visible .section:nth-child(13) { transition-delay: 390ms; }
+
+	/* --- View Toggle --- */
+	.view-toggle {
+		display: flex;
+		gap: 2px;
+		background: rgba(255, 255, 255, 0.05);
+		border-radius: 4px;
+		padding: 2px;
+	}
+
+	.toggle-btn {
+		padding: 2px 8px;
+		border: none;
+		background: transparent;
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		cursor: pointer;
+		border-radius: 3px;
+		transition: all 0.15s;
+	}
+
+	.toggle-btn.active {
+		background: rgba(59, 130, 246, 0.3);
+		color: var(--text-primary);
+	}
+
+	/* --- Window Selector --- */
+	.window-selector {
+		display: flex;
+		gap: 4px;
+	}
+
+	.window-btn {
+		padding: 2px 8px;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		background: transparent;
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		cursor: pointer;
+		border-radius: 3px;
+	}
+
+	.window-btn.active {
+		border-color: rgba(59, 130, 246, 0.5);
+		background: rgba(59, 130, 246, 0.15);
+		color: var(--text-primary);
+	}
+
+	/* --- Waterfall --- */
+	.waterfall {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.waterfall-row {
+		display: grid;
+		grid-template-columns: 90px 1fr 60px auto;
+		gap: 6px;
+		align-items: center;
+		font-size: var(--text-xs);
+	}
+
+	.waterfall-label {
+		color: var(--text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.waterfall-bar-track {
+		height: 12px;
+		background: rgba(255, 255, 255, 0.04);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.waterfall-bar-fill {
+		height: 100%;
+		border-radius: 2px;
+		transition: width 0.3s ease;
+		min-width: 1px;
+	}
+
+	.waterfall-value {
+		text-align: right;
+		color: var(--text-primary);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.waterfall-delta {
+		font-size: 10px;
+		margin-left: 4px;
+	}
+
+	.waterfall-delta.positive { color: var(--status-crit); }
+	.waterfall-delta.negative { color: var(--status-ok); }
+
+	.dim {
+		font-weight: 400;
+		color: var(--text-tertiary);
+	}
+
+	/* --- Perf Source Rows --- */
+	.perf-source-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 2px 0;
+		font-size: var(--text-xs);
+	}
+
+	.perf-source-name {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex: 1;
+		color: var(--text-primary);
+	}
+
+	.perf-source-fps { color: var(--text-secondary); }
+	.perf-source-time { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+	.perf-source-drops { color: var(--status-warn); }
+
+	/* --- Perf Stat Rows --- */
+	.perf-stat-row {
+		display: flex;
+		justify-content: space-between;
+		padding: 2px 0;
+		font-size: var(--text-xs);
+	}
+
+	.perf-stat-row .positive { color: var(--status-crit); }
+	.perf-stat-row .negative { color: var(--status-ok); }
+	.perf-stat-row .warn { color: var(--status-warn); }
+	.perf-stat-row .over-budget { color: var(--status-crit); font-weight: 600; }
+
+	.mode-badge {
+		padding: 0 6px;
+		border-radius: 3px;
+		background: rgba(59, 130, 246, 0.15);
+		color: var(--text-primary);
+	}
+
+	/* --- Baseline Controls --- */
+	.baseline-section { border-top: 1px solid rgba(255, 255, 255, 0.06); padding-top: 8px; }
+
+	.baseline-controls {
+		display: flex;
+		gap: 4px;
+		margin-top: 4px;
+	}
+
+	.baseline-input {
+		flex: 1;
+		padding: 4px 8px;
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 3px;
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+	}
+
+	.baseline-btn {
+		padding: 4px 12px;
+		background: rgba(59, 130, 246, 0.2);
+		border: 1px solid rgba(59, 130, 246, 0.4);
+		border-radius: 3px;
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		cursor: pointer;
+	}
+
+	.baseline-btn:disabled { opacity: 0.4; cursor: default; }
+
+	.baseline-active {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-top: 6px;
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+	}
+
+	.baseline-clear {
+		background: none;
+		border: none;
+		color: var(--status-warn);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+	}
+
+	.baseline-diff { margin-top: 4px; }
+
+	/* --- Health Dot (perf view) --- */
+	.health-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		display: inline-block;
+	}
+
+	.health-dot.ok { background: var(--status-ok); }
+	.health-dot.warn { background: var(--status-warn); }
+	.health-dot.crit { background: var(--status-crit); }
 </style>
