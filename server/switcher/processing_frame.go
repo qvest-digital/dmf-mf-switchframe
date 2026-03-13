@@ -30,6 +30,18 @@ type ProcessingFrame struct {
 	// Used for E2E latency measurement (source arrival → pipeline processing complete).
 	ArrivalNano int64
 
+	// DecodeStartNano records UnixNano when decodeLoop dequeues this frame from
+	// the sourceDecoder channel (T1 in the latency breakdown).
+	DecodeStartNano int64
+
+	// DecodeEndNano records UnixNano after the H.264 decode completes for this
+	// frame (T2 in the latency breakdown).
+	DecodeEndNano int64
+
+	// SyncReleaseNano records UnixNano when frame_sync releases this frame in
+	// releaseTick Phase 3 (T3 in the latency breakdown).
+	SyncReleaseNano int64
+
 	// pool is the FramePool this buffer was acquired from.
 	// nil-safe: falls back to make()/no-op for tests and transient wrappers.
 	pool *FramePool

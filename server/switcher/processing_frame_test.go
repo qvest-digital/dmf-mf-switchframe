@@ -99,6 +99,30 @@ func TestProcessingFrameReleaseYUVWithPool(t *testing.T) {
 	pf.ReleaseYUV()
 }
 
+func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
+	original := &ProcessingFrame{
+		Width:           4,
+		Height:          4,
+		YUV:             make([]byte, 4*4*3/2),
+		PTS:             1000,
+		ArrivalNano:     100000,
+		DecodeStartNano: 200000,
+		DecodeEndNano:   300000,
+		SyncReleaseNano: 400000,
+	}
+
+	copied := original.DeepCopy()
+
+	require.Equal(t, original.ArrivalNano, copied.ArrivalNano, "ArrivalNano should be preserved")
+	require.Equal(t, original.DecodeStartNano, copied.DecodeStartNano, "DecodeStartNano should be preserved")
+	require.Equal(t, original.DecodeEndNano, copied.DecodeEndNano, "DecodeEndNano should be preserved")
+	require.Equal(t, original.SyncReleaseNano, copied.SyncReleaseNano, "SyncReleaseNano should be preserved")
+
+	// Verify modifying the copy doesn't affect the original's YUV
+	copied.YUV[0] = 255
+	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+}
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{
