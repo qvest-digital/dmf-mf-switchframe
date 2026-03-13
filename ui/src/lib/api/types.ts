@@ -318,6 +318,17 @@ export interface PipelineFormatInfo {
 	name: string;
 }
 
+export interface EncoderInfo {
+	name: string;
+	displayName: string;
+	isDefault: boolean;
+}
+
+export interface EncoderState {
+	current: string;
+	available: EncoderInfo[];
+}
+
 export type CaptionMode = 'off' | 'passthrough' | 'author';
 
 export interface CaptionState {
@@ -447,6 +458,7 @@ export interface ControlRoomState {
 	operators?: OperatorInfo[];
 	locks?: Record<string, LockInfo>;
 	pipelineFormat?: PipelineFormatInfo;
+	encoder?: EncoderState;
 	scte35?: SCTE35State;
 	captions?: CaptionState;
 	macro?: MacroExecutionState;
