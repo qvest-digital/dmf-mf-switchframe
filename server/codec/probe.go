@@ -9,12 +9,30 @@ import (
 	"unsafe"
 )
 
+// EncoderInfo describes an available video encoder backend.
+type EncoderInfo struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	IsDefault   bool   `json:"isDefault"`
+}
+
 var (
 	probeOnce       sync.Once
 	selectedEncoder string         // e.g. "h264_videotoolbox", "libx264"
 	selectedDecoder string         // e.g. "h264"
 	hwDeviceCtxPtr  unsafe.Pointer // *C.AVBufferRef, nil for software
+
+	listOnce          sync.Once
+	availableEncoders []EncoderInfo
 )
+
+var displayNames = map[string]string{
+	"h264_nvenc":        "NVENC (CUDA)",
+	"h264_vaapi":        "VA-API (Linux)",
+	"h264_videotoolbox": "VideoToolbox (macOS)",
+	"libx264":           "x264 (Software)",
+	"openh264":          "OpenH264 (Software)",
+}
 
 // encoderCandidate describes an encoder to try during probing.
 type encoderCandidate struct {
@@ -171,6 +189,38 @@ func initHWDeviceCtx() {
 	} else {
 		slog.Debug("codec: hardware device context unavailable, using software decode", "type", hwType)
 	}
+}
+
+// ListAvailableEncoders returns all functional H.264 encoder backends on this
+// system. Each entry includes the encoder name, a human-readable display name,
+// and whether it is the current default (as selected by ProbeEncoders).
+//
+// The list is computed once and cached; safe to call from multiple goroutines.
+func ListAvailableEncoders() []EncoderInfo {
+	listOnce.Do(func() {
+		defaultEnc, _ := ProbeEncoders()
+		for _, c := range candidates {
+			if tryEncoder(c.name) {
+				display := displayNames[c.name]
+				if display == "" {
+					display = c.name
+				}
+				availableEncoders = append(availableEncoders, EncoderInfo{
+					Name:        c.name,
+					DisplayName: display,
+					IsDefault:   c.name == defaultEnc,
+				})
+			}
+		}
+		if tryOpenH264Encoder() {
+			availableEncoders = append(availableEncoders, EncoderInfo{
+				Name:        "openh264",
+				DisplayName: displayNames["openh264"],
+				IsDefault:   "openh264" == defaultEnc,
+			})
+		}
+	})
+	return availableEncoders
 }
 
 // HWDeviceCtx returns the cached hardware device context pointer.

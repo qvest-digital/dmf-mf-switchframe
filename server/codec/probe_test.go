@@ -308,3 +308,38 @@ func TestCreateHWDeviceCtx_EmptyType(t *testing.T) {
 	require.Nil(t, ctx, "empty hw type should return nil")
 }
 
+func TestListAvailableEncoders(t *testing.T) {
+	encoders := ListAvailableEncoders()
+
+	if len(encoders) == 0 {
+		t.Fatal("expected at least one available encoder")
+	}
+
+	defaultCount := 0
+	for _, e := range encoders {
+		if e.IsDefault {
+			defaultCount++
+		}
+		if e.Name == "" {
+			t.Error("encoder name must not be empty")
+		}
+		if e.DisplayName == "" {
+			t.Error("encoder display name must not be empty")
+		}
+	}
+	if defaultCount != 1 {
+		t.Errorf("expected exactly 1 default encoder, got %d", defaultCount)
+	}
+
+	defaultEnc, _ := ProbeEncoders()
+	found := false
+	for _, e := range encoders {
+		if e.IsDefault && e.Name == defaultEnc {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("default encoder %q not found in available list", defaultEnc)
+	}
+}
+
