@@ -510,6 +510,82 @@ func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 func (d *slowDecoder) Close() {}
 
+func TestSourceDecoder_TimestampsStamped(t *testing.T) {
+	// Verify that decodeLoop stamps DecodeStartNano, DecodeEndNano, and
+	// propagates ArrivalNano into the ProcessingFrame.
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var captured *ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		if captured == nil {
+			captured = pf
+		}
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil)
+	defer sd.Close()
+
+	arrivalNano := time.Now().UnixNano()
+
+	frame := &media.VideoFrame{
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	sd.Send(frame, arrivalNano)
+
+	// Wait for callback
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		got := captured
+		mu.Unlock()
+		if got != nil {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for callback")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// ArrivalNano must match what we passed in
+	if captured.ArrivalNano != arrivalNano {
+		t.Errorf("ArrivalNano = %d, want %d", captured.ArrivalNano, arrivalNano)
+	}
+
+	// DecodeStartNano must be stamped (> 0) and >= arrivalNano
+	if captured.DecodeStartNano <= 0 {
+		t.Errorf("DecodeStartNano should be > 0, got %d", captured.DecodeStartNano)
+	}
+	if captured.DecodeStartNano < arrivalNano {
+		t.Errorf("DecodeStartNano (%d) should be >= arrivalNano (%d)", captured.DecodeStartNano, arrivalNano)
+	}
+
+	// DecodeEndNano must be stamped (> 0) and >= DecodeStartNano
+	if captured.DecodeEndNano <= 0 {
+		t.Errorf("DecodeEndNano should be > 0, got %d", captured.DecodeEndNano)
+	}
+	if captured.DecodeEndNano < captured.DecodeStartNano {
+		t.Errorf("DecodeEndNano (%d) should be >= DecodeStartNano (%d)", captured.DecodeEndNano, captured.DecodeStartNano)
+	}
+}
+
 func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	// Bug 3: If decoded frame is larger than pool buffer (e.g., 4K source
 	// with 1080p pool), buf[:yuvSize] panics because yuvSize > cap(buf).

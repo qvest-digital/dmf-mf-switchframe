@@ -127,6 +127,7 @@ func (sd *sourceDecoder) decodeLoop() {
 
 	for input := range sd.ch {
 		frame := input.frame
+		decodeStartNano := time.Now().UnixNano()
 
 		// Convert AVC1 wire format to Annex B for decoder (buffer reuse)
 		sd.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
@@ -137,7 +138,8 @@ func (sd *sourceDecoder) decodeLoop() {
 
 		t0 := time.Now().UnixNano()
 		yuv, w, h, err := sd.decoder.Decode(sd.annexBBuf)
-		dur := time.Now().UnixNano() - t0
+		decodeEndNano := time.Now().UnixNano()
+		dur := decodeEndNano - t0
 		sd.lastDecodeNs.Store(dur)
 		updateAtomicMax(&sd.maxDecodeNs, dur)
 
@@ -184,11 +186,13 @@ func (sd *sourceDecoder) decodeLoop() {
 			// (2) RequestKeyframe() on cuts/output-start, (3) transition engine
 			// first-frame flag. Propagating source keyframes caused excessive
 			// IDRs (every source GOP boundary forced a program IDR).
-			IsKeyframe:  false,
-			GroupID:      frame.GroupID,
-			Codec:       frame.Codec,
-			ArrivalNano: input.arrivalNano,
-			pool:        framePool,
+			IsKeyframe:      false,
+			GroupID:         frame.GroupID,
+			Codec:           frame.Codec,
+			ArrivalNano:     input.arrivalNano,
+			DecodeStartNano: decodeStartNano,
+			DecodeEndNano:   decodeEndNano,
+			pool:            framePool,
 		}
 		pf.SetRefs(1) // frame_sync ownership — shared across value copies
 
