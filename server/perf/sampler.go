@@ -160,8 +160,9 @@ type Sampler struct {
 	lastMixerSample    MixerSample
 	lastOutputSample   OutputSample
 
-	// Baseline storage (max 10, in-memory)
-	baselines map[string]*BaselineSnapshot
+	// Baseline storage (max 10, in-memory, FIFO eviction)
+	baselines     map[string]*BaselineSnapshot
+	baselineOrder []string // insertion order for FIFO eviction
 
 	// Lifecycle
 	startTime time.Time
@@ -261,17 +262,24 @@ func (s *Sampler) SaveBaseline(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Evict oldest if at max capacity
-	if len(s.baselines) >= maxBaselines {
-		// Delete the first key found (deterministic enough for a max-10 map)
-		for k := range s.baselines {
-			delete(s.baselines, k)
+	// Evict oldest (FIFO) if at max capacity
+	if len(s.baselines) >= maxBaselines && len(s.baselineOrder) > 0 {
+		oldest := s.baselineOrder[0]
+		s.baselineOrder = s.baselineOrder[1:]
+		delete(s.baselines, oldest)
+	}
+
+	// Remove existing entry from order if overwriting
+	for i, n := range s.baselineOrder {
+		if n == name {
+			s.baselineOrder = append(s.baselineOrder[:i], s.baselineOrder[i+1:]...)
 			break
 		}
 	}
 
 	snap := s.buildBaselineLocked()
 	s.baselines[name] = snap
+	s.baselineOrder = append(s.baselineOrder, name)
 }
 
 // DeleteBaseline removes a named baseline.
@@ -279,4 +287,10 @@ func (s *Sampler) DeleteBaseline(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.baselines, name)
+	for i, n := range s.baselineOrder {
+		if n == name {
+			s.baselineOrder = append(s.baselineOrder[:i], s.baselineOrder[i+1:]...)
+			break
+		}
+	}
 }

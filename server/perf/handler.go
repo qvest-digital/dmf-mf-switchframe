@@ -10,7 +10,11 @@ func (s *Sampler) HandlePerf(w http.ResponseWriter, r *http.Request) {
 	baseline := r.URL.Query().Get("baseline")
 	snap := s.Snapshot(baseline)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(snap)
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(snap); err != nil {
+		// Client likely disconnected; nothing to do.
+		return
+	}
 }
 
 // HandleSaveBaseline serves POST /api/perf/baseline.

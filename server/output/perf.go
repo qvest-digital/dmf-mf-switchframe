@@ -17,11 +17,18 @@ type PerfOutputSample struct {
 // PerfSample returns a performance snapshot of the output manager's current state.
 // Safe for concurrent access from any goroutine.
 func (m *Manager) PerfSample() PerfOutputSample {
+	// Grab pointers under lock, then read atomics outside lock.
+	// viewer.DebugSnapshot() and muxer.CurrentPTS() are atomic/lock-free,
+	// so we only need the mutex long enough to safely read the pointer values.
 	m.mu.Lock()
+	viewer := m.viewer
+	muxer := m.muxer
+	m.mu.Unlock()
+
 	var videoSent, videoDropped, audioSent, audioDropped int64
 	var muxerPTS int64
-	if m.viewer != nil {
-		snap := m.viewer.DebugSnapshot()
+	if viewer != nil {
+		snap := viewer.DebugSnapshot()
 		if v, ok := snap["video_sent"].(int64); ok {
 			videoSent = v
 		}
@@ -35,10 +42,9 @@ func (m *Manager) PerfSample() PerfOutputSample {
 			audioDropped = v
 		}
 	}
-	if m.muxer != nil {
-		muxerPTS = m.muxer.CurrentPTS()
+	if muxer != nil {
+		muxerPTS = muxer.CurrentPTS()
 	}
-	m.mu.Unlock()
 
 	srt := m.SRTOutputStatus()
 	rec := m.RecordingStatus()
