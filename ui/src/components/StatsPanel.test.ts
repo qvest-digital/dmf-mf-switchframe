@@ -1148,4 +1148,323 @@ describe('StatsPanel', () => {
 
 		expect(container.querySelector('.loading')?.textContent).toContain('Loading perf data...');
 	});
+
+	// --- Browser tab tests ---
+
+	function mockBrowserDiagnostics() {
+		return {
+			cam1: {
+				renderer: {
+					rafCount: 1200,
+					framesDrawn: 600,
+					framesSkipped: 10,
+					avgRafIntervalMs: 16.67,
+					minRafIntervalMs: 15.0,
+					maxRafIntervalMs: 20.0,
+					avgDrawMs: 0.5,
+					maxDrawMs: 2.1,
+					avgFrameIntervalMs: 33.3,
+					minFrameIntervalMs: 30.0,
+					maxFrameIntervalMs: 40.0,
+					avSyncMs: 12.5,
+					avSyncMin: -5.0,
+					avSyncMax: 25.0,
+					avSyncAvg: 10.3,
+					clockMode: 'audio',
+					emptyBufferHits: 3,
+					currentVideoPTS: 5_000_000, // 5 seconds in microseconds
+					currentAudioPTS: 4_987_500,
+					videoQueueSize: 2,
+					videoQueueMs: 66,
+					videoTotalDiscarded: 15,
+				},
+				videoDecoder: null,
+				audio: {
+					callbackCount: 500,
+					callbacksPerSec: 46.9,
+					avgCallbackIntervalMs: 21.3,
+					minCallbackIntervalMs: 20.0,
+					maxCallbackIntervalMs: 25.0,
+					scheduleAheadMs: 100,
+					lastDriftMs: 2.1,
+					maxDriftMs: 8.5,
+					gapRepairs: 1,
+					underruns: 0,
+					totalSilenceMs: 45,
+					totalScheduled: 500,
+					decodeErrors: 0,
+					ptsJumps: 0,
+					ptsJumpMaxMs: 0,
+					inputPtsJumps: 2,
+					inputPtsWraps: 0,
+					lastInputPTS: 5_000_000,
+					lastOutputPTS: 4_990_000,
+					contextState: 'running',
+					contextSampleRate: 48000,
+					contextCurrentTime: 5.0,
+					contextBaseLatency: 0.005,
+					contextOutputLatency: 0.01,
+					isPlaying: true,
+					pendingFrames: 0,
+				},
+				transport: null,
+			},
+			program: {
+				renderer: {
+					rafCount: 1200,
+					framesDrawn: 71,
+					framesSkipped: 825,
+					avgRafIntervalMs: 16.67,
+					minRafIntervalMs: 15.0,
+					maxRafIntervalMs: 20.0,
+					avgDrawMs: 0.8,
+					maxDrawMs: 3.0,
+					avgFrameIntervalMs: 133.0,
+					minFrameIntervalMs: 33.0,
+					maxFrameIntervalMs: 500.0,
+					avSyncMs: 229.0,
+					avSyncMin: -2700.0,
+					avSyncMax: 2100.0,
+					avSyncAvg: -602.0,
+					clockMode: 'audio',
+					emptyBufferHits: 0,
+					currentVideoPTS: 10_000_000,
+					currentAudioPTS: 9_771_000,
+					videoQueueSize: 90,
+					videoQueueMs: 3000,
+					videoTotalDiscarded: 443,
+				},
+				videoDecoder: null,
+				audio: {
+					callbackCount: 500,
+					callbacksPerSec: 46.9,
+					avgCallbackIntervalMs: 21.3,
+					minCallbackIntervalMs: 20.0,
+					maxCallbackIntervalMs: 25.0,
+					scheduleAheadMs: 100,
+					lastDriftMs: 0.5,
+					maxDriftMs: 3.0,
+					gapRepairs: 0,
+					underruns: 0,
+					totalSilenceMs: 2916,
+					totalScheduled: 500,
+					decodeErrors: 0,
+					ptsJumps: 0,
+					ptsJumpMaxMs: 0,
+					inputPtsJumps: 15,
+					inputPtsWraps: 0,
+					lastInputPTS: 10_000_000,
+					lastOutputPTS: 9_990_000,
+					contextState: 'running',
+					contextSampleRate: 48000,
+					contextCurrentTime: 10.0,
+					contextBaseLatency: 0.005,
+					contextOutputLatency: 0.01,
+					isPlaying: true,
+					pendingFrames: 0,
+				},
+				transport: null,
+			},
+		};
+	}
+
+	it('shows "No browser data" when pipeline is null', async () => {
+		mockFetch(mockSnapshot());
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: null },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to browser tab
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(container.querySelector('.loading')?.textContent).toContain('No browser data');
+	});
+
+	it('renders per-source cards in browser tab with section headers', async () => {
+		mockFetch(mockSnapshot());
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(mockBrowserDiagnostics()),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to browser tab
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		const text = panel?.textContent ?? '';
+
+		// Source headers (uppercased)
+		expect(text).toContain('CAM1');
+		expect(text).toContain('PROGRAM');
+
+		// Section headers
+		expect(text).toContain('Render');
+		expect(text).toContain('A/V Sync');
+		expect(text).toContain('Audio');
+	});
+
+	it('shows render health metrics in browser tab', async () => {
+		mockFetch(mockSnapshot());
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(mockBrowserDiagnostics()),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		const text = panel?.textContent ?? '';
+
+		// cam1 render stats
+		expect(text).toContain('600/1200 rAF'); // draw rate
+		expect(text).toContain('2 frames'); // queue size (cam1)
+		expect(text).toContain('15'); // discarded
+	});
+
+	it('shows A/V sync metrics in browser tab', async () => {
+		mockFetch(mockSnapshot());
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(mockBrowserDiagnostics()),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		const text = panel?.textContent ?? '';
+
+		// program has bad sync (229ms current, -602ms avg)
+		expect(text).toContain('229.0ms');
+		expect(text).toContain('-602.0ms');
+
+		// PTS timecodes should be rendered
+		expect(text).toContain('00:00:05.000'); // cam1 video PTS = 5s
+		expect(text).toContain('00:00:10.000'); // program video PTS = 10s
+	});
+
+	it('shows audio pipeline metrics in browser tab', async () => {
+		mockFetch(mockSnapshot());
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(mockBrowserDiagnostics()),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		const text = panel?.textContent ?? '';
+
+		// cam1 audio: 45ms silence, 2 PTS jumps, running state
+		expect(text).toContain('45ms'); // silence
+		expect(text).toContain('running'); // context state
+
+		// program audio: 2916ms silence (critical)
+		expect(text).toContain('2916ms');
+	});
+
+	it('applies correct status colors for queue size thresholds', async () => {
+		mockFetch(mockSnapshot());
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(mockBrowserDiagnostics()),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Find health dots in the browser view
+		const healthDots = container.querySelectorAll('.health-dot');
+		const dotClasses = Array.from(healthDots).map(d => d.className);
+
+		// cam1 queue=2 → ok, program queue=90 → crit
+		// There should be some 'ok' and some 'crit' dots
+		expect(dotClasses.some(c => c.includes('ok'))).toBe(true);
+		expect(dotClasses.some(c => c.includes('crit'))).toBe(true);
+	});
+
+	it('formats negative PTS as placeholder', async () => {
+		mockFetch(mockSnapshot());
+
+		const diag = mockBrowserDiagnostics();
+		// Set audio PTS to -1 (no audio)
+		(diag.cam1.renderer as any).currentAudioPTS = -1;
+
+		const mockPipeline = {
+			getAllDiagnostics: vi.fn().mockResolvedValue(diag),
+		};
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('--:--:--.---');
+	});
+
+	it('polls browser diagnostics at 2s interval', async () => {
+		mockFetch(mockSnapshot());
+
+		const getAllDiagnostics = vi.fn().mockResolvedValue(mockBrowserDiagnostics());
+		const mockPipeline = { getAllDiagnostics };
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn(), pipeline: mockPipeline as any },
+		});
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Switch to browser tab
+		const browserBtn = container.querySelectorAll('.toggle-btn')[2] as HTMLButtonElement;
+		browserBtn?.click();
+		await vi.advanceTimersByTimeAsync(100);
+
+		const initialCalls = getAllDiagnostics.mock.calls.length;
+		expect(initialCalls).toBeGreaterThan(0);
+
+		// Advance two poll intervals
+		await vi.advanceTimersByTimeAsync(4100);
+		expect(getAllDiagnostics.mock.calls.length).toBeGreaterThan(initialCalls);
+	});
 });
