@@ -3,6 +3,7 @@
 	import { setEncoderBackend } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
+	import type { MediaPipeline, SourceDiagnostics } from '$lib/transport/media-pipeline';
 
 	const HW_ENCODERS = new Set(['h264_nvenc', 'h264_vaapi', 'h264_videotoolbox']);
 
@@ -34,6 +35,12 @@
 		e2e: {
 			current: { last_ns: number };
 			windows: PerfWindows;
+			stages?: {
+				decode_queue: { current: { last_ns: number }; windows: PerfWindows };
+				decode: { current: { last_ns: number }; windows: PerfWindows };
+				sync_wait: { current: { last_ns: number }; windows: PerfWindows };
+				proc_queue: { current: { last_ns: number }; windows: PerfWindows };
+			};
 		};
 		audio: {
 			mode: string;
@@ -301,9 +308,10 @@
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
+		pipeline?: MediaPipeline | null;
 	}
 
-	let { visible, onclose }: Props = $props();
+	let { visible, onclose, pipeline = null }: Props = $props();
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
@@ -346,8 +354,9 @@
 	}
 
 	// Perf view state
-	let viewMode = $state<'debug' | 'perf'>('debug');
+	let viewMode = $state<'debug' | 'perf' | 'browser'>('debug');
 	let perfData = $state<PerfSnapshot | null>(null);
+	let browserData = $state<Record<string, SourceDiagnostics> | null>(null);
 	let perfWindow = $state<'1s' | '10s' | '60s'>('10s');
 	let baselineName = $state('');
 	let activeBaseline = $state('');
@@ -396,6 +405,14 @@
 		} catch { /* ignore network + abort errors */ }
 	}
 
+	async function pollBrowser() {
+		if (!pipeline) { browserData = null; return; }
+		try {
+			browserData = await pipeline.getAllDiagnostics();
+			lastUpdateTime = Date.now();
+		} catch { /* ignore */ }
+	}
+
 	$effect(() => {
 		if (visible) {
 			if (viewMode === 'debug') {
@@ -403,9 +420,12 @@
 				poll();
 				fetchEncoderInfo();
 				intervalId = setInterval(poll, POLL_INTERVAL_MS);
-			} else {
+			} else if (viewMode === 'perf') {
 				pollPerf();
 				intervalId = setInterval(pollPerf, POLL_INTERVAL_MS);
+			} else {
+				pollBrowser();
+				intervalId = setInterval(pollBrowser, POLL_INTERVAL_MS);
 			}
 		} else {
 			if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
@@ -500,6 +520,59 @@
 		}
 	}
 
+	// --- Browser helpers ---
+	function fmtBrowserPts(us: number): string {
+		if (us < 0) return '--:--:--.---';
+		const secs = us / 1_000_000;
+		const h = Math.floor(secs / 3600);
+		const m = Math.floor((secs % 3600) / 60);
+		const s = Math.floor(secs % 60);
+		const ms = Math.floor((secs % 1) * 1000);
+		return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}.${ms.toString().padStart(3,'0')}`;
+	}
+
+	function syncStatus(ms: number): 'ok' | 'warn' | 'crit' {
+		const abs = Math.abs(ms);
+		if (abs < 50) return 'ok';
+		if (abs < 150) return 'warn';
+		return 'crit';
+	}
+
+	function queueStatus(size: number): 'ok' | 'warn' | 'crit' {
+		if (size < 5) return 'ok';
+		if (size < 30) return 'warn';
+		return 'crit';
+	}
+
+	function silenceStatus(ms: number): 'ok' | 'warn' | 'crit' {
+		if (ms < 100) return 'ok';
+		if (ms < 500) return 'warn';
+		return 'crit';
+	}
+
+	function driftStatus(ms: number): 'ok' | 'warn' | 'crit' {
+		const abs = Math.abs(ms);
+		if (abs < 5) return 'ok';
+		if (abs < 20) return 'warn';
+		return 'crit';
+	}
+
+	function clockModeStatus(mode: string): 'ok' | 'warn' | 'crit' {
+		if (mode === 'audio') return 'ok';
+		if (mode === 'audio-stall-freerun') return 'warn';
+		return 'ok'; // freerun is neutral, not a problem by itself
+	}
+
+	function drawRateStatus(drawn: number, rafCount: number): 'ok' | 'warn' | 'crit' {
+		if (rafCount < 10) return 'ok'; // too early to judge
+		const rate = drawn / rafCount;
+		// At 60Hz rAF: rate 0.5 = 30fps display (normal for 60fps source on 30fps pipeline)
+		// rate 0.25 = ~15fps (concerning)
+		if (rate > 0.4) return 'ok';
+		if (rate > 0.25) return 'warn';
+		return 'crit';
+	}
+
 	// --- Perf helpers ---
 	function getWindow(windows: PerfWindows): PerfWindowStats {
 		return windows[perfWindow];
@@ -524,17 +597,37 @@
 		const w = getWindow;
 		const rows: Array<{label: string; pct: number; value: string; color: string; delta?: number}> = [];
 
-		// Source decode (max across all sources)
-		const decodeP95s = Object.values(perfData.sources).map(s => w(s.decode.windows).p95_ns);
-		const maxDecode = Math.max(0, ...decodeP95s);
-		rows.push({
-			label: 'Source Decode',
-			pct: budget > 0 ? Math.min((maxDecode / budget) * 100, 100) : 0,
-			value: `${(maxDecode / 1e6).toFixed(1)}ms`,
-			color: 'rgba(167, 139, 250, 0.7)',
-		});
+		// Sub-stage breakdown (when available from server)
+		const stages = perfData.e2e.stages;
+		if (stages) {
+			const stageRows = [
+				{ label: 'Decode Queue', color: 'rgba(251, 146, 60, 0.6)', data: stages.decode_queue },
+				{ label: 'Decode', color: 'rgba(167, 139, 250, 0.7)', data: stages.decode },
+				{ label: 'Sync Wait', color: 'rgba(251, 191, 36, 0.7)', data: stages.sync_wait },
+				{ label: 'Proc Queue', color: 'rgba(251, 146, 60, 0.6)', data: stages.proc_queue },
+			];
+			for (const stage of stageRows) {
+				const p95 = w(stage.data.windows).p95_ns;
+				rows.push({
+					label: stage.label,
+					pct: budget > 0 ? Math.min((p95 / budget) * 100, 100) : 0,
+					value: `${(p95 / 1e6).toFixed(1)}ms`,
+					color: stage.color,
+				});
+			}
+		} else {
+			// Fallback: single source decode row (legacy servers without sub-stages)
+			const decodeP95s = Object.values(perfData.sources).map(s => w(s.decode.windows).p95_ns);
+			const maxDecode = Math.max(0, ...decodeP95s);
+			rows.push({
+				label: 'Source Decode',
+				pct: budget > 0 ? Math.min((maxDecode / budget) * 100, 100) : 0,
+				value: `${(maxDecode / 1e6).toFixed(1)}ms`,
+				color: 'rgba(167, 139, 250, 0.7)',
+			});
+		}
 
-		// Pipeline nodes
+		// Pipeline nodes (unchanged)
 		const nodeOrder = ['upstream-key', 'layout-compositor', 'compositor', 'raw-sink-mxl', 'raw-sink-monitor', 'h264-encode'];
 		const nodeColors: Record<string, string> = {
 			'upstream-key': 'rgba(167, 139, 250, 0.7)',
@@ -553,7 +646,6 @@
 			'h264-encode': 'H.264 Encode',
 		};
 
-		// Show nodes in order, then any unknown ones
 		const shownNodes = new Set<string>();
 		for (const name of nodeOrder) {
 			if (perfData.pipeline.nodes[name]) {
@@ -579,10 +671,10 @@
 			}
 		}
 
-		// E2E row
+		// E2E total row
 		const e2eP95 = w(perfData.e2e.windows).p95_ns;
 		rows.push({
-			label: 'E2E',
+			label: 'E2E Total',
 			pct: budget > 0 ? Math.min((e2eP95 / budget) * 100, 100) : 0,
 			value: `${(e2eP95 / 1e6).toFixed(1)}ms`,
 			color: 'rgba(251, 146, 60, 0.7)',
@@ -753,6 +845,7 @@
 			<div class="view-toggle">
 				<button class="toggle-btn" class:active={viewMode === 'debug'} onclick={() => viewMode = 'debug'}>Debug</button>
 				<button class="toggle-btn" class:active={viewMode === 'perf'} onclick={() => viewMode = 'perf'}>Perf</button>
+				<button class="toggle-btn" class:active={viewMode === 'browser'} onclick={() => viewMode = 'browser'}>Browser</button>
 			</div>
 			<span class="shortcut-hint">Shift+P</span>
 		</div>
@@ -919,6 +1012,176 @@
 			</div>
 		{:else}
 			<div class="loading">Loading perf data...</div>
+		{/if}
+	{:else if viewMode === 'browser'}
+		{#if browserData}
+			<div class="panel-body">
+				{#each Object.keys(browserData).sort() as sourceKey}
+					{@const diag = browserData[sourceKey]}
+					{@const r = diag.renderer as Record<string, any> | null}
+					{@const a = diag.audio as Record<string, any> | null}
+					<div class="section">
+						<div class="section-label">{sourceKey.toUpperCase()}</div>
+
+						<!-- Render Health -->
+						<div class="browser-subsection">
+							<span class="browser-subsection-label">Render</span>
+							{#if r}
+								<div class="stat-row">
+									<span class="stat-key">Draw Rate</span>
+									<span class="stat-val">
+										<span class="health-dot {drawRateStatus(r.framesDrawn ?? 0, r.rafCount ?? 0)}"></span>
+										{r.framesDrawn ?? 0}/{r.rafCount ?? 0} rAF
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Queue</span>
+									<span class="stat-val">
+										<span class="health-dot {queueStatus(r.videoQueueSize ?? 0)}"></span>
+										{r.videoQueueSize ?? 0} frames ({(r.videoQueueMs ?? 0).toFixed(0)}ms)
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Discarded</span>
+									<span class="stat-val">{fmtCount(r.videoTotalDiscarded)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Empty Buf</span>
+									<span class="stat-val">{fmtCount(r.emptyBufferHits)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Skipped</span>
+									<span class="stat-val">{fmtCount(r.framesSkipped)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Clock</span>
+									<span class="stat-val">
+										<span class="health-dot {clockModeStatus(r.clockMode ?? 'freerun')}"></span>
+										{r.clockMode ?? '-'}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Draw Time</span>
+									<span class="stat-val">{(r.avgDrawMs ?? 0).toFixed(2)}ms avg, {(r.maxDrawMs ?? 0).toFixed(2)}ms max</span>
+								</div>
+							{:else}
+								<div class="stat-row"><span class="stat-key dim">No renderer</span></div>
+							{/if}
+						</div>
+
+						<!-- A/V Sync -->
+						<div class="browser-subsection">
+							<span class="browser-subsection-label">A/V Sync</span>
+							{#if r}
+								{@const currentSync = r.avSyncMs ?? 0}
+								{@const avgSync = r.avSyncAvg ?? 0}
+								{@const ptsDelta = ((r.currentVideoPTS ?? 0) - (r.currentAudioPTS ?? 0)) / 1000}
+								<div class="stat-row">
+									<span class="stat-key">Current</span>
+									<span class="stat-val">
+										<span class="health-dot {syncStatus(currentSync)}"></span>
+										{currentSync.toFixed(1)}ms
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Average</span>
+									<span class="stat-val">
+										<span class="health-dot {syncStatus(avgSync)}"></span>
+										{avgSync.toFixed(1)}ms
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Range</span>
+									<span class="stat-val">{(r.avSyncMin ?? 0).toFixed(1)} / {(r.avSyncMax ?? 0).toFixed(1)}ms</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Video PTS</span>
+									<span class="stat-val browser-pts">{fmtBrowserPts(r.currentVideoPTS ?? -1)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Audio PTS</span>
+									<span class="stat-val browser-pts">{fmtBrowserPts(r.currentAudioPTS ?? -1)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">PTS Delta</span>
+									<span class="stat-val">
+										<span class="health-dot {syncStatus(ptsDelta)}"></span>
+										{ptsDelta.toFixed(1)}ms
+									</span>
+								</div>
+							{:else}
+								<div class="stat-row"><span class="stat-key dim">No renderer</span></div>
+							{/if}
+						</div>
+
+						<!-- Audio Pipeline -->
+						<div class="browser-subsection">
+							<span class="browser-subsection-label">Audio</span>
+							{#if a}
+								<div class="stat-row">
+									<span class="stat-key">Silence</span>
+									<span class="stat-val">
+										<span class="health-dot {silenceStatus(a.totalSilenceMs ?? 0)}"></span>
+										{(a.totalSilenceMs ?? 0).toFixed(0)}ms
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">PTS Jumps</span>
+									<span class="stat-val">{a.inputPtsJumps ?? 0}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">PTS Wraps</span>
+									<span class="stat-val">
+										<span class="health-dot {(a.inputPtsWraps ?? 0) > 0 ? 'warn' : 'ok'}"></span>
+										{a.inputPtsWraps ?? 0}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Drift</span>
+									<span class="stat-val">
+										<span class="health-dot {driftStatus(a.lastDriftMs ?? 0)}"></span>
+										{(a.lastDriftMs ?? 0).toFixed(1)}ms (max {(a.maxDriftMs ?? 0).toFixed(1)})
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Errors</span>
+									<span class="stat-val">
+										<span class="health-dot {(a.decodeErrors ?? 0) > 0 ? 'crit' : 'ok'}"></span>
+										{a.decodeErrors ?? 0}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Underruns</span>
+									<span class="stat-val">
+										<span class="health-dot {(a.underruns ?? 0) > 0 ? 'warn' : 'ok'}"></span>
+										{a.underruns ?? 0}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">State</span>
+									<span class="stat-val">
+										<span class="health-dot {a.contextState === 'running' ? 'ok' : 'warn'}"></span>
+										{a.contextState ?? '-'}
+										{#if a.isPlaying} · playing{:else} · stopped{/if}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Cb/sec</span>
+									<span class="stat-val">{(a.callbacksPerSec ?? 0).toFixed(1)}</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Latency</span>
+									<span class="stat-val">{((a.contextBaseLatency ?? 0) * 1000).toFixed(1)} + {((a.contextOutputLatency ?? 0) * 1000).toFixed(1)}ms</span>
+								</div>
+							{:else}
+								<div class="stat-row"><span class="stat-key dim">No audio</span></div>
+							{/if}
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<div class="loading">No browser data</div>
 		{/if}
 	{:else if snapshot}
 		<div class="panel-body">
@@ -2769,4 +3032,33 @@
 	.health-dot.ok { background: var(--status-ok); }
 	.health-dot.warn { background: var(--status-warn); }
 	.health-dot.crit { background: var(--status-crit); }
+
+	/* --- Browser Tab --- */
+	.browser-subsection {
+		margin: 6px 0;
+		padding-left: 8px;
+		border-left: 2px solid var(--border-subtle);
+	}
+
+	.browser-subsection-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.5px;
+		text-transform: uppercase;
+		display: block;
+		margin-bottom: 4px;
+	}
+
+	.browser-pts {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		letter-spacing: 0.5px;
+	}
+
+	.dim {
+		color: var(--text-tertiary);
+		opacity: 0.5;
+	}
 </style>

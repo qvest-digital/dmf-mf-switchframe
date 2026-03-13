@@ -1022,9 +1022,10 @@ describe('StatsPanel', () => {
 		});
 		await vi.advanceTimersByTimeAsync(100);
 		const toggleBtns = container.querySelectorAll('.toggle-btn');
-		expect(toggleBtns.length).toBe(2);
+		expect(toggleBtns.length).toBe(3);
 		expect(toggleBtns[0]?.textContent).toBe('Debug');
 		expect(toggleBtns[1]?.textContent).toBe('Perf');
+		expect(toggleBtns[2]?.textContent).toBe('Browser');
 	});
 
 	it('switches to perf view and fetches /api/perf', async () => {

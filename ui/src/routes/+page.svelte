@@ -649,7 +649,7 @@
 	{/if}
 </ErrorBoundary>
 
-<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} />
+<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} {pipeline} />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>
