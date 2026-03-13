@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { resolveApiUrl } from '$lib/api/base-url';
+	import { setEncoderBackend } from '$lib/api/switch-api';
+	import type { EncoderInfo } from '$lib/api/types';
 
 	// --- Types ---
 	interface PipelineNodeSnapshot {
@@ -246,6 +248,38 @@
 	let nodeHistory = $state<Map<string, number[]>>(new Map());
 	let lastUpdateTime = $state(0);
 
+	// --- Encoder state ---
+	let availableEncoders = $state<EncoderInfo[]>([]);
+	let currentEncoder = $state('');
+	let selectedEncoder = $state('');
+	let encoderChanging = $state(false);
+
+	async function fetchEncoderInfo() {
+		try {
+			const resp = await fetch(resolveApiUrl('/api/encoder'));
+			if (resp.ok) {
+				const data = await resp.json();
+				availableEncoders = data.available ?? [];
+				currentEncoder = data.current ?? '';
+				selectedEncoder = currentEncoder;
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function handleChangeEncoder() {
+		if (!selectedEncoder || selectedEncoder === currentEncoder) return;
+		encoderChanging = true;
+		try {
+			await setEncoderBackend(selectedEncoder);
+			currentEncoder = selectedEncoder;
+			await fetchEncoderInfo();
+		} catch {
+			selectedEncoder = currentEncoder;
+		} finally {
+			encoderChanging = false;
+		}
+	}
+
 	// --- Polling ---
 	async function poll() {
 		try {
@@ -279,6 +313,7 @@
 		if (visible) {
 			nodeHistory = new Map();
 			poll();
+			fetchEncoderInfo();
 			intervalId = setInterval(poll, POLL_INTERVAL_MS);
 		} else {
 			if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
@@ -530,15 +565,15 @@
 
 	{#if snapshot}
 		<div class="panel-body">
-			<!-- Codec Info -->
+			<!-- Codec / Encoder -->
 			{#if snapshot?.switcher?.codec}
-				{@const codec = snapshot.switcher.codec}
+				{@const codecInfo = snapshot.switcher.codec}
 				<div class="section codec-section">
 					<div class="codec-badges">
 						<span class="codec-badge">
 							<span class="codec-label">ENC</span>
-							<span class="codec-value">{codec.encoder || 'none'}</span>
-							{#if codec.hw_accel}
+							<span class="codec-value">{currentEncoder || codecInfo.encoder || 'none'}</span>
+							{#if codecInfo.hw_accel}
 								<span class="hw-badge hw">HW</span>
 							{:else}
 								<span class="hw-badge sw">SW</span>
@@ -546,9 +581,27 @@
 						</span>
 						<span class="codec-badge">
 							<span class="codec-label">DEC</span>
-							<span class="codec-value">{codec.decoder || 'none'}</span>
+							<span class="codec-value">{codecInfo.decoder || 'none'}</span>
 						</span>
 					</div>
+					{#if availableEncoders.length > 1}
+						<div class="encoder-select">
+							<select bind:value={selectedEncoder} disabled={encoderChanging}>
+								{#each availableEncoders as enc}
+									<option value={enc.name}>
+										{enc.displayName}{enc.isDefault ? ' (default)' : ''}
+									</option>
+								{/each}
+							</select>
+							<button
+								class="encoder-change-btn"
+								onclick={handleChangeEncoder}
+								disabled={encoderChanging || selectedEncoder === currentEncoder}
+							>
+								{encoderChanging ? 'Changing...' : 'Change'}
+							</button>
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -2038,6 +2091,46 @@
 	.hw-badge.sw {
 		color: var(--status-warn);
 		background: var(--status-warn-dim);
+	}
+
+	.encoder-select {
+		display: flex;
+		gap: 6px;
+		margin-top: 6px;
+		align-items: center;
+	}
+
+	.encoder-select select {
+		flex: 1;
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		border: 1px solid var(--border-primary);
+		border-radius: 3px;
+		padding: 3px 6px;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+	}
+
+	.encoder-change-btn {
+		background: var(--accent-blue-dim);
+		color: var(--accent-blue);
+		border: 1px solid var(--accent-blue);
+		border-radius: 3px;
+		padding: 3px 10px;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.encoder-change-btn:hover:not(:disabled) {
+		background: var(--accent-blue);
+		color: var(--bg-primary);
+	}
+
+	.encoder-change-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 
 	/* --- Source detail (frame size) --- */
