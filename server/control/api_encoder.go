@@ -3,7 +3,6 @@ package control
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control/httperr"
@@ -43,11 +42,6 @@ func (a *API) handleSetEncoder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.switcher.SetEncoder(req.Encoder); err != nil {
-		// "not available" errors are validation failures (400), not server errors.
-		if strings.Contains(err.Error(), "not available") {
-			httperr.Write(w, http.StatusBadRequest, err.Error())
-			return
-		}
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

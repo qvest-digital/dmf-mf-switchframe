@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { setEncoderBackend } from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
+
+	const HW_ENCODERS = new Set(['h264_nvenc', 'h264_vaapi', 'h264_videotoolbox']);
 
 	// --- Perf Types ---
 	interface PerfWindowStats { min_ns: number; max_ns: number; mean_ns: number; p95_ns: number }
@@ -334,8 +337,9 @@
 			await setEncoderBackend(selectedEncoder);
 			currentEncoder = selectedEncoder;
 			await fetchEncoderInfo();
-		} catch {
+		} catch (err) {
 			selectedEncoder = currentEncoder;
+			notify('error', `Encoder switch failed: ${err instanceof Error ? err.message : 'unknown error'}`);
 		} finally {
 			encoderChanging = false;
 		}
@@ -921,12 +925,14 @@
 			<!-- Codec / Encoder -->
 			{#if snapshot?.switcher?.codec}
 				{@const codecInfo = snapshot.switcher.codec}
+				{@const encoderName = currentEncoder || codecInfo.encoder || 'none'}
+				{@const isHW = currentEncoder ? HW_ENCODERS.has(currentEncoder) : codecInfo.hw_accel}
 				<div class="section codec-section">
 					<div class="codec-badges">
 						<span class="codec-badge">
 							<span class="codec-label">ENC</span>
-							<span class="codec-value">{currentEncoder || codecInfo.encoder || 'none'}</span>
-							{#if codecInfo.hw_accel}
+							<span class="codec-value">{encoderName}</span>
+							{#if isHW}
 								<span class="hw-badge hw">HW</span>
 							{:else}
 								<span class="hw-badge sw">SW</span>

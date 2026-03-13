@@ -67,6 +67,7 @@ var errorMappings = []errorMapping{
 	{operator.ErrNoPermission, http.StatusForbidden},
 
 	// 400 Bad Request
+	{switcher.ErrEncoderNotAvailable, http.StatusBadRequest},
 	{switcher.ErrAlreadyOnProgram, http.StatusBadRequest},
 	{switcher.ErrInvalidDelay, http.StatusBadRequest},
 	{switcher.ErrInvalidPosition, http.StatusBadRequest},

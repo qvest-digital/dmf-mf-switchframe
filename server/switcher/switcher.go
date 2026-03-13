@@ -36,8 +36,9 @@ var (
 	ErrAlreadyOnProgram = errors.New("switcher: already on program")
 	ErrInvalidDelay     = errors.New("switcher: delay must be 0-500ms")
 	ErrInvalidPosition  = errors.New("switcher: position must be >= 1")
-	ErrNoTransition          = errors.New("switcher: no active transition")
+	ErrNoTransition           = errors.New("switcher: no active transition")
 	ErrFormatDuringTransition = errors.New("switcher: cannot change pipeline format during active transition")
+	ErrEncoderNotAvailable    = errors.New("switcher: encoder not available")
 )
 
 // updateAtomicMax atomically updates field to val if val > current.
@@ -366,7 +367,8 @@ type Switcher struct {
 	codecEncoder string
 	codecDecoder string
 	codecHWAccel      bool
-	availableEncoders []codec.EncoderInfo
+	availableEncoders         []codec.EncoderInfo
+	availableEncodersInternal []internal.EncoderInfo // cached conversion for state broadcast
 
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
@@ -448,17 +450,27 @@ func (s *Switcher) SetCodecInfo(encoder, decoder string, hwAccel bool) {
 }
 
 // SetAvailableEncoders stores the list of encoders that are available on this
-// system. Called once at startup from the codec probe results.
+// system. Called once at startup from the codec probe results. Also
+// pre-computes the internal.EncoderInfo conversion to avoid per-broadcast
+// allocations in state enrichment.
 func (s *Switcher) SetAvailableEncoders(encoders []codec.EncoderInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.availableEncoders = encoders
+	s.availableEncodersInternal = make([]internal.EncoderInfo, len(encoders))
+	for i, e := range encoders {
+		s.availableEncodersInternal[i] = internal.EncoderInfo{
+			Name:        e.Name,
+			DisplayName: e.DisplayName,
+			IsDefault:   e.IsDefault,
+		}
+	}
 }
 
 // AvailableEncoders returns the list of encoders available on this system.
 func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]codec.EncoderInfo, len(s.availableEncoders))
 	copy(out, s.availableEncoders)
 	return out
@@ -466,9 +478,17 @@ func (s *Switcher) AvailableEncoders() []codec.EncoderInfo {
 
 // EncoderName returns the name of the currently active encoder.
 func (s *Switcher) EncoderName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.codecEncoder
+}
+
+// AvailableEncodersInternal returns the pre-computed internal.EncoderInfo
+// slice for state broadcast enrichment. The returned slice must not be modified.
+func (s *Switcher) AvailableEncodersInternal() []internal.EncoderInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.availableEncodersInternal
 }
 
 // SetEncoder switches the video encoder at runtime. The name must match one
@@ -493,7 +513,7 @@ func (s *Switcher) SetEncoder(name string) error {
 	}
 	if !found {
 		s.mu.Unlock()
-		return fmt.Errorf("switcher: encoder %q not available", name)
+		return fmt.Errorf("switcher: encoder %q: %w", name, ErrEncoderNotAvailable)
 	}
 
 	// Build factory for the requested encoder.
@@ -525,7 +545,19 @@ func (s *Switcher) SetEncoder(name string) error {
 		pc.SetEncoderFactory(factory)
 	}
 
+	// Force the new encoder's first frame to be an IDR keyframe so
+	// downstream decoders can sync immediately after the switch.
+	s.forceNextIDR.Store(true)
+
 	s.log.Info("encoder changed", "from", oldEncoder, "to", name)
+
+	// Broadcast updated state to all connected clients.
+	atomic.AddUint64(&s.seq, 1)
+	s.mu.RLock()
+	snapshot := s.buildStateLocked()
+	s.mu.RUnlock()
+	s.notifyStateChange(snapshot)
+
 	return nil
 }
 

@@ -1658,9 +1658,9 @@ func TestSwitcher_SetEncoder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "h264_nvenc", sw.EncoderName())
 
-	// Switch to invalid encoder — should fail.
+	// Switch to invalid encoder — should fail with sentinel error.
 	err = sw.SetEncoder("nonexistent")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrEncoderNotAvailable)
 	require.Equal(t, "h264_nvenc", sw.EncoderName(), "should not have changed")
 
 	// AvailableEncoders should return the list.

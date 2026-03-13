@@ -22,6 +22,10 @@ var (
 	selectedDecoder string         // e.g. "h264"
 	hwDeviceCtxPtr  unsafe.Pointer // *C.AVBufferRef, nil for software
 
+	// probeResults caches which candidates passed during ProbeEncoders().
+	// Used by ListAvailableEncoders() to avoid re-probing.
+	probeResults map[string]bool
+
 	listOnce          sync.Once
 	availableEncoders []EncoderInfo
 )
@@ -96,17 +100,32 @@ func ProbeEncoders() (string, string) {
 
 // probeEncoder tries each candidate encoder in priority order.
 // Returns the name of the first encoder that successfully opens and encodes a frame.
+// Also populates probeResults so ListAvailableEncoders can reuse the results.
 func probeEncoder() string {
+	probeResults = make(map[string]bool)
+	var best string
+
 	for _, c := range candidates {
-		if tryEncoder(c.name) {
+		ok := tryEncoder(c.name)
+		probeResults[c.name] = ok
+		if ok {
 			slog.Debug("codec: probe candidate succeeded", "encoder", c.name)
-			return c.name
+			if best == "" {
+				best = c.name
+			}
+		} else {
+			slog.Debug("codec: probe candidate failed", "encoder", c.name)
 		}
-		slog.Debug("codec: probe candidate failed", "encoder", c.name)
 	}
 
-	// All FFmpeg encoders failed. Try OpenH264 as the ultimate fallback.
-	if tryOpenH264Encoder() {
+	// Also probe OpenH264.
+	ok := tryOpenH264Encoder()
+	probeResults["openh264"] = ok
+
+	if best != "" {
+		return best
+	}
+	if ok {
 		return "openh264"
 	}
 
@@ -196,11 +215,13 @@ func initHWDeviceCtx() {
 // and whether it is the current default (as selected by ProbeEncoders).
 //
 // The list is computed once and cached; safe to call from multiple goroutines.
+// Reuses probe results from ProbeEncoders() to avoid re-creating encoder
+// instances a second time.
 func ListAvailableEncoders() []EncoderInfo {
 	listOnce.Do(func() {
 		defaultEnc, _ := ProbeEncoders()
 		for _, c := range candidates {
-			if tryEncoder(c.name) {
+			if probeResults[c.name] {
 				display := displayNames[c.name]
 				if display == "" {
 					display = c.name
@@ -212,10 +233,14 @@ func ListAvailableEncoders() []EncoderInfo {
 				})
 			}
 		}
-		if tryOpenH264Encoder() {
+		if probeResults["openh264"] {
+			display := displayNames["openh264"]
+			if display == "" {
+				display = "openh264"
+			}
 			availableEncoders = append(availableEncoders, EncoderInfo{
 				Name:        "openh264",
-				DisplayName: displayNames["openh264"],
+				DisplayName: display,
 				IsDefault:   "openh264" == defaultEnc,
 			})
 		}

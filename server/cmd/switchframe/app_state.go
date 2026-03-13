@@ -188,15 +188,8 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	state = a.enrichCaptionState(state)
 
 	// Encoder state (current + available backends).
-	if encoders := a.sw.AvailableEncoders(); len(encoders) > 0 {
-		avail := make([]internal.EncoderInfo, len(encoders))
-		for i, e := range encoders {
-			avail[i] = internal.EncoderInfo{
-				Name:        e.Name,
-				DisplayName: e.DisplayName,
-				IsDefault:   e.IsDefault,
-			}
-		}
+	// Uses pre-computed internal.EncoderInfo slice to avoid per-broadcast allocations.
+	if avail := a.sw.AvailableEncodersInternal(); len(avail) > 0 {
 		state.Encoder = &internal.EncoderState{
 			Current:   a.sw.EncoderName(),
 			Available: avail,
