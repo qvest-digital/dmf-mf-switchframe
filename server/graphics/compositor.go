@@ -964,10 +964,11 @@ func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
 	endRect := offScreenRect(to, currentRect, progW, progH)
 
 	cfg := AnimationConfig{
-		Mode:       "transition",
-		ToRect:     &RectState{X: endRect.Min.X, Y: endRect.Min.Y, Width: endRect.Dx(), Height: endRect.Dy()},
-		DurationMs: durationMs,
-		Easing:     "smoothstep",
+		Mode:                 "transition",
+		ToRect:               &RectState{X: endRect.Min.X, Y: endRect.Min.Y, Width: endRect.Dx(), Height: endRect.Dy()},
+		DurationMs:           durationMs,
+		Easing:               "smoothstep",
+		DeactivateOnComplete: true,
 	}
 	layer.animConfig = &cfg
 	layer.animCancel = make(chan struct{})

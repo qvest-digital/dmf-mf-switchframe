@@ -68,4 +68,30 @@ func TestDeactivateOnComplete_NotSet(t *testing.T) {
 	require.True(t, active, "layer should remain active when DeactivateOnComplete is false")
 }
 
+func TestFlyOut_DeactivatesLayer(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	rgba := make([]byte, 1920*1080*4)
+	require.NoError(t, c.SetOverlay(id, rgba, 1920, 1080, "test"))
+	require.NoError(t, c.On(id))
+
+	// Fly out with short duration
+	require.NoError(t, c.FlyOut(id, "left", 50))
+
+	// Wait for animation to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Layer should be deactivated
+	c.mu.RLock()
+	layer := c.layers[id]
+	active := layer.active
+	c.mu.RUnlock()
+	require.False(t, active, "layer should be deactivated after FlyOut completes")
+}
+
 func float64Ptr(v float64) *float64 { return &v }
