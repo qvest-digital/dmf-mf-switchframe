@@ -2677,7 +2677,11 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	// adjusted PTS. The correction delta aligns audio PTS with video PTS.
 	if fs != nil {
 		if delta := fs.GetSourcePTSCorrection(sourceKey); delta > 0 {
-			frame.PTS += delta
+			// Copy the frame before mutating PTS — the relay may fan-out
+			// the same pointer to multiple viewers.
+			adjusted := *frame
+			adjusted.PTS += delta
+			frame = &adjusted
 		}
 	}
 
