@@ -320,6 +320,91 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
+	it('should show IMAGE disclosure toggle', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const imageDisc = Array.from(disclosures).find(d => d.textContent?.includes('IMAGE'));
+		expect(imageDisc).toBeTruthy();
+	});
+
+	it('should show image upload button after clicking IMAGE disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const imageDisc = Array.from(disclosures).find(d => d.textContent?.includes('IMAGE'));
+		await fireEvent.click(imageDisc!);
+		const uploadBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.includes('UPLOAD'));
+		expect(uploadBtn).toBeTruthy();
+	});
+
+	it('should show TICKER disclosure toggle', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const tickerDisc = Array.from(disclosures).find(d => d.textContent?.includes('TICKER'));
+		expect(tickerDisc).toBeTruthy();
+	});
+
+	it('should show ticker controls after clicking TICKER disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const tickerDisc = Array.from(disclosures).find(d => d.textContent?.includes('TICKER'));
+		await fireEvent.click(tickerDisc!);
+		const startBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.trim() === 'START');
+		expect(startBtn).toBeTruthy();
+	});
+
+	it('should show TEXT FX disclosure toggle', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const textFxDisc = Array.from(disclosures).find(d => d.textContent?.includes('TEXT FX'));
+		expect(textFxDisc).toBeTruthy();
+	});
+
+	it('should show text animation controls after clicking TEXT FX disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const textFxDisc = Array.from(disclosures).find(d => d.textContent?.includes('TEXT FX'));
+		await fireEvent.click(textFxDisc!);
+		const modeSelect = container.querySelectorAll('.ctl-select');
+		const hasTypewriter = Array.from(modeSelect).some(sel =>
+			sel.textContent?.includes('Typewriter')
+		);
+		expect(hasTypewriter).toBe(true);
+	});
+
+	it('should have 5 disclosure toggles (FLY, ANIM, IMAGE, TICKER, TEXT FX)', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		expect(disclosures.length).toBe(5);
+	});
+
 	it('should show animation badge in disclosure when animating', () => {
 		const state = {
 			...baseState,

@@ -6,6 +6,9 @@
 		graphicsAnimate, graphicsAnimateStop,
 		graphicsSetZOrder,
 		graphicsFlyIn, graphicsFlyOut, graphicsFlyOn,
+		graphicsImageUpload, graphicsImageDelete,
+		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
+		graphicsTextAnimStart, graphicsTextAnimStop,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -222,6 +225,70 @@
 			[id]: { ...getLayerFlyConfig(id), [key]: value },
 		};
 	}
+
+	// ── Image handlers ──
+	async function handleImageUpload(id: number, file: File) {
+		try {
+			await graphicsImageUpload(id, file);
+			notify('success', `Image "${file.name}" uploaded`);
+		} catch {
+			notify('error', 'Image upload failed');
+		}
+	}
+
+	function handleImageDelete(id: number) {
+		apiCall(graphicsImageDelete(id), 'Image delete failed');
+	}
+
+	// ── Ticker handlers ──
+	let tickerRunning = $state<Record<number, boolean>>({});
+
+	async function handleTickerStart(id: number, config: { text: string; fontSize: number; speed: number; bold: boolean; loop: boolean }) {
+		try {
+			await graphicsTickerStart(id, config);
+			tickerRunning = { ...tickerRunning, [id]: true };
+		} catch {
+			notify('error', 'Ticker start failed');
+		}
+	}
+
+	async function handleTickerStop(id: number) {
+		try {
+			await graphicsTickerStop(id);
+			tickerRunning = { ...tickerRunning, [id]: false };
+		} catch {
+			notify('error', 'Ticker stop failed');
+		}
+	}
+
+	async function handleTickerUpdateText(id: number, text: string) {
+		try {
+			await graphicsTickerUpdateText(id, text);
+		} catch {
+			notify('error', 'Ticker text update failed');
+		}
+	}
+
+	// ── Text animation handlers ──
+	let textAnimRunning = $state<Record<number, boolean>>({});
+
+	async function handleTextAnimStart(id: number, config: { mode: string; text: string; fontSize: number; bold: boolean; charsPerSec?: number; wordDelayMs?: number; fadeDurationMs?: number }) {
+		try {
+			await graphicsTextAnimStart(id, config);
+			textAnimRunning = { ...textAnimRunning, [id]: true };
+		} catch {
+			notify('error', 'Text animation failed');
+		}
+	}
+
+	async function handleTextAnimStop(id: number) {
+		try {
+			await graphicsTextAnimStop(id);
+			textAnimRunning = { ...textAnimRunning, [id]: false };
+		} catch {
+			notify('error', 'Text animation stop failed');
+		}
+	}
 </script>
 
 <div class="graphics-panel">
@@ -266,6 +333,15 @@
 				onFlyOut={() => handleFlyOut(selectedLayer.id)}
 				onAnimate={() => handleAnimate(selectedLayer.id)}
 				onAnimateStop={() => handleAnimateStop(selectedLayer.id)}
+				onImageUpload={(file) => handleImageUpload(selectedLayer.id, file)}
+				onImageDelete={() => handleImageDelete(selectedLayer.id)}
+				onTickerStart={(cfg) => handleTickerStart(selectedLayer.id, cfg)}
+				onTickerStop={() => handleTickerStop(selectedLayer.id)}
+				onTickerUpdateText={(text) => handleTickerUpdateText(selectedLayer.id, text)}
+				tickerActive={tickerRunning[selectedLayer.id] ?? false}
+				onTextAnimStart={(cfg) => handleTextAnimStart(selectedLayer.id, cfg)}
+				onTextAnimStop={() => handleTextAnimStop(selectedLayer.id)}
+				textAnimActive={textAnimRunning[selectedLayer.id] ?? false}
 			/>
 		{:else}
 			<div class="empty-detail">
