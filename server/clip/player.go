@@ -305,7 +305,10 @@ func (p *Player) run(ctx context.Context) {
 		}
 
 		if !p.config.Loop {
-			// Non-loop: fire OnDone, then enter hold state.
+			// Non-loop: transition to holding, notify, then hold loop.
+			// State must be set before OnDone so callers reading State()
+			// after OnDone see StateHolding, not StatePlaying.
+			p.state.Store(StateHolding)
 			if p.config.OnDone != nil {
 				p.config.OnDone()
 			}
