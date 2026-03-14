@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -117,7 +118,7 @@ func (a *API) handleSCTE35Cue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"eventId": eventID,
 		"state":   a.enrichedState(),
 	})
@@ -558,10 +559,10 @@ func buildCueMessage(req scte35CueRequest) (*scte35.CueMessage, error) {
 
 	// Validate command type + descriptor combinations.
 	if msg.CommandType == scte35.CommandSpliceInsert && len(req.Descriptors) > 0 {
-		return nil, fmt.Errorf("descriptors are only supported with time_signal")
+		return nil, errors.New("descriptors are only supported with time_signal")
 	}
 	if msg.CommandType == scte35.CommandTimeSignal && len(req.Descriptors) == 0 {
-		return nil, fmt.Errorf("time_signal requires at least one descriptor")
+		return nil, errors.New("time_signal requires at least one descriptor")
 	}
 
 	// Convert descriptor requests.

@@ -65,6 +65,7 @@ static int aacdec_decode(aacdec_t* h, unsigned char* aac_data, int aac_size,
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -110,10 +111,10 @@ func NewFDKDecoder(sampleRate, channels int) (*FDKDecoder, error) {
 // Decode decodes an ADTS-framed AAC frame into interleaved float32 PCM.
 func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	if d.closed.Load() {
-		return nil, fmt.Errorf("decoder is closed")
+		return nil, errors.New("decoder is closed")
 	}
 	if len(aacFrame) == 0 {
-		return nil, fmt.Errorf("empty AAC frame")
+		return nil, errors.New("empty AAC frame")
 	}
 
 	// Reuse pre-allocated pcmBuf (sized for 2048*8 samples at construction).
@@ -140,7 +141,7 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		if d.frameCount <= 2 {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("decoder produced no samples")
+		return nil, errors.New("decoder produced no samples")
 	}
 
 	// Convert int16 PCM to float32 [-1.0, 1.0] using reusable output buffer.

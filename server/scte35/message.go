@@ -4,6 +4,7 @@ package scte35
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"time"
 
@@ -468,31 +469,31 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 	// Minimum: 14 header bytes + 5 command bytes (event_id + cancel) +
 	// 2 descriptor_loop_length + 4 CRC = 25 bytes
 	if len(data) < 25 {
-		return nil, fmt.Errorf("too short for splice_insert cancel")
+		return nil, errors.New("too short for splice_insert cancel")
 	}
 
 	// Verify table_id.
 	if data[0] != 0xFC {
-		return nil, fmt.Errorf("not an SCTE-35 section")
+		return nil, errors.New("not an SCTE-35 section")
 	}
 
 	// Verify CRC-32 (last 4 bytes of section).
 	sectionLen := 3 + (int(data[1]&0x0F)<<8 | int(data[2]))
 	if len(data) < sectionLen {
-		return nil, fmt.Errorf("section length exceeds data")
+		return nil, errors.New("section length exceeds data")
 	}
 	if sectionLen < 4 {
-		return nil, fmt.Errorf("section too short for CRC")
+		return nil, errors.New("section too short for CRC")
 	}
 	crcData := data[:sectionLen-4]
 	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
 	if crc32MPEG2(crcData) != expectedCRC {
-		return nil, fmt.Errorf("CRC-32 mismatch")
+		return nil, errors.New("CRC-32 mismatch")
 	}
 
 	// Verify splice_command_type is splice_insert (0x05) at byte 13.
 	if data[13] != CommandSpliceInsert {
-		return nil, fmt.Errorf("not a splice_insert command")
+		return nil, errors.New("not a splice_insert command")
 	}
 
 	// Read splice_event_id (big-endian 32 bits at offset 14).
@@ -501,7 +502,7 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 	// Read splice_event_cancel_indicator (MSB of byte 18).
 	cancelIndicator := (data[18] & 0x80) != 0
 	if !cancelIndicator {
-		return nil, fmt.Errorf("not a cancel message")
+		return nil, errors.New("not a cancel message")
 	}
 
 	return &CueMessage{

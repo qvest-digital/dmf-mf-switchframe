@@ -81,7 +81,8 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		if !m.passthrough {
 			// Passthrough was disabled while we waited for the write lock.
 			// Fall through to the mixing path (we already hold m.mu.Lock).
-			goto mixing
+			m.mixFrameLocked(sourceKey, ch, frame)
+			return
 		}
 
 		// Decode for peak metering even in passthrough (skip encode).
@@ -128,8 +129,12 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	// Multi-channel mixing: decode, gain, accumulate, sum, encode
 	m.mu.Lock()
-mixing:
+	m.mixFrameLocked(sourceKey, ch, frame)
+}
 
+// mixFrameLocked performs the multi-channel mixing path for an AAC audio frame.
+// Caller must hold m.mu (write lock). The lock is released before return.
+func (m *Mixer) mixFrameLocked(sourceKey string, ch *Channel, frame *media.AudioFrame) {
 	// Lazy-init decoder for this channel
 	m.initChannelDecoder(ch)
 	if ch.decoder == nil {

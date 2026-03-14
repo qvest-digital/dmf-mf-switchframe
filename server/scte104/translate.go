@@ -1,6 +1,7 @@
 package scte104
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -21,11 +22,11 @@ import (
 //     otherwise creates a standalone time_signal.
 func ToCueMessage(msg *Message) (*scte35.CueMessage, error) {
 	if msg == nil {
-		return nil, fmt.Errorf("scte104: cannot translate nil message")
+		return nil, errors.New("scte104: cannot translate nil message")
 	}
 
 	if len(msg.Operations) == 0 {
-		return nil, fmt.Errorf("scte104: message has no operations")
+		return nil, errors.New("scte104: message has no operations")
 	}
 
 	// Scan for the primary operation (splice_request, splice_null, or time_signal).
@@ -56,7 +57,7 @@ func ToCueMessage(msg *Message) (*scte35.CueMessage, error) {
 	}
 
 	if primaryOp == nil {
-		return nil, fmt.Errorf("scte104: no translatable operation found")
+		return nil, errors.New("scte104: no translatable operation found")
 	}
 
 	switch primaryOp.OpID {
@@ -201,7 +202,7 @@ func PreRollMs(msg *Message) int64 {
 //     per descriptor.
 func FromCueMessage(cue *scte35.CueMessage) (*Message, error) {
 	if cue == nil {
-		return nil, fmt.Errorf("scte104: cannot translate nil CueMessage")
+		return nil, errors.New("scte104: cannot translate nil CueMessage")
 	}
 
 	msg := &Message{}

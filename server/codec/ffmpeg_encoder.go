@@ -289,6 +289,7 @@ static void ffenc_close(ffenc_t* h) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -369,7 +370,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 // Returns the encoded bitstream, whether the frame is a keyframe, and any error.
 func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	if e.closed {
-		return nil, false, fmt.Errorf("encoder is closed")
+		return nil, false, errors.New("encoder is closed")
 	}
 
 	w := int(e.handle.width)
@@ -408,7 +409,7 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 	n := int(outLen)
 	if n == 0 || outBuf == nil {
-		return nil, false, fmt.Errorf("encoder produced no output")
+		return nil, false, errors.New("encoder produced no output")
 	}
 
 	// GoBytes copies pkt->data into Go memory; then unref releases the AVPacket.

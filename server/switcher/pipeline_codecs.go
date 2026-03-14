@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,7 +13,7 @@ import (
 )
 
 // errPipelineClosed is returned by encode() when called after close().
-var errPipelineClosed = fmt.Errorf("pipeline codecs: closed")
+var errPipelineClosed = errors.New("pipeline codecs: closed")
 
 // allocAVC1Buffer allocates an owned AVC1 buffer. Each encoded frame needs
 // its own buffer because BroadcastVideo fans out to viewers via buffered

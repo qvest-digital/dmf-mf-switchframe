@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"net/http"
@@ -234,7 +235,7 @@ func (t *apiMacroTarget) SetLevel(ctx context.Context, source string, level floa
 }
 
 // Execute dispatches all new macro actions to the appropriate subsystem.
-func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[string]interface{}) error {
+func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[string]any) error {
 	switch macro.Action(action) {
 	// Switching
 	case macro.ActionFTB:
@@ -381,9 +382,9 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 
 // SCTE-35 methods — wired to real injector.
 
-func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]interface{}) (uint32, error) {
+func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]any) (uint32, error) {
 	if t.scte35 == nil {
-		return 0, fmt.Errorf("scte35 not enabled")
+		return 0, errors.New("scte35 not enabled")
 	}
 	msg := &scte35.CueMessage{}
 	if ct, ok := params["commandType"].(string); ok {
@@ -421,9 +422,9 @@ func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]interfac
 		msg.AvailsExpected = uint8(v)
 	}
 	// Parse descriptors for time_signal commands.
-	if descs, ok := params["descriptors"].([]interface{}); ok {
+	if descs, ok := params["descriptors"].([]any); ok {
 		for _, raw := range descs {
-			dm, ok := raw.(map[string]interface{})
+			dm, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -456,35 +457,35 @@ func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]interfac
 
 func (t *apiMacroTarget) SCTE35Return(_ context.Context, eventID uint32) error {
 	if t.scte35 == nil {
-		return fmt.Errorf("scte35 not enabled")
+		return errors.New("scte35 not enabled")
 	}
 	return t.scte35.ReturnToProgram(eventID)
 }
 
 func (t *apiMacroTarget) SCTE35Cancel(_ context.Context, eventID uint32) error {
 	if t.scte35 == nil {
-		return fmt.Errorf("scte35 not enabled")
+		return errors.New("scte35 not enabled")
 	}
 	return t.scte35.CancelEvent(eventID)
 }
 
 func (t *apiMacroTarget) SCTE35Hold(_ context.Context, eventID uint32) error {
 	if t.scte35 == nil {
-		return fmt.Errorf("scte35 not enabled")
+		return errors.New("scte35 not enabled")
 	}
 	return t.scte35.HoldBreak(eventID)
 }
 
 func (t *apiMacroTarget) SCTE35Extend(_ context.Context, eventID uint32, durationMs int64) error {
 	if t.scte35 == nil {
-		return fmt.Errorf("scte35 not enabled")
+		return errors.New("scte35 not enabled")
 	}
 	return t.scte35.ExtendBreak(eventID, durationMs)
 }
 
 // --- Audio helpers ---
 
-func (t *apiMacroTarget) execAudioMute(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioMute(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -496,7 +497,7 @@ func (t *apiMacroTarget) execAudioMute(params map[string]interface{}) error {
 	return t.mixer.SetMuted(source, muted)
 }
 
-func (t *apiMacroTarget) execAudioAFV(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioAFV(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -508,7 +509,7 @@ func (t *apiMacroTarget) execAudioAFV(params map[string]interface{}) error {
 	return t.mixer.SetAFV(source, afv)
 }
 
-func (t *apiMacroTarget) execAudioTrim(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioTrim(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -517,7 +518,7 @@ func (t *apiMacroTarget) execAudioTrim(params map[string]interface{}) error {
 	return t.mixer.SetTrim(source, trim)
 }
 
-func (t *apiMacroTarget) execAudioMaster(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioMaster(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -526,7 +527,7 @@ func (t *apiMacroTarget) execAudioMaster(params map[string]interface{}) error {
 	return nil
 }
 
-func (t *apiMacroTarget) execAudioEQ(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioEQ(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -542,7 +543,7 @@ func (t *apiMacroTarget) execAudioEQ(params map[string]interface{}) error {
 	return t.mixer.SetEQ(source, band, freq, gain, q, enabled)
 }
 
-func (t *apiMacroTarget) execAudioCompressor(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioCompressor(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -555,7 +556,7 @@ func (t *apiMacroTarget) execAudioCompressor(params map[string]interface{}) erro
 	return t.mixer.SetCompressor(source, threshold, ratio, attack, release, makeupGain)
 }
 
-func (t *apiMacroTarget) execAudioDelay(params map[string]interface{}) error {
+func (t *apiMacroTarget) execAudioDelay(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
@@ -573,7 +574,7 @@ func (t *apiMacroTarget) execGraphics(fn func(*graphics.Compositor) error) error
 	return fn(t.compositor)
 }
 
-func (t *apiMacroTarget) execGraphicsAnimate(id int, params map[string]interface{}) error {
+func (t *apiMacroTarget) execGraphicsAnimate(id int, params map[string]any) error {
 	if t.compositor == nil {
 		return nil
 	}
@@ -601,7 +602,7 @@ func (t *apiMacroTarget) execGraphicsAnimate(id int, params map[string]interface
 	return t.compositor.Animate(id, cfg)
 }
 
-func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]interface{}) error {
+func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]any) error {
 	if t.compositor == nil {
 		return nil
 	}
@@ -610,7 +611,7 @@ func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]inter
 	tmpl, _ := params["template"].(string)
 	rgbaB64, _ := params["rgba"].(string)
 	if w <= 0 || h <= 0 {
-		return fmt.Errorf("width and height must be positive")
+		return errors.New("width and height must be positive")
 	}
 	rgba, err := base64.StdEncoding.DecodeString(rgbaB64)
 	if err != nil {
@@ -624,7 +625,7 @@ func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]inter
 
 // --- Output helpers ---
 
-func (t *apiMacroTarget) execRecordingStart(params map[string]interface{}) error {
+func (t *apiMacroTarget) execRecordingStart(params map[string]any) error {
 	if t.outputMgr == nil {
 		return nil
 	}
@@ -644,7 +645,7 @@ func (t *apiMacroTarget) execRecordingStop() error {
 
 // --- Preset helpers ---
 
-func (t *apiMacroTarget) execPresetRecall(ctx context.Context, params map[string]interface{}) error {
+func (t *apiMacroTarget) execPresetRecall(ctx context.Context, params map[string]any) error {
 	if t.presetStore == nil {
 		return nil
 	}
@@ -654,7 +655,7 @@ func (t *apiMacroTarget) execPresetRecall(ctx context.Context, params map[string
 		id, _ = params["name"].(string)
 	}
 	if id == "" {
-		return fmt.Errorf("preset_recall requires 'id' param")
+		return errors.New("preset_recall requires 'id' param")
 	}
 	p, ok := t.presetStore.Get(id)
 	if !ok {
@@ -713,13 +714,13 @@ func (rt *macroPresetRecallTarget) SetMasterLevel(level float64) {
 
 // --- Key helpers ---
 
-func (t *apiMacroTarget) execKeySet(params map[string]interface{}) error {
+func (t *apiMacroTarget) execKeySet(params map[string]any) error {
 	if t.keyer == nil {
 		return nil
 	}
 	source, _ := params["source"].(string)
 	config := graphics.KeyConfig{}
-	if configMap, ok := params["config"].(map[string]interface{}); ok {
+	if configMap, ok := params["config"].(map[string]any); ok {
 		data, err := json.Marshal(configMap)
 		if err != nil {
 			return fmt.Errorf("marshal key config: %w", err)
@@ -732,7 +733,7 @@ func (t *apiMacroTarget) execKeySet(params map[string]interface{}) error {
 	return nil
 }
 
-func (t *apiMacroTarget) execKeyDelete(params map[string]interface{}) error {
+func (t *apiMacroTarget) execKeyDelete(params map[string]any) error {
 	if t.keyer == nil {
 		return nil
 	}
@@ -743,19 +744,19 @@ func (t *apiMacroTarget) execKeyDelete(params map[string]interface{}) error {
 
 // --- Source helpers ---
 
-func (t *apiMacroTarget) execSourceLabel(ctx context.Context, params map[string]interface{}) error {
+func (t *apiMacroTarget) execSourceLabel(ctx context.Context, params map[string]any) error {
 	source, _ := params["source"].(string)
 	label, _ := params["label"].(string)
 	return t.switcher.SetLabel(ctx, source, label)
 }
 
-func (t *apiMacroTarget) execSourceDelay(params map[string]interface{}) error {
+func (t *apiMacroTarget) execSourceDelay(params map[string]any) error {
 	source, _ := params["source"].(string)
 	delayMs := int(floatParam(params, "delayMs", 0))
 	return t.switcher.SetSourceDelay(source, delayMs)
 }
 
-func (t *apiMacroTarget) execSourcePosition(params map[string]interface{}) error {
+func (t *apiMacroTarget) execSourcePosition(params map[string]any) error {
 	source, _ := params["source"].(string)
 	pos := int(floatParam(params, "position", 1))
 	return t.switcher.SetSourcePosition(source, pos)
@@ -763,7 +764,7 @@ func (t *apiMacroTarget) execSourcePosition(params map[string]interface{}) error
 
 // --- Replay helpers (mark-based) ---
 
-func (t *apiMacroTarget) execReplayMarkIn(params map[string]interface{}) error {
+func (t *apiMacroTarget) execReplayMarkIn(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
@@ -771,7 +772,7 @@ func (t *apiMacroTarget) execReplayMarkIn(params map[string]interface{}) error {
 	return t.replayMgr.MarkIn(source)
 }
 
-func (t *apiMacroTarget) execReplayMarkOut(params map[string]interface{}) error {
+func (t *apiMacroTarget) execReplayMarkOut(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
@@ -779,7 +780,7 @@ func (t *apiMacroTarget) execReplayMarkOut(params map[string]interface{}) error 
 	return t.replayMgr.MarkOut(source)
 }
 
-func (t *apiMacroTarget) execReplayPlay(params map[string]interface{}) error {
+func (t *apiMacroTarget) execReplayPlay(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
@@ -801,7 +802,7 @@ func (t *apiMacroTarget) execReplayStop() error {
 
 // --- Replay helpers (clip-based — stubs for replay UX plan) ---
 
-func (t *apiMacroTarget) execReplayQuickClip(params map[string]interface{}) error {
+func (t *apiMacroTarget) execReplayQuickClip(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
@@ -827,7 +828,7 @@ func (t *apiMacroTarget) execReplayPlayLast() error {
 	return nil
 }
 
-func (t *apiMacroTarget) execReplayPlayClip(params map[string]interface{}) error {
+func (t *apiMacroTarget) execReplayPlayClip(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
@@ -838,9 +839,9 @@ func (t *apiMacroTarget) execReplayPlayClip(params map[string]interface{}) error
 
 // --- Caption helpers ---
 
-func (t *apiMacroTarget) execCaptionMode(params map[string]interface{}) error {
+func (t *apiMacroTarget) execCaptionMode(params map[string]any) error {
 	if t.captionMgr == nil {
-		return fmt.Errorf("captions not enabled")
+		return errors.New("captions not enabled")
 	}
 	mode, _ := params["mode"].(string)
 	m, ok := caption.ParseMode(mode)
@@ -851,9 +852,9 @@ func (t *apiMacroTarget) execCaptionMode(params map[string]interface{}) error {
 	return nil
 }
 
-func (t *apiMacroTarget) execCaptionText(params map[string]interface{}) error {
+func (t *apiMacroTarget) execCaptionText(params map[string]any) error {
 	if t.captionMgr == nil {
-		return fmt.Errorf("captions not enabled")
+		return errors.New("captions not enabled")
 	}
 	text, _ := params["text"].(string)
 	if text != "" {
@@ -867,7 +868,7 @@ func (t *apiMacroTarget) execCaptionText(params map[string]interface{}) error {
 
 func (t *apiMacroTarget) execCaptionClear() error {
 	if t.captionMgr == nil {
-		return fmt.Errorf("captions not enabled")
+		return errors.New("captions not enabled")
 	}
 	t.captionMgr.Clear()
 	return nil
@@ -875,7 +876,7 @@ func (t *apiMacroTarget) execCaptionClear() error {
 
 // --- Param helpers ---
 
-func floatParam(params map[string]interface{}, key string, defaultVal float64) float64 {
+func floatParam(params map[string]any, key string, defaultVal float64) float64 {
 	if v, ok := params[key].(float64); ok {
 		return v
 	}

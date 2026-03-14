@@ -240,7 +240,7 @@ func TestHandleSCTE35Cue_SpliceInsert(t *testing.T) {
 	require.Equal(t, 30*time.Second, *msg.BreakDuration)
 
 	// Response should include the eventId.
-	var resp map[string]interface{}
+	var resp map[string]any
 	err := json.NewDecoder(rec.Body).Decode(&resp)
 	require.NoError(t, err)
 	require.Contains(t, resp, "eventId")

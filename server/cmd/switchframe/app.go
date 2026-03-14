@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -48,7 +49,7 @@ import (
 // errDiscoverExit is returned by initMXL when --mxl-discover completes
 // successfully. The caller should treat this as a clean exit rather than
 // calling os.Exit directly (which would skip deferred cleanup).
-var errDiscoverExit = fmt.Errorf("mxl discover completed")
+var errDiscoverExit = errors.New("mxl discover completed")
 
 // App holds all subsystems for the switchframe server. Init methods are called
 // in order before Run() starts the Prism distribution server.
@@ -782,7 +783,7 @@ func (a *App) initSCTE104() error {
 		return nil
 	}
 	if a.scte35Injector == nil {
-		return fmt.Errorf("--scte104 requires --scte35")
+		return errors.New("--scte104 requires --scte35")
 	}
 
 	// Output path: wire scte104Sink on the injector to write SCTE-104

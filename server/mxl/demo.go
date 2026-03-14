@@ -1,6 +1,7 @@
 package mxl
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -61,7 +62,7 @@ func (d *DemoVideoReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, erro
 	d.mu.Lock()
 	if d.closed {
 		d.mu.Unlock()
-		return nil, GrainInfo{}, fmt.Errorf("mxl: demo reader closed")
+		return nil, GrainInfo{}, errors.New("mxl: demo reader closed")
 	}
 	d.index++
 	idx := d.index
@@ -153,7 +154,7 @@ func (d *DemoAudioReader) ReadSamples(_ uint64, count int, _ uint64) ([][]float3
 	time.Sleep(d.interval)
 
 	if d.closed.Load() {
-		return nil, fmt.Errorf("mxl: demo audio reader closed")
+		return nil, errors.New("mxl: demo audio reader closed")
 	}
 
 	sampleOffset := d.index.Add(uint64(count)) - uint64(count)

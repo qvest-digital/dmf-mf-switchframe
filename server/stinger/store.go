@@ -296,7 +296,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 	if pngCount == 0 {
 		_ = os.RemoveAll(dir)
 		cleanupPending()
-		return fmt.Errorf("zip contains no PNG files")
+		return errors.New("zip contains no PNG files")
 	}
 
 	// Load the clip

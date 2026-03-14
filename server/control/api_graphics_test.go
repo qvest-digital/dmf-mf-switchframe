@@ -92,7 +92,7 @@ func TestGraphicsFrame_UploadAndOn(t *testing.T) {
 		rgba[i+3] = 200 // A
 	}
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"width":    w,
 		"height":   h,
 		"template": "lower-third",
@@ -173,7 +173,7 @@ func TestGraphicsFrame_InvalidSize(t *testing.T) {
 
 	// Wrong RGBA size for 4x4 (should be 64 bytes, sending 10)
 	smallRGBA := make([]byte, 10)
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"width":    4,
 		"height":   4,
 		"template": "test",
@@ -192,7 +192,7 @@ func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
 	api, _ := setupGraphicsTestAPI(t)
 	id := addLayerViaAPI(t, api)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"width":    0,
 		"height":   4,
 		"template": "test",

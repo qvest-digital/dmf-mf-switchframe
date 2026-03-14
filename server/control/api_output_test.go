@@ -825,7 +825,7 @@ func TestCBRStatus_Disabled(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	err := json.NewDecoder(rec.Body).Decode(&result)
 	require.NoError(t, err)
 	require.Equal(t, false, result["enabled"])

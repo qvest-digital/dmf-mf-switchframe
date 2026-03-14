@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"time"
@@ -107,7 +108,7 @@ func ValidateSlot(slot Slot, frameW, frameH int) error {
 		return fmt.Errorf("slot rect %v exceeds frame bounds %dx%d", r, frameW, frameH)
 	}
 	if r.Dx() <= 0 || r.Dy() <= 0 {
-		return fmt.Errorf("slot rect has zero or negative dimensions")
+		return errors.New("slot rect has zero or negative dimensions")
 	}
 	if slot.Border.Width%2 != 0 {
 		return fmt.Errorf("border width %d must be even", slot.Border.Width)

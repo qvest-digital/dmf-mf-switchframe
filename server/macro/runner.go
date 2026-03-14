@@ -2,6 +2,7 @@ package macro
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -24,10 +25,10 @@ type Target interface {
 
 	// Execute dispatches a generic action with arbitrary params.
 	// Used for all new actions that don't need dedicated interface methods.
-	Execute(ctx context.Context, action string, params map[string]interface{}) error
+	Execute(ctx context.Context, action string, params map[string]any) error
 
 	// SCTE35Cue injects a SCTE-35 splice cue (e.g., ad break start).
-	SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error)
+	SCTE35Cue(ctx context.Context, params map[string]any) (uint32, error)
 
 	// SCTE35Return signals a return-to-program for a splice event.
 	// eventID=0 means the most recent event.
@@ -125,21 +126,21 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 	case ActionCut:
 		source, _ := step.Params["source"].(string)
 		if source == "" {
-			return fmt.Errorf("cut requires 'source' param")
+			return errors.New("cut requires 'source' param")
 		}
 		return target.Cut(ctx, source)
 
 	case ActionPreview:
 		source, _ := step.Params["source"].(string)
 		if source == "" {
-			return fmt.Errorf("preview requires 'source' param")
+			return errors.New("preview requires 'source' param")
 		}
 		return target.SetPreview(ctx, source)
 
 	case ActionTransition:
 		source, _ := step.Params["source"].(string)
 		if source == "" {
-			return fmt.Errorf("transition requires 'source' param")
+			return errors.New("transition requires 'source' param")
 		}
 		transType, _ := step.Params["type"].(string)
 		if transType == "" {
@@ -173,7 +174,7 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 	case ActionSetAudio:
 		source, _ := step.Params["source"].(string)
 		if source == "" {
-			return fmt.Errorf("set_audio requires 'source' param")
+			return errors.New("set_audio requires 'source' param")
 		}
 		level := 0.0
 		if l, ok := step.Params["level"].(float64); ok {
@@ -195,25 +196,25 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 	case ActionSCTE35Cancel:
 		id, ok := step.Params["eventId"].(float64)
 		if !ok {
-			return fmt.Errorf("scte35_cancel requires 'eventId' param")
+			return errors.New("scte35_cancel requires 'eventId' param")
 		}
 		return target.SCTE35Cancel(ctx, uint32(id))
 
 	case ActionSCTE35Hold:
 		id, ok := step.Params["eventId"].(float64)
 		if !ok {
-			return fmt.Errorf("scte35_hold requires 'eventId' param")
+			return errors.New("scte35_hold requires 'eventId' param")
 		}
 		return target.SCTE35Hold(ctx, uint32(id))
 
 	case ActionSCTE35Extend:
 		id, ok := step.Params["eventId"].(float64)
 		if !ok {
-			return fmt.Errorf("scte35_extend requires 'eventId' param")
+			return errors.New("scte35_extend requires 'eventId' param")
 		}
 		dur, ok := step.Params["durationMs"].(float64)
 		if !ok {
-			return fmt.Errorf("scte35_extend requires 'durationMs' param")
+			return errors.New("scte35_extend requires 'durationMs' param")
 		}
 		return target.SCTE35Extend(ctx, uint32(id), int64(dur))
 

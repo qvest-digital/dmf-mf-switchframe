@@ -83,7 +83,7 @@ func TestHandleRunMacro_Returns202Immediately(t *testing.T) {
 	err := store.Save(macro.Macro{
 		Name: "long-wait",
 		Steps: []macro.Step{
-			{Action: macro.ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
+			{Action: macro.ActionWait, Params: map[string]any{"ms": float64(5000)}},
 		},
 	})
 	require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestHandleRunMacro_ConcurrentRun(t *testing.T) {
 	err := store.Save(macro.Macro{
 		Name: "long-wait",
 		Steps: []macro.Step{
-			{Action: macro.ActionWait, Params: map[string]interface{}{"ms": float64(5000)}},
+			{Action: macro.ActionWait, Params: map[string]any{"ms": float64(5000)}},
 		},
 	})
 	require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestHandleRunMacro_BackgroundCompletionBroadcasts(t *testing.T) {
 	err := store.Save(macro.Macro{
 		Name: "quick",
 		Steps: []macro.Step{
-			{Action: macro.ActionWait, Params: map[string]interface{}{"ms": float64(10)}},
+			{Action: macro.ActionWait, Params: map[string]any{"ms": float64(10)}},
 		},
 	})
 	require.NoError(t, err)

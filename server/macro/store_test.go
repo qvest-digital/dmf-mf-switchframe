@@ -23,7 +23,7 @@ func TestStore_SaveAndGet(t *testing.T) {
 	m := Macro{
 		Name: "my-macro",
 		Steps: []Step{
-			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
 		},
 	}
 	require.NoError(t, s.Save(m))
@@ -44,8 +44,8 @@ func TestStore_List(t *testing.T) {
 	require.Empty(t, s.List())
 
 	// Add two macros
-	_ = s.Save(Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
-	_ = s.Save(Macro{Name: "beta", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}})
+	_ = s.Save(Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
+	_ = s.Save(Macro{Name: "beta", Steps: []Step{{Action: ActionPreview, Params: map[string]any{"source": "cam2"}}}})
 
 	list := s.List()
 	require.Len(t, list, 2)
@@ -56,7 +56,7 @@ func TestStore_Delete(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
-	_ = s.Save(Macro{Name: "to-delete", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
+	_ = s.Save(Macro{Name: "to-delete", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
 
 	require.NoError(t, s.Delete("to-delete"))
 
@@ -78,7 +78,7 @@ func TestStore_SaveEmptyName(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
-	err = s.Save(Macro{Name: "", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
+	err = s.Save(Macro{Name: "", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
 	require.Error(t, err, "expected error for empty name")
 }
 
@@ -105,7 +105,7 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			name := fmt.Sprintf("macro-%d", n)
-			_ = s.Save(Macro{Name: name, Steps: []Step{{Action: ActionWait, Params: map[string]interface{}{"ms": float64(100)}}}})
+			_ = s.Save(Macro{Name: name, Steps: []Step{{Action: ActionWait, Params: map[string]any{"ms": float64(100)}}}})
 			_ = s.List()
 			_, _ = s.Get(name)
 		}(i)
@@ -128,7 +128,7 @@ func TestStore_Persistence(t *testing.T) {
 
 	s1, err := NewStore(path)
 	require.NoError(t, err)
-	_ = s1.Save(Macro{Name: "persist-test", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
+	_ = s1.Save(Macro{Name: "persist-test", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
 
 	// Re-open store from same file
 	s2, err := NewStore(path)
@@ -144,8 +144,8 @@ func TestStore_SaveOverwrite(t *testing.T) {
 	s, err := NewStore(tempStorePath(t))
 	require.NoError(t, err)
 
-	_ = s.Save(Macro{Name: "overwrite", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
-	_ = s.Save(Macro{Name: "overwrite", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}})
+	_ = s.Save(Macro{Name: "overwrite", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
+	_ = s.Save(Macro{Name: "overwrite", Steps: []Step{{Action: ActionPreview, Params: map[string]any{"source": "cam2"}}}})
 
 	got, err := s.Get("overwrite")
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestStore_Save_RollbackOnSaveFailure_Create(t *testing.T) {
 	require.NoError(t, err)
 
 	// Successfully save one macro first.
-	m1 := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}}
+	m1 := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}}
 	require.NoError(t, s.Save(m1))
 
 	// Make the directory read-only so save() will fail.
@@ -172,7 +172,7 @@ func TestStore_Save_RollbackOnSaveFailure_Create(t *testing.T) {
 	_ = os.Remove(path)
 
 	// Try to create a new macro — should fail.
-	m2 := Macro{Name: "beta", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}}
+	m2 := Macro{Name: "beta", Steps: []Step{{Action: ActionPreview, Params: map[string]any{"source": "cam2"}}}}
 	err = s.Save(m2)
 	require.Error(t, err, "expected save failure")
 
@@ -192,7 +192,7 @@ func TestStore_Save_RollbackOnSaveFailure_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	// Successfully save a macro.
-	original := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}}
+	original := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}}
 	require.NoError(t, s.Save(original))
 
 	// Make the directory read-only so save() will fail.
@@ -202,7 +202,7 @@ func TestStore_Save_RollbackOnSaveFailure_Update(t *testing.T) {
 	_ = os.Remove(path)
 
 	// Try to update the macro — should fail.
-	updated := Macro{Name: "alpha", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}}
+	updated := Macro{Name: "alpha", Steps: []Step{{Action: ActionPreview, Params: map[string]any{"source": "cam2"}}}}
 	err = s.Save(updated)
 	require.Error(t, err, "expected save failure")
 
@@ -223,7 +223,7 @@ func TestStore_Delete_RollbackOnSaveFailure(t *testing.T) {
 	for _, name := range []string{"alpha", "beta", "gamma"} {
 		require.NoError(t, s.Save(Macro{
 			Name:  name,
-			Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}},
+			Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}},
 		}))
 	}
 
@@ -261,7 +261,7 @@ func TestStore_NewStoreCreatesDir(t *testing.T) {
 	s, err := NewStore(path)
 	require.NoError(t, err)
 
-	_ = s.Save(Macro{Name: "dir-test", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}})
+	_ = s.Save(Macro{Name: "dir-test", Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}}})
 
 	_, err = os.Stat(path)
 	require.False(t, os.IsNotExist(err), "expected file to exist after save")

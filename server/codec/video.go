@@ -3,7 +3,7 @@
 package codec
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -23,7 +23,7 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 	case "openh264":
 		return NewOpenH264Encoder(width, height, bitrate, fpsNum, fpsDen)
 	case "none":
-		return nil, fmt.Errorf("no H.264 encoder available")
+		return nil, errors.New("no H.264 encoder available")
 	default:
 		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, HWDeviceCtx())
 	}
@@ -42,7 +42,7 @@ func NewVideoDecoder() (transition.VideoDecoder, error) {
 	case "openh264":
 		return NewOpenH264Decoder()
 	case "none":
-		return nil, fmt.Errorf("no H.264 decoder available")
+		return nil, errors.New("no H.264 decoder available")
 	default:
 		// "h264" -> FFmpeg software decoder
 		return NewFFmpegDecoder(HWDeviceCtx())

@@ -2,6 +2,7 @@ package scte35
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -9,6 +10,11 @@ import (
 	"time"
 
 	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
+)
+
+var (
+	errInjectorClosed = errors.New("injector is closed")
+	errNoActiveEvents = errors.New("no active events")
 )
 
 // InjectorConfig holds injector configuration.
@@ -266,7 +272,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return 0, fmt.Errorf("injector is closed")
+		return 0, errInjectorClosed
 	}
 
 	// Auto-assign event ID for splice_insert if not set.
@@ -562,14 +568,14 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return fmt.Errorf("injector is closed")
+		return errInjectorClosed
 	}
 
 	if eventID == 0 {
 		eventID = inj.mostRecentActiveIDLocked()
 		if eventID == 0 {
 			inj.mu.Unlock()
-			return fmt.Errorf("no active events")
+			return errNoActiveEvents
 		}
 	}
 
@@ -663,7 +669,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return fmt.Errorf("injector is closed")
+		return errInjectorClosed
 	}
 
 	ae, ok := inj.activeEvents[eventID]
@@ -750,7 +756,7 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32, source string) e
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return fmt.Errorf("injector is closed")
+		return errInjectorClosed
 	}
 
 	// Build a time_signal with a cancel descriptor.
@@ -800,7 +806,7 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return fmt.Errorf("injector is closed")
+		return errInjectorClosed
 	}
 
 	ae, ok := inj.activeEvents[eventID]
@@ -854,7 +860,7 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 
 	if inj.closed.Load() {
 		inj.mu.Unlock()
-		return fmt.Errorf("injector is closed")
+		return errInjectorClosed
 	}
 
 	ae, ok := inj.activeEvents[eventID]

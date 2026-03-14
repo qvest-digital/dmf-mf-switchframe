@@ -2,6 +2,7 @@ package stinger
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 )
@@ -16,10 +17,10 @@ func ParseWAV(data []byte) ([]float32, int, int, error) {
 
 	// Validate RIFF header
 	if string(data[0:4]) != "RIFF" {
-		return nil, 0, 0, fmt.Errorf("wav: not a RIFF file")
+		return nil, 0, 0, errors.New("wav: not a RIFF file")
 	}
 	if string(data[8:12]) != "WAVE" {
-		return nil, 0, 0, fmt.Errorf("wav: not a WAVE file")
+		return nil, 0, 0, errors.New("wav: not a WAVE file")
 	}
 
 	// Scan chunks for "fmt " and "data"
@@ -70,16 +71,16 @@ func ParseWAV(data []byte) ([]float32, int, int, error) {
 	}
 
 	if !fmtFound {
-		return nil, 0, 0, fmt.Errorf("wav: no fmt chunk found")
+		return nil, 0, 0, errors.New("wav: no fmt chunk found")
 	}
 	if dataChunk == nil {
-		return nil, 0, 0, fmt.Errorf("wav: no data chunk found")
+		return nil, 0, 0, errors.New("wav: no data chunk found")
 	}
 	if numChannels == 0 {
-		return nil, 0, 0, fmt.Errorf("wav: invalid channel count: 0")
+		return nil, 0, 0, errors.New("wav: invalid channel count: 0")
 	}
 	if sampleRate == 0 {
-		return nil, 0, 0, fmt.Errorf("wav: invalid sample rate: 0")
+		return nil, 0, 0, errors.New("wav: invalid sample rate: 0")
 	}
 
 	// Convert samples to float32

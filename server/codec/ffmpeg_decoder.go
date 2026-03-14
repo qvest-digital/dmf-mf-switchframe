@@ -429,6 +429,7 @@ static void ffdec_close(ffdec_t* h) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -478,10 +479,10 @@ func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
 // that need the data beyond that point must copy it before the next decode.
 func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.closed {
-		return nil, 0, 0, fmt.Errorf("decoder is closed")
+		return nil, 0, 0, errors.New("decoder is closed")
 	}
 	if len(data) == 0 {
-		return nil, 0, 0, fmt.Errorf("empty input data")
+		return nil, 0, 0, errors.New("empty input data")
 	}
 
 	var dstBuf *C.uchar
@@ -502,7 +503,7 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		&outBuf, &outLen, &outWidth, &outHeight,
 	)
 	if rc == 1 {
-		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+		return nil, 0, 0, errors.New("no output frame yet (buffering)")
 	}
 	if rc < 0 {
 		return nil, 0, 0, fmt.Errorf("FFmpeg decode error: code %d", int(rc))
@@ -510,7 +511,7 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 	n := int(outLen)
 	if n == 0 || outBuf == nil {
-		return nil, 0, 0, fmt.Errorf("decoder produced no output")
+		return nil, 0, 0, errors.New("decoder produced no output")
 	}
 
 	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))
@@ -557,7 +558,7 @@ func (d *FFmpegDecoder) Flush() {
 // (from B-frame reordering) can be drained via ReceiveFrame().
 func (d *FFmpegDecoder) SendEOS() error {
 	if d.closed {
-		return fmt.Errorf("decoder is closed")
+		return errors.New("decoder is closed")
 	}
 	rc := C.ffdec_send_eos(&d.handle)
 	if rc < 0 {
@@ -575,7 +576,7 @@ func (d *FFmpegDecoder) SendEOS() error {
 // that need the data beyond that point must copy it before the next decode.
 func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	if d.closed {
-		return nil, 0, 0, fmt.Errorf("decoder is closed")
+		return nil, 0, 0, errors.New("decoder is closed")
 	}
 
 	var dstBuf *C.uchar
@@ -594,7 +595,7 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 		&outBuf, &outLen, &outWidth, &outHeight,
 	)
 	if rc == 1 {
-		return nil, 0, 0, fmt.Errorf("no more frames")
+		return nil, 0, 0, errors.New("no more frames")
 	}
 	if rc < 0 {
 		return nil, 0, 0, fmt.Errorf("receive frame error: code %d", int(rc))
@@ -602,7 +603,7 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 
 	n := int(outLen)
 	if n == 0 || outBuf == nil {
-		return nil, 0, 0, fmt.Errorf("decoder produced no output")
+		return nil, 0, 0, errors.New("decoder produced no output")
 	}
 
 	return d.adoptOrCopy(outBuf, outLen, int(outWidth), int(outHeight))

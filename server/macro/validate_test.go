@@ -10,7 +10,7 @@ import (
 func TestValidateSteps_RejectsUnknownAction(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: "bogus_action", Params: map[string]interface{}{}},
+		{Action: "bogus_action", Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -23,7 +23,7 @@ func TestValidateSteps_RejectsUnknownAction(t *testing.T) {
 func TestValidateSteps_RejectsCutWithoutSource(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCut, Params: map[string]interface{}{}},
+		{Action: ActionCut, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -40,7 +40,7 @@ func TestValidateSteps_RejectsCutWithoutSource(t *testing.T) {
 func TestValidateSteps_RejectsPreviewWithoutSource(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionPreview, Params: map[string]interface{}{}},
+		{Action: ActionPreview, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -50,7 +50,7 @@ func TestValidateSteps_RejectsPreviewWithoutSource(t *testing.T) {
 func TestValidateSteps_RejectsTransitionWithoutSource(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{"type": "mix"}},
+		{Action: ActionTransition, Params: map[string]any{"type": "mix"}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -60,7 +60,7 @@ func TestValidateSteps_RejectsTransitionWithoutSource(t *testing.T) {
 func TestValidateSteps_RejectsWipeWithoutDirection(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source": "cam1",
 			"type":   "wipe",
 		}},
@@ -73,7 +73,7 @@ func TestValidateSteps_RejectsWipeWithoutDirection(t *testing.T) {
 func TestValidateSteps_RejectsWipeWithInvalidDirection(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":        "cam1",
 			"type":          "wipe",
 			"wipeDirection": "diagonal",
@@ -90,7 +90,7 @@ func TestValidateSteps_AcceptsWipeWithValidDirections(t *testing.T) {
 	validDirs := []string{"h-left", "h-right", "v-top", "v-bottom", "box-center-out", "box-edges-in"}
 	for _, dir := range validDirs {
 		steps := []Step{
-			{Action: ActionTransition, Params: map[string]interface{}{
+			{Action: ActionTransition, Params: map[string]any{
 				"source":        "cam1",
 				"type":          "wipe",
 				"wipeDirection": dir,
@@ -104,7 +104,7 @@ func TestValidateSteps_AcceptsWipeWithValidDirections(t *testing.T) {
 func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source": "cam1",
 			"type":   "stinger",
 		}},
@@ -115,7 +115,7 @@ func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 
 	// Empty string stingerName should also fail.
 	steps2 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":      "cam1",
 			"type":        "stinger",
 			"stingerName": "",
@@ -129,7 +129,7 @@ func TestValidateSteps_RejectsStingerWithoutName(t *testing.T) {
 func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(0)}},
+		{Action: ActionWait, Params: map[string]any{"ms": float64(0)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -137,14 +137,14 @@ func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 
 	// Negative value
 	steps2 := []Step{
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(-100)}},
+		{Action: ActionWait, Params: map[string]any{"ms": float64(-100)}},
 	}
 	result2 := ValidateSteps(steps2)
 	require.True(t, result2.HasErrors())
 
 	// Missing ms param
 	steps3 := []Step{
-		{Action: ActionWait, Params: map[string]interface{}{}},
+		{Action: ActionWait, Params: map[string]any{}},
 	}
 	result3 := ValidateSteps(steps3)
 	require.True(t, result3.HasErrors())
@@ -153,7 +153,7 @@ func TestValidateSteps_RejectsWaitWithZeroMs(t *testing.T) {
 func TestValidateSteps_RejectsSetAudioWithoutSource(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionSetAudio, Params: map[string]interface{}{"level": float64(0.5)}},
+		{Action: ActionSetAudio, Params: map[string]any{"level": float64(0.5)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -163,32 +163,32 @@ func TestValidateSteps_RejectsSetAudioWithoutSource(t *testing.T) {
 func TestValidateSteps_AcceptsValidMacroWithNewActions(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(500)}},
-		{Action: ActionAudioMute, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionAudioAFV, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionAudioTrim, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionAudioEQ, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionAudioCompressor, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionAudioDelay, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionKeySet, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionKeyDelete, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionSourceLabel, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionSourceDelay, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionSourcePosition, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionReplayMarkIn, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionReplayMarkOut, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionReplayPlay, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionReplayPlayClip, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionReplayQuickClip, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionFTB, Params: map[string]interface{}{}},
-		{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
-		{Action: ActionGraphicsOff, Params: map[string]interface{}{}},
-		{Action: ActionRecordingStart, Params: map[string]interface{}{}},
-		{Action: ActionRecordingStop, Params: map[string]interface{}{}},
-		{Action: ActionPresetRecall, Params: map[string]interface{}{}},
-		{Action: ActionReplayPlayLast, Params: map[string]interface{}{}},
-		{Action: ActionReplayStop, Params: map[string]interface{}{}},
+		{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionWait, Params: map[string]any{"ms": float64(500)}},
+		{Action: ActionAudioMute, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionAudioAFV, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionAudioTrim, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionAudioEQ, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionAudioCompressor, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionAudioDelay, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionKeySet, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionKeyDelete, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionSourceLabel, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionSourceDelay, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionSourcePosition, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayMarkIn, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayMarkOut, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayPlay, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayPlayClip, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayQuickClip, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionFTB, Params: map[string]any{}},
+		{Action: ActionGraphicsOn, Params: map[string]any{}},
+		{Action: ActionGraphicsOff, Params: map[string]any{}},
+		{Action: ActionRecordingStart, Params: map[string]any{}},
+		{Action: ActionRecordingStop, Params: map[string]any{}},
+		{Action: ActionPresetRecall, Params: map[string]any{}},
+		{Action: ActionReplayPlayLast, Params: map[string]any{}},
+		{Action: ActionReplayStop, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors(), "expected valid macro to pass validation, got: %+v", result.Errors)
@@ -198,11 +198,11 @@ func TestValidateSteps_AcceptsOldMacrosBackwardCompat(t *testing.T) {
 	t.Parallel()
 	// Macros using only the original 5 actions should still pass.
 	steps := []Step{
-		{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}},
-		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1", "type": "mix"}},
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
-		{Action: ActionSetAudio, Params: map[string]interface{}{"source": "cam1", "level": float64(0.8)}},
+		{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionPreview, Params: map[string]any{"source": "cam2"}},
+		{Action: ActionTransition, Params: map[string]any{"source": "cam1", "type": "mix"}},
+		{Action: ActionWait, Params: map[string]any{"ms": float64(1000)}},
+		{Action: ActionSetAudio, Params: map[string]any{"source": "cam1", "level": float64(0.8)}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -211,8 +211,8 @@ func TestValidateSteps_AcceptsOldMacrosBackwardCompat(t *testing.T) {
 func TestValidateSteps_WarnsConsecutiveTransitions(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2"}},
+		{Action: ActionTransition, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionTransition, Params: map[string]any{"source": "cam2"}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors(), "consecutive transitions should warn, not error")
@@ -221,9 +221,9 @@ func TestValidateSteps_WarnsConsecutiveTransitions(t *testing.T) {
 
 	// If there's a wait between them, no warning.
 	steps2 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam1"}},
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(1000)}},
-		{Action: ActionTransition, Params: map[string]interface{}{"source": "cam2"}},
+		{Action: ActionTransition, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionWait, Params: map[string]any{"ms": float64(1000)}},
+		{Action: ActionTransition, Params: map[string]any{"source": "cam2"}},
 	}
 	result2 := ValidateSteps(steps2)
 	require.Empty(t, result2.Warnings)
@@ -234,7 +234,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 
 	// Too short
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":     "cam1",
 			"durationMs": float64(50),
 		}},
@@ -245,7 +245,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 
 	// Too long
 	steps2 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":     "cam1",
 			"durationMs": float64(6000),
 		}},
@@ -256,7 +256,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 
 	// Valid bounds - exactly 100 and 5000
 	steps3 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":     "cam1",
 			"durationMs": float64(100),
 		}},
@@ -265,7 +265,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 	require.False(t, result3.HasErrors())
 
 	steps4 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":     "cam1",
 			"durationMs": float64(5000),
 		}},
@@ -275,7 +275,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 
 	// No durationMs param is fine (uses default)
 	steps5 := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source": "cam1",
 		}},
 	}
@@ -289,7 +289,7 @@ func TestValidateSteps_RejectsReplayMarkInWithoutSource(t *testing.T) {
 		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayPlayClip, ActionReplayQuickClip,
 	} {
 		steps := []Step{
-			{Action: action, Params: map[string]interface{}{}},
+			{Action: action, Params: map[string]any{}},
 		}
 		result := ValidateSteps(steps)
 		require.True(t, result.HasErrors(), "expected %s without source to fail", action)
@@ -300,7 +300,7 @@ func TestValidateSteps_RejectsReplayMarkInWithoutSource(t *testing.T) {
 func TestValidateSteps_AcceptsFTBNoParams(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionFTB, Params: map[string]interface{}{}},
+		{Action: ActionFTB, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -319,7 +319,7 @@ func TestValidateSteps_AcceptsGraphicsNoParams(t *testing.T) {
 		ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 	} {
 		steps := []Step{
-			{Action: action, Params: map[string]interface{}{}},
+			{Action: action, Params: map[string]any{}},
 		}
 		result := ValidateSteps(steps)
 		require.False(t, result.HasErrors(), "expected %s with no params to pass", action)
@@ -330,7 +330,7 @@ func TestValidateSteps_GraphicsLayerIdWarning(t *testing.T) {
 	t.Parallel()
 	// Missing layerId should produce a warning, not an error.
 	steps := []Step{
-		{Action: ActionGraphicsOn, Params: map[string]interface{}{}},
+		{Action: ActionGraphicsOn, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -342,7 +342,7 @@ func TestValidateSteps_GraphicsLayerIdPresent(t *testing.T) {
 	t.Parallel()
 	// With layerId provided, no warning.
 	steps := []Step{
-		{Action: ActionGraphicsOn, Params: map[string]interface{}{"layerId": float64(1)}},
+		{Action: ActionGraphicsOn, Params: map[string]any{"layerId": float64(1)}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -352,7 +352,7 @@ func TestValidateSteps_GraphicsLayerIdPresent(t *testing.T) {
 func TestValidateSteps_GraphicsFlyInRequiresDirection(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{"layerId": float64(0)}},
+		{Action: ActionGraphicsFlyIn, Params: map[string]any{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -362,7 +362,7 @@ func TestValidateSteps_GraphicsFlyInRequiresDirection(t *testing.T) {
 func TestValidateSteps_GraphicsFlyInInvalidDirection(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
+		{Action: ActionGraphicsFlyIn, Params: map[string]any{
 			"layerId": float64(0), "direction": "diagonal",
 		}},
 	}
@@ -375,7 +375,7 @@ func TestValidateSteps_GraphicsFlyInValid(t *testing.T) {
 	t.Parallel()
 	for _, dir := range []string{"left", "right", "top", "bottom"} {
 		steps := []Step{
-			{Action: ActionGraphicsFlyIn, Params: map[string]interface{}{
+			{Action: ActionGraphicsFlyIn, Params: map[string]any{
 				"layerId": float64(0), "direction": dir,
 			}},
 		}
@@ -387,7 +387,7 @@ func TestValidateSteps_GraphicsFlyInValid(t *testing.T) {
 func TestValidateSteps_GraphicsAnimateRequiresMode(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsAnimate, Params: map[string]interface{}{"layerId": float64(0)}},
+		{Action: ActionGraphicsAnimate, Params: map[string]any{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -397,7 +397,7 @@ func TestValidateSteps_GraphicsAnimateRequiresMode(t *testing.T) {
 func TestValidateSteps_GraphicsSetRectRequiresCoords(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsSetRect, Params: map[string]interface{}{"layerId": float64(0)}},
+		{Action: ActionGraphicsSetRect, Params: map[string]any{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -406,7 +406,7 @@ func TestValidateSteps_GraphicsSetRectRequiresCoords(t *testing.T) {
 func TestValidateSteps_GraphicsUploadFrameRequiresTemplate(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsUploadFrame, Params: map[string]interface{}{"layerId": float64(0)}},
+		{Action: ActionGraphicsUploadFrame, Params: map[string]any{"layerId": float64(0)}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -416,7 +416,7 @@ func TestValidateSteps_GraphicsUploadFrameRequiresTemplate(t *testing.T) {
 func TestValidateSteps_GraphicsAddLayerNoParams(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionGraphicsAddLayer, Params: map[string]interface{}{}},
+		{Action: ActionGraphicsAddLayer, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -436,7 +436,7 @@ func TestValidateSteps_AcceptsRecordingNoParams(t *testing.T) {
 func TestValidateSteps_AcceptsReplayStopNoParams(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionReplayStop, Params: map[string]interface{}{}},
+		{Action: ActionReplayStop, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -445,7 +445,7 @@ func TestValidateSteps_AcceptsReplayStopNoParams(t *testing.T) {
 func TestValidateSteps_AcceptsReplayPlayLastNoParams(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionReplayPlayLast, Params: map[string]interface{}{}},
+		{Action: ActionReplayPlayLast, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -454,9 +454,9 @@ func TestValidateSteps_AcceptsReplayPlayLastNoParams(t *testing.T) {
 func TestValidateSteps_MultipleErrors(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCut, Params: map[string]interface{}{}},            // missing source
-		{Action: ActionPreview, Params: map[string]interface{}{}},        // missing source
-		{Action: ActionWait, Params: map[string]interface{}{"ms": float64(0)}}, // zero ms
+		{Action: ActionCut, Params: map[string]any{}},            // missing source
+		{Action: ActionPreview, Params: map[string]any{}},        // missing source
+		{Action: ActionWait, Params: map[string]any{"ms": float64(0)}}, // zero ms
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -473,7 +473,7 @@ func TestValidateSteps_SCTE35ActionsNoSourceRequired(t *testing.T) {
 		ActionSCTE35Cue, ActionSCTE35Return, ActionSCTE35Cancel, ActionSCTE35Hold, ActionSCTE35Extend,
 	} {
 		steps := []Step{
-			{Action: action, Params: map[string]interface{}{}},
+			{Action: action, Params: map[string]any{}},
 		}
 		result := ValidateSteps(steps)
 		require.False(t, result.HasErrors(), "expected %s without params to pass validation", action)
@@ -483,7 +483,7 @@ func TestValidateSteps_SCTE35ActionsNoSourceRequired(t *testing.T) {
 func TestValidateSteps_AudioMasterNoSourceRequired(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionAudioMaster, Params: map[string]interface{}{}},
+		{Action: ActionAudioMaster, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())
@@ -503,7 +503,7 @@ func TestValidateSteps_SourceRequiredActions(t *testing.T) {
 	}
 	for _, action := range sourceRequiredActions {
 		steps := []Step{
-			{Action: action, Params: map[string]interface{}{}},
+			{Action: action, Params: map[string]any{}},
 		}
 		result := ValidateSteps(steps)
 		require.True(t, result.HasErrors(), "expected %s without source to fail", action)
@@ -528,7 +528,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	m := Macro{
 		Name: "bad-macro",
 		Steps: []Step{
-			{Action: "nonexistent", Params: map[string]interface{}{}},
+			{Action: "nonexistent", Params: map[string]any{}},
 		},
 	}
 	err = s.Save(m)
@@ -539,7 +539,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	m2 := Macro{
 		Name: "bad-cut",
 		Steps: []Step{
-			{Action: ActionCut, Params: map[string]interface{}{}},
+			{Action: ActionCut, Params: map[string]any{}},
 		},
 	}
 	err = s.Save(m2)
@@ -556,7 +556,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 	m3 := Macro{
 		Name: "good-macro",
 		Steps: []Step{
-			{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}},
+			{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
 		},
 	}
 	err = s.Save(m3)
@@ -569,7 +569,7 @@ func TestStore_SaveRejectsInvalidMacro(t *testing.T) {
 func TestValidateSteps_TransitionAcceptsMixNoExtras(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source": "cam1",
 			"type":   "mix",
 		}},
@@ -581,7 +581,7 @@ func TestValidateSteps_TransitionAcceptsMixNoExtras(t *testing.T) {
 func TestValidateSteps_TransitionAcceptsValidStinger(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionTransition, Params: map[string]interface{}{
+		{Action: ActionTransition, Params: map[string]any{
 			"source":      "cam1",
 			"type":        "stinger",
 			"stingerName": "intro",
@@ -594,7 +594,7 @@ func TestValidateSteps_TransitionAcceptsValidStinger(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_RejectsNegativePreRollMs(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "splice_insert",
 			"preRollMs":   float64(-1000),
 		}},
@@ -608,7 +608,7 @@ func TestValidateSteps_SCTE35Cue_RejectsNegativePreRollMs(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_AcceptsPositivePreRollMs(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "splice_insert",
 			"preRollMs":   float64(5000),
 		}},
@@ -620,7 +620,7 @@ func TestValidateSteps_SCTE35Cue_AcceptsPositivePreRollMs(t *testing.T) {
 func TestValidateSteps_SCTE35Cue_AcceptsNoPreRollMs(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "splice_insert",
 		}},
 	}
@@ -639,7 +639,7 @@ func TestValidateSteps_SCTE35Cue_TimeSignal_RequiresDescriptors(t *testing.T) {
 	t.Parallel()
 	// time_signal without descriptors should be an error.
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "time_signal",
 		}},
 	}
@@ -653,10 +653,10 @@ func TestValidateSteps_SCTE35Cue_TimeSignal_WithDescriptors(t *testing.T) {
 	t.Parallel()
 	// time_signal with descriptors should pass validation.
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "time_signal",
-			"descriptors": []interface{}{
-				map[string]interface{}{
+			"descriptors": []any{
+				map[string]any{
 					"segmentationType": float64(0x34),
 					"upidType":         float64(0x09),
 					"upid":             "TEST-SIGNAL",
@@ -672,7 +672,7 @@ func TestValidateSteps_SCTE35Cue_SpliceInsert_NoDescriptorsOK(t *testing.T) {
 	t.Parallel()
 	// splice_insert without descriptors is valid.
 	steps := []Step{
-		{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+		{Action: ActionSCTE35Cue, Params: map[string]any{
 			"commandType": "splice_insert",
 		}},
 	}
@@ -684,7 +684,7 @@ func TestValidateSteps_CaptionModeValid(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"off", "passthrough", "author"} {
 		steps := []Step{
-			{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": mode}},
+			{Action: ActionCaptionMode, Params: map[string]any{"mode": mode}},
 		}
 		result := ValidateSteps(steps)
 		require.False(t, result.HasErrors(), "mode %q should be valid", mode)
@@ -694,7 +694,7 @@ func TestValidateSteps_CaptionModeValid(t *testing.T) {
 func TestValidateSteps_CaptionModeInvalid(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCaptionMode, Params: map[string]interface{}{"mode": "bogus"}},
+		{Action: ActionCaptionMode, Params: map[string]any{"mode": "bogus"}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -704,7 +704,7 @@ func TestValidateSteps_CaptionModeInvalid(t *testing.T) {
 func TestValidateSteps_CaptionModeMissing(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCaptionMode, Params: map[string]interface{}{}},
+		{Action: ActionCaptionMode, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
@@ -714,8 +714,8 @@ func TestValidateSteps_CaptionTextNoParams(t *testing.T) {
 	t.Parallel()
 	// caption_text and caption_clear don't require special params — they pass validation.
 	steps := []Step{
-		{Action: ActionCaptionText, Params: map[string]interface{}{"text": "Hello"}},
-		{Action: ActionCaptionClear, Params: map[string]interface{}{}},
+		{Action: ActionCaptionText, Params: map[string]any{"text": "Hello"}},
+		{Action: ActionCaptionClear, Params: map[string]any{}},
 	}
 	result := ValidateSteps(steps)
 	require.False(t, result.HasErrors())

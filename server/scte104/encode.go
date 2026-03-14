@@ -2,6 +2,7 @@ package scte104
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -12,7 +13,7 @@ import (
 // typical automation system behavior.
 func Encode(msg *Message) ([]byte, error) {
 	if msg == nil {
-		return nil, fmt.Errorf("scte104: cannot encode nil message")
+		return nil, errors.New("scte104: cannot encode nil message")
 	}
 	if len(msg.Operations) > 255 {
 		return nil, fmt.Errorf("scte104: too many operations: %d (max 255)", len(msg.Operations))
@@ -174,7 +175,7 @@ func encodeSegmentationDescriptor(data any) ([]byte, error) {
 
 	binary.BigEndian.PutUint32(buf[0:4], sd.SegEventID)
 	if !sd.ProgramSegmentationFlag {
-		return nil, fmt.Errorf("segmentation_descriptor: component-level encoding not supported")
+		return nil, errors.New("segmentation_descriptor: component-level encoding not supported")
 	}
 	// flags_byte: cancel=0, reserved=0, program_segmentation_flag=1
 	buf[4] = 0x01

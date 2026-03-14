@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -366,7 +367,7 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 	switch config.Type {
 	case "srt-caller":
 		if config.Address == "" {
-			return "", fmt.Errorf("address is required for srt-caller")
+			return "", errors.New("address is required for srt-caller")
 		}
 	case "srt-listener":
 		// No address needed.
@@ -374,7 +375,7 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 		return "", fmt.Errorf("unsupported destination type: %s", config.Type)
 	}
 	if config.Port <= 0 {
-		return "", fmt.Errorf("port is required")
+		return "", errors.New("port is required")
 	}
 
 	id := generateDestinationID()

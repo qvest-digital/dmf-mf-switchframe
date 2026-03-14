@@ -231,7 +231,7 @@ func validateSCTE35Cue(i int, step Step, result *ValidationResult) {
 		})
 	}
 	if ct, ok := step.Params["commandType"].(string); ok && ct == "time_signal" {
-		descs, _ := step.Params["descriptors"].([]interface{})
+		descs, _ := step.Params["descriptors"].([]any)
 		if len(descs) == 0 {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
@@ -304,7 +304,7 @@ func validateGraphicsStep(i int, step Step, result *ValidationResult) {
 }
 
 // hasStringParam returns true if params[key] is a non-empty string.
-func hasStringParam(params map[string]interface{}, key string) bool {
+func hasStringParam(params map[string]any, key string) bool {
 	if params == nil {
 		return false
 	}

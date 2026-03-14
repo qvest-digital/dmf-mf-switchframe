@@ -166,6 +166,7 @@ static int oh264enc_encode(oh264enc_t* h, unsigned char* yuv_data,
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -210,7 +211,7 @@ func NewOpenH264Encoder(width, height, bitrate, fpsNum, fpsDen int) (*OpenH264En
 // Returns the encoded bitstream, whether the frame is a keyframe, and any error.
 func (e *OpenH264Encoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	if e.closed {
-		return nil, false, fmt.Errorf("encoder is closed")
+		return nil, false, errors.New("encoder is closed")
 	}
 
 	w := int(e.handle.width)
@@ -239,12 +240,12 @@ func (e *OpenH264Encoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, 
 	}
 	if rc == 1 {
 		// Frame was skipped by encoder rate control.
-		return nil, false, fmt.Errorf("frame skipped by encoder")
+		return nil, false, errors.New("frame skipped by encoder")
 	}
 
 	n := int(outLen)
 	if n == 0 || outBuf == nil {
-		return nil, false, fmt.Errorf("encoder produced no output")
+		return nil, false, errors.New("encoder produced no output")
 	}
 
 	// Copy from C-allocated buffer to Go slice, then free.

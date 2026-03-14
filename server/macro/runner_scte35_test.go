@@ -14,10 +14,10 @@ type mockSCTE35Target struct {
 	scte35ExtendCalled bool
 	lastEventID        uint32
 	lastDurationMs     int64
-	lastCueParams      map[string]interface{}
+	lastCueParams      map[string]any
 }
 
-func (m *mockSCTE35Target) SCTE35Cue(ctx context.Context, params map[string]interface{}) (uint32, error) {
+func (m *mockSCTE35Target) SCTE35Cue(ctx context.Context, params map[string]any) (uint32, error) {
 	m.scte35CueCalled = true
 	m.lastCueParams = params
 	return 42, nil
@@ -53,7 +53,7 @@ func TestMacro_SCTE35Cue(t *testing.T) {
 	m := Macro{
 		Name: "ad_break",
 		Steps: []Step{
-			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			{Action: ActionSCTE35Cue, Params: map[string]any{
 				"commandType": "splice_insert",
 				"isOut":       true,
 				"durationMs":  float64(60000),
@@ -75,7 +75,7 @@ func TestMacro_SCTE35Return(t *testing.T) {
 	m := Macro{
 		Name: "return",
 		Steps: []Step{
-			{Action: ActionSCTE35Return, Params: map[string]interface{}{}},
+			{Action: ActionSCTE35Return, Params: map[string]any{}},
 		},
 	}
 	err := Run(context.Background(), m, target, nil)
@@ -95,7 +95,7 @@ func TestMacro_SCTE35Cancel(t *testing.T) {
 	m := Macro{
 		Name: "cancel",
 		Steps: []Step{
-			{Action: ActionSCTE35Cancel, Params: map[string]interface{}{"eventId": float64(42)}},
+			{Action: ActionSCTE35Cancel, Params: map[string]any{"eventId": float64(42)}},
 		},
 	}
 	err := Run(context.Background(), m, target, nil)
@@ -112,7 +112,7 @@ func TestMacro_SCTE35Hold(t *testing.T) {
 	m := Macro{
 		Name: "hold",
 		Steps: []Step{
-			{Action: ActionSCTE35Hold, Params: map[string]interface{}{"eventId": float64(42)}},
+			{Action: ActionSCTE35Hold, Params: map[string]any{"eventId": float64(42)}},
 		},
 	}
 	err := Run(context.Background(), m, target, nil)
@@ -129,7 +129,7 @@ func TestMacro_SCTE35Extend(t *testing.T) {
 	m := Macro{
 		Name: "extend",
 		Steps: []Step{
-			{Action: ActionSCTE35Extend, Params: map[string]interface{}{
+			{Action: ActionSCTE35Extend, Params: map[string]any{
 				"eventId":    float64(42),
 				"durationMs": float64(120000),
 			}},
@@ -152,7 +152,7 @@ func TestMacro_SCTE35Cue_WithPreRoll(t *testing.T) {
 	m := Macro{
 		Name: "preroll_break",
 		Steps: []Step{
-			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			{Action: ActionSCTE35Cue, Params: map[string]any{
 				"commandType": "splice_insert",
 				"isOut":       true,
 				"durationMs":  float64(60000),
@@ -180,13 +180,13 @@ func TestMacro_SCTE35_FullWorkflow(t *testing.T) {
 	m := Macro{
 		Name: "full_break",
 		Steps: []Step{
-			{Action: ActionSCTE35Cue, Params: map[string]interface{}{
+			{Action: ActionSCTE35Cue, Params: map[string]any{
 				"commandType": "splice_insert",
 				"isOut":       true,
 				"durationMs":  float64(60000),
 			}},
-			{Action: ActionWait, Params: map[string]interface{}{"ms": float64(10)}},
-			{Action: ActionSCTE35Return, Params: map[string]interface{}{}},
+			{Action: ActionWait, Params: map[string]any{"ms": float64(10)}},
+			{Action: ActionSCTE35Return, Params: map[string]any{}},
 		},
 	}
 	err := Run(context.Background(), m, target, nil)

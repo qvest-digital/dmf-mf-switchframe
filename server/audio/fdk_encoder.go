@@ -159,6 +159,7 @@ static int aacenc_max_out_bytes(aacenc_t* h) {
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -212,7 +213,7 @@ func NewFDKEncoder(sampleRate, channels int) (*FDKEncoder, error) {
 // The input must contain exactly frameSize * channels samples (1024 * channels for AAC-LC).
 func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 	if e.closed.Load() {
-		return nil, fmt.Errorf("encoder is closed")
+		return nil, errors.New("encoder is closed")
 	}
 
 	frameSize := int(C.aacenc_frame_size(&e.handle))

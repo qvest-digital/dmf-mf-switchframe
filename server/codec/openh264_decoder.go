@@ -81,6 +81,7 @@ static int oh264dec_decode(oh264dec_t* h,
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -113,10 +114,10 @@ func NewOpenH264Decoder() (*OpenH264Decoder, error) {
 // tightly-packed planar layout (Y: w*h, U: w/2*h/2, V: w/2*h/2).
 func (d *OpenH264Decoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.closed {
-		return nil, 0, 0, fmt.Errorf("decoder is closed")
+		return nil, 0, 0, errors.New("decoder is closed")
 	}
 	if len(data) == 0 {
-		return nil, 0, 0, fmt.Errorf("empty input data")
+		return nil, 0, 0, errors.New("empty input data")
 	}
 
 	var dstY, dstU, dstV *C.uchar
@@ -131,7 +132,7 @@ func (d *OpenH264Decoder) Decode(data []byte) ([]byte, int, int, error) {
 	)
 	if rc > 0 {
 		// No output frame yet (buffering). Not an error but no data.
-		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
+		return nil, 0, 0, errors.New("no output frame yet (buffering)")
 	}
 	if rc < 0 {
 		return nil, 0, 0, fmt.Errorf("OpenH264 decode error: code %d", int(rc))
@@ -143,7 +144,7 @@ func (d *OpenH264Decoder) Decode(data []byte) ([]byte, int, int, error) {
 	uvs := int(uvStride)
 
 	if dstY == nil || dstU == nil || dstV == nil {
-		return nil, 0, 0, fmt.Errorf("decoder returned nil plane pointers")
+		return nil, 0, 0, errors.New("decoder returned nil plane pointers")
 	}
 
 	// Copy strided decoder output to tightly-packed planar buffer.
