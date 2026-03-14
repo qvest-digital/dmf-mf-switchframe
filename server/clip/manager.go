@@ -260,10 +260,12 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	key := playerKey(playerID)
 
 	// Create a per-player decoder if factory is available.
+	var dec VideoDecoder
 	var decodeFrame func([]byte) ([]byte, int, int, error)
 	var decoderCloser func()
 	if m.config.DecoderFactory != nil {
-		dec, err := m.config.DecoderFactory()
+		var err error
+		dec, err = m.config.DecoderFactory()
 		if err != nil {
 			m.mu.Unlock()
 			return fmt.Errorf("create decoder: %w", err)
@@ -283,6 +285,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 		Width:          slot.clip.Width,
 		Height:         slot.clip.Height,
 		DecodeFrame:    decodeFrame,
+		Decoder:        dec,
 		EncoderFactory: m.config.EncoderFactory,
 		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			if rawVideoFn != nil {

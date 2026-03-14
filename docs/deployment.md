@@ -30,7 +30,7 @@ flowchart LR
 
     subgraph go ["Go Build"]
         style go fill:#0f3460,color:#fff,stroke:#533483
-        CGO["cgo + FFmpeg\nlibavcodec · libx264 · libfdk-aac"]
+        CGO["cgo + FFmpeg\nlibavcodec · libavformat · libswscale\nlibswresample · libx264 · libfdk-aac"]
         EMBED["go build -tags embed_ui\n//go:embed ui"]
     end
 
@@ -61,6 +61,9 @@ The Go build requires cgo and these libraries:
 | Library | Purpose |
 |---------|---------|
 | `libavcodec` + `libavutil` | FFmpeg video encode/decode (H.264 HW + SW) |
+| `libavformat` | FFmpeg container demux/mux (clip transcode-on-upload) |
+| `libswscale` | FFmpeg pixel format conversion (clip transcode) |
+| `libswresample` | FFmpeg audio resampling (clip transcode) |
 | `libx264` | H.264 software encoding |
 | `libfdk-aac` | AAC audio encode/decode |
 | `pkg-config` | cgo flag resolution |
@@ -69,7 +72,7 @@ The Go build requires cgo and these libraries:
 ```bash
 # fdk-aac is in non-free
 sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list.d/debian.sources
-apt-get update && apt-get install -y libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+apt-get update && apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev pkg-config
 ```
 
 **macOS (Homebrew):**
@@ -114,14 +117,14 @@ flowchart LR
     subgraph s2 ["Stage 2: go-builder"]
         style s2 fill:#16213e,color:#fff,stroke:#0f3460
         G125["golang:1.25-bookworm"]
-        CDEPS["apt: libavcodec-dev\nlibx264-dev · libfdk-aac-dev"]
+        CDEPS["apt: libavcodec-dev · libavformat-dev\nlibswscale-dev · libswresample-dev\nlibx264-dev · libfdk-aac-dev"]
         GOBUILD["go build -tags embed_ui"]
     end
 
     subgraph s3 ["Stage 3: runtime"]
         style s3 fill:#0f3460,color:#fff,stroke:#533483
         DEB["debian:bookworm-slim"]
-        RT["libavcodec59 · libx264-164\nlibfdk-aac2 · ca-certificates"]
+        RT["libavcodec59 · libavformat59\nlibswscale6 · libswresample4\nlibx264-164 · libfdk-aac2"]
         USR["USER switchframe"]
     end
 
@@ -917,7 +920,7 @@ flowchart TD
     TESTUI --> DOCKER
 ```
 
-Triggered on push to `main` and all pull requests. The `setup-cgo-deps` custom action installs FFmpeg, libx264, and libfdk-aac for Go test and lint jobs. The Docker smoke test starts the image in `--demo` mode and polls `/health` for up to 30 seconds.
+Triggered on push to `main` and all pull requests. The `setup-cgo-deps` custom action installs FFmpeg (libavcodec, libavutil, libavformat, libswscale, libswresample), libx264, and libfdk-aac for Go test and lint jobs. The Docker smoke test starts the image in `--demo` mode and polls `/health` for up to 30 seconds.
 
 **Files:** [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) · [`.github/actions/setup-cgo-deps/action.yml`](../.github/actions/setup-cgo-deps/action.yml)
 

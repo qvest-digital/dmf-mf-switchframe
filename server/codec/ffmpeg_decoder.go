@@ -21,8 +21,11 @@ typedef struct {
 
 // ffdec_open initializes an H.264 decoder.
 // hwDeviceCtx is reserved for future hardware acceleration (pass NULL for software).
+// thread_count controls multithreading: 0 = auto (ncpu, 2-8), 1 = single-threaded.
+// Single-threaded avoids frame-level buffering delay (important for clip decoders
+// where immediate output is needed per input frame).
 // Returns 0 on success, negative on error.
-static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
+static int ffdec_open(ffdec_t* h, void* hwDeviceCtx, int thread_count) {
 	memset(h, 0, sizeof(ffdec_t));
 
 	// av_log_set_level is called once from Go via initFFmpegLogLevel().
@@ -43,10 +46,14 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx) {
 	// macroblocks, producing fewer visible glitches than simple frame copy.
 	h->ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
 
-	int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
-	if (ncpu < 2) ncpu = 2;
-	if (ncpu > 8) ncpu = 8;
-	h->ctx->thread_count = ncpu;
+	if (thread_count <= 0) {
+		int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+		if (ncpu < 2) ncpu = 2;
+		if (ncpu > 8) ncpu = 8;
+		h->ctx->thread_count = ncpu;
+	} else {
+		h->ctx->thread_count = thread_count;
+	}
 
 	if (hwDeviceCtx) {
 		h->ctx->hw_device_ctx = av_buffer_ref((AVBufferRef*)hwDeviceCtx);
@@ -509,16 +516,23 @@ type FFmpegDecoder struct {
 	yuvBuf []byte // reusable buffer for decoded YUV output
 }
 
-// NewFFmpegDecoder creates a new FFmpeg H.264 decoder.
+// NewFFmpegDecoder creates a new FFmpeg H.264 decoder with auto thread count.
 // hwDeviceCtx is reserved for future hardware acceleration (pass nil for software).
 func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	return NewFFmpegDecoderWithThreads(hwDeviceCtx, 0)
+}
+
+// NewFFmpegDecoderWithThreads creates an FFmpeg H.264 decoder with explicit thread count.
+// threadCount=0 means auto (ncpu, 2-8). threadCount=1 disables frame-level multithreading,
+// which eliminates buffering delay (important for clip decoders that need immediate output).
+func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
 	initFFmpegLogLevel()
 	initRangeTablesOnce.Do(func() {
 		C.init_range_tables()
 	})
 
 	d := &FFmpegDecoder{}
-	rc := C.ffdec_open(&d.handle, hwDeviceCtx)
+	rc := C.ffdec_open(&d.handle, hwDeviceCtx, C.int(threadCount))
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create FFmpeg decoder: code %d", int(rc))
 	}

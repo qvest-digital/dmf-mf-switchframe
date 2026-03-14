@@ -743,6 +743,7 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | Server | Go 1.25+ | All switching, mixing, encoding logic |
 | Media server | Prism (Go library) | MoQ protocol, relay fan-out, stream management |
 | Video codec | FFmpeg libavcodec (cgo) | H.264 encode/decode (HW accel support) |
+| Media transcode | FFmpeg libavformat + libswscale + libswresample (cgo) | Multi-format clip upload (transcode to H.264 TS on ingest) |
 | Video fallback | OpenH264 (cgo, build tag) | Fallback when FFmpeg unavailable |
 | Audio codec | FDK-AAC (cgo) | AAC decode/encode for audio mixing |
 | Shared memory | MXL SDK (cgo, optional) | V210 video + float32 audio via shared memory |

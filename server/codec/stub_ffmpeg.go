@@ -40,8 +40,24 @@ func NewFFmpegDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
 	return nil, errFFmpegDisabled
 }
 
+// NewFFmpegDecoderWithThreads returns an error when FFmpeg is not available.
+func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
 // Decode is a stub that always returns an error.
 func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	return nil, 0, 0, errFFmpegDisabled
+}
+
+// Flush is a no-op stub.
+func (d *FFmpegDecoder) Flush() {}
+
+// SendEOS is a stub that always returns an error.
+func (d *FFmpegDecoder) SendEOS() error { return errFFmpegDisabled }
+
+// ReceiveFrame is a stub that always returns an error.
+func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	return nil, 0, 0, errFFmpegDisabled
 }
 
@@ -68,6 +84,11 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 // NewVideoDecoder is a stub that returns an error when FFmpeg is not available.
 // When FFmpeg is available, the real implementation auto-selects the best decoder.
 func NewVideoDecoder() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderSingleThread is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderSingleThread() (transition.VideoDecoder, error) {
 	return nil, errFFmpegDisabled
 }
 

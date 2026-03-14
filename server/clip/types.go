@@ -87,6 +87,15 @@ type VideoDecoder interface {
 	Close()
 }
 
+// DrainableDecoder extends VideoDecoder with EOS drain support.
+// When the decoder uses frame-level buffering (B-frame reordering),
+// SendEOS + ReceiveFrame drains remaining buffered frames.
+type DrainableDecoder interface {
+	VideoDecoder
+	SendEOS() error
+	ReceiveFrame() (yuv []byte, width, height int, err error)
+}
+
 // VideoEncoder encodes raw YUV420 frames to H.264.
 // Used to re-encode decoded clip frames to browser-compatible 8-bit H.264.
 // Matches transition.VideoEncoder via structural typing.

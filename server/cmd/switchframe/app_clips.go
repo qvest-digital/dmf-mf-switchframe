@@ -34,7 +34,10 @@ func (a *App) initClips() error {
 
 	mgr := clip.NewManager(store, clip.ManagerConfig{
 		DecoderFactory: func() (clip.VideoDecoder, error) {
-			return codec.NewVideoDecoder()
+			// Single-threaded decoder eliminates frame-level multithreading
+			// buffering delay — each Decode() produces output immediately
+			// (only B-frame reordering delay remains, typically 1-2 frames).
+			return codec.NewVideoDecoderSingleThread()
 		},
 		EncoderFactory: func(w, h, fps int) (clip.VideoEncoder, error) {
 			bitrate := switcher.DefaultBitrateForResolution(w, h)

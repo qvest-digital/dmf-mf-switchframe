@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,11 @@ type PlayerConfig struct {
 	// DecodeFrame decodes H.264 wire data to raw YUV420 planar bytes.
 	// If nil, wireData is passed through unchanged (for testing).
 	DecodeFrame func(h264 []byte) (yuv []byte, width, height int, err error)
+
+	// Decoder is the underlying decoder instance for drain support.
+	// If it implements DrainableDecoder, remaining buffered frames are
+	// drained after playback via SendEOS + ReceiveFrame.
+	Decoder VideoDecoder
 
 	// EncoderFactory creates a VideoEncoder for re-encoding decoded frames
 	// to browser-compatible 8-bit H.264. If nil, original wire data is sent
@@ -105,8 +111,12 @@ type Player struct {
 	prependBuf []byte // SPS/PPS prepend (separate buffer, never aliased with annexBBuf)
 	avc1Buf    []byte // Annex B→AVC1 re-encode output
 
-	// decodeErrorLogged tracks whether a decode error has been logged (log once).
-	decodeErrorLogged bool
+	// Decode stats.
+	decodeAttempts   int
+	decodeSuccesses  int
+	decodeBuffering  int // EAGAIN count (expected for B-frame reordering)
+	decodeErrors     int
+	decodeErrorFirst string
 
 	// Audio tracking for proportional distribution.
 	audioIdx          int
@@ -390,22 +400,34 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 					decoderInput = p.prependBuf
 				}
 
+				p.decodeAttempts++
 				decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
 				if err == nil {
+					p.decodeSuccesses++
 					// Deep-copy: decoder may reuse its output buffer.
 					frameData = make([]byte, len(decoded))
 					copy(frameData, decoded)
 					fw, fh = dw, dh
-				} else if !p.decodeErrorLogged {
-					slog.Warn("clip: decode error (first occurrence)",
-						"error", err,
-						"frameIdx", frameIdx,
-						"isKeyframe", f.isKeyframe,
-						"wireDataLen", len(f.wireData),
-						"annexBLen", len(p.annexBBuf),
-						"hasSPS", len(f.sps) > 0,
-					)
-					p.decodeErrorLogged = true
+				} else {
+					errMsg := err.Error()
+					// EAGAIN ("buffering") is expected for B-frame reordering —
+					// the decoder needs reference frames before it can output.
+					if strings.Contains(errMsg, "buffering") {
+						p.decodeBuffering++
+					} else {
+						p.decodeErrors++
+						if p.decodeErrorFirst == "" {
+							p.decodeErrorFirst = errMsg
+							slog.Warn("clip: decode error",
+								"error", err,
+								"frameIdx", frameIdx,
+								"isKeyframe", f.isKeyframe,
+								"wireDataLen", len(f.wireData),
+								"annexBLen", len(p.annexBBuf),
+								"hasSPS", len(f.sps) > 0,
+							)
+						}
+					}
 				}
 			}
 		} else {
@@ -480,6 +502,37 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 		}
 		frameIdx++
 	}
+
+	// Drain remaining buffered frames from the decoder (B-frame reordering).
+	if p.config.Decoder != nil {
+		if drainable, ok := p.config.Decoder.(DrainableDecoder); ok {
+			_ = drainable.SendEOS()
+			for {
+				decoded, dw, dh, err := drainable.ReceiveFrame()
+				if err != nil {
+					break
+				}
+				p.decodeSuccesses++
+				frameData := make([]byte, len(decoded))
+				copy(frameData, decoded)
+				if p.config.RawVideoOutput != nil {
+					p.config.RawVideoOutput(frameData, dw, dh, *outputPTS, false)
+				}
+				*outputPTS += 90000 / int64(math.Max(1, p.sourceFPS))
+			}
+		}
+	}
+
+	// Log decode summary.
+	slog.Info("clip: playback complete",
+		"frames", len(clip),
+		"fps", p.sourceFPS,
+		"decodeAttempts", p.decodeAttempts,
+		"decodeSuccesses", p.decodeSuccesses,
+		"decodeBuffering", p.decodeBuffering,
+		"decodeErrors", p.decodeErrors,
+		"decodeErrorFirst", p.decodeErrorFirst,
+	)
 
 	// Mark final progress.
 	p.progress.Store(1000)

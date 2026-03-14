@@ -48,3 +48,19 @@ func NewVideoDecoder() (transition.VideoDecoder, error) {
 		return NewFFmpegDecoder(HWDeviceCtx())
 	}
 }
+
+// NewVideoDecoderSingleThread creates a video decoder with single-threaded decoding.
+// This eliminates frame-level multithreading buffering delay, ensuring each Decode()
+// call produces output immediately (only B-frame reordering delay remains).
+// Use for clip/replay decoders where immediate per-frame output is needed.
+func NewVideoDecoderSingleThread() (transition.VideoDecoder, error) {
+	_, dec := ProbeEncoders()
+	switch dec {
+	case "openh264":
+		return NewOpenH264Decoder()
+	case "none":
+		return nil, errors.New("no H.264 decoder available")
+	default:
+		return NewFFmpegDecoderWithThreads(HWDeviceCtx(), 1)
+	}
+}

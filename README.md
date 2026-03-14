@@ -68,7 +68,7 @@ brew install ffmpeg fdk-aac pkg-config
 
 **Debian / Ubuntu**
 ```bash
-sudo apt install libavcodec-dev libavutil-dev libx264-dev libfdk-aac-dev pkg-config
+sudo apt install libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev pkg-config
 ```
 
 </details>
