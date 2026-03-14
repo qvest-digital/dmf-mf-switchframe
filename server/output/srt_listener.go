@@ -154,6 +154,11 @@ func (l *SRTListener) Write(tsData []byte) (int, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
+	if len(l.conns) == 0 {
+		l.bytesWritten.Add(int64(len(tsData)))
+		return len(tsData), nil
+	}
+
 	// Single copy shared across all connections. connWriter goroutines
 	// only read the data (passing to conn.Write), so sharing is safe.
 	cp := make([]byte, len(tsData))
