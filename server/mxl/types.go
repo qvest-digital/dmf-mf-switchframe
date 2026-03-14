@@ -7,6 +7,21 @@ import "errors"
 // message to the user.
 var ErrMXLNotAvailable = errors.New("MXL support not compiled (build with -tags mxl)")
 
+// Sentinel errors for MXL SDK status codes. These are returned by the cgo
+// layer and checked with errors.Is in reader loops for error classification.
+var (
+	// ErrTooLate indicates the requested grain/sample index has been
+	// overwritten by the ring buffer (the reader is too slow).
+	ErrTooLate = errors.New("mxl: too late")
+
+	// ErrTimeout indicates a read timed out waiting for data to become available.
+	ErrTimeout = errors.New("mxl: timeout")
+
+	// ErrTooEarly indicates the requested grain/sample index has not been
+	// written yet (the reader is ahead of the writer).
+	ErrTooEarly = errors.New("mxl: too early")
+)
+
 // FlowMode specifies whether a flow is opened for reading or writing.
 type FlowMode int
 

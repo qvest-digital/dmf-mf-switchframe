@@ -33,6 +33,8 @@ func init() {
 }
 
 // statusError converts an mxlStatus to a Go error.
+// Transient errors (too late, too early, timeout) wrap the corresponding
+// sentinel errors so callers can use errors.Is for classification.
 func statusError(status C.mxlStatus, context string) error {
 	switch status {
 	case C.MXL_STATUS_OK:
@@ -40,15 +42,15 @@ func statusError(status C.mxlStatus, context string) error {
 	case C.MXL_ERR_FLOW_NOT_FOUND:
 		return fmt.Errorf("mxl: %s: flow not found", context)
 	case C.MXL_ERR_OUT_OF_RANGE_TOO_LATE:
-		return fmt.Errorf("mxl: %s: grain expired (too late)", context)
+		return fmt.Errorf("%w: %s: grain expired", ErrTooLate, context)
 	case C.MXL_ERR_OUT_OF_RANGE_TOO_EARLY:
-		return fmt.Errorf("mxl: %s: grain not yet available (too early)", context)
+		return fmt.Errorf("%w: %s: grain not yet available", ErrTooEarly, context)
 	case C.MXL_ERR_INVALID_FLOW_READER:
 		return fmt.Errorf("mxl: %s: invalid flow reader", context)
 	case C.MXL_ERR_INVALID_FLOW_WRITER:
 		return fmt.Errorf("mxl: %s: invalid flow writer", context)
 	case C.MXL_ERR_TIMEOUT:
-		return fmt.Errorf("mxl: %s: timeout", context)
+		return fmt.Errorf("%w: %s", ErrTimeout, context)
 	case C.MXL_ERR_INVALID_ARG:
 		return fmt.Errorf("mxl: %s: invalid argument", context)
 	case C.MXL_ERR_CONFLICT:

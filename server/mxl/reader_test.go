@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -45,7 +46,7 @@ func (m *mockDiscreteReader) ReadGrain(index uint64, _ uint64) ([]byte, GrainInf
 	}
 
 	if m.cursor >= len(m.grains) {
-		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+		return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
 	}
 
 	g := m.grains[m.cursor]
@@ -89,7 +90,7 @@ func (m *mockContinuousReader) ReadSamples(_ uint64, _ int, _ uint64) ([][]float
 	}
 
 	if m.cursor >= len(m.samples) {
-		return nil, fmt.Errorf("mxl: read samples: timeout")
+		return nil, fmt.Errorf("%w: read samples", ErrTimeout)
 	}
 
 	s := m.samples[m.cursor]
@@ -488,11 +489,11 @@ func (r *tooLateDiscreteReader) ReadGrain(index uint64, _ uint64) ([]byte, Grain
 	r.callCount++
 
 	if call == r.tooLateAt {
-		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: too late (index %d already overwritten)", index)
+		return nil, GrainInfo{}, fmt.Errorf("%w: read grain (index %d already overwritten)", ErrTooLate, index)
 	}
 
 	if r.cursor >= len(r.grains) {
-		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+		return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
 	}
 
 	g := r.grains[r.cursor]
@@ -576,11 +577,11 @@ func (r *tooLateContinuousReader) ReadSamples(index uint64, count int, timeoutNs
 	r.callCount++
 
 	if call == r.tooLateAt {
-		return nil, fmt.Errorf("mxl: read samples: too late (index %d already overwritten)", index)
+		return nil, fmt.Errorf("%w: read samples (index %d already overwritten)", ErrTooLate, index)
 	}
 
 	if r.cursor >= len(r.samples) {
-		return nil, fmt.Errorf("mxl: read samples: timeout")
+		return nil, fmt.Errorf("%w: read samples", ErrTimeout)
 	}
 
 	s := r.samples[r.cursor]
@@ -632,11 +633,11 @@ func (r *underflowDiscreteReader) ReadGrain(index uint64, _ uint64) ([]byte, Gra
 
 	// First call: return "too late" to trigger re-sync.
 	if r.callCount == 1 {
-		return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: too late (index %d)", index)
+		return nil, GrainInfo{}, fmt.Errorf("%w: read grain (index %d)", ErrTooLate, index)
 	}
 
 	// After re-sync, return timeout to let context cancel cleanly.
-	return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+	return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
 }
 
 func (r *underflowDiscreteReader) ConfigInfo() FlowConfig {
@@ -769,7 +770,7 @@ func (r *timeoutCountingReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.readCount++
-	return nil, GrainInfo{}, fmt.Errorf("mxl: read grain: timeout")
+	return nil, GrainInfo{}, fmt.Errorf("%w: read grain", ErrTimeout)
 }
 
 func (r *timeoutCountingReader) ConfigInfo() FlowConfig {
@@ -845,5 +846,38 @@ func TestVideoLoop_TooLateResync_LargeHeadIdx(t *testing.T) {
 	}
 	if !found98 {
 		t.Fatalf("expected index 98 (headIdx-2) after resync with headIdx=100; indices: %v", indices)
+	}
+}
+
+func TestSentinelErrors_WrappedErrorsMatchWithErrorsIs(t *testing.T) {
+	// Verify that wrapped sentinel errors can be matched with errors.Is,
+	// which is the contract used by reader loops.
+	tests := []struct {
+		name     string
+		err      error
+		sentinel error
+	}{
+		{"too late with context", fmt.Errorf("%w: read grain (index 42 already overwritten)", ErrTooLate), ErrTooLate},
+		{"timeout with context", fmt.Errorf("%w: read grain", ErrTimeout), ErrTimeout},
+		{"too early with context", fmt.Errorf("%w: read samples: grain not yet available", ErrTooEarly), ErrTooEarly},
+		{"bare too late", ErrTooLate, ErrTooLate},
+		{"bare timeout", ErrTimeout, ErrTimeout},
+		{"bare too early", ErrTooEarly, ErrTooEarly},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !errors.Is(tt.err, tt.sentinel) {
+				t.Fatalf("errors.Is(%v, %v) = false; want true", tt.err, tt.sentinel)
+			}
+		})
+	}
+
+	// Verify non-matching sentinel errors do NOT match.
+	unrelatedErr := fmt.Errorf("mxl: flow invalid (writer crashed?)")
+	for _, sentinel := range []error{ErrTooLate, ErrTimeout, ErrTooEarly} {
+		if errors.Is(unrelatedErr, sentinel) {
+			t.Fatalf("errors.Is(unrelatedErr, %v) = true; want false", sentinel)
+		}
 	}
 }

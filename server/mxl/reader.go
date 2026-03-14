@@ -2,8 +2,8 @@ package mxl
 
 import (
 	"context"
+	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 )
@@ -178,11 +178,9 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 		data, info, err := flow.ReadGrain(index, timeoutNs)
 		if err != nil {
-			errStr := err.Error()
-
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
-			if strings.Contains(errStr, "too late") {
+			if errors.Is(err, ErrTooLate) {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
 					oldIndex := index
 					if headIdx >= 2 {
@@ -198,7 +196,7 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			}
 
 			// Timeout and too-early are transient — don't count as fatal errors.
-			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+			if errors.Is(err, ErrTimeout) || errors.Is(err, ErrTooEarly) {
 				time.Sleep(time.Millisecond)
 				continue
 			}
@@ -293,11 +291,9 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 
 		pcm, err := flow.ReadSamples(index, samplesPerRead, audioTimeoutNs)
 		if err != nil {
-			errStr := err.Error()
-
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
-			if strings.Contains(errStr, "too late") {
+			if errors.Is(err, ErrTooLate) {
 				if head, hErr := flow.HeadIndex(); hErr == nil {
 					index = head
 					fatalErrors = 0
@@ -308,7 +304,7 @@ func (r *Reader) audioLoop(ctx context.Context, flow ContinuousReader) {
 			// Timeout and too-early are normal waiting conditions —
 			// the writer hasn't produced samples at our position yet.
 			// Don't count these as errors; just retry after a brief yield.
-			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+			if errors.Is(err, ErrTimeout) || errors.Is(err, ErrTooEarly) {
 				time.Sleep(500 * time.Microsecond)
 				continue
 			}
@@ -373,11 +369,9 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 
 		data, info, err := flow.ReadGrain(index, timeoutNs)
 		if err != nil {
-			errStr := err.Error()
-
 			// On "too late" errors, re-sync to the current write head
 			// instead of dying. The ring buffer moved past our position.
-			if strings.Contains(errStr, "too late") {
+			if errors.Is(err, ErrTooLate) {
 				if headIdx, hErr := flow.HeadIndex(); hErr == nil {
 					oldIndex := index
 					if headIdx >= 2 {
@@ -393,7 +387,7 @@ func (r *Reader) dataLoop(ctx context.Context, flow DiscreteReader) {
 			}
 
 			// Timeout and too-early are transient — don't count as fatal errors.
-			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "too early") {
+			if errors.Is(err, ErrTimeout) || errors.Is(err, ErrTooEarly) {
 				time.Sleep(time.Millisecond)
 				continue
 			}
