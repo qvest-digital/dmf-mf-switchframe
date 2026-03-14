@@ -1868,3 +1868,72 @@ func TestReplayPlayer_LoopTimingNoDrift(t *testing.T) {
 			loopIdx, interval)
 	}
 }
+
+func TestReplayPlayer_AudioPTSAlignedWithVideo(t *testing.T) {
+	// Verify that the first audio output PTS matches the first video output PTS.
+	// Both are seeded from PlayerConfig.InitialPTS, so they are aligned by
+	// construction. This test documents that the alignment is correct and
+	// guards against regressions.
+	clip := buildTestClip(1, 4)
+	initialPTS := int64(900000) // arbitrary non-zero anchor
+
+	audioClip := []bufferedAudioFrame{
+		{data: []byte{0xAA}, pts: 0, sampleRate: 48000, channels: 2},
+		{data: []byte{0xBB}, pts: 1920, sampleRate: 48000, channels: 2},
+		{data: []byte{0xCC}, pts: 3840, sampleRate: 48000, channels: 2},
+	}
+
+	var mu sync.Mutex
+	var videoPTS []int64
+	var audioPTS []int64
+	done := make(chan struct{})
+
+	cfg := PlayerConfig{
+		Clip:      clip,
+		AudioClip: audioClip,
+		Speed:     1.0,
+		Loop:      false,
+		InitialPTS: initialPTS,
+		Interpolation: InterpolationNone,
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return &mockReplayDecoder{width: 320, height: 240}, nil
+		},
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockReplayEncoder{}, nil
+		},
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			videoPTS = append(videoPTS, frame.PTS)
+			mu.Unlock()
+		},
+		AudioOutput: func(frame *media.AudioFrame) {
+			mu.Lock()
+			audioPTS = append(audioPTS, frame.PTS)
+			mu.Unlock()
+		},
+		OnDone:  func() { close(done) },
+		OnReady: func() {},
+	}
+
+	player := newReplayPlayer(cfg)
+	player.Start(context.Background())
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.NotEmpty(t, videoPTS, "should have video output")
+	require.NotEmpty(t, audioPTS, "should have audio output")
+
+	// Both first output PTS values should equal InitialPTS.
+	assert.Equal(t, initialPTS, videoPTS[0],
+		"first video PTS should equal InitialPTS")
+	assert.Equal(t, initialPTS, audioPTS[0],
+		"first audio PTS should equal InitialPTS (aligned with video)")
+
+	// Audio PTS should advance monotonically.
+	for i := 1; i < len(audioPTS); i++ {
+		assert.Greater(t, audioPTS[i], audioPTS[i-1],
+			"audio PTS should be monotonically increasing")
+	}
+}
