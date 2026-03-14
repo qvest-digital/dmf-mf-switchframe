@@ -42,8 +42,9 @@ type TickerEngine struct {
 	renderer   *textrender.Renderer
 	log        *slog.Logger
 
-	mu      sync.Mutex
-	tickers map[int]*tickerInstance
+	mu       sync.Mutex
+	tickers  map[int]*tickerInstance
+	closeOnce sync.Once
 }
 
 // NewTickerEngine creates a ticker engine bound to a compositor and text renderer.
@@ -113,36 +114,35 @@ func (te *TickerEngine) UpdateText(layerID int, text string) error {
 		te.mu.Unlock()
 		return ErrTickerNotFound
 	}
+	delete(te.tickers, layerID) // atomic removal under lock prevents Stop() from finding it
 	te.mu.Unlock()
 
-	// Stop and restart with new text
+	// Stop the old goroutine — only we hold inst now
 	close(inst.cancel)
 	<-inst.done
 
 	cfg := inst.config
 	cfg.Text = text
 
-	te.mu.Lock()
-	delete(te.tickers, layerID)
-	te.mu.Unlock()
-
 	return te.Start(layerID, cfg)
 }
 
-// Close stops all running tickers.
+// Close stops all running tickers. It is safe to call multiple times.
 func (te *TickerEngine) Close() {
-	te.mu.Lock()
-	tickers := make([]*tickerInstance, 0, len(te.tickers))
-	for _, inst := range te.tickers {
-		tickers = append(tickers, inst)
-	}
-	te.tickers = make(map[int]*tickerInstance)
-	te.mu.Unlock()
+	te.closeOnce.Do(func() {
+		te.mu.Lock()
+		tickers := make([]*tickerInstance, 0, len(te.tickers))
+		for _, inst := range te.tickers {
+			tickers = append(tickers, inst)
+		}
+		te.tickers = make(map[int]*tickerInstance)
+		te.mu.Unlock()
 
-	for _, inst := range tickers {
-		close(inst.cancel)
-		<-inst.done
-	}
+		for _, inst := range tickers {
+			close(inst.cancel)
+			<-inst.done
+		}
+	})
 }
 
 // runTicker is the main ticker goroutine. It pre-renders the text strip once,

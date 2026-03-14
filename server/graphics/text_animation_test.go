@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -127,4 +128,64 @@ func TestTextAnimationEngine_StopNonExistent(t *testing.T) {
 
 	err := tae.Stop(999)
 	require.ErrorIs(t, err, ErrTextAnimNotFound)
+}
+
+func TestTextAnimationEngine_CloseIdempotent(t *testing.T) {
+	// Calling Close multiple times must not panic.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestTextRenderer(t)
+	tae := NewTextAnimationEngine(c, renderer)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, tae.Start(id, TextAnimationConfig{
+		Mode: "typewriter", Text: "Close test", FontSize: 24, CharsPerSec: 1,
+	}))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tae.Close()
+		}()
+	}
+	wg.Wait()
+
+	require.False(t, tae.IsRunning(id))
+}
+
+func TestTextAnimationEngine_ConcurrentCloseAndStop(t *testing.T) {
+	// Close and Stop racing must not panic from double-close.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestTextRenderer(t)
+
+	for i := 0; i < 20; i++ {
+		tae := NewTextAnimationEngine(c, renderer)
+		id, err := c.AddLayer()
+		require.NoError(t, err)
+
+		require.NoError(t, tae.Start(id, TextAnimationConfig{
+			Mode: "typewriter", Text: "Race test text", FontSize: 24, CharsPerSec: 1,
+		}))
+		time.Sleep(10 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			tae.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = tae.Stop(id)
+		}()
+		wg.Wait()
+		_ = c.RemoveLayer(id)
+	}
 }

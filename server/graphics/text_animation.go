@@ -45,8 +45,9 @@ type TextAnimationEngine struct {
 	renderer   *textrender.Renderer
 	log        *slog.Logger
 
-	mu    sync.Mutex
-	anims map[int]*textAnimInstance
+	mu        sync.Mutex
+	anims     map[int]*textAnimInstance
+	closeOnce sync.Once
 }
 
 // NewTextAnimationEngine creates a text animation engine.
@@ -118,20 +119,22 @@ func (tae *TextAnimationEngine) Stop(layerID int) error {
 	return nil
 }
 
-// Close stops all running text animations.
+// Close stops all running text animations. It is safe to call multiple times.
 func (tae *TextAnimationEngine) Close() {
-	tae.mu.Lock()
-	anims := make([]*textAnimInstance, 0, len(tae.anims))
-	for _, inst := range tae.anims {
-		anims = append(anims, inst)
-	}
-	tae.anims = make(map[int]*textAnimInstance)
-	tae.mu.Unlock()
+	tae.closeOnce.Do(func() {
+		tae.mu.Lock()
+		anims := make([]*textAnimInstance, 0, len(tae.anims))
+		for _, inst := range tae.anims {
+			anims = append(anims, inst)
+		}
+		tae.anims = make(map[int]*textAnimInstance)
+		tae.mu.Unlock()
 
-	for _, inst := range anims {
-		close(inst.cancel)
-		<-inst.done
-	}
+		for _, inst := range anims {
+			close(inst.cancel)
+			<-inst.done
+		}
+	})
 }
 
 // cleanup removes the animation from the map (called when animation finishes naturally).

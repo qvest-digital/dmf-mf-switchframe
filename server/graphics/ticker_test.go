@@ -2,6 +2,7 @@ package graphics
 
 import (
 	"image"
+	"sync"
 	"testing"
 	"time"
 
@@ -195,4 +196,94 @@ func TestTickerEngine_Close(t *testing.T) {
 
 	require.False(t, te.IsRunning(id1))
 	require.False(t, te.IsRunning(id2))
+}
+
+func TestTickerEngine_ConcurrentUpdateTextAndStop(t *testing.T) {
+	// Regression test: UpdateText and Stop racing must not double-close the cancel channel.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+
+	for i := 0; i < 20; i++ {
+		te := NewTickerEngine(c, renderer)
+		id, err := c.AddLayer()
+		require.NoError(t, err)
+
+		require.NoError(t, te.Start(id, TickerConfig{Text: "Race test", FontSize: 24, Speed: 100}))
+		time.Sleep(10 * time.Millisecond) // let the goroutine start
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			_ = te.UpdateText(id, "Updated text")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = te.Stop(id)
+		}()
+
+		wg.Wait()
+		te.Close()
+		_ = c.RemoveLayer(id)
+	}
+}
+
+func TestTickerEngine_CloseIdempotent(t *testing.T) {
+	// Calling Close multiple times must not panic.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, te.Start(id, TickerConfig{Text: "A", FontSize: 24, Speed: 100}))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			te.Close()
+		}()
+	}
+	wg.Wait()
+
+	require.False(t, te.IsRunning(id))
+}
+
+func TestTickerEngine_ConcurrentCloseAndStop(t *testing.T) {
+	// Close and Stop racing must not panic from double-close.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+
+	for i := 0; i < 20; i++ {
+		te := NewTickerEngine(c, renderer)
+		id, err := c.AddLayer()
+		require.NoError(t, err)
+
+		require.NoError(t, te.Start(id, TickerConfig{Text: "Close race", FontSize: 24, Speed: 100}))
+		time.Sleep(10 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			te.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			_ = te.Stop(id)
+		}()
+		wg.Wait()
+		_ = c.RemoveLayer(id)
+	}
 }
