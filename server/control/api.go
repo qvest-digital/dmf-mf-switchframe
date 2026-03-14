@@ -233,13 +233,20 @@ type API struct {
 	textAnimEngine   *graphics.TextAnimationEngine
 	tickerEngine     *graphics.TickerEngine
 	mux           *http.ServeMux
-	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
+	enrichFn      atomic.Pointer[enrichFunc]
 	lastOperator  atomic.Pointer[string]
 	macroMu       sync.Mutex
 	macroState    *internal.MacroExecutionState
 	macroCancel   context.CancelFunc
-	broadcastFn   func()
+	macroGen      uint64 // incremented each time a macro starts
+	broadcastFn   atomic.Pointer[broadcastFunc]
 }
+
+// enrichFunc is the type for the state enrichment callback.
+type enrichFunc func(internal.ControlRoomState) internal.ControlRoomState
+
+// broadcastFunc is the type for the state broadcast callback.
+type broadcastFunc func()
 
 // NewAPI creates an API that delegates to sw.
 func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
@@ -254,12 +261,21 @@ func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
 // SetEnrichFunc sets the function used to enrich switcher state with output,
 // graphics, operator, and replay information before returning it to API clients.
 func (a *API) SetEnrichFunc(fn func(internal.ControlRoomState) internal.ControlRoomState) {
-	a.enrichFn = fn
+	ef := enrichFunc(fn)
+	a.enrichFn.Store(&ef)
 }
 
 // SetBroadcastFunc sets the function used to trigger a state broadcast.
 func (a *API) SetBroadcastFunc(fn func()) {
-	a.broadcastFn = fn
+	bf := broadcastFunc(fn)
+	a.broadcastFn.Store(&bf)
+}
+
+// broadcast calls the broadcast function if one has been set.
+func (a *API) broadcast() {
+	if fn := a.broadcastFn.Load(); fn != nil {
+		(*fn)()
+	}
 }
 
 // MacroState returns the current macro execution state, if any.
@@ -273,8 +289,8 @@ func (a *API) MacroState() *internal.MacroExecutionState {
 // graphics, operator, and replay information if an enrich function is set.
 func (a *API) enrichedState() internal.ControlRoomState {
 	s := a.switcher.State()
-	if a.enrichFn != nil {
-		s = a.enrichFn(s)
+	if fn := a.enrichFn.Load(); fn != nil {
+		s = (*fn)(s)
 	}
 	return s
 }

@@ -72,9 +72,7 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.layoutCompositor.SetLayout(l)
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(l)
 }
@@ -82,9 +80,7 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleDeleteLayout(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	a.layoutCompositor.SetLayout(nil)
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -96,9 +92,7 @@ func (a *API) handleSlotOn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.layoutCompositor.SlotOn(id)
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -110,9 +104,7 @@ func (a *API) handleSlotOff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.layoutCompositor.SlotOff(id)
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -163,9 +155,7 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 			slot.CropAnchor = *req.CropAnchor
 		}
 	})
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -186,9 +176,7 @@ func (a *API) handleSlotSource(w http.ResponseWriter, r *http.Request) {
 	a.layoutCompositor.UpdateSlot(id, func(slot *layout.Slot) {
 		slot.SourceKey = req.Source
 	})
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -68,7 +68,8 @@ func (a *API) handleDeleteMacro(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRunMacro triggers execution of a macro.
+// handleRunMacro triggers execution of a macro in a background goroutine
+// and returns 202 Accepted immediately.
 func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	m, err := a.macroStore.Get(name)
@@ -84,8 +85,12 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusConflict, "macro already running")
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
+	// Use context.Background() so the macro is not cancelled when the HTTP
+	// response is sent and r.Context() is closed.
+	ctx, cancel := context.WithCancel(context.Background())
 	a.macroCancel = cancel
+	a.macroGen++
+	gen := a.macroGen
 	a.macroState = &internal.MacroExecutionState{Running: true, MacroName: m.Name}
 	a.macroMu.Unlock()
 
@@ -123,32 +128,30 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		a.macroMu.Lock()
 		a.macroState = ms
 		a.macroMu.Unlock()
-		if a.broadcastFn != nil {
-			a.broadcastFn()
+		a.broadcast()
+	}
+
+	// Run in background goroutine so the HTTP handler returns immediately.
+	go func() {
+		macro.Run(ctx, m, target, onProgress)
+		cancel()
+
+		// Mark completed — state stays for dismiss.
+		a.macroMu.Lock()
+		// Only clear cancel if this is still the same execution.
+		if a.macroGen == gen {
+			if a.macroState != nil {
+				a.macroState.Running = false
+			}
+			a.macroCancel = nil
 		}
-	}
-
-	runErr := macro.Run(ctx, m, target, onProgress)
-	cancel()
-
-	// Mark completed — state stays for dismiss
-	a.macroMu.Lock()
-	if a.macroState != nil {
-		a.macroState.Running = false
-	}
-	a.macroCancel = nil
-	a.macroMu.Unlock()
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
-
-	if runErr != nil {
-		httperr.WriteErr(w, errorStatus(runErr), runErr)
-		return
-	}
+		a.macroMu.Unlock()
+		a.broadcast()
+	}()
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "started", "name": m.Name})
 }
 
 // handleDismissMacro clears the macro execution state.
@@ -156,9 +159,7 @@ func (a *API) handleDismissMacro(w http.ResponseWriter, r *http.Request) {
 	a.macroMu.Lock()
 	a.macroState = nil
 	a.macroMu.Unlock()
-	if a.broadcastFn != nil {
-		a.broadcastFn()
-	}
+	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
 
