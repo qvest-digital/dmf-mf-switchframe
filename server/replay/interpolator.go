@@ -9,7 +9,7 @@ const (
 	InterpolationNone     InterpolationMode = "none"     // frame duplication (current behavior)
 	InterpolationBlend    InterpolationMode = "blend"    // alpha blend adjacent frames
 	InterpolationMCFI     InterpolationMode = "mcfi"     // motion-compensated frame interpolation
-	InterpolationPulldown InterpolationMode = "pulldown" // 3:2 pulldown: hold clean frames, crossfade at transitions
+	InterpolationHoldCrossfade InterpolationMode = "hold-crossfade" // hold clean frames, crossfade at transitions
 )
 
 // FrameInterpolator generates an interpolated frame between two YUV420 frames.
@@ -40,15 +40,15 @@ func (b *blendInterpolator) Interpolate(frameA, frameB []byte, width, height int
 	return out
 }
 
-// pulldownInterpolator implements FrameInterpolator using 3:2-style pulldown.
-// Holds the current frame (frameA) for most alpha values and only crossfades
-// to frameB in the last output slot. This produces clean, artifact-free frames
-// with a brief dissolve at each transition — no motion estimation, no blocking.
-type pulldownInterpolator struct {
+// holdCrossfadeInterpolator implements FrameInterpolator using a hold-and-crossfade
+// strategy. Holds the current frame (frameA) for most alpha values and only
+// crossfades to frameB in the last output slot. This produces clean, artifact-free
+// frames with a brief dissolve at each transition — no motion estimation, no blocking.
+type holdCrossfadeInterpolator struct {
 	buf []byte
 }
 
-func (p *pulldownInterpolator) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
+func (p *holdCrossfadeInterpolator) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
 	size := width * height * 3 / 2
 
 	// Hold frameA for alpha < 0.625 (first 2-3 dups); crossfade above that.
@@ -88,8 +88,8 @@ func newInterpolator(mode InterpolationMode) FrameInterpolator {
 		return &blendInterpolator{}
 	case InterpolationMCFI:
 		return switcher.NewMCFIState()
-	case InterpolationPulldown:
-		return &pulldownInterpolator{}
+	case InterpolationHoldCrossfade:
+		return &holdCrossfadeInterpolator{}
 	default:
 		return nil // nil means frame duplication
 	}
