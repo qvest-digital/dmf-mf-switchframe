@@ -54,20 +54,6 @@
 	const anyActive = $derived(layers.some((l) => l.active));
 	const selectedLayer = $derived(layers.find((l) => l.id === selectedLayerId) ?? null);
 
-	// Seed local state from server for layers we haven't initialized locally.
-	// This handles page reload, layers created by other operators, etc.
-	$effect(() => {
-		for (const layer of layers) {
-			if (layer.id in layerModes) continue;
-			layerModes[layer.id] = layer.imageName ? 'image' : 'template';
-			if (!(layer.id in layerTemplates)) {
-				const tpl = (layer.template && layer.template in builtinTemplates) ? layer.template : 'lower-third';
-				layerTemplates[layer.id] = tpl;
-				layerFields[layer.id] = getDefaultValues(tpl);
-			}
-		}
-	});
-
 	// Auto-select first layer if none selected, or fall back when selected layer is removed.
 	// We check layerTemplates to avoid resetting selection for layers just added via
 	// handleAddLayer whose broadcast hasn't arrived yet.
@@ -104,7 +90,11 @@
 	}
 
 	function getLayerTemplate(id: number): string {
-		return layerTemplates[id] ?? 'lower-third';
+		if (id in layerTemplates) return layerTemplates[id];
+		// Fall back to server state for existing layers (page reload, other operator)
+		const layer = layers.find(l => l.id === id);
+		if (layer?.template && layer.template in builtinTemplates) return layer.template;
+		return 'lower-third';
 	}
 
 	function getLayerFields(id: number): Record<string, string> {
@@ -116,7 +106,11 @@
 	}
 
 	function getLayerMode(id: number): SourceMode {
-		return layerModes[id] ?? 'template';
+		if (id in layerModes) return layerModes[id];
+		// Fall back to server state for existing layers (page reload, other operator)
+		const layer = layers.find(l => l.id === id);
+		if (layer?.imageName) return 'image';
+		return 'template';
 	}
 
 	function getLayerFlyConfig(id: number) {
