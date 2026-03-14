@@ -35,6 +35,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrNoOverlay, http.StatusBadRequest}, // no overlay loaded is a bad request
 	{graphics.ErrLayerNotFound, http.StatusNotFound},
 	{graphics.ErrNoImage, http.StatusNotFound},
+	{graphics.ErrTextAnimNotFound, http.StatusNotFound},
 	{operator.ErrNotFound, http.StatusNotFound},
 	{operator.ErrSessionNotFound, http.StatusNotFound},
 	{replay.ErrNoSource, http.StatusNotFound},
@@ -59,6 +60,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrNotActive, http.StatusConflict},
 	{graphics.ErrFadeActive, http.StatusConflict},
 	{graphics.ErrTooManyLayers, http.StatusConflict},
+	{graphics.ErrTextAnimActive, http.StatusConflict},
 	{operator.ErrDuplicateName, http.StatusConflict},
 	{operator.ErrSubsystemLocked, http.StatusConflict},
 	{replay.ErrPlayerActive, http.StatusConflict},

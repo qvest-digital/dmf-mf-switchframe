@@ -199,6 +199,11 @@ func WithPerfSampler(p PerfAPI) APIOption {
 	return func(a *API) { a.perf = p }
 }
 
+// WithTextAnimEngine attaches a text animation engine to the API.
+func WithTextAnimEngine(tae *graphics.TextAnimationEngine) APIOption {
+	return func(a *API) { a.textAnimEngine = tae }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -220,6 +225,7 @@ type API struct {
 	layoutStore      *layout.Store
 	captionMgr       CaptionManagerAPI
 	perf             PerfAPI
+	textAnimEngine   *graphics.TextAnimationEngine
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -392,6 +398,10 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/graphics/{id}/image", a.handleGraphicsImageUpload)
 		mux.HandleFunc("GET /api/graphics/{id}/image", a.handleGraphicsImageGet)
 		mux.HandleFunc("DELETE /api/graphics/{id}/image", a.handleGraphicsImageDelete)
+		if a.textAnimEngine != nil {
+			mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
+			mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
+		}
 	}
 	if a.macroStore != nil {
 		mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)

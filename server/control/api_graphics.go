@@ -504,6 +504,83 @@ func (a *API) handleGraphicsImageDelete(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// textAnimRequest is the JSON body for starting a text animation.
+type textAnimRequest struct {
+	Mode           string  `json:"mode"`
+	Text           string  `json:"text"`
+	FontSize       float64 `json:"fontSize"`
+	Bold           bool    `json:"bold"`
+	CharsPerSec    float64 `json:"charsPerSec"`
+	WordDelayMs    int     `json:"wordDelayMs"`
+	FadeDurationMs int     `json:"fadeDurationMs"`
+	Width          int     `json:"width"`
+	Height         int     `json:"height"`
+}
+
+// handleGraphicsTextAnimStart starts a text animation on a layer.
+func (a *API) handleGraphicsTextAnimStart(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.textAnimEngine == nil {
+		httperr.Write(w, http.StatusNotImplemented, "text animation engine not available")
+		return
+	}
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req textAnimRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Text == "" {
+		httperr.Write(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	if req.Mode != "typewriter" && req.Mode != "fade-word" {
+		httperr.Write(w, http.StatusBadRequest, "mode must be \"typewriter\" or \"fade-word\"")
+		return
+	}
+	cfg := graphics.TextAnimationConfig{
+		Mode:           req.Mode,
+		Text:           req.Text,
+		FontSize:       req.FontSize,
+		Bold:           req.Bold,
+		CharsPerSec:    req.CharsPerSec,
+		WordDelayMs:    req.WordDelayMs,
+		FadeDurationMs: req.FadeDurationMs,
+		Width:          req.Width,
+		Height:         req.Height,
+	}
+	if err := a.textAnimEngine.Start(id, cfg); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsTextAnimStop stops the text animation on a layer.
+func (a *API) handleGraphicsTextAnimStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.textAnimEngine == nil {
+		httperr.Write(w, http.StatusNotImplemented, "text animation engine not available")
+		return
+	}
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	if err := a.textAnimEngine.Stop(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
 // handleStingerList returns all loaded stinger clip names.
 func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
