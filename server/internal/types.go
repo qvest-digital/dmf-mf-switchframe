@@ -117,6 +117,9 @@ type GraphicsLayerState struct {
 	Y             int     `json:"y"`
 	Width         int     `json:"width"`
 	Height        int     `json:"height"`
+	ImageName     string  `json:"imageName,omitempty"`
+	ImageWidth    int     `json:"imageWidth,omitempty"`
+	ImageHeight   int     `json:"imageHeight,omitempty"`
 }
 
 // ReplayState is the JSON-serializable state for the instant replay system,

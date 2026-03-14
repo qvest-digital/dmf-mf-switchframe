@@ -65,6 +65,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				Y:             l.Rect.Y,
 				Width:         l.Rect.Width,
 				Height:        l.Rect.Height,
+				ImageName:     l.ImageName,
+				ImageWidth:    l.ImageWidth,
+				ImageHeight:   l.ImageHeight,
 			})
 		}
 		state.Graphics = gfxState

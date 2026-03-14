@@ -383,38 +383,40 @@
 		/>
 
 		{#if selectedLayer}
-			<GraphicsDetail
-				layer={selectedLayer}
-				sourceMode={getLayerMode(selectedLayer.id)}
-				templateId={getLayerTemplate(selectedLayer.id)}
-				fields={getLayerFields(selectedLayer.id)}
-				animConfig={getLayerAnimConfig(selectedLayer.id)}
-				flyConfig={getLayerFlyConfig(selectedLayer.id)}
-				{publisher}
-				onModeChange={(mode) => handleModeChange(selectedLayer.id, mode)}
-				onTemplateChange={(tplId) => handleTemplateChange(selectedLayer.id, tplId)}
-				onFieldChange={(key, val) => handleFieldChange(selectedLayer.id, key, val)}
-				onAnimConfigChange={(key, val) => handleAnimConfigChange(selectedLayer.id, key, val)}
-				onFlyConfigChange={(key, val) => handleFlyConfigChange(selectedLayer.id, key, val)}
-				onCutOn={() => handleCutOn(selectedLayer.id)}
-				onAutoOn={() => handleAutoOn(selectedLayer.id)}
-				onCutOff={() => handleOff(selectedLayer.id)}
-				onAutoOff={() => handleAutoOff(selectedLayer.id)}
-				onFlyIn={() => handleFlyIn(selectedLayer.id)}
-				onFlyOut={() => handleFlyOut(selectedLayer.id)}
-				onAnimate={() => handleAnimate(selectedLayer.id)}
-				onAnimateStop={() => handleAnimateStop(selectedLayer.id)}
-				onImageUpload={(file) => handleImageUpload(selectedLayer.id, file)}
-				onImageDelete={() => handleImageDelete(selectedLayer.id)}
-				onRectChange={(rect) => handleRectChange(selectedLayer.id, rect)}
-				onTickerStart={(cfg) => handleTickerStart(selectedLayer.id, cfg)}
-				onTickerStop={() => handleTickerStop(selectedLayer.id)}
-				onTickerUpdateText={(text) => handleTickerUpdateText(selectedLayer.id, text)}
-				tickerActive={tickerRunning[selectedLayer.id] ?? false}
-				onTextAnimStart={(cfg) => handleTextAnimStart(selectedLayer.id, cfg)}
-				onTextAnimStop={() => handleTextAnimStop(selectedLayer.id)}
-				textAnimActive={textAnimRunning[selectedLayer.id] ?? false}
-			/>
+			{#key selectedLayer.id}
+				<GraphicsDetail
+					layer={selectedLayer}
+					sourceMode={getLayerMode(selectedLayer.id)}
+					templateId={getLayerTemplate(selectedLayer.id)}
+					fields={getLayerFields(selectedLayer.id)}
+					animConfig={getLayerAnimConfig(selectedLayer.id)}
+					flyConfig={getLayerFlyConfig(selectedLayer.id)}
+					{publisher}
+					onModeChange={(mode) => handleModeChange(selectedLayer.id, mode)}
+					onTemplateChange={(tplId) => handleTemplateChange(selectedLayer.id, tplId)}
+					onFieldChange={(key, val) => handleFieldChange(selectedLayer.id, key, val)}
+					onAnimConfigChange={(key, val) => handleAnimConfigChange(selectedLayer.id, key, val)}
+					onFlyConfigChange={(key, val) => handleFlyConfigChange(selectedLayer.id, key, val)}
+					onCutOn={() => handleCutOn(selectedLayer.id)}
+					onAutoOn={() => handleAutoOn(selectedLayer.id)}
+					onCutOff={() => handleOff(selectedLayer.id)}
+					onAutoOff={() => handleAutoOff(selectedLayer.id)}
+					onFlyIn={() => handleFlyIn(selectedLayer.id)}
+					onFlyOut={() => handleFlyOut(selectedLayer.id)}
+					onAnimate={() => handleAnimate(selectedLayer.id)}
+					onAnimateStop={() => handleAnimateStop(selectedLayer.id)}
+					onImageUpload={(file) => handleImageUpload(selectedLayer.id, file)}
+					onImageDelete={() => handleImageDelete(selectedLayer.id)}
+					onRectChange={(rect) => handleRectChange(selectedLayer.id, rect)}
+					onTickerStart={(cfg) => handleTickerStart(selectedLayer.id, cfg)}
+					onTickerStop={() => handleTickerStop(selectedLayer.id)}
+					onTickerUpdateText={(text) => handleTickerUpdateText(selectedLayer.id, text)}
+					tickerActive={tickerRunning[selectedLayer.id] ?? false}
+					onTextAnimStart={(cfg) => handleTextAnimStart(selectedLayer.id, cfg)}
+					onTextAnimStop={() => handleTextAnimStop(selectedLayer.id)}
+					textAnimActive={textAnimRunning[selectedLayer.id] ?? false}
+				/>
+			{/key}
 		{:else}
 			<div class="empty-detail">
 				<span class="empty-msg">
