@@ -52,6 +52,18 @@ import (
 // calling os.Exit directly (which would skip deferred cleanup).
 var errDiscoverExit = errors.New("mxl discover completed")
 
+// tokenPrefix returns a safe display prefix for an API token.
+func tokenPrefix(token string) string {
+	if len(token) == 0 {
+		return "***"
+	}
+	n := len(token)
+	if n > 8 {
+		n = 8
+	}
+	return token[:n] + "..."
+}
+
 // App holds all subsystems for the switchframe server. Init methods are called
 // in order before Run() starts the Prism distribution server.
 type App struct {
@@ -151,7 +163,7 @@ func (a *App) initInfra() error {
 	if a.cfg.Demo {
 		slog.Info("demo mode: API authentication disabled")
 	} else {
-		slog.Info("API authentication enabled", "token_prefix", a.cfg.APIToken[:8]+"...")
+		slog.Info("API authentication enabled", "token_prefix", tokenPrefix(a.cfg.APIToken))
 		// Print full token to stdout (not stderr) so operators can capture it
 		// without it leaking into log files routed from stderr.
 		_, _ = fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", a.cfg.APIToken)
