@@ -1766,3 +1766,105 @@ func TestEstimateFPSFromClip(t *testing.T) {
 		assert.Equal(t, 120.0, fps)
 	})
 }
+
+// verySlowMockDecoderFactory creates a decoder with 40ms delay per Decode(),
+// simulating heavy decode overhead to amplify timing drift in loop tests.
+func verySlowMockDecoderFactory() (transition.VideoDecoder, error) {
+	return &verySlowMockDecoder{width: 320, height: 240}, nil
+}
+
+type verySlowMockDecoder struct {
+	width, height int
+	decodeCount   int
+}
+
+func (d *verySlowMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	d.decodeCount++
+	time.Sleep(40 * time.Millisecond) // heavy decode latency
+	yuv := make([]byte, d.width*d.height*3/2)
+	yuv[0] = byte(d.decodeCount)
+	return yuv, d.width, d.height, nil
+}
+
+func (d *verySlowMockDecoder) Close() {}
+
+func TestReplayPlayer_LoopTimingNoDrift(t *testing.T) {
+	// Verify that playbackStart and pacingIdx are reset on loop so frame
+	// pacing doesn't drift. Without the fix, pacingIdx keeps incrementing
+	// across loops while playbackStart stays fixed at the original start.
+	// Re-decoding GOPs at each loop boundary adds wall-clock overhead that
+	// accumulates in the deficit between absolute pacing deadlines and
+	// actual wall-clock time.
+	//
+	// With 3 frames per GOP and 40ms-per-frame decode, each loop boundary
+	// re-decode costs ~120ms. At 30fps (33ms/frame), after 1 loop the
+	// accumulated re-decode overhead already exceeds the entire loop's
+	// pacing budget (100ms). This means ALL frames in the 2nd loop have
+	// deadlines in the past, and the encoder Output fires with zero
+	// pacing wait between frames.
+	//
+	// Detection: measure interval between the last two encoded Output
+	// frames in each loop. In loop 0, this interval should be ~33ms
+	// (one frame duration). In loop 1+ without the fix, this interval
+	// should be near-zero because deadlines are all past.
+	clip := buildTestClip(1, 3) // 1 GOP, 3 frames at ~30fps
+
+	type timedFrame struct {
+		wallTime time.Time
+	}
+	var mu sync.Mutex
+	var frames []timedFrame
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           true,
+		InitialPTS:     0,
+		DecoderFactory: verySlowMockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			frames = append(frames, timedFrame{wallTime: time.Now()})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+
+	// With 3 frames at 33ms + 120ms re-decode = ~220ms per loop.
+	// Wait for 3+ loops.
+	time.Sleep(1000 * time.Millisecond)
+	p.Stop()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	framesPerLoop := 3
+	require.GreaterOrEqual(t, len(frames), framesPerLoop*2,
+		"expected at least %d frames (2 loops), got %d", framesPerLoop*2, len(frames))
+
+	// Check the interval between the last two frames of each loop.
+	// This pair is WITHIN the loop (no re-decode gap) and should be
+	// properly paced at ~33ms. Without the fix, later loops have this
+	// interval collapse to near-zero as deadlines fall into the past.
+	numCompleteLoops := len(frames) / framesPerLoop
+	for loopIdx := 0; loopIdx < numCompleteLoops; loopIdx++ {
+		// Last two frames in this loop: indices [loopIdx*3+1] and [loopIdx*3+2]
+		secondLast := loopIdx*framesPerLoop + framesPerLoop - 2
+		last := loopIdx*framesPerLoop + framesPerLoop - 1
+		if last >= len(frames) {
+			break
+		}
+		interval := frames[last].wallTime.Sub(frames[secondLast].wallTime)
+		assert.Greater(t, interval, 15*time.Millisecond,
+			"loop %d: interval between last two frames (%v) collapsed; "+
+				"expected ~33ms but got near-zero, indicating pacing deadlines "+
+				"are in the past (playbackStart/pacingIdx not reset on loop)",
+			loopIdx, interval)
+	}
+}
