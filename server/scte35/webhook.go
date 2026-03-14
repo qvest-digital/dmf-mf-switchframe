@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -34,7 +33,7 @@ type WebhookDispatcher struct {
 	client    *http.Client
 	queue     chan WebhookEvent
 	done      chan struct{}
-	closed    atomic.Bool
+	closeCh   chan struct{}
 	closeOnce sync.Once
 }
 
@@ -45,8 +44,9 @@ func NewWebhookDispatcher(url string, timeout time.Duration) *WebhookDispatcher 
 		client: &http.Client{
 			Timeout: timeout,
 		},
-		queue: make(chan WebhookEvent, webhookQueueSize),
-		done:  make(chan struct{}),
+		queue:   make(chan WebhookEvent, webhookQueueSize),
+		done:    make(chan struct{}),
+		closeCh: make(chan struct{}),
 	}
 	go w.worker()
 	return w
@@ -55,8 +55,14 @@ func NewWebhookDispatcher(url string, timeout time.Duration) *WebhookDispatcher 
 // Dispatch queues a webhook event for async delivery. Never blocks the caller.
 // If the queue is full or the dispatcher is closed, the event is dropped.
 func (w *WebhookDispatcher) Dispatch(event WebhookEvent) {
-	if w.url == "" || w.closed.Load() {
+	if w.url == "" {
 		return
+	}
+
+	select {
+	case <-w.closeCh:
+		return
+	default:
 	}
 
 	if event.Timestamp == 0 {
@@ -65,25 +71,44 @@ func (w *WebhookDispatcher) Dispatch(event WebhookEvent) {
 
 	select {
 	case w.queue <- event:
+	case <-w.closeCh:
 	default:
 		slog.Warn("webhook queue full, dropping event", "type", event.Type, "eventId", event.EventID)
 	}
 }
 
-// Close drains the queue and stops the worker goroutine. Safe to call multiple times.
+// Close signals the worker to stop and waits for it to drain remaining events.
+// Safe to call multiple times.
 func (w *WebhookDispatcher) Close() {
-	w.closed.Store(true)
 	w.closeOnce.Do(func() {
-		close(w.queue)
+		close(w.closeCh)
 	})
 	<-w.done
 }
 
 // worker drains the dispatch queue, sending each event via HTTP POST.
+// It selects on both the queue and closeCh so it can exit without requiring
+// the queue channel to be closed (which would race with Dispatch sends).
 func (w *WebhookDispatcher) worker() {
 	defer close(w.done)
-	for event := range w.queue {
-		w.send(event)
+	for {
+		select {
+		case event, ok := <-w.queue:
+			if !ok {
+				return
+			}
+			w.send(event)
+		case <-w.closeCh:
+			// Drain any remaining events in the queue buffer.
+			for {
+				select {
+				case event := <-w.queue:
+					w.send(event)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 

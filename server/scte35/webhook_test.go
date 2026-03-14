@@ -140,3 +140,46 @@ func TestWebhook_Close_Idempotent(t *testing.T) {
 	wh.Close()
 	wh.Close()
 }
+
+func TestWebhook_ConcurrentDispatchClose_NoRace(t *testing.T) {
+	t.Parallel()
+
+	// Hammer concurrent Dispatch + Close to verify no send-on-closed-channel panic.
+	// Run many iterations to increase the chance of hitting the race window.
+	for iter := 0; iter < 100; iter++ {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		wh := NewWebhookDispatcher(srv.URL, time.Second)
+
+		var wg sync.WaitGroup
+		const dispatchers = 10
+
+		// Launch many concurrent dispatchers.
+		for i := 0; i < dispatchers; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for j := 0; j < 20; j++ {
+					wh.Dispatch(WebhookEvent{
+						Type:    "test",
+						EventID: uint32(id*20 + j),
+					})
+				}
+			}(i)
+		}
+
+		// Close concurrently while dispatchers are still running.
+		// This is the exact scenario that triggers send-on-closed-channel
+		// with the old atomic.Bool approach.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			wh.Close()
+		}()
+
+		wg.Wait()
+		srv.Close()
+	}
+}
