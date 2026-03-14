@@ -250,6 +250,29 @@ func TestAsyncAdapterDropLogRateLimit(t *testing.T) {
 	async.Stop()
 }
 
+func TestAsyncAdapter_DroppedCounterResetOnStop(t *testing.T) {
+	// Start, cause drops, stop, start again. Dropped() should return 0
+	// after stop so metrics are not inflated across start/stop cycles.
+	inner := newBlockingAdapter()
+	async := NewAsyncAdapter(inner, 1)
+	require.NoError(t, async.Start(context.Background()))
+
+	// Fill buffer + drop some packets.
+	for i := 0; i < 5; i++ {
+		_, _ = async.Write([]byte{byte(i)})
+	}
+	time.Sleep(10 * time.Millisecond)
+	require.Greater(t, async.Dropped(), int64(0), "should have drops before stop")
+
+	// Unblock and stop.
+	close(inner.unblock)
+	async.Stop()
+
+	// After stop, dropped counter should be reset.
+	require.Equal(t, int64(0), async.Dropped(),
+		"Dropped() should be 0 after Stop()")
+}
+
 func TestSlowAdapterDoesntBlockFastAdapter(t *testing.T) {
 	// Two adapters share a simulated muxer output callback: one fast (no delay)
 	// and one very slow (50ms per write). We send 100 packets through the

@@ -101,11 +101,13 @@ func (a *AsyncAdapter) Dropped() int64 {
 
 // Stop signals the drain goroutine to exit and waits for it to finish
 // draining any remaining buffered data. Safe to call multiple times.
+// Resets the dropped counter so metrics are not inflated across start/stop cycles.
 func (a *AsyncAdapter) Stop() {
 	a.stopOnce.Do(func() {
 		close(a.stopCh)
 	})
 	<-a.doneCh
+	a.dropped.Store(0)
 }
 
 // Close delegates to the inner adapter.
