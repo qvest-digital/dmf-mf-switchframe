@@ -42,30 +42,54 @@ export const lowerThirdTemplate: GraphicsTemplate = {
 		{ key: 'title', label: 'Title', defaultValue: 'Speaker', maxLength: 60 },
 	],
 	render(ctx, width, height, values) {
-		const barHeight = Math.round(height * 0.12);
+		ctx.save();
+
+		const barHeight = Math.round(height * 0.13);
 		const barY = height - barHeight - Math.round(height * 0.05);
-		const padding = Math.round(width * 0.03);
+		const accentW = Math.round(width * 0.008);
+		const padding = Math.round(width * 0.025);
+		const radius = Math.round(height * 0.008);
 
-		// Semi-transparent background bar
-		ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-		ctx.fillRect(0, barY, width, barHeight);
+		// Gradient blue accent block (left edge)
+		const accentBlockW = Math.round(width * 0.045);
+		const accentGrad = ctx.createLinearGradient(0, barY, 0, barY + barHeight);
+		accentGrad.addColorStop(0, '#2563eb');
+		accentGrad.addColorStop(1, '#1d4ed8');
+		ctx.beginPath();
+		ctx.roundRect(0, barY, accentBlockW, barHeight, [radius, 0, 0, radius]);
+		ctx.fillStyle = accentGrad;
+		ctx.fill();
 
-		// Accent line at top of bar
-		ctx.fillStyle = 'rgba(59, 130, 246, 0.9)';
-		ctx.fillRect(0, barY, width, 3);
+		// Main bar with gradient (dark to slightly lighter)
+		const barGrad = ctx.createLinearGradient(0, barY, width * 0.7, barY);
+		barGrad.addColorStop(0, 'rgba(15, 15, 20, 0.92)');
+		barGrad.addColorStop(0.7, 'rgba(25, 25, 35, 0.88)');
+		barGrad.addColorStop(1, 'rgba(15, 15, 20, 0.0)');
+		ctx.beginPath();
+		ctx.roundRect(accentBlockW, barY, width * 0.65, barHeight, [0, radius, radius, 0]);
+		ctx.fillStyle = barGrad;
+		ctx.fill();
 
-		// Name text
+		// Drop shadow for text
+		ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+		ctx.shadowBlur = 4;
+		ctx.shadowOffsetX = 1;
+		ctx.shadowOffsetY = 1;
+
+		// Name text (bold, larger)
 		const nameFontSize = Math.round(barHeight * 0.42);
-		ctx.font = `bold ${nameFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		ctx.font = `700 ${nameFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
 		ctx.fillStyle = '#ffffff';
 		ctx.textBaseline = 'top';
-		ctx.fillText(values.name || '', padding, barY + Math.round(barHeight * 0.12));
+		ctx.fillText(values.name || '', accentBlockW + padding, barY + Math.round(barHeight * 0.12));
 
-		// Title text
-		const titleFontSize = Math.round(barHeight * 0.30);
-		ctx.font = `${titleFontSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = 'rgba(200, 200, 200, 0.9)';
-		ctx.fillText(values.title || '', padding, barY + Math.round(barHeight * 0.58));
+		// Title text (lighter weight, slightly transparent)
+		const titleFontSize = Math.round(barHeight * 0.28);
+		ctx.font = `400 ${titleFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		ctx.fillStyle = 'rgba(180, 200, 230, 0.9)';
+		ctx.fillText(values.title || '', accentBlockW + padding, barY + Math.round(barHeight * 0.60));
+
+		ctx.restore();
 	},
 };
 
