@@ -305,6 +305,13 @@ func (p *replayPlayer) run(ctx context.Context) {
 			})
 			decodedWindow = append(decodedWindow, decoded)
 		}
+
+		// Reset pacing anchor so the new loop's deadlines are relative to
+		// now, not the original playback start. Without this, pacingIdx
+		// accumulates across loops and all second+ loop deadlines fall in
+		// the past, causing frames to burst out without pacing.
+		p.playbackStart = time.Now()
+		gs.pacingIdx = 0
 	}
 }
 
