@@ -409,7 +409,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		if srcW == slotW && srcH == slotH {
 			scaled = srcYUV
 		} else {
-			quality := c.selectScaleQuality(srcW, srcH, slotW, slotH, width, height)
+			quality := c.selectScaleQuality()
 			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, snap.scaleBuf, slotW, slotH, quality)
 			scaled = snap.scaleBuf
 		}
@@ -435,7 +435,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 // 5-15x slower and imperceptible at PIP overlay scale. With 4 PIP slots
 // scaling from 1080p sources, Lanczos-3 caused 400ms+ per frame (446ms
 // measured), blowing past the 33ms frame budget and causing visual artifacts.
-func (c *Compositor) selectScaleQuality(_, _, _, _, _, _ int) transition.ScaleQuality {
+func (c *Compositor) selectScaleQuality() transition.ScaleQuality {
 	return transition.ScaleQualityFast
 }
 

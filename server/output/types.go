@@ -44,6 +44,10 @@ type Adapter interface {
 	// Start initializes the adapter and begins accepting writes.
 	Start(ctx context.Context) error
 	// Write sends muxed MPEG-TS data to the output destination.
+	// Unlike io.Writer, partial writes are not supported: callers must
+	// treat any error as a complete failure. The returned byte count is
+	// informational and may not reflect the exact number of bytes
+	// delivered to the underlying transport (e.g., SRT, file).
 	Write(tsData []byte) (int, error)
 	// Close shuts down the adapter and releases resources.
 	Close() error

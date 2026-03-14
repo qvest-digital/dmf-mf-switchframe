@@ -10,14 +10,15 @@ import (
 type ScaleQuality int
 
 const (
+	// ScaleQualityFast uses bilinear interpolation. Suitable for real-time
+	// preview or when CPU budget is tight. This is the zero value so that
+	// uninitialized ScaleQuality defaults to the cheap path.
+	ScaleQualityFast ScaleQuality = iota
+
 	// ScaleQualityHigh uses Lanczos-3 interpolation for broadcast-quality
 	// scaling. Produces sharper output than bilinear, especially on downscales,
 	// at the cost of ~3-4x more computation.
-	ScaleQualityHigh ScaleQuality = iota
-
-	// ScaleQualityFast uses bilinear interpolation. Suitable for real-time
-	// preview or when CPU budget is tight.
-	ScaleQualityFast
+	ScaleQualityHigh
 )
 
 // ScaleYUV420WithQuality scales a YUV420 planar frame using the selected algorithm.

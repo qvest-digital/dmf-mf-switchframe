@@ -29,6 +29,15 @@ type ConfidenceMonitor struct {
 	minInterval    time.Duration
 	decoderFactory transition.DecoderFactory
 	decoder        transition.VideoDecoder
+
+	// bufMu serializes access to the cached intermediate buffers below.
+	// In production the rate limiter (minInterval=1s) ensures at most one
+	// IngestVideo is active, so this mutex virtually never contends.
+	bufMu     sync.Mutex
+	scaledBuf []byte
+	rgbBuf    []byte
+	rgbaBuf   *image.RGBA
+	jpegBuf   bytes.Buffer
 }
 
 // NewConfidenceMonitor creates a confidence monitor. The decoderFactory
@@ -90,39 +99,58 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		return
 	}
 
+	// Serialize access to cached intermediate buffers.
+	cm.bufMu.Lock()
+	defer cm.bufMu.Unlock()
+
 	// Scale to thumbnail size if needed
 	dstW, dstH := thumbWidth, thumbHeight
 	var scaledYUV []byte
 	if w == dstW && h == dstH {
 		scaledYUV = yuv
 	} else {
-		scaledYUV = make([]byte, dstW*dstH*3/2)
-		transition.ScaleYUV420(yuv, w, h, scaledYUV, dstW, dstH)
+		scaledSize := dstW * dstH * 3 / 2
+		if cap(cm.scaledBuf) < scaledSize {
+			cm.scaledBuf = make([]byte, scaledSize)
+		}
+		cm.scaledBuf = cm.scaledBuf[:scaledSize]
+		transition.ScaleYUV420(yuv, w, h, cm.scaledBuf, dstW, dstH)
+		scaledYUV = cm.scaledBuf
 	}
 
 	// Convert YUV420 to RGB and build RGBA image via direct Pix access
 	// (avoids per-pixel bounds checks from SetRGBA).
-	rgb := make([]byte, dstW*dstH*3)
-	transition.YUV420ToRGB(scaledYUV, dstW, dstH, rgb)
+	rgbSize := dstW * dstH * 3
+	if cap(cm.rgbBuf) < rgbSize {
+		cm.rgbBuf = make([]byte, rgbSize)
+	}
+	cm.rgbBuf = cm.rgbBuf[:rgbSize]
+	transition.YUV420ToRGB(scaledYUV, dstW, dstH, cm.rgbBuf)
 
-	img := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
-	pix := img.Pix
+	if cm.rgbaBuf == nil || cm.rgbaBuf.Rect.Dx() != dstW || cm.rgbaBuf.Rect.Dy() != dstH {
+		cm.rgbaBuf = image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	}
+	pix := cm.rgbaBuf.Pix
 	for i := 0; i < dstW*dstH; i++ {
 		off := i * 4
-		pix[off+0] = rgb[i*3]
-		pix[off+1] = rgb[i*3+1]
-		pix[off+2] = rgb[i*3+2]
+		pix[off+0] = cm.rgbBuf[i*3]
+		pix[off+1] = cm.rgbBuf[i*3+1]
+		pix[off+2] = cm.rgbBuf[i*3+2]
 		pix[off+3] = 255
 	}
 
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 70}); err != nil {
+	cm.jpegBuf.Reset()
+	if err := jpeg.Encode(&cm.jpegBuf, cm.rgbaBuf, &jpeg.Options{Quality: 70}); err != nil {
 		slog.Error("confidence monitor: JPEG encode error", "err", err)
 		return
 	}
 
+	// Copy JPEG bytes so jpegBuf can be reused on next frame.
+	jpegCopy := make([]byte, cm.jpegBuf.Len())
+	copy(jpegCopy, cm.jpegBuf.Bytes())
+
 	cm.mu.Lock()
-	cm.latestJPEG = buf.Bytes()
+	cm.latestJPEG = jpegCopy
 	cm.mu.Unlock()
 }
 
