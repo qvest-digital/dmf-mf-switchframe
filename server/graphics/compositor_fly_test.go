@@ -94,4 +94,69 @@ func TestFlyOut_DeactivatesLayer(t *testing.T) {
 	require.False(t, active, "layer should be deactivated after FlyOut completes")
 }
 
+func TestFlyOn_AtomicActivateAndAnimate(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	rgba := make([]byte, 1920*1080*4)
+	require.NoError(t, c.SetOverlay(id, rgba, 1920, 1080, "test"))
+
+	// Layer starts inactive
+	c.mu.RLock()
+	require.False(t, c.layers[id].active)
+	c.mu.RUnlock()
+
+	// FlyOn should activate and start animation atomically
+	require.NoError(t, c.FlyOn(id, "left", 50))
+
+	// Layer should be active immediately
+	c.mu.RLock()
+	layer := c.layers[id]
+	active := layer.active
+	c.mu.RUnlock()
+	require.True(t, active, "layer should be active after FlyOn")
+
+	// Wait for animation to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Layer should still be active at target rect
+	c.mu.RLock()
+	layer = c.layers[id]
+	active = layer.active
+	c.mu.RUnlock()
+	require.True(t, active, "layer should remain active after FlyOn animation completes")
+}
+
+func TestFlyOn_RequiresOverlay(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// No overlay uploaded — should fail
+	err = c.FlyOn(id, "left", 500)
+	require.ErrorIs(t, err, ErrNoOverlay)
+}
+
+func TestFlyOn_RejectsActiveLayer(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	rgba := make([]byte, 1920*1080*4)
+	require.NoError(t, c.SetOverlay(id, rgba, 1920, 1080, "test"))
+	require.NoError(t, c.On(id))
+
+	// Already active — should fail
+	err = c.FlyOn(id, "left", 500)
+	require.ErrorIs(t, err, ErrAlreadyActive)
+}
+
 func float64Ptr(v float64) *float64 { return &v }

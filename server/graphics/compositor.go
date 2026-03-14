@@ -931,6 +931,69 @@ func (c *Compositor) FlyIn(id int, from string, durationMs int) error {
 	return nil
 }
 
+// FlyOn atomically activates a layer and animates it from off-screen to its
+// target rect. This avoids the visual glitch of separate On() + FlyIn() calls
+// where the layer is briefly visible at its default position.
+func (c *Compositor) FlyOn(id int, from string, durationMs int) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCompositorClosed
+	}
+	layer, ok := c.layers[id]
+	if !ok {
+		c.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if layer.active {
+		c.mu.Unlock()
+		return ErrAlreadyActive
+	}
+	if layer.overlay == nil {
+		c.mu.Unlock()
+		return ErrNoOverlay
+	}
+	if layer.fadeDone != nil || layer.animDone != nil {
+		c.mu.Unlock()
+		return ErrFadeActive
+	}
+
+	// Read target rect (where the layer should end up)
+	targetRect := layer.rect
+	progW, progH := 1920, 1080
+	if c.resolutionProvider != nil {
+		progW, progH = c.resolutionProvider()
+	}
+
+	// Move rect off-screen
+	startRect := offScreenRect(from, targetRect, progW, progH)
+	layer.rect = startRect
+
+	// Activate layer at off-screen position (invisible until animation moves it in)
+	layer.active = true
+	layer.fadePosition = 1.0
+
+	// Start transition animation to target rect
+	cfg := AnimationConfig{
+		Mode:       "transition",
+		ToRect:     &RectState{X: targetRect.Min.X, Y: targetRect.Min.Y, Width: targetRect.Dx(), Height: targetRect.Dy()},
+		DurationMs: durationMs,
+		Easing:     "smoothstep",
+	}
+	layer.animConfig = &cfg
+	layer.animCancel = make(chan struct{})
+	layer.animDone = make(chan struct{})
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	go c.runTransitionAnimation(id)
+	return nil
+}
+
 // FlyOut animates a layer from its current rect to off-screen.
 // The entire setup is performed under a single write lock.
 func (c *Compositor) FlyOut(id int, to string, durationMs int) error {
