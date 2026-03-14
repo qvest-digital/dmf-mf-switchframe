@@ -1476,28 +1476,15 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 		m.addStingerAudio(mixed)
 	}
 
-	// Apply program mute (FTB held): zero the buffer so output is silent.
-	// This matches the collectMixCycleLocked path which also zeroes on programMuted.
-	if m.programMuted {
-		for i := range mixed {
-			mixed[i] = 0
-		}
+	// Apply master gain (skip if unity — preserves passthrough optimization)
+	if m.masterLinear != 1.0 && len(mixed) > 0 {
+		vec.ScaleFloat32(&mixed[0], m.masterLinear, len(mixed))
 	}
 
-	// Apply master gain
-	for i := range mixed {
-		mixed[i] *= m.masterLinear
-	}
-
-	// Update program peak metering (after mute so meters show silence during FTB)
-	peakL, peakR := PeakLevel(mixed, m.numChannels)
-	m.programPeakL = peakL
-	m.programPeakR = peakR
-
-	// Feed LUFS meter (after master fader, before limiter — matches normal mix path)
+	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
 	m.loudness.Process(mixed)
 
-	// Apply brickwall limiter at -1 dBFS (always active — matches normal mix path)
+	// Apply brickwall limiter at -1 dBFS (always active)
 	m.limiter.Process(mixed)
 
 	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
@@ -1509,6 +1496,35 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 		copy(m.mxlSinkBuf, mixed)
 		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
 	}
+
+	// Apply program mute (FTB held): zero the buffer so output is silent
+	if m.programMuted {
+		for i := range mixed {
+			mixed[i] = 0
+		}
+	}
+
+	// Apply unmute fade-in ramp: prevents uncompressed burst after
+	// compressor/limiter envelopes were reset to zero during mute.
+	if m.unmuteFadeRemaining > 0 {
+		fadeSamples := m.unmuteFadeRemaining
+		for i := range mixed {
+			if fadeSamples <= 0 {
+				break
+			}
+			// Linear ramp from 0 to 1 over the remaining fade samples
+			rampTotal := m.sampleRate * m.numChannels * 5 / 1000
+			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
+			mixed[i] *= progress
+			fadeSamples--
+		}
+		m.unmuteFadeRemaining = fadeSamples
+	}
+
+	// Update program peak metering (after mute so meters show silence during FTB)
+	peakL, peakR := PeakLevel(mixed, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
 
 	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
 	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
@@ -1999,38 +2015,55 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		m.addStingerAudio(mixed)
 	}
 
-	// Apply program mute (FTB held)
+	// Apply master gain (skip if unity — preserves passthrough optimization)
+	if m.masterLinear != 1.0 && len(mixed) > 0 {
+		vec.ScaleFloat32(&mixed[0], m.masterLinear, len(mixed))
+	}
+
+	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
+	m.loudness.Process(mixed)
+
+	// Apply brickwall limiter at -1 dBFS (always active)
+	m.limiter.Process(mixed)
+
+	// Monotonic PTS
+	outPTS := m.advanceOutputPTS(pts)
+
+	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
+	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
+		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
+		copy(m.mxlSinkBuf, mixed)
+		(*sinkPtr)(m.mxlSinkBuf, outPTS, m.sampleRate, m.numChannels)
+	}
+
+	// Apply program mute (FTB held): zero the buffer so output is silent
 	if m.programMuted {
 		for i := range mixed {
 			mixed[i] = 0
 		}
 	}
 
-	// Apply master gain
-	for i := range mixed {
-		mixed[i] *= m.masterLinear
+	// Apply unmute fade-in ramp: prevents uncompressed burst after
+	// compressor/limiter envelopes were reset to zero during mute.
+	if m.unmuteFadeRemaining > 0 {
+		fadeSamples := m.unmuteFadeRemaining
+		for i := range mixed {
+			if fadeSamples <= 0 {
+				break
+			}
+			// Linear ramp from 0 to 1 over the remaining fade samples
+			rampTotal := m.sampleRate * m.numChannels * 5 / 1000
+			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
+			mixed[i] *= progress
+			fadeSamples--
+		}
+		m.unmuteFadeRemaining = fadeSamples
 	}
 
-	// Update program peak metering
+	// Update program peak metering (after mute so meters show silence during FTB)
 	peakL, peakR := PeakLevel(mixed, m.numChannels)
 	m.programPeakL = peakL
 	m.programPeakR = peakR
-
-	// Feed LUFS meter
-	m.loudness.Process(mixed)
-
-	// Apply brickwall limiter
-	m.limiter.Process(mixed)
-
-	// Monotonic PTS
-	outPTS := m.advanceOutputPTS(pts)
-
-	// MXL output tap
-	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
-		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
-		copy(m.mxlSinkBuf, mixed)
-		(*sinkPtr)(m.mxlSinkBuf, outPTS, m.sampleRate, m.numChannels)
-	}
 
 	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
 	if err := m.ensureEncoder(); err != nil || m.encoder == nil {

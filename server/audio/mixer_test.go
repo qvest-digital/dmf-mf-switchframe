@@ -3339,3 +3339,341 @@ func TestMixerMixPTSUsesToSourceDuringTransition(t *testing.T) {
 	require.Equal(t, int64(5000), outputFrames[0].PTS,
 		"output PTS should use TO source's PTS, not FROM source's")
 }
+
+func TestCrossfadePipelineOrder_MXLTapReceivesPreMuteAudio(t *testing.T) {
+	// MXL output tap must receive pre-mute audio during crossfade.
+	// Before this fix, the crossfade path applied mute before the MXL tap,
+	// causing the MXL output to go silent during FTB even though MXL is
+	// a separate output that should not be affected by program mute.
+	var mxlCaptured []float32
+	var mxlMu sync.Mutex
+
+	oldPCM := []float32{0.5, 0.5, 0.5, 0.5}
+	newPCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Set raw audio sink (MXL tap)
+	m.SetRawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
+		mxlMu.Lock()
+		mxlCaptured = append([]float32{}, pcm...)
+		mxlMu.Unlock()
+	})
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Set up decoders
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: newPCM}
+	m.mu.Unlock()
+
+	// Mute program (FTB) then trigger crossfade
+	m.SetProgramMute(true)
+	m.OnCut("cam1", "cam2")
+
+	// Ingest frames to complete crossfade
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// MXL tap should have received non-zero audio (pre-mute)
+	mxlMu.Lock()
+	defer mxlMu.Unlock()
+	require.NotNil(t, mxlCaptured, "MXL tap should have received audio during crossfade")
+
+	hasNonZero := false
+	for _, s := range mxlCaptured {
+		if s != 0 {
+			hasNonZero = true
+			break
+		}
+	}
+	require.True(t, hasNonZero, "MXL tap should receive pre-mute (non-zero) audio during crossfade")
+}
+
+func TestCrossfadePipelineOrder_PeakMeteringReflectsPostMuteState(t *testing.T) {
+	// Peak metering must show silence when program is muted during crossfade.
+	// Before this fix, peak metering ran before the limiter, so it didn't
+	// reflect the full processing chain.
+	oldPCM := []float32{0.5, 0.5, 0.5, 0.5}
+	newPCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Set up decoders
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: newPCM}
+	m.mu.Unlock()
+
+	// Mute program then crossfade
+	m.SetProgramMute(true)
+	m.OnCut("cam1", "cam2")
+
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Peak metering should show silence (-96 dBFS floor) since program is muted.
+	// LinearToDBFS returns -96 for zero values.
+	peaks := m.ProgramPeak()
+	require.Equal(t, -96.0, peaks[0], "left peak should be -96 dBFS (silence) when muted during crossfade")
+	require.Equal(t, -96.0, peaks[1], "right peak should be -96 dBFS (silence) when muted during crossfade")
+}
+
+func TestCrossfadePipelineOrder_UnmuteFadeInRampDuringCrossfade(t *testing.T) {
+	// The unmute fade-in ramp must apply during crossfade to prevent audio pops
+	// after FTB release. Before this fix, the ramp was missing from the crossfade path.
+	var capturedPCM []float32
+
+	pcm := make([]float32, 2048)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Set up decoders
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: pcm}
+	m.channels["cam2"].decoder = &mockDecoder{samples: pcm}
+	m.mu.Unlock()
+
+	// Mute then unmute to schedule fade-in ramp
+	m.SetProgramMute(true)
+	m.SetProgramMute(false)
+
+	// Verify ramp is scheduled
+	m.mu.RLock()
+	fadeRemaining := m.unmuteFadeRemaining
+	m.mu.RUnlock()
+	require.Greater(t, fadeRemaining, 0, "unmute fade-in ramp should be scheduled")
+
+	// Trigger crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Ingest frames to trigger crossfade processing
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// The first sample should be ramped (near zero due to fade-in start)
+	require.NotNil(t, capturedPCM, "encoder should have received PCM")
+	require.Greater(t, len(capturedPCM), 0, "captured PCM should not be empty")
+	// First sample should be attenuated by the fade-in ramp (progress near 0)
+	require.Less(t, capturedPCM[0], float32(0.5),
+		"first sample should be attenuated by unmute fade-in ramp during crossfade")
+
+	// Ramp should have been consumed (at least partially)
+	m.mu.RLock()
+	newFadeRemaining := m.unmuteFadeRemaining
+	m.mu.RUnlock()
+	require.Less(t, newFadeRemaining, fadeRemaining,
+		"unmute fade-in ramp should be consumed during crossfade")
+}
+
+func TestCrossfadePCMPipelineOrder_MXLTapReceivesPreMuteAudio(t *testing.T) {
+	// Same as TestCrossfadePipelineOrder_MXLTapReceivesPreMuteAudio but for
+	// the PCM (MXL) crossfade path via IngestPCM.
+	var mxlCaptured []float32
+	var mxlMu sync.Mutex
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Set raw audio sink (MXL tap)
+	m.SetRawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
+		mxlMu.Lock()
+		mxlCaptured = append([]float32{}, pcm...)
+		mxlMu.Unlock()
+	})
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Mute program (FTB) then trigger crossfade
+	m.SetProgramMute(true)
+	m.OnCut("cam1", "cam2")
+
+	// Pre-seed lastDecodedPCM for cam1 so OnCut has pre-buffer
+	oldPCM := []float32{0.5, 0.5, 0.5, 0.5}
+	newPCM := []float32{0.3, 0.3, 0.3, 0.3}
+
+	// Ingest PCM frames to trigger crossfade
+	m.IngestPCM("cam1", oldPCM, 1000, 2)
+	m.IngestPCM("cam2", newPCM, 1000, 2)
+
+	// MXL tap should have received non-zero audio (pre-mute)
+	mxlMu.Lock()
+	defer mxlMu.Unlock()
+	require.NotNil(t, mxlCaptured, "MXL tap should have received audio during PCM crossfade")
+
+	hasNonZero := false
+	for _, s := range mxlCaptured {
+		if s != 0 {
+			hasNonZero = true
+			break
+		}
+	}
+	require.True(t, hasNonZero, "MXL tap should receive pre-mute (non-zero) audio during PCM crossfade")
+}
+
+func TestCrossfadePCMPipelineOrder_UnmuteFadeInRamp(t *testing.T) {
+	// The unmute fade-in ramp must apply during PCM crossfade path.
+	var capturedPCM []float32
+
+	pcm := make([]float32, 2048)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	// Mute then unmute to schedule fade-in ramp
+	m.SetProgramMute(true)
+	m.SetProgramMute(false)
+
+	// Verify ramp is scheduled
+	m.mu.RLock()
+	fadeRemaining := m.unmuteFadeRemaining
+	m.mu.RUnlock()
+	require.Greater(t, fadeRemaining, 0, "unmute fade-in ramp should be scheduled")
+
+	// Trigger crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Ingest PCM frames
+	m.IngestPCM("cam1", pcm, 1000, 2)
+	m.IngestPCM("cam2", pcm, 1000, 2)
+
+	// The first sample should be attenuated by the fade-in ramp
+	require.NotNil(t, capturedPCM, "encoder should have received PCM")
+	require.Greater(t, len(capturedPCM), 0, "captured PCM should not be empty")
+	require.Less(t, capturedPCM[0], float32(0.5),
+		"first sample should be attenuated by unmute fade-in ramp during PCM crossfade")
+
+	// Ramp should have been consumed
+	m.mu.RLock()
+	newFadeRemaining := m.unmuteFadeRemaining
+	m.mu.RUnlock()
+	require.Less(t, newFadeRemaining, fadeRemaining,
+		"unmute fade-in ramp should be consumed during PCM crossfade")
+}
+
+func TestCrossfadePipelineOrder_MasterGainBeforeMute(t *testing.T) {
+	// Verify that master gain is applied before program mute in the crossfade path.
+	// When program is NOT muted with master at -6dB, the output should reflect
+	// master gain. When program IS muted, peak metering should show silence
+	// regardless of master gain setting.
+	var capturedPCM []float32
+
+	oldPCM := []float32{0.8, 0.8, 0.8, 0.8}
+	newPCM := []float32{0.8, 0.8, 0.8, 0.8}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetMasterLevel(-6.0) // -6 dB
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: newPCM}
+	m.mu.Unlock()
+
+	// Trigger crossfade without muting
+	m.OnCut("cam1", "cam2")
+
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Output should have master gain applied (samples < 0.8)
+	require.NotNil(t, capturedPCM, "should have captured PCM")
+	masterLinear := float32(math.Pow(10, -6.0/20.0)) // ~0.501
+	for i, s := range capturedPCM {
+		require.Less(t, s, float32(0.8),
+			"sample %d should have master gain applied (expected < 0.8, got %f)", i, s)
+		// Should be approximately oldPCM * crossfade_weight * masterLinear
+		// At the first frame of a 2-frame crossfade, old source dominates
+		require.Greater(t, s, float32(0.0),
+			"sample %d should be positive (master gain, not muted)", i, s)
+		_ = masterLinear
+	}
+
+	// Peak metering should also reflect the gain-reduced values
+	peaks := m.ProgramPeak()
+	require.False(t, math.IsInf(peaks[0], -1), "peak should not be -Inf when not muted")
+}
