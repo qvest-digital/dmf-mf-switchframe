@@ -116,18 +116,21 @@ func getLanczosKernel(srcSize, dstSize int) *lanczosKernel {
 			return c.kernel
 		}
 	}
-	// Compute and store in first empty or overwrite slot 0
+	// Compute and store in first empty slot using CAS to avoid duplicates
+	// when concurrent goroutines both miss the cache for the same dimensions.
 	k := precomputeLanczosKernel(srcSize, dstSize)
 	entry := &kernelCacheEntry{srcSize: srcSize, dstSize: dstSize, kernel: k}
 	for i := range kernelCache {
-		if kernelCache[i].Load() == nil {
-			kernelCache[i].Store(entry)
+		if kernelCache[i].CompareAndSwap(nil, entry) {
 			return k
 		}
 	}
-	// Cache full — overwrite slot based on hash to spread evictions
+	// Cache full — overwrite slot based on hash to spread evictions.
+	// CAS reduces (but doesn't eliminate) wasted overwrites when two
+	// goroutines evict the same slot simultaneously.
 	slot := (srcSize*31 + dstSize) % kernelCacheSize
-	kernelCache[slot].Store(entry)
+	old := kernelCache[slot].Load()
+	kernelCache[slot].CompareAndSwap(old, entry)
 	return k
 }
 
