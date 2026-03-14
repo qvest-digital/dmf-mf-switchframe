@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,14 +108,26 @@ func (a *API) handleClipDelete(w http.ResponseWriter, r *http.Request) {
 // The file is validated, metadata extracted, and stored in the clip library.
 // Progress is tracked via uploadProgress and broadcast to connected clients.
 func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
+	// Apply a 10-minute deadline so slow-loris / stalled clients don't hold the
+	// upload guard forever.
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	r = r.WithContext(ctx)
+
 	// Concurrency guard — only one upload at a time.
 	a.uploadMu.Lock()
 	if a.uploadProgress != nil {
-		a.uploadMu.Unlock()
-		httperr.Write(w, http.StatusConflict, "upload already in progress")
-		return
+		if time.Since(a.uploadStartTime) > 10*time.Minute {
+			// Stale upload — clear it and allow the new one.
+			a.uploadProgress = nil
+		} else {
+			a.uploadMu.Unlock()
+			httperr.Write(w, http.StatusConflict, "upload already in progress")
+			return
+		}
 	}
 	a.uploadProgress = &internal.ClipUploadProgress{Stage: "uploading"}
+	a.uploadStartTime = time.Now()
 	a.uploadMu.Unlock()
 	defer func() {
 		a.uploadMu.Lock()

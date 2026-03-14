@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
@@ -262,6 +263,7 @@ type API struct {
 	broadcastFn      atomic.Pointer[broadcastFunc]
 	uploadMu         sync.Mutex
 	uploadProgress   *internal.ClipUploadProgress
+	uploadStartTime  time.Time
 }
 
 // enrichFunc is the type for the state enrichment callback.

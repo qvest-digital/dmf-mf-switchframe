@@ -253,6 +253,73 @@ func TestStore_Delete_RollbackOnSaveFailure(t *testing.T) {
 	}
 }
 
+func TestStore_ListNeverObservesTransientState(t *testing.T) {
+	t.Parallel()
+	s, err := NewStore(tempStorePath(t))
+	require.NoError(t, err)
+
+	// Pre-populate with one macro so the store is non-empty.
+	require.NoError(t, s.Save(Macro{
+		Name:  "seed",
+		Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}},
+	}))
+
+	// Hammer Save and List concurrently. Before the fix, List() could observe
+	// a newly appended macro that hadn't been written to disk yet (transient state).
+	// After the fix, List() either sees the state before or after Save completes,
+	// never in between.
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			name := fmt.Sprintf("concurrent-%d", n)
+			_ = s.Save(Macro{
+				Name:  name,
+				Steps: []Step{{Action: ActionWait, Params: map[string]any{"ms": float64(100)}}},
+			})
+		}(i)
+	}
+
+	// Continuously list while saves are in flight.
+	// Each list result must contain exactly the "seed" macro plus
+	// some number of fully-committed concurrent macros.
+	// Crucially, the seed macro must always be present.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			list := s.List()
+			// The seed macro must always be visible (never lost).
+			found := false
+			for _, m := range list {
+				if m.Name == "seed" {
+					found = true
+					break
+				}
+			}
+			if !found && len(list) > 0 {
+				// If list is non-empty but seed is missing, something went wrong.
+				t.Errorf("List() returned %d macros but seed macro is missing", len(list))
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	done <- struct{}{}
+
+	// After all goroutines finish, we should have seed + all concurrent macros.
+	finalList := s.List()
+	require.Equal(t, goroutines+1, len(finalList))
+}
+
 func TestStore_NewStoreCreatesDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

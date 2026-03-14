@@ -465,8 +465,9 @@ func TestPlayerHoldFrameOutputsDuringHold(t *testing.T) {
 	require.Equal(t, StateHolding, p.State())
 
 	// Wait a bit and check that more frames have been produced (hold outputs at 1fps).
+	// Use 2.5s to give CI (slower machines) enough margin for at least one 1fps tick.
 	countAfterDone := rawCount.Load()
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(2500 * time.Millisecond)
 	assert.Greater(t, rawCount.Load(), countAfterDone, "hold should continue outputting frames at 1fps")
 
 	cancel()

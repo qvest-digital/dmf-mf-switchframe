@@ -846,6 +846,7 @@ func TestHandleClipUploadConcurrentRejection(t *testing.T) {
 	// Simulate an upload in progress by setting uploadProgress directly.
 	api.uploadMu.Lock()
 	api.uploadProgress = &internal.ClipUploadProgress{Stage: "transcoding", Percent: 50}
+	api.uploadStartTime = time.Now()
 	api.uploadMu.Unlock()
 
 	// A second upload attempt should get 409 Conflict.

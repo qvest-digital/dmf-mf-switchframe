@@ -772,7 +772,16 @@ func estimateFPSFromClip(clip []bufferedFrame) float64 {
 	if len(clip) < 2 {
 		return 30.0
 	}
-	ptsSpan := clip[len(clip)-1].pts - clip[0].pts
+	minPTS, maxPTS := clip[0].pts, clip[0].pts
+	for _, f := range clip[1:] {
+		if f.pts < minPTS {
+			minPTS = f.pts
+		}
+		if f.pts > maxPTS {
+			maxPTS = f.pts
+		}
+	}
+	ptsSpan := maxPTS - minPTS
 	if ptsSpan <= 0 {
 		return 30.0
 	}

@@ -1,8 +1,10 @@
 package operator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -158,6 +160,63 @@ func TestStore_FileCreatesDirectory(t *testing.T) {
 	// Verify the file was created.
 	_, err = os.Stat(path)
 	require.False(t, os.IsNotExist(err), "expected operators.json to be created")
+}
+
+func TestStore_ListNeverObservesTransientState(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	// Pre-populate with one operator so the store is non-empty.
+	seed, err := s.Register("Seed", RoleDirector)
+	require.NoError(t, err)
+
+	// Hammer Register and List concurrently. Before the fix, List() could
+	// observe a newly appended operator that hadn't been written to disk yet
+	// (transient state). After the fix, List() either sees the state before
+	// or after Register completes, never in between.
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			name := fmt.Sprintf("Op-%d", n)
+			_, _ = s.Register(name, RoleViewer)
+		}(i)
+	}
+
+	// Continuously list while registrations are in flight.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			list := s.List()
+			// The seed operator must always be visible.
+			found := false
+			for _, op := range list {
+				if op.ID == seed.ID {
+					found = true
+					break
+				}
+			}
+			if !found && len(list) > 0 {
+				t.Errorf("List() returned %d operators but seed operator is missing", len(list))
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	done <- struct{}{}
+
+	// After all goroutines finish, we should have seed + all concurrent operators.
+	finalList := s.List()
+	require.Equal(t, goroutines+1, len(finalList))
 }
 
 func TestStore_Register_RollbackOnSaveFailure(t *testing.T) {

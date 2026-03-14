@@ -164,7 +164,20 @@ export class PrismRenderer {
 			}
 
 			const audioAdvanced = this.currentAudioPTS < 0 || audioPTS !== this.currentAudioPTS;
-			if (audioAdvanced) {
+
+			// Detect A/V PTS divergence: video buffer frames are far ahead
+			// of audio PTS. Happens after source transitions where the mixer
+			// has an audio gap (e.g., clip→live), creating permanent desync.
+			// Threshold: 3 seconds (3,000,000 μs).
+			const peekDiverge = this.videoBuffer.peekFirstFrame();
+			const avDiverged = peekDiverge != null && audioPTS >= 0 &&
+				peekDiverge.timestamp - audioPTS > 3_000_000 &&
+				this.videoBuffer.getStats().queueSize > 10;
+
+			// Only reset audio-stall tracking when audio advances AND
+			// A/V PTS are reasonably aligned. During divergence, keep
+			// the wall-clock pacing stable.
+			if (audioAdvanced && !avDiverged) {
 				this.lastAudioAdvanceTime = now;
 				this.audioStallFreeRunStart = -1;
 				this.audioStallFreeRunBasePTS = -1;
@@ -176,7 +189,7 @@ export class PrismRenderer {
 			const audioStale = this.lastAudioAdvanceTime > 0 &&
 				(now - this.lastAudioAdvanceTime) > AUDIO_STALE_MS;
 
-			if (audioStale && this.videoBuffer.getStats().queueSize > 0) {
+			if ((audioStale || avDiverged) && this.videoBuffer.getStats().queueSize > 0) {
 				// Audio clock has stalled — pace video using wall clock
 				// anchored from when the stall was first detected.
 				if (this.audioStallFreeRunStart < 0) {

@@ -104,16 +104,15 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
-	s.mu.Unlock()
 
 	if err := s.writeFile(data); err != nil {
-		// Roll back: remove the appended operator and its token index entry.
-		s.mu.Lock()
+		// Roll back: remove the appended operator and its token index entry before releasing the lock.
 		s.operators = s.operators[:len(s.operators)-1]
 		delete(s.tokenIdx, op.Token)
 		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
+	s.mu.Unlock()
 	return op, nil
 }
 
@@ -185,11 +184,9 @@ func (s *Store) Delete(id string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save operators: %w", err)
 	}
-	s.mu.Unlock()
 
 	if err := s.writeFile(data); err != nil {
-		// Roll back: re-insert at original position and rebuild index.
-		s.mu.Lock()
+		// Roll back: re-insert at original position and rebuild index before releasing the lock.
 		rear := make([]Operator, len(s.operators[idx:]))
 		copy(rear, s.operators[idx:])
 		s.operators = append(s.operators[:idx], removed)
@@ -198,6 +195,7 @@ func (s *Store) Delete(id string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save operators: %w", err)
 	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -219,7 +217,7 @@ func (s *Store) marshalLocked() ([]byte, error) {
 }
 
 // writeFile writes pre-serialized data to disk atomically (temp file + rename).
-// Called WITHOUT the lock held to avoid blocking readers during I/O.
+// Called with the lock held to prevent transient state visibility.
 func (s *Store) writeFile(data []byte) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

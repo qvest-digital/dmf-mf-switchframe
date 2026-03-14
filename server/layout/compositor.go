@@ -542,6 +542,12 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	if l == nil || slotIdx >= len(l.Slots) {
 		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
 	}
+	// Snap to even alignment for YUV420 compatibility.
+	// Round Min down and Max up so the rect never shrinks below the caller's intent.
+	rect.Min.X &^= 1
+	rect.Min.Y &^= 1
+	rect.Max.X = (rect.Max.X + 1) &^ 1
+	rect.Max.Y = (rect.Max.Y + 1) &^ 1
 	if rect.Min.X < 0 || rect.Min.Y < 0 || rect.Max.X > c.frameW || rect.Max.Y > c.frameH {
 		return fmt.Errorf("rect %v exceeds frame bounds %dx%d", rect, c.frameW, c.frameH)
 	}

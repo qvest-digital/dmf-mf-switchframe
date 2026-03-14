@@ -1693,3 +1693,76 @@ func TestDecodeGOP_PTSAssignmentOnFrameDrop(t *testing.T) {
 			"frame %d PTS mismatch: got %d, want %d", i, df.pts, expectedPTS[i])
 	}
 }
+
+func TestEstimateFPSFromClip(t *testing.T) {
+	t.Run("single frame returns default 30fps", func(t *testing.T) {
+		clip := []bufferedFrame{{pts: 1000}}
+		assert.Equal(t, 30.0, estimateFPSFromClip(clip))
+	})
+
+	t.Run("empty clip returns default 30fps", func(t *testing.T) {
+		assert.Equal(t, 30.0, estimateFPSFromClip(nil))
+	})
+
+	t.Run("frames in PTS order at 30fps", func(t *testing.T) {
+		// 30fps = 3000 ticks per frame at 90kHz
+		clip := []bufferedFrame{
+			{pts: 0},
+			{pts: 3000},
+			{pts: 6000},
+			{pts: 9000},
+		}
+		fps := estimateFPSFromClip(clip)
+		assert.InDelta(t, 30.0, fps, 0.1)
+	})
+
+	t.Run("frames in decode order with B-frames", func(t *testing.T) {
+		// B-frame decode order: I0, P3, B1, B2 — PTS are out of order.
+		// PTS span should be max(9000) - min(0) = 9000, giving 30fps.
+		clip := []bufferedFrame{
+			{pts: 0, isKeyframe: true},  // I-frame (display order 0)
+			{pts: 9000},                 // P-frame (display order 3)
+			{pts: 3000},                 // B-frame (display order 1)
+			{pts: 6000},                 // B-frame (display order 2)
+		}
+		fps := estimateFPSFromClip(clip)
+		// With the bug (last-first): (6000-0)/3 = 2000 ticks/frame = 45fps — WRONG.
+		// With the fix (min/max): (9000-0)/3 = 3000 ticks/frame = 30fps — CORRECT.
+		assert.InDelta(t, 30.0, fps, 0.1)
+	})
+
+	t.Run("decode order where last PTS is less than first PTS", func(t *testing.T) {
+		// Pathological case: I0, B-1(reorder), P2 in decode order
+		// where the last frame in decode order has the lowest PTS.
+		// Without the fix, ptsSpan = last.pts - first.pts < 0, returns default 30fps
+		// even for a 24fps source.
+		clip := []bufferedFrame{
+			{pts: 15000, isKeyframe: true}, // I-frame
+			{pts: 3750},                    // B-frame (lowest PTS, at end of decode order)
+			{pts: 7500},                    // B-frame
+			{pts: 11250},                   // B-frame
+		}
+		// PTS span = 15000 - 3750 = 11250, frames-1 = 3
+		// fps = 3 * 90000 / 11250 = 24.0
+		fps := estimateFPSFromClip(clip)
+		assert.InDelta(t, 24.0, fps, 0.1)
+	})
+
+	t.Run("clamps below 10fps", func(t *testing.T) {
+		clip := []bufferedFrame{
+			{pts: 0},
+			{pts: 900000}, // 10 seconds for 1 interval = 0.1fps
+		}
+		fps := estimateFPSFromClip(clip)
+		assert.Equal(t, 10.0, fps)
+	})
+
+	t.Run("clamps above 120fps", func(t *testing.T) {
+		clip := []bufferedFrame{
+			{pts: 0},
+			{pts: 100}, // absurdly small interval
+		}
+		fps := estimateFPSFromClip(clip)
+		assert.Equal(t, 120.0, fps)
+	})
+}

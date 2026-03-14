@@ -537,6 +537,35 @@ func TestCompositor_UpdateSlotRect_OutOfRange(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCompositor_UpdateSlotRect_SnapsOddToEven(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "test",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(100, 100, 580, 370), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Pass odd coordinates — they should be snapped to even values.
+	// Min rounds down (&^1), Max rounds up ((v+1)&^1).
+	err := c.UpdateSlotRect(0, image.Rect(201, 203, 681, 471))
+	require.NoError(t, err)
+
+	updated := c.GetLayout()
+	r := updated.Slots[0].Rect
+	require.Equal(t, 200, r.Min.X, "Min.X should snap down to even")
+	require.Equal(t, 202, r.Min.Y, "Min.Y should snap down to even")
+	require.Equal(t, 682, r.Max.X, "Max.X should snap up to even")
+	require.Equal(t, 472, r.Max.Y, "Max.Y should snap up to even")
+
+	// Already-even values should pass through unchanged.
+	err = c.UpdateSlotRect(0, image.Rect(100, 100, 580, 370))
+	require.NoError(t, err)
+	updated = c.GetLayout()
+	require.Equal(t, image.Rect(100, 100, 580, 370), updated.Slots[0].Rect)
+}
+
 func TestCompositor_UpdateSlotRect_ExceedsFrame(t *testing.T) {
 	c := NewCompositor(1920, 1080)
 	l := &Layout{

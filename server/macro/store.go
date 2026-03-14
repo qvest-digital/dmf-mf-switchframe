@@ -122,11 +122,9 @@ func (s *Store) Save(m Macro) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save macros: %w", err)
 	}
-	s.mu.Unlock()
 
 	if err := s.writeFile(data); err != nil {
-		// Roll back: restore previous state.
-		s.mu.Lock()
+		// Roll back: restore previous state before releasing the lock.
 		if replaceIdx >= 0 {
 			s.macros[replaceIdx] = previous
 		} else {
@@ -135,6 +133,7 @@ func (s *Store) Save(m Macro) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save macros: %w", err)
 	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -167,11 +166,9 @@ func (s *Store) Delete(name string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save macros: %w", err)
 	}
-	s.mu.Unlock()
 
 	if err := s.writeFile(data); err != nil {
-		// Roll back: re-insert at original position.
-		s.mu.Lock()
+		// Roll back: re-insert at original position before releasing the lock.
 		rear := make([]Macro, len(s.macros[idx:]))
 		copy(rear, s.macros[idx:])
 		s.macros = append(s.macros[:idx], removed)
@@ -179,6 +176,7 @@ func (s *Store) Delete(name string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("save macros: %w", err)
 	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -193,7 +191,7 @@ func (s *Store) marshalLocked() ([]byte, error) {
 }
 
 // writeFile writes pre-serialized data to disk atomically (temp file + rename).
-// Called WITHOUT the lock held to avoid blocking readers during I/O.
+// Called with the lock held to prevent transient state visibility.
 func (s *Store) writeFile(data []byte) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
