@@ -95,7 +95,6 @@ func (s *Store) Save(m Macro) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Replace existing macro with same name, or append.
 	var previous Macro
@@ -112,13 +111,28 @@ func (s *Store) Save(m Macro) error {
 		s.macros = append(s.macros, m)
 	}
 
-	if err := s.save(); err != nil {
+	data, err := s.marshalLocked()
+	if err != nil {
 		// Roll back: restore previous state.
 		if replaceIdx >= 0 {
 			s.macros[replaceIdx] = previous
 		} else {
 			s.macros = s.macros[:len(s.macros)-1]
 		}
+		s.mu.Unlock()
+		return fmt.Errorf("save macros: %w", err)
+	}
+	s.mu.Unlock()
+
+	if err := s.writeFile(data); err != nil {
+		// Roll back: restore previous state.
+		s.mu.Lock()
+		if replaceIdx >= 0 {
+			s.macros[replaceIdx] = previous
+		} else {
+			s.macros = s.macros[:len(s.macros)-1]
+		}
+		s.mu.Unlock()
 		return fmt.Errorf("save macros: %w", err)
 	}
 	return nil
@@ -127,34 +141,60 @@ func (s *Store) Save(m Macro) error {
 // Delete removes a macro by name.
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
+	idx := -1
 	for i, m := range s.macros {
 		if m.Name == name {
-			removed := s.macros[i]
-			s.macros = append(s.macros[:i], s.macros[i+1:]...)
-			if err := s.save(); err != nil {
-				// Roll back: re-insert at original position.
-				rear := make([]Macro, len(s.macros[i:]))
-				copy(rear, s.macros[i:])
-				s.macros = append(s.macros[:i], removed)
-				s.macros = append(s.macros, rear...)
-				return fmt.Errorf("save macros: %w", err)
-			}
-			return nil
+			idx = i
+			break
 		}
 	}
-	return ErrNotFound
-}
-
-// save writes the current macros to disk atomically (temp file + rename).
-// Must be called with s.mu held (either read or write lock).
-func (s *Store) save() error {
-	data, err := json.MarshalIndent(s.macros, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal macros: %w", err)
+	if idx == -1 {
+		s.mu.Unlock()
+		return ErrNotFound
 	}
 
+	removed := s.macros[idx]
+	s.macros = append(s.macros[:idx], s.macros[idx+1:]...)
+
+	data, err := s.marshalLocked()
+	if err != nil {
+		// Roll back: re-insert at original position.
+		rear := make([]Macro, len(s.macros[idx:]))
+		copy(rear, s.macros[idx:])
+		s.macros = append(s.macros[:idx], removed)
+		s.macros = append(s.macros, rear...)
+		s.mu.Unlock()
+		return fmt.Errorf("save macros: %w", err)
+	}
+	s.mu.Unlock()
+
+	if err := s.writeFile(data); err != nil {
+		// Roll back: re-insert at original position.
+		s.mu.Lock()
+		rear := make([]Macro, len(s.macros[idx:]))
+		copy(rear, s.macros[idx:])
+		s.macros = append(s.macros[:idx], removed)
+		s.macros = append(s.macros, rear...)
+		s.mu.Unlock()
+		return fmt.Errorf("save macros: %w", err)
+	}
+	return nil
+}
+
+// marshalLocked serializes the current macros to JSON.
+// Must be called with s.mu held.
+func (s *Store) marshalLocked() ([]byte, error) {
+	data, err := json.MarshalIndent(s.macros, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal macros: %w", err)
+	}
+	return data, nil
+}
+
+// writeFile writes pre-serialized data to disk atomically (temp file + rename).
+// Called WITHOUT the lock held to avoid blocking readers during I/O.
+func (s *Store) writeFile(data []byte) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)

@@ -62,26 +62,28 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 	if name == "" {
 		return Operator{}, ErrEmptyName
 	}
-	if !ValidRoles[role] {
+	if !IsValidRole(role) {
 		return Operator{}, ErrInvalidRole
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Check for duplicate name.
 	for _, op := range s.operators {
 		if op.Name == name {
+			s.mu.Unlock()
 			return Operator{}, ErrDuplicateName
 		}
 	}
 
 	id, err := generateID()
 	if err != nil {
+		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("generate ID: %w", err)
 	}
 	token, err := generateToken()
 	if err != nil {
+		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("generate token: %w", err)
 	}
 
@@ -94,10 +96,22 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 	s.operators = append(s.operators, op)
 	s.tokenIdx[op.Token] = len(s.operators) - 1
 
-	if err := s.save(); err != nil {
+	data, err := s.marshalLocked()
+	if err != nil {
 		// Roll back: remove the appended operator and its token index entry.
 		s.operators = s.operators[:len(s.operators)-1]
 		delete(s.tokenIdx, op.Token)
+		s.mu.Unlock()
+		return Operator{}, fmt.Errorf("save operators: %w", err)
+	}
+	s.mu.Unlock()
+
+	if err := s.writeFile(data); err != nil {
+		// Roll back: remove the appended operator and its token index entry.
+		s.mu.Lock()
+		s.operators = s.operators[:len(s.operators)-1]
+		delete(s.tokenIdx, op.Token)
+		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
 	return op, nil
@@ -142,27 +156,49 @@ func (s *Store) GetByToken(token string) (Operator, error) {
 // Delete removes an operator by ID.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
+	idx := -1
 	for i, op := range s.operators {
 		if op.ID == id {
-			// Save a copy for rollback before mutating.
-			removed := s.operators[i]
-			s.operators = append(s.operators[:i], s.operators[i+1:]...)
-			s.rebuildTokenIndex()
-			if err := s.save(); err != nil {
-				// Roll back: re-insert at original position and rebuild index.
-				rear := make([]Operator, len(s.operators[i:]))
-				copy(rear, s.operators[i:])
-				s.operators = append(s.operators[:i], removed)
-				s.operators = append(s.operators, rear...)
-				s.rebuildTokenIndex()
-				return fmt.Errorf("save operators: %w", err)
-			}
-			return nil
+			idx = i
+			break
 		}
 	}
-	return ErrNotFound
+	if idx == -1 {
+		s.mu.Unlock()
+		return ErrNotFound
+	}
+
+	// Save a copy for rollback before mutating.
+	removed := s.operators[idx]
+	s.operators = append(s.operators[:idx], s.operators[idx+1:]...)
+	s.rebuildTokenIndex()
+
+	data, err := s.marshalLocked()
+	if err != nil {
+		// Roll back: re-insert at original position and rebuild index.
+		rear := make([]Operator, len(s.operators[idx:]))
+		copy(rear, s.operators[idx:])
+		s.operators = append(s.operators[:idx], removed)
+		s.operators = append(s.operators, rear...)
+		s.rebuildTokenIndex()
+		s.mu.Unlock()
+		return fmt.Errorf("save operators: %w", err)
+	}
+	s.mu.Unlock()
+
+	if err := s.writeFile(data); err != nil {
+		// Roll back: re-insert at original position and rebuild index.
+		s.mu.Lock()
+		rear := make([]Operator, len(s.operators[idx:]))
+		copy(rear, s.operators[idx:])
+		s.operators = append(s.operators[:idx], removed)
+		s.operators = append(s.operators, rear...)
+		s.rebuildTokenIndex()
+		s.mu.Unlock()
+		return fmt.Errorf("save operators: %w", err)
+	}
+	return nil
 }
 
 // Count returns the number of registered operators.
@@ -172,13 +208,19 @@ func (s *Store) Count() int {
 	return len(s.operators)
 }
 
-// save writes operators to disk atomically (temp file + rename).
-func (s *Store) save() error {
+// marshalLocked serializes the current operators to JSON.
+// Must be called with s.mu held.
+func (s *Store) marshalLocked() ([]byte, error) {
 	data, err := json.MarshalIndent(s.operators, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal operators: %w", err)
+		return nil, fmt.Errorf("marshal operators: %w", err)
 	}
+	return data, nil
+}
 
+// writeFile writes pre-serialized data to disk atomically (temp file + rename).
+// Called WITHOUT the lock held to avoid blocking readers during I/O.
+func (s *Store) writeFile(data []byte) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)
