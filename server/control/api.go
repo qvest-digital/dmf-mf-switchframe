@@ -204,6 +204,11 @@ func WithTextAnimEngine(tae *graphics.TextAnimationEngine) APIOption {
 	return func(a *API) { a.textAnimEngine = tae }
 }
 
+// WithTickerEngine attaches a ticker engine to the API.
+func WithTickerEngine(te *graphics.TickerEngine) APIOption {
+	return func(a *API) { a.tickerEngine = te }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -226,6 +231,7 @@ type API struct {
 	captionMgr       CaptionManagerAPI
 	perf             PerfAPI
 	textAnimEngine   *graphics.TextAnimationEngine
+	tickerEngine     *graphics.TickerEngine
 	mux           *http.ServeMux
 	enrichFn      func(internal.ControlRoomState) internal.ControlRoomState
 	lastOperator  atomic.Pointer[string]
@@ -401,6 +407,11 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		if a.textAnimEngine != nil {
 			mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
 			mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
+		}
+		if a.tickerEngine != nil {
+			mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
+			mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
+			mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
 		}
 	}
 	if a.macroStore != nil {

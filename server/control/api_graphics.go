@@ -581,6 +581,113 @@ func (a *API) handleGraphicsTextAnimStop(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
+// tickerRequest is the JSON body for starting a ticker.
+type tickerRequest struct {
+	Text     string  `json:"text"`
+	FontSize float64 `json:"fontSize"`
+	Speed    float64 `json:"speed"`
+	Bold     bool    `json:"bold"`
+	Loop     bool    `json:"loop"`
+	Height   int     `json:"height"`
+}
+
+// tickerTextRequest is the JSON body for updating ticker text.
+type tickerTextRequest struct {
+	Text string `json:"text"`
+}
+
+// handleGraphicsTickerStart starts a scrolling ticker on a layer.
+func (a *API) handleGraphicsTickerStart(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.tickerEngine == nil {
+		httperr.Write(w, http.StatusNotImplemented, "ticker engine not available")
+		return
+	}
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req tickerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Text == "" {
+		httperr.Write(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	if req.Speed <= 0 {
+		req.Speed = 100
+	}
+	if req.FontSize <= 0 {
+		req.FontSize = 24
+	}
+	cfg := graphics.TickerConfig{
+		Text:     req.Text,
+		FontSize: req.FontSize,
+		Speed:    req.Speed,
+		Bold:     req.Bold,
+		Loop:     req.Loop,
+		Height:   req.Height,
+	}
+	if err := a.tickerEngine.Start(id, cfg); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsTickerStop stops the ticker on a layer.
+func (a *API) handleGraphicsTickerStop(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.tickerEngine == nil {
+		httperr.Write(w, http.StatusNotImplemented, "ticker engine not available")
+		return
+	}
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	if err := a.tickerEngine.Stop(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsTickerText updates the text of a running ticker.
+func (a *API) handleGraphicsTickerText(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.tickerEngine == nil {
+		httperr.Write(w, http.StatusNotImplemented, "ticker engine not available")
+		return
+	}
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req tickerTextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Text == "" {
+		httperr.Write(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	if err := a.tickerEngine.UpdateText(id, req.Text); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
 // handleStingerList returns all loaded stinger clip names.
 func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
