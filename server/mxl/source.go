@@ -121,8 +121,9 @@ type Source struct {
 	audioReader *Reader
 	dataReader  *Reader
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	stopOnce sync.Once
 
 	// Shared wall-clock epoch for AV sync. The first grain (video or audio)
 	// to arrive sets the epoch; all subsequent PTS values are computed as
@@ -216,18 +217,21 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 }
 
 // Stop halts the source and waits for goroutines to finish.
+// Safe to call multiple times.
 func (s *Source) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	s.wg.Wait()
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.wg.Wait()
 
-	if s.videoEncoder != nil {
-		s.videoEncoder.Close()
-	}
-	if s.audioEncoder != nil {
-		_ = s.audioEncoder.Close()
-	}
+		if s.videoEncoder != nil {
+			s.videoEncoder.Close()
+		}
+		if s.audioEncoder != nil {
+			_ = s.audioEncoder.Close()
+		}
+	})
 }
 
 func (s *Source) videoFanOut(ctx context.Context) {

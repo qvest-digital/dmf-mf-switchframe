@@ -186,6 +186,26 @@ func TestSource_StopsCleanly(t *testing.T) {
 	}
 }
 
+func TestSource_DoubleStopNoPanic(t *testing.T) {
+	src := NewSource(SourceConfig{
+		FlowName:   "cam1",
+		Width:      12,
+		Height:     2,
+		OnRawVideo: func(string, []byte, int, int, int64) {},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	flow := &infiniteDiscreteReader{}
+	src.Start(ctx, flow, nil)
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	// Calling Stop twice must not panic.
+	src.Stop()
+	src.Stop()
+}
+
 func TestInterleaveChannels(t *testing.T) {
 	tests := []struct {
 		name     string
