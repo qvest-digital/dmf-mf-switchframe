@@ -45,6 +45,8 @@ const (
 	ActionGraphicsUploadFrame       Action = "graphics_upload_frame"
 	ActionGraphicsTextAnimate       Action = "graphics_text_animate"
 	ActionGraphicsTextAnimateStop   Action = "graphics_text_animate_stop"
+	ActionGraphicsTickerStart       Action = "graphics_ticker_start"
+	ActionGraphicsTickerStop        Action = "graphics_ticker_stop"
 
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
@@ -121,6 +123,8 @@ var AllActions = map[Action]bool{
 	ActionGraphicsUploadFrame:       true,
 	ActionGraphicsTextAnimate:      true,
 	ActionGraphicsTextAnimateStop:  true,
+	ActionGraphicsTickerStart:      true,
+	ActionGraphicsTickerStop:       true,
 	ActionRecordingStart:  true,
 	ActionRecordingStop:   true,
 	ActionPresetRecall:    true,
@@ -299,6 +303,12 @@ func StepSummary(step Step) string {
 	case ActionGraphicsTextAnimateStop:
 		layerID := fmtLayerID(step.Params)
 		return fmt.Sprintf("Graphics Text Animate Stop (layer %s)", layerID)
+	case ActionGraphicsTickerStart:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Ticker Start (layer %s)", layerID)
+	case ActionGraphicsTickerStop:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Ticker Stop (layer %s)", layerID)
 	case ActionRecordingStart:
 		return "Recording Start"
 	case ActionRecordingStop:
