@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -275,11 +276,10 @@ func (a *App) wireStateCallbacks() {
 	// changes (e.g., first layer turned on, last layer turned off). Fade ticks
 	// fire onStateChange ~60x/sec but don't change Active() — rebuilding on
 	// every tick would create a new pipeline + encode goroutine per frame.
-	var gfxWasActive bool
+	var gfxWasActive atomic.Bool
 	a.compositor.OnStateChange(func(gfxState graphics.State) {
 		nowActive := a.compositor.IsActive()
-		if nowActive != gfxWasActive {
-			gfxWasActive = nowActive
+		if gfxWasActive.Swap(nowActive) != nowActive {
 			a.sw.RebuildPipeline()
 		}
 		a.clearLastOperator()
