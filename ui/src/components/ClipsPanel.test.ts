@@ -70,4 +70,42 @@ describe('ClipsPanel', () => {
 		const { container } = render(ClipsPanel, { props: { state } });
 		expect(container.textContent).toContain('Intro Bumper');
 	});
+
+	it('shows progress bar when clipUpload is present', () => {
+		const state = makeState({
+			clipUpload: {
+				stage: 'transcoding',
+				percent: 42,
+				filename: 'test.mkv',
+			},
+		});
+		const { container } = render(ClipsPanel, { props: { state } });
+		const progressBar = container.querySelector('.upload-progress');
+		expect(progressBar).toBeTruthy();
+		expect(container.textContent).toContain('Transcoding');
+		expect(container.textContent).toContain('test.mkv');
+	});
+
+	it('does not show progress bar when no upload', () => {
+		const state = makeState();
+		const { container } = render(ClipsPanel, { props: { state } });
+		const progressBar = container.querySelector('.upload-progress');
+		expect(progressBar).toBeFalsy();
+	});
+
+	it('shows stage indicators during upload progress', () => {
+		const state = makeState({
+			clipUpload: {
+				stage: 'analyzing',
+				percent: 0,
+				filename: 'clip.webm',
+			},
+		});
+		const { container } = render(ClipsPanel, { props: { state } });
+		const stages = container.querySelectorAll('.stage-dot');
+		expect(stages).toHaveLength(4);
+		// "Analyze" should be the active stage
+		const activeStages = container.querySelectorAll('.stage-dot.active');
+		expect(activeStages.length).toBeGreaterThan(0);
+	});
 });

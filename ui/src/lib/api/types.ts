@@ -346,6 +346,14 @@ export interface CaptionState {
 	sourceCaptions?: Record<string, boolean>;
 }
 
+export type ClipUploadStage = 'uploading' | 'analyzing' | 'transcoding' | 'validating';
+
+export interface ClipUploadProgress {
+	stage: ClipUploadStage;
+	percent: number;
+	filename?: string;
+}
+
 export type ClipPlayerStatus = 'empty' | 'loaded' | 'playing' | 'paused' | 'holding';
 
 export interface ClipPlayerState {
@@ -511,6 +519,7 @@ export interface ControlRoomState {
 	captions?: CaptionState;
 	clipPlayers?: ClipPlayerState[];
 	clipCount?: number;
+	clipUpload?: ClipUploadProgress;
 	macro?: MacroExecutionState;
 	lastChangedBy?: string;
 	seq: number;

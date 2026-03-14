@@ -10,11 +10,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 // registerClipRoutes registers clip management and player routes on the given mux.
@@ -102,7 +105,46 @@ func (a *API) handleClipDelete(w http.ResponseWriter, r *http.Request) {
 
 // handleClipUpload accepts a multipart file upload of a media clip.
 // The file is validated, metadata extracted, and stored in the clip library.
+// Progress is tracked via uploadProgress and broadcast to connected clients.
 func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
+	// Concurrency guard — only one upload at a time.
+	a.uploadMu.Lock()
+	if a.uploadProgress != nil {
+		a.uploadMu.Unlock()
+		httperr.Write(w, http.StatusConflict, "upload already in progress")
+		return
+	}
+	a.uploadProgress = &internal.ClipUploadProgress{Stage: "uploading"}
+	a.uploadMu.Unlock()
+	defer func() {
+		a.uploadMu.Lock()
+		a.uploadProgress = nil
+		a.uploadMu.Unlock()
+		a.broadcast()
+	}()
+
+	// Helper to update and broadcast progress.
+	setProgress := func(stage string, percent int) {
+		a.uploadMu.Lock()
+		if a.uploadProgress != nil {
+			a.uploadProgress.Stage = stage
+			a.uploadProgress.Percent = percent
+		}
+		a.uploadMu.Unlock()
+		a.broadcast()
+	}
+
+	setProgressFilename := func(stage string, percent int, filename string) {
+		a.uploadMu.Lock()
+		if a.uploadProgress != nil {
+			a.uploadProgress.Stage = stage
+			a.uploadProgress.Percent = percent
+			a.uploadProgress.Filename = filename
+		}
+		a.uploadMu.Unlock()
+		a.broadcast()
+	}
+
 	// Limit to 2GB.
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
 
@@ -117,6 +159,8 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = file.Close() }()
+
+	setProgressFilename("uploading", 50, header.Filename)
 
 	// Validate extension.
 	ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -142,14 +186,15 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	setProgress("analyzing", 0)
+
 	// Transcode non-H.264 files to H.264+AAC MPEG-TS.
 	alreadyTranscoded := false
 	if clip.NeedsTranscode(tmpPath) {
-		tsPath := tmpPath + ".transcoded.ts"
-		encoderName, _ := codec.ProbeEncoders()
-		slog.Info("clip: transcoding upload", "input", header.Filename, "encoder", encoderName)
+		setProgress("transcoding", 0)
+		slog.Info("clip: transcoding upload", "input", header.Filename)
 
-		_, tcErr := codec.TranscodeFile(tmpPath, tsPath, encoderName, 0)
+		tsPath, tcErr := a.transcodeWithProgress(tmpPath)
 		_ = os.Remove(tmpPath) // clean up original
 		if tcErr != nil {
 			_ = os.Remove(tsPath)
@@ -165,6 +210,8 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	setProgress("validating", 0)
+
 	// Validate the (potentially transcoded) file.
 	probe, err := clip.Validate(tmpPath)
 	if err != nil && !alreadyTranscoded && clip.CanTranscodeFallback(ext) {
@@ -174,9 +221,10 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		// FFmpeg transcode which handles all MP4 variants.
 		slog.Info("clip: validate failed, falling back to transcode",
 			"input", header.Filename, "error", err)
-		tsPath := tmpPath + ".transcoded.ts"
-		encoderName, _ := codec.ProbeEncoders()
-		_, tcErr := codec.TranscodeFile(tmpPath, tsPath, encoderName, 0)
+
+		setProgress("transcoding", 0)
+
+		tsPath, tcErr := a.transcodeWithProgress(tmpPath)
 		_ = os.Remove(tmpPath)
 		if tcErr != nil {
 			_ = os.Remove(tsPath)
@@ -189,6 +237,9 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		if info, statErr := os.Stat(tmpPath); statErr == nil {
 			n = info.Size()
 		}
+
+		setProgress("validating", 0)
+
 		// Re-validate the transcoded file.
 		probe, err = clip.Validate(tmpPath)
 	}
@@ -197,6 +248,8 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
+
+	setProgress("validating", 100)
 
 	// Derive clip name from original filename (without extension).
 	name := strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
@@ -249,6 +302,52 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = json.NewEncoder(w).Encode(c)
 	}
+}
+
+// transcodeWithProgress runs FFmpeg transcode with a progress polling goroutine.
+// Returns the output .ts path and any error. The caller is responsible for
+// cleaning up input/output files on error.
+func (a *API) transcodeWithProgress(inputPath string) (string, error) {
+	tsPath := inputPath + ".transcoded.ts"
+	encoderName, _ := codec.ProbeEncoders()
+
+	// transcodePct is stack-allocated and passed to C via unsafe.Pointer.
+	// The C function writes to it atomically while Go reads with atomic.LoadInt32.
+	// Stack allocation ensures the GC cannot relocate it. Do NOT move this to
+	// the heap (e.g., new(int32)) without using runtime.Pinner.
+	var transcodePct int32
+	stopPoll := a.pollTranscodeProgress(&transcodePct)
+	_, err := codec.TranscodeFileWithProgress(inputPath, tsPath, encoderName, 0, &transcodePct)
+	stopPoll()
+	return tsPath, err
+}
+
+// pollTranscodeProgress starts a goroutine that reads the atomic transcode
+// progress counter at 4Hz and broadcasts state updates. Returns a stop function
+// that is safe to call multiple times.
+func (a *API) pollTranscodeProgress(pct *int32) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				p := int(atomic.LoadInt32(pct))
+				a.uploadMu.Lock()
+				if a.uploadProgress != nil {
+					a.uploadProgress.Stage = "transcoding"
+					a.uploadProgress.Percent = p
+				}
+				a.uploadMu.Unlock()
+				a.broadcast()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
 
 // handleClipPin marks an ephemeral clip as permanent.

@@ -213,6 +213,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	if a.clipStore != nil {
 		state.ClipCount = len(a.clipStore.List())
 	}
+	if up := a.api.UploadProgress(); up != nil {
+		state.ClipUpload = up
+	}
 
 	// Encoder state (current + available backends).
 	// Uses pre-computed internal.EncoderInfo slice to avoid per-broadcast allocations.

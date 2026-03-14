@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -837,4 +838,61 @@ func TestHandleClipPlayerLoopInvalidJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleClipUploadConcurrentRejection(t *testing.T) {
+	api, _, _ := setupTestAPIWithClips(t)
+
+	// Simulate an upload in progress by setting uploadProgress directly.
+	api.uploadMu.Lock()
+	api.uploadProgress = &internal.ClipUploadProgress{Stage: "transcoding", Percent: 50}
+	api.uploadMu.Unlock()
+
+	// A second upload attempt should get 409 Conflict.
+	req := httptest.NewRequest("POST", "/api/clips/upload", strings.NewReader(""))
+	req.Header.Set("Content-Type", "multipart/form-data")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+
+	// Clean up.
+	api.uploadMu.Lock()
+	api.uploadProgress = nil
+	api.uploadMu.Unlock()
+}
+
+func TestUploadProgressAccessor(t *testing.T) {
+	api, _, _ := setupTestAPIWithClips(t)
+
+	// Initially nil.
+	require.Nil(t, api.UploadProgress())
+
+	// Set progress.
+	api.uploadMu.Lock()
+	api.uploadProgress = &internal.ClipUploadProgress{
+		Stage:    "transcoding",
+		Percent:  42,
+		Filename: "test.mkv",
+	}
+	api.uploadMu.Unlock()
+
+	// Read back — should be a copy.
+	up := api.UploadProgress()
+	require.NotNil(t, up)
+	require.Equal(t, "transcoding", up.Stage)
+	require.Equal(t, 42, up.Percent)
+	require.Equal(t, "test.mkv", up.Filename)
+
+	// Mutating the returned copy should not affect the original.
+	up.Percent = 99
+	up2 := api.UploadProgress()
+	require.Equal(t, 42, up2.Percent)
+
+	// Clean up.
+	api.uploadMu.Lock()
+	api.uploadProgress = nil
+	api.uploadMu.Unlock()
+
+	require.Nil(t, api.UploadProgress())
 }

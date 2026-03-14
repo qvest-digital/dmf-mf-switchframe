@@ -125,3 +125,8 @@ type TranscodeResult struct {
 func TranscodeFile(inputPath, outputPath, encoderName string, bitrate int) (*TranscodeResult, error) {
 	return nil, errFFmpegDisabled
 }
+
+// TranscodeFileWithProgress returns an error when FFmpeg is not available.
+func TranscodeFileWithProgress(inputPath, outputPath, encoderName string, bitrate int, progressPct *int32) (*TranscodeResult, error) {
+	return nil, errFFmpegDisabled
+}

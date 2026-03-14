@@ -235,6 +235,7 @@ type ControlRoomState struct {
 	Replay               *ReplayState            `json:"replay,omitempty"`
 	ClipPlayers          []ClipPlayerInfo        `json:"clipPlayers,omitempty"`
 	ClipCount            int                     `json:"clipCount,omitempty"`
+	ClipUpload           *ClipUploadProgress     `json:"clipUpload,omitempty"`
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
@@ -348,6 +349,13 @@ type ClipPlayerInfo struct {
 	Speed    float64 `json:"speed,omitempty"`
 	Position float64 `json:"position,omitempty"`
 	Loop     bool    `json:"loop,omitempty"`
+}
+
+// ClipUploadProgress tracks server-side clip upload stages for state broadcast.
+type ClipUploadProgress struct {
+	Stage    string `json:"stage"`              // "uploading","analyzing","transcoding","validating"
+	Percent  int    `json:"percent"`            // 0-100 within current stage
+	Filename string `json:"filename,omitempty"`
 }
 
 // ClipInfo is the broadcast-friendly clip metadata.

@@ -779,12 +779,49 @@ export function deleteClip(id: string): Promise<void> {
 	return request(`/api/clips/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function uploadClip(file: File): Promise<ClipInfo> {
-	const formData = new FormData();
-	formData.append('file', file);
-	return request('/api/clips/upload', {
-		method: 'POST',
-		body: formData,
+export function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+	return new Promise((resolve, reject) => {
+		const formData = new FormData();
+		formData.append('file', file);
+
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', resolveApiUrl('/api/clips/upload'));
+
+		// Set auth headers.
+		const headers = authHeaders();
+		for (const [key, value] of Object.entries(headers)) {
+			xhr.setRequestHeader(key, value);
+		}
+
+		// Track upload byte progress.
+		if (onUploadProgress) {
+			xhr.upload.onprogress = (e) => {
+				if (e.lengthComputable) {
+					onUploadProgress(Math.round((e.loaded / e.total) * 100));
+				}
+			};
+		}
+
+		xhr.onload = () => {
+			if (xhr.status >= 200 && xhr.status < 300) {
+				try {
+					resolve(JSON.parse(xhr.responseText));
+				} catch {
+					reject(new SwitchApiError(xhr.status, 'invalid response'));
+				}
+			} else {
+				try {
+					const body = JSON.parse(xhr.responseText);
+					reject(new SwitchApiError(xhr.status, body.error || `HTTP ${xhr.status}`));
+				} catch {
+					reject(new SwitchApiError(xhr.status, `HTTP ${xhr.status}`));
+				}
+			}
+		};
+
+		xhr.onerror = () => reject(new SwitchApiError(0, 'network error'));
+		xhr.onabort = () => reject(new SwitchApiError(0, 'upload aborted'));
+		xhr.send(formData);
 	});
 }
 

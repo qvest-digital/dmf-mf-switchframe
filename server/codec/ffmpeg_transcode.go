@@ -41,6 +41,7 @@ typedef struct {
 //  -10: swr init failed
 static int ff_transcode_file(const char* input_path, const char* output_path,
                               const char* encoder_name, int bitrate,
+                              int* progress_pct,
                               transcode_result_t* result) {
 	memset(result, 0, sizeof(transcode_result_t));
 
@@ -385,6 +386,19 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 			}
 
 			if (pkt->stream_index == video_stream_idx) {
+				// Update progress percentage based on packet PTS vs input duration.
+				// Uses __atomic_store_n with relaxed ordering so that the Go side
+				// can safely read via atomic.LoadInt32 without a data race.
+				if (progress_pct && ifmt_ctx->duration > 0 && pkt->pts != AV_NOPTS_VALUE) {
+					int64_t pts_us = av_rescale_q(pkt->pts,
+						ifmt_ctx->streams[video_stream_idx]->time_base,
+						(AVRational){1, AV_TIME_BASE});
+					int pct = (int)(pts_us * 100 / ifmt_ctx->duration);
+					if (pct < 0) pct = 0;
+					if (pct > 100) pct = 100;
+					__atomic_store_n(progress_pct, pct, __ATOMIC_RELAXED);
+				}
+
 				// Decode video
 				ret = avcodec_send_packet(video_dec_ctx, pkt);
 				av_packet_unref(pkt);
@@ -600,6 +614,11 @@ loop_done:
 		}
 	}
 
+	// Mark progress complete after successful flush.
+	if (progress_pct) {
+		__atomic_store_n(progress_pct, 100, __ATOMIC_RELAXED);
+	}
+
 	ret = 0; // success
 
 cleanup:
@@ -662,6 +681,13 @@ var transcodeErrors = map[C.int]string{
 // "libx264", "h264_videotoolbox"). Pass "" to auto-select H.264 encoder.
 // Bitrate of 0 auto-selects based on resolution.
 func TranscodeFile(inputPath, outputPath, encoderName string, bitrate int) (*TranscodeResult, error) {
+	return TranscodeFileWithProgress(inputPath, outputPath, encoderName, bitrate, nil)
+}
+
+// TranscodeFileWithProgress is like TranscodeFile but accepts an optional
+// progress pointer. When non-nil, the C transcode loop atomically writes
+// 0-100 into *progressPct as packets are processed.
+func TranscodeFileWithProgress(inputPath, outputPath, encoderName string, bitrate int, progressPct *int32) (*TranscodeResult, error) {
 	initFFmpegLogLevel()
 
 	cInput := C.CString(inputPath)
@@ -676,8 +702,13 @@ func TranscodeFile(inputPath, outputPath, encoderName string, bitrate int) (*Tra
 		defer C.free(unsafe.Pointer(cEncoder))
 	}
 
+	var cProgress *C.int
+	if progressPct != nil {
+		cProgress = (*C.int)(unsafe.Pointer(progressPct))
+	}
+
 	var result C.transcode_result_t
-	rc := C.ff_transcode_file(cInput, cOutput, cEncoder, C.int(bitrate), &result)
+	rc := C.ff_transcode_file(cInput, cOutput, cEncoder, C.int(bitrate), cProgress, &result)
 	if rc != 0 {
 		msg := transcodeErrors[rc]
 		if msg == "" {

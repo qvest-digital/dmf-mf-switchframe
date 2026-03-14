@@ -260,6 +260,8 @@ type API struct {
 	macroCancel      context.CancelFunc
 	macroGen         uint64 // incremented each time a macro starts
 	broadcastFn      atomic.Pointer[broadcastFunc]
+	uploadMu         sync.Mutex
+	uploadProgress   *internal.ClipUploadProgress
 }
 
 // enrichFunc is the type for the state enrichment callback.
@@ -303,6 +305,18 @@ func (a *API) MacroState() *internal.MacroExecutionState {
 	a.macroMu.Lock()
 	defer a.macroMu.Unlock()
 	return a.macroState
+}
+
+// UploadProgress returns the current clip upload progress, or nil if no upload
+// is in progress. Returns a copy to avoid races with the upload goroutine.
+func (a *API) UploadProgress() *internal.ClipUploadProgress {
+	a.uploadMu.Lock()
+	defer a.uploadMu.Unlock()
+	if a.uploadProgress == nil {
+		return nil
+	}
+	cp := *a.uploadProgress
+	return &cp
 }
 
 // enrichedState returns the current switcher state, enriched with output,

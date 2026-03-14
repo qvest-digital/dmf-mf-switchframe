@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo } from '$lib/api/types';
+	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, ClipUploadProgress } from '$lib/api/types';
 	import {
 		listClips, uploadClip, deleteClip, pinClip,
 		listRecordings, importRecording,
@@ -17,6 +17,7 @@
 	let clips = $state<ClipInfo[]>([]);
 	let recordings = $state<RecordingFileInfo[]>([]);
 	let uploading = $state(false);
+	let uploadPercent = $state(0);
 	let fileInput: HTMLInputElement | undefined = $state();
 	let playerSpeeds = $state<Record<number, number>>({ 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0 });
 	let playerLoops = $state<Record<number, boolean>>({ 1: false, 2: false, 3: false, 4: false });
@@ -31,6 +32,39 @@
 
 	const uploadedClips = $derived(clips.filter(c => c.source === 'upload'));
 	const replayClips = $derived(clips.filter(c => c.source === 'replay'));
+	const uploadProgress = $derived<ClipUploadProgress | undefined>(crState.clipUpload);
+
+	// Map 4 stages to overall 0-100 (weighted toward transcode which is longest).
+	const stageWeights: Record<string, [number, number]> = {
+		uploading: [0, 25],
+		analyzing: [25, 50],
+		transcoding: [50, 90],
+		validating: [90, 100],
+	};
+
+	const overallPercent = $derived.by(() => {
+		if (!uploading && !uploadProgress) return 0;
+		const stage = uploadProgress?.stage ?? 'uploading';
+		const stagePct = uploadProgress?.percent ?? uploadPercent;
+		const [lo, hi] = stageWeights[stage] ?? [0, 25];
+		// During uploading stage, use client-side uploadPercent if no server stage yet
+		if (stage === 'uploading') {
+			return lo + Math.round((uploadPercent / 100) * (hi - lo));
+		}
+		return lo + Math.round((stagePct / 100) * (hi - lo));
+	});
+
+	const stageLabel = $derived.by(() => {
+		const stage = uploadProgress?.stage;
+		if (!stage) return uploading ? 'Uploading...' : '';
+		switch (stage) {
+			case 'uploading': return 'Uploading...';
+			case 'analyzing': return 'Analyzing...';
+			case 'transcoding': return `Transcoding... ${uploadProgress?.percent ?? 0}%`;
+			case 'validating': return 'Validating...';
+			default: return 'Processing...';
+		}
+	});
 
 	// ── Effects ──
 	let prevClipCount: number | undefined;
@@ -101,14 +135,16 @@
 		const file = input.files?.[0];
 		if (!file) return;
 		uploading = true;
+		uploadPercent = 0;
 		try {
-			await uploadClip(file);
+			await uploadClip(file, (pct) => { uploadPercent = pct; });
 			notify('info', `Uploaded "${file.name}"`);
 			await refreshClips();
 		} catch (err) {
 			notify('error', `Upload failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		} finally {
 			uploading = false;
+			uploadPercent = 0;
 			input.value = '';
 		}
 	}
@@ -192,12 +228,33 @@
 					<input
 						bind:this={fileInput}
 						type="file"
-						accept=".ts,.mp4,.mov"
+						accept=".ts,.mp4,.mov,.m4v,.mkv,.webm,.avi,.flv,.mxf,.wmv,.mpg,.mpeg,.ogv"
 						class="file-input"
 						onchange={onFileSelected}
 					/>
 				</div>
 			</div>
+
+			{#if uploading || uploadProgress}
+				<div class="upload-progress">
+					<div class="upload-progress-label">
+						<span class="upload-stage">{stageLabel}</span>
+						{#if uploadProgress?.filename}
+							<span class="upload-filename" title={uploadProgress.filename}>{uploadProgress.filename}</span>
+						{/if}
+						<span class="upload-pct">{overallPercent}%</span>
+					</div>
+					<div class="upload-progress-bar">
+						<div class="upload-progress-fill" style="width: {overallPercent}%"></div>
+					</div>
+					<div class="upload-stages">
+						<span class="stage-dot" class:active={!uploadProgress || uploadProgress.stage === 'uploading'} class:done={uploadProgress && uploadProgress.stage !== 'uploading'}>Upload</span>
+						<span class="stage-dot" class:active={uploadProgress?.stage === 'analyzing'} class:done={uploadProgress && ['transcoding','validating'].includes(uploadProgress.stage)}>Analyze</span>
+						<span class="stage-dot" class:active={uploadProgress?.stage === 'transcoding'} class:done={uploadProgress?.stage === 'validating'}>Transcode</span>
+						<span class="stage-dot" class:active={uploadProgress?.stage === 'validating'}>Validate</span>
+					</div>
+				</div>
+			{/if}
 
 			<div class="library-sections">
 				<!-- Uploaded -->
@@ -553,6 +610,84 @@
 		background: var(--accent-blue-dim);
 		color: var(--accent-blue);
 		border-color: var(--accent-blue-medium);
+	}
+
+	/* ── Upload Progress ── */
+	.upload-progress {
+		margin-bottom: 6px;
+		padding: 6px;
+		border: 1px solid var(--accent-blue-medium, var(--border-default));
+		border-radius: var(--radius-sm);
+		background: var(--bg-surface);
+	}
+
+	.upload-progress-label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 4px;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+	}
+
+	.upload-stage {
+		color: var(--accent-blue);
+		font-weight: 600;
+	}
+
+	.upload-filename {
+		color: var(--text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.upload-pct {
+		color: var(--text-tertiary);
+		font-family: var(--font-mono);
+		flex-shrink: 0;
+	}
+
+	.upload-progress-bar {
+		height: 4px;
+		background: var(--bg-base);
+		border-radius: 2px;
+		overflow: hidden;
+		margin-bottom: 4px;
+	}
+
+	.upload-progress-fill {
+		height: 100%;
+		background: var(--accent-blue);
+		border-radius: 2px;
+		transition: width 0.2s ease;
+	}
+
+	.upload-stages {
+		display: flex;
+		gap: 8px;
+		font-family: var(--font-ui);
+		font-size: 9px;
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.stage-dot {
+		opacity: 0.4;
+	}
+
+	.stage-dot.active {
+		opacity: 1;
+		color: var(--accent-blue);
+		font-weight: 700;
+	}
+
+	.stage-dot.done {
+		opacity: 0.7;
+		color: var(--tally-preview, #16a34a);
 	}
 
 	/* ── Player Strip (right column) ── */

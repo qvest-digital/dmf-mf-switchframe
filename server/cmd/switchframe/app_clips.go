@@ -103,10 +103,11 @@ func (a *App) initClips() error {
 		a.sw.IngestReplayVideo(key, pf)
 	})
 
-	// Video output: forward original H.264 wire data from clip files directly
-	// to per-player MoQ relays for browser playback. No re-encoding needed —
-	// the demuxed AVC1 data is broadcast as-is.
+	// Video output: forward H.264 wire data from clip players to per-player
+	// MoQ relays for browser playback. The player may re-encode (8-bit) or
+	// pass through original wire data depending on EncoderFactory config.
 	var clipVideoFrameCount [clip.MaxPlayers]int64
+	var clipGroupID [clip.MaxPlayers]uint32 // MoQ group IDs (1-based; 0 is Prism sentinel)
 	mgr.SetVideoOutput(func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
 		idx := clipPlayerIDFromKey(key) - 1
 		if idx < 0 || idx >= clip.MaxPlayers {
@@ -119,6 +120,18 @@ func (a *App) initClips() error {
 
 		clipVideoFrameCount[idx]++
 		count := clipVideoFrameCount[idx]
+
+		// Track MoQ group boundaries: increment on each keyframe.
+		// GroupID must start at 1 (Prism uses 0 as "not damaged" sentinel).
+		if isKeyframe {
+			clipGroupID[idx]++
+		}
+		groupID := clipGroupID[idx]
+		if groupID == 0 {
+			// First frame is not a keyframe — start at 1 anyway.
+			clipGroupID[idx] = 1
+			groupID = 1
+		}
 
 		// Set VideoInfo on relay on each keyframe with SPS/PPS so the
 		// MoQ catalog stays current (clip resolution/codec may vary).
@@ -148,6 +161,7 @@ func (a *App) initClips() error {
 				"isKeyframe", isKeyframe,
 				"wireDataLen", len(wireData),
 				"hasSPS", sps != nil,
+				"groupID", groupID,
 			)
 		}
 
@@ -163,6 +177,7 @@ func (a *App) initClips() error {
 			Codec:      codecStr,
 			SPS:        sps,
 			PPS:        pps,
+			GroupID:    groupID,
 		}
 		relay.BroadcastVideo(frame)
 	})
