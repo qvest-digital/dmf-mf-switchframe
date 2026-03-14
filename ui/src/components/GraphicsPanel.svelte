@@ -5,7 +5,7 @@
 		graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff,
 		graphicsAnimate, graphicsAnimateStop,
 		graphicsSetZOrder,
-		graphicsFlyIn, graphicsFlyOut,
+		graphicsFlyIn, graphicsFlyOut, graphicsFlyOn,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';

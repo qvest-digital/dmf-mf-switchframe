@@ -368,6 +368,10 @@ export function graphicsFlyIn(layerId: number, direction: string, durationMs = 5
 	return post(`/api/graphics/${layerId}/fly-in`, { direction, durationMs });
 }
 
+export function graphicsFlyOn(layerId: number, direction: string, durationMs = 500): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/fly-on`, { direction, durationMs });
+}
+
 export function graphicsFlyOut(layerId: number, direction: string, durationMs = 500): Promise<GraphicsState> {
 	return post(`/api/graphics/${layerId}/fly-out`, { direction, durationMs });
 }
