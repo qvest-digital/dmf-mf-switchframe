@@ -16,6 +16,9 @@ RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list
     apt-get install -y --no-install-recommends \
         libavcodec-dev \
         libavutil-dev \
+        libavformat-dev \
+        libswscale-dev \
+        libswresample-dev \
         libx264-dev \
         libfdk-aac-dev \
         pkg-config && \
@@ -36,6 +39,9 @@ RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list
     apt-get update && \
     apt-get install -y --no-install-recommends \
         libavcodec59 \
+        libavformat59 \
+        libswscale6 \
+        libswresample4 \
         libx264-164 \
         libfdk-aac2 \
         ca-certificates \
