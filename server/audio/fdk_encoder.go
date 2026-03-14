@@ -161,17 +161,20 @@ import "C"
 import (
 	"fmt"
 	"math"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
 // FDKEncoder wraps the FDK AAC encoder (ADTS output) and implements Encoder.
 // It encodes interleaved float32 PCM to ADTS-framed AAC data.
 type FDKEncoder struct {
-	handle   C.aacenc_t
-	channels int
-	closed   bool
-	pcm16Buf []int16 // reused across Encode() calls
-	outBuf   []byte  // reused across Encode() calls
+	handle    C.aacenc_t
+	channels  int
+	closed    atomic.Bool
+	closeOnce sync.Once
+	pcm16Buf  []int16 // reused across Encode() calls
+	outBuf    []byte  // reused across Encode() calls
 }
 
 // NewFDKEncoder creates a new FDK AAC-LC encoder for the given sample rate and channel count.
@@ -208,7 +211,7 @@ func NewFDKEncoder(sampleRate, channels int) (*FDKEncoder, error) {
 // Encode encodes interleaved float32 PCM into an ADTS-framed AAC frame.
 // The input must contain exactly frameSize * channels samples (1024 * channels for AAC-LC).
 func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
-	if e.closed {
+	if e.closed.Load() {
 		return nil, fmt.Errorf("encoder is closed")
 	}
 
@@ -255,11 +258,12 @@ func (e *FDKEncoder) Encode(pcm []float32) ([]byte, error) {
 	return append([]byte(nil), outBuf[:n]...), nil
 }
 
-// Close releases the encoder resources. Safe to call multiple times.
+// Close releases the encoder resources. Safe to call multiple times
+// and concurrently from multiple goroutines.
 func (e *FDKEncoder) Close() error {
-	if !e.closed {
+	e.closeOnce.Do(func() {
+		e.closed.Store(true)
 		C.aacenc_close(&e.handle)
-		e.closed = true
-	}
+	})
 	return nil
 }

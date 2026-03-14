@@ -66,6 +66,8 @@ import "C"
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -77,7 +79,8 @@ import (
 type FDKDecoder struct {
 	handle     C.aacdec_t
 	channels   int
-	closed     bool
+	closed     atomic.Bool
+	closeOnce  sync.Once
 	pcmBuf     []int16   // reusable C decode buffer
 	outBuf     []float32 // reusable float32 output buffer
 	frameCount uint32    // counts decoded frames (0-sample priming frames are expected early)
@@ -106,7 +109,7 @@ func NewFDKDecoder(sampleRate, channels int) (*FDKDecoder, error) {
 
 // Decode decodes an ADTS-framed AAC frame into interleaved float32 PCM.
 func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
-	if d.closed {
+	if d.closed.Load() {
 		return nil, fmt.Errorf("decoder is closed")
 	}
 	if len(aacFrame) == 0 {
@@ -153,11 +156,12 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	return d.outBuf, nil
 }
 
-// Close releases the decoder resources. Safe to call multiple times.
+// Close releases the decoder resources. Safe to call multiple times
+// and concurrently from multiple goroutines.
 func (d *FDKDecoder) Close() error {
-	if !d.closed {
+	d.closeOnce.Do(func() {
+		d.closed.Store(true)
 		C.aacdec_close(&d.handle)
-		d.closed = true
-	}
+	})
 	return nil
 }

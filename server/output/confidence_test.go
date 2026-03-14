@@ -242,3 +242,58 @@ func TestConfidenceMonitorConcurrentClose(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestConfidenceMonitor_IngestVideoCloseRace(t *testing.T) {
+	// This test specifically targets the race where IngestVideo checks
+	// decoderFactory outside the lock while Close sets it to nil under
+	// the lock. With the fix, both accesses are under the lock.
+	// Run with -race to verify.
+	for i := 0; i < 50; i++ {
+		decoderFactory := func() (transition.VideoDecoder, error) {
+			return transition.NewMockDecoder(320, 180), nil
+		}
+
+		cm := NewConfidenceMonitor(decoderFactory)
+		cm.minInterval = 0
+
+		keyframe := &media.VideoFrame{
+			PTS:        1000,
+			IsKeyframe: true,
+			WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+		}
+
+		var wg sync.WaitGroup
+
+		// Start IngestVideo and Close simultaneously to maximize
+		// the chance of hitting the race window.
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cm.IngestVideo(keyframe)
+		}()
+		go func() {
+			defer wg.Done()
+			cm.Close()
+		}()
+
+		wg.Wait()
+	}
+}
+
+func TestConfidenceMonitor_IngestAfterClose(t *testing.T) {
+	decoderFactory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 180), nil
+	}
+
+	cm := NewConfidenceMonitor(decoderFactory)
+	cm.Close()
+
+	// IngestVideo after Close should be a no-op (not panic).
+	keyframe := &media.VideoFrame{
+		PTS:        1000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0x88},
+	}
+	cm.IngestVideo(keyframe)
+	require.Nil(t, cm.LatestThumbnail())
+}

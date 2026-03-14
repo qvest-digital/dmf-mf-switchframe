@@ -4,6 +4,7 @@ package audio
 
 import (
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -183,4 +184,70 @@ func TestFDKDoubleClose(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dec.Close())
 	require.NoError(t, dec.Close()) // should not panic
+}
+
+func TestFDKDecoderConcurrentClose(t *testing.T) {
+	// Verify that calling Close from multiple goroutines concurrently
+	// does not panic or double-free the C handle.
+	dec, err := NewFDKDecoder(48000, 2)
+	require.NoError(t, err)
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_ = dec.Close()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestFDKEncoderConcurrentClose(t *testing.T) {
+	// Verify that calling Close from multiple goroutines concurrently
+	// does not panic or double-free the C handle.
+	enc, err := NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_ = enc.Close()
+		}()
+	}
+	wg.Wait()
+}
+
+func TestFDKDecoderDecodeAfterClose(t *testing.T) {
+	// Create encoder to produce valid AAC data for the decoder.
+	enc, err := NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	defer func() { _ = enc.Close() }()
+
+	silence := make([]float32, 1024*2)
+	aac, err := enc.Encode(silence)
+	require.NoError(t, err)
+
+	dec, err := NewFDKDecoder(48000, 2)
+	require.NoError(t, err)
+	require.NoError(t, dec.Close())
+
+	_, err = dec.Decode(aac)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "closed")
+}
+
+func TestFDKEncoderEncodeAfterClose(t *testing.T) {
+	enc, err := NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	require.NoError(t, enc.Close())
+
+	silence := make([]float32, 1024*2)
+	_, err = enc.Encode(silence)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "closed")
 }

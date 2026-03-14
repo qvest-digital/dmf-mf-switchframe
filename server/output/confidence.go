@@ -47,14 +47,17 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	if !frame.IsKeyframe {
 		return
 	}
-	if cm.decoderFactory == nil {
-		return
-	}
 
 	// Single critical section: rate-limit check + decoder init + stamp
 	// lastUpdate. This prevents TOCTOU where two goroutines both pass
 	// the rate-limit check and decode concurrently.
+	// The decoderFactory nil check must be inside the lock because Close()
+	// sets it to nil under the lock — checking outside would race.
 	cm.mu.Lock()
+	if cm.decoderFactory == nil {
+		cm.mu.Unlock()
+		return
+	}
 	if time.Since(cm.lastUpdate) < cm.minInterval {
 		cm.mu.Unlock()
 		return
