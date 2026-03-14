@@ -177,51 +177,65 @@ export const newsLowerThirdTemplate: GraphicsTemplate = {
 	render(ctx, width, height, values) {
 		ctx.save();
 
-		const barHeight = Math.round(height * 0.15);
+		const barHeight = Math.round(height * 0.14);
 		const barY = height - barHeight - Math.round(height * 0.05);
 		const topHeight = Math.round(barHeight * 0.55);
 		const bottomHeight = barHeight - topHeight;
-		const stripeHeight = 4;
-		const tagWidth = Math.round(width * 0.042); // ~80px at 1920
+		const skew = Math.round(width * 0.012);
 		const padding = Math.round(width * 0.03);
+		const tagWidth = Math.round(width * 0.065);
 
-		// Top section: red bar
-		ctx.globalAlpha = 0.92;
-		ctx.fillStyle = '#CC0000';
-		ctx.fillRect(0, barY, width, topHeight);
+		// Angled parallelogram left tag (red accent)
+		ctx.beginPath();
+		ctx.moveTo(0, barY);
+		ctx.lineTo(tagWidth + skew, barY);
+		ctx.lineTo(tagWidth, barY + barHeight);
+		ctx.lineTo(0, barY + barHeight);
+		ctx.closePath();
+		const tagGrad = ctx.createLinearGradient(0, barY, 0, barY + barHeight);
+		tagGrad.addColorStop(0, '#dc2626');
+		tagGrad.addColorStop(1, '#991b1b');
+		ctx.fillStyle = tagGrad;
+		ctx.fill();
 
-		// Left accent tag block (solid red, slightly darker)
-		ctx.fillStyle = '#AA0000';
-		ctx.fillRect(0, barY, tagWidth, topHeight);
+		// Top bar (gradient red with subtle text shadow)
+		const topGrad = ctx.createLinearGradient(tagWidth, barY, width * 0.7, barY);
+		topGrad.addColorStop(0, 'rgba(185, 28, 28, 0.94)');
+		topGrad.addColorStop(0.8, 'rgba(153, 27, 27, 0.90)');
+		topGrad.addColorStop(1, 'rgba(127, 29, 29, 0.0)');
+		ctx.fillStyle = topGrad;
+		ctx.fillRect(tagWidth, barY, width * 0.65, topHeight);
+
+		// Thin bright accent stripe between sections
+		ctx.fillStyle = '#ef4444';
+		ctx.fillRect(tagWidth, barY + topHeight, width * 0.65, 2);
+
+		// Bottom bar (cooler charcoal with gradient)
+		const bottomGrad = ctx.createLinearGradient(tagWidth, 0, width * 0.7, 0);
+		bottomGrad.addColorStop(0, 'rgba(24, 24, 30, 0.94)');
+		bottomGrad.addColorStop(0.8, 'rgba(30, 30, 38, 0.90)');
+		bottomGrad.addColorStop(1, 'rgba(24, 24, 30, 0.0)');
+		ctx.fillStyle = bottomGrad;
+		ctx.fillRect(tagWidth, barY + topHeight + 2, width * 0.65, bottomHeight - 2);
+
+		// Text shadow
+		ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+		ctx.shadowBlur = 3;
+		ctx.shadowOffsetX = 1;
+		ctx.shadowOffsetY = 1;
 
 		// Name text on top bar
-		const nameFontSize = Math.round(topHeight * 0.55);
-		ctx.globalAlpha = 1;
-		ctx.font = `bold ${nameFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		const nameFontSize = Math.round(topHeight * 0.52);
+		ctx.font = `700 ${nameFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
 		ctx.fillStyle = '#ffffff';
 		ctx.textBaseline = 'middle';
 		ctx.fillText(values.name || '', tagWidth + padding, barY + topHeight / 2);
 
-		// Bright red accent stripe between sections
-		ctx.globalAlpha = 0.92;
-		ctx.fillStyle = '#FF1A1A';
-		ctx.fillRect(0, barY + topHeight, width, stripeHeight);
-
-		// Bottom section: dark charcoal
-		ctx.fillStyle = '#1A1A1A';
-		ctx.fillRect(0, barY + topHeight + stripeHeight, width, bottomHeight - stripeHeight);
-
-		// Left accent tag block on bottom
-		ctx.fillStyle = '#CC0000';
-		ctx.fillRect(0, barY + topHeight + stripeHeight, tagWidth, bottomHeight - stripeHeight);
-
 		// Title text on bottom bar
-		const titleFontSize = Math.round((bottomHeight - stripeHeight) * 0.55);
-		ctx.globalAlpha = 1;
-		ctx.font = `${titleFontSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
-		ctx.textBaseline = 'middle';
-		ctx.fillText(values.title || '', tagWidth + padding, barY + topHeight + stripeHeight + (bottomHeight - stripeHeight) / 2);
+		const titleFontSize = Math.round((bottomHeight - 2) * 0.52);
+		ctx.font = `400 ${titleFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		ctx.fillStyle = 'rgba(210, 210, 220, 0.95)';
+		ctx.fillText(values.title || '', tagWidth + padding, barY + topHeight + 2 + (bottomHeight - 2) / 2);
 
 		ctx.restore();
 	},
