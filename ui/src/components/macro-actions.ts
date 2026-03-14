@@ -32,10 +32,15 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	graphics_set_zorder: { label: 'Set Z-Order', category: 'Graphics', description: 'Set layer stacking order' },
 	graphics_fly_in: { label: 'Fly In', category: 'Graphics', description: 'Animate layer flying in from edge' },
 	graphics_fly_out: { label: 'Fly Out', category: 'Graphics', description: 'Animate layer flying out to edge' },
+	graphics_fly_on: { label: 'Fly On', category: 'Graphics', description: 'Atomically activate and fly in layer' },
 	graphics_slide: { label: 'Slide', category: 'Graphics', description: 'Slide layer to new position' },
 	graphics_animate: { label: 'Animate', category: 'Graphics', description: 'Start pulse or transition animation' },
 	graphics_animate_stop: { label: 'Stop Animation', category: 'Graphics', description: 'Stop current animation' },
 	graphics_upload_frame: { label: 'Upload Frame', category: 'Graphics', description: 'Upload rendered graphic to layer' },
+	graphics_ticker_start: { label: 'Start Ticker', category: 'Graphics', description: 'Start scrolling ticker on layer' },
+	graphics_ticker_stop: { label: 'Stop Ticker', category: 'Graphics', description: 'Stop scrolling ticker on layer' },
+	graphics_text_animate: { label: 'Text Animate', category: 'Graphics', description: 'Start text animation (typewriter/fade-word)' },
+	graphics_text_animate_stop: { label: 'Stop Text Anim', category: 'Graphics', description: 'Stop text animation on layer' },
 	// Output
 	recording_start: { label: 'Start Recording', category: 'Output', description: 'Start recording' },
 	recording_stop: { label: 'Stop Recording', category: 'Output', description: 'Stop recording' },
@@ -86,8 +91,10 @@ export const SOURCE_ACTIONS: MacroAction[] = [
 export const GRAPHICS_LAYER_ACTIONS: MacroAction[] = [
 	'graphics_on', 'graphics_off', 'graphics_auto_on', 'graphics_auto_off',
 	'graphics_remove_layer', 'graphics_set_rect', 'graphics_set_zorder',
-	'graphics_fly_in', 'graphics_fly_out', 'graphics_slide',
+	'graphics_fly_in', 'graphics_fly_out', 'graphics_fly_on', 'graphics_slide',
 	'graphics_animate', 'graphics_animate_stop', 'graphics_upload_frame',
+	'graphics_ticker_start', 'graphics_ticker_stop',
+	'graphics_text_animate', 'graphics_text_animate_stop',
 ];
 
 export const FLY_DIRECTIONS = [
