@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -133,6 +134,9 @@ type App struct {
 	api        *control.API
 	authMW     func(http.Handler) http.Handler
 	operatorMW func(http.Handler) http.Handler
+
+	// Background goroutine tracking for clean shutdown
+	bgWG sync.WaitGroup
 }
 
 // initInfra sets up certificates, logging, codec probing, metrics, and the
@@ -1136,7 +1140,9 @@ func (a *App) Run(ctx context.Context) error {
 	// event-driven (only on user actions). This ticker ensures VU meters
 	// in the browser update smoothly for sources that lack client-side
 	// audio decoders (e.g. MXL/raw PCM sources).
+	a.bgWG.Add(1)
 	go func() {
+		defer a.bgWG.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -1169,6 +1175,9 @@ func logSystemTuning(log *slog.Logger) {
 
 // Close cleans up all subsystems in reverse initialization order.
 func (a *App) Close() {
+	// Wait for background goroutines (metering ticker) to exit.
+	a.bgWG.Wait()
+
 	// MXL cleanup first (before core engine).
 	if a.mxlOutput != nil {
 		a.mxlOutput.Stop()
