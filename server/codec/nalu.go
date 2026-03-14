@@ -21,8 +21,12 @@ func AVC1ToAnnexB(avc1 []byte) []byte {
 	pos := 0
 
 	for pos+4 <= len(avc1) {
-		naluLen := int(binary.BigEndian.Uint32(avc1[pos : pos+4]))
-		if naluLen <= 0 || pos+4+naluLen > len(avc1) {
+		naluLenU := binary.BigEndian.Uint32(avc1[pos : pos+4])
+		if naluLenU == 0 || naluLenU > uint32(len(avc1)) {
+			break
+		}
+		naluLen := int(naluLenU)
+		if pos+4+naluLen > len(avc1) {
 			break
 		}
 
@@ -52,8 +56,12 @@ func AVC1ToAnnexBInto(avc1 []byte, dst []byte) []byte {
 	pos := 0
 
 	for pos+4 <= len(avc1) {
-		naluLen := int(binary.BigEndian.Uint32(avc1[pos : pos+4]))
-		if naluLen <= 0 || pos+4+naluLen > len(avc1) {
+		naluLenU := binary.BigEndian.Uint32(avc1[pos : pos+4])
+		if naluLenU == 0 || naluLenU > uint32(len(avc1)) {
+			break
+		}
+		naluLen := int(naluLenU)
+		if pos+4+naluLen > len(avc1) {
 			break
 		}
 
@@ -124,8 +132,12 @@ func ExtractNALUs(avc1 []byte) [][]byte {
 	pos := 0
 
 	for pos+4 <= len(avc1) {
-		naluLen := int(binary.BigEndian.Uint32(avc1[pos : pos+4]))
-		if naluLen <= 0 || pos+4+naluLen > len(avc1) {
+		naluLenU := binary.BigEndian.Uint32(avc1[pos : pos+4])
+		if naluLenU == 0 || naluLenU > uint32(len(avc1)) {
+			break
+		}
+		naluLen := int(naluLenU)
+		if pos+4+naluLen > len(avc1) {
 			break
 		}
 

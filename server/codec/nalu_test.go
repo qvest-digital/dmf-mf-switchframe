@@ -461,3 +461,92 @@ func TestPrependSPSPPS_OnlySPS(t *testing.T) {
 	}
 	require.Equal(t, expected, result)
 }
+
+// --- NALU length overflow/malicious input tests ---
+
+func TestAVC1ToAnnexB_MaliciousLength_MaxUint32(t *testing.T) {
+	t.Parallel()
+	// NALU length = 0xFFFFFFFF — should be rejected gracefully
+	avc1 := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexB(avc1)
+	require.Empty(t, result, "max uint32 length should produce empty output")
+}
+
+func TestAVC1ToAnnexB_MaliciousLength_HighBitSet(t *testing.T) {
+	t.Parallel()
+	// NALU length = 0x80000000 — on 32-bit int this wraps to negative
+	avc1 := []byte{0x80, 0x00, 0x00, 0x00, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexB(avc1)
+	require.Empty(t, result, "0x80000000 length should produce empty output")
+}
+
+func TestAVC1ToAnnexB_MaliciousLength_JustOverSize(t *testing.T) {
+	t.Parallel()
+	// NALU length = 0x7FFFFFFF — huge positive value, exceeds buffer
+	avc1 := []byte{0x7F, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexB(avc1)
+	require.Empty(t, result, "0x7FFFFFFF length should produce empty output")
+}
+
+func TestAVC1ToAnnexB_ZeroLength(t *testing.T) {
+	t.Parallel()
+	// NALU length = 0 — should be rejected
+	avc1 := []byte{0x00, 0x00, 0x00, 0x00, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexB(avc1)
+	require.Empty(t, result, "zero length should produce empty output")
+}
+
+func TestAVC1ToAnnexBInto_MaliciousLength_MaxUint32(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexBInto(avc1, nil)
+	require.Empty(t, result, "max uint32 length should produce empty output")
+}
+
+func TestAVC1ToAnnexBInto_MaliciousLength_HighBitSet(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0x80, 0x00, 0x00, 0x00, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexBInto(avc1, nil)
+	require.Empty(t, result, "0x80000000 length should produce empty output")
+}
+
+func TestAVC1ToAnnexBInto_MaliciousLength_JustOverSize(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0x7F, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	result := AVC1ToAnnexBInto(avc1, nil)
+	require.Empty(t, result, "0x7FFFFFFF length should produce empty output")
+}
+
+func TestExtractNALUs_MaliciousLength_MaxUint32(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0xFF, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	nalus := ExtractNALUs(avc1)
+	require.Empty(t, nalus, "max uint32 length should produce no NALUs")
+}
+
+func TestExtractNALUs_MaliciousLength_HighBitSet(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0x80, 0x00, 0x00, 0x00, 0x65, 0x01, 0x02}
+	nalus := ExtractNALUs(avc1)
+	require.Empty(t, nalus, "0x80000000 length should produce no NALUs")
+}
+
+func TestExtractNALUs_MaliciousLength_JustOverSize(t *testing.T) {
+	t.Parallel()
+	avc1 := []byte{0x7F, 0xFF, 0xFF, 0xFF, 0x65, 0x01, 0x02}
+	nalus := ExtractNALUs(avc1)
+	require.Empty(t, nalus, "0x7FFFFFFF length should produce no NALUs")
+}
+
+func TestAVC1ToAnnexB_MaliciousLength_ValidThenInvalid(t *testing.T) {
+	t.Parallel()
+	// First NALU is valid (length=2), second has malicious length
+	avc1 := []byte{
+		0x00, 0x00, 0x00, 0x02, 0x67, 0xAA, // valid NALU
+		0xFF, 0xFF, 0xFF, 0xFF, 0x65, 0x01, // malicious length
+	}
+	result := AVC1ToAnnexB(avc1)
+	// Should parse the first NALU and stop at the malicious one
+	expected := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0xAA}
+	require.Equal(t, expected, result, "should parse valid NALU and stop at malicious one")
+}
