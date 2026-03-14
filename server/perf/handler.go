@@ -25,7 +25,7 @@ func (s *Sampler) HandleSaveBaseline(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "name required"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "name required"})
 		return
 	}
 	s.SaveBaseline(req.Name)
@@ -38,7 +38,7 @@ func (s *Sampler) HandleDeleteBaseline(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]string{"error": "name required"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "name required"})
 		return
 	}
 	s.DeleteBaseline(name)

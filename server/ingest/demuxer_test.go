@@ -272,7 +272,7 @@ func TestStreamDemuxer_RealTS(t *testing.T) {
 	if err != nil {
 		t.Skip("testdata/sample.ts not available")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	bc := &mockBroadcaster{}
 	d := NewStreamDemuxer("test", f, bc)
@@ -301,7 +301,7 @@ func TestStreamDemuxer_60FPS(t *testing.T) {
 	if err != nil {
 		t.Skip("testdata/sample_60fps.ts not available")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	bc := &mockBroadcaster{}
 	d := NewStreamDemuxer("test", f, bc)

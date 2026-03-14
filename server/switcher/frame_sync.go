@@ -729,7 +729,7 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 	}
 
 	// Deep-copy YUV to avoid aliasing FRC scratch buffers (nearestOut/blendOut).
-	var result ProcessingFrame = *emitted
+	result := *emitted
 	if framePool != nil && len(emitted.YUV) <= framePool.bufSize {
 		yuvCopy := framePool.Acquire()[:len(emitted.YUV)]
 		copy(yuvCopy, emitted.YUV)

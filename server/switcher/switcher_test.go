@@ -1198,10 +1198,7 @@ func TestSwitcher_E2ELatency(t *testing.T) {
 
 	// Wait for async pipeline to process.
 	deadline := time.After(3 * time.Second)
-	for {
-		if sw.lastE2ENs.Load() > 0 {
-			break
-		}
+	for sw.lastE2ENs.Load() == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("timeout waiting for E2E latency to be recorded")

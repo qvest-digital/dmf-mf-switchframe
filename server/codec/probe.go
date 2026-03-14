@@ -241,7 +241,7 @@ func ListAvailableEncoders() []EncoderInfo {
 			availableEncoders = append(availableEncoders, EncoderInfo{
 				Name:        "openh264",
 				DisplayName: display,
-				IsDefault:   "openh264" == defaultEnc,
+				IsDefault:   defaultEnc == "openh264",
 			})
 		}
 	})

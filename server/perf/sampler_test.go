@@ -52,12 +52,6 @@ func (m *mockOutputPerf) PerfSample() OutputSample {
 	return m.sample
 }
 
-func (m *mockOutputPerf) set(s OutputSample) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sample = s
-}
-
 // --- RingStat tests ---
 
 func TestRingStat_Push_Window(t *testing.T) {
