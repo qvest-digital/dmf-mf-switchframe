@@ -38,6 +38,7 @@ const (
 	ActionGraphicsSetZOrder     Action = "graphics_set_zorder"
 	ActionGraphicsFlyIn         Action = "graphics_fly_in"
 	ActionGraphicsFlyOut        Action = "graphics_fly_out"
+	ActionGraphicsFlyOn         Action = "graphics_fly_on"
 	ActionGraphicsSlide         Action = "graphics_slide"
 	ActionGraphicsAnimate       Action = "graphics_animate"
 	ActionGraphicsAnimateStop   Action = "graphics_animate_stop"
@@ -111,6 +112,7 @@ var AllActions = map[Action]bool{
 	ActionGraphicsSetZOrder:     true,
 	ActionGraphicsFlyIn:         true,
 	ActionGraphicsFlyOut:        true,
+	ActionGraphicsFlyOn:         true,
 	ActionGraphicsSlide:         true,
 	ActionGraphicsAnimate:       true,
 	ActionGraphicsAnimateStop:   true,
@@ -268,6 +270,10 @@ func StepSummary(step Step) string {
 		layerID := fmtLayerID(step.Params)
 		dir, _ := step.Params["direction"].(string)
 		return fmt.Sprintf("Graphics Fly Out %s (layer %s)", dir, layerID)
+	case ActionGraphicsFlyOn:
+		layerID := fmtLayerID(step.Params)
+		dir, _ := step.Params["direction"].(string)
+		return fmt.Sprintf("Graphics Fly On %s (layer %s)", dir, layerID)
 	case ActionGraphicsSlide:
 		layerID := fmtLayerID(step.Params)
 		return fmt.Sprintf("Graphics Slide (layer %s)", layerID)
