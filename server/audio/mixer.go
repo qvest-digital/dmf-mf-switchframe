@@ -11,21 +11,10 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
-// updateAtomicMaxAudio atomically updates field to val if val > current.
-func updateAtomicMaxAudio(field *atomic.Int64, val int64) {
-	for {
-		cur := field.Load()
-		if val <= cur {
-			return
-		}
-		if field.CompareAndSwap(cur, val) {
-			return
-		}
-	}
-}
 
 // growBuf returns buf[:n] if cap(buf) >= n, otherwise allocates a new slice.
 // Used to eliminate per-frame allocations on the mixing hot path.
@@ -97,6 +86,7 @@ type Channel struct {
 	trimBuf   []float32
 	gainBuf   []float32
 	storedBuf []float32
+	upmixBuf  []float32 // reused by upmixMono to avoid per-call allocation
 }
 
 // Mixer mixes audio from multiple sources.
@@ -297,7 +287,7 @@ func (m *Mixer) ensureEncoder() error {
 		return nil
 	}
 	if m.config.EncoderFactory == nil {
-		return fmt.Errorf("no encoder factory")
+		return errors.New("no encoder factory")
 	}
 	enc, err := m.config.EncoderFactory(m.sampleRate, m.numChannels)
 	if err != nil {
@@ -770,16 +760,7 @@ func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
 	m.outputFrameCount.Add(1)
 	if prev > 0 {
 		gap := now - prev
-		// Update max inter-frame gap (atomic CAS loop)
-		for {
-			cur := m.maxInterFrameNano.Load()
-			if gap <= cur {
-				break
-			}
-			if m.maxInterFrameNano.CompareAndSwap(cur, gap) {
-				break
-			}
-		}
+		atomicutil.UpdateMax(&m.maxInterFrameNano, gap)
 	}
 	m.output(frame)
 }
@@ -792,8 +773,9 @@ func (m *Mixer) ResetMaxInterFrameGap() {
 
 // upmixMono duplicates each mono sample to all mixer channels.
 // srcChannels is the source's actual channel count (must be < m.numChannels).
+// ch is used to cache the upmix buffer across calls for the same channel.
 // Caller must hold m.mu.
-func (m *Mixer) upmixMono(pcm []float32, srcChannels int) []float32 {
+func (m *Mixer) upmixMono(ch *Channel, pcm []float32, srcChannels int) []float32 {
 	if srcChannels <= 0 || srcChannels >= m.numChannels || len(pcm) == 0 {
 		return pcm
 	}
@@ -801,7 +783,9 @@ func (m *Mixer) upmixMono(pcm []float32, srcChannels int) []float32 {
 	// For N→M where N<M: interleave source channels into M output channels,
 	// duplicating the last source channel to fill remaining output channels.
 	samplesPerSrcFrame := len(pcm) / srcChannels
-	upmixed := make([]float32, samplesPerSrcFrame*m.numChannels)
+	needed := samplesPerSrcFrame * m.numChannels
+	ch.upmixBuf = growBuf(ch.upmixBuf, needed)
+	upmixed := ch.upmixBuf
 	for i := 0; i < samplesPerSrcFrame; i++ {
 		for outCh := 0; outCh < m.numChannels; outCh++ {
 			srcCh := outCh

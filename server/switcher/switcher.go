@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zsiec/ccx"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
@@ -32,27 +33,19 @@ const (
 
 // Sentinel errors for the switcher package.
 var (
-	ErrSourceNotFound   = errors.New("switcher: source not found")
-	ErrAlreadyOnProgram = errors.New("switcher: already on program")
-	ErrInvalidDelay     = errors.New("switcher: delay must be 0-500ms")
-	ErrInvalidPosition  = errors.New("switcher: position must be >= 1")
+	ErrSourceNotFound         = errors.New("switcher: source not found")
+	ErrAlreadyOnProgram       = errors.New("switcher: already on program")
+	ErrInvalidDelay           = errors.New("switcher: delay must be 0-500ms")
+	ErrInvalidPosition        = errors.New("switcher: position must be >= 1")
 	ErrNoTransition           = errors.New("switcher: no active transition")
 	ErrFormatDuringTransition = errors.New("switcher: cannot change pipeline format during active transition")
 	ErrEncoderNotAvailable    = errors.New("switcher: encoder not available")
+	errTransitionNotConfigured = errors.New("transition not configured")
+	errNoProgramSource         = errors.New("no program source set")
+	errNoTargetSource          = errors.New("no target source specified")
+	errStingerDataRequired     = errors.New("stinger transition requires stinger data")
 )
 
-// updateAtomicMax atomically updates field to val if val > current.
-func updateAtomicMax(field *atomic.Int64, val int64) {
-	for {
-		cur := field.Load()
-		if val <= cur {
-			return
-		}
-		if field.CompareAndSwap(cur, val) {
-			return
-		}
-	}
-}
 
 // State represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
@@ -1056,7 +1049,7 @@ func (s *Switcher) trackBroadcastInterval() {
 		return // first broadcast
 	}
 	gap := now - prev
-	updateAtomicMax(&s.maxBroadcastIntervalNano, gap)
+	atomicutil.UpdateMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
 	if gap > 100_000_000 { // 100ms in nanoseconds
 		s.mu.RLock()
@@ -1103,7 +1096,7 @@ func (s *Switcher) measureTransSeam() {
 	}
 	gap := time.Now().UnixNano() - start
 	s.transSeamLastNano.Store(gap)
-	updateAtomicMax(&s.transSeamMaxNano, gap)
+	atomicutil.UpdateMax(&s.transSeamMaxNano, gap)
 	s.transSeamCount.Add(1)
 	s.log.Info("transition seam measured", "gap_ms", float64(gap)/1e6)
 }
@@ -1274,7 +1267,7 @@ func (s *Switcher) videoProcessingLoop() {
 		dur := time.Since(start).Nanoseconds()
 		s.videoProcLastNano.Store(dur)
 		s.videoProcCount.Add(1)
-		updateAtomicMax(&s.videoProcMaxNano, dur)
+		atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
 		if dur > s.frameBudgetNs.Load() {
 			s.deadlineViolations.Add(1)
 		}
@@ -1282,7 +1275,7 @@ func (s *Switcher) videoProcessingLoop() {
 		if arrivalNano > 0 {
 			e2e := time.Now().UnixNano() - arrivalNano
 			s.lastE2ENs.Store(e2e)
-			updateAtomicMax(&s.maxE2ENs, e2e)
+			atomicutil.UpdateMax(&s.maxE2ENs, e2e)
 		}
 	}
 }
@@ -1365,7 +1358,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	if s.transConfig == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("transition not configured")
+		return errTransitionNotConfigured
 	}
 	if s.state.isInTransition() {
 		s.mu.Unlock()
@@ -1377,11 +1370,11 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 	if s.programSource == "" {
 		s.mu.Unlock()
-		return fmt.Errorf("no program source set")
+		return errNoProgramSource
 	}
 	if sourceKey == "" {
 		s.mu.Unlock()
-		return fmt.Errorf("no target source specified")
+		return errNoTargetSource
 	}
 	if _, ok := s.sources[sourceKey]; !ok {
 		s.mu.Unlock()
@@ -1407,7 +1400,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 	if tt == transition.Stinger && topts.stingerData == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("stinger transition requires stinger data")
+		return errStingerDataRequired
 	}
 
 	// Validate wipe direction when type is wipe
@@ -1549,7 +1542,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	if s.transConfig == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("transition not configured")
+		return errTransitionNotConfigured
 	}
 
 	// Reject if a non-FTB transition is active (mix/dip/wipe)
@@ -1563,7 +1556,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	if s.state == StateFTB {
 		if s.programSource == "" {
 			s.mu.Unlock()
-			return fmt.Errorf("no program source set")
+			return errNoProgramSource
 		}
 
 		fromSource := s.programSource
@@ -1621,7 +1614,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	if s.programSource == "" {
 		s.mu.Unlock()
-		return fmt.Errorf("no program source set")
+		return errNoProgramSource
 	}
 
 	fromSource := s.programSource

@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -768,19 +769,19 @@ func TestUpdateAtomicMax(t *testing.T) {
 	var field atomic.Int64
 
 	// Zero → positive updates.
-	updateAtomicMax(&field, 100)
+	atomicutil.UpdateMax(&field, 100)
 	require.Equal(t, int64(100), field.Load())
 
 	// Larger value replaces.
-	updateAtomicMax(&field, 200)
+	atomicutil.UpdateMax(&field, 200)
 	require.Equal(t, int64(200), field.Load())
 
 	// Smaller value is a no-op.
-	updateAtomicMax(&field, 50)
+	atomicutil.UpdateMax(&field, 50)
 	require.Equal(t, int64(200), field.Load())
 
 	// Equal value is a no-op.
-	updateAtomicMax(&field, 200)
+	atomicutil.UpdateMax(&field, 200)
 	require.Equal(t, int64(200), field.Load())
 }
 

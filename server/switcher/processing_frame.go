@@ -51,7 +51,7 @@ type ProcessingFrame struct {
 	// returns to the pool only when the count decrements to 0. The pointer
 	// is shared across Go value copies so frame_sync delivery copies and
 	// pipeline shallow copies all decrement the same counter.
-	refs *int32
+	refs *atomic.Int32
 }
 
 // SetRefs allocates (if needed) and initializes the reference count. Call
@@ -59,9 +59,9 @@ type ProcessingFrame struct {
 // Typically set to 1 for frames entering the pipeline.
 func (pf *ProcessingFrame) SetRefs(n int32) {
 	if pf.refs == nil {
-		pf.refs = new(int32)
+		pf.refs = &atomic.Int32{}
 	}
-	atomic.StoreInt32(pf.refs, n)
+	pf.refs.Store(n)
 }
 
 // Refs returns the current reference count (for diagnostics/testing).
@@ -70,7 +70,7 @@ func (pf *ProcessingFrame) Refs() int32 {
 	if pf.refs == nil {
 		return 0
 	}
-	return atomic.LoadInt32(pf.refs)
+	return pf.refs.Load()
 }
 
 // Ref increments the reference count, indicating an additional consumer
@@ -79,7 +79,7 @@ func (pf *ProcessingFrame) Ref() {
 	if pf.refs == nil {
 		return
 	}
-	atomic.AddInt32(pf.refs, 1)
+	pf.refs.Add(1)
 }
 
 // ReleaseYUV returns the YUV buffer to the pool when the last reference is
@@ -91,7 +91,7 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 		return
 	}
 	if pf.refs != nil {
-		if atomic.AddInt32(pf.refs, -1) > 0 {
+		if pf.refs.Add(-1) > 0 {
 			return
 		}
 	}
@@ -114,7 +114,7 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 	if pf.YUV == nil {
 		return
 	}
-	if pf.refs == nil || atomic.LoadInt32(pf.refs) <= 1 {
+	if pf.refs == nil || pf.refs.Load() <= 1 {
 		return // already sole owner or unmanaged
 	}
 
@@ -129,11 +129,11 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 
 	// Release our ref on the shared buffer. If this drops it to 0 the
 	// original owner's ReleaseYUV will be a no-op (already returned).
-	atomic.AddInt32(pf.refs, -1)
+	pf.refs.Add(-1)
 
 	// Detach: independent refcount, own buffer, own pool reference.
-	pf.refs = new(int32)
-	atomic.StoreInt32(pf.refs, 1)
+	pf.refs = &atomic.Int32{}
+	pf.refs.Store(1)
 	pf.YUV = newYUV
 	pf.pool = pool
 }

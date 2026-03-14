@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 )
 
 // Default encoder parameters for the pipeline codec pool.
@@ -147,19 +149,6 @@ func NewEngine(config EngineConfig) *Engine {
 	}
 }
 
-// updateAtomicMax atomically updates field to val if val > current value.
-// Uses CAS loop for lock-free thread safety.
-func updateAtomicMax(field *atomic.Int64, val int64) {
-	for {
-		cur := field.Load()
-		if val <= cur {
-			return
-		}
-		if field.CompareAndSwap(cur, val) {
-			return
-		}
-	}
-}
 
 // Timing returns a snapshot of the engine's timing instrumentation.
 // Safe to call from any goroutine (all fields are atomic).
@@ -398,7 +387,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	yuv, w, h, err := decoder.Decode(wireData)
 	decDur := time.Since(decStart).Nanoseconds()
 	e.decodeLastNano.Store(decDur)
-	updateAtomicMax(&e.decodeMaxNano, decDur)
+	atomicutil.UpdateMax(&e.decodeMaxNano, decDur)
 	if err != nil {
 		e.log.Debug("decode failed", "source", sourceKey, "err", err, "dataLen", len(wireData))
 		return false
@@ -469,7 +458,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
 		e.ingestLastNano.Store(dur)
-		updateAtomicMax(&e.ingestMaxNano, dur)
+		atomicutil.UpdateMax(&e.ingestMaxNano, dur)
 	}()
 	e.framesIngested.Add(1)
 
@@ -526,7 +515,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		yuv, w, h, err := decoder.Decode(wireData)
 		decDur := time.Since(decStart).Nanoseconds()
 		e.decodeLastNano.Store(decDur)
-		updateAtomicMax(&e.decodeMaxNano, decDur)
+		atomicutil.UpdateMax(&e.decodeMaxNano, decDur)
 		if err == nil {
 			decodedYUV = yuv
 			decW = w
@@ -601,7 +590,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
 		e.ingestLastNano.Store(dur)
-		updateAtomicMax(&e.ingestMaxNano, dur)
+		atomicutil.UpdateMax(&e.ingestMaxNano, dur)
 	}()
 	e.framesIngested.Add(1)
 
@@ -728,7 +717,7 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 	}
 	blendDur := time.Since(blendStart).Nanoseconds()
 	e.blendLastNano.Store(blendDur)
-	updateAtomicMax(&e.blendMaxNano, blendDur)
+	atomicutil.UpdateMax(&e.blendMaxNano, blendDur)
 	e.framesBlended.Add(1)
 
 	isKF := !e.firstOutput

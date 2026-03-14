@@ -8,6 +8,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -141,7 +142,7 @@ func (sd *sourceDecoder) decodeLoop() {
 		decodeEndNano := time.Now().UnixNano()
 		dur := decodeEndNano - t0
 		sd.lastDecodeNs.Store(dur)
-		updateAtomicMax(&sd.maxDecodeNs, dur)
+		atomicutil.UpdateMax(&sd.maxDecodeNs, dur)
 
 		if err != nil {
 			slog.Debug("source decoder: decode failed",

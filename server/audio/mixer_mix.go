@@ -5,6 +5,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio/vec"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 )
 
 // collectMixCycleLocked sums the accumulated mix buffers, applies master gain,
@@ -136,7 +137,7 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 	// Record mix cycle timing
 	mixDur := time.Now().UnixNano() - mixStart
 	m.lastMixCycleNs.Store(mixDur)
-	updateAtomicMaxAudio(&m.maxMixCycleNs, mixDur)
+	atomicutil.UpdateMax(&m.maxMixCycleNs, mixDur)
 
 	// Build output frame — caller will output after releasing the lock
 	return &media.AudioFrame{

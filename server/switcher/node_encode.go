@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -144,7 +145,7 @@ func (n *encodeNode) doEncode(src *ProcessingFrame, forceIDR bool) {
 
 	// Store real encode timing for debug snapshot (AsyncMetrics).
 	n.lastEncodeNs.Store(encDur)
-	updateAtomicMax(&n.maxEncodeNs, encDur)
+	atomicutil.UpdateMax(&n.maxEncodeNs, encDur)
 
 	if n.promMetrics != nil {
 		n.promMetrics.PipelineEncodeDuration.Observe(float64(encDur) / 1e9)

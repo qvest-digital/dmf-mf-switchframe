@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -104,7 +105,7 @@ func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
 		frame = node.Process(nil, frame)
 		dur := time.Now().UnixNano() - t0
 		p.nodeTiming[i].Store(dur)
-		updateAtomicMax(&p.nodeMaxNs[i], dur)
+		atomicutil.UpdateMax(&p.nodeMaxNs[i], dur)
 		if p.metrics != nil {
 			p.metrics.NodeProcessDuration.WithLabelValues(node.Name()).Observe(float64(dur) / 1e9)
 		}
@@ -113,7 +114,7 @@ func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
 	total := time.Now().UnixNano() - start
 	p.lastRunNs.Store(total)
 	p.runCount.Add(1)
-	updateAtomicMax(&p.maxRunNs, total)
+	atomicutil.UpdateMax(&p.maxRunNs, total)
 	return frame
 }
 
