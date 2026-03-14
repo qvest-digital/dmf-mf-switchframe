@@ -91,8 +91,12 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 		return
 	}
 	if pf.refs != nil {
-		if pf.refs.Add(-1) > 0 {
+		new := pf.refs.Add(-1)
+		if new > 0 {
 			return
+		}
+		if new < 0 {
+			panic("ProcessingFrame.ReleaseYUV: refcount underflow (double release)")
 		}
 	}
 	if pf.pool != nil {

@@ -123,6 +123,33 @@ func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
 	require.NotEqual(t, original.YUV[0], copied.YUV[0])
 }
 
+func TestReleaseYUVUnderflowPanics(t *testing.T) {
+	pool := NewFramePool(4, 8, 8)
+	defer pool.Close()
+
+	pf := &ProcessingFrame{
+		Width:  8,
+		Height: 8,
+		YUV:    pool.Acquire(),
+		pool:   pool,
+	}
+	pf.SetRefs(1)
+
+	// Create a value copy that shares the refs pointer (simulates frame_sync
+	// delivery or pipeline shallow copy). Both copies have non-nil YUV and
+	// share the same atomic refcount.
+	copy1 := *pf
+
+	// First release via original: valid, drops refs to 0, returns buffer to pool.
+	pf.ReleaseYUV()
+
+	// Second release via the copy: refs would go to -1 (underflow). Must panic
+	// to prevent pool state corruption from double-return.
+	require.Panics(t, func() {
+		copy1.ReleaseYUV()
+	}, "double ReleaseYUV on shared refcounted frame should panic on underflow")
+}
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{
