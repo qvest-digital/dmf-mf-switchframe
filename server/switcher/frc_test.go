@@ -1013,3 +1013,43 @@ func TestFRC_IngestRefcountNoDoubleRelease(t *testing.T) {
 	pf2.ReleaseYUV() // frame_sync releases pf2
 	pf3.ReleaseYUV() // frame_sync releases pf3
 }
+
+func TestFRC_SceneDetection_IdenticalFrames(t *testing.T) {
+	fs := newFRCSource(FRCMCFI, 3000)
+
+	// Two identical frames should not be detected as a scene change.
+	f1 := makeTestFrame(1920, 1080, 128, 0)
+	f2 := makeTestFrame(1920, 1080, 128, 3000)
+	result := fs.detectSceneChange(f1, f2)
+	require.False(t, result, "identical frames should not trigger scene change")
+}
+
+func TestFRC_SceneDetection_DifferentFrames(t *testing.T) {
+	fs := newFRCSource(FRCMCFI, 3000)
+
+	// Build up SAD history with similar frames to set a low baseline.
+	for i := 0; i < 8; i++ {
+		fa := makeTestFrame(1920, 1080, byte(100+i), int64(i*3000))
+		fb := makeTestFrame(1920, 1080, byte(100+i+1), int64((i+1)*3000))
+		fs.detectSceneChange(fa, fb)
+	}
+
+	// Dramatically different frame should trigger scene change.
+	fA := makeTestFrame(1920, 1080, 10, 0)
+	fB := makeTestFrame(1920, 1080, 250, 3000)
+	result := fs.detectSceneChange(fA, fB)
+	require.True(t, result, "dramatically different frames should trigger scene change")
+}
+
+func BenchmarkFRC_SceneDetection(b *testing.B) {
+	// Benchmark scene detection at 1080p to measure the effect of
+	// horizontal subsampling (every 4th pixel in both dimensions).
+	fs := newFRCSource(FRCMCFI, 3000)
+	f1 := makeFRCGradientFrame(1920, 1080, 0, 0)
+	f2 := makeFRCGradientFrame(1920, 1080, 10, 3000)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fs.detectSceneChange(f1, f2)
+	}
+}

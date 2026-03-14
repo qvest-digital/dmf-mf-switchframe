@@ -4,7 +4,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/zsiec/switchframe/server/switcher/frcasm"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -423,6 +422,7 @@ func (fs *frcSource) reset() {
 
 // detectSceneChange computes a subsampled SAD between two frames and
 // compares against an adaptive threshold derived from recent SAD history.
+// Both dimensions are subsampled by 4x to reduce compute.
 func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 	width := prev.Width
 	height := prev.Height
@@ -431,14 +431,23 @@ func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 
 	var totalSAD uint64
 	rows := 0
+	pixels := 0
 	for row := 0; row < height; row += 4 {
-		totalSAD += frcasm.SadRow(&yA[row*width], &yB[row*width], width)
+		off := row * width
+		for col := 0; col < width; col += 4 {
+			d := int(yA[off+col]) - int(yB[off+col])
+			if d < 0 {
+				d = -d
+			}
+			totalSAD += uint64(d)
+			pixels++
+		}
 		rows++
 	}
-	if rows == 0 {
+	if pixels == 0 {
 		return false
 	}
-	avgSAD := totalSAD / uint64(rows*width)
+	avgSAD := totalSAD / uint64(pixels)
 
 	median := fs.medianSAD()
 	threshold := median * 5
