@@ -54,13 +54,34 @@
 	const anyActive = $derived(layers.some((l) => l.active));
 	const selectedLayer = $derived(layers.find((l) => l.id === selectedLayerId) ?? null);
 
-	// Auto-select first layer if none selected
+	// Seed local state from server for layers we haven't initialized locally.
+	// This handles page reload, layers created by other operators, etc.
 	$effect(() => {
-		if (layers.length > 0 && (selectedLayerId === null || !layers.some(l => l.id === selectedLayerId))) {
-			selectedLayerId = layers[0].id;
+		for (const layer of layers) {
+			if (layer.id in layerModes) continue;
+			layerModes[layer.id] = layer.imageName ? 'image' : 'template';
+			if (!(layer.id in layerTemplates)) {
+				const tpl = (layer.template && layer.template in builtinTemplates) ? layer.template : 'lower-third';
+				layerTemplates[layer.id] = tpl;
+				layerFields[layer.id] = getDefaultValues(tpl);
+			}
 		}
+	});
+
+	// Auto-select first layer if none selected, or fall back when selected layer is removed.
+	// We check layerTemplates to avoid resetting selection for layers just added via
+	// handleAddLayer whose broadcast hasn't arrived yet.
+	$effect(() => {
 		if (layers.length === 0) {
 			selectedLayerId = null;
+			return;
+		}
+		if (selectedLayerId === null) {
+			selectedLayerId = layers[0].id;
+			return;
+		}
+		if (!layers.some(l => l.id === selectedLayerId) && !(selectedLayerId in layerTemplates)) {
+			selectedLayerId = layers[0].id;
 		}
 	});
 
@@ -102,24 +123,30 @@
 		return layerFlyConfigs[id] ?? { direction: 'left', durationMs: 500 };
 	}
 
-	// Clean up local state for layers removed externally
+	// Clean up local state only for layers that were actually removed from the server
+	// (not layers pending broadcast after handleAddLayer).
+	let prevLayerIdSet: Set<number> | null = null;
 	$effect(() => {
 		const currentIds = new Set(layers.map(l => l.id));
-		for (const key of Object.keys(layerTemplates).map(Number)) {
-			if (!currentIds.has(key)) {
-				delete layerModes[key];
-				delete layerTemplates[key];
-				delete layerFields[key];
-				delete layerAnimConfigs[key];
-				delete layerFlyConfigs[key];
+		if (prevLayerIdSet) {
+			for (const id of prevLayerIdSet) {
+				if (!currentIds.has(id)) {
+					delete layerModes[id];
+					delete layerTemplates[id];
+					delete layerFields[id];
+					delete layerAnimConfigs[id];
+					delete layerFlyConfigs[id];
+				}
 			}
 		}
+		prevLayerIdSet = currentIds;
 	});
 
 	// ── Handlers ──
 	async function handleAddLayer() {
 		try {
 			const result = await graphicsAddLayer();
+			layerModes[result.id] = 'template';
 			layerTemplates[result.id] = 'lower-third';
 			layerFields[result.id] = getDefaultValues('lower-third');
 			selectedLayerId = result.id;
