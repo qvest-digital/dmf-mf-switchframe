@@ -743,7 +743,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionAudioEQ, ActionAudioCompressor, ActionAudioDelay,
 		ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 		ActionGraphicsAddLayer, ActionGraphicsRemoveLayer, ActionGraphicsSetRect,
-		ActionGraphicsSetZOrder, ActionGraphicsFlyIn, ActionGraphicsFlyOut,
+		ActionGraphicsSetZOrder, ActionGraphicsFlyIn, ActionGraphicsFlyOut, ActionGraphicsFlyOn,
 		ActionGraphicsSlide, ActionGraphicsAnimate, ActionGraphicsAnimateStop,
 		ActionGraphicsUploadFrame,
 		ActionRecordingStart, ActionRecordingStop,
