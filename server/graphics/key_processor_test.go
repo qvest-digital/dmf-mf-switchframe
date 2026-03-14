@@ -422,3 +422,35 @@ func BenchmarkKeyProcessor_Process_1080p(b *testing.B) {
 		kp.Process(bg, fills, w, h)
 	}
 }
+
+func TestKeyProcessor_OddDimensionsReturnsUnmodified(t *testing.T) {
+	t.Parallel()
+
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:       KeyTypeChroma,
+		Enabled:    true,
+		KeyColorY:  182,
+		KeyColorCb: 30,
+		KeyColorCr: 12,
+		Similarity: 0.4,
+	})
+
+	// Create a small buffer to act as "bg" -- odd dimensions should
+	// cause Process to return it unmodified (no panic).
+	bg := []byte{100, 101, 102, 103, 104}
+	original := make([]byte, len(bg))
+	copy(original, bg)
+
+	// Odd width
+	result := kp.Process(bg, map[string][]byte{"cam1": bg}, 3, 4)
+	require.Equal(t, original, result, "odd width should return bg unmodified")
+
+	// Odd height
+	result = kp.Process(bg, map[string][]byte{"cam1": bg}, 4, 3)
+	require.Equal(t, original, result, "odd height should return bg unmodified")
+
+	// Both odd
+	result = kp.Process(bg, map[string][]byte{"cam1": bg}, 3, 3)
+	require.Equal(t, original, result, "both odd should return bg unmodified")
+}

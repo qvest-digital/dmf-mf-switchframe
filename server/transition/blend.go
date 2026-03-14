@@ -1,15 +1,14 @@
 package transition
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
-// assertEvenDimensions panics if width or height is odd. YUV420 chroma
-// subsampling requires even dimensions; odd values would cause incorrect
-// buffer sizes and plane offsets throughout the pipeline.
-func assertEvenDimensions(width, height int) {
-	if width%2 != 0 || height%2 != 0 {
-		panic(fmt.Sprintf("YUV420 requires even dimensions, got %dx%d", width, height))
-	}
-}
+// errOddDimensions is returned when YUV420 operations receive odd width or height.
+// YUV420 chroma subsampling requires even dimensions; odd values would cause
+// incorrect buffer sizes and plane offsets throughout the pipeline.
+var errOddDimensions = errors.New("YUV420 requires even dimensions")
 
 // FrameBlender alpha-blends two YUV420 planar byte slices directly,
 // avoiding the cost and chroma resampling error of a YUV->RGB->YUV round-trip.
@@ -47,8 +46,11 @@ type FrameBlender struct {
 
 // NewFrameBlender creates a FrameBlender with a pre-allocated output buffer
 // sized for the given resolution in YUV420 format.
-func NewFrameBlender(width, height int) *FrameBlender {
-	assertEvenDimensions(width, height)
+// Returns an error if width or height is odd (YUV420 requires even dimensions).
+func NewFrameBlender(width, height int) (*FrameBlender, error) {
+	if width%2 != 0 || height%2 != 0 {
+		return nil, fmt.Errorf("%w: got %dx%d", errOddDimensions, width, height)
+	}
 	ySize := width * height
 	uvSize := (width / 2) * (height / 2)
 	return &FrameBlender{
@@ -61,7 +63,7 @@ func NewFrameBlender(width, height int) *FrameBlender {
 		wipeAlphaMap:       make([]byte, ySize),
 		wipeAlphaMapChroma: make([]byte, uvSize),
 		stingerChromaAlpha: make([]byte, uvSize),
-	}
+	}, nil
 }
 
 // SetLimitedRange configures the blender for limited-range (broadcast) or

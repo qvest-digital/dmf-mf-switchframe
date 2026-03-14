@@ -1,7 +1,7 @@
 package graphics
 
 import (
-	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 )
@@ -135,7 +135,8 @@ func (kp *KeyProcessor) EnabledSources() map[string]KeyConfig {
 // If no keys are configured or enabled, the background is returned unchanged.
 func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, height int) []byte {
 	if width%2 != 0 || height%2 != 0 {
-		panic(fmt.Sprintf("YUV420 requires even dimensions, got %dx%d", width, height))
+		slog.Warn("skipping key processing: YUV420 requires even dimensions", "width", width, "height", height)
+		return bg
 	}
 
 	kp.mu.Lock()

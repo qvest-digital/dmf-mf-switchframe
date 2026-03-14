@@ -1,10 +1,19 @@
 package transition
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// mustNewFrameBlender creates a FrameBlender or fails the test.
+func mustNewFrameBlender(t testing.TB, w, h int) *FrameBlender {
+	t.Helper()
+	fb, err := NewFrameBlender(w, h)
+	require.NoError(t, err)
+	return fb
+}
 
 // makeYUVFrame creates a YUV420 frame with uniform Y, Cb, Cr values.
 // Layout: Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]
@@ -26,7 +35,7 @@ func makeYUVFrame(w, h int, y, cb, cr byte) []byte {
 
 func TestBlenderNew(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(1920, 1080)
+	fb := mustNewFrameBlender(t,1920, 1080)
 	require.NotNil(t, fb)
 	require.Equal(t, 1920, fb.width)
 	require.Equal(t, 1080, fb.height)
@@ -34,7 +43,7 @@ func TestBlenderNew(t *testing.T) {
 
 func TestBlendMixPosition0(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	a := makeYUVFrame(4, 4, 200, 90, 240) // bright reddish
 	b := makeYUVFrame(4, 4, 50, 200, 60)  // dark bluish
 
@@ -52,7 +61,7 @@ func TestBlendMixPosition0(t *testing.T) {
 
 func TestBlendMixPosition1(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	a := makeYUVFrame(4, 4, 200, 90, 240)
 	b := makeYUVFrame(4, 4, 50, 200, 60)
 
@@ -70,7 +79,7 @@ func TestBlendMixPosition1(t *testing.T) {
 
 func TestBlendMixPosition05(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 	b := makeYUVFrame(4, 4, 100, 200, 100)
 
@@ -88,7 +97,7 @@ func TestBlendMixPosition05(t *testing.T) {
 
 func TestBlendDipPhase1(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 	b := makeYUVFrame(4, 4, 100, 200, 100)
@@ -113,7 +122,7 @@ func TestBlendDipPhase1(t *testing.T) {
 
 func TestBlendDipMidpoint(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 255, 200, 200)
 	b := makeYUVFrame(4, 4, 255, 200, 200)
@@ -133,7 +142,7 @@ func TestBlendDipMidpoint(t *testing.T) {
 
 func TestBlendDipPhase2(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 100, 100, 100)
 	b := makeYUVFrame(4, 4, 200, 160, 200)
@@ -158,7 +167,7 @@ func TestBlendDipPhase2(t *testing.T) {
 
 func TestBlendFTBHalf(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 
@@ -182,7 +191,7 @@ func TestBlendFTBHalf(t *testing.T) {
 
 func TestBlendFTBFull(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(false)
 	a := makeYUVFrame(4, 4, 200, 200, 200)
 
@@ -201,7 +210,7 @@ func TestBlendFTBFull(t *testing.T) {
 
 func TestBlendFTBZero(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	a := makeYUVFrame(4, 4, 200, 100, 200)
 
 	out := fb.BlendFTB(a, 0.0)
@@ -218,7 +227,7 @@ func TestBlendFTBZero(t *testing.T) {
 
 func TestBlenderReusesBuffer(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	a := makeYUVFrame(4, 4, 100, 128, 128)
 	b := makeYUVFrame(4, 4, 200, 128, 128)
 
@@ -232,7 +241,7 @@ func TestBlenderReusesBuffer(t *testing.T) {
 
 func TestBlenderYUVBufferSize(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(1920, 1080)
+	fb := mustNewFrameBlender(t,1920, 1080)
 	// YUV420: Y=1920*1080 + Cb=960*540 + Cr=960*540 = 3110400
 	expected := 1920*1080 + 2*(960*540)
 	require.Equal(t, expected, len(fb.yuvBufOut))
@@ -243,7 +252,7 @@ func TestBlenderYUVBufferSize(t *testing.T) {
 func TestBlendWipePosition0AllA(t *testing.T) {
 	t.Parallel()
 	// At position 0.0, the entire frame should be source A regardless of direction.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
@@ -264,7 +273,7 @@ func TestBlendWipePosition0AllA(t *testing.T) {
 func TestBlendWipePosition1AllB(t *testing.T) {
 	t.Parallel()
 	// At position 1.0, the entire frame should be source B regardless of direction.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
@@ -288,7 +297,7 @@ func TestBlendWipeHLeftHalfway(t *testing.T) {
 	// Pixels with x/width < 0.5 (i.e., x < 4) should be B.
 	// Pixels with x/width > 0.5 (i.e., x >= 4) should be A.
 	// The boundary (x=3..4) has a 4px soft edge so some blending.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
@@ -314,7 +323,7 @@ func TestBlendWipeVTopHalfway(t *testing.T) {
 	// At position 0.5 with v-top: threshold = y/height.
 	// Pixels with y/height < 0.5 (y < 4) should be B.
 	// Pixels with y/height > 0.5 (y >= 4) should be A.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
@@ -339,7 +348,7 @@ func TestBlendWipeBoxCenterOut(t *testing.T) {
 	t.Parallel()
 	// At position 0.5 with box-center-out: threshold = max(|x-cx|/cx, |y-cy|/cy).
 	// Center pixels have low threshold (< 0.5) -> B. Edge pixels have high threshold -> A.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 200, 90, 240)
 	b := makeYUVFrame(8, 8, 50, 200, 60)
 
@@ -360,7 +369,7 @@ func TestBlendWipeSoftEdge(t *testing.T) {
 	// Verify that pixels at the wipe boundary have blended (intermediate) values.
 	// Use a wider frame so the 4px soft edge is visible.
 	// softEdge = 2/32 = 0.0625. Thresholds use x/(w-1) = x/31.
-	fb := NewFrameBlender(32, 8)
+	fb := mustNewFrameBlender(t,32, 8)
 	a := makeYUVFrame(32, 8, 200, 128, 128)
 	b := makeYUVFrame(32, 8, 50, 128, 128)
 
@@ -394,7 +403,7 @@ func TestBlendWipeThresholdSpansFullRange(t *testing.T) {
 	// The last pixel should be fully A (alpha=0) at position=0.98 because
 	// the wipe hasn't reached the far edge yet.
 	w := 100
-	fb := NewFrameBlender(w, 4)
+	fb := mustNewFrameBlender(t,w, 4)
 	fb.generateWipeAlpha(0.98, WipeHLeft)
 
 	lastPixelAlpha := fb.wipeAlphaMap[w-1]
@@ -409,7 +418,7 @@ func TestBlendWipeVerticalThresholdSpansFullRange(t *testing.T) {
 	//   Bug (threshold=0.99): in soft edge, alpha=64
 	//   Fix (threshold=1.0):  alpha=0 (fully A)
 	h := 100
-	fb := NewFrameBlender(4, h)
+	fb := mustNewFrameBlender(t,4, h)
 	fb.generateWipeAlpha(0.98, WipeVTop)
 
 	// Last row, first pixel.
@@ -421,7 +430,7 @@ func TestBlendWipeVerticalThresholdSpansFullRange(t *testing.T) {
 func TestBlendWipeAllDirectionsValid(t *testing.T) {
 	t.Parallel()
 	// Ensure all 6 directions produce valid output of the correct size.
-	fb := NewFrameBlender(8, 8)
+	fb := mustNewFrameBlender(t,8, 8)
 	a := makeYUVFrame(8, 8, 100, 128, 128)
 	b := makeYUVFrame(8, 8, 200, 128, 128)
 	expectedSize := 8*8 + 2*(4*4)
@@ -446,7 +455,7 @@ func TestBlendWipeAllDirectionsValid(t *testing.T) {
 
 func TestBlendStinger_BoundsCheck(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 
 	validBase := makeYUVFrame(4, 4, 128, 128, 128)
 	validStinger := makeYUVFrame(4, 4, 200, 128, 128)
@@ -480,7 +489,7 @@ func TestBlendStinger_BoundsCheck(t *testing.T) {
 
 func TestBlendFTBFull_LimitedRange(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(true)
 	a := makeYUVFrame(4, 4, 200, 200, 200)
 
@@ -499,7 +508,7 @@ func TestBlendFTBFull_LimitedRange(t *testing.T) {
 
 func TestBlendFTBHalf_LimitedRange(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(true)
 	a := makeYUVFrame(4, 4, 200, 128, 128)
 
@@ -513,7 +522,7 @@ func TestBlendFTBHalf_LimitedRange(t *testing.T) {
 
 func TestBlendDipMidpoint_LimitedRange(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(4, 4)
+	fb := mustNewFrameBlender(t,4, 4)
 	fb.SetLimitedRange(true)
 	a := makeYUVFrame(4, 4, 200, 128, 128)
 	b := makeYUVFrame(4, 4, 200, 128, 128)
@@ -528,14 +537,14 @@ func TestBlendDipMidpoint_LimitedRange(t *testing.T) {
 
 func TestNewFrameBlenderDefaultsToLimitedRange(t *testing.T) {
 	t.Parallel()
-	fb := NewFrameBlender(16, 16)
+	fb := mustNewFrameBlender(t,16, 16)
 	require.Equal(t, byte(16), fb.blackY)
 }
 
 func TestWipeAlphaLinearCorrectness(t *testing.T) {
 	t.Parallel()
 	w, h := 64, 48
-	fb := NewFrameBlender(w, h)
+	fb := mustNewFrameBlender(t,w, h)
 
 	for _, pos := range []float64{0.0, 0.25, 0.5, 0.75, 1.0} {
 		// Horizontal left: alpha varies along X only.
@@ -570,7 +579,7 @@ func TestWipeAlphaLinearCorrectness(t *testing.T) {
 
 func BenchmarkWipeAlphaLinear(b *testing.B) {
 	w, h := 1920, 1080
-	fb := NewFrameBlender(w, h)
+	fb := mustNewFrameBlender(b, w, h)
 
 	b.Run("horizontal_1D", func(b *testing.B) {
 		b.ReportAllocs()
@@ -592,4 +601,38 @@ func BenchmarkWipeAlphaLinear(b *testing.B) {
 			fb.generateWipeAlpha(0.5, WipeBoxCenterOut)
 		}
 	})
+}
+
+func TestNewFrameBlender_OddDimensions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"odd width", 1921, 1080},
+		{"odd height", 1920, 1081},
+		{"both odd", 1921, 1081},
+		{"small odd width", 3, 4},
+		{"small odd height", 4, 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fb, err := NewFrameBlender(tc.width, tc.height)
+			require.Nil(t, fb, "should return nil for odd dimensions")
+			require.Error(t, err)
+			require.True(t, errors.Is(err, errOddDimensions), "error should wrap errOddDimensions")
+		})
+	}
+}
+
+func TestNewFrameBlender_EvenDimensions(t *testing.T) {
+	t.Parallel()
+	fb, err := NewFrameBlender(1920, 1080)
+	require.NoError(t, err)
+	require.NotNil(t, fb)
+	require.Equal(t, 1920, fb.width)
+	require.Equal(t, 1080, fb.height)
 }

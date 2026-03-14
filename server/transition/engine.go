@@ -281,7 +281,11 @@ func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 	if e.config.HintWidth > 0 && e.config.HintHeight > 0 {
 		e.width = e.config.HintWidth
 		e.height = e.config.HintHeight
-		e.blender = NewFrameBlender(e.width, e.height)
+		blender, err := NewFrameBlender(e.width, e.height)
+		if err != nil {
+			return fmt.Errorf("create blender: %w", err)
+		}
+		e.blender = blender
 	} else {
 		e.blender = nil
 		e.width = 0
@@ -405,7 +409,12 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	if e.width == 0 {
 		e.width = w
 		e.height = h
-		e.blender = NewFrameBlender(w, h)
+		blender, err := NewFrameBlender(w, h)
+		if err != nil {
+			e.log.Warn("skipping frame: failed to create blender", "err", err, "w", w, "h", h)
+			return false
+		}
+		e.blender = blender
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
@@ -540,7 +549,15 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		if e.width == 0 {
 			e.width = decW
 			e.height = decH
-			e.blender = NewFrameBlender(decW, decH)
+			blender, blenderErr := NewFrameBlender(decW, decH)
+			if blenderErr != nil {
+				e.log.Warn("skipping frame: failed to create blender", "err", blenderErr, "w", decW, "h", decH)
+				e.width = 0
+				e.height = 0
+				e.mu.Unlock()
+				return
+			}
+			e.blender = blender
 		}
 
 		// Scale if resolution doesn't match the target.
@@ -688,7 +705,15 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	if e.width == 0 {
 		e.width = width
 		e.height = height
-		e.blender = NewFrameBlender(width, height)
+		blender, blenderErr := NewFrameBlender(width, height)
+		if blenderErr != nil {
+			e.log.Warn("skipping frame: failed to create blender", "err", blenderErr, "w", width, "h", height)
+			e.width = 0
+			e.height = 0
+			e.mu.Unlock()
+			return
+		}
+		e.blender = blender
 	}
 
 	// Scale to engine resolution if needed (e.g., 360x240 MXL → 1080p camera).
