@@ -806,13 +806,23 @@ func (c *Compositor) runTransitionAnimation(layerID int) {
 		c.mu.Lock()
 		layer, ok := c.layers[layerID]
 		if ok {
+			deactivate := cfg.DeactivateOnComplete
 			done := layer.animDone
 			layer.animConfig = nil
 			layer.animCancel = nil
 			layer.animDone = nil
+			if deactivate {
+				layer.active = false
+				layer.fadePosition = 0
+			}
+			state := c.buildStateLocked()
+			cb := c.onStateChange
 			c.mu.Unlock()
 			if done != nil {
 				close(done)
+			}
+			if cb != nil {
+				cb(state)
 			}
 		} else {
 			c.mu.Unlock()
