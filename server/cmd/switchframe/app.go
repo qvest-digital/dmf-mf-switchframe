@@ -138,7 +138,7 @@ func (a *App) initInfra() error {
 	slog.Info("video codec selected", "encoder", encName, "decoder", decName)
 
 	// Register subsystem metrics on the shared Prometheus registry.
-	a.appMetrics = metrics.NewMetrics(metrics.Registry)
+	a.appMetrics = metrics.NewMetrics(metrics.GetRegistry())
 
 	slog.Info("switchframe starting", "log_level", a.cfg.LogLevel)
 	if a.cfg.Demo {

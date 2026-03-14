@@ -146,7 +146,7 @@ func (r *FileRecorder) rotateLocked() error {
 	return nil
 }
 
-// cachePATandPMT scans TS data for PAT (PID 0) and PMT (PID 0x1000) packets
+// cachePATandPMT scans TS data for PAT (PID 0) and PMT (pmtPID) packets
 // and caches them for writing at the start of rotated files.
 func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 	var patPkt, pmtPkt []byte
@@ -159,7 +159,7 @@ func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 			patPkt = make([]byte, tsPacketSize)
 			copy(patPkt, tsData[i:i+tsPacketSize])
 		}
-		if pid == 0x1000 && pmtPkt == nil {
+		if pid == pmtPID && pmtPkt == nil {
 			pmtPkt = make([]byte, tsPacketSize)
 			copy(pmtPkt, tsData[i:i+tsPacketSize])
 		}

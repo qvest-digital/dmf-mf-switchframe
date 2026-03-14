@@ -9,13 +9,6 @@ import (
 	"unsafe"
 )
 
-// EncoderInfo describes an available video encoder backend.
-type EncoderInfo struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-	IsDefault   bool   `json:"isDefault"`
-}
-
 var (
 	probeOnce       sync.Once
 	selectedEncoder string         // e.g. "h264_videotoolbox", "libx264"

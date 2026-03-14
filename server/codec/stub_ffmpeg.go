@@ -48,13 +48,6 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 // Close is a no-op stub.
 func (d *FFmpegDecoder) Close() {}
 
-// EncoderInfo describes an available video encoder backend.
-type EncoderInfo struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName"`
-	IsDefault   bool   `json:"isDefault"`
-}
-
 // ProbeEncoders is a stub that returns "none" when FFmpeg is not available.
 // When FFmpeg is available, the real implementation probes hardware and software
 // encoders to find the best backend.

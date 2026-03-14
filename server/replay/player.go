@@ -119,6 +119,24 @@ func (p *replayPlayer) Progress() float64 {
 // than total clip length.
 const gopLookahead = 2
 
+// gopOutputState holds the mutable state threaded through outputGOP calls,
+// replacing what was previously 15 individual pointer/value parameters.
+type gopOutputState struct {
+	encoder       transition.VideoEncoder
+	interpolator  FrameInterpolator
+	timer         *time.Timer
+	dupCount      int
+	ptsPerFrame   int64
+	frameDuration time.Duration
+	totalFrames   int
+	outputPTS     int64
+	firstFrame    bool
+	outputIdx     int
+	codecStr      string
+	groupID       uint32
+	pacingIdx     int
+}
+
 func (p *replayPlayer) run(ctx context.Context) {
 	defer close(p.done)
 	defer p.config.OnDone()
@@ -203,19 +221,26 @@ func (p *replayPlayer) run(ctx context.Context) {
 		<-timer.C
 	}
 
-	codecStr := "avc1.42C01E" // Fallback; overwritten on first keyframe from encoder SPS.
-	var groupID uint32        // MoQ group ID — incremented on each keyframe.
+	// Initialize mutable GOP output state, threaded through outputGOP calls.
+	gs := &gopOutputState{
+		encoder:       encoder,
+		interpolator:  newInterpolator(p.config.Interpolation),
+		timer:         timer,
+		dupCount:      dupCount,
+		ptsPerFrame:   ptsPerFrame,
+		frameDuration: frameDuration,
+		totalFrames:   totalFrames,
+		outputPTS:     p.config.InitialPTS,
+		firstFrame:    true,
+		codecStr:      "avc1.42C01E", // Fallback; overwritten on first keyframe from encoder SPS.
+	}
 
-	interpolator := newInterpolator(p.config.Interpolation)
-
-	outputPTS := p.config.InitialPTS
 	p.outputAudioPTS = p.config.InitialPTS
 	p.playbackStart = time.Now()
-	var pacingIdx int // Monotonic frame counter for absolute-time pacing (never resets).
 	for {
-		p.outputAudioPTS = outputPTS // resync audio PTS to video PTS at loop boundary
-		firstFrame := true
-		outputIdx := 0
+		p.outputAudioPTS = gs.outputPTS // resync audio PTS to video PTS at loop boundary
+		gs.firstFrame = true
+		gs.outputIdx = 0
 		p.audioIdx = 0
 		p.audioCallCount = 0
 
@@ -251,7 +276,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 			}
 
 			// Output the current GOP.
-			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, &groupID, interpolator, &pacingIdx) {
+			if p.outputGOP(ctx, decoded, gs) {
 				return
 			}
 
@@ -289,22 +314,10 @@ func (p *replayPlayer) run(ctx context.Context) {
 func (p *replayPlayer) outputGOP(
 	ctx context.Context,
 	decoded []decodedFrame,
-	encoder transition.VideoEncoder,
-	dupCount int,
-	ptsPerFrame int64,
-	frameDuration time.Duration,
-	timer *time.Timer,
-	outputPTS *int64,
-	firstFrame *bool,
-	outputIdx *int,
-	totalFrames int,
-	codecStr *string,
-	groupID *uint32,
-	interpolator FrameInterpolator,
-	pacingIdx *int,
+	gs *gopOutputState,
 ) bool {
 	for di, df := range decoded {
-		for dup := 0; dup < dupCount; dup++ {
+		for dup := 0; dup < gs.dupCount; dup++ {
 			select {
 			case <-ctx.Done():
 				return true
@@ -316,21 +329,21 @@ func (p *replayPlayer) outputGOP(
 			// interval. Forcing IDR at every source GOP boundary created
 			// excessive MoQ groups (separate QUIC streams), causing
 			// inter-stream frame reordering in the browser.
-			forceIDR := *firstFrame
-			*firstFrame = false
+			forceIDR := gs.firstFrame
+			gs.firstFrame = false
 
 			// Determine which YUV data to encode. When an interpolator is
 			// available, dupCount > 1, and this is not the first copy (dup 0),
 			// blend between the current frame and the next frame.
 			yuvToEncode := df.yuv
-			if interpolator != nil && dupCount > 1 && dup > 0 {
+			if gs.interpolator != nil && gs.dupCount > 1 && dup > 0 {
 				nextIdx := di + 1
 				if nextIdx < len(decoded) {
 					next := decoded[nextIdx]
 					// Only blend if dimensions match.
 					if next.width == df.width && next.height == df.height {
-						alpha := float64(dup) / float64(dupCount)
-						yuvToEncode = interpolator.Interpolate(df.yuv, next.yuv, df.width, df.height, alpha)
+						alpha := float64(dup) / float64(gs.dupCount)
+						yuvToEncode = gs.interpolator.Interpolate(df.yuv, next.yuv, df.width, df.height, alpha)
 					}
 				}
 				// If no next frame or dimension mismatch, fall back to duplication (yuvToEncode stays as df.yuv).
@@ -338,31 +351,31 @@ func (p *replayPlayer) outputGOP(
 
 			// Primary output: raw YUV to switcher pipeline.
 			if p.config.RawVideoOutput != nil {
-				p.config.RawVideoOutput(yuvToEncode, df.width, df.height, *outputPTS)
+				p.config.RawVideoOutput(yuvToEncode, df.width, df.height, gs.outputPTS)
 			}
 
 			// Raw monitoring output (e.g. "replay-raw" relay).
 			if p.config.RawMonitorOutput != nil {
-				p.config.RawMonitorOutput(yuvToEncode, df.width, df.height, *outputPTS)
+				p.config.RawMonitorOutput(yuvToEncode, df.width, df.height, gs.outputPTS)
 			}
 
 			// Pace BEFORE output: wait until the deadline, then emit
 			// the frame right at the target time. This ensures uniform
 			// output intervals regardless of variable encode durations.
-			deadline := p.playbackStart.Add(time.Duration(*pacingIdx) * frameDuration)
+			deadline := p.playbackStart.Add(time.Duration(gs.pacingIdx) * gs.frameDuration)
 			wait := time.Until(deadline)
 			if wait > 0 {
-				timer.Reset(wait)
+				gs.timer.Reset(wait)
 				select {
 				case <-ctx.Done():
 					return true
-				case <-timer.C:
+				case <-gs.timer.C:
 				}
 			}
 
 			// H.264 monitoring output (optional — only when encoder is available).
-			if encoder != nil {
-				encoded, isKeyframe, encErr := encoder.Encode(yuvToEncode, *outputPTS, forceIDR)
+			if gs.encoder != nil {
+				encoded, isKeyframe, encErr := gs.encoder.Encode(yuvToEncode, gs.outputPTS, forceIDR)
 				if encErr != nil {
 					slog.Error("replay player: encode failed", "err", encErr)
 					return true
@@ -386,7 +399,7 @@ func (p *replayPlayer) outputGOP(
 							switch nalu[0] & 0x1F {
 							case 7:
 								spsNALU = nalu
-								*codecStr = codec.ParseSPSCodecString(nalu)
+								gs.codecStr = codec.ParseSPSCodecString(nalu)
 							case 8:
 								ppsNALU = nalu
 							}
@@ -398,16 +411,16 @@ func (p *replayPlayer) outputGOP(
 					}
 
 					// Only start a new MoQ group on the very first keyframe.
-					if isKeyframe && *groupID == 0 {
-						*groupID++
+					if isKeyframe && gs.groupID == 0 {
+						gs.groupID++
 					}
 
 					frame := &media.VideoFrame{
-						PTS:        *outputPTS,
+						PTS:        gs.outputPTS,
 						IsKeyframe: isKeyframe,
 						WireData:   avc1,
-						Codec:      *codecStr,
-						GroupID:    *groupID,
+						Codec:      gs.codecStr,
+						GroupID:    gs.groupID,
 						SPS:        spsNALU,
 						PPS:        ppsNALU,
 					}
@@ -422,16 +435,16 @@ func (p *replayPlayer) outputGOP(
 			if di+1 < len(decoded) {
 				nextSourcePTS = decoded[di+1].pts
 			} else {
-				nextSourcePTS = df.pts + ptsPerFrame
+				nextSourcePTS = df.pts + gs.ptsPerFrame
 			}
 			p.emitAudioForFrame(df.pts, nextSourcePTS, dup)
 
-			*outputPTS += ptsPerFrame
-			*outputIdx++
-			*pacingIdx++
+			gs.outputPTS += gs.ptsPerFrame
+			gs.outputIdx++
+			gs.pacingIdx++
 
-			if totalFrames > 0 {
-				p.progress.Store(int64(*outputIdx * 1000 / totalFrames))
+			if gs.totalFrames > 0 {
+				p.progress.Store(int64(gs.outputIdx * 1000 / gs.totalFrames))
 			}
 		}
 	}

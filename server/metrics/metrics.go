@@ -10,23 +10,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// Registry is a non-default Prometheus registry so Switchframe metrics don't
+// registry is a non-default Prometheus registry so Switchframe metrics don't
 // collide with anything registered on prometheus.DefaultRegisterer.
-var Registry = prometheus.NewRegistry()
+var registry = prometheus.NewRegistry()
 
 func init() {
-	Registry.MustRegister(collectors.NewGoCollector())
-	Registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
-	Registry.MustRegister(
+	registry.MustRegister(collectors.NewGoCollector())
+	registry.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	registry.MustRegister(
 		HTTPRequestsTotal,
 		HTTPRequestDuration,
 	)
 }
 
+// GetRegistry returns the non-default Prometheus registry used by Switchframe.
+func GetRegistry() *prometheus.Registry {
+	return registry
+}
+
 // Handler returns an http.Handler that serves Prometheus metrics from the
-// non-default Registry with OpenMetrics enabled.
+// non-default registry with OpenMetrics enabled.
 func Handler() http.Handler {
-	return promhttp.HandlerFor(Registry, promhttp.HandlerOpts{EnableOpenMetrics: true})
+	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{EnableOpenMetrics: true})
 }
 
 // HTTPRequestsTotal counts HTTP requests by method, path pattern, and status code.

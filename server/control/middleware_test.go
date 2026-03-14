@@ -177,7 +177,7 @@ func TestMetricsMiddlewareIncrementsCounter(t *testing.T) {
 
 	// Verify production-level metrics were incremented.
 	// Gather from the production registry.
-	families, err := metrics.Registry.Gather()
+	families, err := metrics.GetRegistry().Gather()
 	require.NoError(t, err)
 	found := false
 	for _, f := range families {
@@ -200,7 +200,7 @@ func TestMetricsMiddlewareRecordsDuration(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	families, err := metrics.Registry.Gather()
+	families, err := metrics.GetRegistry().Gather()
 	require.NoError(t, err)
 	found := false
 	for _, f := range families {

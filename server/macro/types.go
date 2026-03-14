@@ -163,7 +163,7 @@ func IsValidAction(a Action) bool {
 // Step is a single operation within a macro sequence.
 type Step struct {
 	Action Action            `json:"action"`
-	Params map[string]interface{} `json:"params"`
+	Params map[string]any `json:"params"`
 }
 
 // Macro is a named sequence of steps that can be saved and replayed.
@@ -206,186 +206,167 @@ type ExecutionState struct {
 // OnProgress is a callback invoked by the runner whenever execution state changes.
 type OnProgress func(state ExecutionState)
 
-// StepSummary generates a human-readable summary string for a macro step.
-func StepSummary(step Step) string {
-	source, _ := step.Params["source"].(string)
+// stepSummaryFunc is a function that generates a summary string for a step's parameters.
+type stepSummaryFunc func(step Step) string
 
-	switch step.Action {
-	case ActionCut:
-		return fmt.Sprintf("Cut → %s", source)
-	case ActionPreview:
-		return fmt.Sprintf("Preview → %s", source)
-	case ActionTransition:
-		transType, _ := step.Params["type"].(string)
+// stepSummaryMap maps actions to their summary generation functions.
+// Actions with custom parameter formatting use dedicated functions;
+// simple actions use sourceSummary or staticSummary helpers.
+var stepSummaryMap = map[Action]stepSummaryFunc{
+	ActionCut:     func(s Step) string { return fmt.Sprintf("Cut → %s", paramStr(s, "source")) },
+	ActionPreview: func(s Step) string { return fmt.Sprintf("Preview → %s", paramStr(s, "source")) },
+	ActionTransition: func(s Step) string {
+		transType, _ := s.Params["type"].(string)
 		durationMs := 0
-		if d, ok := step.Params["durationMs"].(float64); ok {
+		if d, ok := s.Params["durationMs"].(float64); ok {
 			durationMs = int(d)
 		}
-		return fmt.Sprintf("Transition %s %dms → %s", transType, durationMs, source)
-	case ActionWait:
+		return fmt.Sprintf("Transition %s %dms → %s", transType, durationMs, paramStr(s, "source"))
+	},
+	ActionWait: func(s Step) string {
 		ms := 0
-		if d, ok := step.Params["ms"].(float64); ok {
+		if d, ok := s.Params["ms"].(float64); ok {
 			ms = int(d)
 		}
 		return fmt.Sprintf("Wait %dms", ms)
-	case ActionSetAudio:
+	},
+	ActionSetAudio: func(s Step) string {
 		level := 0.0
-		if l, ok := step.Params["level"].(float64); ok {
+		if l, ok := s.Params["level"].(float64); ok {
 			level = l
 		}
-		return fmt.Sprintf("Set Audio %s %.1fdB", source, level)
-	case ActionAudioMute:
-		return fmt.Sprintf("Audio Mute %s", source)
-	case ActionAudioAFV:
-		return fmt.Sprintf("Audio AFV %s", source)
-	case ActionAudioTrim:
-		return fmt.Sprintf("Audio Trim %s", source)
-	case ActionAudioMaster:
-		return "Audio Master"
-	case ActionAudioEQ:
-		return fmt.Sprintf("Audio EQ %s", source)
-	case ActionAudioCompressor:
-		return fmt.Sprintf("Audio Compressor %s", source)
-	case ActionAudioDelay:
-		return fmt.Sprintf("Audio Delay %s", source)
-	case ActionGraphicsOn:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics On (layer %s)", layerID)
-	case ActionGraphicsOff:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Off (layer %s)", layerID)
-	case ActionGraphicsAutoOn:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Auto On (layer %s)", layerID)
-	case ActionGraphicsAutoOff:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Auto Off (layer %s)", layerID)
-	case ActionGraphicsAddLayer:
-		return "Graphics Add Layer"
-	case ActionGraphicsRemoveLayer:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Remove Layer %s", layerID)
-	case ActionGraphicsSetRect:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Set Rect (layer %s)", layerID)
-	case ActionGraphicsSetZOrder:
-		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Set Audio %s %.1fdB", paramStr(s, "source"), level)
+	},
+	ActionAudioMute:       sourceSummary("Audio Mute"),
+	ActionAudioAFV:        sourceSummary("Audio AFV"),
+	ActionAudioTrim:       sourceSummary("Audio Trim"),
+	ActionAudioMaster:     staticSummary("Audio Master"),
+	ActionAudioEQ:         sourceSummary("Audio EQ"),
+	ActionAudioCompressor: sourceSummary("Audio Compressor"),
+	ActionAudioDelay:      sourceSummary("Audio Delay"),
+	ActionGraphicsOn:      layerSummary("Graphics On"),
+	ActionGraphicsOff:     layerSummary("Graphics Off"),
+	ActionGraphicsAutoOn:  layerSummary("Graphics Auto On"),
+	ActionGraphicsAutoOff: layerSummary("Graphics Auto Off"),
+	ActionGraphicsAddLayer:    staticSummary("Graphics Add Layer"),
+	ActionGraphicsRemoveLayer: func(s Step) string { return fmt.Sprintf("Graphics Remove Layer %s", fmtLayerID(s.Params)) },
+	ActionGraphicsSetRect:     layerSummary("Graphics Set Rect"),
+	ActionGraphicsSetZOrder: func(s Step) string {
 		z := 0
-		if v, ok := step.Params["zOrder"].(float64); ok {
+		if v, ok := s.Params["zOrder"].(float64); ok {
 			z = int(v)
 		}
-		return fmt.Sprintf("Graphics Z-Order %d (layer %s)", z, layerID)
-	case ActionGraphicsFlyIn:
-		layerID := fmtLayerID(step.Params)
-		dir, _ := step.Params["direction"].(string)
-		return fmt.Sprintf("Graphics Fly In %s (layer %s)", dir, layerID)
-	case ActionGraphicsFlyOut:
-		layerID := fmtLayerID(step.Params)
-		dir, _ := step.Params["direction"].(string)
-		return fmt.Sprintf("Graphics Fly Out %s (layer %s)", dir, layerID)
-	case ActionGraphicsFlyOn:
-		layerID := fmtLayerID(step.Params)
-		dir, _ := step.Params["direction"].(string)
-		return fmt.Sprintf("Graphics Fly On %s (layer %s)", dir, layerID)
-	case ActionGraphicsSlide:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Slide (layer %s)", layerID)
-	case ActionGraphicsAnimate:
-		layerID := fmtLayerID(step.Params)
-		mode, _ := step.Params["mode"].(string)
-		return fmt.Sprintf("Graphics Animate %s (layer %s)", mode, layerID)
-	case ActionGraphicsAnimateStop:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Animate Stop (layer %s)", layerID)
-	case ActionGraphicsUploadFrame:
-		layerID := fmtLayerID(step.Params)
-		tmpl, _ := step.Params["template"].(string)
-		return fmt.Sprintf("Graphics Upload %s (layer %s)", tmpl, layerID)
-	case ActionGraphicsTextAnimate:
-		layerID := fmtLayerID(step.Params)
-		mode, _ := step.Params["mode"].(string)
-		return fmt.Sprintf("Graphics Text Animate %s (layer %s)", mode, layerID)
-	case ActionGraphicsTextAnimateStop:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Text Animate Stop (layer %s)", layerID)
-	case ActionGraphicsTickerStart:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Ticker Start (layer %s)", layerID)
-	case ActionGraphicsTickerStop:
-		layerID := fmtLayerID(step.Params)
-		return fmt.Sprintf("Graphics Ticker Stop (layer %s)", layerID)
-	case ActionRecordingStart:
-		return "Recording Start"
-	case ActionRecordingStop:
-		return "Recording Stop"
-	case ActionFTB:
-		return "Fade to Black"
-	case ActionPresetRecall:
-		id, _ := step.Params["id"].(string)
+		return fmt.Sprintf("Graphics Z-Order %d (layer %s)", z, fmtLayerID(s.Params))
+	},
+	ActionGraphicsFlyIn:  layerDirSummary("Graphics Fly In"),
+	ActionGraphicsFlyOut: layerDirSummary("Graphics Fly Out"),
+	ActionGraphicsFlyOn:  layerDirSummary("Graphics Fly On"),
+	ActionGraphicsSlide:  layerSummary("Graphics Slide"),
+	ActionGraphicsAnimate: func(s Step) string {
+		mode, _ := s.Params["mode"].(string)
+		return fmt.Sprintf("Graphics Animate %s (layer %s)", mode, fmtLayerID(s.Params))
+	},
+	ActionGraphicsAnimateStop: layerSummary("Graphics Animate Stop"),
+	ActionGraphicsUploadFrame: func(s Step) string {
+		tmpl, _ := s.Params["template"].(string)
+		return fmt.Sprintf("Graphics Upload %s (layer %s)", tmpl, fmtLayerID(s.Params))
+	},
+	ActionGraphicsTextAnimate: func(s Step) string {
+		mode, _ := s.Params["mode"].(string)
+		return fmt.Sprintf("Graphics Text Animate %s (layer %s)", mode, fmtLayerID(s.Params))
+	},
+	ActionGraphicsTextAnimateStop: layerSummary("Graphics Text Animate Stop"),
+	ActionGraphicsTickerStart:     layerSummary("Graphics Ticker Start"),
+	ActionGraphicsTickerStop:      layerSummary("Graphics Ticker Stop"),
+	ActionRecordingStart:          staticSummary("Recording Start"),
+	ActionRecordingStop:           staticSummary("Recording Stop"),
+	ActionFTB:                     staticSummary("Fade to Black"),
+	ActionPresetRecall: func(s Step) string {
+		id, _ := s.Params["id"].(string)
 		return fmt.Sprintf("Preset Recall %s", id)
-	case ActionKeySet:
-		return fmt.Sprintf("Key Set %s", source)
-	case ActionKeyDelete:
-		return fmt.Sprintf("Key Delete %s", source)
-	case ActionSourceLabel:
-		return fmt.Sprintf("Source Label %s", source)
-	case ActionSourceDelay:
-		return fmt.Sprintf("Source Delay %s", source)
-	case ActionSourcePosition:
-		return fmt.Sprintf("Source Position %s", source)
-	case ActionReplayMarkIn:
-		return fmt.Sprintf("Replay Mark In %s", source)
-	case ActionReplayMarkOut:
-		return fmt.Sprintf("Replay Mark Out %s", source)
-	case ActionReplayPlay:
-		return fmt.Sprintf("Replay Play %s", source)
-	case ActionReplayStop:
-		return "Replay Stop"
-	case ActionReplayQuickClip:
-		return fmt.Sprintf("Replay Quick Clip %s", source)
-	case ActionReplayPlayLast:
-		return "Replay Play Last"
-	case ActionReplayPlayClip:
-		return "Replay Play Clip"
-	case ActionSCTE35Cue:
-		return "SCTE-35 Cue"
-	case ActionSCTE35Return:
-		return "SCTE-35 Return"
-	case ActionSCTE35Cancel:
-		return "SCTE-35 Cancel"
-	case ActionSCTE35Hold:
-		return "SCTE-35 Hold"
-	case ActionSCTE35Extend:
-		return "SCTE-35 Extend"
-	case ActionLayoutPreset:
-		preset, _ := step.Params["preset"].(string)
+	},
+	ActionKeySet:         sourceSummary("Key Set"),
+	ActionKeyDelete:      sourceSummary("Key Delete"),
+	ActionSourceLabel:    sourceSummary("Source Label"),
+	ActionSourceDelay:    sourceSummary("Source Delay"),
+	ActionSourcePosition: sourceSummary("Source Position"),
+	ActionReplayMarkIn:   sourceSummary("Replay Mark In"),
+	ActionReplayMarkOut:  sourceSummary("Replay Mark Out"),
+	ActionReplayPlay:     sourceSummary("Replay Play"),
+	ActionReplayStop:     staticSummary("Replay Stop"),
+	ActionReplayQuickClip: sourceSummary("Replay Quick Clip"),
+	ActionReplayPlayLast:  staticSummary("Replay Play Last"),
+	ActionReplayPlayClip:  staticSummary("Replay Play Clip"),
+	ActionSCTE35Cue:       staticSummary("SCTE-35 Cue"),
+	ActionSCTE35Return:    staticSummary("SCTE-35 Return"),
+	ActionSCTE35Cancel:    staticSummary("SCTE-35 Cancel"),
+	ActionSCTE35Hold:      staticSummary("SCTE-35 Hold"),
+	ActionSCTE35Extend:    staticSummary("SCTE-35 Extend"),
+	ActionLayoutPreset: func(s Step) string {
+		preset, _ := s.Params["preset"].(string)
 		return fmt.Sprintf("Layout Preset %s", preset)
-	case ActionLayoutSlotOn:
-		return fmt.Sprintf("Layout Slot On %s", source)
-	case ActionLayoutSlotOff:
-		return fmt.Sprintf("Layout Slot Off %s", source)
-	case ActionLayoutSlotSource:
-		return fmt.Sprintf("Layout Slot Source %s", source)
-	case ActionLayoutClear:
-		return "Layout Clear"
-	case ActionCaptionMode:
-		mode, _ := step.Params["mode"].(string)
+	},
+	ActionLayoutSlotOn:     sourceSummary("Layout Slot On"),
+	ActionLayoutSlotOff:    sourceSummary("Layout Slot Off"),
+	ActionLayoutSlotSource: sourceSummary("Layout Slot Source"),
+	ActionLayoutClear:      staticSummary("Layout Clear"),
+	ActionCaptionMode: func(s Step) string {
+		mode, _ := s.Params["mode"].(string)
 		return fmt.Sprintf("Caption Mode %s", mode)
-	case ActionCaptionText:
-		text, _ := step.Params["text"].(string)
+	},
+	ActionCaptionText: func(s Step) string {
+		text, _ := s.Params["text"].(string)
 		if len(text) > 30 {
 			text = text[:30] + "..."
 		}
 		return fmt.Sprintf("Caption Text %q", text)
-	case ActionCaptionClear:
-		return "Caption Clear"
-	default:
-		return string(step.Action)
+	},
+	ActionCaptionClear: staticSummary("Caption Clear"),
+}
+
+// paramStr extracts a string parameter from a step.
+func paramStr(s Step, key string) string {
+	v, _ := s.Params[key].(string)
+	return v
+}
+
+// sourceSummary returns a summary function that formats "Label source".
+func sourceSummary(label string) stepSummaryFunc {
+	return func(s Step) string {
+		return fmt.Sprintf("%s %s", label, paramStr(s, "source"))
 	}
 }
 
+// staticSummary returns a summary function that always returns a fixed string.
+func staticSummary(label string) stepSummaryFunc {
+	return func(_ Step) string { return label }
+}
+
+// layerSummary returns a summary function that formats "Label (layer N)".
+func layerSummary(label string) stepSummaryFunc {
+	return func(s Step) string {
+		return fmt.Sprintf("%s (layer %s)", label, fmtLayerID(s.Params))
+	}
+}
+
+// layerDirSummary returns a summary function that formats "Label dir (layer N)".
+func layerDirSummary(label string) stepSummaryFunc {
+	return func(s Step) string {
+		dir, _ := s.Params["direction"].(string)
+		return fmt.Sprintf("%s %s (layer %s)", label, dir, fmtLayerID(s.Params))
+	}
+}
+
+// StepSummary generates a human-readable summary string for a macro step.
+func StepSummary(step Step) string {
+	if fn, ok := stepSummaryMap[step.Action]; ok {
+		return fn(step)
+	}
+	return string(step.Action)
+}
+
 // fmtLayerID extracts a layerId param as a display string.
-func fmtLayerID(params map[string]interface{}) string {
+func fmtLayerID(params map[string]any) string {
 	if v, ok := params["layerId"].(float64); ok {
 		return fmt.Sprintf("%d", int(v))
 	}

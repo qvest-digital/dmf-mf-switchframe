@@ -20,6 +20,9 @@ const (
 	videoPID uint16 = 0x100
 	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
 	audioPID uint16 = 0x101
+	// pmtPID is the MPEG-TS packet identifier for the Program Map Table.
+	// This matches the go-astits default PMT PID.
+	pmtPID uint16 = 0x1000
 	// defaultSCTE35PID is the default MPEG-TS packet identifier for the SCTE-35 cue stream.
 	// Used by tests and as the fallback when no PID is explicitly configured.
 	defaultSCTE35PID uint16 = 0x102

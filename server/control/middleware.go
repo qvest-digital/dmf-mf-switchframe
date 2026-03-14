@@ -1,11 +1,14 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -139,6 +142,31 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 	n, err := sr.ResponseWriter.Write(b)
 	sr.written += int64(n)
 	return n, err
+}
+
+// Flush delegates to the underlying ResponseWriter if it implements http.Flusher.
+// This is required for streaming responses (e.g., SSE, chunked transfer) to work
+// correctly when the ResponseWriter is wrapped.
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack delegates to the underlying ResponseWriter if it implements http.Hijacker.
+// This is required for WebSocket upgrades and other connection hijacking to work
+// correctly when the ResponseWriter is wrapped.
+func (sr *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := sr.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("hijack not supported")
+}
+
+// Unwrap returns the underlying ResponseWriter, allowing http.ResponseController
+// and other standard library mechanisms to discover optional interfaces.
+func (sr *statusRecorder) Unwrap() http.ResponseWriter {
+	return sr.ResponseWriter
 }
 
 // newRequestID generates a random 8-byte hex string for request tracing.
