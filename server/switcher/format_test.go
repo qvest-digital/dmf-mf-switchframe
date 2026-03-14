@@ -55,9 +55,9 @@ func TestFormatFPSZeroDen(t *testing.T) {
 
 func TestFormatFrameDuration(t *testing.T) {
 	tests := []struct {
-		preset   string
-		wantNs   int64
-		deltaNs  int64
+		preset  string
+		wantNs  int64
+		deltaNs int64
 	}{
 		{"1080p30", 33333333, 0},
 		{"1080p25", 40000000, 0},

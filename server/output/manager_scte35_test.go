@@ -39,16 +39,16 @@ func TestManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
 
 	// Create two destinations: one with SCTE-35 enabled, one without.
 	destEnabled := &Destination{
-		id:     "enabled",
-		config: DestinationConfig{SCTE35Enabled: true},
+		id:      "enabled",
+		config:  DestinationConfig{SCTE35Enabled: true},
 		adapter: &mockFilterWriter{},
-		active: true,
+		active:  true,
 	}
 	destDisabled := &Destination{
-		id:     "disabled",
-		config: DestinationConfig{SCTE35Enabled: false},
+		id:      "disabled",
+		config:  DestinationConfig{SCTE35Enabled: false},
 		adapter: &mockFilterWriter{},
-		active: true,
+		active:  true,
 	}
 
 	m.mu.Lock()

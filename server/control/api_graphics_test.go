@@ -917,4 +917,3 @@ func TestHandleImageDelete(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
-

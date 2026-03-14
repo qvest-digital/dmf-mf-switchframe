@@ -290,6 +290,8 @@ type headIndexErrorReader struct{}
 func (r *headIndexErrorReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, error) {
 	return nil, GrainInfo{}, fmt.Errorf("should not be called")
 }
-func (r *headIndexErrorReader) ConfigInfo() FlowConfig      { return FlowConfig{} }
-func (r *headIndexErrorReader) HeadIndex() (uint64, error)   { return 0, fmt.Errorf("head index unavailable") }
-func (r *headIndexErrorReader) Close() error                 { return nil }
+func (r *headIndexErrorReader) ConfigInfo() FlowConfig { return FlowConfig{} }
+func (r *headIndexErrorReader) HeadIndex() (uint64, error) {
+	return 0, fmt.Errorf("head index unavailable")
+}
+func (r *headIndexErrorReader) Close() error { return nil }

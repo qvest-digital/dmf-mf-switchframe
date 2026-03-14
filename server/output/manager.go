@@ -64,9 +64,9 @@ type Manager struct {
 	onState    func() // triggers ControlRoomState broadcast
 	onMuxStart func() // triggers IDR keyframe request when muxer starts
 	closed     bool
-	stopping   bool   // true while stopMuxerLocked is draining the viewer (lock released)
-	ctx     context.Context    // cancelled on Close()
-	cancel  context.CancelFunc // cancels ctx
+	stopping   bool               // true while stopMuxerLocked is draining the viewer (lock released)
+	ctx        context.Context    // cancelled on Close()
+	cancel     context.CancelFunc // cancels ctx
 
 	// Prometheus metrics (optional, set via SetMetrics)
 	promMetrics *metrics.Metrics
@@ -244,7 +244,7 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		// Set SRT bandwidth hints from CBR muxrate.
 		if m.cbrMuxrate > 0 {
 			callerCfg.InputBW = m.cbrMuxrate / 8 // bps → bytes/sec
-			callerCfg.OverheadBW = 5              // SRT protocol overhead on top of TS muxrate
+			callerCfg.OverheadBW = 5             // SRT protocol overhead on top of TS muxrate
 		}
 		caller := NewSRTCaller(callerCfg)
 		if m.srtConnectFn != nil {

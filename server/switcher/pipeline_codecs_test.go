@@ -449,7 +449,7 @@ func TestPipelineCodecs_EncodeAfterCloseWithoutPriorEncode(t *testing.T) {
 type slowMockEncoder struct {
 	encodeStarted chan struct{} // closed when Encode() begins
 	encodeFinish  chan struct{} // Encode() blocks until this is closed
-	closedAt      int64        // unix nano when Close() was called (atomic)
+	closedAt      int64         // unix nano when Close() was called (atomic)
 }
 
 func (e *slowMockEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {

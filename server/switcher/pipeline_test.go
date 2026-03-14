@@ -872,4 +872,3 @@ func TestPipelineSnapshot_AsyncMetrics(t *testing.T) {
 	require.Greater(t, node["encode_max_ns"].(int64), int64(0), "encode_max_ns should be > 0")
 	require.Equal(t, int64(1), node["encode_total"].(int64))
 }
-

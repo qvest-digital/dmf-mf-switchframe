@@ -45,13 +45,13 @@ type KeyConfig struct {
 //
 // The processor is safe for concurrent use from multiple goroutines.
 type KeyProcessor struct {
-	mu           sync.RWMutex
-	keys         map[string]KeyConfig // source key → config
-	sortedKeys   []string             // cached sorted key list, rebuilt on mutation
-	onChange     func()               // called after SetKey/RemoveKey for pipeline rebuild
-	spillWorkBuf []byte               // reused across frames for spill suppression copy
-	maskBuf      []byte               // reused luma-resolution mask buffer (width*height)
-	chromaMaskBuf []byte              // reused chroma-resolution mask buffer (w/2*h/2)
+	mu            sync.RWMutex
+	keys          map[string]KeyConfig // source key → config
+	sortedKeys    []string             // cached sorted key list, rebuilt on mutation
+	onChange      func()               // called after SetKey/RemoveKey for pipeline rebuild
+	spillWorkBuf  []byte               // reused across frames for spill suppression copy
+	maskBuf       []byte               // reused luma-resolution mask buffer (width*height)
+	chromaMaskBuf []byte               // reused chroma-resolution mask buffer (w/2*h/2)
 }
 
 // NewKeyProcessor creates a new key processor with no keys configured.

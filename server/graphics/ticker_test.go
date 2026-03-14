@@ -57,7 +57,7 @@ func TestTickerEngine_RejectDuplicateStart(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, te.Start(id, TickerConfig{Text: "Test", FontSize: 24, Speed: 100}))
-	defer te.Stop(id)
+	defer func() { _ = te.Stop(id) }()
 
 	// Starting again should fail
 	err = te.Start(id, TickerConfig{Text: "Test 2", FontSize: 24, Speed: 100})
@@ -103,7 +103,7 @@ func TestTickerEngine_SetsOverlay(t *testing.T) {
 	// Verify the compositor has received an overlay update
 	c.mu.RLock()
 	layer := c.layers[id]
-	hasOverlay := layer.overlay != nil && len(layer.overlay) > 0
+	hasOverlay := len(layer.overlay) > 0
 	c.mu.RUnlock()
 	require.True(t, hasOverlay, "ticker should have set overlay data on the layer")
 

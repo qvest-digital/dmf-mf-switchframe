@@ -28,7 +28,7 @@ type Slot struct {
 	Transition SlotTransition  `json:"transition"`
 	Enabled    bool            `json:"enabled"`
 	ScaleMode  string          `json:"scaleMode,omitempty"`  // "stretch" (default) or "fill"
-	CropAnchor [2]float64     `json:"cropAnchor,omitempty"` // [x,y] 0.0-1.0, default center
+	CropAnchor [2]float64      `json:"cropAnchor,omitempty"` // [x,y] 0.0-1.0, default center
 }
 
 // EffectiveScaleMode returns the slot's scale mode, defaulting to "stretch".
@@ -64,8 +64,8 @@ func clamp01(v float64) float64 {
 
 // BorderConfig describes the visual border around a PIP slot.
 type BorderConfig struct {
-	Width   int  `json:"width"`   // luma pixels, must be even, 0 = no border
-	ColorY  byte `json:"colorY"`  // BT.709 limited range
+	Width   int  `json:"width"`  // luma pixels, must be even, 0 = no border
+	ColorY  byte `json:"colorY"` // BT.709 limited range
 	ColorCb byte `json:"colorCb"`
 	ColorCr byte `json:"colorCr"`
 }
@@ -86,7 +86,7 @@ func (t SlotTransition) TransitionDuration() time.Duration {
 
 // Layout is the complete multi-source layout configuration.
 type Layout struct {
-	Name  string       `json:"name"`
+	Name  string `json:"name"`
 	Slots []Slot `json:"slots"`
 }
 

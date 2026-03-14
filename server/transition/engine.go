@@ -149,7 +149,6 @@ func NewEngine(config EngineConfig) *Engine {
 	}
 }
 
-
 // Timing returns a snapshot of the engine's timing instrumentation.
 // Safe to call from any goroutine (all fields are atomic).
 func (e *Engine) Timing() map[string]any {

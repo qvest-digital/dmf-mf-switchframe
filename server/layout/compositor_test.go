@@ -267,7 +267,7 @@ func TestCompositor_FlyInClampedDoesNotCorrupt(t *testing.T) {
 	c.animations = append(c.animations, &Animation{
 		SlotIndex: 0,
 		StartTime: time.Now(),
-		Duration:  time.Hour, // won't complete during test
+		Duration:  time.Hour,                 // won't complete during test
 		FromRect:  image.Rect(12, 4, 20, 12), // extends 4px past right edge
 		ToRect:    image.Rect(8, 4, 16, 12),
 		FromAlpha: 1.0,

@@ -114,7 +114,7 @@ func TestChromaKeyMaskChroma_CrossValidation(t *testing.T) {
 	for row := 0; row < uvHeight; row++ {
 		for col := 0; col < uvWidth; col++ {
 			idx := row*uvWidth + col
-			frame[ySize+idx] = byte((col * 8) % 256)       // Cb
+			frame[ySize+idx] = byte((col * 8) % 256)        // Cb
 			frame[ySize+uvSize+idx] = byte((row * 8) % 256) // Cr
 		}
 	}
@@ -261,7 +261,7 @@ func TestChromaKeyMaskChroma_MonotonicSmoothing(t *testing.T) {
 		cr[i] = 128
 	}
 
-	simThreshSq := 100   // distance < 10
+	simThreshSq := 100    // distance < 10
 	totalThreshSq := 2500 // distance < 50
 	rangeSq := totalThreshSq - simThreshSq
 	invRange := 255 * 65536 / rangeSq
@@ -288,12 +288,12 @@ func TestChromaKeyMaskChroma_InvRangeAccuracy(t *testing.T) {
 
 	// Test a few distSq values in the smooth zone.
 	testCases := []struct {
-		distSq   int
-		wantMin  int
-		wantMax  int
+		distSq  int
+		wantMin int
+		wantMax int
 	}{
 		{simThreshSq, 0, 1},
-		{(simThreshSq + totalThreshSq) / 2, 126, 129},  // midpoint ≈ 127.5
+		{(simThreshSq + totalThreshSq) / 2, 126, 129}, // midpoint ≈ 127.5
 		{totalThreshSq - 1, 253, 255},
 	}
 

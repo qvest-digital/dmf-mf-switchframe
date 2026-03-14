@@ -15,9 +15,9 @@ const webhookQueueSize = 64
 
 // WebhookEvent is the JSON payload sent to external webhook endpoints.
 type WebhookEvent struct {
-	Type      string `json:"type"`                    // "cue_out", "cue_in", "cancel", "hold", "extend", "heartbeat"
+	Type      string `json:"type"` // "cue_out", "cue_in", "cancel", "hold", "extend", "heartbeat"
 	EventID   uint32 `json:"eventId"`
-	Command   string `json:"command"`                 // "splice_insert", "time_signal", "splice_null"
+	Command   string `json:"command"` // "splice_insert", "time_signal", "splice_null"
 	IsOut     bool   `json:"isOut"`
 	Duration  int64  `json:"durationMs,omitempty"`
 	Remaining int64  `json:"remainingMs,omitempty"`

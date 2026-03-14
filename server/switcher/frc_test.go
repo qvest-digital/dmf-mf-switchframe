@@ -197,7 +197,7 @@ func TestFRC_SceneChangeDetection(t *testing.T) {
 	}
 
 	// Now ingest a dramatically different frame (scene change)
-	sceneFrame := makeTestFrame(64, 64, 0, int64(8 * 3000))
+	sceneFrame := makeTestFrame(64, 64, 0, int64(8*3000))
 	fs.ingest(sceneFrame)
 
 	// Scene change should be detected

@@ -20,10 +20,10 @@ func ComputeMuxrate(videoBps, audioBps int64) int64 {
 // ISO 13818-1 defines null packets as stuffing that decoders discard.
 func nullTSPacket() [tsPacketSize]byte {
 	var pkt [tsPacketSize]byte
-	pkt[0] = 0x47       // sync byte
-	pkt[1] = 0x1F       // PID high bits (no PUSI, no TEI, no priority)
-	pkt[2] = 0xFF       // PID low bits → PID = 0x1FFF
-	pkt[3] = 0x10       // AFC=01 (payload only), CC=0
+	pkt[0] = 0x47 // sync byte
+	pkt[1] = 0x1F // PID high bits (no PUSI, no TEI, no priority)
+	pkt[2] = 0xFF // PID low bits → PID = 0x1FFF
+	pkt[3] = 0x10 // AFC=01 (payload only), CC=0
 	for i := 4; i < tsPacketSize; i++ {
 		pkt[i] = 0xFF // null payload
 	}
@@ -41,8 +41,8 @@ func nullTSPacket() [tsPacketSize]byte {
 // the budget, it's sent in full (burst, never drop). SRT's 120ms receive
 // buffer absorbs short-term jitter.
 type CBRPacer struct {
-	muxrateBps  int64
-	bytesPerSec float64
+	muxrateBps   int64
+	bytesPerSec  float64
 	tickInterval time.Duration
 
 	mu      sync.Mutex

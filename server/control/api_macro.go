@@ -150,7 +150,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 
 	// Run in background goroutine so the HTTP handler returns immediately.
 	go func() {
-		macro.Run(ctx, m, target, onProgress)
+		_ = macro.Run(ctx, m, target, onProgress)
 		cancel()
 
 		// Mark completed — state stays for dismiss.

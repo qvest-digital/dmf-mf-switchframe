@@ -49,9 +49,9 @@ type pendingRelease struct {
 	sourceKey   string
 	ss          *syncSource // for PTS tracking during delivery
 	video       *media.VideoFrame
-	rawVideo    ProcessingFrame // value copy — safe from concurrent modification
-	hasRawVideo bool            // true when rawVideo is set
-	freshVideo  bool            // true when a new frame was popped from ring (not repeated)
+	rawVideo    ProcessingFrame     // value copy — safe from concurrent modification
+	hasRawVideo bool                // true when rawVideo is set
+	freshVideo  bool                // true when a new frame was popped from ring (not repeated)
 	audio       *media.AudioFrame   // single audio frame (freeze/repeat or sole queued frame)
 	audioQueue  []*media.AudioFrame // FIFO-drained audio frames (all fresh)
 	freshAudio  bool                // true when audio frame(s) are fresh (not repeated)
@@ -261,7 +261,7 @@ type FrameSynchronizer struct {
 	// Program-source-driven release: when the program source ingests a
 	// fresh frame, the tick loop fires immediately instead of waiting for
 	// the fixed-rate timer. This eliminates sync wait latency (~17ms→<1ms).
-	programSource     string       // key of current program source
+	programSource     string        // key of current program source
 	programFrameReady chan struct{} // buffered(1) signal from IngestRawVideo
 
 	// Observability counters for release trigger type.
@@ -568,9 +568,9 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		ss.mu.Lock()
 		info := map[string]any{
 			"audio_miss_count": ss.audioMissCount,
-			"video_count":     ss.videoCount,
-			"audio_count":     ss.audioCount,
-			"raw_video_count": ss.rawVideoCount,
+			"video_count":      ss.videoCount,
+			"audio_count":      ss.audioCount,
+			"raw_video_count":  ss.rawVideoCount,
 		}
 		if ss.frc != nil {
 			info["frc"] = map[string]any{
@@ -586,11 +586,11 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		sources[key] = info
 	}
 	return map[string]any{
-		"sources":                  sources,
-		"frc_quality":              fs.frcQuality.String(),
-		"program_source":           fs.programSource,
-		"program_driven_releases":  fs.programDrivenReleases.Load(),
-		"timer_driven_releases":    fs.timerDrivenReleases.Load(),
+		"sources":                 sources,
+		"frc_quality":             fs.frcQuality.String(),
+		"program_source":          fs.programSource,
+		"program_driven_releases": fs.programDrivenReleases.Load(),
+		"timer_driven_releases":   fs.timerDrivenReleases.Load(),
 	}
 }
 
@@ -988,12 +988,12 @@ func (fs *FrameSynchronizer) releaseTick() {
 // and Phase 3 (remaining sources). Called from the single tickLoop goroutine.
 //
 // PTS strategy (broadcast-correct monotonic output):
-// - Fresh source frames: preserve original PTS (A/V sync with passthrough audio),
-//   but clamp forward if behind accumulated freeze PTS (prevents backward PTS
-//   in MPEG-TS output that would confuse downstream decoders).
-// - Repeated/frozen frames: advance PTS by one tick interval (monotonic).
-// - FRC-interpolated frames: use computed PTS (no source PTS exists).
-// - Audio: same strategy — fresh preserves source PTS, repeats advance.
+//   - Fresh source frames: preserve original PTS (A/V sync with passthrough audio),
+//     but clamp forward if behind accumulated freeze PTS (prevents backward PTS
+//     in MPEG-TS output that would confuse downstream decoders).
+//   - Repeated/frozen frames: advance PTS by one tick interval (monotonic).
+//   - FRC-interpolated frames: use computed PTS (no source PTS exists).
+//   - Audio: same strategy — fresh preserves source PTS, repeats advance.
 func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, ptsRemNum, ptsRemDen int64) {
 	if r.hasRawVideo {
 		pf := r.rawVideo // already a value copy from under the lock

@@ -31,7 +31,7 @@ func FuzzDecode(f *testing.F) {
 
 	// Seed: splice_insert cancel
 	cancel := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    99,
 		SpliceEventCancelIndicator: true,
 	}
@@ -130,7 +130,7 @@ func FuzzParseFromTS(f *testing.F) {
 func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 	// Seed: valid splice_insert cancel message.
 	cancel := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    12345,
 		SpliceEventCancelIndicator: true,
 	}
@@ -140,7 +140,7 @@ func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 
 	// Seed: cancel with event ID 0.
 	cancel0 := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    0,
 		SpliceEventCancelIndicator: true,
 	}
@@ -150,7 +150,7 @@ func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 
 	// Seed: cancel with max event ID.
 	cancelMax := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    0xFFFFFFFF,
 		SpliceEventCancelIndicator: true,
 	}
@@ -162,10 +162,10 @@ func FuzzDecodeSpliceInsertCancel(f *testing.F) {
 	// Construct a hand-crafted minimal cancel section:
 	// table_id(0xFC) + flags/length + header + splice_command_type(0x05) + event_id + cancel_indicator
 	minCancel := make([]byte, 25)
-	minCancel[0] = 0xFC                                // table_id
-	minCancel[13] = 0x05                               // splice_command_type = splice_insert
-	binary.BigEndian.PutUint32(minCancel[14:18], 42)   // splice_event_id
-	minCancel[18] = 0x80                               // splice_event_cancel_indicator = 1, reserved = 1111111
+	minCancel[0] = 0xFC                              // table_id
+	minCancel[13] = 0x05                             // splice_command_type = splice_insert
+	binary.BigEndian.PutUint32(minCancel[14:18], 42) // splice_event_id
+	minCancel[18] = 0x80                             // splice_event_cancel_indicator = 1, reserved = 1111111
 	f.Add(minCancel)
 
 	// Seed: empty input.

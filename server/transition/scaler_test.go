@@ -515,7 +515,7 @@ func scalePlaneLanczosReference(src []byte, srcW, srcH int, dst []byte, dstW, ds
 func TestPrecomputeKernel_WeightsNormalized(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name            string
+		name             string
 		srcSize, dstSize int
 	}{
 		{"upscale_720_1080", 720, 1080},
@@ -779,10 +779,10 @@ func TestBoxShrinkPlane_Gradient(t *testing.T) {
 	}
 	dst := make([]byte, 4)
 	boxShrinkPlane(src, 4, 4, dst, 2, 2, 2, 2)
-	require.Equal(t, byte(15), dst[0])  // avg(10,20,10,20)
-	require.Equal(t, byte(35), dst[1])  // avg(30,40,30,40)
-	require.Equal(t, byte(55), dst[2])  // avg(50,60,50,60)
-	require.Equal(t, byte(75), dst[3])  // avg(70,80,70,80)
+	require.Equal(t, byte(15), dst[0]) // avg(10,20,10,20)
+	require.Equal(t, byte(35), dst[1]) // avg(30,40,30,40)
+	require.Equal(t, byte(55), dst[2]) // avg(50,60,50,60)
+	require.Equal(t, byte(75), dst[3]) // avg(70,80,70,80)
 }
 
 func TestBoxShrinkPlane_Rounding(t *testing.T) {

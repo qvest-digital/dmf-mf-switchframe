@@ -294,7 +294,7 @@ func generateGreenScreenYUV420p(width, height int, frameNum uint64) []byte {
 	lowerY0 := height - lowerH - height/8 // offset up from very bottom
 	lowerY1 := lowerY0 + lowerH
 	// Sweep across width, wrapping every ~4 seconds at 30fps.
-	lowerX0 := int(frameNum*3) % (width + lowerW) - lowerW
+	lowerX0 := int(frameNum*3)%(width+lowerW) - lowerW
 	lowerX1 := lowerX0 + lowerW
 
 	// Logo: static square in top-right corner.

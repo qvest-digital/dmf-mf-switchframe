@@ -137,8 +137,8 @@ type frcSource struct {
 	pool *FramePool
 
 	// Reusable buffers (zero-alloc steady state)
-	blendOut   []byte         // final blended output
-	nearestOut []byte         // reusable buffer for emitNearest (avoids aliasing live frames)
+	blendOut   []byte          // final blended output
+	nearestOut []byte          // reusable buffer for emitNearest (avoids aliasing live frames)
 	hme        *hierarchicalME // pyramid ME state (reused across frames)
 
 	// FPS tracking from PTS deltas
@@ -503,4 +503,3 @@ func (fs *frcSource) ensureNearestOut(size int) {
 	}
 	fs.nearestOut = make([]byte, size)
 }
-

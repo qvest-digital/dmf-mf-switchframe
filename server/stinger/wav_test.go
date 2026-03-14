@@ -175,8 +175,8 @@ func TestParseWAV_NoDataChunk(t *testing.T) {
 	// fmt chunk
 	copy(buf[12:], "fmt ")
 	binary.LittleEndian.PutUint32(buf[16:], 16)
-	binary.LittleEndian.PutUint16(buf[20:], 1)  // PCM
-	binary.LittleEndian.PutUint16(buf[22:], 2)  // stereo
+	binary.LittleEndian.PutUint16(buf[20:], 1) // PCM
+	binary.LittleEndian.PutUint16(buf[22:], 2) // stereo
 	binary.LittleEndian.PutUint32(buf[24:], 48000)
 	binary.LittleEndian.PutUint32(buf[28:], 192000)
 	binary.LittleEndian.PutUint16(buf[32:], 4) // blockAlign
@@ -201,8 +201,8 @@ func TestParseWAV_ChunkAlignment(t *testing.T) {
 	// Build manually: RIFF header + fmt chunk + junk chunk (odd size) + data chunk
 	fmtSize := 24 // 8 header + 16 body
 	junkBodySize := 5
-	junkChunkSize := 8 + junkBodySize  // 13
-	junkPadded := junkChunkSize + 1    // 14 (word-aligned)
+	junkChunkSize := 8 + junkBodySize // 13
+	junkPadded := junkChunkSize + 1   // 14 (word-aligned)
 	dataChunkSize := 8 + len(rawSamples)
 	totalSize := 12 + fmtSize + junkPadded + dataChunkSize
 
@@ -222,7 +222,7 @@ func TestParseWAV_ChunkAlignment(t *testing.T) {
 	off += 4
 	binary.LittleEndian.PutUint32(buf[off:], 16)
 	off += 4
-	binary.LittleEndian.PutUint16(buf[off:], 1)  // PCM
+	binary.LittleEndian.PutUint16(buf[off:], 1) // PCM
 	off += 2
 	binary.LittleEndian.PutUint16(buf[off:], uint16(channels))
 	off += 2

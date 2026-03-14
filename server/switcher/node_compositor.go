@@ -14,7 +14,7 @@ type compositorNode struct {
 	colLUTScratch []int
 }
 
-func (n *compositorNode) Name() string                         { return "compositor" }
+func (n *compositorNode) Name() string                          { return "compositor" }
 func (n *compositorNode) Configure(format PipelineFormat) error { return nil }
 func (n *compositorNode) Active() bool {
 	return n.compositor != nil && n.compositor.IsActive()

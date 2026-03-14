@@ -240,9 +240,9 @@ func TestCBRPacer_ComputeMuxrate(t *testing.T) {
 		audioBps int64
 		want     int64
 	}{
-		{10_000_000, 128_000, 11_343_360},   // (10M + 128K) * 1.12
-		{6_000_000, 128_000, 6_863_360},     // (6M + 128K) * 1.12
-		{20_000_000, 256_000, 22_686_720},   // (20M + 256K) * 1.12
+		{10_000_000, 128_000, 11_343_360}, // (10M + 128K) * 1.12
+		{6_000_000, 128_000, 6_863_360},   // (6M + 128K) * 1.12
+		{20_000_000, 256_000, 22_686_720}, // (20M + 256K) * 1.12
 	}
 
 	for _, tt := range tests {
@@ -455,8 +455,8 @@ type mockSink struct {
 	writeFn func([]byte) (int, error)
 }
 
-func (m *mockSink) ID() string                              { return "mock-sink" }
-func (m *mockSink) Start(_ context.Context) error           { return nil }
-func (m *mockSink) Write(data []byte) (int, error)          { return m.writeFn(data) }
-func (m *mockSink) Close() error                            { return nil }
-func (m *mockSink) Status() AdapterStatus                   { return AdapterStatus{} }
+func (m *mockSink) ID() string                     { return "mock-sink" }
+func (m *mockSink) Start(_ context.Context) error  { return nil }
+func (m *mockSink) Write(data []byte) (int, error) { return m.writeFn(data) }
+func (m *mockSink) Close() error                   { return nil }
+func (m *mockSink) Status() AdapterStatus          { return AdapterStatus{} }

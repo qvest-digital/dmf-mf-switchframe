@@ -22,13 +22,13 @@ func GenerateWAV(pcm []float32, sampleRate, channels int) []byte {
 
 	// fmt chunk
 	copy(buf[12:16], "fmt ")
-	binary.LittleEndian.PutUint32(buf[16:20], 16)              // chunk size
-	binary.LittleEndian.PutUint16(buf[20:22], 1)               // audioFormat = PCM
+	binary.LittleEndian.PutUint32(buf[16:20], 16)               // chunk size
+	binary.LittleEndian.PutUint16(buf[20:22], 1)                // audioFormat = PCM
 	binary.LittleEndian.PutUint16(buf[22:24], uint16(channels)) // numChannels
 	binary.LittleEndian.PutUint32(buf[24:28], uint32(sampleRate))
 	blockAlign := channels * 2
 	byteRate := sampleRate * blockAlign
-	binary.LittleEndian.PutUint32(buf[28:32], uint32(byteRate))  // byteRate
+	binary.LittleEndian.PutUint32(buf[28:32], uint32(byteRate))   // byteRate
 	binary.LittleEndian.PutUint16(buf[32:34], uint16(blockAlign)) // blockAlign
 	binary.LittleEndian.PutUint16(buf[34:36], 16)                 // bitsPerSample
 

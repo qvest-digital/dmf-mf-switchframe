@@ -493,7 +493,7 @@ func TestRGBAToYUV_LimitedRange(t *testing.T) {
 
 	// Test that pure white RGBA overlay produces Y=235 (not 255) in the blended output.
 	frameW, frameH := 4, 2
-	yuv := makeYUV420(frameW, frameH, 16, 128, 128) // black in limited range
+	yuv := makeYUV420(frameW, frameH, 16, 128, 128)      // black in limited range
 	rgba := makeRGBA(frameW, frameH, 255, 255, 255, 255) // pure white, full alpha
 
 	AlphaBlendRGBA(yuv, rgba, frameW, frameH, 1.0)
@@ -504,7 +504,7 @@ func TestRGBAToYUV_LimitedRange(t *testing.T) {
 	}
 
 	// Test pure black: Y should be 16
-	yuv2 := makeYUV420(frameW, frameH, 235, 128, 128) // white in limited range
+	yuv2 := makeYUV420(frameW, frameH, 235, 128, 128)   // white in limited range
 	rgbaBlack := makeRGBA(frameW, frameH, 0, 0, 0, 255) // pure black, full alpha
 	AlphaBlendRGBA(yuv2, rgbaBlack, frameW, frameH, 1.0)
 	for i := 0; i < frameW*frameH; i++ {

@@ -801,13 +801,11 @@ func parentPredictor(mvX, mvY []int16, parentCols, parentRows, col, row int) (in
 	return int(mvX[idx]) * 2, int(mvY[idx]) * 2
 }
 
-
 // halfPelRefine performs half-pixel refinement on all MVs in the field.
 // For each block, tests 8 half-pel positions around the integer-pel result
 // using bilinear-interpolated reference pixels. If a half-pel position has
 // lower SAD, the MV is updated. After refinement, MVs are stored in half-pel
 // units (original integer values ×2, half-pel adds ±1) and subPel is set to 2.
-//
 func halfPelRefine(mvf *motionVectorField, cur, ref []byte, w, h int, forward bool) {
 	bs := mvf.blockSize
 
@@ -1080,7 +1078,7 @@ func computeReliability(mvf *motionVectorField) {
 	// Between → linear ramp. Values tuned for typical broadcast content:
 	// 5 per pixel is normal motion, 20 per pixel is extreme mismatch.
 	const sadLow = 5   // avg SAD per pixel: good match
-	const sadHigh = 20  // avg SAD per pixel: bad match
+	const sadHigh = 20 // avg SAD per pixel: bad match
 	const sadRange = sadHigh - sadLow
 
 	n := mvf.cols * mvf.rows

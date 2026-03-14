@@ -9,12 +9,68 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 )
 
-// supportedExtensions lists file extensions that Validate accepts.
+// supportedExtensions lists file extensions that Validate accepts directly
+// (Go-native demux path for H.264 content).
 var supportedExtensions = map[string]bool{
 	".ts":  true,
 	".mp4": true,
 	".m4v": true,
 	".mov": true,
+}
+
+// transcodeExtensions lists additional extensions accepted via transcode.
+var transcodeExtensions = map[string]bool{
+	".mkv":  true,
+	".webm": true,
+	".avi":  true,
+	".flv":  true,
+	".mxf":  true,
+	".wmv":  true,
+	".mpg":  true,
+	".mpeg": true,
+	".ogv":  true,
+}
+
+// IsAcceptedExtension returns true if the extension is accepted for upload,
+// either directly (H.264 in native containers) or via transcode.
+func IsAcceptedExtension(ext string) bool {
+	return supportedExtensions[ext] || transcodeExtensions[ext]
+}
+
+// NeedsTranscode returns true if the file at path needs transcoding before
+// it can be stored. Files with transcode-only extensions always need it.
+// Files with native extensions are probed to check if the video codec is H.264;
+// non-H.264 video in .mp4/.mov containers (e.g., HEVC) triggers transcode.
+func NeedsTranscode(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	if transcodeExtensions[ext] {
+		return true
+	}
+	if !supportedExtensions[ext] {
+		return false // unknown extension, let Validate reject it
+	}
+	// Probe native container to check if codec is actually H.264.
+	result, err := codec.ProbeFile(path)
+	if err != nil {
+		// Probe failed. For MP4/MOV containers, the Go-native demuxer only
+		// handles avc1 boxes, so transcoding is the safer fallback. For TS
+		// files, the Go demuxer handles H.264 TS reliably, so let Validate
+		// try first (recordings and replay exports are always H.264 TS).
+		return ext != ".ts"
+	}
+	return !result.IsH264()
+}
+
+// CanTranscodeFallback returns true if the extension is a native container
+// that may benefit from FFmpeg transcode when the Go-native demuxer fails.
+// This covers MP4 variants (fragmented, unusual box layout) that avformat
+// handles but abema/go-mp4 does not.
+func CanTranscodeFallback(ext string) bool {
+	switch ext {
+	case ".mp4", ".m4v", ".mov":
+		return true
+	}
+	return false
 }
 
 // Validate performs a three-stage validation pipeline on a media file:
@@ -89,10 +145,20 @@ func Validate(path string) (*ProbeResult, error) {
 
 	frameCount := len(videoFrames)
 
-	// Compute duration from PTS span.
+	// Compute duration from PTS span. Frames may be in decode order (B-frames),
+	// so scan for actual min/max PTS rather than assuming first/last.
 	var durationMs int64
 	if frameCount >= 2 {
-		ptsSpan := videoFrames[frameCount-1].pts - videoFrames[0].pts
+		minPTS, maxPTS := videoFrames[0].pts, videoFrames[0].pts
+		for _, f := range videoFrames[1:] {
+			if f.pts < minPTS {
+				minPTS = f.pts
+			}
+			if f.pts > maxPTS {
+				maxPTS = f.pts
+			}
+		}
+		ptsSpan := maxPTS - minPTS
 		if ptsSpan > 0 {
 			// Duration includes the last frame's display time.
 			// Estimate per-frame duration and add it.
@@ -202,14 +268,20 @@ func testDecodeFirstGOP(frames []bufferedFrame, spsWidth, spsHeight int) (width,
 		}
 
 		// Check for dimension mismatch between SPS and decoded output.
-		// The SPS display dimensions (after frame cropping) may be smaller
-		// than the decoded dimensions (macroblock-aligned coded size). This
-		// is normal — only flag a mismatch as corruption if the difference
-		// exceeds one macroblock (16px) in either axis.
+		// SPS display dimensions (after frame cropping) and decoded output
+		// may differ by up to one macroblock (16px) due to macroblock
+		// alignment, cropping applied differently by encoder vs decoder,
+		// or SPS parser rounding. Allow ±16px tolerance per axis.
 		if spsWidth > 0 && spsHeight > 0 {
 			dw := w - spsWidth
 			dh := h - spsHeight
-			if dw < 0 || dh < 0 || dw > 16 || dh > 16 {
+			if dw < 0 {
+				dw = -dw
+			}
+			if dh < 0 {
+				dh = -dh
+			}
+			if dw > 16 || dh > 16 {
 				return 0, 0, nil, fmt.Errorf("%w: SPS declares %dx%d but decoder produced %dx%d",
 					ErrCorruptFile, spsWidth, spsHeight, w, h)
 			}
@@ -236,7 +308,17 @@ func estimateFPS(frames []bufferedFrame) float64 {
 	if len(frames) < 2 {
 		return 30.0
 	}
-	ptsSpan := frames[len(frames)-1].pts - frames[0].pts
+	// Frames may be in decode order (B-frames), so scan for min/max PTS.
+	minPTS, maxPTS := frames[0].pts, frames[0].pts
+	for _, f := range frames[1:] {
+		if f.pts < minPTS {
+			minPTS = f.pts
+		}
+		if f.pts > maxPTS {
+			maxPTS = f.pts
+		}
+	}
+	ptsSpan := maxPTS - minPTS
 	if ptsSpan <= 0 {
 		return 30.0
 	}

@@ -93,10 +93,10 @@ func TestEasingCSSPresetAccuracy(t *testing.T) {
 	// Reference values computed with the CSS cubic-bezier specification.
 	// Tolerance ±0.02 as implementations vary slightly.
 	tests := []struct {
-		name     EasingType
-		t025     float64
-		t050     float64
-		t075     float64
+		name EasingType
+		t025 float64
+		t050 float64
+		t075 float64
 	}{
 		// ease: cubic-bezier(0.25, 0.1, 0.25, 1.0)
 		{EasingEase, 0.409, 0.802, 0.960},
@@ -172,7 +172,7 @@ func TestEasingOvershoot(t *testing.T) {
 
 func TestEasingInvalidX(t *testing.T) {
 	tests := []struct {
-		name         string
+		name           string
 		x1, y1, x2, y2 float64
 	}{
 		{"x1 negative", -0.1, 0.0, 0.5, 1.0},

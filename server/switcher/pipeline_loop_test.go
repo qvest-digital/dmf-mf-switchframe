@@ -13,12 +13,12 @@ import (
 
 // countingNode counts Process calls and optionally modifies YUV.
 type countingNode struct {
-	name      string
-	active    bool
-	calls     int
-	latency   time.Duration
-	marker    byte // if non-zero, sets YUV[0] to this value
-	lastErr   error
+	name            string
+	active          bool
+	calls           int
+	latency         time.Duration
+	marker          byte // if non-zero, sets YUV[0] to this value
+	lastErr         error
 	configureCalled bool
 }
 

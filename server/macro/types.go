@@ -28,25 +28,25 @@ const (
 	ActionFTB Action = "ftb"
 
 	// Graphics actions.
-	ActionGraphicsOn            Action = "graphics_on"
-	ActionGraphicsOff           Action = "graphics_off"
-	ActionGraphicsAutoOn        Action = "graphics_auto_on"
-	ActionGraphicsAutoOff       Action = "graphics_auto_off"
-	ActionGraphicsAddLayer      Action = "graphics_add_layer"
-	ActionGraphicsRemoveLayer   Action = "graphics_remove_layer"
-	ActionGraphicsSetRect       Action = "graphics_set_rect"
-	ActionGraphicsSetZOrder     Action = "graphics_set_zorder"
-	ActionGraphicsFlyIn         Action = "graphics_fly_in"
-	ActionGraphicsFlyOut        Action = "graphics_fly_out"
-	ActionGraphicsFlyOn         Action = "graphics_fly_on"
-	ActionGraphicsSlide         Action = "graphics_slide"
-	ActionGraphicsAnimate       Action = "graphics_animate"
-	ActionGraphicsAnimateStop   Action = "graphics_animate_stop"
-	ActionGraphicsUploadFrame       Action = "graphics_upload_frame"
-	ActionGraphicsTextAnimate       Action = "graphics_text_animate"
-	ActionGraphicsTextAnimateStop   Action = "graphics_text_animate_stop"
-	ActionGraphicsTickerStart       Action = "graphics_ticker_start"
-	ActionGraphicsTickerStop        Action = "graphics_ticker_stop"
+	ActionGraphicsOn              Action = "graphics_on"
+	ActionGraphicsOff             Action = "graphics_off"
+	ActionGraphicsAutoOn          Action = "graphics_auto_on"
+	ActionGraphicsAutoOff         Action = "graphics_auto_off"
+	ActionGraphicsAddLayer        Action = "graphics_add_layer"
+	ActionGraphicsRemoveLayer     Action = "graphics_remove_layer"
+	ActionGraphicsSetRect         Action = "graphics_set_rect"
+	ActionGraphicsSetZOrder       Action = "graphics_set_zorder"
+	ActionGraphicsFlyIn           Action = "graphics_fly_in"
+	ActionGraphicsFlyOut          Action = "graphics_fly_out"
+	ActionGraphicsFlyOn           Action = "graphics_fly_on"
+	ActionGraphicsSlide           Action = "graphics_slide"
+	ActionGraphicsAnimate         Action = "graphics_animate"
+	ActionGraphicsAnimateStop     Action = "graphics_animate_stop"
+	ActionGraphicsUploadFrame     Action = "graphics_upload_frame"
+	ActionGraphicsTextAnimate     Action = "graphics_text_animate"
+	ActionGraphicsTextAnimateStop Action = "graphics_text_animate_stop"
+	ActionGraphicsTickerStart     Action = "graphics_ticker_start"
+	ActionGraphicsTickerStop      Action = "graphics_ticker_stop"
 
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
@@ -79,11 +79,11 @@ const (
 	ActionSCTE35Extend Action = "scte35_extend"
 
 	// Layout/PIP actions.
-	ActionLayoutPreset    Action = "layout_preset"
-	ActionLayoutSlotOn    Action = "layout_slot_on"
-	ActionLayoutSlotOff   Action = "layout_slot_off"
+	ActionLayoutPreset     Action = "layout_preset"
+	ActionLayoutSlotOn     Action = "layout_slot_on"
+	ActionLayoutSlotOff    Action = "layout_slot_off"
 	ActionLayoutSlotSource Action = "layout_slot_source"
-	ActionLayoutClear     Action = "layout_clear"
+	ActionLayoutClear      Action = "layout_clear"
 
 	// Caption actions.
 	ActionCaptionMode  Action = "caption_mode"
@@ -101,72 +101,72 @@ const (
 
 // allActions is the set of all valid macro actions.
 var allActions = map[Action]bool{
-	ActionCut:             true,
-	ActionPreview:         true,
-	ActionTransition:      true,
-	ActionWait:            true,
-	ActionSetAudio:        true,
-	ActionAudioMute:       true,
-	ActionAudioAFV:        true,
-	ActionAudioTrim:       true,
-	ActionAudioMaster:     true,
-	ActionAudioEQ:         true,
-	ActionAudioCompressor: true,
-	ActionAudioDelay:      true,
-	ActionFTB:             true,
-	ActionGraphicsOn:            true,
-	ActionGraphicsOff:           true,
-	ActionGraphicsAutoOn:        true,
-	ActionGraphicsAutoOff:       true,
-	ActionGraphicsAddLayer:      true,
-	ActionGraphicsRemoveLayer:   true,
-	ActionGraphicsSetRect:       true,
-	ActionGraphicsSetZOrder:     true,
-	ActionGraphicsFlyIn:         true,
-	ActionGraphicsFlyOut:        true,
-	ActionGraphicsFlyOn:         true,
-	ActionGraphicsSlide:         true,
-	ActionGraphicsAnimate:       true,
-	ActionGraphicsAnimateStop:   true,
-	ActionGraphicsUploadFrame:       true,
-	ActionGraphicsTextAnimate:      true,
-	ActionGraphicsTextAnimateStop:  true,
-	ActionGraphicsTickerStart:      true,
-	ActionGraphicsTickerStop:       true,
-	ActionRecordingStart:  true,
-	ActionRecordingStop:   true,
-	ActionPresetRecall:    true,
-	ActionKeySet:          true,
-	ActionKeyDelete:       true,
-	ActionSourceLabel:     true,
-	ActionSourceDelay:     true,
-	ActionSourcePosition:  true,
-	ActionReplayMarkIn:    true,
-	ActionReplayMarkOut:   true,
-	ActionReplayPlay:      true,
-	ActionReplayStop:      true,
-	ActionReplayQuickClip: true,
-	ActionReplayPlayLast:  true,
-	ActionReplayPlayClip:  true,
-	ActionSCTE35Cue:       true,
-	ActionSCTE35Return:    true,
-	ActionSCTE35Cancel:    true,
-	ActionSCTE35Hold:      true,
-	ActionSCTE35Extend:    true,
-	ActionLayoutPreset:    true,
-	ActionLayoutSlotOn:    true,
-	ActionLayoutSlotOff:   true,
-	ActionLayoutSlotSource: true,
-	ActionLayoutClear:     true,
-	ActionCaptionMode:     true,
-	ActionCaptionText:     true,
-	ActionCaptionClear:    true,
-	ActionClipLoad:        true,
-	ActionClipPlay:        true,
-	ActionClipPause:       true,
-	ActionClipStop:        true,
-	ActionClipEject:       true,
-	ActionClipSeek:        true,
+	ActionCut:                     true,
+	ActionPreview:                 true,
+	ActionTransition:              true,
+	ActionWait:                    true,
+	ActionSetAudio:                true,
+	ActionAudioMute:               true,
+	ActionAudioAFV:                true,
+	ActionAudioTrim:               true,
+	ActionAudioMaster:             true,
+	ActionAudioEQ:                 true,
+	ActionAudioCompressor:         true,
+	ActionAudioDelay:              true,
+	ActionFTB:                     true,
+	ActionGraphicsOn:              true,
+	ActionGraphicsOff:             true,
+	ActionGraphicsAutoOn:          true,
+	ActionGraphicsAutoOff:         true,
+	ActionGraphicsAddLayer:        true,
+	ActionGraphicsRemoveLayer:     true,
+	ActionGraphicsSetRect:         true,
+	ActionGraphicsSetZOrder:       true,
+	ActionGraphicsFlyIn:           true,
+	ActionGraphicsFlyOut:          true,
+	ActionGraphicsFlyOn:           true,
+	ActionGraphicsSlide:           true,
+	ActionGraphicsAnimate:         true,
+	ActionGraphicsAnimateStop:     true,
+	ActionGraphicsUploadFrame:     true,
+	ActionGraphicsTextAnimate:     true,
+	ActionGraphicsTextAnimateStop: true,
+	ActionGraphicsTickerStart:     true,
+	ActionGraphicsTickerStop:      true,
+	ActionRecordingStart:          true,
+	ActionRecordingStop:           true,
+	ActionPresetRecall:            true,
+	ActionKeySet:                  true,
+	ActionKeyDelete:               true,
+	ActionSourceLabel:             true,
+	ActionSourceDelay:             true,
+	ActionSourcePosition:          true,
+	ActionReplayMarkIn:            true,
+	ActionReplayMarkOut:           true,
+	ActionReplayPlay:              true,
+	ActionReplayStop:              true,
+	ActionReplayQuickClip:         true,
+	ActionReplayPlayLast:          true,
+	ActionReplayPlayClip:          true,
+	ActionSCTE35Cue:               true,
+	ActionSCTE35Return:            true,
+	ActionSCTE35Cancel:            true,
+	ActionSCTE35Hold:              true,
+	ActionSCTE35Extend:            true,
+	ActionLayoutPreset:            true,
+	ActionLayoutSlotOn:            true,
+	ActionLayoutSlotOff:           true,
+	ActionLayoutSlotSource:        true,
+	ActionLayoutClear:             true,
+	ActionCaptionMode:             true,
+	ActionCaptionText:             true,
+	ActionCaptionClear:            true,
+	ActionClipLoad:                true,
+	ActionClipPlay:                true,
+	ActionClipPause:               true,
+	ActionClipStop:                true,
+	ActionClipEject:               true,
+	ActionClipSeek:                true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -176,13 +176,13 @@ func IsValidAction(a Action) bool {
 
 // Step is a single operation within a macro sequence.
 type Step struct {
-	Action Action            `json:"action"`
+	Action Action         `json:"action"`
 	Params map[string]any `json:"params"`
 }
 
 // Macro is a named sequence of steps that can be saved and replayed.
 type Macro struct {
-	Name  string      `json:"name"`
+	Name  string `json:"name"`
 	Steps []Step `json:"steps"`
 }
 
@@ -199,12 +199,12 @@ const (
 
 // StepState tracks the runtime state of a single step during execution.
 type StepState struct {
-	Action      Action `json:"action"`
-	Summary     string      `json:"summary"`
-	Status      StepStatus  `json:"status"`
-	Error       string      `json:"error,omitempty"`
-	WaitMs      int         `json:"waitMs,omitempty"`
-	WaitStartMs int64       `json:"waitStartMs,omitempty"`
+	Action      Action     `json:"action"`
+	Summary     string     `json:"summary"`
+	Status      StepStatus `json:"status"`
+	Error       string     `json:"error,omitempty"`
+	WaitMs      int        `json:"waitMs,omitempty"`
+	WaitStartMs int64      `json:"waitStartMs,omitempty"`
 }
 
 // ExecutionState represents the full progress of a macro execution,
@@ -251,17 +251,17 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		}
 		return fmt.Sprintf("Set Audio %s %.1fdB", paramStr(s, "source"), level)
 	},
-	ActionAudioMute:       sourceSummary("Audio Mute"),
-	ActionAudioAFV:        sourceSummary("Audio AFV"),
-	ActionAudioTrim:       sourceSummary("Audio Trim"),
-	ActionAudioMaster:     staticSummary("Audio Master"),
-	ActionAudioEQ:         sourceSummary("Audio EQ"),
-	ActionAudioCompressor: sourceSummary("Audio Compressor"),
-	ActionAudioDelay:      sourceSummary("Audio Delay"),
-	ActionGraphicsOn:      layerSummary("Graphics On"),
-	ActionGraphicsOff:     layerSummary("Graphics Off"),
-	ActionGraphicsAutoOn:  layerSummary("Graphics Auto On"),
-	ActionGraphicsAutoOff: layerSummary("Graphics Auto Off"),
+	ActionAudioMute:           sourceSummary("Audio Mute"),
+	ActionAudioAFV:            sourceSummary("Audio AFV"),
+	ActionAudioTrim:           sourceSummary("Audio Trim"),
+	ActionAudioMaster:         staticSummary("Audio Master"),
+	ActionAudioEQ:             sourceSummary("Audio EQ"),
+	ActionAudioCompressor:     sourceSummary("Audio Compressor"),
+	ActionAudioDelay:          sourceSummary("Audio Delay"),
+	ActionGraphicsOn:          layerSummary("Graphics On"),
+	ActionGraphicsOff:         layerSummary("Graphics Off"),
+	ActionGraphicsAutoOn:      layerSummary("Graphics Auto On"),
+	ActionGraphicsAutoOff:     layerSummary("Graphics Auto Off"),
 	ActionGraphicsAddLayer:    staticSummary("Graphics Add Layer"),
 	ActionGraphicsRemoveLayer: func(s Step) string { return fmt.Sprintf("Graphics Remove Layer %s", fmtLayerID(s.Params)) },
 	ActionGraphicsSetRect:     layerSummary("Graphics Set Rect"),
@@ -299,15 +299,15 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		id, _ := s.Params["id"].(string)
 		return fmt.Sprintf("Preset Recall %s", id)
 	},
-	ActionKeySet:         sourceSummary("Key Set"),
-	ActionKeyDelete:      sourceSummary("Key Delete"),
-	ActionSourceLabel:    sourceSummary("Source Label"),
-	ActionSourceDelay:    sourceSummary("Source Delay"),
-	ActionSourcePosition: sourceSummary("Source Position"),
-	ActionReplayMarkIn:   sourceSummary("Replay Mark In"),
-	ActionReplayMarkOut:  sourceSummary("Replay Mark Out"),
-	ActionReplayPlay:     sourceSummary("Replay Play"),
-	ActionReplayStop:     staticSummary("Replay Stop"),
+	ActionKeySet:          sourceSummary("Key Set"),
+	ActionKeyDelete:       sourceSummary("Key Delete"),
+	ActionSourceLabel:     sourceSummary("Source Label"),
+	ActionSourceDelay:     sourceSummary("Source Delay"),
+	ActionSourcePosition:  sourceSummary("Source Position"),
+	ActionReplayMarkIn:    sourceSummary("Replay Mark In"),
+	ActionReplayMarkOut:   sourceSummary("Replay Mark Out"),
+	ActionReplayPlay:      sourceSummary("Replay Play"),
+	ActionReplayStop:      staticSummary("Replay Stop"),
 	ActionReplayQuickClip: sourceSummary("Replay Quick Clip"),
 	ActionReplayPlayLast:  staticSummary("Replay Play Last"),
 	ActionReplayPlayClip:  staticSummary("Replay Play Clip"),

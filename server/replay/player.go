@@ -68,11 +68,11 @@ type replayPlayer struct {
 	videoInfoSent bool         // true after OnVideoInfo callback has been called
 
 	// Audio tracking: index into AudioClip for interleaved output.
-	audioIdx           int
-	outputAudioPTS     int64 // Separate monotonic PTS for audio frames.
-	audioPreStretched  bool  // true when audio has been WSOLA-stretched
-	totalOutputFrames  int   // total output video frames (for proportional audio distribution)
-	audioCallCount     int   // counts emitAudioForFrame calls (for proportional distribution)
+	audioIdx          int
+	outputAudioPTS    int64 // Separate monotonic PTS for audio frames.
+	audioPreStretched bool  // true when audio has been WSOLA-stretched
+	totalOutputFrames int   // total output video frames (for proportional audio distribution)
+	audioCallCount    int   // counts emitAudioForFrame calls (for proportional distribution)
 
 	// Absolute-time pacing: playbackStart anchors the output timeline so
 	// frame N's deadline is playbackStart + N*frameDuration, preventing
@@ -305,7 +305,6 @@ func (p *replayPlayer) run(ctx context.Context) {
 			})
 			decodedWindow = append(decodedWindow, decoded)
 		}
-		nextDecoded = prefetchCount
 	}
 }
 

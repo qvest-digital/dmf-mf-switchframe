@@ -8,7 +8,7 @@ import (
 
 func TestBlendStinger_FullAlpha(t *testing.T) {
 	// 4x4 frame
-	fb := mustNewFrameBlender(t,4, 4)
+	fb := mustNewFrameBlender(t, 4, 4)
 	ySize := 16
 	uvSize := 4
 	totalSize := ySize + 2*uvSize
@@ -41,7 +41,7 @@ func TestBlendStinger_FullAlpha(t *testing.T) {
 }
 
 func TestBlendStinger_ZeroAlpha(t *testing.T) {
-	fb := mustNewFrameBlender(t,4, 4)
+	fb := mustNewFrameBlender(t, 4, 4)
 	ySize := 16
 	uvSize := 4
 	totalSize := ySize + 2*uvSize
@@ -66,7 +66,7 @@ func TestBlendStinger_ZeroAlpha(t *testing.T) {
 }
 
 func TestBlendStinger_HalfAlpha(t *testing.T) {
-	fb := mustNewFrameBlender(t,4, 4)
+	fb := mustNewFrameBlender(t, 4, 4)
 	ySize := 16
 	uvSize := 4
 	totalSize := ySize + 2*uvSize

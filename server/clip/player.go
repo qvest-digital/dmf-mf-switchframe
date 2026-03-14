@@ -47,9 +47,6 @@ type PlayerConfig struct {
 	// OnDone is called when playback ends (non-loop clip finishes) or is stopped.
 	OnDone func()
 
-	// OnReady is called when the player is ready for playback.
-	OnReady func()
-
 	// OnVideoInfo signals codec parameters (SPS/PPS) and dimensions.
 	// Called once on the first keyframe with SPS/PPS.
 	OnVideoInfo func(sps, pps []byte, width, height int)
@@ -59,7 +56,7 @@ type PlayerConfig struct {
 // variable speed (0.25x-2.0x), hold-last-frame, and loop.
 type Player struct {
 	config   PlayerConfig
-	state    atomic.Value  // PlayerState
+	state    atomic.Value // PlayerState
 	cancel   context.CancelFunc
 	done     chan struct{}
 	once     sync.Once
@@ -95,8 +92,18 @@ type Player struct {
 	videoInfoSent bool
 
 	// Re-encoding for browser relay (8-bit H.264 output).
-	encoder   VideoEncoder
+	encoder  VideoEncoder
+	encoderW int // dimensions encoder was created with
+	encoderH int
+
 	sourceFPS float64
+
+	// Reusable scratch buffers for decode/re-encode hot path.
+	// annexBBuf and prependBuf must be separate allocations because
+	// PrependSPSPPS reads from annexBBuf while writing to prependBuf.
+	annexBBuf  []byte // AVC1→Annex B conversion
+	prependBuf []byte // SPS/PPS prepend (separate buffer, never aliased with annexBBuf)
+	avc1Buf    []byte // Annex B→AVC1 re-encode output
 
 	// decodeErrorLogged tracks whether a decode error has been logged (log once).
 	decodeErrorLogged bool
@@ -371,15 +378,19 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 		var frameData []byte // nil when decode fails (browser relay still works)
 		fw, fh := p.config.Width, p.config.Height
 		if p.config.DecodeFrame != nil {
-			// Convert AVC1 wire data to Annex B for the decoder.
-			annexB := codec.AVC1ToAnnexB(f.wireData)
-			if len(annexB) > 0 {
+			// Convert AVC1 wire data to Annex B for the decoder (reuses buffer).
+			p.annexBBuf = codec.AVC1ToAnnexBInto(f.wireData, p.annexBBuf[:0])
+			if len(p.annexBBuf) > 0 {
 				// Prepend SPS/PPS for keyframes so the decoder can initialize.
+				// Use prependBuf as a separate destination to avoid aliasing
+				// (PrependSPSPPS reads from annexBBuf while writing to dst).
+				decoderInput := p.annexBBuf
 				if f.isKeyframe && len(f.sps) > 0 {
-					annexB = codec.PrependSPSPPS(f.sps, f.pps, annexB)
+					p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+					decoderInput = p.prependBuf
 				}
 
-				decoded, dw, dh, err := p.config.DecodeFrame(annexB)
+				decoded, dw, dh, err := p.config.DecodeFrame(decoderInput)
 				if err == nil {
 					// Deep-copy: decoder may reuse its output buffer.
 					frameData = make([]byte, len(decoded))
@@ -391,7 +402,7 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 						"frameIdx", frameIdx,
 						"isKeyframe", f.isKeyframe,
 						"wireDataLen", len(f.wireData),
-						"annexBLen", len(annexB),
+						"annexBLen", len(p.annexBBuf),
 						"hasSPS", len(f.sps) > 0,
 					)
 					p.decodeErrorLogged = true
@@ -409,7 +420,7 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 		browserSPS := f.sps
 		browserPPS := f.pps
 		if frameData != nil {
-			if wd, kf, s, pp := p.reencodeForBrowser(frameData, fw, fh, f.pts, f.isKeyframe); wd != nil {
+			if wd, kf, s, pp := p.reencodeForBrowser(frameData, fw, fh, *outputPTS, f.isKeyframe); wd != nil {
 				browserWireData = wd
 				browserKeyframe = kf
 				browserSPS = s
@@ -435,7 +446,12 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 			p.holdMu.Lock()
 			if frameData != nil {
 				// Deep-copy YUV (prevents aliasing with decoder buffer).
-				p.holdFrame = make([]byte, len(frameData))
+				// Reuse existing holdFrame buffer when capacity is sufficient.
+				if cap(p.holdFrame) >= len(frameData) {
+					p.holdFrame = p.holdFrame[:len(frameData)]
+				} else {
+					p.holdFrame = make([]byte, len(frameData))
+				}
 				copy(p.holdFrame, frameData)
 				p.holdW = fw
 				p.holdH = fh
@@ -606,7 +622,13 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 		return nil, false, nil, nil
 	}
 
-	// Lazy-create encoder on first decoded frame.
+	// Recreate encoder if dimensions changed (e.g., variable-resolution clip).
+	if p.encoder != nil && (w != p.encoderW || h != p.encoderH) {
+		p.encoder.Close()
+		p.encoder = nil
+	}
+
+	// Lazy-create encoder on first decoded frame or after dimension change.
 	if p.encoder == nil {
 		fps := int(math.Round(p.sourceFPS))
 		if fps <= 0 {
@@ -618,6 +640,8 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 			return nil, false, nil, nil
 		}
 		p.encoder = enc
+		p.encoderW = w
+		p.encoderH = h
 	}
 
 	encoded, encKF, err := p.encoder.Encode(yuv, pts, isKeyframe)
@@ -625,8 +649,9 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 		return nil, false, nil, nil
 	}
 
-	// FFmpeg encoder returns Annex B — convert to AVC1 for the relay.
-	avc1 := codec.AnnexBToAVC1(encoded)
+	// FFmpeg encoder returns Annex B — convert to AVC1 for the relay (reuses buffer).
+	p.avc1Buf = codec.AnnexBToAVC1Into(encoded, p.avc1Buf[:0])
+	avc1 := p.avc1Buf
 
 	// Extract SPS/PPS from keyframes for relay VideoInfo.
 	if encKF {

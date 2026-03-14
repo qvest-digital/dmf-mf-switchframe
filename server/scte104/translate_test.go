@@ -467,7 +467,7 @@ func TestFromCueMessage_SpliceInsert_CueIn(t *testing.T) {
 
 func TestFromCueMessage_SpliceInsert_Cancel(t *testing.T) {
 	cue := &scte35.CueMessage{
-		CommandType:                 scte35.CommandSpliceInsert,
+		CommandType:                scte35.CommandSpliceInsert,
 		EventID:                    300,
 		SpliceEventCancelIndicator: true,
 	}
@@ -575,7 +575,7 @@ func TestRoundTrip_SpliceInsert_CueIn(t *testing.T) {
 
 func TestRoundTrip_SpliceInsert_Cancel(t *testing.T) {
 	original := &scte35.CueMessage{
-		CommandType:                 scte35.CommandSpliceInsert,
+		CommandType:                scte35.CommandSpliceInsert,
 		EventID:                    77,
 		SpliceEventCancelIndicator: true,
 	}

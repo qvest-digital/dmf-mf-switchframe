@@ -6,7 +6,7 @@ import (
 )
 
 type mockSCTE35Target struct {
-	mockTarget // embed existing mock
+	mockTarget         // embed existing mock
 	scte35CueCalled    bool
 	scte35ReturnCalled bool
 	scte35CancelCalled bool

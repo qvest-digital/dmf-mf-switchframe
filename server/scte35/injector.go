@@ -54,16 +54,16 @@ type InjectorConfig struct {
 
 // activeEvent tracks an in-progress SCTE-35 event (internal, not exported).
 type activeEvent struct {
-	EventID       uint32
-	CommandType   uint8
-	IsOut         bool
-	Duration      time.Duration
-	StartedAt     time.Time
-	AutoReturn    bool
-	Held          bool
-	SpliceTimePTS int64
-	Descriptors   []SegmentationDescriptor
-	Source          string             // origin of this cue ("api", "macro", "scte104", etc.)
+	EventID         uint32
+	CommandType     uint8
+	IsOut           bool
+	Duration        time.Duration
+	StartedAt       time.Time
+	AutoReturn      bool
+	Held            bool
+	SpliceTimePTS   int64
+	Descriptors     []SegmentationDescriptor
+	Source          string // origin of this cue ("api", "macro", "scte104", etc.)
 	returnTimer     *time.Timer
 	preRollCancel   context.CancelFunc // cancels pre-roll repetition goroutine
 	lastEncodedData []byte             // encoded SCTE-35 data (for pre-roll repetition)
@@ -706,7 +706,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 	} else {
 		// splice_insert cancel path.
 		cancelMsg = &CueMessage{
-			CommandType:                 CommandSpliceInsert,
+			CommandType:                CommandSpliceInsert,
 			EventID:                    eventID,
 			SpliceEventCancelIndicator: true,
 		}
@@ -765,7 +765,7 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32, source string) e
 		Source:      source,
 		Descriptors: []SegmentationDescriptor{
 			{
-				SegEventID:                      segEventID,
+				SegEventID:                       segEventID,
 				SegmentationEventCancelIndicator: true,
 			},
 		},

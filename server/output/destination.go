@@ -17,14 +17,14 @@ var (
 
 // DestinationConfig configures a single output destination.
 type DestinationConfig struct {
-	Type       string `json:"type"` // "srt-caller" or "srt-listener"
-	Address    string `json:"address,omitempty"`
-	Port       int    `json:"port"`
-	Latency    int    `json:"latency,omitempty"` // ms, default 120
-	StreamID   string `json:"streamID,omitempty"`
-	Encryption string `json:"encryption,omitempty"` // "", "aes-128", "aes-256"
-	Passphrase string `json:"passphrase,omitempty"`
-	MaxBW      int64  `json:"maxBandwidth,omitempty"`
+	Type          string `json:"type"` // "srt-caller" or "srt-listener"
+	Address       string `json:"address,omitempty"`
+	Port          int    `json:"port"`
+	Latency       int    `json:"latency,omitempty"` // ms, default 120
+	StreamID      string `json:"streamID,omitempty"`
+	Encryption    string `json:"encryption,omitempty"` // "", "aes-128", "aes-256"
+	Passphrase    string `json:"passphrase,omitempty"`
+	MaxBW         int64  `json:"maxBandwidth,omitempty"`
 	MaxConns      int    `json:"maxConns,omitempty"`      // listener only
 	Name          string `json:"name,omitempty"`          // user-friendly label
 	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"` // default true; false strips SCTE-35

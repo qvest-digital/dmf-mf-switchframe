@@ -39,11 +39,11 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/output/srt/stop", SubsystemOutput, true},
 		{"/api/presets/abc/recall", SubsystemSwitching, true}, // preset recall
 		{"/api/presets/abc", SubsystemSwitching, true},        // preset mutation (update/delete)
-		{"/api/captions/mode", SubsystemCaptions, true},         // caption mode
-		{"/api/captions/text", SubsystemCaptions, true},         // caption text
-		{"/api/switch/state", "", false},                        // GET endpoint
-		{"/api/operator/register", "", false},                   // operator management
-		{"/api/presets", "", false},                             // list endpoint (no trailing slash)
+		{"/api/captions/mode", SubsystemCaptions, true},       // caption mode
+		{"/api/captions/text", SubsystemCaptions, true},       // caption text
+		{"/api/switch/state", "", false},                      // GET endpoint
+		{"/api/operator/register", "", false},                 // operator management
+		{"/api/presets", "", false},                           // list endpoint (no trailing slash)
 		{"/api/unknown", "", false},
 	}
 

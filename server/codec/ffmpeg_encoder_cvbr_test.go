@@ -187,4 +187,3 @@ func TestCVBR_ProbeFrameCount(t *testing.T) {
 	result := tryEncoder("libx264")
 	require.True(t, result, "tryEncoder should succeed for libx264 with sufficient frame count")
 }
-

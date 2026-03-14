@@ -1484,10 +1484,10 @@ func TestReplayPlayer_WSOLAPreStretch(t *testing.T) {
 
 	var audioCount int64
 	p := newReplayPlayer(PlayerConfig{
-		Clip:      clip,
-		AudioClip: audioClip,
-		Speed:     0.5,
-		Loop:      false,
+		Clip:           clip,
+		AudioClip:      audioClip,
+		Speed:          0.5,
+		Loop:           false,
 		DecoderFactory: mockDecoderFactory,
 		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
 		AudioOutput: func(frame *media.AudioFrame) {
@@ -1530,10 +1530,10 @@ func TestReplayPlayer_AudioWithoutWSOLA(t *testing.T) {
 
 	var audioCount int64
 	p := newReplayPlayer(PlayerConfig{
-		Clip:      clip,
-		AudioClip: audioClip,
-		Speed:     0.5,
-		Loop:      false,
+		Clip:           clip,
+		AudioClip:      audioClip,
+		Speed:          0.5,
+		Loop:           false,
 		DecoderFactory: mockDecoderFactory,
 		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
 		AudioOutput: func(frame *media.AudioFrame) {

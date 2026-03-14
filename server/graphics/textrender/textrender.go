@@ -66,11 +66,11 @@ func (r *Renderer) Close() error {
 	defer r.mu.Unlock()
 
 	for size, face := range r.regularFaces {
-		face.Close()
+		_ = face.Close()
 		delete(r.regularFaces, size)
 	}
 	for size, face := range r.boldFaces {
-		face.Close()
+		_ = face.Close()
 		delete(r.boldFaces, size)
 	}
 	return nil

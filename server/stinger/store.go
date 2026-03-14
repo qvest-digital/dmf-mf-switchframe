@@ -474,4 +474,3 @@ func RGBAToFrame(img image.Image, w, h int) *Frame {
 
 	return &Frame{YUV: yuv, Alpha: alpha}
 }
-

@@ -70,3 +70,37 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 func NewVideoDecoder() (transition.VideoDecoder, error) {
 	return nil, errFFmpegDisabled
 }
+
+// FileProbeResult holds the result of probing a media file.
+type FileProbeResult struct {
+	VideoCodecID int
+	AudioCodecID int
+	Width        int
+	Height       int
+	HasVideo     bool
+	HasAudio     bool
+}
+
+// ProbeFile returns an error when FFmpeg is not available.
+func ProbeFile(path string) (*FileProbeResult, error) {
+	return nil, errFFmpegDisabled
+}
+
+// IsH264 always returns false when FFmpeg is not available.
+func (r *FileProbeResult) IsH264() bool { return false }
+
+// TranscodeResult holds metadata from a transcode operation.
+type TranscodeResult struct {
+	Width       int
+	Height      int
+	DurationMs  int64
+	FPS         float64
+	SampleRate  int
+	Channels    int
+	VideoFrames int
+}
+
+// TranscodeFile returns an error when FFmpeg is not available.
+func TranscodeFile(inputPath, outputPath, encoderName string, bitrate int) (*TranscodeResult, error) {
+	return nil, errFFmpegDisabled
+}

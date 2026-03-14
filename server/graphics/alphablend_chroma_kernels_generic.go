@@ -8,11 +8,11 @@ import "unsafe"
 // Generic scalar fallback for non-SIMD architectures.
 //
 // For each chroma pixel:
-//   1. Read RGBA from full-res row at stride 8 (every other pixel)
-//   2. Compute scaled alpha
-//   3. Skip transparent pixels
-//   4. Compute overlay Cb/Cr via BT.709 integer coefficients
-//   5. Blend with existing Cb/Cr values
+//  1. Read RGBA from full-res row at stride 8 (every other pixel)
+//  2. Compute scaled alpha
+//  3. Skip transparent pixels
+//  4. Compute overlay Cb/Cr via BT.709 integer coefficients
+//  5. Blend with existing Cb/Cr values
 func alphaBlendRGBAChromaRow(cbRow *byte, crRow *byte, rgba *byte, chromaWidth int, alphaScale256 int) {
 	if chromaWidth <= 0 {
 		return

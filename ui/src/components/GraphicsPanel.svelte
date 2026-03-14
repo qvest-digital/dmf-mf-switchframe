@@ -294,7 +294,7 @@
 		try {
 			await graphicsImageUpload(id, file);
 			layerModes = { ...layerModes, [id]: 'image' };
-			notify('success', `Image "${file.name}" uploaded`);
+			notify('info', `Image "${file.name}" uploaded`);
 		} catch {
 			notify('error', 'Image upload failed');
 		}

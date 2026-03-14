@@ -95,7 +95,7 @@ func TestEncode_SpliceNull(t *testing.T) {
 func TestEncode_SpliceInsert_Cancel_RoundTrip(t *testing.T) {
 	t.Parallel()
 	msg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    99,
 		SpliceEventCancelIndicator: true,
 	}
@@ -118,7 +118,7 @@ func TestEncode_TimeSignal_CancelSegmentation_RoundTrip(t *testing.T) {
 		CommandType: CommandTimeSignal,
 		Descriptors: []SegmentationDescriptor{
 			{
-				SegEventID:                      42,
+				SegEventID:                       42,
 				SegmentationEventCancelIndicator: true,
 			},
 		},
@@ -379,7 +379,7 @@ func TestDecodeSpliceInsertCancel_ValidCRC(t *testing.T) {
 	t.Parallel()
 	// Encode a cancel message — the library produces correct CRC-32.
 	msg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    12345,
 		SpliceEventCancelIndicator: true,
 	}
@@ -397,7 +397,7 @@ func TestDecodeSpliceInsertCancel_CorruptCRC(t *testing.T) {
 	t.Parallel()
 	// Encode a cancel message with correct CRC.
 	msg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    12345,
 		SpliceEventCancelIndicator: true,
 	}
@@ -416,7 +416,7 @@ func TestDecodeSpliceInsertCancel_SectionLengthExceedsData(t *testing.T) {
 	t.Parallel()
 	// Construct minimal data where section_length claims more than available.
 	data := make([]byte, 25)
-	data[0] = 0xFC                // table_id
+	data[0] = 0xFC                 // table_id
 	data[13] = CommandSpliceInsert // splice_command_type
 	// Set section_length to 255 (way more than 22 remaining bytes).
 	data[1] = 0x00
@@ -438,7 +438,7 @@ func TestCrc32MPEG2(t *testing.T) {
 	// Test with a known SCTE-35 section: encode a message and verify
 	// the CRC of all-but-last-4-bytes matches the last 4 bytes.
 	msg := &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    42,
 		SpliceEventCancelIndicator: true,
 	}

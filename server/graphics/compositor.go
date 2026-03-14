@@ -45,17 +45,17 @@ type AnimationConfig struct {
 
 // LayerState describes the state of a single graphics layer for serialization.
 type LayerState struct {
-	ID            int     `json:"id"`
-	Template      string  `json:"template,omitempty"`
-	Active        bool    `json:"active"`
-	FadePosition  float64 `json:"fadePosition,omitempty"`
-	AnimationMode string  `json:"animationMode,omitempty"`
-	AnimationHz   float64 `json:"animationHz,omitempty"`
-	ZOrder        int     `json:"zOrder"`
+	ID            int       `json:"id"`
+	Template      string    `json:"template,omitempty"`
+	Active        bool      `json:"active"`
+	FadePosition  float64   `json:"fadePosition,omitempty"`
+	AnimationMode string    `json:"animationMode,omitempty"`
+	AnimationHz   float64   `json:"animationHz,omitempty"`
+	ZOrder        int       `json:"zOrder"`
 	Rect          RectState `json:"rect"`
-	ImageName     string  `json:"imageName,omitempty"`
-	ImageWidth    int     `json:"imageWidth,omitempty"`
-	ImageHeight   int     `json:"imageHeight,omitempty"`
+	ImageName     string    `json:"imageName,omitempty"`
+	ImageWidth    int       `json:"imageWidth,omitempty"`
+	ImageHeight   int       `json:"imageHeight,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -1198,10 +1198,10 @@ func applyEasing(t float64, easing string) float64 {
 // Output coordinates are even-aligned (&^1) for YUV420 chroma compatibility.
 func interpolateRect(a, b image.Rectangle, t float64) image.Rectangle {
 	return image.Rect(
-		int(float64(a.Min.X)+float64(b.Min.X-a.Min.X)*t) &^ 1,
-		int(float64(a.Min.Y)+float64(b.Min.Y-a.Min.Y)*t) &^ 1,
-		int(float64(a.Max.X)+float64(b.Max.X-a.Max.X)*t) &^ 1,
-		int(float64(a.Max.Y)+float64(b.Max.Y-a.Max.Y)*t) &^ 1,
+		int(float64(a.Min.X)+float64(b.Min.X-a.Min.X)*t)&^1,
+		int(float64(a.Min.Y)+float64(b.Min.Y-a.Min.Y)*t)&^1,
+		int(float64(a.Max.X)+float64(b.Max.X-a.Max.X)*t)&^1,
+		int(float64(a.Max.Y)+float64(b.Max.Y-a.Max.Y)*t)&^1,
 	)
 }
 

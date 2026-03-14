@@ -44,4 +44,3 @@ func TestFlowOpenerInterface(t *testing.T) {
 	// Verify Instance satisfies FlowOpener interface at compile time.
 	var _ FlowOpener = (*Instance)(nil)
 }
-

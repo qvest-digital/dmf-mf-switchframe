@@ -14,11 +14,11 @@ import (
 
 // scte35CueRequest is the JSON body for POST /api/scte35/cue.
 type scte35CueRequest struct {
-	CommandType string                    `json:"commandType"` // "splice_insert" or "time_signal"
-	IsOut       *bool                     `json:"isOut,omitempty"`
-	DurationMs  *int64                    `json:"durationMs,omitempty"`
-	AutoReturn  *bool                     `json:"autoReturn,omitempty"`
-	PreRollMs   *int64                    `json:"preRollMs,omitempty"`
+	CommandType     string                    `json:"commandType"` // "splice_insert" or "time_signal"
+	IsOut           *bool                     `json:"isOut,omitempty"`
+	DurationMs      *int64                    `json:"durationMs,omitempty"`
+	AutoReturn      *bool                     `json:"autoReturn,omitempty"`
+	PreRollMs       *int64                    `json:"preRollMs,omitempty"`
 	EventID         *uint32                   `json:"eventId,omitempty"`
 	UniqueProgramID *uint16                   `json:"uniqueProgramId,omitempty"`
 	AvailNum        *uint8                    `json:"availNum,omitempty"`

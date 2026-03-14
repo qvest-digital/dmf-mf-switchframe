@@ -20,14 +20,14 @@ const (
 	cdpMagic1 = 0x69 // CDP header identifier byte 1
 
 	// CDP frame rate codes per SMPTE ST 334-1 Table 3.
-	CDPFrameRate24    byte = 0x01 // 24fps (film)
-	CDPFrameRate25    byte = 0x02 // 25fps (PAL)
-	CDPFrameRate2997  byte = 0x04 // 29.97fps (NTSC)
-	CDPFrameRate30    byte = 0x05 // 30fps
-	CDPFrameRate50    byte = 0x06 // 50fps
-	CDPFrameRate5994  byte = 0x07 // 59.94fps
-	CDPFrameRate60    byte = 0x08 // 60fps
-	cdpFrameRate2997       = CDPFrameRate2997 // backward compat
+	CDPFrameRate24   byte = 0x01             // 24fps (film)
+	CDPFrameRate25   byte = 0x02             // 25fps (PAL)
+	CDPFrameRate2997 byte = 0x04             // 29.97fps (NTSC)
+	CDPFrameRate30   byte = 0x05             // 30fps
+	CDPFrameRate50   byte = 0x06             // 50fps
+	CDPFrameRate5994 byte = 0x07             // 59.94fps
+	CDPFrameRate60   byte = 0x08             // 60fps
+	cdpFrameRate2997      = CDPFrameRate2997 // backward compat
 )
 
 // VANC packet limits.
@@ -39,11 +39,11 @@ const (
 
 // Sentinel errors.
 var (
-	ErrVANCTooShort     = errors.New("vanc: packet too short")
-	ErrVANCInvalidDID   = errors.New("vanc: invalid DID for captions")
-	ErrVANCInvalidSDID  = errors.New("vanc: invalid SDID for captions")
-	ErrVANCBadChecksum  = errors.New("vanc: checksum mismatch")
-	ErrVANCTooLarge     = errors.New("vanc: payload too large for single packet")
+	ErrVANCTooShort    = errors.New("vanc: packet too short")
+	ErrVANCInvalidDID  = errors.New("vanc: invalid DID for captions")
+	ErrVANCInvalidSDID = errors.New("vanc: invalid SDID for captions")
+	ErrVANCBadChecksum = errors.New("vanc: checksum mismatch")
+	ErrVANCTooLarge    = errors.New("vanc: payload too large for single packet")
 )
 
 // BuildCDP constructs a SMPTE ST 334-1 Caption Distribution Packet

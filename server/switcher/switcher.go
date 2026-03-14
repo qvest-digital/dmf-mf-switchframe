@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/zsiec/ccx"
-	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
@@ -21,6 +20,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
@@ -33,19 +33,18 @@ const (
 
 // Sentinel errors for the switcher package.
 var (
-	ErrSourceNotFound         = errors.New("switcher: source not found")
-	ErrAlreadyOnProgram       = errors.New("switcher: already on program")
-	ErrInvalidDelay           = errors.New("switcher: delay must be 0-500ms")
-	ErrInvalidPosition        = errors.New("switcher: position must be >= 1")
-	ErrNoTransition           = errors.New("switcher: no active transition")
-	ErrFormatDuringTransition = errors.New("switcher: cannot change pipeline format during active transition")
-	ErrEncoderNotAvailable    = errors.New("switcher: encoder not available")
+	ErrSourceNotFound          = errors.New("switcher: source not found")
+	ErrAlreadyOnProgram        = errors.New("switcher: already on program")
+	ErrInvalidDelay            = errors.New("switcher: delay must be 0-500ms")
+	ErrInvalidPosition         = errors.New("switcher: position must be >= 1")
+	ErrNoTransition            = errors.New("switcher: no active transition")
+	ErrFormatDuringTransition  = errors.New("switcher: cannot change pipeline format during active transition")
+	ErrEncoderNotAvailable     = errors.New("switcher: encoder not available")
 	errTransitionNotConfigured = errors.New("transition not configured")
 	errNoProgramSource         = errors.New("no program source set")
 	errNoTargetSource          = errors.New("no target source specified")
 	errStingerDataRequired     = errors.New("stinger transition requires stinger data")
 )
-
 
 // State represents the global state of the switching engine.
 // It replaces the implicit (inTransition, ftbActive) boolean pair with an
@@ -54,10 +53,10 @@ type State int
 
 const (
 	StateIdle             State = iota // No transition, normal frame routing
-	StateTransitioning                         // Mix/dip/wipe in progress
-	StateFTBTransitioning                      // FTB forward in progress (transitioning to black)
-	StateFTB                                   // Faded to black (holding black)
-	StateFTBReversing                          // Reversing FTB (fading back in)
+	StateTransitioning                 // Mix/dip/wipe in progress
+	StateFTBTransitioning              // FTB forward in progress (transitioning to black)
+	StateFTB                           // Faded to black (holding black)
+	StateFTBReversing                  // Reversing FTB (fading back in)
 )
 
 // String returns the human-readable name of the switcher state.
@@ -184,10 +183,10 @@ func WithEasing(ec *transition.EasingCurve) TransitionOption {
 
 // sourceState tracks a registered source and its Relay/viewer pair.
 type sourceState struct {
-	key        string
-	label      string
-	relay      *distribution.Relay
-	viewer     *sourceViewer
+	key            string
+	label          string
+	relay          *distribution.Relay
+	viewer         *sourceViewer
 	isVirtual      bool // true for virtual sources (replay, etc.)
 	isMXL          bool // true for MXL raw YUV sources (no H.264 decode/IDR gating)
 	useRawPipeline bool // true when source has a per-source decoder (always-decode mode)
@@ -224,7 +223,7 @@ type Switcher struct {
 	transEngine     *transition.Engine
 	state           State
 	audioTransition audioTransitionHandler
-	delayBuffer *DelayBuffer
+	delayBuffer     *DelayBuffer
 	frameSync       *FrameSynchronizer
 	frameSyncActive bool
 
@@ -363,9 +362,9 @@ type Switcher struct {
 
 	// Codec info — which encoder/decoder were selected at startup.
 	// Set via SetCodecInfo(), read-only after initialization.
-	codecEncoder string
-	codecDecoder string
-	codecHWAccel      bool
+	codecEncoder              string
+	codecDecoder              string
+	codecHWAccel              bool
 	availableEncoders         []codec.EncoderInfo
 	availableEncodersInternal []internal.EncoderInfo // cached conversion for state broadcast
 
@@ -400,13 +399,13 @@ var _ frameHandler = (*Switcher)(nil)
 func New(programRelay *distribution.Relay) *Switcher {
 	defaultFmt := DefaultFormat
 	s := &Switcher{
-		log:          slog.With("component", "switcher"),
-		sources:      make(map[string]*sourceState),
-		programRelay: programRelay,
-		health:       newHealthMonitor(),
-		videoProcCh:  make(chan videoProcWork, 8),
+		log:           slog.With("component", "switcher"),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:    NewFramePool(32, defaultFmt.Width, defaultFmt.Height),
+		framePool:     NewFramePool(32, defaultFmt.Width, defaultFmt.Height),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -1279,7 +1278,6 @@ func (s *Switcher) videoProcessingLoop() {
 		}
 	}
 }
-
 
 // broadcastProcessed handles frames that are already decoded to YUV
 // (e.g., from the transition engine). Enqueues for pipeline processing.
@@ -2343,13 +2341,13 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 	estimatedYUVMB := activeDecoders * 3
 
 	result := map[string]any{
-		"program_source":            s.programSource,
-		"preview_source":            s.previewSource,
-		"state":                     s.state.String(),
-		"in_transition":             s.state.isInTransition(),
-		"ftb_active":                s.state.isFTBActive(),
-		"seq":                       atomic.LoadUint64(&s.seq),
-		"sources":                   sources,
+		"program_source": s.programSource,
+		"preview_source": s.previewSource,
+		"state":          s.state.String(),
+		"in_transition":  s.state.isInTransition(),
+		"ftb_active":     s.state.isFTBActive(),
+		"seq":            atomic.LoadUint64(&s.seq),
+		"sources":        sources,
 		"source_decoders": map[string]any{
 			"active_count":     activeDecoders,
 			"estimated_yuv_mb": estimatedYUVMB,

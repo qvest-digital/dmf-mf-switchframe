@@ -43,9 +43,9 @@ func TestHandlePerf_ReturnsJSON(t *testing.T) {
 func TestHandlePerf_WithBaseline_IncludesDiff(t *testing.T) {
 	sampler := NewSampler(
 		&mockSwitcherPerf{sample: SwitcherSample{
-			Sources:       map[string]SourceSample{},
-			NodeTimings:   map[string]int64{},
-			FrameBudgetNs: 33000000,
+			Sources:        map[string]SourceSample{},
+			NodeTimings:    map[string]int64{},
+			FrameBudgetNs:  33000000,
 			PipelineLastNs: 10000,
 		}},
 		&mockMixerPerf{},

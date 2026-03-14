@@ -429,9 +429,9 @@ func TestFileRecorder_RotatedFileStartsWithPATandPMT(t *testing.T) {
 
 	// Build a TS payload that includes PAT (PID 0), PMT (PID 0x1000),
 	// and video data. This simulates what the TSMuxer produces.
-	pat := makeTSPacket(0x0000, false)    // PAT
-	pmt := makeTSPacket(0x1000, false)    // PMT
-	video := makeTSPacket(0x0100, false)  // Video data
+	pat := makeTSPacket(0x0000, false)   // PAT
+	pmt := makeTSPacket(0x1000, false)   // PMT
+	video := makeTSPacket(0x0100, false) // Video data
 
 	// Write PAT+PMT+video (fills file to limit).
 	data := append(append(pat, pmt...), video...)

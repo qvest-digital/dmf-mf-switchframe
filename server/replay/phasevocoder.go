@@ -4,7 +4,7 @@ import "math"
 
 const (
 	pvFFTSize    = 4096            // FFT window size (samples)
-	pvHopDivisor = 4              // analysis hop = FFT/4 = 1024 (75% overlap)
+	pvHopDivisor = 4               // analysis hop = FFT/4 = 1024 (75% overlap)
 	pvNumBins    = pvFFTSize/2 + 1 // 2049 unique frequency bins
 )
 

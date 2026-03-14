@@ -10,7 +10,7 @@ import (
 
 // encoderResponse is the JSON response for GET /api/encoder.
 type encoderResponse struct {
-	Current   string             `json:"current"`
+	Current   string              `json:"current"`
 	Available []codec.EncoderInfo `json:"available"`
 }
 

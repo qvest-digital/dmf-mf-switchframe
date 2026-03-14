@@ -24,10 +24,10 @@ func TestAlphaBlendChromaRow_AllTransparent(t *testing.T) {
 	// All transparent RGBA (A=0), stride-8 layout (2 full-res pixels per chroma pixel)
 	rgba := make([]byte, chromaWidth*8)
 	for i := 0; i < chromaWidth*2; i++ {
-		rgba[i*4] = 255   // R
-		rgba[i*4+1] = 0   // G
-		rgba[i*4+2] = 0   // B
-		rgba[i*4+3] = 0   // A = transparent
+		rgba[i*4] = 255 // R
+		rgba[i*4+1] = 0 // G
+		rgba[i*4+2] = 0 // B
+		rgba[i*4+3] = 0 // A = transparent
 	}
 
 	alphaBlendRGBAChromaRow(&cb[0], &cr[0], &rgba[0], chromaWidth, 256)
@@ -107,7 +107,8 @@ func TestAlphaBlendChromaRow_WidthZero(t *testing.T) {
 // correctly clamps negative intermediate values to 0 rather than wrapping.
 //
 // The blend formula is:
-//   cb = (existing*inv + overlayCb*a256 + 128) >> 8
+//
+//	cb = (existing*inv + overlayCb*a256 + 128) >> 8
 //
 // When overlayCb is low (e.g., 17 for yellow) and existing Cb is low,
 // the result should be near overlayCb, never wrapping to a high byte value.

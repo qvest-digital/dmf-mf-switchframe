@@ -2,17 +2,20 @@
 
 package codec
 
-// ffmpeg_cgo.go provides the cgo link directives for FFmpeg libavcodec/libavutil.
+// ffmpeg_cgo.go provides the cgo link directives for FFmpeg libraries.
 // This is separated into its own file so the linker flags are specified once,
 // avoiding duplicate library warnings.
 
 /*
-#cgo pkg-config: libavcodec libavutil
+#cgo pkg-config: libavcodec libavutil libavformat libswscale libswresample
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/log.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 */
 import "C"
 

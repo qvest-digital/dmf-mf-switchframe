@@ -10,9 +10,9 @@ import (
 )
 
 type layoutRequest struct {
-	Preset string              `json:"preset,omitempty"`
+	Preset string        `json:"preset,omitempty"`
 	Slots  []layout.Slot `json:"slots,omitempty"`
-	Name   string              `json:"name,omitempty"`
+	Name   string        `json:"name,omitempty"`
 }
 
 type slotUpdateRequest struct {

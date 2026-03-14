@@ -56,7 +56,7 @@ func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
 		PTS:        1000,
 		DTS:        900,
 		IsKeyframe: true,
-		GroupID:     5,
+		GroupID:    5,
 		Codec:      "h264",
 		pool:       pool,
 	}

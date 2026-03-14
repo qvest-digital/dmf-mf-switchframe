@@ -356,3 +356,55 @@ func TestValidateSupportedExtensions(t *testing.T) {
 		})
 	}
 }
+
+func TestIsAcceptedExtension(t *testing.T) {
+	// Native H.264 extensions.
+	for _, ext := range []string{".ts", ".mp4", ".m4v", ".mov"} {
+		assert.True(t, IsAcceptedExtension(ext), "native ext %s should be accepted", ext)
+	}
+	// Transcode extensions.
+	for _, ext := range []string{".mkv", ".webm", ".avi", ".flv", ".mxf", ".wmv", ".mpg", ".mpeg", ".ogv"} {
+		assert.True(t, IsAcceptedExtension(ext), "transcode ext %s should be accepted", ext)
+	}
+	// Unsupported.
+	for _, ext := range []string{".xyz", ".doc", ".pdf", ".txt", ""} {
+		assert.False(t, IsAcceptedExtension(ext), "ext %s should not be accepted", ext)
+	}
+}
+
+func TestNeedsTranscode_TranscodeExtension(t *testing.T) {
+	// Transcode extensions always return true regardless of file contents.
+	path := writeTemp(t, []byte("dummy"), ".mkv")
+	assert.True(t, NeedsTranscode(path))
+}
+
+func TestNeedsTranscode_H264InTS(t *testing.T) {
+	// H.264 in .ts should not need transcode.
+	data := generateTestTS(t, 10)
+	path := writeTemp(t, data, ".ts")
+	assert.False(t, NeedsTranscode(path))
+}
+
+func TestNeedsTranscode_UnknownExtension(t *testing.T) {
+	// Unknown extension returns false (let Validate reject it).
+	path := writeTemp(t, []byte("dummy"), ".xyz")
+	assert.False(t, NeedsTranscode(path))
+}
+
+func TestNeedsTranscode_CorruptMP4(t *testing.T) {
+	// Corrupt .mp4 file where probe fails — should return true (try transcode
+	// rather than sending to Go demuxer which also won't handle it).
+	path := writeTemp(t, []byte("not a real mp4 file"), ".mp4")
+	assert.True(t, NeedsTranscode(path))
+}
+
+func TestCanTranscodeFallback(t *testing.T) {
+	// MP4-family extensions should allow fallback.
+	for _, ext := range []string{".mp4", ".m4v", ".mov"} {
+		assert.True(t, CanTranscodeFallback(ext), "ext %s should allow fallback", ext)
+	}
+	// TS and transcode-only extensions should not.
+	for _, ext := range []string{".ts", ".mkv", ".webm", ".avi", ".xyz", ""} {
+		assert.False(t, CanTranscodeFallback(ext), "ext %s should not allow fallback", ext)
+	}
+}

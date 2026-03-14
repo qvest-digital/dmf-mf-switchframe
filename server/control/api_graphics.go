@@ -498,7 +498,7 @@ func (a *API) handleGraphicsImageUpload(w http.ResponseWriter, r *http.Request) 
 		httperr.Write(w, http.StatusBadRequest, "image field required")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	data, err := io.ReadAll(io.LimitReader(file, 16<<20))
 	if err != nil {
@@ -529,7 +529,7 @@ func (a *API) handleGraphicsImageGet(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // handleGraphicsImageDelete removes the stored image from a layer.

@@ -454,8 +454,8 @@ func TestValidateSteps_AcceptsReplayPlayLastNoParams(t *testing.T) {
 func TestValidateSteps_MultipleErrors(t *testing.T) {
 	t.Parallel()
 	steps := []Step{
-		{Action: ActionCut, Params: map[string]any{}},            // missing source
-		{Action: ActionPreview, Params: map[string]any{}},        // missing source
+		{Action: ActionCut, Params: map[string]any{}},                  // missing source
+		{Action: ActionPreview, Params: map[string]any{}},              // missing source
 		{Action: ActionWait, Params: map[string]any{"ms": float64(0)}}, // zero ms
 	}
 	result := ValidateSteps(steps)

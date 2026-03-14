@@ -27,12 +27,14 @@ test('replay panel has mark and transport controls', async ({ page }) => {
 	await expect(replayPanel.locator('.transport-btn')).toBeVisible();
 });
 
-test('keyboard overlay opens on ? and closes on Escape', async ({ page }) => {
+test('keyboard overlay opens on / and closes on Escape', async ({ page }) => {
 	await page.goto('/');
-	// Ensure the page is focused and the keyboard handler has attached
-	await page.locator('body').click();
-	// Press ? to open overlay (Shift+Slash = ?)
-	await page.keyboard.press('Shift+Slash');
+	// Wait for the control room to render (ensures keyboard handler is attached)
+	await expect(page.locator('.control-strip')).toBeVisible();
+	// dispatchEvent bypasses loading/disconnect overlays that block pointer events
+	await page.locator('body').dispatchEvent('click');
+	// Press / to open overlay (handler matches e.code === 'Slash')
+	await page.keyboard.press('/');
 	await expect(page.locator('[role="dialog"]')).toBeVisible();
 	// Press Escape to close
 	await page.keyboard.press('Escape');

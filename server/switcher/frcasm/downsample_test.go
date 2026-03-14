@@ -119,10 +119,10 @@ func TestDownsampleY2x_CrossValidate_1080p(t *testing.T) {
 
 func TestDownsampleY2x_CrossValidate_Sizes(t *testing.T) {
 	sizes := [][2]int{
-		{32, 32},    // small, dstW=16 (exactly 1 NEON iteration)
-		{64, 48},    // small, dstW=32 (2 iterations)
-		{640, 480},  // 480p
-		{1280, 720}, // 720p
+		{32, 32},     // small, dstW=16 (exactly 1 NEON iteration)
+		{64, 48},     // small, dstW=32 (2 iterations)
+		{640, 480},   // 480p
+		{1280, 720},  // 720p
 		{1920, 1080}, // 1080p
 	}
 	for _, sz := range sizes {

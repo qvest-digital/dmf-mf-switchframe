@@ -126,17 +126,17 @@ func TestRulesStore_Reorder(t *testing.T) {
 	r1, _ := store.Create(Rule{
 		Name: "first", Enabled: true,
 		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
-		Logic: LogicAND, Action: ActionDelete,
+		Logic:      LogicAND, Action: ActionDelete,
 	})
 	r2, _ := store.Create(Rule{
 		Name: "second", Enabled: true,
 		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "6"}},
-		Logic: LogicAND, Action: ActionPass,
+		Logic:      LogicAND, Action: ActionPass,
 	})
 	r3, _ := store.Create(Rule{
 		Name: "third", Enabled: true,
 		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "0"}},
-		Logic: LogicAND, Action: ActionDelete,
+		Logic:      LogicAND, Action: ActionDelete,
 	})
 
 	// Reorder: third, first, second.

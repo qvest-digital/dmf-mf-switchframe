@@ -41,10 +41,10 @@ var endpointPrefixSubsystemMap = []struct {
 	subsystem Subsystem
 }{
 	{"/api/audio/", SubsystemAudio},
-	{"/api/sources/", SubsystemSwitching},  // label, delay, key
-	{"/api/macros/", SubsystemSwitching},   // macro run
-	{"/api/presets/", SubsystemSwitching},  // preset create, update, delete, recall
-	{"/api/captions/", SubsystemCaptions},  // caption mode, text, clear
+	{"/api/sources/", SubsystemSwitching}, // label, delay, key
+	{"/api/macros/", SubsystemSwitching},  // macro run
+	{"/api/presets/", SubsystemSwitching}, // preset create, update, delete, recall
+	{"/api/captions/", SubsystemCaptions}, // caption mode, text, clear
 }
 
 // EndpointSubsystem maps an API path to its subsystem. Returns the subsystem

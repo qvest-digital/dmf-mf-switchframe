@@ -97,7 +97,7 @@ func TestRefcount_PoolBufferReturnedOnLastRef(t *testing.T) {
 	hitsBefore, missesBefore := pool.Stats()
 
 	// Ref pf1 (shared), then release both refs
-	pf1.Ref() // refs=2
+	pf1.Ref()        // refs=2
 	pf1.ReleaseYUV() // refs=1, not returned
 	pf1.ReleaseYUV() // refs=0, returned to pool
 
@@ -187,7 +187,7 @@ func TestRefcount_SharedAcrossValueCopies(t *testing.T) {
 	defer pool.Close()
 
 	original := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -219,7 +219,7 @@ func TestRefcount_ValueCopyChainForPipeline(t *testing.T) {
 
 	// 1. Source decoder creates frame (copy #1 from FFmpeg)
 	decoderFrame := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -273,7 +273,7 @@ func TestRefcount_FreezeRepeatWithSharedRefs(t *testing.T) {
 	defer pool.Close()
 
 	frame := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -286,16 +286,16 @@ func TestRefcount_FreezeRepeatWithSharedRefs(t *testing.T) {
 	copy1.Ref()                       // refs: 1→2 (delivery)
 	pipeline1 := new(ProcessingFrame) // shallow copy for pipeline
 	*pipeline1 = copy1
-	pipeline1.Ref()      // refs: 2→3 (pipeline)
-	copy1.ReleaseYUV()   // refs: 3→2 (delivery done)
+	pipeline1.Ref()    // refs: 2→3 (pipeline)
+	copy1.ReleaseYUV() // refs: 3→2 (delivery done)
 
 	// Tick 2 (freeze): deliver same frame again while pipeline1 still processing
 	copy2 := *lastRawVideo
-	copy2.Ref()                       // refs: 2→3 (delivery)
+	copy2.Ref() // refs: 2→3 (delivery)
 	pipeline2 := new(ProcessingFrame)
 	*pipeline2 = copy2
-	pipeline2.Ref()      // refs: 3→4 (pipeline2)
-	copy2.ReleaseYUV()   // refs: 4→3 (delivery done)
+	pipeline2.Ref()    // refs: 3→4 (pipeline2)
+	copy2.ReleaseYUV() // refs: 4→3 (delivery done)
 
 	// Pipeline1 finishes
 	pipeline1.ReleaseYUV() // refs: 3→2
@@ -318,7 +318,7 @@ func TestRefcount_UnmanagedFrameFallsBackToDeepCopy(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -336,7 +336,7 @@ func TestMakeWritable_SoleOwnerIsNoOp(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}
@@ -370,7 +370,7 @@ func TestMakeWritable_SharedCopiesAndDetaches(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}
@@ -409,7 +409,7 @@ func TestMakeWritable_PreservesSourceForFrameSync(t *testing.T) {
 
 	// 1. Source decoder creates frame.
 	sourceFrame := &ProcessingFrame{
-		YUV:  pool.Acquire(),
+		YUV:   pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}

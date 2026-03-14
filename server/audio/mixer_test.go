@@ -3196,7 +3196,7 @@ func TestMixerOnCutPreSeedAppliesStatelessGainOnly(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// Set trim and level to known values
-	_ = m.SetTrim("cam1", 6.0)  // +6 dB trim
+	_ = m.SetTrim("cam1", 6.0)   // +6 dB trim
 	_ = m.SetLevel("cam1", -6.0) // -6 dB fader
 
 	// Set EQ to a prominent boost — if EQ were applied, the PCM would differ

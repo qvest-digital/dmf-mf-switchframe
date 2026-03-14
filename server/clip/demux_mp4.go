@@ -89,11 +89,11 @@ type mp4Track struct {
 	timescale   uint32
 
 	// Video-specific: SPS/PPS from avcC box.
-	sps             []byte
-	pps             []byte
-	naluLengthSize  int // typically 4
-	width           uint16
-	height          uint16
+	sps            []byte
+	pps            []byte
+	naluLengthSize int // typically 4
+	width          uint16
+	height         uint16
 
 	// Audio-specific: from esds and mp4a boxes.
 	audioObjectType  int

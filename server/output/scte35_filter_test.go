@@ -43,10 +43,10 @@ func (m *mockFilterWriter) Status() AdapterStatus {
 // makeTSPacketFill builds a 188-byte TS packet with the given PID and a fill byte.
 func makeTSPacketFill(pid uint16, fill byte) []byte {
 	pkt := make([]byte, 188)
-	pkt[0] = 0x47                           // sync byte
-	pkt[1] = byte(pid>>8) & 0x1F           // PID high 5 bits
-	pkt[2] = byte(pid & 0xFF)              // PID low 8 bits
-	pkt[3] = 0x10                           // adaptation field control = payload only
+	pkt[0] = 0x47                // sync byte
+	pkt[1] = byte(pid>>8) & 0x1F // PID high 5 bits
+	pkt[2] = byte(pid & 0xFF)    // PID low 8 bits
+	pkt[3] = 0x10                // adaptation field control = payload only
 	for i := 4; i < 188; i++ {
 		pkt[i] = fill
 	}
@@ -59,9 +59,9 @@ func TestSCTE35Filter_StripsMatchingPID(t *testing.T) {
 
 	// Build a buffer with 3 packets: video(0x100), scte35(0x102), audio(0x101).
 	var data []byte
-	data = append(data, makeTSPacketFill(0x100, 0xAA)...)  // video
+	data = append(data, makeTSPacketFill(0x100, 0xAA)...)            // video
 	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0xBB)...) // SCTE-35 — should be stripped
-	data = append(data, makeTSPacketFill(0x101, 0xCC)...)  // audio
+	data = append(data, makeTSPacketFill(0x101, 0xCC)...)            // audio
 
 	n, err := f.Write(data)
 	if err != nil {
@@ -220,10 +220,10 @@ func TestSCTE35Filter_MultipleSCTE35Packets(t *testing.T) {
 
 	// 5 packets: video, scte35, scte35, audio, scte35
 	var data []byte
-	data = append(data, makeTSPacketFill(0x100, 0x11)...)     // video
+	data = append(data, makeTSPacketFill(0x100, 0x11)...)            // video
 	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0x22)...) // strip
 	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0x33)...) // strip
-	data = append(data, makeTSPacketFill(0x101, 0x44)...)     // audio
+	data = append(data, makeTSPacketFill(0x101, 0x44)...)            // audio
 	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0x55)...) // strip
 
 	n, err := f.Write(data)

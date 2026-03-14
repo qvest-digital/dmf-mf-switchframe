@@ -131,7 +131,7 @@ func BenchmarkCropYUV420Region_1080p(b *testing.B) {
 	src := makeYUV420(srcW, srcH, 200, 100, 150)
 	dst := make([]byte, cropW*cropH*3/2)
 
-	b.SetBytes(int64(cropW*cropH*3/2))
+	b.SetBytes(int64(cropW * cropH * 3 / 2))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		CropYUV420Region(dst, src, srcW, srcH, 320, 0, cropW, cropH)

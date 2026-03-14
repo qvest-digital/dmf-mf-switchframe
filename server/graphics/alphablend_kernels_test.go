@@ -20,10 +20,10 @@ func TestAlphaBlendRGBARowY_AllTransparent(t *testing.T) {
 	// All transparent (A=0)
 	rgba := make([]byte, width*4)
 	for i := 0; i < width; i++ {
-		rgba[i*4] = 255   // R
-		rgba[i*4+1] = 0   // G
-		rgba[i*4+2] = 0   // B
-		rgba[i*4+3] = 0   // A = transparent
+		rgba[i*4] = 255 // R
+		rgba[i*4+1] = 0 // G
+		rgba[i*4+2] = 0 // B
+		rgba[i*4+3] = 0 // A = transparent
 	}
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
@@ -193,10 +193,10 @@ func TestAlphaBlendRGBARowY_CrossValidation(t *testing.T) {
 	rgba := make([]byte, width*4)
 	for i := 0; i < width; i++ {
 		if i < 288 {
-			rgba[i*4] = byte(i % 256)             // R varies
-			rgba[i*4+1] = byte((i * 3) % 256)     // G varies
-			rgba[i*4+2] = byte((i * 7) % 256)     // B varies
-			rgba[i*4+3] = byte(128 + (i%128))      // A varies 128-255
+			rgba[i*4] = byte(i % 256)           // R varies
+			rgba[i*4+1] = byte((i * 3) % 256)   // G varies
+			rgba[i*4+2] = byte((i * 7) % 256)   // B varies
+			rgba[i*4+3] = byte(128 + (i % 128)) // A varies 128-255
 		}
 		// else: alpha=0 (transparent)
 	}
@@ -291,13 +291,13 @@ func TestAlphaBlendRGBARowY_PureColors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		r, g, b  byte
-		wantY    int // expected limited-range BT.709 Y
+		name    string
+		r, g, b byte
+		wantY   int // expected limited-range BT.709 Y
 	}{
-		{"pure red", 255, 0, 0, 63},     // 16 + (47*255+128)>>8 = 16+47 = 63
-		{"pure green", 0, 255, 0, 172},  // 16 + (157*255+128)>>8 = 16+156 = 172
-		{"pure blue", 0, 0, 255, 32},    // 16 + (16*255+128)>>8 = 16+16 = 32
+		{"pure red", 255, 0, 0, 63},      // 16 + (47*255+128)>>8 = 16+47 = 63
+		{"pure green", 0, 255, 0, 172},   // 16 + (157*255+128)>>8 = 16+156 = 172
+		{"pure blue", 0, 0, 255, 32},     // 16 + (16*255+128)>>8 = 16+16 = 32
 		{"mid gray", 128, 128, 128, 126}, // 16 + (47*128+157*128+16*128+128)>>8 = 16+110 = 126
 	}
 
@@ -445,4 +445,3 @@ func BenchmarkAlphaBlendRGBA_Full(b *testing.B) {
 		AlphaBlendRGBA(yuv, rgba, width, height, 1.0)
 	}
 }
-

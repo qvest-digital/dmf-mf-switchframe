@@ -21,10 +21,10 @@ var (
 type TickerConfig struct {
 	Text     string  `json:"text"`
 	FontSize float64 `json:"fontSize"`
-	Speed    float64 `json:"speed"`   // pixels per second
-	Bold   bool `json:"bold"`
-	Loop   bool `json:"loop"`   // wrap text for seamless looping
-	Height int  `json:"height"` // bar height in pixels (0 = auto from fontSize)
+	Speed    float64 `json:"speed"` // pixels per second
+	Bold     bool    `json:"bold"`
+	Loop     bool    `json:"loop"`   // wrap text for seamless looping
+	Height   int     `json:"height"` // bar height in pixels (0 = auto from fontSize)
 }
 
 // tickerInstance holds the state for one running ticker.
@@ -41,8 +41,8 @@ type TickerEngine struct {
 	renderer   *textrender.Renderer
 	log        *slog.Logger
 
-	mu       sync.Mutex
-	tickers  map[int]*tickerInstance
+	mu        sync.Mutex
+	tickers   map[int]*tickerInstance
 	closeOnce sync.Once
 }
 

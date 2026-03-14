@@ -117,6 +117,7 @@ var errorMappings = []errorMapping{
 	{clip.ErrInvalidSeek, http.StatusBadRequest},
 	{clip.ErrInvalidName, http.StatusBadRequest},
 	{clip.ErrInvalidFormat, http.StatusBadRequest},
+	{clip.ErrTranscodeFailed, http.StatusUnprocessableEntity},
 	{clip.ErrCorruptFile, http.StatusBadRequest},
 	{clip.ErrOddDimensions, http.StatusBadRequest},
 	{clip.ErrNoVideo, http.StatusBadRequest},

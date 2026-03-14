@@ -131,9 +131,9 @@ func TestPipeline_TimeSignal_FullRoundTrip(t *testing.T) {
 				OpID: OpSegmentationDescriptorRequest,
 				Data: &SegmentationDescriptorRequest{
 					SegEventID:              0x0000BEEF,
-					SegmentationTypeID:      0x34, // Provider Placement Opportunity Start
+					SegmentationTypeID:      0x34,    // Provider Placement Opportunity Start
 					DurationTicks:           2700000, // 30 seconds at 90kHz
-					UPIDType:                0x09, // ADI
+					UPIDType:                0x09,    // ADI
 					UPID:                    upid,
 					SegNum:                  1,
 					SegExpected:             4,

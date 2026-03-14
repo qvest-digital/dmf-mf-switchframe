@@ -15,7 +15,6 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
-
 // growBuf returns buf[:n] if cap(buf) >= n, otherwise allocates a new slice.
 // Used to eliminate per-frame allocations on the mixing hot path.
 func growBuf(buf []float32, n int) []float32 {
@@ -65,22 +64,22 @@ type CompressorState struct {
 
 // Channel tracks per-source audio state.
 type Channel struct {
-	sourceKey   string
-	level       float64 // dB (-inf to +12), fader level
-	levelLinear float32 // cached linear gain from level (avoids per-frame math.Pow)
-	trim        float64 // dB (-20 to +20), input gain/trim
-	trimLinear  float32 // cached linear gain from trim (avoids per-frame math.Pow)
-	muted       bool
-	afv         bool
-	active      bool
-	decoder     Decoder      // lazy init, nil in passthrough
-	decoderOnce sync.Once         // ensures decoder factory is called at most once
-	peakL       float64           // linear amplitude [0,1] — updated on every decoded frame
-	peakR       float64           // linear amplitude [0,1]
-	eq          *EQ               // 3-band parametric EQ (always initialized)
-	compressor  *Compressor       // single-band compressor (always initialized)
-	audioDelay        *DelayBuffer // per-source audio delay for lip-sync correction
-	sampleRateWarned  bool              // true after first sample rate mismatch warning (log once)
+	sourceKey        string
+	level            float64 // dB (-inf to +12), fader level
+	levelLinear      float32 // cached linear gain from level (avoids per-frame math.Pow)
+	trim             float64 // dB (-20 to +20), input gain/trim
+	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
+	muted            bool
+	afv              bool
+	active           bool
+	decoder          Decoder      // lazy init, nil in passthrough
+	decoderOnce      sync.Once    // ensures decoder factory is called at most once
+	peakL            float64      // linear amplitude [0,1] — updated on every decoded frame
+	peakR            float64      // linear amplitude [0,1]
+	eq               *EQ          // 3-band parametric EQ (always initialized)
+	compressor       *Compressor  // single-band compressor (always initialized)
+	audioDelay       *DelayBuffer // per-source audio delay for lip-sync correction
+	sampleRateWarned bool         // true after first sample rate mismatch warning (log once)
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -130,12 +129,12 @@ type Mixer struct {
 
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
 	transCrossfadeActive   bool
-	transCrossfadeFrom     string              // outgoing source key
-	transCrossfadeTo       string              // incoming source key
-	transCrossfadePosition float64             // 0.0 = fully old, 1.0 = fully new
+	transCrossfadeFrom     string         // outgoing source key
+	transCrossfadeTo       string         // incoming source key
+	transCrossfadePosition float64        // 0.0 = fully old, 1.0 = fully new
 	transCrossfadeMode     TransitionMode // gain curve selection
-	transCrossfadeAudioPos float64             // position at end of last audio output (for smooth interpolation)
-	mixCycleTransPos       float64             // snapshotted transition position for current mix cycle
+	transCrossfadeAudioPos float64        // position at end of last audio output (for smooth interpolation)
+	mixCycleTransPos       float64        // snapshotted transition position for current mix cycle
 
 	// Stinger audio overlay (optional, active during stinger transitions)
 	stingerAudio    []float32 // interleaved PCM from stinger clip
@@ -143,8 +142,8 @@ type Mixer struct {
 	stingerChannels int       // channel count of stinger audio
 
 	// Program mute: true while FTB is held (screen is black, audio is silent).
-	programMuted          bool
-	unmuteFadeRemaining   int // samples remaining in unmute fade-in ramp (0 = inactive)
+	programMuted        bool
+	unmuteFadeRemaining int // samples remaining in unmute fade-in ramp (0 = inactive)
 
 	// Monotonic output PTS counter
 	outputPTS       int64
@@ -571,10 +570,6 @@ func (m *Mixer) IsPassthrough() bool {
 	defer m.mu.RUnlock()
 	return m.passthrough
 }
-
-
-
-
 
 // ProgramPeak returns the current program output peak levels in dBFS.
 // Returns [leftDBFS, rightDBFS]. Silence is -Inf.

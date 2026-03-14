@@ -1318,7 +1318,7 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	pool := NewFramePool(8, 4, 4)
 	programRelay := newTestRelay()
 	sw := &Switcher{
-		sources:     make(map[string]*sourceState),
+		sources:      make(map[string]*sourceState),
 		programRelay: programRelay,
 		health:       newHealthMonitor(),
 		// Channel capacity 1 to make it easy to fill.
@@ -1369,10 +1369,10 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	// then check pool stats.
 	pool2 := NewFramePool(4, 4, 4)
 	sw2 := &Switcher{
-		sources:      make(map[string]*sourceState),
-		programRelay: programRelay,
-		health:       newHealthMonitor(),
-		videoProcCh:  make(chan videoProcWork, 1),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 1),
 		videoProcDone: make(chan struct{}),
 		framePool:     pool2,
 	}
@@ -1430,10 +1430,10 @@ func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
 	pool := NewFramePool(8, 4, 4)
 	programRelay := newTestRelay()
 	sw := &Switcher{
-		sources:      make(map[string]*sourceState),
-		programRelay: programRelay,
-		health:       newHealthMonitor(),
-		videoProcCh:  make(chan videoProcWork, 1),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 1),
 		videoProcDone: make(chan struct{}),
 		framePool:     pool,
 	}

@@ -342,4 +342,3 @@ func TestListAvailableEncoders(t *testing.T) {
 		t.Errorf("default encoder %q not found in available list", defaultEnc)
 	}
 }
-

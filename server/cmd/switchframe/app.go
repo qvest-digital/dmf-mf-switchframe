@@ -60,8 +60,8 @@ type App struct {
 	// Infrastructure
 	cert         *certs.CertInfo
 	externalCert bool
-	appMetrics *metrics.Metrics
-	controlPub *control.ChannelPublisher
+	appMetrics   *metrics.Metrics
+	controlPub   *control.ChannelPublisher
 
 	// Prism server + relays
 	server          *distribution.Server
@@ -78,14 +78,14 @@ type App struct {
 	confidenceMon *output.ConfidenceMonitor
 
 	// Subsystems
-	debugCollector *debug.Collector
-	presetStore    *preset.Store
-	macroStore     *macro.Store
-	operatorStore  *operator.Store
-	sessionMgr     *operator.SessionManager
-	compositor     *graphics.Compositor
-	keyProcessor   *graphics.KeyProcessor
-	keyBridge      *graphics.KeyProcessorBridge
+	debugCollector   *debug.Collector
+	presetStore      *preset.Store
+	macroStore       *macro.Store
+	operatorStore    *operator.Store
+	sessionMgr       *operator.SessionManager
+	compositor       *graphics.Compositor
+	keyProcessor     *graphics.KeyProcessor
+	keyBridge        *graphics.KeyProcessorBridge
 	replayMgr        *replay.Manager
 	stingerStore     *stinger.Store
 	layoutCompositor *layout.Compositor
@@ -234,7 +234,7 @@ func (a *App) initPrismServer() error {
 		},
 		OnStreamRegistered:   a.onStreamRegistered,
 		OnStreamUnregistered: a.onStreamUnregistered,
-		ControlCh: a.controlPub.Ch(),
+		ControlCh:            a.controlPub.Ch(),
 		// NOTE: Datagrams bypass operator auth/lock middleware (acceptable for
 		// trusted-LAN single-operator use). Revisit if multi-operator security
 		// requires per-datagram authentication.

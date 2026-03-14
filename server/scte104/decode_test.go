@@ -12,14 +12,14 @@ func TestDecode_SOM_SpliceRequest(t *testing.T) {
 	// Build a SOM: OpID(2) + splice_request_data(14)
 	data := make([]byte, 16)
 	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
-	data[2] = SpliceStartImmediate                       // splice_insert_type
-	binary.BigEndian.PutUint32(data[3:7], 42)            // splice_event_id
-	binary.BigEndian.PutUint16(data[7:9], 100)           // unique_program_id
-	binary.BigEndian.PutUint16(data[9:11], 5000)         // pre_roll_time
-	binary.BigEndian.PutUint16(data[11:13], 300)         // break_duration (100ms units)
-	data[13] = 1                                         // avail_num
-	data[14] = 2                                         // avails_expected
-	data[15] = 0x80                                      // auto_return_flag (bit 7 per SCTE-104 spec)
+	data[2] = SpliceStartImmediate               // splice_insert_type
+	binary.BigEndian.PutUint32(data[3:7], 42)    // splice_event_id
+	binary.BigEndian.PutUint16(data[7:9], 100)   // unique_program_id
+	binary.BigEndian.PutUint16(data[9:11], 5000) // pre_roll_time
+	binary.BigEndian.PutUint16(data[11:13], 300) // break_duration (100ms units)
+	data[13] = 1                                 // avail_num
+	data[14] = 2                                 // avails_expected
+	data[15] = 0x80                              // auto_return_flag (bit 7 per SCTE-104 spec)
 
 	msg, err := Decode(data)
 	require.NoError(t, err)
@@ -96,14 +96,14 @@ func TestDecode_MOM_MultipleOps(t *testing.T) {
 	// data_length: 0 (2)
 
 	spliceData := make([]byte, 14)
-	spliceData[0] = SpliceEndImmediate               // splice_insert_type
-	binary.BigEndian.PutUint32(spliceData[1:5], 999) // event_id
-	binary.BigEndian.PutUint16(spliceData[5:7], 50)  // unique_program_id
+	spliceData[0] = SpliceEndImmediate                // splice_insert_type
+	binary.BigEndian.PutUint32(spliceData[1:5], 999)  // event_id
+	binary.BigEndian.PutUint16(spliceData[5:7], 50)   // unique_program_id
 	binary.BigEndian.PutUint16(spliceData[7:9], 1000) // pre_roll_time
-	binary.BigEndian.PutUint16(spliceData[9:11], 0)  // break_duration
-	spliceData[11] = 0                               // avail_num
-	spliceData[12] = 0                               // avails_expected
-	spliceData[13] = 0                               // auto_return_flag
+	binary.BigEndian.PutUint16(spliceData[9:11], 0)   // break_duration
+	spliceData[11] = 0                                // avail_num
+	spliceData[12] = 0                                // avails_expected
+	spliceData[13] = 0                                // auto_return_flag
 
 	// Total MOM body: header(10) + op1(2+2+14) + op2(2+2+0) = 32
 	headerSize := 10
@@ -114,13 +114,13 @@ func TestDecode_MOM_MultipleOps(t *testing.T) {
 	buf := make([]byte, 2+messageSize)
 	binary.BigEndian.PutUint16(buf[0:2], OpMultipleOperationMessage)
 	binary.BigEndian.PutUint16(buf[2:4], uint16(messageSize))
-	buf[4] = 0                                     // protocolVersion
-	buf[5] = 5                                     // AS_index
-	buf[6] = 3                                     // message_number
-	binary.BigEndian.PutUint16(buf[7:9], 1000)     // DPI_PID_index
-	buf[9] = 0                                     // SCTE35_protocol_version
-	buf[10] = 0                                    // timestamp
-	buf[11] = 2                                    // num_ops
+	buf[4] = 0                                 // protocolVersion
+	buf[5] = 5                                 // AS_index
+	buf[6] = 3                                 // message_number
+	binary.BigEndian.PutUint16(buf[7:9], 1000) // DPI_PID_index
+	buf[9] = 0                                 // SCTE35_protocol_version
+	buf[10] = 0                                // timestamp
+	buf[11] = 2                                // num_ops
 
 	offset := 12
 	// Op 1: splice_request
@@ -170,7 +170,7 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	segPayload[7] = byte(dur >> 16)
 	segPayload[8] = byte(dur >> 8)
 	segPayload[9] = byte(dur)
-	segPayload[10] = 0x09            // upid_type (ADI)
+	segPayload[10] = 0x09 // upid_type (ADI)
 	segPayload[11] = byte(len(upid))
 	copy(segPayload[12:], upid)
 	segPayload[12+len(upid)] = 0x34 // segmentation_type_id (AFTER upid)
@@ -189,9 +189,9 @@ func TestDecode_MOM_SegmentationDescriptor(t *testing.T) {
 	buf := make([]byte, 2+messageSize)
 	binary.BigEndian.PutUint16(buf[0:2], OpMultipleOperationMessage)
 	binary.BigEndian.PutUint16(buf[2:4], uint16(messageSize))
-	buf[4] = 0  // protocolVersion
-	buf[5] = 1  // AS_index
-	buf[6] = 7  // message_number
+	buf[4] = 0 // protocolVersion
+	buf[5] = 1 // AS_index
+	buf[6] = 7 // message_number
 	binary.BigEndian.PutUint16(buf[7:9], 2000)
 	buf[9] = 0  // SCTE35_protocol_version
 	buf[10] = 0 // timestamp
@@ -1034,14 +1034,14 @@ func TestDecode_SOM_AmbiguousMessageSize(t *testing.T) {
 	// decodeSOM falls through to the abbreviated format.
 	data := make([]byte, 16)
 	binary.BigEndian.PutUint16(data[0:2], OpSpliceRequest)
-	data[2] = SpliceStartImmediate                // splice_insert_type
-	binary.BigEndian.PutUint32(data[3:7], 55555)  // splice_event_id
-	binary.BigEndian.PutUint16(data[7:9], 300)    // unique_program_id
-	binary.BigEndian.PutUint16(data[9:11], 1500)  // pre_roll_time
-	binary.BigEndian.PutUint16(data[11:13], 200)  // break_duration
-	data[13] = 1                                  // avail_num
-	data[14] = 5                                  // avails_expected
-	data[15] = 0x80                               // auto_return_flag (bit 7)
+	data[2] = SpliceStartImmediate               // splice_insert_type
+	binary.BigEndian.PutUint32(data[3:7], 55555) // splice_event_id
+	binary.BigEndian.PutUint16(data[7:9], 300)   // unique_program_id
+	binary.BigEndian.PutUint16(data[9:11], 1500) // pre_roll_time
+	binary.BigEndian.PutUint16(data[11:13], 200) // break_duration
+	data[13] = 1                                 // avail_num
+	data[14] = 5                                 // avails_expected
+	data[15] = 0x80                              // auto_return_flag (bit 7)
 
 	// Verify the first 2 bytes of payload (data[2:4]) do NOT match either convention.
 	payloadLen := 14

@@ -80,7 +80,7 @@ func (f *fftState) forward(data []float32) {
 
 	// Iterative Cooley-Tukey: log2N stages
 	for s := 1; s <= f.log2N; s++ {
-		m := 1 << s      // number of elements in each group
+		m := 1 << s       // number of elements in each group
 		halfM := m / 2    // number of butterflies per group
 		twStride := n / m // twiddle stride for this stage
 

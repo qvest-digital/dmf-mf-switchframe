@@ -237,7 +237,6 @@ func transitionToGain(mode TransitionMode, pos float64) float64 {
 	return 0
 }
 
-
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
 // It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
 func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {

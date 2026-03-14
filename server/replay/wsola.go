@@ -146,7 +146,8 @@ func normalizePeak(samples []float32) {
 
 // makePeriodicHannWindow creates a periodic Hann window of the given size.
 // The periodic form has the exact COLA property at 50% hop:
-//   sum of overlapping windows = 1.0 (constant)
+//
+//	sum of overlapping windows = 1.0 (constant)
 func makePeriodicHannWindow(size int) []float64 {
 	w := make([]float64, size)
 	for i := 0; i < size; i++ {

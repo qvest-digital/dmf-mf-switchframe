@@ -132,7 +132,7 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 	// Build the fills map for Process(), scaling any mismatched fills.
 	// Reuse b.fillMap to avoid per-call map allocation: clear old entries,
 	// then populate with current fills.
-	targetSize := width*height*3/2
+	targetSize := width * height * 3 / 2
 	for k := range b.fillMap {
 		delete(b.fillMap, k)
 	}

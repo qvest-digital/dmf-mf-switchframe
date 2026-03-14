@@ -21,7 +21,7 @@ var (
 
 // TextAnimationConfig describes a text animation.
 type TextAnimationConfig struct {
-	Mode           string  `json:"mode"`           // "typewriter" or "fade-word"
+	Mode           string  `json:"mode"` // "typewriter" or "fade-word"
 	Text           string  `json:"text"`
 	FontSize       float64 `json:"fontSize"`
 	Bold           bool    `json:"bold"`

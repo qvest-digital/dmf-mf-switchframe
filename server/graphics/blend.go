@@ -185,7 +185,7 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 	halfRectH := rectH / 2
 	for dy := 0; dy < halfRectH; dy++ {
 		frameChromaRow := (rect.Min.Y / 2) + dy
-		srcRow := ((dy * 2) * overlayH + rectH/2) / rectH
+		srcRow := ((dy*2)*overlayH + rectH/2) / rectH
 		if srcRow >= overlayH {
 			srcRow = overlayH - 1
 		}
@@ -193,7 +193,7 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 
 		// Scale at chroma resolution (every other pixel).
 		for dx := 0; dx < halfRectW; dx++ {
-			srcCol := ((dx * 2) * overlayW + rectW/2) / rectW
+			srcCol := ((dx*2)*overlayW + rectW/2) / rectW
 			if srcCol >= overlayW {
 				srcCol = overlayW - 1
 			}

@@ -669,9 +669,9 @@ func TestRGBAToFrame_LimitedRangeRed(t *testing.T) {
 		"Y for red should be ~63, got %d", frame.YUV[0])
 
 	// Check chroma (Cb and Cr are at offsets ySize and ySize+uvSize)
-	ySize := 4 * 4    // 16
-	uvSize := 2 * 2   // 4
-	cbOffset := ySize  // 16
+	ySize := 4 * 4             // 16
+	uvSize := 2 * 2            // 4
+	cbOffset := ySize          // 16
 	crOffset := ySize + uvSize // 20
 
 	require.InDelta(t, 102, int(frame.YUV[cbOffset]), 1,

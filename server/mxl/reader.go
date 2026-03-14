@@ -10,7 +10,7 @@ import (
 
 // VideoGrain carries a raw V210 video frame read from an MXL flow.
 type VideoGrain struct {
-	V210     []byte    // V210 packed pixel data
+	V210     []byte // V210 packed pixel data
 	Width    int
 	Height   int
 	PTS      int64     // Monotonic frame counter (1, 2, 3, ...)

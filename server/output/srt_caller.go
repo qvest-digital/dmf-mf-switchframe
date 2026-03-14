@@ -21,7 +21,7 @@ const (
 type SRTCallerConfig struct {
 	Address        string
 	Port           int
-	Latency        int   // ms, default 120
+	Latency        int // ms, default 120
 	StreamID       string
 	RingBufferSize int   // bytes, default 4MB
 	InputBW        int64 // bytes/sec, 0 = auto-estimate

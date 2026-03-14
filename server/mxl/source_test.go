@@ -346,9 +346,9 @@ func (d *delayedDiscreteReader) ReadGrain(index uint64, timeout uint64) ([]byte,
 	return d.inner.ReadGrain(index, timeout)
 }
 
-func (d *delayedDiscreteReader) ConfigInfo() FlowConfig { return d.inner.ConfigInfo() }
+func (d *delayedDiscreteReader) ConfigInfo() FlowConfig     { return d.inner.ConfigInfo() }
 func (d *delayedDiscreteReader) HeadIndex() (uint64, error) { return d.inner.HeadIndex() }
-func (d *delayedDiscreteReader) Close() error { return d.inner.Close() }
+func (d *delayedDiscreteReader) Close() error               { return d.inner.Close() }
 
 // makeV210FrameWithY creates a V210 frame where all Y samples are set to the given value.
 // Cb/Cr are set to 128 (neutral chroma). Width must be divisible by 6, height must be even.

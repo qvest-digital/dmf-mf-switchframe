@@ -82,24 +82,24 @@ type CueMessage struct {
 
 // SegmentationDescriptor carries segmentation metadata for time_signal commands.
 type SegmentationDescriptor struct {
-	SegmentationType             uint8   `json:"segmentationType"`
-	SegEventID                   uint32  `json:"segEventId"`
-	SegmentationEventCancelIndicator bool `json:"segmentationEventCancelIndicator,omitempty"`
-	DurationTicks                *uint64 `json:"durationTicks,omitempty"`
-	UPIDType                     uint8   `json:"upidType"`
-	UPID                         []byte  `json:"upid"`
+	SegmentationType                 uint8   `json:"segmentationType"`
+	SegEventID                       uint32  `json:"segEventId"`
+	SegmentationEventCancelIndicator bool    `json:"segmentationEventCancelIndicator,omitempty"`
+	DurationTicks                    *uint64 `json:"durationTicks,omitempty"`
+	UPIDType                         uint8   `json:"upidType"`
+	UPID                             []byte  `json:"upid"`
 
 	// AdditionalUPIDs holds any UPIDs beyond the first. The first UPID is
 	// stored in UPIDType/UPID for backward compatibility.
 	AdditionalUPIDs []AdditionalUPID `json:"additionalUpids,omitempty"`
 
-	SegNum                       uint8   `json:"segNum,omitempty"`
-	SegExpected                  uint8   `json:"segExpected,omitempty"`
-	SubSegmentNum                uint8   `json:"subSegmentNum,omitempty"`
-	SubSegmentsExpected          uint8   `json:"subSegmentsExpected,omitempty"`
+	SegNum              uint8 `json:"segNum,omitempty"`
+	SegExpected         uint8 `json:"segExpected,omitempty"`
+	SubSegmentNum       uint8 `json:"subSegmentNum,omitempty"`
+	SubSegmentsExpected uint8 `json:"subSegmentsExpected,omitempty"`
 
 	// DeliveryRestrictions holds per-descriptor delivery restrictions.
-	DeliveryRestrictions         *DeliveryRestrictions `json:"deliveryRestrictions,omitempty"`
+	DeliveryRestrictions *DeliveryRestrictions `json:"deliveryRestrictions,omitempty"`
 }
 
 // AdditionalUPID represents a UPID beyond the first in a segmentation descriptor.
@@ -110,10 +110,10 @@ type AdditionalUPID struct {
 
 // DeliveryRestrictions carries delivery restriction flags.
 type DeliveryRestrictions struct {
-	WebDeliveryAllowed  bool
-	NoRegionalBlackout  bool
-	ArchiveAllowed      bool
-	DeviceRestrictions  uint8
+	WebDeliveryAllowed bool
+	NoRegionalBlackout bool
+	ArchiveAllowed     bool
+	DeviceRestrictions uint8
 }
 
 // NewSpliceInsert creates a CueMessage for a splice_insert command.
@@ -265,10 +265,10 @@ func (m *CueMessage) Encode(verify bool) ([]byte, error) {
 				}
 				if d.DeliveryRestrictions != nil {
 					sd.DeliveryRestrictions = &scte35lib.DeliveryRestrictions{
-						WebDeliveryAllowedFlag:  d.DeliveryRestrictions.WebDeliveryAllowed,
-						NoRegionalBlackoutFlag:  d.DeliveryRestrictions.NoRegionalBlackout,
-						ArchiveAllowedFlag:      d.DeliveryRestrictions.ArchiveAllowed,
-						DeviceRestrictions:      uint32(d.DeliveryRestrictions.DeviceRestrictions),
+						WebDeliveryAllowedFlag: d.DeliveryRestrictions.WebDeliveryAllowed,
+						NoRegionalBlackoutFlag: d.DeliveryRestrictions.NoRegionalBlackout,
+						ArchiveAllowedFlag:     d.DeliveryRestrictions.ArchiveAllowed,
+						DeviceRestrictions:     uint32(d.DeliveryRestrictions.DeviceRestrictions),
 					}
 				}
 			}
@@ -378,8 +378,8 @@ func Decode(data []byte) (*CueMessage, error) {
 			continue
 		}
 		d := SegmentationDescriptor{
-			SegmentationType:             uint8(segDesc.SegmentationTypeID),
-			SegEventID:                   segDesc.SegmentationEventID,
+			SegmentationType:                 uint8(segDesc.SegmentationTypeID),
+			SegEventID:                       segDesc.SegmentationEventID,
 			SegmentationEventCancelIndicator: segDesc.SegmentationEventCancelIndicator,
 		}
 		if segDesc.SegmentationDuration != nil {
@@ -506,7 +506,7 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 	}
 
 	return &CueMessage{
-		CommandType:                 CommandSpliceInsert,
+		CommandType:                CommandSpliceInsert,
 		EventID:                    eventID,
 		SpliceEventCancelIndicator: true,
 	}, nil

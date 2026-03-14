@@ -21,9 +21,9 @@ type mockCaptionManager struct {
 
 func (m *mockCaptionManager) SetMode(mode caption.Mode) { m.mode = mode }
 func (m *mockCaptionManager) Mode() caption.Mode        { return m.mode }
-func (m *mockCaptionManager) IngestText(text string)     { m.textIngested += text }
-func (m *mockCaptionManager) IngestNewline()             { m.newlines++ }
-func (m *mockCaptionManager) Clear()                     { m.clears++ }
+func (m *mockCaptionManager) IngestText(text string)    { m.textIngested += text }
+func (m *mockCaptionManager) IngestNewline()            { m.newlines++ }
+func (m *mockCaptionManager) Clear()                    { m.clears++ }
 func (m *mockCaptionManager) State() caption.State {
 	return caption.State{
 		Mode:         m.mode.String(),

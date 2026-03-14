@@ -76,16 +76,16 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			mutedCount++
 		}
 		detail := map[string]any{
-			"active":               ch.active,
-			"muted":                ch.muted,
-			"afv":                  ch.afv,
-			"level":                ch.level,
-			"trim":                 ch.trim,
-			"eq_bypassed":          ch.eq.IsBypassed(),
-			"compressor_bypassed":  ch.compressor.IsBypassed(),
-			"delay_ms":             ch.audioDelay.DelayMs(),
-			"peak_l_dbfs":          LinearToDBFS(ch.peakL),
-			"peak_r_dbfs":          LinearToDBFS(ch.peakR),
+			"active":              ch.active,
+			"muted":               ch.muted,
+			"afv":                 ch.afv,
+			"level":               ch.level,
+			"trim":                ch.trim,
+			"eq_bypassed":         ch.eq.IsBypassed(),
+			"compressor_bypassed": ch.compressor.IsBypassed(),
+			"delay_ms":            ch.audioDelay.DelayMs(),
+			"peak_l_dbfs":         LinearToDBFS(ch.peakL),
+			"peak_r_dbfs":         LinearToDBFS(ch.peakR),
 		}
 		channelDetails[key] = detail
 	}

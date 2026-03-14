@@ -1002,7 +1002,7 @@ func TestTickPTSWithRemainder_NTSCDrift(t *testing.T) {
 	fpsDen := int64(1001)
 	baseInterval := int64(mpegtsClock) * fpsDen / fpsNum // 1501
 	remNum := (int64(mpegtsClock) * fpsDen) % fpsNum     // 90090000 % 60000 = 30000
-	remDen := fpsNum                                      // 60000
+	remDen := fpsNum                                     // 60000
 
 	require.Equal(t, int64(1501), baseInterval, "base interval for 59.94fps")
 	require.Equal(t, int64(30000), remNum, "remainder numerator")

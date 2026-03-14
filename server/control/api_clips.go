@@ -2,7 +2,9 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
@@ -113,13 +116,12 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "file field required")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Validate extension.
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	validExts := map[string]bool{".ts": true, ".mp4": true, ".m4v": true, ".mov": true}
-	if !validExts[ext] {
-		httperr.Write(w, http.StatusBadRequest, "unsupported file type; must be .ts, .mp4, .m4v, or .mov")
+	if !clip.IsAcceptedExtension(ext) {
+		httperr.Write(w, http.StatusBadRequest, "unsupported file type")
 		return
 	}
 
@@ -140,8 +142,56 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the uploaded file.
+	// Transcode non-H.264 files to H.264+AAC MPEG-TS.
+	alreadyTranscoded := false
+	if clip.NeedsTranscode(tmpPath) {
+		tsPath := tmpPath + ".transcoded.ts"
+		encoderName, _ := codec.ProbeEncoders()
+		slog.Info("clip: transcoding upload", "input", header.Filename, "encoder", encoderName)
+
+		_, tcErr := codec.TranscodeFile(tmpPath, tsPath, encoderName, 0)
+		_ = os.Remove(tmpPath) // clean up original
+		if tcErr != nil {
+			_ = os.Remove(tsPath)
+			wrappedErr := fmt.Errorf("%w: %v", clip.ErrTranscodeFailed, tcErr)
+			httperr.WriteErr(w, errorStatus(wrappedErr), wrappedErr)
+			return
+		}
+		tmpPath = tsPath
+		ext = ".ts"
+		alreadyTranscoded = true
+		if info, statErr := os.Stat(tmpPath); statErr == nil {
+			n = info.Size()
+		}
+	}
+
+	// Validate the (potentially transcoded) file.
 	probe, err := clip.Validate(tmpPath)
+	if err != nil && !alreadyTranscoded && clip.CanTranscodeFallback(ext) {
+		// Validate failed on a native-extension file that ProbeFile thought
+		// was H.264. The container may be a variant the Go demuxer can't
+		// parse (fragmented MP4, unusual box layout, etc.). Fall back to
+		// FFmpeg transcode which handles all MP4 variants.
+		slog.Info("clip: validate failed, falling back to transcode",
+			"input", header.Filename, "error", err)
+		tsPath := tmpPath + ".transcoded.ts"
+		encoderName, _ := codec.ProbeEncoders()
+		_, tcErr := codec.TranscodeFile(tmpPath, tsPath, encoderName, 0)
+		_ = os.Remove(tmpPath)
+		if tcErr != nil {
+			_ = os.Remove(tsPath)
+			wrappedErr := fmt.Errorf("%w: %v", clip.ErrTranscodeFailed, tcErr)
+			httperr.WriteErr(w, errorStatus(wrappedErr), wrappedErr)
+			return
+		}
+		tmpPath = tsPath
+		ext = ".ts"
+		if info, statErr := os.Stat(tmpPath); statErr == nil {
+			n = info.Size()
+		}
+		// Re-validate the transcoded file.
+		probe, err = clip.Validate(tmpPath)
+	}
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		httperr.WriteErr(w, errorStatus(err), err)

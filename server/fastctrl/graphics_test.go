@@ -10,7 +10,7 @@ import (
 
 func TestParseGraphicsLayerPosition_Valid(t *testing.T) {
 	data := make([]byte, 10)
-	binary.BigEndian.PutUint16(data[0:2], 3)   // layer ID
+	binary.BigEndian.PutUint16(data[0:2], 3)    // layer ID
 	binary.BigEndian.PutUint16(data[2:4], 100)  // X
 	binary.BigEndian.PutUint16(data[4:6], 200)  // Y
 	binary.BigEndian.PutUint16(data[6:8], 400)  // W

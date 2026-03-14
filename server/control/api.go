@@ -228,22 +228,22 @@ func WithRecordingDir(dir string) APIOption {
 
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
-	switcher      *switcher.Switcher
-	mixer         AudioMixerAPI
-	outputMgr     OutputManagerAPI
-	debug         DebugAPI
-	presetStore   *preset.Store
-	compositor    *graphics.Compositor
-	stingerStore  *stinger.Store
-	macroStore    *macro.Store
-	keyer         *graphics.KeyProcessor
-	keyBridge     *graphics.KeyProcessorBridge
-	replayMgr     *replay.Manager
-	clipMgr       *clip.Manager
-	clipStore     *clip.Store
-	recordingDir  atomic.Pointer[string]
-	operatorStore *operator.Store
-	sessionMgr    *operator.SessionManager
+	switcher         *switcher.Switcher
+	mixer            AudioMixerAPI
+	outputMgr        OutputManagerAPI
+	debug            DebugAPI
+	presetStore      *preset.Store
+	compositor       *graphics.Compositor
+	stingerStore     *stinger.Store
+	macroStore       *macro.Store
+	keyer            *graphics.KeyProcessor
+	keyBridge        *graphics.KeyProcessorBridge
+	replayMgr        *replay.Manager
+	clipMgr          *clip.Manager
+	clipStore        *clip.Store
+	recordingDir     atomic.Pointer[string]
+	operatorStore    *operator.Store
+	sessionMgr       *operator.SessionManager
 	scte35           SCTE35API
 	scte35Rules      SCTE35RulesAPI
 	layoutCompositor *layout.Compositor
@@ -252,14 +252,14 @@ type API struct {
 	perf             PerfAPI
 	textAnimEngine   *graphics.TextAnimationEngine
 	tickerEngine     *graphics.TickerEngine
-	mux           *http.ServeMux
-	enrichFn      atomic.Pointer[enrichFunc]
-	lastOperator  atomic.Pointer[string]
-	macroMu       sync.Mutex
-	macroState    *internal.MacroExecutionState
-	macroCancel   context.CancelFunc
-	macroGen      uint64 // incremented each time a macro starts
-	broadcastFn   atomic.Pointer[broadcastFunc]
+	mux              *http.ServeMux
+	enrichFn         atomic.Pointer[enrichFunc]
+	lastOperator     atomic.Pointer[string]
+	macroMu          sync.Mutex
+	macroState       *internal.MacroExecutionState
+	macroCancel      context.CancelFunc
+	macroGen         uint64 // incremented each time a macro starts
+	broadcastFn      atomic.Pointer[broadcastFunc]
 }
 
 // enrichFunc is the type for the state enrichment callback.

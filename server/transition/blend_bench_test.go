@@ -6,7 +6,7 @@ import "testing"
 // This is the most common transition path: linear interpolation between two
 // source frames in the native YUV domain.
 func BenchmarkBlendMix720p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1280, 720)
+	blender := mustNewFrameBlender(b, 1280, 720)
 	yuvSize := 1280 * 720 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -24,7 +24,7 @@ func BenchmarkBlendMix720p(b *testing.B) {
 
 // BenchmarkBlendMix1080p benchmarks the YUV420 mix blend at 1080p resolution.
 func BenchmarkBlendMix1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -43,7 +43,7 @@ func BenchmarkBlendMix1080p(b *testing.B) {
 // BenchmarkBlendDip1080p benchmarks the two-phase dip-to-black transition
 // at 1080p. This is more complex than mix (per-plane black blending).
 func BenchmarkBlendDip1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -62,7 +62,7 @@ func BenchmarkBlendDip1080p(b *testing.B) {
 // BenchmarkBlendFTB1080p benchmarks fade-to-black at 1080p resolution.
 // FTB operates on a single source, fading toward YUV black (Y=0, Cb/Cr=128).
 func BenchmarkBlendFTB1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -78,7 +78,7 @@ func BenchmarkBlendFTB1080p(b *testing.B) {
 
 // BenchmarkBlendWipe1080p benchmarks a horizontal-left wipe at 1080p.
 func BenchmarkBlendWipe1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -96,7 +96,7 @@ func BenchmarkBlendWipe1080p(b *testing.B) {
 
 // BenchmarkBlendWipeVTop1080p benchmarks a vertical top-to-bottom wipe at 1080p.
 func BenchmarkBlendWipeVTop1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -114,7 +114,7 @@ func BenchmarkBlendWipeVTop1080p(b *testing.B) {
 
 // BenchmarkBlendWipeBox1080p benchmarks a box-center-out wipe at 1080p (per-pixel).
 func BenchmarkBlendWipeBox1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	yuvSize := 1920 * 1080 * 3 / 2
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
@@ -131,7 +131,7 @@ func BenchmarkBlendWipeBox1080p(b *testing.B) {
 }
 
 func BenchmarkWipeAlphaHLeft1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -140,7 +140,7 @@ func BenchmarkWipeAlphaHLeft1080p(b *testing.B) {
 }
 
 func BenchmarkWipeAlphaVTop1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -149,7 +149,7 @@ func BenchmarkWipeAlphaVTop1080p(b *testing.B) {
 }
 
 func BenchmarkWipeAlphaBoxCenterOut1080p(b *testing.B) {
-	blender := mustNewFrameBlender(b,1920, 1080)
+	blender := mustNewFrameBlender(b, 1920, 1080)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -160,7 +160,7 @@ func BenchmarkWipeAlphaBoxCenterOut1080p(b *testing.B) {
 // --- 4K Benchmarks ---
 
 func BenchmarkBlendMix4K(b *testing.B) {
-	blender := mustNewFrameBlender(b,3840, 2160)
+	blender := mustNewFrameBlender(b, 3840, 2160)
 	yuvSize := 3840 * 2160 * 3 / 2
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)
@@ -175,7 +175,7 @@ func BenchmarkBlendMix4K(b *testing.B) {
 }
 
 func BenchmarkBlendDip4K(b *testing.B) {
-	blender := mustNewFrameBlender(b,3840, 2160)
+	blender := mustNewFrameBlender(b, 3840, 2160)
 	yuvSize := 3840 * 2160 * 3 / 2
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)
@@ -190,7 +190,7 @@ func BenchmarkBlendDip4K(b *testing.B) {
 }
 
 func BenchmarkBlendFTB4K(b *testing.B) {
-	blender := mustNewFrameBlender(b,3840, 2160)
+	blender := mustNewFrameBlender(b, 3840, 2160)
 	yuvSize := 3840 * 2160 * 3 / 2
 	a := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -203,7 +203,7 @@ func BenchmarkBlendFTB4K(b *testing.B) {
 }
 
 func BenchmarkBlendWipe4K(b *testing.B) {
-	blender := mustNewFrameBlender(b,3840, 2160)
+	blender := mustNewFrameBlender(b, 3840, 2160)
 	yuvSize := 3840 * 2160 * 3 / 2
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)

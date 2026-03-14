@@ -123,7 +123,7 @@ func TestBlendMaskY_MatchesReference(t *testing.T) {
 	mask := make([]byte, n)
 	for i := 0; i < n; i++ {
 		bg[i] = byte((i * 7) % 256)
-		fill[i] = byte((i * 13 + 50) % 256)
+		fill[i] = byte((i*13 + 50) % 256)
 		mask[i] = byte((i * 3) % 256)
 	}
 

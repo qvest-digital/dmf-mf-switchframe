@@ -39,20 +39,20 @@ const (
 // Prism video and audio frames. Initialization is deferred until the
 // first keyframe arrives, since SPS/PPS are needed for PAT/PMT.
 type TSMuxer struct {
-	mu             sync.Mutex
-	muxer          *astits.Muxer
-	buf            *bytes.Buffer
-	output         func([]byte)
-	initialized    bool
-	cancel         context.CancelFunc
-	pendingAudio   []*media.AudioFrame
-	annexBBuf      []byte
-	prependBuf     []byte
-	scte35PID      uint16 // 0 = disabled; non-zero = enabled with this PID
-	pendingSCTE35  [][]byte
-	lastVideoPTS   int64
-	lastPCRPTS     int64
-	scte35CC       uint8 // continuity counter for SCTE-35 PID
+	mu            sync.Mutex
+	muxer         *astits.Muxer
+	buf           *bytes.Buffer
+	output        func([]byte)
+	initialized   bool
+	cancel        context.CancelFunc
+	pendingAudio  []*media.AudioFrame
+	annexBBuf     []byte
+	prependBuf    []byte
+	scte35PID     uint16 // 0 = disabled; non-zero = enabled with this PID
+	pendingSCTE35 [][]byte
+	lastVideoPTS  int64
+	lastPCRPTS    int64
+	scte35CC      uint8 // continuity counter for SCTE-35 PID
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before

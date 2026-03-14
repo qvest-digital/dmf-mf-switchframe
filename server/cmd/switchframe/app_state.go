@@ -358,7 +358,7 @@ func convertEventLog(src []scte35.EventLogEntry) []internal.SCTE35Event {
 			AutoReturn:  e.AutoReturn,
 			Timestamp:   e.Timestamp,
 			Status:      e.Status,
-			Source:       e.Source,
+			Source:      e.Source,
 		}
 		if e.SpliceTimePTS != nil {
 			pts := *e.SpliceTimePTS

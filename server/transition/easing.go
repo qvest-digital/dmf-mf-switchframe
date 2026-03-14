@@ -9,13 +9,13 @@ import (
 type EasingType string
 
 const (
-	EasingLinear     EasingType = "linear"       // y = t
-	EasingEase       EasingType = "ease"         // CSS: cubic-bezier(0.25, 0.1, 0.25, 1.0)
-	EasingEaseIn     EasingType = "ease-in"      // CSS: cubic-bezier(0.42, 0, 1.0, 1.0)
-	EasingEaseOut    EasingType = "ease-out"      // CSS: cubic-bezier(0, 0, 0.58, 1.0)
-	EasingEaseInOut  EasingType = "ease-in-out"   // CSS: cubic-bezier(0.42, 0, 0.58, 1.0)
-	EasingSmoothstep EasingType = "smoothstep"    // Hermite: t*(3-2t)
-	EasingCustom     EasingType = "custom"        // User-defined cubic-bezier
+	EasingLinear     EasingType = "linear"      // y = t
+	EasingEase       EasingType = "ease"        // CSS: cubic-bezier(0.25, 0.1, 0.25, 1.0)
+	EasingEaseIn     EasingType = "ease-in"     // CSS: cubic-bezier(0.42, 0, 1.0, 1.0)
+	EasingEaseOut    EasingType = "ease-out"    // CSS: cubic-bezier(0, 0, 0.58, 1.0)
+	EasingEaseInOut  EasingType = "ease-in-out" // CSS: cubic-bezier(0.42, 0, 0.58, 1.0)
+	EasingSmoothstep EasingType = "smoothstep"  // Hermite: t*(3-2t)
+	EasingCustom     EasingType = "custom"      // User-defined cubic-bezier
 )
 
 // ValidEasingTypes is the set of all recognized easing types.
@@ -71,7 +71,7 @@ func NewCustomEasingCurve(x1, y1, x2, y2 float64) (*EasingCurve, error) {
 	return &EasingCurve{
 		Type: EasingCustom,
 		X1:   x1, Y1: y1,
-		X2:   x2, Y2: y2,
+		X2: x2, Y2: y2,
 	}, nil
 }
 
@@ -156,7 +156,7 @@ func sampleCurve(s, p1, p2 float64) float64 {
 	//   b = 3*p2 - 6*p1
 	//   c = 3*p1
 	// Horner form: ((a*s + b)*s + c)*s
-	return (((1.0-3.0*p2+3.0*p1)*s + (3.0*p2 - 6.0*p1))*s + 3.0*p1) * s
+	return (((1.0-3.0*p2+3.0*p1)*s+(3.0*p2-6.0*p1))*s + 3.0*p1) * s
 }
 
 // sampleCurveDerivative returns dB/ds for the cubic bezier on one axis.
