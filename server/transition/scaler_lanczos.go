@@ -116,9 +116,18 @@ func getLanczosKernel(srcSize, dstSize int) *lanczosKernel {
 			return c.kernel
 		}
 	}
-	// Compute and store in first empty slot using CAS to avoid duplicates
-	// when concurrent goroutines both miss the cache for the same dimensions.
+	// Compute kernel (expensive — may take milliseconds for large dimensions).
 	k := precomputeLanczosKernel(srcSize, dstSize)
+
+	// Re-check: another goroutine may have cached the same dimensions while
+	// we were computing. Use theirs to avoid duplicate cache entries.
+	for i := range kernelCache {
+		if c := kernelCache[i].Load(); c != nil && c.srcSize == srcSize && c.dstSize == dstSize {
+			return c.kernel
+		}
+	}
+
+	// Store in first empty slot using CAS.
 	entry := &kernelCacheEntry{srcSize: srcSize, dstSize: dstSize, kernel: k}
 	for i := range kernelCache {
 		if kernelCache[i].CompareAndSwap(nil, entry) {
