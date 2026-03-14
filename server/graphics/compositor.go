@@ -37,6 +37,10 @@ type AnimationConfig struct {
 	ToAlpha    *float64   `json:"toAlpha,omitempty"`
 	DurationMs int        `json:"durationMs,omitempty"`
 	Easing     string     `json:"easing,omitempty"` // "linear", "ease-in-out", "smoothstep"
+
+	// DeactivateOnComplete sets layer.active = false when the animation finishes.
+	// Used by FlyOut so the layer doesn't remain active at an off-screen position.
+	DeactivateOnComplete bool `json:"deactivateOnComplete,omitempty"`
 }
 
 // LayerState describes the state of a single graphics layer for serialization.
