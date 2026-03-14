@@ -161,3 +161,44 @@ func TestWordWrap(t *testing.T) {
 	lines = wordWrap(face, "a b c", 1)
 	require.Equal(t, 3, len(lines), "narrow width should wrap each word")
 }
+
+func TestFontFaceCache(t *testing.T) {
+	r, err := NewRenderer()
+	require.NoError(t, err)
+
+	// First call creates a new face
+	face1, err := r.face(24, false)
+	require.NoError(t, err)
+
+	// Second call should return the same cached face
+	face2, err := r.face(24, false)
+	require.NoError(t, err)
+	require.Equal(t, face1, face2, "same size should return cached face")
+
+	// Different size should create a new face
+	face3, err := r.face(48, false)
+	require.NoError(t, err)
+	require.NotEqual(t, face1, face3, "different size should create new face")
+
+	// Bold variant should be separate
+	face4, err := r.face(24, true)
+	require.NoError(t, err)
+	require.NotEqual(t, face1, face4, "bold should be separate from regular")
+}
+
+func BenchmarkRenderText(b *testing.B) {
+	r, err := NewRenderer()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	opts := TextOptions{
+		Text:     "Breaking News: The quick brown fox jumps over the lazy dog",
+		FontSize: 32,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = r.RenderToRGBA(opts)
+	}
+}
