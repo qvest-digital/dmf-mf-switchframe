@@ -143,6 +143,9 @@ type Source struct {
 	// Reusable buffer for YUV data passed to the encoder, avoiding aliasing
 	// with v210Bufs.yuvOut which may be retained by OnRawVideo consumers.
 	encoderYUV []byte
+
+	// Reusable buffer for audio interleaving (avoids per-call allocation).
+	interleaveBuf []float32
 }
 
 // NewSource creates an MXL source.
@@ -399,7 +402,8 @@ func (s *Source) dataFanOut(ctx context.Context) {
 
 func (s *Source) processAudioGrain(grain AudioGrain) {
 	// MXL audio is de-interleaved. Convert to interleaved for mixer.
-	interleaved := interleaveChannels(grain.PCM)
+	// Reuse s.interleaveBuf to avoid per-call allocation.
+	interleaved := interleaveChannelsInto(&s.interleaveBuf, grain.PCM)
 
 	// Use wall-clock time for PTS (shared epoch with video for AV sync).
 	s.startOnce.Do(func() { s.startTime = grain.ReadTime })
@@ -446,21 +450,37 @@ func (s *Source) encodeAndBroadcastAudio(pcm []float32, sampleRate, channels int
 	s.config.Relay.BroadcastAudio(frame)
 }
 
-// interleaveChannels converts de-interleaved channels to interleaved.
+// interleaveChannelsInto converts de-interleaved channels to interleaved,
+// reusing the buffer pointed to by dst to avoid per-call allocation.
 // Input: [[L0,L1,L2], [R0,R1,R2]] → Output: [L0,R0,L1,R1,L2,R2]
-func interleaveChannels(channels [][]float32) []float32 {
+func interleaveChannelsInto(dst *[]float32, channels [][]float32) []float32 {
 	if len(channels) == 0 {
 		return nil
 	}
 	numCh := len(channels)
 	samplesPerCh := len(channels[0])
-	result := make([]float32, samplesPerCh*numCh)
+	needed := samplesPerCh * numCh
+	if cap(*dst) >= needed {
+		*dst = (*dst)[:needed]
+	} else {
+		*dst = make([]float32, needed)
+	}
+	result := *dst
 	for i := 0; i < samplesPerCh; i++ {
 		for ch := 0; ch < numCh; ch++ {
 			if i < len(channels[ch]) {
 				result[i*numCh+ch] = channels[ch][i]
+			} else {
+				result[i*numCh+ch] = 0
 			}
 		}
 	}
 	return result
+}
+
+// interleaveChannels converts de-interleaved channels to interleaved.
+// Input: [[L0,L1,L2], [R0,R1,R2]] → Output: [L0,R0,L1,R1,L2,R2]
+func interleaveChannels(channels [][]float32) []float32 {
+	var buf []float32
+	return interleaveChannelsInto(&buf, channels)
 }

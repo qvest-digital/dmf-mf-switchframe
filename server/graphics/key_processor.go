@@ -47,6 +47,7 @@ type KeyConfig struct {
 type KeyProcessor struct {
 	mu           sync.RWMutex
 	keys         map[string]KeyConfig // source key → config
+	sortedKeys   []string             // cached sorted key list, rebuilt on mutation
 	onChange     func()               // called after SetKey/RemoveKey for pipeline rebuild
 	spillWorkBuf []byte               // reused across frames for spill suppression copy
 	maskBuf      []byte               // reused luma-resolution mask buffer (width*height)
@@ -68,10 +69,26 @@ func (kp *KeyProcessor) OnChange(fn func()) {
 	kp.onChange = fn
 }
 
+// rebuildSortedKeys rebuilds the cached sorted key list from the keys map.
+// Caller must hold kp.mu.
+func (kp *KeyProcessor) rebuildSortedKeys() {
+	// Reuse the existing slice backing array when capacity is sufficient.
+	if cap(kp.sortedKeys) >= len(kp.keys) {
+		kp.sortedKeys = kp.sortedKeys[:0]
+	} else {
+		kp.sortedKeys = make([]string, 0, len(kp.keys))
+	}
+	for k := range kp.keys {
+		kp.sortedKeys = append(kp.sortedKeys, k)
+	}
+	slices.Sort(kp.sortedKeys)
+}
+
 // SetKey configures an upstream key for a source.
 func (kp *KeyProcessor) SetKey(source string, config KeyConfig) {
 	kp.mu.Lock()
 	kp.keys[source] = config
+	kp.rebuildSortedKeys()
 	fn := kp.onChange
 	kp.mu.Unlock()
 	if fn != nil {
@@ -91,6 +108,7 @@ func (kp *KeyProcessor) GetKey(source string) (KeyConfig, bool) {
 func (kp *KeyProcessor) RemoveKey(source string) {
 	kp.mu.Lock()
 	delete(kp.keys, source)
+	kp.rebuildSortedKeys()
 	fn := kp.onChange
 	kp.mu.Unlock()
 	if fn != nil {
@@ -151,14 +169,9 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 	uvSize := uvWidth * (height / 2)
 	frameSize := ySize + 2*uvSize
 
-	// Collect and sort source keys for deterministic compositing order.
-	sortedKeys := make([]string, 0, len(kp.keys))
-	for source := range kp.keys {
-		sortedKeys = append(sortedKeys, source)
-	}
-	slices.Sort(sortedKeys)
-
-	for _, source := range sortedKeys {
+	// Use cached sorted key list for deterministic compositing order
+	// (rebuilt on SetKey/RemoveKey, avoids per-frame allocation + sort).
+	for _, source := range kp.sortedKeys {
 		cfg := kp.keys[source]
 		if !cfg.Enabled {
 			continue

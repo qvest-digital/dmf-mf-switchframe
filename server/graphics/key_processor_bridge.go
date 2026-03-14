@@ -34,6 +34,9 @@ type KeyProcessorBridge struct {
 
 	// Per-source scaled fill cache (reused across frames to avoid allocation).
 	scaledFills map[string][]byte
+
+	// Reusable fillMap passed to KeyProcessor.Process (avoids per-call map allocation).
+	fillMap map[string][]byte
 }
 
 // NewKeyProcessorBridge creates a bridge wrapping the given KeyProcessor.
@@ -42,6 +45,7 @@ func NewKeyProcessorBridge(kp *KeyProcessor) *KeyProcessorBridge {
 		kp:          kp,
 		fills:       make(map[string]*fillEntry),
 		scaledFills: make(map[string][]byte),
+		fillMap:     make(map[string][]byte),
 	}
 }
 
@@ -126,12 +130,16 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 	}
 
 	// Build the fills map for Process(), scaling any mismatched fills.
+	// Reuse b.fillMap to avoid per-call map allocation: clear old entries,
+	// then populate with current fills.
 	targetSize := width*height*3/2
-	fillMap := make(map[string][]byte, len(b.fills))
+	for k := range b.fillMap {
+		delete(b.fillMap, k)
+	}
 	for source, entry := range b.fills {
 		if entry.width == width && entry.height == height {
 			// Dimensions match — use directly.
-			fillMap[source] = entry.yuv
+			b.fillMap[source] = entry.yuv
 		} else if b.scaleFunc != nil {
 			// Scale fill to program dimensions.
 			scaled := b.scaledFills[source]
@@ -140,16 +148,16 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 				b.scaledFills[source] = scaled
 			}
 			b.scaleFunc(entry.yuv, entry.width, entry.height, scaled, width, height)
-			fillMap[source] = scaled
+			b.fillMap[source] = scaled
 		}
 		// No scaleFunc and dimensions mismatch → skip (same as before).
 	}
 
-	if len(fillMap) == 0 {
+	if len(b.fillMap) == 0 {
 		return yuv
 	}
 
-	b.kp.Process(yuv, fillMap, width, height)
+	b.kp.Process(yuv, b.fillMap, width, height)
 	return yuv
 }
 

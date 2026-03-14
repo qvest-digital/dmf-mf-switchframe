@@ -318,7 +318,7 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 
 	// Mono→stereo upmix (same as normal IngestPCM path).
 	if channels > 0 && channels < m.numChannels {
-		pcm = m.upmixMono(pcm, channels)
+		pcm = m.upmixMono(ch, pcm, channels)
 	}
 
 	// Pipeline: Trim -> EQ -> Compressor -> Fader (reuse channel work buffers)

@@ -312,7 +312,7 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 	// Mono→stereo upmix: if source delivers fewer channels than the mixer
 	// expects, duplicate each sample to fill all channels.
 	if channels > 0 && channels < m.numChannels {
-		pcm = m.upmixMono(pcm, channels)
+		pcm = m.upmixMono(ch, pcm, channels)
 	}
 
 	// Always compute peak levels for input metering, even for inactive/muted channels.
