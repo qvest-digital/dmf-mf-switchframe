@@ -105,28 +105,62 @@ export const fullScreenCardTemplate: GraphicsTemplate = {
 		{ key: 'body', label: 'Body', defaultValue: '', maxLength: 200 },
 	],
 	render(ctx, width, height, values) {
-		// Semi-transparent full-screen background
-		ctx.fillStyle = 'rgba(0, 0, 0, 0.80)';
+		ctx.save();
+
+		// Radial gradient background (navy center → black edges)
+		const cx = width / 2;
+		const cy = height * 0.45;
+		const outerRadius = Math.max(width, height) * 0.7;
+		const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, outerRadius);
+		bgGrad.addColorStop(0, 'rgba(15, 23, 42, 0.92)');
+		bgGrad.addColorStop(0.5, 'rgba(10, 15, 30, 0.94)');
+		bgGrad.addColorStop(1, 'rgba(2, 6, 15, 0.96)');
+		ctx.fillStyle = bgGrad;
 		ctx.fillRect(0, 0, width, height);
 
-		// Heading
+		// Vignette overlay (darker edges)
+		const vigGrad = ctx.createRadialGradient(cx, cy, outerRadius * 0.3, cx, cy, outerRadius);
+		vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+		vigGrad.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
+		ctx.fillStyle = vigGrad;
+		ctx.fillRect(0, 0, width, height);
+
+		// Decorative horizontal rule with gradient endpoints
+		const ruleY = height * 0.50;
+		const ruleW = width * 0.35;
+		const ruleX = (width - ruleW) / 2;
+		const ruleGrad = ctx.createLinearGradient(ruleX, 0, ruleX + ruleW, 0);
+		ruleGrad.addColorStop(0, 'rgba(148, 163, 184, 0)');
+		ruleGrad.addColorStop(0.2, 'rgba(148, 163, 184, 0.6)');
+		ruleGrad.addColorStop(0.5, 'rgba(203, 213, 225, 0.8)');
+		ruleGrad.addColorStop(0.8, 'rgba(148, 163, 184, 0.6)');
+		ruleGrad.addColorStop(1, 'rgba(148, 163, 184, 0)');
+		ctx.fillStyle = ruleGrad;
+		ctx.fillRect(ruleX, ruleY, ruleW, 1);
+
+		// Drop shadow for text
+		ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
+		ctx.shadowBlur = 6;
+		ctx.shadowOffsetY = 2;
+
+		// Heading (serif font for cinematic feel)
 		const headingSize = Math.round(height * 0.06);
-		ctx.font = `bold ${headingSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = '#ffffff';
+		ctx.font = `700 ${headingSize}px Georgia, "Times New Roman", serif`;
+		ctx.fillStyle = '#f1f5f9';
 		ctx.textAlign = 'center';
 		ctx.textBaseline = 'middle';
-		ctx.fillText(values.heading || '', width / 2, height * 0.42);
+		ctx.fillText(values.heading || '', cx, height * 0.42);
 
-		// Body text
+		// Body text (lighter, sans-serif)
 		if (values.body) {
-			const bodySize = Math.round(height * 0.035);
-			ctx.font = `${bodySize}px -apple-system, "Segoe UI", sans-serif`;
-			ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
-			ctx.fillText(values.body, width / 2, height * 0.55);
+			ctx.shadowBlur = 3;
+			const bodySize = Math.round(height * 0.032);
+			ctx.font = `300 ${bodySize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+			ctx.fillStyle = 'rgba(203, 213, 225, 0.90)';
+			ctx.fillText(values.body, cx, height * 0.57);
 		}
 
-		// Reset alignment
-		ctx.textAlign = 'start';
+		ctx.restore();
 	},
 };
 
