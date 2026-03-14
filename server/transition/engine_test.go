@@ -1980,3 +1980,70 @@ func TestIngestRawFrame_FTBStillUsesBlackForSourceB(t *testing.T) {
 
 	e.Stop()
 }
+
+// racyDecoder has a shared non-atomic field written by Close and read by
+// Decode. The race detector will flag concurrent access.
+type racyDecoder struct {
+	width, height int
+	delay         time.Duration
+	// shared is written by Close and read by Decode — triggers -race.
+	shared int
+}
+
+func newRacyDecoder(w, h int, delay time.Duration) *racyDecoder {
+	return &racyDecoder{width: w, height: h, delay: delay}
+}
+
+func (d *racyDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	if d.delay > 0 {
+		time.Sleep(d.delay)
+	}
+	// Read shared state (races with Close's write)
+	_ = d.shared
+	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+}
+
+func (d *racyDecoder) Close() {
+	// Write shared state (races with Decode's read)
+	d.shared = 1
+}
+
+func TestEngineConcurrentAbortAndIngest(t *testing.T) {
+	// This test verifies that Abort() does not close decoders while
+	// IngestFrame is using them in Phase 2 (the lock-free decode phase).
+	// Run with -race to detect data races.
+	for i := 0; i < 20; i++ {
+		e := NewEngine(EngineConfig{
+			DecoderFactory: func() (VideoDecoder, error) {
+				return newRacyDecoder(4, 4, 5*time.Millisecond), nil
+			},
+			Output:     func([]byte, int, int, int64, bool) {},
+			OnComplete: func(bool) {},
+		})
+
+		require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
+
+		var wg sync.WaitGroup
+
+		// Goroutine 1: rapid ingestion
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+				e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
+			}
+		}()
+
+		// Goroutine 2: abort after a brief delay
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(2 * time.Millisecond)
+			e.Abort()
+		}()
+
+		wg.Wait()
+		e.Stop()
+	}
+}
