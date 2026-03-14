@@ -441,6 +441,31 @@ export function graphicsTextAnimStop(layerId: number): Promise<GraphicsState> {
 	return post(`/api/graphics/${layerId}/text-animate/stop`, {});
 }
 
+// --- Ticker API ---
+
+export function graphicsTickerStart(layerId: number, config: {
+	text: string;
+	fontSize?: number;
+	speed?: number;
+	bold?: boolean;
+	loop?: boolean;
+	height?: number;
+}): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/ticker`, config);
+}
+
+export function graphicsTickerStop(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/ticker/stop`, {});
+}
+
+export function graphicsTickerUpdateText(layerId: number, text: string): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/ticker/text`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ text }),
+	});
+}
+
 // --- Macro API ---
 
 export function listMacros(): Promise<Macro[]> {
