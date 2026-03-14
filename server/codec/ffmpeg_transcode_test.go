@@ -82,6 +82,20 @@ func TestTranscodeFile_NonExistent(t *testing.T) {
 	require.Contains(t, err.Error(), "cannot open input file")
 }
 
+func TestTranscodeFile_NonExistentRepeated(t *testing.T) {
+	// Exercise the cleanup path repeatedly to ensure no resource leaks
+	// (file descriptors, codec contexts). Before the fix, the early
+	// return -1 in avformat_open_input failure bypassed goto cleanup.
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "output.ts")
+
+	for i := range 50 {
+		_, err := TranscodeFile("/tmp/nonexistent_transcode_test_12345.h264", outputPath, "libx264", 500000)
+		require.Error(t, err, "iteration %d", i)
+		require.Contains(t, err.Error(), "cannot open input file", "iteration %d", i)
+	}
+}
+
 func TestTranscodeFile_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := filepath.Join(dir, "empty.h264")

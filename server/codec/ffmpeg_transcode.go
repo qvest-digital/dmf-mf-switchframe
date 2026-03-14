@@ -80,7 +80,8 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 	// --- Open input ---
 	ret = avformat_open_input(&ifmt_ctx, input_path, NULL, NULL);
 	if (ret < 0) {
-		return -1;
+		ret = -1;
+		goto cleanup;
 	}
 
 	ret = avformat_find_stream_info(ifmt_ctx, NULL);
