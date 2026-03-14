@@ -1,6 +1,9 @@
 package switcher
 
-import "sync/atomic"
+import (
+	"log/slog"
+	"sync/atomic"
+)
 
 // ProcessingFrame carries decoded YUV420 data through the video processing chain.
 // Created by decoding a media.VideoFrame, consumed by encoding back to one.
@@ -96,7 +99,11 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 			return
 		}
 		if new < 0 {
-			panic("ProcessingFrame.ReleaseYUV: refcount underflow (double release)")
+			// Log and leak the buffer rather than panicking — a leaked buffer
+			// is invisible to viewers, but a panic takes down the broadcast.
+			slog.Error("ProcessingFrame.ReleaseYUV: refcount underflow (double release)",
+				"refs", new)
+			return
 		}
 	}
 	if pf.pool != nil {

@@ -123,7 +123,7 @@ func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
 	require.NotEqual(t, original.YUV[0], copied.YUV[0])
 }
 
-func TestReleaseYUVUnderflowPanics(t *testing.T) {
+func TestReleaseYUVUnderflowLogsAndLeaks(t *testing.T) {
 	pool := NewFramePool(4, 8, 8)
 	defer pool.Close()
 
@@ -143,11 +143,16 @@ func TestReleaseYUVUnderflowPanics(t *testing.T) {
 	// First release via original: valid, drops refs to 0, returns buffer to pool.
 	pf.ReleaseYUV()
 
-	// Second release via the copy: refs would go to -1 (underflow). Must panic
-	// to prevent pool state corruption from double-return.
-	require.Panics(t, func() {
+	// Second release via the copy: refs goes to -1 (underflow).
+	// Should NOT panic — logs the error and leaks the buffer instead of
+	// corrupting pool state. A leaked buffer is invisible to viewers;
+	// a panic takes down the broadcast.
+	require.NotPanics(t, func() {
 		copy1.ReleaseYUV()
-	}, "double ReleaseYUV on shared refcounted frame should panic on underflow")
+	}, "double ReleaseYUV should log and leak, not panic")
+
+	// Refs should be -1 (underflow detected, buffer not returned to pool).
+	require.Equal(t, int32(-1), copy1.Refs())
 }
 
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
