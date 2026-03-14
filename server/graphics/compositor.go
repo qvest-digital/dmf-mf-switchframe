@@ -53,6 +53,9 @@ type LayerState struct {
 	AnimationHz   float64 `json:"animationHz,omitempty"`
 	ZOrder        int     `json:"zOrder"`
 	Rect          RectState `json:"rect"`
+	ImageName     string  `json:"imageName,omitempty"`
+	ImageWidth    int     `json:"imageWidth,omitempty"`
+	ImageHeight   int     `json:"imageHeight,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -91,6 +94,13 @@ type graphicsLayer struct {
 	animCancel chan struct{}
 
 	zOrder int
+
+	// Per-layer image storage.
+	imageName   string // original filename
+	imageData   []byte // original PNG bytes (for GET retrieval)
+	imageRGBA   []byte // decoded RGBA pixels
+	imageWidth  int
+	imageHeight int
 }
 
 // Compositor manages multiple downstream keyer (DSK) graphics overlay layers.
@@ -1095,6 +1105,9 @@ func (c *Compositor) buildStateLocked() State {
 				Width:  layer.rect.Dx(),
 				Height: layer.rect.Dy(),
 			},
+			ImageName:   layer.imageName,
+			ImageWidth:  layer.imageWidth,
+			ImageHeight: layer.imageHeight,
 		}
 		if layer.animConfig != nil {
 			ls.AnimationMode = layer.animConfig.Mode
