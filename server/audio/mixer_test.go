@@ -3279,3 +3279,63 @@ func TestMixer_MixCycleTimingRecorded(t *testing.T) {
 	require.Greater(t, maxCycle, int64(0), "maxMixCycleNs should be > 0")
 	require.GreaterOrEqual(t, maxCycle, lastCycle, "maxMixCycleNs should be >= lastMixCycleNs")
 }
+
+func TestMixerMixPTSUsesToSourceDuringTransition(t *testing.T) {
+	// During a transition, the mixer output PTS should align with the TO
+	// (incoming) source's PTS, not the FROM (outgoing) source. The video
+	// transition engine outputs frames with the TO source's PTS, so audio
+	// must match. When the FROM source ingests last, it should NOT overwrite
+	// mixPTS — only the TO source should set it.
+	var outputFrames []*media.AudioFrame
+
+	fromPCM := []float32{0.5, 0.5, 0.5, 0.5}
+	toPCM := []float32{0.5, 0.5, 0.5, 0.5}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			outputFrames = append(outputFrames, frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: nil}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Set up decoders with known PCM
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: fromPCM}
+	m.channels["cam2"].decoder = &mockDecoder{samples: toPCM}
+	m.mu.Unlock()
+
+	// Start transition crossfade from cam1 → cam2
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+	m.OnTransitionPosition(0.5)
+	m.mu.Lock()
+	m.transCrossfadeAudioPos = 0.5
+	m.mu.Unlock()
+
+	// Ingest TO source (cam2) FIRST with PTS=5000
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 5000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Ingest FROM source (cam1) LAST with PTS=3000 (lower PTS)
+	// BUG: without fix, this overwrites m.mixPTS from 5000 to 3000
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 3000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+
+	require.Equal(t, 1, len(outputFrames), "should produce one mixed output frame")
+
+	// The output PTS should be based on the TO source's PTS (5000),
+	// not the FROM source's PTS (3000). advanceOutputPTS(5000) for the
+	// first output initializes outputPTS to 5000.
+	require.Equal(t, int64(5000), outputFrames[0].PTS,
+		"output PTS should use TO source's PTS, not FROM source's")
+}

@@ -2676,7 +2676,19 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 	handler := s.audioHandler
 	_, ok := s.sources[sourceKey]
 	isProgram := ok && s.programSource == sourceKey
+	fs := s.frameSync
 	s.mu.RUnlock()
+
+	// Apply PTS correction from FrameSynchronizer. Audio bypasses the frame
+	// sync entirely (to avoid bursty tick-quantized delivery), but video PTS
+	// is rewritten by the frame sync (forward-clamped during freezes). This
+	// creates A/V desync — audio PTS uses raw source PTS while video uses
+	// adjusted PTS. The correction delta aligns audio PTS with video PTS.
+	if fs != nil {
+		if delta := fs.GetSourcePTSCorrection(sourceKey); delta > 0 {
+			frame.PTS += delta
+		}
+	}
 
 	// Route to audio handler (mixer) if set — ALL sources
 	if handler != nil {

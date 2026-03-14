@@ -3,19 +3,19 @@ import { render, fireEvent } from '@testing-library/svelte';
 import GraphicsPanel from './GraphicsPanel.svelte';
 
 // Mock OffscreenCanvas since jsdom doesn't support it.
-// Must be set up before module imports evaluate.
 const mockCtx2d = {
 	clearRect: vi.fn(),
 	fillRect: vi.fn(),
 	fillText: vi.fn(),
 	getImageData: vi.fn(() => ({
-		data: new Uint8ClampedArray(320 * 240 * 4),
+		data: new Uint8ClampedArray(384 * 216 * 4),
 	})),
 	save: vi.fn(),
 	restore: vi.fn(),
 	beginPath: vi.fn(),
 	arc: vi.fn(),
 	fill: vi.fn(),
+	measureText: vi.fn(() => ({ width: 50 })),
 	set font(_v: string) { /* noop */ },
 	set fillStyle(_v: string) { /* noop */ },
 	set textBaseline(_v: string) { /* noop */ },
@@ -38,7 +38,6 @@ class MockOffscreenCanvas {
 // @ts-expect-error - mock for jsdom
 globalThis.OffscreenCanvas = MockOffscreenCanvas;
 
-// Also mock HTMLCanvasElement.prototype.getContext for preview canvas
 const origGetContext = HTMLCanvasElement.prototype.getContext;
 HTMLCanvasElement.prototype.getContext = function(type: string, ...args: unknown[]) {
 	if (type === '2d') {
@@ -78,16 +77,15 @@ const oneLayerActive = {
 };
 
 describe('GraphicsPanel', () => {
-	it('should render DSK LAYERS label and OFF status when no layers', () => {
+	it('should render DSK GRAPHICS label and OFF status when no layers', () => {
 		const { container } = render(GraphicsPanel, { props: { state: baseState } });
-		expect(container.textContent).toContain('DSK LAYERS');
+		expect(container.textContent).toContain('DSK GRAPHICS');
 		expect(container.textContent).toContain('OFF');
 	});
 
 	it('should show empty state when no layers exist', () => {
 		const { container } = render(GraphicsPanel, { props: { state: baseState } });
-		expect(container.textContent).toContain('No layers');
-		expect(container.querySelector('.layer-card')).toBeNull();
+		expect(container.textContent).toContain('Add a layer to get started');
 	});
 
 	it('should show ON AIR when any layer is active', () => {
@@ -99,7 +97,7 @@ describe('GraphicsPanel', () => {
 		expect(container.textContent).toContain('ON AIR');
 	});
 
-	it('should render a layer card for each layer', () => {
+	it('should render a rail item for each layer', () => {
 		const state = {
 			...baseState,
 			graphics: {
@@ -110,19 +108,18 @@ describe('GraphicsPanel', () => {
 			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const cards = container.querySelectorAll('.layer-card');
-		expect(cards.length).toBe(2);
+		const items = container.querySelectorAll('.rail-item');
+		expect(items.length).toBe(2);
 	});
 
-	it('should have template selector with 6 templates per layer', () => {
+	it('should have template cards (6 templates) in detail pane', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const select = container.querySelector('.template-select') as HTMLSelectElement;
-		expect(select).toBeTruthy();
-		expect(select.options.length).toBe(6);
+		const cards = container.querySelectorAll('.tpl-card');
+		expect(cards.length).toBe(6);
 	});
 
 	it('should show field inputs for default lower-third template', () => {
@@ -131,28 +128,22 @@ describe('GraphicsPanel', () => {
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		// Default template is lower-third which has Name and Title fields
-		const inputs = container.querySelectorAll('.field-input');
+		const inputs = container.querySelectorAll('.field-inp');
 		expect(inputs.length).toBe(2);
 	});
 
-	it('should have CUT ON/OFF, AUTO ON/OFF, FLY IN/OUT, and ANIMATE buttons per layer', () => {
+	it('should have CUT ON/OFF, AUTO ON/OFF action buttons', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const buttons = container.querySelectorAll('.gfx-btn');
-		expect(buttons.length).toBe(7);
-
+		const buttons = container.querySelectorAll('.act-btn');
 		const labels = Array.from(buttons).map((b) => b.textContent?.trim());
 		expect(labels).toContain('CUT ON');
 		expect(labels).toContain('AUTO ON');
 		expect(labels).toContain('CUT OFF');
 		expect(labels).toContain('AUTO OFF');
-		expect(labels).toContain('FLY IN');
-		expect(labels).toContain('FLY OUT');
-		expect(labels).toContain('ANIMATE');
 	});
 
 	it('should disable OFF buttons when layer not active', () => {
@@ -161,8 +152,8 @@ describe('GraphicsPanel', () => {
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const offBtn = container.querySelector('.gfx-btn.off') as HTMLButtonElement;
-		const autoOffBtn = container.querySelector('.gfx-btn.auto-off') as HTMLButtonElement;
+		const offBtn = container.querySelector('.act-btn.off') as HTMLButtonElement;
+		const autoOffBtn = container.querySelector('.act-btn.auto-off') as HTMLButtonElement;
 		expect(offBtn.disabled).toBe(true);
 		expect(autoOffBtn.disabled).toBe(true);
 	});
@@ -173,49 +164,115 @@ describe('GraphicsPanel', () => {
 			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const onBtn = container.querySelector('.gfx-btn.on') as HTMLButtonElement;
-		const autoOnBtn = container.querySelector('.gfx-btn.auto-on') as HTMLButtonElement;
+		const onBtn = container.querySelector('.act-btn.on') as HTMLButtonElement;
+		const autoOnBtn = container.querySelector('.act-btn.auto-on') as HTMLButtonElement;
 		expect(onBtn.disabled).toBe(true);
 		expect(autoOnBtn.disabled).toBe(true);
 	});
 
-	it('should render a preview canvas per layer', () => {
+	it('should render a preview canvas', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const canvas = container.querySelector('.gfx-preview') as HTMLCanvasElement;
+		const canvas = container.querySelector('.detail-preview') as HTMLCanvasElement;
 		expect(canvas).toBeTruthy();
-		expect(canvas.width).toBe(320);
-		expect(canvas.height).toBe(240);
+		expect(canvas.width).toBe(384);
+		expect(canvas.height).toBe(216);
 	});
 
-	it('should show animation controls for all templates including lower-third', () => {
+	it('should show layer ID and z-order in rail', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [{ ...oneLayer, id: 3, zOrder: 2 }] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		expect(container.textContent).toContain('L3');
+		expect(container.textContent).toContain('z2');
+	});
+
+	it('should have z-order up/down buttons in rail', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const animRow = container.querySelector('.gfx-anim-row');
-		expect(animRow).toBeTruthy();
-		const animBtn = container.querySelector('.gfx-btn.anim-start');
-		expect(animBtn).toBeTruthy();
+		const microBtns = container.querySelectorAll('.micro-btn');
+		// 2 z-order buttons + 1 delete button per layer
+		expect(microBtns.length).toBe(3);
 	});
 
-	it('should show ANIMATE button enabled when layer active', () => {
+	it('should have delete button in rail', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const delBtn = container.querySelector('.micro-btn.del');
+		expect(delBtn).toBeTruthy();
+	});
+
+	it('should have add layer button', () => {
+		const { container } = render(GraphicsPanel, { props: { state: baseState } });
+		const addBtn = container.querySelector('.add-btn');
+		expect(addBtn).toBeTruthy();
+		expect(addBtn?.textContent?.trim()).toBe('+ ADD');
+	});
+
+	it('should highlight active layer in rail', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
+		const item = container.querySelector('.rail-item.active');
+		expect(item).toBeTruthy();
+	});
+
+	it('should auto-select first layer', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const selected = container.querySelector('.rail-item.selected');
+		expect(selected).toBeTruthy();
+	});
+
+	it('should show fly controls after clicking disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		// Fly controls are behind disclosure toggle
+		const disclosures = container.querySelectorAll('.disclosure');
+		const flyDisclosure = Array.from(disclosures).find(d => d.textContent?.includes('FLY'));
+		expect(flyDisclosure).toBeTruthy();
+		await fireEvent.click(flyDisclosure!);
+		// After clicking, fly buttons should appear
+		const flyBtns = container.querySelectorAll('.act-btn.fly');
+		expect(flyBtns.length).toBe(2);
+	});
+
+	it('should show animation controls after clicking disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayerActive] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const disclosures = container.querySelectorAll('.disclosure');
+		const animDisclosure = Array.from(disclosures).find(d => d.textContent?.includes('ANIM'));
+		expect(animDisclosure).toBeTruthy();
+		await fireEvent.click(animDisclosure!);
+		const animBtn = container.querySelector('.act-btn.anim-start') as HTMLButtonElement;
 		expect(animBtn).toBeTruthy();
 		expect(animBtn.textContent?.trim()).toBe('ANIMATE');
 		expect(animBtn.disabled).toBe(false);
 	});
 
-	it('should show STOP ANIM button when animation is active', () => {
+	it('should show STOP button when animation is active', async () => {
 		const state = {
 			...baseState,
 			graphics: {
@@ -228,165 +285,16 @@ describe('GraphicsPanel', () => {
 			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const stopBtn = container.querySelector('.gfx-btn.anim-stop') as HTMLButtonElement;
+		// Open anim disclosure
+		const disclosures = container.querySelectorAll('.disclosure');
+		const animDisclosure = Array.from(disclosures).find(d => d.textContent?.includes('ANIM'));
+		await fireEvent.click(animDisclosure!);
+		const stopBtn = container.querySelector('.act-btn.anim-stop') as HTMLButtonElement;
 		expect(stopBtn).toBeTruthy();
-		expect(stopBtn.textContent?.trim()).toBe('STOP ANIM');
+		expect(stopBtn.textContent?.trim()).toBe('STOP');
 	});
 
-	it('should disable ANIMATE button when layer not active', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const animBtn = container.querySelector('.gfx-btn.anim-start') as HTMLButtonElement;
-		expect(animBtn).toBeTruthy();
-		expect(animBtn.disabled).toBe(true);
-	});
-
-	it('should show layer ID and z-order', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [{ ...oneLayer, id: 3, zOrder: 2 }] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		expect(container.textContent).toContain('L3');
-		expect(container.textContent).toContain('z2');
-	});
-
-	it('should have z-order up/down buttons', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const zBtns = container.querySelectorAll('.z-btn');
-		expect(zBtns.length).toBe(2);
-	});
-
-	it('should have delete button per layer', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const deleteBtn = container.querySelector('.delete-btn');
-		expect(deleteBtn).toBeTruthy();
-	});
-
-	it('should have add layer button', () => {
-		const { container } = render(GraphicsPanel, { props: { state: baseState } });
-		const addBtn = container.querySelector('.add-layer-btn');
-		expect(addBtn).toBeTruthy();
-		expect(addBtn?.textContent?.trim()).toBe('+ LAYER');
-	});
-
-	it('should highlight active layer card', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayerActive] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const card = container.querySelector('.layer-card.active');
-		expect(card).toBeTruthy();
-	});
-
-	it('should show fly-in/out controls with direction and duration', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const flyDirSelect = container.querySelector('.fly-direction-select') as HTMLSelectElement;
-		expect(flyDirSelect).toBeTruthy();
-		expect(flyDirSelect.options.length).toBe(4);
-
-		const flyDuration = container.querySelector('.fly-duration') as HTMLInputElement;
-		expect(flyDuration).toBeTruthy();
-
-		const flyInBtn = container.querySelector('.gfx-btn.fly-in') as HTMLButtonElement;
-		const flyOutBtn = container.querySelector('.gfx-btn.fly-out') as HTMLButtonElement;
-		expect(flyInBtn).toBeTruthy();
-		expect(flyOutBtn).toBeTruthy();
-	});
-
-	it('should disable FLY IN when active, FLY OUT when inactive', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const flyIn = container.querySelector('.gfx-btn.fly-in') as HTMLButtonElement;
-		const flyOut = container.querySelector('.gfx-btn.fly-out') as HTMLButtonElement;
-		expect(flyIn.disabled).toBe(false);
-		expect(flyOut.disabled).toBe(true);
-	});
-
-	it('should show animation mode selector', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeSelect = container.querySelector('.anim-mode-select') as HTMLSelectElement;
-		expect(modeSelect).toBeTruthy();
-		expect(modeSelect.options.length).toBe(2);
-		expect(modeSelect.value).toBe('pulse');
-	});
-
-	it('should show pulse params (min/max/Hz) for pulse mode', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const params = container.querySelectorAll('.anim-param');
-		expect(params.length).toBe(3);
-	});
-
-	it('should show transition params (alpha/ms) when mode is transition', async () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeSelect = container.querySelector('.anim-mode-select') as HTMLSelectElement;
-		await fireEvent.change(modeSelect, { target: { value: 'transition' } });
-		const params = container.querySelectorAll('.anim-param');
-		expect(params.length).toBe(2);
-	});
-
-	it('should show animation badge when animation active', () => {
-		const state = {
-			...baseState,
-			graphics: {
-				layers: [{
-					...oneLayerActive,
-					animationMode: 'pulse',
-					animationHz: 1.0,
-				}],
-			},
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const badge = container.querySelector('.anim-badge');
-		expect(badge).toBeTruthy();
-		expect(badge?.textContent).toContain('pulse');
-		expect(badge?.textContent).toContain('1Hz');
-	});
-
-	it('should show layer position in header', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [{ ...oneLayer, x: 100, y: 50, width: 960, height: 540 }] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const rect = container.querySelector('.layer-rect');
-		expect(rect).toBeTruthy();
-		expect(rect?.textContent).toContain('960');
-		expect(rect?.textContent).toContain('540');
-	});
-
-	it('should sort layers by z-order', () => {
+	it('should sort layers by z-order in rail', () => {
 		const state = {
 			...baseState,
 			graphics: {
@@ -398,7 +306,34 @@ describe('GraphicsPanel', () => {
 			},
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const ids = Array.from(container.querySelectorAll('.layer-id')).map(el => el.textContent);
-		expect(ids).toEqual(['L0', 'L2', 'L1']);
+		const nums = Array.from(container.querySelectorAll('.layer-num')).map(el => el.textContent);
+		expect(nums).toEqual(['L0', 'L2', 'L1']);
+	});
+
+	it('should show selected template card highlighted', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const selected = container.querySelector('.tpl-card.selected');
+		expect(selected).toBeTruthy();
+	});
+
+	it('should show animation badge in disclosure when animating', () => {
+		const state = {
+			...baseState,
+			graphics: {
+				layers: [{
+					...oneLayerActive,
+					animationMode: 'pulse',
+					animationHz: 1.0,
+				}],
+			},
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const badge = container.querySelector('.disclosure-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('pulse');
 	});
 });

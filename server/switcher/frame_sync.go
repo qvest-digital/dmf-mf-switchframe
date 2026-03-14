@@ -121,6 +121,18 @@ type syncSource struct {
 	// (e.g., 59.94fps: 90000*1001/60000 = 1501.5, truncates to 1501).
 	ptsRemAccum int64 // accumulated remainder (numerator)
 
+	// lastSourcePTS tracks the original PTS of the most recently ingested
+	// fresh video frame (before any frame-sync rewriting). Used to compute
+	// ptsCorrectionDelta for audio PTS alignment.
+	lastSourcePTS int64
+
+	// ptsCorrectionDelta stores the difference between the last released
+	// (rewritten) video PTS and the last fresh source PTS. Audio frames
+	// bypass the frame sync, so this delta is applied to audio PTS in the
+	// switcher to maintain A/V sync. Stored atomically for lock-free reads
+	// from the audio hot path.
+	ptsCorrectionDelta atomic.Int64
+
 	// frc holds per-source frame rate conversion state. nil when FRC is disabled.
 	frc *frcSource
 }
@@ -517,6 +529,21 @@ func (fs *FrameSynchronizer) FRCQuality() FRCQuality {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return fs.frcQuality
+}
+
+// GetSourcePTSCorrection returns the PTS correction delta for a source.
+// This is the amount by which the frame sync has shifted video PTS relative
+// to the source's original PTS. Audio frames should have this delta added
+// to their PTS to maintain A/V sync (since audio bypasses the frame sync).
+// Returns 0 if the source is not found or no correction is needed.
+func (fs *FrameSynchronizer) GetSourcePTSCorrection(sourceKey string) int64 {
+	fs.mu.Lock()
+	ss, ok := fs.sources[sourceKey]
+	fs.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	return ss.ptsCorrectionDelta.Load()
 }
 
 // SetProgramSource sets which source drives early release of the tick loop.
@@ -983,9 +1010,10 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 
 		if r.ss != nil {
 			if r.freshVideo || !r.ss.ptsInitialized {
-				// Fresh frame: preserve source PTS, but clamp forward
-				// if behind accumulated freeze PTS to prevent backward
-				// PTS in the MPEG-TS output.
+				// Fresh frame: update lastSourcePTS, preserve source PTS,
+				// but clamp forward if behind accumulated freeze PTS to
+				// prevent backward PTS in the MPEG-TS output.
+				r.ss.lastSourcePTS = pf.PTS
 				if r.ss.ptsInitialized && !ptsAfter(pf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					pf.PTS = r.ss.lastReleasedPTS
@@ -998,6 +1026,9 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 				pf.PTS = r.ss.lastReleasedPTS
 			}
+			// Store correction delta atomically for audio PTS alignment.
+			// Delta = how far frame sync has shifted video PTS beyond source PTS.
+			r.ss.ptsCorrectionDelta.Store(r.ss.lastReleasedPTS - r.ss.lastSourcePTS)
 		}
 		pf.SyncReleaseNano = time.Now().UnixNano()
 		if fs.onRawVideo != nil {
@@ -1007,6 +1038,7 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 		vf := *r.video
 		if r.ss != nil {
 			if r.freshVideo || !r.ss.ptsInitialized {
+				r.ss.lastSourcePTS = vf.PTS
 				if r.ss.ptsInitialized && !ptsAfter(vf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					vf.PTS = r.ss.lastReleasedPTS
@@ -1018,6 +1050,7 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 				vf.PTS = r.ss.lastReleasedPTS
 			}
+			r.ss.ptsCorrectionDelta.Store(r.ss.lastReleasedPTS - r.ss.lastSourcePTS)
 		}
 		fs.onVideo(r.sourceKey, vf)
 	}

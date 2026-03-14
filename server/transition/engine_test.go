@@ -917,14 +917,13 @@ func TestEngineStingerTransition(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Stinger, 1000))
 	require.Equal(t, Stinger, e.TransitionType())
 
-	// Ingest from both sources. Stinger triggers blend on BOTH from+to frames
-	// to maximize frame cadence (complex per-frame animation benefits from
-	// higher output rates). First from-frame uses black fallback for B source.
+	// Ingest from both sources. Only TO (cam2) triggers blend output;
+	// FROM (cam1) stores YUV but does not trigger redundant blend.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 2, len(outputs), "stinger transition should produce output for both from+to frames")
+	require.Equal(t, 1, len(outputs), "stinger should produce one output per TO frame")
 	mu.Unlock()
 
 	e.Stop()
@@ -993,12 +992,12 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", Stinger, 60000))
 
-	// Stinger triggers on both from+to, so 2 outputs per pair.
+	// Only TO (cam2) triggers blend; FROM (cam1) stores YUV only.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 2, len(outputs))
+	require.Equal(t, 1, len(outputs))
 	out := outputs[0]
 	mu.Unlock()
 
@@ -1012,7 +1011,7 @@ func TestEngineStingerNoDataReturnsCopy(t *testing.T) {
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 33000, true)
 
 	mu.Lock()
-	require.Equal(t, 4, len(outputs), "should still produce output after mutation")
+	require.Equal(t, 2, len(outputs), "should still produce output after mutation")
 	mu.Unlock()
 
 	e.Stop()
@@ -1065,15 +1064,85 @@ func TestEngineStingerNoData(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", Stinger, 1000))
 
-	// Stinger triggers on both from+to, so 2 outputs per pair.
+	// Only TO (cam2) triggers blend output.
 	e.IngestFrame("cam1", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 	e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01}, 0, true)
 
 	mu.Lock()
-	require.Equal(t, 2, len(outputs), "stinger without data should still produce output for both sources")
+	require.Equal(t, 1, len(outputs), "stinger without data should produce output for TO frame")
 	mu.Unlock()
 
 	e.Stop()
+}
+
+func TestEngineStinger_OutputRateMatchesDissolve(t *testing.T) {
+	// Stinger should produce the same output rate as dissolve: one output per
+	// TO-source frame. The FROM source stores its YUV for blending but should
+	// NOT trigger a redundant blend output. If stinger triggers on BOTH
+	// isFrom+isTo, the output rate is 2x (one per source frame), causing:
+	//  - 2x encoder load
+	//  - 2x PTS advancement (persistent A/V desync)
+	//  - frame drops in the video processing channel
+	w, h := 4, 4
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	totalSize := ySize + 2*uvSize
+
+	// Stinger with 10 frames
+	frames := make([]StingerFrameData, 10)
+	for i := range frames {
+		frames[i] = StingerFrameData{
+			YUV:   make([]byte, totalSize),
+			Alpha: make([]byte, ySize),
+		}
+	}
+
+	countOutputs := func(tt Type) int {
+		var mu sync.Mutex
+		var count int
+
+		cfg := EngineConfig{
+			Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+				mu.Lock()
+				count++
+				mu.Unlock()
+			},
+			OnComplete: func(aborted bool) {},
+		}
+		if tt == Stinger {
+			cfg.Stinger = &StingerData{
+				Frames:   frames,
+				Width:    w,
+				Height:   h,
+				CutPoint: 0.5,
+			}
+		}
+		e := NewEngine(cfg)
+		require.NoError(t, e.Start("cam1", "cam2", tt, 60000)) // long duration
+
+		// Send 10 frame pairs (one from each source per pair)
+		yuvA := make([]byte, totalSize)
+		yuvB := make([]byte, totalSize)
+		for i := 0; i < 10; i++ {
+			yuvA[0] = byte(i)
+			yuvB[0] = byte(100 + i)
+			e.IngestRawFrame("cam1", yuvA, w, h, int64(i*3000))
+			e.IngestRawFrame("cam2", yuvB, w, h, int64(i*3000))
+		}
+
+		e.Stop()
+		mu.Lock()
+		defer mu.Unlock()
+		return count
+	}
+
+	dissolveOutputs := countOutputs(Mix)
+	stingerOutputs := countOutputs(Stinger)
+
+	require.Equal(t, 10, dissolveOutputs, "dissolve should produce one output per TO frame")
+	require.Equal(t, dissolveOutputs, stingerOutputs,
+		"stinger should produce same output rate as dissolve (got %d stinger vs %d dissolve)",
+		stingerOutputs, dissolveOutputs)
 }
 
 func TestEngineDecodeFallThroughToBlendOnEAGAIN(t *testing.T) {

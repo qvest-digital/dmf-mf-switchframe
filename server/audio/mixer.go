@@ -1197,7 +1197,13 @@ mixing:
 
 	// Mix on frame arrival: each source contributes its latest frame.
 	m.mixBuffer[sourceKey] = gainedPCM
-	m.mixPTS = frame.PTS
+	// During transition crossfade, only the TO (incoming) source sets mixPTS.
+	// The video transition engine outputs frames with the TO source's PTS,
+	// so audio must match. Without this guard, the FROM source could overwrite
+	// mixPTS if it ingests last, causing audio/video PTS mismatch.
+	if !m.transCrossfadeActive || sourceKey == m.transCrossfadeTo {
+		m.mixPTS = frame.PTS
+	}
 
 	// Flush when all active unmuted channels have contributed OR deadline exceeded
 	var outputFrame *media.AudioFrame
@@ -1349,7 +1355,10 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 
 	// Mix on frame arrival: each source contributes its latest frame.
 	m.mixBuffer[sourceKey] = gainedPCM
-	m.mixPTS = pts
+	// During transition crossfade, only the TO (incoming) source sets mixPTS.
+	if !m.transCrossfadeActive || sourceKey == m.transCrossfadeTo {
+		m.mixPTS = pts
+	}
 
 	// Flush when all active unmuted channels have contributed OR deadline exceeded
 	var outputFrame *media.AudioFrame

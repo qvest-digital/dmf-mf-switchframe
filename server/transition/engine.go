@@ -573,17 +573,16 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 	}
 
 	// Determine if we should trigger blend+output.
-	// For Mix/Dip/Wipe: triggered by incoming TO source frame.
+	// For Mix/Dip/Wipe/Stinger: triggered by incoming TO source frame.
 	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
-	// For Stinger: triggered by EITHER source to maximize frame cadence.
-	// Stingers have complex per-frame animation that benefits from higher output
-	// rates; the blend function's cut-point logic picks the correct base source.
+	// FROM source frames still store YUV in latestYUVA (above) so the blend
+	// function has access to both sources. Triggering only on TO keeps output
+	// rate at 1x (matching source frame rate) and prevents 2x PTS advancement
+	// that causes persistent A/V desync.
 	shouldBlend := false
 	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType == Stinger && (isFrom || isTo) {
-		shouldBlend = true
-	} else if e.transitionType != FTB && e.transitionType != FTBReverse && isTo {
+	} else if isTo {
 		shouldBlend = true
 	}
 
@@ -723,9 +722,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	shouldBlend := false
 	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
 		shouldBlend = true
-	} else if e.transitionType == Stinger && (isFrom || isTo) {
-		shouldBlend = true
-	} else if e.transitionType != FTB && e.transitionType != FTBReverse && isTo {
+	} else if isTo {
 		shouldBlend = true
 	}
 
