@@ -389,6 +389,9 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/graphics/{id}/fly-out", a.handleGraphicsFlyOut)
 		mux.HandleFunc("POST /api/graphics/{id}/fly-on", a.handleGraphicsFlyOn)
 		mux.HandleFunc("POST /api/graphics/{id}/slide", a.handleGraphicsSlide)
+		mux.HandleFunc("POST /api/graphics/{id}/image", a.handleGraphicsImageUpload)
+		mux.HandleFunc("GET /api/graphics/{id}/image", a.handleGraphicsImageGet)
+		mux.HandleFunc("DELETE /api/graphics/{id}/image", a.handleGraphicsImageDelete)
 	}
 	if a.macroStore != nil {
 		mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)

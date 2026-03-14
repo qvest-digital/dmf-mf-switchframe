@@ -435,6 +435,75 @@ func (a *API) handleGraphicsSlide(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
+// handleGraphicsImageUpload stores a PNG image on a layer.
+func (a *API) handleGraphicsImageUpload(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+
+	// Parse multipart form (max 16MB)
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "image field required")
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, 16<<20))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "failed to read image")
+		return
+	}
+
+	if err := a.compositor.SetImage(id, header.Filename, data); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsImageGet returns the stored PNG for a layer.
+func (a *API) handleGraphicsImageGet(w http.ResponseWriter, r *http.Request) {
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	name, data, err := a.compositor.GetImage(id)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Disposition", "inline; filename=\""+name+"\"")
+	w.Write(data)
+}
+
+// handleGraphicsImageDelete removes the stored image from a layer.
+func (a *API) handleGraphicsImageDelete(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	if err := a.compositor.DeleteImage(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleStingerList returns all loaded stinger clip names.
 func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

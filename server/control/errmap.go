@@ -34,6 +34,7 @@ var errorMappings = []errorMapping{
 	{macro.ErrNotFound, http.StatusNotFound},
 	{graphics.ErrNoOverlay, http.StatusBadRequest}, // no overlay loaded is a bad request
 	{graphics.ErrLayerNotFound, http.StatusNotFound},
+	{graphics.ErrNoImage, http.StatusNotFound},
 	{operator.ErrNotFound, http.StatusNotFound},
 	{operator.ErrSessionNotFound, http.StatusNotFound},
 	{replay.ErrNoSource, http.StatusNotFound},
