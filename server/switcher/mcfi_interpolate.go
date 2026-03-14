@@ -56,18 +56,25 @@ func NewMCFIState() *MCFIState {
 // The returned slice is a freshly allocated copy, safe for async consumers.
 func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
 	frameSize := width * height * 3 / 2
+	out := make([]byte, frameSize)
+	s.InterpolateInto(out, frameA, frameB, width, height, alpha)
+	return out
+}
+
+// InterpolateInto writes the interpolated frame into dst. dst must be at least
+// width*height*3/2 bytes. This variant avoids allocation when the caller can
+// provide a reusable buffer.
+func (s *MCFIState) InterpolateInto(dst, frameA, frameB []byte, width, height int, alpha float64) {
+	frameSize := width * height * 3 / 2
 
 	// Near-threshold: skip ME/warp for extreme alpha values.
-	// Return copies to satisfy the "freshly allocated copy" contract.
 	if alpha < frcNearThresholdLow {
-		out := make([]byte, frameSize)
-		copy(out, frameA[:frameSize])
-		return out
+		copy(dst[:frameSize], frameA[:frameSize])
+		return
 	}
 	if alpha > frcNearThresholdHigh {
-		out := make([]byte, frameSize)
-		copy(out, frameB[:frameSize])
-		return out
+		copy(dst[:frameSize], frameB[:frameSize])
+		return
 	}
 
 	// Check if this is the same frame pair (pointer identity)
@@ -118,11 +125,8 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 	// Motion-compensated interpolation with per-pixel warping (fixed-point, row-parallel)
 	if s.mvValid && !s.sceneChange {
 		mcfiInterpolateFast(s.blendOut, frameA, frameB, width, height, s.mvf, alpha)
-		// Return a copy so callers can hold the result across calls without
-		// it being overwritten by the next Interpolate() invocation.
-		out := make([]byte, frameSize)
-		copy(out, s.blendOut[:frameSize])
-		return out
+		copy(dst[:frameSize], s.blendOut[:frameSize])
+		return
 	}
 
 	// Fallback: linear blend (scene change or invalid MVs)
@@ -136,10 +140,7 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 	for i := 0; i < frameSize && i < len(frameA) && i < len(frameB); i++ {
 		s.fallbackBuf[i] = byte(float64(frameA[i])*invAlpha + float64(frameB[i])*alpha + 0.5)
 	}
-	// Return a copy so callers can hold the result across calls.
-	out := make([]byte, frameSize)
-	copy(out, s.fallbackBuf[:frameSize])
-	return out
+	copy(dst[:frameSize], s.fallbackBuf[:frameSize])
 }
 
 // mcfiInterpolateSmooth produces an interpolated frame using per-pixel
