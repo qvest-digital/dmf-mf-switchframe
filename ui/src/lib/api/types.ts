@@ -232,7 +232,9 @@ export type MacroAction =
 	// SCTE-35
 	| 'scte35_cue' | 'scte35_return' | 'scte35_cancel' | 'scte35_hold' | 'scte35_extend'
 	// Captions
-	| 'caption_mode' | 'caption_text' | 'caption_clear';
+	| 'caption_mode' | 'caption_text' | 'caption_clear'
+	// Clips
+	| 'clip_load' | 'clip_play' | 'clip_pause' | 'clip_stop' | 'clip_eject' | 'clip_seek';
 
 export interface MacroStep {
 	action: MacroAction;
@@ -340,6 +342,45 @@ export interface CaptionState {
 	mode: CaptionMode;
 	authorBuffer?: string;
 	sourceCaptions?: Record<string, boolean>;
+}
+
+export type ClipPlayerStatus = 'empty' | 'loaded' | 'playing' | 'paused' | 'holding';
+
+export interface ClipPlayerState {
+	id: number;
+	clipId?: string;
+	clipName?: string;
+	state: ClipPlayerStatus;
+	speed?: number;
+	position?: number;
+	loop?: boolean;
+}
+
+export interface ClipInfo {
+	id: string;
+	name: string;
+	filename: string;
+	source: 'upload' | 'replay' | 'recording';
+	codec: string;
+	audioCodec?: string;
+	width: number;
+	height: number;
+	fpsNum: number;
+	fpsDen: number;
+	durationMs: number;
+	sampleRate?: number;
+	channels?: number;
+	byteSize: number;
+	loop: boolean;
+	createdAt: string;
+	ephemeral: boolean;
+}
+
+export interface RecordingFileInfo {
+	filename: string;
+	path: string;
+	byteSize: number;
+	modTime: string;
 }
 
 export interface SCTE35State {
@@ -466,6 +507,8 @@ export interface ControlRoomState {
 	encoder?: EncoderState;
 	scte35?: SCTE35State;
 	captions?: CaptionState;
+	clipPlayers?: ClipPlayerState[];
+	clipCount?: number;
 	macro?: MacroExecutionState;
 	lastChangedBy?: string;
 	seq: number;

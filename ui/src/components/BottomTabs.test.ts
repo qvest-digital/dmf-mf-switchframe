@@ -21,7 +21,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('SCTE');
 		expect(tabLabels).toContain('Layout');
 		expect(tabLabels).toContain('Captions');
-		expect(tabs.length).toBe(9);
+		expect(tabLabels).toContain('Clips');
+		expect(tabs.length).toBe(10);
 	});
 
 	it('renders Presets tab', () => {

@@ -187,6 +187,27 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	// Caption state.
 	state = a.enrichCaptionState(state)
 
+	// Clip player state.
+	if a.clipMgr != nil {
+		states := a.clipMgr.PlayerStates()
+		clipPlayers := make([]internal.ClipPlayerInfo, len(states))
+		for i, s := range states {
+			clipPlayers[i] = internal.ClipPlayerInfo{
+				ID:       s.ID,
+				ClipID:   s.ClipID,
+				ClipName: s.ClipName,
+				State:    string(s.State),
+				Speed:    s.Speed,
+				Position: s.Position,
+				Loop:     s.Loop,
+			}
+		}
+		state.ClipPlayers = clipPlayers
+	}
+	if a.clipStore != nil {
+		state.ClipCount = len(a.clipStore.List())
+	}
+
 	// Encoder state (current + available backends).
 	// Uses pre-computed internal.EncoderInfo slice to avoid per-broadcast allocations.
 	if avail := a.sw.AvailableEncodersInternal(); len(avail) > 0 {

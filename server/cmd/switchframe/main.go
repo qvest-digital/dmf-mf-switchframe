@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/zsiec/switchframe/server/control"
 )
@@ -56,6 +57,10 @@ type AppConfig struct {
 
 	// Closed captions.
 	Captions bool // Enable CEA-608/708 closed captioning
+
+	// Clip storage.
+	ClipStorageMax   int64         // --clip-storage-max (bytes, default 10GB)
+	ClipEphemeralTTL time.Duration // --clip-ephemeral-ttl (default 24h)
 
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
@@ -112,6 +117,9 @@ func run() error {
 	if err := app.initCaptions(); err != nil {
 		return err
 	}
+	if err := app.initClips(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -153,6 +161,10 @@ func parseConfig() (AppConfig, error) {
 
 	// Caption flag.
 	captionsFlag := flag.Bool("captions", false, "Enable CEA-608/708 closed captioning")
+
+	// Clip storage flags.
+	clipStorageMaxFlag := flag.Int64("clip-storage-max", 10<<30, "Maximum clip storage in bytes (default 10GB)")
+	clipEphemeralTTLFlag := flag.Duration("clip-ephemeral-ttl", 24*time.Hour, "TTL for ephemeral clips (default 24h)")
 
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
@@ -210,6 +222,8 @@ func parseConfig() (AppConfig, error) {
 		SCTE35WebhookURL:  *scte35WebhookFlag,
 		SCTE104:           *scte104Flag,
 		Captions:          *captionsFlag,
+		ClipStorageMax:    *clipStorageMaxFlag,
+		ClipEphemeralTTL:  *clipEphemeralTTLFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,

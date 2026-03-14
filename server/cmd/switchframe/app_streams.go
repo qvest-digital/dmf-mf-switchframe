@@ -18,6 +18,9 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if strings.HasPrefix(key, "mxl:") {
 		return // MXL sources are manually wired in initMXL()
 	}
+	if strings.HasPrefix(key, "clip:") {
+		return // Clip sources are manually wired in initClips()
+	}
 
 	if a.sw == nil || a.mixer == nil {
 		slog.Error("BUG: stream registered before switcher/mixer initialized", "key", key)
@@ -44,6 +47,9 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 func (a *App) onStreamUnregistered(key string) {
 	if key == "program" || key == "program-raw" || key == "replay" || key == "replay-raw" {
 		return
+	}
+	if strings.HasPrefix(key, "clip:") {
+		return // Clip sources are managed by clipMgr lifecycle callbacks
 	}
 
 	if a.sw == nil || a.mixer == nil {

@@ -3,13 +3,16 @@ package replay
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"log/slog"
+	"os"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -58,6 +61,10 @@ type Manager struct {
 	// Audio codec factories for WSOLA time-stretching.
 	audioDecoderFactory audio.DecoderFactory
 	audioEncoderFactory audio.EncoderFactory
+
+	// onClipExported is called after Play() extracts a clip, with the
+	// source name and path to a temp TS file containing the muxed frames.
+	onClipExported func(source string, filePath string)
 }
 
 // NewManager creates a replay manager.
@@ -216,6 +223,18 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 		clip, audioClip, err := buf.ExtractClip(*m.markIn, *m.markOut)
 		if err != nil {
 			return err
+		}
+
+		// Export clip to temp TS file for the clip store (background).
+		if exportFn := m.onClipExported; exportFn != nil {
+			go func() {
+				path, muxErr := muxClipToTempFile(clip, audioClip)
+				if muxErr != nil {
+					m.log.Error("failed to export replay clip", "source", source, "error", muxErr)
+					return
+				}
+				exportFn(source, path)
+			}()
 		}
 
 		m.playerState = PlayerLoading
@@ -415,6 +434,16 @@ func (m *Manager) SetAudioCodecFactories(decFactory audio.DecoderFactory, encFac
 	m.audioEncoderFactory = encFactory
 }
 
+// SetOnClipExported registers a callback invoked after Play() extracts a
+// clip from the replay buffer. The callback receives the source name and
+// a path to a temporary MPEG-TS file containing the muxed clip frames.
+// The caller is responsible for moving or removing the temp file.
+func (m *Manager) SetOnClipExported(fn func(source string, filePath string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onClipExported = fn
+}
+
 // Close stops any active player and releases resources.
 func (m *Manager) Close() {
 	m.mu.Lock()
@@ -454,6 +483,82 @@ func (m *Manager) DebugSnapshot() map[string]any {
 		"markSource": m.markSource,
 		"buffers":    buffers,
 	}
+}
+
+// muxClipToTempFile muxes extracted replay frames into a temporary MPEG-TS
+// file and returns its path. The caller is responsible for moving or removing
+// the file. Uses output.TSMuxer to produce valid MPEG-TS with PAT/PMT.
+func muxClipToTempFile(videoFrames []bufferedFrame, audioFrames []bufferedAudioFrame) (string, error) {
+	tmpFile, err := os.CreateTemp("", "replay-clip-*.ts")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+
+	muxer := output.NewTSMuxer()
+	muxer.SetOutput(func(data []byte) {
+		_, _ = tmpFile.Write(data)
+	})
+
+	// Interleave video and audio by PTS order.
+	vi, ai := 0, 0
+	for vi < len(videoFrames) || ai < len(audioFrames) {
+		// Determine which frame comes next by PTS.
+		writeVideo := false
+		if vi < len(videoFrames) && ai < len(audioFrames) {
+			writeVideo = videoFrames[vi].pts <= audioFrames[ai].pts
+		} else {
+			writeVideo = vi < len(videoFrames)
+		}
+
+		if writeVideo {
+			f := videoFrames[vi]
+			vf := &media.VideoFrame{
+				WireData:   f.wireData,
+				PTS:        f.pts,
+				DTS:        f.pts,
+				IsKeyframe: f.isKeyframe,
+				SPS:        f.sps,
+				PPS:        f.pps,
+				Codec:      "avc1",
+			}
+			if muxErr := muxer.WriteVideo(vf); muxErr != nil {
+				_ = tmpFile.Close()
+				_ = os.Remove(tmpPath)
+				return "", fmt.Errorf("mux video frame %d: %w", vi, muxErr)
+			}
+			vi++
+		} else {
+			f := audioFrames[ai]
+			af := &media.AudioFrame{
+				Data:       f.data,
+				PTS:        f.pts,
+				SampleRate: f.sampleRate,
+				Channels:   f.channels,
+			}
+			if muxErr := muxer.WriteAudio(af); muxErr != nil {
+				_ = tmpFile.Close()
+				_ = os.Remove(tmpPath)
+				return "", fmt.Errorf("mux audio frame %d: %w", ai, muxErr)
+			}
+			ai++
+		}
+	}
+
+	// Close muxer before file to ensure all data is flushed to the output callback.
+	_ = muxer.Close()
+
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("fsync temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("close temp file: %w", err)
+	}
+
+	return tmpPath, nil
 }
 
 // notifyStateChange safely reads the callback under lock, releases the lock,

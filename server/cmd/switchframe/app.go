@@ -23,6 +23,7 @@ import (
 	"github.com/zsiec/prism/moq"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
@@ -98,6 +99,10 @@ type App struct {
 
 	// Closed captions
 	captionMgr *caption.Manager
+
+	// Clip players
+	clipMgr   *clip.Manager
+	clipStore *clip.Store
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -852,6 +857,12 @@ func (a *App) initAPI() error {
 	if a.captionMgr != nil {
 		apiOpts = append(apiOpts, control.WithCaptionManager(a.captionMgr))
 	}
+	if a.clipMgr != nil {
+		apiOpts = append(apiOpts, control.WithClipManager(a.clipMgr))
+	}
+	if a.clipStore != nil {
+		apiOpts = append(apiOpts, control.WithClipStore(a.clipStore))
+	}
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
@@ -1164,6 +1175,9 @@ func (a *App) Close() {
 		a.scte35Injector.Close()
 	}
 
+	if a.clipMgr != nil {
+		a.clipMgr.Close()
+	}
 	if a.tickerEngine != nil {
 		a.tickerEngine.Close()
 	}

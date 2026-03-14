@@ -73,9 +73,16 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	caption_mode: { label: 'Caption Mode', category: 'Captions', description: 'Set caption mode' },
 	caption_text: { label: 'Caption Text', category: 'Captions', description: 'Send caption text' },
 	caption_clear: { label: 'Clear Captions', category: 'Captions', description: 'Clear caption display' },
+	// Clips
+	clip_load: { label: 'Load Clip', category: 'Clips', description: 'Load clip into player' },
+	clip_play: { label: 'Play Clip', category: 'Clips', description: 'Start clip playback' },
+	clip_pause: { label: 'Pause Clip', category: 'Clips', description: 'Pause clip playback' },
+	clip_stop: { label: 'Stop Clip', category: 'Clips', description: 'Stop and reset clip' },
+	clip_eject: { label: 'Eject Clip', category: 'Clips', description: 'Eject clip from player' },
+	clip_seek: { label: 'Seek Clip', category: 'Clips', description: 'Seek to position in clip' },
 };
 
-export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions'] as const;
+export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions', 'Clips'] as const;
 
 export const SOURCE_ACTIONS: MacroAction[] = [
 	'cut', 'preview', 'transition', 'set_audio',

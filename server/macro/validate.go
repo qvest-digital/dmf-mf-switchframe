@@ -141,6 +141,10 @@ func validateStep(i int, step Step, result *ValidationResult) {
 			})
 		}
 
+	// Clip player actions that require player (1-4).
+	case ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek:
+		validateClipStep(i, step, result)
+
 	// Graphics layer actions that require layerId.
 	case ActionGraphicsOn, ActionGraphicsOff, ActionGraphicsAutoOn, ActionGraphicsAutoOff,
 		ActionGraphicsRemoveLayer, ActionGraphicsSetRect, ActionGraphicsSetZOrder,
@@ -298,6 +302,36 @@ func validateGraphicsStep(i int, step Step, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: "graphics_upload_frame requires 'template' param",
+			})
+		}
+	}
+}
+
+// validateClipStep checks clip player action parameter requirements.
+func validateClipStep(i int, step Step, result *ValidationResult) {
+	player, ok := step.Params["player"].(float64)
+	if !ok || player < 1 || player > 4 {
+		result.Errors = append(result.Errors, ValidationError{
+			Step:    i,
+			Message: fmt.Sprintf("%s requires 'player' param (1-4)", step.Action),
+		})
+		return
+	}
+
+	switch step.Action {
+	case ActionClipLoad:
+		if !hasStringParam(step.Params, "clipId") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "clip_load requires 'clipId' param",
+			})
+		}
+	case ActionClipSeek:
+		pos, ok := step.Params["position"].(float64)
+		if !ok || pos < 0 || pos > 1 {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "clip_seek requires 'position' param (0.0-1.0)",
 			})
 		}
 	}

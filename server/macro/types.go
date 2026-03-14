@@ -89,6 +89,14 @@ const (
 	ActionCaptionMode  Action = "caption_mode"
 	ActionCaptionText  Action = "caption_text"
 	ActionCaptionClear Action = "caption_clear"
+
+	// Clip player actions.
+	ActionClipLoad  Action = "clip_load"
+	ActionClipPlay  Action = "clip_play"
+	ActionClipPause Action = "clip_pause"
+	ActionClipStop  Action = "clip_stop"
+	ActionClipEject Action = "clip_eject"
+	ActionClipSeek  Action = "clip_seek"
 )
 
 // allActions is the set of all valid macro actions.
@@ -153,6 +161,12 @@ var allActions = map[Action]bool{
 	ActionCaptionMode:     true,
 	ActionCaptionText:     true,
 	ActionCaptionClear:    true,
+	ActionClipLoad:        true,
+	ActionClipPlay:        true,
+	ActionClipPause:       true,
+	ActionClipStop:        true,
+	ActionClipEject:       true,
+	ActionClipSeek:        true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -322,6 +336,30 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		return fmt.Sprintf("Caption Text %q", text)
 	},
 	ActionCaptionClear: staticSummary("Caption Clear"),
+
+	// Clip player actions.
+	ActionClipLoad: func(s Step) string {
+		return fmt.Sprintf("Clip Load %s → Player %s", paramStr(s, "clipId"), fmtPlayerID(s.Params))
+	},
+	ActionClipPlay: func(s Step) string {
+		return fmt.Sprintf("Clip Play Player %s", fmtPlayerID(s.Params))
+	},
+	ActionClipPause: func(s Step) string {
+		return fmt.Sprintf("Clip Pause Player %s", fmtPlayerID(s.Params))
+	},
+	ActionClipStop: func(s Step) string {
+		return fmt.Sprintf("Clip Stop Player %s", fmtPlayerID(s.Params))
+	},
+	ActionClipEject: func(s Step) string {
+		return fmt.Sprintf("Clip Eject Player %s", fmtPlayerID(s.Params))
+	},
+	ActionClipSeek: func(s Step) string {
+		pos := 0.0
+		if v, ok := s.Params["position"].(float64); ok {
+			pos = v
+		}
+		return fmt.Sprintf("Clip Seek Player %s → %.0f%%", fmtPlayerID(s.Params), pos*100)
+	},
 }
 
 // paramStr extracts a string parameter from a step.
@@ -363,6 +401,14 @@ func StepSummary(step Step) string {
 		return fn(step)
 	}
 	return string(step.Action)
+}
+
+// fmtPlayerID extracts a player param as a display string.
+func fmtPlayerID(params map[string]any) string {
+	if v, ok := params["player"].(float64); ok {
+		return fmt.Sprintf("%d", int(v))
+	}
+	return "?"
 }
 
 // fmtLayerID extracts a layerId param as a display string.

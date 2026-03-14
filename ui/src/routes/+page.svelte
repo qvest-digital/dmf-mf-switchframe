@@ -23,6 +23,7 @@
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
 	import LayoutPanel from '../components/LayoutPanel.svelte';
 	import CaptionsPanel from '../components/CaptionsPanel.svelte';
+	import ClipsPanel from '../components/ClipsPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
@@ -636,6 +637,10 @@
 									<LockIndicator state={store.effectiveState} subsystem="captions" />
 								</div>
 								<CaptionsPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Clips'}
+							<div class="tab-panel">
+								<ClipsPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

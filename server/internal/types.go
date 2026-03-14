@@ -228,6 +228,8 @@ type ControlRoomState struct {
 	Graphics             *GraphicsState          `json:"graphics,omitempty"`
 	Layout               *LayoutState            `json:"layout,omitempty"`
 	Replay               *ReplayState            `json:"replay,omitempty"`
+	ClipPlayers          []ClipPlayerInfo        `json:"clipPlayers,omitempty"`
+	ClipCount            int                     `json:"clipCount,omitempty"`
 	Operators            []OperatorInfo          `json:"operators,omitempty"`
 	Locks                map[string]LockInfo     `json:"locks,omitempty"`
 	PipelineFormat       *PipelineFormatInfo     `json:"pipelineFormat,omitempty"`
@@ -330,6 +332,29 @@ type SCTE35Config struct {
 	PID                 uint16 `json:"pid"`
 	VerifyEncoding      bool   `json:"verifyEncoding"`
 	WebhookURL          string `json:"webhookUrl,omitempty"`
+}
+
+// ClipPlayerInfo is the broadcast state of a single clip player.
+type ClipPlayerInfo struct {
+	ID       int     `json:"id"`
+	ClipID   string  `json:"clipId,omitempty"`
+	ClipName string  `json:"clipName,omitempty"`
+	State    string  `json:"state"`
+	Speed    float64 `json:"speed,omitempty"`
+	Position float64 `json:"position,omitempty"`
+	Loop     bool    `json:"loop,omitempty"`
+}
+
+// ClipInfo is the broadcast-friendly clip metadata.
+type ClipInfo struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	DurationMs int64  `json:"durationMs"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	Ephemeral  bool   `json:"ephemeral,omitempty"`
+	Loop       bool   `json:"loop"`
 }
 
 // LayoutState represents the current layout configuration for state broadcast.

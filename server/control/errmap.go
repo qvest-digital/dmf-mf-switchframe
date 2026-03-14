@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
@@ -40,6 +41,7 @@ var errorMappings = []errorMapping{
 	{operator.ErrNotFound, http.StatusNotFound},
 	{operator.ErrSessionNotFound, http.StatusNotFound},
 	{replay.ErrNoSource, http.StatusNotFound},
+	{clip.ErrNotFound, http.StatusNotFound},
 	{scte35.ErrRuleNotFound, http.StatusNotFound},
 	{scte35.ErrTemplateNotFound, http.StatusNotFound},
 
@@ -68,6 +70,10 @@ var errorMappings = []errorMapping{
 	{operator.ErrSubsystemLocked, http.StatusConflict},
 	{replay.ErrPlayerActive, http.StatusConflict},
 	{replay.ErrMaxSources, http.StatusConflict},
+	{clip.ErrStorageFull, http.StatusConflict},
+	{clip.ErrPlayerBusy, http.StatusConflict},
+	{clip.ErrAlreadyExists, http.StatusConflict},
+	{clip.ErrPlayerFull, http.StatusConflict},
 
 	// 403 Forbidden
 	{operator.ErrNoPermission, http.StatusForbidden},
@@ -105,6 +111,15 @@ var errorMappings = []errorMapping{
 	{replay.ErrNoPlayer, http.StatusBadRequest},
 	{replay.ErrBufferDisabled, http.StatusBadRequest},
 	{replay.ErrSourceMismatch, http.StatusBadRequest},
+	{clip.ErrInvalidPlayer, http.StatusBadRequest},
+	{clip.ErrPlayerEmpty, http.StatusBadRequest},
+	{clip.ErrInvalidSpeed, http.StatusBadRequest},
+	{clip.ErrInvalidSeek, http.StatusBadRequest},
+	{clip.ErrInvalidName, http.StatusBadRequest},
+	{clip.ErrInvalidFormat, http.StatusBadRequest},
+	{clip.ErrCorruptFile, http.StatusBadRequest},
+	{clip.ErrOddDimensions, http.StatusBadRequest},
+	{clip.ErrNoVideo, http.StatusBadRequest},
 }
 
 // errorStatus maps a sentinel error to an HTTP status code.

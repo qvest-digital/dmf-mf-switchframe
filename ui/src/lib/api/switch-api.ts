@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -755,6 +755,88 @@ export function clearCaptions(): Promise<CaptionState> {
 
 export function getCaptionState(): Promise<CaptionState> {
 	return request('/api/captions/state');
+}
+
+// ── Clips ──
+
+export function listClips(): Promise<ClipInfo[]> {
+	return request('/api/clips');
+}
+
+export function getClip(id: string): Promise<ClipInfo> {
+	return request(`/api/clips/${encodeURIComponent(id)}`);
+}
+
+export function updateClip(id: string, updates: { name?: string; loop?: boolean }): Promise<ClipInfo> {
+	return request(`/api/clips/${encodeURIComponent(id)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(updates),
+	});
+}
+
+export function deleteClip(id: string): Promise<void> {
+	return request(`/api/clips/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function uploadClip(file: File): Promise<ClipInfo> {
+	const formData = new FormData();
+	formData.append('file', file);
+	return request('/api/clips/upload', {
+		method: 'POST',
+		body: formData,
+	});
+}
+
+export function pinClip(id: string): Promise<ClipInfo> {
+	return post(`/api/clips/${encodeURIComponent(id)}/pin`, {});
+}
+
+export function importRecording(path: string): Promise<ClipInfo> {
+	return post('/api/clips/from-recording', { path });
+}
+
+export function listRecordings(): Promise<RecordingFileInfo[]> {
+	return request('/api/clips/recordings');
+}
+
+export function listClipPlayers(): Promise<ClipPlayerState[]> {
+	return request('/api/clips/players');
+}
+
+export function clipPlayerLoad(player: number, clipId: string): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/load`, { clipId });
+}
+
+export function clipPlayerEject(player: number): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/eject`, {});
+}
+
+export function clipPlayerPlay(player: number, speed?: number, loop?: boolean): Promise<ControlRoomState> {
+	const body: Record<string, unknown> = {};
+	if (speed !== undefined) body.speed = speed;
+	if (loop !== undefined) body.loop = loop;
+	return post(`/api/clips/players/${player}/play`, body);
+}
+
+export function clipPlayerPause(player: number): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/pause`, {});
+}
+
+export function clipPlayerStop(player: number): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/stop`, {});
+}
+
+export function clipPlayerSeek(player: number, position: number): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/seek`, { position });
+}
+
+export function clipPlayerSpeed(player: number, speed: number): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/speed`, { speed });
+}
+
+export function clipPlayerLoop(player: number, loop: boolean): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/loop`, { loop });
 }
 
 /**

@@ -74,6 +74,8 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
+	// Track the recording directory for clip import.
+	a.recordingDir.Store(&outDir)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.outputMgr.RecordingStatus())
 }

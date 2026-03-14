@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -621,6 +622,82 @@ func TestReplayManager_SetAudioCodecFactories(t *testing.T) {
 	require.NotNil(t, m.audioDecoderFactory)
 	require.NotNil(t, m.audioEncoderFactory)
 	m.mu.Unlock()
+}
+
+func TestReplayManager_OnClipExported(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// Track callback invocations.
+	type exportEvent struct {
+		source   string
+		filePath string
+	}
+	exportCh := make(chan exportEvent, 1)
+	m.SetOnClipExported(func(source string, filePath string) {
+		exportCh <- exportEvent{source: source, filePath: filePath}
+	})
+
+	_ = m.AddSource("cam1")
+
+	// Record frames so ExtractClip has data.
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	// The callback should be invoked with the source and a temp TS file path.
+	select {
+	case ev := <-exportCh:
+		require.Equal(t, "cam1", ev.source)
+		require.NotEmpty(t, ev.filePath)
+
+		// Verify the temp file exists and has content.
+		info, statErr := os.Stat(ev.filePath)
+		require.NoError(t, statErr, "temp TS file should exist")
+		require.Greater(t, info.Size(), int64(0), "temp TS file should have content")
+
+		// Clean up the temp file.
+		_ = os.Remove(ev.filePath)
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnClipExported callback not called within timeout")
+	}
+
+	// Wait for playback to complete.
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+func TestReplayManager_OnClipExported_NilCallback(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// Don't set callback — Play should still work without panicking.
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -154,6 +155,16 @@ func WithReplayManager(rm *replay.Manager) APIOption {
 	return func(a *API) { a.replayMgr = rm }
 }
 
+// WithClipManager attaches a clip manager to the API.
+func WithClipManager(cm *clip.Manager) APIOption {
+	return func(a *API) { a.clipMgr = cm }
+}
+
+// WithClipStore attaches a clip store to the API.
+func WithClipStore(cs *clip.Store) APIOption {
+	return func(a *API) { a.clipStore = cs }
+}
+
 // WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
 func WithSCTE35(s SCTE35API, r SCTE35RulesAPI) APIOption {
 	return func(a *API) { a.scte35 = s; a.scte35Rules = r }
@@ -209,6 +220,12 @@ func WithTickerEngine(te *graphics.TickerEngine) APIOption {
 	return func(a *API) { a.tickerEngine = te }
 }
 
+// WithRecordingDir sets the directory where recordings are stored.
+// Used by handleClipRecordings to list available recordings for import.
+func WithRecordingDir(dir string) APIOption {
+	return func(a *API) { a.recordingDir.Store(&dir) }
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher      *switcher.Switcher
@@ -222,6 +239,9 @@ type API struct {
 	keyer         *graphics.KeyProcessor
 	keyBridge     *graphics.KeyProcessorBridge
 	replayMgr     *replay.Manager
+	clipMgr       *clip.Manager
+	clipStore     *clip.Store
+	recordingDir  atomic.Pointer[string]
 	operatorStore *operator.Store
 	sessionMgr    *operator.SessionManager
 	scte35           SCTE35API
@@ -362,6 +382,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerSCTE35Routes(mux)
 	a.registerCaptionRoutes(mux)
 	a.registerLayoutRoutes(mux)
+	a.registerClipRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }

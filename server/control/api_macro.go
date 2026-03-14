@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -120,6 +121,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		stingerStore: a.stingerStore,
 		scte35:       a.scte35,
 		captionMgr:   a.captionMgr,
+		clipMgr:      a.clipMgr,
 	}
 
 	onProgress := func(state macro.ExecutionState) {
@@ -204,6 +206,7 @@ type apiMacroTarget struct {
 	stingerStore *stinger.Store
 	scte35       SCTE35API
 	captionMgr   CaptionManagerAPI
+	clipMgr      *clip.Manager
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
@@ -374,6 +377,20 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execReplayPlayLast()
 	case macro.ActionReplayPlayClip:
 		return t.execReplayPlayClip(params)
+
+	// Clips
+	case macro.ActionClipLoad:
+		return t.execClipLoad(params)
+	case macro.ActionClipPlay:
+		return t.execClipPlay(params)
+	case macro.ActionClipPause:
+		return t.execClipPause(params)
+	case macro.ActionClipStop:
+		return t.execClipStop(params)
+	case macro.ActionClipEject:
+		return t.execClipEject(params)
+	case macro.ActionClipSeek:
+		return t.execClipSeek(params)
 
 	default:
 		return fmt.Errorf("unimplemented action %q", action)
@@ -872,6 +889,66 @@ func (t *apiMacroTarget) execCaptionClear() error {
 	}
 	t.captionMgr.Clear()
 	return nil
+}
+
+// --- Clip helpers ---
+
+func (t *apiMacroTarget) execClipLoad(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	clipID, _ := params["clipId"].(string)
+	if clipID == "" {
+		return fmt.Errorf("clip_load requires 'clipId' param")
+	}
+	return t.clipMgr.Load(playerID, clipID)
+}
+
+func (t *apiMacroTarget) execClipPlay(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	speed := floatParam(params, "speed", 1.0)
+	loop := false
+	if v, ok := params["loop"].(bool); ok {
+		loop = v
+	}
+	return t.clipMgr.Play(playerID, speed, loop)
+}
+
+func (t *apiMacroTarget) execClipPause(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	return t.clipMgr.Pause(playerID)
+}
+
+func (t *apiMacroTarget) execClipStop(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	return t.clipMgr.Stop(playerID)
+}
+
+func (t *apiMacroTarget) execClipEject(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	return t.clipMgr.Eject(playerID)
+}
+
+func (t *apiMacroTarget) execClipSeek(params map[string]interface{}) error {
+	if t.clipMgr == nil {
+		return fmt.Errorf("clips not enabled")
+	}
+	playerID := int(floatParam(params, "playerId", 1))
+	position := floatParam(params, "position", 0)
+	return t.clipMgr.Seek(playerID, position)
 }
 
 // --- Param helpers ---

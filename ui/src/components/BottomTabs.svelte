@@ -7,7 +7,7 @@
 	}
 	let { children, onTabChange }: Props = $props();
 
-	const tabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets'] as const;
+	const tabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips'] as const;
 	type TabId = typeof tabs[number];
 
 	function loadSavedTab(): TabId {
@@ -25,14 +25,18 @@
 		onTabChange?.(tab);
 	}
 
-	// Keyboard shortcut: Ctrl+Shift+1-6
+	// Keyboard shortcut: Ctrl+Shift+1-9,0
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
-			const match = e.code.match(/^Digit([1-9])$/);
+			const match = e.code.match(/^Digit([0-9])$/);
 			if (match) {
-				e.preventDefault();
-				e.stopPropagation();
-				setTab(tabs[parseInt(match[1]) - 1]);
+				const digit = parseInt(match[1]);
+				const idx = digit === 0 ? 9 : digit - 1; // 0 maps to 10th tab
+				if (idx < tabs.length) {
+					e.preventDefault();
+					e.stopPropagation();
+					setTab(tabs[idx]);
+				}
 			}
 		}
 	}
@@ -56,7 +60,7 @@
 				onclick={() => setTab(tab)}
 			>
 				{tab}
-				<span class="tab-shortcut">^{i + 1}</span>
+				<span class="tab-shortcut">^{(i + 1) % 10}</span>
 			</button>
 		{/each}
 	</div>

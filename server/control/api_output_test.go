@@ -17,6 +17,7 @@ import (
 // mockOutputManager implements OutputManagerAPI for testing.
 type mockOutputManager struct {
 	recording         bool
+	recFilename       string // active recording filename (default: "test-2026-03-04.ts")
 	srtActive         bool
 	startRecErr       error
 	stopRecErr        error
@@ -58,9 +59,13 @@ func (m *mockOutputManager) StopRecording() error {
 }
 
 func (m *mockOutputManager) RecordingStatus() output.RecordingStatus {
+	fn := m.recFilename
+	if fn == "" {
+		fn = "test-2026-03-04.ts"
+	}
 	return output.RecordingStatus{
 		Active:         m.recording,
-		Filename:       "test-2026-03-04.ts",
+		Filename:       fn,
 		BytesWritten:   1024,
 		DurationSecs:   10.5,
 		DroppedPackets: m.recDroppedPackets,

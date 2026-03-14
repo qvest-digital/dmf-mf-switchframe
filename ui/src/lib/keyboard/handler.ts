@@ -16,6 +16,8 @@ export interface KeyboardActions {
 	scte35Hold?: () => void;
 	scte35Extend?: () => void;
 	layoutTogglePIP?: () => void;
+	clipPlayerToggle?: (playerID: number) => void;
+	clipPlayerStop?: (playerID: number) => void;
 	getSourceKeys: () => string[];
 }
 
@@ -127,6 +129,22 @@ export class KeyboardHandler {
 					e.stopPropagation();
 					this.actions.scte35Extend?.();
 					return;
+			}
+		}
+
+		// F5-F8: clip player controls
+		if (e.code.startsWith('F') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+			const num = parseInt(e.code.slice(1));
+			if (num >= 5 && num <= 8) {
+				e.preventDefault();
+				e.stopPropagation();
+				const playerID = num - 4; // F5=Player 1, F6=Player 2, F7=Player 3, F8=Player 4
+				if (e.shiftKey) {
+					this.actions.clipPlayerStop?.(playerID);
+				} else {
+					this.actions.clipPlayerToggle?.(playerID);
+				}
+				return;
 			}
 		}
 

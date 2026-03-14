@@ -756,6 +756,7 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionLayoutPreset, ActionLayoutSlotOn, ActionLayoutSlotOff,
 		ActionLayoutSlotSource, ActionLayoutClear,
 		ActionCaptionMode, ActionCaptionText, ActionCaptionClear,
+		ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek,
 	}
 
 	for _, action := range expectedActions {
