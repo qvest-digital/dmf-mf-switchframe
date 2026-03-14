@@ -974,3 +974,42 @@ func TestFRC_EmitNearestPTSWraparound(t *testing.T) {
 	require.Equal(t, byte(200), result.YUV[0],
 		"alpha=0.75 across PTS wrap should select currFrame")
 }
+
+func TestFRC_IngestRefcountNoDoubleRelease(t *testing.T) {
+	// Verify that FRC takes its own Ref() on ingest, so that both FRC
+	// and frame_sync can release independently without underflow.
+	pool := NewFramePool(4, 4, 4)
+	fs := newFRCSource(FRCNearest, 3000)
+
+	// Create frames from pool (refcounted).
+	pf1 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 0}
+	pf1.SetRefs(1) // frame_sync ownership
+
+	pf2 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 3000}
+	pf2.SetRefs(1)
+
+	pf3 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 6000}
+	pf3.SetRefs(1)
+
+	// Ingest first frame: FRC takes Ref → refs=2
+	fs.ingest(pf1)
+	require.Equal(t, int32(2), pf1.Refs(), "FRC should Ref() on ingest")
+
+	// Ingest second frame: FRC takes Ref on pf2 → refs=2
+	// pf1 is now prevFrame (refs still 2 — FRC hasn't released it yet)
+	fs.ingest(pf2)
+	require.Equal(t, int32(2), pf2.Refs())
+
+	// Ingest third frame: FRC releases prevFrame (pf1) → pf1 refs 2→1
+	fs.ingest(pf3)
+	require.Equal(t, int32(1), pf1.Refs(), "FRC should have released its ref on pf1")
+
+	// Simulate frame_sync releasing its reference on pf1 → refs 1→0
+	pf1.ReleaseYUV()
+	require.Equal(t, int32(0), pf1.Refs(), "frame_sync release should drop to 0")
+
+	// Clean up
+	fs.reset()
+	pf2.ReleaseYUV() // frame_sync releases pf2
+	pf3.ReleaseYUV() // frame_sync releases pf3
+}
