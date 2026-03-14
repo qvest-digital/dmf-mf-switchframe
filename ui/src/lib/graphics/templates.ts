@@ -418,71 +418,116 @@ export const scoreBugTemplate: GraphicsTemplate = {
 		{ key: 'away', label: 'Away Team', defaultValue: 'AWAY', maxLength: 20 },
 		{ key: 'homeScore', label: 'Home Score', defaultValue: '0', maxLength: 3 },
 		{ key: 'awayScore', label: 'Away Score', defaultValue: '0', maxLength: 3 },
+		{ key: 'homeColor', label: 'Home Color', defaultValue: '#1d4ed8', maxLength: 7 },
+		{ key: 'awayColor', label: 'Away Color', defaultValue: '#dc2626', maxLength: 7 },
 		{ key: 'period', label: 'Period', defaultValue: '1ST', maxLength: 5 },
 		{ key: 'clock', label: 'Clock', defaultValue: '12:00', maxLength: 8 },
 	],
 	render(ctx, width, height, values) {
 		ctx.save();
 
-		const barHeight = Math.round(height * 0.05);
-		const barWidth = Math.round(width * 0.45);
-		const barX = Math.round(width * 0.03);
-		const barY = Math.round(height * 0.03);
-		const padding = Math.round(barWidth * 0.02);
+		const bugW = Math.round(width * 0.22);
+		const rowH = Math.round(height * 0.038);
+		const bugH = rowH * 2;
+		const bugX = Math.round(width * 0.03);
+		const bugY = Math.round(height * 0.03);
+		const accentW = Math.round(bugW * 0.025);
+		const scoreColW = Math.round(bugW * 0.22);
+		const radius = Math.round(height * 0.006);
+		const homeColor = values.homeColor || '#1d4ed8';
+		const awayColor = values.awayColor || '#dc2626';
 
-		// Semi-transparent background
-		ctx.globalAlpha = 0.85;
-		ctx.fillStyle = '#000000';
-		ctx.fillRect(barX, barY, barWidth, barHeight);
+		// Drop shadow for entire bug
+		ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+		ctx.shadowBlur = 6;
+		ctx.shadowOffsetY = 2;
 
-		ctx.globalAlpha = 1;
+		// Outer rounded rect (clipping region)
+		ctx.beginPath();
+		ctx.roundRect(bugX, bugY, bugW, bugH, radius);
+		ctx.clip();
 
-		const teamFontSize = Math.round(barHeight * 0.45);
-		const scoreFontSize = Math.round(barHeight * 0.50);
-		const infoFontSize = Math.round(barHeight * 0.38);
+		// Clear shadow after clipping
+		ctx.shadowBlur = 0;
+		ctx.shadowOffsetY = 0;
 
-		// Layout: |  HOME  score | divider | AWAY  score | period . clock  |
-		const sectionWidth = Math.round(barWidth / 3);
-		const centerY = barY + barHeight / 2;
+		// -- Home row (top) --
+		// Team color accent block
+		ctx.fillStyle = homeColor;
+		ctx.fillRect(bugX, bugY, accentW, rowH);
 
-		// Home team name (bold) + score
+		// Dark background
+		ctx.fillStyle = 'rgba(15, 15, 20, 0.95)';
+		ctx.fillRect(bugX + accentW, bugY, bugW - accentW - scoreColW, rowH);
+
+		// Score column (slightly different bg)
+		ctx.fillStyle = 'rgba(25, 25, 35, 0.95)';
+		ctx.fillRect(bugX + bugW - scoreColW, bugY, scoreColW, rowH);
+
+		// Home team name
+		const teamFontSize = Math.round(rowH * 0.48);
+		ctx.font = `700 ${teamFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		ctx.fillStyle = '#ffffff';
 		ctx.textBaseline = 'middle';
-		ctx.textAlign = 'start';
-		ctx.font = `bold ${teamFontSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = '#ffffff';
-		ctx.fillText(values.home || 'HOME', barX + padding, centerY);
+		ctx.textAlign = 'left';
+		ctx.fillText(values.home || 'HOME', bugX + accentW + Math.round(bugW * 0.03), bugY + rowH / 2);
 
-		// Home score (monospace)
-		ctx.textAlign = 'end';
-		ctx.font = `bold ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
-		ctx.fillText(values.homeScore || '0', barX + sectionWidth - padding, centerY);
-
-		// Divider line
-		ctx.fillStyle = '#CC0000';
-		ctx.fillRect(barX + sectionWidth, barY + Math.round(barHeight * 0.15), 2, Math.round(barHeight * 0.7));
-
-		// Away team name (bold) + score
-		ctx.textAlign = 'start';
-		ctx.font = `bold ${teamFontSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = '#ffffff';
-		ctx.fillText(values.away || 'AWAY', barX + sectionWidth + padding + 2, centerY);
-
-		// Away score (monospace)
-		ctx.textAlign = 'end';
-		ctx.font = `bold ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
-		ctx.fillText(values.awayScore || '0', barX + sectionWidth * 2 - padding, centerY);
-
-		// Divider line
-		ctx.fillStyle = '#CC0000';
-		ctx.fillRect(barX + sectionWidth * 2, barY + Math.round(barHeight * 0.15), 2, Math.round(barHeight * 0.7));
-
-		// Period and clock
+		// Home score (large monospace)
+		const scoreFontSize = Math.round(rowH * 0.55);
+		ctx.font = `700 ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
 		ctx.textAlign = 'center';
-		ctx.font = `bold ${infoFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
-		ctx.fillStyle = 'rgba(220, 220, 220, 0.95)';
-		const infoCenter = barX + sectionWidth * 2 + sectionWidth / 2 + 2;
-		const periodClock = `${values.period || '1ST'} ${values.clock || '12:00'}`;
-		ctx.fillText(periodClock, infoCenter, centerY);
+		ctx.fillText(values.homeScore || '0', bugX + bugW - scoreColW / 2, bugY + rowH / 2);
+
+		// -- Thin divider --
+		ctx.fillStyle = 'rgba(60, 60, 70, 0.8)';
+		ctx.fillRect(bugX, bugY + rowH, bugW, 1);
+
+		// -- Away row (bottom) --
+		ctx.fillStyle = awayColor;
+		ctx.fillRect(bugX, bugY + rowH + 1, accentW, rowH - 1);
+
+		ctx.fillStyle = 'rgba(15, 15, 20, 0.95)';
+		ctx.fillRect(bugX + accentW, bugY + rowH + 1, bugW - accentW - scoreColW, rowH - 1);
+
+		ctx.fillStyle = 'rgba(25, 25, 35, 0.95)';
+		ctx.fillRect(bugX + bugW - scoreColW, bugY + rowH + 1, scoreColW, rowH - 1);
+
+		// Away team name
+		ctx.font = `700 ${teamFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		ctx.fillStyle = '#ffffff';
+		ctx.textAlign = 'left';
+		ctx.fillText(values.away || 'AWAY', bugX + accentW + Math.round(bugW * 0.03), bugY + rowH + 1 + (rowH - 1) / 2);
+
+		// Away score
+		ctx.font = `700 ${scoreFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		ctx.textAlign = 'center';
+		ctx.fillText(values.awayScore || '0', bugX + bugW - scoreColW / 2, bugY + rowH + 1 + (rowH - 1) / 2);
+
+		// -- Period/Clock pill (to the right of the bug) --
+		const period = values.period || '1ST';
+		const clock = values.clock || '12:00';
+		const infoFontSize = Math.round(rowH * 0.38);
+		ctx.font = `600 ${infoFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		const infoText = `${period}  ${clock}`;
+		const infoW = ctx.measureText(infoText).width + Math.round(bugW * 0.06);
+		const infoX = bugX + bugW + Math.round(width * 0.005);
+		const infoH = Math.round(bugH * 0.45);
+		const infoY = bugY + (bugH - infoH) / 2;
+
+		// Reset clip for info pill
+		ctx.restore();
+		ctx.save();
+
+		ctx.fillStyle = 'rgba(10, 10, 18, 0.90)';
+		ctx.beginPath();
+		ctx.roundRect(infoX, infoY, infoW, infoH, Math.round(infoH * 0.25));
+		ctx.fill();
+
+		ctx.fillStyle = 'rgba(200, 200, 210, 0.90)';
+		ctx.font = `600 ${infoFontSize}px "SF Mono", "Cascadia Code", "Consolas", monospace`;
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		ctx.fillText(infoText, infoX + infoW / 2, infoY + infoH / 2);
 
 		ctx.restore();
 	},
