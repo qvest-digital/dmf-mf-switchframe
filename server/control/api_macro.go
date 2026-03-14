@@ -171,11 +171,18 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "started", "name": m.Name})
 }
 
-// handleDismissMacro clears the macro execution state.
+// handleDismissMacro clears the macro execution state and cancels any
+// running macro. Without cancellation, a dismissed macro would continue
+// executing steps silently in the background.
 func (a *API) handleDismissMacro(w http.ResponseWriter, r *http.Request) {
 	a.macroMu.Lock()
+	cancel := a.macroCancel
 	a.macroState = nil
+	a.macroCancel = nil
 	a.macroMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }

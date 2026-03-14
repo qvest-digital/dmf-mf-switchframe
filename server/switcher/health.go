@@ -40,6 +40,7 @@ type healthMonitor struct {
 	consecutiveCount map[string]int                // consecutive checks at pending status
 	running          bool
 	stopCh           chan struct{}
+	stopOnce         sync.Once
 	done             chan struct{} // closed when the monitor goroutine exits; nil if never started
 }
 
@@ -241,11 +242,9 @@ func (hm *healthMonitor) stop() {
 	done := hm.done
 	hm.mu.Unlock()
 
-	select {
-	case <-hm.stopCh:
-	default:
+	hm.stopOnce.Do(func() {
 		close(hm.stopCh)
-	}
+	})
 
 	// Wait for the goroutine to exit if it was started.
 	if done != nil {

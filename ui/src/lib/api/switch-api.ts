@@ -239,6 +239,7 @@ export function setStingerCutPoint(name: string, cutPoint: number): Promise<void
 export async function uploadStinger(name: string, file: File): Promise<void> {
 	const response = await fetch(resolveApiUrl(`/api/stinger/${encodeURIComponent(name)}/upload`), {
 		method: 'POST',
+		headers: authHeaders(),
 		body: await file.arrayBuffer(),
 	});
 	if (!response.ok) {

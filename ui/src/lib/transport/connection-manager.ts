@@ -20,6 +20,8 @@ export class ConnectionManager {
 	private readonly connection: ReturnType<typeof createPrismConnection>;
 	/** True when MoQ control data has been received via the media pipeline. */
 	private hasMoQPipeline = false;
+	/** True after the first successful state fetch (initial or polling). */
+	private initialLoadDone = false;
 
 	constructor(config: ConnectionManagerConfig) {
 		this.config = config;
@@ -65,6 +67,8 @@ export class ConnectionManager {
 		}
 		this.stopPolling();
 		this.connection.disconnect();
+		this.hasMoQPipeline = false;
+		this.initialLoadDone = false;
 	}
 
 	getConnectionState(): ConnectionStatus {
@@ -106,6 +110,11 @@ export class ConnectionManager {
 			try {
 				const state = await getState();
 				this.config.onStateUpdate(state);
+				// Clear loading overlay if initial fetch failed but polling succeeds.
+				if (!this.initialLoadDone) {
+					this.initialLoadDone = true;
+					this.config.onInitialLoadComplete();
+				}
 			} catch { /* ignore */ }
 		}, 500);
 		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
@@ -125,7 +134,10 @@ export class ConnectionManager {
 		try {
 			const state = await getState();
 			this.config.onStateUpdate(state);
-			this.config.onInitialLoadComplete();
+			if (!this.initialLoadDone) {
+				this.initialLoadDone = true;
+				this.config.onInitialLoadComplete();
+			}
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			this.config.onInitialLoadError(msg, e);

@@ -6,6 +6,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMCFIInterpolateInto_ZeroAllocs(t *testing.T) {
+	w, h := 32, 32
+	frameSize := w * h * 3 / 2
+	frameA := make([]byte, frameSize)
+	frameB := make([]byte, frameSize)
+	dst := make([]byte, frameSize)
+	for i := range frameA {
+		frameA[i] = 100
+		frameB[i] = 200
+	}
+
+	mcfi := NewMCFIState()
+
+	// InterpolateInto should not allocate (for near-threshold paths).
+	allocs := testing.AllocsPerRun(10, func() {
+		mcfi.InterpolateInto(dst, frameA, frameB, w, h, 0.01)
+	})
+	if allocs > 0 {
+		t.Errorf("InterpolateInto near-threshold: got %v allocs, want 0", allocs)
+	}
+}
+
 func TestMCFIInterpolate_NearThresholdReturnsCopy(t *testing.T) {
 	// Bug: Interpolate() returns frameA/frameB directly for near-threshold
 	// alpha values, violating the documented "freshly allocated copy" contract.

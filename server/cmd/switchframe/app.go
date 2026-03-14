@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,6 +52,18 @@ import (
 // successfully. The caller should treat this as a clean exit rather than
 // calling os.Exit directly (which would skip deferred cleanup).
 var errDiscoverExit = errors.New("mxl discover completed")
+
+// tokenPrefix returns a safe display prefix for an API token.
+func tokenPrefix(token string) string {
+	if len(token) == 0 {
+		return "***"
+	}
+	n := len(token)
+	if n > 8 {
+		n = 8
+	}
+	return token[:n] + "..."
+}
 
 // App holds all subsystems for the switchframe server. Init methods are called
 // in order before Run() starts the Prism distribution server.
@@ -121,6 +134,9 @@ type App struct {
 	api        *control.API
 	authMW     func(http.Handler) http.Handler
 	operatorMW func(http.Handler) http.Handler
+
+	// Background goroutine tracking for clean shutdown
+	bgWG sync.WaitGroup
 }
 
 // initInfra sets up certificates, logging, codec probing, metrics, and the
@@ -151,7 +167,7 @@ func (a *App) initInfra() error {
 	if a.cfg.Demo {
 		slog.Info("demo mode: API authentication disabled")
 	} else {
-		slog.Info("API authentication enabled", "token_prefix", a.cfg.APIToken[:8]+"...")
+		slog.Info("API authentication enabled", "token_prefix", tokenPrefix(a.cfg.APIToken))
 		// Print full token to stdout (not stderr) so operators can capture it
 		// without it leaking into log files routed from stderr.
 		_, _ = fmt.Fprintf(os.Stdout, "\n  API Token: %s\n\n", a.cfg.APIToken)
@@ -1020,12 +1036,6 @@ func (a *App) Run(ctx context.Context) error {
 			make([]byte, packSize),
 		}
 		packIdx := 0
-		// Reusable VideoFrame to avoid per-frame allocation.
-		monitorFrame := &media.VideoFrame{
-			IsKeyframe: true,
-			Codec:      "raw/yuv420",
-		}
-
 		a.sw.SetRawMonitorSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
 			yuv := frame.YUV
 			w, h := frame.Width, frame.Height
@@ -1050,9 +1060,15 @@ func (a *App) Run(ctx context.Context) error {
 			packed[7] = byte(h)
 			copy(packed[8:], yuv)
 
-			monitorFrame.PTS = frame.PTS
-			monitorFrame.DTS = frame.DTS
-			monitorFrame.WireData = packed
+			// Allocate frame per-call so async viewers don't see stale PTS/DTS.
+			// The struct is small (5 fields); triple-buffered WireData handles byte data.
+			monitorFrame := &media.VideoFrame{
+				PTS:        frame.PTS,
+				DTS:        frame.DTS,
+				IsKeyframe: true,
+				Codec:      "raw/yuv420",
+				WireData:   packed,
+			}
 			a.rawProgramRelay.BroadcastVideoNoCache(monitorFrame)
 		}))
 
@@ -1076,10 +1092,6 @@ func (a *App) Run(ctx context.Context) error {
 				make([]byte, packSize),
 			}
 			replayPackIdx := 0
-			replayFrame := &media.VideoFrame{
-				IsKeyframe: true,
-				Codec:      "raw/yuv420",
-			}
 
 			a.replayMgr.SetRawMonitorOutput(func(yuv []byte, w, h int, pts int64) {
 				packed := replayPackBufs[replayPackIdx]
@@ -1094,9 +1106,13 @@ func (a *App) Run(ctx context.Context) error {
 				packed[7] = byte(h)
 				copy(packed[8:], yuv)
 
-				replayFrame.PTS = pts
-				replayFrame.DTS = pts
-				replayFrame.WireData = packed
+				replayFrame := &media.VideoFrame{
+					PTS:        pts,
+					DTS:        pts,
+					IsKeyframe: true,
+					Codec:      "raw/yuv420",
+					WireData:   packed,
+				}
 				rawReplayRelay.BroadcastVideoNoCache(replayFrame)
 			})
 
@@ -1124,7 +1140,9 @@ func (a *App) Run(ctx context.Context) error {
 	// event-driven (only on user actions). This ticker ensures VU meters
 	// in the browser update smoothly for sources that lack client-side
 	// audio decoders (e.g. MXL/raw PCM sources).
+	a.bgWG.Add(1)
 	go func() {
+		defer a.bgWG.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -1157,6 +1175,9 @@ func logSystemTuning(log *slog.Logger) {
 
 // Close cleans up all subsystems in reverse initialization order.
 func (a *App) Close() {
+	// Wait for background goroutines (metering ticker) to exit.
+	a.bgWG.Wait()
+
 	// MXL cleanup first (before core engine).
 	if a.mxlOutput != nil {
 		a.mxlOutput.Stop()

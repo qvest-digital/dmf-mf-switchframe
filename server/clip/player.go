@@ -518,7 +518,8 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 				if p.config.RawVideoOutput != nil {
 					p.config.RawVideoOutput(frameData, dw, dh, *outputPTS, false)
 				}
-				*outputPTS += 90000 / int64(math.Max(1, p.sourceFPS))
+				num, den := fpsToRational(p.sourceFPS)
+			*outputPTS += int64(90000) * int64(den) / int64(num)
 			}
 		}
 	}

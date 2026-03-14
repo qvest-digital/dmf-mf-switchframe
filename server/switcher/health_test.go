@@ -277,6 +277,31 @@ func TestHealthMonitor_StopWithoutStart(t *testing.T) {
 	hm.stop()
 }
 
+func TestHealthMonitorDoubleStop(t *testing.T) {
+	hm := newHealthMonitor()
+	hm.registerSource("cam1")
+	hm.recordFrame("cam1", time.Now())
+
+	// Start the monitor so that stopCh and done are active.
+	hm.start(10*time.Millisecond, func() {})
+
+	// Let it run briefly.
+	time.Sleep(30 * time.Millisecond)
+
+	// Call stop() from 10 concurrent goroutines.
+	// The old select/close pattern will panic with "close of closed channel"
+	// or trigger a race detector warning.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hm.stop()
+		}()
+	}
+	wg.Wait()
+}
+
 func TestHealthHysteresis_FirstSourceAppliesImmediately(t *testing.T) {
 	hm := newHealthMonitor()
 	hm.registerSource("cam1")

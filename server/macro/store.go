@@ -209,6 +209,11 @@ func (s *Store) writeFile(data []byte) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("fsync temp file: %w", err)
+	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close temp file: %w", err)

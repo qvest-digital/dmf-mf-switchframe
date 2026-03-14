@@ -120,6 +120,10 @@ type Engine struct {
 	// Pre-scaled stinger frames (scaled to match video dimensions on first use)
 	stingerScaled []StingerFrameData
 
+	// In-flight decode tracking: cleanup waits for active decodes to finish
+	// before closing decoders, preventing use-after-free.
+	decodeWG sync.WaitGroup
+
 	// Watchdog: aborts transition if no frames arrive within timeout
 	timeout      time.Duration // default 10s, configurable via SetTimeout()
 	lastFrameAt  time.Time     // updated in IngestFrame()
@@ -448,11 +452,6 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 // sources sending frames near-simultaneously don't block each other during
 // the 3-16ms decode step.
 func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKeyframe bool) {
-	// No decoders — raw-only mode. IngestRawFrame is the only active path.
-	if e.decoderA == nil && e.decoderB == nil {
-		return
-	}
-
 	ingestStart := time.Now()
 	defer func() {
 		dur := time.Since(ingestStart).Nanoseconds()
@@ -503,6 +502,11 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 			e.needsFlushB = false
 		}
 	}
+	// Track in-flight decode BEFORE releasing the lock so cleanup()'s
+	// decodeWG.Wait() will see it and wait for the decode to finish.
+	if decoder != nil {
+		e.decodeWG.Add(1)
+	}
 	e.mu.Unlock()
 
 	// --- Phase 2 (no lock): decode using snapshotted decoder ---
@@ -512,6 +516,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 	if decoder != nil {
 		decStart := time.Now()
 		yuv, w, h, err := decoder.Decode(wireData)
+		e.decodeWG.Done() // paired with Add(1) above
 		decDur := time.Since(decStart).Nanoseconds()
 		e.decodeLastNano.Store(decDur)
 		atomicutil.UpdateMax(&e.decodeMaxNano, decDur)
@@ -748,11 +753,6 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 // produce blended output immediately. Produces no output callbacks.
 // No-op if the engine is not active.
 func (e *Engine) WarmupDecode(sourceKey string, wireData []byte) {
-	// No-op when decoders are nil (raw-only mode).
-	if e.decoderA == nil && e.decoderB == nil {
-		return
-	}
-
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -774,9 +774,6 @@ func (e *Engine) WarmupDecode(sourceKey string, wireData []byte) {
 // to discard stale warmup references before decoding the fresh IDR.
 // No-op when decoders are nil (raw-only mode).
 func (e *Engine) WarmupComplete() {
-	if e.decoderA == nil && e.decoderB == nil {
-		return
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.needsFlushA = true
@@ -945,6 +942,14 @@ func (e *Engine) cleanup() {
 			close(e.watchdogStop)
 		})
 	}
+
+	// Wait for any in-flight Phase 2 decodes to finish before closing
+	// decoders. Release the lock briefly so blocked decoders can proceed
+	// to Phase 3 (which checks state != StateActive and returns early).
+	e.state = StateIdle // prevents new Phase 3 work
+	e.mu.Unlock()
+	e.decodeWG.Wait()
+	e.mu.Lock()
 
 	if e.decoderA != nil {
 		e.decoderA.Close()

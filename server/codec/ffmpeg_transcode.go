@@ -66,6 +66,8 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 
 	// Conversion state
 	struct SwsContext* sws_ctx = NULL;
+	enum AVPixelFormat last_sws_fmt = AV_PIX_FMT_NONE;
+	int last_sws_w = 0, last_sws_h = 0;
 	struct SwrContext* swr_ctx = NULL;
 
 	// Frame/packet state
@@ -415,8 +417,11 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 						goto loop_done;
 					}
 
-					// Lazily reinitialize sws if decoder pixel format changed
-					if (dec_frame->format != AV_PIX_FMT_NONE) {
+					// Reinitialize sws only when decoder format/resolution actually changes.
+					if (dec_frame->format != AV_PIX_FMT_NONE &&
+					    (dec_frame->format != last_sws_fmt ||
+					     dec_frame->width  != last_sws_w   ||
+					     dec_frame->height != last_sws_h)) {
 						struct SwsContext* new_sws = sws_getContext(
 							dec_frame->width, dec_frame->height, dec_frame->format,
 							video_enc_ctx->width, video_enc_ctx->height, AV_PIX_FMT_YUV420P,
@@ -424,6 +429,9 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 						if (new_sws) {
 							sws_freeContext(sws_ctx);
 							sws_ctx = new_sws;
+							last_sws_fmt = dec_frame->format;
+							last_sws_w   = dec_frame->width;
+							last_sws_h   = dec_frame->height;
 						}
 					}
 
