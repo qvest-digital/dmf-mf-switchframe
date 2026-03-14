@@ -69,7 +69,7 @@ func ValidateSteps(steps []Step) *ValidationResult {
 
 	for i, step := range steps {
 		// Check that the action is known.
-		if !AllActions[step.Action] {
+		if !IsValidAction(step.Action) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: fmt.Sprintf("unknown action %q", step.Action),

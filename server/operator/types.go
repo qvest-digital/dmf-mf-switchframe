@@ -30,13 +30,18 @@ const (
 	RoleViewer    Role = "viewer"
 )
 
-// ValidRoles is the set of allowed roles.
-var ValidRoles = map[Role]bool{
+// validRoles is the set of allowed roles.
+var validRoles = map[Role]bool{
 	RoleDirector:  true,
 	RoleAudio:     true,
 	RoleGraphics:  true,
 	RoleCaptioner: true,
 	RoleViewer:    true,
+}
+
+// IsValidRole reports whether r is a recognized operator role.
+func IsValidRole(r Role) bool {
+	return validRoles[r]
 }
 
 // Subsystem identifies a lockable area of the switcher.
@@ -51,14 +56,19 @@ const (
 	SubsystemCaptions  Subsystem = "captions"
 )
 
-// ValidSubsystems is the set of lockable subsystems.
-var ValidSubsystems = map[Subsystem]bool{
+// validSubsystems is the set of lockable subsystems.
+var validSubsystems = map[Subsystem]bool{
 	SubsystemSwitching: true,
 	SubsystemAudio:     true,
 	SubsystemGraphics:  true,
 	SubsystemReplay:    true,
 	SubsystemOutput:    true,
 	SubsystemCaptions:  true,
+}
+
+// IsValidSubsystem reports whether s is a recognized lockable subsystem.
+func IsValidSubsystem(s Subsystem) bool {
+	return validSubsystems[s]
 }
 
 // rolePermissions defines which subsystems each role can command.

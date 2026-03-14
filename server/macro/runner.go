@@ -218,7 +218,7 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 		return target.SCTE35Extend(ctx, uint32(id), int64(dur))
 
 	default:
-		if AllActions[step.Action] {
+		if IsValidAction(step.Action) {
 			return target.Execute(ctx, string(step.Action), step.Params)
 		}
 		return fmt.Errorf("unknown action %q", step.Action)

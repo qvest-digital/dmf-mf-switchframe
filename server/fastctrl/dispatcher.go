@@ -17,8 +17,14 @@ type Dispatcher struct {
 	log      *slog.Logger
 }
 
-func New() *Dispatcher {
+// NewDispatcher creates a new fast-control datagram dispatcher.
+func NewDispatcher() *Dispatcher {
 	return &Dispatcher{log: slog.Default()}
+}
+
+// Deprecated: New is an alias for NewDispatcher. Use NewDispatcher instead.
+func New() *Dispatcher {
+	return NewDispatcher()
 }
 
 func (d *Dispatcher) Register(msgType byte, h Handler) {

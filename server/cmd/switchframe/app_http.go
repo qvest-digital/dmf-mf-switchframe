@@ -29,7 +29,7 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiHandler = a.authMW(apiHandler)
 	apiHandler = control.MetricsMiddleware(apiHandler)
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
-	apiHandler = control.CORSMiddleware(apiHandler)
+	apiHandler = control.CORSMiddleware(nil)(apiHandler)
 
 	httpSrv := &http.Server{
 		Handler: apiHandler,

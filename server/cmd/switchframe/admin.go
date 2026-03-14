@@ -62,7 +62,7 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 
 	// Cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
 	// Wrapped with CORSMiddleware to handle OPTIONS preflight from cross-origin browsers.
-	certHashHandler := control.CORSMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	certHashHandler := control.CORSMiddleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"hash":    certHash,

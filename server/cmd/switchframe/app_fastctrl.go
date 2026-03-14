@@ -9,7 +9,7 @@ import (
 // initFastControl sets up the fast-control datagram dispatcher with handlers
 // for layout slot position updates and transition position updates.
 func (a *App) initFastControl() {
-	a.fastCtrl = fastctrl.New()
+	a.fastCtrl = fastctrl.NewDispatcher()
 
 	a.fastCtrl.Register(fastctrl.MsgLayoutSlotPosition, a.handleFastLayoutUpdate)
 	a.fastCtrl.Register(fastctrl.MsgTransitionPosition, a.handleFastTransitionUpdate)

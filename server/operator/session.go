@@ -83,7 +83,7 @@ func (sm *SessionManager) AcquireLock(operatorID string, sub Subsystem) error {
 		sm.mu.Unlock()
 		return ErrSessionNotFound
 	}
-	if !ValidSubsystems[sub] {
+	if !IsValidSubsystem(sub) {
 		sm.mu.Unlock()
 		return ErrInvalidSubsystem
 	}

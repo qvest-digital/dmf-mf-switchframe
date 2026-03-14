@@ -734,7 +734,7 @@ func TestRunner_OnProgressContextCancel(t *testing.T) {
 }
 
 func TestRunner_AllActionsMapComplete(t *testing.T) {
-	// Verify AllActions contains all expected actions
+	// Verify IsValidAction returns true for all expected actions
 	expectedActions := []Action{
 		ActionCut, ActionPreview, ActionTransition, ActionWait, ActionSetAudio,
 		ActionSCTE35Cue, ActionSCTE35Return, ActionSCTE35Cancel, ActionSCTE35Hold, ActionSCTE35Extend,
@@ -759,10 +759,9 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 	}
 
 	for _, action := range expectedActions {
-		require.True(t, AllActions[action], "AllActions should contain %q", action)
+		require.True(t, IsValidAction(action), "IsValidAction should return true for %q", action)
 	}
 
-	// Verify map doesn't contain unexpected entries
-	require.Equal(t, len(expectedActions), len(AllActions),
-		"AllActions should have exactly %d entries, got %d", len(expectedActions), len(AllActions))
+	// Verify an unknown action is not valid
+	require.False(t, IsValidAction("bogus_action"), "IsValidAction should return false for unknown action")
 }

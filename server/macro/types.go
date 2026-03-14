@@ -91,8 +91,8 @@ const (
 	ActionCaptionClear Action = "caption_clear"
 )
 
-// AllActions is the set of all valid macro actions.
-var AllActions = map[Action]bool{
+// allActions is the set of all valid macro actions.
+var allActions = map[Action]bool{
 	ActionCut:             true,
 	ActionPreview:         true,
 	ActionTransition:      true,
@@ -153,6 +153,11 @@ var AllActions = map[Action]bool{
 	ActionCaptionMode:     true,
 	ActionCaptionText:     true,
 	ActionCaptionClear:    true,
+}
+
+// IsValidAction reports whether a is a recognized macro action.
+func IsValidAction(a Action) bool {
+	return allActions[a]
 }
 
 // Step is a single operation within a macro sequence.
