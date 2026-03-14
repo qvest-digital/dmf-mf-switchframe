@@ -15,6 +15,7 @@ const (
 	defaultRingBufSize = 4 * 1024 * 1024 // 4MB
 	maxBackoff         = 30 * time.Second
 	initialBackoff     = 1 * time.Second
+	idrGateTimeout     = 2 * time.Second // max time to wait for a keyframe before forcing output
 )
 
 // SRTCallerConfig holds configuration for SRT caller (push mode).
@@ -40,7 +41,8 @@ type SRTCaller struct {
 	ringBuf       *ringBuffer
 	backoff       time.Duration
 	reconnecting  atomic.Bool // guards against duplicate reconnect goroutines
-	pendingIDR    atomic.Bool // when true, drop writes until a keyframe arrives
+	pendingIDR      atomic.Bool  // when true, drop writes until a keyframe arrives
+	pendingIDRSince atomic.Int64 // UnixMilli timestamp when pendingIDR was set (for timeout)
 	bytesWritten  atomic.Int64
 	overflowCount atomic.Int64 // number of ring buffer overflow events
 	state         atomic.Pointer[AdapterState]
@@ -118,14 +120,25 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 
 	switch state {
 	case StateActive:
-		// IDR gating: after a ring buffer overflow during reconnect, drop
-		// all writes until we see a keyframe (RAI in the TS adaptation field).
-		// This prevents decoder artifacts on the remote SRT receiver.
+		// IDR gating: after a reconnect, drop all writes until we see a
+		// keyframe (RAI in the TS adaptation field). This prevents decoder
+		// artifacts on the remote SRT receiver. If no keyframe arrives
+		// within idrGateTimeout (2s), force-clear the gate to prevent
+		// indefinite output hang (e.g., during transitions that produce
+		// only P-frames).
 		if c.pendingIDR.Load() {
 			if !containsKeyframe(tsData) {
-				return len(tsData), nil // drop delta frames silently
+				elapsed := time.Since(time.UnixMilli(c.pendingIDRSince.Load()))
+				if elapsed <= idrGateTimeout {
+					return len(tsData), nil // drop delta frames silently
+				}
+				// Timeout expired — force-clear IDR gate.
+				slog.Warn("SRT IDR gate timeout expired, forcing output",
+					"elapsed", elapsed, "address", c.config.Address)
+				c.pendingIDR.Store(false)
+			} else {
+				c.pendingIDR.Store(false)
 			}
-			c.pendingIDR.Store(false)
 		}
 
 		c.mu.Lock()
@@ -253,7 +266,9 @@ func (c *SRTCaller) reconnectLoop() {
 		// Always gate writes until a keyframe after reconnect.
 		// The remote decoder has lost state — flushing buffered delta
 		// frames would cause decode errors. Discard the ring buffer
-		// and wait for the next keyframe.
+		// and wait for the next keyframe (with a 2s timeout to prevent
+		// indefinite hang if no keyframe arrives).
+		c.pendingIDRSince.Store(time.Now().UnixMilli())
 		c.pendingIDR.Store(true)
 
 		if overflowed {

@@ -778,6 +778,109 @@ func TestSRTCaller_IDRGating_SetWithoutOverflow(t *testing.T) {
 	_ = c.Close()
 }
 
+func TestSRTCaller_IDRGating_TimeoutAfter2Seconds(t *testing.T) {
+	t.Parallel()
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+	c.conn = mock
+	c.state.Store(ptrTo(StateActive))
+
+	// Simulate pendingIDR being set (as after a reconnect).
+	c.pendingIDR.Store(true)
+	c.pendingIDRSince.Store(time.Now().UnixMilli())
+
+	// Write a delta packet — should be dropped (within 2s timeout).
+	deltaPkt := makeTSPacket(0x100, false)
+	n, err := c.Write(deltaPkt)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt), n)
+	require.Zero(t, mock.written.Load(), "delta should be dropped within 2s timeout window")
+	require.True(t, c.pendingIDR.Load(), "pendingIDR should still be set")
+
+	// Now backdate pendingIDRSince to 2.5 seconds ago to simulate timeout.
+	c.pendingIDRSince.Store(time.Now().Add(-2500 * time.Millisecond).UnixMilli())
+
+	// Write another delta packet — should pass through because timeout expired.
+	deltaPkt2 := makeTSPacket(0x100, false)
+	n, err = c.Write(deltaPkt2)
+	require.NoError(t, err)
+	require.Equal(t, len(deltaPkt2), n)
+	require.Equal(t, int64(len(deltaPkt2)), mock.written.Load(),
+		"delta packet should pass through after 2s IDR gating timeout")
+	require.False(t, c.pendingIDR.Load(),
+		"pendingIDR should be cleared after timeout")
+}
+
+func TestSRTCaller_IDRGating_KeyframeClearsBeforeTimeout(t *testing.T) {
+	t.Parallel()
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+	c.conn = mock
+	c.state.Store(ptrTo(StateActive))
+
+	// Simulate pendingIDR being set (as after a reconnect).
+	c.pendingIDR.Store(true)
+	c.pendingIDRSince.Store(time.Now().UnixMilli())
+
+	// Write a keyframe packet within the 2s window — should pass through and clear gate.
+	keyframePkt := makeTSPacket(0x100, true)
+	n, err := c.Write(keyframePkt)
+	require.NoError(t, err)
+	require.Equal(t, len(keyframePkt), n)
+	require.Equal(t, int64(len(keyframePkt)), mock.written.Load(),
+		"keyframe should pass through immediately")
+	require.False(t, c.pendingIDR.Load(),
+		"pendingIDR should be cleared after keyframe, even before timeout")
+}
+
+func TestSRTCaller_IDRGating_ReconnectSetsPendingIDRSince(t *testing.T) {
+	t.Parallel()
+	mock := &mockSRTConn{}
+	c := NewSRTCaller(SRTCallerConfig{
+		Address:        "srt.example.com",
+		Port:           9998,
+		RingBufferSize: 4096,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.cancel = cancel
+	c.state.Store(ptrTo(StateReconnecting))
+
+	// Write small data (no overflow).
+	_, _ = c.ringBuf.Write(make([]byte, 188))
+
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	before := time.Now().UnixMilli()
+	go c.reconnectLoop()
+
+	require.Eventually(t, func() bool {
+		return c.Status().State == StateActive
+	}, 5*time.Second, 50*time.Millisecond)
+	after := time.Now().UnixMilli()
+
+	// pendingIDR should be set.
+	require.True(t, c.pendingIDR.Load())
+
+	// pendingIDRSince should be set to approximately now.
+	since := c.pendingIDRSince.Load()
+	require.GreaterOrEqual(t, since, before, "pendingIDRSince should be >= test start time")
+	require.LessOrEqual(t, since, after, "pendingIDRSince should be <= test end time")
+
+	_ = c.Close()
+}
+
 func TestSRTCaller_BandwidthHintsPassedToConnectFn(t *testing.T) {
 	t.Parallel()
 	var capturedConfig SRTCallerConfig
