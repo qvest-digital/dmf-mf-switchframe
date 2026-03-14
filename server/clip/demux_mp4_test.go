@@ -292,3 +292,38 @@ func TestReadVideoSamples_NegativeCTTSOffset(t *testing.T) {
 	assert.GreaterOrEqual(t, frames[0].pts, int64(0),
 		"PTS should be clamped to 0 when CTTS produces negative composition time")
 }
+
+// --- NALU length normalization edge case tests ---
+// These verify that normalizeNALULengthSize handles truncated data and
+// unsupported length sizes safely. The loop guard (pos+lengthSize <= len(data))
+// prevents out-of-bounds access on truncated data, and the switch default
+// case returns original data for unsupported sizes. No code changes needed.
+
+func TestNormalizeNALULengthSize_TruncatedData(t *testing.T) {
+	// 1 byte of data with lengthSize=2: loop guard prevents panic.
+	data := []byte{0xFF}
+	result := normalizeNALULengthSize(data, 2)
+	assert.Equal(t, data, result, "should return original data when truncated")
+}
+
+func TestNormalizeNALULengthSize_UnsupportedLengthSize(t *testing.T) {
+	// lengthSize=5 is not valid per AVC spec (only 1,2,3,4 allowed).
+	data := []byte{0x00, 0x00, 0x00, 0x04, 0x65, 0x00, 0x00, 0x00}
+	result := normalizeNALULengthSize(data, 5)
+	assert.Equal(t, data, result, "should return original data for unsupported length size")
+}
+
+func TestNormalizeNALULengthSize_LengthSize1(t *testing.T) {
+	// lengthSize=1: single byte length prefix → convert to 4-byte.
+	data := []byte{0x03, 0x65, 0xAA, 0xBB}
+	result := normalizeNALULengthSize(data, 1)
+	expected := []byte{0x00, 0x00, 0x00, 0x03, 0x65, 0xAA, 0xBB}
+	assert.Equal(t, expected, result)
+}
+
+func TestNormalizeNALULengthSize_LengthSize4Passthrough(t *testing.T) {
+	// lengthSize=4: should return data unchanged (fast path).
+	data := []byte{0x00, 0x00, 0x00, 0x03, 0x65, 0xAA, 0xBB}
+	result := normalizeNALULengthSize(data, 4)
+	assert.Equal(t, data, result)
+}
