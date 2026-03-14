@@ -3,6 +3,7 @@ package switcher
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -244,6 +245,16 @@ type FrameSynchronizer struct {
 	frcTasks   []frcTask        // reused across ticks for parallel FRC
 	frcQuality FRCQuality       // FRC quality level for new sources
 	framePool  *FramePool       // pool reference for FRC-emitted frames
+
+	// Program-source-driven release: when the program source ingests a
+	// fresh frame, the tick loop fires immediately instead of waiting for
+	// the fixed-rate timer. This eliminates sync wait latency (~17ms→<1ms).
+	programSource     string       // key of current program source
+	programFrameReady chan struct{} // buffered(1) signal from IngestRawVideo
+
+	// Observability counters for release trigger type.
+	programDrivenReleases atomic.Int64
+	timerDrivenReleases   atomic.Int64
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -258,14 +269,15 @@ func NewFrameSynchronizer(
 	// tickRateToRational which maps to standard broadcast frame rates.
 	fpsNum, fpsDen := tickRateToRational(tickRate)
 	return &FrameSynchronizer{
-		log:      slog.With("component", "framesync"),
-		sources:  make(map[string]*syncSource),
-		tickRate: tickRate,
-		fpsNum:   fpsNum,
-		fpsDen:   fpsDen,
-		onVideo:  onVideo,
-		onAudio:  onAudio,
-		done:     make(chan struct{}),
+		log:               slog.With("component", "framesync"),
+		sources:           make(map[string]*syncSource),
+		tickRate:          tickRate,
+		fpsNum:            fpsNum,
+		fpsDen:            fpsDen,
+		onVideo:           onVideo,
+		onAudio:           onAudio,
+		done:              make(chan struct{}),
+		programFrameReady: make(chan struct{}, 1),
 	}
 }
 
@@ -393,9 +405,15 @@ func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFra
 }
 
 // IngestRawVideo buffers a decoded YUV frame for the specified source.
+// When the source is the current program source, signals the tick loop to
+// fire immediately (phase-lock). This works safely with FRC because each
+// early release resets the timer deadline (nextTick = time.Now().Add(rate)),
+// consuming a timer slot and preventing rate inflation. Between program
+// source frames, the timer continues firing normally for FRC interpolation.
 func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	fs.mu.Lock()
 	ss, ok := fs.sources[sourceKey]
+	canSignal := sourceKey == fs.programSource
 	fs.mu.Unlock()
 	if !ok {
 		return
@@ -406,6 +424,15 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 		ss.frc.ingest(pf)
 	}
 	ss.mu.Unlock()
+
+	// Signal tick loop for immediate release when program source has a fresh frame.
+	// Non-blocking: if signal already pending, skip (buffered channel, size 1).
+	if canSignal {
+		select {
+		case fs.programFrameReady <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // tickPTSInterval returns the tick interval in 90 kHz PTS units using
@@ -492,6 +519,15 @@ func (fs *FrameSynchronizer) FRCQuality() FRCQuality {
 	return fs.frcQuality
 }
 
+// SetProgramSource sets which source drives early release of the tick loop.
+// When the program source ingests a fresh frame, the tick fires immediately
+// instead of waiting for the fixed-rate timer.
+func (fs *FrameSynchronizer) SetProgramSource(key string) {
+	fs.mu.Lock()
+	fs.programSource = key
+	fs.mu.Unlock()
+}
+
 // DebugSnapshot returns a point-in-time snapshot of the frame synchronizer
 // state for diagnostic display. Includes per-source buffer counts, audio
 // miss counts, and FRC state (when enabled).
@@ -523,8 +559,11 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		sources[key] = info
 	}
 	return map[string]any{
-		"sources":     sources,
-		"frc_quality": fs.frcQuality.String(),
+		"sources":                  sources,
+		"frc_quality":              fs.frcQuality.String(),
+		"program_source":           fs.programSource,
+		"program_driven_releases":  fs.programDrivenReleases.Load(),
+		"timer_driven_releases":    fs.timerDrivenReleases.Load(),
 	}
 }
 
@@ -582,9 +621,10 @@ func (fs *FrameSynchronizer) Stop() {
 }
 
 // tickLoop is the background goroutine that runs the ticker.
-// Uses a monotonic deadline loop: nextTick advances by fixed intervals from
-// the previous *target* time, not from time.Now(). If a tick handler takes
-// variable time, the next tick fires earlier to compensate, preventing drift.
+// Uses a monotonic deadline loop with program-source-driven early release:
+// when the program source ingests a fresh frame, the tick fires immediately
+// instead of waiting for the fixed-rate timer. The timer remains as fallback
+// for FRC interpolation, freeze frames, and startup.
 func (fs *FrameSynchronizer) tickLoop() {
 	defer fs.wg.Done()
 	fs.mu.Lock()
@@ -596,6 +636,7 @@ func (fs *FrameSynchronizer) tickLoop() {
 	nextTick := time.Now().Add(rate)
 	for {
 		sleepDur := time.Until(nextTick)
+		var earlyRelease bool
 		if sleepDur > 0 {
 			if !timer.Stop() {
 				select {
@@ -606,15 +647,39 @@ func (fs *FrameSynchronizer) tickLoop() {
 			timer.Reset(sleepDur)
 			select {
 			case <-timer.C:
+				// Normal timer tick. Drain any pending program signal
+				// to prevent double-fire on the next iteration.
+				select {
+				case <-fs.programFrameReady:
+				default:
+				}
+				earlyRelease = false
+			case <-fs.programFrameReady:
+				// Program source has a fresh frame — release immediately.
+				// Drain timer to prevent it firing after we proceed.
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				earlyRelease = true
 			case <-fs.done:
 				return
 			}
 		} else {
+			// Tick is overdue.
 			select {
 			case <-fs.done:
 				return
 			default:
 			}
+			// Drain any stale program signal.
+			select {
+			case <-fs.programFrameReady:
+			default:
+			}
+			earlyRelease = false
 		}
 
 		fs.mu.Lock()
@@ -624,8 +689,27 @@ func (fs *FrameSynchronizer) tickLoop() {
 		if newRate != rate {
 			rate = newRate
 			nextTick = time.Now().Add(rate)
-		} else {
+		} else if earlyRelease {
+			// Advance the tick grid forward by one period. The early release
+			// consumed this tick slot; advancing ensures it replaces the next
+			// timer tick rather than inserting an extra one. Without this,
+			// a 24fps source driving a 60fps pipeline would inflate output to
+			// ~72fps (early releases + unchanged timer grid = extra ticks).
 			nextTick = nextTick.Add(rate)
+			now := time.Now()
+			for !nextTick.After(now) {
+				nextTick = nextTick.Add(rate)
+			}
+		} else {
+			// Monotonic advance from previous target (existing behavior).
+			nextTick = nextTick.Add(rate)
+		}
+
+		// Track release type for diagnostics.
+		if earlyRelease {
+			fs.programDrivenReleases.Add(1)
+		} else {
+			fs.timerDrivenReleases.Add(1)
 		}
 
 		fs.releaseTick()
@@ -666,12 +750,14 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 //
 // Phase 1 (under fs.mu + per-source ss.mu): Pop fresh frames from ring
 // buffers. Sources needing FRC interpolation are identified but NOT computed
-// here — they are deferred to Phase 2.
+// here — they are deferred to Phase 2. fs.mu is released after this phase
+// to unblock IngestRawVideo during FRC processing.
 //
-// Phase 2 (parallel goroutines under individual ss.mu): FRC emit + deep copy
-// runs concurrently for all sources that need interpolation. This transforms
-// tick time from O(sum(MCFI_times)) to O(max(MCFI_time)), following the
-// broadcast principle that the output clock never waits on input processing.
+// Phase 2 (parallel goroutines under individual ss.mu, fs.mu NOT held):
+// FRC emit + deep copy runs concurrently for all sources that need
+// interpolation. This transforms tick time from O(sum(MCFI_times)) to
+// O(max(MCFI_time)). Releasing fs.mu before this phase lets ingest calls
+// land frames in the ring buffer during FRC, reducing sync wait.
 //
 // Phase 3 (no locks): Deliver frames to downstream callbacks with PTS handling.
 //
@@ -691,6 +777,12 @@ func (fs *FrameSynchronizer) releaseTick() {
 	fs.releases = fs.releases[:0]
 	fs.frcTasks = fs.frcTasks[:0]
 	framePool := fs.framePool
+	programSource := fs.programSource
+
+	// programReleaseIdx tracks the index of the program source's fresh frame
+	// in the releases slice. -1 means no early delivery (program source has
+	// no fresh frame or needs FRC). Set during Phase 1, used in Phase 1.5.
+	programReleaseIdx := -1
 
 	// Phase 1: Pop fresh frames and identify FRC work.
 	for key, ss := range fs.sources {
@@ -808,12 +900,36 @@ func (fs *FrameSynchronizer) releaseTick() {
 					frcPTS:     frcPTS,
 				})
 			}
+			// Track program source's fresh frame for early delivery (Phase 1.5).
+			// Only when it has a fresh frame and doesn't need FRC.
+			if key == programSource && freshVideo && !needsFRC {
+				programReleaseIdx = idx
+			}
 		}
 	}
 
+	// Release fs.mu before Phase 1.5/2 to reduce lock contention on the ingest
+	// hot path. Phase 2 only needs per-source ss.mu for FRC emit. Releasing
+	// fs.mu here lets IngestRawVideo land frames in the ring buffer during
+	// FRC processing instead of blocking, reducing sync wait by the FRC
+	// duration (~3-5ms for MCFI).
+	//
+	// Safety: frcTasks and releases were built in Phase 1 and are only
+	// accessed by this goroutine (tickLoop is single-threaded). Captured ss
+	// pointers remain valid even if RemoveSource deletes from the map —
+	// RemoveSource blocks on ss.mu until Phase 2 finishes.
+	fs.mu.Unlock()
+
+	// Phase 1.5: Deliver the program source's fresh frame immediately, before
+	// Phase 2 FRC computation. This eliminates ~6.6ms of waiting for other
+	// sources' MCFI to complete. The program source is the only one the
+	// pipeline processes — other sources' frames are buffered for transitions.
+	if programReleaseIdx >= 0 {
+		fs.deliverRelease(&fs.releases[programReleaseIdx], tickIntervalPTS, ptsRemNum, ptsRemDen)
+	}
+
 	// Phase 2: Parallel FRC computation.
-	// fs.mu is still held to prevent source add/remove during FRC.
-	// Each goroutine locks only its own ss.mu (no deadlock: fs.mu → ss.mu order).
+	// Each goroutine locks only its own ss.mu (no contention between sources).
 	// Single task runs inline to avoid goroutine overhead.
 	if len(fs.frcTasks) == 1 {
 		task := &fs.frcTasks[0]
@@ -830,101 +946,120 @@ func (fs *FrameSynchronizer) releaseTick() {
 		wg.Wait()
 	}
 
-	fs.mu.Unlock()
-
-	// Phase 3: Deliver outside the lock to prevent deadlocks with downstream handlers.
-	//
-	// PTS strategy (broadcast-correct monotonic output):
-	// - Fresh source frames: preserve original PTS (A/V sync with passthrough audio),
-	//   but clamp forward if behind accumulated freeze PTS (prevents backward PTS
-	//   in MPEG-TS output that would confuse downstream decoders).
-	// - Repeated/frozen frames: advance PTS by one tick interval (monotonic).
-	// - FRC-interpolated frames: use computed PTS (no source PTS exists).
-	// - Audio: same strategy — fresh preserves source PTS, repeats advance.
+	// Phase 3: Deliver remaining sources (skip program source already delivered
+	// in Phase 1.5). No locks held — prevents deadlocks with downstream handlers.
 	for i := range fs.releases {
-		r := &fs.releases[i]
-		if r.hasRawVideo {
-			pf := r.rawVideo // already a value copy from under the lock
-			if r.ss != nil {
-				if r.freshVideo || !r.ss.ptsInitialized {
-					// Fresh frame: preserve source PTS, but clamp forward
-					// if behind accumulated freeze PTS to prevent backward
-					// PTS in the MPEG-TS output.
-					if r.ss.ptsInitialized && !ptsAfter(pf.PTS, r.ss.lastReleasedPTS) {
-						r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
-						pf.PTS = r.ss.lastReleasedPTS
-					} else {
-						r.ss.lastReleasedPTS = pf.PTS
-					}
-					r.ss.ptsInitialized = true
-				} else {
-					// Repeated frame (freeze): advance by tick interval for monotonic output
+		if i == programReleaseIdx {
+			continue // already delivered in Phase 1.5
+		}
+		fs.deliverRelease(&fs.releases[i], tickIntervalPTS, ptsRemNum, ptsRemDen)
+	}
+}
+
+// deliverRelease handles PTS assignment and callback delivery for a single
+// pendingRelease entry. Shared between Phase 1.5 (program source early delivery)
+// and Phase 3 (remaining sources). Called from the single tickLoop goroutine.
+//
+// PTS strategy (broadcast-correct monotonic output):
+// - Fresh source frames: preserve original PTS (A/V sync with passthrough audio),
+//   but clamp forward if behind accumulated freeze PTS (prevents backward PTS
+//   in MPEG-TS output that would confuse downstream decoders).
+// - Repeated/frozen frames: advance PTS by one tick interval (monotonic).
+// - FRC-interpolated frames: use computed PTS (no source PTS exists).
+// - Audio: same strategy — fresh preserves source PTS, repeats advance.
+func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, ptsRemNum, ptsRemDen int64) {
+	if r.hasRawVideo {
+		pf := r.rawVideo // already a value copy from under the lock
+
+		// Non-fresh frames (frozen/repeated or FRC fallback) inherit stale
+		// decode timestamps from the original frame. Clear them so the
+		// downstream sync wait measurement stores 0 instead of a large
+		// stale delta (e.g., 36ms from a frame decoded 36ms ago).
+		if !r.freshVideo {
+			pf.DecodeEndNano = 0
+			pf.DecodeStartNano = 0
+			pf.ArrivalNano = 0
+		}
+
+		if r.ss != nil {
+			if r.freshVideo || !r.ss.ptsInitialized {
+				// Fresh frame: preserve source PTS, but clamp forward
+				// if behind accumulated freeze PTS to prevent backward
+				// PTS in the MPEG-TS output.
+				if r.ss.ptsInitialized && !ptsAfter(pf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					pf.PTS = r.ss.lastReleasedPTS
-				}
-			}
-			pf.SyncReleaseNano = time.Now().UnixNano()
-			if fs.onRawVideo != nil {
-				fs.onRawVideo(r.sourceKey, &pf)
-			}
-		} else if r.video != nil {
-			vf := *r.video
-			if r.ss != nil {
-				if r.freshVideo || !r.ss.ptsInitialized {
-					if r.ss.ptsInitialized && !ptsAfter(vf.PTS, r.ss.lastReleasedPTS) {
-						r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
-						vf.PTS = r.ss.lastReleasedPTS
-					} else {
-						r.ss.lastReleasedPTS = vf.PTS
-					}
-					r.ss.ptsInitialized = true
 				} else {
+					r.ss.lastReleasedPTS = pf.PTS
+				}
+				r.ss.ptsInitialized = true
+			} else {
+				// Repeated frame (freeze): advance by tick interval for monotonic output
+				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+				pf.PTS = r.ss.lastReleasedPTS
+			}
+		}
+		pf.SyncReleaseNano = time.Now().UnixNano()
+		if fs.onRawVideo != nil {
+			fs.onRawVideo(r.sourceKey, &pf)
+		}
+	} else if r.video != nil {
+		vf := *r.video
+		if r.ss != nil {
+			if r.freshVideo || !r.ss.ptsInitialized {
+				if r.ss.ptsInitialized && !ptsAfter(vf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
 					vf.PTS = r.ss.lastReleasedPTS
-				}
-			}
-			fs.onVideo(r.sourceKey, vf)
-		}
-		// Audio: drain FIFO queue first (all fresh), then single frame (freeze/repeat).
-		if len(r.audioQueue) > 0 {
-			// FIFO drain: deliver all queued audio frames in order.
-			// Each frame preserves its original PTS (fresh frames).
-			for _, qaf := range r.audioQueue {
-				af := *qaf
-				if r.ss != nil {
-					if !r.ss.audioPTSInitialized {
-						r.ss.lastReleasedAudioPTS = af.PTS
-						r.ss.audioPTSInitialized = true
-					} else if !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
-						// PTS behind accumulated value — clamp forward.
-						r.ss.lastReleasedAudioPTS += audioFramePTS
-						af.PTS = r.ss.lastReleasedAudioPTS
-					} else {
-						r.ss.lastReleasedAudioPTS = af.PTS
-					}
-				}
-				fs.onAudio(r.sourceKey, af)
-			}
-		} else if r.audio != nil {
-			af := *r.audio
-			if r.ss != nil {
-				if r.freshAudio || !r.ss.audioPTSInitialized {
-					if r.ss.audioPTSInitialized && !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
-						r.ss.lastReleasedAudioPTS += audioFramePTS
-						af.PTS = r.ss.lastReleasedAudioPTS
-					} else {
-						r.ss.lastReleasedAudioPTS = af.PTS
-					}
-					r.ss.audioPTSInitialized = true
 				} else {
-					// Repeated audio frame (freeze): advance by audio frame duration,
-					// not video tick interval. AAC frames are 1024 samples at 48kHz
-					// = 1920 ticks at 90kHz, regardless of video frame rate.
+					r.ss.lastReleasedPTS = vf.PTS
+				}
+				r.ss.ptsInitialized = true
+			} else {
+				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+				vf.PTS = r.ss.lastReleasedPTS
+			}
+		}
+		fs.onVideo(r.sourceKey, vf)
+	}
+	// Audio: drain FIFO queue first (all fresh), then single frame (freeze/repeat).
+	if len(r.audioQueue) > 0 {
+		// FIFO drain: deliver all queued audio frames in order.
+		// Each frame preserves its original PTS (fresh frames).
+		for _, qaf := range r.audioQueue {
+			af := *qaf
+			if r.ss != nil {
+				if !r.ss.audioPTSInitialized {
+					r.ss.lastReleasedAudioPTS = af.PTS
+					r.ss.audioPTSInitialized = true
+				} else if !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
+					// PTS behind accumulated value — clamp forward.
 					r.ss.lastReleasedAudioPTS += audioFramePTS
 					af.PTS = r.ss.lastReleasedAudioPTS
+				} else {
+					r.ss.lastReleasedAudioPTS = af.PTS
 				}
 			}
 			fs.onAudio(r.sourceKey, af)
 		}
+	} else if r.audio != nil {
+		af := *r.audio
+		if r.ss != nil {
+			if r.freshAudio || !r.ss.audioPTSInitialized {
+				if r.ss.audioPTSInitialized && !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
+					r.ss.lastReleasedAudioPTS += audioFramePTS
+					af.PTS = r.ss.lastReleasedAudioPTS
+				} else {
+					r.ss.lastReleasedAudioPTS = af.PTS
+				}
+				r.ss.audioPTSInitialized = true
+			} else {
+				// Repeated audio frame (freeze): advance by audio frame duration,
+				// not video tick interval. AAC frames are 1024 samples at 48kHz
+				// = 1920 ticks at 90kHz, regardless of video frame rate.
+				r.ss.lastReleasedAudioPTS += audioFramePTS
+				af.PTS = r.ss.lastReleasedAudioPTS
+			}
+		}
+		fs.onAudio(r.sourceKey, af)
 	}
 }

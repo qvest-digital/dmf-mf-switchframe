@@ -132,6 +132,8 @@ func fastWarpRows(
 	fwdYSlice := mvf.fwdY
 	bwdXSlice := mvf.bwdX
 	bwdYSlice := mvf.bwdY
+	relSlice := mvf.reliability
+	hasReliability := len(relSlice) == mvf.cols*mvf.rows
 
 	subPel := mvf.subPel
 	if subPel < 1 {
@@ -206,10 +208,10 @@ func fastWarpRows(
 			pxFP := int64(px) << fpShift
 			pyFP := int64(py) << fpShift
 
-			sAxFP := pxFP + ((fmvxFP*alphaFP>>fpShift)*mvScaleFP)>>fpShift
-			sAyFP := pyFP + ((fmvyFP*alphaFP>>fpShift)*mvScaleFP)>>fpShift
-			sBxFP := pxFP + ((bmvxFP*invAlphaFP>>fpShift)*mvScaleFP)>>fpShift
-			sByFP := pyFP + ((bmvyFP*invAlphaFP>>fpShift)*mvScaleFP)>>fpShift
+			sAxFP := pxFP - ((fmvxFP*alphaFP>>fpShift)*mvScaleFP)>>fpShift
+			sAyFP := pyFP - ((fmvyFP*alphaFP>>fpShift)*mvScaleFP)>>fpShift
+			sBxFP := pxFP - ((bmvxFP*invAlphaFP>>fpShift)*mvScaleFP)>>fpShift
+			sByFP := pyFP - ((bmvyFP*invAlphaFP>>fpShift)*mvScaleFP)>>fpShift
 
 			// Clamp all positions
 			if sAxFP < 0 {
@@ -275,15 +277,43 @@ func fastWarpRows(
 				int64(srcB[by1v*planeW+bx1v])*bfx*bfy +
 				int64(fpOne)*fpHalf) >> (2 * fpShift)
 
-			// Alpha blend
-			blended := (sA*invAlphaFP + sB*alphaFP + fpHalf) >> fpShift
-			if blended < 0 {
-				blended = 0
-			} else if blended > 255 {
-				blended = 255
+			// MCFI warp blend
+			mcfi := (sA*invAlphaFP + sB*alphaFP + fpHalf) >> fpShift
+
+			// Reliability-weighted fallback: blend between MCFI warp and
+			// simple linear interpolation based on per-block reliability.
+			// This eliminates visible blocking at boundaries between
+			// well-matched and poorly-matched blocks.
+			if hasReliability {
+				// Bilinear interpolation of reliability from 4 nearest blocks
+				r00 := int64(relSlice[i00])
+				r10 := int64(relSlice[i10])
+				r01 := int64(relSlice[i01])
+				r11 := int64(relSlice[i11])
+				relFP := ((r00*invFxFP+r10*fxFP)*invFyFP +
+					(r01*invFxFP+r11*fxFP)*fyFP + fpHalf) >> fpShift
+				// relFP is in [0, 255]; scale to [0, fpOne]
+				relFP = relFP * 257
+
+				if relFP < fpOne {
+					// Linear blend fallback: srcA[px,py] and srcB[px,py] at
+					// the output position (no motion compensation).
+					linearIdx := py*planeW + px
+					linearA := int64(srcA[linearIdx])
+					linearB := int64(srcB[linearIdx])
+					linear := (linearA*invAlphaFP + linearB*alphaFP + fpHalf) >> fpShift
+
+					mcfi = (mcfi*relFP + linear*(int64(fpOne)-relFP) + fpHalf) >> fpShift
+				}
 			}
 
-			dstRow[px] = byte(blended)
+			if mcfi < 0 {
+				mcfi = 0
+			} else if mcfi > 255 {
+				mcfi = 255
+			}
+
+			dstRow[px] = byte(mcfi)
 		}
 	}
 }

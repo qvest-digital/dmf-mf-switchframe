@@ -213,6 +213,7 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 	fs.hme.estimate(fs.prevFrame, fs.currFrame, fs.mvField, frcMESearchRange)
 	medianFilterMVField(fs.mvField)
 	checkConsistency(fs.mvField, 4)
+	computeReliability(fs.mvField)
 	meElapsed := time.Since(meStart)
 	fs.meLastNs = meElapsed.Nanoseconds()
 	fs.mvValid = true

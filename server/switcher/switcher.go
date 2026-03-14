@@ -922,6 +922,7 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 			}
 			fs.AddSource(key)
 		}
+		fs.SetProgramSource(s.programSource)
 		fs.Start()
 		s.log.Info("frame sync enabled", "tick_rate", tickRate)
 	} else {
@@ -1250,8 +1251,14 @@ func (s *Switcher) videoProcessingLoop() {
 		if work.yuvFrame.DecodeStartNano > 0 && work.yuvFrame.DecodeEndNano > 0 {
 			s.lastDecodeNs.Store(work.yuvFrame.DecodeEndNano - work.yuvFrame.DecodeStartNano)
 		}
-		if work.yuvFrame.DecodeEndNano > 0 && work.yuvFrame.SyncReleaseNano > 0 {
-			s.lastSyncWaitNs.Store(work.yuvFrame.SyncReleaseNano - work.yuvFrame.DecodeEndNano)
+		if work.yuvFrame.SyncReleaseNano > 0 {
+			if work.yuvFrame.DecodeEndNano > 0 {
+				s.lastSyncWaitNs.Store(work.yuvFrame.SyncReleaseNano - work.yuvFrame.DecodeEndNano)
+			} else {
+				// FRC-synthesized frame: no decode→sync wait by definition.
+				// Store 0 to prevent stale values from previous fresh frames.
+				s.lastSyncWaitNs.Store(0)
+			}
 		}
 		if work.enqueueNano > 0 {
 			s.lastProcQueueNs.Store(time.Now().UnixNano() - work.enqueueNano)
@@ -1492,6 +1499,10 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.transEngine = engine
 	s.previewSource = sourceKey
 	s.transitionsStarted.Add(1)
+	// During transition, the destination (incoming) source drives the release.
+	if s.frameSync != nil {
+		s.frameSync.SetProgramSource(sourceKey)
+	}
 
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
@@ -1753,9 +1764,18 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues(transType).Inc()
 	}
+	frameSync := s.frameSync
+	programAfterTransition := s.programSource
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
+
+	// Update frame sync program source after unlock.
+	// Completed: programSource was updated to destination.
+	// Aborted: programSource is unchanged (reverts to old program).
+	if frameSync != nil {
+		frameSync.SetProgramSource(programAfterTransition)
+	}
 
 	completeDur := time.Since(completeStart)
 	if aborted {
@@ -2115,6 +2135,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		}
 		oldProgram = s.programSource
 		s.programSource = sourceKey
+		if s.frameSync != nil {
+			s.frameSync.SetProgramSource(sourceKey)
+		}
 		// Bump program epoch so in-flight frames from the old program
 		// source are discarded in videoProcessingLoop.
 		s.programEpoch.Add(1)

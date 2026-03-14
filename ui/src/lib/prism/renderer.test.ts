@@ -76,15 +76,48 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(0);
 		});
 
-		it('skips frame when video is 300ms+ ahead of audio', () => {
-			// 300ms exceeds the 250ms look-ahead tolerance — should NOT draw.
-			// With reduced audio buffer (HIGH_WATER = 200ms), 300ms ahead
-			// indicates a PTS discontinuity, not normal pipeline latency.
+		it('draws frame when video is 300ms ahead of audio', () => {
+			// 300ms is within the 500ms look-ahead tolerance — should draw.
+			// Server-side frame sync and mixer can introduce PTS offsets of
+			// 200-400ms after cuts/transitions; this must not freeze the display.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
 			buffer.addFrame(new MockVideoFrame(1_300_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('draws frame when video is 450ms ahead of audio (typical post-cut offset)', () => {
+			// After cuts/fades, the server's frame sync (video) and mixer
+			// (audio) rewrite PTS independently, creating offsets of ~400-500ms.
+			// The 500ms tolerance handles this common case.
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_450_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('skips frame when video is 600ms+ ahead of audio (low queue)', () => {
+			// 600ms exceeds the 500ms base look-ahead tolerance and the queue
+			// isn't under pressure — should skip.
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_600_000) as unknown as VideoFrame);
 
 			renderer.renderOnce();
 
@@ -222,6 +255,74 @@ describe('PrismRenderer', () => {
 			expect(diag.currentAudioPTS).toBe(5_000_000);
 			// AV sync should reflect only the new source (0ms delta)
 			expect(diag.avSyncMs).toBe(0);
+		});
+	});
+
+	describe('queue-pressure desync recovery', () => {
+		it('draws frame when video is 800ms ahead and queue is near capacity', () => {
+			// When the queue is at 2/3 capacity (60+ frames), the look-ahead
+			// tolerance extends to 1 second to prevent permanent freeze from
+			// persistent server-side PTS offset after cuts/transitions.
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// Fill queue to near capacity with frames 800ms ahead of audio
+			for (let i = 0; i < 70; i++) {
+				buffer.addFrame(new MockVideoFrame(1_800_000 + i * 16_667) as unknown as VideoFrame);
+			}
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+		});
+
+		it('still skips when video is 1.5s ahead even under queue pressure', () => {
+			// Even under queue pressure, offsets > 1 second are treated as
+			// PTS discontinuities — not normal drift.
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			for (let i = 0; i < 70; i++) {
+				buffer.addFrame(new MockVideoFrame(2_500_000 + i * 16_667) as unknown as VideoFrame);
+			}
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(0);
+		});
+
+		it('recovers from persistent desync after cuts (real-world scenario)', () => {
+			// Simulates the real-world bug: after several cuts, video PTS is
+			// ~445ms ahead of audio PTS. Queue fills to capacity at 60fps.
+			// Renderer should draw frames continuously, not freeze.
+			let audioPTS = 10_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			const PTS_OFFSET = 445_000; // 445ms video-ahead-of-audio
+
+			// Fill queue with 90 frames (capacity), all 445ms ahead of audio
+			for (let i = 0; i < 90; i++) {
+				const framePTS = audioPTS + PTS_OFFSET + i * 16_667;
+				buffer.addFrame(new MockVideoFrame(framePTS) as unknown as VideoFrame);
+			}
+
+			// Render multiple ticks, advancing audio PTS each time
+			let totalDrawn = 0;
+			for (let tick = 0; tick < 10; tick++) {
+				renderer.renderOnce();
+				audioPTS += 16_667; // advance audio by one frame interval
+				const diag = renderer.getDiagnostics();
+				totalDrawn = diag.framesDrawn;
+			}
+
+			// Should have drawn frames on every tick (not frozen)
+			expect(totalDrawn).toBeGreaterThanOrEqual(8);
 		});
 	});
 

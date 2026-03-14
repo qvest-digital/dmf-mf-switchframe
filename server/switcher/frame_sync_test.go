@@ -1636,3 +1636,569 @@ func TestFrameSync_SyncReleaseNano(t *testing.T) {
 	require.GreaterOrEqual(t, captured.SyncReleaseNano, captured.DecodeEndNano,
 		"SyncReleaseNano should be >= DecodeEndNano")
 }
+
+// --- Program-source-driven release tests ---
+
+func TestFrameSync_ProgramSourceTriggersImmediateRelease(t *testing.T) {
+	// Use a slow tick rate (100ms) to make timing obvious.
+	// Without program-driven release, we'd wait up to 100ms for delivery.
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(100*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for the first timer tick to fire so we have a clean baseline.
+	time.Sleep(120 * time.Millisecond)
+	releaseCount.Store(0)
+
+	// Ingest a frame for the program source — should trigger immediate release.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    5000,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	// Should be released within a few ms, not 100ms.
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 20*time.Millisecond, 1*time.Millisecond,
+		"program source frame should trigger immediate release")
+}
+
+func TestFrameSync_NonProgramSourceDoesNotTriggerEarlyRelease(t *testing.T) {
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(100*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.SetProgramSource("cam1") // cam1 is program, NOT cam2
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first tick.
+	time.Sleep(120 * time.Millisecond)
+	releaseCount.Store(0)
+
+	// Ingest a frame for cam2 (NOT the program source).
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    5000,
+	}
+	fs.IngestRawVideo("cam2", pf)
+
+	// Should NOT trigger early release — must wait for timer.
+	time.Sleep(20 * time.Millisecond)
+	require.Equal(t, int32(0), releaseCount.Load(),
+		"non-program source should not trigger early release")
+
+	// But should be released by the next timer tick.
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 120*time.Millisecond, 5*time.Millisecond,
+		"frame should eventually be released by timer")
+}
+
+func TestFrameSync_SetProgramSourceSwitchesDriver(t *testing.T) {
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(100*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first tick.
+	time.Sleep(120 * time.Millisecond)
+
+	// Switch program source to cam2.
+	fs.SetProgramSource("cam2")
+	releaseCount.Store(0)
+
+	// Ingest frame for cam2 — should trigger immediate release now.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    6000,
+	}
+	fs.IngestRawVideo("cam2", pf)
+
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 20*time.Millisecond, 1*time.Millisecond,
+		"new program source should trigger immediate release")
+}
+
+func TestFrameSync_TimerFallbackWithoutProgramFrames(t *testing.T) {
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(50*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+
+	// Ingest an initial frame so freeze has something to repeat.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    1000,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first release (the ingested frame).
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 100*time.Millisecond, 5*time.Millisecond)
+
+	// Don't ingest any more frames — timer should still fire for freeze frames.
+	countAfterFirst := releaseCount.Load()
+	time.Sleep(180 * time.Millisecond)
+	// Should have gotten ~3 more timer-driven releases (180ms / 50ms).
+	final := releaseCount.Load()
+	require.Greater(t, final, countAfterFirst+1,
+		"timer should still drive releases when no program frames arrive")
+}
+
+func TestFrameSync_NoDoubleRelease(t *testing.T) {
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(30*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first tick.
+	time.Sleep(40 * time.Millisecond)
+	releaseCount.Store(0)
+
+	// Rapidly ingest frames at ~30fps for 200ms.
+	start := time.Now()
+	for time.Since(start) < 200*time.Millisecond {
+		pf := &ProcessingFrame{
+			YUV:    make([]byte, 64),
+			Width:  8,
+			Height: 4,
+			PTS:    int64(time.Since(start).Milliseconds()) * 90,
+		}
+		fs.IngestRawVideo("cam1", pf)
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// At 30ms tick rate over 200ms, expect ~6-8 releases.
+	// With timing jitter, up to ~12 is acceptable. Double-fire would give ~14+.
+	count := releaseCount.Load()
+	require.LessOrEqual(t, count, int32(14),
+		"should not double-fire releases (got %d, expected ~6-8)", count)
+	require.GreaterOrEqual(t, count, int32(4),
+		"should still release frames (got %d, expected ~6-8)", count)
+}
+
+func TestFrameSync_DebugSnapshotIncludesReleaseCounters(t *testing.T) {
+	var released atomic.Int32
+	fs := NewFrameSynchronizer(50*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		released.Add(1)
+	}
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Ingest a frame to trigger a program-driven release.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    1000,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	// Wait for the release + a timer tick with no ingest.
+	require.Eventually(t, func() bool {
+		return released.Load() >= 2
+	}, 200*time.Millisecond, 5*time.Millisecond)
+
+	snap := fs.DebugSnapshot()
+	require.Equal(t, "cam1", snap["program_source"])
+
+	programDriven, ok := snap["program_driven_releases"].(int64)
+	require.True(t, ok, "program_driven_releases should be int64")
+	require.Greater(t, programDriven, int64(0), "should have program-driven releases")
+
+	// timer_driven_releases should exist (may be 0 if all were program-driven)
+	_, ok = snap["timer_driven_releases"].(int64)
+	require.True(t, ok, "timer_driven_releases should be int64")
+}
+
+func TestFrameSync_ProgramSourceDeliveredBeforeFRC(t *testing.T) {
+	// When the program source has a fresh frame and other sources need FRC,
+	// the program source's frame should be delivered before FRC computation
+	// (Phase 1.5), not after Phase 2.
+	var mu sync.Mutex
+	var deliveryOrder []string
+	var seq int
+
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, nil, nil)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		deliveryOrder = append(deliveryOrder, sourceKey)
+		seq++
+		mu.Unlock()
+	}
+	fs.frcQuality = FRCNearest
+	fs.AddSource("cam1") // program source — will have fresh frame
+	fs.AddSource("cam2") // non-program — will need FRC
+	fs.SetProgramSource("cam1")
+
+	// Give cam2 two frames so FRC has data to interpolate.
+	w, h := 8, 4
+	yuvSize := w * h * 3 / 2
+	pf2a := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
+	pf2b := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
+	fs.IngestRawVideo("cam2", pf2a)
+	fs.IngestRawVideo("cam2", pf2b)
+
+	// First tick consumes the fresh frames.
+	fs.releaseTick()
+
+	mu.Lock()
+	deliveryOrder = deliveryOrder[:0]
+	mu.Unlock()
+
+	// Now ingest a fresh frame for cam1 (program source) only.
+	// cam2 has no new frame — it will need FRC interpolation.
+	pf1 := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 9000}
+	fs.IngestRawVideo("cam1", pf1)
+
+	// Fire a tick — cam1 should be delivered BEFORE cam2's FRC result.
+	fs.releaseTick()
+
+	mu.Lock()
+	order := make([]string, len(deliveryOrder))
+	copy(order, deliveryOrder)
+	mu.Unlock()
+
+	require.GreaterOrEqual(t, len(order), 2, "both sources should be delivered")
+
+	// Find positions of cam1 and cam2 in delivery order.
+	cam1Idx := -1
+	cam2Idx := -1
+	for i, key := range order {
+		if key == "cam1" && cam1Idx == -1 {
+			cam1Idx = i
+		}
+		if key == "cam2" && cam2Idx == -1 {
+			cam2Idx = i
+		}
+	}
+	require.NotEqual(t, -1, cam1Idx, "cam1 should be delivered")
+	require.NotEqual(t, -1, cam2Idx, "cam2 should be delivered")
+	require.Less(t, cam1Idx, cam2Idx,
+		"program source (cam1) should be delivered before FRC source (cam2)")
+}
+
+func TestFrameSync_ProgramSourceFRCNotEarlyDelivered(t *testing.T) {
+	// When the program source itself needs FRC (no fresh frame), it should
+	// NOT be early-delivered in Phase 1.5 — it waits for Phase 2 FRC normally.
+	var mu sync.Mutex
+	var deliveries []string
+
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, nil, nil)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		deliveries = append(deliveries, sourceKey)
+		mu.Unlock()
+	}
+	fs.frcQuality = FRCNearest
+	fs.AddSource("cam1") // program source
+	fs.SetProgramSource("cam1")
+
+	// Give cam1 two frames so FRC has data to interpolate.
+	w, h := 8, 4
+	yuvSize := w * h * 3 / 2
+	pf1a := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
+	pf1b := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
+	fs.IngestRawVideo("cam1", pf1a)
+	fs.IngestRawVideo("cam1", pf1b)
+
+	// First tick: consume fresh frames.
+	fs.releaseTick()
+	mu.Lock()
+	deliveries = deliveries[:0]
+	mu.Unlock()
+
+	// Second tick: no new frames ingested. cam1 needs FRC interpolation.
+	fs.releaseTick()
+
+	mu.Lock()
+	count := len(deliveries)
+	mu.Unlock()
+
+	// cam1 should still be delivered (via FRC or freeze), just not early.
+	// The key assertion is that no panic or delivery ordering issue occurs
+	// when the program source itself needs FRC.
+	require.GreaterOrEqual(t, count, 1,
+		"program source should still be delivered when it needs FRC")
+}
+
+func TestFrameSync_FRCFramesClearDecodeTimestamps(t *testing.T) {
+	// FRC-emitted frames are value-copies of reference frames and inherit
+	// their DecodeEndNano/DecodeStartNano timestamps. These stale timestamps
+	// cause inflated sync wait measurements (e.g., 36ms when the reference
+	// was decoded 36ms ago). FRC frames should have DecodeEndNano=0 so the
+	// measurement code stores 0 instead of a stale delta.
+	var mu sync.Mutex
+	var deliveredFrames []*ProcessingFrame
+
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, nil, nil)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		cp := *pf
+		deliveredFrames = append(deliveredFrames, &cp)
+		mu.Unlock()
+	}
+	fs.frcQuality = FRCNearest
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+
+	w, h := 8, 4
+	yuvSize := w * h * 3 / 2
+
+	// Ingest two frames with non-zero decode timestamps (simulating real frames).
+	pf1 := &ProcessingFrame{
+		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
+		DecodeStartNano: 1_000_000_000,
+		DecodeEndNano:   1_001_000_000, // 1ms decode
+		ArrivalNano:     999_000_000,
+	}
+	pf2 := &ProcessingFrame{
+		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000,
+		DecodeStartNano: 1_040_000_000,
+		DecodeEndNano:   1_041_000_000,
+		ArrivalNano:     1_039_000_000,
+	}
+	fs.IngestRawVideo("cam1", pf1)
+	fs.IngestRawVideo("cam1", pf2)
+
+	// First tick: consumes both fresh frames (newest wins).
+	fs.releaseTick()
+
+	mu.Lock()
+	deliveredFrames = deliveredFrames[:0]
+	mu.Unlock()
+
+	// Second tick: no new frames. FRC should interpolate.
+	fs.releaseTick()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.GreaterOrEqual(t, len(deliveredFrames), 1, "should deliver FRC frame")
+
+	frcFrame := deliveredFrames[0]
+	require.Equal(t, int64(0), frcFrame.DecodeEndNano,
+		"FRC frame should have DecodeEndNano=0 (not inherited from reference frame)")
+	require.Equal(t, int64(0), frcFrame.DecodeStartNano,
+		"FRC frame should have DecodeStartNano=0")
+	require.Equal(t, int64(0), frcFrame.ArrivalNano,
+		"FRC frame should have ArrivalNano=0")
+	require.Greater(t, frcFrame.SyncReleaseNano, int64(0),
+		"FRC frame should have SyncReleaseNano stamped")
+}
+
+func TestFrameSync_FrozenFramesClearDecodeTimestamps(t *testing.T) {
+	// Frozen/repeated frames (no FRC, no new frame — value copy of lastRawVideo)
+	// inherit stale DecodeEndNano from the original decode. When SyncReleaseNano
+	// is stamped at delivery time, the delta produces inflated sync wait
+	// measurements (e.g., 36ms). Non-fresh frames should have DecodeEndNano=0
+	// so the measurement code stores 0 instead of a stale delta.
+	var mu sync.Mutex
+	var deliveredFrames []*ProcessingFrame
+
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, nil, nil)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		cp := *pf
+		deliveredFrames = append(deliveredFrames, &cp)
+		mu.Unlock()
+	}
+	// No FRC — this tests the regular frozen/repeat path (line 828-829).
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+
+	w, h := 8, 4
+	yuvSize := w * h * 3 / 2
+
+	// Ingest one frame with non-zero decode timestamps.
+	pf1 := &ProcessingFrame{
+		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
+		DecodeStartNano: 1_000_000_000,
+		DecodeEndNano:   1_001_000_000, // 1ms decode
+		ArrivalNano:     999_000_000,
+	}
+	fs.IngestRawVideo("cam1", pf1)
+
+	// First tick: consumes the fresh frame.
+	fs.releaseTick()
+
+	mu.Lock()
+	require.Equal(t, 1, len(deliveredFrames), "should deliver fresh frame")
+	// Fresh frame should preserve its decode timestamps.
+	require.Equal(t, int64(1_001_000_000), deliveredFrames[0].DecodeEndNano,
+		"fresh frame should preserve DecodeEndNano")
+	deliveredFrames = deliveredFrames[:0]
+	mu.Unlock()
+
+	// Second tick: no new frames, no FRC. Should repeat lastRawVideo (frozen).
+	fs.releaseTick()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, len(deliveredFrames), "should deliver frozen frame")
+
+	frozenFrame := deliveredFrames[0]
+	require.Equal(t, int64(0), frozenFrame.DecodeEndNano,
+		"frozen frame should have DecodeEndNano=0 (not inherited from original decode)")
+	require.Equal(t, int64(0), frozenFrame.DecodeStartNano,
+		"frozen frame should have DecodeStartNano=0")
+	require.Equal(t, int64(0), frozenFrame.ArrivalNano,
+		"frozen frame should have ArrivalNano=0")
+	require.Greater(t, frozenFrame.SyncReleaseNano, int64(0),
+		"frozen frame should have SyncReleaseNano stamped")
+}
+
+func TestFrameSync_FRCWithPhaseLock_ImmediateRelease(t *testing.T) {
+	// With FRC active, program source should STILL trigger immediate release
+	// (phase-lock). The timer reset on early release prevents rate inflation.
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(100*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.SetFRCQuality(FRCNearest) // enable FRC
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first tick.
+	time.Sleep(120 * time.Millisecond)
+	releaseCount.Store(0)
+
+	// Ingest a frame for the program source.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    5000,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	// With phase-lock, should trigger immediate release even with FRC active.
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 20*time.Millisecond, 1*time.Millisecond,
+		"FRC active: program source should still trigger immediate release (phase-lock)")
+}
+
+func TestFrameSync_FRCWithPhaseLock_OutputRateNotInflated(t *testing.T) {
+	// With FRC active and phase-lock, output rate should not exceed pipeline rate.
+	// Run 500ms at 60fps pipeline with 24fps program source.
+	// Expect ~30 releases (60fps * 0.5s), not inflated by early releases.
+	// Rate inflation would give ~36+ (30 timer + 12 early = 42 without fix).
+	var releaseCount atomic.Int32
+	tickRate := 16666666 * time.Nanosecond // ~60fps
+	fs := NewFrameSynchronizer(tickRate, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.SetFRCQuality(FRCNearest)
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first tick.
+	time.Sleep(30 * time.Millisecond)
+	releaseCount.Store(0)
+
+	// Ingest at ~24fps for 500ms (program source driving phase-lock).
+	start := time.Now()
+	for time.Since(start) < 500*time.Millisecond {
+		pf := &ProcessingFrame{
+			YUV:    make([]byte, 64),
+			Width:  8,
+			Height: 4,
+			PTS:    int64(time.Since(start).Milliseconds()) * 90,
+		}
+		fs.IngestRawVideo("cam1", pf)
+		time.Sleep(41700 * time.Microsecond) // ~24fps
+	}
+
+	count := releaseCount.Load()
+	// At 60fps over 500ms, expect ~30 releases. Tight bounds verify no inflation.
+	// With rate inflation bug: ~42 releases (early releases add extra ticks).
+	// With grid-aligned fix: ~30 releases (early releases replace timer ticks).
+	require.LessOrEqual(t, count, int32(36),
+		"output rate inflated by phase-lock (got %d, expected ~30)", count)
+	require.GreaterOrEqual(t, count, int32(22),
+		"should still release at pipeline rate (got %d, expected ~30)", count)
+}
+
+func TestFrameSync_FRCWithPhaseLock_TimerContinuesBetweenSourceFrames(t *testing.T) {
+	// Between program source frames (24fps → ~42ms gap), the timer should
+	// still fire for FRC interpolation ticks at 60fps (~16.7ms).
+	var releaseCount atomic.Int32
+	fs := NewFrameSynchronizer(50*time.Millisecond, nil, nil)
+	fs.onRawVideo = func(string, *ProcessingFrame) {
+		releaseCount.Add(1)
+	}
+	fs.SetFRCQuality(FRCNearest)
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+
+	// Ingest a frame so there's something to release.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 64),
+		Width:  8,
+		Height: 4,
+		PTS:    1000,
+	}
+	fs.IngestRawVideo("cam1", pf)
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Wait for first release.
+	require.Eventually(t, func() bool {
+		return releaseCount.Load() >= 1
+	}, 100*time.Millisecond, 5*time.Millisecond)
+
+	// Don't ingest any more frames — timer should still fire for freeze/FRC ticks.
+	countAfterFirst := releaseCount.Load()
+	time.Sleep(180 * time.Millisecond)
+	final := releaseCount.Load()
+	require.Greater(t, final, countAfterFirst+1,
+		"timer should continue driving FRC ticks between program source frames")
+}

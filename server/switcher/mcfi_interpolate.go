@@ -110,6 +110,7 @@ func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha 
 			s.hme.estimate(pfA, pfB, s.mvf, frcMESearchRange)
 			medianFilterMVField(s.mvf)
 			checkConsistency(s.mvf, 4)
+			computeReliability(s.mvf)
 			s.mvValid = true
 		}
 	}
@@ -266,17 +267,34 @@ func smoothWarpBlendPlane(
 
 			// Sample from each source at displaced position
 			sA := bilinearSample(srcA, planeW, planeH,
-				float64(px)+fmvx*alpha*mvScale,
-				float64(py)+fmvy*alpha*mvScale)
+				float64(px)-fmvx*alpha*mvScale,
+				float64(py)-fmvy*alpha*mvScale)
 			sB := bilinearSample(srcB, planeW, planeH,
-				float64(px)+bmvx*invAlpha*mvScale,
-				float64(py)+bmvy*invAlpha*mvScale)
+				float64(px)-bmvx*invAlpha*mvScale,
+				float64(py)-bmvy*invAlpha*mvScale)
 
-			// Smooth alpha-weighted blend of both warps.
-			// Avoids per-block occlusion switching which causes hard
-			// boundaries when adjacent blocks have different flags.
+			// MCFI warp blend
+			mcfiVal := float64(sA)*invAlpha + float64(sB)*alpha
+
+			// Reliability-weighted fallback: blend between MCFI and
+			// simple linear interpolation based on per-block reliability.
+			if len(mvf.reliability) == mvf.cols*mvf.rows {
+				r00 := float64(mvf.reliability[i00])
+				r10 := float64(mvf.reliability[i10])
+				r01 := float64(mvf.reliability[i01])
+				r11 := float64(mvf.reliability[i11])
+				rel := (r00*invFx+r10*fx)*invFy + (r01*invFx+r11*fx)*fy
+				rel /= 255.0 // normalize to [0, 1]
+
+				if rel < 1.0 {
+					linearIdx := py*planeW + px
+					linearVal := float64(srcA[linearIdx])*invAlpha + float64(srcB[linearIdx])*alpha
+					mcfiVal = mcfiVal*rel + linearVal*(1.0-rel)
+				}
+			}
+
 			idx := rowOff + px
-			dst[idx] = byte(float64(sA)*invAlpha + float64(sB)*alpha + 0.5)
+			dst[idx] = byte(mcfiVal + 0.5)
 		}
 	}
 }

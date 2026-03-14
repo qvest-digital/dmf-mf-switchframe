@@ -244,16 +244,23 @@ export class PrismRenderer {
 				}
 			}
 
-			// Look-ahead for video-ahead-of-audio: the client-side audio
-			// ring buffer adds latency relative to video. Draw the earliest
-			// frame if it's within tolerance to keep the display responsive.
-			// 250ms tolerance covers the audio buffer max depth (HIGH_WATER
-			// = 200ms) with margin, while rejecting PTS discontinuities.
+			// Look-ahead for video-ahead-of-audio: the server's frame sync
+			// (video PTS) and mixer (audio PTS) rewrite timestamps
+			// independently, so after cuts/transitions video PTS can be
+			// 200-500ms ahead of audio. Base tolerance of 500ms covers
+			// audio buffer depth (HIGH_WATER=200ms) plus typical server
+			// PTS offset. When the queue is under pressure (>2/3 capacity),
+			// tolerance extends to 1s to prevent permanent display freeze
+			// from persistent desync.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
-				if (peek && peek.timestamp > targetPTS &&
-					peek.timestamp - targetPTS < 250_000) {
-					frame = this.videoBuffer.takeNextFrame();
+				if (peek && peek.timestamp > targetPTS) {
+					const gap = peek.timestamp - targetPTS;
+					const stats = this.videoBuffer.getStats();
+					const tolerance = stats.queueSize > 60 ? 1_000_000 : 500_000;
+					if (gap < tolerance) {
+						frame = this.videoBuffer.takeNextFrame();
+					}
 				}
 			}
 		}

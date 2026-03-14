@@ -35,6 +35,11 @@ type motionVectorField struct {
 	// Occlusion: 0=valid, 1=fwd-occluded, 2=bwd-occluded, 3=both
 	occlusion []byte
 
+	// Per-block reliability for SAD-aware warp blending (0=unreliable, 255=fully reliable).
+	// Computed from SAD + occlusion after consistency check. Used by the warp to
+	// blend between MCFI and simple linear interpolation at block boundaries.
+	reliability []uint8
+
 	// Scratch buffers for median filter (avoids per-call allocation)
 	medFwdX []int16
 	medFwdY []int16
@@ -48,18 +53,24 @@ func newMotionVectorField(width, height, blockSize int) *motionVectorField {
 	rows := height / blockSize
 	n := cols * rows
 
+	rel := make([]uint8, n)
+	for i := range rel {
+		rel[i] = 255 // default: fully reliable until computeReliability says otherwise
+	}
+
 	return &motionVectorField{
-		blockSize: blockSize,
-		cols:      cols,
-		rows:      rows,
-		subPel:    1,
-		fwdX:      make([]int16, n),
-		fwdY:      make([]int16, n),
-		fwdSAD:    make([]uint32, n),
-		bwdX:      make([]int16, n),
-		bwdY:      make([]int16, n),
-		bwdSAD:    make([]uint32, n),
-		occlusion: make([]byte, n),
+		blockSize:   blockSize,
+		cols:        cols,
+		rows:        rows,
+		subPel:      1,
+		fwdX:        make([]int16, n),
+		fwdY:        make([]int16, n),
+		fwdSAD:      make([]uint32, n),
+		bwdX:        make([]int16, n),
+		bwdY:        make([]int16, n),
+		bwdSAD:      make([]uint32, n),
+		occlusion:   make([]byte, n),
+		reliability: rel,
 	}
 }
 
@@ -74,6 +85,7 @@ func (mvf *motionVectorField) reset() {
 		mvf.bwdY[i] = 0
 		mvf.bwdSAD[i] = 0
 		mvf.occlusion[i] = 0
+		mvf.reliability[i] = 255
 	}
 }
 
@@ -1048,6 +1060,62 @@ func checkConsistency(mvf *motionVectorField, threshold int) {
 				occ |= 2
 			}
 			mvf.occlusion[idx] = occ
+		}
+	}
+}
+
+// computeReliability fills mvf.reliability from SAD values and occlusion flags.
+// Blocks with low SAD (good ME match) get high reliability (255); blocks with
+// high SAD or occlusion get low reliability (0). The warp uses this to blend
+// between MCFI and simple linear interpolation, eliminating visible blocking
+// at boundaries between well-matched and poorly-matched blocks.
+//
+// Must be called after checkConsistency (which populates occlusion flags).
+func computeReliability(mvf *motionVectorField) {
+	bs := mvf.blockSize
+	pixelsPerBlock := uint32(bs * bs) // 256 for 16x16
+
+	// SAD thresholds in per-pixel-average units.
+	// Below sadLow → fully reliable (255). Above sadHigh → unreliable (0).
+	// Between → linear ramp. Values tuned for typical broadcast content:
+	// 5 per pixel is normal motion, 20 per pixel is extreme mismatch.
+	const sadLow = 5   // avg SAD per pixel: good match
+	const sadHigh = 20  // avg SAD per pixel: bad match
+	const sadRange = sadHigh - sadLow
+
+	n := mvf.cols * mvf.rows
+	if len(mvf.reliability) < n {
+		mvf.reliability = make([]uint8, n)
+	}
+
+	for i := 0; i < n; i++ {
+		// Both-occluded blocks are unreliable regardless of SAD.
+		if mvf.occlusion[i] == 3 {
+			mvf.reliability[i] = 0
+			continue
+		}
+
+		// Use the worse (higher) of forward and backward SAD.
+		sad := mvf.fwdSAD[i]
+		if mvf.bwdSAD[i] > sad {
+			sad = mvf.bwdSAD[i]
+		}
+
+		// Convert to per-pixel average.
+		avgSAD := sad / pixelsPerBlock
+
+		if avgSAD <= sadLow {
+			mvf.reliability[i] = 255
+		} else if avgSAD >= sadHigh {
+			mvf.reliability[i] = 0
+		} else {
+			// Linear ramp from 255 to 0.
+			mvf.reliability[i] = uint8(255 * (sadHigh - avgSAD) / sadRange)
+		}
+
+		// Single-direction occlusion: reduce reliability by half.
+		if mvf.occlusion[i] != 0 {
+			mvf.reliability[i] /= 2
 		}
 	}
 }
