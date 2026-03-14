@@ -27,6 +27,19 @@ type recallPresetResponse struct {
 	Warnings []string      `json:"warnings,omitempty"`
 }
 
+// registerPresetRoutes registers preset-related API routes on the given mux.
+func (a *API) registerPresetRoutes(mux *http.ServeMux) {
+	if a.presetStore == nil {
+		return
+	}
+	mux.HandleFunc("GET /api/presets", a.handleListPresets)
+	mux.HandleFunc("POST /api/presets", a.handleCreatePreset)
+	mux.HandleFunc("GET /api/presets/{id}", a.handleGetPreset)
+	mux.HandleFunc("PUT /api/presets/{id}", a.handleUpdatePreset)
+	mux.HandleFunc("DELETE /api/presets/{id}", a.handleDeletePreset)
+	mux.HandleFunc("POST /api/presets/{id}/recall", a.handleRecallPreset)
+}
+
 // handleListPresets returns all presets.
 func (a *API) handleListPresets(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

@@ -8,6 +8,16 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 )
 
+// registerKeyRoutes registers upstream key API routes on the given mux.
+func (a *API) registerKeyRoutes(mux *http.ServeMux) {
+	if a.keyer == nil {
+		return
+	}
+	mux.HandleFunc("PUT /api/sources/{source}/key", a.handleSetSourceKey)
+	mux.HandleFunc("GET /api/sources/{source}/key", a.handleGetSourceKey)
+	mux.HandleFunc("DELETE /api/sources/{source}/key", a.handleDeleteSourceKey)
+}
+
 // handleSetSourceKey configures an upstream key for a source.
 func (a *API) handleSetSourceKey(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")

@@ -18,6 +18,16 @@ type captionTextRequest struct {
 	Clear   bool   `json:"clear,omitempty"`
 }
 
+// registerCaptionRoutes registers caption-related API routes on the given mux.
+func (a *API) registerCaptionRoutes(mux *http.ServeMux) {
+	if a.captionMgr == nil {
+		return
+	}
+	mux.HandleFunc("POST /api/captions/mode", a.handleCaptionMode)
+	mux.HandleFunc("POST /api/captions/text", a.handleCaptionText)
+	mux.HandleFunc("GET /api/captions/state", a.handleCaptionState)
+}
+
 // handleCaptionMode sets the caption operating mode (off/passthrough/author).
 func (a *API) handleCaptionMode(w http.ResponseWriter, r *http.Request) {
 	if a.captionMgr == nil {

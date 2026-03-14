@@ -69,6 +69,20 @@ type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
 }
 
+// registerAudioRoutes registers audio-related API routes on the given mux.
+func (a *API) registerAudioRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/audio/trim", a.handleAudioTrim)
+	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
+	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
+	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
+	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
+	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
+	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
+	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
+	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
+	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
+}
+
 // handleAudioTrim sets the input trim for a source channel.
 func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)

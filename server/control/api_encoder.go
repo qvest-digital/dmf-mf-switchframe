@@ -19,6 +19,12 @@ type encoderRequest struct {
 	Encoder string `json:"encoder"`
 }
 
+// registerEncoderRoutes registers encoder-related API routes on the given mux.
+func (a *API) registerEncoderRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/encoder", a.handleGetEncoder)
+	mux.HandleFunc("PUT /api/encoder", a.handleSetEncoder)
+}
+
 // handleGetEncoder returns the current encoder and available encoder options.
 func (a *API) handleGetEncoder(w http.ResponseWriter, _ *http.Request) {
 	resp := encoderResponse{

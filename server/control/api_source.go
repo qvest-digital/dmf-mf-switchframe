@@ -12,6 +12,14 @@ type labelRequest struct {
 	Label string `json:"label"`
 }
 
+// registerSourceRoutes registers source-related API routes on the given mux.
+func (a *API) registerSourceRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/sources", a.handleSources)
+	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
+	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
+	mux.HandleFunc("PUT /api/sources/{key}/position", a.handleSetPosition)
+}
+
 // handleSetLabel sets a human-readable label on a source.
 func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)

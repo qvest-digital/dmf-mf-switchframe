@@ -33,6 +33,12 @@ type formatRequest struct {
 	FPSDen int    `json:"fpsDen,omitempty"`
 }
 
+// registerFormatRoutes registers format-related API routes on the given mux.
+func (a *API) registerFormatRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/format", a.handleGetFormat)
+	mux.HandleFunc("PUT /api/format", a.handleSetFormat)
+}
+
 // handleGetFormat returns the current pipeline format and available presets.
 func (a *API) handleGetFormat(w http.ResponseWriter, r *http.Request) {
 	f := a.switcher.PipelineFormat()

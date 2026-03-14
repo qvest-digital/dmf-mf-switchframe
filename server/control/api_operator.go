@@ -8,6 +8,14 @@ import (
 	"github.com/zsiec/switchframe/server/operator"
 )
 
+// registerOperatorAPIRoutes registers operator management routes if both store and session manager are configured.
+func (a *API) registerOperatorAPIRoutes(mux *http.ServeMux) {
+	if a.operatorStore == nil || a.sessionMgr == nil {
+		return
+	}
+	a.registerOperatorRoutes(mux)
+}
+
 // registerOperatorRoutes adds operator management routes to the mux.
 func (a *API) registerOperatorRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/operator/register", a.handleOperatorRegister)

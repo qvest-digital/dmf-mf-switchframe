@@ -54,6 +54,34 @@ type scte35TemplateRequest struct {
 	Name string `json:"name"`
 }
 
+// registerSCTE35Routes registers SCTE-35 API routes on the given mux.
+func (a *API) registerSCTE35Routes(mux *http.ServeMux) {
+	if a.scte35 != nil {
+		mux.HandleFunc("POST /api/scte35/cue", a.handleSCTE35Cue)
+		mux.HandleFunc("POST /api/scte35/return", a.handleSCTE35Return)
+		mux.HandleFunc("POST /api/scte35/return/{eventId}", a.handleSCTE35ReturnEvent)
+		mux.HandleFunc("POST /api/scte35/cancel/{eventId}", a.handleSCTE35Cancel)
+		mux.HandleFunc("POST /api/scte35/cancel-segmentation/{segEventId}", a.handleSCTE35CancelSegmentation)
+		mux.HandleFunc("POST /api/scte35/hold/{eventId}", a.handleSCTE35Hold)
+		mux.HandleFunc("POST /api/scte35/extend/{eventId}", a.handleSCTE35Extend)
+		mux.HandleFunc("GET /api/scte35/status", a.handleSCTE35Status)
+		mux.HandleFunc("GET /api/scte35/log", a.handleSCTE35Log)
+		mux.HandleFunc("GET /api/scte35/active", a.handleSCTE35Active)
+	}
+	if a.scte35Rules != nil {
+		// Register specific named routes before wildcard {id} routes to ensure
+		// Go's ServeMux picks them correctly.
+		mux.HandleFunc("PUT /api/scte35/rules/default", a.handleSCTE35SetDefault)
+		mux.HandleFunc("POST /api/scte35/rules/reorder", a.handleSCTE35ReorderRules)
+		mux.HandleFunc("GET /api/scte35/rules/templates", a.handleSCTE35Templates)
+		mux.HandleFunc("POST /api/scte35/rules/from-template", a.handleSCTE35FromTemplate)
+		mux.HandleFunc("GET /api/scte35/rules", a.handleSCTE35ListRules)
+		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
+		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
+		mux.HandleFunc("DELETE /api/scte35/rules/{id}", a.handleSCTE35DeleteRule)
+	}
+}
+
 // --- Cue injection handlers ---
 
 // handleSCTE35Cue handles POST /api/scte35/cue.

@@ -340,44 +340,34 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
+	// Core routes (state, cut, preview) stay here
 	mux.HandleFunc("POST /api/switch/cut", a.handleCut)
 	mux.HandleFunc("POST /api/switch/preview", a.handlePreview)
-	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)
-	mux.HandleFunc("POST /api/switch/transition/position", a.handleTransitionPosition)
-	mux.HandleFunc("POST /api/switch/ftb", a.handleFTB)
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
-	mux.HandleFunc("GET /api/format", a.handleGetFormat)
-	mux.HandleFunc("PUT /api/format", a.handleSetFormat)
-	mux.HandleFunc("GET /api/encoder", a.handleGetEncoder)
-	mux.HandleFunc("PUT /api/encoder", a.handleSetEncoder)
-	mux.HandleFunc("GET /api/sources", a.handleSources)
-	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
-	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
-	mux.HandleFunc("PUT /api/sources/{key}/position", a.handleSetPosition)
-	mux.HandleFunc("POST /api/audio/trim", a.handleAudioTrim)
-	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
-	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
-	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
-	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
-	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
-	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
-	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
-	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
-	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
-	mux.HandleFunc("POST /api/recording/start", a.handleRecordingStart)
-	mux.HandleFunc("POST /api/recording/stop", a.handleRecordingStop)
-	mux.HandleFunc("GET /api/recording/status", a.handleRecordingStatus)
-	mux.HandleFunc("POST /api/output/srt/start", a.handleSRTStart)
-	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
-	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
-	mux.HandleFunc("GET /api/output/confidence", a.handleConfidence)
-	mux.HandleFunc("GET /api/output/cbr", a.handleCBRStatus)
-	mux.HandleFunc("POST /api/output/destinations", a.handleAddDestination)
-	mux.HandleFunc("GET /api/output/destinations", a.handleListDestinations)
-	mux.HandleFunc("GET /api/output/destinations/{id}", a.handleGetDestination)
-	mux.HandleFunc("DELETE /api/output/destinations/{id}", a.handleRemoveDestination)
-	mux.HandleFunc("POST /api/output/destinations/{id}/start", a.handleStartDestination)
-	mux.HandleFunc("POST /api/output/destinations/{id}/stop", a.handleStopDestination)
+
+	// Delegate to per-file route registration methods
+	a.registerTransitionRoutes(mux)
+	a.registerFormatRoutes(mux)
+	a.registerEncoderRoutes(mux)
+	a.registerSourceRoutes(mux)
+	a.registerAudioRoutes(mux)
+	a.registerOutputRoutes(mux)
+	a.registerDebugRoutes(mux)
+	a.registerPresetRoutes(mux)
+	a.registerGraphicsRoutes(mux)
+	a.registerMacroRoutes(mux)
+	a.registerKeyRoutes(mux)
+	a.registerOperatorAPIRoutes(mux)
+	a.registerReplayRoutes(mux)
+	a.registerSCTE35Routes(mux)
+	a.registerCaptionRoutes(mux)
+	a.registerLayoutRoutes(mux)
+}
+
+func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
+
+// registerDebugRoutes registers debug and performance monitoring routes on the given mux.
+func (a *API) registerDebugRoutes(mux *http.ServeMux) {
 	if a.debug != nil {
 		mux.HandleFunc("GET /api/debug/snapshot", a.debug.HandleSnapshot)
 	}
@@ -386,119 +376,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/perf/baseline", a.perf.HandleSaveBaseline)
 		mux.HandleFunc("DELETE /api/perf/baseline/{name}", a.perf.HandleDeleteBaseline)
 	}
-	if a.presetStore != nil {
-		mux.HandleFunc("GET /api/presets", a.handleListPresets)
-		mux.HandleFunc("POST /api/presets", a.handleCreatePreset)
-		mux.HandleFunc("GET /api/presets/{id}", a.handleGetPreset)
-		mux.HandleFunc("PUT /api/presets/{id}", a.handleUpdatePreset)
-		mux.HandleFunc("DELETE /api/presets/{id}", a.handleDeletePreset)
-		mux.HandleFunc("POST /api/presets/{id}/recall", a.handleRecallPreset)
-	}
-	if a.stingerStore != nil {
-		mux.HandleFunc("GET /api/stinger/list", a.handleStingerList)
-		mux.HandleFunc("DELETE /api/stinger/{name}", a.handleStingerDelete)
-		mux.HandleFunc("POST /api/stinger/{name}/cut-point", a.handleStingerCutPoint)
-		mux.HandleFunc("POST /api/stinger/{name}/upload", a.handleStingerUpload)
-	}
-	if a.compositor != nil {
-		mux.HandleFunc("POST /api/graphics", a.handleGraphicsAddLayer)
-		mux.HandleFunc("GET /api/graphics", a.handleGraphicsStatus)
-		mux.HandleFunc("DELETE /api/graphics/{id}", a.handleGraphicsRemoveLayer)
-		mux.HandleFunc("POST /api/graphics/{id}/frame", a.handleGraphicsFrame)
-		mux.HandleFunc("POST /api/graphics/{id}/on", a.handleGraphicsOn)
-		mux.HandleFunc("POST /api/graphics/{id}/off", a.handleGraphicsOff)
-		mux.HandleFunc("POST /api/graphics/{id}/auto-on", a.handleGraphicsAutoOn)
-		mux.HandleFunc("POST /api/graphics/{id}/auto-off", a.handleGraphicsAutoOff)
-		mux.HandleFunc("POST /api/graphics/{id}/animate", a.handleGraphicsAnimate)
-		mux.HandleFunc("POST /api/graphics/{id}/animate/stop", a.handleGraphicsAnimateStop)
-		mux.HandleFunc("PUT /api/graphics/{id}/rect", a.handleGraphicsLayerRect)
-		mux.HandleFunc("PUT /api/graphics/{id}/zorder", a.handleGraphicsLayerZOrder)
-		mux.HandleFunc("POST /api/graphics/{id}/fly-in", a.handleGraphicsFlyIn)
-		mux.HandleFunc("POST /api/graphics/{id}/fly-out", a.handleGraphicsFlyOut)
-		mux.HandleFunc("POST /api/graphics/{id}/fly-on", a.handleGraphicsFlyOn)
-		mux.HandleFunc("POST /api/graphics/{id}/slide", a.handleGraphicsSlide)
-		mux.HandleFunc("POST /api/graphics/{id}/image", a.handleGraphicsImageUpload)
-		mux.HandleFunc("GET /api/graphics/{id}/image", a.handleGraphicsImageGet)
-		mux.HandleFunc("DELETE /api/graphics/{id}/image", a.handleGraphicsImageDelete)
-		if a.textAnimEngine != nil {
-			mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
-			mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
-		}
-		if a.tickerEngine != nil {
-			mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
-			mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
-			mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
-		}
-	}
-	if a.macroStore != nil {
-		mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)
-		mux.HandleFunc("POST /api/macros/execution/cancel", a.handleCancelMacro)
-		mux.HandleFunc("GET /api/macros", a.handleListMacros)
-		mux.HandleFunc("GET /api/macros/{name}", a.handleGetMacro)
-		mux.HandleFunc("PUT /api/macros/{name}", a.handleSaveMacro)
-		mux.HandleFunc("DELETE /api/macros/{name}", a.handleDeleteMacro)
-		mux.HandleFunc("POST /api/macros/{name}/run", a.handleRunMacro)
-	}
-	if a.keyer != nil {
-		mux.HandleFunc("PUT /api/sources/{source}/key", a.handleSetSourceKey)
-		mux.HandleFunc("GET /api/sources/{source}/key", a.handleGetSourceKey)
-		mux.HandleFunc("DELETE /api/sources/{source}/key", a.handleDeleteSourceKey)
-	}
-	if a.operatorStore != nil && a.sessionMgr != nil {
-		a.registerOperatorRoutes(mux)
-	}
-	if a.replayMgr != nil {
-		mux.HandleFunc("POST /api/replay/mark-in", a.handleReplayMarkIn)
-		mux.HandleFunc("POST /api/replay/mark-out", a.handleReplayMarkOut)
-		mux.HandleFunc("POST /api/replay/play", a.handleReplayPlay)
-		mux.HandleFunc("POST /api/replay/stop", a.handleReplayStop)
-		mux.HandleFunc("GET /api/replay/status", a.handleReplayStatus)
-		mux.HandleFunc("GET /api/replay/sources", a.handleReplaySources)
-	}
-	if a.scte35 != nil {
-		mux.HandleFunc("POST /api/scte35/cue", a.handleSCTE35Cue)
-		mux.HandleFunc("POST /api/scte35/return", a.handleSCTE35Return)
-		mux.HandleFunc("POST /api/scte35/return/{eventId}", a.handleSCTE35ReturnEvent)
-		mux.HandleFunc("POST /api/scte35/cancel/{eventId}", a.handleSCTE35Cancel)
-		mux.HandleFunc("POST /api/scte35/cancel-segmentation/{segEventId}", a.handleSCTE35CancelSegmentation)
-		mux.HandleFunc("POST /api/scte35/hold/{eventId}", a.handleSCTE35Hold)
-		mux.HandleFunc("POST /api/scte35/extend/{eventId}", a.handleSCTE35Extend)
-		mux.HandleFunc("GET /api/scte35/status", a.handleSCTE35Status)
-		mux.HandleFunc("GET /api/scte35/log", a.handleSCTE35Log)
-		mux.HandleFunc("GET /api/scte35/active", a.handleSCTE35Active)
-	}
-	if a.scte35Rules != nil {
-		// Register specific named routes before wildcard {id} routes to ensure
-		// Go's ServeMux picks them correctly.
-		mux.HandleFunc("PUT /api/scte35/rules/default", a.handleSCTE35SetDefault)
-		mux.HandleFunc("POST /api/scte35/rules/reorder", a.handleSCTE35ReorderRules)
-		mux.HandleFunc("GET /api/scte35/rules/templates", a.handleSCTE35Templates)
-		mux.HandleFunc("POST /api/scte35/rules/from-template", a.handleSCTE35FromTemplate)
-		mux.HandleFunc("GET /api/scte35/rules", a.handleSCTE35ListRules)
-		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
-		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
-		mux.HandleFunc("DELETE /api/scte35/rules/{id}", a.handleSCTE35DeleteRule)
-	}
-	if a.captionMgr != nil {
-		mux.HandleFunc("POST /api/captions/mode", a.handleCaptionMode)
-		mux.HandleFunc("POST /api/captions/text", a.handleCaptionText)
-		mux.HandleFunc("GET /api/captions/state", a.handleCaptionState)
-	}
-	if a.layoutCompositor != nil {
-		mux.HandleFunc("GET /api/layout", a.handleGetLayout)
-		mux.HandleFunc("PUT /api/layout", a.handleSetLayout)
-		mux.HandleFunc("DELETE /api/layout", a.handleDeleteLayout)
-		mux.HandleFunc("PUT /api/layout/slots/{id}", a.handleSlotUpdate)
-		mux.HandleFunc("POST /api/layout/slots/{id}/on", a.handleSlotOn)
-		mux.HandleFunc("POST /api/layout/slots/{id}/off", a.handleSlotOff)
-		mux.HandleFunc("PUT /api/layout/slots/{id}/source", a.handleSlotSource)
-		mux.HandleFunc("GET /api/layout/presets", a.handleListLayoutPresets)
-		mux.HandleFunc("POST /api/layout/presets", a.handleSaveLayoutPreset)
-		mux.HandleFunc("DELETE /api/layout/presets/{name}", a.handleDeleteLayoutPreset)
-	}
 }
-
-func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
 
 // handleCut performs a hard cut to the specified source.
 func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {

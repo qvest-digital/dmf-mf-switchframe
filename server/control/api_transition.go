@@ -19,6 +19,13 @@ type transitionRequest struct {
 	Easing        *transition.EasingConfig `json:"easing,omitempty"`
 }
 
+// registerTransitionRoutes registers transition-related API routes on the given mux.
+func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)
+	mux.HandleFunc("POST /api/switch/transition/position", a.handleTransitionPosition)
+	mux.HandleFunc("POST /api/switch/ftb", a.handleFTB)
+}
+
 // handleTransition starts a mix, dip, wipe, or stinger transition to the specified source.
 func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)

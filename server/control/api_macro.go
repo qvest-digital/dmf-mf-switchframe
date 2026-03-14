@@ -22,6 +22,20 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
+// registerMacroRoutes registers macro-related API routes on the given mux.
+func (a *API) registerMacroRoutes(mux *http.ServeMux) {
+	if a.macroStore == nil {
+		return
+	}
+	mux.HandleFunc("DELETE /api/macros/execution", a.handleDismissMacro)
+	mux.HandleFunc("POST /api/macros/execution/cancel", a.handleCancelMacro)
+	mux.HandleFunc("GET /api/macros", a.handleListMacros)
+	mux.HandleFunc("GET /api/macros/{name}", a.handleGetMacro)
+	mux.HandleFunc("PUT /api/macros/{name}", a.handleSaveMacro)
+	mux.HandleFunc("DELETE /api/macros/{name}", a.handleDeleteMacro)
+	mux.HandleFunc("POST /api/macros/{name}/run", a.handleRunMacro)
+}
+
 // handleListMacros returns all macros.
 func (a *API) handleListMacros(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

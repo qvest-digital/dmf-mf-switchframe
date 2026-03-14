@@ -8,6 +8,19 @@ import (
 	"github.com/zsiec/switchframe/server/replay"
 )
 
+// registerReplayRoutes registers replay-related API routes on the given mux.
+func (a *API) registerReplayRoutes(mux *http.ServeMux) {
+	if a.replayMgr == nil {
+		return
+	}
+	mux.HandleFunc("POST /api/replay/mark-in", a.handleReplayMarkIn)
+	mux.HandleFunc("POST /api/replay/mark-out", a.handleReplayMarkOut)
+	mux.HandleFunc("POST /api/replay/play", a.handleReplayPlay)
+	mux.HandleFunc("POST /api/replay/stop", a.handleReplayStop)
+	mux.HandleFunc("GET /api/replay/status", a.handleReplayStatus)
+	mux.HandleFunc("GET /api/replay/sources", a.handleReplaySources)
+}
+
 func (a *API) handleReplayMarkIn(w http.ResponseWriter, r *http.Request) {
 	if a.replayMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "replay not enabled")

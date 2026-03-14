@@ -22,6 +22,47 @@ type graphicsFrameRequest struct {
 	RGBA     []byte `json:"rgba"`
 }
 
+// registerGraphicsRoutes registers graphics and stinger API routes on the given mux.
+func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
+	if a.stingerStore != nil {
+		mux.HandleFunc("GET /api/stinger/list", a.handleStingerList)
+		mux.HandleFunc("DELETE /api/stinger/{name}", a.handleStingerDelete)
+		mux.HandleFunc("POST /api/stinger/{name}/cut-point", a.handleStingerCutPoint)
+		mux.HandleFunc("POST /api/stinger/{name}/upload", a.handleStingerUpload)
+	}
+	if a.compositor == nil {
+		return
+	}
+	mux.HandleFunc("POST /api/graphics", a.handleGraphicsAddLayer)
+	mux.HandleFunc("GET /api/graphics", a.handleGraphicsStatus)
+	mux.HandleFunc("DELETE /api/graphics/{id}", a.handleGraphicsRemoveLayer)
+	mux.HandleFunc("POST /api/graphics/{id}/frame", a.handleGraphicsFrame)
+	mux.HandleFunc("POST /api/graphics/{id}/on", a.handleGraphicsOn)
+	mux.HandleFunc("POST /api/graphics/{id}/off", a.handleGraphicsOff)
+	mux.HandleFunc("POST /api/graphics/{id}/auto-on", a.handleGraphicsAutoOn)
+	mux.HandleFunc("POST /api/graphics/{id}/auto-off", a.handleGraphicsAutoOff)
+	mux.HandleFunc("POST /api/graphics/{id}/animate", a.handleGraphicsAnimate)
+	mux.HandleFunc("POST /api/graphics/{id}/animate/stop", a.handleGraphicsAnimateStop)
+	mux.HandleFunc("PUT /api/graphics/{id}/rect", a.handleGraphicsLayerRect)
+	mux.HandleFunc("PUT /api/graphics/{id}/zorder", a.handleGraphicsLayerZOrder)
+	mux.HandleFunc("POST /api/graphics/{id}/fly-in", a.handleGraphicsFlyIn)
+	mux.HandleFunc("POST /api/graphics/{id}/fly-out", a.handleGraphicsFlyOut)
+	mux.HandleFunc("POST /api/graphics/{id}/fly-on", a.handleGraphicsFlyOn)
+	mux.HandleFunc("POST /api/graphics/{id}/slide", a.handleGraphicsSlide)
+	mux.HandleFunc("POST /api/graphics/{id}/image", a.handleGraphicsImageUpload)
+	mux.HandleFunc("GET /api/graphics/{id}/image", a.handleGraphicsImageGet)
+	mux.HandleFunc("DELETE /api/graphics/{id}/image", a.handleGraphicsImageDelete)
+	if a.textAnimEngine != nil {
+		mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
+		mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
+	}
+	if a.tickerEngine != nil {
+		mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
+		mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
+		mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
+	}
+}
+
 // parseLayerID extracts the layer ID from the URL path parameter.
 func parseLayerID(r *http.Request) (int, error) {
 	s := r.PathValue("id")

@@ -18,6 +18,24 @@ type recordingStartRequest struct {
 	MaxFileSizeMB   int    `json:"maxFileSizeMB,omitempty"`
 }
 
+// registerOutputRoutes registers output/recording/SRT-related API routes on the given mux.
+func (a *API) registerOutputRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /api/recording/start", a.handleRecordingStart)
+	mux.HandleFunc("POST /api/recording/stop", a.handleRecordingStop)
+	mux.HandleFunc("GET /api/recording/status", a.handleRecordingStatus)
+	mux.HandleFunc("POST /api/output/srt/start", a.handleSRTStart)
+	mux.HandleFunc("POST /api/output/srt/stop", a.handleSRTStop)
+	mux.HandleFunc("GET /api/output/srt/status", a.handleSRTStatus)
+	mux.HandleFunc("GET /api/output/confidence", a.handleConfidence)
+	mux.HandleFunc("GET /api/output/cbr", a.handleCBRStatus)
+	mux.HandleFunc("POST /api/output/destinations", a.handleAddDestination)
+	mux.HandleFunc("GET /api/output/destinations", a.handleListDestinations)
+	mux.HandleFunc("GET /api/output/destinations/{id}", a.handleGetDestination)
+	mux.HandleFunc("DELETE /api/output/destinations/{id}", a.handleRemoveDestination)
+	mux.HandleFunc("POST /api/output/destinations/{id}/start", a.handleStartDestination)
+	mux.HandleFunc("POST /api/output/destinations/{id}/stop", a.handleStopDestination)
+}
+
 // handleRecordingStart begins recording program output to a file.
 func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)

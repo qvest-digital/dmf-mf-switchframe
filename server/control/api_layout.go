@@ -27,6 +27,23 @@ type slotUpdateRequest struct {
 	CropAnchor *[2]float64            `json:"cropAnchor,omitempty"`
 }
 
+// registerLayoutRoutes registers layout/PIP-related API routes on the given mux.
+func (a *API) registerLayoutRoutes(mux *http.ServeMux) {
+	if a.layoutCompositor == nil {
+		return
+	}
+	mux.HandleFunc("GET /api/layout", a.handleGetLayout)
+	mux.HandleFunc("PUT /api/layout", a.handleSetLayout)
+	mux.HandleFunc("DELETE /api/layout", a.handleDeleteLayout)
+	mux.HandleFunc("PUT /api/layout/slots/{id}", a.handleSlotUpdate)
+	mux.HandleFunc("POST /api/layout/slots/{id}/on", a.handleSlotOn)
+	mux.HandleFunc("POST /api/layout/slots/{id}/off", a.handleSlotOff)
+	mux.HandleFunc("PUT /api/layout/slots/{id}/source", a.handleSlotSource)
+	mux.HandleFunc("GET /api/layout/presets", a.handleListLayoutPresets)
+	mux.HandleFunc("POST /api/layout/presets", a.handleSaveLayoutPreset)
+	mux.HandleFunc("DELETE /api/layout/presets/{name}", a.handleDeleteLayoutPreset)
+}
+
 func (a *API) handleGetLayout(w http.ResponseWriter, r *http.Request) {
 	l := a.layoutCompositor.GetLayout()
 	w.Header().Set("Content-Type", "application/json")
