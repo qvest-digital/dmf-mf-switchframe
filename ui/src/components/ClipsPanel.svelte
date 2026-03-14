@@ -33,9 +33,13 @@
 	const replayClips = $derived(clips.filter(c => c.source === 'replay'));
 
 	// ── Effects ──
+	let prevClipCount: number | undefined;
 	$effect(() => {
-		void crState.clipCount;
-		refreshClips();
+		const count = crState.clipCount;
+		if (count !== prevClipCount) {
+			prevClipCount = count;
+			refreshClips();
+		}
 	});
 
 	// Fetch recordings once on mount (no reactive dependency needed).
