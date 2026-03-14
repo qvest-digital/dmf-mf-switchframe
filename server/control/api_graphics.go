@@ -382,6 +382,34 @@ func (a *API) handleGraphicsFlyOut(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
+// handleGraphicsFlyOn atomically activates a layer and animates it from off-screen.
+func (a *API) handleGraphicsFlyOn(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req flyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Direction != "left" && req.Direction != "right" && req.Direction != "top" && req.Direction != "bottom" {
+		httperr.Write(w, http.StatusBadRequest, "direction must be \"left\", \"right\", \"top\", or \"bottom\"")
+		return
+	}
+	if req.DurationMs <= 0 {
+		req.DurationMs = 500
+	}
+	if err := a.compositor.FlyOn(id, req.Direction, req.DurationMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
 // handleGraphicsSlide animates a layer from its current position to a new rect.
 func (a *API) handleGraphicsSlide(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)

@@ -387,6 +387,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/graphics/{id}/zorder", a.handleGraphicsLayerZOrder)
 		mux.HandleFunc("POST /api/graphics/{id}/fly-in", a.handleGraphicsFlyIn)
 		mux.HandleFunc("POST /api/graphics/{id}/fly-out", a.handleGraphicsFlyOut)
+		mux.HandleFunc("POST /api/graphics/{id}/fly-on", a.handleGraphicsFlyOn)
 		mux.HandleFunc("POST /api/graphics/{id}/slide", a.handleGraphicsSlide)
 	}
 	if a.macroStore != nil {
