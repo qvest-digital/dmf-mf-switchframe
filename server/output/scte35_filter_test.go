@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockFilterWriter captures all Write calls for verification.
@@ -268,5 +270,73 @@ func TestSCTE35Filter_InvalidSyncByte(t *testing.T) {
 	}
 	if len(inner.writes[0]) != 188 {
 		t.Errorf("expected 188 bytes, got %d", len(inner.writes[0]))
+	}
+}
+
+func TestSCTE35Filter_BufferReuse(t *testing.T) {
+	inner := &mockFilterWriter{}
+	f := newSCTE35Filter(inner, defaultSCTE35PID)
+
+	// First write with SCTE-35 packet to exercise the slow path and allocate filterBuf.
+	var data []byte
+	data = append(data, makeTSPacketFill(0x100, 0xAA)...)
+	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0xBB)...)
+	data = append(data, makeTSPacketFill(0x101, 0xCC)...)
+
+	_, err := f.Write(data)
+	require.NoError(t, err)
+	require.NotNil(t, f.filterBuf, "filterBuf should be allocated after slow-path write")
+
+	// Subsequent writes should reuse the buffer (no new allocation).
+	bufPtr := &f.filterBuf[0:1][0]
+	_, err = f.Write(data)
+	require.NoError(t, err)
+	// The buffer backing array should be the same (reused, not reallocated).
+	require.Equal(t, bufPtr, &f.filterBuf[0:1][0],
+		"filterBuf should be reused across writes, not reallocated")
+}
+
+func BenchmarkSCTE35Filter_FastPath(b *testing.B) {
+	// Benchmark the fast path: no SCTE-35 packets present.
+	// Should show 0 allocs in steady state.
+	inner := &mockFilterWriter{}
+	f := newSCTE35Filter(inner, defaultSCTE35PID)
+
+	// 7 non-SCTE-35 packets (typical TS segment).
+	var data []byte
+	for i := 0; i < 7; i++ {
+		data = append(data, makeTSPacketFill(uint16(0x100+i), byte(i))...)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		inner.mu.Lock()
+		inner.writes = inner.writes[:0]
+		inner.mu.Unlock()
+		_, _ = f.Write(data)
+	}
+}
+
+func BenchmarkSCTE35Filter_SlowPath(b *testing.B) {
+	// Benchmark the slow path with buffer reuse.
+	inner := &mockFilterWriter{}
+	f := newSCTE35Filter(inner, defaultSCTE35PID)
+
+	var data []byte
+	data = append(data, makeTSPacketFill(0x100, 0xAA)...)
+	data = append(data, makeTSPacketFill(defaultSCTE35PID, 0xBB)...)
+	data = append(data, makeTSPacketFill(0x101, 0xCC)...)
+
+	// Prime the buffer.
+	_, _ = f.Write(data)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		inner.mu.Lock()
+		inner.writes = inner.writes[:0]
+		inner.mu.Unlock()
+		_, _ = f.Write(data)
 	}
 }

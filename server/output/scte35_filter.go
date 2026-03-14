@@ -6,8 +6,9 @@ import "context"
 // carrying the SCTE-35 PID before forwarding to the inner adapter.
 // Used when a destination has SCTE35Enabled == false.
 type scte35Filter struct {
-	inner Adapter
-	pid   uint16
+	inner     Adapter
+	pid       uint16
+	filterBuf []byte
 }
 
 // newSCTE35Filter creates a filter that strips TS packets with the given PID.
@@ -45,7 +46,10 @@ func (f *scte35Filter) Write(data []byte) (int, error) {
 	}
 
 	// Slow path: build filtered output without SCTE-35 packets.
-	filtered := make([]byte, 0, inputLen)
+	if cap(f.filterBuf) < inputLen {
+		f.filterBuf = make([]byte, 0, inputLen)
+	}
+	filtered := f.filterBuf[:0]
 	for i := 0; i+tsPacketSize <= inputLen; i += tsPacketSize {
 		pkt := data[i : i+tsPacketSize]
 		// Verify sync byte.
@@ -61,6 +65,8 @@ func (f *scte35Filter) Write(data []byte) (int, error) {
 		}
 		filtered = append(filtered, pkt...)
 	}
+
+	f.filterBuf = filtered // retain in case append grew the slice
 
 	if len(filtered) == 0 {
 		return inputLen, nil
