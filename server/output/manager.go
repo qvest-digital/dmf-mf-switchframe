@@ -412,12 +412,16 @@ func (m *Manager) RemoveDestination(id string) error {
 		dest.async = nil
 		dest.active = false
 		dest.mu.Unlock()
+	}
 
+	// Remove from map before rebuild so rebuildAdaptersLocked won't
+	// iterate over the stale destination entry.
+	delete(m.destinations, id)
+
+	if adapterToClose != nil {
 		stale = m.rebuildAdaptersLocked()
 		m.stopMuxerIfNoAdaptersLocked()
 	}
-
-	delete(m.destinations, id)
 	fn := m.onState
 	m.mu.Unlock()
 

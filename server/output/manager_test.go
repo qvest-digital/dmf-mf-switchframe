@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -744,4 +745,82 @@ func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("muxer callback deadlocked — still acquiring m.mu")
 	}
+}
+
+// TestOutputManager_RemoveDestination_ConcurrentWithList exercises concurrent
+// RemoveDestination and ListDestinations calls to verify no data races.
+// The race detector (-race) will catch unsynchronized map access if the
+// destination is iterated during removal.
+func TestOutputManager_RemoveDestination_ConcurrentWithList(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	// Mock SRT connect so StartDestination succeeds.
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	const numDestinations = 20
+	ids := make([]string, numDestinations)
+	for i := 0; i < numDestinations; i++ {
+		id, err := mgr.AddDestination(DestinationConfig{
+			Type:    "srt-caller",
+			Address: "127.0.0.1",
+			Port:    9000 + i,
+			Name:    "test-dest",
+		})
+		require.NoError(t, err)
+		require.NoError(t, mgr.StartDestination(id))
+		ids[i] = id
+	}
+
+	// Concurrently remove destinations while listing them.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, id := range ids {
+			_ = mgr.RemoveDestination(id)
+		}
+	}()
+
+	// Hammer ListDestinations concurrently from multiple goroutines.
+	var listWg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		listWg.Add(1)
+		go func() {
+			defer listWg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					dests := mgr.ListDestinations()
+					// Each returned status should have valid data.
+					for _, d := range dests {
+						_ = d.State
+					}
+				}
+			}
+		}()
+	}
+
+	// Wait for all removals to complete.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent remove+list")
+	}
+
+	// Wait for list goroutines to finish (they exit when done is closed).
+	listWg.Wait()
+
+	// Verify all destinations were removed.
+	remaining := mgr.ListDestinations()
+	require.Empty(t, remaining, "all destinations should be removed")
 }
