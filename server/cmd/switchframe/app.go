@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -101,8 +102,13 @@ type App struct {
 	captionMgr *caption.Manager
 
 	// Clip players
-	clipMgr   *clip.Manager
-	clipStore *clip.Store
+	clipMgr      *clip.Manager
+	clipStore    *clip.Store
+	clipRelays   [clip.MaxPlayers]*distribution.Relay
+	clipEncMu    sync.Mutex
+	clipEncoders [clip.MaxPlayers]transition.VideoEncoder
+	clipGroupIDs [clip.MaxPlayers]uint32
+	clipInfoSent [clip.MaxPlayers]bool
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
