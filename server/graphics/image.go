@@ -46,6 +46,20 @@ func (c *Compositor) SetImage(id int, name string, pngData []byte) error {
 	layer.imageRGBA = rgba.Pix
 	layer.imageWidth = w
 	layer.imageHeight = h
+	layer.template = "" // clear any previous template name
+
+	// Also set as the active overlay so the image actually renders on program output.
+	expected := w * h * 4
+	if len(layer.overlay) != expected {
+		layer.overlay = make([]byte, expected)
+	}
+	copy(layer.overlay, rgba.Pix)
+	layer.overlayWidth = w
+	layer.overlayHeight = h
+
+	// Activate the layer so ProcessYUV renders it.
+	layer.active = true
+	layer.fadePosition = 1.0
 
 	state := c.buildStateLocked()
 	cb := c.onStateChange
@@ -97,6 +111,13 @@ func (c *Compositor) DeleteImage(id int) error {
 	layer.imageRGBA = nil
 	layer.imageWidth = 0
 	layer.imageHeight = 0
+
+	// Deactivate and clear the overlay so the image stops rendering.
+	layer.active = false
+	layer.fadePosition = 0.0
+	layer.overlay = nil
+	layer.overlayWidth = 0
+	layer.overlayHeight = 0
 
 	state := c.buildStateLocked()
 	cb := c.onStateChange

@@ -53,21 +53,18 @@ func TestAlphaBlendRGBARowY_FullOpaqueWhite(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
-	// BT.709: Y = (54*255 + 183*255 + 19*255 + 128) >> 8
-	// = (13770 + 46665 + 4845 + 128) >> 8 = 65408 >> 8 = 255
-	// Integer approximation: 54+183+19=256, so (256*255+128)>>8 = 255
+	// Limited-range BT.709: Y = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8)
+	// = 16 + (56228 >> 8) = 16 + 219 = 235
 	for i := 0; i < width; i++ {
-		assert.InDelta(t, 255, int(yRow[i]), 1, "Y[%d] should be ~255 for white", i)
+		assert.InDelta(t, 235, int(yRow[i]), 1, "Y[%d] should be ~235 for limited-range white", i)
 	}
 }
 
-// TestAlphaBlendRGBARowY_WhiteMapsTo255 verifies that full-range white
-// (R=G=B=255) maps to Y=255, not Y=254. BT.709 integer coefficients must
-// sum to 256 (not 255) so that (256*255+128)>>8 = 255.
+// TestAlphaBlendRGBARowY_WhiteMapsTo235 verifies that RGB white (R=G=B=255)
+// maps to Y=235 (limited-range BT.709 white), not Y=255 (full-range).
 //
-// With blue coefficient 18: 54+183+18=255 → (255*255+128)>>8=254 (WRONG)
-// With blue coefficient 19: 54+183+19=256 → (256*255+128)>>8=255 (CORRECT)
-func TestAlphaBlendRGBARowY_WhiteMapsTo255(t *testing.T) {
+// Limited-range: Y = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) = 235
+func TestAlphaBlendRGBARowY_WhiteMapsTo235(t *testing.T) {
 	t.Parallel()
 	width := 16
 	yRow := make([]byte, width)
@@ -83,10 +80,10 @@ func TestAlphaBlendRGBARowY_WhiteMapsTo255(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
-	// Full-range white MUST map to Y=255, not Y=254.
+	// Limited-range white MUST map to Y=235.
 	for i := 0; i < width; i++ {
-		assert.Equal(t, byte(255), yRow[i],
-			"Y[%d] = %d, want 255 for full-range white (coefficient sum must be 256)", i, yRow[i])
+		assert.Equal(t, byte(235), yRow[i],
+			"Y[%d] = %d, want 235 for limited-range white", i, yRow[i])
 	}
 }
 
@@ -106,10 +103,10 @@ func TestAlphaBlendRGBARowY_FullOpaqueBlack(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
-	// overlayY = 0, a256 = (255*256+128)>>8 = 255
-	// result = (200*1 + 0*255 + 128) >> 8 = 328>>8 = 1
+	// Limited-range: overlayY = 16 (black), a256 ≈ 256 (fully opaque)
+	// result ≈ 16 (limited-range black)
 	for i := 0; i < width; i++ {
-		assert.InDelta(t, 0, int(yRow[i]), 1, "Y[%d] should be ~0 for opaque black overlay", i)
+		assert.InDelta(t, 16, int(yRow[i]), 1, "Y[%d] should be ~16 for opaque black overlay (limited-range)", i)
 	}
 }
 
@@ -130,11 +127,11 @@ func TestAlphaBlendRGBARowY_HalfAlpha(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 256)
 
-	// a256 = (128*256+128)>>8 = 128
-	// overlayY = (54*255 + 183*255 + 19*255 + 128) >> 8 = 255
-	// result = (0*128 + 254*128 + 128) >> 8 = 32640>>8 = 127
+	// Limited-range: overlayY = 235 (white)
+	// A'=129, a256=(129*256)>>8=129, inv=127
+	// result = (0*127 + 235*129 + 128) >> 8 = 30443>>8 = 118
 	for i := 0; i < width; i++ {
-		assert.InDelta(t, 127, int(yRow[i]), 2, "Y[%d] should be ~127 for half-alpha white on black", i)
+		assert.InDelta(t, 118, int(yRow[i]), 2, "Y[%d] should be ~118 for half-alpha white on black (limited-range)", i)
 	}
 }
 
@@ -155,11 +152,11 @@ func TestAlphaBlendRGBARowY_AlphaScale(t *testing.T) {
 
 	alphaBlendRGBARowY(&yRow[0], &rgba[0], width, 128) // 50% alpha scale
 
-	// a256 = (255*128+128)>>8 = 32768>>8 = 128
-	// overlayY = 255
-	// result = (0*128 + 255*128 + 128) >> 8 = 32768>>8 = 128
+	// Limited-range: overlayY = 235 (white)
+	// A'=256, a256=(256*128)>>8=128, inv=128
+	// result = (0*128 + 235*128 + 128) >> 8 = 30208>>8 = 118
 	for i := 0; i < width; i++ {
-		assert.InDelta(t, 127, int(yRow[i]), 2, "Y[%d] should be ~127 for 50%% alpha scale", i)
+		assert.InDelta(t, 118, int(yRow[i]), 2, "Y[%d] should be ~118 for 50%% alpha scale (limited-range)", i)
 	}
 }
 
@@ -296,12 +293,12 @@ func TestAlphaBlendRGBARowY_PureColors(t *testing.T) {
 	tests := []struct {
 		name     string
 		r, g, b  byte
-		wantY    int // expected BT.709 Y (integer approx)
+		wantY    int // expected limited-range BT.709 Y
 	}{
-		{"pure red", 255, 0, 0, 54},     // 54*255/256 ~ 53-54
-		{"pure green", 0, 255, 0, 182},  // 183*255/256 ~ 182
-		{"pure blue", 0, 0, 255, 18},    // 19*255/256 ~ 18-19
-		{"mid gray", 128, 128, 128, 128}, // (54+183+19)*128/256 = 128
+		{"pure red", 255, 0, 0, 63},     // 16 + (47*255+128)>>8 = 16+47 = 63
+		{"pure green", 0, 255, 0, 172},  // 16 + (157*255+128)>>8 = 16+156 = 172
+		{"pure blue", 0, 0, 255, 32},    // 16 + (16*255+128)>>8 = 16+16 = 32
+		{"mid gray", 128, 128, 128, 126}, // 16 + (47*128+157*128+16*128+128)>>8 = 16+110 = 126
 	}
 
 	for _, tc := range tests {
@@ -348,9 +345,10 @@ func alphaBlendRGBAReference(yuv []byte, rgba []byte, width, height int, alphaSc
 			g := float64(rgba[rgbaIdx+1])
 			b := float64(rgba[rgbaIdx+2])
 
-			overlayY := 0.2126*r + 0.7152*g + 0.0722*b
-			overlayCb := -0.1146*r - 0.3854*g + 0.5*b + 128.0
-			overlayCr := 0.5*r - 0.4542*g - 0.0458*b + 128.0
+			// Limited-range BT.709 coefficients matching the integer kernel
+			overlayY := 16.0 + (47.0*r+157.0*g+16.0*b)/256.0
+			overlayCb := (-26.0*r-86.0*g+112.0*b)/256.0 + 128.0
+			overlayCr := (112.0*r-102.0*g-10.0*b)/256.0 + 128.0
 
 			invA := 1.0 - a
 

@@ -95,10 +95,12 @@ type graphicsLayer struct {
 
 	zOrder int
 
-	// Per-layer image storage.
+	// Per-layer image storage. imageData retains original PNG bytes for
+	// GET /api/graphics/layers/{id}/image retrieval; imageRGBA holds decoded
+	// RGBA pixels used by SetOverlay for overlay compositing.
 	imageName   string // original filename
 	imageData   []byte // original PNG bytes (for GET retrieval)
-	imageRGBA   []byte // decoded RGBA pixels
+	imageRGBA   []byte // decoded RGBA pixels (for overlay compositing)
 	imageWidth  int
 	imageHeight int
 }
@@ -333,6 +335,50 @@ func (c *Compositor) On(id int) error {
 	return nil
 }
 
+// activateLayer sets a layer to active with full opacity. Used by ticker/text-anim
+// engines that manage their own overlay lifecycle. Unlike On(), this does not
+// require an existing overlay (the engine will set it shortly after).
+func (c *Compositor) activateLayer(id int) {
+	c.mu.Lock()
+	layer, ok := c.layers[id]
+	if !ok || c.closed {
+		c.mu.Unlock()
+		return
+	}
+	layer.active = true
+	layer.fadePosition = 1.0
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+}
+
+// deactivateAndClearLayer deactivates a layer and clears its overlay data.
+// Used by ticker/text-anim engines on stop or natural completion.
+func (c *Compositor) deactivateAndClearLayer(id int) {
+	c.mu.Lock()
+	layer, ok := c.layers[id]
+	if !ok || c.closed {
+		c.mu.Unlock()
+		return
+	}
+	layer.active = false
+	layer.fadePosition = 0.0
+	layer.overlay = nil
+	layer.overlayWidth = 0
+	layer.overlayHeight = 0
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+}
+
 // Off deactivates a layer immediately (CUT OFF).
 func (c *Compositor) Off(id int) error {
 	c.mu.Lock()
@@ -550,10 +596,10 @@ func (c *Compositor) Close() {
 // blend modifies the buffer before the next layer reads it, producing correct
 // layered compositing. All blending runs single-threaded under RLock.
 //
-// blendScratch is an optional caller-owned scratch buffer for sub-frame blending.
-// If non-nil, it will be reused across calls to avoid per-frame allocation.
-// Ownership of the scratch buffer stays with the caller (typically the pipeline node).
-func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]byte) []byte {
+// blendScratch and colLUTScratch are optional caller-owned scratch buffers for
+// sub-frame blending. If non-nil, they will be reused across calls to avoid
+// per-frame allocation. Ownership stays with the caller (typically the pipeline node).
+func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]byte, colLUTScratch *[]int) []byte {
 	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
 		return yuv
 	}
@@ -584,11 +630,18 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 			if blendScratch != nil {
 				scratch = *blendScratch
 			}
-			scratch = AlphaBlendRGBARectInto(yuv, layer.overlay, width, height,
+			var colLUT []int
+			if colLUTScratch != nil {
+				colLUT = *colLUTScratch
+			}
+			scratch, colLUT = AlphaBlendRGBARectInto(yuv, layer.overlay, width, height,
 				layer.overlayWidth, layer.overlayHeight,
-				rect, layer.fadePosition, scratch)
+				rect, layer.fadePosition, scratch, colLUT)
 			if blendScratch != nil {
 				*blendScratch = scratch
+			}
+			if colLUTScratch != nil {
+				*colLUTScratch = colLUT
 			}
 		}
 	}
@@ -1142,12 +1195,13 @@ func applyEasing(t float64, easing string) float64 {
 }
 
 // interpolateRect linearly interpolates between two rectangles.
+// Output coordinates are even-aligned (&^1) for YUV420 chroma compatibility.
 func interpolateRect(a, b image.Rectangle, t float64) image.Rectangle {
 	return image.Rect(
-		int(float64(a.Min.X)+float64(b.Min.X-a.Min.X)*t),
-		int(float64(a.Min.Y)+float64(b.Min.Y-a.Min.Y)*t),
-		int(float64(a.Max.X)+float64(b.Max.X-a.Max.X)*t),
-		int(float64(a.Max.Y)+float64(b.Max.Y-a.Max.Y)*t),
+		int(float64(a.Min.X)+float64(b.Min.X-a.Min.X)*t) &^ 1,
+		int(float64(a.Min.Y)+float64(b.Min.Y-a.Min.Y)*t) &^ 1,
+		int(float64(a.Max.X)+float64(b.Max.X-a.Max.X)*t) &^ 1,
+		int(float64(a.Max.Y)+float64(b.Max.Y-a.Max.Y)*t) &^ 1,
 	)
 }
 

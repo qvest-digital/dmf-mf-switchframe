@@ -55,23 +55,22 @@ func TestAlphaBlendRGBA_TransparentPassthrough(t *testing.T) {
 func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
 	t.Parallel()
 	width, height := 4, 4
-	// Start with black frame: Y=0, Cb=128, Cr=128
-	yuv := makeYUV420(width, height, 0, 128, 128)
+	// Start with black frame: Y=16 (limited-range black), Cb=128, Cr=128
+	yuv := makeYUV420(width, height, 16, 128, 128)
 
 	// Fully opaque white overlay (255,255,255,255)
 	rgba := makeRGBA(width, height, 255, 255, 255, 255)
 
 	AlphaBlendRGBA(yuv, rgba, width, height, 1.0)
 
-	// White in BT.709 YUV: Y = 0.2126*255 + 0.7152*255 + 0.0722*255 = 255
-	// Integer approx: (54+183+19)*255/256 = 255 (coefficients sum to 256)
-	// Cb = -0.1146*255 - 0.3854*255 + 0.5*255 + 128 = 128
-	// Cr = 0.5*255 - 0.4542*255 - 0.0458*255 + 128 = 128
+	// White in limited-range BT.709 YUV: Y = 16 + ((47+157+16)*255+128)>>8
+	// = 16 + (56228>>8) = 16 + 219 = 235
+	// Cb = (-26*255 - 86*255 + 112*255 + 128) >> 8 + 128 = 128
+	// Cr = (112*255 - 102*255 - 10*255 + 128) >> 8 + 128 = 128
 	ySize := width * height
 	for i := 0; i < ySize; i++ {
-		diff := int(yuv[i]) - 255
-		require.True(t, diff >= -1 && diff <= 0,
-			"Y[%d] = %d, want 254-255 (white)", i, yuv[i])
+		require.InDelta(t, 235, int(yuv[i]), 1,
+			"Y[%d] = %d, want ~235 (limited-range white)", i, yuv[i])
 	}
 	uvSize := (width / 2) * (height / 2)
 	for i := 0; i < uvSize; i++ {
@@ -83,17 +82,18 @@ func TestAlphaBlendRGBA_OpaqueBlend(t *testing.T) {
 func TestAlphaBlendRGBA_HalfAlpha(t *testing.T) {
 	t.Parallel()
 	width, height := 4, 4
-	// Start with black frame: Y=0, Cb=128, Cr=128
-	yuv := makeYUV420(width, height, 0, 128, 128)
+	// Start with limited-range black frame: Y=16, Cb=128, Cr=128
+	yuv := makeYUV420(width, height, 16, 128, 128)
 
 	// 50% alpha white overlay
 	rgba := makeRGBA(width, height, 255, 255, 255, 128)
 
 	AlphaBlendRGBA(yuv, rgba, width, height, 1.0)
 
-	// At ~50% alpha (128/255 = 0.502):
-	// Y = 0*(1-0.502) + 255*0.502 = 128
-	expected := byte(128)
+	// At ~50% alpha (128/255 → a256=128):
+	// overlayY = 235 (limited-range white)
+	// Y = (16*128 + 235*128 + 128) >> 8 = (2048 + 30080 + 128) >> 8 = 125
+	expected := byte(125)
 	ySize := width * height
 	for i := 0; i < ySize; i++ {
 		diff := int(yuv[i]) - int(expected)
@@ -136,13 +136,12 @@ func TestAlphaBlendRGBA_LowerStrip(t *testing.T) {
 		}
 	}
 
-	// Bottom 2 rows should be white (Y=254-255, integer rounding)
+	// Bottom 2 rows should be limited-range white (Y≈235)
 	for row := 6; row < 8; row++ {
 		for col := 0; col < width; col++ {
 			idx := row*width + col
-			diff := int(yuv[idx]) - 255
-			require.True(t, diff >= -1 && diff <= 0,
-				"Y[%d,%d] = %d, want 254-255 (white overlay)", row, col, yuv[idx])
+			require.InDelta(t, 235, int(yuv[idx]), 1,
+				"Y[%d,%d] = %d, want ~235 (limited-range white overlay)", row, col, yuv[idx])
 		}
 	}
 }
@@ -173,8 +172,8 @@ func TestAlphaBlendRGBARect_FullFrame(t *testing.T) {
 	width, height := 8, 8
 
 	// Full-frame rect should produce same result as AlphaBlendRGBA.
-	yuv1 := makeYUV420(width, height, 0, 128, 128)
-	yuv2 := makeYUV420(width, height, 0, 128, 128)
+	yuv1 := makeYUV420(width, height, 16, 128, 128)
+	yuv2 := makeYUV420(width, height, 16, 128, 128)
 	rgba := makeRGBA(width, height, 255, 255, 255, 200)
 
 	AlphaBlendRGBA(yuv1, rgba, width, height, 1.0)
@@ -206,11 +205,10 @@ func TestAlphaBlendRGBARect_SubRegion(t *testing.T) {
 	require.Equal(t, byte(100), yuv[1], "Y[0,1] outside rect should be unchanged")
 	require.Equal(t, byte(100), yuv[width], "Y[1,0] outside rect should be unchanged")
 
-	// Pixels inside rect should be white (Y≈254).
+	// Pixels inside rect should be limited-range white (Y≈235).
 	insideIdx := 2*width + 2 // row=2, col=2
-	diff := int(yuv[insideIdx]) - 254
-	require.True(t, diff >= -1 && diff <= 1,
-		"Y[2,2] inside rect = %d, want ~254 (white)", yuv[insideIdx])
+	require.InDelta(t, 235, int(yuv[insideIdx]), 1,
+		"Y[2,2] inside rect = %d, want ~235 (limited-range white)", yuv[insideIdx])
 }
 
 func TestAlphaBlendRGBARect_ClipBounds(t *testing.T) {
@@ -224,10 +222,9 @@ func TestAlphaBlendRGBARect_ClipBounds(t *testing.T) {
 
 	AlphaBlendRGBARect(yuv, overlay, width, height, 6, 6, rect, 1.0)
 
-	// Pixel at (0,0) should be modified (white).
-	diff := int(yuv[0]) - 254
-	require.True(t, diff >= -1 && diff <= 1,
-		"Y[0,0] should be ~254 after clipped blend, got %d", yuv[0])
+	// Pixel at (0,0) should be modified (limited-range white).
+	require.InDelta(t, 235, int(yuv[0]), 1,
+		"Y[0,0] should be ~235 after clipped blend, got %d", yuv[0])
 
 	// Pixel at (4,0) should be unchanged.
 	require.Equal(t, byte(100), yuv[4], "Y[0,4] outside clipped rect should be unchanged")
@@ -245,15 +242,14 @@ func TestAlphaBlendRGBARect_EvenAlign(t *testing.T) {
 	AlphaBlendRGBARect(yuv, overlay, width, height, 4, 4, rect, 1.0)
 
 	// (0,0) should be modified (even-aligned to 0).
-	diff := int(yuv[0]) - 254
-	require.True(t, diff >= -1 && diff <= 1,
-		"Y[0,0] should be ~254 after even-aligned blend, got %d", yuv[0])
+	require.InDelta(t, 235, int(yuv[0]), 1,
+		"Y[0,0] should be ~235 after even-aligned blend, got %d", yuv[0])
 }
 
 func TestAlphaBlendRGBARect_OverlayScaling(t *testing.T) {
 	t.Parallel()
 	width, height := 8, 8
-	yuv := makeYUV420(width, height, 0, 128, 128)
+	yuv := makeYUV420(width, height, 16, 128, 128)
 
 	// 2x2 white overlay scaled into 4x4 rect.
 	overlay := makeRGBA(2, 2, 255, 255, 255, 255)
@@ -261,18 +257,101 @@ func TestAlphaBlendRGBARect_OverlayScaling(t *testing.T) {
 
 	AlphaBlendRGBARect(yuv, overlay, width, height, 2, 2, rect, 1.0)
 
-	// All 4x4 pixels in the rect should be white.
+	// All 4x4 pixels in the rect should be limited-range white.
 	for row := 0; row < 4; row++ {
 		for col := 0; col < 4; col++ {
 			idx := row*width + col
-			diff := int(yuv[idx]) - 254
-			require.True(t, diff >= -1 && diff <= 1,
-				"Y[%d,%d] = %d, want ~254 (scaled overlay)", row, col, yuv[idx])
+			require.InDelta(t, 235, int(yuv[idx]), 1,
+				"Y[%d,%d] = %d, want ~235 (scaled overlay)", row, col, yuv[idx])
 		}
 	}
 
-	// Pixels outside rect should remain black.
-	require.Equal(t, byte(0), yuv[4], "Y[0,4] outside rect should be 0")
+	// Pixels outside rect should remain at limited-range black.
+	require.Equal(t, byte(16), yuv[4], "Y[0,4] outside rect should be 16")
+}
+
+func TestAlphaBlendRGBARectInto_Basic(t *testing.T) {
+	t.Parallel()
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 100, 128, 128)
+
+	// Save original Y values for comparison.
+	origY := make([]byte, frameW*frameH)
+	copy(origY, yuv[:frameW*frameH])
+
+	overlayW, overlayH := 200, 50
+	rgba := makeRGBA(overlayW, overlayH, 255, 255, 255, 255) // opaque white
+	rect := image.Rect(100, 900, 1800, 1000)
+
+	scratch, colLUT := AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH,
+		rect, 1.0, nil, nil)
+
+	// Verify scratch buffers are non-nil.
+	require.NotNil(t, scratch, "scratch should be non-nil after call")
+	require.NotNil(t, colLUT, "colLUT should be non-nil after call")
+
+	// Verify Y values are modified inside the rect region.
+	// The rect is even-aligned: (100, 900) → (1800, 1000).
+	insideIdx := 900*frameW + 100
+	require.InDelta(t, 235, int(yuv[insideIdx]), 1,
+		"Y inside rect at (100,900) = %d, want ~235 (limited-range white overlay)", yuv[insideIdx])
+
+	// Verify Y values are unchanged outside the rect region.
+	outsideIdx := 0 // top-left corner, well outside rect
+	require.Equal(t, byte(100), yuv[outsideIdx],
+		"Y outside rect at (0,0) should be 100 (unchanged)")
+
+	outsideIdx2 := 800*frameW + 50 // above the rect
+	require.Equal(t, byte(100), yuv[outsideIdx2],
+		"Y outside rect at (50,800) should be 100 (unchanged)")
+
+	// Verify Cb/Cr values are modified in the rect region.
+	ySize := frameW * frameH
+	uvSize := (frameW / 2) * (frameH / 2)
+	halfFrameW := frameW / 2
+	// Chroma sample at (50, 450) maps to rect region (100/2=50, 900/2=450).
+	chromaInsideIdx := 450*halfFrameW + 50
+	require.Equal(t, byte(128), yuv[ySize+chromaInsideIdx],
+		"Cb inside rect should be 128 (white)")
+	require.Equal(t, byte(128), yuv[ySize+uvSize+chromaInsideIdx],
+		"Cr inside rect should be 128 (white)")
+
+	// Verify chroma outside rect is unchanged.
+	chromaOutsideIdx := 0
+	require.Equal(t, byte(128), yuv[ySize+chromaOutsideIdx],
+		"Cb outside rect should be 128 (unchanged)")
+}
+
+func TestAlphaBlendRGBARectInto_ScratchReuse(t *testing.T) {
+	t.Parallel()
+	frameW, frameH := 1920, 1080
+	yuv := makeYUV420(frameW, frameH, 100, 128, 128)
+
+	overlayW, overlayH := 200, 50
+	rgba := makeRGBA(overlayW, overlayH, 255, 0, 0, 200)
+	rect := image.Rect(100, 900, 1800, 1000)
+
+	// First call: scratch buffers start as nil.
+	scratch1, colLUT1 := AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH,
+		rect, 1.0, nil, nil)
+
+	require.NotNil(t, scratch1, "scratch should be non-nil after first call")
+	require.NotNil(t, colLUT1, "colLUT should be non-nil after first call")
+	cap1Scratch := cap(scratch1)
+	cap1ColLUT := cap(colLUT1)
+
+	// Second call: pass returned scratch buffers back in.
+	scratch2, colLUT2 := AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH,
+		rect, 1.0, scratch1, colLUT1)
+
+	require.NotNil(t, scratch2, "scratch should be non-nil after second call")
+	require.NotNil(t, colLUT2, "colLUT should be non-nil after second call")
+
+	// Verify buffers were reused (same capacity, no new allocation).
+	require.Equal(t, cap1Scratch, cap(scratch2),
+		"scratch buffer should be reused (same capacity)")
+	require.Equal(t, cap1ColLUT, cap(colLUT2),
+		"colLUT buffer should be reused (same capacity)")
 }
 
 func BenchmarkAlphaBlendRGBA_TypicalLowerThird(b *testing.B) {
@@ -313,9 +392,9 @@ func TestAlphaBlendRGBARect_ShortRGBA(t *testing.T) {
 
 func TestAlphaBlendRGBARect_PureBlueNoChromaOverflow(t *testing.T) {
 	t.Parallel()
-	// Bug 2: Pure blue (R=0,G=0,B=255) produces overlayCb = 256 via:
-	//   (-29*0 - 99*0 + 128*255 + 128) >> 8 + 128 = 128 + 128 = 256
-	// byte(256) wraps to 0, producing visually wrong chroma.
+	// Bug 2: Pure blue (R=0,G=0,B=255) formerly produced overlayCb = 256 via
+	// full-range coefficients. Limited-range coefficients (112*B) avoid the overflow:
+	//   (-26*0 - 86*0 + 112*255 + 128) >> 8 + 128 = 112 + 128 = 240.
 	width, height := 4, 4
 	yuv := makeYUV420(width, height, 0, 128, 128)
 
@@ -338,9 +417,9 @@ func TestAlphaBlendRGBARect_PureBlueNoChromaOverflow(t *testing.T) {
 
 func TestAlphaBlendRGBARect_PureRedNoChromaOverflow(t *testing.T) {
 	t.Parallel()
-	// Pure red (R=255,G=0,B=0) produces overlayCr = 256 via:
-	//   (128*255 - 116*0 - 12*0 + 128) >> 8 + 128 = 128 + 128 = 256
-	// byte(256) wraps to 0, producing visually wrong chroma.
+	// Pure red (R=255,G=0,B=0) formerly produced overlayCr = 256 via
+	// full-range coefficients. Limited-range coefficients (112*R) avoid the overflow:
+	//   (112*255 - 102*0 - 10*0 + 128) >> 8 + 128 = 112 + 128 = 240.
 	width, height := 4, 4
 	yuv := makeYUV420(width, height, 0, 128, 128)
 
@@ -368,16 +447,16 @@ func TestAlphaBlendRGBARect_OpaqueNoBackgroundLeak(t *testing.T) {
 	// the background through fully opaque pixels. AlphaBlendRGBA (full-frame)
 	// does this correctly via its assembly/generic kernel.
 	//
-	// We use a bright background (Y=200) and a dark overlay (Y≈18 for pure blue)
-	// at alpha=255 to maximize the leak visibility. Without the fix, the leaked
-	// background adds ~0.78 to the output Y (200 * 1/256 ≈ 0.78), rounding
-	// to Y=19 instead of the correct Y=18.
+	// We use a bright background (Y=200) and a dark overlay (Y≈32 for pure blue
+	// in limited-range BT.709) at alpha=255 to maximize the leak visibility.
+	// Without the fix, the leaked background adds ~0.78 to the output Y
+	// (200 * 1/256 ≈ 0.78).
 	width, height := 4, 4
 
 	// Bright background so any leak is detectable.
 	yuv := makeYUV420(width, height, 200, 128, 128)
 
-	// Pure blue overlay, fully opaque. BT.709 Y for blue: (19*255+128)>>8 = 19.
+	// Pure blue overlay, fully opaque. Limited-range BT.709 Y for blue: 16+((16*255+128)>>8) = 32.
 	rgba := makeRGBA(width, height, 0, 0, 255, 255)
 	rect := image.Rect(0, 0, width, height)
 
@@ -406,6 +485,41 @@ func TestAlphaBlendRGBARect_OpaqueNoBackgroundLeak(t *testing.T) {
 		crRef := yuvRef[ySize+uvSize+i]
 		require.Equal(t, crRef, crRect,
 			"Cr[%d]: rect=%d, full-frame=%d — background leaked through opaque chroma", i, crRect, crRef)
+	}
+}
+
+func TestRGBAToYUV_LimitedRange(t *testing.T) {
+	t.Parallel()
+
+	// Test that pure white RGBA overlay produces Y=235 (not 255) in the blended output.
+	frameW, frameH := 4, 2
+	yuv := makeYUV420(frameW, frameH, 16, 128, 128) // black in limited range
+	rgba := makeRGBA(frameW, frameH, 255, 255, 255, 255) // pure white, full alpha
+
+	AlphaBlendRGBA(yuv, rgba, frameW, frameH, 1.0)
+
+	// Y plane: white in limited range should be 235
+	for i := 0; i < frameW*frameH; i++ {
+		require.InDelta(t, 235, int(yuv[i]), 1, "Y[%d] should be ~235 (limited range white)", i)
+	}
+
+	// Test pure black: Y should be 16
+	yuv2 := makeYUV420(frameW, frameH, 235, 128, 128) // white in limited range
+	rgbaBlack := makeRGBA(frameW, frameH, 0, 0, 0, 255) // pure black, full alpha
+	AlphaBlendRGBA(yuv2, rgbaBlack, frameW, frameH, 1.0)
+	for i := 0; i < frameW*frameH; i++ {
+		require.InDelta(t, 16, int(yuv2[i]), 1, "Y[%d] should be ~16 (limited range black)", i)
+	}
+
+	// White overlay should produce Cb=128, Cr=128 (neutral chroma)
+	yuv3 := makeYUV420(frameW, frameH, 16, 64, 200) // some chroma values
+	rgbaWhite := makeRGBA(frameW, frameH, 255, 255, 255, 255)
+	AlphaBlendRGBA(yuv3, rgbaWhite, frameW, frameH, 1.0)
+	cbOffset := frameW * frameH
+	crOffset := cbOffset + (frameW/2)*(frameH/2)
+	for i := 0; i < (frameW/2)*(frameH/2); i++ {
+		require.InDelta(t, 128, int(yuv3[cbOffset+i]), 1, "Cb[%d] should be ~128 (neutral)", i)
+		require.InDelta(t, 128, int(yuv3[crOffset+i]), 1, "Cr[%d] should be ~128 (neutral)", i)
 	}
 }
 
@@ -453,8 +567,8 @@ func BenchmarkAlphaBlendRGBARect_LowerThird(b *testing.B) {
 	}
 }
 
-// BenchmarkAlphaBlendRGBARectInto_ScoreBug benchmarks the Into variant with a
-// pre-allocated scratch buffer (simulating Compositor steady-state).
+// BenchmarkAlphaBlendRGBARectInto_ScoreBug benchmarks the Into variant with
+// pre-allocated scratch buffers (simulating Compositor steady-state).
 func BenchmarkAlphaBlendRGBARectInto_ScoreBug(b *testing.B) {
 	frameW, frameH := 1920, 1080
 	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
@@ -463,19 +577,20 @@ func BenchmarkAlphaBlendRGBARectInto_ScoreBug(b *testing.B) {
 	rgba := makeRGBA(overlayW, overlayH, 200, 50, 50, 220)
 	rect := image.Rect(1580, 20, 1900, 100)
 
-	// Pre-allocate scratch buffer (as Compositor would).
+	// Pre-allocate scratch buffers (as Compositor would).
 	scratch := make([]byte, rect.Dx()*4)
+	var colLUT []int
 
 	b.SetBytes(int64(overlayW * overlayH))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scratch = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch)
+		scratch, colLUT = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch, colLUT)
 	}
 }
 
 // BenchmarkAlphaBlendRGBARectInto_LowerThird benchmarks the Into variant with
-// pre-allocated scratch for a lower-third overlay.
+// pre-allocated scratch buffers for a lower-third overlay.
 func BenchmarkAlphaBlendRGBARectInto_LowerThird(b *testing.B) {
 	frameW, frameH := 1920, 1080
 	yuv := makeYUV420(frameW, frameH, 128, 128, 128)
@@ -485,12 +600,13 @@ func BenchmarkAlphaBlendRGBARectInto_LowerThird(b *testing.B) {
 	rect := image.Rect(0, 880, 1920, 1080)
 
 	scratch := make([]byte, rect.Dx()*4)
+	var colLUT []int
 
 	b.SetBytes(int64(overlayW * overlayH))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scratch = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch)
+		scratch, colLUT = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, 1.0, scratch, colLUT)
 	}
 }
 

@@ -35,13 +35,18 @@ func TestSetImage(t *testing.T) {
 	err = c.SetImage(id, "logo.png", pngData)
 	require.NoError(t, err)
 
-	// Verify image is stored
+	// Verify image is stored and overlay is set
 	c.mu.RLock()
 	layer := c.layers[id]
 	require.Equal(t, "logo.png", layer.imageName)
 	require.Equal(t, 100, layer.imageWidth)
 	require.Equal(t, 50, layer.imageHeight)
 	require.Equal(t, 100*50*4, len(layer.imageRGBA))
+	require.Equal(t, 100*50*4, len(layer.overlay), "overlay should be set from uploaded image")
+	require.Equal(t, 100, layer.overlayWidth)
+	require.Equal(t, 50, layer.overlayHeight)
+	require.True(t, layer.active, "layer should be activated by SetImage")
+	require.Equal(t, 1.0, layer.fadePosition, "fade should be fully on")
 	c.mu.RUnlock()
 }
 
@@ -85,6 +90,13 @@ func TestDeleteImage(t *testing.T) {
 
 	_, _, err = c.GetImage(id)
 	require.ErrorIs(t, err, ErrNoImage)
+
+	// Verify overlay is also cleared
+	c.mu.RLock()
+	layer := c.layers[id]
+	require.Nil(t, layer.overlay, "overlay should be cleared when image is deleted")
+	require.False(t, layer.active, "layer should be deactivated when image is deleted")
+	c.mu.RUnlock()
 }
 
 func TestDeleteImage_NoImage(t *testing.T) {

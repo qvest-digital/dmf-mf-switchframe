@@ -87,7 +87,7 @@ func TestCompositor_MultiLayerProcessYUV(t *testing.T) {
 	require.NoError(t, c.On(id2))
 
 	yuv := makeYUV420(4, 4, 0, 128, 128)
-	result := c.ProcessYUV(yuv, 4, 4, nil)
+	result := c.ProcessYUV(yuv, 4, 4, nil, nil)
 
 	// Both layers should have blended — result should differ from black.
 	allZero := true
@@ -811,7 +811,7 @@ func TestCompositor_ConcurrentOps(t *testing.T) {
 				}
 				_ = c.SetOverlay(id, overlay, 8, 8, "test")
 				_ = c.On(id)
-				c.ProcessYUV(yuv, 8, 8, nil)
+				c.ProcessYUV(yuv, 8, 8, nil, nil)
 				_ = c.Off(id)
 				_ = c.RemoveLayer(id)
 			}
@@ -835,6 +835,6 @@ func TestCompositor_ProcessYUV_ShortBuffer(t *testing.T) {
 
 	// Short buffer should be returned unchanged (no panic).
 	short := make([]byte, 10)
-	result := c.ProcessYUV(short, 4, 4, nil)
+	result := c.ProcessYUV(short, 4, 4, nil, nil)
 	require.Equal(t, short, result)
 }

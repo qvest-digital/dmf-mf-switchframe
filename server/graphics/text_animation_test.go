@@ -189,3 +189,86 @@ func TestTextAnimationEngine_ConcurrentCloseAndStop(t *testing.T) {
 		_ = c.RemoveLayer(id)
 	}
 }
+
+func TestTextAnimEngine_ConcurrentStartStop(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestTextRenderer(t)
+	tae := NewTextAnimationEngine(c, renderer)
+	defer tae.Close()
+
+	ids := make([]int, 4)
+	for i := range ids {
+		id, err := c.AddLayer()
+		require.NoError(t, err)
+		ids[i] = id
+	}
+
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(layerID int) {
+			defer wg.Done()
+			cfg := TextAnimationConfig{
+				Mode: "typewriter", Text: "Race test words", FontSize: 24, CharsPerSec: 100,
+			}
+			for i := 0; i < 3; i++ {
+				if err := tae.Start(layerID, cfg); err != nil {
+					continue
+				}
+				time.Sleep(20 * time.Millisecond)
+				_ = tae.Stop(layerID)
+			}
+		}(id)
+	}
+	wg.Wait()
+}
+
+func TestTextAnimEngine_StopDuringAnimation(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestTextRenderer(t)
+	tae := NewTextAnimationEngine(c, renderer)
+	defer tae.Close()
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Start a slow fade-word animation
+	err = tae.Start(id, TextAnimationConfig{
+		Mode:           "fade-word",
+		Text:           "Many words in this sentence to animate slowly",
+		FontSize:       32,
+		WordDelayMs:    500,
+		FadeDurationMs: 300,
+	})
+	require.NoError(t, err)
+
+	// Stop immediately — should complete cleanly without panic or deadlock
+	time.Sleep(30 * time.Millisecond) // let one frame render
+	require.NoError(t, tae.Stop(id))
+	require.False(t, tae.IsRunning(id))
+}
+
+func TestSplitWordsForAnim_Empty(t *testing.T) {
+	require.Empty(t, splitWordsForAnim(""))
+}
+
+func TestSplitWordsForAnim_SingleWord(t *testing.T) {
+	require.Equal(t, []string{"hello"}, splitWordsForAnim("hello"))
+}
+
+func TestSplitWordsForAnim_MultipleSpaces(t *testing.T) {
+	// Double spaces should not produce empty words
+	result := splitWordsForAnim("hello  world")
+	require.Equal(t, []string{"hello", "world"}, result)
+}
+
+func TestSplitWordsForAnim_LeadingTrailingSpaces(t *testing.T) {
+	result := splitWordsForAnim(" hello world ")
+	require.Equal(t, []string{"hello", "world"}, result)
+}

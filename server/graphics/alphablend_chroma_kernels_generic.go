@@ -33,8 +33,8 @@ func alphaBlendRGBAChromaRow(cbRow *byte, crRow *byte, rgba *byte, chromaWidth i
 		G := int(rgbaS[rgbaOff+1])
 		B := int(rgbaS[rgbaOff+2])
 
-		overlayCb := ((-29*R - 99*G + 128*B + 128) >> 8) + 128
-		overlayCr := ((128*R - 116*G - 12*B + 128) >> 8) + 128
+		overlayCb := ((-26*R - 86*G + 112*B + 128) >> 8) + 128
+		overlayCr := ((112*R - 102*G - 10*B + 128) >> 8) + 128
 
 		inv := 256 - a256
 		cb := (int(cbS[i])*inv + overlayCb*a256 + 128) >> 8

@@ -8,7 +8,7 @@
 //   A' = A + (A >> 7)                       (map 0-255 to 0-256)
 //   a256 = (A' * alphaScale256) >> 8
 //   if a256 == 0: skip (transparent)
-//   overlayY = (54*R + 183*G + 19*B + 128) >> 8
+//   overlayY = 16 + ((47*R + 157*G + 16*B + 128) >> 8)
 //   yRow[i] = (yRow[i]*(256-a256) + overlayY*a256 + 128) >> 8
 //
 // Registers:
@@ -41,14 +41,15 @@ loop:
 	MOVBQZX 1(SI), R10        // R10 = G
 	MOVBQZX 2(SI), R11        // R11 = B
 
-	// overlayY = (54*R + 183*G + 19*B + 128) >> 8
-	IMUL3Q  $54, R9, R12
-	IMUL3Q  $183, R10, R13
+	// overlayY = 16 + ((47*R + 157*G + 16*B + 128) >> 8)
+	IMUL3Q  $47, R9, R12
+	IMUL3Q  $157, R10, R13
 	ADDQ    R13, R12
-	IMUL3Q  $19, R11, R13
+	IMUL3Q  $16, R11, R13
 	ADDQ    R13, R12
 	ADDQ    $128, R12
-	SHRQ    $8, R12            // R12 = overlayY
+	SHRQ    $8, R12
+	ADDQ    $16, R12            // R12 = overlayY (limited-range)
 
 	// inv = 256 - a256
 	MOVQ    $256, R13

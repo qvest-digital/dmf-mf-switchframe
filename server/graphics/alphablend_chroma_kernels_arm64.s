@@ -37,7 +37,7 @@
 //   V24 = byte mask 0xFF per .4S
 //   V25 = constant 128 per .4S
 //   V26 = constant 256 per .4S
-//   V27-V31 = coefficients [29, 99, 128, 116, 12]
+//   V27-V31 = coefficients [26, 86, 112, 102, 10]
 TEXT ·alphaBlendRGBAChromaRow(SB), NOSPLIT, $0-40
 	MOVD cbRow+0(FP), R0
 	MOVD crRow+8(FP), R1
@@ -55,15 +55,15 @@ TEXT ·alphaBlendRGBAChromaRow(SB), NOSPLIT, $0-40
 	VDUP_4S(25, 5)
 	MOVD  $256, R5
 	VDUP_4S(26, 5)
-	MOVD  $29, R5
+	MOVD  $26, R5
 	VDUP_4S(27, 5)
-	MOVD  $99, R5
+	MOVD  $86, R5
 	VDUP_4S(28, 5)
-	MOVD  $128, R5
+	MOVD  $112, R5
 	VDUP_4S(29, 5)
-	MOVD  $116, R5
+	MOVD  $102, R5
 	VDUP_4S(30, 5)
-	MOVD  $12, R5
+	MOVD  $10, R5
 	VDUP_4S(31, 5)
 	VDUP_4S(23, 4)
 	// V22 = zero vector for negative clamping
@@ -105,19 +105,19 @@ chroma_neon4:
 	USHR_4S(5, 2, 16)
 	VAND V5.B16, V24.B16, V5.B16  // B
 
-	// overlayCb = (128*B - 29*R - 99*G + 128) >> 8 + 128
-	VMUL_4S(8, 5, 29)             // 128*B
+	// overlayCb = (112*B - 26*R - 86*G + 128) >> 8 + 128
+	VMUL_4S(8, 5, 29)             // 112*B
 	VADD V8.S4, V25.S4, V8.S4    // + 128
-	VMLS_4S(8, 3, 27)             // -= 29*R
-	VMLS_4S(8, 4, 28)             // -= 99*G
+	VMLS_4S(8, 3, 27)             // -= 26*R
+	VMLS_4S(8, 4, 28)             // -= 86*G
 	SSHR_4S(8, 8, 8)
 	VADD V8.S4, V25.S4, V8.S4    // + 128 = overlayCb
 
-	// overlayCr = (128*R - 116*G - 12*B + 128) >> 8 + 128
-	VMUL_4S(9, 3, 29)             // 128*R
+	// overlayCr = (112*R - 102*G - 10*B + 128) >> 8 + 128
+	VMUL_4S(9, 3, 29)             // 112*R
 	VADD V9.S4, V25.S4, V9.S4    // + 128
-	VMLS_4S(9, 4, 30)             // -= 116*G
-	VMLS_4S(9, 5, 31)             // -= 12*B
+	VMLS_4S(9, 4, 30)             // -= 102*G
+	VMLS_4S(9, 5, 31)             // -= 10*B
 	SSHR_4S(9, 9, 8)
 	VADD V9.S4, V25.S4, V9.S4    // + 128 = overlayCr
 
@@ -189,26 +189,26 @@ chroma_scalar_loop:
 	MOVBU 2(R2), R8
 
 	// overlayCb
-	MOVD  $128, R9
+	MOVD  $112, R9
 	MUL   R9, R8, R9
 	ADD   $128, R9, R9
-	MOVD  $29, R10
+	MOVD  $26, R10
 	MUL   R10, R6, R10
 	SUB   R10, R9, R9
-	MOVD  $99, R10
+	MOVD  $86, R10
 	MUL   R10, R7, R10
 	SUB   R10, R9, R9
 	ASR   $8, R9, R9
 	ADD   $128, R9, R9
 
 	// overlayCr
-	MOVD  $128, R10
+	MOVD  $112, R10
 	MUL   R10, R6, R10
 	ADD   $128, R10, R10
-	MOVD  $116, R11
+	MOVD  $102, R11
 	MUL   R11, R7, R11
 	SUB   R11, R10, R10
-	MOVD  $12, R11
+	MOVD  $10, R11
 	MUL   R11, R8, R11
 	SUB   R11, R10, R10
 	ASR   $8, R10, R10

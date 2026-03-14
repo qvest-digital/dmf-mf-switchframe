@@ -63,6 +63,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrTooManyLayers, http.StatusConflict},
 	{graphics.ErrTextAnimActive, http.StatusConflict},
 	{graphics.ErrTickerActive, http.StatusConflict},
+	{graphics.ErrCompositorClosed, http.StatusServiceUnavailable},
 	{operator.ErrDuplicateName, http.StatusConflict},
 	{operator.ErrSubsystemLocked, http.StatusConflict},
 	{replay.ErrPlayerActive, http.StatusConflict},

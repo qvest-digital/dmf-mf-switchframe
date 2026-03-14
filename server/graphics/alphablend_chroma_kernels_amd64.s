@@ -35,29 +35,31 @@ chroma_loop_amd64:
 	MOVBQZX 1(DX), R10         // R10 = G
 	MOVBQZX 2(DX), R11         // R11 = B
 
-	// overlayCb = (128*B - 29*R - 99*G + 128) >> 8 + 128
-	MOVQ R11, R12
-	SHLQ $7, R12               // R12 = 128*B
+	// overlayCb = (112*B - 26*R - 86*G + 128) >> 8 + 128
+	MOVQ $112, R15
+	IMULQ R11, R15              // R15 = 112*B
+	MOVQ R15, R12               // R12 = 112*B
 	ADDQ $128, R12             // + 128
-	MOVQ $29, R13
-	IMULQ R9, R13               // R13 = 29*R
-	SUBQ R13, R12              // - 29*R
-	MOVQ $99, R13
-	IMULQ R10, R13              // R13 = 99*G
-	SUBQ R13, R12              // - 99*G
+	MOVQ $26, R13
+	IMULQ R9, R13               // R13 = 26*R
+	SUBQ R13, R12              // - 26*R
+	MOVQ $86, R13
+	IMULQ R10, R13              // R13 = 86*G
+	SUBQ R13, R12              // - 86*G
 	SARQ $8, R12               // >> 8 (arithmetic)
 	ADDQ $128, R12             // + 128 = overlayCb
 
-	// overlayCr = (128*R - 116*G - 12*B + 128) >> 8 + 128
-	MOVQ R9, R13
-	SHLQ $7, R13               // R13 = 128*R
+	// overlayCr = (112*R - 102*G - 10*B + 128) >> 8 + 128
+	MOVQ $112, R15
+	IMULQ R9, R15               // R15 = 112*R
+	MOVQ R15, R13               // R13 = 112*R
 	ADDQ $128, R13             // + 128
-	MOVQ $116, R14
-	IMULQ R10, R14              // R14 = 116*G
-	SUBQ R14, R13              // - 116*G
-	MOVQ $12, R14
-	IMULQ R11, R14              // R14 = 12*B
-	SUBQ R14, R13              // - 12*B
+	MOVQ $102, R14
+	IMULQ R10, R14              // R14 = 102*G
+	SUBQ R14, R13              // - 102*G
+	MOVQ $10, R14
+	IMULQ R11, R14              // R14 = 10*B
+	SUBQ R14, R13              // - 10*B
 	SARQ $8, R13               // >> 8
 	ADDQ $128, R13             // + 128 = overlayCr
 

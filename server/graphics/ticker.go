@@ -22,10 +22,9 @@ type TickerConfig struct {
 	Text     string  `json:"text"`
 	FontSize float64 `json:"fontSize"`
 	Speed    float64 `json:"speed"`   // pixels per second
-	Bold     bool    `json:"bold"`
-	Loop     bool    `json:"loop"`    // wrap text for seamless looping
-	BgColor  string  `json:"bgColor"` // background hex (default: dark)
-	Height   int     `json:"height"`  // bar height in pixels (0 = auto from fontSize)
+	Bold   bool `json:"bold"`
+	Loop   bool `json:"loop"`   // wrap text for seamless looping
+	Height int  `json:"height"` // bar height in pixels (0 = auto from fontSize)
 }
 
 // tickerInstance holds the state for one running ticker.
@@ -127,6 +126,16 @@ func (te *TickerEngine) UpdateText(layerID int, text string) error {
 	return te.Start(layerID, cfg)
 }
 
+// cleanup removes the ticker from the map and deactivates the layer.
+// Called on all exit paths (cancel, natural completion).
+func (te *TickerEngine) cleanup(layerID int) {
+	te.mu.Lock()
+	delete(te.tickers, layerID)
+	te.mu.Unlock()
+
+	te.compositor.deactivateAndClearLayer(layerID)
+}
+
 // Close stops all running tickers. It is safe to call multiple times.
 func (te *TickerEngine) Close() {
 	te.closeOnce.Do(func() {
@@ -145,10 +154,15 @@ func (te *TickerEngine) Close() {
 	})
 }
 
+// maxStripWidth caps the pre-rendered ticker strip to prevent excessive memory
+// allocation from very long text. 65536 pixels at 48px tall = ~12.5 MB RGBA.
+const maxStripWidth = 65536
+
 // runTicker is the main ticker goroutine. It pre-renders the text strip once,
 // then slides a viewport across it at 60fps.
 func (te *TickerEngine) runTicker(inst *tickerInstance) {
 	defer close(inst.done)
+	defer te.cleanup(inst.layerID)
 
 	cfg := inst.config
 	if cfg.Speed <= 0 {
@@ -158,13 +172,13 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 		cfg.FontSize = 24
 	}
 
-	// Get program resolution for viewport width
+	// Get program resolution for viewport width.
 	progW, progH := 1920, 1080
 	if te.compositor.resolutionProvider != nil {
 		progW, progH = te.compositor.resolutionProvider()
 	}
 
-	// Bar height (even-aligned for YUV420)
+	// Bar height (even-aligned for YUV420).
 	barH := cfg.Height
 	if barH <= 0 {
 		barH = int(cfg.FontSize * 2.0)
@@ -196,6 +210,12 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 		stripW = gapW + textW + gapW + textW
 	} else {
 		stripW = gapW + textW + gapW
+	}
+
+	// Cap strip width to prevent excessive memory allocation.
+	if stripW > maxStripWidth {
+		te.log.Warn("ticker strip width capped", "original", stripW, "max", maxStripWidth)
+		stripW = maxStripWidth
 	}
 
 	// Create strip image
@@ -240,6 +260,9 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 
 	// Viewport buffer (what gets sent to compositor each frame)
 	viewport := make([]byte, progW*barH*4)
+
+	// Activate the layer so the overlay is rendered by ProcessYUV.
+	te.compositor.activateLayer(inst.layerID)
 
 	const tickRate = 60
 	ticker := time.NewTicker(time.Second / tickRate)

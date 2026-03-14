@@ -1,9 +1,13 @@
 package control
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -669,5 +674,247 @@ func TestGraphicsLayerNotFound(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// setupGraphicsTestAPIWithEngines creates an API with compositor, ticker engine, and text animation engine.
+func setupGraphicsTestAPIWithEngines(t *testing.T) (*API, *graphics.Compositor) {
+	t.Helper()
+	programRelay := distribution.NewRelay()
+	sw := switcher.New(programRelay)
+	comp := graphics.NewCompositor()
+	comp.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+	t.Cleanup(comp.Close)
+	renderer, err := textrender.NewRenderer()
+	require.NoError(t, err)
+	tae := graphics.NewTextAnimationEngine(comp, renderer)
+	t.Cleanup(tae.Close)
+	te := graphics.NewTickerEngine(comp, renderer)
+	t.Cleanup(te.Close)
+	api := NewAPI(sw, WithCompositor(comp), WithTextAnimEngine(tae), WithTickerEngine(te))
+	return api, comp
+}
+
+// createTestPNG generates a small valid PNG image.
+func createTestPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	return buf.Bytes()
+}
+
+func TestHandleTickerStart(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	body := `{"text":"Breaking News","fontSize":24,"speed":100}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/ticker", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "ticker start: body: %s", rec.Body.String())
+}
+
+func TestHandleTickerStart_InvalidLayer(t *testing.T) {
+	// The ticker engine does not validate layer IDs synchronously — it starts
+	// an async goroutine that will fail on SetOverlay. The handler therefore
+	// returns 200 even for a non-existent layer. We verify the handler still
+	// succeeds and that the ticker can be stopped without error.
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+
+	body := `{"text":"Breaking News","fontSize":24,"speed":100}`
+	req := httptest.NewRequest("POST", "/api/graphics/999/ticker", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "ticker start returns 200 (async layer validation): body: %s", rec.Body.String())
+}
+
+func TestHandleTickerStop(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Start ticker first
+	body := `{"text":"Breaking News","fontSize":24,"speed":100}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/ticker", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "ticker start: body: %s", rec.Body.String())
+
+	// Stop ticker
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/ticker/stop", id), nil)
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "ticker stop: body: %s", rec.Body.String())
+}
+
+func TestHandleTickerStop_NotRunning(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/ticker/stop", id), nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, "ticker stop not running: body: %s", rec.Body.String())
+}
+
+func TestHandleTickerUpdateText(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Start ticker first
+	body := `{"text":"Breaking News","fontSize":24,"speed":100}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/ticker", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "ticker start: body: %s", rec.Body.String())
+
+	// Update text
+	updateBody := `{"text":"Updated Headlines"}`
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/graphics/%d/ticker/text", id), strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "ticker update text: body: %s", rec.Body.String())
+}
+
+func TestHandleTextAnimStart(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	body := `{"mode":"typewriter","text":"Hello","fontSize":24,"charsPerSec":100}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/text-animate", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "text-anim start: body: %s", rec.Body.String())
+}
+
+func TestHandleTextAnimStop(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Start text animation first
+	body := `{"mode":"typewriter","text":"Hello","fontSize":24,"charsPerSec":100}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/text-animate", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "text-anim start: body: %s", rec.Body.String())
+
+	// Stop text animation
+	req = httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/text-animate/stop", id), nil)
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "text-anim stop: body: %s", rec.Body.String())
+}
+
+func TestHandleFlyOn(t *testing.T) {
+	api, comp := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Upload overlay (required for FlyOn)
+	uploadOverlay(t, api, id, 4, 4, "test")
+	// Layer must NOT be active for FlyOn (it activates the layer)
+	require.False(t, comp.Status().Layers[0].Active)
+
+	body := `{"direction":"left","durationMs":300}`
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/fly-on", id), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "fly-on: body: %s", rec.Body.String())
+
+	// Clean up animation
+	_ = comp.StopAnimation(id)
+}
+
+func TestHandleImageUpload(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	pngData := createTestPNG(t)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "test.png")
+	require.NoError(t, err)
+	_, err = part.Write(pngData)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/image", id), &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "image upload: body: %s", rec.Body.String())
+}
+
+func TestHandleImageGet(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Upload image first
+	pngData := createTestPNG(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "test.png")
+	require.NoError(t, err)
+	_, err = part.Write(pngData)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/image", id), &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "image upload: body: %s", rec.Body.String())
+
+	// Get image
+	req = httptest.NewRequest("GET", fmt.Sprintf("/api/graphics/%d/image", id), nil)
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "image get: body length: %d", rec.Body.Len())
+	require.Equal(t, "image/png", rec.Header().Get("Content-Type"))
+}
+
+func TestHandleImageDelete(t *testing.T) {
+	api, _ := setupGraphicsTestAPIWithEngines(t)
+	id := addLayerViaAPI(t, api)
+
+	// Upload image first
+	pngData := createTestPNG(t)
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("image", "test.png")
+	require.NoError(t, err)
+	_, err = part.Write(pngData)
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/image", id), &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "image upload: body: %s", rec.Body.String())
+
+	// Delete image
+	req = httptest.NewRequest("DELETE", fmt.Sprintf("/api/graphics/%d/image", id), nil)
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 

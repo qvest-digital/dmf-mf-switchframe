@@ -48,9 +48,9 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 	// Uses top-left pixel's RGBA for chroma blend (matching previous
 	// "last write wins" behavior, now deterministic).
 	//
-	// BT.709 integer coefficients (scaled by 256):
-	//   Cb = (-29*R - 99*G + 128*B + 128) >> 8 + 128
-	//   Cr = (128*R - 116*G - 12*B + 128) >> 8 + 128
+	// BT.709 limited-range integer coefficients (scaled by 256):
+	//   Cb = (-26*R - 86*G + 112*B + 128) >> 8 + 128
+	//   Cr = (112*R - 102*G - 10*B + 128) >> 8 + 128
 	for row := 0; row < height; row += 2 {
 		rgbaStart := (row * width) * 4
 		uvStart := (row / 2) * halfW
@@ -71,22 +71,22 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 //   - alphaScale: global alpha modulator (0.0-1.0)
 func AlphaBlendRGBARect(yuv []byte, rgba []byte, frameW, frameH, overlayW, overlayH int,
 	rect image.Rectangle, alphaScale float64) {
-	_ = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, alphaScale, nil)
+	_, _ = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH, rect, alphaScale, nil, nil)
 }
 
-// AlphaBlendRGBARectInto is like AlphaBlendRGBARect but accepts a reusable
-// scratch buffer to avoid per-frame allocation. If scratch is nil or too small,
-// a new buffer is allocated internally. Returns the scratch buffer (possibly
-// grown) so callers can retain it for subsequent calls.
+// AlphaBlendRGBARectInto is like AlphaBlendRGBARect but accepts reusable
+// scratch buffers to avoid per-frame allocation. If scratch or colLUTScratch
+// is nil or too small, a new buffer is allocated internally. Returns both
+// buffers (possibly grown) so callers can retain them for subsequent calls.
 func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, overlayH int,
-	rect image.Rectangle, alphaScale float64, scratch []byte) []byte {
+	rect image.Rectangle, alphaScale float64, scratch []byte, colLUTScratch []int) ([]byte, []int) {
 
 	// Validate buffer lengths.
 	if len(rgba) < overlayW*overlayH*4 {
-		return scratch
+		return scratch, colLUTScratch
 	}
 	if len(yuv) < frameW*frameH*3/2 {
-		return scratch
+		return scratch, colLUTScratch
 	}
 
 	// Even-align the rect for YUV420 compatibility.
@@ -112,12 +112,12 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 	rectW := rect.Dx()
 	rectH := rect.Dy()
 	if rectW <= 0 || rectH <= 0 {
-		return scratch
+		return scratch, colLUTScratch
 	}
 
 	alphaScale256 := int(alphaScale*256 + 0.5)
 	if alphaScale256 <= 0 {
-		return scratch
+		return scratch, colLUTScratch
 	}
 	if alphaScale256 > 256 {
 		alphaScale256 = 256
@@ -137,7 +137,12 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 
 	// Build column lookup table: for each dest column dx, the source RGBA
 	// pixel offset. Avoids recomputing nearest-neighbor per row.
-	colLUT := make([]int, rectW)
+	if cap(colLUTScratch) >= rectW {
+		colLUTScratch = colLUTScratch[:rectW]
+	} else {
+		colLUTScratch = make([]int, rectW)
+	}
+	colLUT := colLUTScratch
 	for dx := 0; dx < rectW; dx++ {
 		srcCol := (dx*overlayW + rectW/2) / rectW
 		if srcCol >= overlayW {
@@ -205,5 +210,5 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 		alphaBlendRGBAChromaRow(&yuv[cbOffset+uvStart], &yuv[crOffset+uvStart], &rowBuf[0], halfRectW, alphaScale256)
 	}
 
-	return scratch
+	return scratch, colLUTScratch
 }

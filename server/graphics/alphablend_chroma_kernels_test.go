@@ -87,11 +87,12 @@ func TestAlphaBlendChromaRow_OpaqueYellow(t *testing.T) {
 
 	alphaBlendRGBAChromaRow(&cb[0], &cr[0], &rgba[0], chromaWidth, 256)
 
-	// overlayCb = ((-29*255 - 99*255 + 128*0 + 128) >> 8) + 128 = (-32512>>8) + 128 = -127+128 = 1
-	// overlayCr = ((128*255 - 116*255 - 12*0 + 128) >> 8) + 128 = (3188>>8) + 128 = 12+128 = 140
+	// Limited-range BT.709:
+	// overlayCb = ((-26*255 - 86*255 + 112*0 + 128) >> 8) + 128 = (-28432>>8)+128 = -111+128 = 17
+	// overlayCr = ((112*255 - 102*255 - 10*0 + 128) >> 8) + 128 = (2678>>8)+128 = 10+128 = 138
 	for i := 0; i < chromaWidth; i++ {
-		assert.InDelta(t, 1, int(cb[i]), 2, "Cb[%d] for yellow", i)
-		assert.InDelta(t, 140, int(cr[i]), 2, "Cr[%d] for yellow", i)
+		assert.InDelta(t, 17, int(cb[i]), 2, "Cb[%d] for yellow", i)
+		assert.InDelta(t, 138, int(cr[i]), 2, "Cr[%d] for yellow", i)
 	}
 }
 
@@ -108,7 +109,7 @@ func TestAlphaBlendChromaRow_WidthZero(t *testing.T) {
 // The blend formula is:
 //   cb = (existing*inv + overlayCb*a256 + 128) >> 8
 //
-// When overlayCb is minimal (e.g., 1 for yellow) and existing Cb is low,
+// When overlayCb is low (e.g., 17 for yellow) and existing Cb is low,
 // the result should be near overlayCb, never wrapping to a high byte value.
 //
 // This test exercises the generic scalar kernel's arithmetic path. The
@@ -129,15 +130,15 @@ func TestAlphaBlendChromaRow_NegativeBlendClamp(t *testing.T) {
 	// negative, potentially making the blend sum negative.
 	//
 	// Example: a256=300, inv=-44, existing Cb=255, overlayCb=1 (yellow)
-	//   cb = (255*(-44) + 1*300 + 128) >> 8 = (-11220 + 300 + 128) >> 8
-	//      = -10792 >> 8 = -43
-	//   byte(-43) wraps to 213 — WRONG (should clamp to 0)
+	//   cb = (255*(-44) + 17*300 + 128) >> 8 = (-11220 + 5100 + 128) >> 8
+	//      = -5992 >> 8 = -24
+	//   byte(-24) wraps to 232 — WRONG (should clamp to 0)
 
 	// Compute what the generic arithmetic produces without clamping.
 	existingCb := 255
 	a256 := 300 // exceeds 256 — kernel should handle defensively
 	inv := 256 - a256
-	overlayCb := 1 // minimal (yellow)
+	overlayCb := 17 // low (yellow with limited-range coefficients)
 
 	blendRaw := (existingCb*inv + overlayCb*a256 + 128) >> 8
 	// blendRaw is negative: (255*(-44) + 300 + 128) >> 8 = (-10792) >> 8 = -43
@@ -198,7 +199,7 @@ func TestAlphaBlendChromaRow_GenericArithmeticNegativeClamp(t *testing.T) {
 			g:           255,
 			b:           0,
 			alphaScale:  300,
-			wantCbBelow: 10, // overlayCb=1, should be near 0
+			wantCbBelow: 25, // overlayCb=17 (limited-range), should be near 17
 			wantCrBelow: 200,
 		},
 		{
@@ -210,16 +211,16 @@ func TestAlphaBlendChromaRow_GenericArithmeticNegativeClamp(t *testing.T) {
 			b:           255,
 			alphaScale:  300,
 			wantCbBelow: 255, // overlayCb for cyan is high, so no issue
-			wantCrBelow: 10,  // overlayCr=1, should be near 0
+			wantCrBelow: 25,  // overlayCr=17 (limited-range), should be near 17
 		},
 	}
 
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			// Compute overlay values using the same integer formula as the kernel
-			overlayCb := ((-29*tc.r - 99*tc.g + 128*tc.b + 128) >> 8) + 128
-			overlayCr := ((128*tc.r - 116*tc.g - 12*tc.b + 128) >> 8) + 128
+			// Compute overlay values using the same limited-range integer formula as the kernel
+			overlayCb := ((-26*tc.r - 86*tc.g + 112*tc.b + 128) >> 8) + 128
+			overlayCr := ((112*tc.r - 102*tc.g - 10*tc.b + 128) >> 8) + 128
 
 			// Compute a256 as the kernel does: A=255, A'=256, a256=(256*alphaScale)>>8
 			a256 := (256 * tc.alphaScale) >> 8

@@ -287,3 +287,153 @@ func TestTickerEngine_ConcurrentCloseAndStop(t *testing.T) {
 		_ = c.RemoveLayer(id)
 	}
 }
+
+func TestTickerEngine_ConcurrentStartStop(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	// Create several layers
+	ids := make([]int, 4)
+	for i := range ids {
+		id, err := c.AddLayer()
+		require.NoError(t, err)
+		ids[i] = id
+	}
+
+	// Start and stop tickers concurrently — race detector should catch issues
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(layerID int) {
+			defer wg.Done()
+			cfg := TickerConfig{Text: "Race test", FontSize: 24, Speed: 200}
+			for i := 0; i < 3; i++ {
+				if err := te.Start(layerID, cfg); err != nil {
+					continue
+				}
+				time.Sleep(20 * time.Millisecond)
+				_ = te.Stop(layerID)
+			}
+		}(id)
+	}
+	wg.Wait()
+}
+
+func TestTickerEngine_LoopMode(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Very fast ticker with loop — should still be running after enough time
+	// for a non-loop ticker to complete
+	err = te.Start(id, TickerConfig{
+		Text:     "Hi",
+		FontSize: 24,
+		Speed:    50000, // extremely fast
+		Loop:     true,
+	})
+	require.NoError(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+	require.True(t, te.IsRunning(id), "loop ticker should still be running")
+
+	require.NoError(t, te.Stop(id))
+}
+
+func TestTickerEngine_NonLoopCompletion(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Very fast non-loop ticker — should complete naturally
+	err = te.Start(id, TickerConfig{
+		Text:     "Hi",
+		FontSize: 24,
+		Speed:    100000, // extremely fast — will scroll off quickly
+		Loop:     false,
+	})
+	require.NoError(t, err)
+
+	// Wait long enough for it to scroll off
+	time.Sleep(500 * time.Millisecond)
+	require.False(t, te.IsRunning(id), "non-loop ticker should complete naturally")
+}
+
+func TestExtractViewport_Normal(t *testing.T) {
+	c := NewCompositor()
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	// Create a small strip: 20 pixels wide, 2 rows high
+	strip := image.NewRGBA(image.Rect(0, 0, 20, 2))
+	for i := range strip.Pix {
+		strip.Pix[i] = byte(i % 256)
+	}
+
+	dst := make([]byte, 8*2*4) // viewport: 8 pixels wide, 2 rows
+	te.extractViewport(strip, 4, 8, 2, dst)
+
+	// Verify data matches strip at offset 4
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 8; x++ {
+			srcOff := y*strip.Stride + (4+x)*4
+			dstOff := y*8*4 + x*4
+			require.Equal(t, strip.Pix[srcOff], dst[dstOff], "pixel mismatch at (%d,%d)", x, y)
+		}
+	}
+}
+
+func TestExtractViewport_ZeroOffset(t *testing.T) {
+	c := NewCompositor()
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	strip := image.NewRGBA(image.Rect(0, 0, 10, 1))
+	for i := range strip.Pix {
+		strip.Pix[i] = byte(i % 256)
+	}
+
+	dst := make([]byte, 4*1*4) // 4 pixels wide
+	te.extractViewport(strip, 0, 4, 1, dst)
+
+	for x := 0; x < 4; x++ {
+		srcOff := x * 4
+		dstOff := x * 4
+		require.Equal(t, strip.Pix[srcOff], dst[dstOff])
+	}
+}
+
+func TestExtractViewport_BoundaryOverflow(t *testing.T) {
+	c := NewCompositor()
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	strip := image.NewRGBA(image.Rect(0, 0, 10, 1))
+	for i := range strip.Pix {
+		strip.Pix[i] = 42
+	}
+
+	dst := make([]byte, 8*1*4) // 8 pixels, but strip only has 10 - starts at 5 = 5 pixels available
+	te.extractViewport(strip, 5, 8, 1, dst)
+
+	// First 5 pixels should be copied, rest should be zero/whatever was there
+	for x := 0; x < 5; x++ {
+		require.Equal(t, byte(42), dst[x*4], "pixel %d should be copied from strip", x)
+	}
+}

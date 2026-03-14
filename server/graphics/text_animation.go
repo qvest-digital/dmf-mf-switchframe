@@ -4,7 +4,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
-	"image/draw"
+
 	"log/slog"
 	"sync"
 	"time"
@@ -137,11 +137,14 @@ func (tae *TextAnimationEngine) Close() {
 	})
 }
 
-// cleanup removes the animation from the map (called when animation finishes naturally).
+// cleanup removes the animation from the map and deactivates the layer.
+// Called on all exit paths (cancel, natural completion).
 func (tae *TextAnimationEngine) cleanup(layerID int) {
 	tae.mu.Lock()
 	delete(tae.anims, layerID)
 	tae.mu.Unlock()
+
+	tae.compositor.deactivateAndClearLayer(layerID)
 }
 
 // runTypewriter reveals characters one at a time.
@@ -179,6 +182,18 @@ func (tae *TextAnimationEngine) runTypewriter(inst *textAnimInstance) {
 		})
 		renderH = int(float64(renderH) * 1.5) // add padding
 	}
+	// Even-align for YUV420 chroma compatibility.
+	renderW = renderW &^ 1
+	renderH = renderH &^ 1
+	if renderW < 2 {
+		renderW = 2
+	}
+	if renderH < 2 {
+		renderH = 2
+	}
+
+	// Activate the layer so the overlay is rendered by ProcessYUV.
+	tae.compositor.activateLayer(inst.layerID)
 
 	textColor := color.RGBA{R: 255, G: 255, B: 255, A: 255}
 	charInterval := time.Duration(float64(time.Second) / cfg.CharsPerSec)
@@ -215,7 +230,15 @@ func (tae *TextAnimationEngine) runTypewriter(inst *textAnimInstance) {
 	}
 }
 
+// preRenderedWord holds a word image rendered once at full opacity.
+type preRenderedWord struct {
+	img  *image.RGBA
+	x    int
+	w, h int
+}
+
 // runFadeWord reveals words sequentially with an alpha ramp.
+// Word images are pre-rendered once; only alpha blitting happens per frame.
 func (tae *TextAnimationEngine) runFadeWord(inst *textAnimInstance) {
 	defer close(inst.done)
 	defer tae.cleanup(inst.layerID)
@@ -251,6 +274,48 @@ func (tae *TextAnimationEngine) runFadeWord(inst *textAnimInstance) {
 		})
 		renderH = int(float64(renderH) * 1.5)
 	}
+	// Even-align for YUV420 chroma compatibility.
+	renderW = renderW &^ 1
+	renderH = renderH &^ 1
+	if renderW < 2 {
+		renderW = 2
+	}
+	if renderH < 2 {
+		renderH = 2
+	}
+
+	// Pre-render all word images at full opacity (one-time cost).
+	var preRendered []preRenderedWord
+	xOffset := 0
+	for i, word := range words {
+		wordText := word
+		if i > 0 {
+			wordText = " " + word
+		}
+		wordW, wordH := tae.renderer.MeasureText(textrender.TextOptions{
+			Text: wordText, FontSize: cfg.FontSize, Bold: cfg.Bold,
+		})
+		wordImg, _, err := tae.renderer.RenderText(wordW, wordH, textrender.TextOptions{
+			Text:     wordText,
+			FontSize: cfg.FontSize,
+			Bold:     cfg.Bold,
+			Color:    color.RGBA{R: 255, G: 255, B: 255, A: 255},
+		})
+		if err != nil {
+			continue
+		}
+		preRendered = append(preRendered, preRenderedWord{img: wordImg, x: xOffset, w: wordW, h: wordH})
+		xOffset += wordW
+	}
+	if len(preRendered) == 0 {
+		return
+	}
+
+	// Reusable compositing buffer — cleared each frame instead of allocating.
+	compBuf := image.NewRGBA(image.Rect(0, 0, renderW, renderH))
+
+	// Activate the layer so the overlay is rendered by ProcessYUV.
+	tae.compositor.activateLayer(inst.layerID)
 
 	const frameRate = 60
 	frameTicker := time.NewTicker(time.Second / frameRate)
@@ -267,12 +332,13 @@ func (tae *TextAnimationEngine) runFadeWord(inst *textAnimInstance) {
 		case <-frameTicker.C:
 			elapsed := time.Since(start)
 
-			// Determine which words are visible and their alpha
-			img := image.NewRGBA(image.Rect(0, 0, renderW, renderH))
-			allDone := true
-			xOffset := 0
+			// Clear compositing buffer.
+			for i := range compBuf.Pix {
+				compBuf.Pix[i] = 0
+			}
 
-			for i, word := range words {
+			allDone := true
+			for i, pw := range preRendered {
 				wordStart := time.Duration(i) * wordDelay
 				wordElapsed := elapsed - wordStart
 
@@ -288,35 +354,54 @@ func (tae *TextAnimationEngine) runFadeWord(inst *textAnimInstance) {
 					allDone = false
 				}
 
-				// Render this word
-				wordText := word
-				if i > 0 {
-					wordText = " " + word
-				}
-				wordW, wordH := tae.renderer.MeasureText(textrender.TextOptions{
-					Text: wordText, FontSize: cfg.FontSize, Bold: cfg.Bold,
-				})
-
-				alphaU8 := uint8(alpha * 255)
-				wordImg, _, err := tae.renderer.RenderText(wordW, wordH, textrender.TextOptions{
-					Text:     wordText,
-					FontSize: cfg.FontSize,
-					Bold:     cfg.Bold,
-					Color:    color.RGBA{R: 255, G: 255, B: 255, A: alphaU8},
-				})
-				if err != nil {
-					continue
-				}
-
-				draw.Draw(img, image.Rect(xOffset, 0, xOffset+wordW, wordH), wordImg, image.Point{}, draw.Over)
-				xOffset += wordW
+				// Blit pre-rendered word with alpha scaling.
+				blitWordAlpha(compBuf, pw.img, pw.x, 0, uint8(alpha*255))
 			}
 
-			_ = tae.compositor.SetOverlay(inst.layerID, img.Pix, renderW, renderH, "text-anim")
+			_ = tae.compositor.SetOverlay(inst.layerID, compBuf.Pix, renderW, renderH, "text-anim")
 
 			if allDone {
 				return
 			}
+		}
+	}
+}
+
+// blitWordAlpha copies a pre-rendered word image into dst at (dstX, dstY)
+// with per-pixel alpha scaled by the given factor.
+func blitWordAlpha(dst, src *image.RGBA, dstX, dstY int, alpha uint8) {
+	srcBounds := src.Bounds()
+	srcW := srcBounds.Dx()
+	srcH := srcBounds.Dy()
+	dstBounds := dst.Bounds()
+	dstW := dstBounds.Dx()
+	dstH := dstBounds.Dy()
+
+	for y := 0; y < srcH; y++ {
+		dy := dstY + y
+		if dy < 0 || dy >= dstH {
+			continue
+		}
+		srcRowOff := y * src.Stride
+		dstRowOff := dy * dst.Stride
+		for x := 0; x < srcW; x++ {
+			dx := dstX + x
+			if dx < 0 || dx >= dstW {
+				continue
+			}
+			srcOff := srcRowOff + x*4
+			dstOff := dstRowOff + dx*4
+
+			srcA := src.Pix[srcOff+3]
+			if srcA == 0 {
+				continue
+			}
+			a := uint16(srcA) * uint16(alpha) / 255
+
+			dst.Pix[dstOff] = src.Pix[srcOff]
+			dst.Pix[dstOff+1] = src.Pix[srcOff+1]
+			dst.Pix[dstOff+2] = src.Pix[srcOff+2]
+			dst.Pix[dstOff+3] = uint8(a)
 		}
 	}
 }
