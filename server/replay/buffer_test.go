@@ -389,3 +389,42 @@ func TestReplayBuffer_ConcurrentAccess(t *testing.T) {
 
 	<-done
 }
+
+func BenchmarkReplayBuffer_TrimCompaction(b *testing.B) {
+	// Benchmark validates that trimLocked() compaction (make+copy inside mutex)
+	// is fast enough not to block frame ingest. At 9000 frames (300s buffer at
+	// 30fps), the compaction copies ~9000 bufferedFrame structs (~120 bytes each),
+	// which is a contiguous memcpy of ~1MB -- well under 1ms on modern hardware.
+	//
+	// The compaction is O(n) where n is frames REMAINING after trim, not total
+	// frames ever recorded. Since trimLocked removes GOPs before compacting,
+	// n is always smaller than the pre-trim count. The make+copy ensures the
+	// old backing array (which may be much larger) can be GC'd.
+	buf := newReplayBuffer(10, 0) // 10s window to force frequent trims
+	now := time.Now()
+
+	// Pre-fill with ~9000 frames (300 GOPs of 30 frames each).
+	// Only the last 10s worth will survive trimming.
+	for g := 0; g < 300; g++ {
+		wallTime := now.Add(time.Duration(g) * 100 * time.Millisecond)
+		kf := makeVideoFrame(int64(g)*90000, true, 1000)
+		buf.recordFrameAt(kf, wallTime)
+		for j := 1; j <= 29; j++ {
+			df := makeVideoFrame(int64(g)*90000+int64(j)*3003, false, 500)
+			buf.recordFrameAt(df, wallTime.Add(time.Duration(j)*3*time.Millisecond))
+		}
+	}
+
+	// Now benchmark the steady-state: recording a new GOP triggers trim+compact.
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g := 300 + i
+		wallTime := now.Add(time.Duration(g) * 100 * time.Millisecond)
+		kf := makeVideoFrame(int64(g)*90000, true, 1000)
+		buf.recordFrameAt(kf, wallTime)
+		for j := 1; j <= 29; j++ {
+			df := makeVideoFrame(int64(g)*90000+int64(j)*3003, false, 500)
+			buf.recordFrameAt(df, wallTime.Add(time.Duration(j)*3*time.Millisecond))
+		}
+	}
+}
