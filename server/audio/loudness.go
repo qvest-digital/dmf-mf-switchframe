@@ -1,7 +1,6 @@
 package audio
 
 import (
-	"log/slog"
 	"math"
 	"sync/atomic"
 )
@@ -49,28 +48,76 @@ type LoudnessMeter struct {
 	pendingReset atomic.Bool
 }
 
-// BS.1770-4 K-weighting filter coefficients for 48kHz sample rate.
-// Stage 1: Pre-filter (head-related shelf boost ~4dB above 1.5kHz)
-// Stage 2: RLB weighting (revised low-frequency B-curve, high-pass ~100Hz)
-// Coefficients are pre-normalized (a0 = 1.0).
-func newKWeightPreFilter() BiquadFilter {
-	return BiquadFilter{
-		b0: 1.53512485958697,
-		b1: -2.69169618940638,
-		b2: 1.19839281085285,
-		a1: -1.69065929318241,
-		a2: 0.73248077421585,
-	}
+// BS.1770-4 K-weighting filter coefficients computed from sample rate
+// using the bilinear transform. ITU-R BS.1770-4 Annex 1 defines the
+// analog prototype parameters.
+//
+// Stage 1: Pre-filter (head-related shelf boost ~4dB above ~1.5kHz)
+//   Analog parameters: f0=1681.974450955533 Hz, G=3.999843853973347 dB, Q=0.7071752369554196
+//
+// Stage 2: RLB weighting (revised low-frequency B-curve, high-pass ~38Hz)
+//   Analog parameters: f0=38.13547087602444 Hz, Q=0.5003270373238773
+
+// newKWeightPreFilter computes the BS.1770-4 pre-filter (high shelf) coefficients
+// for the given sample rate using the bilinear transform.
+//
+// Uses the ITU-R BS.1770-4 Annex 1 formulation: analog high-shelf prototype
+// with Vh = 10^(G/20), Vb = Vh^0.4996667741545416, K = tan(pi*f0/fs).
+// Produces coefficients identical to the ITU reference table at 48kHz.
+func newKWeightPreFilter(sampleRate int) BiquadFilter {
+	// Analog prototype parameters from BS.1770-4 Annex 1
+	const (
+		f0        = 1681.974450955533
+		G         = 3.999843853973347  // dB
+		Q         = 0.7071752369554196
+		vbExpHigh = 0.4996667741545416 // exponent for Vb derivation (boost)
+	)
+
+	fs := float64(sampleRate)
+	Vh := math.Pow(10, G/20.0) // voltage gain
+	Vb := math.Pow(Vh, vbExpHigh)
+	K := math.Tan(math.Pi * f0 / fs)
+	K2 := K * K
+	KdivQ := K / Q
+
+	a0 := 1.0 + KdivQ + K2
+	b0 := (Vh + Vb*KdivQ + K2) / a0
+	b1 := 2.0 * (K2 - Vh) / a0
+	b2 := (Vh - Vb*KdivQ + K2) / a0
+	a1 := 2.0 * (K2 - 1.0) / a0
+	a2 := (1.0 - KdivQ + K2) / a0
+
+	return BiquadFilter{b0: b0, b1: b1, b2: b2, a1: a1, a2: a2}
 }
 
-func newKWeightRLBFilter() BiquadFilter {
-	return BiquadFilter{
-		b0: 1.0,
-		b1: -2.0,
-		b2: 1.0,
-		a1: -1.99004745483398,
-		a2: 0.99007225036621,
-	}
+// newKWeightRLBFilter computes the BS.1770-4 RLB (revised low-frequency B-weighting)
+// high-pass filter coefficients for the given sample rate using the bilinear transform.
+//
+// Uses the ITU-R BS.1770-4 Annex 1 formulation: second-order analog HPF prototype
+// with K = tan(pi*f0/fs). All coefficients normalized by a0.
+// Note: the ITU reference table at 48kHz rounds the b coefficients to 1.0/-2.0/1.0;
+// this implementation produces the exact bilinear transform result (~0.995/-1.990/0.995
+// at 48kHz) which is acoustically equivalent.
+func newKWeightRLBFilter(sampleRate int) BiquadFilter {
+	// Analog prototype parameters from BS.1770-4 Annex 1
+	const (
+		f0 = 38.13547087602444
+		Q  = 0.5003270373238773
+	)
+
+	fs := float64(sampleRate)
+	K := math.Tan(math.Pi * f0 / fs)
+	K2 := K * K
+	KdivQ := K / Q
+
+	a0 := 1.0 + KdivQ + K2
+	b0 := 1.0 / a0
+	b1 := -2.0 / a0
+	b2 := 1.0 / a0
+	a1 := 2.0 * (K2 - 1.0) / a0
+	a2 := (1.0 - KdivQ + K2) / a0
+
+	return BiquadFilter{b0: b0, b1: b1, b2: b2, a1: a1, a2: a2}
 }
 
 var negMaxFloat64Bits = math.Float64bits(-math.MaxFloat64)
@@ -83,16 +130,11 @@ func NewLoudnessMeter(sampleRate, channels int) *LoudnessMeter {
 	if sampleRate < 1 {
 		sampleRate = 48000
 	}
-	if sampleRate != 48000 {
-		slog.Warn("loudness meter K-weighting coefficients are designed for 48kHz; LUFS readings may be inaccurate",
-			"sampleRate", sampleRate)
-	}
-
 	preFilters := make([]BiquadFilter, channels)
 	rlbFilters := make([]BiquadFilter, channels)
 	for ch := 0; ch < channels; ch++ {
-		preFilters[ch] = newKWeightPreFilter()
-		rlbFilters[ch] = newKWeightRLBFilter()
+		preFilters[ch] = newKWeightPreFilter(sampleRate)
+		rlbFilters[ch] = newKWeightRLBFilter(sampleRate)
 	}
 
 	stepSize := sampleRate / 10
