@@ -249,3 +249,46 @@ func TestBuildSampleTable_EmptyInputs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, entries)
 }
+
+func TestReadVideoSamples_NegativeCTTSOffset(t *testing.T) {
+	// CTTS v1 with signed offset that produces negative composition time.
+	// DTS=100, CTTS offset=-200 → compositionTime should clamp to 0, not -100.
+	track := &mp4Track{
+		handlerType:    "vide",
+		timescale:      90000,
+		naluLengthSize: 4,
+		sps:            []byte{0x67, 0x42},
+		pps:            []byte{0x68, 0xce},
+		stts:           []mp4.SttsEntry{{SampleCount: 1, SampleDelta: 100}},
+		ctts:           []mp4.CttsEntry{{SampleCount: 1, SampleOffsetV1: -200}},
+		cttsVersion:    1,
+		stss:           []uint32{1}, // sample 1 is keyframe
+		stsz:           []uint32{8}, // 8-byte sample
+		stsc:           []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco:           []uint64{0},
+	}
+
+	// Create a temp file with the sample data (4-byte NALU length + 4 bytes payload).
+	sampleData := make([]byte, 8)
+	sampleData[0] = 0x00
+	sampleData[1] = 0x00
+	sampleData[2] = 0x00
+	sampleData[3] = 0x04 // NALU length = 4
+	sampleData[4] = 0x65 // IDR NALU type
+	sampleData[5] = 0x00
+	sampleData[6] = 0x00
+	sampleData[7] = 0x00
+
+	tmpFile := writeTemp(t, sampleData, ".raw")
+	f, err := os.Open(tmpFile)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	frames, err := readVideoSamples(f, track)
+	require.NoError(t, err)
+	require.Len(t, frames, 1)
+
+	// PTS should be 0 (clamped), not negative.
+	assert.GreaterOrEqual(t, frames[0].pts, int64(0),
+		"PTS should be clamped to 0 when CTTS produces negative composition time")
+}

@@ -541,6 +541,11 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 		} else {
 			compositionTime = dts[i]
 		}
+		// CTTS v1 uses signed offsets which can produce negative composition
+		// times. Clamp to zero to avoid invalid negative PTS values.
+		if compositionTime < 0 {
+			compositionTime = 0
+		}
 		pts90k := compositionTime * 90000 / int64(track.timescale)
 
 		// Determine if this is a keyframe.
