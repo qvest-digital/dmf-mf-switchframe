@@ -149,11 +149,12 @@ func (ps *Store) Create(name string, state ControlRoomSnapshot) (Preset, error) 
 	ps.mu.Lock()
 	ps.presets = append(ps.presets, p)
 	err := ps.save()
-	ps.mu.Unlock()
-
 	if err != nil {
+		ps.presets = ps.presets[:len(ps.presets)-1]
+		ps.mu.Unlock()
 		return Preset{}, fmt.Errorf("save presets: %w", err)
 	}
+	ps.mu.Unlock()
 	return p, nil
 }
 
@@ -219,6 +220,11 @@ func (ps *Store) save() error {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("fsync temp file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpPath)

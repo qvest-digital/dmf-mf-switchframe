@@ -197,6 +197,27 @@ func TestConcurrency(t *testing.T) {
 	require.Len(t, presets, goroutines)
 }
 
+func TestCreateRollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+
+	// Use a path where the directory doesn't exist and can't be created
+	// (a file path under /dev/null which is not a directory).
+	ps := &Store{
+		filePath: "/dev/null/impossible/presets.json",
+		presets:  []Preset{},
+	}
+
+	// Verify the store starts empty.
+	require.Empty(t, ps.List())
+
+	// Create should fail because save() can't write to that path.
+	_, err := ps.Create("should-fail", testSnapshot())
+	require.Error(t, err, "expected Create to fail with unwritable path")
+
+	// The in-memory list must be unchanged (rollback on save failure).
+	require.Empty(t, ps.List(), "in-memory presets should be empty after save failure")
+}
+
 func TestNewStoreNonexistentFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
