@@ -1065,7 +1065,7 @@
 									<span class="stat-val">{(r.avgDrawMs ?? 0).toFixed(2)}ms avg, {(r.maxDrawMs ?? 0).toFixed(2)}ms max</span>
 								</div>
 							{:else}
-								<div class="stat-row"><span class="stat-key dim">No renderer</span></div>
+								<div class="stat-row"><span class="stat-key browser-dim">No renderer</span></div>
 							{/if}
 						</div>
 
@@ -1110,7 +1110,7 @@
 									</span>
 								</div>
 							{:else}
-								<div class="stat-row"><span class="stat-key dim">No renderer</span></div>
+								<div class="stat-row"><span class="stat-key browser-dim">No renderer</span></div>
 							{/if}
 						</div>
 
@@ -1174,7 +1174,7 @@
 									<span class="stat-val">{((a.contextBaseLatency ?? 0) * 1000).toFixed(1)} + {((a.contextOutputLatency ?? 0) * 1000).toFixed(1)}ms</span>
 								</div>
 							{:else}
-								<div class="stat-row"><span class="stat-key dim">No audio</span></div>
+								<div class="stat-row"><span class="stat-key browser-dim">No audio</span></div>
 							{/if}
 						</div>
 					</div>
@@ -3057,7 +3057,7 @@
 		letter-spacing: 0.5px;
 	}
 
-	.dim {
+	.browser-dim {
 		color: var(--text-tertiary);
 		opacity: 0.5;
 	}
