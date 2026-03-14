@@ -338,46 +338,69 @@ export const networkBugTemplate: GraphicsTemplate = {
 	render(ctx, width, height, values) {
 		ctx.save();
 
-		const marginX = Math.round(width * 0.08);
-		const marginY = Math.round(height * 0.08);
-		const bugX = width - marginX;
-		const bugY = marginY;
+		const marginX = Math.round(width * 0.06);
+		const marginY = Math.round(height * 0.06);
 
-		// Bold stylized bug text
-		const bugFontSize = Math.round(height * 0.05);
-		ctx.globalAlpha = 0.6;
-		ctx.font = `900 ${bugFontSize}px -apple-system, "Segoe UI", sans-serif`;
+		// Bug text metrics
+		const bugFontSize = Math.round(height * 0.045);
+		ctx.font = `900 ${bugFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		const bugText = values.text || 'SF';
+		const textMetrics = ctx.measureText(bugText);
+		const textW = textMetrics.width;
+
+		// Backdrop pill dimensions
+		const pillPadX = Math.round(bugFontSize * 0.6);
+		const pillPadY = Math.round(bugFontSize * 0.3);
+		const pillW = textW + pillPadX * 2;
+		const pillH = bugFontSize + pillPadY * 2;
+		const pillX = width - marginX - pillW;
+		const pillY = marginY;
+		const pillR = Math.round(pillH * 0.3);
+
+		// Rounded rect backdrop pill (semi-transparent for contrast)
+		ctx.globalAlpha = 0.35;
+		ctx.beginPath();
+		ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
+		ctx.fillStyle = '#000000';
+		ctx.fill();
+
+		// Bug text
+		ctx.globalAlpha = 0.75;
 		ctx.fillStyle = '#ffffff';
 		ctx.textAlign = 'center';
-		ctx.textBaseline = 'top';
-		const bugTextWidth = ctx.measureText(values.text || 'SF').width;
-		const bugCenterX = bugX - bugTextWidth / 2;
-		ctx.fillText(values.text || 'SF', bugCenterX, bugY);
+		ctx.textBaseline = 'middle';
+		ctx.fillText(bugText, pillX + pillW / 2, pillY + pillH / 2);
 
-		// "LIVE" indicator below: red dot + text, centered under bug text
-		const liveY = bugY + bugFontSize + Math.round(height * 0.01);
-		const liveFontSize = Math.round(bugFontSize * 0.35);
-		const dotRadius = Math.round(liveFontSize * 0.4);
+		// "LIVE" indicator below pill
+		const liveY = pillY + pillH + Math.round(height * 0.008);
+		const liveFontSize = Math.round(bugFontSize * 0.32);
+		const dotRadius = Math.round(liveFontSize * 0.35);
 
-		ctx.globalAlpha = 0.5;
+		ctx.font = `700 ${liveFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		const liveTextW = ctx.measureText('LIVE').width;
+		const liveGroupW = dotRadius * 2 + liveFontSize * 0.35 + liveTextW;
+		const liveGroupX = pillX + (pillW - liveGroupW) / 2;
 
-		// Measure LIVE text to center the dot+text group
-		ctx.font = `bold ${liveFontSize}px -apple-system, "Segoe UI", sans-serif`;
-		const liveTextWidth = ctx.measureText('LIVE').width;
-		const liveGroupWidth = dotRadius * 2 + liveFontSize * 0.4 + liveTextWidth;
-		const liveGroupLeft = bugCenterX - liveGroupWidth / 2;
-
-		// Red dot
-		ctx.fillStyle = '#FF0000';
+		// Red dot (pulsing effect via alpha)
+		ctx.globalAlpha = 0.7;
+		ctx.fillStyle = '#ef4444';
 		ctx.beginPath();
-		ctx.arc(liveGroupLeft + dotRadius, liveY + liveFontSize * 0.5, dotRadius, 0, Math.PI * 2);
+		ctx.arc(liveGroupX + dotRadius, liveY + liveFontSize * 0.5, dotRadius, 0, Math.PI * 2);
+		ctx.fill();
+
+		// Glow ring around dot
+		ctx.globalAlpha = 0.25;
+		ctx.beginPath();
+		ctx.arc(liveGroupX + dotRadius, liveY + liveFontSize * 0.5, dotRadius * 1.8, 0, Math.PI * 2);
+		ctx.fillStyle = '#ef4444';
 		ctx.fill();
 
 		// "LIVE" text
+		ctx.globalAlpha = 0.6;
 		ctx.fillStyle = '#ffffff';
 		ctx.textAlign = 'left';
 		ctx.textBaseline = 'top';
-		ctx.fillText('LIVE', liveGroupLeft + dotRadius * 2 + liveFontSize * 0.4, liveY);
+		ctx.fillText('LIVE', liveGroupX + dotRadius * 2 + liveFontSize * 0.35, liveY);
 
 		ctx.restore();
 	},
