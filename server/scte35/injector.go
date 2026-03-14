@@ -363,11 +363,16 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			// If the splice point is in the future (scheduled with pre-roll),
 			// add the pre-roll time to the auto-return delay so the return
 			// fires relative to the splice point, not the injection time.
+			// Uses modular 33-bit arithmetic to handle PTS wrap at 2^33.
 			if msg.SpliceTimePTS != nil {
 				currentPTS := inj.ptsFn()
-				if currentPTS > 0 && *msg.SpliceTimePTS > currentPTS {
-					preRollTicks := *msg.SpliceTimePTS - currentPTS
-					dur += time.Duration(preRollTicks) * time.Second / 90000
+				if currentPTS > 0 {
+					delta := maskPTS33(*msg.SpliceTimePTS - currentPTS)
+					// If delta is in the lower half of the 33-bit range,
+					// the splice point is in the future.
+					if delta > 0 && delta < (1 << 32) {
+						dur += time.Duration(delta) * time.Second / 90000
+					}
 				}
 			}
 			eid := msg.EventID

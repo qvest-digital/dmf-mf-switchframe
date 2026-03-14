@@ -1684,6 +1684,53 @@ func TestInjector_ScheduleCue_PTSWraparound(t *testing.T) {
 	require.True(t, ae.SpliceTimePTS >= 0 && ae.SpliceTimePTS < 1<<33, "State().SpliceTimePTS %d exceeds 33-bit range", ae.SpliceTimePTS)
 }
 
+func TestInjector_PreRoll_PTSWrap33Bit(t *testing.T) {
+	t.Parallel()
+
+	// PTS near the 33-bit wrap boundary: 2^33 - 90000 (~1 second before wrap).
+	// With a 2-second pre-roll, SpliceTimePTS wraps to a small value (~90000)
+	// while currentPTS is near 2^33. The old code used a simple > comparison
+	// which fails because 90000 > 8589844592 is false, skipping the pre-roll.
+	nearMax := int64(1<<33 - 90000) // 8589844592
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return nearMax }
+
+	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
+	defer inj.Close()
+
+	// Create a splice_insert with auto-return, 200ms break duration,
+	// and a SpliceTimePTS that wraps past 2^33.
+	preRollTicks := int64(180000) // 2 seconds in 90kHz ticks
+	spliceTimePTS := maskPTS33(nearMax + preRollTicks)
+	breakDur := 200 * time.Millisecond
+
+	msg := NewSpliceInsert(0, breakDur, true, true) // auto-return
+	msg.SpliceTimePTS = &spliceTimePTS
+
+	eventID, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+	require.NotZero(t, eventID)
+
+	// The auto-return timer should be set to breakDur + pre-roll time.
+	// Pre-roll = 180000 ticks / 90000 = 2 seconds.
+	// Total timer = 200ms + 2s = 2.2s.
+	// Without the fix, the timer would be set to just 200ms (pre-roll skipped).
+
+	// Verify the event is still active immediately (should not have returned yet).
+	require.Len(t, inj.ActiveEventIDs(), 1, "event should still be active")
+
+	// Wait long enough for breakDur alone (200ms) but not breakDur + preRoll (2.2s).
+	time.Sleep(500 * time.Millisecond)
+
+	// With the fix: event should still be active (timer = 2.2s, only 500ms elapsed).
+	// Without the fix: event would already be returned (timer = 200ms, 500ms elapsed).
+	activeIDs := inj.ActiveEventIDs()
+	require.Len(t, activeIDs, 1, "event should still be active after 500ms "+
+		"because pre-roll (2s) is included in auto-return delay; "+
+		"if this fails, PTS wrap pre-roll calculation is broken")
+}
+
 func TestInjector_InjectCue_TimeSignal_PTSWraparound(t *testing.T) {
 	t.Parallel()
 	// PTS that exceeds 33-bit range to verify masking.
