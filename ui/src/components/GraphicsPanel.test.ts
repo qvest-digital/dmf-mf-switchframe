@@ -170,7 +170,7 @@ describe('GraphicsPanel', () => {
 		expect(autoOnBtn.disabled).toBe(true);
 	});
 
-	it('should render a preview canvas', () => {
+	it('should render a preview canvas in template mode', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
@@ -240,23 +240,34 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should show fly controls after clicking disclosure', async () => {
+	it('should show fly/anim effects when layer is active', () => {
 		const state = {
 			...baseState,
-			graphics: { layers: [oneLayer] },
+			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		// Fly controls are behind disclosure toggle
+		const disclosures = container.querySelectorAll('.disclosure');
+		const flyDisc = Array.from(disclosures).find(d => d.textContent?.includes('FLY'));
+		const animDisc = Array.from(disclosures).find(d => d.textContent?.includes('ANIM'));
+		expect(flyDisc).toBeTruthy();
+		expect(animDisc).toBeTruthy();
+	});
+
+	it('should show fly controls after clicking FLY disclosure', async () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayerActive] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
 		const disclosures = container.querySelectorAll('.disclosure');
 		const flyDisclosure = Array.from(disclosures).find(d => d.textContent?.includes('FLY'));
 		expect(flyDisclosure).toBeTruthy();
 		await fireEvent.click(flyDisclosure!);
-		// After clicking, fly buttons should appear
 		const flyBtns = container.querySelectorAll('.act-btn.fly');
 		expect(flyBtns.length).toBe(2);
 	});
 
-	it('should show animation controls after clicking disclosure', async () => {
+	it('should show animation controls after clicking ANIM disclosure', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayerActive] },
@@ -320,74 +331,56 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should show IMAGE disclosure toggle', () => {
+	it('should have 4 source mode buttons (TEMPLATE, IMAGE, TICKER, TEXT FX)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const imageDisc = Array.from(disclosures).find(d => d.textContent?.includes('IMAGE'));
-		expect(imageDisc).toBeTruthy();
+		const modeBtns = container.querySelectorAll('.mode-btn');
+		expect(modeBtns.length).toBe(4);
+		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
+		expect(labels).toContain('TEMPLATE');
+		expect(labels).toContain('IMAGE');
+		expect(labels).toContain('TICKER');
+		expect(labels).toContain('TEXT FX');
 	});
 
-	it('should show image upload button after clicking IMAGE disclosure', async () => {
+	it('should show image upload button after clicking IMAGE mode', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const imageDisc = Array.from(disclosures).find(d => d.textContent?.includes('IMAGE'));
-		await fireEvent.click(imageDisc!);
+		const modeBtns = container.querySelectorAll('.mode-btn');
+		const imageBtn = Array.from(modeBtns).find(b => b.textContent?.includes('IMAGE'));
+		await fireEvent.click(imageBtn!);
 		const uploadBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.includes('UPLOAD'));
 		expect(uploadBtn).toBeTruthy();
 	});
 
-	it('should show TICKER disclosure toggle', () => {
+	it('should show ticker controls after clicking TICKER mode', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const tickerDisc = Array.from(disclosures).find(d => d.textContent?.includes('TICKER'));
-		expect(tickerDisc).toBeTruthy();
-	});
-
-	it('should show ticker controls after clicking TICKER disclosure', async () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const tickerDisc = Array.from(disclosures).find(d => d.textContent?.includes('TICKER'));
-		await fireEvent.click(tickerDisc!);
+		const modeBtns = container.querySelectorAll('.mode-btn');
+		const tickerBtn = Array.from(modeBtns).find(b => b.textContent?.includes('TICKER'));
+		await fireEvent.click(tickerBtn!);
 		const startBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.trim() === 'START');
 		expect(startBtn).toBeTruthy();
 	});
 
-	it('should show TEXT FX disclosure toggle', () => {
+	it('should show text animation controls after clicking TEXT FX mode', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const textFxDisc = Array.from(disclosures).find(d => d.textContent?.includes('TEXT FX'));
-		expect(textFxDisc).toBeTruthy();
-	});
-
-	it('should show text animation controls after clicking TEXT FX disclosure', async () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const disclosures = container.querySelectorAll('.disclosure');
-		const textFxDisc = Array.from(disclosures).find(d => d.textContent?.includes('TEXT FX'));
-		await fireEvent.click(textFxDisc!);
+		const modeBtns = container.querySelectorAll('.mode-btn');
+		const textFxBtn = Array.from(modeBtns).find(b => b.textContent?.includes('TEXT FX'));
+		await fireEvent.click(textFxBtn!);
 		const modeSelect = container.querySelectorAll('.ctl-select');
 		const hasTypewriter = Array.from(modeSelect).some(sel =>
 			sel.textContent?.includes('Typewriter')
@@ -395,14 +388,14 @@ describe('GraphicsPanel', () => {
 		expect(hasTypewriter).toBe(true);
 	});
 
-	it('should have 5 disclosure toggles (FLY, ANIM, IMAGE, TICKER, TEXT FX)', () => {
+	it('should not show effects section when layer is inactive', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const disclosures = container.querySelectorAll('.disclosure');
-		expect(disclosures.length).toBe(5);
+		expect(disclosures.length).toBe(0);
 	});
 
 	it('should show animation badge in disclosure when animating', () => {
@@ -420,5 +413,16 @@ describe('GraphicsPanel', () => {
 		const badge = container.querySelector('.disclosure-badge');
 		expect(badge).toBeTruthy();
 		expect(badge?.textContent).toContain('pulse');
+	});
+
+	it('should default to TEMPLATE mode with selected mode button', () => {
+		const state = {
+			...baseState,
+			graphics: { layers: [oneLayer] },
+		};
+		const { container } = render(GraphicsPanel, { props: { state } });
+		const selectedMode = container.querySelector('.mode-btn.selected');
+		expect(selectedMode).toBeTruthy();
+		expect(selectedMode?.textContent?.trim()).toBe('TEMPLATE');
 	});
 });

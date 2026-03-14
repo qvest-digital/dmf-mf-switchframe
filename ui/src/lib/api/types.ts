@@ -136,6 +136,8 @@ export interface GraphicsLayerState {
 
 export interface GraphicsState {
 	layers?: GraphicsLayerState[];
+	programWidth?: number;
+	programHeight?: number;
 }
 
 export interface LayoutState {

@@ -57,6 +57,22 @@ func (c *Compositor) SetImage(id int, name string, pngData []byte) error {
 	layer.overlayWidth = w
 	layer.overlayHeight = h
 
+	// Set rect to image native dimensions (capped to program resolution).
+	// The overlay renders at its actual pixel size — no upscaling.
+	// Users can drag/resize via the program monitor overlay.
+	rectW, rectH := w, h
+	if c.resolutionProvider != nil {
+		if pw, ph := c.resolutionProvider(); pw > 0 && ph > 0 {
+			if rectW > pw {
+				rectW = pw
+			}
+			if rectH > ph {
+				rectH = ph
+			}
+		}
+	}
+	layer.rect = image.Rect(0, 0, rectW, rectH)
+
 	// Activate the layer so ProcessYUV renders it.
 	layer.active = true
 	layer.fadePosition = 1.0
@@ -115,6 +131,7 @@ func (c *Compositor) DeleteImage(id int) error {
 	// Deactivate and clear the overlay so the image stops rendering.
 	layer.active = false
 	layer.fadePosition = 0.0
+	layer.rect = image.Rectangle{}
 	layer.overlay = nil
 	layer.overlayWidth = 0
 	layer.overlayHeight = 0

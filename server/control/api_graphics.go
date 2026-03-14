@@ -52,15 +52,11 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/graphics/{id}/image", a.handleGraphicsImageUpload)
 	mux.HandleFunc("GET /api/graphics/{id}/image", a.handleGraphicsImageGet)
 	mux.HandleFunc("DELETE /api/graphics/{id}/image", a.handleGraphicsImageDelete)
-	if a.textAnimEngine != nil {
-		mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
-		mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
-	}
-	if a.tickerEngine != nil {
-		mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
-		mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
-		mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
-	}
+	mux.HandleFunc("POST /api/graphics/{id}/text-animate", a.handleGraphicsTextAnimStart)
+	mux.HandleFunc("POST /api/graphics/{id}/text-animate/stop", a.handleGraphicsTextAnimStop)
+	mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
+	mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
+	mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
 }
 
 // parseLayerID extracts the layer ID from the URL path parameter.

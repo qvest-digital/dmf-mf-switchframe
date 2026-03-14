@@ -50,6 +50,8 @@
 	let showOverlay = $state(false);
 	let statsPanelVisible = $state(false);
 	let layoutTabActive = $state(false);
+	let graphicsTabActive = $state(false);
+	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
 	let connectionState = $state<'webtransport' | 'polling' | 'disconnected'>('disconnected');
@@ -569,7 +571,7 @@
 			</header>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} {fastControl} />
+				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} showGraphicsOverlay={graphicsTabActive} {fastControl} onGraphicsLayerSelect={(id) => { graphicsSelectedLayerId = id; }} />
 			</section>
 
 			<section class="multiview-section">
@@ -584,7 +586,7 @@
 			</section>
 
 			<section class="bottom-panel">
-				<BottomTabs onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; }}>
+				<BottomTabs onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; }}>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
@@ -598,7 +600,7 @@
 								<div class="panel-header">
 									<LockIndicator state={store.effectiveState} subsystem="graphics" />
 								</div>
-								<GraphicsPanel state={store.effectiveState} />
+								<GraphicsPanel state={store.effectiveState} externalSelectedLayerId={graphicsSelectedLayerId} />
 							</div>
 						{:else if activeTab === 'Macros'}
 							<div class="tab-panel">

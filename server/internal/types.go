@@ -99,7 +99,9 @@ type PresetInfo struct {
 // GraphicsState is the JSON-serializable state for the downstream
 // keyer (DSK) graphics overlay layers, included in ControlRoomState.
 type GraphicsState struct {
-	Layers []GraphicsLayerState `json:"layers,omitempty"`
+	Layers        []GraphicsLayerState `json:"layers,omitempty"`
+	ProgramWidth  int                  `json:"programWidth,omitempty"`
+	ProgramHeight int                  `json:"programHeight,omitempty"`
 }
 
 // GraphicsLayerState is the JSON-serializable state for a single graphics layer.

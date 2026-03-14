@@ -6,7 +6,7 @@
 		graphicsAnimate, graphicsAnimateStop,
 		graphicsSetZOrder,
 		graphicsFlyIn, graphicsFlyOut, graphicsFlyOn,
-		graphicsImageUpload, graphicsImageDelete,
+		graphicsImageUpload, graphicsImageDelete, graphicsSetRect,
 		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
 		graphicsTextAnimStart, graphicsTextAnimStop,
 		apiCall,
@@ -19,10 +19,14 @@
 
 	interface Props {
 		state: ControlRoomState;
+		externalSelectedLayerId?: number | null;
 	}
-	let { state: crState }: Props = $props();
+	let { state: crState, externalSelectedLayerId = null }: Props = $props();
+
+	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx';
 
 	// ── Per-layer state maps ──
+	let layerModes = $state<Record<number, SourceMode>>({});
 	let layerTemplates = $state<Record<number, string>>({});
 	let layerFields = $state<Record<number, Record<string, string>>>({});
 	let layerAnimConfigs = $state<Record<number, {
@@ -60,6 +64,13 @@
 		}
 	});
 
+	// Sync selection from external source (e.g. overlay click on program monitor)
+	$effect(() => {
+		if (externalSelectedLayerId !== null && externalSelectedLayerId !== selectedLayerId && layers.some(l => l.id === externalSelectedLayerId)) {
+			selectedLayerId = externalSelectedLayerId;
+		}
+	});
+
 	// ── Helpers ──
 	function getDefaultValues(templateId: string): Record<string, string> {
 		const tpl = builtinTemplates[templateId];
@@ -83,6 +94,10 @@
 		return layerAnimConfigs[id] ?? { mode: 'pulse', minAlpha: 0.3, maxAlpha: 1.0, speedHz: 1.0, toAlpha: 0.5, durationMs: 500 };
 	}
 
+	function getLayerMode(id: number): SourceMode {
+		return layerModes[id] ?? 'template';
+	}
+
 	function getLayerFlyConfig(id: number) {
 		return layerFlyConfigs[id] ?? { direction: 'left', durationMs: 500 };
 	}
@@ -92,6 +107,7 @@
 		const currentIds = new Set(layers.map(l => l.id));
 		for (const key of Object.keys(layerTemplates).map(Number)) {
 			if (!currentIds.has(key)) {
+				delete layerModes[key];
 				delete layerTemplates[key];
 				delete layerFields[key];
 				delete layerAnimConfigs[key];
@@ -114,33 +130,44 @@
 
 	function handleRemoveLayer(id: number) {
 		apiCall(graphicsRemoveLayer(id), 'Remove layer failed');
+		delete layerModes[id];
 		delete layerTemplates[id];
 		delete layerFields[id];
 		delete layerAnimConfigs[id];
 		delete layerFlyConfigs[id];
 	}
 
-	async function handlePublishAndOn(id: number) {
-		const tplId = getLayerTemplate(id);
-		const tpl = builtinTemplates[tplId];
-		if (!tpl) return;
-		try {
-			await publisher.publish(id, tpl, getLayerFields(id));
+	async function handleCutOn(id: number) {
+		const mode = getLayerMode(id);
+		if (mode === 'template') {
+			const tplId = getLayerTemplate(id);
+			const tpl = builtinTemplates[tplId];
+			if (!tpl) return;
+			try {
+				await publisher.publish(id, tpl, getLayerFields(id));
+				apiCall(graphicsOn(id), 'Graphics failed');
+			} catch {
+				notify('error', 'Graphics publish failed');
+			}
+		} else {
 			apiCall(graphicsOn(id), 'Graphics failed');
-		} catch {
-			notify('error', 'Graphics publish failed');
 		}
 	}
 
-	async function handlePublishAndAutoOn(id: number) {
-		const tplId = getLayerTemplate(id);
-		const tpl = builtinTemplates[tplId];
-		if (!tpl) return;
-		try {
-			await publisher.publish(id, tpl, getLayerFields(id));
+	async function handleAutoOn(id: number) {
+		const mode = getLayerMode(id);
+		if (mode === 'template') {
+			const tplId = getLayerTemplate(id);
+			const tpl = builtinTemplates[tplId];
+			if (!tpl) return;
+			try {
+				await publisher.publish(id, tpl, getLayerFields(id));
+				apiCall(graphicsAutoOn(id), 'Graphics failed');
+			} catch {
+				notify('error', 'Graphics publish failed');
+			}
+		} else {
 			apiCall(graphicsAutoOn(id), 'Graphics failed');
-		} catch {
-			notify('error', 'Graphics publish failed');
 		}
 	}
 
@@ -175,15 +202,26 @@
 	}
 
 	async function handleFlyIn(id: number) {
-		const tplId = getLayerTemplate(id);
-		const tpl = builtinTemplates[tplId];
-		if (!tpl) return;
-		try {
-			await publisher.publish(id, tpl, getLayerFields(id));
-			const cfg = getLayerFlyConfig(id);
-			apiCall(graphicsFlyOn(id, cfg.direction, cfg.durationMs), 'Fly on failed');
-		} catch {
-			notify('error', 'Fly on failed');
+		const mode = getLayerMode(id);
+		const cfg = getLayerFlyConfig(id);
+		if (mode === 'template') {
+			const tplId = getLayerTemplate(id);
+			const tpl = builtinTemplates[tplId];
+			if (!tpl) return;
+			try {
+				await publisher.publish(id, tpl, getLayerFields(id));
+				apiCall(graphicsFlyOn(id, cfg.direction, cfg.durationMs), 'Fly on failed');
+			} catch {
+				notify('error', 'Fly on failed');
+			}
+		} else {
+			// For non-template modes, use FlyIn if active, FlyOn if inactive
+			const layer = layers.find(l => l.id === id);
+			if (layer?.active) {
+				apiCall(graphicsFlyIn(id, cfg.direction, cfg.durationMs), 'Fly in failed');
+			} else {
+				apiCall(graphicsFlyOn(id, cfg.direction, cfg.durationMs), 'Fly on failed');
+			}
 		}
 	}
 
@@ -198,6 +236,10 @@
 
 	function handleZOrderDown(id: number, currentZ: number) {
 		apiCall(graphicsSetZOrder(id, Math.max(0, currentZ - 1)), 'Z-order failed');
+	}
+
+	function handleModeChange(id: number, mode: SourceMode) {
+		layerModes = { ...layerModes, [id]: mode };
 	}
 
 	function handleTemplateChange(id: number, tplId: string) {
@@ -230,6 +272,7 @@
 	async function handleImageUpload(id: number, file: File) {
 		try {
 			await graphicsImageUpload(id, file);
+			layerModes = { ...layerModes, [id]: 'image' };
 			notify('success', `Image "${file.name}" uploaded`);
 		} catch {
 			notify('error', 'Image upload failed');
@@ -238,6 +281,11 @@
 
 	function handleImageDelete(id: number) {
 		apiCall(graphicsImageDelete(id), 'Image delete failed');
+		layerModes = { ...layerModes, [id]: 'template' };
+	}
+
+	function handleRectChange(id: number, rect: { x: number; y: number; width: number; height: number }) {
+		apiCall(graphicsSetRect(id, rect), 'Position update failed');
 	}
 
 	// ── Ticker handlers ──
@@ -316,17 +364,19 @@
 		{#if selectedLayer}
 			<GraphicsDetail
 				layer={selectedLayer}
+				sourceMode={getLayerMode(selectedLayer.id)}
 				templateId={getLayerTemplate(selectedLayer.id)}
 				fields={getLayerFields(selectedLayer.id)}
 				animConfig={getLayerAnimConfig(selectedLayer.id)}
 				flyConfig={getLayerFlyConfig(selectedLayer.id)}
 				{publisher}
+				onModeChange={(mode) => handleModeChange(selectedLayer.id, mode)}
 				onTemplateChange={(tplId) => handleTemplateChange(selectedLayer.id, tplId)}
 				onFieldChange={(key, val) => handleFieldChange(selectedLayer.id, key, val)}
 				onAnimConfigChange={(key, val) => handleAnimConfigChange(selectedLayer.id, key, val)}
 				onFlyConfigChange={(key, val) => handleFlyConfigChange(selectedLayer.id, key, val)}
-				onCutOn={() => handlePublishAndOn(selectedLayer.id)}
-				onAutoOn={() => handlePublishAndAutoOn(selectedLayer.id)}
+				onCutOn={() => handleCutOn(selectedLayer.id)}
+				onAutoOn={() => handleAutoOn(selectedLayer.id)}
 				onCutOff={() => handleOff(selectedLayer.id)}
 				onAutoOff={() => handleAutoOff(selectedLayer.id)}
 				onFlyIn={() => handleFlyIn(selectedLayer.id)}
@@ -335,6 +385,7 @@
 				onAnimateStop={() => handleAnimateStop(selectedLayer.id)}
 				onImageUpload={(file) => handleImageUpload(selectedLayer.id, file)}
 				onImageDelete={() => handleImageDelete(selectedLayer.id)}
+				onRectChange={(rect) => handleRectChange(selectedLayer.id, rect)}
 				onTickerStart={(cfg) => handleTickerStart(selectedLayer.id, cfg)}
 				onTickerStop={() => handleTickerStop(selectedLayer.id)}
 				onTickerUpdateText={(text) => handleTickerUpdateText(selectedLayer.id, text)}

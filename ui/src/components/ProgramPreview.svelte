@@ -4,15 +4,18 @@
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import HealthAlarm from './HealthAlarm.svelte';
 	import LayoutOverlay from './LayoutOverlay.svelte';
+	import GraphicsOverlay from './GraphicsOverlay.svelte';
 
 	interface Props {
 		state: ControlRoomState;
 		showLayoutOverlay?: boolean;
+		showGraphicsOverlay?: boolean;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
 		onCaptionElReady?: (el: HTMLDivElement) => void;
 		fastControl?: FastControl | null;
+		onGraphicsLayerSelect?: (id: number) => void;
 	}
-	let { state: crState, showLayoutOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, showGraphicsOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null, onGraphicsLayerSelect }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -134,6 +137,9 @@
 			<HealthAlarm health={programHealth} sourceLabel={programLabel} variant="critical" label="PROGRAM" />
 			{#if showLayoutOverlay && crState.layout?.slots?.length}
 				<LayoutOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} {fastControl} />
+			{/if}
+			{#if showGraphicsOverlay && crState.graphics?.layers?.some(l => l.active)}
+				<GraphicsOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} {fastControl} onSelect={onGraphicsLayerSelect} />
 			{/if}
 		</div>
 	</div>

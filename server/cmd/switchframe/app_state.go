@@ -47,8 +47,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	} else {
 		gfxStatus = a.compositor.Status()
 	}
-	if len(gfxStatus.Layers) > 0 {
-		gfxState := &internal.GraphicsState{}
+	if len(gfxStatus.Layers) > 0 || gfxStatus.ProgramWidth > 0 {
+		gfxState := &internal.GraphicsState{
+			ProgramWidth:  gfxStatus.ProgramWidth,
+			ProgramHeight: gfxStatus.ProgramHeight,
+		}
 		for _, l := range gfxStatus.Layers {
 			gfxState.Layers = append(gfxState.Layers, internal.GraphicsLayerState{
 				ID:            l.ID,

@@ -47,6 +47,8 @@ func TestSetImage(t *testing.T) {
 	require.Equal(t, 50, layer.overlayHeight)
 	require.True(t, layer.active, "layer should be activated by SetImage")
 	require.Equal(t, 1.0, layer.fadePosition, "fade should be fully on")
+	// Without a resolution provider, rect should fall back to image dimensions
+	require.Equal(t, image.Rect(0, 0, 100, 50), layer.rect, "rect should be set to image dimensions")
 	c.mu.RUnlock()
 }
 
@@ -96,6 +98,7 @@ func TestDeleteImage(t *testing.T) {
 	layer := c.layers[id]
 	require.Nil(t, layer.overlay, "overlay should be cleared when image is deleted")
 	require.False(t, layer.active, "layer should be deactivated when image is deleted")
+	require.Equal(t, image.Rectangle{}, layer.rect, "rect should be reset on delete")
 	c.mu.RUnlock()
 }
 
@@ -129,6 +132,45 @@ func TestSetImage_LayerNotFound(t *testing.T) {
 	require.ErrorIs(t, err, ErrLayerNotFound)
 }
 
+func TestSetImage_RectUsesImageDimensions(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	pngData := createTestPNG(t, 100, 50)
+	require.NoError(t, c.SetImage(id, "logo.png", pngData))
+
+	c.mu.RLock()
+	layer := c.layers[id]
+	// Rect should match image dimensions (smaller than program)
+	require.Equal(t, image.Rect(0, 0, 100, 50), layer.rect)
+	require.Equal(t, 100, layer.overlayWidth)
+	require.Equal(t, 50, layer.overlayHeight)
+	c.mu.RUnlock()
+}
+
+func TestSetImage_RectCappedToProgram(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 320, 240 })
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Image larger than program resolution
+	pngData := createTestPNG(t, 1920, 1080)
+	require.NoError(t, c.SetImage(id, "big.png", pngData))
+
+	c.mu.RLock()
+	layer := c.layers[id]
+	// Rect should be capped to program resolution
+	require.Equal(t, image.Rect(0, 0, 320, 240), layer.rect)
+	c.mu.RUnlock()
+}
+
 func TestSetImage_StateBroadcast(t *testing.T) {
 	c := NewCompositor()
 	defer c.Close()
@@ -145,4 +187,7 @@ func TestSetImage_StateBroadcast(t *testing.T) {
 	require.Equal(t, "logo.png", lastState.Layers[0].ImageName)
 	require.Equal(t, 100, lastState.Layers[0].ImageWidth)
 	require.Equal(t, 50, lastState.Layers[0].ImageHeight)
+	// Without resolution provider, rect should be image size
+	require.Equal(t, 100, lastState.Layers[0].Rect.Width)
+	require.Equal(t, 50, lastState.Layers[0].Rect.Height)
 }
