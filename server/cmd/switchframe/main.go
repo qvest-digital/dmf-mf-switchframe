@@ -98,6 +98,9 @@ func run() error {
 		return err
 	}
 	if err := app.initMXL(); err != nil {
+		if err == errDiscoverExit {
+			return nil // clean exit after --mxl-discover
+		}
 		return err
 	}
 	if err := app.initSCTE35(); err != nil {

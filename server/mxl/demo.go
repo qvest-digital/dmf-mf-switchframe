@@ -26,6 +26,7 @@ type DemoVideoReader struct {
 	width, height int
 	colorIdx      int // base hue index (different per source)
 	pattern       DemoPattern
+	fps           float64
 	interval      time.Duration
 
 	mu     sync.Mutex
@@ -48,6 +49,7 @@ func NewDemoVideoReaderWithPattern(width, height int, fps float64, colorIdx int,
 		height:   height,
 		colorIdx: colorIdx,
 		pattern:  pattern,
+		fps:      fps,
 		interval: time.Duration(float64(time.Second) / fps),
 	}
 }
@@ -87,10 +89,28 @@ func (d *DemoVideoReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, erro
 }
 
 func (d *DemoVideoReader) ConfigInfo() FlowConfig {
+	// Convert fps to integer rational. Common broadcast rates like 29.97
+	// map to 30000/1001; exact integer rates use N/1.
+	num, den := fpsToRational(d.fps)
 	return FlowConfig{
 		Format:    DataFormatVideo,
-		GrainRate: Rational{30, 1},
+		GrainRate: Rational{num, den},
 	}
+}
+
+// fpsToRational converts a floating-point frame rate to an integer rational.
+// Recognizes standard broadcast rates (29.97, 59.94, 23.976) and falls back
+// to a simple integer numerator for exact rates like 25, 30, 50, 60.
+func fpsToRational(fps float64) (int64, int64) {
+	// Check for common NTSC rates: N * 1000/1001
+	for _, base := range []int64{24, 30, 60} {
+		ntsc := float64(base) * 1000.0 / 1001.0
+		if math.Abs(fps-ntsc) < 0.01 {
+			return base * 1000, 1001
+		}
+	}
+	// Integer or near-integer rate.
+	return int64(math.Round(fps)), 1
 }
 
 func (d *DemoVideoReader) HeadIndex() (uint64, error) {

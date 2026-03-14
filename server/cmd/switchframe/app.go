@@ -45,6 +45,11 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+// errDiscoverExit is returned by initMXL when --mxl-discover completes
+// successfully. The caller should treat this as a clean exit rather than
+// calling os.Exit directly (which would skip deferred cleanup).
+var errDiscoverExit = fmt.Errorf("mxl discover completed")
+
 // App holds all subsystems for the switchframe server. Init methods are called
 // in order before Run() starts the Prism distribution server.
 type App struct {
@@ -86,6 +91,7 @@ type App struct {
 	fastCtrl         *fastctrl.Dispatcher
 
 	// Text rendering engines
+	textRenderer   *textrender.Renderer
 	tickerEngine   *graphics.TickerEngine
 	textAnimEngine *graphics.TextAnimationEngine
 
@@ -510,7 +516,7 @@ func (a *App) initMXL() error {
 					f.ID, f.MediaType, f.Name, active)
 			}
 		}
-		os.Exit(0)
+		return errDiscoverExit
 	}
 
 	// No MXL sources or output configured — skip.
@@ -848,12 +854,13 @@ func (a *App) initAPI() error {
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
-		textRenderer, err := textrender.NewRenderer()
+		tr, err := textrender.NewRenderer()
 		if err != nil {
 			slog.Warn("text renderer init failed, ticker/text-anim disabled", "error", err)
 		} else {
-			a.tickerEngine = graphics.NewTickerEngine(a.compositor, textRenderer)
-			a.textAnimEngine = graphics.NewTextAnimationEngine(a.compositor, textRenderer)
+			a.textRenderer = tr
+			a.tickerEngine = graphics.NewTickerEngine(a.compositor, tr)
+			a.textAnimEngine = graphics.NewTextAnimationEngine(a.compositor, tr)
 			apiOpts = append(apiOpts,
 				control.WithTickerEngine(a.tickerEngine),
 				control.WithTextAnimEngine(a.textAnimEngine),
@@ -1161,6 +1168,9 @@ func (a *App) Close() {
 	}
 	if a.textAnimEngine != nil {
 		a.textAnimEngine.Close()
+	}
+	if a.textRenderer != nil {
+		_ = a.textRenderer.Close()
 	}
 	if a.keyBridge != nil {
 		a.keyBridge.Close()

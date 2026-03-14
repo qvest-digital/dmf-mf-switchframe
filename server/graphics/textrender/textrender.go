@@ -59,6 +59,23 @@ func NewRenderer() (*Renderer, error) {
 	}, nil
 }
 
+// Close releases all cached font faces. The renderer should not be used after
+// calling Close.
+func (r *Renderer) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for size, face := range r.regularFaces {
+		face.Close()
+		delete(r.regularFaces, size)
+	}
+	for size, face := range r.boldFaces {
+		face.Close()
+		delete(r.boldFaces, size)
+	}
+	return nil
+}
+
 // faceLocked returns a cached font.Face for the given size and weight.
 // Must be called with r.mu held.
 func (r *Renderer) faceLocked(size float64, bold bool) (font.Face, error) {

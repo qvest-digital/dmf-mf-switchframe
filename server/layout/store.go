@@ -2,7 +2,9 @@ package layout
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 )
@@ -71,10 +73,14 @@ func (s *Store) List() []string {
 func (s *Store) load() {
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("failed to load layout presets", "error", err, "path", s.filePath)
+		}
 		return
 	}
 	var presets map[string]*Layout
 	if err := json.Unmarshal(data, &presets); err != nil {
+		slog.Warn("failed to parse layout presets", "error", err, "path", s.filePath)
 		return
 	}
 	s.presets = presets
