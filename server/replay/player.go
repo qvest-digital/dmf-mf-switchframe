@@ -113,6 +113,12 @@ func (p *replayPlayer) Progress() float64 {
 	return float64(p.progress.Load()) / 1000.0
 }
 
+// gopLookahead is the number of GOPs to keep decoded ahead of the current
+// playback position. A small window (2 GOPs) eliminates jitter at GOP
+// boundaries while keeping memory usage proportional to GOP size rather
+// than total clip length.
+const gopLookahead = 2
+
 func (p *replayPlayer) run(ctx context.Context) {
 	defer close(p.done)
 	defer p.config.OnDone()
@@ -122,28 +128,32 @@ func (p *replayPlayer) run(ctx context.Context) {
 		return
 	}
 
-	// Split clip into GOPs for batch decoding.
+	// Split clip into GOPs for streaming decode.
 	gops := splitIntoGOPs(clip)
 	if len(gops) == 0 {
 		return
 	}
 
-	// Pre-decode ALL GOPs upfront to eliminate inline decode delays
-	// that cause jitter at GOP boundaries during playback.
-	var allDecoded [][]decodedFrame
-	for gopIdx, gop := range gops {
-		decoded, err := decodeGOP(gop, p.config.DecoderFactory)
+	// Pre-decode a small window of GOPs (up to gopLookahead) to determine
+	// frame dimensions and eliminate jitter at the first GOP boundary.
+	// Remaining GOPs are decoded on-demand during playback.
+	prefetchCount := gopLookahead
+	if prefetchCount > len(gops) {
+		prefetchCount = len(gops)
+	}
+	decodedWindow := make([][]decodedFrame, prefetchCount)
+	for i := 0; i < prefetchCount; i++ {
+		decoded, err := decodeGOP(gops[i], p.config.DecoderFactory)
 		if err != nil {
-			slog.Error("replay player: decode GOP failed", "gop", gopIdx, "err", err)
+			slog.Error("replay player: decode GOP failed", "gop", i, "err", err)
 			return
 		}
-		// Sort within GOP for B-frame display order.
 		slices.SortFunc(decoded, func(a, b decodedFrame) int {
 			return cmp.Compare(a.pts, b.pts)
 		})
-		allDecoded = append(allDecoded, decoded)
+		decodedWindow[i] = decoded
 	}
-	if len(allDecoded) == 0 || len(allDecoded[0]) == 0 {
+	if len(decodedWindow) == 0 || len(decodedWindow[0]) == 0 {
 		return
 	}
 
@@ -161,7 +171,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 	ptsPerFrame := int64(90000) * int64(fpsDen) / int64(fpsNum)
 
 	// Create encoder (optional — only needed when H.264 Output callback is set).
-	w, h := allDecoded[0][0].width, allDecoded[0][0].height
+	w, h := decodedWindow[0][0].width, decodedWindow[0][0].height
 	var encoder transition.VideoEncoder
 	if p.config.EncoderFactory != nil && p.config.Output != nil {
 		bitrate := estimateBitrate(w, h)
@@ -209,15 +219,68 @@ func (p *replayPlayer) run(ctx context.Context) {
 		p.audioIdx = 0
 		p.audioCallCount = 0
 
-		for _, decoded := range allDecoded {
+		// nextDecoded tracks how many GOPs have been decoded (across all
+		// loop iterations). For the first pass this starts at prefetchCount;
+		// on subsequent loop iterations it resets along with decodedWindow.
+		nextDecoded := prefetchCount
+
+		for gopIdx := 0; gopIdx < len(gops); gopIdx++ {
+			// Ensure decodedWindow[0] is the current GOP's decoded frames.
+			// windowIdx maps gopIdx into the sliding window.
+			windowIdx := gopIdx - (nextDecoded - len(decodedWindow))
+			if windowIdx < 0 || windowIdx >= len(decodedWindow) {
+				// Should not happen — decode ahead should keep us covered.
+				slog.Error("replay player: GOP window miss", "gopIdx", gopIdx, "windowIdx", windowIdx)
+				return
+			}
+
+			decoded := decodedWindow[windowIdx]
+
+			// Decode ahead: ensure the next GOP is ready if not already decoded.
+			if nextDecoded < len(gops) && windowIdx+1 >= len(decodedWindow) {
+				ahead, err := decodeGOP(gops[nextDecoded], p.config.DecoderFactory)
+				if err != nil {
+					slog.Error("replay player: decode GOP failed", "gop", nextDecoded, "err", err)
+					return
+				}
+				slices.SortFunc(ahead, func(a, b decodedFrame) int {
+					return cmp.Compare(a.pts, b.pts)
+				})
+				decodedWindow = append(decodedWindow, ahead)
+				nextDecoded++
+			}
+
+			// Output the current GOP.
 			if p.outputGOP(ctx, decoded, encoder, dupCount, ptsPerFrame, frameDuration, timer, &outputPTS, &firstFrame, &outputIdx, totalFrames, &codecStr, &groupID, interpolator, &pacingIdx) {
 				return
+			}
+
+			// Release consumed GOP frames to free memory. Slide the window
+			// forward by dropping the front entry now that it's been played.
+			decodedWindow[windowIdx] = nil // allow GC
+			if windowIdx == 0 && len(decodedWindow) > 1 {
+				decodedWindow = decodedWindow[1:]
 			}
 		}
 
 		if !p.config.Loop {
 			return
 		}
+
+		// On loop restart, re-decode the initial window from the beginning.
+		decodedWindow = decodedWindow[:0]
+		for i := 0; i < prefetchCount; i++ {
+			decoded, err := decodeGOP(gops[i], p.config.DecoderFactory)
+			if err != nil {
+				slog.Error("replay player: decode GOP failed on loop", "gop", i, "err", err)
+				return
+			}
+			slices.SortFunc(decoded, func(a, b decodedFrame) int {
+				return cmp.Compare(a.pts, b.pts)
+			})
+			decodedWindow = append(decodedWindow, decoded)
+		}
+		nextDecoded = prefetchCount
 	}
 }
 

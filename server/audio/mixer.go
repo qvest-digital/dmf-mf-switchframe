@@ -1425,149 +1425,9 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 
 	m.crossfadePCM[sourceKey] = gainedPCM
 
-	// Wait for both sources (with timeout)
-	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
-	_, hasTo := m.crossfadePCM[m.crossfadeTo]
-	timedOut := !m.crossfadeDeadline.IsZero() && time.Now().After(m.crossfadeDeadline)
-	if !hasFrom && !hasTo {
-		m.mu.Unlock()
-		return
-	}
-	if (!hasFrom || !hasTo) && !timedOut {
-		m.mu.Unlock()
-		return
-	}
-
-	// Track crossfade timeouts (timed out with only one source)
-	if timedOut && (!hasFrom || !hasTo) {
-		m.crossfadeTimeouts.Add(1)
-		missingSrc := m.crossfadeFrom
-		if hasFrom {
-			missingSrc = m.crossfadeTo
-		}
-		m.log.Warn("crossfade timeout",
-			"source", missingSrc,
-			"deadline_ms", crossfadeTimeout.Milliseconds())
-	}
-
-	// Compute crossfade position range for this frame within the multi-frame ramp.
-	frameIdx := m.crossfadeTotalFrames - m.crossfadeFramesRemaining // 0-based
-	posStart := float64(frameIdx) / float64(m.crossfadeTotalFrames)
-	posEnd := float64(frameIdx+1) / float64(m.crossfadeTotalFrames)
-
-	// Apply equal-power crossfade (or use single source if timed out)
-	var mixed []float32
-	if hasFrom && hasTo {
-		m.crossfadeBuf = EqualPowerCrossfadeRanged(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels, posStart, posEnd)
-		mixed = m.crossfadeBuf
-	} else if hasTo {
-		// Outgoing source timed out — use incoming source only
-		mixed = m.crossfadePCM[m.crossfadeTo]
-	} else {
-		// Incoming source timed out — use outgoing source only (unusual)
-		mixed = m.crossfadePCM[m.crossfadeFrom]
-	}
-
-	// Stinger audio overlay: add stinger PCM on top of source crossfade.
-	// This path runs for the crossfade (transCrossfadeActive=true).
-	// collectMixCycleLocked has its own injection point for the multi-source path.
-	// Mutual exclusion: crossfade participants are routed here, not to collectMixCycleLocked.
-	if m.stingerAudio != nil {
-		m.addStingerAudio(mixed)
-	}
-
-	// Apply master gain (skip if unity — preserves passthrough optimization)
-	if m.masterLinear != 1.0 && len(mixed) > 0 {
-		vec.ScaleFloat32(&mixed[0], m.masterLinear, len(mixed))
-	}
-
-	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
-	m.loudness.Process(mixed)
-
-	// Apply brickwall limiter at -1 dBFS (always active)
-	m.limiter.Process(mixed)
-
-	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
-	pts := m.advanceOutputPTS(frame.PTS)
-
-	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
-	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
-		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
-		copy(m.mxlSinkBuf, mixed)
-		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
-	}
-
-	// Apply program mute (FTB held): zero the buffer so output is silent
-	if m.programMuted {
-		for i := range mixed {
-			mixed[i] = 0
-		}
-	}
-
-	// Apply unmute fade-in ramp: prevents uncompressed burst after
-	// compressor/limiter envelopes were reset to zero during mute.
-	if m.unmuteFadeRemaining > 0 {
-		fadeSamples := m.unmuteFadeRemaining
-		for i := range mixed {
-			if fadeSamples <= 0 {
-				break
-			}
-			// Linear ramp from 0 to 1 over the remaining fade samples
-			rampTotal := m.sampleRate * m.numChannels * 5 / 1000
-			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
-			mixed[i] *= progress
-			fadeSamples--
-		}
-		m.unmuteFadeRemaining = fadeSamples
-	}
-
-	// Update program peak metering (after mute so meters show silence during FTB)
-	peakL, peakR := PeakLevel(mixed, m.numChannels)
-	m.programPeakL = peakL
-	m.programPeakR = peakR
-
-	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
-	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
-		m.crossfadeActive = false
-		m.mu.Unlock()
-		return
-	}
-
-	// Encode
-	aacData, err := m.encoder.Encode(mixed)
-	if err != nil {
-		m.encodeErrors.Add(1)
-		if m.promMetrics != nil {
-			m.promMetrics.EncodeErrorsTotal.Inc()
-		}
-		m.crossfadeActive = false
-		m.mu.Unlock()
-		m.log.Warn("encode error", "err", err)
-		return
-	}
-
-	// Decrement multi-frame crossfade counter. If more frames remain,
-	// reset the PCM map and deadline so we collect another frame pair.
-	m.crossfadeFramesRemaining--
-	if m.crossfadeFramesRemaining <= 0 {
-		m.crossfadeActive = false
-		m.crossfadePCM = nil
-	} else {
-		m.crossfadePCM = make(map[string][]float32)
-		m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
-	}
-
-	// Build output frame before releasing lock (reuse pts from above)
-	outputFrame := &media.AudioFrame{
-		PTS:        pts,
-		Data:       aacData,
-		SampleRate: m.sampleRate,
-		Channels:   m.numChannels,
-	}
-	m.mu.Unlock()
-
-	// Output outside the lock to avoid blocking other goroutines
-	m.recordAndOutput(outputFrame)
+	// Run the shared crossfade pipeline (wait for sources, blend, master,
+	// encode, output). This method handles unlocking m.mu.
+	m.processCrossfadePipeline(frame.PTS)
 }
 
 // recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
@@ -1969,6 +1829,17 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 
 	m.crossfadePCM[sourceKey] = gainedPCM
 
+	// Run the shared crossfade pipeline (wait for sources, blend, master,
+	// encode, output). This method handles unlocking m.mu.
+	m.processCrossfadePipeline(pts)
+}
+
+// processCrossfadePipeline runs the crossfade pipeline after both (or timed-out)
+// sources have stored their processed PCM in m.crossfadePCM. Handles: waiting
+// for both sources, crossfade blending, stinger overlay, master gain, LUFS,
+// limiter, MXL tap, mute, unmute ramp, peak metering, encode, and output.
+// Caller must hold m.mu. This method always unlocks m.mu before returning.
+func (m *Mixer) processCrossfadePipeline(inputPTS int64) {
 	// Wait for both sources (with timeout)
 	_, hasFrom := m.crossfadePCM[m.crossfadeFrom]
 	_, hasTo := m.crossfadePCM[m.crossfadeTo]
@@ -1995,7 +1866,7 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 	}
 
 	// Compute crossfade position range for this frame within the multi-frame ramp.
-	frameIdx := m.crossfadeTotalFrames - m.crossfadeFramesRemaining
+	frameIdx := m.crossfadeTotalFrames - m.crossfadeFramesRemaining // 0-based
 	posStart := float64(frameIdx) / float64(m.crossfadeTotalFrames)
 	posEnd := float64(frameIdx+1) / float64(m.crossfadeTotalFrames)
 
@@ -2005,12 +1876,17 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		m.crossfadeBuf = EqualPowerCrossfadeRanged(m.crossfadeBuf, m.crossfadePCM[m.crossfadeFrom], m.crossfadePCM[m.crossfadeTo], m.numChannels, posStart, posEnd)
 		mixed = m.crossfadeBuf
 	} else if hasTo {
+		// Outgoing source timed out — use incoming source only
 		mixed = m.crossfadePCM[m.crossfadeTo]
 	} else {
+		// Incoming source timed out — use outgoing source only (unusual)
 		mixed = m.crossfadePCM[m.crossfadeFrom]
 	}
 
-	// Stinger audio overlay
+	// Stinger audio overlay: add stinger PCM on top of source crossfade.
+	// This path runs for the crossfade (transCrossfadeActive=true).
+	// collectMixCycleLocked has its own injection point for the multi-source path.
+	// Mutual exclusion: crossfade participants are routed here, not to collectMixCycleLocked.
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}
@@ -2026,14 +1902,14 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 	// Apply brickwall limiter at -1 dBFS (always active)
 	m.limiter.Process(mixed)
 
-	// Monotonic PTS
-	outPTS := m.advanceOutputPTS(pts)
+	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
+	pts := m.advanceOutputPTS(inputPTS)
 
 	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
 	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
 		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
 		copy(m.mxlSinkBuf, mixed)
-		(*sinkPtr)(m.mxlSinkBuf, outPTS, m.sampleRate, m.numChannels)
+		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
 	}
 
 	// Apply program mute (FTB held): zero the buffer so output is silent
@@ -2085,7 +1961,8 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		return
 	}
 
-	// Decrement multi-frame crossfade counter.
+	// Decrement multi-frame crossfade counter. If more frames remain,
+	// reset the PCM map and deadline so we collect another frame pair.
 	m.crossfadeFramesRemaining--
 	if m.crossfadeFramesRemaining <= 0 {
 		m.crossfadeActive = false
@@ -2095,15 +1972,16 @@ func (m *Mixer) ingestCrossfadePCM(sourceKey string, pcm []float32, pts int64, c
 		m.crossfadeDeadline = time.Now().Add(crossfadeTimeout)
 	}
 
-	// Build output frame
+	// Build output frame before releasing lock
 	outputFrame := &media.AudioFrame{
-		PTS:        outPTS,
+		PTS:        pts,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
 	}
 	m.mu.Unlock()
 
+	// Output outside the lock to avoid blocking other goroutines
 	m.recordAndOutput(outputFrame)
 }
 

@@ -589,89 +589,8 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		}
 	}
 
-	// Determine if we should trigger blend+output.
-	// For Mix/Dip/Wipe/Stinger: triggered by incoming TO source frame.
-	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
-	// FROM source frames still store YUV in latestYUVA (above) so the blend
-	// function has access to both sources. Triggering only on TO keeps output
-	// rate at 1x (matching source frame rate) and prevents 2x PTS advancement
-	// that causes persistent A/V desync.
-	shouldBlend := false
-	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
-		shouldBlend = true
-	} else if isTo {
-		shouldBlend = true
-	}
-
-	if !shouldBlend || e.blender == nil {
-		e.mu.Unlock()
-		return
-	}
-
-	// Resolve source frames. For non-FTB transitions, skip this blend if
-	// source A (from/program) hasn't arrived yet rather than substituting a
-	// black frame which causes a visible flash. The viewer sees the last
-	// pipeline frame for at most one frame period until source A arrives.
-	yuvA := e.latestYUVA
-	yuvB := e.latestYUVB
-	if yuvA == nil {
-		if e.transitionType != FTB && e.transitionType != FTBReverse {
-			e.mu.Unlock()
-			return
-		}
-		yuvA = e.getBlackFrame()
-	}
-	if yuvB == nil {
-		yuvB = e.getBlackFrame()
-	}
-
-	pos := e.currentPosition()
-
-	blendStart := time.Now()
-	var blended []byte
-	switch e.transitionType {
-	case Mix:
-		blended = e.blender.BlendMix(yuvA, yuvB, pos)
-	case Dip:
-		blended = e.blender.BlendDip(yuvA, yuvB, pos)
-	case FTB:
-		blended = e.blender.BlendFTB(yuvA, pos)
-	case FTBReverse:
-		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
-	case Wipe:
-		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
-	case Stinger:
-		blended = e.blendStinger(pos)
-	default:
-		blended = yuvA
-	}
-	blendDur := time.Since(blendStart).Nanoseconds()
-	e.blendLastNano.Store(blendDur)
-	updateAtomicMax(&e.blendMaxNano, blendDur)
-	e.framesBlended.Add(1)
-
-	isKF := !e.firstOutput
-	e.firstOutput = true
-	e.log.Debug("blended", "pos", fmt.Sprintf("%.3f", pos), "w", e.width, "h", e.height)
-
-	var autoComplete bool
-	if !e.manualControl && pos >= 1.0 {
-		autoComplete = true
-		e.log.Info("auto-complete", "type", e.transitionType)
-		e.cleanup()
-	}
-
-	w, h := e.width, e.height
-	e.mu.Unlock()
-
-	// --- Phase 4 (no lock): output callback and completion ---
-	if e.config.Output != nil && blended != nil {
-		e.config.Output(blended, w, h, pts, isKF)
-	}
-
-	if autoComplete && e.config.OnComplete != nil {
-		e.config.OnComplete(false)
-	}
+	// Blend, output, and check for auto-completion (shared with IngestRawFrame).
+	e.blendAndOutput(isFrom, pts)
 }
 
 // IngestRawFrame accepts a pre-decoded YUV420 frame (e.g., from MXL sources).
@@ -743,11 +662,25 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 		e.needsFlushB = false
 	}
 
-	// Same blend triggering logic as IngestFrame (see comments there).
+	// Blend, output, and check for auto-completion (shared with IngestFrame).
+	e.blendAndOutput(isFrom, pts)
+}
+
+// blendAndOutput performs blend triggering, blending, auto-completion, and
+// output. Shared by IngestFrame and IngestRawFrame. Caller must hold e.mu.
+// Unlocks e.mu before returning (output callbacks run outside the lock).
+func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
+	// Determine if we should trigger blend+output.
+	// For Mix/Dip/Wipe/Stinger: triggered by incoming TO source frame.
+	// For FTB/FTBReverse: triggered by FROM source frame (no toSource).
+	// FROM source frames still store YUV in latestYUVA (above) so the blend
+	// function has access to both sources. Triggering only on TO keeps output
+	// rate at 1x (matching source frame rate) and prevents 2x PTS advancement
+	// that causes persistent A/V desync.
 	shouldBlend := false
 	if (e.transitionType == FTB || e.transitionType == FTBReverse) && isFrom {
 		shouldBlend = true
-	} else if isTo {
+	} else if !isFrom { // isTo
 		shouldBlend = true
 	}
 
@@ -756,7 +689,10 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 		return
 	}
 
-	// Same nil-source-A guard as IngestFrame blend path (see comment there).
+	// Resolve source frames. For non-FTB transitions, skip this blend if
+	// source A (from/program) hasn't arrived yet rather than substituting a
+	// black frame which causes a visible flash. The viewer sees the last
+	// pipeline frame for at most one frame period until source A arrives.
 	yuvA := e.latestYUVA
 	yuvB := e.latestYUVB
 	if yuvA == nil {
@@ -797,6 +733,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 
 	isKF := !e.firstOutput
 	e.firstOutput = true
+	e.log.Debug("blended", "pos", fmt.Sprintf("%.3f", pos), "w", e.width, "h", e.height)
 
 	var autoComplete bool
 	if !e.manualControl && pos >= 1.0 {
@@ -808,9 +745,11 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	w, h := e.width, e.height
 	e.mu.Unlock()
 
+	// Output callback and completion run outside the lock.
 	if e.config.Output != nil && blended != nil {
 		e.config.Output(blended, w, h, pts, isKF)
 	}
+
 	if autoComplete && e.config.OnComplete != nil {
 		e.config.OnComplete(false)
 	}
