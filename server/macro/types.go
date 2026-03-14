@@ -42,7 +42,9 @@ const (
 	ActionGraphicsSlide         Action = "graphics_slide"
 	ActionGraphicsAnimate       Action = "graphics_animate"
 	ActionGraphicsAnimateStop   Action = "graphics_animate_stop"
-	ActionGraphicsUploadFrame   Action = "graphics_upload_frame"
+	ActionGraphicsUploadFrame       Action = "graphics_upload_frame"
+	ActionGraphicsTextAnimate       Action = "graphics_text_animate"
+	ActionGraphicsTextAnimateStop   Action = "graphics_text_animate_stop"
 
 	// Recording actions.
 	ActionRecordingStart Action = "recording_start"
@@ -116,7 +118,9 @@ var AllActions = map[Action]bool{
 	ActionGraphicsSlide:         true,
 	ActionGraphicsAnimate:       true,
 	ActionGraphicsAnimateStop:   true,
-	ActionGraphicsUploadFrame:   true,
+	ActionGraphicsUploadFrame:       true,
+	ActionGraphicsTextAnimate:      true,
+	ActionGraphicsTextAnimateStop:  true,
 	ActionRecordingStart:  true,
 	ActionRecordingStop:   true,
 	ActionPresetRecall:    true,
@@ -288,6 +292,13 @@ func StepSummary(step Step) string {
 		layerID := fmtLayerID(step.Params)
 		tmpl, _ := step.Params["template"].(string)
 		return fmt.Sprintf("Graphics Upload %s (layer %s)", tmpl, layerID)
+	case ActionGraphicsTextAnimate:
+		layerID := fmtLayerID(step.Params)
+		mode, _ := step.Params["mode"].(string)
+		return fmt.Sprintf("Graphics Text Animate %s (layer %s)", mode, layerID)
+	case ActionGraphicsTextAnimateStop:
+		layerID := fmtLayerID(step.Params)
+		return fmt.Sprintf("Graphics Text Animate Stop (layer %s)", layerID)
 	case ActionRecordingStart:
 		return "Recording Start"
 	case ActionRecordingStop:

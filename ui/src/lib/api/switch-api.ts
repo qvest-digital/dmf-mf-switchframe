@@ -423,6 +423,24 @@ export async function graphicsImageDelete(layerId: number): Promise<void> {
 	}
 }
 
+// --- Text Animation API ---
+
+export function graphicsTextAnimStart(layerId: number, config: {
+	mode: string;
+	text: string;
+	fontSize?: number;
+	bold?: boolean;
+	charsPerSec?: number;
+	wordDelayMs?: number;
+	fadeDurationMs?: number;
+}): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/text-animate`, config);
+}
+
+export function graphicsTextAnimStop(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/text-animate/stop`, {});
+}
+
 // --- Macro API ---
 
 export function listMacros(): Promise<Macro[]> {
