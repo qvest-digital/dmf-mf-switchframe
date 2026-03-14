@@ -129,6 +129,9 @@ export interface GraphicsLayerState {
 	y: number;
 	width: number;
 	height: number;
+	imageName?: string;
+	imageWidth?: number;
+	imageHeight?: number;
 }
 
 export interface GraphicsState {

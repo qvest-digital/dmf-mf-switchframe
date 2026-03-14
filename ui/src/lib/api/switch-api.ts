@@ -384,6 +384,45 @@ export function graphicsSlide(
 	return post(`/api/graphics/${layerId}/slide`, { ...rect, durationMs });
 }
 
+// --- Graphics Image API ---
+
+export async function graphicsImageUpload(layerId: number, file: File): Promise<GraphicsState> {
+	const formData = new FormData();
+	formData.append('image', file);
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
+		method: 'POST',
+		headers: authHeaders(),
+		body: formData,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export async function graphicsImageGet(layerId: number): Promise<Blob> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
+		headers: authHeaders(),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.blob();
+}
+
+export async function graphicsImageDelete(layerId: number): Promise<void> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
+		method: 'DELETE',
+		headers: authHeaders(),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+}
+
 // --- Macro API ---
 
 export function listMacros(): Promise<Macro[]> {
