@@ -399,17 +399,29 @@ type sampleTableEntry struct {
 }
 
 // buildSampleTable resolves sample-to-chunk mapping to produce a flat list
-// of (offset, size) for every sample in the track.
-func buildSampleTable(track *mp4Track) []sampleTableEntry {
+// of (offset, size) for every sample in the track. Returns an error if the
+// stsc box references chunk indices beyond the stco/co64 chunk offset table.
+func buildSampleTable(track *mp4Track) ([]sampleTableEntry, error) {
 	if len(track.stsz) == 0 || len(track.stsc) == 0 || len(track.stco) == 0 {
-		return nil
+		return nil, nil
+	}
+
+	// Validate that stsc does not reference chunks beyond stco.
+	// stsc FirstChunk is 1-based, so FirstChunk=N requires at least N
+	// entries in the chunk offset table (stco/co64).
+	numChunks := len(track.stco)
+	for _, entry := range track.stsc {
+		if int(entry.FirstChunk) > numChunks {
+			return nil, fmt.Errorf("stsc references chunk %d but only %d chunks in stco",
+				entry.FirstChunk, numChunks)
+		}
 	}
 
 	numSamples := len(track.stsz)
 	entries := make([]sampleTableEntry, 0, numSamples)
 
 	sampleIdx := 0
-	for chunkIdx := 0; chunkIdx < len(track.stco) && sampleIdx < numSamples; chunkIdx++ {
+	for chunkIdx := 0; chunkIdx < numChunks && sampleIdx < numSamples; chunkIdx++ {
 		// Find the stsc entry that applies to this chunk (1-based chunk number).
 		chunkNum := uint32(chunkIdx + 1)
 		samplesInChunk := uint32(0)
@@ -432,7 +444,7 @@ func buildSampleTable(track *mp4Track) []sampleTableEntry {
 		}
 	}
 
-	return entries
+	return entries, nil
 }
 
 // buildDTSTable computes the decode timestamp for each sample from stts entries.
@@ -494,7 +506,10 @@ func isSyncSample(sampleNum uint32, stss []uint32) bool {
 // readVideoSamples reads all video samples from the file, constructing
 // bufferedFrame entries with proper PTS and keyframe markers.
 func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error) {
-	sampleTable := buildSampleTable(track)
+	sampleTable, err := buildSampleTable(track)
+	if err != nil {
+		return nil, fmt.Errorf("build sample table: %w", err)
+	}
 	if len(sampleTable) == 0 {
 		return nil, fmt.Errorf("empty video sample table")
 	}
@@ -554,7 +569,10 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 // (no ADTS headers), and bufferedAudioFrame.data expects raw AAC, so we
 // use the sample data directly without any ADTS round-trip.
 func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedAudioFrame, error) {
-	sampleTable := buildSampleTable(track)
+	sampleTable, err := buildSampleTable(track)
+	if err != nil {
+		return nil, fmt.Errorf("build sample table: %w", err)
+	}
 	if len(sampleTable) == 0 {
 		return nil, nil // No audio samples is not an error.
 	}

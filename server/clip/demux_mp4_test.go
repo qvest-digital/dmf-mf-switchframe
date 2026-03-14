@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	mp4 "github.com/abema/go-mp4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -200,4 +201,51 @@ func TestDemuxMP4_EmptyFile(t *testing.T) {
 	tmpFile := writeTemp(t, []byte{}, ".mp4")
 	_, _, err := DemuxFile(tmpFile)
 	assert.Error(t, err, "expected error for empty MP4 file")
+}
+
+func TestBuildSampleTable_StscReferencesNonexistentChunk(t *testing.T) {
+	// stsc references chunk 3 (FirstChunk=3) but stco has only 2 entries.
+	// This is a structural inconsistency in the MP4 file.
+	track := &mp4Track{
+		stsz: []uint32{100, 200, 300}, // 3 samples
+		stsc: []mp4.StscEntry{
+			{FirstChunk: 1, SamplesPerChunk: 1}, // chunks 1-2: 1 sample each
+			{FirstChunk: 3, SamplesPerChunk: 1}, // chunk 3: 1 sample — but chunk 3 doesn't exist!
+		},
+		stco: []uint64{0, 100}, // only 2 chunks
+	}
+
+	_, err := buildSampleTable(track)
+	require.Error(t, err, "should error when stsc references chunks beyond stco")
+	assert.Contains(t, err.Error(), "chunk")
+}
+
+func TestBuildSampleTable_ValidTrack(t *testing.T) {
+	// All stsc references are within stco bounds — should succeed.
+	track := &mp4Track{
+		stsz: []uint32{100, 200, 300},
+		stsc: []mp4.StscEntry{
+			{FirstChunk: 1, SamplesPerChunk: 1},
+			{FirstChunk: 3, SamplesPerChunk: 1},
+		},
+		stco: []uint64{0, 100, 300}, // 3 chunks
+	}
+
+	entries, err := buildSampleTable(track)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+	assert.Equal(t, uint64(0), entries[0].offset)
+	assert.Equal(t, uint32(100), entries[0].size)
+	assert.Equal(t, uint64(100), entries[1].offset)
+	assert.Equal(t, uint32(200), entries[1].size)
+	assert.Equal(t, uint64(300), entries[2].offset)
+	assert.Equal(t, uint32(300), entries[2].size)
+}
+
+func TestBuildSampleTable_EmptyInputs(t *testing.T) {
+	// Empty stsz/stsc/stco should return nil, no error.
+	track := &mp4Track{}
+	entries, err := buildSampleTable(track)
+	require.NoError(t, err)
+	assert.Nil(t, entries)
 }
