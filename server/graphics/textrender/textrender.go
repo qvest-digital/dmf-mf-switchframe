@@ -59,11 +59,9 @@ func NewRenderer() (*Renderer, error) {
 	}, nil
 }
 
-// face returns a cached font.Face for the given size and weight.
-func (r *Renderer) face(size float64, bold bool) (font.Face, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+// faceLocked returns a cached font.Face for the given size and weight.
+// Must be called with r.mu held.
+func (r *Renderer) faceLocked(size float64, bold bool) (font.Face, error) {
 	cache := r.regularFaces
 	f := r.regularFont
 	if bold {
@@ -89,12 +87,17 @@ func (r *Renderer) face(size float64, bold bool) (font.Face, error) {
 
 // MeasureText returns the pixel width and height needed to render the text.
 // If opts.MaxWidth > 0, text is word-wrapped and the height reflects all lines.
+// Thread-safe: holds the renderer lock for the entire duration because
+// opentype.Face has internal mutable state that is not goroutine-safe.
 func (r *Renderer) MeasureText(opts TextOptions) (width, height int) {
 	if opts.FontSize <= 0 {
 		opts.FontSize = 24
 	}
 
-	face, err := r.face(opts.FontSize, opts.Bold)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	face, err := r.faceLocked(opts.FontSize, opts.Bold)
 	if err != nil {
 		return 0, 0
 	}
@@ -126,6 +129,7 @@ func (r *Renderer) MeasureText(opts TextOptions) (width, height int) {
 
 // RenderToRGBA renders text into a new RGBA image of exactly the needed size.
 // Returns the image and its raw RGBA pixel bytes.
+// Thread-safe.
 func (r *Renderer) RenderToRGBA(opts TextOptions) (*image.RGBA, []byte, error) {
 	w, h := r.MeasureText(opts)
 	if w == 0 {
@@ -136,12 +140,17 @@ func (r *Renderer) RenderToRGBA(opts TextOptions) (*image.RGBA, []byte, error) {
 
 // RenderText renders text into a new RGBA image of the given dimensions.
 // Text is drawn starting from the top-left. Returns the image and raw RGBA bytes.
+// Thread-safe: holds the renderer lock for the entire duration because
+// opentype.Face has internal mutable state that is not goroutine-safe.
 func (r *Renderer) RenderText(width, height int, opts TextOptions) (*image.RGBA, []byte, error) {
 	if width <= 0 || height <= 0 {
 		return nil, nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
 	}
 
-	face, err := r.face(opts.FontSize, opts.Bold)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	face, err := r.faceLocked(opts.FontSize, opts.Bold)
 	if err != nil {
 		return nil, nil, err
 	}

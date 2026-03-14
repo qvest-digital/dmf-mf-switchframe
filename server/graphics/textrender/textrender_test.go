@@ -152,7 +152,9 @@ func TestWordWrap(t *testing.T) {
 	r, err := NewRenderer()
 	require.NoError(t, err)
 
-	face, err := r.face(24, false)
+	r.mu.Lock()
+	face, err := r.faceLocked(24, false)
+	r.mu.Unlock()
 	require.NoError(t, err)
 
 	lines := wordWrap(face, "a b c", 10000)
@@ -166,24 +168,28 @@ func TestFontFaceCache(t *testing.T) {
 	r, err := NewRenderer()
 	require.NoError(t, err)
 
+	r.mu.Lock()
+
 	// First call creates a new face
-	face1, err := r.face(24, false)
+	face1, err := r.faceLocked(24, false)
 	require.NoError(t, err)
 
 	// Second call should return the same cached face
-	face2, err := r.face(24, false)
+	face2, err := r.faceLocked(24, false)
 	require.NoError(t, err)
 	require.Equal(t, face1, face2, "same size should return cached face")
 
 	// Different size should create a new face
-	face3, err := r.face(48, false)
+	face3, err := r.faceLocked(48, false)
 	require.NoError(t, err)
 	require.NotEqual(t, face1, face3, "different size should create new face")
 
 	// Bold variant should be separate
-	face4, err := r.face(24, true)
+	face4, err := r.faceLocked(24, true)
 	require.NoError(t, err)
 	require.NotEqual(t, face1, face4, "bold should be separate from regular")
+
+	r.mu.Unlock()
 }
 
 func BenchmarkRenderText(b *testing.B) {
