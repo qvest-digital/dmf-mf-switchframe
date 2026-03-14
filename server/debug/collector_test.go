@@ -2,8 +2,10 @@ package debug
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,6 +29,43 @@ func TestCollector_Snapshot(t *testing.T) {
 	require.Equal(t, 42, provider["frames"])
 	require.NotNil(t, snap["uptime_ms"], "expected uptime_ms in snapshot")
 	require.NotNil(t, snap["events"], "expected events in snapshot")
+}
+
+func TestCollector_ConcurrentRegisterAndSnapshot(t *testing.T) {
+	c := NewCollector()
+
+	const numRegisters = 50
+	const numSnapshots = 50
+
+	var wg sync.WaitGroup
+	wg.Add(numRegisters + numSnapshots)
+
+	// Concurrently register providers.
+	for i := 0; i < numRegisters; i++ {
+		go func(i int) {
+			defer wg.Done()
+			c.Register(fmt.Sprintf("provider_%d", i), &mockProvider{})
+		}(i)
+	}
+
+	// Concurrently take snapshots.
+	for i := 0; i < numSnapshots; i++ {
+		go func() {
+			defer wg.Done()
+			snap := c.Snapshot()
+			require.NotNil(t, snap["timestamp"])
+			require.NotNil(t, snap["uptime_ms"])
+		}()
+	}
+
+	wg.Wait()
+
+	// After all goroutines complete, all providers should be registered.
+	snap := c.Snapshot()
+	for i := 0; i < numRegisters; i++ {
+		require.NotNil(t, snap[fmt.Sprintf("provider_%d", i)],
+			"expected provider_%d in final snapshot", i)
+	}
 }
 
 func TestCollector_HandleSnapshot(t *testing.T) {

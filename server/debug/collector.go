@@ -3,6 +3,7 @@ package debug
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,7 @@ type SnapshotProvider interface {
 
 // Collector aggregates debug snapshots from registered providers.
 type Collector struct {
+	mu        sync.RWMutex
 	startTime time.Time
 	providers map[string]SnapshotProvider
 	eventLog  *EventLog
@@ -29,6 +31,8 @@ func NewCollector() *Collector {
 
 // Register adds a named provider.
 func (c *Collector) Register(name string, p SnapshotProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.providers[name] = p
 }
 
@@ -39,6 +43,9 @@ func (c *Collector) EventLog() *EventLog {
 
 // Snapshot collects data from all providers into a single map.
 func (c *Collector) Snapshot() map[string]any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	result := map[string]any{
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 		"uptime_ms": time.Since(c.startTime).Milliseconds(),
