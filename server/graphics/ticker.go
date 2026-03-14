@@ -85,7 +85,8 @@ func (te *TickerEngine) Start(layerID int, cfg TickerConfig) error {
 	return nil
 }
 
-// Stop halts the ticker on the specified layer.
+// Stop halts the ticker on the specified layer and resets the layer rect
+// back to full-frame so subsequent overlays are not clipped.
 func (te *TickerEngine) Stop(layerID int) error {
 	te.mu.Lock()
 	inst, ok := te.tickers[layerID]
@@ -98,6 +99,9 @@ func (te *TickerEngine) Stop(layerID int) error {
 
 	close(inst.cancel)
 	<-inst.done
+
+	// Reset layer rect to zero (full-frame) so other templates aren't clipped.
+	_ = te.compositor.SetLayerRect(layerID, image.Rectangle{})
 	return nil
 }
 
@@ -155,16 +159,25 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 	}
 
 	// Get program resolution for viewport width
-	progW := 1920
+	progW, progH := 1920, 1080
 	if te.compositor.resolutionProvider != nil {
-		progW, _ = te.compositor.resolutionProvider()
+		progW, progH = te.compositor.resolutionProvider()
 	}
 
-	// Bar height
+	// Bar height (even-aligned for YUV420)
 	barH := cfg.Height
 	if barH <= 0 {
 		barH = int(cfg.FontSize * 2.0)
 	}
+	barH = barH &^ 1 // even-align
+	if barH < 2 {
+		barH = 2
+	}
+
+	// Position ticker bar at the bottom of the screen instead of full-frame.
+	tickerY := (progH - barH) &^ 1 // even-align Y position
+	tickerRect := image.Rect(0, tickerY, progW, tickerY+barH)
+	_ = te.compositor.SetLayerRect(inst.layerID, tickerRect)
 
 	// Pre-render the full text strip
 	textW, textH := te.renderer.MeasureText(textrender.TextOptions{

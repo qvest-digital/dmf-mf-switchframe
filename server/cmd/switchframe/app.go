@@ -28,6 +28,7 @@ import (
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/fastctrl"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -83,6 +84,10 @@ type App struct {
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	fastCtrl         *fastctrl.Dispatcher
+
+	// Text rendering engines
+	tickerEngine   *graphics.TickerEngine
+	textAnimEngine *graphics.TextAnimationEngine
 
 	// Closed captions
 	captionMgr *caption.Manager
@@ -840,6 +845,23 @@ func (a *App) initAPI() error {
 	if a.captionMgr != nil {
 		apiOpts = append(apiOpts, control.WithCaptionManager(a.captionMgr))
 	}
+
+	// Create text rendering engines for ticker and text animation.
+	if a.compositor != nil {
+		textRenderer, err := textrender.NewRenderer()
+		if err != nil {
+			slog.Warn("text renderer init failed, ticker/text-anim disabled", "error", err)
+		} else {
+			a.tickerEngine = graphics.NewTickerEngine(a.compositor, textRenderer)
+			a.textAnimEngine = graphics.NewTextAnimationEngine(a.compositor, textRenderer)
+			apiOpts = append(apiOpts,
+				control.WithTickerEngine(a.tickerEngine),
+				control.WithTextAnimEngine(a.textAnimEngine),
+			)
+			slog.Info("text rendering engines initialized (ticker + text-animation)")
+		}
+	}
+
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
 	// Wire all state callbacks (enrichState, broadcastState, etc.).
@@ -1134,6 +1156,12 @@ func (a *App) Close() {
 		a.scte35Injector.Close()
 	}
 
+	if a.tickerEngine != nil {
+		a.tickerEngine.Close()
+	}
+	if a.textAnimEngine != nil {
+		a.textAnimEngine.Close()
+	}
 	if a.keyBridge != nil {
 		a.keyBridge.Close()
 	}

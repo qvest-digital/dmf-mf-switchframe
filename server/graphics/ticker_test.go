@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"image"
 	"testing"
 	"time"
 
@@ -129,6 +130,51 @@ func TestTickerEngine_UpdateText(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	require.NoError(t, te.Stop(id))
+}
+
+func TestTickerEngine_SetsLayerRect(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
+
+	renderer := newTestRenderer(t)
+	te := NewTickerEngine(c, renderer)
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	err = te.Start(id, TickerConfig{
+		Text:     "Ticker rect test",
+		FontSize: 24,
+		Speed:    100,
+	})
+	require.NoError(t, err)
+
+	// Wait for the ticker goroutine to set the rect
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the layer rect is positioned at the bottom, not full-frame
+	c.mu.RLock()
+	layer := c.layers[id]
+	rect := layer.rect
+	c.mu.RUnlock()
+
+	require.NotEqual(t, image.Rectangle{}, rect, "ticker should set layer rect")
+	require.Equal(t, 0, rect.Min.X)
+	require.Equal(t, 1920, rect.Max.X)
+	// Rect should be at the bottom of the screen, not full height
+	require.Greater(t, rect.Min.Y, 0, "ticker rect should not start at top")
+	require.Equal(t, rect.Max.Y, 1080, "ticker rect should end at bottom")
+	barH := rect.Dy()
+	require.Less(t, barH, 200, "ticker bar should be much smaller than full frame")
+
+	require.NoError(t, te.Stop(id))
+
+	// After stop, rect should be reset to zero (full-frame)
+	c.mu.RLock()
+	rectAfter := c.layers[id].rect
+	c.mu.RUnlock()
+	require.Equal(t, image.Rectangle{}, rectAfter, "ticker stop should reset layer rect to full-frame")
 }
 
 func TestTickerEngine_Close(t *testing.T) {
