@@ -31,8 +31,10 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 
 	// If the write is larger than total capacity, only keep the last
 	// capacity bytes (everything older is lost).
+	didOverflow := false
 	if total > r.capacity {
 		r.overflowed = true
+		didOverflow = true
 		p = p[total-r.capacity:]
 		// Reset positions — we're filling the entire buffer.
 		r.writePos = 0
@@ -42,7 +44,6 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 
 	n := len(p)
 	// If writing more than available space, mark overflow and advance readPos.
-	didOverflow := false
 	if r.count+n > r.capacity {
 		r.overflowed = true
 		didOverflow = true
@@ -62,18 +63,14 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	r.writePos = (r.writePos + n) % r.capacity
 	r.count += n
 
-	// After overflow, align readPos UP to the next TS packet boundary so
-	// ReadAll never returns data starting mid-packet, and trim count DOWN
-	// to a TS packet multiple so partial trailing packets are excluded.
+	// After overflow, scan forward from readPos to find the first TS sync
+	// byte (0x47), then trim count to a TS packet multiple. This ensures
+	// ReadAll never returns data starting mid-packet. The scan handles
+	// both partial-overwrite overflow (readPos lands mid-packet in
+	// previously written data) and large-write overflow (data itself may
+	// begin mid-packet after slicing to capacity).
 	if didOverflow {
-		if rem := r.readPos % tsPacketSize; rem != 0 {
-			align := tsPacketSize - rem
-			r.readPos = (r.readPos + align) % r.capacity
-			r.count -= align
-		}
-		if tail := r.count % tsPacketSize; tail != 0 {
-			r.count -= tail
-		}
+		r.alignToTSPacket()
 	}
 
 	return total, nil
@@ -104,6 +101,37 @@ func (r *ringBuffer) ReadAll() []byte {
 	r.overflowed = false
 
 	return out
+}
+
+// alignToTSPacket scans forward from readPos to find the first TS sync byte
+// (0x47) and adjusts readPos/count accordingly. Then trims count to a TS
+// packet multiple so partial trailing packets are excluded.
+func (r *ringBuffer) alignToTSPacket() {
+	// Scan up to one full TS packet worth of bytes to find 0x47.
+	// In MPEG-TS data, sync bytes occur every 188 bytes, so we'll find one
+	// within at most 187 bytes of scanning.
+	found := false
+	for skip := 0; skip < tsPacketSize && skip < r.count; skip++ {
+		pos := (r.readPos + skip) % r.capacity
+		if r.data[pos] == 0x47 {
+			if skip > 0 {
+				r.readPos = pos
+				r.count -= skip
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		// No sync byte found — data is not valid TS. Clear readable data.
+		r.count = 0
+		return
+	}
+
+	// Trim trailing partial packet.
+	if tail := r.count % tsPacketSize; tail != 0 {
+		r.count -= tail
+	}
 }
 
 // Len returns the number of unread bytes in the buffer.

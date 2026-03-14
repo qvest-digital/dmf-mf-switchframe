@@ -193,3 +193,122 @@ func TestRingBuffer_OverflowTSAlignmentAlreadyAligned(t *testing.T) {
 	require.Equal(t, 0, len(out)%188,
 		"readable length must be a multiple of 188, got %d", len(out))
 }
+
+func TestRingBuffer_OverflowPreservesStateUntilReadAll(t *testing.T) {
+	t.Parallel()
+
+	// Verify that the Overflowed() flag remains true across multiple
+	// subsequent writes until ReadAll() is called. This ensures callers
+	// (like srt_caller.go) can reliably detect overflow at reconnect time.
+	capacity := 188 * 3 // 564 bytes
+	buf := newRingBuffer(capacity)
+
+	// Fill the buffer completely.
+	for i := byte(1); i <= 3; i++ {
+		_, _ = buf.Write(makeTaggedTSPacket(i))
+	}
+	require.False(t, buf.Overflowed())
+
+	// Overflow with one more packet.
+	_, _ = buf.Write(makeTaggedTSPacket(4))
+	require.True(t, buf.Overflowed(), "Overflowed() must be true after overflow")
+
+	// Additional writes should not clear the overflow flag.
+	_, _ = buf.Write(makeTaggedTSPacket(5))
+	require.True(t, buf.Overflowed(), "Overflowed() must remain true after subsequent writes")
+
+	_, _ = buf.Write(makeTaggedTSPacket(6))
+	require.True(t, buf.Overflowed(), "Overflowed() must remain true until ReadAll()")
+
+	// ReadAll clears the flag.
+	out := buf.ReadAll()
+	require.False(t, buf.Overflowed(), "Overflowed() must be false after ReadAll()")
+	require.NotEmpty(t, out)
+}
+
+func TestRingBuffer_OverflowAllPacketBoundariesValid(t *testing.T) {
+	t.Parallel()
+
+	// Fill ring buffer past capacity with TS packets, then verify:
+	// 1. Overflowed() returns true
+	// 2. ReadAll() data length is a multiple of 188
+	// 3. Every 188-byte boundary starts with sync byte 0x47
+	//
+	// This confirms that after overflow trimming, there are no CC
+	// discontinuity issues from mid-packet alignment.
+	capacity := 188 * 8 // 1504 bytes
+	buf := newRingBuffer(capacity)
+
+	// Write 8 packets to fill the buffer.
+	for i := byte(1); i <= 8; i++ {
+		_, _ = buf.Write(makeTaggedTSPacket(i))
+	}
+	require.False(t, buf.Overflowed())
+
+	// Overflow with 5 more packets plus a non-TS-aligned fragment.
+	// This exercises the alignment logic: the 37-byte fragment causes
+	// readPos to land mid-packet, requiring the alignment fix.
+	for i := byte(9); i <= 13; i++ {
+		_, _ = buf.Write(makeTaggedTSPacket(i))
+	}
+	fragment := make([]byte, 37)
+	for i := range fragment {
+		fragment[i] = 0xBB // not 0x47
+	}
+	_, _ = buf.Write(fragment)
+
+	require.True(t, buf.Overflowed(), "Overflowed() must be true")
+
+	out := buf.ReadAll()
+	require.NotEmpty(t, out, "ReadAll() must return data after overflow")
+
+	// Length must be a multiple of TS packet size.
+	require.Equal(t, 0, len(out)%188,
+		"ReadAll() length must be a multiple of 188, got %d", len(out))
+
+	// Every 188-byte boundary must start with a TS sync byte.
+	numPackets := len(out) / 188
+	require.Greater(t, numPackets, 0, "should contain at least one complete TS packet")
+	for i := 0; i < numPackets; i++ {
+		offset := i * 188
+		require.Equal(t, byte(0x47), out[offset],
+			"packet %d at offset %d: expected sync byte 0x47, got 0x%02X",
+			i, offset, out[offset])
+	}
+}
+
+func TestRingBuffer_OverflowLargeWriteAllBoundariesValid(t *testing.T) {
+	t.Parallel()
+
+	// Test overflow caused by a single write larger than the buffer capacity.
+	// The buffer keeps the last `capacity` bytes, then aligns.
+	capacity := 188 * 4 // 752 bytes
+	buf := newRingBuffer(capacity)
+
+	// Build a large write: 10 complete TS packets + 50 non-aligned bytes.
+	var bigWrite []byte
+	for i := byte(1); i <= 10; i++ {
+		bigWrite = append(bigWrite, makeTaggedTSPacket(i)...)
+	}
+	junk := make([]byte, 50)
+	for i := range junk {
+		junk[i] = 0xCC
+	}
+	bigWrite = append(bigWrite, junk...)
+
+	_, _ = buf.Write(bigWrite)
+	require.True(t, buf.Overflowed())
+
+	out := buf.ReadAll()
+	require.NotEmpty(t, out)
+	require.Equal(t, 0, len(out)%188,
+		"length must be a multiple of 188 after large overflow, got %d", len(out))
+
+	numPackets := len(out) / 188
+	for i := 0; i < numPackets; i++ {
+		offset := i * 188
+		require.Equal(t, byte(0x47), out[offset],
+			"packet %d at offset %d: expected 0x47, got 0x%02X",
+			i, offset, out[offset])
+	}
+}
