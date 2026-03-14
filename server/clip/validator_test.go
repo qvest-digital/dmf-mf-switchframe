@@ -200,7 +200,7 @@ func TestValidateDimensions(t *testing.T) {
 func TestParseSPSDimensions(t *testing.T) {
 	// Known SPS for Baseline profile, 320x240.
 	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88}
-	w, h := parseSPSDimensions(sps)
+	w, h := ParseSPSDimensions(sps)
 	assert.Greater(t, w, 0, "width should be positive")
 	assert.Greater(t, h, 0, "height should be positive")
 	assert.Equal(t, 0, w%2, "width should be even")
@@ -208,22 +208,21 @@ func TestParseSPSDimensions(t *testing.T) {
 }
 
 func TestParseSPSDimensionsShortSPS(t *testing.T) {
-	w, h := parseSPSDimensions([]byte{0x67})
+	w, h := ParseSPSDimensions([]byte{0x67})
 	assert.Equal(t, 0, w, "short SPS should return 0 width")
 	assert.Equal(t, 0, h, "short SPS should return 0 height")
 }
 
 func TestParseSPSDimensionsNil(t *testing.T) {
-	w, h := parseSPSDimensions(nil)
+	w, h := ParseSPSDimensions(nil)
 	assert.Equal(t, 0, w)
 	assert.Equal(t, 0, h)
 }
 
 func TestTestDecodeFirstGOP_DimensionMismatchReturnsCorrupt(t *testing.T) {
-	// If decoder produces frames whose dimensions don't match SPS,
-	// testDecodeFirstGOP should return ErrCorruptFile.
-	// We test this by passing mismatched spsWidth/spsHeight to the function
-	// with frames that decode to known dimensions.
+	// If decoder produces frames whose dimensions differ from SPS by more
+	// than one macroblock (16px), testDecodeFirstGOP returns ErrCorruptFile.
+	// Small differences (frame cropping vs coded size) are tolerated.
 
 	// Create frames that the decoder can actually decode (real H.264).
 	// We'll use the SPS for 320x240 but claim the SPS says 640x480.
@@ -281,7 +280,7 @@ func TestTestDecodeFirstGOP_MatchingDimensionsNoError(t *testing.T) {
 	}
 
 	// Parse the actual SPS dimensions to pass as expected.
-	spsW, spsH := parseSPSDimensions(sps)
+	spsW, spsH := ParseSPSDimensions(sps)
 
 	w, h, _, err := testDecodeFirstGOP(frames, spsW, spsH)
 	assert.NoError(t, err, "matching dimensions should not return error")

@@ -61,7 +61,7 @@ func TestClipEndToEnd(t *testing.T) {
 	// Track raw video output with a channel for synchronization.
 	var videoCount atomic.Int32
 	videoReceived := make(chan struct{}, 1)
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		videoCount.Add(1)
 		select {
 		case videoReceived <- struct{}{}:
@@ -159,7 +159,7 @@ func TestClipMultiPlayer(t *testing.T) {
 	// Track which player keys produce video output.
 	keysSeen := &sync.Map{}
 	var totalFrames atomic.Int32
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		keysSeen.Store(key, true)
 		totalFrames.Add(1)
 	})
@@ -282,7 +282,7 @@ func TestClipSeekDuringPlayback(t *testing.T) {
 	defer mgr.Close()
 
 	var videoCount atomic.Int32
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		videoCount.Add(1)
 	})
 
@@ -323,7 +323,7 @@ func TestClipSpeedChange(t *testing.T) {
 	defer mgr.Close()
 
 	var videoCount atomic.Int32
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		videoCount.Add(1)
 	})
 
@@ -403,7 +403,7 @@ func TestClipPTSProviderAnchors(t *testing.T) {
 
 	var firstPTS atomic.Int64
 	firstPTS.Store(-1)
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		firstPTS.CompareAndSwap(-1, pts)
 	})
 

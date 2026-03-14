@@ -106,9 +106,61 @@ static void remap_row(unsigned char* dst, const unsigned char* src,
 	}
 }
 
-// ffdec_is_planar_420 returns 1 if the frame is YUV420P or YUVJ420P (3-plane planar).
+// ffdec_is_planar_420 returns 1 if the frame is YUV420P or YUVJ420P (3-plane 8-bit planar).
 static int ffdec_is_planar_420(AVFrame* f) {
 	return f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P;
+}
+
+// ffdec_is_planar_420_10bit returns 1 if the frame is YUV420P10LE or YUV420P10BE (10-bit planar).
+static int ffdec_is_planar_420_10bit(AVFrame* f) {
+	return f->format == AV_PIX_FMT_YUV420P10LE || f->format == AV_PIX_FMT_YUV420P10BE;
+}
+
+// ffdec_is_supported_format returns 1 if the decoder can handle this pixel format.
+static int ffdec_is_supported_format(AVFrame* f) {
+	return ffdec_is_planar_420(f) || ffdec_is_planar_420_10bit(f) || f->format == AV_PIX_FMT_NV12;
+}
+
+// ffdec_copy_10bit_to_8bit copies a 10-bit YUV420P plane to 8-bit by right-shifting.
+// src contains uint16_t samples (2 bytes each), dst contains uint8_t.
+static void ffdec_copy_10bit_plane(unsigned char* dst, const unsigned char* src,
+                                    int src_linesize, int width, int height,
+                                    int is_big_endian, const unsigned char* remap_lut) {
+	for (int row = 0; row < height; row++) {
+		const unsigned char* s = src + row * src_linesize;
+		unsigned char* d = dst + row * width;
+		for (int col = 0; col < width; col++) {
+			unsigned short val;
+			if (is_big_endian) {
+				val = ((unsigned short)s[col * 2] << 8) | s[col * 2 + 1];
+			} else {
+				val = s[col * 2] | ((unsigned short)s[col * 2 + 1] << 8);
+			}
+			// 10-bit (0-1023) to 8-bit (0-255): shift right by 2.
+			unsigned char v8 = (unsigned char)(val >> 2);
+			d[col] = remap_lut ? remap_lut[v8] : v8;
+		}
+	}
+}
+
+// ffdec_copy_10bit copies 10-bit YUV420P into packed 8-bit YUV420P dst buffer.
+static void ffdec_copy_10bit(AVFrame* src_frame, unsigned char* dst,
+                              int w, int h_val, int remap_to_limited) {
+	int uv_w = w / 2;
+	int uv_h = h_val / 2;
+	int y_size = w * h_val;
+	int uv_size = uv_w * uv_h;
+	int is_be = (src_frame->format == AV_PIX_FMT_YUV420P10BE);
+
+	const unsigned char* y_lut  = remap_to_limited ? full_to_limited_y  : NULL;
+	const unsigned char* uv_lut = remap_to_limited ? full_to_limited_uv : NULL;
+
+	ffdec_copy_10bit_plane(dst, src_frame->data[0],
+	                        src_frame->linesize[0], w, h_val, is_be, y_lut);
+	ffdec_copy_10bit_plane(dst + y_size, src_frame->data[1],
+	                        src_frame->linesize[1], uv_w, uv_h, is_be, uv_lut);
+	ffdec_copy_10bit_plane(dst + y_size + uv_size, src_frame->data[2],
+	                        src_frame->linesize[2], uv_w, uv_h, is_be, uv_lut);
 }
 
 // ffdec_is_full_range returns 1 if the decoded frame uses full-range (JPEG) levels.
@@ -207,10 +259,12 @@ static void ffdec_copy_nv12(AVFrame* src_frame, unsigned char* dst,
 }
 
 // ffdec_copy_frame copies decoded frame into packed YUV420P dst buffer.
-// Handles both planar YUV420P/YUVJ420P and semi-planar NV12 inputs.
+// Handles planar YUV420P/YUVJ420P, semi-planar NV12, and 10-bit YUV420P10 inputs.
 static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
                              int w, int h_val, int remap_to_limited) {
-	if (src_frame->format == AV_PIX_FMT_NV12) {
+	if (ffdec_is_planar_420_10bit(src_frame)) {
+		ffdec_copy_10bit(src_frame, dst, w, h_val, remap_to_limited);
+	} else if (src_frame->format == AV_PIX_FMT_NV12) {
 		ffdec_copy_nv12(src_frame, dst, w, h_val, remap_to_limited);
 	} else {
 		ffdec_copy_planar(src_frame, dst, w, h_val, remap_to_limited);
@@ -255,7 +309,7 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 
 	AVFrame* src_frame = h->frame;
 
-	if (!ffdec_is_planar_420(h->frame) && h->frame->format != AV_PIX_FMT_NV12) {
+	if (!ffdec_is_supported_format(h->frame)) {
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
@@ -263,7 +317,7 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 				return -3;
 			}
 			src_frame = h->sw_frame;
-			if (!ffdec_is_planar_420(src_frame) && src_frame->format != AV_PIX_FMT_NV12) {
+			if (!ffdec_is_supported_format(src_frame)) {
 				av_frame_unref(h->frame);
 				av_frame_unref(h->sw_frame);
 				return -4;
@@ -342,7 +396,7 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 
 	AVFrame* src_frame = h->frame;
 
-	if (!ffdec_is_planar_420(h->frame) && h->frame->format != AV_PIX_FMT_NV12) {
+	if (!ffdec_is_supported_format(h->frame)) {
 		if (h->frame->hw_frames_ctx) {
 			rc = av_hwframe_transfer_data(h->sw_frame, h->frame, 0);
 			if (rc < 0) {
@@ -350,7 +404,7 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 				return -3;
 			}
 			src_frame = h->sw_frame;
-			if (!ffdec_is_planar_420(src_frame) && src_frame->format != AV_PIX_FMT_NV12) {
+			if (!ffdec_is_supported_format(src_frame)) {
 				av_frame_unref(h->frame);
 				av_frame_unref(h->sw_frame);
 				return -4;

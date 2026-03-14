@@ -15,9 +15,10 @@ import (
 
 // DemuxFile reads a media file and extracts H.264 video frames and AAC
 // audio frames. The format is detected by file extension (.ts or .mp4).
-// Video frames are returned in AVC1 format with SPS/PPS set on keyframes.
-// Audio frames contain raw AAC payloads (ADTS headers stripped).
-// Both slices are sorted by PTS in ascending order.
+// Video frames are returned in AVC1 format with SPS/PPS set on keyframes,
+// in decode order (not display/PTS order) so that the H.264 decoder receives
+// reference frames before B-frames that depend on them.
+// Audio frames contain raw AAC payloads (ADTS headers stripped), sorted by PTS.
 func DemuxFile(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
@@ -120,10 +121,11 @@ func demuxTS(r io.Reader) ([]bufferedFrame, []bufferedAudioFrame, error) {
 		return nil, nil, fmt.Errorf("no video frames found in TS data")
 	}
 
-	// Sort frames by PTS.
-	sort.Slice(videoFrames, func(i, j int) bool {
-		return videoFrames[i].pts < videoFrames[j].pts
-	})
+	// Video frames are kept in PES arrival order (decode order) because the
+	// H.264 decoder needs reference frames before B-frames that depend on them.
+	// Sorting by PTS would reorder to display order, breaking B-frame decoding.
+
+	// Audio frames have no B-frame reordering — sort by PTS for proper playback.
 	sort.Slice(audioFrames, func(i, j int) bool {
 		return audioFrames[i].pts < audioFrames[j].pts
 	})

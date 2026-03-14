@@ -52,7 +52,7 @@ func Validate(path string) (*ProbeResult, error) {
 	}
 
 	// Extract resolution from SPS if available.
-	width, height := parseSPSDimensions(spsNALU)
+	width, height := ParseSPSDimensions(spsNALU)
 
 	// Determine audio codec from ADTS presence.
 	var audioCodec string
@@ -202,10 +202,17 @@ func testDecodeFirstGOP(frames []bufferedFrame, spsWidth, spsHeight int) (width,
 		}
 
 		// Check for dimension mismatch between SPS and decoded output.
-		// A mismatch indicates actual file corruption.
-		if spsWidth > 0 && spsHeight > 0 && (w != spsWidth || h != spsHeight) {
-			return 0, 0, nil, fmt.Errorf("%w: SPS declares %dx%d but decoder produced %dx%d",
-				ErrCorruptFile, spsWidth, spsHeight, w, h)
+		// The SPS display dimensions (after frame cropping) may be smaller
+		// than the decoded dimensions (macroblock-aligned coded size). This
+		// is normal — only flag a mismatch as corruption if the difference
+		// exceeds one macroblock (16px) in either axis.
+		if spsWidth > 0 && spsHeight > 0 {
+			dw := w - spsWidth
+			dh := h - spsHeight
+			if dw < 0 || dh < 0 || dw > 16 || dh > 16 {
+				return 0, 0, nil, fmt.Errorf("%w: SPS declares %dx%d but decoder produced %dx%d",
+					ErrCorruptFile, spsWidth, spsHeight, w, h)
+			}
 		}
 
 		// Successfully decoded a frame.
@@ -273,10 +280,10 @@ func fpsToRational(fps float64) (int, int) {
 	return bestNum, bestDen
 }
 
-// parseSPSDimensions extracts width and height from an H.264 SPS NALU.
+// ParseSPSDimensions extracts width and height from an H.264 SPS NALU.
 // Uses exponential Golomb coding to parse the SPS fields.
 // Returns (0, 0) if the SPS is too short or cannot be parsed.
-func parseSPSDimensions(sps []byte) (width, height int) {
+func ParseSPSDimensions(sps []byte) (width, height int) {
 	if len(sps) < 4 {
 		return 0, 0
 	}

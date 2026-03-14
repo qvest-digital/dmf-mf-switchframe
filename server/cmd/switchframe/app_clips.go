@@ -36,6 +36,10 @@ func (a *App) initClips() error {
 		DecoderFactory: func() (clip.VideoDecoder, error) {
 			return codec.NewVideoDecoder()
 		},
+		EncoderFactory: func(w, h, fps int) (clip.VideoEncoder, error) {
+			bitrate := switcher.DefaultBitrateForResolution(w, h)
+			return codec.NewVideoEncoder(w, h, bitrate, fps*1000, 1001)
+		},
 	})
 
 	// PTS anchoring (same pattern as replay).
@@ -59,30 +63,105 @@ func (a *App) initClips() error {
 			// so the new channel becomes active.
 			a.mixer.OnProgramChange(a.sw.ProgramSource())
 		},
-		// onStop: unregister clip player source + close encoder.
+		// onStop: unregister clip player source.
 		func(playerID int, key string) {
 			a.sw.UnregisterSource(key)
 			a.mixer.RemoveChannel(key)
-			a.closeClipEncoder(playerID)
 		},
 	)
 
-	// Raw video output: clip player sends decoded YUV to switcher pipeline
-	// AND encodes to H.264 for browser relay (lazy encoder init).
-	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64) {
-		// Send raw YUV to switcher pipeline.
+	// Raw video output: clip player sends decoded YUV to switcher pipeline.
+	var clipRawFrameCount [clip.MaxPlayers]int64
+	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		idx := clipPlayerIDFromKey(key) - 1
+		if idx >= 0 && idx < clip.MaxPlayers {
+			clipRawFrameCount[idx]++
+			count := clipRawFrameCount[idx]
+			if count <= 3 || count%100 == 0 {
+				slog.Info("clip: RawVideoOutput (decoded YUV)",
+					"key", key,
+					"frame", count,
+					"width", w,
+					"height", h,
+					"yuvLen", len(yuv),
+					"pts", pts,
+					"isKeyframe", isKeyframe,
+				)
+			}
+		}
 		pf := &switcher.ProcessingFrame{
 			YUV:        yuv,
 			Width:      w,
 			Height:     h,
 			PTS:        pts,
 			DTS:        pts,
-			IsKeyframe: true,
+			IsKeyframe: isKeyframe,
 		}
 		a.sw.IngestReplayVideo(key, pf)
+	})
 
-		// Encode to H.264 and broadcast to per-player relay.
-		a.clipEncodeAndBroadcast(key, yuv, w, h, pts)
+	// Video output: forward original H.264 wire data from clip files directly
+	// to per-player MoQ relays for browser playback. No re-encoding needed —
+	// the demuxed AVC1 data is broadcast as-is.
+	var clipVideoFrameCount [clip.MaxPlayers]int64
+	mgr.SetVideoOutput(func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
+		idx := clipPlayerIDFromKey(key) - 1
+		if idx < 0 || idx >= clip.MaxPlayers {
+			return
+		}
+		relay := a.clipRelays[idx]
+		if relay == nil {
+			return
+		}
+
+		clipVideoFrameCount[idx]++
+		count := clipVideoFrameCount[idx]
+
+		// Set VideoInfo on relay on each keyframe with SPS/PPS so the
+		// MoQ catalog stays current (clip resolution/codec may vary).
+		if isKeyframe && sps != nil && pps != nil {
+			avcC := a.buildAVCConfig(sps, pps)
+			if avcC != nil {
+				w, h := clip.ParseSPSDimensions(sps)
+				slog.Info("clip: SetVideoInfo",
+					"key", key,
+					"width", w,
+					"height", h,
+					"codec", codec.ParseSPSCodecString(sps),
+					"spsLen", len(sps),
+					"ppsLen", len(pps),
+					"avcCLen", len(avcC),
+				)
+				relay.SetVideoInfo(a.buildVideoInfo(sps, avcC, w, h))
+			}
+		}
+
+		// Log first few frames and then every 100th for diagnostics.
+		if count <= 3 || count%100 == 0 {
+			slog.Info("clip: BroadcastVideo",
+				"key", key,
+				"frame", count,
+				"pts", pts,
+				"isKeyframe", isKeyframe,
+				"wireDataLen", len(wireData),
+				"hasSPS", sps != nil,
+			)
+		}
+
+		var codecStr string
+		if sps != nil {
+			codecStr = codec.ParseSPSCodecString(sps)
+		}
+
+		frame := &media.VideoFrame{
+			PTS:        pts,
+			IsKeyframe: isKeyframe,
+			WireData:   wireData,
+			Codec:      codecStr,
+			SPS:        sps,
+			PPS:        pps,
+		}
+		relay.BroadcastVideo(frame)
 	})
 
 	// Audio output: clip player sends audio frames to mixer AND relay.
@@ -132,147 +211,11 @@ func (a *App) initClips() error {
 	return nil
 }
 
-// clipEncodeAndBroadcast encodes raw YUV to H.264 and broadcasts to the
-// per-player MoQ relay. Creates the encoder lazily on the first frame.
-// Mirrors the replay player's encode-and-broadcast pattern.
-func (a *App) clipEncodeAndBroadcast(key string, yuv []byte, w, h int, pts int64) {
-	idx := clipPlayerIDFromKey(key) - 1
-	if idx < 0 || idx >= clip.MaxPlayers {
-		return
-	}
-
-	relay := a.clipRelays[idx]
-	if relay == nil {
-		return
-	}
-
-	a.clipEncMu.Lock()
-	enc := a.clipEncoders[idx]
-
-	// Lazy-init encoder on first frame.
-	if enc == nil {
-		bitrate := clipEstimateBitrate(w, h)
-		var err error
-		enc, err = codec.NewVideoEncoder(w, h, bitrate, 30, 1)
-		if err != nil {
-			a.clipEncMu.Unlock()
-			slog.Error("clips: encoder creation failed", "key", key, "err", err)
-			return
-		}
-		a.clipEncoders[idx] = enc
-		a.clipGroupIDs[idx] = 0
-		a.clipInfoSent[idx] = false
-		slog.Info("clips: encoder created for browser relay", "key", key, "w", w, "h", h)
-	}
-
-	groupID := a.clipGroupIDs[idx]
-	infoSent := a.clipInfoSent[idx]
-	a.clipEncMu.Unlock()
-
-	// Encode YUV to H.264 (outside lock — encoder is single-writer per player).
-	encoded, isKeyframe, err := enc.Encode(yuv, pts, false)
-	if err != nil {
-		slog.Error("clips: encode failed", "key", key, "err", err)
-		return
-	}
-	if encoded == nil {
-		return // Encoder buffering (EAGAIN).
-	}
-
-	// Convert Annex B to AVC1 for relay.
-	avc1 := codec.AnnexBToAVC1(encoded)
-	if len(avc1) == 0 {
-		avc1 = encoded
-	}
-
-	// Extract SPS/PPS from keyframes for MoQ catalog.
-	var spsNALU, ppsNALU []byte
-	var codecStr string
-	if isKeyframe {
-		for _, nalu := range codec.ExtractNALUs(avc1) {
-			if len(nalu) == 0 {
-				continue
-			}
-			switch nalu[0] & 0x1F {
-			case 7:
-				spsNALU = nalu
-				codecStr = codec.ParseSPSCodecString(nalu)
-			case 8:
-				ppsNALU = nalu
-			}
-		}
-
-		// Set VideoInfo on relay once so browsers can discover the track.
-		if !infoSent && spsNALU != nil && ppsNALU != nil {
-			avcC := a.buildAVCConfig(spsNALU, ppsNALU)
-			if avcC != nil {
-				relay.SetVideoInfo(a.buildVideoInfo(spsNALU, avcC, w, h))
-				slog.Info("clips: set relay VideoInfo", "key", key, "w", w, "h", h)
-			}
-			a.clipEncMu.Lock()
-			a.clipInfoSent[idx] = true
-			a.clipEncMu.Unlock()
-		}
-
-		// Start first MoQ group on first keyframe.
-		if groupID == 0 {
-			groupID = 1
-			a.clipEncMu.Lock()
-			a.clipGroupIDs[idx] = groupID
-			a.clipEncMu.Unlock()
-		}
-	}
-
-	frame := &media.VideoFrame{
-		PTS:        pts,
-		IsKeyframe: isKeyframe,
-		WireData:   avc1,
-		Codec:      codecStr,
-		GroupID:    groupID,
-		SPS:        spsNALU,
-		PPS:        ppsNALU,
-	}
-	relay.BroadcastVideo(frame)
-}
-
-// closeClipEncoder closes and removes the H.264 encoder for a clip player.
-func (a *App) closeClipEncoder(playerID int) {
-	idx := playerID - 1
-	if idx < 0 || idx >= clip.MaxPlayers {
-		return
-	}
-
-	a.clipEncMu.Lock()
-	enc := a.clipEncoders[idx]
-	a.clipEncoders[idx] = nil
-	a.clipGroupIDs[idx] = 0
-	a.clipInfoSent[idx] = false
-	a.clipEncMu.Unlock()
-
-	if enc != nil {
-		enc.Close()
-		slog.Info("clips: encoder closed", "player", playerID)
-	}
-}
-
 // clipPlayerIDFromKey extracts the player ID from a "clip:N" key.
 func clipPlayerIDFromKey(key string) int {
 	s := strings.TrimPrefix(key, "clip:")
 	n, _ := strconv.Atoi(s)
 	return n
-}
-
-// clipEstimateBitrate returns a reasonable bitrate for browser relay encoding.
-func clipEstimateBitrate(w, h int) int {
-	pixels := w * h
-	switch {
-	case pixels >= 1920*1080:
-		return 8_000_000
-	case pixels >= 1280*720:
-		return 4_000_000
-	default:
-		return 2_000_000
-	}
 }
 
 // handleReplayClipExported processes a temp TS file exported from replay,

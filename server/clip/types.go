@@ -86,6 +86,14 @@ type VideoDecoder interface {
 	Close()
 }
 
+// VideoEncoder encodes raw YUV420 frames to H.264.
+// Used to re-encode decoded clip frames to browser-compatible 8-bit H.264.
+// Matches transition.VideoEncoder via structural typing.
+type VideoEncoder interface {
+	Encode(yuv []byte, pts int64, forceIDR bool) (data []byte, isKeyframe bool, err error)
+	Close()
+}
+
 // bufferedFrame mirrors replay's internal frame format for code reuse.
 type bufferedFrame struct {
 	wireData   []byte

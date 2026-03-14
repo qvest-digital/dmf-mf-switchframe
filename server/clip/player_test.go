@@ -35,7 +35,7 @@ func TestPlayerPlayToCompletion(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 		OnDone: func() { close(done) },
@@ -66,7 +66,7 @@ func TestPlayerHoldLastFrame(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 		OnDone: func() { close(done) },
 	})
 
@@ -90,7 +90,7 @@ func TestPlayerPauseResume(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 	})
@@ -127,7 +127,7 @@ func TestPlayerStop(t *testing.T) {
 		Speed:     1.0,
 		Loop:      true,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 	})
 
 	ctx := context.Background()
@@ -147,7 +147,7 @@ func TestPlayerLoop(t *testing.T) {
 		Speed:     2.0,
 		Loop:      true,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 	})
@@ -175,7 +175,7 @@ func TestPlayerProgress(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 		OnDone: func() { close(done) },
 	})
 
@@ -204,7 +204,7 @@ func TestPlayerSpeedAboveOne(t *testing.T) {
 		Speed:     2.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 		OnDone: func() { close(done) },
 	})
 
@@ -231,7 +231,7 @@ func TestPlayerSeek(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 		OnDone: func() { close(done) },
@@ -267,7 +267,7 @@ func TestPlayerSetSpeed(t *testing.T) {
 		Speed:     0.5,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 	})
@@ -294,7 +294,7 @@ func TestPlayerEmptyClip(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 		OnDone: func() { close(done) },
 	})
 
@@ -318,7 +318,7 @@ func TestPlayerDoubleStop(t *testing.T) {
 		Speed:     1.0,
 		Loop:      true,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 	})
 
 	ctx := context.Background()
@@ -340,7 +340,7 @@ func TestPlayerPauseBeforeStart(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 	})
 
 	// Pause before start should not panic.
@@ -357,7 +357,7 @@ func TestPlayerResumeWithoutPause(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -383,7 +383,7 @@ func TestPlayerMonotonicPTS(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			prev := lastPTS.Swap(pts)
 			if prev >= 0 && pts <= prev {
 				ptsViolations.Add(1)
@@ -420,7 +420,7 @@ func TestPlayerAudioOutput(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
 		AudioOutput: func(data []byte, pts int64, sampleRate, channels int) {
 			audioCount.Add(1)
 		},
@@ -448,7 +448,7 @@ func TestPlayerHoldFrameOutputsDuringHold(t *testing.T) {
 		Speed:     1.0,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 		OnDone: func() { close(done) },
@@ -483,7 +483,7 @@ func TestPlayerSlowMotion(t *testing.T) {
 		Speed:     0.5,
 		Loop:      false,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawCount.Add(1)
 		},
 		OnDone: func() { close(done) },
@@ -516,7 +516,7 @@ func TestPlayerLoopMonotonicPTS(t *testing.T) {
 		Speed:     2.0,
 		Loop:      true,
 		InitialPTS: 0,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			prev := lastPTS.Swap(pts)
 			if prev >= 0 && pts <= prev {
 				ptsViolations.Add(1)

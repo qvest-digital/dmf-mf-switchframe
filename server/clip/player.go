@@ -2,10 +2,13 @@ package clip
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/codec"
 )
 
 // PlayerConfig configures a clip player instance.
@@ -22,9 +25,21 @@ type PlayerConfig struct {
 	// If nil, wireData is passed through unchanged (for testing).
 	DecodeFrame func(h264 []byte) (yuv []byte, width, height int, err error)
 
+	// EncoderFactory creates a VideoEncoder for re-encoding decoded frames
+	// to browser-compatible 8-bit H.264. If nil, original wire data is sent
+	// to the browser relay (only works for 8-bit clips).
+	EncoderFactory func(w, h, fps int) (VideoEncoder, error)
+
 	// RawVideoOutput sends decoded YUV420 frame data to the switcher pipeline.
 	// Called for every output frame (including duplicates for slow-mo).
-	RawVideoOutput func(yuv []byte, w, h int, pts int64)
+	RawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
+
+	// VideoOutput forwards H.264 wire data (AVC1 format) for browser relay.
+	// When EncoderFactory is set, this receives re-encoded 8-bit data.
+	// Otherwise, it receives original wire data from the clip file.
+	// Called for every output frame (including duplicates for slow-mo).
+	// sps/pps are set on keyframes, nil on non-keyframes.
+	VideoOutput func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 
 	// AudioOutput sends audio frame data during playback.
 	AudioOutput func(data []byte, pts int64, sampleRate, channels int)
@@ -36,6 +51,7 @@ type PlayerConfig struct {
 	OnReady func()
 
 	// OnVideoInfo signals codec parameters (SPS/PPS) and dimensions.
+	// Called once on the first keyframe with SPS/PPS.
 	OnVideoInfo func(sps, pps []byte, width, height int)
 }
 
@@ -67,6 +83,23 @@ type Player struct {
 	holdW     int
 	holdH     int
 	holdPTS   int64
+
+	// Last keyframe wire data for hold mode browser relay output.
+	// The browser decoder needs a keyframe to start, so we always send
+	// the last keyframe's wire data (not the last frame which may be non-IDR).
+	holdKeyWireData []byte
+	holdKeySPS      []byte
+	holdKeyPPS      []byte
+
+	// videoInfoSent tracks whether OnVideoInfo has been called.
+	videoInfoSent bool
+
+	// Re-encoding for browser relay (8-bit H.264 output).
+	encoder   VideoEncoder
+	sourceFPS float64
+
+	// decodeErrorLogged tracks whether a decode error has been logged (log once).
+	decodeErrorLogged bool
 
 	// Audio tracking for proportional distribution.
 	audioIdx          int
@@ -224,6 +257,12 @@ func (p *Player) SetSpeed(speed float64) {
 // run is the main playback goroutine.
 func (p *Player) run(ctx context.Context) {
 	defer close(p.done)
+	defer func() {
+		if p.encoder != nil {
+			p.encoder.Close()
+			p.encoder = nil
+		}
+	}()
 
 	clip := p.config.Clip
 	if len(clip) == 0 {
@@ -235,6 +274,7 @@ func (p *Player) run(ctx context.Context) {
 
 	// Estimate source FPS from clip PTS values.
 	sourceFPS := estimateFPSFromClipFrames(clip)
+	p.sourceFPS = sourceFPS
 
 	p.state.Store(StatePlaying)
 
@@ -325,35 +365,89 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 
 		f := clip[frameIdx]
 
-		// Decode H.264 to YUV420 (once per source frame, reused for all dups).
-		frameData := f.wireData
+		// Decode H.264 to YUV420 for the switcher pipeline.
+		// Wire data forwarding to the browser relay is independent of decode
+		// success — the browser has its own decoder and always gets frames.
+		var frameData []byte // nil when decode fails (browser relay still works)
 		fw, fh := p.config.Width, p.config.Height
 		if p.config.DecodeFrame != nil {
-			decoded, dw, dh, err := p.config.DecodeFrame(f.wireData)
-			if err != nil {
-				// Skip frames the decoder is buffering (e.g., B-frame reorder).
-				frameIdx++
-				continue
+			// Convert AVC1 wire data to Annex B for the decoder.
+			annexB := codec.AVC1ToAnnexB(f.wireData)
+			if len(annexB) > 0 {
+				// Prepend SPS/PPS for keyframes so the decoder can initialize.
+				if f.isKeyframe && len(f.sps) > 0 {
+					annexB = codec.PrependSPSPPS(f.sps, f.pps, annexB)
+				}
+
+				decoded, dw, dh, err := p.config.DecodeFrame(annexB)
+				if err == nil {
+					// Deep-copy: decoder may reuse its output buffer.
+					frameData = make([]byte, len(decoded))
+					copy(frameData, decoded)
+					fw, fh = dw, dh
+				} else if !p.decodeErrorLogged {
+					slog.Warn("clip: decode error (first occurrence)",
+						"error", err,
+						"frameIdx", frameIdx,
+						"isKeyframe", f.isKeyframe,
+						"wireDataLen", len(f.wireData),
+						"annexBLen", len(annexB),
+						"hasSPS", len(f.sps) > 0,
+					)
+					p.decodeErrorLogged = true
+				}
 			}
-			// Deep-copy: decoder may reuse its output buffer.
-			frameData = make([]byte, len(decoded))
-			copy(frameData, decoded)
-			fw, fh = dw, dh
+		} else {
+			// No decoder (testing) — pass wire data through as frame data.
+			frameData = f.wireData
+		}
+
+		// Re-encode decoded frame to browser-compatible 8-bit H.264.
+		// Falls back to original wire data when no encoder factory is set.
+		browserWireData := f.wireData
+		browserKeyframe := f.isKeyframe
+		browserSPS := f.sps
+		browserPPS := f.pps
+		if frameData != nil {
+			if wd, kf, s, pp := p.reencodeForBrowser(frameData, fw, fh, f.pts, f.isKeyframe); wd != nil {
+				browserWireData = wd
+				browserKeyframe = kf
+				browserSPS = s
+				browserPPS = pp
+			}
+		}
+
+		// Signal codec parameters on first keyframe with SPS/PPS.
+		if browserKeyframe && !p.videoInfoSent && p.config.OnVideoInfo != nil {
+			if browserSPS != nil && browserPPS != nil {
+				p.config.OnVideoInfo(browserSPS, browserPPS, fw, fh)
+				p.videoInfoSent = true
+			}
 		}
 
 		// Output frames with duplication for slow-mo.
 		for dup := 0; dup < dupCount; dup++ {
-			if p.outputFrame(ctx, frameData, fw, fh, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
+			if p.outputFrame(ctx, frameData, fw, fh, f.isKeyframe, browserWireData, browserKeyframe, browserSPS, browserPPS, outputPTS, ptsPerFrame, frameDuration, timer, playbackStart, &pacingIdx) {
 				return true
 			}
 
-			// Save decoded YUV as hold frame (deep-copy to prevent aliasing).
+			// Save hold frame state.
 			p.holdMu.Lock()
-			p.holdFrame = make([]byte, len(frameData))
-			copy(p.holdFrame, frameData)
-			p.holdW = fw
-			p.holdH = fh
+			if frameData != nil {
+				// Deep-copy YUV (prevents aliasing with decoder buffer).
+				p.holdFrame = make([]byte, len(frameData))
+				copy(p.holdFrame, frameData)
+				p.holdW = fw
+				p.holdH = fh
+			}
 			p.holdPTS = *outputPTS
+			// Track last keyframe wire data for hold mode browser relay.
+			// The browser decoder needs a keyframe to start decoding.
+			if browserKeyframe && browserSPS != nil && browserPPS != nil {
+				p.holdKeyWireData = append(p.holdKeyWireData[:0], browserWireData...)
+				p.holdKeySPS = browserSPS
+				p.holdKeyPPS = browserPPS
+			}
 			p.holdMu.Unlock()
 
 			outputIdx++
@@ -378,10 +472,15 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 }
 
 // outputFrame outputs a single decoded frame, handling pause and pacing.
+// It sends both decoded YUV (for switcher pipeline) and H.264 wire data
+// (for browser relay) if the respective callbacks are set.
+// srcKeyframe is the source frame's keyframe flag (for the pipeline encoder).
+// wireData/isKeyframe/sps/pps may be re-encoded (8-bit) for browser compatibility.
 // Returns true if context was cancelled.
 func (p *Player) outputFrame(
 	ctx context.Context,
-	frameData []byte, fw, fh int,
+	frameData []byte, fw, fh int, srcKeyframe bool,
+	wireData []byte, isKeyframe bool, sps, pps []byte,
 	outputPTS *int64,
 	ptsPerFrame int64,
 	frameDuration time.Duration,
@@ -407,9 +506,14 @@ func (p *Player) outputFrame(
 	default:
 	}
 
-	// Output decoded YUV video.
-	if p.config.RawVideoOutput != nil {
-		p.config.RawVideoOutput(frameData, fw, fh, *outputPTS)
+	// Output decoded YUV video to switcher pipeline (only when decode succeeded).
+	if frameData != nil && p.config.RawVideoOutput != nil {
+		p.config.RawVideoOutput(frameData, fw, fh, *outputPTS, srcKeyframe)
+	}
+
+	// Forward H.264 wire data to browser relay (re-encoded or original).
+	if p.config.VideoOutput != nil {
+		p.config.VideoOutput(wireData, *outputPTS, isKeyframe, sps, pps)
 	}
 
 	// Pace using absolute time to prevent drift from callback overhead.
@@ -463,9 +567,14 @@ func (p *Player) holdLoop(ctx context.Context, outputPTS *int64) {
 	holdData := p.holdFrame
 	holdW := p.holdW
 	holdH := p.holdH
+	// Use last keyframe for browser relay (decoder needs IDR to start).
+	holdKeyWire := p.holdKeyWireData
+	holdKeySPS := p.holdKeySPS
+	holdKeyPPS := p.holdKeyPPS
 	p.holdMu.Unlock()
 
-	if holdData == nil || p.config.RawVideoOutput == nil {
+	// Nothing to output.
+	if holdData == nil && holdKeyWire == nil {
 		return
 	}
 
@@ -477,18 +586,83 @@ func (p *Player) holdLoop(ctx context.Context, outputPTS *int64) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.config.RawVideoOutput(holdData, holdW, holdH, *outputPTS)
+			if holdData != nil && p.config.RawVideoOutput != nil {
+				p.config.RawVideoOutput(holdData, holdW, holdH, *outputPTS, true)
+			}
+			// Send last keyframe wire data so late-joining browsers can decode.
+			if holdKeyWire != nil && p.config.VideoOutput != nil {
+				p.config.VideoOutput(holdKeyWire, *outputPTS, true, holdKeySPS, holdKeyPPS)
+			}
 			*outputPTS += 90000 // 1 second in 90kHz PTS
 		}
 	}
 }
 
+// reencodeForBrowser re-encodes a decoded YUV frame to 8-bit H.264 for
+// browser relay output. Creates the encoder lazily on first call.
+// Returns nil wireData if no encoder factory is set or encoding fails.
+func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe bool) (wireData []byte, isKF bool, sps, pps []byte) {
+	if p.config.EncoderFactory == nil {
+		return nil, false, nil, nil
+	}
+
+	// Lazy-create encoder on first decoded frame.
+	if p.encoder == nil {
+		fps := int(math.Round(p.sourceFPS))
+		if fps <= 0 {
+			fps = 30
+		}
+		enc, err := p.config.EncoderFactory(w, h, fps)
+		if err != nil {
+			slog.Warn("clip: failed to create browser encoder", "error", err, "w", w, "h", h)
+			return nil, false, nil, nil
+		}
+		p.encoder = enc
+	}
+
+	encoded, encKF, err := p.encoder.Encode(yuv, pts, isKeyframe)
+	if err != nil || len(encoded) == 0 {
+		return nil, false, nil, nil
+	}
+
+	// FFmpeg encoder returns Annex B — convert to AVC1 for the relay.
+	avc1 := codec.AnnexBToAVC1(encoded)
+
+	// Extract SPS/PPS from keyframes for relay VideoInfo.
+	if encKF {
+		for _, nalu := range codec.ExtractNALUs(avc1) {
+			if len(nalu) == 0 {
+				continue
+			}
+			switch nalu[0] & 0x1F {
+			case 7: // SPS
+				sps = append([]byte(nil), nalu...)
+			case 8: // PPS
+				pps = append([]byte(nil), nalu...)
+			}
+		}
+	}
+
+	return avc1, encKF, sps, pps
+}
+
 // estimateFPSFromClipFrames estimates FPS from buffered frame PTS values.
+// Frames may be in decode order (not PTS order) due to B-frames, so we
+// find the actual min/max PTS rather than assuming first/last ordering.
 func estimateFPSFromClipFrames(clip []bufferedFrame) float64 {
 	if len(clip) < 2 {
 		return 30.0
 	}
-	ptsSpan := clip[len(clip)-1].pts - clip[0].pts
+	minPTS, maxPTS := clip[0].pts, clip[0].pts
+	for _, f := range clip[1:] {
+		if f.pts < minPTS {
+			minPTS = f.pts
+		}
+		if f.pts > maxPTS {
+			maxPTS = f.pts
+		}
+	}
+	ptsSpan := maxPTS - minPTS
 	if ptsSpan <= 0 {
 		return 30.0
 	}

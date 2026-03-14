@@ -67,10 +67,11 @@ func demuxMP4(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 		}
 	}
 
-	// Sort by PTS.
-	sort.Slice(videoFrames, func(i, j int) bool {
-		return videoFrames[i].pts < videoFrames[j].pts
-	})
+	// Video frames are kept in sample table order (decode order) because the
+	// H.264 decoder needs reference frames before B-frames that depend on them.
+	// Sorting by PTS would reorder to display order, breaking B-frame decoding.
+
+	// Audio frames have no B-frame reordering — sort by PTS for proper playback.
 	sort.Slice(audioFrames, func(i, j int) bool {
 		return audioFrames[i].pts < audioFrames[j].pts
 	})

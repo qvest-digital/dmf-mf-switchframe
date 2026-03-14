@@ -23,7 +23,8 @@ type Manager struct {
 	// Callbacks set by app wiring.
 	onPlayerStart  func(playerID int, key string)
 	onPlayerStop   func(playerID int, key string)
-	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64)
+	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
+	videoOutput    func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 	audioOutput    func(key string, data []byte, pts int64, sampleRate, channels int)
 }
 
@@ -34,6 +35,9 @@ type ManagerConfig struct {
 	// DecoderFactory creates an H.264 decoder for each clip player.
 	// If nil, wireData is passed through without decoding (for testing).
 	DecoderFactory func() (VideoDecoder, error)
+	// EncoderFactory creates an H.264 encoder for re-encoding decoded frames
+	// to browser-compatible 8-bit H.264. If nil, original wire data is forwarded.
+	EncoderFactory func(w, h, fps int) (VideoEncoder, error)
 }
 
 // playerSlot holds the state of a single clip player slot.
@@ -133,7 +137,31 @@ func (m *Manager) Load(playerID int, clipID string) error {
 		audio:    audio,
 	}
 
-	m.log.Info("clip loaded", "player", playerID, "clipID", clipID, "clipName", c.Name, "frames", len(frames))
+	// Count keyframes and check for SPS/PPS presence.
+	keyframes := 0
+	firstKeyIdx := -1
+	hasSPS := false
+	for i, f := range frames {
+		if f.isKeyframe {
+			keyframes++
+			if firstKeyIdx < 0 {
+				firstKeyIdx = i
+				hasSPS = len(f.sps) > 0
+			}
+		}
+	}
+	m.log.Info("clip loaded",
+		"player", playerID,
+		"clipID", clipID,
+		"clipName", c.Name,
+		"frames", len(frames),
+		"keyframes", keyframes,
+		"firstKeyframeIdx", firstKeyIdx,
+		"hasSPS", hasSPS,
+		"audioFrames", len(audio),
+		"width", c.Width,
+		"height", c.Height,
+	)
 	m.mu.Unlock()
 	m.notifyStateChange()
 	return nil
@@ -227,6 +255,7 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	startCb := m.onPlayerStart
 	// Capture output callbacks once under lock — avoids per-frame mutex in hot path.
 	rawVideoFn := m.rawVideoOutput
+	videoFn := m.videoOutput
 	audioFn := m.audioOutput
 	key := playerKey(playerID)
 
@@ -246,17 +275,23 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := NewPlayer(PlayerConfig{
-		Clip:       slot.frames,
-		AudioClip:  slot.audio,
-		Speed:      speed,
-		Loop:       loop,
-		InitialPTS: initialPTS,
-		Width:      slot.clip.Width,
-		Height:     slot.clip.Height,
-		DecodeFrame: decodeFrame,
-		RawVideoOutput: func(yuv []byte, w, h int, pts int64) {
+		Clip:           slot.frames,
+		AudioClip:      slot.audio,
+		Speed:          speed,
+		Loop:           loop,
+		InitialPTS:     initialPTS,
+		Width:          slot.clip.Width,
+		Height:         slot.clip.Height,
+		DecodeFrame:    decodeFrame,
+		EncoderFactory: m.config.EncoderFactory,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			if rawVideoFn != nil {
-				rawVideoFn(key, yuv, w, h, pts)
+				rawVideoFn(key, yuv, w, h, pts, isKeyframe)
+			}
+		},
+		VideoOutput: func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
+			if videoFn != nil {
+				videoFn(key, wireData, pts, isKeyframe, sps, pps)
 			}
 		},
 		AudioOutput: func(data []byte, pts int64, sampleRate, channels int) {
@@ -265,20 +300,17 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 			}
 		},
 		OnDone: func() {
+			// Playback finished — clean up decoder (not needed for hold loop)
+			// but keep player/cancel alive so Stop/Eject can cancel holdLoop.
+			// Do NOT call onPlayerStop: the source stays registered during hold.
 			m.mu.Lock()
 			if s := m.players[idx]; s != nil {
 				if s.decoderCloser != nil {
 					s.decoderCloser()
 					s.decoderCloser = nil
 				}
-				s.player = nil
-				s.cancel = nil
 			}
-			stopCb := m.onPlayerStop
 			m.mu.Unlock()
-			if stopCb != nil {
-				stopCb(playerID, playerKey(playerID))
-			}
 			m.notifyStateChange()
 		},
 	})
@@ -289,16 +321,16 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	slot.speed = speed
 	slot.loop = loop
 
-	p.Start(ctx)
-
 	m.log.Info("clip playback started", "player", playerID, "speed", speed, "loop", loop)
 	m.mu.Unlock()
 
-	// Call start callback outside lock.
+	// Register source BEFORE starting player to prevent race where the
+	// player outputs frames before the source is registered.
 	if startCb != nil {
 		startCb(playerID, playerKey(playerID))
 	}
 
+	p.Start(ctx)
 	m.notifyStateChange()
 	return nil
 }
@@ -519,11 +551,20 @@ func (m *Manager) OnPlayerLifecycle(onStart func(int, string), onStop func(int, 
 }
 
 // SetRawVideoOutput registers a callback for raw YUV frame output from clip players.
-// The callback receives the player source key and frame data.
-func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pts int64)) {
+// The callback receives the player source key, frame data, and keyframe flag.
+func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
+}
+
+// SetVideoOutput registers a callback for forwarding original H.264 wire data
+// from clip players to browser MoQ relays. The callback receives the player
+// source key, AVC1 wire data, PTS, keyframe flag, and SPS/PPS (on keyframes).
+func (m *Manager) SetVideoOutput(fn func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoOutput = fn
 }
 
 // SetAudioOutput registers a callback for audio frame output from clip players.
