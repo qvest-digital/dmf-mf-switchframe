@@ -279,6 +279,19 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return true;
 	}
 
+	/**
+	 * Extract H.264 codec string from avcC configuration record (ISO 14496-15).
+	 * Returns "avc1.PPCCLL" where PP=profile_idc, CC=constraint_flags, LL=level_idc.
+	 * These bytes are at avcC[1..3], matching SPS[1..3].
+	 */
+	function codecStringFromAvcC(avcC: Uint8Array): string | null {
+		if (avcC.length < 4) return null;
+		const p = avcC[1].toString(16).padStart(2, '0');
+		const c = avcC[2].toString(16).padStart(2, '0');
+		const l = avcC[3].toString(16).padStart(2, '0');
+		return `avc1.${p}${c}${l}`;
+	}
+
 	function feedVideoFrame(
 		sourceKey: string,
 		data: Uint8Array,
@@ -312,16 +325,25 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// entire parent ArrayBuffer which contains other extension data.
 		// We need TWO copies: one to transfer to the worker (gets detached),
 		// and one to retain for change detection on subsequent keyframes.
+		//
+		// Codec string and dimensions are derived from the avcC bytes when
+		// available, rather than relying on the cached MoQ catalog values.
+		// The catalog is only received once per connection; subsequent
+		// SetVideoInfo calls on the server update the relay but don't push
+		// a new catalog to existing subscribers. Without this, transitions
+		// between sources of different resolutions/profiles (e.g., clip →
+		// live) would reconfigure the decoder with a stale codec string,
+		// causing WebCodecs to silently drop frames.
 		if (description && !source.configured) {
-			const codec = source.videoCodec || 'avc1.64001f';
+			const codec = codecStringFromAvcC(description) || source.videoCodec || 'avc1.64001f';
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
 			source.lastDescription = description.slice(); // retained copy
 			source.videoDecoder.configure(codec, width, height, description.slice().buffer as ArrayBuffer);
 			source.configured = true;
 		} else if (description && source.configured && !descriptionEqual(source.lastDescription, description)) {
-			// Reconfigure only when description actually changes (resolution/codec switch)
-			const codec = source.videoCodec || 'avc1.64001f';
+			// Reconfigure: derive codec string from the NEW avcC, not stale catalog.
+			const codec = codecStringFromAvcC(description) || source.videoCodec || 'avc1.64001f';
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
 			source.lastDescription = description.slice(); // retained copy

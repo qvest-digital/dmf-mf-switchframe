@@ -36,7 +36,7 @@ Every source is continuously decoded to raw YUV420. Cuts are instant. All video 
 
 **Graphics & Keying** — 8-layer downstream key compositor with fade, fly-in/out, slide, and pulse animations. 6 built-in broadcast templates. Per-source upstream chroma and luma keying. PIP, side-by-side, and quad layouts with slot transitions and live drag positioning via WebTransport datagrams.
 
-**Instant Replay** — Per-source circular buffers (configurable up to 5 minutes), mark-in/out, variable-speed playback down to 0.25x. Pitch-preserved audio via phase vocoder. Frame interpolation options including motion-compensated.
+**Instant Replay** — Per-source circular buffers (configurable up to 5 minutes), mark-in/out, variable-speed playback down to 0.25x. Pitch-preserved audio via phase vocoder. Frame interpolation: duplication, alpha blend, motion-compensated (MCFI), or 3:2 pulldown (default).
 
 **Output** — MPEG-TS recording with time and size rotation. Multi-destination SRT, push and pull. CEA-608 closed captions. Per-destination SCTE-35 ad insertion with signal conditioning rules engine. SCTE-104 automation on MXL data flows.
 
