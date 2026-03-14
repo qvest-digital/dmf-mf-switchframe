@@ -31,7 +31,7 @@ func createTestH264File(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Encode enough frames to get output (hardware encoders may buffer).
 	for i := range 30 {

@@ -28,7 +28,7 @@ func createTestTSInputFile(t *testing.T, dir string, width, height, numFrames in
 	path := filepath.Join(dir, "input.h264")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	written := 0
 	for i := range numFrames {
