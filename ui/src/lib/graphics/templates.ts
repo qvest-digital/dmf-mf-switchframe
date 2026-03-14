@@ -173,26 +173,75 @@ export const tickerTemplate: GraphicsTemplate = {
 	id: 'ticker',
 	name: 'Ticker',
 	fields: [
+		{ key: 'label', label: 'Label', defaultValue: 'BREAKING', maxLength: 12 },
 		{ key: 'text', label: 'Ticker Text', defaultValue: 'Breaking News: Welcome to Switchframe', maxLength: 200 },
 	],
 	render(ctx, width, height, values) {
-		const barHeight = Math.round(height * 0.06);
+		ctx.save();
+
+		const barHeight = Math.round(height * 0.065);
 		const barY = height - barHeight;
 
-		// Background bar
-		ctx.fillStyle = 'rgba(20, 20, 60, 0.90)';
+		// Dark background bar
+		const barGrad = ctx.createLinearGradient(0, barY, 0, barY + barHeight);
+		barGrad.addColorStop(0, 'rgba(10, 10, 25, 0.94)');
+		barGrad.addColorStop(1, 'rgba(5, 5, 18, 0.96)');
+		ctx.fillStyle = barGrad;
 		ctx.fillRect(0, barY, width, barHeight);
 
-		// Top border
-		ctx.fillStyle = 'rgba(59, 130, 246, 1.0)';
+		// Neon-like blue glow top edge
+		ctx.shadowColor = 'rgba(59, 130, 246, 0.8)';
+		ctx.shadowBlur = 8;
+		ctx.shadowOffsetY = 0;
+		ctx.fillStyle = '#3b82f6';
 		ctx.fillRect(0, barY, width, 2);
+		ctx.shadowBlur = 0;
+
+		// Label pill (e.g., "BREAKING" / "LIVE")
+		const label = values.label || '';
+		let textStartX = Math.round(width * 0.015);
+		if (label) {
+			const pillFontSize = Math.round(barHeight * 0.42);
+			ctx.font = `800 ${pillFontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+			const pillTextW = ctx.measureText(label).width;
+			const pillPadH = Math.round(barHeight * 0.15);
+			const pillPadW = Math.round(pillFontSize * 0.5);
+			const pillH = Math.round(barHeight * 0.6);
+			const pillY = barY + (barHeight - pillH) / 2;
+			const pillX = textStartX;
+			const pillW = pillTextW + pillPadW * 2;
+			const pillR = Math.round(pillH * 0.25);
+
+			// Pill background
+			const pillGrad = ctx.createLinearGradient(pillX, pillY, pillX, pillY + pillH);
+			pillGrad.addColorStop(0, '#2563eb');
+			pillGrad.addColorStop(1, '#1d4ed8');
+			ctx.beginPath();
+			ctx.roundRect(pillX, pillY, pillW, pillH, pillR);
+			ctx.fillStyle = pillGrad;
+			ctx.fill();
+
+			// Pill text
+			ctx.fillStyle = '#ffffff';
+			ctx.textBaseline = 'middle';
+			ctx.fillText(label, pillX + pillPadW, barY + barHeight / 2);
+
+			// Vertical divider after pill
+			const divX = pillX + pillW + Math.round(width * 0.008);
+			ctx.fillStyle = 'rgba(59, 130, 246, 0.5)';
+			ctx.fillRect(divX, barY + Math.round(barHeight * 0.2), 1, Math.round(barHeight * 0.6));
+
+			textStartX = divX + Math.round(width * 0.008);
+		}
 
 		// Ticker text
-		const fontSize = Math.round(barHeight * 0.55);
-		ctx.font = `${fontSize}px -apple-system, "Segoe UI", sans-serif`;
-		ctx.fillStyle = '#ffffff';
+		const fontSize = Math.round(barHeight * 0.48);
+		ctx.font = `500 ${fontSize}px "Segoe UI", "Helvetica Neue", Arial, sans-serif`;
+		ctx.fillStyle = '#e2e8f0';
 		ctx.textBaseline = 'middle';
-		ctx.fillText(values.text || '', Math.round(width * 0.02), barY + barHeight / 2);
+		ctx.fillText(values.text || '', textStartX, barY + barHeight / 2);
+
+		ctx.restore();
 	},
 };
 
