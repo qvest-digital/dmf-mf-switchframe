@@ -54,8 +54,9 @@ type CBRPacer struct {
 
 	adapters atomic.Pointer[[]Adapter]
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	stopOnce sync.Once
 
 	// Pre-allocated null slab (one tick's worth of null packets).
 	nullSlab []byte
@@ -130,9 +131,9 @@ func (p *CBRPacer) Start() {
 }
 
 // Stop signals the tick loop to exit, drains remaining data, and waits
-// for the goroutine to finish.
+// for the goroutine to finish. Safe to call multiple times.
 func (p *CBRPacer) Stop() {
-	close(p.stopCh)
+	p.stopOnce.Do(func() { close(p.stopCh) })
 	<-p.doneCh
 }
 

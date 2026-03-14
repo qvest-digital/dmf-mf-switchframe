@@ -78,6 +78,7 @@ type Store struct {
 	dir      string
 	mu       sync.RWMutex
 	clips    map[string]*Clip
+	pending  map[string]struct{} // slots reserved by in-progress uploads
 	maxClips int
 }
 
@@ -199,20 +200,38 @@ func (s *Store) Upload(name string, zipData []byte) error {
 		return fmt.Errorf("%w: %s", ErrInvalidName, name)
 	}
 
+	// Reserve a pending slot under lock to prevent TOCTOU races where
+	// concurrent uploads could exceed maxClips.
 	s.mu.Lock()
 	if _, exists := s.clips[name]; exists {
 		s.mu.Unlock()
 		return ErrAlreadyExists
 	}
-	if len(s.clips) >= s.maxClips {
+	if _, pendingExists := s.pending[name]; pendingExists {
+		s.mu.Unlock()
+		return ErrAlreadyExists
+	}
+	if len(s.clips)+len(s.pending) >= s.maxClips {
 		s.mu.Unlock()
 		return ErrMaxClipsReached
 	}
+	if s.pending == nil {
+		s.pending = make(map[string]struct{})
+	}
+	s.pending[name] = struct{}{}
 	s.mu.Unlock()
+
+	// From here, all error paths must clean up the pending reservation.
+	cleanupPending := func() {
+		s.mu.Lock()
+		delete(s.pending, name)
+		s.mu.Unlock()
+	}
 
 	// Create the directory
 	dir := filepath.Join(s.dir, name)
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		cleanupPending()
 		return fmt.Errorf("create stinger dir: %w", err)
 	}
 
@@ -220,6 +239,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		_ = os.RemoveAll(dir) // clean up on failure
+		cleanupPending()
 		return fmt.Errorf("open zip: %w", err)
 	}
 
@@ -243,6 +263,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 		rc, err := f.Open()
 		if err != nil {
 			_ = os.RemoveAll(dir)
+			cleanupPending()
 			return fmt.Errorf("open zip entry %s: %w", f.Name, err)
 		}
 
@@ -251,6 +272,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 		if err != nil {
 			_ = rc.Close()
 			_ = os.RemoveAll(dir)
+			cleanupPending()
 			return fmt.Errorf("create file %s: %w", baseName, err)
 		}
 
@@ -259,6 +281,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 		_ = outFile.Close()
 		if err != nil {
 			_ = os.RemoveAll(dir)
+			cleanupPending()
 			return fmt.Errorf("write file %s: %w", baseName, err)
 		}
 
@@ -272,6 +295,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 
 	if pngCount == 0 {
 		_ = os.RemoveAll(dir)
+		cleanupPending()
 		return fmt.Errorf("zip contains no PNG files")
 	}
 
@@ -279,10 +303,12 @@ func (s *Store) Upload(name string, zipData []byte) error {
 	clip, err := s.loadClip(name)
 	if err != nil {
 		_ = os.RemoveAll(dir)
+		cleanupPending()
 		return fmt.Errorf("load clip: %w", err)
 	}
 
 	s.mu.Lock()
+	delete(s.pending, name)
 	s.clips[name] = clip
 	s.mu.Unlock()
 

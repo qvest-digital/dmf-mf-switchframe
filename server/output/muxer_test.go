@@ -1,8 +1,12 @@
 package output
 
 import (
+	"context"
+	"io"
+	"reflect"
 	"testing"
 
+	astits "github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -970,6 +974,21 @@ func TestTSMuxer_PATRepeatedOnKeyframe(t *testing.T) {
 	// can parse the stream before receiving video.
 	require.Greater(t, firstVideoOffset, firstPATOffset,
 		"PAT should appear before video data in keyframe output")
+}
+
+func TestMuxer_PMTFieldExists(t *testing.T) {
+	// Guard against go-astits internal changes. setProgramDescriptors uses
+	// reflect + unsafe to access unexported pmt field. If the field is
+	// renamed or removed, this test fails early with a clear message
+	// instead of a silent runtime panic.
+	m := astits.NewMuxer(context.Background(), io.Discard)
+	v := reflect.ValueOf(m).Elem()
+	pmt := v.FieldByName("pmt")
+	require.True(t, pmt.IsValid(),
+		"go-astits unexported 'pmt' field missing — update setProgramDescriptors")
+	pd := pmt.FieldByName("ProgramDescriptors")
+	require.True(t, pd.IsValid(),
+		"go-astits ProgramDescriptors field missing — update setProgramDescriptors")
 }
 
 func TestTSMuxer_DeltaFrameNoPATPMT(t *testing.T) {

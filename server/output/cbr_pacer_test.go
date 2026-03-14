@@ -426,6 +426,30 @@ func testutil_readCounter(c prometheus.Counter) float64 {
 	return 0
 }
 
+func TestCBRPacer_StopDoubleClose(t *testing.T) {
+	// Regression test: calling Stop() twice must not panic.
+	const muxrateBps = 1_000_000
+
+	sink := &mockSink{
+		writeFn: func(data []byte) (int, error) { return len(data), nil },
+	}
+
+	p := NewCBRPacer(muxrateBps, 10*time.Millisecond)
+	adapters := []Adapter{sink}
+	p.SetAdapters(&adapters)
+	p.Start()
+
+	time.Sleep(30 * time.Millisecond)
+
+	// First stop — should work normally.
+	p.Stop()
+
+	// Second stop — must not panic (double close(stopCh) would panic).
+	require.NotPanics(t, func() {
+		p.Stop()
+	}, "Stop() called twice must not panic")
+}
+
 // mockSink implements Adapter for testing.
 type mockSink struct {
 	writeFn func([]byte) (int, error)

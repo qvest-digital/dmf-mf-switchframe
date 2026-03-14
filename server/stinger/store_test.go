@@ -334,6 +334,83 @@ func TestStingerStore_MaxClipsLimitUpload(t *testing.T) {
 	require.Equal(t, 2, len(store.List()))
 }
 
+func TestStingerStore_UploadConcurrentTOCTOU(t *testing.T) {
+	// Regression test: concurrent uploads must not exceed maxClips.
+	// Before the pending-set fix, two concurrent Upload calls could both
+	// pass the len(clips) < maxClips check and both succeed.
+	dir := t.TempDir()
+	store, err := NewStore(dir, 2) // limit to 2 clips
+	require.NoError(t, err)
+
+	zipData := createTestZip(t, 2, 2, 1) // 1 frame, small
+
+	// Fill one slot so only 1 remains.
+	require.NoError(t, store.Upload("existing", zipData))
+
+	// Launch 10 concurrent uploads competing for the last slot.
+	const concurrent = 10
+	errs := make(chan error, concurrent)
+	for i := 0; i < concurrent; i++ {
+		i := i
+		go func() {
+			errs <- store.Upload(fmt.Sprintf("race-%d", i), zipData)
+		}()
+	}
+
+	successes := 0
+	maxClipsErrors := 0
+	for i := 0; i < concurrent; i++ {
+		err := <-errs
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrMaxClipsReached) {
+			maxClipsErrors++
+		}
+	}
+
+	// Exactly 1 should succeed (filling the last slot), the rest must fail.
+	require.Equal(t, 1, successes,
+		"exactly one concurrent upload should succeed; got %d successes", successes)
+	require.Equal(t, concurrent-1, maxClipsErrors,
+		"remaining uploads should return ErrMaxClipsReached")
+	require.Equal(t, 2, len(store.List()), "store should have exactly 2 clips")
+}
+
+func TestStingerStore_UploadPendingBlocksDuplicateName(t *testing.T) {
+	// Two concurrent uploads with the same name: the second must get
+	// ErrAlreadyExists even if the first hasn't finished yet.
+	dir := t.TempDir()
+	store, err := NewStore(dir, 16)
+	require.NoError(t, err)
+
+	zipData := createTestZip(t, 2, 2, 1)
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			errs <- store.Upload("same-name", zipData)
+		}()
+	}
+
+	var results []error
+	for i := 0; i < 2; i++ {
+		results = append(results, <-errs)
+	}
+
+	successes := 0
+	alreadyExists := 0
+	for _, e := range results {
+		if e == nil {
+			successes++
+		} else if errors.Is(e, ErrAlreadyExists) {
+			alreadyExists++
+		}
+	}
+
+	require.Equal(t, 1, successes, "exactly one upload should succeed")
+	require.Equal(t, 1, alreadyExists, "second upload should get ErrAlreadyExists")
+}
+
 func TestStingerStore_DefaultMaxClips(t *testing.T) {
 	dir := t.TempDir()
 	// maxClips <= 0 should default to 16
