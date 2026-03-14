@@ -1036,12 +1036,6 @@ func (a *App) Run(ctx context.Context) error {
 			make([]byte, packSize),
 		}
 		packIdx := 0
-		// Reusable VideoFrame to avoid per-frame allocation.
-		monitorFrame := &media.VideoFrame{
-			IsKeyframe: true,
-			Codec:      "raw/yuv420",
-		}
-
 		a.sw.SetRawMonitorSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
 			yuv := frame.YUV
 			w, h := frame.Width, frame.Height
@@ -1066,9 +1060,15 @@ func (a *App) Run(ctx context.Context) error {
 			packed[7] = byte(h)
 			copy(packed[8:], yuv)
 
-			monitorFrame.PTS = frame.PTS
-			monitorFrame.DTS = frame.DTS
-			monitorFrame.WireData = packed
+			// Allocate frame per-call so async viewers don't see stale PTS/DTS.
+			// The struct is small (5 fields); triple-buffered WireData handles byte data.
+			monitorFrame := &media.VideoFrame{
+				PTS:        frame.PTS,
+				DTS:        frame.DTS,
+				IsKeyframe: true,
+				Codec:      "raw/yuv420",
+				WireData:   packed,
+			}
 			a.rawProgramRelay.BroadcastVideoNoCache(monitorFrame)
 		}))
 
@@ -1092,10 +1092,6 @@ func (a *App) Run(ctx context.Context) error {
 				make([]byte, packSize),
 			}
 			replayPackIdx := 0
-			replayFrame := &media.VideoFrame{
-				IsKeyframe: true,
-				Codec:      "raw/yuv420",
-			}
 
 			a.replayMgr.SetRawMonitorOutput(func(yuv []byte, w, h int, pts int64) {
 				packed := replayPackBufs[replayPackIdx]
@@ -1110,9 +1106,13 @@ func (a *App) Run(ctx context.Context) error {
 				packed[7] = byte(h)
 				copy(packed[8:], yuv)
 
-				replayFrame.PTS = pts
-				replayFrame.DTS = pts
-				replayFrame.WireData = packed
+				replayFrame := &media.VideoFrame{
+					PTS:        pts,
+					DTS:        pts,
+					IsKeyframe: true,
+					Codec:      "raw/yuv420",
+					WireData:   packed,
+				}
 				rawReplayRelay.BroadcastVideoNoCache(replayFrame)
 			})
 
