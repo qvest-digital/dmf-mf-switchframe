@@ -95,7 +95,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	}
 	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
-		slog.Debug("confidence monitor: decode error", "err", err)
+		slog.Warn("confidence monitor: decode error", "err", err)
 		return
 	}
 
