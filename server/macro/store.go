@@ -98,19 +98,27 @@ func (s *Store) Save(m Macro) error {
 	defer s.mu.Unlock()
 
 	// Replace existing macro with same name, or append.
-	found := false
+	var previous Macro
+	replaceIdx := -1
 	for i := range s.macros {
 		if s.macros[i].Name == m.Name {
+			previous = s.macros[i]
+			replaceIdx = i
 			s.macros[i] = m
-			found = true
 			break
 		}
 	}
-	if !found {
+	if replaceIdx == -1 {
 		s.macros = append(s.macros, m)
 	}
 
 	if err := s.save(); err != nil {
+		// Roll back: restore previous state.
+		if replaceIdx >= 0 {
+			s.macros[replaceIdx] = previous
+		} else {
+			s.macros = s.macros[:len(s.macros)-1]
+		}
 		return fmt.Errorf("save macros: %w", err)
 	}
 	return nil
@@ -123,8 +131,14 @@ func (s *Store) Delete(name string) error {
 
 	for i, m := range s.macros {
 		if m.Name == name {
+			removed := s.macros[i]
 			s.macros = append(s.macros[:i], s.macros[i+1:]...)
 			if err := s.save(); err != nil {
+				// Roll back: re-insert at original position.
+				rear := make([]Macro, len(s.macros[i:]))
+				copy(rear, s.macros[i:])
+				s.macros = append(s.macros[:i], removed)
+				s.macros = append(s.macros, rear...)
 				return fmt.Errorf("save macros: %w", err)
 			}
 			return nil

@@ -160,6 +160,92 @@ func TestStore_FileCreatesDirectory(t *testing.T) {
 	require.False(t, os.IsNotExist(err), "expected operators.json to be created")
 }
 
+func TestStore_Register_RollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	// Register one operator successfully first.
+	alice, err := s.Register("Alice", RoleDirector)
+	require.NoError(t, err)
+
+	// Make the directory read-only so save() will fail on CreateTemp.
+	dir := filepath.Dir(path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	// Remove the existing file so the next save cannot even use it.
+	_ = os.Remove(path)
+
+	_, err = s.Register("Bob", RoleAudio)
+	require.Error(t, err, "expected save failure")
+
+	// In-memory state should be rolled back: only Alice should remain.
+	require.Len(t, s.List(), 1)
+	require.Equal(t, "Alice", s.List()[0].Name)
+
+	// Token index should still work for Alice.
+	got, err := s.GetByToken(alice.Token)
+	require.NoError(t, err)
+	require.Equal(t, alice.ID, got.ID)
+
+	// Bob's registration should have been fully undone —
+	// a subsequent Register("Bob") should succeed after restoring permissions.
+	require.NoError(t, os.Chmod(dir, 0o755))
+	bob, err := s.Register("Bob", RoleAudio)
+	require.NoError(t, err)
+	require.Equal(t, "Bob", bob.Name)
+	require.Len(t, s.List(), 2)
+}
+
+func TestStore_Delete_RollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	// Register three operators.
+	alice, err := s.Register("Alice", RoleDirector)
+	require.NoError(t, err)
+	bob, err := s.Register("Bob", RoleAudio)
+	require.NoError(t, err)
+	carol, err := s.Register("Carol", RoleGraphics)
+	require.NoError(t, err)
+
+	// Make the directory read-only so save() will fail.
+	dir := filepath.Dir(path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	_ = os.Remove(path)
+
+	// Try to delete Bob — should fail.
+	err = s.Delete(bob.ID)
+	require.Error(t, err, "expected save failure")
+
+	// In-memory state should be rolled back: all three operators remain.
+	require.Len(t, s.List(), 3)
+
+	// Token lookups should all still work.
+	gotAlice, err := s.GetByToken(alice.Token)
+	require.NoError(t, err)
+	require.Equal(t, alice.ID, gotAlice.ID)
+
+	gotBob, err := s.GetByToken(bob.Token)
+	require.NoError(t, err)
+	require.Equal(t, bob.ID, gotBob.ID)
+
+	gotCarol, err := s.GetByToken(carol.Token)
+	require.NoError(t, err)
+	require.Equal(t, carol.ID, gotCarol.ID)
+
+	// Order should be preserved: Alice, Bob, Carol.
+	list := s.List()
+	require.Equal(t, "Alice", list[0].Name)
+	require.Equal(t, "Bob", list[1].Name)
+	require.Equal(t, "Carol", list[2].Name)
+}
+
 func TestStore_GetByToken_AfterDelete(t *testing.T) {
 	t.Parallel()
 	s, _ := NewStore(tempStorePath(t))

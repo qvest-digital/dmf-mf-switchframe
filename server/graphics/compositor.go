@@ -120,9 +120,6 @@ type Compositor struct {
 
 	closed bool
 
-	// Reusable scratch buffer for AlphaBlendRGBARectInto (avoids per-frame allocation).
-	blendScratch []byte
-
 	// Callback invoked on state change.
 	// Receives a snapshot of the current state so callers don't need
 	// to call Status() (which would deadlock under the compositor's lock).
@@ -552,7 +549,11 @@ func (c *Compositor) Close() {
 // Layers are composited sequentially in z-order (lowest first). Each layer's
 // blend modifies the buffer before the next layer reads it, producing correct
 // layered compositing. All blending runs single-threaded under RLock.
-func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
+//
+// blendScratch is an optional caller-owned scratch buffer for sub-frame blending.
+// If non-nil, it will be reused across calls to avoid per-frame allocation.
+// Ownership of the scratch buffer stays with the caller (typically the pipeline node).
+func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]byte) []byte {
 	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
 		return yuv
 	}
@@ -579,9 +580,16 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int) []byte {
 			if (rect == image.Rectangle{}) {
 				rect = fullFrame
 			}
-			c.blendScratch = AlphaBlendRGBARectInto(yuv, layer.overlay, width, height,
+			var scratch []byte
+			if blendScratch != nil {
+				scratch = *blendScratch
+			}
+			scratch = AlphaBlendRGBARectInto(yuv, layer.overlay, width, height,
 				layer.overlayWidth, layer.overlayHeight,
-				rect, layer.fadePosition, c.blendScratch)
+				rect, layer.fadePosition, scratch)
+			if blendScratch != nil {
+				*blendScratch = scratch
+			}
 		}
 	}
 	return yuv

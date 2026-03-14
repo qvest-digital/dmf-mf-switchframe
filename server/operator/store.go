@@ -95,7 +95,10 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 	s.tokenIdx[op.Token] = len(s.operators) - 1
 
 	if err := s.save(); err != nil {
-		return Operator{}, err
+		// Roll back: remove the appended operator and its token index entry.
+		s.operators = s.operators[:len(s.operators)-1]
+		delete(s.tokenIdx, op.Token)
+		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
 	return op, nil
 }
@@ -143,9 +146,20 @@ func (s *Store) Delete(id string) error {
 
 	for i, op := range s.operators {
 		if op.ID == id {
+			// Save a copy for rollback before mutating.
+			removed := s.operators[i]
 			s.operators = append(s.operators[:i], s.operators[i+1:]...)
 			s.rebuildTokenIndex()
-			return s.save()
+			if err := s.save(); err != nil {
+				// Roll back: re-insert at original position and rebuild index.
+				rear := make([]Operator, len(s.operators[i:]))
+				copy(rear, s.operators[i:])
+				s.operators = append(s.operators[:i], removed)
+				s.operators = append(s.operators, rear...)
+				s.rebuildTokenIndex()
+				return fmt.Errorf("save operators: %w", err)
+			}
+			return nil
 		}
 	}
 	return ErrNotFound

@@ -9,7 +9,8 @@ import (
 var _ PipelineNode = (*compositorNode)(nil)
 
 type compositorNode struct {
-	compositor *graphics.Compositor
+	compositor   *graphics.Compositor
+	blendScratch []byte
 }
 
 func (n *compositorNode) Name() string                         { return "compositor" }
@@ -22,6 +23,6 @@ func (n *compositorNode) Latency() time.Duration { return 200 * time.Microsecond
 func (n *compositorNode) Close() error           { return nil }
 
 func (n *compositorNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
-	src.YUV = n.compositor.ProcessYUV(src.YUV, src.Width, src.Height)
+	src.YUV = n.compositor.ProcessYUV(src.YUV, src.Width, src.Height, &n.blendScratch)
 	return src
 }

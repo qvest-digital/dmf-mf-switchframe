@@ -11,7 +11,7 @@ func TestCompositorProcessYUV_Inactive(t *testing.T) {
 	yuv := make([]byte, 4*4*3/2)
 	yuv[0] = 42
 
-	result := c.ProcessYUV(yuv, 4, 4)
+	result := c.ProcessYUV(yuv, 4, 4, nil)
 	require.Equal(t, yuv, result)
 }
 
@@ -32,7 +32,7 @@ func TestCompositorProcessYUV_Active(t *testing.T) {
 
 	yuv := make([]byte, 4*4*3/2)
 
-	result := c.ProcessYUV(yuv, 4, 4)
+	result := c.ProcessYUV(yuv, 4, 4, nil)
 	require.NotEqual(t, make([]byte, 4*4*3/2), result)
 }
 
@@ -54,7 +54,7 @@ func TestCompositorProcessYUV_ResolutionMismatch(t *testing.T) {
 	origY := make([]byte, 4*4)
 	copy(origY, yuv[:4*4])
 
-	result := c.ProcessYUV(yuv, 4, 4)
+	result := c.ProcessYUV(yuv, 4, 4, nil)
 	// The sub-frame path handles resolution mismatch by scaling.
 	// With zero rect (default), it uses fullFrameRect which clips to frame bounds.
 	// The overlay has alpha=255 so pixels should be modified.
@@ -72,16 +72,16 @@ func TestCompositorProcessYUV_OddDimensions(t *testing.T) {
 	require.NoError(t, c.On(id))
 
 	yuv := []byte{1, 2, 3}
-	result := c.ProcessYUV(yuv, 3, 4)
+	result := c.ProcessYUV(yuv, 3, 4, nil)
 	require.Equal(t, yuv, result, "odd width should return input unchanged")
 
-	result = c.ProcessYUV(yuv, 4, 3)
+	result = c.ProcessYUV(yuv, 4, 3, nil)
 	require.Equal(t, yuv, result, "odd height should return input unchanged")
 
-	result = c.ProcessYUV(yuv, 0, 4)
+	result = c.ProcessYUV(yuv, 0, 4, nil)
 	require.Equal(t, yuv, result, "zero width should return input unchanged")
 
-	result = c.ProcessYUV(yuv, -2, 4)
+	result = c.ProcessYUV(yuv, -2, 4, nil)
 	require.Equal(t, yuv, result, "negative width should return input unchanged")
 }
 
@@ -108,6 +108,6 @@ func TestCompositorProcessYUV_FadePosition(t *testing.T) {
 		yuv[i] = 100
 	}
 
-	result := c.ProcessYUV(yuv, 4, 4)
+	result := c.ProcessYUV(yuv, 4, 4, nil)
 	require.Equal(t, yuv, result)
 }

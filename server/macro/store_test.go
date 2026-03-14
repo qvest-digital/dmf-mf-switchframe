@@ -155,6 +155,104 @@ func TestStore_SaveOverwrite(t *testing.T) {
 	require.Len(t, s.List(), 1)
 }
 
+func TestStore_Save_RollbackOnSaveFailure_Create(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	// Successfully save one macro first.
+	m1 := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}}
+	require.NoError(t, s.Save(m1))
+
+	// Make the directory read-only so save() will fail.
+	dir := filepath.Dir(path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	_ = os.Remove(path)
+
+	// Try to create a new macro — should fail.
+	m2 := Macro{Name: "beta", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}}
+	err = s.Save(m2)
+	require.Error(t, err, "expected save failure")
+
+	// In-memory state should be rolled back: only alpha should remain.
+	require.Len(t, s.List(), 1)
+	require.Equal(t, "alpha", s.List()[0].Name)
+
+	// The failed macro should not be findable.
+	_, err = s.Get("beta")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestStore_Save_RollbackOnSaveFailure_Update(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	// Successfully save a macro.
+	original := Macro{Name: "alpha", Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}}}
+	require.NoError(t, s.Save(original))
+
+	// Make the directory read-only so save() will fail.
+	dir := filepath.Dir(path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	_ = os.Remove(path)
+
+	// Try to update the macro — should fail.
+	updated := Macro{Name: "alpha", Steps: []Step{{Action: ActionPreview, Params: map[string]interface{}{"source": "cam2"}}}}
+	err = s.Save(updated)
+	require.Error(t, err, "expected save failure")
+
+	// In-memory state should still have the original action.
+	got, err := s.Get("alpha")
+	require.NoError(t, err)
+	require.Equal(t, ActionCut, got.Steps[0].Action)
+	require.Equal(t, "cam1", got.Steps[0].Params["source"])
+}
+
+func TestStore_Delete_RollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+	path := tempStorePath(t)
+	s, err := NewStore(path)
+	require.NoError(t, err)
+
+	// Save three macros.
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		require.NoError(t, s.Save(Macro{
+			Name:  name,
+			Steps: []Step{{Action: ActionCut, Params: map[string]interface{}{"source": "cam1"}}},
+		}))
+	}
+
+	// Make the directory read-only so save() will fail.
+	dir := filepath.Dir(path)
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	_ = os.Remove(path)
+
+	// Try to delete beta — should fail.
+	err = s.Delete("beta")
+	require.Error(t, err, "expected save failure")
+
+	// In-memory state should be rolled back: all three macros remain.
+	require.Len(t, s.List(), 3)
+
+	// Order should be preserved.
+	list := s.List()
+	require.Equal(t, "alpha", list[0].Name)
+	require.Equal(t, "beta", list[1].Name)
+	require.Equal(t, "gamma", list[2].Name)
+
+	// Each should be retrievable.
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		_, err := s.Get(name)
+		require.NoError(t, err)
+	}
+}
+
 func TestStore_NewStoreCreatesDir(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
