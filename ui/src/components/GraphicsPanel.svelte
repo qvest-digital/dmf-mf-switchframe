@@ -177,11 +177,10 @@
 		if (!tpl) return;
 		try {
 			await publisher.publish(id, tpl, getLayerFields(id));
-			await graphicsOn(id);
 			const cfg = getLayerFlyConfig(id);
-			apiCall(graphicsFlyIn(id, cfg.direction, cfg.durationMs), 'Fly in failed');
+			apiCall(graphicsFlyOn(id, cfg.direction, cfg.durationMs), 'Fly on failed');
 		} catch {
-			notify('error', 'Fly in failed');
+			notify('error', 'Fly on failed');
 		}
 	}
 
