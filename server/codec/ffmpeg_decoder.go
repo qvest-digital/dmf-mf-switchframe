@@ -542,9 +542,8 @@ func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*
 // Decode decodes Annex B encoded H.264 data into packed YUV420 planar bytes.
 // Returns the YUV buffer (Y: w*h, U: w/2*h/2, V: w/2*h/2), width, height, and any error.
 //
-// WARNING: The returned YUV byte slice aliases the decoder's internal buffer.
-// It is only valid until the next call to Decode or ReceiveFrame. Callers
-// that need the data beyond that point must copy it before the next decode.
+// The returned byte slice is an independent copy that is safe to retain
+// across subsequent Decode or ReceiveFrame calls.
 func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.closed {
 		return nil, 0, 0, errors.New("decoder is closed")
@@ -586,17 +585,22 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 }
 
 // adoptOrCopy handles the output from ffdec_decode/ffdec_receive_only.
-// If outBuf points into d.yuvBuf (the Go-provided buffer was used), it re-slices
-// d.yuvBuf to the output length. Otherwise, the C side malloc'd a buffer because
-// d.yuvBuf was too small or nil, so we copy via GoBytes and free the C buffer.
-// In both cases, d.yuvBuf is updated for the next call.
+// If outBuf points into d.yuvBuf (the Go-provided buffer was used), it deep-copies
+// the data into a new slice to prevent aliasing. Otherwise, the C side malloc'd a
+// buffer because d.yuvBuf was too small or nil, so we copy via GoBytes and free the
+// C buffer. In both cases, d.yuvBuf is updated for the next call and the returned
+// slice is always an independent copy safe for the caller to retain.
 func (d *FFmpegDecoder) adoptOrCopy(outBuf *C.uchar, outLen C.int, w, h int) ([]byte, int, int, error) {
 	n := int(outLen)
 	needed := w * h * 3 / 2
 
 	if len(d.yuvBuf) > 0 && outBuf == (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0])) {
-		// C wrote directly into our Go buffer — no copy needed.
-		return d.yuvBuf[:n], w, h, nil
+		// C wrote directly into our Go buffer — deep copy to prevent aliasing.
+		// Without this, callers holding a reference to a previous decode output
+		// see their data overwritten on the next Decode() call.
+		result := make([]byte, n)
+		copy(result, d.yuvBuf[:n])
+		return result, w, h, nil
 	}
 
 	// C malloc'd its own buffer (first call or resolution changed).
@@ -639,9 +643,8 @@ func (d *FFmpegDecoder) SendEOS() error {
 // Returns the YUV buffer, width, height, and any error.
 // Returns an error when no more frames are available (EAGAIN/EOF).
 //
-// WARNING: The returned YUV byte slice aliases the decoder's internal buffer.
-// It is only valid until the next call to Decode or ReceiveFrame. Callers
-// that need the data beyond that point must copy it before the next decode.
+// The returned byte slice is an independent copy that is safe to retain
+// across subsequent Decode or ReceiveFrame calls.
 func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	if d.closed {
 		return nil, 0, 0, errors.New("decoder is closed")

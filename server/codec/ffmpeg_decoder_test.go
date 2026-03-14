@@ -236,3 +236,96 @@ func TestFFmpegDecoderPacketReuse(t *testing.T) {
 	require.Greater(t, successCount, 10,
 		"expected many decoded frames from %d encoded frames", totalFrames)
 }
+
+func TestFFmpegDecoderBufferAliasing(t *testing.T) {
+	// Regression test: adoptOrCopy must return a deep copy, not an alias
+	// of the decoder's internal yuvBuf. If the returned slice aliases
+	// yuvBuf, decoding a second frame overwrites the first frame's data.
+	w, h := 160, 120
+
+	// Use single-threaded encoder+decoder so each Encode produces output
+	// and each Decode produces output without extra buffering.
+	enc, err := NewFFmpegEncoder("libx264", w, h, 200000, 30, 1, 2, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	dec, err := NewFFmpegDecoderWithThreads(nil, 1)
+	require.NoError(t, err)
+	defer dec.Close()
+
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	frameSize := ySize + 2*uvSize
+
+	// Build two visually distinct YUV frames.
+	yuvA := make([]byte, frameSize)
+	for i := 0; i < ySize; i++ {
+		yuvA[i] = 32 // dark Y
+	}
+	for i := ySize; i < frameSize; i++ {
+		yuvA[i] = 128
+	}
+
+	yuvB := make([]byte, frameSize)
+	for i := 0; i < ySize; i++ {
+		yuvB[i] = 220 // bright Y
+	}
+	for i := ySize; i < frameSize; i++ {
+		yuvB[i] = 128
+	}
+
+	// Encode enough frames to prime the encoder pipeline, then encode our
+	// two distinct frames as IDRs so each decode produces immediate output.
+	// Prime with frame A.
+	var encodedFrames [][]byte
+	for i := 0; i < 30; i++ {
+		encoded, _, encErr := enc.Encode(yuvA, int64(i*3000), i == 0)
+		require.NoError(t, encErr)
+		if encoded != nil {
+			encodedFrames = append(encodedFrames, append([]byte(nil), encoded...))
+		}
+	}
+	// Encode frame B as IDR.
+	encodedB, _, err := enc.Encode(yuvB, int64(30*3000), true)
+	require.NoError(t, err)
+	if encodedB != nil {
+		encodedFrames = append(encodedFrames, append([]byte(nil), encodedB...))
+	}
+
+	require.GreaterOrEqual(t, len(encodedFrames), 2,
+		"need at least 2 encoded frames for aliasing test")
+
+	// Decode all frames, keeping references to the last two decoded outputs.
+	var decodedPrev, decodedCurr []byte
+	for _, ef := range encodedFrames {
+		decoded, dw, dh, decErr := dec.Decode(ef)
+		if decErr != nil {
+			continue // buffering
+		}
+		require.Equal(t, w, dw)
+		require.Equal(t, h, dh)
+		decodedPrev = decodedCurr
+		decodedCurr = decoded
+	}
+
+	require.NotNil(t, decodedPrev, "need at least two decoded frames")
+	require.NotNil(t, decodedCurr, "need at least two decoded frames")
+
+	// The bug: if adoptOrCopy returns an alias, decodedPrev and decodedCurr
+	// point to the same underlying buffer. Both would contain the last
+	// decoded frame's data (Y≈220), making their luminance identical.
+	// With the fix, each decode returns an independent copy.
+	// Verify the two frames have different Y data (32 vs 220).
+	var sumPrev, sumCurr int64
+	for i := 0; i < ySize; i++ {
+		sumPrev += int64(decodedPrev[i])
+		sumCurr += int64(decodedCurr[i])
+	}
+	avgPrev := float64(sumPrev) / float64(ySize)
+	avgCurr := float64(sumCurr) / float64(ySize)
+
+	// The dark frame (Y=32) and bright frame (Y=220) should produce
+	// noticeably different averages even after lossy encode/decode.
+	require.Greater(t, avgCurr-avgPrev, 50.0,
+		"decoded frames should have different luminance (prev=%.1f, curr=%.1f)", avgPrev, avgCurr)
+}
