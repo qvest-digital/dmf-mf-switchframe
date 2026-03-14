@@ -19,6 +19,9 @@ describe('templates', () => {
 	});
 
 	it('each template renders without error', () => {
+		// Mock gradient object returned by createLinearGradient / createRadialGradient
+		const mockGradient = { addColorStop: vi.fn() };
+
 		// Mock CanvasRenderingContext2D
 		const mockCtx = {
 			fillStyle: '',
@@ -26,6 +29,10 @@ describe('templates', () => {
 			textBaseline: '',
 			textAlign: 'start',
 			globalAlpha: 1,
+			shadowColor: '',
+			shadowBlur: 0,
+			shadowOffsetX: 0,
+			shadowOffsetY: 0,
 			fillRect: vi.fn(),
 			fillText: vi.fn(),
 			beginPath: vi.fn(),
@@ -33,7 +40,14 @@ describe('templates', () => {
 			fill: vi.fn(),
 			save: vi.fn(),
 			restore: vi.fn(),
+			clip: vi.fn(),
+			closePath: vi.fn(),
+			moveTo: vi.fn(),
+			lineTo: vi.fn(),
+			roundRect: vi.fn(),
 			measureText: vi.fn(() => ({ width: 50 })),
+			createLinearGradient: vi.fn(() => mockGradient),
+			createRadialGradient: vi.fn(() => mockGradient),
 		} as unknown as CanvasRenderingContext2D;
 
 		for (const tpl of templateList) {
@@ -57,8 +71,8 @@ describe('templates', () => {
 		expect(builtinTemplates['network-bug'].fields).toHaveLength(1);
 	});
 
-	it('score-bug has 6 fields', () => {
-		expect(builtinTemplates['score-bug'].fields).toHaveLength(6);
+	it('score-bug has 8 fields', () => {
+		expect(builtinTemplates['score-bug'].fields).toHaveLength(8);
 	});
 
 	it('lower-third supports animation', () => {
