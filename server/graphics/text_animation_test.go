@@ -127,7 +127,7 @@ func TestTextAnimationEngine_StopNonExistent(t *testing.T) {
 	tae := NewTextAnimationEngine(c, renderer)
 
 	err := tae.Stop(999)
-	require.ErrorIs(t, err, ErrTextAnimNotFound)
+	require.NoError(t, err, "Stop on non-existent animation should be a no-op")
 }
 
 func TestTextAnimationEngine_CloseIdempotent(t *testing.T) {

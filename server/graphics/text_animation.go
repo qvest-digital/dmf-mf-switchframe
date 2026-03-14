@@ -104,12 +104,14 @@ func (tae *TextAnimationEngine) Start(layerID int, cfg TextAnimationConfig) erro
 }
 
 // Stop halts the text animation on the specified layer.
+// Returns nil if no animation is running (already finished or never started).
 func (tae *TextAnimationEngine) Stop(layerID int) error {
 	tae.mu.Lock()
 	inst, ok := tae.anims[layerID]
 	if !ok {
 		tae.mu.Unlock()
-		return ErrTextAnimNotFound
+		// Animation already finished or never started — no-op.
+		return nil
 	}
 	delete(tae.anims, layerID)
 	tae.mu.Unlock()
