@@ -71,6 +71,15 @@ func (c *Compositor) SetImage(id int, name string, pngData []byte) error {
 			}
 		}
 	}
+	// Even-align for YUV420 chroma compatibility (matches fast-control validation).
+	rectW = rectW &^ 1
+	rectH = rectH &^ 1
+	if rectW < 2 {
+		rectW = 2
+	}
+	if rectH < 2 {
+		rectH = 2
+	}
 	layer.rect = image.Rect(0, 0, rectW, rectH)
 
 	// Activate the layer so ProcessYUV renders it.
@@ -102,7 +111,11 @@ func (c *Compositor) GetImage(id int) (name string, data []byte, err error) {
 	if layer.imageData == nil {
 		return "", nil, ErrNoImage
 	}
-	return layer.imageName, layer.imageData, nil
+	// Return a copy so the caller can use it after the lock is released
+	// without racing with concurrent SetImage/DeleteImage.
+	dataCopy := make([]byte, len(layer.imageData))
+	copy(dataCopy, layer.imageData)
+	return layer.imageName, dataCopy, nil
 }
 
 // DeleteImage removes the stored image from a layer.

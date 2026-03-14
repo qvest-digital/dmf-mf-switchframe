@@ -6,6 +6,7 @@ import (
 	"image/color"
 
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -410,20 +411,5 @@ func blitWordAlpha(dst, src *image.RGBA, dstX, dstY int, alpha uint8) {
 
 // splitWordsForAnim splits text on spaces for word-by-word animation.
 func splitWordsForAnim(text string) []string {
-	var words []string
-	word := ""
-	for _, r := range text {
-		if r == ' ' {
-			if word != "" {
-				words = append(words, word)
-				word = ""
-			}
-		} else {
-			word += string(r)
-		}
-	}
-	if word != "" {
-		words = append(words, word)
-	}
-	return words
+	return strings.Fields(text)
 }

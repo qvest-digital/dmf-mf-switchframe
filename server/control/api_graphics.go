@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"image"
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"time"
@@ -312,7 +313,12 @@ func (a *API) handleGraphicsLayerRect(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	rect := image.Rect(req.X, req.Y, req.X+req.Width, req.Y+req.Height)
+	if req.Width <= 0 || req.Height <= 0 {
+		httperr.Write(w, http.StatusBadRequest, "width and height must be positive")
+		return
+	}
+	// Even-align for YUV420 chroma compatibility (matches fast-control validation).
+	rect := image.Rect(req.X&^1, req.Y&^1, (req.X&^1)+(req.Width&^1), (req.Y&^1)+(req.Height&^1))
 	if err := a.compositor.SetLayerRect(id, rect); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -522,7 +528,7 @@ func (a *API) handleGraphicsImageGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Content-Disposition", "inline; filename=\""+name+"\"")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
 	w.Write(data)
 }
 
