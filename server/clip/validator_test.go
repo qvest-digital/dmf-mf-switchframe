@@ -408,3 +408,29 @@ func TestCanTranscodeFallback(t *testing.T) {
 		assert.False(t, CanTranscodeFallback(ext), "ext %s should not allow fallback", ext)
 	}
 }
+
+func TestPTSIncrementForDropFrameRates(t *testing.T) {
+	// 29.97fps (30000/1001) should give PTS increment of 3003, not 3103.
+	// The old code: 90000 / int64(29.97) = 90000/29 = 3103 (wrong).
+	// The fix uses rational: 90000 * 1001 / 30000 = 3003 (correct).
+	tests := []struct {
+		fps      float64
+		wantIncr int64
+	}{
+		{29.97, 3003},
+		{59.94, 1501}, // 90000 * 1001 / 60000 = 1501 (truncated from 1501.5)
+		{30.0, 3000},
+		{24.0, 3750},
+		{23.976, 3753}, // 90000 * 1001 / 24000 = 3753 (truncated from 3753.75)
+		{25.0, 3600},
+		{60.0, 1500},
+	}
+	for _, tt := range tests {
+		num, den := fpsToRational(tt.fps)
+		got := int64(90000) * int64(den) / int64(num)
+		if got != tt.wantIncr {
+			t.Errorf("fps=%v: got PTS increment %d, want %d (num=%d den=%d)",
+				tt.fps, got, tt.wantIncr, num, den)
+		}
+	}
+}
