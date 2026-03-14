@@ -216,6 +216,48 @@ func TestHandleRunMacro_BackgroundCompletionBroadcasts(t *testing.T) {
 	require.Nil(t, cancel, "macroCancel should be nil after completion")
 }
 
+func TestHandleDismissMacro_CancelsRunningExecution(t *testing.T) {
+	api, store := setupMacroTestAPI(t)
+
+	api.SetBroadcastFunc(func() {})
+
+	// Save a macro with a long wait step.
+	err := store.Save(macro.Macro{
+		Name: "slow",
+		Steps: []macro.Step{
+			{Action: macro.ActionWait, Params: map[string]any{"ms": float64(30000)}},
+		},
+	})
+	require.NoError(t, err)
+
+	// Run the macro.
+	body := `{}`
+	req := httptest.NewRequest("POST", "/api/macros/slow/run", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	// Wait for it to start running.
+	require.Eventually(t, func() bool {
+		api.macroMu.Lock()
+		defer api.macroMu.Unlock()
+		return api.macroState != nil && api.macroState.Running
+	}, 2*time.Second, 20*time.Millisecond)
+
+	// Dismiss (not cancel) — should also stop the macro.
+	req = httptest.NewRequest("DELETE", "/api/macros/execution", nil)
+	rec = httptest.NewRecorder()
+	api.mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	// The macro should stop within a reasonable time (not run for 30 seconds).
+	require.Eventually(t, func() bool {
+		api.macroMu.Lock()
+		defer api.macroMu.Unlock()
+		return api.macroCancel == nil
+	}, 2*time.Second, 50*time.Millisecond, "dismiss should cancel the running macro")
+}
+
 func TestBroadcastFn_RaceFree(t *testing.T) {
 	api, _ := setupMacroTestAPI(t)
 
