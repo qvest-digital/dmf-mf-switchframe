@@ -85,15 +85,21 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 	// compressor/limiter envelopes were reset to zero during mute.
 	if m.unmuteFadeRemaining > 0 {
 		fadeSamples := m.unmuteFadeRemaining
-		for i := range mixed {
+		rampTotal := m.sampleRate * m.numChannels * 5 / 1000
+		ch := m.numChannels
+		for i := 0; i < len(mixed); i += ch {
 			if fadeSamples <= 0 {
 				break
 			}
 			// Linear ramp from 0 to 1 over the remaining fade samples
-			rampTotal := m.sampleRate * m.numChannels * 5 / 1000
 			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
-			mixed[i] *= progress
-			fadeSamples--
+			for j := 0; j < ch && i+j < len(mixed); j++ {
+				mixed[i+j] *= progress
+			}
+			fadeSamples -= ch
+		}
+		if fadeSamples < 0 {
+			fadeSamples = 0
 		}
 		m.unmuteFadeRemaining = fadeSamples
 	}

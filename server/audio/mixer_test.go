@@ -3844,3 +3844,101 @@ func TestMixerRejectsMismatchedSampleRateWarnsOnce(t *testing.T) {
 	m.mu.RUnlock()
 	require.True(t, warned, "sampleRateWarned should be set after first mismatch")
 }
+
+func TestUnmuteFadeLRSymmetry(t *testing.T) {
+	// The unmute fade-in ramp must apply the same gain to L and R channels
+	// of each sample pair. Before the fix, fadeSamples was decremented per
+	// individual sample instead of per sample-pair, causing L and R to get
+	// different progress values and the fade to complete in half the time.
+	var capturedPCM []float32
+
+	// Use a buffer large enough to span the full 5ms ramp (480 samples for 48kHz stereo)
+	// plus some extra to verify post-ramp samples are unattenuated.
+	const numSamples = 1024 // 512 stereo pairs
+	pcm := make([]float32, numSamples)
+	for i := range pcm {
+		pcm[i] = 1.0
+	}
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: pcm}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: &capturedPCM}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Mute then unmute to schedule fade-in ramp
+	m.SetProgramMute(true)
+	m.SetProgramMute(false)
+
+	// Verify ramp is scheduled: 48000 * 2 * 5 / 1000 = 480
+	m.mu.RLock()
+	fadeRemaining := m.unmuteFadeRemaining
+	m.mu.RUnlock()
+	require.Equal(t, 480, fadeRemaining)
+
+	// Set decoders: cam1 returns 1.0, cam2 returns 0.0 (so sum = 1.0)
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: pcm}
+	zeroPCM := make([]float32, numSamples)
+	m.channels["cam2"].decoder = &mockDecoder{samples: zeroPCM}
+	m.mu.Unlock()
+
+	// Ingest frames from both channels to trigger collectMixCycleLocked
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	require.NotNil(t, capturedPCM, "encoder should have received PCM")
+	require.GreaterOrEqual(t, len(capturedPCM), 480, "captured PCM should span the ramp")
+
+	// Verify L/R symmetry: every stereo pair must have identical gain values.
+	// With the bug, L gets progress P and R gets progress P' != P because
+	// fadeSamples is decremented between L and R.
+	rampPairs := 480 / 2 // 240 stereo pairs in the ramp
+	for i := 0; i < rampPairs && 2*i+1 < len(capturedPCM); i++ {
+		left := capturedPCM[2*i]
+		right := capturedPCM[2*i+1]
+		require.InDelta(t, left, right, 1e-6,
+			"stereo pair %d: L=%f R=%f must have identical fade gain", i, left, right)
+	}
+
+	// Verify the ramp is monotonically increasing (each pair's gain >= previous pair's)
+	for i := 1; i < rampPairs && 2*i < len(capturedPCM); i++ {
+		prev := capturedPCM[2*(i-1)]
+		curr := capturedPCM[2*i]
+		require.GreaterOrEqual(t, curr, prev,
+			"fade ramp pair %d (%f) should be >= pair %d (%f)", i, curr, i-1, prev)
+	}
+
+	// Verify that samples beyond the 480-sample ramp have full gain (not ramped).
+	// The ramp is 480 samples = 240 stereo pairs. Post-ramp samples should all
+	// have the same value (the limiter may attenuate from 1.0, so we compare
+	// against each other rather than against 1.0). With the bug the ramp would
+	// extend to sample 960, so samples 480-959 would still be attenuated.
+	if len(capturedPCM) > 482 {
+		// All post-ramp samples should be equal to each other (same gain applied)
+		postRampVal := capturedPCM[480]
+		require.Greater(t, postRampVal, float32(0.5),
+			"post-ramp sample should be significant (not still ramping)")
+		for i := 481; i < len(capturedPCM); i++ {
+			require.InDelta(t, postRampVal, capturedPCM[i], 1e-6,
+				"sample %d should have same value as other post-ramp samples, got %f vs %f",
+				i, capturedPCM[i], postRampVal)
+		}
+		// The last ramped pair (pair 239) should have lower gain than post-ramp
+		lastRampedL := capturedPCM[478]
+		require.Less(t, lastRampedL, postRampVal,
+			"last ramped sample (%f) should be less than post-ramp (%f)", lastRampedL, postRampVal)
+	}
+}
