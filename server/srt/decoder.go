@@ -277,8 +277,44 @@ static int srtdec_is_full_range(AVFrame* f) {
     return 0;
 }
 
+// srtdec_averror_eof returns the AVERROR_EOF constant for use from Go.
+// We need this helper because AVERROR_EOF is a C macro that cgo cannot access directly.
+static int srtdec_averror_eof(void) {
+    return AVERROR_EOF;
+}
+
+// srtdec_copy_yuv420 copies a planar YUV420P frame to a contiguous buffer.
+// Returns the allocated buffer or NULL on failure. Caller must free().
+static uint8_t* srtdec_copy_yuv420(AVFrame *frame, int w, int h_val) {
+    int uv_w = w / 2;
+    int uv_h = h_val / 2;
+    int y_size = w * h_val;
+    int uv_size = uv_w * uv_h;
+    int total = y_size + 2 * uv_size;
+
+    uint8_t *buf = (uint8_t*)malloc(total);
+    if (!buf) return NULL;
+
+    // Copy Y plane.
+    for (int row = 0; row < h_val; row++) {
+        memcpy(buf + row * w,
+               frame->data[0] + row * frame->linesize[0], w);
+    }
+    // Copy U plane.
+    for (int row = 0; row < uv_h; row++) {
+        memcpy(buf + y_size + row * uv_w,
+               frame->data[1] + row * frame->linesize[1], uv_w);
+    }
+    // Copy V plane.
+    for (int row = 0; row < uv_h; row++) {
+        memcpy(buf + y_size + uv_size + row * uv_w,
+               frame->data[2] + row * frame->linesize[2], uv_w);
+    }
+    return buf;
+}
+
 // srtdec_process_video handles a decoded video frame:
-// converts to YUV420P if needed, deep-copies, and calls Go callback.
+// converts to YUV420P (limited range, BT.709) if needed, deep-copies, and calls Go callback.
 static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
     int w = frame->width;
     int h_val = frame->height;
@@ -291,32 +327,62 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
 
     int total = w * h_val * 3 / 2;
 
-    // Check if we need sws conversion (non-YUV420P input).
-    if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
-        // Direct copy from planar YUV420P.
-        uint8_t *buf = (uint8_t*)malloc(total);
+    // Check if we need sws conversion (non-YUV420P input, or full-range→limited-range).
+    if (frame->format == AV_PIX_FMT_YUV420P && !srtdec_is_full_range(frame)) {
+        // Direct copy from planar YUV420P limited-range — no conversion needed.
+        uint8_t *buf = srtdec_copy_yuv420(frame, w, h_val);
         if (!buf) return;
 
-        int uv_w = w / 2;
-        int uv_h = h_val / 2;
-        int y_size = w * h_val;
-        int uv_size = uv_w * uv_h;
+        goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
+        free(buf);
+    } else if ((frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) &&
+               srtdec_is_full_range(frame)) {
+        // Full-range (JPEG) YUV420P — convert to limited-range via sws.
+        // The pipeline operates in BT.709 limited range; passing full-range through
+        // would cause crushed blacks and blown highlights.
+        if (frame->format != h->last_sws_fmt ||
+            frame->width != h->last_sws_w ||
+            frame->height != h->last_sws_h) {
+            if (h->sws_ctx) {
+                sws_freeContext(h->sws_ctx);
+                h->sws_ctx = NULL;
+            }
+            h->sws_ctx = sws_getContext(
+                frame->width, frame->height, frame->format,
+                w, h_val, AV_PIX_FMT_YUV420P,
+                SWS_BILINEAR, NULL, NULL, NULL);
+            if (!h->sws_ctx) return;
 
-        // Copy Y plane.
-        for (int row = 0; row < h_val; row++) {
-            memcpy(buf + row * w,
-                   frame->data[0] + row * frame->linesize[0], w);
+            // Set source range to full (1) and destination to limited (0).
+            // sws_setColorspaceDetails args: inv_table, srcRange, table, dstRange, brightness, contrast, saturation
+            const int *inv_table = sws_getCoefficients(SWS_CS_ITU709);
+            const int *table     = sws_getCoefficients(SWS_CS_ITU709);
+            sws_setColorspaceDetails(h->sws_ctx,
+                inv_table, 1,  // source: full range
+                table,     0,  // dest: limited range
+                0, 1 << 16, 1 << 16);
+
+            h->last_sws_fmt = frame->format;
+            h->last_sws_w = frame->width;
+            h->last_sws_h = frame->height;
+
+            // Set up sws output frame.
+            av_frame_unref(h->sws_frame);
+            h->sws_frame->format = AV_PIX_FMT_YUV420P;
+            h->sws_frame->width = w;
+            h->sws_frame->height = h_val;
+            av_frame_get_buffer(h->sws_frame, 0);
         }
-        // Copy U plane.
-        for (int row = 0; row < uv_h; row++) {
-            memcpy(buf + y_size + row * uv_w,
-                   frame->data[1] + row * frame->linesize[1], uv_w);
-        }
-        // Copy V plane.
-        for (int row = 0; row < uv_h; row++) {
-            memcpy(buf + y_size + uv_size + row * uv_w,
-                   frame->data[2] + row * frame->linesize[2], uv_w);
-        }
+
+        av_frame_make_writable(h->sws_frame);
+        sws_scale(h->sws_ctx,
+            (const uint8_t* const*)frame->data, frame->linesize,
+            0, frame->height,
+            h->sws_frame->data, h->sws_frame->linesize);
+
+        // Copy sws output to contiguous buffer.
+        uint8_t *buf = srtdec_copy_yuv420(h->sws_frame, w, h_val);
+        if (!buf) return;
 
         goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
         free(buf);
@@ -352,26 +418,8 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             h->sws_frame->data, h->sws_frame->linesize);
 
         // Copy sws output to contiguous buffer.
-        uint8_t *buf = (uint8_t*)malloc(total);
+        uint8_t *buf = srtdec_copy_yuv420(h->sws_frame, w, h_val);
         if (!buf) return;
-
-        int uv_w = w / 2;
-        int uv_h = h_val / 2;
-        int y_size = w * h_val;
-        int uv_size = uv_w * uv_h;
-
-        for (int row = 0; row < h_val; row++) {
-            memcpy(buf + row * w,
-                   h->sws_frame->data[0] + row * h->sws_frame->linesize[0], w);
-        }
-        for (int row = 0; row < uv_h; row++) {
-            memcpy(buf + y_size + row * uv_w,
-                   h->sws_frame->data[1] + row * h->sws_frame->linesize[1], uv_w);
-        }
-        for (int row = 0; row < uv_h; row++) {
-            memcpy(buf + y_size + uv_size + row * uv_w,
-                   h->sws_frame->data[2] + row * h->sws_frame->linesize[2], uv_w);
-        }
 
         goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
         free(buf);
@@ -509,6 +557,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -550,8 +599,15 @@ type StreamDecoderConfig struct {
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
+	// TODO: OnCaptions is not yet invoked. Needs implementation to extract
+	// CEA-608/708 caption data from H.264 SEI NALUs during video decode and
+	// deliver them via this callback.
 	OnCaptions func(data []byte, pts int64) // optional
-	OnSCTE35   func(data []byte, pts int64) // optional
+
+	// TODO: OnSCTE35 is not yet invoked. Needs implementation to detect
+	// SCTE-35 data PIDs in the MPEG-TS PMT and deliver splice_info_section
+	// payloads via this callback.
+	OnSCTE35 func(data []byte, pts int64) // optional
 }
 
 // StreamDecoder bridges an io.Reader to FFmpeg's avformat/avcodec for live
@@ -561,7 +617,7 @@ type StreamDecoder struct {
 	cfg    StreamDecoderConfig
 	handle C.srtdec_t
 	id     int
-	closed bool
+	closed atomic.Bool
 }
 
 // NewStreamDecoder creates a StreamDecoder that will demux and decode
@@ -599,7 +655,7 @@ func NewStreamDecoder(cfg StreamDecoderConfig) (*StreamDecoder, error) {
 // Run blocks and runs the decode loop until EOF, error, or Stop() is called.
 // Decoded video frames are delivered via OnVideo, audio via OnAudio.
 func (d *StreamDecoder) Run() {
-	if d.closed {
+	if d.closed.Load() {
 		return
 	}
 	C.srtdec_run(&d.handle)
@@ -608,7 +664,7 @@ func (d *StreamDecoder) Run() {
 
 // Stop signals the decoder to stop. Run() will return shortly after.
 func (d *StreamDecoder) Stop() {
-	if !d.closed {
+	if !d.closed.Load() {
 		C.srtdec_stop(&d.handle)
 		// Also close the reader if it supports it, to unblock any pending reads.
 		if closer, ok := d.cfg.Reader.(io.Closer); ok {
@@ -619,10 +675,9 @@ func (d *StreamDecoder) Stop() {
 
 // close releases all FFmpeg resources and unregisters from the global map.
 func (d *StreamDecoder) close() {
-	if d.closed {
-		return
+	if d.closed.Swap(true) {
+		return // already closed
 	}
-	d.closed = true
 	C.srtdec_close(&d.handle)
 	unregisterDecoder(d.id)
 }
@@ -653,8 +708,12 @@ func goSRTRead(opaque unsafe.Pointer, buf *C.uint8_t, bufSize C.int) C.int {
 		return C.int(n)
 	}
 	if err != nil {
-		// Return AVERROR_EOF for any read error (EOF, closed pipe, etc.)
-		// The C code in av_read_frame will handle this as end-of-stream.
+		if err == io.EOF {
+			// Return AVERROR_EOF so FFmpeg treats this as a clean end-of-stream
+			// rather than a generic I/O error.
+			return C.int(C.srtdec_averror_eof())
+		}
+		// Other errors (closed pipe, network failure, etc.) — return generic error.
 		return C.int(-1)
 	}
 	return C.int(0)

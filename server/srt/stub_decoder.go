@@ -17,8 +17,15 @@ type StreamDecoderConfig struct {
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
+	// TODO: OnCaptions is not yet invoked. Needs implementation to extract
+	// CEA-608/708 caption data from H.264 SEI NALUs during video decode and
+	// deliver them via this callback.
 	OnCaptions func(data []byte, pts int64) // optional
-	OnSCTE35   func(data []byte, pts int64) // optional
+
+	// TODO: OnSCTE35 is not yet invoked. Needs implementation to detect
+	// SCTE-35 data PIDs in the MPEG-TS PMT and deliver splice_info_section
+	// payloads via this callback.
+	OnSCTE35 func(data []byte, pts int64) // optional
 }
 
 // StreamDecoder bridges an io.Reader to FFmpeg's avformat/avcodec for live
