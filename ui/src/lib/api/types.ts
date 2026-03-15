@@ -1,10 +1,24 @@
 export type TallyStatus = 'program' | 'preview' | 'idle';
 export type SourceHealthStatus = 'healthy' | 'stale' | 'no_signal' | 'offline';
 
+export interface SRTSourceInfo {
+	mode: 'listener' | 'caller';
+	streamID: string;
+	remoteAddr?: string;
+	latencyMs: number;
+	rttMs: number;
+	lossRate: number;
+	bitrateKbps: number;
+	recvBufMs: number;
+	connected: boolean;
+}
+
 export interface SourceInfo {
 	key: string;
 	label?: string;
+	type: 'demo' | 'mxl' | 'srt' | 'replay' | 'clip';
 	status: SourceHealthStatus;
+	srt?: SRTSourceInfo;
 
 	position?: number;
 	delayMs?: number;

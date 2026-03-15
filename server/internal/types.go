@@ -24,12 +24,28 @@ type SourceKeyConfig struct {
 type SourceInfo struct {
 	Key         string           `json:"key"`
 	Label       string           `json:"label,omitempty"`
+	Type        string           `json:"type"`              // "demo", "mxl", "srt", "replay", "clip"
 	Status      string           `json:"status"`
 	Position    int              `json:"position"`
 	DelayMs     int              `json:"delayMs,omitempty"`
 	KeyConfig   *SourceKeyConfig `json:"keyConfig,omitempty"`
+	SRTInfo     *SRTSourceInfo   `json:"srt,omitempty"`     // non-nil for SRT sources
 	IsVirtual   bool             `json:"isVirtual,omitempty"`
 	HasCaptions bool             `json:"hasCaptions,omitempty"`
+}
+
+// SRTSourceInfo holds live SRT connection metadata for ControlRoomState broadcast.
+// This is separate from srt.SRTSourceInfo to avoid circular imports.
+type SRTSourceInfo struct {
+	Mode        string  `json:"mode"`
+	StreamID    string  `json:"streamID"`
+	RemoteAddr  string  `json:"remoteAddr,omitempty"`
+	LatencyMs   int     `json:"latencyMs"`
+	RTTMs       float64 `json:"rttMs"`
+	LossRate    float64 `json:"lossRate"`
+	BitrateKbps float64 `json:"bitrateKbps"`
+	RecvBufMs   float64 `json:"recvBufMs"`
+	Connected   bool    `json:"connected"`
 }
 
 // EQBand describes the settings for a single EQ band.

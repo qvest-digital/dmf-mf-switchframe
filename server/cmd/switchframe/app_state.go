@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/graphics"
@@ -10,11 +11,33 @@ import (
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
+// sourceType derives the source type string from a source key prefix.
+func sourceType(key string) string {
+	switch {
+	case strings.HasPrefix(key, "srt:"):
+		return "srt"
+	case strings.HasPrefix(key, "mxl:"):
+		return "mxl"
+	case strings.HasPrefix(key, "clip-player-"):
+		return "clip"
+	case key == "replay":
+		return "replay"
+	default:
+		return "demo"
+	}
+}
+
 // enrichState patches a ControlRoomState snapshot with output, graphics,
 // operator, and replay status. gfxOverride, if non-nil, is used instead of
 // calling compositor.Status() (which would deadlock when called from the
 // compositor's own callback).
 func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics.State) internal.ControlRoomState {
+	// Enrich sources with type field.
+	for key, info := range state.Sources {
+		info.Type = sourceType(key)
+		state.Sources[key] = info
+	}
+
 	if p := a.api.LastOperator(); p != nil {
 		state.LastChangedBy = *p
 	}
