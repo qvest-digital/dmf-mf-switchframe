@@ -175,33 +175,22 @@ func (s *Source) updateStats() {
 		return
 	}
 
-	cs := statter.Stats(false) // cumulative stats
+	cs := statter.Stats(true) // interval mode: MbpsRecvRate and loss reflect recent window
 
-	rttMs := float64(cs.RTT) / float64(time.Millisecond)
-	rttVarMs := float64(cs.RTTVar) / float64(time.Millisecond)
-	recvBufMs := float64(cs.MsRcvBuf) / float64(time.Millisecond)
-
-	// Compute receive bitrate from MbpsRecvRate if available,
-	// otherwise approximate from bytes/duration.
-	recvRateMbps := cs.MbpsRecvRate
-
-	// Loss rate as percentage
-	lossRatePct := cs.RecvLossRate
-
-	s.stats.Update(
-		rttMs,
-		rttVarMs,
-		recvRateMbps,
-		lossRatePct,
-		int64(cs.RecvPackets),
-		int64(cs.RecvLoss),
-		int64(cs.RecvDropped),
-		int64(cs.Retransmits),
-		int64(cs.RecvBelated),
-		recvBufMs,
-		cs.RecvBufSize,
-		cs.FlightSize,
-	)
+	s.stats.Update(StatsUpdate{
+		RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
+		RTTVarMs:        float64(cs.RTTVar) / float64(time.Millisecond),
+		RecvRateMbps:    cs.MbpsRecvRate,
+		LossRatePct:     cs.RecvLossRate,
+		PacketsReceived: int64(cs.RecvPackets),
+		PacketsLost:     int64(cs.RecvLoss),
+		PacketsDropped:  int64(cs.RecvDropped),
+		PacketsRetrans:  int64(cs.Retransmits),
+		PacketsBelated:  int64(cs.RecvBelated),
+		RecvBufMs:       float64(cs.MsRcvBuf) / float64(time.Millisecond),
+		RecvBufPackets:  cs.RecvBufSize,
+		FlightSize:      cs.FlightSize,
+	})
 }
 
 // newRealDecoder wraps NewStreamDecoder to satisfy the decoderFactoryFunc signature.

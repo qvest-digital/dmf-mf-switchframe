@@ -87,27 +87,38 @@ func (cs *ConnStats) SetDisconnected() {
 	cs.reconnectCount++
 }
 
+// StatsUpdate holds a batch of SRT connection metrics for ConnStats.Update.
+type StatsUpdate struct {
+	RTTMs            float64
+	RTTVarMs         float64
+	RecvRateMbps     float64
+	LossRatePct      float64
+	PacketsReceived  int64
+	PacketsLost      int64
+	PacketsDropped   int64
+	PacketsRetrans   int64
+	PacketsBelated   int64
+	RecvBufMs        float64
+	RecvBufPackets   int
+	FlightSize       int
+}
+
 // Update applies a bulk stats update from srtgo.
-func (cs *ConnStats) Update(
-	rttMs, rttVarMs, recvRateMbps, lossRatePct float64,
-	packetsReceived, packetsLost, packetsDropped, packetsRetrans, packetsBelated int64,
-	recvBufMs float64,
-	recvBufPackets, flightSize int,
-) {
+func (cs *ConnStats) Update(u StatsUpdate) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.rttMs = rttMs
-	cs.rttVarMs = rttVarMs
-	cs.recvRateMbps = recvRateMbps
-	cs.lossRatePct = lossRatePct
-	cs.packetsReceived = packetsReceived
-	cs.packetsLost = packetsLost
-	cs.packetsDropped = packetsDropped
-	cs.packetsRetransmitted = packetsRetrans
-	cs.packetsBelated = packetsBelated
-	cs.recvBufMs = recvBufMs
-	cs.recvBufPackets = recvBufPackets
-	cs.flightSize = flightSize
+	cs.rttMs = u.RTTMs
+	cs.rttVarMs = u.RTTVarMs
+	cs.recvRateMbps = u.RecvRateMbps
+	cs.lossRatePct = u.LossRatePct
+	cs.packetsReceived = u.PacketsReceived
+	cs.packetsLost = u.PacketsLost
+	cs.packetsDropped = u.PacketsDropped
+	cs.packetsRetransmitted = u.PacketsRetrans
+	cs.packetsBelated = u.PacketsBelated
+	cs.recvBufMs = u.RecvBufMs
+	cs.recvBufPackets = u.RecvBufPackets
+	cs.flightSize = u.FlightSize
 }
 
 // Snapshot returns a point-in-time copy of connection statistics.

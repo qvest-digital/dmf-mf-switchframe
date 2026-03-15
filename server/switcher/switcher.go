@@ -2012,40 +2012,36 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 	s.notifyStateChange(snapshot)
 }
 
-// RegisterMXLSource registers a source that provides raw YUV420p frames
-// directly (no Prism relay/viewer). Used for MXL shared-memory sources.
-func (s *Switcher) RegisterMXLSource(key string) {
+// registerRawSource is the shared implementation for RegisterMXLSource and
+// RegisterSRTSource. It creates a sourceState with no relay/viewer (raw YUV
+// frames arrive via IngestRawVideo) and notifies state listeners.
+func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	s.mu.Lock()
 	s.sources[key] = &sourceState{
 		key:      key,
-		label:    strings.ToUpper(key),
+		label:    label,
 		position: len(s.sources) + 1,
-		isMXL:    true,
+		isMXL:    mxl,
 	}
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
-	s.log.Info("MXL source registered", "source_key", key)
+	s.log.Info("raw source registered", "source_key", key, "mxl", mxl)
 	s.notifyStateChange(snapshot)
+}
+
+// RegisterMXLSource registers a source that provides raw YUV420p frames
+// directly (no Prism relay/viewer). Used for MXL shared-memory sources.
+func (s *Switcher) RegisterMXLSource(key string) {
+	s.registerRawSource(key, strings.ToUpper(key), true)
 }
 
 // RegisterSRTSource registers a source that provides raw YUV420p frames
 // via IngestRawVideo (same path as MXL). Used for SRT input sources that
 // are decoded by the srt.Source orchestrator before being fed to the switcher.
 func (s *Switcher) RegisterSRTSource(key string) {
-	s.mu.Lock()
-	s.sources[key] = &sourceState{
-		key:      key,
-		label:    strings.TrimPrefix(key, "srt:"),
-		position: len(s.sources) + 1,
-	}
-	s.health.registerSource(key)
-	atomic.AddUint64(&s.seq, 1)
-	snapshot := s.buildStateLocked()
-	s.mu.Unlock()
-	s.log.Info("SRT source registered", "source_key", key)
-	s.notifyStateChange(snapshot)
+	s.registerRawSource(key, strings.TrimPrefix(key, "srt:"), false)
 }
 
 // RegisterReplaySource registers a transient replay source that receives

@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// ErrInvalidConfig is a sentinel error for SRT configuration validation failures.
+// Wrapping a validation error with this sentinel allows callers to distinguish
+// user input errors (HTTP 400) from internal failures (HTTP 500).
+var ErrInvalidConfig = errors.New("invalid SRT config")
+
 const (
 	ModeListener = "listener"
 	ModeCaller   = "caller"

@@ -39,6 +39,7 @@ type updateSourceSRTRequest struct {
 // registerSourceRoutes registers source-related API routes on the given mux.
 func (a *API) registerSourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sources", a.handleSources)
+	mux.HandleFunc("GET /api/sources/{key}", a.handleGetSource)
 	mux.HandleFunc("POST /api/sources", a.handleCreateSource)
 	mux.HandleFunc("POST /api/sources/{key}/label", a.handleSetLabel)
 	mux.HandleFunc("POST /api/sources/{key}/delay", a.handleSetDelay)
@@ -116,6 +117,21 @@ func (a *API) handleSources(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(state.Sources)
 }
 
+// handleGetSource returns a single source's info including SRT stats if applicable.
+// GET /api/sources/{key}
+func (a *API) handleGetSource(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	state := a.enrichedState()
+	info, ok := state.Sources[key]
+	if !ok {
+		httperr.Write(w, http.StatusNotFound, "source not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(info)
+}
+
 // handleCreateSource creates a new SRT pull source.
 // POST /api/sources
 // Body: {"type":"srt","mode":"caller","address":"...","streamID":"...","label":"...","latencyMs":200}
@@ -157,7 +173,7 @@ func (a *API) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 
 	key, err := a.srtMgr.CreatePull(r.Context(), req.Address, req.StreamID, req.Label, req.LatencyMs)
 	if err != nil {
-		httperr.WriteErr(w, http.StatusInternalServerError, err)
+		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 

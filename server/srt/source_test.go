@@ -225,16 +225,18 @@ func TestSourceStatsPolling(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Wait long enough for at least one stats poll
-	time.Sleep(1500 * time.Millisecond)
-
-	// Check that stats were updated
-	snap := stats.Snapshot()
-	if snap.RTTMs == 0 {
-		t.Error("expected RTTMs to be updated from stats polling")
-	}
-	if snap.PacketsReceived == 0 {
-		t.Error("expected PacketsReceived to be updated from stats polling")
+	// Poll until stats are updated instead of using a fixed sleep.
+	deadline := time.After(5 * time.Second)
+	for {
+		snap := stats.Snapshot()
+		if snap.RTTMs != 0 && snap.PacketsReceived != 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("stats never polled within deadline")
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	close(blockCh)
@@ -242,6 +244,9 @@ func TestSourceStatsPolling(t *testing.T) {
 
 	if !mockConn.statsCalled.Load() {
 		t.Error("expected Stats() to be called on SRT conn")
+	}
+	if !mockConn.statsIntervalMode.Load() {
+		t.Error("expected Stats(true) for interval mode, got Stats(false)")
 	}
 }
 
@@ -312,11 +317,13 @@ func (m *mockDecoder) Stop() { m.stopFunc() }
 
 type mockSRTConn struct {
 	mockReadCloser
-	stats       srtgo.ConnStats
-	statsCalled atomic.Bool
+	stats            srtgo.ConnStats
+	statsCalled      atomic.Bool
+	statsIntervalMode atomic.Bool
 }
 
 func (m *mockSRTConn) Stats(clear bool) srtgo.ConnStats {
 	m.statsCalled.Store(true)
+	m.statsIntervalMode.Store(clear)
 	return m.stats
 }

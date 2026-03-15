@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -210,6 +212,20 @@ func TestCreateSource_ManagerError(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code, "body: %s", rec.Body.String())
 }
 
+func TestCreateSource_ValidationError(t *testing.T) {
+	api, _, mock := setupSRTTestAPI(t)
+	// Simulate a validation error from the SRT manager (wraps srt.ErrInvalidConfig).
+	mock.createPullErr = fmt.Errorf("srt caller: %w: streamID is required", srt.ErrInvalidConfig)
+
+	body := `{"type":"srt","mode":"caller","address":"srt://192.168.1.100:6464","streamID":"cam1"}`
+	req := httptest.NewRequest("POST", "/api/sources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "validation errors should return 400, body: %s", rec.Body.String())
+}
+
 func TestCreateSource_DefaultLatency(t *testing.T) {
 	api, _, mock := setupSRTTestAPI(t)
 
@@ -379,4 +395,32 @@ func TestUpdateSourceSRT_LatencyTooHigh(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+}
+
+// --- GET /api/sources/{key} ---
+
+func TestGetSource_Found(t *testing.T) {
+	api, _, _ := setupSRTTestAPI(t)
+
+	// "camera1" is registered by setupSRTTestAPI.
+	req := httptest.NewRequest("GET", "/api/sources/camera1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]interface{}
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Equal(t, "camera1", resp["key"])
+}
+
+func TestGetSource_NotFound(t *testing.T) {
+	api, _, _ := setupSRTTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/sources/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, "body: %s", rec.Body.String())
 }

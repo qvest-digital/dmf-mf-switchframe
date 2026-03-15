@@ -72,7 +72,7 @@ func (c *Caller) Pull(ctx context.Context, config SourceConfig) error {
 	config.Mode = ModeCaller
 
 	if err := config.Validate(); err != nil {
-		return fmt.Errorf("srt caller: invalid config: %w", err)
+		return fmt.Errorf("srt caller: %w: %w", ErrInvalidConfig, err)
 	}
 
 	// Persist to store.

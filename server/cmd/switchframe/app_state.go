@@ -32,9 +32,23 @@ func sourceType(key string) string {
 // calling compositor.Status() (which would deadlock when called from the
 // compositor's own callback).
 func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics.State) internal.ControlRoomState {
-	// Enrich sources with type field.
+	// Enrich sources with type field and SRT info.
 	for key, info := range state.Sources {
 		info.Type = sourceType(key)
+		if info.Type == "srt" && a.srtStats != nil {
+			srtInfo := a.srtStats.GetOrCreate(key).ToSRTSourceInfo()
+			info.SRTInfo = &internal.SRTSourceInfo{
+				Mode:        srtInfo.Mode,
+				StreamID:    srtInfo.StreamID,
+				RemoteAddr:  srtInfo.RemoteAddr,
+				LatencyMs:   srtInfo.LatencyMs,
+				RTTMs:       srtInfo.RTTMs,
+				LossRate:    srtInfo.LossRate,
+				BitrateKbps: srtInfo.BitrateKbps,
+				RecvBufMs:   srtInfo.RecvBufMs,
+				Connected:   srtInfo.Connected,
+			}
+		}
 		state.Sources[key] = info
 	}
 

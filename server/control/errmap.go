@@ -13,6 +13,7 @@ import (
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte35"
+	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -121,6 +122,7 @@ var errorMappings = []errorMapping{
 	{clip.ErrCorruptFile, http.StatusBadRequest},
 	{clip.ErrOddDimensions, http.StatusBadRequest},
 	{clip.ErrNoVideo, http.StatusBadRequest},
+	{srt.ErrInvalidConfig, http.StatusBadRequest},
 }
 
 // errorStatus maps a sentinel error to an HTTP status code.

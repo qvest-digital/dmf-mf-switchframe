@@ -86,20 +86,20 @@ func TestConnStatsUpdate(t *testing.T) {
 	cs := NewConnStats("listener", "live/cam4", 120)
 	cs.SetConnected("10.0.0.1:5000", 120)
 
-	cs.Update(
-		5.2,    // rttMs
-		1.1,    // rttVarMs
-		12.5,   // recvRateMbps
-		0.01,   // lossRatePct
-		100000, // packetsReceived
-		100,    // packetsLost
-		5,      // packetsDropped
-		50,     // packetsRetrans
-		3,      // packetsBelated
-		45.0,   // recvBufMs
-		32,     // recvBufPackets
-		10,     // flightSize
-	)
+	cs.Update(StatsUpdate{
+		RTTMs:           5.2,
+		RTTVarMs:        1.1,
+		RecvRateMbps:    12.5,
+		LossRatePct:     0.01,
+		PacketsReceived: 100000,
+		PacketsLost:     100,
+		PacketsDropped:  5,
+		PacketsRetrans:  50,
+		PacketsBelated:  3,
+		RecvBufMs:       45.0,
+		RecvBufPackets:  32,
+		FlightSize:      10,
+	})
 
 	snap := cs.Snapshot()
 	if snap.RTTMs != 5.2 {
@@ -143,20 +143,20 @@ func TestConnStatsUpdate(t *testing.T) {
 func TestConnStatsToSRTSourceInfo(t *testing.T) {
 	cs := NewConnStats("listener", "live/cam5", 120)
 	cs.SetConnected("10.0.0.1:5000", 120)
-	cs.Update(
-		5.2,    // rttMs
-		1.1,    // rttVarMs
-		12.5,   // recvRateMbps
-		0.5,    // lossRatePct
-		100000, // packetsReceived
-		500,    // packetsLost
-		5,      // packetsDropped
-		50,     // packetsRetrans
-		3,      // packetsBelated
-		45.0,   // recvBufMs
-		32,     // recvBufPackets
-		10,     // flightSize
-	)
+	cs.Update(StatsUpdate{
+		RTTMs:           5.2,
+		RTTVarMs:        1.1,
+		RecvRateMbps:    12.5,
+		LossRatePct:     0.5,
+		PacketsReceived: 100000,
+		PacketsLost:     500,
+		PacketsDropped:  5,
+		PacketsRetrans:  50,
+		PacketsBelated:  3,
+		RecvBufMs:       45.0,
+		RecvBufPackets:  32,
+		FlightSize:      10,
+	})
 
 	info := cs.ToSRTSourceInfo()
 	if info.Mode != "listener" {
@@ -253,7 +253,7 @@ func TestConnStatsConcurrency(t *testing.T) {
 		defer close(done)
 		for i := 0; i < 1000; i++ {
 			cs.SetConnected("10.0.0.1:5000", 120)
-			cs.Update(5.2, 1.1, 12.5, 0.01, int64(i), 0, 0, 0, 0, 45.0, 32, 10)
+			cs.Update(StatsUpdate{RTTMs: 5.2, RTTVarMs: 1.1, RecvRateMbps: 12.5, LossRatePct: 0.01, PacketsReceived: int64(i), RecvBufMs: 45.0, RecvBufPackets: 32, FlightSize: 10})
 			cs.SetDisconnected()
 		}
 	}()
