@@ -1,6 +1,7 @@
 package control
 
 import (
+	"image"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,63 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/layout"
 )
+
+// TestLayoutSlotBoundsValidation verifies that slot handlers return 400 for
+// out-of-range slot IDs rather than panicking or silently succeeding.
+func TestLayoutSlotBoundsValidation(t *testing.T) {
+	_, sw := setupTestAPI(t)
+	lc := layout.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithLayoutCompositor(lc))
+
+	// Set up a layout with 2 slots.
+	lc.SetLayout(&layout.Layout{
+		Name: "test",
+		Slots: []layout.Slot{
+			{SourceKey: "cam1", Enabled: true, Rect: image.Rect(0, 0, 480, 270)},
+			{SourceKey: "cam2", Enabled: false, Rect: image.Rect(480, 0, 960, 270)},
+		},
+	})
+
+	type testCase struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}
+
+	tests := []testCase{
+		// Negative slot IDs
+		{"SlotOn negative", "POST", "/api/layout/slots/-1/on", ""},
+		{"SlotOff negative", "POST", "/api/layout/slots/-1/off", ""},
+		{"SlotUpdate negative", "PUT", "/api/layout/slots/-1", `{"sourceKey":"cam1"}`},
+		{"SlotSource negative", "PUT", "/api/layout/slots/-1/source", `{"source":"cam1"}`},
+		// Out-of-range slot IDs (layout has 2 slots, index 0 and 1)
+		{"SlotOn out-of-range", "POST", "/api/layout/slots/99/on", ""},
+		{"SlotOff out-of-range", "POST", "/api/layout/slots/99/off", ""},
+		{"SlotUpdate out-of-range", "PUT", "/api/layout/slots/99", `{"sourceKey":"cam1"}`},
+		{"SlotSource out-of-range", "PUT", "/api/layout/slots/99/source", `{"source":"cam1"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var req *http.Request
+			if tc.body != "" {
+				req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+				req.Header.Set("Content-Type", "application/json")
+			} else {
+				req = httptest.NewRequest(tc.method, tc.path, nil)
+			}
+			rec := httptest.NewRecorder()
+
+			// Must not panic.
+			api.Mux().ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code,
+				"%s %s: expected 400 for out-of-range slot, got %d: %s",
+				tc.method, tc.path, rec.Code, rec.Body.String())
+		})
+	}
+}
 
 // TestLayoutStoreNilDoesNotPanic verifies that layout preset endpoints
 // return proper HTTP errors (not a nil-pointer panic) when the API has a

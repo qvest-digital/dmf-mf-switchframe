@@ -107,11 +107,27 @@ func (a *API) handleDeleteLayout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) handleSlotOn(w http.ResponseWriter, r *http.Request) {
-	a.setLastOperator(r)
+// parseAndValidateSlotID parses the slot ID from the request path and validates
+// it against the current layout bounds. Returns the validated ID or writes an
+// error response and returns -1.
+func (a *API) parseAndValidateSlotID(w http.ResponseWriter, r *http.Request) int {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid slot id")
+		return -1
+	}
+	l := a.layoutCompositor.GetLayout()
+	if id < 0 || l == nil || id >= len(l.Slots) {
+		httperr.Write(w, http.StatusBadRequest, "slot id out of range")
+		return -1
+	}
+	return id
+}
+
+func (a *API) handleSlotOn(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id := a.parseAndValidateSlotID(w, r)
+	if id < 0 {
 		return
 	}
 	a.layoutCompositor.SlotOn(id)
@@ -121,9 +137,8 @@ func (a *API) handleSlotOn(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSlotOff(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		httperr.Write(w, http.StatusBadRequest, "invalid slot id")
+	id := a.parseAndValidateSlotID(w, r)
+	if id < 0 {
 		return
 	}
 	a.layoutCompositor.SlotOff(id)
@@ -133,9 +148,8 @@ func (a *API) handleSlotOff(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		httperr.Write(w, http.StatusBadRequest, "invalid slot id")
+	id := a.parseAndValidateSlotID(w, r)
+	if id < 0 {
 		return
 	}
 
@@ -184,9 +198,8 @@ func (a *API) handleSlotUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSlotSource(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	id, err := strconv.Atoi(r.PathValue("id"))
-	if err != nil {
-		httperr.Write(w, http.StatusBadRequest, "invalid slot id")
+	id := a.parseAndValidateSlotID(w, r)
+	if id < 0 {
 		return
 	}
 	var req struct {

@@ -57,15 +57,24 @@ var endpointPrefixSubsystemMap = []struct {
 // EndpointSubsystem maps an API path to its subsystem. Returns the subsystem
 // and true if the path requires subsystem permission checking; false if the
 // path is exempt (GETs, operator management, CRUD-only endpoints).
+//
+// Paths with /api/v1/ prefix are normalized to /api/ before lookup so that
+// versioned requests go through the same permission checks.
 func EndpointSubsystem(path string) (Subsystem, bool) {
+	// Normalize /api/v1/... to /api/... so versioned paths are checked.
+	normalized := path
+	if strings.HasPrefix(path, "/api/v1/") {
+		normalized = "/api/" + path[len("/api/v1/"):]
+	}
+
 	// Exact match first.
-	if sub, ok := endpointSubsystemMap[path]; ok {
+	if sub, ok := endpointSubsystemMap[normalized]; ok {
 		return sub, true
 	}
 
 	// Prefix match for parameterized endpoints.
 	for _, pm := range endpointPrefixSubsystemMap {
-		if strings.HasPrefix(path, pm.prefix) {
+		if strings.HasPrefix(normalized, pm.prefix) {
 			return pm.subsystem, true
 		}
 	}
@@ -102,7 +111,8 @@ func NewMiddleware(store *Store, sm *SessionManager) func(http.Handler) http.Han
 			}
 
 			// 3. /api/operator/* routes are exempt from lock checking.
-			if strings.HasPrefix(r.URL.Path, "/api/operator/") {
+			if strings.HasPrefix(r.URL.Path, "/api/operator/") ||
+				strings.HasPrefix(r.URL.Path, "/api/v1/operator/") {
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -321,6 +321,64 @@ func TestCanLock_Captioner(t *testing.T) {
 	require.True(t, CanLock(RoleDirector, SubsystemCaptions))
 }
 
+func TestEndpointSubsystem_V1Prefix(t *testing.T) {
+	// /api/v1/ paths should map to the same subsystem as their /api/ equivalents.
+	tests := []struct {
+		path string
+		sub  Subsystem
+		ok   bool
+	}{
+		{"/api/v1/switch/cut", SubsystemSwitching, true},
+		{"/api/v1/switch/preview", SubsystemSwitching, true},
+		{"/api/v1/audio/level", SubsystemAudio, true},
+		{"/api/v1/audio/cam1/eq", SubsystemAudio, true},
+		{"/api/v1/graphics/3/on", SubsystemGraphics, true},
+		{"/api/v1/replay/play", SubsystemReplay, true},
+		{"/api/v1/recording/start", SubsystemOutput, true},
+		{"/api/v1/layout/slots/0/on", SubsystemSwitching, true},
+		{"/api/v1/scte35/cue", SubsystemOutput, true},
+		{"/api/v1/clips/upload", SubsystemSwitching, true},
+		{"/api/v1/captions/text", SubsystemCaptions, true},
+		// Exempt paths should still return false.
+		{"/api/v1/switch/state", "", false},
+		{"/api/v1/unknown", "", false},
+	}
+
+	for _, tc := range tests {
+		sub, ok := EndpointSubsystem(tc.path)
+		require.Equal(t, tc.ok, ok, "EndpointSubsystem(%q): ok mismatch", tc.path)
+		if ok {
+			require.Equal(t, tc.sub, sub, "EndpointSubsystem(%q): subsystem mismatch", tc.path)
+		}
+	}
+}
+
+func TestMiddleware_V1PrefixEnforcesPermissions(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Register an audio operator — should NOT be able to cut.
+	op, _ := store.Register("Bob", RoleAudio)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// POST /api/v1/switch/cut should be blocked for audio role, not bypassed.
+	req := httptest.NewRequest("POST", "/api/v1/switch/cut", nil)
+	req.Header.Set("Authorization", "Bearer "+op.Token)
+	rr := httptest.NewRecorder()
+	wrapped.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code,
+		"expected 403 for audio role on /api/v1/switch/cut, got %d (permission bypass via v1 prefix)", rr.Code)
+}
+
 func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
 	store, _ := NewStore(tempStorePath(t))
 	sm := NewSessionManager()

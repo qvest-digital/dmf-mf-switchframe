@@ -533,7 +533,7 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	l := c.layout.Load()
-	if l == nil || slotIdx >= len(l.Slots) {
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
 		return
 	}
 	updated := c.cloneLayout(l)
@@ -550,7 +550,7 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	l := c.layout.Load()
-	if l == nil || slotIdx >= len(l.Slots) {
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
 		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
 	}
 	// Snap to even alignment for YUV420 compatibility.
@@ -574,7 +574,7 @@ func (c *Compositor) SlotOn(slotIdx int) {
 	c.mu.Lock()
 
 	l := c.layout.Load()
-	if l == nil || slotIdx >= len(l.Slots) {
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
 		c.mu.Unlock()
 		return
 	}
@@ -625,7 +625,7 @@ func (c *Compositor) SlotOff(slotIdx int) {
 	c.mu.Lock()
 
 	l := c.layout.Load()
-	if l == nil || slotIdx >= len(l.Slots) {
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
 		c.mu.Unlock()
 		return
 	}
