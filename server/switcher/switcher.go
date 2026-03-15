@@ -2030,6 +2030,24 @@ func (s *Switcher) RegisterMXLSource(key string) {
 	s.notifyStateChange(snapshot)
 }
 
+// RegisterSRTSource registers a source that provides raw YUV420p frames
+// via IngestRawVideo (same path as MXL). Used for SRT input sources that
+// are decoded by the srt.Source orchestrator before being fed to the switcher.
+func (s *Switcher) RegisterSRTSource(key string) {
+	s.mu.Lock()
+	s.sources[key] = &sourceState{
+		key:      key,
+		label:    strings.TrimPrefix(key, "srt:"),
+		position: len(s.sources) + 1,
+	}
+	s.health.registerSource(key)
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+	s.log.Info("SRT source registered", "source_key", key)
+	s.notifyStateChange(snapshot)
+}
+
 // RegisterReplaySource registers a transient replay source that receives
 // raw YUV frames via IngestReplayVideo. Like virtual sources, replay
 // sources skip delay buffer, frame sync, and replay buffering.
