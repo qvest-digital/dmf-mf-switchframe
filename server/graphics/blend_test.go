@@ -189,6 +189,70 @@ func TestAlphaBlendRGBARect_FullFrame(t *testing.T) {
 	}
 }
 
+// TestAlphaBlendRGBARect_ChromaMatchesFullFrame verifies that the rect path
+// produces identical Cb/Cr chroma values as the full-frame path for a
+// non-uniform, strongly colored overlay. The overlay alternates red and blue
+// columns every 2 pixels so that adjacent chroma samples have maximally
+// different Cb/Cr values (red: Cb~90, Cr~240; blue: Cb~240, Cr~110).
+// A stride mismatch in the chroma kernel dispatch causes the rect path to
+// read the wrong pre-scaled pixel, producing visibly wrong chroma.
+func TestAlphaBlendRGBARect_ChromaMatchesFullFrame(t *testing.T) {
+	t.Parallel()
+	width, height := 8, 4
+
+	// Build a striped overlay: columns 0-1 red, 2-3 blue, 4-5 red, 6-7 blue.
+	rgba := make([]byte, width*height*4)
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			idx := (row*width + col) * 4
+			chromaCol := col / 2
+			if chromaCol%2 == 0 {
+				rgba[idx] = 255   // R
+				rgba[idx+1] = 0   // G
+				rgba[idx+2] = 0   // B
+				rgba[idx+3] = 255 // A
+			} else {
+				rgba[idx] = 0     // R
+				rgba[idx+1] = 0   // G
+				rgba[idx+2] = 255 // B
+				rgba[idx+3] = 255 // A
+			}
+		}
+	}
+
+	yuv1 := makeYUV420(width, height, 16, 128, 128)
+	yuv2 := makeYUV420(width, height, 16, 128, 128)
+
+	AlphaBlendRGBA(yuv1, rgba, width, height, 1.0)
+	AlphaBlendRGBARect(yuv2, rgba, width, height, width, height,
+		image.Rect(0, 0, width, height), 1.0)
+
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+	halfW := width / 2
+
+	// Verify every chroma sample matches between both paths.
+	for i := 0; i < uvSize; i++ {
+		chromaRow := i / halfW
+		chromaCol := i % halfW
+		cbFull := yuv1[ySize+i]
+		cbRect := yuv2[ySize+i]
+		require.InDelta(t, int(cbFull), int(cbRect), 1,
+			"Cb[row=%d,col=%d]: full-frame=%d rect=%d — chroma stride mismatch",
+			chromaRow, chromaCol, cbFull, cbRect)
+	}
+
+	for i := 0; i < uvSize; i++ {
+		chromaRow := i / halfW
+		chromaCol := i % halfW
+		crFull := yuv1[ySize+uvSize+i]
+		crRect := yuv2[ySize+uvSize+i]
+		require.InDelta(t, int(crFull), int(crRect), 1,
+			"Cr[row=%d,col=%d]: full-frame=%d rect=%d — chroma stride mismatch",
+			chromaRow, chromaCol, crFull, crRect)
+	}
+}
+
 func TestAlphaBlendRGBARect_SubRegion(t *testing.T) {
 	t.Parallel()
 	width, height := 8, 8

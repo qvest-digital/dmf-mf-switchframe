@@ -191,14 +191,17 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 		}
 		srcRowOff := srcRow * overlayW * 4
 
-		// Scale at chroma resolution (every other pixel).
+		// Scale at chroma resolution (every other pixel) into stride-8
+		// layout. alphaBlendRGBAChromaRow reads RGBA at stride 8 (every
+		// other full-res pixel), so we must place each chroma sample at
+		// offset dx*8, not dx*4.
 		for dx := 0; dx < halfRectW; dx++ {
 			srcCol := ((dx*2)*overlayW + rectW/2) / rectW
 			if srcCol >= overlayW {
 				srcCol = overlayW - 1
 			}
 			srcOff := srcRowOff + srcCol*4
-			dstOff := dx * 4
+			dstOff := dx * 8
 			rowBuf[dstOff] = rgba[srcOff]
 			rowBuf[dstOff+1] = rgba[srcOff+1]
 			rowBuf[dstOff+2] = rgba[srcOff+2]
