@@ -232,9 +232,13 @@ func (m *Mixer) mixFrameLocked(sourceKey string, ch *Channel, frame *media.Audio
 		gStart := float32(gainFn(m.transCrossfadeAudioPos))
 		gEnd := float32(gainFn(m.mixCycleTransPos))
 		channels := m.numChannels
-		pairCount := float32(len(trimmedPCM) / channels)
+		pairCount := len(trimmedPCM) / channels
+		divisor := float32(pairCount)
+		if pairCount > 1 {
+			divisor = float32(pairCount - 1)
+		}
 		for i, s := range trimmedPCM {
-			t := float32(i/channels) / pairCount
+			t := float32(i/channels) / divisor
 			transGain := gStart + (gEnd-gStart)*t
 			gainedPCM[i] = s * faderGain * transGain
 		}
@@ -390,9 +394,13 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		gStart := float32(gainFn(m.transCrossfadeAudioPos))
 		gEnd := float32(gainFn(m.mixCycleTransPos))
 		channels := m.numChannels
-		pairCount := float32(len(trimmedPCM) / channels)
+		pairCount := len(trimmedPCM) / channels
+		divisor := float32(pairCount)
+		if pairCount > 1 {
+			divisor = float32(pairCount - 1)
+		}
 		for i, s := range trimmedPCM {
-			t := float32(i/channels) / pairCount
+			t := float32(i/channels) / divisor
 			transGain := gStart + (gEnd-gStart)*t
 			gainedPCM[i] = s * faderGain * transGain
 		}

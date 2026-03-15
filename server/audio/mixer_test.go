@@ -2462,9 +2462,13 @@ func TestStereoGainInterpolation(t *testing.T) {
 	gStart := float32(gainFn(m.transCrossfadeAudioPos))
 	gEnd := float32(gainFn(m.mixCycleTransPos))
 	channels := m.numChannels
-	pairCount := float32(len(trimmedPCM) / channels)
+	pairCount := len(trimmedPCM) / channels
+	divisor := float32(pairCount)
+	if pairCount > 1 {
+		divisor = float32(pairCount - 1)
+	}
 	for i, s := range trimmedPCM {
-		t := float32(i/channels) / pairCount
+		t := float32(i/channels) / divisor
 		transGain := gStart + (gEnd-gStart)*t
 		gainedPCM[i] = s * ch.levelLinear * transGain
 	}
@@ -2482,6 +2486,51 @@ func TestStereoGainInterpolation(t *testing.T) {
 				"pair %d: L/R ratio should be 0.5 (identical gain), got %v", i, ratio)
 		}
 	}
+}
+
+func TestTransitionGainInterpolation_LastPairReachesTarget(t *testing.T) {
+	// Verify that the transition gain interpolation ramp reaches gEnd on the
+	// last sample pair. Before the fix, integer division and dividing by
+	// pairCount (instead of pairCount-1) caused the last pair's t to be
+	// (pairCount-1)/pairCount ≈ 0.999 instead of 1.0. The error is small
+	// (~0.001 * gainDelta, about -60dB) but the fix is trivial.
+	t.Parallel()
+
+	// Simulate the gain interpolation logic from mixFrameLocked.
+	channels := 2
+	numPairs := 512
+	buf := make([]float32, numPairs*channels)
+	for i := range buf {
+		buf[i] = 1.0 // uniform input
+	}
+
+	gStart := float32(1.0) // from gain at position 0
+	gEnd := float32(0.0)   // from gain at position 1 (cos(pi/2) = 0)
+
+	gained := make([]float32, len(buf))
+	pairCount := len(buf) / channels
+	for i, s := range buf {
+		var tVal float32
+		if pairCount > 1 {
+			tVal = float32(i/channels) / float32(pairCount-1)
+		}
+		transGain := gStart + (gEnd-gStart)*tVal
+		gained[i] = s * transGain
+	}
+
+	// First pair should have gain = gStart = 1.0
+	require.InDelta(t, float64(gStart), float64(gained[0]), 1e-6,
+		"first sample should have gain = gStart")
+	require.InDelta(t, float64(gStart), float64(gained[1]), 1e-6,
+		"first sample R should have gain = gStart")
+
+	// Last pair should have gain = gEnd = 0.0 exactly
+	lastL := gained[len(gained)-2]
+	lastR := gained[len(gained)-1]
+	require.InDelta(t, float64(gEnd), float64(lastL), 1e-6,
+		"last sample L should have gain = gEnd exactly, got %f", lastL)
+	require.InDelta(t, float64(gEnd), float64(lastR), 1e-6,
+		"last sample R should have gain = gEnd exactly, got %f", lastR)
 }
 
 func TestChannelGainCached(t *testing.T) {
