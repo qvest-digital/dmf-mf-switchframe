@@ -27,9 +27,9 @@ func growBuf(buf []float32, n int) []float32 {
 // crossfadeTimeout is the maximum time to wait for both sources to deliver
 // frames during a crossfade. If the outgoing source disconnects, the crossfade
 // completes with only the incoming source's audio after this deadline.
-// crossfadeTimeout is reduced from 50ms to 25ms because PCM pre-buffering
-// eliminates the need to wait for the outgoing source. Only the incoming
-// source needs to deliver a frame, so one AAC frame (~21.3ms) is sufficient.
+// 25ms is sufficient because PCM pre-buffering provides the outgoing source's
+// audio immediately — only the incoming source needs to deliver a frame
+// (one AAC frame is ~21.3ms).
 const crossfadeTimeout = 25 * time.Millisecond
 
 // Sentinel errors for the audio mixer.

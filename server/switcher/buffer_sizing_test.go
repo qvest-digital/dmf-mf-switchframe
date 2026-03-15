@@ -9,7 +9,7 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
-// Fix 5: source_decoder should slice buffer to actual frame size, not pool size.
+// source_decoder slices buffer to actual frame dimensions, not pool buffer size.
 func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 	// Pool is 1080p (bufSize=3,110,400) but decoder produces 320x240 frames.
 	pool := NewFramePool(4, 1920, 1080)
@@ -64,7 +64,7 @@ func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 	}
 }
 
-// Fix 6: DeepCopy should preserve source YUV slice length, not expand to pool size.
+// DeepCopy preserves source YUV slice length, not pool buffer capacity.
 func TestDeepCopy_PreservesYUVLength(t *testing.T) {
 	pool := NewFramePool(4, 1920, 1080)
 
@@ -104,7 +104,7 @@ func TestDeepCopy_PreservesYUVLength(t *testing.T) {
 	}
 }
 
-// Fix 6: DeepCopy without pool should also preserve length.
+// DeepCopy without pool preserves YUV slice length.
 func TestDeepCopy_NoPool_PreservesLength(t *testing.T) {
 	pf := &ProcessingFrame{
 		YUV:    make([]byte, 115200), // 320x240
@@ -119,7 +119,7 @@ func TestDeepCopy_NoPool_PreservesLength(t *testing.T) {
 	}
 }
 
-// Fix 7: broadcastProcessed should slice buffer to actual frame size.
+// broadcastProcessed slices buffer to actual frame dimensions.
 // Tests the pattern used in broadcastProcessed: acquire pool buffer, copy
 // source data, slice to actual frame dimensions.
 func TestBroadcastProcessed_YUVBufferMatchesFrameSize(t *testing.T) {
@@ -162,7 +162,7 @@ func TestBroadcastProcessed_YUVBufferMatchesFrameSize(t *testing.T) {
 	}
 }
 
-// Fix 5+6: Pool buffers should round-trip correctly through Release even when sliced.
+// Pool buffers round-trip correctly through Release even when sliced.
 func TestFramePool_ReleaseAcceptsSubslice(t *testing.T) {
 	pool := NewFramePool(2, 1920, 1080)
 	poolBufSize := 1920 * 1080 * 3 / 2

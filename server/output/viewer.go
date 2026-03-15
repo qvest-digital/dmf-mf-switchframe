@@ -152,9 +152,8 @@ func (v *Viewer) Run() {
 				slog.Error("output viewer: mux audio error", "err", err)
 			}
 
-		// Captions are received but not muxed in Phase 5 (TS muxer
-		// does not have a caption PID). We still drain the channel to
-		// avoid backpressure.
+		// Captions are received but not muxed (TS muxer does not have
+		// a caption PID). Drain the channel to avoid backpressure.
 		case <-v.captionCh:
 
 		case <-v.stopCh:

@@ -120,7 +120,7 @@ func (p *replayPlayer) Progress() float64 {
 const gopLookahead = 2
 
 // gopOutputState holds the mutable state threaded through outputGOP calls,
-// replacing what was previously 15 individual pointer/value parameters.
+// grouping per-GOP parameters into a single struct for readability.
 type gopOutputState struct {
 	encoder       transition.VideoEncoder
 	interpolator  FrameInterpolator

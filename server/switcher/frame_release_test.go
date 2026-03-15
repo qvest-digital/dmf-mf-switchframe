@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Fix 1: frcSource.ingest should release old prevFrame's YUV buffer.
+// frcSource.ingest releases the old prevFrame's YUV buffer back to the pool.
 func TestFRCIngest_ReleasesOldPrevFrame(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -53,7 +53,7 @@ func TestFRCIngest_ReleasesOldPrevFrame(t *testing.T) {
 	pool.Release(buf)
 }
 
-// Fix 1: frcSource.reset should release both prevFrame and currFrame.
+// frcSource.reset releases both prevFrame and currFrame buffers.
 func TestFRCReset_ReleasesBothFrames(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -87,7 +87,7 @@ func TestFRCReset_ReleasesBothFrames(t *testing.T) {
 	}
 }
 
-// Fix 2: Ring buffer overwrite should release old frame when no FRC.
+// Ring buffer overwrite releases the old frame when FRC is inactive.
 func TestSyncSource_PushRawVideo_ReleasesOverwrittenFrame(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -118,7 +118,7 @@ func TestSyncSource_PushRawVideo_ReleasesOverwrittenFrame(t *testing.T) {
 	}
 }
 
-// Fix 2: popNewestRawVideo should release non-newest frames when no FRC.
+// popNewestRawVideo releases non-newest frames when FRC is inactive.
 func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -146,7 +146,7 @@ func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
 	}
 }
 
-// Fix 2: With FRC active, ring buffer should NOT release frames (FRC owns them).
+// With FRC active, ring buffer does not release frames (FRC owns lifecycle).
 func TestSyncSource_PushRawVideo_NoReleaseWithFRC(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -170,7 +170,7 @@ func TestSyncSource_PushRawVideo_NoReleaseWithFRC(t *testing.T) {
 	}
 }
 
-// Fix 2: Delay buffer should release frame after delivering via timer callback.
+// Delay buffer releases frame after delivering via timer callback.
 func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -181,8 +181,7 @@ func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 	// When delay=0 (immediate path), release happens after handler call.
 	// We test the immediate path here since it's synchronous.
 	//
-	// In the current buggy code, the frame is never released.
-	// After the fix, frames are released after handler.handleRawVideoFrame.
+	// Frames are released after handler.handleRawVideoFrame returns.
 	//
 	// We verify the pattern by checking that a frame released after
 	// handleRawVideoFrame returns its buffer to the pool.
@@ -202,7 +201,7 @@ func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 	}
 }
 
-// Fix 4: rawSinkNode.Process should release the DeepCopy'd frame after sink callback.
+// rawSinkNode.Process releases frames via refcount after sink callback.
 func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
@@ -257,7 +256,7 @@ func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 	}
 }
 
-// Fix 2: makeDecoderCallback direct path should release frame after handleRawVideoFrame.
+// makeDecoderCallback direct path releases frame after handleRawVideoFrame.
 func TestDecoderCallback_ReleasesOnDirectPath(t *testing.T) {
 	pool := NewFramePool(4, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
