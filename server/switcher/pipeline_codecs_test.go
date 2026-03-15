@@ -469,11 +469,7 @@ func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
 	// encode() is using it. The fix holds the mutex for the entire encode,
 	// so invalidateEncoder() blocks until encode() completes.
 	//
-	// Without the fix, the old 3-phase locking pattern released the mutex
-	// before calling encoder.Encode(), allowing invalidateEncoder() to
-	// call encoder.Close() concurrently — a use-after-free with real
-	// FFmpeg encoders (C.avcodec_free_context while C.avcodec_encode_video2
-	// is running).
+	// encode() holds the mutex for the entire encode call, preventing concurrent Close().
 
 	slowEnc := &slowMockEncoder{
 		encodeStarted: make(chan struct{}),

@@ -118,6 +118,8 @@ func Run(ctx context.Context, m Macro, target Target, onProgress OnProgress) err
 		state.Steps[i].Status = StepDone
 		notify()
 	}
+	state.Running = false
+	notify()
 	return nil
 }
 

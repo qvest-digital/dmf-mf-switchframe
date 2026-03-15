@@ -294,7 +294,7 @@ func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
 	}()
 
 	// Both operations must complete within a reasonable time.
-	// Without the fix, this can hang if viewerWg.Wait() blocks on the new viewer.
+	// Concurrent start-during-stop completes without deadlock.
 	for i := 0; i < 2; i++ {
 		select {
 		case <-errCh:

@@ -449,8 +449,7 @@ func TestAlphaBlendRGBARect_OpaqueNoBackgroundLeak(t *testing.T) {
 	//
 	// We use a bright background (Y=200) and a dark overlay (Y≈32 for pure blue
 	// in limited-range BT.709) at alpha=255 to maximize the leak visibility.
-	// Without the fix, the leaked background adds ~0.78 to the output Y
-	// (200 * 1/256 ≈ 0.78).
+	// At alpha=255, the background does not leak through (output Y equals overlay Y exactly).
 	width, height := 4, 4
 
 	// Bright background so any leak is detectable.

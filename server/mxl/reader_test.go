@@ -616,7 +616,7 @@ func TestReader_AudioChannelNilForVideo(t *testing.T) {
 }
 
 // underflowDiscreteReader simulates a "too late" error followed by HeadIndex
-// returning a small value (0 or 1), which previously caused uint64 underflow
+// returning a small value (0 or 1), which would cause uint64 underflow without the bounds check
 // in the `index = headIdx - 2` re-sync logic.
 type underflowDiscreteReader struct {
 	mu        sync.Mutex

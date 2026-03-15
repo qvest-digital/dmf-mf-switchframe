@@ -84,8 +84,8 @@ func TestTranscodeFile_NonExistent(t *testing.T) {
 
 func TestTranscodeFile_NonExistentRepeated(t *testing.T) {
 	// Exercise the cleanup path repeatedly to ensure no resource leaks
-	// (file descriptors, codec contexts). Before the fix, the early
-	// return -1 in avformat_open_input failure bypassed goto cleanup.
+	// (file descriptors, codec contexts). Error path runs cleanup
+	// (goto cleanup), preventing resource leaks.
 	dir := t.TempDir()
 	outputPath := filepath.Join(dir, "output.ts")
 

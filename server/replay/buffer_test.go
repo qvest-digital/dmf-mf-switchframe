@@ -296,7 +296,7 @@ func TestReplayBuffer_ExtractClip_AudioIncludesLastFrameDuration(t *testing.T) {
 }
 
 func TestReplayBuffer_AudioFrameDataIntegrity(t *testing.T) {
-	// Fix 8: Verify audio frame data is correctly deep-copied into the buffer.
+	// Audio frame data is deep-copied into the buffer (not aliased).
 	// A self-copy bug (copy(af.data, af.data)) would leave the buffer with
 	// zero-filled data instead of the original audio content.
 	buf := newReplayBuffer(60, 0)
@@ -324,9 +324,7 @@ func TestReplayBuffer_AudioFrameDataIntegrity(t *testing.T) {
 }
 
 func TestReplayBuffer_AudioBytesIncludedInMemoryLimit(t *testing.T) {
-	// Fix 7: trimLocked only checks bytesUsed (video bytes). audioBytesUsed
-	// never contributes to the memory limit, and recordAudioFrameAt never
-	// calls trimLocked. This means audio frames can grow unbounded.
+	// Audio bytes are included in the memory limit for trim decisions.
 	maxBytes := int64(2000)
 	buf := newReplayBuffer(60, maxBytes)
 	now := time.Now()

@@ -170,10 +170,8 @@ func TestStore_ListNeverObservesTransientState(t *testing.T) {
 	seed, err := s.Register("Seed", RoleDirector)
 	require.NoError(t, err)
 
-	// Hammer Register and List concurrently. Before the fix, List() could
-	// observe a newly appended operator that hadn't been written to disk yet
-	// (transient state). After the fix, List() either sees the state before
-	// or after Register completes, never in between.
+	// Hammer Register and List concurrently. List() returns a consistent
+	// snapshot — it never observes an in-flight mutation.
 	const goroutines = 50
 	var wg sync.WaitGroup
 	wg.Add(goroutines)

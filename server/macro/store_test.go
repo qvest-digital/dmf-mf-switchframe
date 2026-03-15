@@ -264,10 +264,7 @@ func TestStore_ListNeverObservesTransientState(t *testing.T) {
 		Steps: []Step{{Action: ActionCut, Params: map[string]any{"source": "cam1"}}},
 	}))
 
-	// Hammer Save and List concurrently. Before the fix, List() could observe
-	// a newly appended macro that hadn't been written to disk yet (transient state).
-	// After the fix, List() either sees the state before or after Save completes,
-	// never in between.
+	// Save and List are serialized: List() returns a consistent snapshot.
 	const goroutines = 50
 	var wg sync.WaitGroup
 	wg.Add(goroutines)

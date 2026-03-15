@@ -1715,7 +1715,7 @@ func TestInjector_PreRoll_PTSWrap33Bit(t *testing.T) {
 	// The auto-return timer should be set to breakDur + pre-roll time.
 	// Pre-roll = 180000 ticks / 90000 = 2 seconds.
 	// Total timer = 200ms + 2s = 2.2s.
-	// Without the fix, the timer would be set to just 200ms (pre-roll skipped).
+	// The auto-return timer includes pre-roll duration (breakDur + preRoll).
 
 	// Verify the event is still active immediately (should not have returned yet).
 	require.Len(t, inj.ActiveEventIDs(), 1, "event should still be active")
@@ -1723,8 +1723,8 @@ func TestInjector_PreRoll_PTSWrap33Bit(t *testing.T) {
 	// Wait long enough for breakDur alone (200ms) but not breakDur + preRoll (2.2s).
 	time.Sleep(500 * time.Millisecond)
 
-	// With the fix: event should still be active (timer = 2.2s, only 500ms elapsed).
-	// Without the fix: event would already be returned (timer = 200ms, 500ms elapsed).
+	// Event should still be active (timer = 2.2s, only 500ms elapsed).
+	// If pre-roll were not included, event would already be returned (timer = 200ms, 500ms elapsed).
 	activeIDs := inj.ActiveEventIDs()
 	require.Len(t, activeIDs, 1, "event should still be active after 500ms "+
 		"because pre-roll (2s) is included in auto-return delay; "+
