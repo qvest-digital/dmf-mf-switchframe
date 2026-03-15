@@ -133,6 +133,46 @@ func TestDelayRingBufferWrap(t *testing.T) {
 	}
 }
 
+func TestDelayBuffer_WallClockTimingIsCorrectForLipSync(t *testing.T) {
+	// Document that wall-clock timing (time.Now) is the correct approach for
+	// the audio delay buffer. This buffer implements lip-sync correction,
+	// which compensates for latency differences between the audio and video
+	// processing paths. Wall-clock timing is preferred over PTS because:
+	//
+	// 1. PTS reflects presentation time, not processing arrival time.
+	//    Lip-sync correction needs to delay relative to arrival.
+	// 2. PTS can have discontinuities on stream restart; wall-clock is monotonic.
+	// 3. If frames arrive in a burst (network jitter), wall-clock correctly
+	//    delays from arrival, while PTS-based timing would release them all
+	//    at once since their PTS values are closely spaced.
+	//
+	// This test verifies that frames with varying PTS spacing are delayed
+	// correctly based on wall-clock, not PTS.
+	buf := NewDelayBuffer(100) // 100ms delay
+	now := time.Now()
+
+	// Simulate frames arriving at regular wall-clock intervals but with
+	// irregular PTS values (as happens with variable-length AAC frames,
+	// B-frame reordering, or stream discontinuities).
+	frames := []*media.AudioFrame{
+		{Data: []byte{0}, PTS: 0},
+		{Data: []byte{1}, PTS: 50000}, // PTS jump of 50000 (556ms in 90kHz)
+		{Data: []byte{2}, PTS: 50100}, // PTS jump of 100 (1.1ms in 90kHz)
+	}
+
+	// Ingest at regular 23ms intervals (typical AAC frame arrival rate).
+	for i, f := range frames {
+		out := buf.ingestAt(f, now.Add(time.Duration(i)*23*time.Millisecond))
+		assert.Nil(t, out, "frame %d should be buffered (delay not elapsed)", i)
+	}
+
+	// At 100ms, the first frame (ingested at t+0) should be released.
+	trigger := &media.AudioFrame{Data: []byte{3}, PTS: 100000}
+	out := buf.ingestAt(trigger, now.Add(100*time.Millisecond))
+	require.NotNil(t, out, "first frame should be released at 100ms wall-clock")
+	assert.Equal(t, byte(0), out.Data[0], "released frame should be the first one")
+}
+
 func TestDelayRingBufferNoLeak(t *testing.T) {
 	// Process many frames and verify the internal ring stays bounded.
 	buf := NewDelayBuffer(20)
