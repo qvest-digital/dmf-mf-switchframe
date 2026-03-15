@@ -522,7 +522,7 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 					p.config.RawVideoOutput(frameData, dw, dh, *outputPTS, false)
 				}
 				num, den := fpsToRational(p.sourceFPS)
-			*outputPTS += int64(90000) * int64(den) / int64(num)
+				*outputPTS += int64(90000) * int64(den) / int64(num)
 			}
 		}
 	}
