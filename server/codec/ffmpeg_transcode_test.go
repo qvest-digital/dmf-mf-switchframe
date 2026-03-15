@@ -197,6 +197,41 @@ func TestTranscodeFileWithProgress_NilProgress(t *testing.T) {
 	require.Greater(t, result.VideoFrames, 0)
 }
 
+func TestTranscodeFile_DecoderFlushPreservesFrames(t *testing.T) {
+	// This test verifies that the transcoder properly flushes the video decoder
+	// after EOF. With thread_count=0 (auto), FFmpeg's frame-threaded decoder
+	// buffers multiple frames internally. Without sending a NULL packet to drain
+	// the decoder, the last few frames are silently lost.
+	//
+	// Strategy: create a source file, transcode it to MPEG-TS, then re-transcode
+	// the output. The re-transcoded file must have the same frame count as the
+	// first transcode. If the decoder flush is missing, the second transcode
+	// loses buffered frames and the count drops.
+	dir := t.TempDir()
+
+	// Step 1: Create raw H.264 input and transcode to proper MPEG-TS
+	rawInput := createTestTSInputFile(t, dir, 128, 128, 90)
+	firstOutput := filepath.Join(dir, "first.ts")
+
+	result1, err := TranscodeFile(rawInput, firstOutput, "libx264", 500000)
+	require.NoError(t, err)
+	require.NotNil(t, result1)
+	require.Greater(t, result1.VideoFrames, 0, "first transcode should produce frames")
+
+	// Step 2: Re-transcode the MPEG-TS output
+	secondOutput := filepath.Join(dir, "second.ts")
+	result2, err := TranscodeFile(firstOutput, secondOutput, "libx264", 500000)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+
+	// The re-transcoded file must have the same frame count.
+	// Without decoder flush, frame-threaded decoding loses the last few frames
+	// on each transcode pass, causing result2.VideoFrames < result1.VideoFrames.
+	require.Equal(t, result1.VideoFrames, result2.VideoFrames,
+		"re-transcode must preserve frame count (decoder flush required); "+
+			"first=%d second=%d", result1.VideoFrames, result2.VideoFrames)
+}
+
 func TestTranscodeFile_OutputIsMPEGTS(t *testing.T) {
 	dir := t.TempDir()
 	inputPath := createTestTSInputFile(t, dir, 64, 64, 15)

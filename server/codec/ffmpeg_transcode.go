@@ -47,6 +47,8 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 
 	int ret = 0;
 	int video_frames = 0;
+	int64_t video_pts = 0;
+	int64_t audio_pts = 0;
 
 	// Input state
 	AVFormatContext* ifmt_ctx = NULL;
@@ -379,9 +381,6 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 
 	// --- Main transcode loop ---
 	{
-		int64_t video_pts = 0;
-		int64_t audio_pts = 0;
-
 		while (1) {
 			ret = av_read_frame(ifmt_ctx, pkt);
 			if (ret < 0) {
@@ -538,6 +537,70 @@ static int ff_transcode_file(const char* input_path, const char* output_path,
 
 loop_done:
 
+	// --- Flush video decoder ---
+	// With thread_count=0 (auto), the decoder uses frame threading which
+	// buffers multiple frames internally. Sending a NULL packet drains them.
+	avcodec_send_packet(video_dec_ctx, NULL);
+	while (1) {
+		ret = avcodec_receive_frame(video_dec_ctx, dec_frame);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+			break;
+		}
+		if (ret < 0) {
+			break;
+		}
+
+		// Reinitialize sws if decoder format/resolution changed.
+		if (dec_frame->format != AV_PIX_FMT_NONE &&
+		    (dec_frame->format != last_sws_fmt ||
+		     dec_frame->width  != last_sws_w   ||
+		     dec_frame->height != last_sws_h)) {
+			struct SwsContext* new_sws = sws_getContext(
+				dec_frame->width, dec_frame->height, dec_frame->format,
+				video_enc_ctx->width, video_enc_ctx->height, AV_PIX_FMT_YUV420P,
+				SWS_BILINEAR, NULL, NULL, NULL);
+			if (new_sws) {
+				sws_freeContext(sws_ctx);
+				sws_ctx = new_sws;
+				last_sws_fmt = dec_frame->format;
+				last_sws_w   = dec_frame->width;
+				last_sws_h   = dec_frame->height;
+			}
+		}
+
+		av_frame_make_writable(sws_frame);
+		sws_scale(sws_ctx,
+			(const uint8_t* const*)dec_frame->data, dec_frame->linesize,
+			0, dec_frame->height,
+			sws_frame->data, sws_frame->linesize);
+
+		sws_frame->pts = video_pts++;
+		av_frame_unref(dec_frame);
+
+		ret = avcodec_send_frame(video_enc_ctx, sws_frame);
+		if (ret < 0) {
+			continue;
+		}
+
+		while (1) {
+			ret = avcodec_receive_packet(video_enc_ctx, enc_pkt);
+			if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+				break;
+			}
+			if (ret < 0) {
+				break;
+			}
+
+			enc_pkt->stream_index = out_video_idx;
+			av_packet_rescale_ts(enc_pkt,
+				video_enc_ctx->time_base,
+				out_video_stream->time_base);
+			av_interleaved_write_frame(ofmt_ctx, enc_pkt);
+			av_packet_unref(enc_pkt);
+			video_frames++;
+		}
+	}
+
 	// --- Flush video encoder ---
 	avcodec_send_frame(video_enc_ctx, NULL);
 	while (1) {
@@ -555,6 +618,55 @@ loop_done:
 		av_interleaved_write_frame(ofmt_ctx, enc_pkt);
 		av_packet_unref(enc_pkt);
 		video_frames++;
+	}
+
+	// --- Flush audio decoder ---
+	if (audio_dec_ctx && audio_enc_ctx) {
+		avcodec_send_packet(audio_dec_ctx, NULL);
+		while (1) {
+			ret = avcodec_receive_frame(audio_dec_ctx, dec_frame);
+			if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+				break;
+			}
+			if (ret < 0) {
+				break;
+			}
+
+			int out_samples = swr_convert(swr_ctx,
+				swr_frame->data, swr_frame->nb_samples,
+				(const uint8_t**)dec_frame->data, dec_frame->nb_samples);
+			av_frame_unref(dec_frame);
+
+			if (out_samples <= 0) {
+				continue;
+			}
+
+			swr_frame->nb_samples = out_samples;
+			swr_frame->pts = audio_pts;
+			audio_pts += out_samples;
+
+			ret = avcodec_send_frame(audio_enc_ctx, swr_frame);
+			if (ret < 0) {
+				continue;
+			}
+
+			while (1) {
+				ret = avcodec_receive_packet(audio_enc_ctx, enc_pkt);
+				if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+					break;
+				}
+				if (ret < 0) {
+					break;
+				}
+
+				enc_pkt->stream_index = out_audio_idx;
+				av_packet_rescale_ts(enc_pkt,
+					audio_enc_ctx->time_base,
+					out_audio_stream->time_base);
+				av_interleaved_write_frame(ofmt_ctx, enc_pkt);
+				av_packet_unref(enc_pkt);
+			}
+		}
 	}
 
 	// --- Flush audio encoder ---
