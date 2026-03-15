@@ -7,6 +7,17 @@ import (
 	"unsafe"
 )
 
+// conv10to8 converts a 10-bit value to 8-bit with rounding and clamping.
+// (val+2)>>2 rounds to nearest, but 10-bit values 1022-1023 produce 256
+// which overflows byte. Clamping to 255 prevents wrap-to-zero.
+func conv10to8(v uint32) byte {
+	r := (v + 2) >> 2
+	if r > 255 {
+		return 255
+	}
+	return byte(r)
+}
+
 // ChromaVAvg computes dst[i] = (top[i] + bot[i] + 1) >> 1 for n bytes.
 // Used for vertical 4:2:2 → 4:2:0 chroma downsampling.
 func ChromaVAvg(dst, top, bot *byte, n int) {
@@ -43,23 +54,23 @@ func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 		w2 := binary.LittleEndian.Uint32(v210S[offset+8:])
 		w3 := binary.LittleEndian.Uint32(v210S[offset+12:])
 
-		// Extract 10-bit values and convert to 8-bit with rounding (+2 before >>2)
+		// Extract 10-bit values and convert to 8-bit with rounding and clamping.
 		yBase := g * 6
-		yS[yBase+0] = byte(((w0>>10&0x3FF) + 2) >> 2) // Y0
-		yS[yBase+1] = byte(((w1&0x3FF) + 2) >> 2)     // Y1
-		yS[yBase+2] = byte(((w1>>20&0x3FF) + 2) >> 2) // Y2
-		yS[yBase+3] = byte(((w2>>10&0x3FF) + 2) >> 2) // Y3
-		yS[yBase+4] = byte(((w3&0x3FF) + 2) >> 2)     // Y4
-		yS[yBase+5] = byte(((w3>>20&0x3FF) + 2) >> 2) // Y5
+		yS[yBase+0] = conv10to8(w0 >> 10 & 0x3FF) // Y0
+		yS[yBase+1] = conv10to8(w1 & 0x3FF)       // Y1
+		yS[yBase+2] = conv10to8(w1 >> 20 & 0x3FF) // Y2
+		yS[yBase+3] = conv10to8(w2 >> 10 & 0x3FF) // Y3
+		yS[yBase+4] = conv10to8(w3 & 0x3FF)       // Y4
+		yS[yBase+5] = conv10to8(w3 >> 20 & 0x3FF) // Y5
 
 		cBase := g * 3
-		cbS[cBase+0] = byte(((w0&0x3FF) + 2) >> 2)     // Cb0
-		cbS[cBase+1] = byte(((w1>>10&0x3FF) + 2) >> 2) // Cb2
-		cbS[cBase+2] = byte(((w2>>20&0x3FF) + 2) >> 2) // Cb4
+		cbS[cBase+0] = conv10to8(w0 & 0x3FF)       // Cb0
+		cbS[cBase+1] = conv10to8(w1 >> 10 & 0x3FF) // Cb2
+		cbS[cBase+2] = conv10to8(w2 >> 20 & 0x3FF) // Cb4
 
-		crS[cBase+0] = byte(((w0>>20&0x3FF) + 2) >> 2) // Cr0
-		crS[cBase+1] = byte(((w2&0x3FF) + 2) >> 2)     // Cr2
-		crS[cBase+2] = byte(((w3>>10&0x3FF) + 2) >> 2) // Cr4
+		crS[cBase+0] = conv10to8(w0 >> 20 & 0x3FF) // Cr0
+		crS[cBase+1] = conv10to8(w2 & 0x3FF)       // Cr2
+		crS[cBase+2] = conv10to8(w3 >> 10 & 0x3FF) // Cr4
 	}
 }
 
