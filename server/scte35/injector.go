@@ -336,8 +336,9 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		return 0, fmt.Errorf("encode cue: %w", err)
 	}
 
-	// Send to muxer.
-	inj.muxerSink(data)
+	// Capture muxer sink reference under lock; call it outside to avoid
+	// blocking the injector if the sink is slow (same pattern as sendHeartbeat).
+	muxerSink := inj.muxerSink
 
 	// eventID tracks the primary ID for this cue. For splice_insert it's
 	// msg.EventID; for time_signal it's the first cue-out SegEventID.
@@ -482,6 +483,12 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
+
+	// Send to muxer outside the lock to avoid blocking the injector
+	// if the sink is slow (e.g. TSMuxer write, SRT flush).
+	if muxerSink != nil {
+		muxerSink(data)
+	}
 
 	// Fire state change callback outside the lock to avoid deadlock
 	// (callback may call State() which also acquires mu).
@@ -652,7 +659,6 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 		inj.mu.Unlock()
 		return fmt.Errorf("encode cue-in: %w", err)
 	}
-	inj.muxerSink(data)
 
 	// Remove from active (plus any sibling descriptors from multi-descriptor time_signals).
 	delete(inj.activeEvents, eventID)
@@ -663,9 +669,15 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 
 	// Capture fields before unlocking.
 	aeSource := ae.Source
+	muxerSink := inj.muxerSink
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
+
+	// Send to muxer outside the lock.
+	if muxerSink != nil {
+		muxerSink(data)
+	}
 
 	if cb != nil {
 		cb()
@@ -735,7 +747,6 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		inj.mu.Unlock()
 		return fmt.Errorf("encode cancel: %w", err)
 	}
-	inj.muxerSink(data)
 
 	// Remove from active (plus any sibling descriptors from multi-descriptor time_signals).
 	delete(inj.activeEvents, eventID)
@@ -746,9 +757,15 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 
 	// Capture fields before unlocking.
 	aeSource := ae.Source
+	muxerSink := inj.muxerSink
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
+
+	// Send to muxer outside the lock.
+	if muxerSink != nil {
+		muxerSink(data)
+	}
 
 	if cb != nil {
 		cb()
@@ -794,14 +811,19 @@ func (inj *Injector) CancelSegmentationEvent(segEventID uint32, source string) e
 		inj.mu.Unlock()
 		return fmt.Errorf("encode cancel segmentation: %w", err)
 	}
-	inj.muxerSink(data)
 
 	// Log the event.
 	inj.logEventLocked(segEventID, CommandTimeSignal, false, nil, false, "cancelled", msg)
 
+	muxerSink := inj.muxerSink
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
+
+	// Send to muxer outside the lock.
+	if muxerSink != nil {
+		muxerSink(data)
+	}
 
 	if cb != nil {
 		cb()
@@ -935,7 +957,6 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 		inj.mu.Unlock()
 		return fmt.Errorf("encode extend: %w", err)
 	}
-	inj.muxerSink(data)
 
 	// Log.
 	durMs := newDurationMs
@@ -945,9 +966,15 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 	cmdType := ae.CommandType
 	isOut := ae.IsOut
 	aeSource := ae.Source
+	muxerSink := inj.muxerSink
 	cb := inj.onStateChange
 	s104 := inj.scte104Sink
 	inj.mu.Unlock()
+
+	// Send to muxer outside the lock.
+	if muxerSink != nil {
+		muxerSink(data)
+	}
 
 	if cb != nil {
 		cb()

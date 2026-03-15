@@ -1,7 +1,7 @@
 package switcher
 
 import (
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/zsiec/switchframe/server/transition"
@@ -138,6 +138,7 @@ type frcSource struct {
 	// Reusable buffers (zero-alloc steady state)
 	blendOut   []byte          // final blended output
 	nearestOut []byte          // reusable buffer for emitNearest (avoids aliasing live frames)
+	sortBuf    []uint64        // reusable buffer for medianSAD sort
 	hme        *hierarchicalME // pyramid ME state (reused across frames)
 
 	// FPS tracking from PTS deltas
@@ -471,21 +472,20 @@ func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 }
 
 // medianSAD computes the median of the SAD history buffer.
+// Uses a reusable sort buffer to avoid per-call allocation.
 func (fs *frcSource) medianSAD() uint64 {
 	if fs.sadHistoryCount == 0 {
 		return 0
 	}
 
-	// Copy valid entries and sort
-	vals := make([]uint64, fs.sadHistoryCount)
-	if fs.sadHistoryCount == frcSADHistorySize {
-		copy(vals, fs.sadHistory[:])
-	} else {
-		// History hasn't wrapped yet; entries are at indices 0..sadHistoryCount-1
-		copy(vals, fs.sadHistory[:fs.sadHistoryCount])
+	n := fs.sadHistoryCount
+	if cap(fs.sortBuf) < n {
+		fs.sortBuf = make([]uint64, n)
 	}
+	vals := fs.sortBuf[:n]
+	copy(vals, fs.sadHistory[:n])
 
-	sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
+	slices.Sort(vals)
 	return vals[len(vals)/2]
 }
 

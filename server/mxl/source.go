@@ -225,6 +225,19 @@ func (s *Source) Stop() {
 		}
 		s.wg.Wait()
 
+		// Wait for reader goroutines (videoLoop, audioLoop, dataLoop) to finish.
+		// These are tracked by each Reader's own WaitGroup, separate from the
+		// fan-out goroutines tracked by s.wg.
+		if s.videoReader != nil {
+			s.videoReader.Wait()
+		}
+		if s.audioReader != nil {
+			s.audioReader.Wait()
+		}
+		if s.dataReader != nil {
+			s.dataReader.Wait()
+		}
+
 		if s.videoEncoder != nil {
 			s.videoEncoder.Close()
 		}

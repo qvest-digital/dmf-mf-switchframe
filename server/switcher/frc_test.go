@@ -1053,3 +1053,14 @@ func BenchmarkFRC_SceneDetection(b *testing.B) {
 		fs.detectSceneChange(f1, f2)
 	}
 }
+
+func BenchmarkMedianSAD(b *testing.B) {
+	fs := &frcSource{sadHistoryCount: frcSADHistorySize}
+	for i := range fs.sadHistory {
+		fs.sadHistory[i] = uint64(i * 100)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		fs.medianSAD()
+	}
+}
