@@ -689,6 +689,10 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 	c.mu.Unlock()
 
 	// Compositing pass under read lock (no ticker writes).
+	// Note: there is a brief window between Unlock and RLock where fade/animation
+	// goroutines can modify layer state (fade position, rect, active flag). This is
+	// benign — at most a one-frame delay (~16-41ms) in observing animation changes,
+	// which is visually imperceptible.
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

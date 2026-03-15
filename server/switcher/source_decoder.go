@@ -3,6 +3,7 @@ package switcher
 import (
 	"log/slog"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,7 +46,8 @@ type sourceDecoder struct {
 	pipelineFormat *atomic.Pointer[PipelineFormat]
 
 	// Reusable buffer for resolution scaling (lazy-allocated on first use).
-	scaleBuf []byte
+	scaleBuf       []byte
+	scaleWarnOnce  sync.Once // log mismatch warning once per source
 
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
@@ -163,6 +165,11 @@ func (sd *sourceDecoder) decodeLoop() {
 		// Scale to pipeline format if resolution differs.
 		if sd.pipelineFormat != nil {
 			if pf := sd.pipelineFormat.Load(); pf != nil && pf.Width > 0 && pf.Height > 0 && (w != pf.Width || h != pf.Height) {
+				sd.scaleWarnOnce.Do(func() {
+					slog.Info("source resolution differs from pipeline format; scaling with Lanczos-3",
+						"source", sd.sourceKey, "source_w", w, "source_h", h,
+						"pipeline_w", pf.Width, "pipeline_h", pf.Height)
+				})
 				dstSize := pf.Width * pf.Height * 3 / 2
 				if len(sd.scaleBuf) < dstSize {
 					sd.scaleBuf = make([]byte, dstSize)
