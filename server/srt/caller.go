@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -145,6 +146,19 @@ func (c *Caller) RestoreFromStore(ctx context.Context) {
 	}
 }
 
+// computeJitteredBackoff adds ±25% random jitter to a backoff duration
+// to prevent thundering herd when multiple callers reconnect simultaneously.
+func computeJitteredBackoff(backoff time.Duration) time.Duration {
+	// Jitter range: ±25% of backoff
+	quarter := int64(backoff / 4)
+	if quarter <= 0 {
+		return backoff
+	}
+	// Random offset in [-quarter, +quarter)
+	jitter := rand.Int64N(2*quarter) - quarter
+	return backoff + time.Duration(jitter)
+}
+
 // connectLoop dials the remote SRT address with exponential backoff. On success,
 // it calls OnSource and waits for the source to stop before reconnecting.
 func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
@@ -169,18 +183,19 @@ func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
 		c.log.Info("dialing", "key", config.Key, "address", config.Address)
 		conn, err := srtgo.Dial(config.Address, srtCfg)
 		if err != nil {
+			jitteredBackoff := computeJitteredBackoff(backoff)
 			c.log.Warn("dial failed",
 				"key", config.Key,
 				"address", config.Address,
 				"error", err,
-				"backoff", backoff,
+				"backoff", jitteredBackoff,
 			)
 
-			// Sleep with backoff, respecting context cancellation.
+			// Sleep with jittered backoff, respecting context cancellation.
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(backoff):
+			case <-time.After(jitteredBackoff):
 			}
 
 			// Exponential backoff with cap.

@@ -482,6 +482,38 @@ func TestCallerValidation(t *testing.T) {
 	// (But address is still required.)
 }
 
+func TestCallerBackoffJitter(t *testing.T) {
+	// Verify that computeJitteredBackoff adds randomness to backoff values.
+	// Run multiple times and check that not all values are identical.
+	base := 2 * time.Second
+	seen := make(map[time.Duration]bool)
+	for i := 0; i < 100; i++ {
+		jittered := computeJitteredBackoff(base)
+		seen[jittered] = true
+		// Jitter should be within ±25% of base.
+		minVal := base - base/4
+		maxVal := base + base/4
+		if jittered < minVal || jittered > maxVal {
+			t.Errorf("jittered backoff %v outside expected range [%v, %v]", jittered, minVal, maxVal)
+		}
+	}
+	// With 100 iterations and ±25% jitter, we should see more than 1 distinct value.
+	if len(seen) < 2 {
+		t.Errorf("expected jitter to produce multiple distinct backoff values, got %d", len(seen))
+	}
+}
+
+func TestCallerBackoffJitterRespectsCap(t *testing.T) {
+	// Even with jitter, backoff should never exceed maxBackoff + 25%.
+	for i := 0; i < 100; i++ {
+		jittered := computeJitteredBackoff(maxBackoff)
+		maxAllowed := maxBackoff + maxBackoff/4
+		if jittered > maxAllowed {
+			t.Errorf("jittered backoff %v exceeds max allowed %v", jittered, maxAllowed)
+		}
+	}
+}
+
 func TestCallerReplacesExistingPull(t *testing.T) {
 	addr1 := findFreePort(t)
 	addr2 := findFreePort(t)

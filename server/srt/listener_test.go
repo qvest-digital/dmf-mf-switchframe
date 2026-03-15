@@ -2,6 +2,7 @@ package srt
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -259,6 +260,177 @@ func TestListenerRestoresConfig(t *testing.T) {
 		t.Errorf("expected restored delayMs %d, got %d", 50, gotConfig.DelayMs)
 	}
 
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Run to return")
+	}
+}
+
+func TestListenerMaxSources(t *testing.T) {
+	addr := findFreePort(t)
+	store := tempStore(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var mu sync.Mutex
+	acceptedCount := 0
+	called := make(chan struct{}, 10)
+
+	l, err := NewListener(ListenerConfig{
+		Addr:           addr,
+		Store:          store,
+		DefaultLatency: 120 * time.Millisecond,
+		MaxSources:     2,
+		OnSource: func(cfg SourceConfig, conn *srtgo.Conn) {
+			mu.Lock()
+			acceptedCount++
+			mu.Unlock()
+			called <- struct{}{}
+		},
+		Log: log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- l.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect 2 sources — both should succeed.
+	conns := make([]*srtgo.Conn, 0, 3)
+	for i := 0; i < 2; i++ {
+		cfg := srtgo.DefaultConfig()
+		cfg.StreamID = fmt.Sprintf("live/camera%d", i+1)
+		conn, err := srtgo.Dial(addr, cfg)
+		if err != nil {
+			t.Fatalf("Dial %d failed: %v", i+1, err)
+		}
+		conns = append(conns, conn)
+	}
+
+	// Wait for both OnSource callbacks.
+	for i := 0; i < 2; i++ {
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timeout waiting for OnSource callback %d", i+1)
+		}
+	}
+
+	mu.Lock()
+	if acceptedCount != 2 {
+		t.Errorf("expected 2 accepted sources, got %d", acceptedCount)
+	}
+	mu.Unlock()
+
+	// Third connection should be rejected (max=2).
+	cfg := srtgo.DefaultConfig()
+	cfg.StreamID = "live/camera3"
+	conn3, err := srtgo.Dial(addr, cfg)
+	if err == nil {
+		// Connection might succeed at SRT level but should be closed by listener.
+		// Wait briefly and check that OnSource was NOT called a 3rd time.
+		select {
+		case <-called:
+			t.Error("OnSource should not be called for 3rd connection when max=2")
+		case <-time.After(500 * time.Millisecond):
+			// Good — no callback.
+		}
+		conn3.Close()
+	}
+	// If Dial itself failed, that's also acceptable (connection rejected).
+
+	mu.Lock()
+	if acceptedCount > 2 {
+		t.Errorf("expected max 2 accepted sources, got %d", acceptedCount)
+	}
+	mu.Unlock()
+
+	// Clean up.
+	for _, c := range conns {
+		c.Close()
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Run to return")
+	}
+}
+
+func TestListenerMaxSourcesZeroUnlimited(t *testing.T) {
+	addr := findFreePort(t)
+	store := tempStore(t)
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	acceptedCount := 0
+	var mu sync.Mutex
+	called := make(chan struct{}, 10)
+
+	l, err := NewListener(ListenerConfig{
+		Addr:           addr,
+		Store:          store,
+		DefaultLatency: 120 * time.Millisecond,
+		MaxSources:     0, // unlimited
+		OnSource: func(cfg SourceConfig, conn *srtgo.Conn) {
+			mu.Lock()
+			acceptedCount++
+			mu.Unlock()
+			called <- struct{}{}
+		},
+		Log: log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- l.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect 3 sources — all should succeed with MaxSources=0.
+	conns := make([]*srtgo.Conn, 0, 3)
+	for i := 0; i < 3; i++ {
+		cfg := srtgo.DefaultConfig()
+		cfg.StreamID = fmt.Sprintf("live/camera%d", i+1)
+		conn, err := srtgo.Dial(addr, cfg)
+		if err != nil {
+			t.Fatalf("Dial %d failed: %v", i+1, err)
+		}
+		conns = append(conns, conn)
+	}
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timeout waiting for OnSource callback %d", i+1)
+		}
+	}
+
+	mu.Lock()
+	if acceptedCount != 3 {
+		t.Errorf("expected 3 accepted sources with unlimited, got %d", acceptedCount)
+	}
+	mu.Unlock()
+
+	for _, c := range conns {
+		c.Close()
+	}
 	cancel()
 	select {
 	case <-runDone:

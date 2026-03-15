@@ -56,9 +56,50 @@ func (c *SourceConfig) Validate() error {
 }
 
 // ExtractStreamKey derives a source key suffix from an SRT streamid.
+// It handles both plain streamIDs ("live/camera1") and structured streamIDs
+// per the SRT Access Control spec ("#!::u=admin,r=live/camera1,m=publish").
 func ExtractStreamKey(streamID string) string {
-	s := strings.TrimPrefix(streamID, "/")
+	// Handle structured streamID format: #!::key=value,key=value
+	if strings.HasPrefix(streamID, "#!::") {
+		parts := strings.Split(streamID[4:], ",")
+		for _, part := range parts {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 && kv[0] == "r" {
+				return sanitizeStreamKey(stripLivePrefix(kv[1]))
+			}
+		}
+		return "default"
+	}
+	return sanitizeStreamKey(stripLivePrefix(streamID))
+}
+
+// stripLivePrefix removes a leading "/" and "live/" prefix from a stream key.
+func stripLivePrefix(s string) string {
+	s = strings.TrimPrefix(s, "/")
 	s = strings.TrimPrefix(s, "live/")
+	if s == "" {
+		return "default"
+	}
+	return s
+}
+
+// sanitizeStreamKey removes path traversal sequences and unsafe characters
+// from a stream key, preventing directory traversal attacks.
+func sanitizeStreamKey(key string) string {
+	// Remove path traversal
+	key = strings.ReplaceAll(key, "..", "")
+	key = strings.ReplaceAll(key, "//", "/")
+	key = strings.TrimPrefix(key, "/")
+	key = strings.TrimSuffix(key, "/")
+	// Limit to safe characters: alphanumeric, hyphen, underscore, slash, dot
+	var result strings.Builder
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '/' || r == '.' {
+			result.WriteRune(r)
+		}
+	}
+	s := result.String()
 	if s == "" {
 		return "default"
 	}

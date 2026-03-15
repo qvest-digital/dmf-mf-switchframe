@@ -222,6 +222,73 @@ func TestExtractStreamKey(t *testing.T) {
 			streamID: "/live/",
 			want:     "default",
 		},
+		// Structured SRT streamID tests (SRT Access Control spec)
+		{
+			name:     "structured streamID with resource",
+			streamID: "#!::u=admin,r=live/camera1,m=publish",
+			want:     "camera1",
+		},
+		{
+			name:     "structured streamID resource without live prefix",
+			streamID: "#!::u=admin,r=camera2,m=publish",
+			want:     "camera2",
+		},
+		{
+			name:     "structured streamID no resource field",
+			streamID: "#!::u=admin,m=publish",
+			want:     "default",
+		},
+		{
+			name:     "structured streamID with session",
+			streamID: "#!::u=admin,r=live/stream,m=publish,s=session123",
+			want:     "stream",
+		},
+		{
+			name:     "structured streamID resource with nested path",
+			streamID: "#!::r=live/studio/cam1,m=publish",
+			want:     "studio/cam1",
+		},
+		{
+			name:     "structured streamID empty resource",
+			streamID: "#!::r=,m=publish",
+			want:     "default",
+		},
+		// Sanitization tests (path traversal prevention)
+		{
+			name:     "path traversal attempt",
+			streamID: "live/../../etc/passwd",
+			want:     "etc/passwd",
+		},
+		{
+			name:     "path traversal in structured streamID",
+			streamID: "#!::r=../../etc/passwd,m=publish",
+			want:     "etc/passwd",
+		},
+		{
+			name:     "special characters stripped",
+			streamID: "live/cam<script>1",
+			want:     "camscript1",
+		},
+		{
+			name:     "double slashes collapsed",
+			streamID: "live//camera1",
+			want:     "camera1",
+		},
+		{
+			name:     "only unsafe characters",
+			streamID: "live/<>{}",
+			want:     "default",
+		},
+		{
+			name:     "dots allowed in normal names",
+			streamID: "live/camera1.stream",
+			want:     "camera1.stream",
+		},
+		{
+			name:     "hyphens and underscores allowed",
+			streamID: "live/my-camera_1",
+			want:     "my-camera_1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -229,6 +296,69 @@ func TestExtractStreamKey(t *testing.T) {
 			got := ExtractStreamKey(tt.streamID)
 			if got != tt.want {
 				t.Errorf("ExtractStreamKey(%q) = %q, want %q", tt.streamID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeStreamKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "clean key",
+			input: "camera1",
+			want:  "camera1",
+		},
+		{
+			name:  "path traversal",
+			input: "../../etc/passwd",
+			want:  "etc/passwd",
+		},
+		{
+			name:  "double dots in middle",
+			input: "foo/../bar",
+			want:  "foo/bar",
+		},
+		{
+			name:  "double slashes",
+			input: "foo//bar",
+			want:  "foo/bar",
+		},
+		{
+			name:  "special characters",
+			input: "cam<script>alert(1)</script>",
+			want:  "camscriptalert1/script",
+		},
+		{
+			name:  "only dots",
+			input: "....",
+			want:  "default",
+		},
+		{
+			name:  "empty after sanitization",
+			input: "<>{}",
+			want:  "default",
+		},
+		{
+			name:  "leading and trailing slashes",
+			input: "/foo/bar/",
+			want:  "foo/bar",
+		},
+		{
+			name:  "alphanumeric with allowed specials",
+			input: "my-camera_1.stream",
+			want:  "my-camera_1.stream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeStreamKey(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeStreamKey(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

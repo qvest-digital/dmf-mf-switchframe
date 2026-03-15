@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	srtgo "github.com/zsiec/srtgo"
@@ -20,6 +21,9 @@ type ListenerConfig struct {
 	// DefaultLatency is the SRT latency for the listener socket.
 	DefaultLatency time.Duration
 
+	// MaxSources limits the number of concurrent active sources. 0 = unlimited.
+	MaxSources int
+
 	// OnSource is called for each accepted connection with the resolved config
 	// and the raw srtgo connection. The callback owns the connection lifecycle.
 	OnSource func(SourceConfig, *srtgo.Conn)
@@ -31,9 +35,11 @@ type ListenerConfig struct {
 // Listener accepts incoming SRT push connections. It uses srtgo's Server
 // abstraction for connection lifecycle management.
 type Listener struct {
-	cfg    ListenerConfig
-	server *srtgo.Server
-	log    *slog.Logger
+	cfg         ListenerConfig
+	server      *srtgo.Server
+	log         *slog.Logger
+	mu          sync.Mutex
+	activeCount int
 }
 
 // NewListener creates a Listener ready to accept SRT connections.
@@ -93,6 +99,21 @@ func (l *Listener) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Check MaxSources limit before processing.
+		if l.cfg.MaxSources > 0 {
+			l.mu.Lock()
+			count := l.activeCount
+			l.mu.Unlock()
+			if count >= l.cfg.MaxSources {
+				l.log.Warn("max sources reached, rejecting connection",
+					"max", l.cfg.MaxSources,
+					"remote", conn.RemoteAddr(),
+				)
+				conn.Close()
+				continue
+			}
+		}
+
 		streamID := conn.StreamID()
 		suffix := ExtractStreamKey(streamID)
 		key := KeyPrefix + suffix
@@ -111,9 +132,33 @@ func (l *Listener) Run(ctx context.Context) error {
 			l.log.Warn("failed to save source config", "key", key, "error", err)
 		}
 
-		// Invoke the OnSource callback. The callback owns the connection lifecycle.
-		l.cfg.OnSource(cfg, conn)
+		// Track active source count.
+		l.mu.Lock()
+		l.activeCount++
+		l.mu.Unlock()
+
+		// Wrap the OnSource callback to decrement active count when done.
+		wrappedCfg := cfg
+		wrappedConn := conn
+		l.cfg.OnSource(wrappedCfg, wrappedConn)
 	}
+}
+
+// ReleaseSource decrements the active source count. Call this when a source
+// connection is closed to allow new connections when MaxSources is set.
+func (l *Listener) ReleaseSource() {
+	l.mu.Lock()
+	if l.activeCount > 0 {
+		l.activeCount--
+	}
+	l.mu.Unlock()
+}
+
+// ActiveCount returns the current number of active sources.
+func (l *Listener) ActiveCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.activeCount
 }
 
 // Close is a no-op for Listener since Run handles cleanup via context cancellation.
