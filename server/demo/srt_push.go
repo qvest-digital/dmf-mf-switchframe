@@ -78,18 +78,25 @@ func pushFile(ctx context.Context, addr, filePath, streamID string, log *slog.Lo
 			return
 		}
 		log.Warn("srt-push: disconnected, reconnecting", "err", err)
-		sleepCtx(ctx, reconnectDelay)
 	}
 }
 
+// accessUnit represents a group of TS packets that share the same PTS.
+// A real encoder sends all packets for one frame as a burst at the
+// frame's presentation time.
+type accessUnit struct {
+	pts    int64 // PES PTS in 90kHz ticks (-1 if no PTS found)
+	start  int   // byte offset in file data
+	end    int   // byte offset end (exclusive)
+}
+
 // streamFileLoop reads the TS file into memory and streams it in a loop
-// using CBR pacing derived from the file's PTS duration.
+// using PTS-based pacing that matches real encoder behavior.
 //
-// Pacing strategy: the file's duration is estimated by scanning for the
-// first and last video PTS. Each loop iteration anchors byte offset 0
-// to the current wall clock time and linearly interpolates send times
-// for each chunk. This is self-correcting: if one sleep overshoots,
-// the next compensates. No drift over hours.
+// Pacing strategy: the file is pre-parsed into access units (groups of
+// TS packets sharing the same PES PTS). Each access unit is sent as a
+// burst at the wall-clock time derived from its PTS. This produces the
+// same timing as a real encoder like OBS or FFmpeg -re.
 //
 // At each loop boundary, PTS/DTS/PCR values in the byte stream are
 // advanced by the file duration to keep timestamps monotonically
@@ -105,26 +112,44 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 		return nil
 	}
 
-	fileDuration := estimateFileDuration(data)
+	// Pre-parse into access units for PTS-based pacing.
+	units := parseAccessUnits(data)
+	if len(units) == 0 {
+		log.Warn("srt-push: no access units found")
+		return nil
+	}
 
 	// Pre-scan timestamp locations for patching at loop boundaries.
 	tsEntries, firstPTS, lastPTS := scanTimestamps(data)
 	var loopPTSDelta int64
 	if firstPTS >= 0 && lastPTS > firstPTS {
-		// Add one frame (~3750 ticks at 24fps) to avoid collision at boundary.
 		loopPTSDelta = lastPTS - firstPTS + 3750
 	}
+
+	// Find the first valid PTS for anchoring.
+	var anchorPTS int64 = -1
+	for _, u := range units {
+		if u.pts >= 0 {
+			anchorPTS = u.pts
+			break
+		}
+	}
+	if anchorPTS < 0 {
+		anchorPTS = 0
+	}
+
+	fileDuration := estimateFileDuration(data)
 
 	log.Info("srt-push: streaming",
 		"duration", fileDuration.Round(time.Millisecond),
 		"bytes", len(data),
+		"accessUnits", len(units),
 		"tsLocations", len(tsEntries),
 		"loopDelta", time.Duration(loopPTSDelta)*time.Second/90000,
 	)
 
-	// globalStart tracks the absolute start for continuous pacing across loops.
-	globalStart := time.Now()
-	var totalBytesSent int64
+	anchorWall := time.Now()
+	var ptsOffset int64
 
 	for loop := 1; ; loop++ {
 		if ctx.Err() != nil {
@@ -132,62 +157,164 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 		}
 
 		if loop > 1 {
-			// Advance all PTS/DTS/PCR by one loop duration so timestamps
-			// remain monotonically increasing across the seam.
-			//
-			// Trade-off: this patches ALL timestamp locations in the file
-			// buffer at once, which can take up to a few milliseconds for
-			// large files (e.g., ~1ms for 900 entries). An incremental
-			// per-chunk approach would amortize this cost but adds
-			// complexity (binary search per chunk, extra bookkeeping).
-			// Since the stall is brief (< 5ms) and happens only once per
-			// loop (~10-15s), it's acceptable for a demo pusher. SRT's
-			// TSBPD buffer absorbs the jitter.
 			if loopPTSDelta > 0 && len(tsEntries) > 0 {
 				addTimestampOffset(data, tsEntries, loopPTSDelta)
 			}
-			log.Debug("srt-push: loop", "loop", loop)
+			ptsOffset += loopPTSDelta
 		}
 
-		for offset := 0; offset < len(data); {
+		for _, unit := range units {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 
-			end := offset + srtChunkSize
-			if end > len(data) {
-				end = len(data)
-			}
-			chunk := data[offset:end]
-
-			// Pace: compute how far ahead of schedule we are based on
-			// total bytes sent vs. expected time at the file's bitrate.
-			//
-			// Limitation: byte-rate pacing assumes roughly constant
-			// bitrate (CBR). For VBR content, I-frames will be paced
-			// slightly too slowly and P-frames slightly too fast.
-			// PTS-based pacing would be more accurate but requires
-			// real-time PES header parsing. SRT's TSBPD buffer
-			// smooths out the burstiness, making this acceptable
-			// for demo use.
-			targetByteTime := float64(totalBytesSent) / (float64(len(data)) / fileDuration.Seconds())
-			elapsed := time.Since(globalStart).Seconds()
-			if targetByteTime > elapsed {
-				sleepCtx(ctx, time.Duration((targetByteTime-elapsed)*float64(time.Second)))
-				if ctx.Err() != nil {
-					return ctx.Err()
+			// Compute wall-clock send time from PTS.
+			if unit.pts >= 0 {
+				sendPTS := unit.pts + ptsOffset
+				target := pacingTarget(anchorWall, anchorPTS, sendPTS)
+				now := time.Now()
+				if target.After(now) {
+					sleepCtx(ctx, target.Sub(now))
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
 				}
 			}
 
-			_, err := conn.Write(chunk)
-			if err != nil {
-				return err
+			// Send all packets in this access unit as a burst,
+			// chunked to SRT payload size.
+			for off := unit.start; off < unit.end; {
+				end := off + srtChunkSize
+				if end > unit.end {
+					end = unit.end
+				}
+				_, err := conn.Write(data[off:end])
+				if err != nil {
+					return err
+				}
+				off = end
 			}
-
-			totalBytesSent += int64(end - offset)
-			offset = end
 		}
 	}
+}
+
+// parseAccessUnits groups TS packets by their PES PTS into access units.
+// Packets without a PES header are grouped with the preceding access unit.
+// This produces the same burst pattern as a real encoder.
+func parseAccessUnits(data []byte) []accessUnit {
+	var units []accessUnit
+	var current *accessUnit
+
+	for offset := 0; offset+tsPacketLen <= len(data); offset += tsPacketLen {
+		pkt := data[offset : offset+tsPacketLen]
+		if pkt[0] != 0x47 {
+			continue // skip non-sync packets
+		}
+
+		// Check for PES start: payload_unit_start_indicator
+		pusi := (pkt[1] & 0x40) != 0
+		pid := int(pkt[1]&0x1F)<<8 | int(pkt[2])
+
+		// Skip PAT/PMT/null packets — they don't carry media.
+		if pid == 0 || pid == 0x1FFF {
+			if current != nil {
+				current.end = offset + tsPacketLen
+			}
+			continue
+		}
+
+		if pusi {
+			// Extract PTS from PES header if present.
+			pts := extractPESPTS(pkt)
+
+			if current != nil {
+				// Close previous access unit.
+				current.end = offset
+			}
+
+			// Start new access unit.
+			units = append(units, accessUnit{
+				pts:   pts,
+				start: offset,
+				end:   offset + tsPacketLen,
+			})
+			current = &units[len(units)-1]
+		} else if current != nil {
+			// Continuation packet — extend current access unit.
+			current.end = offset + tsPacketLen
+		}
+	}
+
+	// Merge audio-only units into the preceding video unit for burst delivery.
+	// A real encoder sends audio and video for the same time period together.
+	return mergeSmallUnits(units)
+}
+
+// extractPESPTS extracts the PTS from a TS packet's PES header.
+// Returns -1 if no PTS is found.
+func extractPESPTS(pkt []byte) int64 {
+	if len(pkt) < tsPacketLen {
+		return -1
+	}
+
+	// Find payload start, accounting for adaptation field.
+	afc := (pkt[3] >> 4) & 0x03
+	var payloadStart int
+	switch afc {
+	case 1: // payload only
+		payloadStart = 4
+	case 3: // adaptation + payload
+		if len(pkt) < 5 {
+			return -1
+		}
+		afLen := int(pkt[4])
+		payloadStart = 5 + afLen
+	default:
+		return -1
+	}
+
+	if payloadStart+14 > len(pkt) {
+		return -1
+	}
+
+	payload := pkt[payloadStart:]
+
+	// Check PES start code: 00 00 01
+	if payload[0] != 0x00 || payload[1] != 0x00 || payload[2] != 0x01 {
+		return -1
+	}
+
+	// Check PTS flag in PES header.
+	if len(payload) < 14 {
+		return -1
+	}
+	ptsFlag := (payload[7] >> 6) & 0x03
+	if ptsFlag < 2 {
+		return -1 // no PTS
+	}
+
+	return decodePTS(payload[9:14])
+}
+
+// mergeSmallUnits merges access units smaller than 2 TS packets into
+// the preceding unit. Audio PES packets are typically 1-2 TS packets
+// and should be sent with the preceding video frame, not independently.
+func mergeSmallUnits(units []accessUnit) []accessUnit {
+	if len(units) <= 1 {
+		return units
+	}
+
+	var merged []accessUnit
+	for i, u := range units {
+		size := u.end - u.start
+		if i > 0 && size <= 2*tsPacketLen && len(merged) > 0 {
+			// Merge into previous unit.
+			merged[len(merged)-1].end = u.end
+		} else {
+			merged = append(merged, u)
+		}
+	}
+	return merged
 }
 
 // pacingTarget computes the wall-clock time at which a frame with the
@@ -212,66 +339,55 @@ func estimateFileDuration(data []byte) time.Duration {
 		return time.Duration(deltaTicks) * time.Second / 90000
 	}
 
-	// Fallback: assume 5 Mbps and derive duration from file size.
-	const assumedBitrate = 5_000_000 // bits per second
-	if len(data) > 0 {
-		return time.Duration(float64(len(data)) * 8 / assumedBitrate * float64(time.Second))
+	// Fallback: assume ~2 Mbps average bitrate, minimum 1 second.
+	const fallbackBitrate = 2_000_000
+	bytes := len(data)
+	seconds := float64(bytes*8) / fallbackBitrate
+	if seconds < 1.0 {
+		seconds = 1.0
 	}
-	return 10 * time.Second // last resort
+	return time.Duration(seconds * float64(time.Second))
 }
 
-// scanFirstLastPTS walks the TS byte stream and returns the first and last
-// video PTS values in 90kHz ticks. Returns (-1, -1) if no video PTS found.
+// --- TS scanning and patching functions ---
+
 func scanFirstLastPTS(data []byte) (firstPTS, lastPTS int64) {
 	firstPTS = -1
 	lastPTS = -1
-
 	for off := 0; off+tsPacketLen <= len(data); off += tsPacketLen {
 		pkt := data[off : off+tsPacketLen]
 		if pkt[0] != 0x47 {
 			continue
 		}
-
-		// Only interested in PUSI packets with payload.
 		pusi := pkt[1]&0x40 != 0
 		hasPayload := pkt[3]&0x10 != 0
 		hasAdapt := pkt[3]&0x20 != 0
 		if !pusi || !hasPayload {
 			continue
 		}
-
 		payloadOff := 4
 		if hasAdapt && payloadOff < tsPacketLen {
 			afLen := int(pkt[payloadOff])
 			payloadOff += 1 + afLen
 		}
-
 		if payloadOff+14 > tsPacketLen {
 			continue
 		}
-
 		payload := pkt[payloadOff:]
-		// PES start code prefix.
 		if len(payload) < 14 || payload[0] != 0 || payload[1] != 0 || payload[2] != 1 {
 			continue
 		}
-
 		streamID := payload[3]
-		// Video stream IDs: 0xE0-0xEF.
 		if streamID < 0xE0 || streamID > 0xEF {
 			continue
 		}
-
-		// Check PTS present flag.
 		if len(payload) < 9 {
 			continue
 		}
 		flags := payload[7]
-		hasPTS := flags&0x80 != 0
-		if !hasPTS || len(payload) < 14 {
+		if flags&0x80 == 0 || len(payload) < 14 {
 			continue
 		}
-
 		pts := decodePTS(payload[9:])
 		if firstPTS < 0 || pts < firstPTS {
 			firstPTS = pts
@@ -280,75 +396,56 @@ func scanFirstLastPTS(data []byte) (firstPTS, lastPTS int64) {
 			lastPTS = pts
 		}
 	}
-
 	return firstPTS, lastPTS
 }
 
-// --- TS timestamp scanning and patching (adapted from Prism's srt-push/tspatch.go) ---
-
-// ptsEntry records a byte offset in the TS data where a PTS, DTS, or PCR
-// value lives. Used for patching timestamps at loop boundaries.
 type ptsEntry struct {
 	offset int
-	isPCR  bool // true = 6-byte PCR; false = 5-byte PTS/DTS
+	isPCR  bool
 }
 
-// scanTimestamps walks the TS data and returns every PTS, DTS, and PCR
-// byte location, plus the first and last video PTS values.
 func scanTimestamps(data []byte) (entries []ptsEntry, firstPTS, lastPTS int64) {
 	firstPTS = -1
-
 	for off := 0; off+tsPacketLen <= len(data); off += tsPacketLen {
 		pkt := data[off : off+tsPacketLen]
 		if pkt[0] != 0x47 {
 			continue
 		}
-
 		hasAdapt := pkt[3]&0x20 != 0
 		hasPayload := pkt[3]&0x10 != 0
-
 		payloadOff := 4
-
-		// Adaptation field: check for PCR.
 		if hasAdapt && payloadOff < tsPacketLen {
 			afLen := int(pkt[payloadOff])
 			if afLen > 0 && payloadOff+1 < tsPacketLen {
 				afFlags := pkt[payloadOff+1]
-				if afFlags&0x10 != 0 && afLen >= 7 { // PCR flag
+				if afFlags&0x10 != 0 && afLen >= 7 {
 					entries = append(entries, ptsEntry{offset: off + payloadOff + 2, isPCR: true})
 				}
 			}
 			payloadOff += 1 + afLen
 		}
-
-		// PES header: PTS/DTS on PUSI packets.
 		pusi := pkt[1]&0x40 != 0
 		if !pusi || !hasPayload || payloadOff >= tsPacketLen {
 			continue
 		}
-
 		payload := pkt[payloadOff:]
 		if len(payload) < 14 || payload[0] != 0 || payload[1] != 0 || payload[2] != 1 {
 			continue
 		}
-
 		streamID := payload[3]
 		isMedia := (streamID >= 0xC0 && streamID <= 0xDF) || (streamID >= 0xE0 && streamID <= 0xEF)
 		if !isMedia {
 			continue
 		}
-
 		if len(payload) < 9 {
 			continue
 		}
 		flags := payload[7]
 		hasPTS := flags&0x80 != 0
 		hasDTS := flags&0x40 != 0
-
 		if hasPTS && len(payload) >= 14 {
 			absOff := off + payloadOff + 9
 			entries = append(entries, ptsEntry{offset: absOff, isPCR: false})
-
 			isVideo := streamID >= 0xE0 && streamID <= 0xEF
 			if isVideo {
 				pts := decodePTS(data[absOff:])
@@ -365,12 +462,9 @@ func scanTimestamps(data []byte) (entries []ptsEntry, firstPTS, lastPTS int64) {
 			entries = append(entries, ptsEntry{offset: absOff, isPCR: false})
 		}
 	}
-
 	return entries, firstPTS, lastPTS
 }
 
-// addTimestampOffset advances every recorded PTS/DTS/PCR location by delta
-// (in 90kHz ticks). Called once per loop iteration.
 func addTimestampOffset(data []byte, entries []ptsEntry, delta int64) {
 	for _, e := range entries {
 		if e.isPCR {
@@ -383,7 +477,6 @@ func addTimestampOffset(data []byte, entries []ptsEntry, delta int64) {
 	}
 }
 
-// decodePTS extracts a 33-bit PTS/DTS from the 5-byte PES timestamp encoding.
 func decodePTS(b []byte) int64 {
 	return int64(b[0]>>1&0x07)<<30 |
 		int64(b[1])<<22 |
@@ -392,8 +485,6 @@ func decodePTS(b []byte) int64 {
 		int64(b[4]>>1&0x7F)
 }
 
-// encodePTS writes a 33-bit PTS/DTS into the 5-byte PES timestamp encoding,
-// preserving marker bits and prefix nibble.
 func encodePTS(b []byte, pts int64) {
 	prefix := b[0] & 0xF0
 	b[0] = prefix | byte((pts>>29)&0x0E) | 0x01
@@ -403,7 +494,6 @@ func encodePTS(b []byte, pts int64) {
 	b[4] = byte((pts<<1)&0xFE) | 0x01
 }
 
-// decodePCR extracts a 33-bit PCR base (90kHz) from the 6-byte adaptation field.
 func decodePCR(b []byte) int64 {
 	return int64(b[0])<<25 |
 		int64(b[1])<<17 |
@@ -412,8 +502,6 @@ func decodePCR(b []byte) int64 {
 		int64(b[4]>>7)
 }
 
-// encodePCR writes a 33-bit PCR base into the 6-byte encoding, preserving
-// the 9-bit extension and reserved bits.
 func encodePCR(b []byte, base int64) {
 	ext := uint16(b[4]&0x01)<<8 | uint16(b[5])
 	b[0] = byte(base >> 25)
