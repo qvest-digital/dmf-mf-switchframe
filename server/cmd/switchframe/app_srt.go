@@ -222,9 +222,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		audioEncoder  audio.Encoder
 		groupID       atomic.Uint32
 		videoInfoSent bool
-		encoderYUV    []byte // reusable buffer for encoder input (avoids aliasing)
-		lastVideoW    int    // track resolution for mid-stream changes
+		encoderYUV    []byte    // reusable buffer for encoder input (avoids aliasing)
+		lastVideoW    int      // track resolution for mid-stream changes
 		lastVideoH    int
+		audioBuf      []float32 // accumulation buffer for AAC 1024-sample chunks
+		audioPTS      int64     // PTS of first sample in audioBuf
 	)
 
 	pf := a.sw.PipelineFormat()
@@ -340,9 +342,13 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	}
 
 	// Wire audio: decoded PCM -> IngestPCM -> mixer + encode -> relay.BroadcastAudio.
-	// Same pattern as MXL encodeAndBroadcastAudio in mxl/source.go.
+	// FFmpeg's swresample outputs variable-length frames (e.g., 1115 samples when
+	// resampling 44.1→48kHz). FDK AAC requires exactly 1024 samples per channel.
+	// Accumulate PCM in audioBuf and drain in 1024-sample chunks.
+	const aacFrameSamples = 1024
+
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
-		// 1. Deliver raw PCM to mixer.
+		// 1. Deliver raw PCM to mixer (handles variable lengths internally).
 		a.mixer.IngestPCM(sourceKey, pcm, pts, channels)
 
 		// 2. Encode PCM -> AAC and broadcast to relay for browser viewing.
@@ -361,22 +367,38 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			state.audioEncoder = enc
 		}
 
-		encoded, err := audioEncoder.Encode(pcm)
-		if err != nil {
-			slog.Error("srt: audio encode failed", "key", sourceKey, "error", err)
-			return
-		}
-		if len(encoded) == 0 {
-			return // encoder warming up
+		// Track PTS of first sample in accumulation buffer.
+		if len(audioBuf) == 0 {
+			audioPTS = pts
 		}
 
-		audioFrame := &media.AudioFrame{
-			PTS:        pts,
-			Data:       encoded,
-			SampleRate: sampleRate,
-			Channels:   channels,
+		// Accumulate incoming PCM (interleaved: len = samples * channels).
+		audioBuf = append(audioBuf, pcm...)
+
+		// Drain in 1024-sample chunks.
+		chunkSize := aacFrameSamples * channels
+		for len(audioBuf) >= chunkSize {
+			chunk := audioBuf[:chunkSize]
+
+			encoded, err := audioEncoder.Encode(chunk)
+			if err != nil {
+				slog.Error("srt: audio encode failed", "key", sourceKey, "error", err)
+				audioBuf = audioBuf[chunkSize:]
+				continue
+			}
+
+			if len(encoded) > 0 {
+				relay.BroadcastAudio(&media.AudioFrame{
+					PTS:        audioPTS,
+					Data:       encoded,
+					SampleRate: sampleRate,
+					Channels:   channels,
+				})
+			}
+
+			audioPTS += int64(aacFrameSamples) * 90000 / int64(sampleRate)
+			audioBuf = audioBuf[chunkSize:]
 		}
-		relay.BroadcastAudio(audioFrame)
 	}
 
 	// Wire stopped callback: clean up encoders and remove from active sources.
