@@ -7,6 +7,7 @@ function makeSource(overrides: Partial<SourceInfo> = {}): SourceInfo {
 	return {
 		key: 'cam1',
 		label: 'Camera 1',
+		type: 'demo',
 		status: 'healthy',
 ...overrides,
 	};

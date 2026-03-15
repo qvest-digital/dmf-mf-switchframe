@@ -60,8 +60,8 @@ const baseState = {
 	programPeak: [0, 0] as [number, number],
 	tallyState: { cam1: 'program' as const, cam2: 'preview' as const },
 	sources: {
-		cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' as const },
-		cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' as const },
+		cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' as const },
+		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 	},
 	seq: 1,
 	timestamp: Date.now(),

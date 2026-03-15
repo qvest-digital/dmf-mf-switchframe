@@ -25,9 +25,9 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 		programPeak: [0, 0],
 		tallyState: { cam1: 'program', cam2: 'preview', cam3: 'idle' },
 		sources: {
-			cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
-			cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' },
-			cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+			cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' },
+			cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' },
+			cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 		},
 		seq: 1,
 		timestamp: Date.now(),
@@ -176,9 +176,9 @@ describe('SimpleMode', () => {
 	it('source button gets class source-stale when source status is stale', () => {
 		const state = makeState({
 			sources: {
-				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
-				cam2: { key: 'cam2', label: 'Camera 2', status: 'stale' },
-				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+				cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'stale' },
+				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
 		render(SimpleMode, { props: { state } });
@@ -190,9 +190,9 @@ describe('SimpleMode', () => {
 	it('source button gets class source-stale when source status is no_signal', () => {
 		const state = makeState({
 			sources: {
-				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
-				cam2: { key: 'cam2', label: 'Camera 2', status: 'no_signal' },
-				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+				cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'no_signal' },
+				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
 		render(SimpleMode, { props: { state } });
@@ -204,9 +204,9 @@ describe('SimpleMode', () => {
 	it('source button is disabled and shows OFFLINE text when status is offline', () => {
 		const state = makeState({
 			sources: {
-				cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
-				cam2: { key: 'cam2', label: 'Camera 2', status: 'offline' },
-				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+				cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' },
+				cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'offline' },
+				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
 		render(SimpleMode, { props: { state } });
@@ -223,9 +223,9 @@ describe('SimpleMode', () => {
 	it('source button shows warning indicator when stale', () => {
 		const state = makeState({
 			sources: {
-				cam1: { key: 'cam1', label: 'Camera 1', status: 'stale' },
-				cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' },
-				cam3: { key: 'cam3', label: 'Camera 3', status: 'healthy' },
+				cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'stale' },
+				cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' },
+				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
 		render(SimpleMode, { props: { state } });

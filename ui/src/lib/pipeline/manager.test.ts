@@ -27,10 +27,10 @@ function createMockPipeline() {
 }
 
 /** Create a minimal sources record for testing. */
-function makeSources(...keys: string[]): Record<string, { key: string; status: string }> {
-	const sources: Record<string, { key: string; status: string }> = {};
+function makeSources(...keys: string[]): Record<string, { key: string; type: string; status: string }> {
+	const sources: Record<string, { key: string; type: string; status: string }> = {};
 	for (const key of keys) {
-		sources[key] = { key, status: 'healthy' };
+		sources[key] = { key, type: 'demo', status: 'healthy' };
 	}
 	return sources;
 }

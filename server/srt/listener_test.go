@@ -21,7 +21,7 @@ func findFreePort(t *testing.T) string {
 		t.Fatal(err)
 	}
 	addr := l.LocalAddr().String()
-	l.Close()
+	_ = l.Close()
 	return addr
 }
 
@@ -80,7 +80,7 @@ func TestListenerAcceptsConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Wait for OnSource callback
 	select {
@@ -155,7 +155,7 @@ func TestListenerExtractsStreamKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	select {
 	case <-called:
@@ -236,7 +236,7 @@ func TestListenerRestoresConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	select {
 	case <-called:
@@ -344,7 +344,7 @@ func TestListenerMaxSources(t *testing.T) {
 		case <-time.After(500 * time.Millisecond):
 			// Good — no callback.
 		}
-		conn3.Close()
+		_ = conn3.Close()
 	}
 	// If Dial itself failed, that's also acceptable (connection rejected).
 
@@ -356,7 +356,7 @@ func TestListenerMaxSources(t *testing.T) {
 
 	// Clean up.
 	for _, c := range conns {
-		c.Close()
+		_ = c.Close()
 	}
 	cancel()
 	select {
@@ -429,7 +429,7 @@ func TestListenerMaxSourcesZeroUnlimited(t *testing.T) {
 	mu.Unlock()
 
 	for _, c := range conns {
-		c.Close()
+		_ = c.Close()
 	}
 	cancel()
 	select {

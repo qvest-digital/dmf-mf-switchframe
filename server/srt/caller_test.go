@@ -24,7 +24,7 @@ func TestCallerPullAndStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	// Accept connections in background.
 	acceptDone := make(chan struct{})
@@ -36,7 +36,7 @@ func TestCallerPullAndStop(t *testing.T) {
 		}
 		// Hold the connection open until test cleanup.
 		<-acceptDone
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	var mu sync.Mutex
@@ -152,7 +152,7 @@ func TestCallerPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	// Accept connections in background (accept multiple for restore).
 	go func() {
@@ -164,7 +164,7 @@ func TestCallerPersistence(t *testing.T) {
 			// Hold connections open briefly then close.
 			go func() {
 				time.Sleep(10 * time.Second)
-				conn.Close()
+				_ = conn.Close()
 			}()
 		}
 	}()
@@ -281,7 +281,7 @@ func TestCallerStopDeletesFromStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	go func() {
 		for {
@@ -291,7 +291,7 @@ func TestCallerStopDeletesFromStore(t *testing.T) {
 			}
 			go func() {
 				time.Sleep(10 * time.Second)
-				conn.Close()
+				_ = conn.Close()
 			}()
 		}
 	}()
@@ -361,7 +361,7 @@ func TestCallerReconnectsOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	// Accept connections — close the first one to trigger reconnect.
 	acceptCount := 0
@@ -378,12 +378,12 @@ func TestCallerReconnectsOnDisconnect(t *testing.T) {
 			acceptMu.Unlock()
 			if n == 1 {
 				// Close first connection quickly to trigger reconnect.
-				conn.Close()
+				_ = conn.Close()
 			} else {
 				// Keep subsequent connections open.
 				go func() {
 					time.Sleep(30 * time.Second)
-					conn.Close()
+					_ = conn.Close()
 				}()
 			}
 		}
@@ -528,7 +528,7 @@ func TestCallerReplacesExistingPull(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Listen %s: %v", a, err)
 		}
-		defer ln.Close()
+		defer func() { _ = ln.Close() }()
 		go func() {
 			for {
 				conn, err := ln.Accept()
@@ -537,7 +537,7 @@ func TestCallerReplacesExistingPull(t *testing.T) {
 				}
 				go func() {
 					time.Sleep(30 * time.Second)
-					conn.Close()
+					_ = conn.Close()
 				}()
 			}
 		}()

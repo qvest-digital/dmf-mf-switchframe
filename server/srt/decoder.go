@@ -698,7 +698,7 @@ type StreamDecoder struct {
 // MPEG-TS data from cfg.Reader. Call Run() to start the decode loop.
 func NewStreamDecoder(cfg StreamDecoderConfig) (*StreamDecoder, error) {
 	if cfg.Reader == nil {
-		return nil, errors.New("Reader is required")
+		return nil, errors.New("reader is required")
 	}
 	if cfg.OnVideo == nil {
 		return nil, errors.New("OnVideo callback is required")
@@ -742,7 +742,7 @@ func (d *StreamDecoder) Stop() {
 		C.srtdec_stop(&d.handle)
 		// Also close the reader if it supports it, to unblock any pending reads.
 		if closer, ok := d.cfg.Reader.(io.Closer); ok {
-			closer.Close()
+			_ = closer.Close()
 		}
 	}
 }

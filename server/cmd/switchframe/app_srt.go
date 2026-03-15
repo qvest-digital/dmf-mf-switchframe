@@ -95,12 +95,12 @@ func (a *App) initSRT() error {
 func (a *App) onSRTListenerSource(cfg srt.SourceConfig, conn *srtgo.Conn) {
 	src := a.wireSRTSource(cfg, conn)
 	if src == nil {
-		conn.Close()
+		_ = conn.Close()
 		return
 	}
 	if err := src.Start(a.srtCtx); err != nil {
 		slog.Error("srt: failed to start source", "key", cfg.Key, "error", err)
-		conn.Close()
+		_ = conn.Close()
 		src.Stop() // clean up any partially started goroutines
 		return
 	}
@@ -116,7 +116,7 @@ func (a *App) onSRTCallerSource(cfg srt.SourceConfig, conn *srtgo.Conn) <-chan s
 
 	src := a.wireSRTSource(cfg, conn)
 	if src == nil {
-		conn.Close()
+		_ = conn.Close()
 		close(doneCh)
 		return doneCh
 	}
@@ -133,7 +133,7 @@ func (a *App) onSRTCallerSource(cfg srt.SourceConfig, conn *srtgo.Conn) <-chan s
 
 	if err := src.Start(a.srtCtx); err != nil {
 		slog.Error("srt: failed to start source", "key", cfg.Key, "error", err)
-		conn.Close()
+		_ = conn.Close()
 		src.Stop()
 		closeOnce.Do(func() { close(doneCh) })
 		return doneCh

@@ -7,14 +7,14 @@ import type { ControlRoomState, SourceHealthStatus, SourceInfo } from '$lib/api/
 
 function makeState(overrides: Record<string, { status: SourceHealthStatus }> = {}) {
 	const sources: Record<string, SourceInfo> = {
-		cam1: { key: 'cam1', label: 'Camera 1', status: 'healthy' },
-		cam2: { key: 'cam2', label: 'Camera 2', status: 'healthy' },
+		cam1: { key: 'cam1', label: 'Camera 1', type: 'demo' as const, status: 'healthy' },
+		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' },
 	};
 	for (const [key, val] of Object.entries(overrides)) {
 		if (sources[key]) {
 			sources[key].status = val.status;
 		} else {
-			sources[key] = { key, label: key, status: val.status };
+			sources[key] = { key, label: key, type: 'demo', status: val.status };
 		}
 	}
 	return {

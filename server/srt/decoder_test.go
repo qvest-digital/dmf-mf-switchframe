@@ -28,7 +28,7 @@ func TestStreamDecoderWithTSFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test clip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 500*1024)
 	n, err := io.ReadFull(f, buf)
@@ -122,7 +122,7 @@ func TestStreamDecoderStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test clip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Read enough data for format probing (~200KB), then stall.
 	probeBuf := make([]byte, 200*1024)
@@ -273,7 +273,7 @@ func TestStreamDecoderNilCaptionSCTE35Callbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test clip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 500*1024)
 	n, err := io.ReadFull(f, buf)
@@ -329,7 +329,7 @@ func TestStreamDecoderCaptionSCTE35CallbacksInvoked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test clip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 500*1024)
 	n, err := io.ReadFull(f, buf)
@@ -422,7 +422,7 @@ func TestStreamDecoderMultiClipResolutionReuse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to open test clip: %v", err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			buf := make([]byte, 500*1024)
 			n, err := io.ReadFull(f, buf)
@@ -495,7 +495,7 @@ func TestStreamDecoderZeroByteRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open test clip: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, 500*1024)
 	n, err := io.ReadFull(f, buf)

@@ -26,7 +26,7 @@ func pushTestData(t *testing.T, addr, streamID string, ctx context.Context) {
 	}
 
 	go func() {
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		data, err := os.ReadFile("../../test/clips/tears_of_steel.ts")
 		if err != nil {
 			return
@@ -105,10 +105,7 @@ func TestIntegrationListenerPushE2E(t *testing.T) {
 
 	// Wait for at least 5 video frames to be decoded.
 	deadline := time.After(14 * time.Second)
-	for {
-		if videoFrames.Load() >= 5 {
-			break
-		}
+	for videoFrames.Load() < 5 {
 		select {
 		case <-deadline:
 			t.Fatalf("timeout: got %d video frames (need >=5), %d audio frames",
@@ -167,7 +164,7 @@ func TestIntegrationMultiSource(t *testing.T) {
 		DefaultLatency: 120 * time.Millisecond,
 		OnSource: func(cfg SourceConfig, conn *srtgo.Conn) {
 			// Close the connection; we only care about OnSource being called.
-			conn.Close()
+			_ = conn.Close()
 			mu.Lock()
 			seenKeys[cfg.Key] = true
 			count := len(seenKeys)
@@ -202,7 +199,7 @@ func TestIntegrationMultiSource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial %s failed: %v", sid, err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		// Small delay between connections to avoid thundering herd.
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -278,7 +275,7 @@ func TestIntegrationListenerReconnectRestoresConfig(t *testing.T) {
 		Store:          store,
 		DefaultLatency: 120 * time.Millisecond,
 		OnSource: func(cfg SourceConfig, conn *srtgo.Conn) {
-			conn.Close()
+			_ = conn.Close()
 			mu.Lock()
 			gotConfig = cfg
 			mu.Unlock()
@@ -308,7 +305,7 @@ func TestIntegrationListenerReconnectRestoresConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Wait for OnSource callback.
 	select {

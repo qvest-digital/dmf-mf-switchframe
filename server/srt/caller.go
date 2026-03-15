@@ -224,7 +224,7 @@ func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
 			continue
 		case <-ctx.Done():
 			// Context cancelled — close the connection and exit.
-			conn.Close()
+			_ = conn.Close()
 			return
 		}
 	}
