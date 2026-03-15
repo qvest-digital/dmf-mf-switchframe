@@ -2,6 +2,7 @@ package perf
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -97,6 +98,11 @@ type SourceSample struct {
 	AvgFPS        float64
 	AvgFrameBytes int
 	Health        string
+
+	// SRT connection stats (populated only for srt: sources)
+	SRTRTTMs     float64
+	SRTLossRate  float64
+	SRTRecvBufMs float64
 }
 
 // MixerPerf provides mixer performance samples.
@@ -165,6 +171,9 @@ type Sampler struct {
 	mixer    MixerPerf
 	output   OutputPerf
 
+	// Optional SRT stats provider (called per srt: source on each tick)
+	srtStats func(key string) (rttMs, lossRate, recvBufMs float64, ok bool)
+
 	// Latest sample cache (for snapshot current values)
 	lastSwitcherSample SwitcherSample
 	lastMixerSample    MixerSample
@@ -203,6 +212,14 @@ func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 	}
 }
 
+// SetSRTStats registers an optional function that returns SRT connection
+// stats for a given source key. Called once per srt: source on each tick.
+func (s *Sampler) SetSRTStats(fn func(key string) (rttMs, lossRate, recvBufMs float64, ok bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.srtStats = fn
+}
+
 // Start launches the 1Hz sampling goroutine.
 func (s *Sampler) Start() {
 	s.wg.Add(1)
@@ -239,6 +256,20 @@ func (s *Sampler) tick() {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Enrich SRT sources with connection stats
+	if s.srtStats != nil {
+		for key, src := range sw.Sources {
+			if strings.HasPrefix(key, "srt:") {
+				if rtt, loss, buf, ok := s.srtStats(key); ok {
+					src.SRTRTTMs = rtt
+					src.SRTLossRate = loss
+					src.SRTRecvBufMs = buf
+					sw.Sources[key] = src
+				}
+			}
+		}
+	}
 
 	s.lastSwitcherSample = sw
 	s.lastMixerSample = mx

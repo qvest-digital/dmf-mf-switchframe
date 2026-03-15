@@ -86,6 +86,14 @@ type PerfSnapshot struct {
 type PerfSourceSnapshot struct {
 	Health string           `json:"health"`
 	Decode PerfSourceDecode `json:"decode"`
+	SRT    *PerfSourceSRT   `json:"srt,omitempty"`
+}
+
+// PerfSourceSRT holds SRT connection stats for an SRT source.
+type PerfSourceSRT struct {
+	RTTMs     float64 `json:"rtt_ms"`
+	LossRate  float64 `json:"loss_rate_pct"`
+	RecvBufMs float64 `json:"recv_buf_ms"`
 }
 
 // PerfSourceDecode holds current + windowed decode stats.
@@ -256,7 +264,7 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 		if ring != nil {
 			windows = ringToWindows(ring)
 		}
-		sources[key] = PerfSourceSnapshot{
+		snap := PerfSourceSnapshot{
 			Health: src.Health,
 			Decode: PerfSourceDecode{
 				Current: PerfSourceDecodeCurrent{
@@ -268,6 +276,15 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 				Windows: windows,
 			},
 		}
+		// Include SRT stats if present (non-zero RTT indicates populated)
+		if src.SRTRTTMs != 0 || src.SRTLossRate != 0 || src.SRTRecvBufMs != 0 {
+			snap.SRT = &PerfSourceSRT{
+				RTTMs:     src.SRTRTTMs,
+				LossRate:  src.SRTLossRate,
+				RecvBufMs: src.SRTRecvBufMs,
+			}
+		}
+		sources[key] = snap
 	}
 
 	// Build per-node snapshots

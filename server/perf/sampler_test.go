@@ -1,6 +1,8 @@
 package perf
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -470,6 +472,134 @@ func TestSampler_StaleMapEntryCleanup(t *testing.T) {
 	require.Contains(t, s.nodeRings, "encode", "encode should still be present")
 	require.NotContains(t, s.nodeRings, "keyer", "keyer should be removed after disappearing from sample")
 	s.mu.RUnlock()
+}
+
+func TestSampler_SRTStats_PopulatedForSRTSource(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:my-camera": {DecodeLastNs: 3000, Health: "active"},
+			"cam1":          {DecodeLastNs: 5000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.SetSRTStats(func(key string) (rttMs, lossRate, recvBufMs float64, ok bool) {
+		if key == "srt:my-camera" {
+			return 12.5, 0.3, 45.0, true
+		}
+		return 0, 0, 0, false
+	})
+
+	s.tick()
+
+	snap := s.Snapshot("")
+
+	// SRT source should have SRT stats
+	srtSnap, ok := snap.Sources["srt:my-camera"]
+	require.True(t, ok, "srt:my-camera should be in sources")
+	require.NotNil(t, srtSnap.SRT, "SRT stats should be populated for srt: source")
+	require.InDelta(t, 12.5, srtSnap.SRT.RTTMs, 0.001)
+	require.InDelta(t, 0.3, srtSnap.SRT.LossRate, 0.001)
+	require.InDelta(t, 45.0, srtSnap.SRT.RecvBufMs, 0.001)
+
+	// Non-SRT source should NOT have SRT stats
+	camSnap, ok := snap.Sources["cam1"]
+	require.True(t, ok, "cam1 should be in sources")
+	require.Nil(t, camSnap.SRT, "SRT stats should be nil for non-srt source")
+}
+
+func TestSampler_SRTStats_OmittedWhenNoProvider(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:my-camera": {DecodeLastNs: 3000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	// No SetSRTStats call — provider is nil
+
+	s.tick()
+
+	snap := s.Snapshot("")
+	srtSnap := snap.Sources["srt:my-camera"]
+	require.Nil(t, srtSnap.SRT, "SRT stats should be nil when no provider is set")
+}
+
+func TestSampler_SRTStats_ProviderReturnsNotOK(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:disconnected": {DecodeLastNs: 0, Health: "offline"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.SetSRTStats(func(key string) (rttMs, lossRate, recvBufMs float64, ok bool) {
+		// Source not connected, no stats available
+		return 0, 0, 0, false
+	})
+
+	s.tick()
+
+	snap := s.Snapshot("")
+	srtSnap := snap.Sources["srt:disconnected"]
+	require.Nil(t, srtSnap.SRT, "SRT stats should be nil when provider returns ok=false")
+}
+
+func TestSampler_SRTStats_AppearsInJSON(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:feed1": {DecodeLastNs: 1000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.SetSRTStats(func(key string) (rttMs, lossRate, recvBufMs float64, ok bool) {
+		return 8.0, 1.5, 20.0, true
+	})
+	s.tick()
+
+	// Use HTTP handler to verify JSON output
+	req := httptest.NewRequest("GET", "/api/perf", nil)
+	w := httptest.NewRecorder()
+	s.HandlePerf(w, req)
+
+	require.Equal(t, 200, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+
+	sources, ok := result["sources"].(map[string]any)
+	require.True(t, ok)
+
+	feed1, ok := sources["srt:feed1"].(map[string]any)
+	require.True(t, ok)
+
+	srt, ok := feed1["srt"].(map[string]any)
+	require.True(t, ok, "srt field should be present in JSON for srt: source")
+	require.InDelta(t, 8.0, srt["rtt_ms"].(float64), 0.001)
+	require.InDelta(t, 1.5, srt["loss_rate_pct"].(float64), 0.001)
+	require.InDelta(t, 20.0, srt["recv_buf_ms"].(float64), 0.001)
 }
 
 func TestSamplerDoubleStopNoPanic(t *testing.T) {
