@@ -96,6 +96,8 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 				m.programPeakL = peakL
 				m.programPeakR = peakR
 				ch.peakL, ch.peakR = peakL, peakR
+				// Feed LUFS meter so loudness is always measured on program output.
+				m.loudness.Process(pcm)
 				// Store a copy for crossfade pre-buffer even in passthrough.
 				// Copy to avoid aliasing since decoder reuses its internal buffer.
 				ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
