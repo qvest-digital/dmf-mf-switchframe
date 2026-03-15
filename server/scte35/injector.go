@@ -50,6 +50,12 @@ type InjectorConfig struct {
 	// (0x000-0xFFF). 0 means unrestricted (0xFFF). Applied to cues
 	// that don't specify their own tier.
 	DefaultTier uint16
+
+	// OnSpliceOut is called after a cue-out (splice_insert with OutOfNetwork=true,
+	// or time_signal with cue-out segmentation descriptors) is successfully injected.
+	// Typically wired to Switcher.RequestKeyframe() so downstream SRT receivers
+	// get a clean IDR at the splice point.
+	OnSpliceOut func()
 }
 
 // activeEvent tracks an in-progress SCTE-35 event (internal, not exported).
@@ -481,6 +487,13 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	// (callback may call State() which also acquires mu).
 	if cb != nil {
 		cb()
+	}
+
+	// Fire OnSpliceOut callback for cue-out events so the encoder can
+	// force an IDR keyframe at the splice point. This gives downstream
+	// SRT receivers a clean entry point.
+	if webhookIsOut && inj.config.OnSpliceOut != nil {
+		inj.config.OnSpliceOut()
 	}
 
 	// Fire SCTE-104 sink outside the lock.

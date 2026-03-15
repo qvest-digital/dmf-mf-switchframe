@@ -2409,3 +2409,76 @@ func TestInjector_WebhookDispatch_TimeSignal_CueInType(t *testing.T) {
 	require.Equal(t, "cue_in", evt.Type, "webhook type should be cue_in for time_signal with cue-in descriptor")
 	require.False(t, evt.IsOut, "webhook isOut should be false for time_signal with cue-in descriptor")
 }
+
+func TestInjector_OnSpliceOut_CalledForSpliceInsertCueOut(t *testing.T) {
+	t.Parallel()
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	var called int
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		OnSpliceOut:       func() { called++ },
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// splice_insert with OutOfNetwork=true should trigger the callback.
+	msg := NewSpliceInsert(0, 30*time.Second, true, false)
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+	require.Equal(t, 1, called, "OnSpliceOut should be called once for splice_insert cue-out")
+}
+
+func TestInjector_OnSpliceOut_NotCalledForCueIn(t *testing.T) {
+	t.Parallel()
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	var called int
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		OnSpliceOut:       func() { called++ },
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// splice_insert with OutOfNetwork=false (cue-in) should NOT trigger.
+	msg := NewSpliceInsert(1, 0, false, false)
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+	require.Equal(t, 0, called, "OnSpliceOut should not be called for cue-in")
+}
+
+func TestInjector_OnSpliceOut_NilSafe(t *testing.T) {
+	t.Parallel()
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	// No OnSpliceOut configured — should not panic.
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, false)
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+}
+
+func TestInjector_OnSpliceOut_CalledForTimeSignalCueOut(t *testing.T) {
+	t.Parallel()
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 8100000 }
+
+	var called int
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		OnSpliceOut:       func() { called++ },
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// time_signal with cue-out segmentation descriptor should trigger.
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, []byte("test-upid"))
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+	require.Equal(t, 1, called, "OnSpliceOut should be called for time_signal with cue-out descriptor")
+}

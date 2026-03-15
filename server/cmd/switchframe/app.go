@@ -778,6 +778,7 @@ func (a *App) initSCTE35() error {
 		SCTE35PID:         a.cfg.SCTE35PID,
 		VerifyEncoding:    a.cfg.SCTE35Verify,
 		WebhookURL:        a.cfg.SCTE35WebhookURL,
+		OnSpliceOut:       a.sw.RequestKeyframe,
 	}
 
 	muxerSink := func(data []byte) {
