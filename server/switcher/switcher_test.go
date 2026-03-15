@@ -727,9 +727,9 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	sw.mu.RLock()
 	ss := sw.sources["cam1"]
 	sw.mu.RUnlock()
-	avgFrameSize := ss.avgFrameSize
-	avgFPS := ss.avgFPS
-	frameCount := ss.frameCount
+	avgFrameSize := ss.getAvgFrameSize()
+	avgFPS := ss.getAvgFPS()
+	frameCount := ss.getFrameCount()
 
 	require.Equal(t, 20, frameCount, "should have recorded 20 frames")
 	require.InDelta(t, 10000, avgFrameSize, 1000, "avg frame size should be near 10000 bytes")
@@ -1542,8 +1542,8 @@ func TestUpdateFrameStats_90kHzPTS(t *testing.T) {
 	}
 
 	// avgFPS should converge to ~29.97, not ~333.
-	require.InDelta(t, 29.97, ss.avgFPS, 1.0,
-		"avgFPS should be ~29.97 for 90kHz PTS deltas of 3003, got %f", ss.avgFPS)
+	require.InDelta(t, 29.97, ss.getAvgFPS(), 1.0,
+		"avgFPS should be ~29.97 for 90kHz PTS deltas of 3003, got %f", ss.getAvgFPS())
 }
 
 func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
@@ -1563,7 +1563,7 @@ func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
 	sw.updateFrameStats(ss, &media.VideoFrame{
 		PTS: 3003, WireData: make([]byte, 50000),
 	})
-	fpsAfterNormal := ss.avgFPS
+	fpsAfterNormal := ss.getAvgFPS()
 	require.InDelta(t, 29.97, fpsAfterNormal, 1.0)
 
 	// Third frame with a huge PTS jump (>90000 ticks = >1 second).
@@ -1571,8 +1571,54 @@ func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
 	sw.updateFrameStats(ss, &media.VideoFrame{
 		PTS: 3003 + 200000, WireData: make([]byte, 50000),
 	})
-	require.InDelta(t, fpsAfterNormal, ss.avgFPS, 0.01,
+	require.InDelta(t, fpsAfterNormal, ss.getAvgFPS(), 0.01,
 		"avgFPS should be unchanged after rejecting unreasonable delta")
+}
+
+func TestUpdateFrameStats_ConcurrentReadWrite(t *testing.T) {
+	// Verify that concurrent reads of sourceState frame stats don't race
+	// with updateFrameStats writes. The writer (source viewer goroutine)
+	// calls updateFrameStats, while readers (state broadcast, debug snapshot)
+	// access the same fields via sourceState.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	ss := &sourceState{key: "test"}
+
+	const iterations = 1000
+	var wg sync.WaitGroup
+
+	// Writer goroutine: simulate source viewer calling updateFrameStats.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			frame := &media.VideoFrame{
+				PTS:      int64(i * 3003),
+				WireData: make([]byte, 50000),
+			}
+			sw.updateFrameStats(ss, frame)
+		}
+	}()
+
+	// Reader goroutine: simulate buildStateLocked / DebugSnapshot reading stats.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			_ = ss.getAvgFrameSize()
+			_ = ss.getAvgFPS()
+			_ = ss.getLastPTS()
+			_ = ss.getFrameCount()
+		}
+	}()
+
+	wg.Wait()
+
+	// After all frames, stats should be populated.
+	require.Greater(t, ss.getFrameCount(), 0, "frameCount should be > 0")
+	require.Greater(t, ss.getAvgFrameSize(), 0.0, "avgFrameSize should be > 0")
 }
 
 func TestCutDuringActiveTransition_AbortsThenCuts(t *testing.T) {

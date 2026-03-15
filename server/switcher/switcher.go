@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"slices"
 	"strings"
@@ -193,14 +194,35 @@ type sourceState struct {
 	position       int  // display order in the UI (1-based)
 
 	// Rolling frame statistics for dynamic encoder parameters.
-	// Updated on every video frame from a single goroutine (source viewer).
-	// Used to estimate bitrate/fps for the transition encoder so it
-	// matches the source stream quality.
-	avgFrameSize float64       // exponential moving average of len(WireData) in bytes
-	avgFPS       float64       // exponential moving average of fps from PTS deltas
-	lastPTS      int64         // PTS of the most recent video frame (90kHz clock units)
-	frameCount   int           // total video frames received (for EMA warmup)
-	lastGroupID  atomic.Uint32 // most recent GroupID from this source's video frames
+	// Written by a single goroutine (source viewer) via updateFrameStats,
+	// read concurrently by state broadcast / debug snapshot goroutines.
+	// Uses atomic Uint64 + Float64bits/Float64frombits to avoid data race
+	// (same pattern as sourceDecoder.updateStats).
+	avgFrameSizeBits atomic.Uint64 // exponential moving average of len(WireData) in bytes
+	avgFPSBits       atomic.Uint64 // exponential moving average of fps from PTS deltas
+	lastPTS          atomic.Int64  // PTS of the most recent video frame (90kHz clock units)
+	frameCount       atomic.Int32  // total video frames received (for EMA warmup)
+	lastGroupID      atomic.Uint32 // most recent GroupID from this source's video frames
+}
+
+// getAvgFrameSize returns the rolling average frame size. Safe for concurrent access.
+func (ss *sourceState) getAvgFrameSize() float64 {
+	return math.Float64frombits(ss.avgFrameSizeBits.Load())
+}
+
+// getAvgFPS returns the rolling average FPS. Safe for concurrent access.
+func (ss *sourceState) getAvgFPS() float64 {
+	return math.Float64frombits(ss.avgFPSBits.Load())
+}
+
+// getLastPTS returns the most recent video PTS. Safe for concurrent access.
+func (ss *sourceState) getLastPTS() int64 {
+	return ss.lastPTS.Load()
+}
+
+// getFrameCount returns the total video frames received. Safe for concurrent access.
+func (ss *sourceState) getFrameCount() int {
+	return int(ss.frameCount.Load())
 }
 
 // Switcher is the central switching engine. It manages which source is
@@ -2559,38 +2581,43 @@ func (s *Switcher) notifyStateChange(snapshot internal.ControlRoomState) {
 
 // updateFrameStats updates the rolling frame size and FPS estimates for a
 // source. Called on every video frame from the source's viewer goroutine
-// (single-writer). Uses an exponential moving average with alpha=0.1.
+// (single-writer). Stats are stored atomically so concurrent readers
+// (state broadcast, debug snapshot) can access them without a lock.
+// Uses an exponential moving average with alpha=0.1.
 func (s *Switcher) updateFrameStats(ss *sourceState, frame *media.VideoFrame) {
 	const alpha = 0.1 // EMA smoothing factor
 
 	frameSize := float64(len(frame.WireData))
-	ss.frameCount++
+	count := int(ss.frameCount.Add(1))
 
-	if ss.frameCount == 1 {
+	if count == 1 {
 		// First frame — seed the averages
-		ss.avgFrameSize = frameSize
-		ss.lastPTS = frame.PTS
+		ss.avgFrameSizeBits.Store(math.Float64bits(frameSize))
+		ss.lastPTS.Store(frame.PTS)
 		return
 	}
 
 	// Update frame size EMA
-	ss.avgFrameSize = alpha*frameSize + (1-alpha)*ss.avgFrameSize
+	prev := math.Float64frombits(ss.avgFrameSizeBits.Load())
+	ss.avgFrameSizeBits.Store(math.Float64bits(alpha*frameSize + (1-alpha)*prev))
 
 	// Update FPS EMA from PTS delta
-	if frame.PTS > ss.lastPTS {
-		deltaPTS := frame.PTS - ss.lastPTS
+	prevPTS := ss.lastPTS.Load()
+	if frame.PTS > prevPTS {
+		deltaPTS := frame.PTS - prevPTS
 		// PTS is in 90kHz clock units (standard MPEG-TS timebase).
 		// Protect against unreasonable deltas (>1 second or negative)
 		if deltaPTS > 0 && deltaPTS < 90000 {
 			instantFPS := 90000.0 / float64(deltaPTS)
-			if ss.avgFPS == 0 {
-				ss.avgFPS = instantFPS
+			prevFPS := math.Float64frombits(ss.avgFPSBits.Load())
+			if prevFPS == 0 {
+				ss.avgFPSBits.Store(math.Float64bits(instantFPS))
 			} else {
-				ss.avgFPS = alpha*instantFPS + (1-alpha)*ss.avgFPS
+				ss.avgFPSBits.Store(math.Float64bits(alpha*instantFPS + (1-alpha)*prevFPS))
 			}
 		}
 	}
-	ss.lastPTS = frame.PTS
+	ss.lastPTS.Store(frame.PTS)
 	if frame.GroupID > ss.lastGroupID.Load() {
 		ss.lastGroupID.Store(frame.GroupID)
 	}
