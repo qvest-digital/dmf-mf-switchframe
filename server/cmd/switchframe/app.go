@@ -409,6 +409,14 @@ func (a *App) initSubsystems() error {
 	// Graphics compositor (DSK).
 	a.compositor = graphics.NewCompositor()
 	a.compositor.SetResolutionProvider(func() (int, int) {
+		// Use pipeline format as the authoritative resolution. This is always set
+		// (unlike programRelay.VideoInfo which is zero until the first frame is
+		// broadcast), ensuring graphics are rendered at the correct resolution
+		// from startup.
+		if f := a.sw.PipelineFormat(); f.Width > 0 && f.Height > 0 {
+			return f.Width, f.Height
+		}
+		// Fallback to relay info (should never be needed).
 		vi := a.programRelay.VideoInfo()
 		return vi.Width, vi.Height
 	})
