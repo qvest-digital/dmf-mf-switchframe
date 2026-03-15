@@ -6,6 +6,7 @@ import (
 	"image/jpeg"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -29,6 +30,8 @@ type ConfidenceMonitor struct {
 	minInterval    time.Duration
 	decoderFactory transition.DecoderFactory
 	decoder        transition.VideoDecoder
+
+	decodeErrors atomic.Int64
 
 	// bufMu serializes access to the cached intermediate buffers below.
 	// In production the rate limiter (minInterval=1s) ensures at most one
@@ -95,6 +98,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	}
 	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
+		cm.decodeErrors.Add(1)
 		slog.Warn("confidence monitor: decode error", "err", err)
 		return
 	}
@@ -160,6 +164,11 @@ func (cm *ConfidenceMonitor) LatestThumbnail() []byte {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	return cm.latestJPEG
+}
+
+// DecodeErrors returns the total number of decode errors since creation.
+func (cm *ConfidenceMonitor) DecodeErrors() int64 {
+	return cm.decodeErrors.Load()
 }
 
 // Close releases decoder resources. Safe to call multiple times.
