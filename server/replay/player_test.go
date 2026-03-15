@@ -1657,14 +1657,14 @@ func (d *mockDropDecoder) Decode(data []byte) ([]byte, int, int, error) {
 func (d *mockDropDecoder) Close() {}
 
 func TestDecodeGOP_PTSAssignmentOnFrameDrop(t *testing.T) {
-	// Fix 9: When a decoder drops a frame (non-EAGAIN error), remaining
+	// When a decoder drops a frame (non-EAGAIN error), remaining
 	// frames get wrong PTS because sortedPTS[len(decoded)] uses the decoded
 	// output count as the index, not the input consumption count.
 	//
 	// GOP with 4 frames, PTS = [1000, 2000, 3000, 4000].
 	// Frame at index 1 (PTS 2000) is dropped by the decoder.
 	// Expected: 3 decoded frames with PTS [1000, 3000, 4000].
-	// Bug: decoded frames get PTS [1000, 2000, 3000] (index off-by-one).
+	// Incorrect: PTS [1000, 2000, 3000] would result from indexing by decoded output count instead of input consumption index.
 	gop := []bufferedFrame{
 		{wireData: makeAVC1Data(100), pts: 1000, isKeyframe: true,
 			sps: []byte{0x67, 0x42, 0xC0, 0x1E}, pps: []byte{0x68, 0xCE, 0x38, 0x80}},
@@ -1734,7 +1734,7 @@ func TestEstimateFPSFromClip(t *testing.T) {
 	t.Run("decode order where last PTS is less than first PTS", func(t *testing.T) {
 		// Pathological case: I0, B-1(reorder), P2 in decode order
 		// where the last frame in decode order has the lowest PTS.
-		// Without the fix, ptsSpan = last.pts - first.pts < 0, returns default 30fps
+		// Duplicate PTS values yield ptsSpan=0, triggering the default 30fps.
 		// even for a 24fps source.
 		clip := []bufferedFrame{
 			{pts: 15000, isKeyframe: true}, // I-frame
@@ -1790,8 +1790,7 @@ func (d *verySlowMockDecoder) Close() {}
 
 func TestReplayPlayer_LoopTimingNoDrift(t *testing.T) {
 	// Verify that playbackStart and pacingIdx are reset on loop so frame
-	// pacing doesn't drift. Without the fix, pacingIdx keeps incrementing
-	// across loops while playbackStart stays fixed at the original start.
+	// pacing doesn't drift. playbackStart and pacingIdx are reset on loop to prevent cumulative timing drift.
 	// Re-decoding GOPs at each loop boundary adds wall-clock overhead that
 	// accumulates in the deficit between absolute pacing deadlines and
 	// actual wall-clock time.
@@ -1850,8 +1849,7 @@ func TestReplayPlayer_LoopTimingNoDrift(t *testing.T) {
 
 	// Check the interval between the last two frames of each loop.
 	// This pair is WITHIN the loop (no re-decode gap) and should be
-	// properly paced at ~33ms. Without the fix, later loops have this
-	// interval collapse to near-zero as deadlines fall into the past.
+	// properly paced at ~33ms. Frame pacing remains consistent across loop boundaries.
 	numCompleteLoops := len(frames) / framesPerLoop
 	for loopIdx := 0; loopIdx < numCompleteLoops; loopIdx++ {
 		// Last two frames in this loop: indices [loopIdx*3+1] and [loopIdx*3+2]
