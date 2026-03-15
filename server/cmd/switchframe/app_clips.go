@@ -39,9 +39,9 @@ func (a *App) initClips() error {
 			// (only B-frame reordering delay remains, typically 1-2 frames).
 			return codec.NewVideoDecoderSingleThread()
 		},
-		EncoderFactory: func(w, h, fps int) (clip.VideoEncoder, error) {
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
 			bitrate := switcher.DefaultBitrateForResolution(w, h)
-			return codec.NewVideoEncoder(w, h, bitrate, fps*1000, 1001)
+			return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
 		},
 	})
 

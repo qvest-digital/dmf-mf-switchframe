@@ -37,7 +37,9 @@ type ManagerConfig struct {
 	DecoderFactory func() (VideoDecoder, error)
 	// EncoderFactory creates an H.264 encoder for re-encoding decoded frames
 	// to browser-compatible 8-bit H.264. If nil, original wire data is forwarded.
-	EncoderFactory func(w, h, fps int) (VideoEncoder, error)
+	// fpsNum/fpsDen express the frame rate as a rational number
+	// (e.g. 30000/1001 for 29.97fps, 25000/1000 for 25fps).
+	EncoderFactory func(w, h, fpsNum, fpsDen int) (VideoEncoder, error)
 }
 
 // playerSlot holds the state of a single clip player slot.

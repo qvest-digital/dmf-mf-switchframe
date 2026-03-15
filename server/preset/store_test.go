@@ -218,6 +218,39 @@ func TestCreateRollbackOnSaveFailure(t *testing.T) {
 	require.Empty(t, ps.List(), "in-memory presets should be empty after save failure")
 }
 
+func TestUpdateRollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+
+	// Create a store in a temp directory and add a preset.
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "presets.json")
+	ps, err := NewStore(fp)
+	require.NoError(t, err)
+
+	created, err := ps.Create("original", testSnapshot())
+	require.NoError(t, err)
+	require.Equal(t, "original", created.Name)
+
+	// Make the directory read-only to force save failure.
+	require.NoError(t, os.Chmod(dir, 0o444))
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o755)
+	})
+
+	// Attempt to rename — should fail because directory is read-only.
+	newName := "renamed"
+	_, err = ps.Update(created.ID, Update{Name: &newName})
+	require.Error(t, err, "expected Update to fail when directory is read-only")
+
+	// Restore permissions to verify in-memory state.
+	require.NoError(t, os.Chmod(dir, 0o755))
+
+	// Verify the in-memory name was rolled back to "original".
+	got, ok := ps.Get(created.ID)
+	require.True(t, ok, "preset should still exist")
+	require.Equal(t, "original", got.Name, "name should be rolled back after save failure")
+}
+
 func TestNewStoreNonexistentFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

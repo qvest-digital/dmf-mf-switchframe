@@ -672,7 +672,7 @@ func TestHandleSCTE35Rules_Create(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 	require.Len(t, mr.createCalls, 1)
 	require.Equal(t, "Test rule", mr.createCalls[0].Name)
 

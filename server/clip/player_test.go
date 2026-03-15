@@ -711,7 +711,7 @@ func TestPlayerReencodeForBrowser(t *testing.T) {
 			yuv := make([]byte, 320*240*3/2)
 			return yuv, 320, 240, nil
 		},
-		EncoderFactory: func(w, h, fps int) (VideoEncoder, error) {
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
 			assert.Equal(t, 320, w)
 			assert.Equal(t, 240, h)
 			return mockEncoder, nil
@@ -754,7 +754,7 @@ func TestPlayerReencodeFailureFallsBack(t *testing.T) {
 			yuv := make([]byte, 320*240*3/2)
 			return yuv, 320, 240, nil
 		},
-		EncoderFactory: func(w, h, fps int) (VideoEncoder, error) {
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
 			// Encoder always returns error — should fall back to original wire data.
 			return &mockVideoEncoder{
 				encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
@@ -883,6 +883,129 @@ func TestEstimateFPSClampRange(t *testing.T) {
 	}
 	fps = estimateFPSFromClipFrames(lowFPS)
 	assert.Equal(t, 10.0, fps, "should clamp to 10fps min")
+}
+
+func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
+	// Test that a ~29.97fps clip passes (30000, 1001) to the encoder factory.
+	// Create frames with PTS values that yield ~29.97fps.
+	// 29.97fps -> PTS increment = 90000/29.97 ≈ 3003
+	ntscFrames := make([]bufferedFrame, 10)
+	ntscFrames[0] = bufferedFrame{
+		wireData:   []byte{0, 0, 0, 1, 0x65, 1, 2, 3},
+		pts:        0,
+		isKeyframe: true,
+		sps:        []byte{0x67, 0x42},
+		pps:        []byte{0x68, 0xCE},
+	}
+	for i := 1; i < 10; i++ {
+		ntscFrames[i] = bufferedFrame{
+			wireData: []byte{0, 0, 0, 1, 0x41, byte(i)},
+			pts:      int64(i) * 3003, // 29.97fps: 90000 * 1001/30000 ≈ 3003
+		}
+	}
+
+	var gotFPSNum, gotFPSDen int
+	done := make(chan struct{})
+
+	p := NewPlayer(PlayerConfig{
+		Clip:       ntscFrames,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
+			yuv := make([]byte, 320*240*3/2)
+			return yuv, 320, 240, nil
+		},
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+			gotFPSNum = fpsNum
+			gotFPSDen = fpsDen
+			return &mockVideoEncoder{
+				encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+					if forceIDR {
+						return buildAnnexBKeyframe(), true, nil
+					}
+					return buildAnnexBNonKeyframe(), false, nil
+				},
+				closeFn: func() {},
+			}, nil
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		OnDone:         func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	<-done
+	cancel()
+	p.Wait()
+
+	// ~29.97fps should snap to 30000/1001.
+	assert.Equal(t, 30000, gotFPSNum, "NTSC 29.97fps should produce fpsNum=30000")
+	assert.Equal(t, 1001, gotFPSDen, "NTSC 29.97fps should produce fpsDen=1001")
+}
+
+func TestPlayerEncoderFactoryPAL25fps(t *testing.T) {
+	// Test that a 25fps clip passes (25, 1) to the encoder factory.
+	// 25fps -> PTS increment = 90000/25 = 3600
+	palFrames := make([]bufferedFrame, 10)
+	palFrames[0] = bufferedFrame{
+		wireData:   []byte{0, 0, 0, 1, 0x65, 1, 2, 3},
+		pts:        0,
+		isKeyframe: true,
+		sps:        []byte{0x67, 0x42},
+		pps:        []byte{0x68, 0xCE},
+	}
+	for i := 1; i < 10; i++ {
+		palFrames[i] = bufferedFrame{
+			wireData: []byte{0, 0, 0, 1, 0x41, byte(i)},
+			pts:      int64(i) * 3600, // 25fps: 90000/25 = 3600
+		}
+	}
+
+	var gotFPSNum, gotFPSDen int
+	done := make(chan struct{})
+
+	p := NewPlayer(PlayerConfig{
+		Clip:       palFrames,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
+			yuv := make([]byte, 320*240*3/2)
+			return yuv, 320, 240, nil
+		},
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+			gotFPSNum = fpsNum
+			gotFPSDen = fpsDen
+			return &mockVideoEncoder{
+				encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+					if forceIDR {
+						return buildAnnexBKeyframe(), true, nil
+					}
+					return buildAnnexBNonKeyframe(), false, nil
+				},
+				closeFn: func() {},
+			}, nil
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		OnDone:         func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+	<-done
+	cancel()
+	p.Wait()
+
+	// 25fps should snap to 25/1.
+	assert.Equal(t, 25, gotFPSNum, "PAL 25fps should produce fpsNum=25")
+	assert.Equal(t, 1, gotFPSDen, "PAL 25fps should produce fpsDen=1")
 }
 
 // --- Mock types for encoder tests ---

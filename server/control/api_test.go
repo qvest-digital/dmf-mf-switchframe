@@ -795,3 +795,17 @@ func TestAPIv1AliasSources(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sources, 2)
 }
+
+// --- SCTE-35 Rules API tests ---
+
+func TestCreateRuleReturns201(t *testing.T) {
+	api, _, _ := setupSCTE35TestAPI(t)
+
+	body := `{"name":"test rule","enabled":true,"action":"pass","conditions":[{"field":"commandType","operator":"=","value":"splice_insert"}]}`
+	req := httptest.NewRequest("POST", "/api/scte35/rules", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+}

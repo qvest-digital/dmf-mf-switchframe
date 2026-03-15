@@ -574,7 +574,8 @@ func TestRunner_OnProgressCallbacks(t *testing.T) {
 	// 3. step 0 done
 	// 4. step 1 running
 	// 5. step 1 done
-	require.Len(t, states, 5, "expected 5 progress callbacks")
+	// 6. final (Running=false)
+	require.Len(t, states, 6, "expected 6 progress callbacks")
 
 	// Initial state: all pending
 	require.True(t, states[0].Running)
@@ -596,9 +597,15 @@ func TestRunner_OnProgressCallbacks(t *testing.T) {
 	require.Equal(t, StepRunning, states[3].Steps[1].Status)
 	require.Equal(t, 1, states[3].CurrentStep)
 
-	// Step 1 done
+	// Step 1 done (still Running=true at this point)
+	require.True(t, states[4].Running)
 	require.Equal(t, StepDone, states[4].Steps[0].Status)
 	require.Equal(t, StepDone, states[4].Steps[1].Status)
+
+	// Final: Running=false
+	require.False(t, states[5].Running)
+	require.Equal(t, StepDone, states[5].Steps[0].Status)
+	require.Equal(t, StepDone, states[5].Steps[1].Status)
 }
 
 func TestRunner_OnProgressFailure(t *testing.T) {
@@ -731,6 +738,36 @@ func TestRunner_OnProgressContextCancel(t *testing.T) {
 	require.Equal(t, StepFailed, final.Steps[0].Status)
 	require.Contains(t, final.Steps[0].Error, "cancel")
 	require.Equal(t, StepSkipped, final.Steps[1].Status)
+}
+
+func TestRunSetsRunningFalseOnSuccess(t *testing.T) {
+	target := &mockTarget{}
+	m := Macro{
+		Name: "running-false-test",
+		Steps: []Step{
+			{Action: ActionCut, Params: map[string]any{"source": "cam1"}},
+		},
+	}
+
+	var lastState ExecutionState
+	onProgress := func(state ExecutionState) {
+		stepsCopy := make([]StepState, len(state.Steps))
+		copy(stepsCopy, state.Steps)
+		lastState = ExecutionState{
+			Running:     state.Running,
+			MacroName:   state.MacroName,
+			Steps:       stepsCopy,
+			CurrentStep: state.CurrentStep,
+			Error:       state.Error,
+		}
+	}
+
+	err := Run(context.Background(), m, target, onProgress)
+	require.NoError(t, err)
+
+	// The final onProgress callback should have Running=false.
+	require.False(t, lastState.Running, "final state should have Running=false after successful completion")
+	require.Equal(t, StepDone, lastState.Steps[0].Status, "step should be done")
 }
 
 func TestRunner_AllActionsMapComplete(t *testing.T) {

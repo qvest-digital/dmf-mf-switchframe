@@ -165,6 +165,7 @@ func (ps *Store) Update(id string, updates Update) (Preset, error) {
 
 	for i := range ps.presets {
 		if ps.presets[i].ID == id {
+			oldName := ps.presets[i].Name
 			if updates.Name != nil {
 				if *updates.Name == "" {
 					return Preset{}, ErrEmptyName
@@ -172,6 +173,7 @@ func (ps *Store) Update(id string, updates Update) (Preset, error) {
 				ps.presets[i].Name = *updates.Name
 			}
 			if err := ps.save(); err != nil {
+				ps.presets[i].Name = oldName // rollback
 				return Preset{}, fmt.Errorf("save presets: %w", err)
 			}
 			return ps.presets[i], nil

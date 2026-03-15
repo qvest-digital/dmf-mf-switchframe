@@ -34,7 +34,9 @@ type PlayerConfig struct {
 	// EncoderFactory creates a VideoEncoder for re-encoding decoded frames
 	// to browser-compatible 8-bit H.264. If nil, original wire data is sent
 	// to the browser relay (only works for 8-bit clips).
-	EncoderFactory func(w, h, fps int) (VideoEncoder, error)
+	// fpsNum/fpsDen express the frame rate as a rational number
+	// (e.g. 30000/1001 for 29.97fps, 25000/1000 for 25fps).
+	EncoderFactory func(w, h, fpsNum, fpsDen int) (VideoEncoder, error)
 
 	// RawVideoOutput sends decoded YUV420 frame data to the switcher pipeline.
 	// Called for every output frame (including duplicates for slow-mo).
@@ -687,11 +689,8 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 
 	// Lazy-create encoder on first decoded frame or after dimension change.
 	if p.encoder == nil {
-		fps := int(math.Round(p.sourceFPS))
-		if fps <= 0 {
-			fps = 30
-		}
-		enc, err := p.config.EncoderFactory(w, h, fps)
+		fpsNum, fpsDen := fpsToRational(p.sourceFPS)
+		enc, err := p.config.EncoderFactory(w, h, fpsNum, fpsDen)
 		if err != nil {
 			slog.Warn("clip: failed to create browser encoder", "error", err, "w", w, "h", h)
 			return nil, false, nil, nil
