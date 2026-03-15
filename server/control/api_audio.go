@@ -191,7 +191,10 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	a.mixer.SetMasterLevel(req.Level)
+	if err := a.mixer.SetMasterLevel(req.Level); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }

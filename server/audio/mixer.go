@@ -442,12 +442,20 @@ func (m *Mixer) SetMuted(sourceKey string, muted bool) error {
 }
 
 // SetMasterLevel sets the master output level in dB.
-func (m *Mixer) SetMasterLevel(levelDB float64) {
+// Returns an error if the level is NaN, Inf, or outside [-100, 20].
+func (m *Mixer) SetMasterLevel(levelDB float64) error {
+	if math.IsNaN(levelDB) || math.IsInf(levelDB, 0) {
+		return errors.New("level must be a finite number")
+	}
+	if levelDB < -100 || levelDB > 20 {
+		return fmt.Errorf("level %f out of range [-100, 20]", levelDB)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.masterLevel = levelDB
 	m.masterLinear = float32(DBToLinear(levelDB))
 	m.recalcPassthrough()
+	return nil
 }
 
 // SetAFV enables or disables audio-follows-video for a channel.

@@ -280,6 +280,53 @@ func TestParseWAV_ZeroSampleRate(t *testing.T) {
 	require.Contains(t, err.Error(), "sample rate")
 }
 
+func TestDecodeFloat32PCMSanitizesNaN(t *testing.T) {
+	// Encode NaN bits into raw sample data
+	rawSamples := make([]byte, 4)
+	binary.LittleEndian.PutUint32(rawSamples[0:], math.Float32bits(float32(math.NaN())))
+
+	pcm := decodeFloat32PCM(rawSamples)
+	require.Len(t, pcm, 1)
+	require.Equal(t, float32(0), pcm[0], "NaN should be replaced with 0")
+}
+
+func TestDecodeFloat32PCMSanitizesInf(t *testing.T) {
+	// Encode +Inf and -Inf bits
+	rawSamples := make([]byte, 8)
+	binary.LittleEndian.PutUint32(rawSamples[0:], math.Float32bits(float32(math.Inf(1))))
+	binary.LittleEndian.PutUint32(rawSamples[4:], math.Float32bits(float32(math.Inf(-1))))
+
+	pcm := decodeFloat32PCM(rawSamples)
+	require.Len(t, pcm, 2)
+	require.Equal(t, float32(1.0), pcm[0], "+Inf should be clamped to 1.0")
+	require.Equal(t, float32(-1.0), pcm[1], "-Inf should be clamped to -1.0")
+}
+
+func TestDecodeFloat32PCMClampsOutOfRange(t *testing.T) {
+	rawSamples := make([]byte, 8)
+	binary.LittleEndian.PutUint32(rawSamples[0:], math.Float32bits(2.0))
+	binary.LittleEndian.PutUint32(rawSamples[4:], math.Float32bits(-3.5))
+
+	pcm := decodeFloat32PCM(rawSamples)
+	require.Len(t, pcm, 2)
+	require.Equal(t, float32(1.0), pcm[0], "2.0 should be clamped to 1.0")
+	require.Equal(t, float32(-1.0), pcm[1], "-3.5 should be clamped to -1.0")
+}
+
+func TestDecodeFloat32PCMPassthroughValid(t *testing.T) {
+	// Valid samples in range should pass through unchanged
+	rawSamples := make([]byte, 12)
+	binary.LittleEndian.PutUint32(rawSamples[0:], math.Float32bits(0.5))
+	binary.LittleEndian.PutUint32(rawSamples[4:], math.Float32bits(-0.75))
+	binary.LittleEndian.PutUint32(rawSamples[8:], math.Float32bits(0.0))
+
+	pcm := decodeFloat32PCM(rawSamples)
+	require.Len(t, pcm, 3)
+	require.Equal(t, float32(0.5), pcm[0])
+	require.Equal(t, float32(-0.75), pcm[1])
+	require.Equal(t, float32(0.0), pcm[2])
+}
+
 func TestParseWAV_44100Hz(t *testing.T) {
 	// Verify a different sample rate works.
 	rawSamples := make([]byte, 4) // 2 int16 samples

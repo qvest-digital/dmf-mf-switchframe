@@ -181,11 +181,11 @@ func (t *apiRecallTarget) SetAFV(sourceKey string, afv bool) error {
 	return t.mixer.SetAFV(sourceKey, afv)
 }
 
-func (t *apiRecallTarget) SetMasterLevel(level float64) {
+func (t *apiRecallTarget) SetMasterLevel(level float64) error {
 	if t.mixer == nil {
-		return
+		return nil
 	}
-	t.mixer.SetMasterLevel(level)
+	return t.mixer.SetMasterLevel(level)
 }
 
 // stateToSnapshot converts a ControlRoomState to a ControlRoomSnapshot

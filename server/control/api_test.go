@@ -389,8 +389,9 @@ func (m *mockMixer) SetAFV(sourceKey string, afv bool) error {
 	return nil
 }
 
-func (m *mockMixer) SetMasterLevel(level float64) {
+func (m *mockMixer) SetMasterLevel(level float64) error {
 	m.masterCalls = append(m.masterCalls, level)
+	return nil
 }
 
 func (m *mockMixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error {

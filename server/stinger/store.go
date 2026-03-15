@@ -25,6 +25,10 @@ var (
 	ErrMaxClipsReached = errors.New("stinger: maximum clips reached")
 )
 
+// maxZipEntrySize is the maximum allowed size for a single extracted zip entry.
+// 50 MB is generous for stinger PNG frames (a 1080p RGBA PNG is ~8MB uncompressed).
+const maxZipEntrySize = 50 << 20 // 50 MB
+
 // validateName rejects names that could cause path traversal or are otherwise invalid.
 func validateName(name string) error {
 	if name == "" || name == "." || name == ".." {
@@ -276,13 +280,19 @@ func (s *Store) Upload(name string, zipData []byte) error {
 			return fmt.Errorf("create file %s: %w", baseName, err)
 		}
 
-		_, err = io.Copy(outFile, rc)
+		limited := io.LimitReader(rc, maxZipEntrySize+1)
+		n, copyErr := io.Copy(outFile, limited)
 		_ = rc.Close()
 		_ = outFile.Close()
-		if err != nil {
+		if copyErr != nil {
 			_ = os.RemoveAll(dir)
 			cleanupPending()
-			return fmt.Errorf("write file %s: %w", baseName, err)
+			return fmt.Errorf("write file %s: %w", baseName, copyErr)
+		}
+		if n > maxZipEntrySize {
+			_ = os.RemoveAll(dir)
+			cleanupPending()
+			return fmt.Errorf("zip entry %s exceeds maximum size (%d bytes)", baseName, maxZipEntrySize)
 		}
 
 		if isPNG {

@@ -90,8 +90,9 @@ func (m *mockTarget) SetAFV(sourceKey string, afv bool) error {
 	return nil
 }
 
-func (m *mockTarget) SetMasterLevel(level float64) {
+func (m *mockTarget) SetMasterLevel(level float64) error {
 	m.masterCalls = append(m.masterCalls, level)
+	return nil
 }
 
 func TestRecallSetsProgramSource(t *testing.T) {

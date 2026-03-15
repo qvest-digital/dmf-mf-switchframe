@@ -298,7 +298,7 @@ func TestMixerMasterLevel(t *testing.T) {
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
-	m.SetMasterLevel(-6.0)
+	require.NoError(t, m.SetMasterLevel(-6.0))
 	require.False(t, m.IsPassthrough())
 
 	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
@@ -327,11 +327,71 @@ func TestMixerSetMasterLevel(t *testing.T) {
 	m.SetActive("cam1", true)
 	require.True(t, m.IsPassthrough())
 
-	m.SetMasterLevel(-3.0)
+	require.NoError(t, m.SetMasterLevel(-3.0))
 	require.False(t, m.IsPassthrough(), "non-zero master level should disable passthrough")
 
-	m.SetMasterLevel(0.0)
+	require.NoError(t, m.SetMasterLevel(0.0))
 	require.True(t, m.IsPassthrough(), "zero master level should enable passthrough")
+}
+
+func TestSetMasterLevelRejectsNaN(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	err := m.SetMasterLevel(math.NaN())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "finite")
+}
+
+func TestSetMasterLevelRejectsInf(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	err := m.SetMasterLevel(math.Inf(1))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "finite")
+
+	err = m.SetMasterLevel(math.Inf(-1))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "finite")
+}
+
+func TestSetMasterLevelRejectsOutOfRange(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	err := m.SetMasterLevel(-101)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "out of range")
+
+	err = m.SetMasterLevel(21)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "out of range")
+}
+
+func TestSetMasterLevelAcceptsValidRange(t *testing.T) {
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	for _, level := range []float64{-100, -60, 0, 10, 20} {
+		require.NoError(t, m.SetMasterLevel(level), "level %f should be accepted", level)
+	}
 }
 
 func TestMixerChannelGainApplied(t *testing.T) {
@@ -431,7 +491,7 @@ func (m *mockEncoderCallCounter) CallCount() int {
 
 func TestMixerEnsureEncoderPrimesOnAllPaths(t *testing.T) {
 	// Verify that the encoder is primed (silent frame + real frame = 2+ calls)
-	// on the crossfade path, which previously lazy-inited without priming.
+	// on the crossfade path.
 	var enc *mockEncoderCallCounter
 	var outputFrames []*media.AudioFrame
 
@@ -1013,13 +1073,13 @@ func TestMixerTransitionCrossfadeIngestFrame(t *testing.T) {
 	}
 }
 
-// --- Bug: Audio gain discontinuity when video position updates skip between audio frames ---
+// Verify audio gain is continuous across mix cycles when multiple video position updates occur between audio frames.
 
 func TestMixerTransitionGainContinuityAcrossFrames(t *testing.T) {
 	// This test verifies that audio gain is continuous across mix cycles even
 	// when multiple video position updates happen between audio frames.
-	// Bug: transCrossfadePrevPos was updated by video goroutine, so if 3 video
-	// position updates happen between 2 audio frames, the audio gain jumps.
+	// The transition position is snapshotted per mix cycle, so intermediate
+	// video position updates do not cause gain jumps between audio frames.
 	//
 	// Scenario: Audio frame 1 at position 0.1, then video updates to 0.2, 0.3,
 	// then audio frame 2. Frame 2's start gain should match frame 1's end gain
@@ -1171,7 +1231,7 @@ func (m *mockEncoderMultiCapture) Encode(pcm []float32) ([]byte, error) {
 }
 func (m *mockEncoderMultiCapture) Close() error { return nil }
 
-// --- Bug 1: FTB Reverse audio should fade IN (not out) ---
+// FTB Reverse audio fades in (increasing gain as position advances).
 
 func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -1236,7 +1296,7 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 	require.InDelta(t, 0.0, oldGain, 0.001, "FTB forward at 1.0: silent")
 }
 
-// --- Bug 2: Program mute (FTB held) ---
+// Program mute silences output when FTB is held.
 
 func TestMixerProgramMute(t *testing.T) {
 	var capturedPCM []float32
@@ -1296,7 +1356,7 @@ func TestMixerProgramMute(t *testing.T) {
 	}
 }
 
-// --- Bug 3: Dip transition dips audio to silence at midpoint ---
+// Dip transition reduces audio to silence at the midpoint.
 
 func TestMixerTransitionDipGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -1393,7 +1453,7 @@ func TestMixerDipIngestFrameMidpoint(t *testing.T) {
 	}
 }
 
-// --- Bug 4: Per-sample interpolation (no zipper noise) ---
+// Transition gain interpolation ramps smoothly per-sample (no zipper noise).
 
 func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 	// When position changes between frames, gain should ramp smoothly
@@ -1457,8 +1517,7 @@ func TestMixerTransitionPerSampleInterpolation(t *testing.T) {
 
 func TestMixerDeadlockPrevention(t *testing.T) {
 	// Two active channels, but only one sends frames.
-	// Without the fix, the mixer hangs forever waiting for channel 2.
-	// With the fix, output is produced after the 50ms deadline.
+	// The mixer produces output after the 50ms per-cycle deadline even when a channel is silent.
 	var mu sync.Mutex
 	var outputFrames []*media.AudioFrame
 
@@ -1533,7 +1592,7 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// Force non-passthrough mode so the mixing path's decoder init is exercised.
-	m.SetMasterLevel(-1.0)
+	require.NoError(t, m.SetMasterLevel(-1.0))
 	require.False(t, m.IsPassthrough())
 
 	var wg sync.WaitGroup
@@ -1649,7 +1708,7 @@ func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)
-	m.SetMasterLevel(-1.0) // force mixing path
+	require.NoError(t, m.SetMasterLevel(-1.0)) // force mixing path
 
 	// Ingest a frame to populate lastDecodedPCM
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 0, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
@@ -1778,7 +1837,7 @@ func TestMixerPerChannelPeaks(t *testing.T) {
 	m.SetActive("cam1", true)
 
 	// Force non-passthrough so the mixing path runs
-	m.SetMasterLevel(-1.0)
+	require.NoError(t, m.SetMasterLevel(-1.0))
 
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 0, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
@@ -2331,8 +2390,7 @@ func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
 
 // TestMixer_MonotonicPTSAcrossPassthroughMixingCycles verifies that output PTS
 // is monotonically increasing across passthrough↔mixing mode transitions.
-// Before the fix, passthrough forwarded raw source PTS while mixing used a
-// monotonic counter, causing drift after each transition.
+// Output PTS is monotonically increasing across passthrough/mixing mode transitions.
 func TestMixer_MonotonicPTSAcrossPassthroughMixingCycles(t *testing.T) {
 	var mu sync.Mutex
 	var outputFrames []*media.AudioFrame
@@ -2490,10 +2548,7 @@ func TestStereoGainInterpolation(t *testing.T) {
 
 func TestTransitionGainInterpolation_LastPairReachesTarget(t *testing.T) {
 	// Verify that the transition gain interpolation ramp reaches gEnd on the
-	// last sample pair. Before the fix, integer division and dividing by
-	// pairCount (instead of pairCount-1) caused the last pair's t to be
-	// (pairCount-1)/pairCount ≈ 0.999 instead of 1.0. The error is small
-	// (~0.001 * gainDelta, about -60dB) but the fix is trivial.
+	// The interpolation ramp reaches gEnd exactly on the last sample pair using (pairCount-1) denominator.
 	t.Parallel()
 
 	// Simulate the gain interpolation logic from mixFrameLocked.
@@ -2570,7 +2625,7 @@ func TestChannelGainCached(t *testing.T) {
 	m.mu.RUnlock()
 
 	// Set master level to -3 dB and verify cached value
-	m.SetMasterLevel(-3)
+	require.NoError(t, m.SetMasterLevel(-3))
 	m.mu.RLock()
 	expectedMaster := float32(DBToLinear(-3))
 	require.InDelta(t, float64(expectedMaster), float64(m.masterLinear), 1e-6, "masterLinear should match DBToLinear(-3)")
@@ -3011,13 +3066,11 @@ func TestMixerCrossfadeDuringFTBProducesSilence(t *testing.T) {
 	}
 }
 
-// --- Fix 2: IngestPCM skips crossfade (MXL audio clicks) ---
+// IngestPCM applies crossfade during cuts to prevent audio clicks.
 
 func TestMixerIngestPCM_CrossfadeOnCut(t *testing.T) {
 	// When two MXL sources are active and a cut is triggered via OnCut(),
-	// IngestPCM for both old and new source should produce a crossfaded
-	// output frame (not raw mix). Without the fix, IngestPCM ignores
-	// crossfadeActive and the output contains an abrupt switch (click).
+	// IngestPCM respects crossfadeActive, producing a crossfaded output frame.
 	var capturedPCM []float32
 	var outputFrames []*media.AudioFrame
 
@@ -3101,15 +3154,12 @@ func TestMixerIngestPCM_CrossfadeOnCut(t *testing.T) {
 	require.False(t, active, "crossfade should be cleared after completion")
 }
 
-// --- Fix 10: Decoder channel mismatch (mono→stereo upmix) ---
+// IngestPCM upmixes mono to stereo when mixer is configured for stereo.
 
 func TestMixerIngestPCM_MonoToStereoUpmix(t *testing.T) {
 	// When an MXL source delivers mono PCM (1024 float32 samples) to a
-	// stereo mixer (numChannels=2), the mixer should upmix mono→stereo
-	// by duplicating each sample to both L and R channels.
-	// Without the fix, the mono samples are treated as interleaved stereo,
-	// meaning odd/even samples get assigned to different channels, producing
-	// garbled audio at half the expected length.
+	// stereo mixer (numChannels=2), mono samples are duplicated to L and R
+	// channels, not interpreted as interleaved stereo.
 	var capturedPCM []float32
 	var outputFrames []*media.AudioFrame
 
@@ -3378,7 +3428,7 @@ func TestMixerMixPTSUsesToSourceDuringTransition(t *testing.T) {
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 5000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
 
 	// Ingest FROM source (cam1) LAST with PTS=3000 (lower PTS)
-	// BUG: without fix, this overwrites m.mixPTS from 5000 to 3000
+	// The FROM source's PTS must not overwrite the TO source's PTS.
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 3000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
 	require.Equal(t, 1, len(outputFrames), "should produce one mixed output frame")
@@ -3697,7 +3747,7 @@ func TestCrossfadePipelineOrder_MasterGainBeforeMute(t *testing.T) {
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
 	m.SetActive("cam1", true)
-	m.SetMasterLevel(-6.0) // -6 dB
+	require.NoError(t, m.SetMasterLevel(-6.0)) // -6 dB
 
 	m.mu.Lock()
 	m.channels["cam1"].decoder = &mockDecoder{samples: oldPCM}
@@ -3948,10 +3998,8 @@ func TestMixerCrossfadeWithMismatchedRate(t *testing.T) {
 }
 
 func TestUnmuteFadeLRSymmetry(t *testing.T) {
-	// The unmute fade-in ramp must apply the same gain to L and R channels
-	// of each sample pair. Before the fix, fadeSamples was decremented per
-	// individual sample instead of per sample-pair, causing L and R to get
-	// different progress values and the fade to complete in half the time.
+	// The unmute fade-in ramp must apply the same gain to L and R channels.
+	// fadeSamples is decremented per sample-pair so L and R get identical gain.
 	var capturedPCM []float32
 
 	// Use a buffer large enough to span the full 5ms ramp (480 samples for 48kHz stereo)

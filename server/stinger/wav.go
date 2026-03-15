@@ -114,12 +114,21 @@ func decodeInt16PCM(data []byte) []float32 {
 }
 
 // decodeFloat32PCM converts little-endian IEEE float32 samples.
+// NaN values are replaced with 0, and values outside [-1.0, 1.0] are clamped.
 func decodeFloat32PCM(data []byte) []float32 {
 	numSamples := len(data) / 4
 	pcm := make([]float32, numSamples)
 	for i := 0; i < numSamples; i++ {
 		bits := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
-		pcm[i] = math.Float32frombits(bits)
+		s := math.Float32frombits(bits)
+		if s != s { // NaN check (NaN != NaN)
+			s = 0
+		} else if s > 1.0 {
+			s = 1.0
+		} else if s < -1.0 {
+			s = -1.0
+		}
+		pcm[i] = s
 	}
 	return pcm
 }

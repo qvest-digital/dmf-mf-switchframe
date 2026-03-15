@@ -547,8 +547,7 @@ func (t *apiMacroTarget) execAudioMaster(params map[string]any) error {
 		return nil
 	}
 	level := floatParam(params, "level", 0)
-	t.mixer.SetMasterLevel(level)
-	return nil
+	return t.mixer.SetMasterLevel(level)
 }
 
 func (t *apiMacroTarget) execAudioEQ(params map[string]any) error {
@@ -729,11 +728,11 @@ func (rt *macroPresetRecallTarget) SetAFV(sourceKey string, afv bool) error {
 	return rt.mixer.SetAFV(sourceKey, afv)
 }
 
-func (rt *macroPresetRecallTarget) SetMasterLevel(level float64) {
+func (rt *macroPresetRecallTarget) SetMasterLevel(level float64) error {
 	if rt.mixer == nil {
-		return
+		return nil
 	}
-	rt.mixer.SetMasterLevel(level)
+	return rt.mixer.SetMasterLevel(level)
 }
 
 // --- Key helpers ---

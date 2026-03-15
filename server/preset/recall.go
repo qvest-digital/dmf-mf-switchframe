@@ -26,7 +26,7 @@ type RecallTarget interface {
 	SetAFV(sourceKey string, afv bool) error
 
 	// SetMasterLevel sets the master output level.
-	SetMasterLevel(level float64)
+	SetMasterLevel(level float64) error
 }
 
 // Recall applies a preset to the given target, returning warnings for any
@@ -75,7 +75,11 @@ func Recall(ctx context.Context, p Preset, target RecallTarget) []string {
 	}
 
 	// Set master level
-	target.SetMasterLevel(p.MasterLevel)
+	if err := target.SetMasterLevel(p.MasterLevel); err != nil {
+		slog.Warn("preset recall: master level failed",
+			"level", p.MasterLevel, "error", err)
+		warnings = append(warnings, fmt.Sprintf("master level %.1f: %v", p.MasterLevel, err))
+	}
 
 	return warnings
 }

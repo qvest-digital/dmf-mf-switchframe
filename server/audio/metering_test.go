@@ -204,6 +204,6 @@ func TestMixerMasterLevelGetter(t *testing.T) {
 
 	require.Equal(t, 0.0, m.MasterLevel())
 
-	m.SetMasterLevel(-3.0)
+	require.NoError(t, m.SetMasterLevel(-3.0))
 	require.InDelta(t, -3.0, m.MasterLevel(), 0.001)
 }

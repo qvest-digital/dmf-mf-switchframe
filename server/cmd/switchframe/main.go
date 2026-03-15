@@ -176,6 +176,13 @@ func parseConfig() (AppConfig, error) {
 
 	flag.Parse()
 
+	// Validate SCTE-35 PID when enabled.
+	if *scte35Flag {
+		if err := validateSCTE35PID(*scte35PIDFlag); err != nil {
+			return AppConfig{}, err
+		}
+	}
+
 	// MXL sources: CLI flag takes precedence over environment variable.
 	var mxlSources []string
 	if *mxlSourcesFlag != "" {
@@ -231,6 +238,15 @@ func parseConfig() (AppConfig, error) {
 		MXLDomain:         *mxlDomain,
 		MXLDiscover:       *mxlDiscover,
 	}, nil
+}
+
+// validateSCTE35PID checks that the given PID is in the valid MPEG-TS range
+// for user-defined PIDs [0x0020, 0x1FFE].
+func validateSCTE35PID(pid int) error {
+	if pid < 0x20 || pid > 0x1FFE {
+		return fmt.Errorf("--scte35-pid %d out of valid MPEG-TS PID range [0x0020, 0x1FFE]", pid)
+	}
+	return nil
 }
 
 // splitAndTrim splits a comma-separated string and trims whitespace.

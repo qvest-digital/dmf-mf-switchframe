@@ -539,6 +539,45 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 	require.Equal(t, 960*2, len(clip.Audio))
 }
 
+func TestUploadRejectsOversizedZipEntry(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 0)
+	require.NoError(t, err)
+
+	// Create a zip with a .png-named file that exceeds maxZipEntrySize.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Write a file that's larger than maxZipEntrySize (50MB).
+	// We only need to exceed the limit, so write maxZipEntrySize+1 bytes.
+	fw, err := zw.Create("oversized.png")
+	require.NoError(t, err)
+
+	// Write in chunks to avoid huge memory allocation
+	chunk := make([]byte, 1<<20) // 1 MB chunk
+	bytesWritten := int64(0)
+	target := int64(maxZipEntrySize) + 1
+	for bytesWritten < target {
+		toWrite := int64(len(chunk))
+		if bytesWritten+toWrite > target {
+			toWrite = target - bytesWritten
+		}
+		n, writeErr := fw.Write(chunk[:toWrite])
+		require.NoError(t, writeErr)
+		bytesWritten += int64(n)
+	}
+
+	require.NoError(t, zw.Close())
+
+	err = store.Upload("oversized-stinger", buf.Bytes())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeds maximum size")
+
+	// Verify the directory was cleaned up
+	_, ok := store.Get("oversized-stinger")
+	require.False(t, ok, "oversized stinger should not be loaded")
+}
+
 func TestRGBAToFrame_LimitedRangeWhite(t *testing.T) {
 	// White (255,255,255) should produce Y=235 in limited-range BT.709, not Y=255.
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
