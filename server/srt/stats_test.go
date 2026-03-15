@@ -189,6 +189,30 @@ func TestConnStatsToSRTSourceInfo(t *testing.T) {
 	}
 }
 
+func TestStatsManagerGet(t *testing.T) {
+	sm := NewStatsManager()
+
+	// Get for nonexistent key returns nil, false.
+	cs, ok := sm.Get("srt:cam1")
+	if ok || cs != nil {
+		t.Errorf("Get for nonexistent key: got (%v, %v), want (nil, false)", cs, ok)
+	}
+
+	// After GetOrCreate, Get returns the same instance.
+	created := sm.GetOrCreate("srt:cam1")
+	cs, ok = sm.Get("srt:cam1")
+	if !ok || cs != created {
+		t.Errorf("Get after GetOrCreate: got (%v, %v), want (%v, true)", cs, ok, created)
+	}
+
+	// After Remove, Get returns nil, false again.
+	sm.Remove("srt:cam1")
+	cs, ok = sm.Get("srt:cam1")
+	if ok || cs != nil {
+		t.Errorf("Get after Remove: got (%v, %v), want (nil, false)", cs, ok)
+	}
+}
+
 func TestStatsManagerGetOrCreate(t *testing.T) {
 	sm := NewStatsManager()
 

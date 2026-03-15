@@ -188,6 +188,15 @@ func NewStatsManager() *StatsManager {
 	}
 }
 
+// Get returns the ConnStats for the given key, or nil and false if not found.
+// Unlike GetOrCreate, this does not create phantom entries for unknown keys.
+func (sm *StatsManager) Get(key string) (*ConnStats, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cs, ok := sm.stats[key]
+	return cs, ok
+}
+
 // GetOrCreate returns the ConnStats for the given key, creating one if needed.
 // Newly created ConnStats are initialized with zero-value mode/streamID/latency;
 // the caller should configure them via SetConnected/Update.

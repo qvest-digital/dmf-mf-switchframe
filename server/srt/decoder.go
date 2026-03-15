@@ -674,6 +674,11 @@ type StreamDecoder struct {
 	handle C.srtdec_t
 	id     int
 	closed atomic.Bool
+
+	// Reusable Go-side buffers for C→Go copies, avoiding per-frame allocation
+	// (~3.1 MB/frame at 1080p for video, ~8 KB/frame for audio).
+	videoGoBuf []byte
+	audioGoBuf []float32
 }
 
 // NewStreamDecoder creates a StreamDecoder that will demux and decode
@@ -784,13 +789,18 @@ func goOnVideoFrame(id C.int, data *C.uint8_t, length C.int, width C.int, height
 		return
 	}
 
-	// Deep copy the YUV data from C to Go before calling the callback.
-	// This prevents aliasing — the C buffer will be freed after this returns.
+	// Copy YUV data from C to a reusable Go buffer to avoid per-frame allocation
+	// (~3.1 MB at 1080p, ~93 MB/s per source at 30fps). The callback must not
+	// retain the slice beyond the call — all downstream consumers (IngestRawVideo,
+	// IngestFillYUV, IngestSourceFrame, IngestRawFrame) deep-copy before async use.
 	n := int(length)
-	yuv := make([]byte, n)
-	copy(yuv, unsafe.Slice((*byte)(unsafe.Pointer(data)), n))
+	if cap(d.videoGoBuf) < n {
+		d.videoGoBuf = make([]byte, n)
+	}
+	d.videoGoBuf = d.videoGoBuf[:n]
+	copy(d.videoGoBuf, unsafe.Slice((*byte)(unsafe.Pointer(data)), n))
 
-	d.cfg.OnVideo(yuv, int(width), int(height), int64(pts))
+	d.cfg.OnVideo(d.videoGoBuf, int(width), int(height), int64(pts))
 }
 
 //export goOnAudioFrame
@@ -800,14 +810,19 @@ func goOnAudioFrame(id C.int, data *C.float, samples C.int, channels C.int, pts 
 		return
 	}
 
-	// Deep copy the float32 PCM data from C to Go.
+	// Copy PCM data from C to a reusable Go buffer to avoid per-frame allocation.
+	// The callback must not retain the slice beyond the call — IngestPCM and the
+	// audio encoder consume the data synchronously.
 	n := int(samples)
-	pcm := make([]float32, n)
+	if cap(d.audioGoBuf) < n {
+		d.audioGoBuf = make([]float32, n)
+	}
+	d.audioGoBuf = d.audioGoBuf[:n]
 	cSlice := unsafe.Slice((*float32)(unsafe.Pointer(data)), n)
-	copy(pcm, cSlice)
+	copy(d.audioGoBuf, cSlice)
 
 	// The swr output is stereo float32 at 48kHz.
-	d.cfg.OnAudio(pcm, int64(pts), 48000, int(channels))
+	d.cfg.OnAudio(d.audioGoBuf, int64(pts), 48000, int(channels))
 }
 
 //export goOnCaptionData

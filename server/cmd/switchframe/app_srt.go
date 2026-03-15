@@ -158,19 +158,27 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	key := cfg.Key
 
 	// Clean up existing source if reconnecting with the same key.
+	// Copy old state and release lock before calling Stop() — Stop() blocks
+	// on wg.Wait() and must not be called under srtSourcesMu.
 	a.srtSourcesMu.Lock()
-	if oldState, ok := a.srtSources[key]; ok {
+	oldState, hadOld := a.srtSources[key]
+	if hadOld {
+		delete(a.srtSources, key)
+	}
+	a.srtSourcesMu.Unlock()
+
+	if hadOld {
 		slog.Info("SRT source reconnecting, cleaning up old source", "key", key)
 		oldState.source.Stop()
+		// Encoder Close() is idempotent (video: closed bool guard, audio: sync.Once),
+		// so double-close from OnStopped + here is safe.
 		if oldState.videoEncoder != nil {
 			oldState.videoEncoder.Close()
 		}
 		if oldState.audioEncoder != nil {
 			_ = oldState.audioEncoder.Close()
 		}
-		delete(a.srtSources, key)
 	}
-	a.srtSourcesMu.Unlock()
 
 	// Unregister old source from switcher (safe even if not registered).
 	a.sw.UnregisterSource(key)
@@ -215,6 +223,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		groupID       atomic.Uint32
 		videoInfoSent bool
 		encoderYUV    []byte // reusable buffer for encoder input (avoids aliasing)
+		lastVideoW    int    // track resolution for mid-stream changes
+		lastVideoH    int
 	)
 
 	pf := a.sw.PipelineFormat()
@@ -238,7 +248,18 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			return
 		}
 
-		// Lazy encoder creation on first frame.
+		// Recreate encoder on resolution change (mid-stream format switch).
+		if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
+			slog.Info("SRT source resolution changed, recreating encoder",
+				"key", sourceKey, "old", fmt.Sprintf("%dx%d", lastVideoW, lastVideoH),
+				"new", fmt.Sprintf("%dx%d", w, h))
+			videoEncoder.Close()
+			videoEncoder = nil
+			state.videoEncoder = nil
+			videoInfoSent = false // force re-send with new dimensions
+		}
+
+		// Lazy encoder creation on first frame (or after resolution change).
 		if videoEncoder == nil {
 			bitrate := 6_000_000
 			enc, err := codec.NewVideoEncoder(w, h, bitrate, pf.FPSNum, pf.FPSDen)
@@ -248,6 +269,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			}
 			videoEncoder = enc
 			state.videoEncoder = enc
+			lastVideoW = w
+			lastVideoH = h
 		}
 
 		// Copy YUV to avoid aliasing with the decoder's buffer.
@@ -295,9 +318,10 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				}
 			}
 
-			// Set VideoInfo on first keyframe so browsers can init their decoder.
+			// Set VideoInfo on first keyframe or after resolution change so
+			// browsers can (re-)init their decoder. Resolution changes reset
+			// videoInfoSent to false in the encoder recreation block above.
 			if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
-				videoInfoSent = true
 				avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
 				if avcC != nil {
 					relay.SetVideoInfo(distribution.VideoInfo{
@@ -307,6 +331,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 						DecoderConfig: avcC,
 					})
 					slog.Info("SRT source: relay VideoInfo set", "key", sourceKey, "w", w, "h", h)
+					videoInfoSent = true
 				}
 			}
 		}
@@ -374,6 +399,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		delete(a.srtSources, sourceKey)
 		a.srtSourcesMu.Unlock()
 
+		// Release listener slot so new connections can be accepted
+		// when MaxSources is set.
+		if cfg.Mode == srt.ModeListener && a.srtListener != nil {
+			a.srtListener.ReleaseSource()
+		}
+
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
 		// The health monitor will mark it stale/no_signal automatically.
 	}
@@ -436,8 +467,10 @@ func (a *App) stopSRTSources() {
 	for key, state := range sources {
 		slog.Info("stopping SRT source on shutdown", "key", key)
 		state.source.Stop()
-		// Encoders are cleaned up by OnStopped callback,
-		// but guard against cases where Stop() doesn't trigger it.
+		// Encoders are cleaned up by OnStopped callback, but guard against
+		// cases where Stop() doesn't trigger it. Double-close is safe because
+		// both encoder Close() methods are idempotent (video: closed bool
+		// guard, audio: sync.Once).
 		if state.videoEncoder != nil {
 			state.videoEncoder.Close()
 		}
@@ -494,11 +527,12 @@ func (m *srtManagerAdapter) GetStats(key string) (interface{}, bool) {
 	if !strings.HasPrefix(key, srt.KeyPrefix) {
 		return nil, false
 	}
-	// Check store first (covers both listener and caller sources).
-	if _, ok := m.store.Get(key); !ok {
+	// Use read-only Get to avoid creating phantom entries for
+	// sources that were never connected.
+	cs, ok := m.stats.Get(key)
+	if !ok {
 		return nil, false
 	}
-	cs := m.stats.GetOrCreate(key)
 	return cs.Snapshot(), true
 }
 
