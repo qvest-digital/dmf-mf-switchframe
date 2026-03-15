@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
@@ -51,6 +52,14 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 
 	if req.OutputDir == "" {
 		req.OutputDir = filepath.Join(os.TempDir(), "switchframe-recordings")
+	}
+
+	// Reject path traversal attempts before cleaning. A raw path containing
+	// ".." could resolve to a location outside the intended directory tree
+	// (e.g. "/tmp/../../etc/sensitive" -> "/etc/sensitive").
+	if strings.Contains(req.OutputDir, "..") {
+		httperr.Write(w, http.StatusBadRequest, "outputDir must not contain path traversal (..)")
+		return
 	}
 
 	outDir := filepath.Clean(req.OutputDir)

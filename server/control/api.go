@@ -302,11 +302,22 @@ func (a *API) broadcast() {
 	}
 }
 
-// MacroState returns the current macro execution state, if any.
+// MacroState returns a deep copy of the current macro execution state, if any.
+// A copy is returned to prevent data races: the onProgress callback writes
+// fields under macroMu, and callers (e.g. enrichState -> json.Marshal) read
+// fields without the lock.
 func (a *API) MacroState() *internal.MacroExecutionState {
 	a.macroMu.Lock()
 	defer a.macroMu.Unlock()
-	return a.macroState
+	if a.macroState == nil {
+		return nil
+	}
+	cp := *a.macroState
+	if a.macroState.Steps != nil {
+		cp.Steps = make([]internal.MacroStepState, len(a.macroState.Steps))
+		copy(cp.Steps, a.macroState.Steps)
+	}
+	return &cp
 }
 
 // UploadProgress returns the current clip upload progress, or nil if no upload

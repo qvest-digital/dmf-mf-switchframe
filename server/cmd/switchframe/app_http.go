@@ -23,8 +23,9 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	// Cert-hash outside auth chain (browsers need it before they have tokens).
 	apiMux.HandleFunc("GET /api/cert-hash", a.handleCertHash)
 
-	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> auth -> operator
+	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> auth -> operator -> maxbytes
 	var apiHandler http.Handler = apiMux
+	apiHandler = control.MaxBytesMiddleware(apiHandler)
 	apiHandler = a.operatorMW(apiHandler)
 	apiHandler = a.authMW(apiHandler)
 	apiHandler = control.MetricsMiddleware(apiHandler)

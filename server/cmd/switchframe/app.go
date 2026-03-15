@@ -231,8 +231,9 @@ func (a *App) initPrismServer() error {
 			apiSubMux := http.NewServeMux()
 			a.api.RegisterOnMux(apiSubMux)
 
-			// Chain (outermost first): CORS -> logger -> metrics -> auth -> operator -> handler
+			// Chain (outermost first): CORS -> logger -> metrics -> auth -> operator -> maxbytes -> handler
 			var apiHandler http.Handler = apiSubMux
+			apiHandler = control.MaxBytesMiddleware(apiHandler)
 			apiHandler = a.operatorMW(apiHandler)
 			apiHandler = a.authMW(apiHandler)
 			apiHandler = control.MetricsMiddleware(apiHandler)

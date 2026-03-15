@@ -262,6 +262,48 @@ func TestRecordingStartRelativeDir(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestRecordingStartAbsolutePathTraversal(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	// An absolute path containing ".." resolves via filepath.Clean to a
+	// different directory ("/tmp/../../etc/sensitive" -> "/etc/sensitive").
+	// This should be rejected because the raw path contains "..".
+	tests := []struct {
+		name string
+		dir  string
+	}{
+		{"traversal via tmp", "/tmp/../../etc/sensitive"},
+		{"traversal via var", "/var/log/../../etc/passwd"},
+		{"double dot in middle", "/recordings/../../../root"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"outputDir":"` + tt.dir + `"}`
+			req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			api.Mux().ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, "path %q should be rejected", tt.dir)
+		})
+	}
+}
+
+func TestRecordingStartValidAbsolutePath(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	// A clean absolute path without ".." should be accepted.
+	body := `{"outputDir":"/tmp/switchframe-recordings"}`
+	req := httptest.NewRequest("POST", "/api/recording/start", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "/tmp/switchframe-recordings", mock.lastRecConfig.Dir)
+}
+
 func TestRecordingStartInvalidJSON(t *testing.T) {
 	api, _ := setupOutputTestAPI(t)
 

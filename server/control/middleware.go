@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zsiec/switchframe/server/metrics"
@@ -187,4 +188,29 @@ func isNoisyPath(path string) bool {
 		return true
 	}
 	return false
+}
+
+// maxJSONBodySize is the default maximum request body size for JSON POST endpoints.
+// Sized to accommodate the graphics frame upload endpoint which sends base64-encoded
+// RGBA overlays (up to ~11 MB for 1080p). Clip and stinger uploads use multipart/zip
+// content types and are excluded from this middleware.
+const maxJSONBodySize = 16 << 20 // 16 MB
+
+// MaxBytesMiddleware wraps request bodies with http.MaxBytesReader to reject
+// oversized payloads before they are fully read. This prevents memory exhaustion
+// from malicious or accidental large POST bodies. Excluded:
+//   - GET/HEAD requests (no body)
+//   - multipart/form-data uploads (stinger zip, clip upload have their own limits)
+//   - application/octet-stream uploads (stinger raw upload)
+func MaxBytesMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Body != nil {
+			ct := r.Header.Get("Content-Type")
+			// Skip file uploads — they have per-handler size limits.
+			if !strings.HasPrefix(ct, "multipart/") && ct != "application/octet-stream" && ct != "application/zip" {
+				r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodySize)
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }

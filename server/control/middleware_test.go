@@ -231,3 +231,77 @@ func TestLoggerMiddlewareLogFields(t *testing.T) {
 		require.Contains(t, logOutput, field, "log output missing field %q", field)
 	}
 }
+
+func TestMaxBytesMiddleware_RejectsOversizedBody(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Try to read the body -- should fail for oversized payloads.
+		buf := make([]byte, maxJSONBodySize+1)
+		_, err := r.Body.Read(buf)
+		if err != nil {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Create a body that exceeds the limit.
+	bigBody := make([]byte, maxJSONBodySize+1)
+	req := httptest.NewRequest("POST", "/api/switch/cut", bytes.NewReader(bigBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code,
+		"oversized POST body should be rejected")
+}
+
+func TestMaxBytesMiddleware_AllowsNormalBody(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1024)
+		n, _ := r.Body.Read(buf)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf[:n])
+	}))
+
+	smallBody := []byte(`{"source":"camera1"}`)
+	req := httptest.NewRequest("POST", "/api/switch/cut", bytes.NewReader(smallBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code,
+		"normal-sized POST body should be allowed")
+}
+
+func TestMaxBytesMiddleware_SkipsGETRequests(t *testing.T) {
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/api/switch/state", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMaxBytesMiddleware_SkipsMultipartUploads(t *testing.T) {
+	// Multipart uploads (stinger, clip) have their own size limits.
+	// The middleware should not wrap their body.
+	bigBody := make([]byte, maxJSONBodySize+1)
+	handler := MaxBytesMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, len(bigBody))
+		n, _ := r.Body.Read(buf)
+		if n > 0 {
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+		}
+	}))
+
+	req := httptest.NewRequest("POST", "/api/clips/upload", bytes.NewReader(bigBody))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=abc123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code,
+		"multipart uploads should bypass body size limit")
+}

@@ -378,3 +378,103 @@ func TestEnrichFn_RaceFree(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestMacroState_ReturnsDeepCopy(t *testing.T) {
+	api, _ := setupMacroTestAPI(t)
+
+	// Set up a macro state with steps.
+	api.macroMu.Lock()
+	api.macroState = &internal.MacroExecutionState{
+		Running:     true,
+		MacroName:   "test-macro",
+		CurrentStep: 1,
+		Steps: []internal.MacroStepState{
+			{Action: "cut", Summary: "Cut to camera2", Status: "done"},
+			{Action: "wait", Summary: "Wait 500ms", Status: "running"},
+		},
+	}
+	api.macroMu.Unlock()
+
+	// Get the copy.
+	copy1 := api.MacroState()
+	require.NotNil(t, copy1)
+	require.Equal(t, "test-macro", copy1.MacroName)
+	require.True(t, copy1.Running)
+	require.Len(t, copy1.Steps, 2)
+
+	// Mutate the copy and verify the original is unchanged.
+	copy1.Running = false
+	copy1.Steps[0].Status = "MUTATED"
+
+	api.macroMu.Lock()
+	require.True(t, api.macroState.Running, "original Running should not be mutated by copy")
+	require.Equal(t, "done", api.macroState.Steps[0].Status, "original Steps should not be mutated by copy")
+	api.macroMu.Unlock()
+}
+
+func TestMacroState_NilReturnsNil(t *testing.T) {
+	api, _ := setupMacroTestAPI(t)
+	require.Nil(t, api.MacroState())
+}
+
+func TestMacroState_ConcurrentAccessRaceFree(t *testing.T) {
+	api, _ := setupMacroTestAPI(t)
+
+	api.SetBroadcastFunc(func() {})
+
+	// Set up initial state.
+	api.macroMu.Lock()
+	api.macroState = &internal.MacroExecutionState{
+		Running:   true,
+		MacroName: "race-test",
+		Steps: []internal.MacroStepState{
+			{Action: "wait", Summary: "Wait", Status: "running"},
+		},
+	}
+	api.macroMu.Unlock()
+
+	var wg sync.WaitGroup
+
+	// Writer goroutines simulate onProgress callbacks.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				api.macroMu.Lock()
+				api.macroState = &internal.MacroExecutionState{
+					Running:     true,
+					MacroName:   "race-test",
+					CurrentStep: j,
+					Steps: []internal.MacroStepState{
+						{Action: "wait", Summary: "Wait", Status: "running", WaitMs: j * 10},
+					},
+				}
+				api.macroMu.Unlock()
+			}
+		}(i)
+	}
+
+	// Reader goroutines simulate enrichState -> json.Marshal.
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				ms := api.MacroState()
+				if ms != nil {
+					// Simulate what enrichState does: read fields without lock.
+					_ = ms.Running
+					_ = ms.MacroName
+					_ = ms.CurrentStep
+					for _, s := range ms.Steps {
+						_ = s.Action
+						_ = s.WaitMs
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
