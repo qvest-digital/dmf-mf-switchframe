@@ -43,6 +43,7 @@ import (
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte104"
 	"github.com/zsiec/switchframe/server/scte35"
+	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -121,6 +122,12 @@ type App struct {
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
 	scte35Rules    *scte35.RulesStore
+
+	// SRT input
+	srtListener *srt.Listener
+	srtCaller   *srt.Caller
+	srtStore    *srt.Store
+	srtStats    *srt.StatsManager
 
 	// MXL integration
 	mxlInstance *mxl.Instance
@@ -892,6 +899,13 @@ func (a *App) initAPI() error {
 	if a.clipStore != nil {
 		apiOpts = append(apiOpts, control.WithClipStore(a.clipStore))
 	}
+	if a.srtCaller != nil && a.srtStore != nil && a.srtStats != nil {
+		apiOpts = append(apiOpts, control.WithSRTManager(&srtManagerAdapter{
+			caller: a.srtCaller,
+			stats:  a.srtStats,
+			store:  a.srtStore,
+		}))
+	}
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
@@ -941,6 +955,9 @@ func (a *App) Run(ctx context.Context) error {
 	defer cancel()
 
 	a.sw.StartHealthMonitor(1 * time.Second)
+
+	// Start SRT listener and restore persisted caller pulls.
+	a.startSRT(ctx)
 
 	demoStats := demo.NewStats()
 	if a.cfg.Demo {
@@ -1199,6 +1216,11 @@ func (a *App) Close() {
 	}
 	if a.mxlInstance != nil {
 		_ = a.mxlInstance.Close()
+	}
+
+	// SRT cleanup (listener is stopped via context cancellation in bgWG.Wait).
+	if a.srtListener != nil {
+		_ = a.srtListener.Close()
 	}
 
 	if a.perfSampler != nil {

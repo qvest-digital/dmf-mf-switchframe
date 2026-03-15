@@ -61,6 +61,10 @@ type AppConfig struct {
 	ClipStorageMax   int64         // --clip-storage-max (bytes, default 10GB)
 	ClipEphemeralTTL time.Duration // --clip-ephemeral-ttl (default 24h)
 
+	// SRT input.
+	SRTListen    string // SRT listener address (e.g., ":6464")
+	SRTLatencyMs int    // Default SRT latency in milliseconds
+
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
 	MXLOutput         string   // Flow name for program output (empty = disabled)
@@ -119,6 +123,9 @@ func run() error {
 	if err := app.initClips(); err != nil {
 		return err
 	}
+	if err := app.initSRT(); err != nil {
+		return err
+	}
 	if err := app.initAPI(); err != nil {
 		return err
 	}
@@ -163,6 +170,10 @@ func parseConfig() (AppConfig, error) {
 	// Clip storage flags.
 	clipStorageMaxFlag := flag.Int64("clip-storage-max", 10<<30, "Maximum clip storage in bytes (default 10GB)")
 	clipEphemeralTTLFlag := flag.Duration("clip-ephemeral-ttl", 24*time.Hour, "TTL for ephemeral clips (default 24h)")
+
+	// SRT input flags.
+	srtListenFlag := flag.String("srt-listen", "", "SRT listener address for incoming push connections (e.g., :6464)")
+	srtLatencyFlag := flag.Int("srt-latency", 120, "Default SRT latency in milliseconds")
 
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
@@ -228,6 +239,8 @@ func parseConfig() (AppConfig, error) {
 		Captions:          *captionsFlag,
 		ClipStorageMax:    *clipStorageMaxFlag,
 		ClipEphemeralTTL:  *clipEphemeralTTLFlag,
+		SRTListen:         *srtListenFlag,
+		SRTLatencyMs:      *srtLatencyFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,
