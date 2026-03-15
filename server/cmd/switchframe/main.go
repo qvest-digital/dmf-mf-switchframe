@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 func init() {
@@ -85,6 +86,12 @@ func run() error {
 	cfg, err := parseConfig()
 	if err != nil {
 		return err
+	}
+
+	// Auto-enable SRT listener in demo mode so demo SRT pushers have
+	// something to connect to without requiring --srt-listen explicitly.
+	if cfg.Demo && cfg.SRTListen == "" {
+		cfg.SRTListen = srt.DefaultPort
 	}
 
 	app := &App{cfg: cfg}

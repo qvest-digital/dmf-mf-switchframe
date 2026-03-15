@@ -987,6 +987,27 @@ func (a *App) Run(ctx context.Context) error {
 		stopMXLDemo := a.startMXLDemo(ctx)
 		defer stopMXLDemo()
 
+		// Start SRT demo sources (push test clips to local SRT listener).
+		if a.cfg.SRTListen != "" && a.cfg.DemoVideoDir != "" {
+			clips := []string{
+				filepath.Join(a.cfg.DemoVideoDir, "tears_of_steel.ts"),
+				filepath.Join(a.cfg.DemoVideoDir, "sintel.ts"),
+			}
+			// Filter to clips that actually exist on disk.
+			var validClips []string
+			for _, c := range clips {
+				if _, err := os.Stat(c); err == nil {
+					validClips = append(validClips, c)
+				}
+			}
+			if len(validClips) > 0 {
+				// Give the SRT listener a moment to start accepting connections.
+				time.Sleep(200 * time.Millisecond)
+				go demo.StartSRTSources(ctx, a.cfg.SRTListen, validClips, slog.Default())
+				slog.Info("demo: SRT push sources started", "clips", len(validClips), "addr", a.cfg.SRTListen)
+			}
+		}
+
 		// Load demo stingers if none exist yet.
 		if len(a.stingerStore.List()) == 0 {
 			vi := a.programRelay.VideoInfo()

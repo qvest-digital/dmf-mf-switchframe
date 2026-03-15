@@ -47,7 +47,7 @@ demo: build-server node_modules_check
 	@echo ""
 	@echo "  SwitchFrame Demo"
 	@echo "  Open http://localhost:5173 in your browser"
-	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV pipeline)"
+	@echo "  Sources: cam1-cam4 (H.264), mxl:raw1-raw2 (raw YUV), SRT push (if test clips exist)"
 	@echo "  Keying: mxl:raw2 is a green screen with chroma key pre-configured (Keys tab)"
 	@echo "  SCTE-35: Enabled (SCTE-35 tab in bottom panel)"
 	@echo "  Captions: Enabled (Captions tab in bottom panel)"
@@ -58,9 +58,9 @@ demo: build-server node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
