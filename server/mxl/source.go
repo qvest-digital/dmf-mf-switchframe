@@ -121,6 +121,12 @@ type Source struct {
 	audioReader *Reader
 	dataReader  *Reader
 
+	// Raw flow handles opened by the caller (inst.OpenReader/OpenAudioReader).
+	// Stored so Stop() can close them, releasing C handles before mxlInstance.Close().
+	videoFlow DiscreteReader
+	audioFlow ContinuousReader
+	dataFlow  DiscreteReader
+
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
@@ -179,6 +185,7 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 	ctx, s.cancel = context.WithCancel(ctx)
 
 	if videoFlow != nil {
+		s.videoFlow = videoFlow
 		s.videoReader = NewVideoReader(ReaderConfig{
 			BufSize:   4,
 			TimeoutMs: 100,
@@ -192,6 +199,7 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 	}
 
 	if audioFlow != nil {
+		s.audioFlow = audioFlow
 		s.audioReader = NewAudioReader(ReaderConfig{
 			BufSize:        16,
 			TimeoutMs:      100, // overridden by audioLoop's 5ms for actual reads
@@ -205,6 +213,7 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 
 	// Optional data flow (metadata/ancillary).
 	if len(dataFlow) > 0 && dataFlow[0] != nil {
+		s.dataFlow = dataFlow[0]
 		s.dataReader = NewDataReader(ReaderConfig{
 			BufSize:   8,
 			TimeoutMs: 100,
@@ -217,7 +226,8 @@ func (s *Source) Start(ctx context.Context, videoFlow DiscreteReader, audioFlow 
 }
 
 // Stop halts the source and waits for goroutines to finish.
-// Safe to call multiple times.
+// Safe to call multiple times. Closes flow readers to release C handles
+// before the caller closes the MXL instance.
 func (s *Source) Stop() {
 	s.stopOnce.Do(func() {
 		if s.cancel != nil {
@@ -236,6 +246,19 @@ func (s *Source) Stop() {
 		}
 		if s.dataReader != nil {
 			s.dataReader.Wait()
+		}
+
+		// Close flow readers to release C handles. Must happen after reader
+		// goroutines exit (they call ReadGrain/ReadSamples on these handles).
+		// Without this, mxlInstance.Close() races with still-open flow readers.
+		if s.videoFlow != nil {
+			_ = s.videoFlow.Close()
+		}
+		if s.audioFlow != nil {
+			_ = s.audioFlow.Close()
+		}
+		if s.dataFlow != nil {
+			_ = s.dataFlow.Close()
 		}
 
 		if s.videoEncoder != nil {

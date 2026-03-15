@@ -469,6 +469,156 @@ func TestSource_OnRawVideoBufferNotAliased(t *testing.T) {
 	}
 }
 
+func TestSource_StopClosesFlowReaders(t *testing.T) {
+	// Finding #5: Flow readers opened by inst.OpenReader() / inst.OpenAudioReader()
+	// hold C handles (in cgo builds). Source.Stop() stops goroutines but never
+	// calls Close() on the readers. When mxlInstance.Close() is called next,
+	// these unclosed handles become dangling pointers — use-after-free in cgo.
+	//
+	// After the fix: Source.Stop() must call Close() on all flow readers.
+	videoFlow := &closeTrackingDiscreteReader{
+		inner: newMockDiscreteReader(
+			[]mockGrain{
+				{data: makeV210Frame(12, 2), info: GrainInfo{Index: 1, GrainSize: uint32(len(makeV210Frame(12, 2))), TotalSlices: 1, ValidSlices: 1}},
+			},
+			FlowConfig{Format: DataFormatVideo, GrainRate: Rational{30, 1}},
+		),
+	}
+	audioFlow := &closeTrackingContinuousReader{
+		inner: newMockContinuousReader(
+			[]mockSamples{{pcm: [][]float32{{0.1}, {0.2}}}},
+			FlowConfig{Format: DataFormatAudio, GrainRate: Rational{48000, 1}, ChannelCount: 2},
+		),
+	}
+	dataFlow := &closeTrackingDiscreteReader{
+		inner: newMockDiscreteReader(
+			[]mockGrain{
+				{data: []byte{0x01}, info: GrainInfo{Index: 1, GrainSize: 1, TotalSlices: 1, ValidSlices: 1}},
+			},
+			FlowConfig{Format: DataFormatData, GrainRate: Rational{25, 1}},
+		),
+	}
+
+	src := NewSource(SourceConfig{
+		FlowName:    "cam1",
+		Width:       12,
+		Height:      2,
+		SampleRate:  48000,
+		Channels:    2,
+		OnRawVideo:  func(string, []byte, int, int, int64) {},
+		OnRawAudio:  func(string, []float32, int64, int) {},
+		OnDataGrain: func(string, []byte, int64) {},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	src.Start(ctx, videoFlow, audioFlow, dataFlow)
+
+	// Let flows produce some data.
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	src.Stop()
+
+	// After Stop returns, all flow readers must be closed.
+	videoFlow.mu.Lock()
+	videoClosed := videoFlow.closed
+	videoFlow.mu.Unlock()
+	if !videoClosed {
+		t.Fatal("video flow reader not closed by Source.Stop(); " +
+			"unclosed C handle would be use-after-free when mxlInstance.Close() is called")
+	}
+
+	audioFlow.mu.Lock()
+	audioClosed := audioFlow.closed
+	audioFlow.mu.Unlock()
+	if !audioClosed {
+		t.Fatal("audio flow reader not closed by Source.Stop(); " +
+			"unclosed C handle would be use-after-free when mxlInstance.Close() is called")
+	}
+
+	dataFlow.mu.Lock()
+	dataClosed := dataFlow.closed
+	dataFlow.mu.Unlock()
+	if !dataClosed {
+		t.Fatal("data flow reader not closed by Source.Stop(); " +
+			"unclosed C handle would be use-after-free when mxlInstance.Close() is called")
+	}
+}
+
+func TestSource_StopClosesFlowReadersVideoOnly(t *testing.T) {
+	// Verify Close is called even when only a video flow is provided.
+	videoFlow := &closeTrackingDiscreteReader{
+		inner: &infiniteDiscreteReader{},
+	}
+
+	src := NewSource(SourceConfig{
+		FlowName:   "cam1",
+		Width:      12,
+		Height:     2,
+		OnRawVideo: func(string, []byte, int, int, int64) {},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	src.Start(ctx, videoFlow, nil)
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	src.Stop()
+
+	videoFlow.mu.Lock()
+	closed := videoFlow.closed
+	videoFlow.mu.Unlock()
+	if !closed {
+		t.Fatal("video flow reader not closed by Source.Stop() (video-only case)")
+	}
+}
+
+// closeTrackingDiscreteReader wraps a DiscreteReader and tracks Close() calls.
+type closeTrackingDiscreteReader struct {
+	inner  DiscreteReader
+	mu     sync.Mutex
+	closed bool
+}
+
+func (r *closeTrackingDiscreteReader) ReadGrain(index uint64, timeout uint64) ([]byte, GrainInfo, error) {
+	return r.inner.ReadGrain(index, timeout)
+}
+
+func (r *closeTrackingDiscreteReader) ConfigInfo() FlowConfig { return r.inner.ConfigInfo() }
+func (r *closeTrackingDiscreteReader) HeadIndex() (uint64, error) {
+	return r.inner.HeadIndex()
+}
+
+func (r *closeTrackingDiscreteReader) Close() error {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	return r.inner.Close()
+}
+
+// closeTrackingContinuousReader wraps a ContinuousReader and tracks Close() calls.
+type closeTrackingContinuousReader struct {
+	inner  ContinuousReader
+	mu     sync.Mutex
+	closed bool
+}
+
+func (r *closeTrackingContinuousReader) ReadSamples(index uint64, count int, timeout uint64) ([][]float32, error) {
+	return r.inner.ReadSamples(index, count, timeout)
+}
+
+func (r *closeTrackingContinuousReader) ConfigInfo() FlowConfig { return r.inner.ConfigInfo() }
+func (r *closeTrackingContinuousReader) HeadIndex() (uint64, error) {
+	return r.inner.HeadIndex()
+}
+
+func (r *closeTrackingContinuousReader) Close() error {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	return r.inner.Close()
+}
+
 func TestSource_NilFlowsNoOp(t *testing.T) {
 	src := NewSource(SourceConfig{FlowName: "cam1"})
 

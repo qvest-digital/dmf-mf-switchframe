@@ -2,6 +2,7 @@ package mxl
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -228,6 +229,108 @@ func TestMXLOutputConfigurableFrameRateLifecycle(t *testing.T) {
 	if ref.rate.Numerator != 50 || ref.rate.Denominator != 1 {
 		t.Fatalf("expected video rate 50/1, got %d/%d", ref.rate.Numerator, ref.rate.Denominator)
 	}
+}
+
+func TestOutput_StopWaitsForWriterClose(t *testing.T) {
+	// Finding #4: Output.Stop() cancels context and returns immediately.
+	// Writer.Start() has a goroutine that calls Close() on ctx.Done() async.
+	// If App.Close() calls mxlInstance.Close() right after Stop(), the flow
+	// writers may still be closing — potential use-after-free in cgo.
+	//
+	// After the fix: Stop() must block until Writer.Close() completes.
+	vMock := &mockDiscreteWriter{}
+	aMock := &mockContinuousWriter{}
+
+	out := NewOutput(OutputConfig{
+		FlowName:   "program",
+		Width:      12,
+		Height:     2,
+		SampleRate: 48000,
+		Channels:   2,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out.StartLifecycle(ctx, vMock, aMock)
+
+	// Let the ticker goroutine start.
+	time.Sleep(20 * time.Millisecond)
+
+	// Stop must synchronously close the writer. After Stop returns,
+	// the flow writers must already be closed — not closing asynchronously.
+	out.Stop()
+
+	// Immediately after Stop returns, writers must be closed.
+	vMock.mu.Lock()
+	vClosed := vMock.closed
+	vMock.mu.Unlock()
+	if !vClosed {
+		t.Fatal("video writer not closed synchronously by Stop(); " +
+			"Stop() returned before Writer.Close() completed — " +
+			"mxlInstance.Close() could race with async flow writer cleanup")
+	}
+
+	aMock.mu.Lock()
+	aClosed := aMock.closed
+	aMock.mu.Unlock()
+	if !aClosed {
+		t.Fatal("audio writer not closed synchronously by Stop(); " +
+			"Stop() returned before Writer.Close() completed")
+	}
+}
+
+func TestOutput_StopBlocksUntilWriterCloseCompletes(t *testing.T) {
+	// Verify Stop doesn't return before Close finishes, even with slow writers.
+	slowWriter := &slowCloseDiscreteWriter{delay: 100 * time.Millisecond}
+
+	out := NewOutput(OutputConfig{
+		FlowName: "program",
+		Width:    12,
+		Height:   2,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out.StartLifecycle(ctx, slowWriter, nil)
+
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	out.Stop()
+	elapsed := time.Since(start)
+
+	// Stop should have waited for the slow writer's Close.
+	if elapsed < 80*time.Millisecond {
+		t.Fatalf("Stop() returned too quickly (%v); did not wait for slow writer Close()", elapsed)
+	}
+
+	slowWriter.mu.Lock()
+	closed := slowWriter.closed
+	slowWriter.mu.Unlock()
+	if !closed {
+		t.Fatal("slow writer not closed after Stop()")
+	}
+}
+
+// slowCloseDiscreteWriter simulates a flow writer whose Close() takes time.
+type slowCloseDiscreteWriter struct {
+	mu     sync.Mutex
+	closed bool
+	delay  time.Duration
+}
+
+func (w *slowCloseDiscreteWriter) WriteGrain(index uint64, data []byte) error {
+	return nil
+}
+
+func (w *slowCloseDiscreteWriter) Close() error {
+	time.Sleep(w.delay)
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	return nil
 }
 
 func TestOutput_NilWritersNoOp(t *testing.T) {

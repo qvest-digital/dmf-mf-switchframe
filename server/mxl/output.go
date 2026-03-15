@@ -132,12 +132,17 @@ func (o *Output) StartLifecycle(ctx context.Context, videoWriter DiscreteWriter,
 		"video", videoWriter != nil, "audio", audioWriter != nil, "data", hasData)
 }
 
-// Stop disconnects sinks and stops the MXL writer via context cancellation.
-// Writer.Start() has a goroutine that calls Close() on ctx.Done(), so we
-// only cancel the context here to avoid a double-close.
+// Stop disconnects sinks and stops the MXL writer synchronously.
+// Cancels the context (which stops the video ticker goroutine) and then
+// calls Writer.Close() to wait for goroutines and release flow writers.
+// This must be synchronous so that the caller (App.Close) can safely
+// call mxlInstance.Close() immediately after Stop() returns.
 func (o *Output) Stop() {
 	if o.cancel != nil {
 		o.cancel()
 	}
+	// Close the writer synchronously. Writer.Close() uses CompareAndSwap so
+	// it's safe even if the ctx.Done goroutine in Writer.Start() races with us.
+	_ = o.writer.Close()
 	o.log.Info("MXL output stopped", "flow", o.config.FlowName)
 }
