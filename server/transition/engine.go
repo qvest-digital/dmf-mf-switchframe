@@ -414,10 +414,11 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
-	// Common in mixed-resolution setups (e.g. 1080p cameras + 720p ProPresenter).
+	// This should no longer trigger now that per-source normalization scales at
+	// the decoder output. Kept as a defensive fallback.
 	if w != e.width || h != e.height {
-		e.log.Debug("scaling frame", "source", sourceKey,
-			"from_w", w, "from_h", h, "to_w", e.width, "to_h", e.height)
+		slog.Warn("transition: unexpected resolution mismatch after normalization",
+			"source_w", w, "source_h", h, "target_w", e.width, "target_h", e.height)
 		targetSize := e.width * e.height * 3 / 2
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
@@ -558,9 +559,11 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		}
 
 		// Scale if resolution doesn't match the target.
+		// This should no longer trigger now that per-source normalization scales at
+		// the decoder output. Kept as a defensive fallback.
 		if decW != e.width || decH != e.height {
-			e.log.Debug("scaling frame", "source", sourceKey,
-				"from_w", decW, "from_h", decH, "to_w", e.width, "to_h", e.height)
+			slog.Warn("transition: unexpected resolution mismatch after normalization",
+				"source_w", decW, "source_h", decH, "target_w", e.width, "target_h", e.height)
 			targetSize := e.width * e.height * 3 / 2
 			if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 				e.scaleBuf = make([]byte, targetSize)
@@ -632,9 +635,12 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 		e.blender = blender
 	}
 
-	// Scale to engine resolution if needed (e.g., 360x240 MXL → 1080p camera).
+	// Scale to engine resolution if needed. This should no longer trigger now that
+	// per-source normalization scales at the decoder output. Kept as a defensive fallback.
 	src := yuv
 	if width != e.width || height != e.height {
+		slog.Warn("transition: unexpected resolution mismatch after normalization",
+			"source_w", width, "source_h", height, "target_w", e.width, "target_h", e.height)
 		targetSize := e.width * e.height * 3 / 2
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
