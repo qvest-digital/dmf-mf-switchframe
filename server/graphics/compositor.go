@@ -103,6 +103,25 @@ type graphicsLayer struct {
 	imageRGBA   []byte // decoded RGBA pixels (for overlay compositing)
 	imageWidth  int
 	imageHeight int
+
+	// Frame-locked ticker state. Set by ticker engine, advanced by ProcessYUV.
+	ticker *tickerState
+}
+
+// tickerState holds the pre-rendered strip and scroll state for a
+// frame-locked ticker. The xOffset is advanced by exactly
+// (speed / pipelineFPS) pixels on each ProcessYUV call, producing
+// perfectly smooth scrolling at any pipeline frame rate.
+type tickerState struct {
+	strip     *image.RGBA // pre-rendered text strip
+	viewport  []byte      // reusable viewport buffer (progW * barH * 4)
+	xOffset   float64     // current scroll position (sub-pixel precision)
+	speed     float64     // pixels per second
+	loopPoint int         // wrap position for loop mode (0 = no loop)
+	viewW     int         // viewport width
+	viewH     int         // viewport height
+	done   bool        // true when non-loop ticker has scrolled off the end
+	doneCh chan struct{} // closed when non-loop ticker completes (signals goroutine to exit)
 }
 
 // Compositor manages multiple downstream keyer (DSK) graphics overlay layers.
@@ -129,6 +148,11 @@ type Compositor struct {
 
 	// Returns program video resolution. Set via SetResolutionProvider.
 	resolutionProvider func() (width, height int)
+
+	// Pipeline frame rate for frame-locked animations (tickers).
+	// Stored as rational num/den for drift-free advancement.
+	pipelineFPSNum int
+	pipelineFPSDen int
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
@@ -573,6 +597,16 @@ func (c *Compositor) SetResolutionProvider(fn func() (width, height int)) {
 	c.resolutionProvider = fn
 }
 
+// SetPipelineFPS sets the pipeline frame rate for frame-locked animations.
+// Uses rational num/den for drift-free ticker advancement (e.g., 30000/1001
+// for 29.97fps). Must be called when the pipeline format changes.
+func (c *Compositor) SetPipelineFPS(fpsNum, fpsDen int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pipelineFPSNum = fpsNum
+	c.pipelineFPSDen = fpsDen
+}
+
 // OnStateChange registers a callback invoked when the overlay state changes.
 func (c *Compositor) OnStateChange(fn func(State)) {
 	c.mu.Lock()
@@ -607,6 +641,54 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 		return yuv
 	}
 
+	c.mu.Lock()
+
+	// Advance frame-locked tickers before compositing.
+	if c.pipelineFPSNum > 0 && c.pipelineFPSDen > 0 {
+		for _, id := range c.sortedIDs {
+			layer := c.layers[id]
+			if layer.ticker == nil || !layer.active || layer.ticker.done {
+				continue
+			}
+			ts := layer.ticker
+			// pixelsPerFrame = speed * fpsDen / fpsNum (rational, drift-free)
+			pixelsPerFrame := ts.speed * float64(c.pipelineFPSDen) / float64(c.pipelineFPSNum)
+			ts.xOffset += pixelsPerFrame
+
+			// Loop wrap.
+			if ts.loopPoint > 0 {
+				for ts.xOffset >= float64(ts.loopPoint) {
+					ts.xOffset -= float64(ts.loopPoint)
+				}
+			} else {
+				// Non-loop: check if scrolled past the end of the strip.
+				stripW := ts.strip.Bounds().Dx()
+				if int(ts.xOffset)+ts.viewW > stripW {
+					ts.done = true
+					layer.active = false
+					if ts.doneCh != nil {
+						close(ts.doneCh)
+						ts.doneCh = nil
+					}
+					continue
+				}
+			}
+
+			// Extract viewport from strip at current offset.
+			xInt := int(ts.xOffset)
+			if ts.strip != nil && ts.viewport != nil {
+				extractTickerViewport(ts.strip, xInt, ts.viewW, ts.viewH, ts.viewport)
+				// Update overlay in-place (no copy needed, we hold the lock).
+				layer.overlay = ts.viewport
+				layer.overlayWidth = ts.viewW
+				layer.overlayHeight = ts.viewH
+			}
+		}
+	}
+
+	c.mu.Unlock()
+
+	// Compositing pass under read lock (no ticker writes).
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

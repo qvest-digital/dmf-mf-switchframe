@@ -412,6 +412,8 @@ func (a *App) initSubsystems() error {
 		vi := a.programRelay.VideoInfo()
 		return vi.Width, vi.Height
 	})
+	pf := a.sw.PipelineFormat()
+	a.compositor.SetPipelineFPS(pf.FPSNum, pf.FPSDen)
 	a.sw.SetCompositor(a.compositor)
 
 	// Layout compositor (PIP / multi-layout).

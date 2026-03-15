@@ -127,6 +127,11 @@ func (a *API) handleSetFormat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update compositor FPS for frame-locked animations (tickers).
+	if a.compositor != nil {
+		a.compositor.SetPipelineFPS(f.FPSNum, f.FPSDen)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }

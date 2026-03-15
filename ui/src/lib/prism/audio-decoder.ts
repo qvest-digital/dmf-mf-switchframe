@@ -128,9 +128,14 @@ export class PrismAudioDecoder {
 		this.gainNode.gain.value = this.muted ? 0 : 1;
 		this.gainNode.connect(this.context.destination);
 
-		const ringSize = Math.ceil(sampleRate * RING_BUFFER_SECONDS);
+		// Use the AudioContext's actual sample rate for the ring buffer, not the source rate.
+		// After resampling (e.g., 44.1kHz → 48kHz), all samples in the ring are at the
+		// context rate. Using the source rate would miscalculate queueLengthMs, causing
+		// A/V sync drift and buffer underruns for non-48kHz sources.
+		const ctxRate = this.context.sampleRate;
+		const ringSize = Math.ceil(ctxRate * RING_BUFFER_SECONDS);
 		this.ringBuffer = new AudioRingBuffer();
-		this.ringBuffer.init(channels, ringSize, sampleRate);
+		this.ringBuffer.init(channels, ringSize, ctxRate);
 
 		try {
 			await this.context.audioWorklet.addModule(audioWorkletUrl);

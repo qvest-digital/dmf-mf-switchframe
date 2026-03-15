@@ -69,8 +69,9 @@ type Writer struct {
 	audioWriter ContinuousWriter
 	audioRate   Rational
 
-	closed atomic.Bool
-	wg     sync.WaitGroup
+	closed    atomic.Bool
+	closeDone chan struct{} // closed when Close() completes; CAS-losers wait on it
+	wg        sync.WaitGroup
 
 	// Steady-rate video: WriteVideo stores latest frame, ticker writes it.
 	latestV210 atomic.Pointer[v210Frame]
@@ -99,8 +100,9 @@ func NewWriter(config WriterConfig) *Writer {
 		log = slog.Default()
 	}
 	return &Writer{
-		config: config,
-		log:    log,
+		config:    config,
+		log:       log,
+		closeDone: make(chan struct{}),
 	}
 }
 
@@ -298,8 +300,11 @@ func (w *Writer) WriteAudio(pcm []float32, pts int64, sampleRate, channels int) 
 // Close releases the writer resources and waits for goroutines to exit.
 func (w *Writer) Close() error {
 	if !w.closed.CompareAndSwap(false, true) {
+		// Another goroutine is closing; wait for it to finish.
+		<-w.closeDone
 		return nil
 	}
+	defer close(w.closeDone)
 
 	// Wait for worker goroutines (videoTickLoop) to exit.
 	// They check w.closed on each tick and return promptly.

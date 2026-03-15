@@ -7,7 +7,6 @@ import (
 	"image/draw"
 	"log/slog"
 	"sync"
-	"time"
 
 	"github.com/zsiec/switchframe/server/graphics/textrender"
 )
@@ -126,12 +125,19 @@ func (te *TickerEngine) UpdateText(layerID int, text string) error {
 	return te.Start(layerID, cfg)
 }
 
-// cleanup removes the ticker from the map and deactivates the layer.
+// cleanup removes the ticker from the map, clears ticker state, and deactivates the layer.
 // Called on all exit paths (cancel, natural completion).
 func (te *TickerEngine) cleanup(layerID int) {
 	te.mu.Lock()
 	delete(te.tickers, layerID)
 	te.mu.Unlock()
+
+	// Clear ticker state from the layer.
+	te.compositor.mu.Lock()
+	if layer, ok := te.compositor.layers[layerID]; ok {
+		layer.ticker = nil
+	}
+	te.compositor.mu.Unlock()
 
 	te.compositor.deactivateAndClearLayer(layerID)
 }
@@ -158,8 +164,10 @@ func (te *TickerEngine) Close() {
 // allocation from very long text. 65536 pixels at 48px tall = ~12.5 MB RGBA.
 const maxStripWidth = 65536
 
-// runTicker is the main ticker goroutine. It pre-renders the text strip once,
-// then slides a viewport across it at 60fps.
+// runTicker pre-renders the text strip and installs a tickerState on the layer.
+// The actual scroll advancement is driven by ProcessYUV (frame-locked), not by
+// a wall-clock ticker. This goroutine just renders, installs state, and waits
+// for cancellation.
 func (te *TickerEngine) runTicker(inst *tickerInstance) {
 	defer close(inst.done)
 	defer te.cleanup(inst.layerID)
@@ -258,51 +266,60 @@ func (te *TickerEngine) runTicker(inst *tickerInstance) {
 		strip.SetRGBA(x, 1, accentCol)
 	}
 
-	// Viewport buffer (what gets sent to compositor each frame)
+	loopPoint := 0
+	if cfg.Loop {
+		loopPoint = gapW + textW + gapW
+	}
+
+	// Install frame-locked ticker state on the layer.
+	// ProcessYUV will advance xOffset by (speed / pipelineFPS) each frame.
 	viewport := make([]byte, progW*barH*4)
+	// Render initial viewport at offset 0.
+	extractTickerViewport(strip, 0, progW, barH, viewport)
+
+	// For non-loop tickers, create a done channel so ProcessYUV can signal completion.
+	var doneCh chan struct{}
+	if !cfg.Loop {
+		doneCh = make(chan struct{})
+	}
+
+	te.compositor.mu.Lock()
+	layer, ok := te.compositor.layers[inst.layerID]
+	if ok {
+		layer.ticker = &tickerState{
+			strip:     strip,
+			viewport:  viewport,
+			xOffset:   0,
+			speed:     cfg.Speed,
+			loopPoint: loopPoint,
+			viewW:     progW,
+			viewH:     barH,
+			doneCh:    doneCh,
+		}
+		layer.overlay = viewport
+		layer.overlayWidth = progW
+		layer.overlayHeight = barH
+	}
+	te.compositor.mu.Unlock()
 
 	// Activate the layer so the overlay is rendered by ProcessYUV.
 	te.compositor.activateLayer(inst.layerID)
 
-	const tickRate = 60
-	ticker := time.NewTicker(time.Second / tickRate)
-	defer ticker.Stop()
-
-	start := time.Now()
-	loopPoint := gapW + textW + gapW // where loop mode wraps
-
-	for {
+	// Wait for cancellation or natural completion (non-loop).
+	// All scrolling is driven by ProcessYUV.
+	if doneCh != nil {
 		select {
 		case <-inst.cancel:
-			return
-		case <-ticker.C:
-			elapsed := time.Since(start).Seconds()
-			xOffset := int(elapsed * cfg.Speed)
-
-			// Loop mode: wrap viewport position
-			if cfg.Loop && loopPoint > 0 {
-				xOffset = xOffset % loopPoint
-			}
-
-			// Clamp
-			if xOffset+progW > stripW {
-				if !cfg.Loop {
-					return // non-loop: ticker scrolled off the end
-				}
-				xOffset = xOffset % loopPoint
-			}
-
-			// Extract viewport from strip
-			te.extractViewport(strip, xOffset, progW, barH, viewport)
-
-			// Send to compositor
-			_ = te.compositor.SetOverlay(inst.layerID, viewport, progW, barH, "ticker")
+		case <-doneCh:
 		}
+	} else {
+		<-inst.cancel
 	}
 }
 
-// extractViewport copies a progW x barH viewport from the strip at the given x offset.
-func (te *TickerEngine) extractViewport(strip *image.RGBA, xOffset, viewW, viewH int, dst []byte) {
+// extractTickerViewport copies a progW x barH viewport from the strip at the given x offset.
+// Package-level function used by both the ticker engine and ProcessYUV's frame-locked path.
+func extractTickerViewport(strip *image.RGBA, xOffset, viewW, viewH int, dst []byte) {
 	stripStride := strip.Stride
 	dstStride := viewW * 4
 
