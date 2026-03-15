@@ -67,9 +67,14 @@ func demuxMP4(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 		}
 	}
 
-	// Video frames are kept in sample table order (decode order) because the
-	// H.264 decoder needs reference frames before B-frames that depend on them.
-	// Sorting by PTS would reorder to display order, breaking B-frame decoding.
+	// B-frame handling: video frames are kept in sample table order (decode order)
+	// because the H.264 decoder needs reference frames before B-frames that
+	// depend on them. Sorting by PTS would reorder to display order, breaking
+	// B-frame decoding. The FFmpeg decoder handles reordering internally,
+	// returning EAGAIN while it buffers reference frames. After playback, the
+	// player drains remaining buffered frames via SendEOS + ReceiveFrame
+	// (see player.go drain phase). The output encoder uses tune=zerolatency
+	// (bframes=0), so the output stream never contains B-frames.
 
 	// Audio frames have no B-frame reordering — sort by PTS for proper playback.
 	sort.Slice(audioFrames, func(i, j int) bool {

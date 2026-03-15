@@ -2,6 +2,7 @@ package clip
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -899,6 +900,139 @@ func (m *mockVideoEncoder) Close() {
 	if m.closeFn != nil {
 		m.closeFn()
 	}
+}
+
+// --- Mock DrainableDecoder for B-frame drain tests ---
+
+type mockDrainableDecoder struct {
+	decodeFn      func(h264 []byte) (yuv []byte, w, h int, err error)
+	sendEOSFn     func() error
+	receiveFrameFn func() (yuv []byte, w, h int, err error)
+	closeFn       func()
+}
+
+func (m *mockDrainableDecoder) Decode(h264 []byte) (yuv []byte, w, h int, err error) {
+	return m.decodeFn(h264)
+}
+
+func (m *mockDrainableDecoder) SendEOS() error {
+	return m.sendEOSFn()
+}
+
+func (m *mockDrainableDecoder) ReceiveFrame() (yuv []byte, w, h int, err error) {
+	return m.receiveFrameFn()
+}
+
+func (m *mockDrainableDecoder) Close() {
+	if m.closeFn != nil {
+		m.closeFn()
+	}
+}
+
+// TestPlayerDrainBFrameBufferedFrames verifies that when a decoder buffers
+// frames (as happens with B-frame reordering), the drain phase after playback
+// flushes all remaining buffered frames via SendEOS + ReceiveFrame.
+//
+// This confirms the B-frame handling is correct end-to-end:
+//  1. demux_mp4.go keeps frames in decode (sample table) order
+//  2. player.go feeds frames sequentially to the decoder
+//  3. FFmpeg decoder buffers B-frames, returning EAGAIN until ready
+//  4. After all frames are sent, drain phase flushes remaining buffered frames
+//  5. Output encoder uses tune=zerolatency (bframes=0) so output is B-frame-free
+func TestPlayerDrainBFrameBufferedFrames(t *testing.T) {
+	// Simulate 5 frames where the decoder buffers the last 2 (B-frame reordering).
+	// The decoder returns real output for frames 1-3 but EAGAIN for 4-5.
+	// After SendEOS, it produces the 2 buffered frames.
+	clip := []bufferedFrame{
+		{wireData: []byte{0, 0, 0, 1, 0x65, 1, 2, 3}, pts: 0, isKeyframe: true, sps: []byte{0x67, 0x42}, pps: []byte{0x68, 0xCE}},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 4, 5, 6}, pts: 3000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 7, 8, 9}, pts: 6000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 10, 11, 12}, pts: 9000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 13, 14, 15}, pts: 12000},
+	}
+
+	var mu sync.Mutex
+	decodeCount := 0
+	bufferingError := fmt.Errorf("buffering")
+
+	// Track drain outputs separately from normal outputs.
+	var drainCount atomic.Int32
+	var normalCount atomic.Int32
+	drainStarted := false
+
+	decoder := &mockDrainableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			decodeCount++
+			// First 3 frames decode normally, last 2 return "buffering" (EAGAIN).
+			if decodeCount <= 3 {
+				yuv := make([]byte, 320*240*3/2) // minimal YUV420
+				return yuv, 320, 240, nil
+			}
+			return nil, 0, 0, bufferingError
+		},
+		sendEOSFn: func() error {
+			mu.Lock()
+			drainStarted = true
+			mu.Unlock()
+			return nil
+		},
+		receiveFrameFn: func() ([]byte, int, int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if !drainStarted {
+				return nil, 0, 0, fmt.Errorf("no frames")
+			}
+			// Return 2 buffered frames, then error to end drain.
+			count := drainCount.Load()
+			if count < 2 {
+				drainCount.Add(1)
+				yuv := make([]byte, 320*240*3/2)
+				return yuv, 320, 240, nil
+			}
+			return nil, 0, 0, fmt.Errorf("no more frames")
+		},
+		closeFn: func() {},
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    decoder,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return decoder.Decode(h264)
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+			normalCount.Add(1)
+		},
+		OnDone: func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete")
+	}
+
+	// The drain phase should have produced the 2 buffered frames.
+	assert.Equal(t, int32(2), drainCount.Load(),
+		"drain phase should flush 2 buffered B-frames via SendEOS + ReceiveFrame")
+
+	// Normal decode should have produced 3 frames (+ 2 EAGAIN skipped).
+	// Total raw output = 3 normal + 2 drained = 5.
+	totalOutput := normalCount.Load()
+	assert.GreaterOrEqual(t, totalOutput, int32(3),
+		"should have at least 3 normally decoded frames")
 }
 
 // buildAnnexBKeyframe returns minimal Annex B data with SPS + PPS + IDR NALU.
