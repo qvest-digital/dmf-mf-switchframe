@@ -28,8 +28,8 @@ import (
 type srtSourceState struct {
 	source       *srt.Source
 	relay        *distribution.Relay
-	videoEncoder transition.VideoEncoder
-	audioEncoder audio.Encoder
+	videoEncoder transition.VideoEncoder // set by relay goroutine, for stats
+	audioEncoder audio.Encoder          // set by audio goroutine, for stats
 }
 
 // initSRT initializes the SRT listener, caller, store, and stats manager.
@@ -169,15 +169,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	if hadOld {
 		slog.Info("SRT source reconnecting, cleaning up old source", "key", key)
-		oldState.source.Stop()
-		// Encoder Close() is idempotent (video: closed bool guard, audio: sync.Once),
-		// so double-close from OnStopped + here is safe.
-		if oldState.videoEncoder != nil {
-			oldState.videoEncoder.Close()
-		}
-		if oldState.audioEncoder != nil {
-			_ = oldState.audioEncoder.Close()
-		}
+		oldState.source.Stop() // triggers OnStopped which closes channels → goroutines clean up
 	}
 
 	// Unregister old source from switcher (safe even if not registered).
@@ -214,207 +206,282 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		relay:  relay,
 	}
 
-	// Per-source encoder state, accessed only from callbacks on the decode goroutine.
-	// Using closures to capture mutable state -- safe because srt.Source callbacks
-	// are called from a single goroutine (the decode loop).
-	var (
-		videoEncoder  transition.VideoEncoder
-		audioEncoder  audio.Encoder
-		groupID       atomic.Uint32
-		videoInfoSent bool
-		encoderYUV    []byte    // reusable buffer for encoder input (avoids aliasing)
-		lastVideoW    int      // track resolution for mid-stream changes
-		lastVideoH    int
-		audioBuf      []float32 // accumulation buffer for AAC 1024-sample chunks
-		audioPTS      int64     // PTS of first sample in audioBuf
-	)
+	// === FULLY ASYNC ARCHITECTURE ===
+	//
+	// The FFmpeg decode goroutine runs a single-threaded decode loop:
+	// av_read_frame → decode → callback → av_read_frame → ...
+	// If ANY callback blocks, the entire decode loop stalls — no video
+	// OR audio frames are produced. This causes bursty frame delivery
+	// with 100-1500ms gaps.
+	//
+	// Demo cameras don't have this problem because their audio and video
+	// arrive on SEPARATE goroutines (sourceViewer via Prism relay).
+	//
+	// Solution: The decode callbacks do NOTHING blocking. They deep-copy
+	// the data and send to buffered channels. Three separate goroutines
+	// handle the heavy work:
+	//   1. Pipeline goroutine: IngestRawVideo (program path)
+	//   2. Relay video goroutine: H.264 encode + BroadcastVideo
+	//   3. Audio goroutine: IngestPCM + AAC encode + BroadcastAudio
+	//
+	// PTS linearization runs in the callback (fast, no allocation).
 
 	pf := a.sw.PipelineFormat()
 
-	// Wire video: decoded YUV -> ProcessingFrame -> IngestRawVideo + encode -> relay.
-	// Same pattern as MXL encodeAndBroadcastVideo in mxl/source.go.
-	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
-		// 1. Deliver raw YUV to switcher pipeline.
-		pfr := &switcher.ProcessingFrame{
-			YUV:    yuv,
-			Width:  w,
-			Height: h,
-			PTS:    pts,
-			DTS:    pts,
-			Codec:  "h264",
-		}
-		a.sw.IngestRawVideo(sourceKey, pfr)
-
-		// 2. Encode YUV -> H.264 and broadcast to relay for browser viewing.
-		if relay == nil {
-			return
-		}
-
-		// Recreate encoder on resolution change (mid-stream format switch).
-		if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
-			slog.Info("SRT source resolution changed, recreating encoder",
-				"key", sourceKey, "old", fmt.Sprintf("%dx%d", lastVideoW, lastVideoH),
-				"new", fmt.Sprintf("%dx%d", w, h))
-			videoEncoder.Close()
-			videoEncoder = nil
-			state.videoEncoder = nil
-			videoInfoSent = false // force re-send with new dimensions
-		}
-
-		// Lazy encoder creation on first frame (or after resolution change).
-		if videoEncoder == nil {
-			bitrate := 6_000_000
-			enc, err := codec.NewVideoEncoder(w, h, bitrate, pf.FPSNum, pf.FPSDen)
-			if err != nil {
-				slog.Error("srt: failed to create video encoder", "key", sourceKey, "error", err)
-				return
-			}
-			videoEncoder = enc
-			state.videoEncoder = enc
-			lastVideoW = w
-			lastVideoH = h
-		}
-
-		// Copy YUV to avoid aliasing with the decoder's buffer.
-		needed := len(yuv)
-		if cap(encoderYUV) < needed {
-			encoderYUV = make([]byte, needed)
-		}
-		encoderYUV = encoderYUV[:needed]
-		copy(encoderYUV, yuv)
-
-		encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
-		if err != nil {
-			slog.Error("srt: video encode failed", "key", sourceKey, "error", err)
-			return
-		}
-		if len(encoded) == 0 {
-			return // encoder warming up
-		}
-
-		avc1 := codec.AnnexBToAVC1(encoded)
-		if isKeyframe {
-			groupID.Add(1)
-		}
-
-		frame := &media.VideoFrame{
-			PTS:        pts,
-			DTS:        pts,
-			IsKeyframe: isKeyframe,
-			WireData:   avc1,
-			Codec:      "h264",
-			GroupID:    groupID.Load(),
-		}
-
-		// Extract SPS/PPS from keyframes for VideoInfo.
-		if isKeyframe {
-			for _, nalu := range codec.ExtractNALUs(avc1) {
-				if len(nalu) == 0 {
-					continue
-				}
-				switch nalu[0] & 0x1F {
-				case 7:
-					frame.SPS = nalu
-				case 8:
-					frame.PPS = nalu
-				}
-			}
-
-			// Set VideoInfo on first keyframe or after resolution change so
-			// browsers can (re-)init their decoder. Resolution changes reset
-			// videoInfoSent to false in the encoder recreation block above.
-			if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
-				avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
-				if avcC != nil {
-					relay.SetVideoInfo(distribution.VideoInfo{
-						Codec:         codec.ParseSPSCodecString(frame.SPS),
-						Width:         w,
-						Height:        h,
-						DecoderConfig: avcC,
-					})
-					slog.Info("SRT source: relay VideoInfo set", "key", sourceKey, "w", w, "h", h)
-					videoInfoSent = true
-				}
-			}
-		}
-
-		relay.BroadcastVideo(frame)
+	type videoJob struct {
+		yuv []byte
+		w   int
+		h   int
+		pts int64
+	}
+	type audioJob struct {
+		pcm        []float32
+		pts        int64
+		sampleRate int
+		channels   int
 	}
 
-	// Wire audio: decoded PCM -> IngestPCM -> mixer + encode -> relay.BroadcastAudio.
-	// FFmpeg's swresample outputs variable-length frames (e.g., 1115 samples when
-	// resampling 44.1→48kHz). FDK AAC requires exactly 1024 samples per channel.
-	// Accumulate PCM in audioBuf and drain in 1024-sample chunks.
-	const aacFrameSamples = 1024
+	pipelineCh := make(chan videoJob, 4)   // → IngestRawVideo
+	relayVideoCh := make(chan videoJob, 4) // → H.264 encode + relay
+	audioCh := make(chan audioJob, 8)      // → IngestPCM + AAC encode + relay
 
-	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
-		// 1. Deliver raw PCM to mixer (handles variable lengths internally).
-		a.mixer.IngestPCM(sourceKey, pcm, pts, channels)
+	// PTS linearizers (separate for video/audio — they're interleaved).
+	type ptsLinearizer struct {
+		lastInput int64
+		offset    int64
+		frameDur  int64
+		inited    bool
+	}
+	const ptsJumpThreshold = 45000 // 0.5s in 90kHz ticks
 
-		// 2. Encode PCM -> AAC and broadcast to relay for browser viewing.
-		if relay == nil {
-			return
+	linearize := func(lin *ptsLinearizer, rawPTS int64) int64 {
+		if !lin.inited {
+			lin.lastInput = rawPTS
+			lin.inited = true
+			return rawPTS
 		}
-
-		// Lazy encoder creation on first audio frame.
-		if audioEncoder == nil {
-			enc, err := audio.NewFDKEncoder(sampleRate, channels)
-			if err != nil {
-				slog.Error("srt: failed to create audio encoder", "key", sourceKey, "error", err)
-				return
+		delta := rawPTS - lin.lastInput
+		if delta < 0 || delta > ptsJumpThreshold {
+			if lin.frameDur <= 0 {
+				lin.frameDur = 3750
 			}
-			audioEncoder = enc
-			state.audioEncoder = enc
+			lin.offset += lin.frameDur - delta
+		} else if delta > 0 {
+			lin.frameDur = delta
 		}
+		lin.lastInput = rawPTS
+		return (rawPTS + lin.offset) & 0x1FFFFFFFF
+	}
+	var videoLinear, audioLinear ptsLinearizer
 
-		// Track PTS of first sample in accumulation buffer.
-		if len(audioBuf) == 0 {
-			audioPTS = pts
+	// --- Goroutine 1: Pipeline ingest (program path) ---
+	go func() {
+		for job := range pipelineCh {
+			pfr := &switcher.ProcessingFrame{
+				YUV:   job.yuv,
+				Width: job.w,
+				Height: job.h,
+				PTS:   job.pts,
+				DTS:   job.pts,
+				Codec: "h264",
+			}
+			a.sw.IngestRawVideo(key, pfr)
 		}
+	}()
 
-		// Accumulate incoming PCM (interleaved: len = samples * channels).
-		audioBuf = append(audioBuf, pcm...)
+	// --- Goroutine 2: Relay video encode ---
+	var (
+		videoEncoder  transition.VideoEncoder
+		groupID       atomic.Uint32
+		videoInfoSent bool
+		encoderYUV    []byte
+		lastVideoW    int
+		lastVideoH    int
+	)
+	go func() {
+		for job := range relayVideoCh {
+			if relay == nil {
+				continue
+			}
+			w, h, pts := job.w, job.h, job.pts
 
-		// Drain in 1024-sample chunks.
-		chunkSize := aacFrameSamples * channels
-		for len(audioBuf) >= chunkSize {
-			chunk := audioBuf[:chunkSize]
+			// Resolution change → recreate encoder.
+			if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
+				videoEncoder.Close()
+				videoEncoder = nil
+				state.videoEncoder = nil
+				videoInfoSent = false
+			}
 
-			encoded, err := audioEncoder.Encode(chunk)
-			if err != nil {
-				slog.Error("srt: audio encode failed", "key", sourceKey, "error", err)
-				audioBuf = audioBuf[chunkSize:]
+			// Lazy encoder creation.
+			if videoEncoder == nil {
+				enc, err := codec.NewVideoEncoder(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
+				if err != nil {
+					slog.Error("srt: video encoder init failed", "key", key, "error", err)
+					continue
+				}
+				videoEncoder = enc
+				state.videoEncoder = enc
+				lastVideoW = w
+				lastVideoH = h
+			}
+
+			// Copy YUV for encoder (job.yuv may be retained by pipeline goroutine).
+			needed := len(job.yuv)
+			if cap(encoderYUV) < needed {
+				encoderYUV = make([]byte, needed)
+			}
+			encoderYUV = encoderYUV[:needed]
+			copy(encoderYUV, job.yuv)
+
+			encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
+			if err != nil || len(encoded) == 0 {
 				continue
 			}
 
-			if len(encoded) > 0 {
-				relay.BroadcastAudio(&media.AudioFrame{
-					PTS:        audioPTS,
-					Data:       encoded,
-					SampleRate: sampleRate,
-					Channels:   channels,
-				})
+			avc1 := codec.AnnexBToAVC1(encoded)
+			if isKeyframe {
+				groupID.Add(1)
 			}
 
-			audioPTS += int64(aacFrameSamples) * 90000 / int64(sampleRate)
-			audioBuf = audioBuf[chunkSize:]
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+				WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+			}
+
+			if isKeyframe {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						frame.SPS = nalu
+					case 8:
+						frame.PPS = nalu
+					}
+				}
+				if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
+					avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
+					if avcC != nil {
+						relay.SetVideoInfo(distribution.VideoInfo{
+							Codec: codec.ParseSPSCodecString(frame.SPS),
+							Width: w, Height: h, DecoderConfig: avcC,
+						})
+						slog.Info("SRT source: relay VideoInfo set", "key", key, "w", w, "h", h)
+						videoInfoSent = true
+					}
+				}
+			}
+			relay.BroadcastVideo(frame)
 		}
-	}
-
-	// Wire stopped callback: clean up encoders and remove from active sources.
-	src.OnStopped = func(sourceKey string) {
-		cs.SetDisconnected()
-		slog.Info("SRT source disconnected", "key", sourceKey)
-
-		// Clean up encoders.
 		if videoEncoder != nil {
 			videoEncoder.Close()
 			videoEncoder = nil
+		}
+	}()
+
+	// --- Goroutine 3: Audio (mixer + relay encode) ---
+	const aacFrameSamples = 1024
+	var (
+		audioEncoder audio.Encoder
+		audioBuf     []float32
+		audioPTS     int64
+	)
+	go func() {
+		for job := range audioCh {
+			// Deliver to mixer.
+			a.mixer.IngestPCM(key, job.pcm, job.pts, job.channels)
+
+			// Encode for relay.
+			if relay == nil {
+				continue
+			}
+
+			if audioEncoder == nil {
+				enc, err := audio.NewFDKEncoder(job.sampleRate, job.channels)
+				if err != nil {
+					slog.Error("srt: audio encoder init failed", "key", key, "error", err)
+					continue
+				}
+				audioEncoder = enc
+				state.audioEncoder = enc
+			}
+
+			if len(audioBuf) == 0 {
+				audioPTS = job.pts
+			}
+			audioBuf = append(audioBuf, job.pcm...)
+
+			chunkSize := aacFrameSamples * job.channels
+			for len(audioBuf) >= chunkSize {
+				chunk := audioBuf[:chunkSize]
+				encoded, err := audioEncoder.Encode(chunk)
+				if err != nil {
+					audioBuf = audioBuf[chunkSize:]
+					continue
+				}
+				if len(encoded) > 0 {
+					relay.BroadcastAudio(&media.AudioFrame{
+						PTS: audioPTS, Data: encoded,
+						SampleRate: job.sampleRate, Channels: job.channels,
+					})
+				}
+				audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
+				audioBuf = audioBuf[chunkSize:]
+			}
 		}
 		if audioEncoder != nil {
 			_ = audioEncoder.Close()
 			audioEncoder = nil
 		}
+	}()
+
+	// --- Decode callbacks: ZERO blocking work ---
+	// Only: linearize PTS + deep copy + non-blocking channel send.
+
+	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
+		pts = linearize(&videoLinear, pts)
+
+		// Single deep copy shared by pipeline and relay goroutines.
+		yuvCopy := make([]byte, len(yuv))
+		copy(yuvCopy, yuv)
+
+		// Pipeline ingest (non-blocking).
+		select {
+		case pipelineCh <- videoJob{yuv: yuvCopy, w: w, h: h, pts: pts}:
+		default:
+		}
+		// Relay encode (non-blocking, separate copy needed since pipeline
+		// goroutine may hold yuvCopy in frame sync ring buffer).
+		encCopy := make([]byte, len(yuv))
+		copy(encCopy, yuv)
+		select {
+		case relayVideoCh <- videoJob{yuv: encCopy, w: w, h: h, pts: pts}:
+		default:
+		}
+	}
+
+	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
+		pts = linearize(&audioLinear, pts)
+
+		pcmCopy := make([]float32, len(pcm))
+		copy(pcmCopy, pcm)
+		select {
+		case audioCh <- audioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels}:
+		default:
+		}
+	}
+
+	// Wire stopped callback: close channels (goroutines clean up their encoders).
+	src.OnStopped = func(sourceKey string) {
+		cs.SetDisconnected()
+		slog.Info("SRT source disconnected", "key", sourceKey)
+
+		// Close all async channels — goroutines drain and clean up.
+		close(pipelineCh)
+		close(relayVideoCh)
+		close(audioCh)
 
 		// Remove from active sources map.
 		a.srtSourcesMu.Lock()
@@ -488,17 +555,7 @@ func (a *App) stopSRTSources() {
 
 	for key, state := range sources {
 		slog.Info("stopping SRT source on shutdown", "key", key)
-		state.source.Stop()
-		// Encoders are cleaned up by OnStopped callback, but guard against
-		// cases where Stop() doesn't trigger it. Double-close is safe because
-		// both encoder Close() methods are idempotent (video: closed bool
-		// guard, audio: sync.Once).
-		if state.videoEncoder != nil {
-			state.videoEncoder.Close()
-		}
-		if state.audioEncoder != nil {
-			_ = state.audioEncoder.Close()
-		}
+		state.source.Stop() // triggers OnStopped → closes channels → goroutines clean up encoders
 	}
 }
 
