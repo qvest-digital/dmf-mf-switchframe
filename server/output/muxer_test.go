@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"reflect"
@@ -989,6 +990,65 @@ func TestMuxer_PMTFieldExists(t *testing.T) {
 	pd := pmt.FieldByName("ProgramDescriptors")
 	require.True(t, pd.IsValid(),
 		"go-astits ProgramDescriptors field missing — update setProgramDescriptors")
+
+	// Verify the type of pmt is PMTData (not a pointer or different struct).
+	pmtType := pmt.Type()
+	require.Equal(t, "PMTData", pmtType.Name(),
+		"pmt field type changed from PMTData — update setProgramDescriptors")
+
+	// Verify ProgramDescriptors is []*Descriptor (the type we write via unsafe).
+	pdType := pd.Type()
+	require.Equal(t, reflect.Slice, pdType.Kind(),
+		"ProgramDescriptors is no longer a slice — update setProgramDescriptors")
+	require.Equal(t, "*astits.Descriptor", pdType.Elem().String(),
+		"ProgramDescriptors element type changed from *Descriptor — update setProgramDescriptors")
+
+	// Verify pmt field offset is stable. If the struct is reordered, the
+	// unsafe.Pointer arithmetic changes. Record the offset and fail if it
+	// shifts, forcing a review of setProgramDescriptors.
+	pmtStructField, ok := v.Type().FieldByName("pmt")
+	require.True(t, ok, "pmt struct field not found via Type().FieldByName")
+	// We don't pin an exact byte offset (it may differ by platform/alignment),
+	// but we verify the field is addressable via UnsafeAddr, which is the
+	// prerequisite for the unsafe.Pointer write in setProgramDescriptors.
+	require.True(t, pmt.CanAddr(),
+		"pmt field is not addressable — unsafe.Pointer write will fail")
+	require.True(t, pd.CanAddr(),
+		"ProgramDescriptors field is not addressable — unsafe.Pointer write will fail")
+	_ = pmtStructField // used for ok check above
+}
+
+func TestSetProgramDescriptors_EndToEnd(t *testing.T) {
+	// Verify that setProgramDescriptors actually writes the descriptors
+	// and that WriteTables produces a valid PMT containing them.
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	m.SetSCTE35PID(defaultSCTE35PID)
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+
+	// The CUEI descriptor should have been written by setProgramDescriptors
+	// during init. Verify by reading back the pmt field via reflect.
+	v := reflect.ValueOf(m.muxer).Elem()
+	pmt := v.FieldByName("pmt")
+	pd := pmt.FieldByName("ProgramDescriptors")
+	require.Equal(t, 1, pd.Len(), "should have 1 program descriptor (CUEI)")
+
+	// Cannot call Interface() on values obtained from unexported fields,
+	// so verify the descriptor content via the PMT output bytes instead.
+	// The CUEI registration descriptor is: tag=0x05, length=0x04,
+	// format_identifier=0x43 0x55 0x45 0x49 ("CUEI").
+	cueiBytes := []byte{0x05, 0x04, 0x43, 0x55, 0x45, 0x49}
+	found := false
+	for i := 0; i+len(cueiBytes) <= len(output); i++ {
+		if bytes.Equal(output[i:i+len(cueiBytes)], cueiBytes) {
+			found = true
+			break
+		}
+	}
+	require.True(t, found,
+		"PMT output should contain CUEI registration descriptor bytes")
 }
 
 func TestTSMuxer_DeltaFrameNoPATPMT(t *testing.T) {

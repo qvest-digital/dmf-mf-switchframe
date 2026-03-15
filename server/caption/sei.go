@@ -1,6 +1,9 @@
 package caption
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"unsafe"
+)
 
 // ATSC A/53 constants for CEA-608/708 in H.264 SEI NALUs.
 const (
@@ -185,11 +188,18 @@ func insertEPB(buf []byte, startOffset int) []byte {
 //
 // If dst has insufficient capacity, a new buffer is allocated.
 // Returns the result slice. Pass dst[:0] to reuse a buffer.
+//
+// SAFETY: dst must not share a backing array with annexB. If it might,
+// pass nil for dst (the function detects aliasing and allocates a fresh
+// buffer to prevent corruption).
 func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte) []byte {
 	if len(sei) == 0 {
 		// No SEI to insert — copy annexB as-is.
 		needed := len(annexB)
-		if cap(dst) < needed {
+		if cap(dst) >= needed && slicesOverlap(dst[:cap(dst)], annexB) {
+			// dst aliases annexB — allocate fresh buffer to avoid corruption.
+			dst = make([]byte, needed)
+		} else if cap(dst) < needed {
 			dst = make([]byte, needed)
 		} else {
 			dst = dst[:needed]
@@ -207,7 +217,11 @@ func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte) []byte {
 	}
 
 	needed := vclPos + len(sei) + (len(annexB) - vclPos)
-	if cap(dst) < needed {
+	if cap(dst) >= needed && slicesOverlap(dst[:cap(dst)], annexB) {
+		// dst aliases annexB — allocate fresh buffer to avoid corruption
+		// from overlapping copy operations.
+		dst = make([]byte, needed)
+	} else if cap(dst) < needed {
 		dst = make([]byte, needed)
 	} else {
 		dst = dst[:needed]
@@ -219,6 +233,18 @@ func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte) []byte {
 	copy(dst[n:], annexB[vclPos:])
 
 	return dst
+}
+
+// slicesOverlap reports whether the memory regions of a and b overlap.
+func slicesOverlap(a, b []byte) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	aStart := uintptr(unsafe.Pointer(&a[0]))
+	aEnd := aStart + uintptr(len(a))
+	bStart := uintptr(unsafe.Pointer(&b[0]))
+	bEnd := bStart + uintptr(len(b))
+	return aStart < bEnd && bStart < aEnd
 }
 
 // findFirstVCL returns the byte offset of the first VCL NALU's start code

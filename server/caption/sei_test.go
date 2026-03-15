@@ -195,6 +195,62 @@ func TestInsertSEIBeforeVCLInto_BufferReuse(t *testing.T) {
 	}
 }
 
+func TestInsertSEIBeforeVCLInto_DstAliasesAnnexB(t *testing.T) {
+	// Regression test: when dst shares the backing array with annexB,
+	// the copy operations in InsertSEIBeforeVCLInto can overwrite annexB
+	// before it's fully read, producing corrupted output.
+	sei := BuildSEINALU([]CCPair{{Data: [2]byte{'C', 'D'}}})
+
+	// Build annexB: SPS + PPS + IDR (typical keyframe layout).
+	annexB := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0xC0, 0x1E, // SPS
+		0x00, 0x00, 0x00, 0x01, 0x68, 0xCE, 0x38, 0x80, // PPS
+		0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB, 0xCC, // IDR
+	}
+
+	// Compute expected result with a guaranteed-safe separate buffer.
+	expected := InsertSEIBeforeVCLInto(sei, annexB, nil)
+
+	// Now create a dst that shares the same backing array as annexB.
+	// This simulates the "pass dst[:0] to reuse a buffer" pattern when
+	// the previous result was used as the next annexB input.
+	// We need a buffer large enough to hold the result that shares
+	// backing memory with annexB.
+	shared := make([]byte, len(annexB)+len(sei)+64)
+	copy(shared, annexB)
+	aliasedAnnexB := shared[:len(annexB)]
+	aliasedDst := shared[:0]
+
+	result := InsertSEIBeforeVCLInto(sei, aliasedAnnexB, aliasedDst)
+
+	if !bytes.Equal(result, expected) {
+		t.Errorf("aliased dst produced corrupted output:\n  got:  %X\n  want: %X", result, expected)
+	}
+}
+
+func TestInsertSEIBeforeVCLInto_NoSEI_DstAliasesAnnexB(t *testing.T) {
+	// When sei is nil/empty, the function copies annexB into dst.
+	// If dst aliases annexB, this should still produce correct output.
+	annexB := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB, 0xCC,
+	}
+
+	expected := make([]byte, len(annexB))
+	copy(expected, annexB)
+
+	// Create aliased buffers.
+	shared := make([]byte, len(annexB)+64)
+	copy(shared, annexB)
+	aliasedAnnexB := shared[:len(annexB)]
+	aliasedDst := shared[:0]
+
+	result := InsertSEIBeforeVCLInto(nil, aliasedAnnexB, aliasedDst)
+
+	if !bytes.Equal(result, expected) {
+		t.Errorf("aliased dst with nil SEI produced corrupted output:\n  got:  %X\n  want: %X", result, expected)
+	}
+}
+
 func TestExtractCCPairsFromSEI_Invalid(t *testing.T) {
 	tests := []struct {
 		name  string
