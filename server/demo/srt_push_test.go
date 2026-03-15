@@ -246,6 +246,89 @@ func TestStartSRTSources_MultipleClips(t *testing.T) {
 	}
 }
 
+func TestAddTimestampOffset_PatchingLatency(t *testing.T) {
+	// Verify that patching all timestamp entries at a loop boundary
+	// completes in a bounded time (< 5ms for typical files).
+	// Build a large synthetic TS stream with many PTS entries.
+	const numPackets = 5000 // ~940KB, simulating a moderate file
+	data := make([]byte, 0, numPackets*tsPacketLen)
+	for i := 0; i < numPackets; i++ {
+		pts := int64(i) * 3750 // one frame at 24fps per packet
+		pkt := buildTSPacketWithPTS(0xE0, pts)
+		data = append(data, pkt...)
+	}
+
+	entries, _, _ := scanTimestamps(data)
+	if len(entries) < numPackets {
+		t.Fatalf("expected >= %d entries, got %d", numPackets, len(entries))
+	}
+
+	delta := int64(90000) // 1 second offset
+
+	start := time.Now()
+	addTimestampOffset(data, entries, delta)
+	elapsed := time.Since(start)
+
+	// Patching should be fast — well under 5ms even for thousands of entries.
+	if elapsed > 5*time.Millisecond {
+		t.Errorf("addTimestampOffset took %v for %d entries, want < 5ms", elapsed, len(entries))
+	}
+
+	// Verify correctness: first PTS should be delta (was 0).
+	_, firstPTS, _ := scanTimestamps(data)
+	if firstPTS != delta {
+		t.Errorf("after offset: firstPTS=%d, want %d", firstPTS, delta)
+	}
+}
+
+func TestConcurrentDataBufferIsolation(t *testing.T) {
+	// Verify that independent data buffers (as used by concurrent pushFile
+	// goroutines) don't interfere with each other when timestamps are patched.
+	// Each goroutine gets its own os.ReadFile copy; this test simulates that.
+	basePTS1 := int64(1000)
+	basePTS2 := int64(91000)
+
+	// Create two independent copies of the same TS data (simulating two
+	// os.ReadFile calls on the same file from different goroutines).
+	template := buildTestTSWithPTS(t, basePTS1, basePTS2)
+	buf1 := make([]byte, len(template))
+	buf2 := make([]byte, len(template))
+	copy(buf1, template)
+	copy(buf2, template)
+
+	entries1, _, _ := scanTimestamps(buf1)
+	entries2, _, _ := scanTimestamps(buf2)
+
+	delta1 := int64(100000)
+	delta2 := int64(200000)
+
+	// Patch both concurrently.
+	done := make(chan struct{})
+	go func() {
+		addTimestampOffset(buf1, entries1, delta1)
+		close(done)
+	}()
+	addTimestampOffset(buf2, entries2, delta2)
+	<-done
+
+	// Verify each buffer was patched independently.
+	_, first1, last1 := scanTimestamps(buf1)
+	_, first2, last2 := scanTimestamps(buf2)
+
+	if first1 != basePTS1+delta1 {
+		t.Errorf("buf1 firstPTS=%d, want %d", first1, basePTS1+delta1)
+	}
+	if last1 != basePTS2+delta1 {
+		t.Errorf("buf1 lastPTS=%d, want %d", last1, basePTS2+delta1)
+	}
+	if first2 != basePTS1+delta2 {
+		t.Errorf("buf2 firstPTS=%d, want %d", first2, basePTS1+delta2)
+	}
+	if last2 != basePTS2+delta2 {
+		t.Errorf("buf2 lastPTS=%d, want %d", last2, basePTS2+delta2)
+	}
+}
+
 // --- test helpers ---
 
 const tsPacketSize = 188

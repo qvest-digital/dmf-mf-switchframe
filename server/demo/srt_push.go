@@ -46,6 +46,11 @@ func StartSRTSources(ctx context.Context, addr string, clips []string, log *slog
 // pushFile connects to the SRT listener and streams the file in a loop.
 // On connection failure it retries with a delay. On write failure it
 // reconnects. Runs until ctx is cancelled.
+//
+// NOTE: Each pushFile goroutine gets its own copy of the file data via
+// os.ReadFile (called inside streamFileLoop). The data buffer is mutated
+// in-place by addTimestampOffset at loop boundaries. Do NOT share this
+// buffer between goroutines.
 func pushFile(ctx context.Context, addr, filePath, streamID string, log *slog.Logger) {
 	log = log.With("streamID", streamID, "file", filepath.Base(filePath))
 
@@ -129,6 +134,15 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 		if loop > 1 {
 			// Advance all PTS/DTS/PCR by one loop duration so timestamps
 			// remain monotonically increasing across the seam.
+			//
+			// Trade-off: this patches ALL timestamp locations in the file
+			// buffer at once, which can take up to a few milliseconds for
+			// large files (e.g., ~1ms for 900 entries). An incremental
+			// per-chunk approach would amortize this cost but adds
+			// complexity (binary search per chunk, extra bookkeeping).
+			// Since the stall is brief (< 5ms) and happens only once per
+			// loop (~10-15s), it's acceptable for a demo pusher. SRT's
+			// TSBPD buffer absorbs the jitter.
 			if loopPTSDelta > 0 && len(tsEntries) > 0 {
 				addTimestampOffset(data, tsEntries, loopPTSDelta)
 			}
@@ -148,6 +162,14 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 
 			// Pace: compute how far ahead of schedule we are based on
 			// total bytes sent vs. expected time at the file's bitrate.
+			//
+			// Limitation: byte-rate pacing assumes roughly constant
+			// bitrate (CBR). For VBR content, I-frames will be paced
+			// slightly too slowly and P-frames slightly too fast.
+			// PTS-based pacing would be more accurate but requires
+			// real-time PES header parsing. SRT's TSBPD buffer
+			// smooths out the burstiness, making this acceptable
+			// for demo use.
 			targetByteTime := float64(totalBytesSent) / (float64(len(data)) / fileDuration.Seconds())
 			elapsed := time.Since(globalStart).Seconds()
 			if targetByteTime > elapsed {
