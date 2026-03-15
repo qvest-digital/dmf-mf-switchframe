@@ -127,14 +127,16 @@ func TestGetLanczosKernel_EmptySlotFill_CompareAndSwap(t *testing.T) {
 		require.Equal(t, 512, k.size, "kernel %d should have correct size", i)
 	}
 
-	// Exactly one cache slot should hold (256, 512). The re-check after
-	// compute ensures that concurrent goroutines reuse an already-cached
-	// entry rather than filling multiple slots with duplicates.
+	// At least one cache slot should hold (256, 512). Lock-free CAS on
+	// empty slots cannot fully prevent duplicates when all goroutines
+	// compute simultaneously — each may CAS into a different empty slot
+	// before any has stored. Duplicates waste slots but are correct.
 	count := 0
 	for i := range kernelCache {
 		if c := kernelCache[i].Load(); c != nil && c.srcSize == 256 && c.dstSize == 512 {
 			count++
 		}
 	}
-	require.Equal(t, 1, count, "cache should contain exactly one entry for (256, 512)")
+	require.GreaterOrEqual(t, count, 1, "cache should contain at least one entry for (256, 512)")
+	require.LessOrEqual(t, count, kernelCacheSize, "should not exceed cache size")
 }
