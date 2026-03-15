@@ -31,7 +31,8 @@ func (m *Mixer) recalcPassthrough() {
 	if activeCount == 1 && m.masterLevel == 0 {
 		ch := m.channels[activeKey]
 		m.passthrough = !ch.muted && ch.level == 0 && ch.trim == 0 &&
-			ch.eq.IsBypassed() && ch.compressor.IsBypassed()
+			ch.eq.IsBypassed() && ch.compressor.IsBypassed() &&
+			ch.resampler == nil // can't passthrough raw AAC at wrong sample rate
 	} else {
 		m.passthrough = false
 	}

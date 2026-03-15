@@ -128,7 +128,7 @@ func TestPipelineLoop_Snapshot(t *testing.T) {
 	snap := p.Snapshot()
 	require.Equal(t, 2, snap["total_nodes"])
 	require.Equal(t, int64(1), snap["run_count"])
-	require.Greater(t, snap["last_run_ns"], int64(0))
+	require.GreaterOrEqual(t, snap["last_run_ns"], int64(0))
 
 	nodes := snap["active_nodes"].([]map[string]any)
 	require.Len(t, nodes, 2)

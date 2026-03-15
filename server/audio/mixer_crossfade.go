@@ -36,6 +36,7 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.crossfadeActive = true
 	m.crossfadeFramesRemaining = 2
 	m.crossfadeTotalFrames = 2
+	m.encodeBuf = m.encodeBuf[:0] // flush stale resample residual
 	m.crossfadePCM = make(map[string][]float32)
 	// Pre-seed the old source's PCM from the buffer — no waiting needed.
 	// Apply only stateless gain (Trim * Fader) to avoid advancing EQ/compressor
@@ -80,6 +81,7 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 
 	m.transCrossfadeActive = true
 	m.transCrossfades.Add(1)
+	m.encodeBuf = m.encodeBuf[:0] // flush stale resample residual
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadePosition = 0.0
@@ -132,6 +134,7 @@ func (m *Mixer) OnTransitionComplete() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
+	m.encodeBuf = m.encodeBuf[:0] // flush stale resample residual
 	m.recalcPassthrough()
 	m.mu.Unlock()
 	if outputFrame != nil {
@@ -163,6 +166,7 @@ func (m *Mixer) OnTransitionAbort() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
+	m.encodeBuf = m.encodeBuf[:0] // flush stale resample residual
 	m.recalcPassthrough()
 	m.mu.Unlock()
 	if outputFrame != nil {
@@ -240,14 +244,6 @@ func transitionToGain(mode TransitionMode, pos float64) float64 {
 // ingestCrossfadeFrame handles frames during an active crossfade transition.
 // It collects one frame from both old and new source, applies equal-power crossfade, and outputs.
 func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) {
-	// Reject frames whose sample rate doesn't match the mixer's configured rate.
-	// Wrong rates cause incorrect EQ biquad coefficients, compressor envelope
-	// tracking, and crossfade blending — processing with wrong parameters is worse
-	// than silence. SampleRate==0 means unknown; accept those for backward compat.
-	if frame.SampleRate > 0 && frame.SampleRate != m.sampleRate {
-		return
-	}
-
 	m.mu.Lock()
 
 	if !m.crossfadeActive {
@@ -278,6 +274,9 @@ func (m *Mixer) ingestCrossfadeFrame(sourceKey string, frame *media.AudioFrame) 
 		m.log.Warn("decode error", "source", sourceKey, "err", err)
 		return
 	}
+
+	// Resample if source rate doesn't match mixer rate.
+	pcm = m.resampleIfNeeded(ch, pcm, frame.SampleRate)
 
 	// Pipeline: Trim -> EQ -> Compressor -> Fader (reuse channel work buffers)
 	ch.trimBuf = growBuf(ch.trimBuf, len(pcm))

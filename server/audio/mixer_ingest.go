@@ -142,22 +142,6 @@ func (m *Mixer) mixFrameLocked(sourceKey string, ch *Channel, frame *media.Audio
 		return
 	}
 
-	// Reject frames whose sample rate doesn't match the mixer's configured rate.
-	// Wrong rates cause incorrect EQ biquad coefficients, compressor envelope
-	// tracking, and LUFS metering — processing with wrong parameters is worse
-	// than silence. SampleRate==0 means unknown; accept those for backward compat.
-	if frame.SampleRate > 0 && frame.SampleRate != m.sampleRate {
-		if !ch.sampleRateWarned {
-			ch.sampleRateWarned = true
-			m.log.Warn("audio: source sample rate mismatch — frame rejected",
-				"source", sourceKey,
-				"expected", m.sampleRate,
-				"actual", frame.SampleRate)
-		}
-		m.mu.Unlock()
-		return
-	}
-
 	// Ensure ADTS header is present — FDK decoder requires ADTS framing.
 	adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 
@@ -169,6 +153,11 @@ func (m *Mixer) mixFrameLocked(sourceKey string, ch *Channel, frame *media.Audio
 		m.log.Warn("decode error", "source", sourceKey, "err", err)
 		return
 	}
+
+	// Resample if source rate doesn't match mixer rate.
+	// Converts decoded PCM to mixer's sample rate so EQ biquad coefficients,
+	// compressor envelope, and LUFS metering all operate correctly.
+	pcm = m.resampleIfNeeded(ch, pcm, frame.SampleRate)
 
 	// Update per-channel peaks (pre-fader, pre-gain)
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)

@@ -160,6 +160,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
 	}
 
+	// Enable Access Unit Delimiters for hardware encoders.
+	// libx264 sets aud=1 above; for NVENC/VideoToolbox/VA-API, set it here.
+	// av_opt_set returns error if unsupported — safe to ignore.
+	if (strcmp(codec_name, "libx264") != 0) {
+		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
+	}
+
 	int rc = avcodec_open2(h->ctx, codec, NULL);
 	if (rc < 0) {
 		avcodec_free_context(&h->ctx);

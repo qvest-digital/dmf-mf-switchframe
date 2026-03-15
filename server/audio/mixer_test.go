@@ -2679,11 +2679,12 @@ func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
 	defer func() { _ = m.Close() }()
 
 	audio := []float32{0.1, 0.2, 0.3}
-	m.SetStingerAudio(audio, 44100, 2) // wrong sample rate
+	m.SetStingerAudio(audio, 44100, 2) // different sample rate → resampled, not rejected
 
-	m.mu.Lock()
-	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on sample rate mismatch")
-	m.mu.Unlock()
+	m.mu.RLock()
+	stinger := m.stingerAudio
+	m.mu.RUnlock()
+	require.NotNil(t, stinger, "stingerAudio should be resampled, not rejected")
 }
 
 func TestMixer_SetStingerAudio_ChannelMismatch(t *testing.T) {
@@ -3727,11 +3728,9 @@ func TestCrossfadePipelineOrder_MasterGainBeforeMute(t *testing.T) {
 	require.False(t, math.IsInf(peaks[0], -1), "peak should not be -Inf when not muted")
 }
 
-// TestMixerRejectsMismatchedSampleRate verifies that frames with a sample rate
-// different from the mixer's configured rate are rejected (not mixed into output).
-// Processing audio with wrong filter coefficients (EQ, compressor, LUFS) produces
-// incorrect results, so rejection is better than silent corruption.
-func TestMixerRejectsMismatchedSampleRate(t *testing.T) {
+// TestMixerResamplesMismatchedSampleRate verifies that frames with a different
+// sample rate than the mixer are resampled (not rejected) and mixed into output.
+func TestMixerResamplesMismatchedSampleRate(t *testing.T) {
 	t.Parallel()
 
 	m := NewMixer(MixerConfig{
@@ -3768,80 +3767,22 @@ func TestMixerRejectsMismatchedSampleRate(t *testing.T) {
 	}
 	m.IngestFrame("cam1", mismatchedFrame)
 
-	// The mismatched frame should be rejected — cam1's PCM should NOT appear in mixBuffer
+	// The frame should be resampled and accepted into the mix buffer
 	m.mu.RLock()
 	_, cam1InBuffer := m.mixBuffer["cam1"]
 	m.mu.RUnlock()
-	require.False(t, cam1InBuffer, "mismatched sample rate frame should be rejected, not added to mix buffer")
+	require.True(t, cam1InBuffer, "mismatched sample rate frame should be resampled and mixed")
 
-	// Now ingest a matching frame from cam2 to verify the mixer still works
-	matchingFrame := &media.AudioFrame{
-		PTS:        1000,
-		Data:       []byte{0xBB},
-		SampleRate: 48000,
-		Channels:   2,
-	}
-	m.IngestFrame("cam2", matchingFrame)
-
-	// cam2 should have been accepted
+	// A resampler should have been created for this channel
 	m.mu.RLock()
-	_, cam2InBuffer := m.mixBuffer["cam2"]
+	hasResampler := m.channels["cam1"].resampler != nil
 	m.mu.RUnlock()
-	require.True(t, cam2InBuffer, "matching sample rate frame should be accepted into mix buffer")
+	require.True(t, hasResampler, "resampler should be lazy-initialized on mismatch")
 }
 
 // TestMixerAcceptsZeroSampleRate verifies that frames with SampleRate==0
-// (unknown) are not rejected — backward compatibility requires accepting them.
+// (unknown) are accepted without creating a resampler — backward compatibility.
 func TestMixerAcceptsZeroSampleRate(t *testing.T) {
-	t.Parallel()
-
-	var outputFrames []*media.AudioFrame
-
-	m := NewMixer(MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
-		Output: func(frame *media.AudioFrame) {
-			outputFrames = append(outputFrames, frame)
-		},
-		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
-			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
-		},
-		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
-			return &mockEncoder{data: []byte{0xFF}}, nil
-		},
-	})
-	defer func() { _ = m.Close() }()
-
-	m.AddChannel("cam1")
-	m.SetActive("cam1", true)
-
-	// Force non-passthrough
-	m.AddChannel("cam2")
-	m.SetActive("cam2", true)
-
-	m.mu.Lock()
-	m.channels["cam1"].decoder = &mockDecoder{samples: []float32{0.5, 0.5}}
-	m.channels["cam2"].decoder = &mockDecoder{samples: []float32{0.3, 0.3}}
-	m.mu.Unlock()
-
-	// Ingest a frame with SampleRate==0 (unknown — should NOT be rejected)
-	unknownRateFrame := &media.AudioFrame{
-		PTS:      1000,
-		Data:     []byte{0xAA},
-		Channels: 2,
-	}
-	m.IngestFrame("cam1", unknownRateFrame)
-
-	// Frame should be accepted into the mix buffer
-	m.mu.RLock()
-	_, cam1InBuffer := m.mixBuffer["cam1"]
-	m.mu.RUnlock()
-	require.True(t, cam1InBuffer, "frame with SampleRate==0 should be accepted (backward compat)")
-}
-
-// TestMixerRejectsMismatchedSampleRateWarnsOnce verifies that the warning
-// is logged only once per channel, but every mismatched frame is rejected.
-func TestMixerRejectsMismatchedSampleRateWarnsOnce(t *testing.T) {
 	t.Parallel()
 
 	m := NewMixer(MixerConfig{
@@ -3869,29 +3810,141 @@ func TestMixerRejectsMismatchedSampleRateWarnsOnce(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: []float32{0.3, 0.3}}
 	m.mu.Unlock()
 
-	mismatchedFrame := &media.AudioFrame{
-		PTS:        1000,
-		Data:       []byte{0xAA},
-		SampleRate: 44100,
-		Channels:   2,
+	// Ingest a frame with SampleRate==0 (unknown — no resampler should be created)
+	unknownRateFrame := &media.AudioFrame{
+		PTS:      1000,
+		Data:     []byte{0xAA},
+		Channels: 2,
 	}
+	m.IngestFrame("cam1", unknownRateFrame)
 
-	// Ingest multiple mismatched frames
-	m.IngestFrame("cam1", mismatchedFrame)
-	m.IngestFrame("cam1", mismatchedFrame)
-	m.IngestFrame("cam1", mismatchedFrame)
-
-	// All frames should be rejected — none should be in the mix buffer
 	m.mu.RLock()
 	_, cam1InBuffer := m.mixBuffer["cam1"]
+	hasResampler := m.channels["cam1"].resampler != nil
 	m.mu.RUnlock()
-	require.False(t, cam1InBuffer, "all mismatched frames should be rejected, not just the first")
+	require.True(t, cam1InBuffer, "frame with SampleRate==0 should be accepted")
+	require.False(t, hasResampler, "no resampler should be created for SampleRate==0")
+}
 
-	// The sampleRateWarned flag should be set (warning logged once)
+// TestMixerResamplerCreatedOncePerChannel verifies that the resampler is
+// created once on first mismatch and reused for subsequent frames.
+func TestMixerResamplerCreatedOncePerChannel(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+	m.AddChannel("cam2")
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: []float32{0.5, 0.5}}
+	m.channels["cam2"].decoder = &mockDecoder{samples: []float32{0.3, 0.3}}
+	m.mu.Unlock()
+
+	frame := &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 44100, Channels: 2}
+
+	m.IngestFrame("cam1", frame)
+
 	m.mu.RLock()
-	warned := m.channels["cam1"].sampleRateWarned
+	resampler1 := m.channels["cam1"].resampler
 	m.mu.RUnlock()
-	require.True(t, warned, "sampleRateWarned should be set after first mismatch")
+	require.NotNil(t, resampler1, "resampler should be created on first mismatch")
+
+	// Second frame should reuse the same resampler
+	m.IngestFrame("cam1", frame)
+
+	m.mu.RLock()
+	resampler2 := m.channels["cam1"].resampler
+	m.mu.RUnlock()
+	require.True(t, resampler1 == resampler2, "resampler should be reused, not recreated")
+}
+
+// TestMixerResamplerDisablesPassthrough verifies that when a source needs
+// resampling, passthrough mode is disabled (can't forward raw AAC at wrong rate).
+func TestMixerResamplerDisablesPassthrough(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Single active source at 0dB — would normally enable passthrough
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	require.True(t, m.IsPassthrough(), "should be passthrough before mismatch")
+
+	// Inject a resampler to simulate mismatch detection
+	m.mu.Lock()
+	m.channels["cam1"].resampler = NewResampler(44100, 48000, 2)
+	m.recalcPassthrough()
+	m.mu.Unlock()
+
+	require.False(t, m.IsPassthrough(), "passthrough must be disabled when resampler is active")
+}
+
+// TestMixerCrossfadeWithMismatchedRate verifies that crossfade works correctly
+// when the incoming source has a different sample rate.
+func TestMixerCrossfadeWithMismatchedRate(t *testing.T) {
+	t.Parallel()
+
+	var outputCount int
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) { outputCount++ },
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+	m.AddChannel("cam2")
+	m.SetActive("cam2", true)
+
+	m.mu.Lock()
+	m.channels["cam1"].decoder = &mockDecoder{samples: []float32{0.5, 0.5}}
+	m.channels["cam2"].decoder = &mockDecoder{samples: []float32{0.3, 0.3}}
+	m.mu.Unlock()
+
+	// Pre-populate cam1's PCM for crossfade pre-buffer
+	m.IngestFrame("cam1", &media.AudioFrame{PTS: 500, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
+
+	// Trigger crossfade from cam1 to cam2
+	m.OnCut("cam1", "cam2")
+
+	// cam2 sends a frame with mismatched rate during crossfade
+	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 44100, Channels: 2})
+
+	// The crossfade should complete (not silently drop the frame)
+	require.Greater(t, outputCount, 0, "crossfade should produce output even with mismatched rate")
 }
 
 func TestUnmuteFadeLRSymmetry(t *testing.T) {

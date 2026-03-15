@@ -12,6 +12,11 @@ import (
 // program mute, metering, encodes to AAC, and returns the output frame.
 // Returns nil if there is nothing to output (empty buffer, encoder error, etc.).
 //
+// When resampling produces non-1024-sample PCM, the raw mix is accumulated in
+// m.encodeBuf and drained in exact 1024-sample frames. Each chunk is independently
+// processed through the full master chain (gain → LUFS → limiter → encode) to
+// avoid double-processing artifacts.
+//
 // Caller must hold m.mu write lock. The lock is held for the entire call.
 // Callers are responsible for calling m.output() after releasing the lock.
 func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
@@ -44,70 +49,10 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 	}
 	mixed := m.mixAccum
 
-	// Stinger audio overlay: add stinger PCM on top of source crossfade.
-	// This path runs for multi-source mixing (passthrough disabled, no crossfade).
-	// The crossfade path in ingestCrossfadeFrame has its own injection point.
-	// Mutual exclusion: when transCrossfadeActive is true, sources participating
-	// in the crossfade go through ingestCrossfadeFrame instead of collectMixCycleLocked.
+	// Stinger audio overlay
 	if m.stingerAudio != nil {
 		m.addStingerAudio(mixed)
 	}
-
-	// Apply master gain (skip if unity — preserves passthrough optimization)
-	if m.masterLinear != 1.0 && len(mixed) > 0 {
-		vec.ScaleFloat32(&mixed[0], m.masterLinear, len(mixed))
-	}
-
-	// Feed LUFS meter (after master fader, before limiter — measures perceived loudness)
-	m.loudness.Process(mixed)
-
-	// Apply brickwall limiter at -1 dBFS (always active)
-	m.limiter.Process(mixed)
-
-	// Monotonic PTS: computed before MXL tap and encode so both receive the correct PTS.
-	pts := m.advanceOutputPTS(m.mixPTS)
-
-	// MXL output tap — copy mixed PCM after master processing (fader + limiter)
-	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
-		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(mixed))
-		copy(m.mxlSinkBuf, mixed)
-		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
-	}
-
-	// Apply program mute (FTB held): zero the buffer so output is silent
-	if m.programMuted {
-		for i := range mixed {
-			mixed[i] = 0
-		}
-	}
-
-	// Apply unmute fade-in ramp: prevents uncompressed burst after
-	// compressor/limiter envelopes were reset to zero during mute.
-	if m.unmuteFadeRemaining > 0 {
-		fadeSamples := m.unmuteFadeRemaining
-		rampTotal := m.sampleRate * m.numChannels * 5 / 1000
-		ch := m.numChannels
-		for i := 0; i < len(mixed); i += ch {
-			if fadeSamples <= 0 {
-				break
-			}
-			// Linear ramp from 0 to 1 over the remaining fade samples
-			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
-			for j := 0; j < ch && i+j < len(mixed); j++ {
-				mixed[i+j] *= progress
-			}
-			fadeSamples -= ch
-		}
-		if fadeSamples < 0 {
-			fadeSamples = 0
-		}
-		m.unmuteFadeRemaining = fadeSamples
-	}
-
-	// Update program peak metering (after mute so meters show silence)
-	peakL, peakR := PeakLevel(mixed, m.numChannels)
-	m.programPeakL = peakL
-	m.programPeakR = peakR
 
 	// Lazy-init encoder with priming (prevents MDCT warmup artifacts).
 	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
@@ -115,7 +60,78 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 		return nil
 	}
 
-	// Encode mixed PCM -> AAC
+	aacFrameSamples := 1024 * m.numChannels
+	pts := m.advanceOutputPTS(m.mixPTS)
+
+	if len(m.encodeBuf) > 0 || len(mixed) > aacFrameSamples {
+		// Buffered path: resampling produced non-standard frame size.
+		// Accumulate raw mixed PCM (pre-master) and drain in 1024-sample chunks.
+		// Each chunk goes through the full master chain independently.
+		m.encodeBuf = append(m.encodeBuf, mixed...)
+
+		var frames []*media.AudioFrame
+
+		for len(m.encodeBuf) >= aacFrameSamples {
+			chunk := m.encodeBuf[:aacFrameSamples]
+
+			// Apply full master chain to this chunk
+			m.applyMasterChain(chunk, pts)
+
+			aacData, err := m.encoder.Encode(chunk)
+			if err != nil {
+				m.encodeErrors.Add(1)
+				if m.promMetrics != nil {
+					m.promMetrics.EncodeErrorsTotal.Inc()
+				}
+				m.log.Warn("encode error", "err", err)
+				m.encodeBuf = m.encodeBuf[aacFrameSamples:]
+				continue
+			}
+			m.framesMixed.Add(1)
+			if m.promMetrics != nil {
+				m.promMetrics.FramesMixedTotal.Inc()
+			}
+
+			framePTS := pts
+			if len(frames) > 0 {
+				framePTS = m.advanceOutputPTS(pts)
+			}
+			frames = append(frames, &media.AudioFrame{
+				PTS:        framePTS,
+				Data:       aacData,
+				SampleRate: m.sampleRate,
+				Channels:   m.numChannels,
+			})
+			m.encodeBuf = m.encodeBuf[aacFrameSamples:]
+		}
+
+		// Advance audio position tracking
+		if m.transCrossfadeActive {
+			m.transCrossfadeAudioPos = m.mixCycleTransPos
+		}
+		m.resetMixCycleLocked()
+		mixDur := time.Now().UnixNano() - mixStart
+		m.lastMixCycleNs.Store(mixDur)
+		atomicutil.UpdateMax(&m.maxMixCycleNs, mixDur)
+
+		if len(frames) == 0 {
+			return nil
+		}
+
+		// Output all but the last frame directly (still under lock — safe
+		// because output() is a callback that writes to the relay).
+		for _, f := range frames[:len(frames)-1] {
+			m.mu.Unlock()
+			m.recordAndOutput(f)
+			m.mu.Lock()
+		}
+		// Return the last frame for the caller to output after releasing lock
+		return frames[len(frames)-1]
+	}
+
+	// Direct path: mixed ≤ 1024 samples (normal case, no resampling active)
+	m.applyMasterChain(mixed, pts)
+
 	aacData, err := m.encoder.Encode(mixed)
 	if err != nil {
 		m.encodeErrors.Add(1)
@@ -131,27 +147,76 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 		m.promMetrics.FramesMixedTotal.Inc()
 	}
 
-	// Advance audio position tracking so the next cycle's start gain
-	// matches this cycle's end gain (continuous gain envelope).
 	if m.transCrossfadeActive {
 		m.transCrossfadeAudioPos = m.mixCycleTransPos
 	}
-
-	// Reset mix cycle for next round
 	m.resetMixCycleLocked()
-
-	// Record mix cycle timing
 	mixDur := time.Now().UnixNano() - mixStart
 	m.lastMixCycleNs.Store(mixDur)
 	atomicutil.UpdateMax(&m.maxMixCycleNs, mixDur)
 
-	// Build output frame — caller will output after releasing the lock
 	return &media.AudioFrame{
 		PTS:        pts,
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
 	}
+}
+
+// applyMasterChain runs the master output processing on a PCM buffer:
+// master gain → LUFS metering → limiter → MXL tap → program mute → unmute ramp → peak metering.
+// Caller must hold m.mu.
+func (m *Mixer) applyMasterChain(pcm []float32, pts int64) {
+	// Master gain
+	if m.masterLinear != 1.0 && len(pcm) > 0 {
+		vec.ScaleFloat32(&pcm[0], m.masterLinear, len(pcm))
+	}
+
+	// LUFS metering (after master fader, before limiter)
+	m.loudness.Process(pcm)
+
+	// Brickwall limiter
+	m.limiter.Process(pcm)
+
+	// MXL output tap
+	if sinkPtr := m.rawAudioSink.Load(); sinkPtr != nil {
+		m.mxlSinkBuf = growBuf(m.mxlSinkBuf, len(pcm))
+		copy(m.mxlSinkBuf, pcm)
+		(*sinkPtr)(m.mxlSinkBuf, pts, m.sampleRate, m.numChannels)
+	}
+
+	// Program mute (FTB)
+	if m.programMuted {
+		for i := range pcm {
+			pcm[i] = 0
+		}
+	}
+
+	// Unmute fade-in ramp
+	if m.unmuteFadeRemaining > 0 {
+		fadeSamples := m.unmuteFadeRemaining
+		rampTotal := m.sampleRate * m.numChannels * 5 / 1000
+		ch := m.numChannels
+		for i := 0; i < len(pcm); i += ch {
+			if fadeSamples <= 0 {
+				break
+			}
+			progress := float32(rampTotal-fadeSamples) / float32(rampTotal)
+			for j := 0; j < ch && i+j < len(pcm); j++ {
+				pcm[i+j] *= progress
+			}
+			fadeSamples -= ch
+		}
+		if fadeSamples < 0 {
+			fadeSamples = 0
+		}
+		m.unmuteFadeRemaining = fadeSamples
+	}
+
+	// Peak metering
+	peakL, peakR := PeakLevel(pcm, m.numChannels)
+	m.programPeakL = peakL
+	m.programPeakR = peakR
 }
 
 // resetMixCycleLocked clears the mix accumulation state for the next cycle.

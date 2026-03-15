@@ -79,7 +79,9 @@ type Channel struct {
 	eq               *EQ          // 3-band parametric EQ (always initialized)
 	compressor       *Compressor  // single-band compressor (always initialized)
 	audioDelay       *DelayBuffer // per-source audio delay for lip-sync correction
-	sampleRateWarned bool         // true after first sample rate mismatch warning (log once)
+	sampleRateWarned bool         // true after first sample rate mismatch log (once per channel)
+	resampler        *Resampler   // nil when source rate matches mixer rate; lazy-init on mismatch
+	resamplerSrcRate int          // source rate the resampler was created for (detect rate changes)
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -165,6 +167,10 @@ type Mixer struct {
 	// Reusable buffers for hot-path allocation elimination
 	mxlSinkBuf   []float32 // reused by MXL raw audio sink copy
 	crossfadeBuf []float32 // reused by ingestCrossfadeFrame crossfade output
+
+	// Encode buffer: accumulates mixed PCM across cycles when resampling
+	// produces non-1024-sample chunks. Drained in 1024-sample frames.
+	encodeBuf []float32
 
 	// Raw audio output tap for MXL (atomic, lock-free read)
 	rawAudioSink atomic.Pointer[RawAudioSink]
@@ -495,20 +501,22 @@ func (m *Mixer) SetProgramMute(muted bool) {
 // SetStingerAudio provides the stinger clip's audio PCM for additive overlay
 // during a stinger transition. The audio is consumed sample-by-sample during
 // mix cycles until exhausted or cleared by OnTransitionComplete.
-// If the stinger audio has a different sample rate or channel count than the
-// mixer, a warning is logged and the audio is skipped to prevent artifacts.
+// If the stinger audio has a different sample rate, it is resampled to the
+// mixer's rate. Channel count mismatches are still rejected (no upmix logic).
 func (m *Mixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if sampleRate != m.sampleRate {
-		m.log.Warn("stinger audio sample rate mismatch, skipping audio",
-			"stinger_rate", sampleRate, "mixer_rate", m.sampleRate)
-		return
-	}
 	if channels != m.numChannels {
 		m.log.Warn("stinger audio channel count mismatch, skipping audio",
 			"stinger_channels", channels, "mixer_channels", m.numChannels)
 		return
+	}
+	// Resample stinger audio to mixer rate if needed (one-time conversion).
+	if sampleRate != 0 && sampleRate != m.sampleRate {
+		r := NewResampler(sampleRate, m.sampleRate, channels)
+		audio = r.Resample(audio)
+		m.log.Info("stinger audio resampled",
+			"from", sampleRate, "to", m.sampleRate)
 	}
 	m.stingerAudio = audio
 	m.stingerOffset = 0
@@ -764,6 +772,33 @@ func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
 // fresh measurement after a transition or other event.
 func (m *Mixer) ResetMaxInterFrameGap() {
 	m.maxInterFrameNano.Store(0)
+}
+
+// resampleIfNeeded checks if decoded PCM needs sample rate conversion and
+// applies the per-channel polyphase FIR resampler if so. Returns the
+// (possibly resampled) PCM. SampleRate==0 means unknown — no resampling.
+// Caller must hold m.mu (write lock).
+func (m *Mixer) resampleIfNeeded(ch *Channel, pcm []float32, srcRate int) []float32 {
+	if srcRate == 0 || srcRate == m.sampleRate {
+		return pcm
+	}
+	// Lazy-init or replace resampler if source rate changed
+	if ch.resampler == nil || ch.resamplerSrcRate != srcRate {
+		ch.resampler = NewResampler(srcRate, m.sampleRate, m.numChannels)
+		ch.resamplerSrcRate = srcRate
+		if !ch.sampleRateWarned {
+			ch.sampleRateWarned = true
+			m.log.Info("audio: resampling source",
+				"source", ch.sourceKey,
+				"from", srcRate,
+				"to", m.sampleRate,
+				"taps_per_phase", ch.resampler.TapsPerPhase(),
+				"L", ch.resampler.UpFactor(),
+				"M", ch.resampler.DownFactor())
+		}
+		m.recalcPassthrough()
+	}
+	return ch.resampler.Resample(pcm)
 }
 
 // upmixMono duplicates each mono sample to all mixer channels.
