@@ -564,8 +564,11 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 		}
 
 		if isKey {
-			frame.sps = track.sps
-			frame.pps = track.pps
+			// Deep-copy SPS/PPS so each keyframe owns independent slices,
+			// matching the TS demux path. Shared references would let a
+			// mutation of one frame's SPS/PPS corrupt all other keyframes.
+			frame.sps = append([]byte(nil), track.sps...)
+			frame.pps = append([]byte(nil), track.pps...)
 		}
 
 		frames = append(frames, frame)

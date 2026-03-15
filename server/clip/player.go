@@ -707,7 +707,11 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 
 	// FFmpeg encoder returns Annex B — convert to AVC1 for the relay (reuses buffer).
 	p.avc1Buf = codec.AnnexBToAVC1Into(encoded, p.avc1Buf[:0])
-	avc1 := p.avc1Buf
+	// Deep-copy: downstream consumers (BroadcastVideo) retain frame references
+	// in the GOP cache and send them asynchronously via channels. Without a copy,
+	// the next encode cycle overwrites the aliased scratch buffer.
+	avc1 := make([]byte, len(p.avc1Buf))
+	copy(avc1, p.avc1Buf)
 
 	// Extract SPS/PPS from keyframes for relay VideoInfo.
 	if encKF {

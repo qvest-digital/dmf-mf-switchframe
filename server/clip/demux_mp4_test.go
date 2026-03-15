@@ -327,3 +327,83 @@ func TestNormalizeNALULengthSize_LengthSize4Passthrough(t *testing.T) {
 	result := normalizeNALULengthSize(data, 4)
 	assert.Equal(t, data, result)
 }
+
+// TestMP4KeyframeSPSPPSIndependence verifies that each keyframe's SPS/PPS
+// slices are independent copies, not shared references to the same track-level
+// buffer. If they share the same underlying array, mutating one keyframe's
+// SPS/PPS would corrupt all others. The TS demux path deep-copies SPS/PPS
+// per keyframe; the MP4 path must do the same.
+func TestMP4KeyframeSPSPPSIndependence(t *testing.T) {
+	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88}
+	pps := []byte{0x68, 0xCE, 0x38, 0x80}
+
+	track := &mp4Track{
+		handlerType:    "vide",
+		timescale:      90000,
+		naluLengthSize: 4,
+		sps:            make([]byte, len(sps)),
+		pps:            make([]byte, len(pps)),
+		stts:           []mp4.SttsEntry{{SampleCount: 3, SampleDelta: 3000}},
+		stss:           []uint32{1, 3}, // samples 1 and 3 are keyframes
+		stsz:           []uint32{8, 8, 8},
+		stsc:           []mp4.StscEntry{{FirstChunk: 1, SamplesPerChunk: 1}},
+		stco:           []uint64{0, 8, 16},
+	}
+	copy(track.sps, sps)
+	copy(track.pps, pps)
+
+	// Create a temp file with 3 samples of 8 bytes each (4-byte NALU length + 4 bytes payload).
+	var fileData []byte
+	for i := 0; i < 3; i++ {
+		sample := make([]byte, 8)
+		sample[0] = 0x00
+		sample[1] = 0x00
+		sample[2] = 0x00
+		sample[3] = 0x04 // NALU length = 4
+		if i == 0 || i == 2 {
+			sample[4] = 0x65 // IDR NALU type
+		} else {
+			sample[4] = 0x41 // non-IDR NALU type
+		}
+		sample[5] = byte(i)
+		fileData = append(fileData, sample...)
+	}
+
+	tmpFile := writeTemp(t, fileData, ".raw")
+	f, err := os.Open(tmpFile)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	frames, err := readVideoSamples(f, track)
+	require.NoError(t, err)
+	require.Len(t, frames, 3)
+
+	// Frames 0 and 2 are keyframes and should have SPS/PPS.
+	require.NotNil(t, frames[0].sps, "keyframe 0 should have SPS")
+	require.NotNil(t, frames[0].pps, "keyframe 0 should have PPS")
+	require.NotNil(t, frames[2].sps, "keyframe 2 should have SPS")
+	require.NotNil(t, frames[2].pps, "keyframe 2 should have PPS")
+
+	// Frame 1 is not a keyframe — should not have SPS/PPS.
+	assert.Nil(t, frames[1].sps, "non-keyframe should not have SPS")
+	assert.Nil(t, frames[1].pps, "non-keyframe should not have PPS")
+
+	// Critical check: mutating keyframe 0's SPS should NOT affect keyframe 2's SPS.
+	// If they share the same underlying array, this mutation corrupts all keyframes.
+	originalSPS2 := make([]byte, len(frames[2].sps))
+	copy(originalSPS2, frames[2].sps)
+
+	frames[0].sps[0] = 0xFF // mutate keyframe 0's SPS
+
+	assert.Equal(t, originalSPS2, frames[2].sps,
+		"keyframe 2's SPS should be unaffected by mutating keyframe 0's SPS (must be independent copies)")
+
+	// Same check for PPS.
+	originalPPS2 := make([]byte, len(frames[2].pps))
+	copy(originalPPS2, frames[2].pps)
+
+	frames[0].pps[0] = 0xFF // mutate keyframe 0's PPS
+
+	assert.Equal(t, originalPPS2, frames[2].pps,
+		"keyframe 2's PPS should be unaffected by mutating keyframe 0's PPS (must be independent copies)")
+}

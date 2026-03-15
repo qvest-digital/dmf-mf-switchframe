@@ -1188,3 +1188,70 @@ func buildAnnexBNonKeyframe() []byte {
 	out = append(out, nonIDR...)
 	return out
 }
+
+// TestPlayerReencodeAVC1BufferNotAliased verifies that reencodeForBrowser
+// returns a deep copy rather than a slice aliasing the player's internal
+// avc1Buf scratch buffer. Downstream consumers (BroadcastVideo) retain frame
+// references in the GOP cache and send them asynchronously via channels.
+// If wireData aliases avc1Buf, the next encode overwrites the retained data.
+func TestPlayerReencodeAVC1BufferNotAliased(t *testing.T) {
+	// Track encode call count to produce different output each time.
+	var callCount int
+
+	p := &Player{
+		config: PlayerConfig{
+			EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+				return &mockVideoEncoder{
+					encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+						callCount++
+						// Return different Annex B data each call by varying the IDR payload.
+						// This ensures that if buffers alias, the first result gets corrupted.
+						sps := []byte{0x67, 0x42, 0xC0, 0x1E}
+						pps := []byte{0x68, 0xCE, 0x38, 0x80}
+						idr := make([]byte, 16)
+						idr[0] = 0x65 // IDR NALU type
+						// Fill with call-specific marker so each frame is distinguishable.
+						for i := 1; i < len(idr); i++ {
+							idr[i] = byte(callCount)
+						}
+
+						var out []byte
+						out = append(out, 0x00, 0x00, 0x00, 0x01)
+						out = append(out, sps...)
+						out = append(out, 0x00, 0x00, 0x00, 0x01)
+						out = append(out, pps...)
+						out = append(out, 0x00, 0x00, 0x00, 0x01)
+						out = append(out, idr...)
+						return out, true, nil
+					},
+					closeFn: func() {},
+				}, nil
+			},
+		},
+		sourceFPS: 30.0,
+	}
+
+	yuv := make([]byte, 320*240*3/2)
+
+	// First call: get wireData reference.
+	wd1, _, _, _ := p.reencodeForBrowser(yuv, 320, 240, 0, true)
+	require.NotNil(t, wd1, "first reencode should return wireData")
+
+	// Snapshot the first result.
+	snap1 := make([]byte, len(wd1))
+	copy(snap1, wd1)
+
+	// Second call with different encoder output — should NOT corrupt wd1.
+	wd2, _, _, _ := p.reencodeForBrowser(yuv, 320, 240, 3003, true)
+	require.NotNil(t, wd2, "second reencode should return wireData")
+
+	// The two outputs should be different (different marker bytes).
+	require.NotEqual(t, snap1, []byte(wd2),
+		"encoder should produce different output for different calls")
+
+	// Critical check: wd1 must still hold its original content.
+	// If wd1 aliases avc1Buf, it now holds wd2's data instead.
+	assert.Equal(t, snap1, []byte(wd1),
+		"first wireData was corrupted by second reencode call; "+
+			"avc1Buf aliasing means downstream GOP cache and async channel sends get stale data")
+}
