@@ -39,6 +39,11 @@ const (
 	// clock units: 1024 samples * 90000 Hz / 48000 Hz = 1920 ticks.
 	// Used for advancing repeated audio frame PTS (instead of video tick interval).
 	audioFramePTS = int64(aacSamplesPerFrame) * int64(mpegtsClock) / int64(defaultAudioSampleRate)
+
+	// maxAudioQueueSize caps the per-source audio FIFO to prevent unbounded
+	// growth if ticks stall or a source floods faster than drain rate.
+	// 16 frames ≈ ~340ms at 48kHz/1024 samples — well above normal (1-2).
+	maxAudioQueueSize = 16
 )
 
 // audioFramePTSForRate computes the PTS interval for one AAC frame at the
@@ -427,6 +432,10 @@ func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFra
 		return
 	}
 	ss.mu.Lock()
+	if len(ss.audioQueue) >= maxAudioQueueSize {
+		// Drop the oldest frame to keep the queue bounded.
+		ss.audioQueue = ss.audioQueue[1:]
+	}
 	ss.audioQueue = append(ss.audioQueue, frame)
 	ss.pushAudio(frame) // ring buffer for freeze/repeat fallback
 	if frame.SampleRate > 0 {

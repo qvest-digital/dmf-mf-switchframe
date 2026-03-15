@@ -120,8 +120,10 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 				payload = payload[pointerField:]
 			}
 
-			// Start a new section.
-			sectionData = payload
+			// Start a new section. Deep-copy to avoid aliasing the input buffer,
+			// which would allow append() in multi-packet assembly to corrupt
+			// subsequent TS packets.
+			sectionData = append([]byte(nil), payload...)
 			collecting = true
 
 			// Extract section_length to know how much data to collect.

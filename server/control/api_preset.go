@@ -117,7 +117,6 @@ func (a *API) handleDeletePreset(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -2,6 +2,7 @@ package debug
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -59,8 +60,12 @@ func (c *Collector) Snapshot() map[string]any {
 
 // HandleSnapshot is the HTTP handler for GET /api/debug/snapshot.
 func (c *Collector) HandleSnapshot(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(c.Snapshot()); err != nil {
+	data, err := json.Marshal(c.Snapshot())
+	if err != nil {
+		slog.Error("failed to marshal debug snapshot", "error", err)
 		http.Error(w, "failed to encode snapshot", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(data)
 }

@@ -2457,3 +2457,32 @@ func TestFrameSync_SetFramePool_UpdatesPool(t *testing.T) {
 	require.Equal(t, newPool, fs.framePool, "pool should be updated to newPool")
 	fs.mu.Unlock()
 }
+
+func TestFrameSync_AudioQueueCapped(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Flood more audio frames than the cap without starting the ticker
+	// (so no tick drains the queue).
+	for i := 0; i < maxAudioQueueSize+10; i++ {
+		af := &media.AudioFrame{PTS: int64(i * 1920), Data: []byte{byte(i)}}
+		fs.IngestAudio("cam1", af)
+	}
+
+	// Inspect the internal queue length — it must be capped.
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+
+	ss.mu.Lock()
+	queueLen := len(ss.audioQueue)
+	// The newest frame should be the last one ingested.
+	lastFrame := ss.audioQueue[queueLen-1]
+	ss.mu.Unlock()
+
+	require.Equal(t, maxAudioQueueSize, queueLen,
+		"audioQueue should be capped at maxAudioQueueSize")
+	require.Equal(t, byte(maxAudioQueueSize+10-1), lastFrame.Data[0],
+		"newest frame should be preserved")
+}

@@ -84,3 +84,25 @@ func TestCollector_HandleSnapshot(t *testing.T) {
 	require.NoError(t, err, "invalid JSON")
 	require.NotNil(t, result["test"], "expected test in response")
 }
+
+// errorProvider returns a value that cannot be marshaled to JSON.
+type errorProvider struct{}
+
+func (e *errorProvider) DebugSnapshot() map[string]any {
+	return map[string]any{
+		"bad": func() {}, // functions are not JSON-serializable
+	}
+}
+
+func TestCollector_HandleSnapshot_MarshalError(t *testing.T) {
+	c := NewCollector()
+	c.Register("broken", &errorProvider{})
+
+	req := httptest.NewRequest("GET", "/api/debug/snapshot", nil)
+	w := httptest.NewRecorder()
+	c.HandleSnapshot(w, req)
+
+	// Should return a clean 500 error, not garbled partial JSON.
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	require.Contains(t, w.Body.String(), "failed to encode snapshot")
+}

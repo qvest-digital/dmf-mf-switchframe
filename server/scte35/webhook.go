@@ -3,6 +3,7 @@ package scte35
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -125,6 +126,9 @@ func (w *WebhookDispatcher) send(event WebhookEvent) {
 		slog.Debug("webhook dispatch failed", "url", w.url, "error", err)
 		return
 	}
+	// Drain the body before closing so the underlying TCP connection can
+	// be reused by the http.Client transport pool.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
 	if resp.StatusCode >= 400 {

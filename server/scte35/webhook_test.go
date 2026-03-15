@@ -141,6 +141,39 @@ func TestWebhook_Close_Idempotent(t *testing.T) {
 	wh.Close()
 }
 
+func TestWebhook_ResponseBodyDrained(t *testing.T) {
+	t.Parallel()
+	// Verify the response body is fully read before Close, enabling
+	// HTTP/1.1 connection reuse by the transport pool.
+	var mu sync.Mutex
+	var count int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write a non-empty response body. If the webhook code doesn't
+		// drain it, the connection won't be reused and eventually the
+		// test server will run out of sockets (not checked here, but
+		// the code path matters).
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		mu.Lock()
+		count++
+		mu.Unlock()
+	}))
+	defer srv.Close()
+
+	wh := NewWebhookDispatcher(srv.URL, 2*time.Second)
+
+	// Send multiple events to exercise connection reuse.
+	for i := 0; i < 5; i++ {
+		wh.Dispatch(WebhookEvent{Type: "test", EventID: uint32(i)})
+	}
+	wh.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 5, count, "all 5 webhook events should have been delivered")
+}
+
 func TestWebhook_ConcurrentDispatchClose_NoRace(t *testing.T) {
 	t.Parallel()
 

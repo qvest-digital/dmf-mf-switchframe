@@ -364,6 +364,37 @@ func TestDetectSCTE35PID_WrongTableID(t *testing.T) {
 	require.Len(t, pids, 0)
 }
 
+func TestParseFromTS_MultiPacket_NoInputCorruption(t *testing.T) {
+	t.Parallel()
+	// Build a section large enough to span multiple TS packets, then
+	// verify that the original input buffer is not corrupted by the
+	// append() during multi-packet assembly.
+	largeUPID := make([]byte, 200)
+	for i := range largeUPID {
+		largeUPID[i] = byte('A' + (i % 26))
+	}
+
+	msg := NewTimeSignal(0x34, 60*time.Second, 0x0F, largeUPID)
+	sectionData, err := msg.Encode(true)
+	require.NoError(t, err)
+	require.Greater(t, len(sectionData), 183, "section must span multiple packets")
+
+	pid := uint16(0x102)
+	tsData := wrapInTS(pid, sectionData)
+
+	// Deep copy the original TS data to compare after parsing.
+	original := make([]byte, len(tsData))
+	copy(original, tsData)
+
+	parsed, err := ParseFromTS(pid, tsData)
+	require.NoError(t, err)
+	require.Equal(t, uint8(CommandTimeSignal), parsed.CommandType)
+
+	// The input buffer must not have been mutated by the parser.
+	require.Equal(t, original, tsData,
+		"ParseFromTS must not corrupt the input buffer during multi-packet assembly")
+}
+
 func TestParseFromTS_NotSCTE35TableID(t *testing.T) {
 	t.Parallel()
 	// Create valid section but change table_id to something other than 0xFC

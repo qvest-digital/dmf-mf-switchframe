@@ -164,6 +164,21 @@ func TestDeletePresetEndpoint(t *testing.T) {
 	require.Empty(t, ps.List(), "expected 0 presets after delete")
 }
 
+func TestDeletePresetNoContentType(t *testing.T) {
+	api, _, ps := setupPresetTestAPI(t)
+
+	created, _ := ps.Create("ToDelete", preset.ControlRoomSnapshot{ProgramSource: "camera1"})
+
+	req := httptest.NewRequest("DELETE", "/api/presets/"+created.ID, nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	// 204 No Content MUST NOT include a Content-Type header (RFC 9110 sec 6.4.1).
+	require.Empty(t, rec.Header().Get("Content-Type"),
+		"204 No Content should not set Content-Type header")
+}
+
 func TestDeletePresetNotFound(t *testing.T) {
 	api, _, _ := setupPresetTestAPI(t)
 
