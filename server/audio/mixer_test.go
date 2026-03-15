@@ -3960,11 +3960,11 @@ func TestMixerResamplerDisablesPassthrough(t *testing.T) {
 func TestMixerCrossfadeWithMismatchedRate(t *testing.T) {
 	t.Parallel()
 
-	var outputCount int
+	var outputCount atomic.Int64
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
-		Output:     func(frame *media.AudioFrame) { outputCount++ },
+		Output:     func(frame *media.AudioFrame) { outputCount.Add(1) },
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: []float32{0.5, 0.5}}, nil
 		},
@@ -3994,7 +3994,7 @@ func TestMixerCrossfadeWithMismatchedRate(t *testing.T) {
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 44100, Channels: 2})
 
 	// The crossfade should complete (not silently drop the frame)
-	require.Greater(t, outputCount, 0, "crossfade should produce output even with mismatched rate")
+	require.Greater(t, outputCount.Load(), int64(0), "crossfade should produce output even with mismatched rate")
 }
 
 func TestUnmuteFadeLRSymmetry(t *testing.T) {
