@@ -36,7 +36,12 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	for key, info := range state.Sources {
 		info.Type = sourceType(key)
 		if info.Type == "srt" && a.srtStats != nil {
-			srtInfo := a.srtStats.GetOrCreate(key).ToSRTSourceInfo()
+			cs, ok := a.srtStats.Get(key)
+			if !ok {
+				state.Sources[key] = info
+				continue
+			}
+			srtInfo := cs.ToSRTSourceInfo()
 			info.SRTInfo = &internal.SRTSourceInfo{
 				Mode:        srtInfo.Mode,
 				StreamID:    srtInfo.StreamID,
