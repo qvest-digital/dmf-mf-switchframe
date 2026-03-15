@@ -355,6 +355,8 @@ func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 		// Backward or duplicate — advance by one frame to stay monotonic
 		m.outputPTS += m.frameDuration90k()
 	}
+	// MPEG-TS PTS is 33 bits; mask to prevent overflow after ~26.5 hours.
+	m.outputPTS &= 0x1FFFFFFFF
 	return m.outputPTS
 }
 
@@ -547,23 +549,26 @@ func (m *Mixer) addStingerAudio(mixed []float32) {
 		n = remaining
 	}
 
-	// Fade envelope to prevent clicks
-	fadeInSamples := m.sampleRate * m.stingerChannels * 10 / 1000  // 10ms
-	fadeOutSamples := m.sampleRate * m.stingerChannels * 50 / 1000 // 50ms
-	totalSamples := len(m.stingerAudio)
+	// Fade envelope to prevent clicks.
+	// Use sample-frames (time steps) so L and R channels at the same
+	// time instant get identical gain.
+	fadeInFrames := m.sampleRate * 10 / 1000  // 10ms in sample-frames
+	fadeOutFrames := m.sampleRate * 50 / 1000 // 50ms in sample-frames
+	totalFrames := len(m.stingerAudio) / m.stingerChannels
 
 	for i := 0; i < n; i++ {
 		pos := m.stingerOffset + i
+		framePos := pos / m.stingerChannels
 		gain := float32(1.0)
 
 		// Fade in
-		if pos < fadeInSamples {
-			gain = float32(pos) / float32(fadeInSamples)
+		if framePos < fadeInFrames {
+			gain = float32(framePos) / float32(fadeInFrames)
 		}
 		// Fade out
-		distFromEnd := totalSamples - pos
-		if distFromEnd < fadeOutSamples {
-			fadeGain := float32(distFromEnd) / float32(fadeOutSamples)
+		distFromEnd := totalFrames - framePos
+		if distFromEnd < fadeOutFrames {
+			fadeGain := float32(distFromEnd) / float32(fadeOutFrames)
 			if fadeGain < gain {
 				gain = fadeGain
 			}

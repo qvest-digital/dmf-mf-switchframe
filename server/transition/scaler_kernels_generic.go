@@ -34,9 +34,9 @@ func scaleBilinearRow(dst, row0, row1 *byte, srcW, dstW int, xCoords *int64, fy 
 		p11 := int(r1[ix1])
 
 		invFx := 65536 - fx
-		top := (p00*invFx + p10*fx) >> 16
-		bot := (p01*invFx + p11*fx) >> 16
-		val := (top*invFy + bot*fy) >> 16
+		top := (p00*invFx + p10*fx + 32768) >> 16
+		bot := (p01*invFx + p11*fx + 32768) >> 16
+		val := (top*invFy + bot*fy + 32768) >> 16
 
 		if val < 0 {
 			val = 0

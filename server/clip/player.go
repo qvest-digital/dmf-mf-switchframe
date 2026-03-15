@@ -82,6 +82,9 @@ type Player struct {
 	// Speed changes mid-playback.
 	speed atomic.Value // float64
 
+	// Loop changes mid-playback.
+	loop atomic.Bool
+
 	// Hold frame: the last output frame for hold/pause output.
 	holdMu    sync.Mutex
 	holdFrame []byte
@@ -150,6 +153,9 @@ func NewPlayer(config PlayerConfig) *Player {
 		speed = 1.0
 	}
 	p.speed.Store(speed)
+
+	// Initialize loop.
+	p.loop.Store(config.Loop)
 
 	// Initialize pause channel as closed (not paused).
 	ch := make(chan struct{})
@@ -273,6 +279,11 @@ func (p *Player) SetSpeed(speed float64) {
 	p.speed.Store(speed)
 }
 
+// SetLoop enables or disables loop mode. Safe to call during playback.
+func (p *Player) SetLoop(loop bool) {
+	p.loop.Store(loop)
+}
+
 // run is the main playback goroutine.
 func (p *Player) run(ctx context.Context) {
 	defer close(p.done)
@@ -306,7 +317,7 @@ func (p *Player) run(ctx context.Context) {
 			return
 		}
 
-		if !p.config.Loop {
+		if !p.loop.Load() {
 			// Non-loop: transition to holding, notify, then hold loop.
 			// State must be set before OnDone so callers reading State()
 			// after OnDone see StateHolding, not StatePlaying.
@@ -522,6 +533,12 @@ func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS f
 				copy(frameData, decoded)
 				if p.config.RawVideoOutput != nil {
 					p.config.RawVideoOutput(frameData, dw, dh, *outputPTS, false)
+				}
+				// Re-encode drained frames for the browser relay (VideoOutput).
+				if p.config.VideoOutput != nil {
+					if wd, kf, s, pp := p.reencodeForBrowser(frameData, dw, dh, *outputPTS, false); wd != nil {
+						p.config.VideoOutput(wd, *outputPTS, kf, s, pp)
+					}
 				}
 				num, den := fpsToRational(p.sourceFPS)
 				*outputPTS += int64(90000) * int64(den) / int64(num)

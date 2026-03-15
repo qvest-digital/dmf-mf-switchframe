@@ -288,6 +288,31 @@ func TestBuildCDP_ClampsPairsTo15(t *testing.T) {
 	}
 }
 
+func TestCDPFrameRateCodes(t *testing.T) {
+	// CDP frame rate codes per SMPTE ST 334-1 Table 3.
+	tests := []struct {
+		name string
+		got  byte
+		want byte
+	}{
+		{"23.976fps", CDPFrameRate2398, 0x01},
+		{"24fps", CDPFrameRate24, 0x02},
+		{"25fps", CDPFrameRate25, 0x03},
+		{"29.97fps", CDPFrameRate2997, 0x04},
+		{"30fps", CDPFrameRate30, 0x05},
+		{"50fps", CDPFrameRate50, 0x06},
+		{"59.94fps", CDPFrameRate5994, 0x07},
+		{"60fps", CDPFrameRate60, 0x08},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Errorf("CDPFrameRate %s = 0x%02X, want 0x%02X", tt.name, tt.got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCaptionVANC_CoexistsWithSCTE104(t *testing.T) {
 	// Caption DID/SDID should differ from SCTE-104 DID/SDID.
 	// SCTE-104 uses DID=0x41, SDID=0x07.

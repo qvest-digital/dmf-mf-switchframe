@@ -23,7 +23,9 @@ func ChromaVAvg(dst, top, bot *byte, n int) {
 
 // V210UnpackRow extracts Y, Cb, Cr from V210 packed data for one row.
 // Each group of 16 bytes (4 uint32 words) produces 6 Y + 3 Cb + 3 Cr bytes.
-// 10-bit values are right-shifted by 2 to produce 8-bit output.
+// 10-bit values are converted to 8-bit with rounding: (val + 2) >> 2.
+//
+// NOTE: SIMD kernels (amd64/arm64) also need this rounding fix applied.
 func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 	if groups <= 0 {
 		return
@@ -41,29 +43,32 @@ func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 		w2 := binary.LittleEndian.Uint32(v210S[offset+8:])
 		w3 := binary.LittleEndian.Uint32(v210S[offset+12:])
 
-		// Extract 10-bit values and convert to 8-bit
+		// Extract 10-bit values and convert to 8-bit with rounding (+2 before >>2)
 		yBase := g * 6
-		yS[yBase+0] = byte((w0 >> 10 & 0x3FF) >> 2) // Y0
-		yS[yBase+1] = byte((w1 & 0x3FF) >> 2)       // Y1
-		yS[yBase+2] = byte((w1 >> 20 & 0x3FF) >> 2) // Y2
-		yS[yBase+3] = byte((w2 >> 10 & 0x3FF) >> 2) // Y3
-		yS[yBase+4] = byte((w3 & 0x3FF) >> 2)       // Y4
-		yS[yBase+5] = byte((w3 >> 20 & 0x3FF) >> 2) // Y5
+		yS[yBase+0] = byte(((w0>>10&0x3FF) + 2) >> 2) // Y0
+		yS[yBase+1] = byte(((w1&0x3FF) + 2) >> 2)     // Y1
+		yS[yBase+2] = byte(((w1>>20&0x3FF) + 2) >> 2) // Y2
+		yS[yBase+3] = byte(((w2>>10&0x3FF) + 2) >> 2) // Y3
+		yS[yBase+4] = byte(((w3&0x3FF) + 2) >> 2)     // Y4
+		yS[yBase+5] = byte(((w3>>20&0x3FF) + 2) >> 2) // Y5
 
 		cBase := g * 3
-		cbS[cBase+0] = byte((w0 & 0x3FF) >> 2)       // Cb0
-		cbS[cBase+1] = byte((w1 >> 10 & 0x3FF) >> 2) // Cb2
-		cbS[cBase+2] = byte((w2 >> 20 & 0x3FF) >> 2) // Cb4
+		cbS[cBase+0] = byte(((w0&0x3FF) + 2) >> 2)     // Cb0
+		cbS[cBase+1] = byte(((w1>>10&0x3FF) + 2) >> 2) // Cb2
+		cbS[cBase+2] = byte(((w2>>20&0x3FF) + 2) >> 2) // Cb4
 
-		crS[cBase+0] = byte((w0 >> 20 & 0x3FF) >> 2) // Cr0
-		crS[cBase+1] = byte((w2 & 0x3FF) >> 2)       // Cr2
-		crS[cBase+2] = byte((w3 >> 10 & 0x3FF) >> 2) // Cr4
+		crS[cBase+0] = byte(((w0>>20&0x3FF) + 2) >> 2) // Cr0
+		crS[cBase+1] = byte(((w2&0x3FF) + 2) >> 2)     // Cr2
+		crS[cBase+2] = byte(((w3>>10&0x3FF) + 2) >> 2) // Cr4
 	}
 }
 
 // V210PackRow packs Y, Cb, Cr bytes into V210 format for one row.
 // Each group of 6 Y + 3 Cb + 3 Cr bytes produces 16 bytes (4 uint32 words).
-// 8-bit values are left-shifted by 2 to produce 10-bit output.
+// 8-bit values are expanded to 10-bit using bit-replication: (val<<2)|(val>>6).
+// This maps the full 8-bit range [0,255] to the full 10-bit range [0,1023].
+//
+// NOTE: SIMD kernels (amd64/arm64) also need this bit-replication fix applied.
 func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int) {
 	if groups <= 0 {
 		return
@@ -77,20 +82,20 @@ func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int) {
 		yBase := g * 6
 		cBase := g * 3
 
-		y0 := uint32(yS[yBase+0]) << 2
-		y1 := uint32(yS[yBase+1]) << 2
-		y2 := uint32(yS[yBase+2]) << 2
-		y3 := uint32(yS[yBase+3]) << 2
-		y4 := uint32(yS[yBase+4]) << 2
-		y5 := uint32(yS[yBase+5]) << 2
+		y0 := uint32(yS[yBase+0])<<2 | uint32(yS[yBase+0])>>6
+		y1 := uint32(yS[yBase+1])<<2 | uint32(yS[yBase+1])>>6
+		y2 := uint32(yS[yBase+2])<<2 | uint32(yS[yBase+2])>>6
+		y3 := uint32(yS[yBase+3])<<2 | uint32(yS[yBase+3])>>6
+		y4 := uint32(yS[yBase+4])<<2 | uint32(yS[yBase+4])>>6
+		y5 := uint32(yS[yBase+5])<<2 | uint32(yS[yBase+5])>>6
 
-		cb0 := uint32(cbS[cBase+0]) << 2
-		cb2 := uint32(cbS[cBase+1]) << 2
-		cb4 := uint32(cbS[cBase+2]) << 2
+		cb0 := uint32(cbS[cBase+0])<<2 | uint32(cbS[cBase+0])>>6
+		cb2 := uint32(cbS[cBase+1])<<2 | uint32(cbS[cBase+1])>>6
+		cb4 := uint32(cbS[cBase+2])<<2 | uint32(cbS[cBase+2])>>6
 
-		cr0 := uint32(crS[cBase+0]) << 2
-		cr2 := uint32(crS[cBase+1]) << 2
-		cr4 := uint32(crS[cBase+2]) << 2
+		cr0 := uint32(crS[cBase+0])<<2 | uint32(crS[cBase+0])>>6
+		cr2 := uint32(crS[cBase+1])<<2 | uint32(crS[cBase+1])>>6
+		cr4 := uint32(crS[cBase+2])<<2 | uint32(crS[cBase+2])>>6
 
 		offset := g * 16
 		binary.LittleEndian.PutUint32(v210S[offset:], (cb0&0x3FF)|((y0&0x3FF)<<10)|((cr0&0x3FF)<<20))

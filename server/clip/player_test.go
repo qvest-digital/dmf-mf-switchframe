@@ -1158,6 +1158,184 @@ func TestPlayerDrainBFrameBufferedFrames(t *testing.T) {
 		"should have at least 3 normally decoded frames")
 }
 
+// TestPlayerReencodeReturnsCopy verifies that reencodeForBrowser returns
+// a deep copy of the internal avc1Buf, not an aliased slice. If the caller
+// retains the returned data asynchronously (e.g., for MoQ relay broadcast),
+// the next encode cycle must not overwrite it.
+func TestPlayerReencodeReturnsCopy(t *testing.T) {
+	callCount := 0
+	mockEncoder := &mockVideoEncoder{
+		encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+			callCount++
+			// Return distinct Annex B data on each call so we can detect aliasing.
+			if callCount == 1 {
+				return buildAnnexBKeyframe(), true, nil
+			}
+			return buildAnnexBNonKeyframe(), false, nil
+		},
+		closeFn: func() {},
+	}
+
+	p := &Player{
+		config: PlayerConfig{
+			EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+				return mockEncoder, nil
+			},
+		},
+		sourceFPS: 30.0,
+	}
+
+	// Initialize avc1Buf scratch buffer.
+	p.avc1Buf = make([]byte, 0, 1024)
+
+	// First call — get a keyframe result.
+	yuv1 := make([]byte, 320*240*3/2)
+	result1, kf1, _, _ := p.reencodeForBrowser(yuv1, 320, 240, 0, true)
+	require.NotNil(t, result1)
+	assert.True(t, kf1)
+
+	// Snapshot the first result's content.
+	snapshot := make([]byte, len(result1))
+	copy(snapshot, result1)
+
+	// Second call — should NOT overwrite result1's data.
+	yuv2 := make([]byte, 320*240*3/2)
+	result2, _, _, _ := p.reencodeForBrowser(yuv2, 320, 240, 3000, false)
+	require.NotNil(t, result2)
+
+	// result1 must still contain the original data.
+	assert.Equal(t, snapshot, result1,
+		"first result was overwritten by second reencodeForBrowser call — returned slice aliases internal buffer")
+}
+
+// TestPlayerDrainBFramesSentToBrowserRelay verifies that drained B-frames
+// (from the decoder drain phase after playback) are also sent to VideoOutput
+// for the browser relay, not just to RawVideoOutput.
+func TestPlayerDrainBFramesSentToBrowserRelay(t *testing.T) {
+	clip := []bufferedFrame{
+		{wireData: []byte{0, 0, 0, 1, 0x65, 1, 2, 3}, pts: 0, isKeyframe: true, sps: []byte{0x67, 0x42}, pps: []byte{0x68, 0xCE}},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 4, 5, 6}, pts: 3000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 7, 8, 9}, pts: 6000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 10, 11, 12}, pts: 9000},
+		{wireData: []byte{0, 0, 0, 1, 0x41, 13, 14, 15}, pts: 12000},
+	}
+
+	var mu sync.Mutex
+	decodeCount := 0
+	bufferingError := fmt.Errorf("buffering")
+	drainStarted := false
+	var drainCount atomic.Int32
+
+	decoder := &mockDrainableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			decodeCount++
+			if decodeCount <= 3 {
+				yuv := make([]byte, 320*240*3/2)
+				return yuv, 320, 240, nil
+			}
+			return nil, 0, 0, bufferingError
+		},
+		sendEOSFn: func() error {
+			mu.Lock()
+			drainStarted = true
+			mu.Unlock()
+			return nil
+		},
+		receiveFrameFn: func() ([]byte, int, int, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if !drainStarted {
+				return nil, 0, 0, fmt.Errorf("no frames")
+			}
+			count := drainCount.Load()
+			if count < 2 {
+				drainCount.Add(1)
+				yuv := make([]byte, 320*240*3/2)
+				return yuv, 320, 240, nil
+			}
+			return nil, 0, 0, fmt.Errorf("no more frames")
+		},
+		closeFn: func() {},
+	}
+
+	// Track VideoOutput calls during the drain phase.
+	// We use a mutex-protected flag to distinguish drain-phase outputs
+	// from normal playback outputs and hold-mode outputs.
+	var rawDrainCount atomic.Int32
+	var videoDrainCount atomic.Int32
+	var drainPhaseActive atomic.Bool
+	done := make(chan struct{})
+
+	mockEnc := &mockVideoEncoder{
+		encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+			if forceIDR {
+				return buildAnnexBKeyframe(), true, nil
+			}
+			return buildAnnexBNonKeyframe(), false, nil
+		},
+		closeFn: func() {},
+	}
+
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    decoder,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return decoder.Decode(h264)
+		},
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+			return mockEnc, nil
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+			if drainPhaseActive.Load() {
+				rawDrainCount.Add(1)
+			}
+		},
+		VideoOutput: func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
+			if drainPhaseActive.Load() {
+				videoDrainCount.Add(1)
+			}
+		},
+		OnDone: func() { close(done) },
+	})
+
+	// Wrap the SendEOS function to set our drain-phase flag.
+	origSendEOS := decoder.sendEOSFn
+	decoder.sendEOSFn = func() error {
+		drainPhaseActive.Store(true)
+		return origSendEOS()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete")
+	}
+
+	cancel()
+	p.Wait()
+
+	// Drain should have produced 2 frames to RawVideoOutput.
+	assert.Equal(t, int32(2), drainCount.Load(),
+		"drain phase should flush 2 buffered B-frames")
+	assert.GreaterOrEqual(t, rawDrainCount.Load(), int32(2),
+		"drained frames should be sent to RawVideoOutput")
+
+	// BUG: Drained frames should ALSO be sent to VideoOutput (browser relay).
+	assert.GreaterOrEqual(t, videoDrainCount.Load(), int32(2),
+		"drained frames should also be sent to VideoOutput for browser relay")
+}
+
 // buildAnnexBKeyframe returns minimal Annex B data with SPS + PPS + IDR NALU.
 func buildAnnexBKeyframe() []byte {
 	sps := []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88}
@@ -1187,6 +1365,41 @@ func buildAnnexBNonKeyframe() []byte {
 	out = append(out, 0x00, 0x00, 0x00, 0x01)
 	out = append(out, nonIDR...)
 	return out
+}
+
+func TestPlayerSetLoop(t *testing.T) {
+	// Bug: SetLoop on the Manager sets slot.loop but doesn't propagate to
+	// the active Player, which reads p.config.Loop at creation time.
+	frames, audio := generateTestFrames(t, 5)
+	var rawCount atomic.Int32
+
+	p := NewPlayer(PlayerConfig{
+		Clip:       frames,
+		AudioClip:  audio,
+		Speed:      2.0,
+		Loop:       false, // start without looping
+		InitialPTS: 0,
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+			rawCount.Add(1)
+		},
+	})
+
+	// Before starting, SetLoop should update the config
+	p.SetLoop(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	// With loop=true and a 5-frame clip at 2x speed, we should see more
+	// frames than a single pass through the clip (5 frames).
+	time.Sleep(1 * time.Second)
+	cancel()
+	p.Wait()
+
+	count := rawCount.Load()
+	require.Greater(t, count, int32(5),
+		"with loop enabled via SetLoop, player should loop and produce more than 5 frames, got %d", count)
 }
 
 // TestPlayerReencodeAVC1BufferNotAliased verifies that reencodeForBrowser

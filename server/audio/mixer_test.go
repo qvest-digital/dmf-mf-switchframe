@@ -2893,6 +2893,50 @@ func TestMixer_AddStingerAudio_Exhaustion(t *testing.T) {
 	m.mu.Unlock()
 }
 
+func TestMixer_AddStingerAudio_StereoFadeSymmetry(t *testing.T) {
+	// Bug: fade envelope advanced per-sample instead of per sample-frame,
+	// causing L and R channels at the same time instant to get different gains.
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Create stereo stinger audio with all 1.0 values so gain is directly visible.
+	// fade-in is 10ms = 480 sample-frames, fade-out is 50ms = 2400 sample-frames.
+	// Use a long enough clip so the regions don't overlap.
+	totalFrames := 480 + 2400 + 1000 // fade-in + fade-out + middle
+	stingerPCM := make([]float32, totalFrames*2) // stereo
+	for i := range stingerPCM {
+		stingerPCM[i] = 1.0
+	}
+
+	m.mu.Lock()
+	m.stingerAudio = stingerPCM
+	m.stingerOffset = 0
+	m.stingerChannels = 2
+
+	// Process the fade-in region
+	mixed := make([]float32, 960) // 480 sample-frames * 2 channels = fade-in region
+	m.addStingerAudio(mixed)
+
+	// Verify L and R channels at each time instant get the SAME gain.
+	for i := 0; i < len(mixed)-1; i += 2 {
+		frameIdx := i / 2
+		require.InDelta(t, mixed[i], mixed[i+1], 1e-6,
+			"frame %d: L (%f) and R (%f) should have identical fade gain",
+			frameIdx, mixed[i], mixed[i+1])
+	}
+
+	// Also verify that gain is monotonically increasing during fade-in
+	for i := 2; i < len(mixed)-1; i += 2 {
+		require.GreaterOrEqual(t, mixed[i], mixed[i-2],
+			"fade-in should be monotonically increasing at sample %d", i)
+	}
+	m.mu.Unlock()
+}
+
 func TestMixer_StingerAudioClearedOnComplete(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -4091,4 +4135,63 @@ func TestUnmuteFadeLRSymmetry(t *testing.T) {
 		require.Less(t, lastRampedL, postRampVal,
 			"last ramped sample (%f) should be less than post-ramp (%f)", lastRampedL, postRampVal)
 	}
+}
+
+func TestAdvanceOutputPTS_33BitWraparound(t *testing.T) {
+	t.Parallel()
+
+	const ptsMask33 = int64((1 << 33) - 1) // 0x1FFFFFFFF = 8589934591
+
+	var mu sync.Mutex
+	var output []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(frame *media.AudioFrame) {
+			mu.Lock()
+			output = append(output, frame)
+			mu.Unlock()
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// frameDuration90k = 1024 * 90000 / 48000 = 1920 ticks
+	// Set outputPTS near the 33-bit boundary so the next frame advance wraps.
+	nearBoundary := ptsMask33 - 500 // 500 ticks below 2^33
+
+	// First frame: seed the outputPTS to nearBoundary
+	frame1 := &media.AudioFrame{PTS: nearBoundary, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame1)
+
+	mu.Lock()
+	require.Equal(t, 1, len(output))
+	require.Equal(t, nearBoundary, output[0].PTS, "first frame should seed outputPTS")
+	mu.Unlock()
+
+	// Second frame: send a backward PTS to trigger the += frameDuration90k() branch.
+	// This will push outputPTS past 2^33 if not masked.
+	// nearBoundary + 1920 = ptsMask33 - 500 + 1920 = ptsMask33 + 1420
+	// Without masking, the PTS would be > 2^33. With masking, it wraps to 1420.
+	frame2 := &media.AudioFrame{PTS: 0, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2}
+	m.IngestFrame("cam1", frame2)
+
+	mu.Lock()
+	require.Equal(t, 2, len(output))
+	resultPTS := output[1].PTS
+	mu.Unlock()
+
+	// The PTS must be within the valid 33-bit range [0, 2^33 - 1].
+	require.LessOrEqual(t, resultPTS, ptsMask33,
+		"output PTS %d exceeds 33-bit max %d; advanceOutputPTS must mask to 33 bits", resultPTS, ptsMask33)
+	require.GreaterOrEqual(t, resultPTS, int64(0),
+		"output PTS must be non-negative")
+
+	// Specifically: nearBoundary + 1920 = ptsMask33 + 1420, masked to 33 bits = 1419
+	expectedWrapped := (nearBoundary + 1920) & ptsMask33
+	require.Equal(t, expectedWrapped, resultPTS,
+		"output PTS should wrap correctly via 33-bit mask")
 }

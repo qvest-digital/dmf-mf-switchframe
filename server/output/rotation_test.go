@@ -205,8 +205,13 @@ func TestRotation_RotatedPATMPTHasDiscontinuityIndicator(t *testing.T) {
 
 	// Build a TS payload that includes PAT (PID 0), PMT (PID 0x1000),
 	// and video data. The PAT/PMT are payload-only packets (no adaptation field).
+	// Real PAT/PMT packets have 0xFF stuffing in their trailing bytes.
 	pat := makeTSPacket(0x0000, false) // PAT: adaptation_field_control = 01 (payload only)
+	pat[tsPacketSize-1] = 0xFF
+	pat[tsPacketSize-2] = 0xFF
 	pmt := makeTSPacket(0x1000, false) // PMT: adaptation_field_control = 01 (payload only)
+	pmt[tsPacketSize-1] = 0xFF
+	pmt[tsPacketSize-2] = 0xFF
 	video := makeTSPacket(0x0100, false)
 
 	// Set non-zero CC values on PAT and PMT to verify they are preserved (not reset to 0).
@@ -270,6 +275,11 @@ func TestSetTSDiscontinuityIndicator_PayloadOnly(t *testing.T) {
 	// Test with a payload-only packet (adaptation_field_control = 01).
 	pkt := makeTSPacket(0x0000, false) // PAT, payload only
 	pkt[3] = 0x15                      // AFC=01 (payload only), CC=5
+
+	// PAT/PMT packets typically have 0xFF stuffing in their trailing bytes.
+	pkt[tsPacketSize-1] = 0xFF
+	pkt[tsPacketSize-2] = 0xFF
+
 	require.Equal(t, byte(0x01), (pkt[3]>>4)&0x03,
 		"precondition: AFC should be 01 (payload only)")
 
@@ -318,7 +328,11 @@ func TestSetTSDiscontinuityIndicator_AdaptationFieldPresent(t *testing.T) {
 func TestSetTSDiscontinuityIndicator_MultiplePackets(t *testing.T) {
 	// Test that it handles a buffer containing multiple TS packets.
 	pat := makeTSPacket(0x0000, false)
+	pat[tsPacketSize-1] = 0xFF
+	pat[tsPacketSize-2] = 0xFF
 	pmt := makeTSPacket(0x1000, false)
+	pmt[tsPacketSize-1] = 0xFF
+	pmt[tsPacketSize-2] = 0xFF
 	buf := append(pat, pmt...)
 
 	setTSDiscontinuityIndicator(buf)
@@ -332,4 +346,77 @@ func TestSetTSDiscontinuityIndicator_MultiplePackets(t *testing.T) {
 		require.NotZero(t, buf[offset+5]&0x80,
 			"packet %d: discontinuity_indicator should be set", i)
 	}
+}
+
+func TestSetTSDiscontinuityIndicator_PayloadOnlyWithStuffing(t *testing.T) {
+	// Test the happy path: payload-only packet where the last 2 bytes ARE
+	// 0xFF stuffing. The function should insert the adaptation field and
+	// set the discontinuity indicator.
+	pkt := makeTSPacket(0x0000, false) // PAT, payload only (AFC=01)
+	pkt[3] = 0x15                      // AFC=01, CC=5
+
+	// Fill the trailing bytes with 0xFF stuffing (as PAT/PMT typically have).
+	pkt[tsPacketSize-1] = 0xFF
+	pkt[tsPacketSize-2] = 0xFF
+
+	original := make([]byte, tsPacketSize)
+	copy(original, pkt)
+
+	setTSDiscontinuityIndicator(pkt)
+
+	// AFC should now be 11 (adaptation + payload).
+	afc := (pkt[3] >> 4) & 0x03
+	require.Equal(t, byte(3), afc, "AFC should be changed to 11")
+
+	// CC should be preserved.
+	cc := pkt[3] & 0x0F
+	require.Equal(t, byte(5), cc, "CC should be preserved")
+
+	// Adaptation field length should be 1.
+	require.Equal(t, byte(1), pkt[4], "adaptation_field_length should be 1")
+
+	// Discontinuity indicator should be set.
+	require.NotZero(t, pkt[5]&0x80, "discontinuity_indicator should be set")
+}
+
+func TestSetTSDiscontinuityIndicator_PayloadOnlyNonStuffingTrailingBytes(t *testing.T) {
+	// Test the bug fix: payload-only packet where the last 2 bytes are NOT
+	// 0xFF stuffing. Shifting payload would corrupt the packet by dropping
+	// significant data. The function should skip modification for this packet.
+	pkt := makeTSPacket(0x0000, false) // PAT, payload only (AFC=01)
+	pkt[3] = 0x15                      // AFC=01, CC=5
+
+	// Set the last 2 bytes to non-stuffing values (simulate a full PMT with
+	// a large descriptor loop that uses all available space).
+	pkt[tsPacketSize-1] = 0xAB
+	pkt[tsPacketSize-2] = 0xCD
+
+	// Save original packet for comparison.
+	original := make([]byte, tsPacketSize)
+	copy(original, pkt)
+
+	setTSDiscontinuityIndicator(pkt)
+
+	// The packet should NOT be modified since truncating would corrupt data.
+	require.Equal(t, original, pkt,
+		"packet with non-stuffing trailing bytes should not be modified")
+}
+
+func TestSetTSDiscontinuityIndicator_PayloadOnlyOneByteNonStuffing(t *testing.T) {
+	// Test edge case: last byte is 0xFF but second-to-last is not.
+	// Should still skip modification since we'd lose the non-0xFF byte.
+	pkt := makeTSPacket(0x0000, false)
+	pkt[3] = 0x15 // AFC=01, CC=5
+
+	pkt[tsPacketSize-1] = 0xFF
+	pkt[tsPacketSize-2] = 0xCD // non-stuffing
+
+	original := make([]byte, tsPacketSize)
+	copy(original, pkt)
+
+	setTSDiscontinuityIndicator(pkt)
+
+	// The packet should NOT be modified.
+	require.Equal(t, original, pkt,
+		"packet with one non-stuffing trailing byte should not be modified")
 }

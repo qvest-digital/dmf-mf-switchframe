@@ -151,9 +151,17 @@ func sampleRateFromIndex(idx int) int {
 	return 0
 }
 
+// standardRates lists the 13 MPEG-4 Audio standard sample rates,
+// indexed by sampling_frequency_index (0-12).
+var standardRates = [13]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+
 // sampleRateIndex maps a sample rate in Hz to the MPEG-4 Audio sample
-// rate index (0-12). Returns 15 (escape value) for unrecognized rates.
+// rate index (0-12). For non-standard rates, it returns the index of
+// the nearest standard rate to avoid producing the escape value (15),
+// which would require a 24-bit explicit frequency field that
+// BuildADTS's 7-byte header does not include.
 func sampleRateIndex(rate int) int {
+	// Fast path: exact match via switch.
 	switch rate {
 	case 96000:
 		return 0
@@ -181,7 +189,24 @@ func sampleRateIndex(rate int) int {
 		return 11
 	case 7350:
 		return 12
-	default:
-		return 15
 	}
+
+	// Slow path: snap to the nearest standard rate.
+	bestIdx := 3 // default to 48000
+	bestDist := abs(rate - standardRates[3])
+	for i, sr := range standardRates {
+		d := abs(rate - sr)
+		if d < bestDist {
+			bestDist = d
+			bestIdx = i
+		}
+	}
+	return bestIdx
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

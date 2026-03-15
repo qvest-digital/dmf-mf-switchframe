@@ -17,6 +17,13 @@ type LoudnessMeter struct {
 	sampleRate int
 	channels   int
 
+	// Per-channel BS.1770-4 weights:
+	//   L, R, C: 1.0
+	//   LFE:     0.0 (excluded)
+	//   Ls, Rs:  ~1.41 (10^(1.5/10))
+	// Mono/stereo channels all use 1.0.
+	channelWeights []float64
+
 	// Per-channel K-weighting filters (2 stages each).
 	// Only written by Process() (single-writer).
 	preFilters []BiquadFilter
@@ -143,13 +150,31 @@ func NewLoudnessMeter(sampleRate, channels int) *LoudnessMeter {
 
 	stepSize := sampleRate / 10
 
+	// BS.1770-4 Section 2 channel weights.
+	// Standard 5.1 order: L(0), R(1), C(2), LFE(3), Ls(4), Rs(5).
+	channelWeights := make([]float64, channels)
+	switch channels {
+	case 6: // 5.1 surround
+		channelWeights[0] = 1.0                      // L
+		channelWeights[1] = 1.0                      // R
+		channelWeights[2] = 1.0                      // C
+		channelWeights[3] = 0.0                      // LFE (excluded)
+		channelWeights[4] = math.Pow(10, 1.5/10.0)   // Ls (~1.41)
+		channelWeights[5] = math.Pow(10, 1.5/10.0)   // Rs (~1.41)
+	default: // mono, stereo, or other layouts: all channels weighted equally
+		for i := range channelWeights {
+			channelWeights[i] = 1.0
+		}
+	}
+
 	m := &LoudnessMeter{
-		sampleRate: sampleRate,
-		channels:   channels,
-		preFilters: preFilters,
-		rlbFilters: rlbFilters,
-		blockAccum: make([]float64, channels),
-		stepSize:   stepSize,
+		sampleRate:     sampleRate,
+		channels:       channels,
+		channelWeights: channelWeights,
+		preFilters:     preFilters,
+		rlbFilters:     rlbFilters,
+		blockAccum:     make([]float64, channels),
+		stepSize:       stepSize,
 	}
 	m.momentaryLUFSBits.Store(negMaxFloat64Bits)
 	m.shortTermLUFSBits.Store(negMaxFloat64Bits)
@@ -193,7 +218,7 @@ func (m *LoudnessMeter) emitBlock() {
 
 	var energy float64
 	for ch := 0; ch < m.channels; ch++ {
-		energy += m.blockAccum[ch] / float64(m.blockCount)
+		energy += m.channelWeights[ch] * m.blockAccum[ch] / float64(m.blockCount)
 	}
 
 	m.momentaryRing[m.momentaryIdx] = energy

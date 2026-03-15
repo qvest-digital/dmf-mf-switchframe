@@ -174,7 +174,6 @@ func TestSampleRateIndex(t *testing.T) {
 	}{
 		{"96000", 96000, 0}, {"88200", 88200, 1}, {"48000", 48000, 3}, {"44100", 44100, 4},
 		{"32000", 32000, 5}, {"24000", 24000, 6}, {"16000", 16000, 8}, {"8000", 8000, 11},
-		{"unknown", 12345, 15},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,4 +181,48 @@ func TestSampleRateIndex(t *testing.T) {
 			require.Equal(t, tt.index, sampleRateIndex(tt.rate), "rate=%d", tt.rate)
 		})
 	}
+}
+
+func TestSampleRateIndex_NonStandardSnapsToNearest(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		rate     int
+		expected int
+	}{
+		// 22000 is closest to 22050 (index 7)
+		{"22000_snaps_to_22050", 22000, 7},
+		// 47999 is closest to 48000 (index 3)
+		{"47999_snaps_to_48000", 47999, 3},
+		// 50000 is closest to 48000 (index 3)
+		{"50000_snaps_to_48000", 50000, 3},
+		// 10000 is closest to 11025 (index 10)
+		{"10000_snaps_to_11025", 10000, 10},
+		// 7000 is closest to 7350 (index 12)
+		{"7000_snaps_to_7350", 7000, 12},
+		// 100000 is closest to 96000 (index 0)
+		{"100000_snaps_to_96000", 100000, 0},
+		// 12345 is closest to 12000 (index 9)
+		{"12345_snaps_to_12000", 12345, 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			idx := sampleRateIndex(tt.rate)
+			require.NotEqual(t, 15, idx, "sampleRateIndex(%d) must not return escape value 15", tt.rate)
+			require.Equal(t, tt.expected, idx, "sampleRateIndex(%d)", tt.rate)
+		})
+	}
+}
+
+func TestBuildADTS_NonStandardRate_RoundTrips(t *testing.T) {
+	t.Parallel()
+	// BuildADTS with a non-standard rate should produce a header
+	// that ParseADTSInfo can decode to the nearest standard rate.
+	header := BuildADTS(22000, 2, 100)
+	require.Len(t, header, 7)
+
+	sr, ch := ParseADTSInfo(header)
+	require.Equal(t, 22050, sr, "non-standard 22000 should snap to 22050")
+	require.Equal(t, 2, ch)
 }

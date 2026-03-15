@@ -18,25 +18,31 @@ type RecorderConfig struct {
 	MaxFileSize int64         // Rotate after this many bytes; default 0 (unlimited).
 }
 
+// syncBytesThreshold is the number of bytes written between periodic fsync
+// calls. 4MB provides crash resilience without excessive I/O overhead.
+const syncBytesThreshold int64 = 4 * 1024 * 1024
+
 // FileRecorder is an Adapter that writes muxed MPEG-TS data to a file.
 // Files are named program_{date}_{time}_{index}.ts in the configured directory.
 // Rotation occurs based on time elapsed and/or file size thresholds.
 type FileRecorder struct {
 	config RecorderConfig
 
-	mu            sync.Mutex
-	file          *os.File
-	filename      string
-	state         AdapterState
-	started       time.Time // overall recording start
-	fileStarted   time.Time // current file start
-	fileBytes     int64     // bytes written to current file
-	fileIndex     int       // 1-based file index
-	baseTimestamp string    // shared timestamp across rotated files
-	bytes         atomic.Int64
-	errMsg        string
-	pendingRotate bool   // true when rotation threshold reached but awaiting keyframe
-	cachedPATMPT  []byte // cached PAT+PMT packets from stream for rotated files
+	mu             sync.Mutex
+	file           *os.File
+	filename       string
+	state          AdapterState
+	started        time.Time // overall recording start
+	fileStarted    time.Time // current file start
+	fileBytes      int64     // bytes written to current file
+	fileIndex      int       // 1-based file index
+	baseTimestamp  string    // shared timestamp across rotated files
+	bytes          atomic.Int64
+	errMsg         string
+	pendingRotate  bool   // true when rotation threshold reached but awaiting keyframe
+	cachedPATMPT   []byte // cached PAT+PMT packets from stream for rotated files
+	bytesSinceSync int64  // bytes written since last fsync
+	lastSyncTime   time.Time // time of last periodic fsync
 }
 
 // NewFileRecorder creates a FileRecorder with the given configuration.
@@ -104,6 +110,7 @@ func (r *FileRecorder) openFileLocked(now time.Time) error {
 	r.file = f
 	r.fileStarted = now
 	r.fileBytes = 0
+	r.bytesSinceSync = 0
 	return nil
 }
 
@@ -203,13 +210,23 @@ func setTSDiscontinuityIndicator(tsData []byte) {
 
 		case afc == 1:
 			// Payload only (AFC=01). We need to insert a minimal adaptation field.
+			// Shifting payload right by 2 bytes drops the last 2 bytes. Verify
+			// they are 0xFF stuffing before proceeding; otherwise skip this
+			// packet to avoid corrupting a PAT/PMT with a full descriptor loop.
+			if tsData[i+tsPacketSize-1] != 0xFF || tsData[i+tsPacketSize-2] != 0xFF {
+				slog.Warn("setTSDiscontinuityIndicator: skipping payload-only packet with non-stuffing trailing bytes",
+					"offset", i,
+					"byte[-1]", fmt.Sprintf("0x%02X", tsData[i+tsPacketSize-1]),
+					"byte[-2]", fmt.Sprintf("0x%02X", tsData[i+tsPacketSize-2]))
+				continue
+			}
+
 			// Change AFC from 01 to 11 (adaptation + payload), preserving CC.
 			tsData[i+3] = (tsData[i+3] & 0x0F) | 0x30
 
 			// Shift existing payload right by 2 bytes to make room for the
 			// adaptation field header (length + flags). The last 2 bytes of
-			// the original payload are dropped, which is acceptable for
-			// PAT/PMT packets whose trailing bytes are typically 0xFF stuffing.
+			// the original payload are 0xFF stuffing and are safely dropped.
 			copy(tsData[i+6:i+tsPacketSize], tsData[i+4:i+tsPacketSize-2])
 
 			// Set adaptation_field_length = 1 (just the flags byte).
@@ -270,6 +287,18 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 		r.errMsg = err.Error()
 		return n, err
 	}
+
+	// Periodic fsync to limit data loss on crash.
+	r.bytesSinceSync += int64(n)
+	if r.bytesSinceSync >= syncBytesThreshold {
+		if syncErr := r.file.Sync(); syncErr != nil {
+			slog.Error("periodic fsync failed", "file", r.filename, "err", syncErr)
+		} else {
+			r.lastSyncTime = time.Now()
+		}
+		r.bytesSinceSync = 0
+	}
+
 	return n, nil
 }
 

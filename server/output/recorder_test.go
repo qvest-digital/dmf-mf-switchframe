@@ -511,6 +511,100 @@ func TestFileRecorder_WriteFailureSetsStateError(t *testing.T) {
 		"error message should be set after write failure")
 }
 
+func TestFileRecorder_PeriodicSync(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Write enough data to exceed the sync threshold (4MB).
+	// Each write is 188 bytes * 100 = 18800 bytes. We need ~225 writes to exceed 4MB.
+	chunk := make([]byte, 188*100)
+	chunk[0] = 0x47
+	for i := 188; i < len(chunk); i += 188 {
+		chunk[i] = 0x47
+	}
+
+	totalWritten := 0
+	for totalWritten < 5*1024*1024 { // Write 5MB total
+		n, err := r.Write(chunk)
+		require.NoError(t, err)
+		totalWritten += n
+	}
+
+	// Verify the data is actually on disk by reading the file size.
+	// If periodic sync works, the file should have close to totalWritten bytes
+	// flushed to disk. We verify by checking the file exists and has data.
+	r.mu.Lock()
+	filename := r.filename
+	r.mu.Unlock()
+	path := filepath.Join(dir, filename)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Greater(t, info.Size(), int64(0), "file should have data")
+
+	// Verify that lastSyncTime was updated (meaning sync was called).
+	r.mu.Lock()
+	lastSync := r.lastSyncTime
+	r.mu.Unlock()
+	require.False(t, lastSync.IsZero(),
+		"lastSyncTime should be set after writing >4MB")
+}
+
+func TestFileRecorder_PeriodicSyncNotTriggeredBelowThreshold(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Write a small amount of data (well below 4MB threshold).
+	chunk := make([]byte, 188)
+	chunk[0] = 0x47
+	_, err := r.Write(chunk)
+	require.NoError(t, err)
+
+	// lastSyncTime should still be zero since we haven't exceeded the threshold.
+	r.mu.Lock()
+	lastSync := r.lastSyncTime
+	r.mu.Unlock()
+	require.True(t, lastSync.IsZero(),
+		"lastSyncTime should be zero when below sync threshold")
+}
+
+func TestFileRecorder_PeriodicSyncResetOnRotation(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:         dir,
+		MaxFileSize: 188 * 50, // Rotate after 50 packets.
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	// Write 120 keyframe packets. With MaxFileSize=188*50, after 50 writes
+	// shouldRotate returns true; the 51st write triggers rotation.
+	// After rotation, bytesSinceSync resets due to openFileLocked.
+	chunk := makeTSPacket(0x100, true) // keyframe for rotation
+	for i := 0; i < 120; i++ {
+		_, err := r.Write(chunk)
+		require.NoError(t, err)
+	}
+
+	// Verify rotation actually happened.
+	r.mu.Lock()
+	fileIndex := r.fileIndex
+	bytesSinceSync := r.bytesSinceSync
+	r.mu.Unlock()
+	require.Greater(t, fileIndex, 1, "should have rotated at least once")
+
+	// bytesSinceSync should reflect only the data written to the current file
+	// since the last rotation, not accumulated from before rotation.
+	// With 120 writes and rotation every 50, we expect 2 rotations:
+	// file1: 50 packets, file2: 50 packets, file3: 20 packets.
+	// bytesSinceSync for the current file should be at most 50*188 = 9400.
+	require.LessOrEqual(t, bytesSinceSync, int64(188*50),
+		"bytesSinceSync should be reset after rotation")
+}
+
 func TestFileRecorder_PATMPTWriteFailureSetsStateError(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{

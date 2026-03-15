@@ -467,6 +467,9 @@ func (m *Manager) SetLoop(playerID int, loop bool) error {
 		return ErrPlayerEmpty
 	}
 	slot.loop = loop
+	if slot.player != nil {
+		slot.player.SetLoop(loop)
+	}
 	m.mu.Unlock()
 
 	m.notifyStateChange()

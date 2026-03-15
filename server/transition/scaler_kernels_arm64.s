@@ -60,22 +60,25 @@ scale_loop:
 	MOVD $65536, R19
 	SUB  R12, R19, R19        // R19 = invFx
 
-	// top = (p00*invFx + p10*fx) >> 16
+	// top = (p00*invFx + p10*fx + 32768) >> 16  (round to nearest)
 	MUL  R19, R14, R14        // p00 * invFx
 	MUL  R12, R15, R15        // p10 * fx
 	ADD  R15, R14, R14
+	ADD  $32768, R14, R14     // rounding bias
 	LSR  $16, R14, R14        // top
 
-	// bot = (p01*invFx + p11*fx) >> 16
+	// bot = (p01*invFx + p11*fx + 32768) >> 16  (round to nearest)
 	MUL  R19, R16, R16        // p01 * invFx
 	MUL  R12, R17, R17        // p11 * fx
 	ADD  R17, R16, R16
+	ADD  $32768, R16, R16     // rounding bias
 	LSR  $16, R16, R16        // bot
 
-	// val = (top*invFy + bot*fy) >> 16
+	// val = (top*invFy + bot*fy + 32768) >> 16  (round to nearest)
 	MUL  R8, R14, R14         // top * invFy
 	MUL  R6, R16, R16         // bot * fy
 	ADD  R16, R14, R14
+	ADD  $32768, R14, R14     // rounding bias
 	LSR  $16, R14, R14        // val
 
 	// Clamp to 0-255 (only >255 is possible with unsigned math)

@@ -257,7 +257,10 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// Insert PCR on keyframes and at least every 30ms (under the 40ms MPEG-TS requirement).
 	// PCR base uses the same 90kHz timebase as PTS.
 	const pcrInterval = 2700 // 30ms at 90kHz — ensures PCR on every frame at 30fps (33.3ms > 30ms)
-	if frame.IsKeyframe || frame.PTS-m.lastPCRPTS >= pcrInterval {
+	// Use wrap-aware comparison: PTS is a 33-bit field in MPEG-TS and wraps
+	// from 2^33-1 back to 0. Masking the subtraction to 33 bits ensures the
+	// delta is always positive and forward-looking across the wrap boundary.
+	if frame.IsKeyframe || (frame.PTS-m.lastPCRPTS)&0x1FFFFFFFF >= pcrInterval {
 		af.HasPCR = true
 		af.PCR = &astits.ClockReference{Base: frame.PTS}
 		m.lastPCRPTS = frame.PTS

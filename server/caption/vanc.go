@@ -20,8 +20,9 @@ const (
 	cdpMagic1 = 0x69 // CDP header identifier byte 1
 
 	// CDP frame rate codes per SMPTE ST 334-1 Table 3.
-	CDPFrameRate24   byte = 0x01             // 24fps (film)
-	CDPFrameRate25   byte = 0x02             // 25fps (PAL)
+	CDPFrameRate2398 byte = 0x01             // 23.976fps (film, NTSC pulldown)
+	CDPFrameRate24   byte = 0x02             // 24fps (true film)
+	CDPFrameRate25   byte = 0x03             // 25fps (PAL)
 	CDPFrameRate2997 byte = 0x04             // 29.97fps (NTSC)
 	CDPFrameRate30   byte = 0x05             // 30fps
 	CDPFrameRate50   byte = 0x06             // 50fps

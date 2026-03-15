@@ -502,6 +502,96 @@ func TestLoudnessMeter_TruncationDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestLoudnessMeter_SurroundChannelWeights(t *testing.T) {
+	// BS.1770-4 Section 2 requires channel-dependent weighting:
+	//   L, R, C: weight = 1.0
+	//   LFE:     weight = 0.0 (excluded)
+	//   Ls, Rs:  weight = 1.41 (~10^(1.5/10))
+	//
+	// Standard 5.1 channel order: L, R, C, LFE, Ls, Rs (indices 0-5)
+	//
+	// This test feeds a tone only on surround channels (4,5) and verifies
+	// the measured energy is weighted by 1.41 compared to front channels.
+
+	const sampleRate = 48000
+	const channels = 6
+
+	// Test 1: Tone only on surround channels (4,5) — should be weighted by 1.41
+	mSurround := NewLoudnessMeter(sampleRate, channels)
+
+	// Feed 1s of 1kHz sine only on Ls and Rs (channels 4,5)
+	nSamples := sampleRate
+	samplesSurround := make([]float32, nSamples*channels)
+	for i := 0; i < nSamples; i++ {
+		v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / float64(sampleRate)))
+		samplesSurround[i*channels+4] = v // Ls
+		samplesSurround[i*channels+5] = v // Rs
+	}
+	mSurround.Process(samplesSurround)
+	lufsSurround := mSurround.MomentaryLUFS()
+
+	// Test 2: Same tone on front L and R (channels 0,1) — weight = 1.0
+	mFront := NewLoudnessMeter(sampleRate, channels)
+
+	samplesFront := make([]float32, nSamples*channels)
+	for i := 0; i < nSamples; i++ {
+		v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / float64(sampleRate)))
+		samplesFront[i*channels+0] = v // L
+		samplesFront[i*channels+1] = v // R
+	}
+	mFront.Process(samplesFront)
+	lufsFront := mFront.MomentaryLUFS()
+
+	// Surround channels should measure higher due to 1.41 weight.
+	// 10*log10(1.41) ≈ 1.49 dB higher
+	diff := lufsSurround - lufsFront
+	t.Logf("surround LUFS=%.4f, front LUFS=%.4f, diff=%.4f LU", lufsSurround, lufsFront, diff)
+	if diff < 1.0 || diff > 2.0 {
+		t.Errorf("surround should measure ~1.49 LU higher than front (10*log10(1.41)), got diff=%.4f LU", diff)
+	}
+
+	// Test 3: LFE channel (index 3) should be excluded (weight = 0)
+	mLFE := NewLoudnessMeter(sampleRate, channels)
+
+	samplesLFE := make([]float32, nSamples*channels)
+	for i := 0; i < nSamples; i++ {
+		v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / float64(sampleRate)))
+		samplesLFE[i*channels+3] = v // LFE only
+	}
+	mLFE.Process(samplesLFE)
+	lufsLFE := mLFE.MomentaryLUFS()
+
+	// LFE-only should measure as silence (weight = 0, excluded from measurement)
+	if lufsLFE > -60 {
+		t.Errorf("LFE-only should measure as near-silence (weight=0), got LUFS=%.4f", lufsLFE)
+	}
+}
+
+func TestLoudnessMeter_ChannelWeightsMonoStereoUnchanged(t *testing.T) {
+	// Verify that mono and stereo meters produce the same results as before
+	// (all weights = 1.0 for mono/stereo).
+	for _, channels := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%dch", channels), func(t *testing.T) {
+			m := NewLoudnessMeter(48000, channels)
+
+			nSamples := 48000
+			samples := make([]float32, nSamples*channels)
+			for i := 0; i < nSamples; i++ {
+				v := float32(math.Sin(2 * math.Pi * 1000 * float64(i) / 48000))
+				for ch := 0; ch < channels; ch++ {
+					samples[i*channels+ch] = v
+				}
+			}
+			m.Process(samples)
+
+			lufs := m.MomentaryLUFS()
+			if lufs < -5 || lufs > 1 {
+				t.Errorf("%dch: LUFS = %.4f, want between -5 and 1", channels, lufs)
+			}
+		})
+	}
+}
+
 func TestLoudnessMeter_MultipleSampleRates(t *testing.T) {
 	// Verify the meter works correctly across common broadcast sample rates.
 	// All should produce valid LUFS readings for a 1kHz sine.

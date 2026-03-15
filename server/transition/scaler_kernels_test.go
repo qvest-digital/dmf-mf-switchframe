@@ -277,6 +277,77 @@ func TestScaleBilinearRow_CrossValidation_Downscale(t *testing.T) {
 	}
 }
 
+func TestScaleBilinear_Rounding(t *testing.T) {
+	// Bilinear interpolation should round to nearest, not truncate.
+	// When interpolating between pixel values 0 and 255 at the exact
+	// midpoint (fraction = 0.5), the true result is 127.5.
+	// Truncation gives 127; rounding gives 128.
+	//
+	// Source: 2x2 image, scale to 3x3 to create a midpoint sample.
+	// The center pixel (dx=1, dy=1) maps to source (0.5, 0.5).
+	srcW, srcH := 2, 2
+	dstW, dstH := 3, 3
+
+	// All four corners = 255 except top-left = 0.
+	// At (0.5, 0.5): true value = (0*0.25 + 255*0.25 + 255*0.25 + 255*0.25) = 191.25
+	// With rounding: 191. Without rounding (truncation): could be 190 or lower.
+	//
+	// Simpler case: uniform 255 with one corner at 1.
+	// p00=1, p10=1, p01=1, p11=1 → midpoint = 1.0 (exact, no difference).
+	//
+	// Best case: use values that produce a .5 fractional result at the midpoint.
+	// p00=0, p10=255, p01=0, p11=255:
+	//   horizontal mid: top = (0*0.5 + 255*0.5) = 127.5
+	//                   bot = (0*0.5 + 255*0.5) = 127.5
+	//   vertical mid: val = (127*0.5 + 127*0.5) = 127 (truncation cascaded)
+	//   With rounding: top=128, bot=128, val=128
+	src := make([]byte, srcW*srcH)
+	src[0] = 0   // (0,0)
+	src[1] = 255 // (1,0)
+	src[2] = 0   // (0,1)
+	src[3] = 255 // (1,1)
+
+	dst := make([]byte, dstW*dstH)
+	scalePlane(src, srcW, srcH, dst, dstW, dstH)
+
+	// Center pixel at (1,1) in 3x3 output maps to source (0.5, 0.5).
+	// True bilinear: (0*0.25 + 255*0.25 + 0*0.25 + 255*0.25) = 127.5 → rounds to 128.
+	// Also check the edge midpoints:
+	//   (1,0) maps to source (0.5, 0): (0*0.5 + 255*0.5) = 127.5 → 128
+	//   (1,2) maps to source (0.5, 1): (0*0.5 + 255*0.5) = 127.5 → 128
+	//   (0,1) maps to source (0, 0.5): (0*0.5 + 0*0.5) = 0 → 0
+	//   (2,1) maps to source (1, 0.5): (255*0.5 + 255*0.5) = 255 → 255
+	centerVal := dst[1*dstW+1]
+	topMidVal := dst[0*dstW+1]
+	botMidVal := dst[2*dstW+1]
+
+	// With truncation, the horizontal interpolation of (0, 255) at 0.5
+	// gives 127 instead of 128. This test asserts proper rounding.
+	if topMidVal != 128 {
+		t.Errorf("top-mid pixel (1,0) = %d, want 128 (rounded from 127.5)", topMidVal)
+	}
+	if botMidVal != 128 {
+		t.Errorf("bot-mid pixel (1,2) = %d, want 128 (rounded from 127.5)", botMidVal)
+	}
+	if centerVal != 128 {
+		t.Errorf("center pixel (1,1) = %d, want 128 (rounded from 127.5)", centerVal)
+	}
+
+	// Corners must still be exact
+	if dst[0] != 0 {
+		t.Errorf("top-left corner = %d, want 0", dst[0])
+	}
+	if dst[dstW-1] != 255 {
+		t.Errorf("top-right corner = %d, want 255", dst[dstW-1])
+	}
+	if dst[(dstH-1)*dstW] != 0 {
+		t.Errorf("bottom-left corner = %d, want 0", dst[(dstH-1)*dstW])
+	}
+	if dst[(dstH-1)*dstW+dstW-1] != 255 {
+		t.Errorf("bottom-right corner = %d, want 255", dst[(dstH-1)*dstW+dstW-1])
+	}
+}
+
 // --- Benchmark ---
 
 func BenchmarkScaleBilinearRow_1920(b *testing.B) {

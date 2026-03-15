@@ -864,6 +864,75 @@ func TestTSMuxer_WriteVideo_PCRInterval(t *testing.T) {
 		"PCR should appear on every frame at 30fps; got %d PCRs over 31 frames (~1s)", pcrCount)
 }
 
+func TestTSMuxer_PCRWrapAround(t *testing.T) {
+	// PTS is a 33-bit field in MPEG-TS. When PTS wraps from near 2^33 back
+	// to near zero, the naive subtraction (frame.PTS - m.lastPCRPTS) goes
+	// negative (signed int64), causing the >= pcrInterval check to fail.
+	// This test verifies that PCR is still inserted after a PTS wrap.
+	m := NewTSMuxer()
+
+	var allOutput []byte
+	m.SetOutput(func(data []byte) {
+		c := make([]byte, len(data))
+		copy(c, data)
+		allOutput = append(allOutput, c...)
+	})
+
+	// Initialize with a keyframe at PTS near the 33-bit max.
+	// 2^33 = 8589934592. Place the keyframe 1000 ticks before wrap.
+	preWrapPTS := int64((1 << 33) - 1000)
+	idrFrame := &media.VideoFrame{
+		PTS: preWrapPTS, DTS: preWrapPTS, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	// Clear output — we only care about the next frame's output.
+	allOutput = nil
+
+	// Write a non-keyframe with PTS just past the wrap (back near zero).
+	// The wrap-aware delta is: (2000 - (2^33 - 1000)) & 0x1FFFFFFFF = 3000.
+	// 3000 > pcrInterval (2700), so PCR should be inserted.
+	postWrapPTS := int64(2000)
+	pFrame := &media.VideoFrame{
+		PTS: postWrapPTS, DTS: postWrapPTS, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x01},
+	}
+	require.NoError(t, m.WriteVideo(pFrame))
+	require.NotEmpty(t, allOutput, "post-wrap frame should produce output")
+
+	// Scan the output for a video PID packet with the PCR flag set.
+	foundPCR := false
+	for i := 0; i+tsPacketSize <= len(allOutput); i += tsPacketSize {
+		if allOutput[i] != 0x47 {
+			continue
+		}
+		pid := uint16(allOutput[i+1]&0x1F)<<8 | uint16(allOutput[i+2])
+		if pid != videoPID {
+			continue
+		}
+		// Check adaptation field control (bits 5-4 of byte 3).
+		afc := (allOutput[i+3] >> 4) & 0x03
+		if afc < 2 {
+			continue // no adaptation field
+		}
+		afLen := allOutput[i+4]
+		if afLen == 0 {
+			continue
+		}
+		// PCR flag is bit 4 of the adaptation field flags byte.
+		if allOutput[i+5]&0x10 != 0 {
+			foundPCR = true
+			break
+		}
+	}
+	require.True(t, foundPCR,
+		"PCR should be inserted after PTS wrap-around (delta 3000 > pcrInterval 2700)")
+}
+
 func TestTSMuxer_Close_ResetsPCRState(t *testing.T) {
 	m := NewTSMuxer()
 	m.SetOutput(func(data []byte) {})

@@ -45,22 +45,25 @@ scale_loop:
 	MOVQ  $65536, R12
 	SUBQ  AX, R12             // R12 = invFx
 
-	// top = (p00*invFx + p10*fx) >> 16
+	// top = (p00*invFx + p10*fx + 32768) >> 16  (round to nearest)
 	IMULQ R12, R13            // p00 * invFx
 	IMULQ AX, R14             // p10 * fx
 	ADDQ  R14, R13
+	ADDQ  $32768, R13         // rounding bias
 	SHRQ  $16, R13            // top
 
-	// bot = (p01*invFx + p11*fx) >> 16
+	// bot = (p01*invFx + p11*fx + 32768) >> 16  (round to nearest)
 	IMULQ R12, R15            // p01 * invFx
 	IMULQ AX, BX              // p11 * fx
 	ADDQ  BX, R15
+	ADDQ  $32768, R15         // rounding bias
 	SHRQ  $16, R15            // bot
 
-	// val = (top*invFy + bot*fy) >> 16
+	// val = (top*invFy + bot*fy + 32768) >> 16  (round to nearest)
 	IMULQ R11, R13            // top * invFy
 	IMULQ R10, R15            // bot * fy
 	ADDQ  R15, R13
+	ADDQ  $32768, R13         // rounding bias
 	SHRQ  $16, R13            // val
 
 	// Clamp to 0-255

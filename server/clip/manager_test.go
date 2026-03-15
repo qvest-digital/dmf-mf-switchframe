@@ -537,6 +537,36 @@ func TestManagerConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestManagerSetLoopPropagatesToActivePlayer(t *testing.T) {
+	// Bug: Manager.SetLoop sets slot.loop but doesn't propagate to the active
+	// Player, which reads p.config.Loop at creation time. The player continues
+	// using the original loop value and ignores the manager's update.
+	mgr, store, dir := newTestManager(t)
+	defer mgr.Close()
+	clip := addTestClip(t, store, dir)
+
+	require.NoError(t, mgr.Load(1, clip.ID))
+	require.NoError(t, mgr.Play(1, 0.25, false)) // start without loop
+
+	// Wait for player to start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Change loop setting while playing.
+	require.NoError(t, mgr.SetLoop(1, true))
+
+	// Verify the player's internal config was updated.
+	mgr.mu.Lock()
+	slot := mgr.players[0]
+	require.NotNil(t, slot)
+	require.NotNil(t, slot.player, "player should be active")
+	assert.True(t, slot.player.loop.Load(),
+		"player.loop should be true after Manager.SetLoop(true)")
+	mgr.mu.Unlock()
+
+	// Clean up.
+	_ = mgr.Stop(1)
+}
+
 func TestManagerEjectEmptySlot(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
 	defer mgr.Close()
