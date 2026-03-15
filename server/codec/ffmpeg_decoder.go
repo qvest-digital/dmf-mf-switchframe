@@ -21,7 +21,7 @@ typedef struct {
 
 // ffdec_open initializes an H.264 decoder.
 // hwDeviceCtx is reserved for future hardware acceleration (pass NULL for software).
-// thread_count controls multithreading: 0 = auto (ncpu, 2-8), 1 = single-threaded.
+// thread_count controls multithreading: 0 = auto (ncpu, 2-4), 1 = single-threaded.
 // Single-threaded avoids frame-level buffering delay (important for clip decoders
 // where immediate output is needed per input frame).
 // Returns 0 on success, negative on error.
@@ -49,7 +49,7 @@ static int ffdec_open(ffdec_t* h, void* hwDeviceCtx, int thread_count) {
 	if (thread_count <= 0) {
 		int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 		if (ncpu < 2) ncpu = 2;
-		if (ncpu > 8) ncpu = 8;
+		if (ncpu > 4) ncpu = 4;
 		h->ctx->thread_count = ncpu;
 	} else {
 		h->ctx->thread_count = thread_count;
