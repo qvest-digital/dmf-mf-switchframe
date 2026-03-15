@@ -244,3 +244,33 @@ func TestGenerateMusicalStingerZip_InvalidArgs(t *testing.T) {
 	_, err = GenerateMusicalStingerZip(319, 240, 20) // odd width
 	require.Error(t, err)
 }
+
+func TestGenerateStingerZip_SingleFrame(t *testing.T) {
+	// Regression test: numFrames==1 caused division by zero (NaN) in
+	// progress = float64(i) / float64(numFrames-1).
+	data, err := GenerateStingerZip(4, 4, 1)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 1, false)
+}
+
+func TestGenerateWhooshStingerZip_SingleFrame(t *testing.T) {
+	data, err := GenerateWhooshStingerZip(4, 4, 1)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 1, true)
+}
+
+func TestGenerateSlamStingerZip_SingleFrame(t *testing.T) {
+	data, err := GenerateSlamStingerZip(4, 4, 1)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 1, true)
+}
+
+func TestGenerateMusicalStingerZip_SingleFrame(t *testing.T) {
+	data, err := GenerateMusicalStingerZip(4, 4, 1)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0)
+	verifyZipContents(t, data, 1, true)
+}

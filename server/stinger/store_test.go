@@ -718,3 +718,37 @@ func TestRGBAToFrame_LimitedRangeRed(t *testing.T) {
 	require.InDelta(t, 240, int(frame.YUV[crOffset]), 1,
 		"Cr for red should be ~240, got %d", frame.YUV[crOffset])
 }
+
+func TestStingerStore_UploadRejectsTooManyFrames(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 0)
+	require.NoError(t, err)
+
+	// Create a zip with maxFramesPerClip+1 PNG frames.
+	zipData := createTestZip(t, 2, 2, maxFramesPerClip+1)
+
+	err = store.Upload("too-many-frames", zipData)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrTooManyFrames)
+
+	// Verify the clip was not loaded and directory was cleaned up.
+	_, ok := store.Get("too-many-frames")
+	require.False(t, ok, "clip with too many frames should not be loaded")
+}
+
+func TestStingerStore_UploadAtFrameLimit(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir, 0)
+	require.NoError(t, err)
+
+	// Exactly maxFramesPerClip frames should succeed.
+	// Use small frames (2x2) to keep the test fast.
+	zipData := createTestZip(t, 2, 2, maxFramesPerClip)
+
+	err = store.Upload("at-limit", zipData)
+	require.NoError(t, err)
+
+	clip, ok := store.Get("at-limit")
+	require.True(t, ok)
+	require.Equal(t, maxFramesPerClip, len(clip.Frames))
+}

@@ -30,7 +30,10 @@ func GenerateWhooshStingerZip(width, height, numFrames int) ([]byte, error) {
 	fill := color.NRGBA{R: 30, G: 35, B: 50, A: 255}
 
 	for i := 0; i < numFrames; i++ {
-		progress := float64(i) / float64(numFrames-1)
+		var progress float64
+		if numFrames > 1 {
+			progress = float64(i) / float64(numFrames-1)
+		}
 		frontPos := progress * (maxDiag + trailingEdge)
 
 		img := image.NewNRGBA(image.Rect(0, 0, width, height))
@@ -119,7 +122,10 @@ func GenerateSlamStingerZip(width, height, numFrames int) ([]byte, error) {
 	flashColor := color.NRGBA{R: 240, G: 230, B: 220, A: 255}
 
 	for i := 0; i < numFrames; i++ {
-		progress := float64(i) / float64(numFrames-1)
+		var progress float64
+		if numFrames > 1 {
+			progress = float64(i) / float64(numFrames-1)
+		}
 		img := image.NewNRGBA(image.Rect(0, 0, width, height))
 
 		// Flash phase: first 15% of frames
@@ -252,7 +258,10 @@ func GenerateMusicalStingerZip(width, height, numFrames int) ([]byte, error) {
 	cy := h64 / 2.0
 
 	for i := 0; i < numFrames; i++ {
-		progress := float64(i) / float64(numFrames-1)
+		var progress float64
+		if numFrames > 1 {
+			progress = float64(i) / float64(numFrames-1)
+		}
 		// Use smoothstep for organic growth
 		t := progress * progress * (3.0 - 2.0*progress)
 

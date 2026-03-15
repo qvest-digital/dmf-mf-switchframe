@@ -700,6 +700,45 @@ func TestReplayManager_OnClipExported_NilCallback(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond)
 }
 
+func TestReplayManager_CloseWaitsForExportGoroutine(t *testing.T) {
+	// Regression test: Manager.Close() must wait for background export
+	// goroutines to finish before returning.
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+
+	var exportFinished atomic.Int32
+	m.SetOnClipExported(func(source string, filePath string) {
+		// Simulate slow export work.
+		time.Sleep(200 * time.Millisecond)
+		exportFinished.Add(1)
+		_ = os.Remove(filePath)
+	})
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 1.0, false)
+	require.NoError(t, err)
+
+	// Wait for playback to complete so the export goroutine has time to start.
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerIdle
+	}, 5*time.Second, 50*time.Millisecond)
+
+	// Close should block until the export goroutine finishes.
+	m.Close()
+
+	// After Close returns, the export callback must have completed.
+	require.Equal(t, int32(1), exportFinished.Load(),
+		"export goroutine should have completed before Close() returned")
+}
+
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {
 	f := makeVideoFrame(pts, keyframe, size)
 	// Override wireData with valid AVC1 format.

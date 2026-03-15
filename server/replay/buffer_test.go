@@ -388,6 +388,30 @@ func TestReplayBuffer_ConcurrentAccess(t *testing.T) {
 	<-done
 }
 
+func TestReplayBuffer_BytesUsedNeverNegative(t *testing.T) {
+	// Regression test: bytesUsed must be clamped to 0 like audioBytesUsed,
+	// preventing negative values from rounding or edge cases in trimLocked.
+	buf := newReplayBuffer(1, 500) // tiny: 1s duration, 500 byte limit
+	now := time.Now()
+
+	// Record several GOPs to trigger aggressive trimming.
+	for g := 0; g < 10; g++ {
+		kf := makeVideoFrame(int64(g)*90000, true, 100)
+		buf.recordFrameAt(kf, now.Add(time.Duration(g)*500*time.Millisecond))
+		for j := 1; j <= 5; j++ {
+			df := makeVideoFrame(int64(g)*90000+int64(j)*3003, false, 50)
+			buf.recordFrameAt(df, now.Add(time.Duration(g)*500*time.Millisecond+time.Duration(j)*33*time.Millisecond))
+		}
+	}
+
+	buf.mu.RLock()
+	require.GreaterOrEqual(t, buf.bytesUsed, int64(0),
+		"bytesUsed must never go negative, got %d", buf.bytesUsed)
+	require.GreaterOrEqual(t, buf.audioBytesUsed, int64(0),
+		"audioBytesUsed must never go negative, got %d", buf.audioBytesUsed)
+	buf.mu.RUnlock()
+}
+
 func BenchmarkReplayBuffer_TrimCompaction(b *testing.B) {
 	// Benchmark validates that trimLocked() compaction (make+copy inside mutex)
 	// is fast enough not to block frame ingest. At 9000 frames (300s buffer at

@@ -18,16 +18,26 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("stinger: not found")
-	ErrInvalidName     = errors.New("stinger: invalid name")
-	ErrInvalidCutPoint = errors.New("stinger: cut point must be between 0 and 1")
-	ErrAlreadyExists   = errors.New("stinger: already exists")
-	ErrMaxClipsReached = errors.New("stinger: maximum clips reached")
+	ErrNotFound          = errors.New("stinger: not found")
+	ErrInvalidName       = errors.New("stinger: invalid name")
+	ErrInvalidCutPoint   = errors.New("stinger: cut point must be between 0 and 1")
+	ErrAlreadyExists     = errors.New("stinger: already exists")
+	ErrMaxClipsReached   = errors.New("stinger: maximum clips reached")
+	ErrTooManyFrames     = errors.New("stinger: too many frames in clip")
+	ErrTotalSizeExceeded = errors.New("stinger: total extracted size exceeds limit")
 )
 
 // maxZipEntrySize is the maximum allowed size for a single extracted zip entry.
 // 50 MB is generous for stinger PNG frames (a 1080p RGBA PNG is ~8MB uncompressed).
 const maxZipEntrySize = 50 << 20 // 50 MB
+
+// maxFramesPerClip limits the number of PNG frames in a single stinger clip.
+// 300 frames = 10 seconds at 30fps, which is generous for any stinger transition.
+const maxFramesPerClip = 300
+
+// maxTotalExtractedBytes limits the total size of all extracted files from a zip upload.
+// 500 MB prevents zip bombs from exhausting disk space.
+const maxTotalExtractedBytes = 500 << 20 // 500 MB
 
 // validateName rejects names that could cause path traversal or are otherwise invalid.
 func validateName(name string) error {
@@ -249,6 +259,7 @@ func (s *Store) Upload(name string, zipData []byte) error {
 
 	pngCount := 0
 	wavFound := false
+	var totalExtractedBytes int64
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -259,6 +270,13 @@ func (s *Store) Upload(name string, zipData []byte) error {
 
 		if !isPNG && !isWAV {
 			continue
+		}
+
+		// Check frame count limit before extracting
+		if isPNG && pngCount >= maxFramesPerClip {
+			_ = os.RemoveAll(dir)
+			cleanupPending()
+			return fmt.Errorf("%w: limit is %d", ErrTooManyFrames, maxFramesPerClip)
 		}
 
 		// Use only the base name to prevent zip path traversal
@@ -293,6 +311,13 @@ func (s *Store) Upload(name string, zipData []byte) error {
 			_ = os.RemoveAll(dir)
 			cleanupPending()
 			return fmt.Errorf("zip entry %s exceeds maximum size (%d bytes)", baseName, maxZipEntrySize)
+		}
+
+		totalExtractedBytes += n
+		if totalExtractedBytes > maxTotalExtractedBytes {
+			_ = os.RemoveAll(dir)
+			cleanupPending()
+			return fmt.Errorf("%w: limit is %d bytes", ErrTotalSizeExceeded, maxTotalExtractedBytes)
 		}
 
 		if isPNG {

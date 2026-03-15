@@ -65,6 +65,9 @@ type Manager struct {
 	// onClipExported is called after Play() extracts a clip, with the
 	// source name and path to a temp TS file containing the muxed frames.
 	onClipExported func(source string, filePath string)
+
+	// exportWg tracks background export goroutines so Close() can wait for them.
+	exportWg sync.WaitGroup
 }
 
 // NewManager creates a replay manager.
@@ -227,7 +230,9 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 
 		// Export clip to temp TS file for the clip store (background).
 		if exportFn := m.onClipExported; exportFn != nil {
+			m.exportWg.Add(1)
 			go func() {
+				defer m.exportWg.Done()
 				path, muxErr := muxClipToTempFile(clip, audioClip)
 				if muxErr != nil {
 					m.log.Error("failed to export replay clip", "source", source, "error", muxErr)
@@ -444,7 +449,8 @@ func (m *Manager) SetOnClipExported(fn func(source string, filePath string)) {
 	m.onClipExported = fn
 }
 
-// Close stops any active player and releases resources.
+// Close stops any active player, waits for background export goroutines,
+// and releases resources.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	player := m.player
@@ -457,6 +463,9 @@ func (m *Manager) Close() {
 	if player != nil {
 		player.Wait()
 	}
+
+	// Wait for any in-flight export goroutines to finish.
+	m.exportWg.Wait()
 }
 
 // DebugSnapshot returns debug information about the replay system.

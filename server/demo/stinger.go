@@ -29,7 +29,10 @@ func GenerateStingerZip(width, height, numFrames int) ([]byte, error) {
 	fill := color.NRGBA{R: 30, G: 35, B: 50, A: 255}
 
 	for i := 0; i < numFrames; i++ {
-		progress := float64(i) / float64(numFrames-1)
+		var progress float64
+		if numFrames > 1 {
+			progress = float64(i) / float64(numFrames-1)
+		}
 		frontPos := progress * maxDiag
 
 		img := image.NewNRGBA(image.Rect(0, 0, width, height))

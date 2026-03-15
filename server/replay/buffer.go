@@ -189,6 +189,11 @@ func (b *replayBuffer) trimLocked() {
 		}
 	}
 
+	// Guard against negative bytesUsed from rounding or edge cases.
+	if b.bytesUsed < 0 {
+		b.bytesUsed = 0
+	}
+
 	// Compact slices to release old backing array memory.
 	if trimmed {
 		newFrames := make([]bufferedFrame, len(b.frames))
