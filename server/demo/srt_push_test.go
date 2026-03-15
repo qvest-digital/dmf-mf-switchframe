@@ -329,7 +329,146 @@ func TestConcurrentDataBufferIsolation(t *testing.T) {
 	}
 }
 
+func TestFindVideoPID(t *testing.T) {
+	// Build TS with video on PID 0x100 and audio on PID 0x101.
+	data := buildTestTSWithPTS(t, 1000, 91000)
+	pid := findVideoPID(data)
+	if pid != 0x100 {
+		t.Errorf("findVideoPID=%d, want 0x100", pid)
+	}
+}
+
+func TestFindVideoPID_NoVideo(t *testing.T) {
+	// Build TS with audio-only packets (stream ID 0xC0).
+	pkt := buildTSPacketWithPTS(0xC0, 1000)
+	pid := findVideoPID(pkt)
+	if pid != -1 {
+		t.Errorf("findVideoPID for audio-only=%d, want -1", pid)
+	}
+}
+
+func TestParseAccessUnits_VideoFrameAligned(t *testing.T) {
+	// Build a TS stream: [video PES frame1] [audio PES] [video PES frame2] [audio PES]
+	var data []byte
+	// Video frame 1 (PTS=0): 3 packets (PUSI + 2 continuation)
+	data = append(data, buildTSPacketWithPTS(0xE0, 0)...)      // video PUSI
+	data = append(data, buildTSContinuation(0x100)...)          // video cont
+	data = append(data, buildTSContinuation(0x100)...)          // video cont
+	// Audio (PTS=500): 1 packet
+	data = append(data, buildTSPacketWithPTSOnPID(0xC0, 500, 0x101)...)
+	// Video frame 2 (PTS=3750): 2 packets
+	data = append(data, buildTSPacketWithPTS(0xE0, 3750)...)    // video PUSI
+	data = append(data, buildTSContinuation(0x100)...)          // video cont
+	// Audio (PTS=4250): 1 packet
+	data = append(data, buildTSPacketWithPTSOnPID(0xC0, 4250, 0x101)...)
+
+	units := parseAccessUnits(data)
+
+	// Should have 2 access units (one per video frame).
+	if len(units) != 2 {
+		t.Fatalf("got %d access units, want 2", len(units))
+	}
+
+	// Unit 1: video frame 1 (3 video pkts + 1 audio pkt = 4 pkts).
+	if units[0].pts != 0 {
+		t.Errorf("unit[0].pts=%d, want 0", units[0].pts)
+	}
+	pktCount0 := (units[0].end - units[0].start) / tsPacketLen
+	if pktCount0 != 4 {
+		t.Errorf("unit[0] has %d packets, want 4", pktCount0)
+	}
+
+	// Unit 2: video frame 2 (2 video pkts + 1 audio pkt = 3 pkts).
+	if units[1].pts != 3750 {
+		t.Errorf("unit[1].pts=%d, want 3750", units[1].pts)
+	}
+	pktCount1 := (units[1].end - units[1].start) / tsPacketLen
+	if pktCount1 != 3 {
+		t.Errorf("unit[1] has %d packets, want 3", pktCount1)
+	}
+}
+
+func TestParseAccessUnits_PreambleMerge(t *testing.T) {
+	// PAT/PMT before first video PES should be merged into first video unit.
+	var data []byte
+	data = append(data, buildTSContinuation(0x00)...)      // PAT (PID 0 — skipped in preamble, becomes preamble)
+	data = append(data, buildTSPacketWithPTS(0xE0, 1000)...) // video PUSI
+
+	units := parseAccessUnits(data)
+
+	// Preamble PAT has PID=0, which is skipped by findVideoPID, but
+	// parseAccessUnits handles it. The PAT packet at PID 0 would be caught
+	// by the else-if current != nil branch. Let's verify we get 1 unit
+	// with the video PTS.
+	if len(units) != 1 {
+		t.Fatalf("got %d units, want 1 (preamble merged)", len(units))
+	}
+	if units[0].pts != 1000 {
+		t.Errorf("unit[0].pts=%d, want 1000", units[0].pts)
+	}
+}
+
+func TestParseAccessUnits_RealClip(t *testing.T) {
+	data, err := os.ReadFile("../../test/clips/tears_of_steel.ts")
+	if err != nil {
+		t.Skip("test clip not available:", err)
+	}
+
+	units := parseAccessUnits(data)
+	if len(units) == 0 {
+		t.Fatal("no access units found")
+	}
+
+	// tears_of_steel is ~15s at 24fps = ~360 video frames.
+	if len(units) < 300 || len(units) > 400 {
+		t.Errorf("got %d access units for tears_of_steel, expected ~360", len(units))
+	}
+
+	// All units should have valid PTS.
+	for i, u := range units {
+		if u.pts < 0 {
+			t.Errorf("unit[%d] has pts=%d, want >= 0", i, u.pts)
+		}
+		if u.end <= u.start {
+			t.Errorf("unit[%d] has invalid range: start=%d end=%d", i, u.start, u.end)
+		}
+	}
+
+	// DTS values (used for pacing) should be monotonically increasing.
+	// With B-frames, PTS can go backward, but our extractPESDTS returns
+	// DTS when available, which is always monotonic.
+	for i := 1; i < len(units); i++ {
+		if units[i].pts < units[i-1].pts {
+			t.Errorf("unit[%d].dts=%d < unit[%d].dts=%d (not monotonic)",
+				i, units[i].pts, i-1, units[i-1].pts)
+			break
+		}
+	}
+
+	t.Logf("tears_of_steel: %d access units, first PTS=%d, last PTS=%d",
+		len(units), units[0].pts, units[len(units)-1].pts)
+}
+
 // --- test helpers ---
+
+// buildTSContinuation creates a TS continuation packet (no PUSI, no PES header).
+func buildTSContinuation(pid int) []byte {
+	pkt := make([]byte, tsPacketSize)
+	pkt[0] = 0x47
+	pkt[1] = byte((pid >> 8) & 0x1F) // no PUSI
+	pkt[2] = byte(pid & 0xFF)
+	pkt[3] = 0x10 // payload only
+	return pkt
+}
+
+// buildTSPacketWithPTSOnPID constructs a TS packet with a PES header on a specific PID.
+func buildTSPacketWithPTSOnPID(streamID byte, pts int64, pid int) []byte {
+	pkt := buildTSPacketWithPTS(streamID, pts)
+	// Override PID (bytes 1-2, preserving PUSI bit).
+	pkt[1] = 0x40 | byte((pid>>8)&0x1F) // PUSI=1 + PID high
+	pkt[2] = byte(pid & 0xFF)            // PID low
+	return pkt
+}
 
 const tsPacketSize = 188
 

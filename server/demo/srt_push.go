@@ -81,22 +81,28 @@ func pushFile(ctx context.Context, addr, filePath, streamID string, log *slog.Lo
 	}
 }
 
-// accessUnit represents a group of TS packets that share the same PTS.
-// A real encoder sends all packets for one frame as a burst at the
-// frame's presentation time.
+// accessUnit represents a video-frame-aligned group of TS packets.
+// Contains one video frame plus all audio/data packets until the next
+// video frame. A real encoder sends all packets for one frame as a
+// burst when the frame is produced.
 type accessUnit struct {
-	pts    int64 // PES PTS in 90kHz ticks (-1 if no PTS found)
-	start  int   // byte offset in file data
-	end    int   // byte offset end (exclusive)
+	pts   int64 // video PES PTS in 90kHz ticks (-1 if no PTS found)
+	start int   // byte offset in file data
+	end   int   // byte offset end (exclusive)
 }
 
 // streamFileLoop reads the TS file into memory and streams it in a loop
-// using PTS-based pacing that matches real encoder behavior.
+// using PTS-based burst pacing that matches real encoder behavior.
 //
-// Pacing strategy: the file is pre-parsed into access units (groups of
-// TS packets sharing the same PES PTS). Each access unit is sent as a
-// burst at the wall-clock time derived from its PTS. This produces the
-// same timing as a real encoder like OBS or FFmpeg -re.
+// Pacing strategy: the file is pre-parsed into video-frame-aligned
+// access units. Each unit contains one video frame + associated audio.
+// At each frame's PTS time, all TS packets are burst-sent at once.
+// This matches how real encoders (OBS, FFmpeg) operate: produce a
+// frame, write all packets, wait for next frame time.
+//
+// Previous approach spread packets evenly within each frame period
+// using per-packet sleeps (~0.75ms each). macOS timer resolution is
+// ~1-4ms, so accumulated overshoot was 100-170ms per frame.
 //
 // At each loop boundary, PTS/DTS/PCR values in the byte stream are
 // advanced by the file duration to keep timestamps monotonically
@@ -163,56 +169,34 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 			ptsOffset += loopPTSDelta
 		}
 
-		for i, unit := range units {
+		for _, unit := range units {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 
-			// Compute the time window for this access unit: from its PTS
-			// to the next unit's PTS. Spread TS packet sends evenly across
-			// this window to simulate real encoder CBR delivery. This prevents
-			// SRT's TSBPD from seeing burst arrivals (which it delivers as
-			// bursts after the latency delay, causing ~165ms gaps).
-			var unitStartTime, unitEndTime time.Time
+			// Wait until this access unit's PTS time, then send all its
+			// packets as a burst. This matches real encoder behavior: the
+			// encoder produces a frame, outputs all TS packets immediately,
+			// then waits until the next frame time.
+			//
+			// Previous approach spread packets within each frame using
+			// per-packet sleeps (~0.75ms each). macOS timer resolution is
+			// ~1-4ms, so accumulated overshoot was 14-179ms per frame,
+			// directly causing the 100-170ms broadcast gaps.
 			if unit.pts >= 0 {
 				sendPTS := unit.pts + ptsOffset
-				unitStartTime = pacingTarget(anchorWall, anchorPTS, sendPTS)
-
-				// Next unit's PTS (or end of file = start + frame duration)
-				nextPTS := sendPTS + 3750 // default: 1 frame at 24fps
-				if i+1 < len(units) && units[i+1].pts >= 0 {
-					nextPTS = units[i+1].pts + ptsOffset
-				}
-				unitEndTime = pacingTarget(anchorWall, anchorPTS, nextPTS)
-			}
-
-			// Count TS packets in this unit for even distribution.
-			unitBytes := unit.end - unit.start
-			numChunks := (unitBytes + srtChunkSize - 1) / srtChunkSize
-			if numChunks < 1 {
-				numChunks = 1
-			}
-
-			// Send TS packets spread evenly across the time window.
-			chunkIdx := 0
-			for off := unit.start; off < unit.end; {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-
-				// Compute per-packet send time (linear interpolation).
-				if !unitStartTime.IsZero() && !unitEndTime.IsZero() {
-					frac := float64(chunkIdx) / float64(numChunks)
-					target := unitStartTime.Add(time.Duration(frac * float64(unitEndTime.Sub(unitStartTime))))
-					now := time.Now()
-					if target.After(now) {
-						sleepCtx(ctx, target.Sub(now))
-						if ctx.Err() != nil {
-							return ctx.Err()
-						}
+				target := pacingTarget(anchorWall, anchorPTS, sendPTS)
+				now := time.Now()
+				if target.After(now) {
+					sleepCtx(ctx, target.Sub(now))
+					if ctx.Err() != nil {
+						return ctx.Err()
 					}
 				}
+			}
 
+			// Burst-send all TS packets in this access unit.
+			for off := unit.start; off < unit.end; {
 				end := off + srtChunkSize
 				if end > unit.end {
 					end = unit.end
@@ -222,47 +206,47 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 					return err
 				}
 				off = end
-				chunkIdx++
 			}
 		}
 	}
 }
 
-// parseAccessUnits groups TS packets by their PES PTS into access units.
-// Packets without a PES header are grouped with the preceding access unit.
-// This produces the same burst pattern as a real encoder.
+// parseAccessUnits groups TS packets into video-frame-aligned access units.
+// Each access unit starts at a video PES start and includes ALL packets
+// (video, audio, PAT, PMT) until the next video PES start. This matches
+// how a real encoder outputs data: one complete video frame + associated
+// audio as a burst.
+//
+// If the file starts with non-video packets (audio, PAT/PMT), they are
+// included in the first video access unit.
 func parseAccessUnits(data []byte) []accessUnit {
+	// First pass: find the video PID by looking for video PES stream IDs.
+	videoPID := findVideoPID(data)
+	if videoPID < 0 {
+		// No video found — fall back to PES-start-based grouping.
+		return parseAccessUnitsByPES(data)
+	}
+
+	// Second pass: group packets by video PES boundaries.
 	var units []accessUnit
 	var current *accessUnit
 
 	for offset := 0; offset+tsPacketLen <= len(data); offset += tsPacketLen {
 		pkt := data[offset : offset+tsPacketLen]
 		if pkt[0] != 0x47 {
-			continue // skip non-sync packets
-		}
-
-		// Check for PES start: payload_unit_start_indicator
-		pusi := (pkt[1] & 0x40) != 0
-		pid := int(pkt[1]&0x1F)<<8 | int(pkt[2])
-
-		// Skip PAT/PMT/null packets — they don't carry media.
-		if pid == 0 || pid == 0x1FFF {
-			if current != nil {
-				current.end = offset + tsPacketLen
-			}
 			continue
 		}
 
-		if pusi {
-			// Extract PTS from PES header if present.
-			pts := extractPESPTS(pkt)
+		pid := int(pkt[1]&0x1F)<<8 | int(pkt[2])
+		pusi := (pkt[1] & 0x40) != 0
+
+		// New video PES start → new access unit.
+		if pid == videoPID && pusi {
+			pts := extractPESDTS(pkt)
 
 			if current != nil {
-				// Close previous access unit.
 				current.end = offset
 			}
-
-			// Start new access unit.
 			units = append(units, accessUnit{
 				pts:   pts,
 				start: offset,
@@ -270,19 +254,114 @@ func parseAccessUnits(data []byte) []accessUnit {
 			})
 			current = &units[len(units)-1]
 		} else if current != nil {
-			// Continuation packet — extend current access unit.
+			// Any other packet (audio, PAT, PMT, continuation) → extend.
 			current.end = offset + tsPacketLen
+		} else {
+			// Packets before first video PES — create a preamble unit.
+			// These will be merged into the first video unit below.
+			units = append(units, accessUnit{
+				pts:   -1,
+				start: offset,
+				end:   offset + tsPacketLen,
+			})
+			current = &units[len(units)-1]
 		}
 	}
 
-	// Merge audio-only units into the preceding video unit for burst delivery.
-	// A real encoder sends audio and video for the same time period together.
-	return mergeSmallUnits(units)
+	// Merge any preamble (pts=-1) into the first video unit.
+	if len(units) >= 2 && units[0].pts < 0 && units[1].pts >= 0 {
+		units[1].start = units[0].start
+		units = units[1:]
+	}
+
+	return units
 }
 
-// extractPESPTS extracts the PTS from a TS packet's PES header.
-// Returns -1 if no PTS is found.
-func extractPESPTS(pkt []byte) int64 {
+// findVideoPID returns the PID carrying the video elementary stream,
+// or -1 if no video stream is found.
+func findVideoPID(data []byte) int {
+	for off := 0; off+tsPacketLen <= len(data); off += tsPacketLen {
+		pkt := data[off : off+tsPacketLen]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pusi := (pkt[1] & 0x40) != 0
+		pid := int(pkt[1]&0x1F)<<8 | int(pkt[2])
+		if !pusi || pid == 0 || pid == 0x1FFF {
+			continue
+		}
+		// Check for PES with video stream ID (0xE0-0xEF).
+		hasPayload := pkt[3]&0x10 != 0
+		hasAdapt := pkt[3]&0x20 != 0
+		if !hasPayload {
+			continue
+		}
+		payloadOff := 4
+		if hasAdapt {
+			if payloadOff >= tsPacketLen {
+				continue
+			}
+			afLen := int(pkt[payloadOff])
+			payloadOff += 1 + afLen
+		}
+		if payloadOff+4 > tsPacketLen {
+			continue
+		}
+		payload := pkt[payloadOff:]
+		if payload[0] == 0 && payload[1] == 0 && payload[2] == 1 {
+			streamID := payload[3]
+			if streamID >= 0xE0 && streamID <= 0xEF {
+				return pid
+			}
+		}
+	}
+	return -1
+}
+
+// parseAccessUnitsByPES is the fallback parser when no video PID is found.
+// Groups packets by any PES start, then merges small units.
+func parseAccessUnitsByPES(data []byte) []accessUnit {
+	var units []accessUnit
+	var current *accessUnit
+
+	for offset := 0; offset+tsPacketLen <= len(data); offset += tsPacketLen {
+		pkt := data[offset : offset+tsPacketLen]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pusi := (pkt[1] & 0x40) != 0
+		pid := int(pkt[1]&0x1F)<<8 | int(pkt[2])
+		if pid == 0 || pid == 0x1FFF {
+			if current != nil {
+				current.end = offset + tsPacketLen
+			}
+			continue
+		}
+		if pusi {
+			pts := extractPESDTS(pkt)
+			if current != nil {
+				current.end = offset
+			}
+			units = append(units, accessUnit{
+				pts:   pts,
+				start: offset,
+				end:   offset + tsPacketLen,
+			})
+			current = &units[len(units)-1]
+		} else if current != nil {
+			current.end = offset + tsPacketLen
+		}
+	}
+	return units
+}
+
+// extractPESDTS extracts the timing reference for pacing from a TS packet's
+// PES header. Returns DTS if present (always monotonic, used for decode/send
+// order), otherwise PTS. Returns -1 if neither is found.
+//
+// With B-frames, PTS can go backward (display reordering), but DTS is always
+// monotonically increasing. For pacing, DTS is the correct timestamp.
+func extractPESDTS(pkt []byte) int64 {
 	if len(pkt) < tsPacketLen {
 		return -1
 	}
@@ -314,37 +393,25 @@ func extractPESPTS(pkt []byte) int64 {
 		return -1
 	}
 
-	// Check PTS flag in PES header.
-	if len(payload) < 14 {
+	if len(payload) < 9 {
 		return -1
 	}
-	ptsFlag := (payload[7] >> 6) & 0x03
-	if ptsFlag < 2 {
-		return -1 // no PTS
+	flags := payload[7]
+	hasPTS := flags&0x80 != 0
+	hasDTS := flags&0x40 != 0
+
+	if !hasPTS {
+		return -1
 	}
 
+	// DTS present (PTS+DTS): DTS is at offset 14 in PES header.
+	// Use DTS for pacing since it's always monotonically increasing.
+	if hasDTS && len(payload) >= 19 {
+		return decodePTS(payload[14:19])
+	}
+
+	// PTS only (no B-frames): PTS == DTS, use it directly.
 	return decodePTS(payload[9:14])
-}
-
-// mergeSmallUnits merges access units smaller than 2 TS packets into
-// the preceding unit. Audio PES packets are typically 1-2 TS packets
-// and should be sent with the preceding video frame, not independently.
-func mergeSmallUnits(units []accessUnit) []accessUnit {
-	if len(units) <= 1 {
-		return units
-	}
-
-	var merged []accessUnit
-	for i, u := range units {
-		size := u.end - u.start
-		if i > 0 && size <= 2*tsPacketLen && len(merged) > 0 {
-			// Merge into previous unit.
-			merged[len(merged)-1].end = u.end
-		} else {
-			merged = append(merged, u)
-		}
-	}
-	return merged
 }
 
 // pacingTarget computes the wall-clock time at which a frame with the
