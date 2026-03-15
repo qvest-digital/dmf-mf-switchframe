@@ -166,7 +166,7 @@ func (sd *sourceDecoder) decodeLoop() {
 		if sd.pipelineFormat != nil {
 			if pf := sd.pipelineFormat.Load(); pf != nil && pf.Width > 0 && pf.Height > 0 && (w != pf.Width || h != pf.Height) {
 				sd.scaleWarnOnce.Do(func() {
-					slog.Info("source resolution differs from pipeline format; scaling with Lanczos-3",
+					slog.Info("source resolution differs from pipeline format; scaling with bilinear",
 						"source", sd.sourceKey, "source_w", w, "source_h", h,
 						"pipeline_w", pf.Width, "pipeline_h", pf.Height)
 				})
@@ -174,7 +174,7 @@ func (sd *sourceDecoder) decodeLoop() {
 				if len(sd.scaleBuf) < dstSize {
 					sd.scaleBuf = make([]byte, dstSize)
 				}
-				transition.ScaleYUV420Lanczos(yuv[:w*h*3/2], w, h, sd.scaleBuf[:dstSize], pf.Width, pf.Height)
+				transition.ScaleYUV420(yuv[:w*h*3/2], w, h, sd.scaleBuf[:dstSize], pf.Width, pf.Height)
 				yuv = sd.scaleBuf
 				w = pf.Width
 				h = pf.Height
