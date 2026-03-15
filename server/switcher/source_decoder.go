@@ -160,6 +160,20 @@ func (sd *sourceDecoder) decodeLoop() {
 			continue
 		}
 
+		// Scale to pipeline format if resolution differs.
+		if sd.pipelineFormat != nil {
+			if pf := sd.pipelineFormat.Load(); pf != nil && pf.Width > 0 && pf.Height > 0 && (w != pf.Width || h != pf.Height) {
+				dstSize := pf.Width * pf.Height * 3 / 2
+				if len(sd.scaleBuf) < dstSize {
+					sd.scaleBuf = make([]byte, dstSize)
+				}
+				transition.ScaleYUV420Lanczos(yuv[:w*h*3/2], w, h, sd.scaleBuf[:dstSize], pf.Width, pf.Height)
+				yuv = sd.scaleBuf
+				w = pf.Width
+				h = pf.Height
+			}
+		}
+
 		// Deep-copy YUV (decoder reuses internal buffer)
 		yuvSize := w * h * 3 / 2
 		if len(yuv) < yuvSize {
