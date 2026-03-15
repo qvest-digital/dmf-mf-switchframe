@@ -367,6 +367,25 @@ func TestGenerateFramesFromFile_GroupIDMonotonicAcrossLoop(t *testing.T) {
 	}
 }
 
+func TestStats_SetFileInfoConcurrent(t *testing.T) {
+	stats := NewStats()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			stats.SetFileInfo("test", "file.ts", i, i)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			_ = stats.DebugSnapshot()
+		}
+	}()
+	wg.Wait()
+}
+
 func TestStats_DebugSnapshot(t *testing.T) {
 	stats := NewStats()
 	stats.SetFileInfo("real_video", "test.ts", 100, 200)

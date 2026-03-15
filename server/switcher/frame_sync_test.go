@@ -954,6 +954,73 @@ func TestFrameSync_AudioPTSUsesAudioFrameDuration(t *testing.T) {
 	}
 }
 
+func TestFrameSync_AudioPTSUsesSourceSampleRate(t *testing.T) {
+	// Bug: Repeated/frozen audio frames advance PTS by audioFramePTS (1920 ticks),
+	// which assumes 48kHz. For 44.1kHz sources, the correct increment is
+	// 1024 * 90000 / 44100 ≈ 2088 ticks. This test verifies that the PTS
+	// increment adapts to the actual sample rate of the audio frame.
+	handler := &syncTestHandler{}
+	// Use 29.97fps tick so video tick interval (3003) is distinct from both
+	// 48kHz audio (1920) and 44.1kHz audio (2088).
+	fs := NewFrameSynchronizer(33366666*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Push one 44.1kHz audio frame, then let it repeat via freeze behavior.
+	af := &media.AudioFrame{PTS: 10000, Data: []byte{0xAA}, SampleRate: 44100, Channels: 2}
+	fs.IngestAudio("cam1", af)
+
+	// Manually run enough ticks for original + 2 repeats (max allowed).
+	fs.releaseTick() // tick 1: fresh frame, PTS=10000
+	fs.releaseTick() // tick 2: repeat #1
+	fs.releaseTick() // tick 3: repeat #2
+
+	audios := handler.getAudios()
+	require.GreaterOrEqual(t, len(audios), 3, "need at least 3 audio frames")
+
+	// First frame: original PTS preserved.
+	require.Equal(t, int64(10000), audios[0].frame.PTS, "first frame PTS")
+
+	// Repeated frames should advance by 44.1kHz audio frame duration (~2088),
+	// NOT the 48kHz default (1920) or video tick interval (3003).
+	// Exact value: 1024 * 90000 / 44100 = 2089 (integer division)
+	const expectedIncrement44k int64 = 1024 * 90000 / 44100 // 2088
+	for i := 1; i < len(audios); i++ {
+		delta := audios[i].frame.PTS - audios[i-1].frame.PTS
+		require.Equal(t, expectedIncrement44k, delta,
+			"audio PTS delta[%d] = %d, want %d (44.1kHz), not %d (48kHz default)",
+			i, delta, expectedIncrement44k, audioFramePTS)
+	}
+}
+
+func TestFrameSync_AudioPTSUsesSourceSampleRate_FIFO(t *testing.T) {
+	// Verify that FIFO-drained audio frames also use the correct sample rate
+	// for PTS clamping when frames arrive out of order or behind.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Push two 44.1kHz audio frames where the second has a PTS behind the first
+	// (simulates PTS wrap or reset). The clamped PTS should advance by 2088, not 1920.
+	af1 := &media.AudioFrame{PTS: 10000, Data: []byte{0xAA}, SampleRate: 44100, Channels: 2}
+	af2 := &media.AudioFrame{PTS: 9000, Data: []byte{0xBB}, SampleRate: 44100, Channels: 2}
+	fs.IngestAudio("cam1", af1)
+	fs.IngestAudio("cam1", af2)
+
+	fs.releaseTick() // drains both from FIFO
+
+	audios := handler.getAudios()
+	require.Equal(t, 2, len(audios), "should have 2 audio frames")
+
+	// First frame establishes PTS.
+	require.Equal(t, int64(10000), audios[0].frame.PTS, "first frame PTS")
+
+	// Second frame PTS is behind, so it should be clamped forward by 44.1kHz increment.
+	const expectedIncrement44k int64 = 1024 * 90000 / 44100 // 2088
+	expectedPTS := int64(10000) + expectedIncrement44k
+	require.Equal(t, expectedPTS, audios[1].frame.PTS,
+		"clamped PTS should use 44.1kHz increment (%d), got %d", expectedPTS, audios[1].frame.PTS)
+}
+
 func BenchmarkReleaseTick(b *testing.B) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
@@ -2088,6 +2155,165 @@ func TestFrameSync_FrozenFramesClearDecodeTimestamps(t *testing.T) {
 		"frozen frame should have SyncReleaseNano stamped")
 }
 
+func TestFrameSync_PTSWrapsAt33Bits_RawVideo(t *testing.T) {
+	// Bug: lastReleasedPTS grows unbounded past the 33-bit PTS range
+	// (2^33 - 1 = 8589934591) after ~26.5 hours of continuous operation.
+	// MPEG-TS PTS is 33 bits; the frame sync must mask all PTS values.
+	// This test sets lastReleasedPTS near the boundary and verifies that
+	// increments wrap correctly and ptsCorrectionDelta stays bounded.
+	var mu sync.Mutex
+	var deliveredPTS []int64
+
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, nil, nil)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		deliveredPTS = append(deliveredPTS, pf.PTS)
+		mu.Unlock()
+	}
+	fs.AddSource("cam1")
+
+	w, h := 8, 4
+	yuvSize := w * h * 3 / 2
+
+	// Seed a frame to initialize PTS tracking.
+	initPTS := ptsMask33 - 6000 // near the 33-bit boundary
+	pf1 := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: initPTS}
+	fs.IngestRawVideo("cam1", pf1)
+	fs.releaseTick() // consumes pf1, sets lastReleasedPTS = initPTS
+
+	mu.Lock()
+	deliveredPTS = deliveredPTS[:0]
+	mu.Unlock()
+
+	// Now let several freeze ticks accumulate past the 33-bit boundary.
+	// At 30fps, tickIntervalPTS = 3000. We need ~3 ticks to cross 2^33.
+	for i := 0; i < 5; i++ {
+		fs.releaseTick()
+	}
+
+	mu.Lock()
+	pts := make([]int64, len(deliveredPTS))
+	copy(pts, deliveredPTS)
+	mu.Unlock()
+
+	require.GreaterOrEqual(t, len(pts), 5, "expected 5 freeze frames")
+
+	// All PTS values must be within the 33-bit range.
+	for i, p := range pts {
+		require.LessOrEqual(t, p, ptsMask33,
+			"PTS[%d]=%d exceeds 33-bit range (max %d)", i, p, ptsMask33)
+		require.GreaterOrEqual(t, p, int64(0),
+			"PTS[%d]=%d is negative", i, p)
+	}
+
+	// ptsCorrectionDelta must also be bounded to 33 bits.
+	delta := fs.GetSourcePTSCorrection("cam1")
+	require.LessOrEqual(t, delta, ptsMask33,
+		"ptsCorrectionDelta=%d exceeds 33-bit range", delta)
+	require.GreaterOrEqual(t, delta, -ptsMask33,
+		"ptsCorrectionDelta=%d is too negative", delta)
+}
+
+func TestFrameSync_PTSWrapsAt33Bits_H264Video(t *testing.T) {
+	// Same as above but for the H.264 (non-raw) video path.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Seed a frame near the 33-bit boundary.
+	initPTS := ptsMask33 - 6000
+	vf1 := &media.VideoFrame{PTS: initPTS, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf1)
+	fs.releaseTick()
+
+	handler.mu.Lock()
+	handler.videos = handler.videos[:0]
+	handler.mu.Unlock()
+
+	// Freeze ticks to cross the boundary.
+	for i := 0; i < 5; i++ {
+		fs.releaseTick()
+	}
+
+	videos := handler.getVideos()
+	require.GreaterOrEqual(t, len(videos), 5, "expected 5 freeze frames")
+
+	for i, v := range videos {
+		require.LessOrEqual(t, v.frame.PTS, ptsMask33,
+			"H264 PTS[%d]=%d exceeds 33-bit range", i, v.frame.PTS)
+		require.GreaterOrEqual(t, v.frame.PTS, int64(0),
+			"H264 PTS[%d]=%d is negative", i, v.frame.PTS)
+	}
+}
+
+func TestFrameSync_PTSWrapsAt33Bits_Audio(t *testing.T) {
+	// Audio PTS (lastReleasedAudioPTS) must also wrap at 33 bits.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Seed an audio frame near the 33-bit boundary.
+	initPTS := ptsMask33 - 3000
+	af1 := &media.AudioFrame{PTS: initPTS, Data: []byte{0xAA}}
+	fs.IngestAudio("cam1", af1)
+	fs.releaseTick() // consumes af1
+
+	handler.mu.Lock()
+	handler.audios = handler.audios[:0]
+	handler.mu.Unlock()
+
+	// Freeze ticks to cross the boundary. audioFramePTS = 1920.
+	// 3000 / 1920 ≈ 1.5, so 2 ticks should cross it.
+	for i := 0; i < 4; i++ {
+		fs.releaseTick()
+	}
+
+	audios := handler.getAudios()
+	// Only 2 repeats are allowed (audioMissCount check), so we may get fewer.
+	require.GreaterOrEqual(t, len(audios), 2, "expected at least 2 repeat audio frames")
+
+	for i, a := range audios {
+		require.LessOrEqual(t, a.frame.PTS, ptsMask33,
+			"Audio PTS[%d]=%d exceeds 33-bit range", i, a.frame.PTS)
+		require.GreaterOrEqual(t, a.frame.PTS, int64(0),
+			"Audio PTS[%d]=%d is negative", i, a.frame.PTS)
+	}
+}
+
+func TestFrameSync_PTSWrapsAt33Bits_AudioFIFO(t *testing.T) {
+	// Audio FIFO drain path: when a fresh audio frame arrives with PTS
+	// behind the accumulated value near the 33-bit boundary, the clamped
+	// PTS must wrap correctly.
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33333333*time.Nanosecond, handler.onVideo, handler.onAudio)
+	fs.AddSource("cam1")
+
+	// Initialize audio PTS near the 33-bit boundary.
+	initPTS := ptsMask33 - 1000
+	af1 := &media.AudioFrame{PTS: initPTS, Data: []byte{0x01}}
+	fs.IngestAudio("cam1", af1)
+	fs.releaseTick()
+
+	handler.mu.Lock()
+	handler.audios = handler.audios[:0]
+	handler.mu.Unlock()
+
+	// Now ingest audio with PTS behind the accumulated value — triggers clamp.
+	af2 := &media.AudioFrame{PTS: initPTS - 500, Data: []byte{0x02}}
+	fs.IngestAudio("cam1", af2)
+	fs.releaseTick()
+
+	audios := handler.getAudios()
+	require.GreaterOrEqual(t, len(audios), 1, "expected at least 1 audio frame")
+
+	for i, a := range audios {
+		require.LessOrEqual(t, a.frame.PTS, ptsMask33,
+			"FIFO Audio PTS[%d]=%d exceeds 33-bit range", i, a.frame.PTS)
+		require.GreaterOrEqual(t, a.frame.PTS, int64(0),
+			"FIFO Audio PTS[%d]=%d is negative", i, a.frame.PTS)
+	}
+}
+
 func TestFrameSync_FRCWithPhaseLock_ImmediateRelease(t *testing.T) {
 	// With FRC active, program source should STILL trigger immediate release
 	// (phase-lock). The timer reset on early release prevents rate inflation.
@@ -2201,4 +2427,33 @@ func TestFrameSync_FRCWithPhaseLock_TimerContinuesBetweenSourceFrames(t *testing
 	final := releaseCount.Load()
 	require.Greater(t, final, countAfterFirst+1,
 		"timer should continue driving FRC ticks between program source frames")
+}
+
+// TestFrameSync_SetFramePool_UpdatesPool verifies that SetFramePool updates
+// the frame pool reference used by releaseTick for FRC deep copies. Without
+// this, SetPipelineFormat creates a new pool but the frame sync continues
+// using the old one — leaking buffers into the stale pool.
+func TestFrameSync_SetFramePool_UpdatesPool(t *testing.T) {
+	oldPool := NewFramePool(4, 320, 240)
+	newPool := NewFramePool(4, 640, 480)
+
+	fs := NewFrameSynchronizer(
+		33*time.Millisecond,
+		func(string, media.VideoFrame) {},
+		func(string, media.AudioFrame) {},
+	)
+	fs.framePool = oldPool
+
+	// Verify initial pool.
+	fs.mu.Lock()
+	require.Equal(t, oldPool, fs.framePool, "initial pool should be oldPool")
+	fs.mu.Unlock()
+
+	// Update pool.
+	fs.SetFramePool(newPool)
+
+	// Verify updated pool.
+	fs.mu.Lock()
+	require.Equal(t, newPool, fs.framePool, "pool should be updated to newPool")
+	fs.mu.Unlock()
 }

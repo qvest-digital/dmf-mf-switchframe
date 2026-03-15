@@ -3,6 +3,7 @@
 package mxl
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -76,5 +77,44 @@ func TestDiscoverStub_ReturnsError2(t *testing.T) {
 	_, err := Discover("/dev/shm/mxl")
 	if err != ErrMXLNotAvailable {
 		t.Fatalf("expected ErrMXLNotAvailable, got: %v", err)
+	}
+}
+
+func TestInstanceClose_ConcurrentSafe(t *testing.T) {
+	// Instance.Close() must be safe for concurrent calls.
+	// The real (cgo) implementation has a stopGC channel and handle;
+	// double-close of the channel would panic without sync.Once.
+	inst := &Instance{}
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			errs <- inst.Close()
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Close returned unexpected error: %v", err)
+		}
+	}
+}
+
+func TestInstanceClose_Idempotent(t *testing.T) {
+	// Calling Close() multiple times sequentially must be safe.
+	inst := &Instance{}
+
+	for i := 0; i < 5; i++ {
+		if err := inst.Close(); err != nil {
+			t.Fatalf("Close() call %d returned error: %v", i, err)
+		}
 	}
 }

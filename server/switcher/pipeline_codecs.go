@@ -243,6 +243,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		// matching the audio mixer's forward-gap behavior and preventing
 		// permanent A/V desync.
 	}
+	outPTS &= ptsMask33
 	pc.lastOutputPTS = outPTS
 
 	frame := &media.VideoFrame{

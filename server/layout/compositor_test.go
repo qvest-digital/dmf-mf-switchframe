@@ -2,6 +2,7 @@ package layout
 
 import (
 	"image"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -665,4 +666,173 @@ func TestMakeGrayFrame_BroadcastBlack(t *testing.T) {
 	require.Equal(t, byte(128), gray[ySize], "no-signal Cb should be 128")
 	cbSize := 2 * 2
 	require.Equal(t, byte(128), gray[ySize+cbSize], "no-signal Cr should be 128")
+}
+
+// Race 1: SetLayout stores the layout atomically BEFORE allocating buffers
+// under the mutex. A concurrent ProcessFrame loads the new layout (with N slots)
+// but sees stale sortedSlots/scaleBufs/grayBufs (from a previous layout with
+// fewer slots), causing incorrect compositing or missed slots.
+//
+// The fix moves c.layout.Store(l) AFTER allocateBuffers and fill pruning,
+// so ProcessFrame never sees a layout whose buffers haven't been allocated.
+func TestSetLayout_ProcessFrame_Race(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	// Start with a 1-slot layout so buffers are allocated for 1 slot.
+	l1 := &Layout{
+		Name: "one",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l1)
+	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 200, 128, 128), 8, 8)
+	c.IngestSourceFrame("cam2", makeYUV420(8, 8, 100, 128, 128), 8, 8)
+
+	// Two-slot layout — allocateBuffers produces different-length slices.
+	l2 := &Layout{
+		Name: "two",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: true},
+			{SourceKey: "cam2", Rect: image.Rect(8, 0, 16, 8), Enabled: true},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			// Alternate between 1-slot and 2-slot layouts.
+			if i%2 == 0 {
+				c.SetLayout(l2)
+			} else {
+				c.SetLayout(l1)
+			}
+		}
+	}()
+
+	// ProcessFrame must not panic or produce corrupted output.
+	bg := makeYUV420(16, 16, 16, 128, 128)
+	for i := 0; i < 1000; i++ {
+		bgCopy := make([]byte, len(bg))
+		copy(bgCopy, bg)
+		c.ProcessFrame(bgCopy, 16, 16)
+	}
+	<-done
+}
+
+// Race 2: SlotOn/SlotOff read Active() without the lock held. Between the
+// wasBefore check and the wasAfter check, another goroutine can change the
+// active state, causing missed or spurious OnActiveChange callbacks.
+//
+// The fix moves wasBefore inside the lock and computes wasAfter before unlock,
+// so the before/after comparison is atomic with respect to the state change.
+func TestSlotOn_ConcurrentActiveChange_Race(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	l := &Layout{
+		Name: "test",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: false},
+			{SourceKey: "cam2", Rect: image.Rect(8, 0, 16, 8), Enabled: false},
+		},
+	}
+	c.SetLayout(l)
+
+	var callCount int32
+	c.OnActiveChange = func() {
+		atomic.AddInt32(&callCount, 1)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			c.SlotOn(0)
+			c.SlotOff(0)
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		c.SlotOn(1)
+		c.SlotOff(1)
+	}
+	<-done
+
+	// After all goroutines finish, both slots should be off.
+	// The exact callCount depends on interleaving, but it should be > 0
+	// (at least some transitions from inactive→active and active→inactive occurred).
+	require.Greater(t, atomic.LoadInt32(&callCount), int32(0),
+		"OnActiveChange should have been called at least once")
+}
+
+// TestSetLayout_ActiveChange_Atomicity verifies that SetLayout correctly
+// detects active-state transitions. The wasBefore/wasAfter check must
+// be performed atomically with the layout swap to avoid missing callbacks.
+func TestSetLayout_ActiveChange_Atomicity(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	var callCount int32
+	c.OnActiveChange = func() {
+		atomic.AddInt32(&callCount, 1)
+	}
+
+	// Going from nil → active layout should trigger callback.
+	l := &Layout{
+		Name: "test",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	require.Equal(t, int32(1), atomic.LoadInt32(&callCount), "nil→active should trigger callback")
+
+	// Going from active → nil should trigger callback.
+	c.SetLayout(nil)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "active→nil should trigger callback")
+
+	// Going from nil → inactive layout should NOT trigger callback.
+	inactiveLayout := &Layout{
+		Name: "inactive",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: false},
+		},
+	}
+	c.SetLayout(inactiveLayout)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "nil→inactive should not trigger callback")
+}
+
+// TestSlotOn_ActiveChange_NotMissed verifies that SlotOn correctly fires
+// OnActiveChange when going from no-enabled-slots to at least one enabled.
+func TestSlotOn_ActiveChange_NotMissed(t *testing.T) {
+	c := NewCompositor(16, 16)
+
+	l := &Layout{
+		Name: "test",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 8, 8), Enabled: false},
+		},
+	}
+	c.SetLayout(l)
+
+	var callCount int32
+	c.OnActiveChange = func() {
+		atomic.AddInt32(&callCount, 1)
+	}
+
+	// SlotOn on the only slot: inactive→active should fire callback.
+	c.SlotOn(0)
+	require.Equal(t, int32(1), atomic.LoadInt32(&callCount), "SlotOn inactive→active should trigger callback")
+
+	// SlotOn again (already enabled): should NOT fire callback.
+	c.SlotOn(0)
+	require.Equal(t, int32(1), atomic.LoadInt32(&callCount), "SlotOn active→active should not trigger callback")
+
+	// SlotOff: active→inactive should fire callback.
+	c.SlotOff(0)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "SlotOff active→inactive should trigger callback")
+
+	// SlotOff again (already disabled): should NOT fire callback.
+	c.SlotOff(0)
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "SlotOff inactive→inactive should not trigger callback")
 }

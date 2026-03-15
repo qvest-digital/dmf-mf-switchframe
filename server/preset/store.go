@@ -189,8 +189,11 @@ func (ps *Store) Delete(id string) error {
 
 	for i, p := range ps.presets {
 		if p.ID == id {
+			deleted := ps.presets[i]
 			ps.presets = append(ps.presets[:i], ps.presets[i+1:]...)
 			if err := ps.save(); err != nil {
+				// Rollback: re-insert at original position
+				ps.presets = append(ps.presets[:i], append([]Preset{deleted}, ps.presets[i:]...)...)
 				return fmt.Errorf("save presets: %w", err)
 			}
 			return nil

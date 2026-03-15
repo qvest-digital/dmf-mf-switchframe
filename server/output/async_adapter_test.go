@@ -273,6 +273,46 @@ func TestAsyncAdapter_DroppedCounterResetOnStop(t *testing.T) {
 		"Dropped() should be 0 after Stop()")
 }
 
+func TestAsyncAdapterDoubleDrain(t *testing.T) {
+	// Bug: Start() launches go a.drain() and startDrain() also launches
+	// go a.drain(). drain() does defer close(a.doneCh), so two drain
+	// goroutines will panic with "close of closed channel" when both exit.
+	inner := newSlowAdapter(0)
+	async := NewAsyncAdapter(inner, 8)
+
+	// Start() launches one drain goroutine via go a.drain().
+	require.NoError(t, async.Start(context.Background()))
+
+	// startDrain() launches a second drain goroutine via go a.drain().
+	async.startDrain()
+
+	// Write some data so drains have work.
+	for i := 0; i < 3; i++ {
+		_, _ = async.Write([]byte{byte(i)})
+	}
+
+	// Stop() closes stopCh, which causes both drain goroutines to exit.
+	// The second one to call close(a.doneCh) will panic.
+	// Use a done channel to detect if Stop completes without panic.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("Stop() panicked: %v", r)
+			}
+		}()
+		async.Stop()
+	}()
+
+	select {
+	case <-done:
+		// Completed (may have logged an error via t.Errorf in the goroutine).
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() timed out — likely deadlocked")
+	}
+}
+
 func TestSlowAdapterDoesntBlockFastAdapter(t *testing.T) {
 	// Two adapters share a simulated muxer output callback: one fast (no delay)
 	// and one very slow (50ms per write). We send 100 packets through the

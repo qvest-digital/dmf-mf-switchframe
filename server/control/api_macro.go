@@ -903,7 +903,7 @@ func (t *apiMacroTarget) execClipLoad(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	clipID, _ := params["clipId"].(string)
 	if clipID == "" {
 		return fmt.Errorf("clip_load requires 'clipId' param")
@@ -915,7 +915,7 @@ func (t *apiMacroTarget) execClipPlay(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	speed := floatParam(params, "speed", 1.0)
 	loop := false
 	if v, ok := params["loop"].(bool); ok {
@@ -928,7 +928,7 @@ func (t *apiMacroTarget) execClipPause(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	return t.clipMgr.Pause(playerID)
 }
 
@@ -936,7 +936,7 @@ func (t *apiMacroTarget) execClipStop(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	return t.clipMgr.Stop(playerID)
 }
 
@@ -944,7 +944,7 @@ func (t *apiMacroTarget) execClipEject(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	return t.clipMgr.Eject(playerID)
 }
 
@@ -952,7 +952,7 @@ func (t *apiMacroTarget) execClipSeek(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "playerId", 1))
+	playerID := int(floatParam(params, "player", 1))
 	position := floatParam(params, "position", 0)
 	return t.clipMgr.Seek(playerID, position)
 }

@@ -14,10 +14,13 @@ func TestEndpointSubsystem(t *testing.T) {
 		sub  Subsystem
 		ok   bool
 	}{
+		// Switching (exact matches)
 		{"/api/switch/cut", SubsystemSwitching, true},
 		{"/api/switch/preview", SubsystemSwitching, true},
 		{"/api/switch/transition", SubsystemSwitching, true},
 		{"/api/switch/ftb", SubsystemSwitching, true},
+
+		// Audio (exact + prefix)
 		{"/api/audio/level", SubsystemAudio, true},
 		{"/api/audio/trim", SubsystemAudio, true},
 		{"/api/audio/mute", SubsystemAudio, true},
@@ -25,25 +28,89 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/audio/master", SubsystemAudio, true},
 		{"/api/audio/cam1/eq", SubsystemAudio, true},
 		{"/api/audio/cam1/compressor", SubsystemAudio, true},
-		{"/api/graphics/on", SubsystemGraphics, true},
-		{"/api/graphics/off", SubsystemGraphics, true},
-		{"/api/graphics/auto-on", SubsystemGraphics, true},
-		{"/api/graphics/auto-off", SubsystemGraphics, true},
+
+		// Graphics with layer ID (bug: exact paths /api/graphics/on never match)
+		{"/api/graphics/3/on", SubsystemGraphics, true},
+		{"/api/graphics/0/off", SubsystemGraphics, true},
+		{"/api/graphics/1/auto-on", SubsystemGraphics, true},
+		{"/api/graphics/2/auto-off", SubsystemGraphics, true},
+		{"/api/graphics/5/frame", SubsystemGraphics, true},
+		{"/api/graphics/1/animate", SubsystemGraphics, true},
+		{"/api/graphics/0/fly-in", SubsystemGraphics, true},
+		{"/api/graphics/0/fly-out", SubsystemGraphics, true},
+		{"/api/graphics/0/slide", SubsystemGraphics, true},
+		{"/api/graphics/1/rect", SubsystemGraphics, true},
+		{"/api/graphics/1/zorder", SubsystemGraphics, true},
+		{"/api/graphics/2/image", SubsystemGraphics, true},
+		{"/api/graphics/1/ticker", SubsystemGraphics, true},
+		{"/api/graphics/1/text-animate", SubsystemGraphics, true},
+
+		// Replay (exact matches)
 		{"/api/replay/mark-in", SubsystemReplay, true},
 		{"/api/replay/mark-out", SubsystemReplay, true},
 		{"/api/replay/play", SubsystemReplay, true},
 		{"/api/replay/stop", SubsystemReplay, true},
+
+		// Output (exact matches)
 		{"/api/recording/start", SubsystemOutput, true},
 		{"/api/recording/stop", SubsystemOutput, true},
 		{"/api/output/srt/start", SubsystemOutput, true},
 		{"/api/output/srt/stop", SubsystemOutput, true},
-		{"/api/presets/abc/recall", SubsystemSwitching, true}, // preset recall
-		{"/api/presets/abc", SubsystemSwitching, true},        // preset mutation (update/delete)
-		{"/api/captions/mode", SubsystemCaptions, true},       // caption mode
-		{"/api/captions/text", SubsystemCaptions, true},       // caption text
-		{"/api/switch/state", "", false},                      // GET endpoint
-		{"/api/operator/register", "", false},                 // operator management
-		{"/api/presets", "", false},                           // list endpoint (no trailing slash)
+
+		// Presets (prefix)
+		{"/api/presets/abc/recall", SubsystemSwitching, true},
+		{"/api/presets/abc", SubsystemSwitching, true},
+
+		// Captions (prefix)
+		{"/api/captions/mode", SubsystemCaptions, true},
+		{"/api/captions/text", SubsystemCaptions, true},
+
+		// Layout/PIP (unmapped — should be switching)
+		{"/api/layout", SubsystemSwitching, true},
+		{"/api/layout/slots/0/on", SubsystemSwitching, true},
+		{"/api/layout/slots/1/off", SubsystemSwitching, true},
+		{"/api/layout/slots/2/source", SubsystemSwitching, true},
+		{"/api/layout/presets", SubsystemSwitching, true},
+
+		// Destinations (unmapped — should be output)
+		{"/api/output/destinations", SubsystemOutput, true},
+		{"/api/output/destinations/d1", SubsystemOutput, true},
+		{"/api/output/destinations/d1/start", SubsystemOutput, true},
+		{"/api/output/destinations/d1/stop", SubsystemOutput, true},
+
+		// Clips (unmapped — should be switching)
+		{"/api/clips/upload", SubsystemSwitching, true},
+		{"/api/clips/abc123", SubsystemSwitching, true},
+		{"/api/clips/players/1/load", SubsystemSwitching, true},
+		{"/api/clips/players/1/play", SubsystemSwitching, true},
+		{"/api/clips/players/1/stop", SubsystemSwitching, true},
+		{"/api/clips/from-recording", SubsystemSwitching, true},
+
+		// SCTE-35 (unmapped — should be output)
+		{"/api/scte35/cue", SubsystemOutput, true},
+		{"/api/scte35/return", SubsystemOutput, true},
+		{"/api/scte35/return/42", SubsystemOutput, true},
+		{"/api/scte35/cancel/42", SubsystemOutput, true},
+		{"/api/scte35/hold/42", SubsystemOutput, true},
+		{"/api/scte35/extend/42", SubsystemOutput, true},
+		{"/api/scte35/rules", SubsystemOutput, true},
+
+		// Stinger (unmapped — should be graphics)
+		{"/api/stinger/list", SubsystemGraphics, true},
+		{"/api/stinger/my-wipe/upload", SubsystemGraphics, true},
+		{"/api/stinger/my-wipe", SubsystemGraphics, true},
+		{"/api/stinger/my-wipe/cut-point", SubsystemGraphics, true},
+
+		// Format (unmapped — should be switching)
+		{"/api/format", SubsystemSwitching, true},
+
+		// Encoder (unmapped — should be switching)
+		{"/api/encoder", SubsystemSwitching, true},
+
+		// Exempt / unmapped (should return false)
+		{"/api/switch/state", "", false},
+		{"/api/operator/register", "", false},
+		{"/api/presets", "", false}, // list endpoint (no trailing slash)
 		{"/api/unknown", "", false},
 	}
 

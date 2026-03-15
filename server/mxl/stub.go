@@ -59,8 +59,10 @@ func (i *Instance) IsFlowActive(flowID string) (bool, error) {
 	return false, ErrMXLNotAvailable
 }
 
-// Close is a no-op stub.
-func (i *Instance) Close() error { return nil }
+// Close is a no-op stub. It is safe to call concurrently or multiple times.
+func (i *Instance) Close() error {
+	return nil
+}
 
 // Discover returns ErrMXLNotAvailable when the mxl build tag is not set.
 func Discover(domain string) ([]FlowInfo, error) {

@@ -216,6 +216,44 @@ func TestExtractCCPairsFromSEI_Invalid(t *testing.T) {
 	}
 }
 
+func TestFindFirstVCL_TruncatedStartCode(t *testing.T) {
+	// Degenerate inputs where start code sits at the end of the buffer
+	// with no NALU type byte following. Must return -1 without panicking.
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"nil", nil},
+		{"empty", []byte{}},
+		{"4-byte start code at end", []byte{0x00, 0x00, 0x00, 0x01}},
+		{"3-byte start code at end", []byte{0x00, 0x00, 0x01}},
+		{"padding then 4-byte start code at end", []byte{0xFF, 0x00, 0x00, 0x00, 0x01}},
+		{"padding then 3-byte start code at end", []byte{0xFF, 0x00, 0x00, 0x01}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findFirstVCL(tt.data)
+			if got != -1 {
+				t.Errorf("findFirstVCL() = %d, want -1", got)
+			}
+		})
+	}
+}
+
+func TestInsertSEIBeforeVCLInto_TruncatedStartCode(t *testing.T) {
+	// InsertSEIBeforeVCLInto must not panic when annexB contains a start code
+	// at the very end with no NALU type byte.
+	sei := BuildSEINALU([]CCPair{{Data: [2]byte{'A', 'B'}}})
+	truncated := []byte{0x00, 0x00, 0x00, 0x01}
+
+	// Must not panic.
+	result := InsertSEIBeforeVCLInto(sei, truncated, nil)
+	if result == nil {
+		t.Error("expected non-nil result")
+	}
+}
+
 func TestFindFirstVCL(t *testing.T) {
 	tests := []struct {
 		name string

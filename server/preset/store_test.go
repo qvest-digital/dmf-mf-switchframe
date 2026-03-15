@@ -251,6 +251,34 @@ func TestUpdateRollbackOnSaveFailure(t *testing.T) {
 	require.Equal(t, "original", got.Name, "name should be rolled back after save failure")
 }
 
+func TestDeleteRollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+
+	// Use a path where save() will always fail.
+	ps := &Store{
+		filePath: "/dev/null/impossible/presets.json",
+		presets: []Preset{
+			{
+				ID:   "preset-to-delete",
+				Name: "Doomed",
+			},
+		},
+	}
+
+	// Verify the store has one preset.
+	require.Len(t, ps.List(), 1)
+
+	// Delete should fail because save() can't write to that path.
+	err := ps.Delete("preset-to-delete")
+	require.Error(t, err, "expected Delete to fail with unwritable path")
+
+	// The in-memory list must still contain the preset (rollback on save failure).
+	presets := ps.List()
+	require.Len(t, presets, 1, "in-memory presets should still have 1 element after save failure")
+	require.Equal(t, "preset-to-delete", presets[0].ID, "preset ID should be preserved after rollback")
+	require.Equal(t, "Doomed", presets[0].Name, "preset name should be preserved after rollback")
+}
+
 func TestNewStoreNonexistentFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

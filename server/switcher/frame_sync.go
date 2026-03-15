@@ -41,6 +41,15 @@ const (
 	audioFramePTS = int64(aacSamplesPerFrame) * int64(mpegtsClock) / int64(defaultAudioSampleRate)
 )
 
+// audioFramePTSForRate computes the PTS interval for one AAC frame at the
+// given sample rate. If sampleRate is 0, defaultAudioSampleRate (48000) is used.
+func audioFramePTSForRate(sampleRate int) int64 {
+	if sampleRate <= 0 {
+		sampleRate = defaultAudioSampleRate
+	}
+	return int64(aacSamplesPerFrame) * int64(mpegtsClock) / int64(sampleRate)
+}
+
 // pendingRelease holds a frame pair collected under the lock for delivery
 // outside the lock. The slice is reused across ticks to avoid allocation.
 // rawVideo is stored by value (not pointer) to prevent races with
@@ -115,6 +124,13 @@ type syncSource struct {
 	// in the MPEG-TS muxer.
 	lastReleasedAudioPTS int64
 	audioPTSInitialized  bool
+
+	// lastAudioSampleRate tracks the sample rate of the most recently
+	// ingested audio frame. Used to compute correct PTS increments for
+	// repeated/frozen audio frames (e.g., 44.1kHz needs 2089 ticks vs
+	// 48kHz needs 1920 ticks per AAC frame). Defaults to 0 (meaning
+	// use defaultAudioSampleRate).
+	lastAudioSampleRate int
 
 	// Bresenham accumulator for sub-tick PTS remainder.
 	// Prevents drift at NTSC rates where tickPTSInterval truncates
@@ -413,6 +429,9 @@ func (fs *FrameSynchronizer) IngestAudio(sourceKey string, frame *media.AudioFra
 	ss.mu.Lock()
 	ss.audioQueue = append(ss.audioQueue, frame)
 	ss.pushAudio(frame) // ring buffer for freeze/repeat fallback
+	if frame.SampleRate > 0 {
+		ss.lastAudioSampleRate = frame.SampleRate
+	}
 	ss.mu.Unlock()
 }
 
@@ -496,6 +515,23 @@ func (fs *FrameSynchronizer) SetTickRate(d time.Duration) {
 	}
 
 	fs.log.Debug("tick rate updated", "rate", d)
+}
+
+// SetFramePool updates the frame pool reference used by the FrameSynchronizer
+// for FRC deep copies and new source FRC initialization. Called by
+// SetPipelineFormat after creating a new pool at the updated dimensions.
+// Also propagates the new pool to all existing FRC sources.
+func (fs *FrameSynchronizer) SetFramePool(pool *FramePool) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.framePool = pool
+	for _, ss := range fs.sources {
+		ss.mu.Lock()
+		if ss.frc != nil {
+			ss.frc.pool = pool
+		}
+		ss.mu.Unlock()
+	}
 }
 
 // SetFRCQuality sets the frame rate conversion quality for all sources.
@@ -1016,19 +1052,22 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				r.ss.lastSourcePTS = pf.PTS
 				if r.ss.ptsInitialized && !ptsAfter(pf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+					r.ss.lastReleasedPTS &= ptsMask33
 					pf.PTS = r.ss.lastReleasedPTS
 				} else {
-					r.ss.lastReleasedPTS = pf.PTS
+					r.ss.lastReleasedPTS = pf.PTS & ptsMask33
 				}
 				r.ss.ptsInitialized = true
 			} else {
 				// Repeated frame (freeze): advance by tick interval for monotonic output
 				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+				r.ss.lastReleasedPTS &= ptsMask33
 				pf.PTS = r.ss.lastReleasedPTS
 			}
 			// Store correction delta atomically for audio PTS alignment.
 			// Delta = how far frame sync has shifted video PTS beyond source PTS.
-			r.ss.ptsCorrectionDelta.Store(r.ss.lastReleasedPTS - r.ss.lastSourcePTS)
+			// Mask to 33 bits since the values may be from different wrap epochs.
+			r.ss.ptsCorrectionDelta.Store((r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33)
 		}
 		pf.SyncReleaseNano = time.Now().UnixNano()
 		if fs.onRawVideo != nil {
@@ -1041,16 +1080,18 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				r.ss.lastSourcePTS = vf.PTS
 				if r.ss.ptsInitialized && !ptsAfter(vf.PTS, r.ss.lastReleasedPTS) {
 					r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+					r.ss.lastReleasedPTS &= ptsMask33
 					vf.PTS = r.ss.lastReleasedPTS
 				} else {
-					r.ss.lastReleasedPTS = vf.PTS
+					r.ss.lastReleasedPTS = vf.PTS & ptsMask33
 				}
 				r.ss.ptsInitialized = true
 			} else {
 				r.ss.lastReleasedPTS += tickPTSWithRemainder(r.ss, tickIntervalPTS, ptsRemNum, ptsRemDen)
+				r.ss.lastReleasedPTS &= ptsMask33
 				vf.PTS = r.ss.lastReleasedPTS
 			}
-			r.ss.ptsCorrectionDelta.Store(r.ss.lastReleasedPTS - r.ss.lastSourcePTS)
+			r.ss.ptsCorrectionDelta.Store((r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33)
 		}
 		fs.onVideo(r.sourceKey, vf)
 	}
@@ -1062,14 +1103,15 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 			af := *qaf
 			if r.ss != nil {
 				if !r.ss.audioPTSInitialized {
-					r.ss.lastReleasedAudioPTS = af.PTS
+					r.ss.lastReleasedAudioPTS = af.PTS & ptsMask33
 					r.ss.audioPTSInitialized = true
 				} else if !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
 					// PTS behind accumulated value — clamp forward.
-					r.ss.lastReleasedAudioPTS += audioFramePTS
+					r.ss.lastReleasedAudioPTS += audioFramePTSForRate(r.ss.lastAudioSampleRate)
+					r.ss.lastReleasedAudioPTS &= ptsMask33
 					af.PTS = r.ss.lastReleasedAudioPTS
 				} else {
-					r.ss.lastReleasedAudioPTS = af.PTS
+					r.ss.lastReleasedAudioPTS = af.PTS & ptsMask33
 				}
 			}
 			fs.onAudio(r.sourceKey, af)
@@ -1079,17 +1121,19 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 		if r.ss != nil {
 			if r.freshAudio || !r.ss.audioPTSInitialized {
 				if r.ss.audioPTSInitialized && !ptsAfter(af.PTS, r.ss.lastReleasedAudioPTS) {
-					r.ss.lastReleasedAudioPTS += audioFramePTS
+					r.ss.lastReleasedAudioPTS += audioFramePTSForRate(r.ss.lastAudioSampleRate)
+					r.ss.lastReleasedAudioPTS &= ptsMask33
 					af.PTS = r.ss.lastReleasedAudioPTS
 				} else {
-					r.ss.lastReleasedAudioPTS = af.PTS
+					r.ss.lastReleasedAudioPTS = af.PTS & ptsMask33
 				}
 				r.ss.audioPTSInitialized = true
 			} else {
 				// Repeated audio frame (freeze): advance by audio frame duration,
-				// not video tick interval. AAC frames are 1024 samples at 48kHz
-				// = 1920 ticks at 90kHz, regardless of video frame rate.
-				r.ss.lastReleasedAudioPTS += audioFramePTS
+				// not video tick interval. AAC frames are 1024 samples at the
+				// source's sample rate, regardless of video frame rate.
+				r.ss.lastReleasedAudioPTS += audioFramePTSForRate(r.ss.lastAudioSampleRate)
+				r.ss.lastReleasedAudioPTS &= ptsMask33
 				af.PTS = r.ss.lastReleasedAudioPTS
 			}
 		}

@@ -238,6 +238,9 @@ func findFirstVCL(data []byte) int {
 		}
 
 		if scLen > 0 {
+			if i+scLen >= len(data) {
+				break
+			}
 			naluType := data[i+scLen] & 0x1F
 			// VCL NALU types: 1 (non-IDR), 5 (IDR)
 			if naluType == 1 || naluType == 5 {

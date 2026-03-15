@@ -30,9 +30,10 @@ func ChromaKey(frame []byte, width, height int, keyColor YCbCr, similarity, smoo
 //   - spillSuppress: desaturate near-key pixels (0-1). Modifies the frame in-place.
 //   - spillReplaceCb, spillReplaceCr: chroma values to pull spill toward (128,128 = neutral).
 //
-// Uses squared distance comparisons to avoid per-pixel sqrt for the majority of
-// pixels. Only the smoothness transition zone requires the actual Euclidean distance
-// for linear interpolation.
+// Uses squared distance comparisons throughout to avoid per-pixel sqrt. The
+// smoothness transition zone interpolates linearly in squared-distance space
+// (not Euclidean distance), producing a slightly non-linear feather that is
+// visually acceptable and significantly faster than a true sqrt-based ramp.
 //
 // Returns an alpha mask with one byte per pixel (0 = transparent, 255 = opaque).
 func ChromaKeyWithSpillColor(frame []byte, width, height int, keyColor YCbCr, similarity, smoothness, spillSuppress float32, spillReplaceCb, spillReplaceCr uint8) []byte {

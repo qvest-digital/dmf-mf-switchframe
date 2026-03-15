@@ -29,6 +29,7 @@ type AsyncAdapter struct {
 	stopCh      chan struct{}
 	doneCh      chan struct{}
 	stopOnce    sync.Once
+	drainOnce   sync.Once
 }
 
 // NewAsyncAdapter creates an AsyncAdapter wrapping the given inner adapter
@@ -52,14 +53,14 @@ func (a *AsyncAdapter) Start(ctx context.Context) error {
 	if err := a.inner.Start(ctx); err != nil {
 		return err
 	}
-	go a.drain()
+	a.drainOnce.Do(func() { go a.drain() })
 	return nil
 }
 
 // startDrain starts only the drain goroutine without calling inner.Start().
 // Used by Manager when the inner adapter has already been started.
 func (a *AsyncAdapter) startDrain() {
-	go a.drain()
+	a.drainOnce.Do(func() { go a.drain() })
 }
 
 // Write copies the data and sends it to the buffer channel. If the channel

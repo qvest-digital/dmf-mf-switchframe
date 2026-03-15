@@ -39,9 +39,11 @@ func (a *API) registerLayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/layout/slots/{id}/on", a.handleSlotOn)
 	mux.HandleFunc("POST /api/layout/slots/{id}/off", a.handleSlotOff)
 	mux.HandleFunc("PUT /api/layout/slots/{id}/source", a.handleSlotSource)
-	mux.HandleFunc("GET /api/layout/presets", a.handleListLayoutPresets)
-	mux.HandleFunc("POST /api/layout/presets", a.handleSaveLayoutPreset)
-	mux.HandleFunc("DELETE /api/layout/presets/{name}", a.handleDeleteLayoutPreset)
+	if a.layoutStore != nil {
+		mux.HandleFunc("GET /api/layout/presets", a.handleListLayoutPresets)
+		mux.HandleFunc("POST /api/layout/presets", a.handleSaveLayoutPreset)
+		mux.HandleFunc("DELETE /api/layout/presets/{name}", a.handleDeleteLayoutPreset)
+	}
 }
 
 func (a *API) handleGetLayout(w http.ResponseWriter, r *http.Request) {
@@ -68,13 +70,17 @@ func (a *API) handleSetLayout(w http.ResponseWriter, r *http.Request) {
 	if req.Preset != "" {
 		// Try built-in presets first, then user presets.
 		l = layout.ResolveBuiltinPreset(req.Preset, format.Width, format.Height)
-		if l == nil {
+		if l == nil && a.layoutStore != nil {
 			stored, err := a.layoutStore.Get(req.Preset)
 			if err != nil {
 				httperr.Write(w, http.StatusNotFound, "preset not found: "+req.Preset)
 				return
 			}
 			l = stored
+		}
+		if l == nil {
+			httperr.Write(w, http.StatusNotFound, "preset not found: "+req.Preset)
+			return
 		}
 	} else if len(req.Slots) > 0 {
 		l = &layout.Layout{Name: "custom", Slots: req.Slots}

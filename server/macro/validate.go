@@ -58,7 +58,6 @@ var actionsRequiringSource = map[Action]bool{
 	ActionReplayMarkIn:    true,
 	ActionReplayMarkOut:   true,
 	ActionReplayPlay:      true,
-	ActionReplayPlayClip:  true,
 	ActionReplayQuickClip: true,
 }
 

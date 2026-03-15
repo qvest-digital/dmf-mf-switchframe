@@ -179,7 +179,7 @@ func TestValidateSteps_AcceptsValidMacroWithNewActions(t *testing.T) {
 		{Action: ActionReplayMarkIn, Params: map[string]any{"source": "cam1"}},
 		{Action: ActionReplayMarkOut, Params: map[string]any{"source": "cam1"}},
 		{Action: ActionReplayPlay, Params: map[string]any{"source": "cam1"}},
-		{Action: ActionReplayPlayClip, Params: map[string]any{"source": "cam1"}},
+		{Action: ActionReplayPlayClip, Params: map[string]any{"clipId": "clip-001"}},
 		{Action: ActionReplayQuickClip, Params: map[string]any{"source": "cam1"}},
 		{Action: ActionFTB, Params: map[string]any{}},
 		{Action: ActionGraphicsOn, Params: map[string]any{}},
@@ -286,7 +286,7 @@ func TestValidateSteps_TransitionDurationBounds(t *testing.T) {
 func TestValidateSteps_RejectsReplayMarkInWithoutSource(t *testing.T) {
 	t.Parallel()
 	for _, action := range []Action{
-		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayPlayClip, ActionReplayQuickClip,
+		ActionReplayMarkIn, ActionReplayMarkOut, ActionReplayPlay, ActionReplayQuickClip,
 	} {
 		steps := []Step{
 			{Action: action, Params: map[string]any{}},
@@ -499,7 +499,7 @@ func TestValidateSteps_SourceRequiredActions(t *testing.T) {
 		ActionKeySet, ActionKeyDelete, ActionSourceLabel,
 		ActionSourceDelay, ActionSourcePosition,
 		ActionReplayMarkIn, ActionReplayMarkOut,
-		ActionReplayPlay, ActionReplayPlayClip, ActionReplayQuickClip,
+		ActionReplayPlay, ActionReplayQuickClip,
 	}
 	for _, action := range sourceRequiredActions {
 		steps := []Step{
@@ -708,6 +708,44 @@ func TestValidateSteps_CaptionModeMissing(t *testing.T) {
 	}
 	result := ValidateSteps(steps)
 	require.True(t, result.HasErrors())
+}
+
+func TestValidateSteps_ReplayPlayClipDoesNotRequireSource(t *testing.T) {
+	t.Parallel()
+	// replay_play_clip takes a clipId, not a source — it should pass
+	// validation without a "source" param.
+	steps := []Step{
+		{Action: ActionReplayPlayClip, Params: map[string]any{
+			"clipId": "clip-001",
+		}},
+	}
+	result := ValidateSteps(steps)
+	require.False(t, result.HasErrors(),
+		"replay_play_clip should not require 'source'; got errors: %+v", result.Errors)
+}
+
+func TestValidateSteps_ClipActionsUsePlayerNotPlayerId(t *testing.T) {
+	t.Parallel()
+	// The validator checks params["player"] (not "playerId"). A macro with
+	// "player" set should pass validation for all clip actions.
+	clipActions := []Action{
+		ActionClipLoad, ActionClipPlay, ActionClipPause,
+		ActionClipStop, ActionClipEject, ActionClipSeek,
+	}
+	for _, action := range clipActions {
+		params := map[string]any{"player": float64(2)}
+		// Add required sub-params for specific actions.
+		if action == ActionClipLoad {
+			params["clipId"] = "test-clip"
+		}
+		if action == ActionClipSeek {
+			params["position"] = float64(0.5)
+		}
+		steps := []Step{{Action: action, Params: params}}
+		result := ValidateSteps(steps)
+		require.False(t, result.HasErrors(),
+			"expected %s with 'player' param to pass validation; got: %+v", action, result.Errors)
+	}
 }
 
 func TestValidateSteps_CaptionTextNoParams(t *testing.T) {

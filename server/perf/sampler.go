@@ -253,6 +253,12 @@ func (s *Sampler) tick() {
 		}
 		ring.Push(src.DecodeLastNs)
 	}
+	// Remove stale source entries no longer in the current sample.
+	for key := range s.decodeRings {
+		if _, ok := sw.Sources[key]; !ok {
+			delete(s.decodeRings, key)
+		}
+	}
 
 	// Pipeline
 	s.pipelineRing.Push(sw.PipelineLastNs)
@@ -265,6 +271,12 @@ func (s *Sampler) tick() {
 			s.nodeRings[name] = ring
 		}
 		ring.Push(ns)
+	}
+	// Remove stale node entries no longer in the current sample.
+	for name := range s.nodeRings {
+		if _, ok := sw.NodeTimings[name]; !ok {
+			delete(s.nodeRings, name)
+		}
 	}
 
 	// E2E, mix cycle, broadcast gap

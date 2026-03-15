@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/macro"
 )
@@ -285,6 +287,66 @@ func TestBroadcastFn_RaceFree(t *testing.T) {
 
 	wg.Wait()
 	// Just verifying no race — exact count doesn't matter.
+}
+
+func TestClipMacroExecutor_UsesPlayerNotPlayerId(t *testing.T) {
+	// The validator checks params["player"], so the executor must also read
+	// "player" (not "playerId"). This test verifies the param key matches
+	// by passing player=5 (invalid) and asserting ErrInvalidPlayer.
+	// If the executor reads "playerId" instead, it defaults to 1 (valid)
+	// and the error would be "clip not found" — not ErrInvalidPlayer.
+
+	dir := t.TempDir()
+	store, err := clip.NewStore(dir, 1<<30)
+	require.NoError(t, err)
+
+	mgr := clip.NewManager(store, clip.ManagerConfig{})
+	target := &apiMacroTarget{clipMgr: mgr}
+
+	// clip_load with player=5 (out of range 1-4): should get ErrInvalidPlayer.
+	params := map[string]any{
+		"player": float64(5),
+		"clipId": "test-clip",
+	}
+	err = target.Execute(context.Background(), "clip_load", params)
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipLoad must read 'player' key (not 'playerId'); got: %v", err)
+
+	// clip_play with player=5: same assertion.
+	err = target.Execute(context.Background(), "clip_play", map[string]any{
+		"player": float64(5),
+	})
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipPlay must read 'player' key; got: %v", err)
+
+	// clip_pause with player=5.
+	err = target.Execute(context.Background(), "clip_pause", map[string]any{
+		"player": float64(5),
+	})
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipPause must read 'player' key; got: %v", err)
+
+	// clip_stop with player=5.
+	err = target.Execute(context.Background(), "clip_stop", map[string]any{
+		"player": float64(5),
+	})
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipStop must read 'player' key; got: %v", err)
+
+	// clip_eject with player=5.
+	err = target.Execute(context.Background(), "clip_eject", map[string]any{
+		"player": float64(5),
+	})
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipEject must read 'player' key; got: %v", err)
+
+	// clip_seek with player=5.
+	err = target.Execute(context.Background(), "clip_seek", map[string]any{
+		"player":   float64(5),
+		"position": float64(0.5),
+	})
+	require.ErrorIs(t, err, clip.ErrInvalidPlayer,
+		"execClipSeek must read 'player' key; got: %v", err)
 }
 
 func TestEnrichFn_RaceFree(t *testing.T) {

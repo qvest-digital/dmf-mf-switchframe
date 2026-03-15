@@ -17,6 +17,7 @@ import (
 
 // Stats tracks per-source frame counts for debug snapshots.
 type Stats struct {
+	mu                sync.RWMutex
 	mode              string
 	file              string
 	videoFramesLoaded int64
@@ -38,6 +39,8 @@ func NewStats() *Stats {
 
 // SetFileInfo records the mode and file info after demuxing.
 func (d *Stats) SetFileInfo(mode, file string, videoFrames, audioFrames int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.mode = mode
 	d.file = file
 	d.videoFramesLoaded = int64(videoFrames)
@@ -66,11 +69,17 @@ func (d *Stats) DebugSnapshot() map[string]any {
 		}
 		return true
 	})
+	d.mu.RLock()
+	mode := d.mode
+	file := d.file
+	videoFramesLoaded := d.videoFramesLoaded
+	audioFramesLoaded := d.audioFramesLoaded
+	d.mu.RUnlock()
 	return map[string]any{
-		"mode":                d.mode,
-		"file":                d.file,
-		"video_frames_loaded": d.videoFramesLoaded,
-		"audio_frames_loaded": d.audioFramesLoaded,
+		"mode":                mode,
+		"file":                file,
+		"video_frames_loaded": videoFramesLoaded,
+		"audio_frames_loaded": audioFramesLoaded,
 		"per_source":          perSource,
 	}
 }

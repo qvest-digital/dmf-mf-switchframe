@@ -979,8 +979,9 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	// Release() discards wrong-sized buffers via cap check.
 	s.framePool = NewFramePool(32, f.Width, f.Height)
 
-	// Update frame sync tick rate if active.
+	// Update frame sync tick rate and pool reference if active.
 	if s.frameSyncActive && s.frameSync != nil {
+		s.frameSync.SetFramePool(s.framePool)
 		s.frameSync.SetTickRate(f.FrameDuration())
 	}
 
@@ -2680,7 +2681,7 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 			// Copy the frame before mutating PTS — the relay may fan-out
 			// the same pointer to multiple viewers.
 			adjusted := *frame
-			adjusted.PTS += delta
+			adjusted.PTS = (adjusted.PTS + delta) & ptsMask33
 			frame = &adjusted
 		}
 	}

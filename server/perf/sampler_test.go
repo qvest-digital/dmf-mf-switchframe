@@ -418,6 +418,60 @@ func TestSampler_SubStageBreakdown(t *testing.T) {
 	}
 }
 
+func TestSampler_StaleMapEntryCleanup(t *testing.T) {
+	// Verify that decodeRings and nodeRings entries are removed when the
+	// corresponding source/node disappears from the current sample.
+	// Without cleanup, these maps grow unboundedly as sources are added/removed.
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"cam1": {DecodeLastNs: 5000, Health: "active"},
+			"cam2": {DecodeLastNs: 6000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings: map[string]int64{
+			"encode":  3000,
+			"keyer":   1000,
+		},
+		E2ELastNs:     15000,
+		FrameBudgetNs: 33333,
+	}}
+	mx := &mockMixerPerf{sample: MixerSample{MixCycleLastNs: 2000}}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+
+	// Tick with both sources and nodes present.
+	s.tick()
+
+	s.mu.RLock()
+	require.Contains(t, s.decodeRings, "cam1")
+	require.Contains(t, s.decodeRings, "cam2")
+	require.Contains(t, s.nodeRings, "encode")
+	require.Contains(t, s.nodeRings, "keyer")
+	s.mu.RUnlock()
+
+	// Remove cam2 and keyer from the sample (simulating source removal).
+	sw.set(SwitcherSample{
+		Sources: map[string]SourceSample{
+			"cam1": {DecodeLastNs: 5000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{"encode": 3000},
+		E2ELastNs:      15000,
+		FrameBudgetNs:  33333,
+	})
+
+	// Tick again — stale entries should be cleaned up.
+	s.tick()
+
+	s.mu.RLock()
+	require.Contains(t, s.decodeRings, "cam1", "cam1 should still be present")
+	require.NotContains(t, s.decodeRings, "cam2", "cam2 should be removed after disappearing from sample")
+	require.Contains(t, s.nodeRings, "encode", "encode should still be present")
+	require.NotContains(t, s.nodeRings, "keyer", "keyer should be removed after disappearing from sample")
+	s.mu.RUnlock()
+}
+
 func TestSamplerDoubleStopNoPanic(t *testing.T) {
 	sw := &mockSwitcherPerf{sample: SwitcherSample{
 		Sources:     map[string]SourceSample{},

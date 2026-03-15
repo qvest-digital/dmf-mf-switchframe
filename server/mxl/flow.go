@@ -67,9 +67,11 @@ func statusError(status C.mxlStatus, context string) error {
 
 // Instance wraps an MXL SDK instance handle.
 type Instance struct {
-	handle C.mxlInstance
-	stopGC chan struct{}    // signals the GC goroutine to stop
-	gcWG   sync.WaitGroup // waits for gcLoop to exit before destroying handle
+	handle    C.mxlInstance
+	stopGC    chan struct{}    // signals the GC goroutine to stop
+	gcWG      sync.WaitGroup  // waits for gcLoop to exit before destroying handle
+	closeOnce sync.Once       // ensures Close is safe for concurrent calls
+	closeErr  error           // captured error from the single Close execution
 }
 
 // NewInstance creates an MXL instance for the given domain path
@@ -228,15 +230,18 @@ func (inst *Instance) IsFlowActive(flowID string) (bool, error) {
 }
 
 // Close releases the MXL instance and stops the GC goroutine.
+// It is safe to call Close concurrently or multiple times.
 func (inst *Instance) Close() error {
-	if inst.handle != nil {
-		close(inst.stopGC)
-		inst.gcWG.Wait() // ensure gcLoop exits before destroying handle
-		status := C.mxlDestroyInstance(inst.handle)
-		inst.handle = nil
-		return statusError(status, "destroy instance")
-	}
-	return nil
+	inst.closeOnce.Do(func() {
+		if inst.handle != nil {
+			close(inst.stopGC)
+			inst.gcWG.Wait() // ensure gcLoop exits before destroying handle
+			status := C.mxlDestroyInstance(inst.handle)
+			inst.handle = nil
+			inst.closeErr = statusError(status, "destroy instance")
+		}
+	})
+	return inst.closeErr
 }
 
 // convertFlowConfig converts a C mxlFlowConfigInfo to Go FlowConfig.

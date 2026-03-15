@@ -191,10 +191,18 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpPath := tmp.Name()
 
+	// Deferred cleanup: remove the temp file on any exit path (error, context
+	// cancellation, panic) unless the file is successfully consumed. On success,
+	// tmpPath is cleared to prevent removal of the renamed/stored file.
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
 	n, err := io.Copy(tmp, file)
 	_ = tmp.Close()
 	if err != nil {
-		_ = os.Remove(tmpPath)
 		httperr.Write(w, http.StatusInternalServerError, "failed to write upload")
 		return
 	}
@@ -257,7 +265,6 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 		probe, err = clip.Validate(tmpPath)
 	}
 	if err != nil {
-		_ = os.Remove(tmpPath)
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -288,7 +295,6 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.clipStore.Add(c); err != nil {
-		_ = os.Remove(tmpPath)
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -298,8 +304,12 @@ func (a *API) handleClipUpload(w http.ResponseWriter, r *http.Request) {
 	finalPath := filepath.Join(dir, finalName)
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		// Metadata is already in store; just log and keep temp name.
+		// Clear tmpPath so defer doesn't remove the file the store references.
+		tmpPath = ""
 		_ = a.clipStore.Update(c.ID, func(cl *clip.Clip) {})
 	} else {
+		// File renamed successfully — clear tmpPath so defer doesn't remove it.
+		tmpPath = ""
 		_ = a.clipStore.Update(c.ID, func(cl *clip.Clip) {
 			cl.Filename = finalName
 		})

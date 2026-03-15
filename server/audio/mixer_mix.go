@@ -17,7 +17,9 @@ import (
 // processed through the full master chain (gain → LUFS → limiter → encode) to
 // avoid double-processing artifacts.
 //
-// Caller must hold m.mu write lock. The lock is held for the entire call.
+// Caller must hold m.mu write lock. In the multi-frame resampling path, the
+// lock is temporarily dropped to call m.recordAndOutput() for intermediate
+// frames, then reacquired. The lock is always held on return.
 // Callers are responsible for calling m.output() after releasing the lock.
 func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 	if len(m.mixBuffer) == 0 {
@@ -118,8 +120,9 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 			return nil
 		}
 
-		// Output all but the last frame directly (still under lock — safe
-		// because output() is a callback that writes to the relay).
+		// Output all but the last frame directly. The lock is dropped
+		// during each output call to avoid holding it across I/O, then
+		// reacquired before proceeding.
 		for _, f := range frames[:len(frames)-1] {
 			m.mu.Unlock()
 			m.recordAndOutput(f)

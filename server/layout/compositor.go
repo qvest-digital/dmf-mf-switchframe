@@ -68,10 +68,13 @@ func NewCompositor(frameW, frameH int) *Compositor {
 // SetLayout atomically sets the current layout. nil clears the layout.
 // Clears stale source fills that are no longer needed by any slot to
 // prevent flashes of old frame data when layouts change.
+//
+// The layout pointer is stored AFTER buffer allocation and fill pruning
+// so that a concurrent ProcessFrame never sees a layout whose buffers
+// haven't been prepared yet.
 func (c *Compositor) SetLayout(l *Layout) {
-	wasBefore := c.Active()
-	c.layout.Store(l)
 	c.mu.Lock()
+	wasBefore := c.hasEnabledSlots(c.layout.Load())
 	if l != nil {
 		c.allocateBuffers(l)
 		// Prune fills for sources not in the new layout.
@@ -90,8 +93,10 @@ func (c *Compositor) SetLayout(l *Layout) {
 		// Layout cleared — drop all fills.
 		c.fills = make(map[string]*fillEntry)
 	}
+	c.layout.Store(l)
+	wasAfter := c.hasEnabledSlots(l)
 	c.mu.Unlock()
-	if wasBefore != c.Active() && c.OnActiveChange != nil {
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
 		c.OnActiveChange()
 	}
 }
@@ -149,7 +154,13 @@ func (c *Compositor) FrameSize() (int, int) { return c.frameW, c.frameH }
 
 // Active returns true if a layout is configured with at least one enabled slot.
 func (c *Compositor) Active() bool {
-	l := c.layout.Load()
+	return c.hasEnabledSlots(c.layout.Load())
+}
+
+// hasEnabledSlots checks if a layout has at least one enabled slot.
+// Pure function — accepts the layout directly so callers that already
+// have the layout reference avoid a redundant atomic load.
+func (c *Compositor) hasEnabledSlots(l *Layout) bool {
 	if l == nil {
 		return false
 	}
@@ -560,7 +571,6 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 
 // SlotOn brings a slot on-air with its configured transition.
 func (c *Compositor) SlotOn(slotIdx int) {
-	wasBefore := c.Active()
 	c.mu.Lock()
 
 	l := c.layout.Load()
@@ -569,11 +579,15 @@ func (c *Compositor) SlotOn(slotIdx int) {
 		return
 	}
 
+	wasBefore := c.hasEnabledSlots(l)
+
 	// Clone layout and enable the slot
 	updated := c.cloneLayout(l)
 	slot := &updated.Slots[slotIdx]
 	slot.Enabled = true
 	c.layout.Store(updated)
+
+	wasAfter := c.hasEnabledSlots(updated)
 
 	switch slot.Transition.Type {
 	case "dissolve":
@@ -601,14 +615,13 @@ func (c *Compositor) SlotOn(slotIdx int) {
 	c.mu.Unlock()
 	// "cut" = no animation, slot is just enabled
 
-	if wasBefore != c.Active() && c.OnActiveChange != nil {
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
 		c.OnActiveChange()
 	}
 }
 
 // SlotOff takes a slot off-air with its configured transition.
 func (c *Compositor) SlotOff(slotIdx int) {
-	wasBefore := c.Active()
 	c.mu.Lock()
 
 	l := c.layout.Load()
@@ -617,8 +630,11 @@ func (c *Compositor) SlotOff(slotIdx int) {
 		return
 	}
 
+	wasBefore := c.hasEnabledSlots(l)
+
 	slot := l.Slots[slotIdx]
 
+	var wasAfter bool
 	switch slot.Transition.Type {
 	case "dissolve":
 		c.animations = append(c.animations, &Animation{
@@ -639,6 +655,8 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
+		// Dissolve: slot is still enabled during animation, active state unchanged.
+		wasAfter = wasBefore
 	case "fly":
 		dest := FlyInOrigin(slot.Rect, c.frameW, c.frameH)
 		c.animations = append(c.animations, &Animation{
@@ -659,14 +677,17 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
+		// Fly: slot is still enabled during animation, active state unchanged.
+		wasAfter = wasBefore
 	default: // "cut"
 		updated := c.cloneLayout(l)
 		updated.Slots[slotIdx].Enabled = false
 		c.layout.Store(updated)
+		wasAfter = c.hasEnabledSlots(updated)
 	}
 	c.mu.Unlock()
 
-	if wasBefore != c.Active() && c.OnActiveChange != nil {
+	if wasBefore != wasAfter && c.OnActiveChange != nil {
 		c.OnActiveChange()
 	}
 }

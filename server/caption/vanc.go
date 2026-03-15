@@ -63,11 +63,20 @@ func BuildCDP(pairs []CCPair, seq uint16, frameRate byte) []byte {
 		return nil
 	}
 
+	// cc_count is a 5-bit field (max 31). Each pair produces 2 triples
+	// (field 1 + field 2 null), so max input is 15 pairs → 30 triples.
+	if len(pairs) > 15 {
+		pairs = pairs[:15]
+	}
+
 	if frameRate == 0 {
 		frameRate = cdpFrameRate2997
 	}
 
-	ccCount := len(pairs)
+	// Each input pair produces 2 cc_data triples: field 1 data + field 2 null.
+	// This matches the SEI path (BuildSEINALU) and ensures decoder compatibility
+	// with broadcast VANC receivers that expect paired field 1 + field 2 entries.
+	ccCount := len(pairs) * 2
 
 	// CDP layout:
 	// Header: magic(2) + length(1) + frame_rate(1) + flags(1) + seq(2) = 7
@@ -109,11 +118,17 @@ func BuildCDP(pairs []CCPair, seq uint16, frameRate byte) []byte {
 	pos++
 
 	// cc_data triples: [cc_valid|cc_type] [cc_data_1] [cc_data_2].
+	// Each input pair emits a field 1 data triple followed by a field 2 null triple.
 	for _, pair := range pairs {
-		// cc_valid=1, cc_type=00 (CEA-608 field 1): 0xFC
+		// Field 1: cc_valid(1) | cc_type=0b00 (CEA-608 field 1) → 0xFC
 		buf[pos] = 0xFC
 		buf[pos+1] = pair.Data[0]
 		buf[pos+2] = pair.Data[1]
+		pos += 3
+		// Field 2 null: cc_valid(0) | cc_type=0b01 (CEA-608 field 2) → 0xF9
+		buf[pos] = 0xF9
+		buf[pos+1] = 0x80
+		buf[pos+2] = 0x80
 		pos += 3
 	}
 

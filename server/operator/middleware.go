@@ -27,24 +27,31 @@ var endpointSubsystemMap = map[string]Subsystem{
 	"/api/replay/mark-out":            SubsystemReplay,
 	"/api/replay/play":                SubsystemReplay,
 	"/api/replay/stop":                SubsystemReplay,
-	"/api/graphics/on":                SubsystemGraphics,
-	"/api/graphics/off":               SubsystemGraphics,
-	"/api/graphics/auto-on":           SubsystemGraphics,
-	"/api/graphics/auto-off":          SubsystemGraphics,
-	"/api/graphics/frame":             SubsystemGraphics,
+	"/api/format":                     SubsystemSwitching,
+	"/api/encoder":                    SubsystemSwitching,
+	"/api/layout":                     SubsystemSwitching,
+	"/api/output/destinations":        SubsystemOutput,
 }
 
 // endpointPrefixSubsystemMap maps path prefixes to subsystems,
 // used for endpoints with path parameters (e.g., /api/audio/{source}/eq).
+// Order matters: more specific prefixes must come before less specific ones
+// (e.g., /api/output/destinations/ before /api/output/ if both existed).
 var endpointPrefixSubsystemMap = []struct {
 	prefix    string
 	subsystem Subsystem
 }{
 	{"/api/audio/", SubsystemAudio},
-	{"/api/sources/", SubsystemSwitching}, // label, delay, key
-	{"/api/macros/", SubsystemSwitching},  // macro run
-	{"/api/presets/", SubsystemSwitching}, // preset create, update, delete, recall
-	{"/api/captions/", SubsystemCaptions}, // caption mode, text, clear
+	{"/api/sources/", SubsystemSwitching},           // label, delay, key
+	{"/api/macros/", SubsystemSwitching},             // macro run
+	{"/api/presets/", SubsystemSwitching},            // preset create, update, delete, recall
+	{"/api/captions/", SubsystemCaptions},            // caption mode, text, clear
+	{"/api/graphics/", SubsystemGraphics},            // layer on/off/frame/animate/fly/image
+	{"/api/layout/", SubsystemSwitching},             // PIP slots, layout presets
+	{"/api/output/destinations/", SubsystemOutput},   // multi-destination SRT
+	{"/api/clips/", SubsystemSwitching},              // clip CRUD, player controls
+	{"/api/scte35/", SubsystemOutput},                // SCTE-35 ad insertion
+	{"/api/stinger/", SubsystemGraphics},             // stinger upload/delete/cut-point
 }
 
 // EndpointSubsystem maps an API path to its subsystem. Returns the subsystem

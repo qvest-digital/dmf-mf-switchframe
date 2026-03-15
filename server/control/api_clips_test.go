@@ -840,6 +840,44 @@ func TestHandleClipPlayerLoopInvalidJSON(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestHandleClipUploadTempFileCleanup(t *testing.T) {
+	// Verify that temp files created during upload are cleaned up when the
+	// handler exits with an error (e.g., unsupported format, validation failure,
+	// context cancellation).
+	api, store, _ := setupTestAPIWithClips(t)
+	dir := store.Dir()
+
+	// Count files in dir before upload.
+	filesBefore, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	// Create a multipart upload with an unsupported extension.
+	// The handler will create a temp file, write it, then fail validation.
+	// The deferred cleanup should remove the temp file.
+	body := &strings.Builder{}
+	boundary := "testboundary"
+	body.WriteString("--" + boundary + "\r\n")
+	body.WriteString("Content-Disposition: form-data; name=\"file\"; filename=\"test.ts\"\r\n")
+	body.WriteString("Content-Type: video/mp2t\r\n\r\n")
+	body.WriteString("not a real TS file content")
+	body.WriteString("\r\n--" + boundary + "--\r\n")
+
+	req := httptest.NewRequest("POST", "/api/clips/upload", strings.NewReader(body.String()))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	// The request should fail (invalid TS file won't validate).
+	// But the temp file should be cleaned up by the deferred removal.
+	filesAfter, err := os.ReadDir(dir)
+	require.NoError(t, err)
+
+	// No new files should remain in the directory (temp file cleaned up).
+	require.Len(t, filesAfter, len(filesBefore),
+		"temp file should be cleaned up on error; files before=%d, after=%d",
+		len(filesBefore), len(filesAfter))
+}
+
 func TestHandleClipUploadConcurrentRejection(t *testing.T) {
 	api, _, _ := setupTestAPIWithClips(t)
 

@@ -193,6 +193,58 @@ func TestPipelineCodecs_ForwardPTSJumpReseeds(t *testing.T) {
 		"next frame should continue from reseeded PTS")
 }
 
+func TestPipelineCodecs_OutputPTSWrapsAt33Bits(t *testing.T) {
+	// Bug: pc.lastOutputPTS grows unbounded past the 33-bit PTS range
+	// after ~26.5 hours of continuous operation. The pipeline must mask
+	// lastOutputPTS to 33 bits to prevent corrupted timestamps.
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	mkFrame := func(pts int64) *ProcessingFrame {
+		return &ProcessingFrame{
+			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+			PTS: pts, DTS: pts, IsKeyframe: true, Codec: "h264",
+		}
+	}
+
+	// Set lastOutputPTS near the 33-bit boundary by encoding a frame there.
+	nearBoundary := ptsMask33 - 6000
+	f1, err := pc.encode(mkFrame(nearBoundary), true)
+	require.NoError(t, err)
+	require.NotNil(t, f1)
+
+	// Encode subsequent frames that would push past 2^33.
+	// Default frame duration at 30000/1001 fps = 3003 ticks.
+	// After 3 more frames: nearBoundary + 3*3003 = ptsMask33 - 6000 + 9009
+	// = ptsMask33 + 3009, which exceeds 33 bits.
+	var outputPTS []int64
+	for i := 1; i <= 5; i++ {
+		pts := nearBoundary + int64(i)*3003
+		f, err := pc.encode(mkFrame(pts), true)
+		require.NoError(t, err)
+		require.NotNil(t, f)
+		outputPTS = append(outputPTS, f.PTS)
+	}
+
+	// All output PTS values must be within the 33-bit range.
+	for i, p := range outputPTS {
+		require.LessOrEqual(t, p, ptsMask33,
+			"output PTS[%d]=%d exceeds 33-bit range (max %d)", i, p, ptsMask33)
+		require.GreaterOrEqual(t, p, int64(0),
+			"output PTS[%d]=%d is negative", i, p)
+	}
+
+	// lastOutputPTS should also be within range.
+	pc.mu.Lock()
+	lastPTS := pc.lastOutputPTS
+	pc.mu.Unlock()
+	require.LessOrEqual(t, lastPTS, ptsMask33,
+		"lastOutputPTS=%d exceeds 33-bit range", lastPTS)
+}
+
 func TestPipelineCodecs_DefaultBitrateForResolution(t *testing.T) {
 	require.Equal(t, 10_000_000, defaultBitrateForResolution(1920, 1080), "1080p should default to 10 Mbps")
 	require.Equal(t, 6_000_000, defaultBitrateForResolution(1280, 720), "720p should default to 6 Mbps")
