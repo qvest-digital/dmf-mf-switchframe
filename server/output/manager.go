@@ -403,17 +403,18 @@ func (m *Manager) RemoveDestination(id string) error {
 		return ErrDestinationNotFound
 	}
 
-	// If active, stop it.
+	// If active, stop it. Must hold dest.mu to read dest.active consistently
+	// with StartDestination/StopDestination which modify it under dest.mu.
 	var adapterToClose Adapter
 	var stale []*AsyncAdapter
+	dest.mu.Lock()
 	if dest.active {
-		dest.mu.Lock()
 		adapterToClose = dest.adapter
 		dest.adapter = nil
 		dest.async = nil
 		dest.active = false
-		dest.mu.Unlock()
 	}
+	dest.mu.Unlock()
 
 	// Remove from map before rebuild so rebuildAdaptersLocked won't
 	// iterate over the stale destination entry.

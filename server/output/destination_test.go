@@ -441,3 +441,88 @@ func TestGenerateDestinationID(t *testing.T) {
 	require.Len(t, id2, 8)
 	require.NotEqual(t, id1, id2, "IDs should be unique")
 }
+
+// TestOutputManager_RemoveDestination_ConcurrentStartStop exercises concurrent
+// StartDestination, StopDestination, and RemoveDestination calls to verify
+// dest.active is consistently protected by dest.mu under the race detector.
+func TestOutputManager_RemoveDestination_ConcurrentStartStop(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		config := DestinationConfig{
+			Type:    "srt-caller",
+			Address: "192.168.1.100",
+			Port:    9000 + i,
+		}
+
+		id, err := mgr.AddDestination(config)
+		require.NoError(t, err)
+
+		// Use a barrier so all goroutines start at the same instant.
+		barrier := make(chan struct{})
+		done := make(chan struct{}, 3)
+
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-barrier
+			_ = mgr.StartDestination(id)
+		}()
+
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-barrier
+			_ = mgr.StopDestination(id)
+		}()
+
+		go func() {
+			defer func() { done <- struct{}{} }()
+			<-barrier
+			_ = mgr.RemoveDestination(id)
+		}()
+
+		close(barrier)
+		<-done
+		<-done
+		<-done
+
+		// Cleanup: if start won the race, the destination might still exist.
+		_ = mgr.RemoveDestination(id)
+	}
+}
+
+// TestOutputManager_RemoveDestination_ActiveFieldConsistency verifies that
+// RemoveDestination properly reads dest.active under dest.mu, ensuring the
+// adapter is stopped when the destination is active at removal time.
+func TestOutputManager_RemoveDestination_ActiveFieldConsistency(t *testing.T) {
+	relay := newTestRelay()
+	mgr := NewManager(relay)
+	defer func() { _ = mgr.Close() }()
+
+	config := DestinationConfig{
+		Type:    "srt-caller",
+		Address: "192.168.1.100",
+		Port:    9000,
+	}
+
+	id, err := mgr.AddDestination(config)
+	require.NoError(t, err)
+
+	// Start the destination.
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Verify it has an active adapter by checking muxer is running.
+	mgr.mu.Lock()
+	require.NotNil(t, mgr.viewer, "viewer should be running with active destination")
+	mgr.mu.Unlock()
+
+	// Remove while active -- should stop the adapter.
+	err = mgr.RemoveDestination(id)
+	require.NoError(t, err)
+
+	// Destination should no longer exist.
+	_, err = mgr.GetDestination(id)
+	require.ErrorIs(t, err, ErrDestinationNotFound)
+}
