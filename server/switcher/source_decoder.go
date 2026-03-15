@@ -40,6 +40,13 @@ type sourceDecoder struct {
 	// FramePool for YUV buffer allocation (nil-safe: falls back to make)
 	pool *FramePool
 
+	// Pipeline format for per-source resolution normalization.
+	// Shared pointer from Switcher — reads are lock-free via atomic.Load().
+	pipelineFormat *atomic.Pointer[PipelineFormat]
+
+	// Reusable buffer for resolution scaling (lazy-allocated on first use).
+	scaleBuf []byte
+
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
 	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
@@ -58,7 +65,9 @@ type sourceDecoder struct {
 
 // newSourceDecoder creates a decoder for the given source key, starts its
 // decode goroutine, and returns the decoder. Returns nil if the factory fails.
-func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool) *sourceDecoder {
+// pipelineFormat is the shared atomic pointer from Switcher for per-source
+// resolution normalization (may be nil if no normalization is needed).
+func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool, pipelineFormat *atomic.Pointer[PipelineFormat]) *sourceDecoder {
 	dec, err := factory()
 	if err != nil {
 		slog.Warn("source decoder creation failed", "source", key, "error", err)
@@ -66,12 +75,13 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 	}
 
 	sd := &sourceDecoder{
-		sourceKey: key,
-		decoder:   dec,
-		ch:        make(chan decoderInput, 2),
-		callback:  callback,
-		done:      make(chan struct{}),
-		pool:      pool,
+		sourceKey:      key,
+		decoder:        dec,
+		ch:             make(chan decoderInput, 2),
+		callback:       callback,
+		done:           make(chan struct{}),
+		pool:           pool,
+		pipelineFormat: pipelineFormat,
 	}
 	go sd.decodeLoop()
 	return sd

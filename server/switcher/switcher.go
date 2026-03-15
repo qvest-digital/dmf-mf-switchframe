@@ -1920,7 +1920,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat)
 		if sd != nil {
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
