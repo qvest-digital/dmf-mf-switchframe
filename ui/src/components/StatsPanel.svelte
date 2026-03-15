@@ -187,8 +187,35 @@
 		bytesUsed: number;
 	}
 
+	interface SRTSourceStatsSnapshot {
+		mode: string;
+		streamID: string;
+		remoteAddr?: string;
+		state: string;
+		connected: boolean;
+		uptimeMs: number;
+		latencyMs: number;
+		negotiatedLatencyMs: number;
+		rttMs: number;
+		rttVarMs: number;
+		recvRateMbps: number;
+		lossRatePct: number;
+		packetsReceived: number;
+		packetsLost: number;
+		packetsDropped: number;
+		packetsRetransmitted: number;
+		packetsBelated: number;
+		recvBufMs: number;
+		recvBufPackets: number;
+		flightSize: number;
+		reconnectCount?: number;
+	}
+
 	interface DebugSnapshot {
 		uptime_ms?: number;
+		srt?: {
+			srt_sources?: Record<string, SRTSourceStatsSnapshot>;
+		};
 		switcher?: {
 			program_source?: string;
 			preview_source?: string;
@@ -1224,6 +1251,57 @@
 							</button>
 						</div>
 					{/if}
+				</div>
+			{/if}
+
+			<!-- SRT Sources -->
+			{#if snapshot?.srt?.srt_sources && Object.keys(snapshot.srt.srt_sources).length > 0}
+				<div class="section">
+					<div class="section-label">SRT SOURCES</div>
+					<div class="srt-grid">
+						{#each Object.entries(snapshot.srt.srt_sources) as [key, stats]}
+							<div class="srt-card" class:srt-healthy={stats.lossRatePct < 0.1}
+								class:srt-warning={stats.lossRatePct >= 0.1 && stats.lossRatePct < 1}
+								class:srt-critical={stats.lossRatePct >= 1}>
+								<div class="srt-card-header">
+									<span class="srt-key">{key}</span>
+									<span class="srt-badge">{stats.mode}</span>
+									<span class="srt-state" class:connected={stats.state === 'connected'}>
+										{stats.state}
+									</span>
+								</div>
+								<div class="srt-card-stats">
+									<div class="srt-stat">
+										<span class="srt-stat-label">RTT</span>
+										<span class="srt-stat-value">{stats.rttMs?.toFixed(1) ?? '—'}ms</span>
+									</div>
+									<div class="srt-stat">
+										<span class="srt-stat-label">Loss</span>
+										<span class="srt-stat-value">{(stats.lossRatePct ?? 0).toFixed(3)}%</span>
+									</div>
+									<div class="srt-stat">
+										<span class="srt-stat-label">Bitrate</span>
+										<span class="srt-stat-value">{(stats.recvRateMbps ?? 0).toFixed(1)} Mbps</span>
+									</div>
+									<div class="srt-stat">
+										<span class="srt-stat-label">Buffer</span>
+										<span class="srt-stat-value">{(stats.recvBufMs ?? 0).toFixed(0)}ms</span>
+									</div>
+									<div class="srt-stat">
+										<span class="srt-stat-label">Packets</span>
+										<span class="srt-stat-value">{(stats.packetsReceived ?? 0).toLocaleString()}</span>
+									</div>
+									<div class="srt-stat">
+										<span class="srt-stat-label">Lost</span>
+										<span class="srt-stat-value">{stats.packetsLost ?? 0}</span>
+									</div>
+								</div>
+								{#if stats.remoteAddr}
+									<div class="srt-remote">{stats.remoteAddr}</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
 				</div>
 			{/if}
 
@@ -3059,6 +3137,84 @@
 
 	.browser-dim {
 		color: var(--text-tertiary);
+		opacity: 0.5;
+	}
+
+	/* --- SRT Sources --- */
+	.srt-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.srt-card {
+		padding: 8px 10px;
+		border-left: 3px solid var(--color-green, #4ade80);
+		background: var(--color-surface-2, #1e1e2e);
+		border-radius: 4px;
+	}
+
+	.srt-card.srt-warning {
+		border-left-color: var(--color-yellow, #facc15);
+	}
+
+	.srt-card.srt-critical {
+		border-left-color: var(--color-red, #f87171);
+	}
+
+	.srt-card-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 6px;
+	}
+
+	.srt-key {
+		font-weight: 600;
+		font-size: 0.9em;
+	}
+
+	.srt-badge {
+		font-size: 0.75em;
+		padding: 1px 6px;
+		border-radius: 3px;
+		background: var(--color-surface-3, #2a2a3e);
+		opacity: 0.7;
+	}
+
+	.srt-state {
+		margin-left: auto;
+		font-size: 0.8em;
+		color: var(--color-red, #f87171);
+	}
+
+	.srt-state.connected {
+		color: var(--color-green, #4ade80);
+	}
+
+	.srt-card-stats {
+		display: grid;
+		grid-template-columns: 1fr 1fr 1fr;
+		gap: 4px;
+	}
+
+	.srt-stat {
+		display: flex;
+		justify-content: space-between;
+		font-size: 0.8em;
+	}
+
+	.srt-stat-label {
+		opacity: 0.6;
+	}
+
+	.srt-stat-value {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.srt-remote {
+		margin-top: 4px;
+		font-size: 0.75em;
 		opacity: 0.5;
 	}
 </style>
