@@ -151,7 +151,6 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 
 	log := r.config.Logger
 	timeoutNs := uint64(r.config.TimeoutMs) * 1_000_000
-	config := flow.ConfigInfo()
 
 	// Start reading from the current head position.
 	index, err := flow.HeadIndex()
@@ -228,12 +227,6 @@ func (r *Reader) videoLoop(ctx context.Context, flow DiscreteReader) {
 			Height:   r.config.Height,
 			PTS:      pts,
 			ReadTime: readTime,
-		}
-
-		// If width/height not configured, derive from config.
-		if grain.Width == 0 && len(config.SliceSizes) > 0 && config.SliceSizes[0] > 0 {
-			grain.Width = r.config.Width
-			grain.Height = r.config.Height
 		}
 
 		select {

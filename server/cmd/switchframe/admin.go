@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers on http.DefaultServeMux.
+	"os"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -17,10 +18,13 @@ import (
 
 func init() {
 	// Enable mutex and block profiling for pprof analysis.
-	// Fraction=5 means ~20% of mutex contention events are sampled.
-	runtime.SetMutexProfileFraction(5)
-	// Rate=1000 means block events >= 1µs are recorded.
-	runtime.SetBlockProfileRate(1000)
+	// Only enabled when SWITCHFRAME_PROFILING=1 to avoid overhead in production.
+	if os.Getenv("SWITCHFRAME_PROFILING") == "1" {
+		// Fraction=5 means ~20% of mutex contention events are sampled.
+		runtime.SetMutexProfileFraction(5)
+		// Rate=1000 means block events >= 1µs are recorded.
+		runtime.SetBlockProfileRate(1000)
+	}
 }
 
 // readyFlag is set to true once all components are initialized and the server
