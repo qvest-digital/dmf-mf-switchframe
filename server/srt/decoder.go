@@ -147,6 +147,14 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
         return -4;
     }
 
+    // Limit probe to avoid consuming too much data from the live SRT
+    // stream. Default probesize (5MB) causes avformat to read far ahead
+    // of real-time. 500 TS packets (~94KB) is enough to find PAT/PMT +
+    // video and audio PES headers. 1.5 seconds analyze duration gives
+    // enough time to detect both streams reliably.
+    h->fmt_ctx->probesize = 188 * 500;
+    h->fmt_ctx->max_analyze_duration = 1500000; // 1.5 seconds (µs)
+
     // Find stream info (probes the stream for codec parameters).
     ret = avformat_find_stream_info(h->fmt_ctx, NULL);
     if (ret < 0) {
@@ -170,10 +178,15 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
         goto fail;
     }
 
-    // Determine thread count: default auto (capped at 4).
+    // Thread count for live streaming: default 1 for immediate per-frame
+    // output. Frame-level threading (N threads) buffers N frames before
+    // producing output, creating ~N*41ms burst/gap patterns (e.g., 4 threads
+    // = 165ms gaps at 24fps). For live SRT input, low latency matters more
+    // than decode throughput. Single-threaded H.264 decode at 720p/1080p
+    // is fast enough for 24-30fps on modern hardware.
     int thread_count = max_threads;
     if (thread_count <= 0) {
-        thread_count = 4;
+        thread_count = 1;
     }
     if (thread_count > 4) {
         thread_count = 4;
