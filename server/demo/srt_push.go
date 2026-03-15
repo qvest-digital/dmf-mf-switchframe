@@ -163,27 +163,56 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 			ptsOffset += loopPTSDelta
 		}
 
-		for _, unit := range units {
+		for i, unit := range units {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 
-			// Compute wall-clock send time from PTS.
+			// Compute the time window for this access unit: from its PTS
+			// to the next unit's PTS. Spread TS packet sends evenly across
+			// this window to simulate real encoder CBR delivery. This prevents
+			// SRT's TSBPD from seeing burst arrivals (which it delivers as
+			// bursts after the latency delay, causing ~165ms gaps).
+			var unitStartTime, unitEndTime time.Time
 			if unit.pts >= 0 {
 				sendPTS := unit.pts + ptsOffset
-				target := pacingTarget(anchorWall, anchorPTS, sendPTS)
-				now := time.Now()
-				if target.After(now) {
-					sleepCtx(ctx, target.Sub(now))
-					if ctx.Err() != nil {
-						return ctx.Err()
-					}
+				unitStartTime = pacingTarget(anchorWall, anchorPTS, sendPTS)
+
+				// Next unit's PTS (or end of file = start + frame duration)
+				nextPTS := sendPTS + 3750 // default: 1 frame at 24fps
+				if i+1 < len(units) && units[i+1].pts >= 0 {
+					nextPTS = units[i+1].pts + ptsOffset
 				}
+				unitEndTime = pacingTarget(anchorWall, anchorPTS, nextPTS)
 			}
 
-			// Send all packets in this access unit as a burst,
-			// chunked to SRT payload size.
+			// Count TS packets in this unit for even distribution.
+			unitBytes := unit.end - unit.start
+			numChunks := (unitBytes + srtChunkSize - 1) / srtChunkSize
+			if numChunks < 1 {
+				numChunks = 1
+			}
+
+			// Send TS packets spread evenly across the time window.
+			chunkIdx := 0
 			for off := unit.start; off < unit.end; {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				// Compute per-packet send time (linear interpolation).
+				if !unitStartTime.IsZero() && !unitEndTime.IsZero() {
+					frac := float64(chunkIdx) / float64(numChunks)
+					target := unitStartTime.Add(time.Duration(frac * float64(unitEndTime.Sub(unitStartTime))))
+					now := time.Now()
+					if target.After(now) {
+						sleepCtx(ctx, target.Sub(now))
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
+					}
+				}
+
 				end := off + srtChunkSize
 				if end > unit.end {
 					end = unit.end
@@ -193,6 +222,7 @@ func streamFileLoop(ctx context.Context, conn *srtgo.Conn, filePath string, log 
 					return err
 				}
 				off = end
+				chunkIdx++
 			}
 		}
 	}
