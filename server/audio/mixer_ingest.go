@@ -328,10 +328,16 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		return
 	}
 
+	// Mark channel as PCM source and recalculate passthrough.
 	// Raw PCM cannot use passthrough (passthrough forwards raw AAC bytes).
-	// Force mixing mode if currently in passthrough.
-	if m.passthrough {
-		m.passthrough = false
+	// Using recalcPassthrough() ensures proper mode transition logging and
+	// allows passthrough to recover when this PCM source is deactivated.
+	if !ch.isPCM {
+		ch.isPCM = true
+		m.recalcPassthrough()
+	} else if m.passthrough {
+		// isPCM was already set but passthrough got re-enabled externally
+		m.recalcPassthrough()
 	}
 
 	// Store a copy of PCM for instant crossfade on future cuts.

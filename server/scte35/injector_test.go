@@ -2482,3 +2482,66 @@ func TestInjector_OnSpliceOut_CalledForTimeSignalCueOut(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, called, "OnSpliceOut should be called for time_signal with cue-out descriptor")
 }
+
+func TestInjector_MaxActiveEvents(t *testing.T) {
+	t.Parallel()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 8100000 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		MaxActiveEvents:   10,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Inject 10 events without auto-return — should all succeed.
+	for i := uint32(1); i <= 10; i++ {
+		msg := NewSpliceInsert(i, 0, true, false) // no auto-return, no duration
+		_, err := inj.InjectCue(msg)
+		require.NoError(t, err, "event %d should succeed", i)
+	}
+
+	// Verify all 10 are tracked.
+	ids := inj.ActiveEventIDs()
+	require.Len(t, ids, 10)
+
+	// 11th event should be rejected.
+	msg := NewSpliceInsert(11, 0, true, false)
+	_, err := inj.InjectCue(msg)
+	require.Error(t, err, "should reject when max active events exceeded")
+	require.Contains(t, err.Error(), "active events limit")
+
+	// After returning one, the next should succeed.
+	err = inj.ReturnToProgram(1)
+	require.NoError(t, err)
+
+	msg = NewSpliceInsert(12, 0, true, false)
+	_, err = inj.InjectCue(msg)
+	require.NoError(t, err, "should succeed after returning an event")
+}
+
+func TestInjector_MaxActiveEvents_DefaultLimit(t *testing.T) {
+	t.Parallel()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	// Default config (MaxActiveEvents=0 means use default of 256).
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	// Should be able to inject many events up to the default limit.
+	for i := uint32(1); i <= 256; i++ {
+		msg := NewSpliceInsert(i, 0, true, false)
+		_, err := inj.InjectCue(msg)
+		require.NoError(t, err, "event %d should succeed within default limit", i)
+	}
+
+	// 257th should fail.
+	msg := NewSpliceInsert(257, 0, true, false)
+	_, err := inj.InjectCue(msg)
+	require.Error(t, err, "should reject at default limit")
+}

@@ -191,6 +191,112 @@ func TestIngestPCM_MutedChannelSkipped(t *testing.T) {
 	mu.Unlock()
 }
 
+func TestIngestPCM_PassthroughRecalculatedAfterDisable(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: make([]float32, 2048)}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Set up one AAC source in passthrough-eligible state.
+	m.AddChannel("aac1")
+	m.SetActive("aac1", true)
+
+	// Also add a PCM source.
+	m.AddChannel("mxl1")
+	m.SetActive("mxl1", true)
+
+	// Passthrough should be false (two active sources).
+	m.mu.RLock()
+	require.False(t, m.passthrough, "two active sources should not be passthrough")
+	m.mu.RUnlock()
+
+	// IngestPCM forces passthrough=false.
+	pcm := make([]float32, 2048)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
+
+	m.mu.RLock()
+	require.False(t, m.passthrough, "passthrough should be false during PCM ingest")
+	m.mu.RUnlock()
+
+	// Now deactivate the PCM source, leaving only the AAC source.
+	// This triggers recalcPassthrough, which should re-enable passthrough.
+	m.SetActive("mxl1", false)
+
+	m.mu.RLock()
+	require.True(t, m.passthrough, "passthrough should be re-enabled with single AAC source at 0dB")
+	m.mu.RUnlock()
+
+	// Now send another PCM frame — this should disable passthrough again.
+	// After IngestPCM, the passthrough flag should be properly computed,
+	// not just hard-coded to false.
+	m.SetActive("mxl1", true)
+
+	// With 2 active sources, passthrough should be false anyway.
+	m.mu.RLock()
+	require.False(t, m.passthrough, "two active sources should not be passthrough")
+	m.mu.RUnlock()
+
+	// Deactivate PCM source again — passthrough should recover.
+	m.SetActive("mxl1", false)
+	m.mu.RLock()
+	require.True(t, m.passthrough, "passthrough should recover after PCM source deactivated")
+	m.mu.RUnlock()
+}
+
+// TestIngestPCM_PassthroughRecalcOnSinglePCMSource verifies that when a single
+// PCM source is the only active source, passthrough remains false (PCM can't use
+// passthrough which forwards raw AAC bytes), and mode transitions are logged.
+func TestIngestPCM_PassthroughRecalcOnSinglePCMSource(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output:     func(frame *media.AudioFrame) {},
+		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
+			return &mockDecoder{samples: make([]float32, 2048)}, nil
+		},
+		EncoderFactory: func(sampleRate, channels int) (Encoder, error) {
+			return &mockEncoder{data: []byte{0xFF}}, nil
+		},
+	})
+	defer func() { _ = m.Close() }()
+
+	// Only one PCM source, passthrough starts true.
+	m.AddChannel("mxl1")
+	m.SetActive("mxl1", true)
+
+	m.mu.RLock()
+	wasPassthrough := m.passthrough
+	m.mu.RUnlock()
+	require.True(t, wasPassthrough, "passthrough should start true for single active source at 0dB")
+
+	// IngestPCM should disable passthrough via recalcPassthrough() and log
+	// the mode transition.
+	initialTransitions := m.modeTransitions.Load()
+
+	pcm := make([]float32, 2048)
+	m.IngestPCM("mxl1", pcm, 1000, 2)
+
+	m.mu.RLock()
+	require.False(t, m.passthrough, "passthrough must be false when PCM source is active")
+	m.mu.RUnlock()
+
+	// Verify that a mode transition was logged (recalcPassthrough logs transitions).
+	require.Greater(t, m.modeTransitions.Load(), initialTransitions,
+		"recalcPassthrough should have logged a mode transition")
+}
+
 func TestIngestPCM_InactiveChannelSkipped(t *testing.T) {
 	t.Parallel()
 

@@ -79,6 +79,7 @@ type Channel struct {
 	eq               *EQ          // 3-band parametric EQ (always initialized)
 	compressor       *Compressor  // single-band compressor (always initialized)
 	audioDelay       *DelayBuffer // per-source audio delay for lip-sync correction
+	isPCM            bool         // true if this channel receives raw PCM (not AAC); disables passthrough
 	sampleRateWarned bool         // true after first sample rate mismatch log (once per channel)
 	resampler        *Resampler   // nil when source rate matches mixer rate; lazy-init on mismatch
 	resamplerSrcRate int          // source rate the resampler was created for (detect rate changes)

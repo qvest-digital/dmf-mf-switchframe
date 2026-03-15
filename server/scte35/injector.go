@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	errInjectorClosed = errors.New("injector is closed")
-	errNoActiveEvents = errors.New("no active events")
+	errInjectorClosed      = errors.New("injector is closed")
+	errNoActiveEvents      = errors.New("no active events")
+	errActiveEventsLimit   = errors.New("active events limit exceeded")
 )
 
 // InjectorConfig holds injector configuration.
@@ -35,6 +36,12 @@ type InjectorConfig struct {
 	// MaxEventLog is the maximum number of event log entries to retain.
 	// Default: 256.
 	MaxEventLog int
+
+	// MaxActiveEvents is the maximum number of concurrently active events.
+	// Events without auto-return that are never returned or cancelled count
+	// against this limit. When exceeded, InjectCue returns an error.
+	// Default: 256.
+	MaxActiveEvents int
 
 	// VerifyEncoding when true causes encoded SCTE-35 to be decoded back for
 	// CRC-32 verification.
@@ -189,6 +196,9 @@ func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int
 	if config.MaxEventLog <= 0 {
 		config.MaxEventLog = 256
 	}
+	if config.MaxActiveEvents <= 0 {
+		config.MaxActiveEvents = 256
+	}
 
 	startID := config.EventIDStart
 	if startID == 0 {
@@ -279,6 +289,14 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 	if inj.closed.Load() {
 		inj.mu.Unlock()
 		return 0, errInjectorClosed
+	}
+
+	// Enforce active events limit to prevent unbounded map growth from events
+	// that have AutoReturn=false and are never explicitly returned or cancelled.
+	if len(inj.activeEvents) >= inj.config.MaxActiveEvents {
+		inj.mu.Unlock()
+		return 0, fmt.Errorf("%w: %d active (max %d)", errActiveEventsLimit,
+			len(inj.activeEvents), inj.config.MaxActiveEvents)
 	}
 
 	// Auto-assign event ID for splice_insert if not set.
