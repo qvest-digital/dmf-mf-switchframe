@@ -780,6 +780,105 @@ func TestSourceDecoder_SkipsScaleWhenResolutionMatches(t *testing.T) {
 	}
 }
 
+func TestSourceDecoder_PipelineFormatChangeUpdatesScaling(t *testing.T) {
+	// Integration test: verify that when the pipeline format changes at runtime
+	// (via atomic store), the decoder picks up the new format on the very next
+	// frame and outputs at the new resolution.
+	//
+	// Sequence:
+	//   1. Pipeline format = 640x480, decoder outputs 320x240 → scaled to 640x480
+	//   2. Atomic store pipeline format = 1280x720
+	//   3. Next decoded frame → scaled to 1280x720
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	var pfPtr atomic.Pointer[PipelineFormat]
+	initialFormat := &PipelineFormat{Width: 640, Height: 480, FPSNum: 30, FPSDen: 1, Name: "480p30"}
+	pfPtr.Store(initialFormat)
+
+	sd := newSourceDecoder("cam1", factory, callback, nil, &pfPtr)
+	if sd == nil {
+		t.Fatal("newSourceDecoder returned nil")
+	}
+	defer sd.Close()
+
+	makeFrame := func(pts int64, groupID uint32) *media.VideoFrame {
+		return &media.VideoFrame{
+			PTS:        pts,
+			DTS:        pts,
+			IsKeyframe: true,
+			WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+			SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+			PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+			Codec:      "h264",
+			GroupID:    groupID,
+		}
+	}
+
+	waitForN := func(n int) {
+		deadline := time.After(2 * time.Second)
+		for {
+			mu.Lock()
+			count := len(received)
+			mu.Unlock()
+			if count >= n {
+				return
+			}
+			select {
+			case <-deadline:
+				t.Fatalf("timeout waiting for %d frames, got %d", n, count)
+			default:
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}
+
+	// Step 1: Send first frame with pipeline format 640x480.
+	sd.Send(makeFrame(90000, 1), 0)
+	waitForN(1)
+
+	mu.Lock()
+	frame1 := received[0]
+	mu.Unlock()
+
+	if frame1.Width != 640 || frame1.Height != 480 {
+		t.Errorf("frame 1: dimensions = %dx%d, want 640x480", frame1.Width, frame1.Height)
+	}
+	expectedSize1 := 640 * 480 * 3 / 2
+	if len(frame1.YUV) != expectedSize1 {
+		t.Errorf("frame 1: YUV size = %d, want %d", len(frame1.YUV), expectedSize1)
+	}
+
+	// Step 2: Change pipeline format to 1280x720.
+	newFormat := &PipelineFormat{Width: 1280, Height: 720, FPSNum: 60, FPSDen: 1, Name: "720p60"}
+	pfPtr.Store(newFormat)
+
+	// Step 3: Send second frame — should be scaled to 1280x720.
+	sd.Send(makeFrame(180000, 2), 0)
+	waitForN(2)
+
+	mu.Lock()
+	frame2 := received[1]
+	mu.Unlock()
+
+	if frame2.Width != 1280 || frame2.Height != 720 {
+		t.Errorf("frame 2: dimensions = %dx%d, want 1280x720", frame2.Width, frame2.Height)
+	}
+	expectedSize2 := 1280 * 720 * 3 / 2
+	if len(frame2.YUV) != expectedSize2 {
+		t.Errorf("frame 2: YUV size = %d, want %d", len(frame2.YUV), expectedSize2)
+	}
+}
+
 func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	// Bug 3: If decoded frame is larger than pool buffer (e.g., 4K source
 	// with 1080p pool), buf[:yuvSize] panics because yuvSize > cap(buf).
