@@ -18,6 +18,9 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if strings.HasPrefix(key, "mxl:") {
 		return // MXL sources are manually wired in initMXL()
 	}
+	if strings.HasPrefix(key, "srt:") {
+		return // SRT sources are manually wired in app_srt.go wireSRTSource()
+	}
 	if strings.HasPrefix(key, "clip:") {
 		return // Clip sources are manually wired in initClips()
 	}
@@ -50,6 +53,9 @@ func (a *App) onStreamUnregistered(key string) {
 	}
 	if strings.HasPrefix(key, "clip:") {
 		return // Clip sources are managed by clipMgr lifecycle callbacks
+	}
+	if strings.HasPrefix(key, "srt:") {
+		return // SRT sources are managed by app_srt.go lifecycle
 	}
 
 	if a.sw == nil || a.mixer == nil {

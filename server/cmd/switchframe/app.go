@@ -1006,7 +1006,13 @@ func (a *App) Run(ctx context.Context) error {
 			if len(validClips) > 0 {
 				// Give the SRT listener a moment to start accepting connections.
 				time.Sleep(200 * time.Millisecond)
-				go demo.StartSRTSources(ctx, a.cfg.SRTListen, validClips, slog.Default())
+				// Use explicit IPv4 loopback — ":6464" resolves to IPv6 on macOS
+				// which may not have a route.
+				dialAddr := a.cfg.SRTListen
+				if strings.HasPrefix(dialAddr, ":") {
+					dialAddr = "127.0.0.1" + dialAddr
+				}
+				go demo.StartSRTSources(ctx, dialAddr, validClips, slog.Default())
 				slog.Info("demo: SRT push sources started", "clips", len(validClips), "addr", a.cfg.SRTListen)
 			}
 		}
