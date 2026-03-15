@@ -155,6 +155,44 @@ func TestReleaseYUVUnderflowLogsAndLeaks(t *testing.T) {
 	require.Equal(t, int32(-1), copy1.Refs())
 }
 
+func TestDeepCopyPoolSizeMismatch(t *testing.T) {
+	// Create a small pool (2x2 = 6 bytes YUV420)
+	pool := NewFramePool(4, 2, 2)
+	defer pool.Close()
+
+	// Create a frame with YUV larger than the pool's bufSize (2*2*3/2 = 6 bytes).
+	// Use an 8x8 frame = 96 bytes, which exceeds pool.bufSize of 6.
+	largeYUV := make([]byte, 8*8*3/2)
+	for i := range largeYUV {
+		largeYUV[i] = byte(i % 256)
+	}
+
+	original := &ProcessingFrame{
+		Width:  8,
+		Height: 8,
+		YUV:    largeYUV,
+		PTS:    2000,
+		pool:   pool,
+	}
+
+	// DeepCopy must NOT panic even though len(YUV) > pool.bufSize.
+	// It should fall back to make() instead of pool.Acquire()[:len(YUV)].
+	var copied *ProcessingFrame
+	require.NotPanics(t, func() {
+		copied = original.DeepCopy()
+	})
+
+	// Verify data was copied correctly
+	require.Equal(t, original.YUV, copied.YUV)
+	require.Equal(t, original.Width, copied.Width)
+	require.Equal(t, original.Height, copied.Height)
+	require.Equal(t, original.PTS, copied.PTS)
+
+	// Verify it's a true deep copy
+	copied.YUV[0] = 255
+	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+}
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{

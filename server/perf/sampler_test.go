@@ -3,6 +3,8 @@ package perf
 import (
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // --- Mock providers ---
@@ -414,4 +416,22 @@ func TestSampler_SubStageBreakdown(t *testing.T) {
 	if w1s.W1s.MeanNs != 12_000_000 {
 		t.Errorf("SyncWait 1s mean: got %d, want 12000000", w1s.W1s.MeanNs)
 	}
+}
+
+func TestSamplerDoubleStopNoPanic(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:     map[string]SourceSample{},
+		NodeTimings: map[string]int64{},
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.Start()
+	s.Stop()
+
+	// Second Stop must not panic (double close on channel).
+	require.NotPanics(t, func() {
+		s.Stop()
+	})
 }

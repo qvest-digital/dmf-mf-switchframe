@@ -2047,3 +2047,75 @@ func TestEngineConcurrentAbortAndIngest(t *testing.T) {
 		e.Stop()
 	}
 }
+
+// slowMockDecoder blocks on a channel during Decode to simulate slow decoding.
+// This makes the cleanup() unlock window visible for race testing.
+type slowMockDecoder struct {
+	width, height int
+	blockCh       chan struct{} // decode blocks until this is closed
+}
+
+func (d *slowMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	<-d.blockCh
+	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+}
+
+func (d *slowMockDecoder) Close() {}
+
+func TestCleanupBlocksConcurrentStart(t *testing.T) {
+	blockCh := make(chan struct{})
+
+	e := NewEngine(EngineConfig{
+		DecoderFactory: func() (VideoDecoder, error) {
+			return &slowMockDecoder{width: 4, height: 4, blockCh: blockCh}, nil
+		},
+		Output:     func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete: func(aborted bool) {},
+	})
+
+	// Start the first transition.
+	err := e.Start("cam1", "cam2", Mix, 5000)
+	require.NoError(t, err)
+
+	// Kick off a slow in-flight decode by ingesting a frame.
+	// IngestFrame will Add(1) to decodeWG then block in Decode().
+	go e.IngestFrame("cam2", []byte{0x00, 0x00, 0x00, 0x01, 0x65}, 1000, true)
+
+	// Give IngestFrame time to enter Phase 2 (blocked in Decode).
+	time.Sleep(10 * time.Millisecond)
+
+	// Start Stop() in a goroutine — it will call cleanup() which sets
+	// state=Idle, cleaning=true, unlocks, then blocks on decodeWG.Wait().
+	stopDone := make(chan struct{})
+	go func() {
+		e.Stop()
+		close(stopDone)
+	}()
+
+	// Give cleanup time to reach the unlock+Wait window.
+	time.Sleep(10 * time.Millisecond)
+
+	// Attempt Start() during the cleanup window. With the fix, this must
+	// fail because cleaning==true even though state==Idle.
+	err = e.Start("cam3", "cam4", Mix, 1000)
+	require.Error(t, err, "Start() must fail during cleanup window")
+	require.ErrorIs(t, err, ErrActive)
+
+	// Unblock the slow decode so cleanup can finish.
+	close(blockCh)
+
+	// Wait for Stop() to complete.
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() did not complete in time")
+	}
+
+	// Engine should be idle and usable after cleanup completes.
+	require.Equal(t, StateIdle, e.State())
+
+	// Start should succeed now.
+	err = e.Start("cam5", "cam6", Mix, 1000)
+	require.NoError(t, err, "Start() should succeed after cleanup completes")
+	e.Stop()
+}

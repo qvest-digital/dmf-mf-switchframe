@@ -14,6 +14,7 @@ import "C"
 
 import (
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 )
@@ -67,7 +68,8 @@ func statusError(status C.mxlStatus, context string) error {
 // Instance wraps an MXL SDK instance handle.
 type Instance struct {
 	handle C.mxlInstance
-	stopGC chan struct{} // signals the GC goroutine to stop
+	stopGC chan struct{}    // signals the GC goroutine to stop
+	gcWG   sync.WaitGroup // waits for gcLoop to exit before destroying handle
 }
 
 // NewInstance creates an MXL instance for the given domain path
@@ -81,6 +83,7 @@ func NewInstance(domain string) (*Instance, error) {
 		return nil, fmt.Errorf("mxl: failed to create instance for domain %q", domain)
 	}
 	inst := &Instance{handle: handle, stopGC: make(chan struct{})}
+	inst.gcWG.Add(1)
 	go inst.gcLoop()
 	return inst, nil
 }
@@ -89,6 +92,7 @@ func NewInstance(domain string) (*Instance, error) {
 // from crashed writers. The SDK runs GC once at instance creation, but the
 // docs say it "should be called periodically on a long running application."
 func (inst *Instance) gcLoop() {
+	defer inst.gcWG.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -227,6 +231,7 @@ func (inst *Instance) IsFlowActive(flowID string) (bool, error) {
 func (inst *Instance) Close() error {
 	if inst.handle != nil {
 		close(inst.stopGC)
+		inst.gcWG.Wait() // ensure gcLoop exits before destroying handle
 		status := C.mxlDestroyInstance(inst.handle)
 		inst.handle = nil
 		return statusError(status, "destroy instance")
@@ -292,6 +297,9 @@ func (r *discreteFlowReader) ReadGrain(index uint64, timeoutNs uint64) ([]byte, 
 
 	// Copy payload from shared memory into Go-owned slice.
 	size := int(grain.grainSize)
+	if size == 0 {
+		return nil, info, nil
+	}
 	data := make([]byte, size)
 	C.memcpy(unsafe.Pointer(&data[0]), unsafe.Pointer(payload), C.size_t(size))
 

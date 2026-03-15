@@ -155,7 +155,7 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 	cp := *pf
 	cp.refs = nil // independent lifecycle — new allocation on SetRefs
-	if pf.pool != nil {
+	if pf.pool != nil && len(pf.YUV) <= pf.pool.bufSize {
 		cp.YUV = pf.pool.Acquire()[:len(pf.YUV)]
 	} else {
 		cp.YUV = make([]byte, len(pf.YUV))

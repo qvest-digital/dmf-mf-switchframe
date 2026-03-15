@@ -124,6 +124,10 @@ type Engine struct {
 	// before closing decoders, preventing use-after-free.
 	decodeWG sync.WaitGroup
 
+	// cleaning is true while cleanup() has released the lock to wait for
+	// in-flight decodes. Prevents Start() from succeeding during the window.
+	cleaning bool
+
 	// Watchdog: aborts transition if no frames arrive within timeout
 	timeout      time.Duration // default 10s, configurable via SetTimeout()
 	lastFrameAt  time.Time     // updated in IngestFrame()
@@ -228,7 +232,7 @@ func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.state == StateActive {
+	if e.state == StateActive || e.cleaning {
 		return ErrActive
 	}
 
@@ -946,10 +950,13 @@ func (e *Engine) cleanup() {
 	// Wait for any in-flight Phase 2 decodes to finish before closing
 	// decoders. Release the lock briefly so blocked decoders can proceed
 	// to Phase 3 (which checks state != StateActive and returns early).
+	// Set cleaning=true to prevent Start() from succeeding during the window.
 	e.state = StateIdle // prevents new Phase 3 work
+	e.cleaning = true
 	e.mu.Unlock()
 	e.decodeWG.Wait()
 	e.mu.Lock()
+	e.cleaning = false
 
 	if e.decoderA != nil {
 		e.decoderA.Close()

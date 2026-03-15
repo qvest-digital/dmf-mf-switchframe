@@ -178,6 +178,7 @@ type Sampler struct {
 	startTime time.Time
 	done      chan struct{}
 	wg        sync.WaitGroup
+	stopOnce  sync.Once
 }
 
 // NewSampler creates a Sampler that reads from the given providers.
@@ -209,9 +210,12 @@ func (s *Sampler) Start() {
 }
 
 // Stop signals the sampling goroutine to exit and waits.
+// Safe to call multiple times — subsequent calls are no-ops.
 func (s *Sampler) Stop() {
-	close(s.done)
-	s.wg.Wait()
+	s.stopOnce.Do(func() {
+		close(s.done)
+		s.wg.Wait()
+	})
 }
 
 func (s *Sampler) tickLoop() {
