@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"log/slog"
 	"math"
 	"sync/atomic"
 )
@@ -46,6 +47,9 @@ type LoudnessMeter struct {
 
 	// Reset flag: set by Reset(), cleared by Process()
 	pendingReset atomic.Bool
+
+	// truncationWarned prevents repeated log warnings for integration truncation.
+	truncationWarned bool
 }
 
 // BS.1770-4 K-weighting filter coefficients computed from sample rate
@@ -206,6 +210,13 @@ func (m *LoudnessMeter) emitBlock() {
 
 	const maxIntegratedBlocks = 360_000
 	if len(m.integratedBlocks) >= maxIntegratedBlocks {
+		if !m.truncationWarned {
+			m.truncationWarned = true
+			slog.Warn("LUFS integrated measurement truncated: oldest blocks discarded",
+				"max_blocks", maxIntegratedBlocks,
+				"discarded", maxIntegratedBlocks/2,
+				"approx_hours", float64(maxIntegratedBlocks)/(10*3600))
+		}
 		half := maxIntegratedBlocks / 2
 		copy(m.integratedBlocks, m.integratedBlocks[half:])
 		m.integratedBlocks = m.integratedBlocks[:half]
@@ -354,4 +365,5 @@ func (m *LoudnessMeter) drainReset() {
 	m.shortTermFull = false
 
 	m.integratedBlocks = m.integratedBlocks[:0]
+	m.truncationWarned = false
 }

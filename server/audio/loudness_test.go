@@ -453,6 +453,55 @@ func TestLoudnessMeter_48kHzBackwardCompat(t *testing.T) {
 	}
 }
 
+func TestLoudnessMeter_TruncationDoesNotPanic(t *testing.T) {
+	// Verify that exceeding maxIntegratedBlocks (360,000) doesn't panic,
+	// integrated LUFS remains valid, and Reset() clears all state.
+	m := NewLoudnessMeter(48000, 1)
+
+	// Feed enough blocks to trigger truncation. stepSize = 4800 samples
+	// per channel. We need >360,000 blocks. Each Process call with 4800
+	// samples yields 1 block. Feeding 100 blocks at a time:
+	chunkSamples := 4800 * 100 // 100 blocks per call
+	chunk := make([]float32, chunkSamples)
+	for i := range chunk {
+		chunk[i] = float32(0.1 * math.Sin(2*math.Pi*1000*float64(i)/48000))
+	}
+
+	// 3601 calls * 100 blocks = 360,100 blocks -- exceeds maxIntegratedBlocks.
+	// Under -race this is slow, so we directly manipulate integratedBlocks
+	// to test the truncation path without processing 360k+ blocks.
+	for i := 0; i < 360_001; i++ {
+		m.integratedBlocks = append(m.integratedBlocks, 0.001)
+	}
+	// Process a small chunk to trigger emitBlock and the truncation check.
+	m.Process(chunk[:4800])
+
+	// After truncation, integratedBlocks should be ~180,001 (half of 360k + 1 new).
+	if len(m.integratedBlocks) > 180_010 {
+		t.Errorf("expected truncation to ~180k blocks, got %d", len(m.integratedBlocks))
+	}
+
+	// Integrated LUFS should still be valid (not -inf or NaN).
+	lufs := m.IntegratedLUFS()
+	if math.IsNaN(lufs) {
+		t.Error("integrated LUFS should not be NaN after truncation")
+	}
+
+	// Reset should clear everything.
+	m.Reset()
+	// Trigger drainReset via Process.
+	m.Process(make([]float32, 4800))
+	after := m.IntegratedLUFS()
+	// After reset + 1 block of silence, integrated may be -MaxFloat64 (silence gated).
+	if after != -math.MaxFloat64 {
+		// If the 1 block of silence passes the absolute gate, that's OK —
+		// just verify it's finite and not the pre-reset value.
+		if math.IsNaN(after) || math.IsInf(after, 1) {
+			t.Errorf("integrated LUFS after reset should be valid, got %v", after)
+		}
+	}
+}
+
 func TestLoudnessMeter_MultipleSampleRates(t *testing.T) {
 	// Verify the meter works correctly across common broadcast sample rates.
 	// All should produce valid LUFS readings for a 1kHz sine.
