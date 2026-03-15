@@ -20,6 +20,8 @@ package srt
 extern int goSRTRead(void *opaque, uint8_t *buf, int buf_size);
 extern void goOnVideoFrame(int id, uint8_t *data, int len, int width, int height, int64_t pts);
 extern void goOnAudioFrame(int id, float *data, int samples, int channels, int64_t pts);
+extern void goOnCaptionData(int id, uint8_t *data, int size, int64_t pts);
+extern void goOnSCTE35Data(int id, uint8_t *data, int size, int64_t pts);
 
 // srtdec_interrupt_cb is called by FFmpeg to check if the operation should be aborted.
 // The opaque pointer is an int* pointing to the interrupt flag.
@@ -59,10 +61,19 @@ typedef struct {
     AVCodecContext    *audio_dec_ctx;
     struct SwrContext *swr_ctx;
 
+    // Data (SCTE-35)
+    int                data_stream_idx;
+
     // Frames
     AVFrame           *dec_frame;
     AVFrame           *sws_frame;
     AVPacket          *pkt;
+
+    // Reusable buffers (avoid per-frame malloc/free)
+    uint8_t           *video_buf;
+    int                video_buf_size;
+    float             *audio_buf;
+    int                audio_buf_size;
 
     // Interrupt
     int                interrupted;
@@ -80,7 +91,12 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
     h->decoder_id = decoder_id;
     h->video_stream_idx = -1;
     h->audio_stream_idx = -1;
+    h->data_stream_idx = -1;
     h->last_sws_fmt = AV_PIX_FMT_NONE;
+    h->video_buf = NULL;
+    h->video_buf_size = 0;
+    h->audio_buf = NULL;
+    h->audio_buf_size = 0;
 
     // Allocate AVIO buffer (32KB is a good balance for streaming).
     h->avio_buffer_size = 32768;
@@ -144,6 +160,10 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
     // Find best audio stream.
     h->audio_stream_idx = av_find_best_stream(
         h->fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+
+    // Find data stream (SCTE-35). May be -1 if none exists.
+    h->data_stream_idx = av_find_best_stream(
+        h->fmt_ctx, AVMEDIA_TYPE_DATA, -1, -1, NULL, 0);
 
     if (h->video_stream_idx < 0 && h->audio_stream_idx < 0) {
         ret = -5; // No usable streams found.
@@ -283,17 +303,29 @@ static int srtdec_averror_eof(void) {
     return AVERROR_EOF;
 }
 
-// srtdec_copy_yuv420 copies a planar YUV420P frame to a contiguous buffer.
-// Returns the allocated buffer or NULL on failure. Caller must free().
-static uint8_t* srtdec_copy_yuv420(AVFrame *frame, int w, int h_val) {
+// srtdec_copy_yuv420 copies a planar YUV420P frame into the srtdec_t's
+// reusable video buffer, reallocating only on resolution change.
+// Returns the buffer pointer or NULL on failure.
+static uint8_t* srtdec_copy_yuv420(srtdec_t *h, AVFrame *frame, int w, int h_val) {
+    if (w <= 0 || h_val <= 0 || w > 16384 || h_val > 16384) return NULL;
+
     int uv_w = w / 2;
     int uv_h = h_val / 2;
     int y_size = w * h_val;
     int uv_size = uv_w * uv_h;
     int total = y_size + 2 * uv_size;
 
-    uint8_t *buf = (uint8_t*)malloc(total);
-    if (!buf) return NULL;
+    // Reuse persistent buffer; only reallocate on size increase.
+    if (total > h->video_buf_size) {
+        free(h->video_buf);
+        h->video_buf = (uint8_t*)malloc(total);
+        if (!h->video_buf) {
+            h->video_buf_size = 0;
+            return NULL;
+        }
+        h->video_buf_size = total;
+    }
+    uint8_t *buf = h->video_buf;
 
     // Copy Y plane.
     for (int row = 0; row < h_val; row++) {
@@ -330,11 +362,10 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
     // Check if we need sws conversion (non-YUV420P input, or full-range→limited-range).
     if (frame->format == AV_PIX_FMT_YUV420P && !srtdec_is_full_range(frame)) {
         // Direct copy from planar YUV420P limited-range — no conversion needed.
-        uint8_t *buf = srtdec_copy_yuv420(frame, w, h_val);
+        uint8_t *buf = srtdec_copy_yuv420(h, frame, w, h_val);
         if (!buf) return;
 
         goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
-        free(buf);
     } else if ((frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) &&
                srtdec_is_full_range(frame)) {
         // Full-range (JPEG) YUV420P — convert to limited-range via sws.
@@ -380,12 +411,11 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             0, frame->height,
             h->sws_frame->data, h->sws_frame->linesize);
 
-        // Copy sws output to contiguous buffer.
-        uint8_t *buf = srtdec_copy_yuv420(h->sws_frame, w, h_val);
+        // Copy sws output to reusable buffer.
+        uint8_t *buf = srtdec_copy_yuv420(h, h->sws_frame, w, h_val);
         if (!buf) return;
 
         goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
-        free(buf);
     } else {
         // Need sws conversion — reinit if format/resolution changed.
         if (frame->format != h->last_sws_fmt ||
@@ -417,17 +447,17 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
             0, frame->height,
             h->sws_frame->data, h->sws_frame->linesize);
 
-        // Copy sws output to contiguous buffer.
-        uint8_t *buf = srtdec_copy_yuv420(h->sws_frame, w, h_val);
+        // Copy sws output to reusable buffer.
+        uint8_t *buf = srtdec_copy_yuv420(h, h->sws_frame, w, h_val);
         if (!buf) return;
 
         goOnVideoFrame(h->decoder_id, buf, total, w, h_val, pts);
-        free(buf);
     }
 }
 
 // srtdec_process_audio handles a decoded audio frame:
 // resamples to stereo float32 48kHz, and calls Go callback.
+// Uses the persistent audio_buf to avoid per-frame malloc.
 static void srtdec_process_audio(srtdec_t *h, AVFrame *frame, int64_t pts) {
     if (!h->swr_ctx) return;
 
@@ -435,24 +465,30 @@ static void srtdec_process_audio(srtdec_t *h, AVFrame *frame, int64_t pts) {
     int max_out = swr_get_out_samples(h->swr_ctx, frame->nb_samples);
     if (max_out <= 0) max_out = frame->nb_samples * 2 + 256;
 
-    // Allocate output buffer: stereo float32.
+    // Reuse persistent audio buffer; only reallocate on size increase.
     int out_channels = 2;
     int buf_samples = max_out;
-    float *out_buf = (float*)malloc(buf_samples * out_channels * sizeof(float));
-    if (!out_buf) return;
+    int needed = buf_samples * out_channels;
+    if (needed > h->audio_buf_size) {
+        free(h->audio_buf);
+        h->audio_buf = (float*)malloc(needed * sizeof(float));
+        if (!h->audio_buf) {
+            h->audio_buf_size = 0;
+            return;
+        }
+        h->audio_buf_size = needed;
+    }
 
     uint8_t *out_data[1];
-    out_data[0] = (uint8_t*)out_buf;
+    out_data[0] = (uint8_t*)h->audio_buf;
 
     int out_samples = swr_convert(h->swr_ctx,
         out_data, buf_samples,
         (const uint8_t**)frame->data, frame->nb_samples);
 
     if (out_samples > 0) {
-        goOnAudioFrame(h->decoder_id, out_buf, out_samples * out_channels, out_channels, pts);
+        goOnAudioFrame(h->decoder_id, h->audio_buf, out_samples * out_channels, out_channels, pts);
     }
-
-    free(out_buf);
 }
 
 // srtdec_run runs the main decode loop until EOF, error, or interrupt.
@@ -488,6 +524,13 @@ static int srtdec_run(srtdec_t *h) {
                     pts = h->dec_frame->best_effort_timestamp;
                 }
                 srtdec_process_video(h, h->dec_frame, pts);
+
+                // Check for CEA-608/708 closed caption side data (A53 CC).
+                AVFrameSideData *cc = av_frame_get_side_data(h->dec_frame, AV_FRAME_DATA_A53_CC);
+                if (cc && cc->size > 0) {
+                    goOnCaptionData(h->decoder_id, cc->data, cc->size, pts);
+                }
+
                 av_frame_unref(h->dec_frame);
             }
         } else if (h->pkt->stream_index == h->audio_stream_idx && h->audio_dec_ctx) {
@@ -514,6 +557,11 @@ static int srtdec_run(srtdec_t *h) {
                 srtdec_process_audio(h, h->dec_frame, pts);
                 av_frame_unref(h->dec_frame);
             }
+        } else if (h->pkt->stream_index == h->data_stream_idx && h->data_stream_idx >= 0) {
+            // SCTE-35 data packet — forward raw section data to Go.
+            if (h->pkt->size > 0) {
+                goOnSCTE35Data(h->decoder_id, h->pkt->data, h->pkt->size, h->pkt->pts);
+            }
         }
 
         av_packet_unref(h->pkt);
@@ -539,6 +587,13 @@ static void srtdec_close(srtdec_t *h) {
     }
     if (h->audio_dec_ctx) avcodec_free_context(&h->audio_dec_ctx);
     if (h->video_dec_ctx) avcodec_free_context(&h->video_dec_ctx);
+    // Free reusable buffers.
+    free(h->video_buf);
+    h->video_buf = NULL;
+    h->video_buf_size = 0;
+    free(h->audio_buf);
+    h->audio_buf = NULL;
+    h->audio_buf_size = 0;
     if (h->fmt_ctx) {
         // Detach custom IO before closing to prevent double-free.
         h->fmt_ctx->pb = NULL;
@@ -562,8 +617,10 @@ import (
 )
 
 // decoderRegistry maps opaque IDs to StreamDecoder instances for C callbacks.
+// Uses RWMutex because lookupDecoder is called 30+ times/sec per source from
+// C callbacks, while register/unregister are infrequent lifecycle operations.
 var (
-	decoderMu       sync.Mutex
+	decoderMu       sync.RWMutex
 	decoderRegistry = map[int]*StreamDecoder{}
 	decoderNextID   int
 )
@@ -586,9 +643,10 @@ func unregisterDecoder(id int) {
 }
 
 // lookupDecoder retrieves a decoder from the global registry.
+// Uses RLock for concurrent read access from C callbacks.
 func lookupDecoder(id int) *StreamDecoder {
-	decoderMu.Lock()
-	defer decoderMu.Unlock()
+	decoderMu.RLock()
+	defer decoderMu.RUnlock()
 	return decoderRegistry[id]
 }
 
@@ -599,14 +657,12 @@ type StreamDecoderConfig struct {
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
-	// TODO: OnCaptions is not yet invoked. Needs implementation to extract
-	// CEA-608/708 caption data from H.264 SEI NALUs during video decode and
-	// deliver them via this callback.
+	// OnCaptions is called when CEA-608/708 closed caption data is extracted
+	// from H.264 SEI NALUs (A53 CC side data) during video decode.
 	OnCaptions func(data []byte, pts int64) // optional
 
-	// TODO: OnSCTE35 is not yet invoked. Needs implementation to detect
-	// SCTE-35 data PIDs in the MPEG-TS PMT and deliver splice_info_section
-	// payloads via this callback.
+	// OnSCTE35 is called when SCTE-35 splice_info_section data is found on
+	// a data PID in the MPEG-TS stream.
 	OnSCTE35 func(data []byte, pts int64) // optional
 }
 
@@ -716,6 +772,8 @@ func goSRTRead(opaque unsafe.Pointer, buf *C.uint8_t, bufSize C.int) C.int {
 		// Other errors (closed pipe, network failure, etc.) — return generic error.
 		return C.int(-1)
 	}
+	// n == 0 && err == nil: spurious empty read. Return 0 and let FFmpeg's
+	// AVIO layer retry. This is safe — AVIO treats 0 as "no data yet".
 	return C.int(0)
 }
 
@@ -750,4 +808,24 @@ func goOnAudioFrame(id C.int, data *C.float, samples C.int, channels C.int, pts 
 
 	// The swr output is stereo float32 at 48kHz.
 	d.cfg.OnAudio(pcm, int64(pts), 48000, int(channels))
+}
+
+//export goOnCaptionData
+func goOnCaptionData(id C.int, data *C.uint8_t, size C.int, pts C.int64_t) {
+	d := lookupDecoder(int(id))
+	if d == nil || d.cfg.OnCaptions == nil {
+		return
+	}
+	goData := C.GoBytes(unsafe.Pointer(data), size)
+	d.cfg.OnCaptions(goData, int64(pts))
+}
+
+//export goOnSCTE35Data
+func goOnSCTE35Data(id C.int, data *C.uint8_t, size C.int, pts C.int64_t) {
+	d := lookupDecoder(int(id))
+	if d == nil || d.cfg.OnSCTE35 == nil {
+		return
+	}
+	goData := C.GoBytes(unsafe.Pointer(data), size)
+	d.cfg.OnSCTE35(goData, int64(pts))
 }
