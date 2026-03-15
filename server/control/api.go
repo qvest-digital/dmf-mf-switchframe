@@ -191,6 +191,23 @@ func WithLayoutStore(ls *layout.Store) APIOption {
 	return func(a *API) { a.layoutStore = ls }
 }
 
+// SRTManager is the interface for SRT source management operations.
+// The app layer implements this, wrapping srt.Caller and srt.StatsManager.
+// This keeps the control package free of srt package imports.
+type SRTManager interface {
+	// CreatePull starts an outbound SRT pull connection. Returns the source key.
+	CreatePull(ctx context.Context, address, streamID, label string, latencyMs int) (string, error)
+	// StopPull cancels an active pull and removes it from the store.
+	// Returns ErrNotSRTSource if the key is not an SRT pull source.
+	StopPull(key string) error
+	// GetStats returns SRT connection stats for the given source key.
+	// The second return value is false if the source is not found.
+	GetStats(key string) (interface{}, bool)
+	// UpdateLatency changes the SRT latency for an active source.
+	// Returns ErrNotSRTSource if the key is not an SRT source.
+	UpdateLatency(key string, latencyMs int) error
+}
+
 // CaptionManagerAPI is the interface for caption management operations.
 type CaptionManagerAPI interface {
 	SetMode(mode caption.Mode)
@@ -219,6 +236,11 @@ func WithTextAnimEngine(tae *graphics.TextAnimationEngine) APIOption {
 // WithTickerEngine attaches a ticker engine to the API.
 func WithTickerEngine(te *graphics.TickerEngine) APIOption {
 	return func(a *API) { a.tickerEngine = te }
+}
+
+// WithSRTManager attaches an SRT source manager to the API.
+func WithSRTManager(m SRTManager) APIOption {
+	return func(a *API) { a.srtMgr = m }
 }
 
 // WithRecordingDir sets the directory where recordings are stored.
@@ -253,6 +275,7 @@ type API struct {
 	perf             PerfAPI
 	textAnimEngine   *graphics.TextAnimationEngine
 	tickerEngine     *graphics.TickerEngine
+	srtMgr           SRTManager
 	mux              *http.ServeMux
 	enrichFn         atomic.Pointer[enrichFunc]
 	lastOperator     atomic.Pointer[string]
