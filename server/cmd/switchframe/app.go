@@ -124,10 +124,13 @@ type App struct {
 	scte35Rules    *scte35.RulesStore
 
 	// SRT input
-	srtListener *srt.Listener
-	srtCaller   *srt.Caller
-	srtStore    *srt.Store
-	srtStats    *srt.StatsManager
+	srtListener  *srt.Listener
+	srtCaller    *srt.Caller
+	srtStore     *srt.Store
+	srtStats     *srt.StatsManager
+	srtSources   map[string]*srtSourceState
+	srtSourcesMu sync.Mutex
+	srtCtx       context.Context
 
 	// MXL integration
 	mxlInstance *mxl.Instance
@@ -1239,7 +1242,8 @@ func (a *App) Close() {
 		_ = a.mxlInstance.Close()
 	}
 
-	// SRT cleanup (listener is stopped via context cancellation in bgWG.Wait).
+	// SRT cleanup: stop all active sources first, then the listener.
+	a.stopSRTSources()
 	if a.srtListener != nil {
 		_ = a.srtListener.Close()
 	}
