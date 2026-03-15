@@ -363,14 +363,6 @@ func TestV210UnpackPackRoundTrip(t *testing.T) {
 	}
 }
 
-// maskV210Bottom2 zeros the bottom 2 bits of each 10-bit field in a V210 word.
-func maskV210Bottom2(word uint32) uint32 {
-	f0 := (word & 0x3FF) &^ 3
-	f1 := ((word >> 10) & 0x3FF) &^ 3
-	f2 := ((word >> 20) & 0x3FF) &^ 3
-	return f0 | (f1 << 10) | (f2 << 20)
-}
-
 // --- Benchmarks ---
 
 func BenchmarkChromaVAvg_1080p(b *testing.B) {
