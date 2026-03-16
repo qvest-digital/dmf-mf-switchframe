@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency } from './switch-api';
 import * as notifications from '$lib/state/notifications.svelte';
-import type { SRTOutputConfig, SCTE35CueRequest } from './types';
+import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
 
 describe('switch-api', () => {
 	beforeEach(() => {
@@ -698,4 +698,102 @@ describe('SCTE-35 API', () => {
 		});
 	});
 
+});
+
+describe('SRT source API', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		sessionStorage.clear();
+	});
+
+	it('createSRTSource sends POST /api/sources with correct body', async () => {
+		const config: CreateSRTSourceConfig = {
+			type: 'srt',
+			mode: 'caller',
+			address: 'srt://192.168.1.50:9000',
+			streamID: 'live/camera5',
+			label: 'Camera 5',
+			latencyMs: 200,
+		};
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ key: 'srt:camera5' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await createSRTSource(config);
+		expect(mockFetch).toHaveBeenCalledWith('/api/sources', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(config),
+		});
+		expect(result.key).toBe('srt:camera5');
+	});
+
+	it('deleteSRTSource sends DELETE /api/sources/{key} with URI encoding', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 204,
+			headers: { get: () => '0' },
+			json: () => Promise.resolve(undefined),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await deleteSRTSource('srt:camera5');
+		expect(mockFetch).toHaveBeenCalledWith('/api/sources/srt%3Acamera5', {
+			method: 'DELETE',
+			headers: {},
+		});
+	});
+
+	it('getSRTSourceStats sends GET /api/sources/{key}/srt/stats', async () => {
+		const stats = {
+			mode: 'caller',
+			streamID: 'live/camera5',
+			state: 'connected',
+			connected: true,
+			uptimeMs: 60000,
+			latencyMs: 120,
+			negotiatedLatencyMs: 120,
+			rttMs: 5.2,
+			rttVarMs: 1.1,
+			recvRateMbps: 4.5,
+			lossRatePct: 0.01,
+			packetsReceived: 100000,
+			packetsLost: 10,
+			packetsDropped: 2,
+			packetsRetransmitted: 8,
+			packetsBelated: 0,
+			recvBufMs: 80,
+			recvBufPackets: 50,
+			flightSize: 12,
+		};
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve(stats),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await getSRTSourceStats('srt:camera5');
+		expect(mockFetch).toHaveBeenCalledWith('/api/sources/srt%3Acamera5/srt/stats', { headers: {} });
+		expect(result.connected).toBe(true);
+		expect(result.rttMs).toBe(5.2);
+	});
+
+	it('updateSRTLatency sends PUT /api/sources/{key}/srt with latencyMs body', async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 204,
+			headers: { get: () => '0' },
+			json: () => Promise.resolve(undefined),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await updateSRTLatency('srt:camera5', 250);
+		expect(mockFetch).toHaveBeenCalledWith('/api/sources/srt%3Acamera5/srt', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ latencyMs: 250 }),
+		});
+	});
 });
