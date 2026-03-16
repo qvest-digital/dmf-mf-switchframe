@@ -236,6 +236,7 @@
 			streamID: newDestStreamID || undefined,
 			latency: newDestLatency,
 			name: newDestName || undefined,
+			scte35Enabled: newDestSCTE35,
 		};
 		apiCall(addDestination(config), 'Add destination');
 		// Reset form
@@ -523,21 +524,21 @@
 					<!-- Destinations -->
 					{#each destinations as dest (dest.id)}
 						<div class="dest-row">
-							<!-- svelte-ignore a11y_click_events_have_key_events -->
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div
-								class="row-header clickable"
-								onclick={() => toggleDest(dest.id)}
-							>
-								<span class="type-badge type-srt">{destTypeBadge(dest)}</span>
-								<span class="row-label">{dest.name || `${dest.address ?? ''}:${dest.port}`}</span>
-								<span class="status-dot {destStateClass(dest.state)}"></span>
-								<span class="row-detail">{dest.bytesWritten != null ? fmtBytes(dest.bytesWritten) : ''}</span>
+							<div class="row-header-group">
+								<button
+									class="row-header"
+									onclick={() => toggleDest(dest.id)}
+								>
+									<span class="type-badge type-srt">{destTypeBadge(dest)}</span>
+									<span class="row-label">{dest.name || `${dest.address ?? ''}:${dest.port}`}</span>
+									<span class="status-dot {destStateClass(dest.state)}"></span>
+									<span class="row-detail">{dest.bytesWritten != null ? fmtBytes(dest.bytesWritten) : ''}</span>
+									<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
+								</button>
 								<button
 									class="action-btn"
 									class:stop={dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting'}
-									onclick={(e: MouseEvent) => {
-										e.stopPropagation();
+									onclick={() => {
 										if (dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting') {
 											handleStopDest(dest.id);
 										} else {
@@ -552,7 +553,6 @@
 										&#x25B6;
 									{/if}
 								</button>
-								<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
 							</div>
 
 							{#if expandedDests.has(dest.id)}
@@ -590,6 +590,7 @@
 											<span class="detail-value error">{dest.error}</span>
 										</div>
 									{/if}
+									<!-- TODO: show SCTE-35 status when DestinationInfo includes it -->
 									<div class="detail-actions">
 										{#if confirmingDeleteDest === dest.id}
 											<span class="confirm-text">Are you sure?</span>
@@ -855,8 +856,19 @@
 		background: none;
 	}
 
-	.row-header.clickable {
-		cursor: pointer;
+	.row-header-group {
+		display: flex;
+		align-items: center;
+	}
+
+	.row-header-group > .row-header {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.row-header-group > .action-btn {
+		flex-shrink: 0;
+		margin-right: 8px;
 	}
 
 	/* --- Type Badge --- */

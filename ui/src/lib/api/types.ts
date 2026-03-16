@@ -128,6 +128,7 @@ export interface DestinationConfig {
 	maxBandwidth?: number;
 	maxConns?: number;
 	name?: string;
+	scte35Enabled?: boolean;
 }
 
 export interface DestinationInfo {
