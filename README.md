@@ -24,7 +24,7 @@
 
 <br>
 
-SwitchFrame is a live video switcher where the server handles all switching, mixing, encoding, and compositing. Browsers connect over WebTransport as control surfaces — they view sources and send commands, but don't produce the output. Sources arrive via [Prism](https://github.com/zsiec/prism) MoQ ingest or [MXL](https://tech.ebu.ch/dmf/mxl) shared-memory transport.
+SwitchFrame is a live video switcher where the server handles all switching, mixing, encoding, and compositing. Browsers connect over WebTransport as control surfaces — they view sources and send commands, but don't produce the output. Sources arrive via [Prism](https://github.com/zsiec/prism) MoQ ingest, [SRT](https://github.com/zsiec/srtgo) input (listener or caller mode), or [MXL](https://tech.ebu.ch/dmf/mxl) shared-memory transport.
 
 Every source is continuously decoded to raw YUV420. Cuts are instant. All video processing — transitions, keying, compositing, scaling — happens in BT.709 YUV420.
 
@@ -38,7 +38,9 @@ Every source is continuously decoded to raw YUV420. Cuts are instant. All video 
 
 **Instant Replay** — Per-source circular buffers (configurable up to 5 minutes), mark-in/out, variable-speed playback down to 0.25x. Pitch-preserved audio via phase vocoder. Frame interpolation: duplication, alpha blend, motion-compensated (MCFI), or hold-crossfade (default).
 
-**Output** — MPEG-TS recording with time and size rotation. Multi-destination SRT, push and pull. CEA-608 closed captions. Per-destination SCTE-35 ad insertion with signal conditioning rules engine. SCTE-104 automation on MXL data flows.
+**SRT Input** — Listener (push) and caller (pull) modes for ingesting SRT sources. Any codec FFmpeg can decode, normalized to YUV420. Persistent config across reconnects. Exponential backoff reconnection. Per-source latency override and connection stats.
+
+**Output** — MPEG-TS recording with time and size rotation. Multi-destination SRT output, push and pull. CEA-608 closed captions. Per-destination SCTE-35 ad insertion with signal conditioning rules engine. SCTE-104 automation on MXL data flows.
 
 **Multi-Operator** — Director, audio, graphics, and viewer roles with per-subsystem locking. Macro system covering switching, audio, graphics, replay, layout, and SCTE-35 with step validation and keyboard triggers.
 
@@ -53,7 +55,7 @@ git clone https://github.com/zsiec/switchframe.git && cd switchframe
 make demo
 ```
 
-Open **http://localhost:5173**. Four simulated cameras with full audio mixer.
+Open **http://localhost:5173**. Four simulated cameras + two SRT sources with full audio mixer.
 
 <details>
 <summary>Prerequisites</summary>
@@ -76,7 +78,7 @@ sudo apt install libavcodec-dev libavutil-dev libavformat-dev libswscale-dev lib
 ## Architecture
 
 ```
-Sources (H.264 via MoQ, or V210 via MXL shared memory)
+Sources (H.264 via MoQ, any codec via SRT, or V210 via MXL shared memory)
   → per-source decode to YUV420
     → frame synchronizer · delay buffer
       → switching engine

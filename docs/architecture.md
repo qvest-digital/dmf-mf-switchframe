@@ -16,13 +16,14 @@
 
 ## 1. System at a Glance
 
-SwitchFrame is a server-authoritative live video switcher: all switching, mixing, compositing, and encoding happen on the server. Browsers connect over WebTransport as thin control surfaces -- they display source previews and send operator commands, but the server produces the definitive program output. Sources arrive via Prism MoQ ingest (H.264/AAC cameras over the internet) or MXL shared-memory transport (uncompressed V210 from local infrastructure).
+SwitchFrame is a server-authoritative live video switcher: all switching, mixing, compositing, and encoding happen on the server. Browsers connect over WebTransport as thin control surfaces -- they display source previews and send operator commands, but the server produces the definitive program output. Sources arrive via three ingest paths: Prism MoQ (H.264/AAC cameras over the internet), MXL shared-memory transport (uncompressed V210 from local infrastructure), or SRT input (any codec supported by FFmpeg, decoded on ingest).
 
 ```mermaid
 flowchart LR
     subgraph ingest ["Source Ingest"]
         moq["MoQ Sources<br/>(H.264 / AAC)"]
         mxl["MXL Sources<br/>(V210 shared mem)"]
+        srti["SRT Sources<br/>(any codec via FFmpeg)"]
 
         moq --> relay["Per-Source<br/>Prism Relay"]
         relay --> sv["sourceViewer"]
@@ -30,8 +31,11 @@ flowchart LR
 
         mxl --> v210["V210 → YUV420"]
 
+        srti --> srtdec["FFmpeg AVIO<br/>decode → YUV420"]
+
         sd --> yuv["Raw YUV420"]
         v210 --> yuv
+        srtdec --> yuv
     end
 
     subgraph switching ["Switching Engine"]
@@ -97,7 +101,7 @@ Audio follows a similar always-ready model. Each channel flows through a fixed p
 
 ## 2. A Frame's Journey
 
-Following a single frame from camera to screen reveals how the pieces fit together. The path differs slightly for MoQ (H.264) and MXL (uncompressed V210) sources, but both converge on the same raw YUV420 processing pipeline.
+Following a single frame from camera to screen reveals how the pieces fit together. The path differs for MoQ (H.264), MXL (uncompressed V210), and SRT (any codec) sources, but all three converge on the same raw YUV420 processing pipeline.
 
 ### MoQ Source Path
 
@@ -140,6 +144,23 @@ flowchart TD
 ```
 
 MXL sources bypass the sourceViewer and sourceDecoder entirely -- the V210-to-YUV420 conversion happens in the reader goroutine, and raw frames are injected directly into the switcher. Audio arrives as float32 PCM and skips AAC decoding. A third fan-out encodes to H.264/AAC for browser preview, since browsers cannot consume raw YUV over MoQ.
+
+### SRT Source Path
+
+```mermaid
+flowchart TD
+    SRT["SRT Connection<br/>(listener or caller)"] --> AVIO["FFmpeg AVIO Bridge<br/>(io.Reader → avformat → avcodec)"]
+
+    AVIO --> YUV["Raw YUV420 → Switcher<br/>(IngestRawVideo)"]
+    AVIO --> PCM["Float32 PCM → Audio Mixer<br/>(IngestPCM, bypasses AAC decode)"]
+    AVIO --> Encode["Encode H.264/AAC → Browser relay"]
+    AVIO -.-> CC["Captions → SEI extraction"]
+    AVIO -.-> SCTE["SCTE-35 → pass-through"]
+```
+
+SRT sources follow the same triple fan-out pattern as MXL. A custom FFmpeg AVIO bridge wraps the SRT connection's `io.Reader` so avformat can auto-detect the container format (typically MPEG-TS) and avcodec can decode any supported video codec to YUV420. Audio is resampled to stereo float32 at 48 kHz and injected directly into the mixer, bypassing AAC decode. A third fan-out re-encodes to H.264/AAC for browser preview. Single-threaded decode is used by default for live streams to minimize latency (multi-threaded frame-level decoding buffers N frames, creating burst/gap patterns).
+
+SRT operates in two modes: **listener** (accept incoming encoder pushes on a configurable port, default `:6464`) and **caller** (initiate outbound pulls to remote SRT sources). Listener mode derives the source key from the SRT `streamid` field. Caller mode reconnects automatically with exponential backoff (1s to 30s). Source configuration (label, position, delay) is persisted to `~/.switchframe/srt_sources.json` and survives both encoder disconnects and server restarts.
 
 ### Always-Decode Architecture
 

@@ -40,6 +40,11 @@ flowchart TD
         sv -->|"atomic.Pointer<br/>dispatch"| sd
     end
 
+    subgraph srtsources ["SRT Source Goroutines (per SRT source)"]
+        srtdec["srt.Source<br/>(FFmpeg AVIO decode)"]
+        srtstat["stats poller<br/>(1Hz srtgo stats)"]
+    end
+
     subgraph sync ["Synchronization"]
         fs["FrameSynchronizer<br/>(tick-based release)"]
         db["DelayBuffer<br/>(lip-sync delay)"]
@@ -79,6 +84,8 @@ flowchart TD
 
     sd --> fs
     sd --> db
+    srtdec --> fs
+    srtdec --> db
     fs -->|callback| hrvf
     db -->|callback| hrvf
     fs -->|callback| haf
@@ -104,6 +111,10 @@ flowchart TD
 |-----------|---------|---------|---------|
 | `videoProcessingLoop` | `New()` | `Close()` via `videoProcDone` | Drain `videoProcCh`, run pipeline, broadcast |
 | `sourceDecoder.decodeLoop` | `RegisterSource()` | Channel close → `done` signal | Per-source H.264 → YUV420 decode |
+| `srt.Source.decodeLoop` | `Source.Start()` | Context cancel → `dec.Stop()` | Per-SRT-source FFmpeg AVIO decode → YUV420 + PCM |
+| `srt.Source.statsPoller` | `Source.Start()` | Context cancel | 1Hz srtgo connection stats polling |
+| `srt.Listener.acceptLoop` | `Listener.Run()` | Context cancel → listener close | Accept incoming SRT push connections |
+| `srt.Caller.connectLoop` | `Caller.Pull()` | Context cancel | Per-source exponential backoff reconnection |
 | `mixDeadlineTicker` | `NewMixer()` | `stopTicker` close + `tickerWg.Wait()` | 25ms flush timeout for audio mix cycle |
 | `output.Viewer.Run` | First output starts | `stopCh` close + `done` signal | Drain video/audio/caption to muxer |
 | `AsyncAdapter.drain` | `NewAsyncAdapter()` | `stopCh` close + `doneCh` signal | Non-blocking write to slow outputs |

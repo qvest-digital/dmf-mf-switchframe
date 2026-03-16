@@ -1,6 +1,6 @@
 # Switchframe API Reference
 
-Switchframe exposes a REST API for controlling all aspects of the live video switcher: switching sources, managing transitions, audio mixing, recording, SRT output, graphics overlays, and presets.
+Switchframe exposes a REST API for controlling all aspects of the live video switcher: switching sources, managing transitions, audio mixing, recording, SRT input and output, graphics overlays, and presets.
 
 All endpoints are served over HTTP/3 on port **8080** (QUIC/UDP). An optional plain HTTP/1.1 server on TCP port **8081** can be enabled with `--http-fallback` for curl, scripts, and environments that cannot speak QUIC. The API accepts and returns **JSON**. All `POST` and `PUT` requests must include `Content-Type: application/json`.
 
@@ -22,9 +22,14 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [GET /api/switch/state](#get-apiswitchstate)
 - [Sources](#sources)
   - [GET /api/sources](#get-apisources)
+  - [GET /api/sources/{key}](#get-apisourceskey)
+  - [POST /api/sources](#post-apisources)
+  - [DELETE /api/sources/{key}](#delete-apisourceskey)
   - [POST /api/sources/{key}/label](#post-apisourceskeylabel)
   - [POST /api/sources/{key}/delay](#post-apisourceskeydelay)
   - [PUT /api/sources/{key}/position](#put-apisourceskeyposition)
+  - [GET /api/sources/{key}/srt/stats](#get-apisourceskeysrtstats)
+  - [PUT /api/sources/{key}/srt](#put-apisourceskeysrt)
   - [PUT /api/sources/{key}/key](#put-apisourceskeykey)
   - [GET /api/sources/{key}/key](#get-apisourceskeykey)
   - [DELETE /api/sources/{key}/key](#delete-apisourceskeykey)
@@ -306,8 +311,15 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
     { "id": "d1", "name": "YouTube", "type": "srt-caller", "address": "ingest.yt.com", "port": 9000, "state": "active" }
   ],
   "sources": {
-    "cam1": { "key": "cam1", "label": "Stage Left", "status": "healthy", "position": 1 },
-    "cam2": { "key": "cam2", "label": "Stage Right", "status": "healthy", "position": 2, "delayMs": 100 }
+    "cam1": { "key": "cam1", "label": "Stage Left", "type": "demo", "status": "healthy", "position": 1 },
+    "cam2": { "key": "cam2", "label": "Stage Right", "type": "demo", "status": "healthy", "position": 2, "delayMs": 100 },
+    "srt:encoder1": {
+      "key": "srt:encoder1", "label": "Remote Encoder", "type": "srt", "status": "healthy", "position": 3,
+      "srt": {
+        "mode": "caller", "streamID": "live/encoder1", "remoteAddr": "192.168.1.100:6464",
+        "latencyMs": 200, "rttMs": 2.5, "lossRate": 0.001, "bitrateKbps": 5000.0, "recvBufMs": 245.0, "connected": true
+      }
+    }
   },
   "presets": [
     { "id": "550e8400-e29b-41d4-a716-446655440000", "name": "Opening" }
@@ -405,14 +417,30 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `key` | `string` | Unique identifier for the source (e.g., `"cam1"`) |
+| `key` | `string` | Unique identifier for the source (e.g., `"cam1"`, `"srt:encoder1"`) |
 | `label` | `string` | Human-readable label. Omitted if not set. |
+| `type` | `string` | Source type: `"demo"`, `"mxl"`, `"srt"`, `"replay"`, or `"clip"` |
 | `status` | `string` | Health status: `"healthy"`, `"stale"`, `"no_signal"`, or `"offline"` |
 | `position` | `int` | Display position index (1-based). Always present. |
 | `delayMs` | `int` | Input delay in milliseconds. Omitted when `0`. |
+| `srt` | `SRTSourceInfo` or `null` | SRT connection metadata. Present only for SRT sources. |
 | `keyConfig` | `object` or `null` | Upstream key configuration. Omitted when no key is configured. See [Source Keying](#put-apisourceskeykey). |
 | `isVirtual` | `bool` | `true` for virtual sources (e.g., replay). Omitted when `false`. |
 | `hasCaptions` | `bool` | `true` when this source has upstream captions. Omitted when `false`. |
+
+### SRTSourceInfo
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `string` | Connection mode: `"listener"` (push) or `"caller"` (pull) |
+| `streamID` | `string` | SRT stream identifier |
+| `remoteAddr` | `string` | Remote encoder address (`IP:port`). Omitted when not connected. |
+| `latencyMs` | `int` | Configured SRT latency in milliseconds |
+| `rttMs` | `float` | Round-trip time in milliseconds |
+| `lossRate` | `float` | Packet loss ratio (`0.0` to `1.0`) |
+| `bitrateKbps` | `float` | Receive bitrate in Kbps |
+| `recvBufMs` | `float` | Receive buffer fill level in milliseconds |
+| `connected` | `bool` | Whether the SRT connection is currently active |
 
 ### AudioChannel
 
@@ -730,19 +758,34 @@ List all registered video sources with their current info and health status.
   "cam1": {
     "key": "cam1",
     "label": "Stage Left",
+    "type": "demo",
     "status": "healthy",
     "position": 1
   },
   "cam2": {
     "key": "cam2",
+    "type": "demo",
     "status": "healthy",
     "position": 2,
     "delayMs": 100
   },
-  "cam3": {
-    "key": "cam3",
-    "status": "stale",
-    "position": 3
+  "srt:encoder1": {
+    "key": "srt:encoder1",
+    "label": "Remote Encoder",
+    "type": "srt",
+    "status": "healthy",
+    "position": 3,
+    "srt": {
+      "mode": "caller",
+      "streamID": "live/encoder1",
+      "remoteAddr": "192.168.1.100:6464",
+      "latencyMs": 200,
+      "rttMs": 2.5,
+      "lossRate": 0.001,
+      "bitrateKbps": 5000.0,
+      "recvBufMs": 245.0,
+      "connected": true
+    }
   }
 }
 ```
@@ -760,6 +803,136 @@ List all registered video sources with their current info and health status.
 
 ```bash
 curl http://localhost:8081/api/sources \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/sources/{key}
+
+Get a single source by key.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `cam1`, `srt:encoder1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `SourceInfo`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Source not found |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/sources/srt:encoder1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/sources
+
+Create an SRT input source in caller (pull) mode. The server initiates an outbound SRT connection to the specified address and begins ingesting video/audio.
+
+Listener (push) mode sources are created automatically when an encoder pushes to the SRT listener port (default `:6464`). Only caller mode sources can be created via this endpoint.
+
+**Request Body:**
+
+```json
+{
+  "type": "srt",
+  "mode": "caller",
+  "address": "srt://192.168.1.100:6464",
+  "streamID": "live/camera1",
+  "label": "Remote Camera",
+  "latencyMs": 200
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `string` | Yes | Must be `"srt"` |
+| `mode` | `string` | Yes | Must be `"caller"` |
+| `address` | `string` | Yes | Remote SRT address (e.g., `srt://host:port` or `host:port`) |
+| `streamID` | `string` | Yes | SRT stream identifier. Used to derive the source key. |
+| `label` | `string` | No | Human-readable label for the source |
+| `latencyMs` | `int` | No | SRT latency in milliseconds (0-10000). Default: server `--srt-latency` value. |
+
+**Source Key Derivation:**
+
+The source key is derived from `streamID` with the `srt:` prefix:
+- `live/camera1` → `srt:camera1`
+- `encoder/main` → `srt:main`
+- `#!::r=live/cam1` (SRT Access Control format) → `srt:cam1`
+
+**Response:** `201 Created`
+
+```json
+{
+  "key": "srt:camera1"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing required fields, invalid type/mode, malformed JSON, or invalid latency range |
+| `500` | SRT connection error |
+| `501` | SRT not configured (server started without `--srt-listen`) |
+
+**Caller Reconnection:**
+
+Once created, the caller maintains the connection with automatic reconnection:
+- Exponential backoff: 1s → 2s → 4s → ... → 30s max
+- ±25% jitter on each backoff interval
+- Source stays visible as `"no_signal"` during reconnection
+- Configuration persists across server restarts (`~/.switchframe/srt_sources.json`)
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/sources \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "srt", "mode": "caller", "address": "srt://192.168.1.100:6464", "streamID": "live/camera1", "label": "Remote Camera", "latencyMs": 200}'
+```
+
+---
+
+### DELETE /api/sources/{key}
+
+Remove an SRT input source. Only SRT caller (pull) mode sources can be deleted via API. Listener (push) mode sources are managed by the encoder connection lifecycle. Non-SRT sources (demo, MXL, replay, clip) cannot be deleted.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `srt:camera1`) |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Source not found |
+| `405` | Attempt to delete a non-SRT source |
+| `501` | SRT not configured |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/sources/srt:camera1 \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -887,6 +1060,135 @@ curl -X PUT http://localhost:8081/api/sources/cam1/position \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"position": 2}'
+```
+
+---
+
+### GET /api/sources/{key}/srt/stats
+
+Get detailed SRT connection statistics for a source. Only available for SRT sources.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | SRT source key (e.g., `srt:encoder1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "mode": "caller",
+  "streamID": "live/encoder1",
+  "remoteAddr": "192.168.1.100:6464",
+  "state": "connected",
+  "connected": true,
+  "uptimeMs": 3600000,
+  "latencyMs": 200,
+  "negotiatedLatencyMs": 200,
+  "rttMs": 2.5,
+  "rttVarMs": 0.8,
+  "recvRateMbps": 4.95,
+  "lossRatePct": 0.01,
+  "packetsReceived": 1234567,
+  "packetsLost": 12,
+  "packetsDropped": 0,
+  "packetsRetransmitted": 5,
+  "packetsBelated": 0,
+  "recvBufMs": 245.0,
+  "recvBufPackets": 98,
+  "flightSize": 156,
+  "reconnectCount": 0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `string` | `"listener"` or `"caller"` |
+| `streamID` | `string` | SRT stream identifier |
+| `remoteAddr` | `string` | Remote encoder address |
+| `state` | `string` | Connection state: `"connected"` or `"disconnected"` |
+| `connected` | `bool` | Whether the connection is active |
+| `uptimeMs` | `int` | Time since source creation in milliseconds |
+| `latencyMs` | `int` | Configured SRT latency |
+| `negotiatedLatencyMs` | `int` | Negotiated SRT latency (may differ from configured) |
+| `rttMs` | `float` | Round-trip time in milliseconds |
+| `rttVarMs` | `float` | RTT variance in milliseconds |
+| `recvRateMbps` | `float` | Receive bitrate in Mbps |
+| `lossRatePct` | `float` | Packet loss percentage (0-100) |
+| `packetsReceived` | `int` | Total packets received |
+| `packetsLost` | `int` | Total packets lost |
+| `packetsDropped` | `int` | Total packets dropped (too late) |
+| `packetsRetransmitted` | `int` | Total packets retransmitted |
+| `packetsBelated` | `int` | Total belated packets |
+| `recvBufMs` | `float` | Receive buffer fill level in milliseconds |
+| `recvBufPackets` | `int` | Receive buffer fill level in packets |
+| `flightSize` | `int` | Packets in flight |
+| `reconnectCount` | `int` | Number of reconnections since source creation |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Source not found or not an SRT source |
+| `501` | SRT not configured |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/sources/srt:encoder1/srt/stats \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/sources/{key}/srt
+
+Update the SRT configuration for a source. Currently supports changing the SRT latency. The change takes effect on the next connection (caller mode reconnects automatically).
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | SRT source key (e.g., `srt:encoder1`) |
+
+**Request Body:**
+
+```json
+{
+  "latencyMs": 300
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `latencyMs` | `int` | Yes | SRT latency in milliseconds. Range: `0`-`10000`. |
+
+**Response:** `200 OK`
+
+```json
+{
+  "status": "ok"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or `latencyMs` out of range |
+| `404` | Source not found or not an SRT source |
+| `501` | SRT not configured |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/sources/srt:encoder1/srt \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"latencyMs": 300}'
 ```
 
 ---

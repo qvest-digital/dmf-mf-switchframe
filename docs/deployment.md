@@ -149,6 +149,7 @@ docker run -d \
   -p 8080:8080/tcp \
   -p 9090:9090/tcp \
   -p 9000:9000/udp \
+  -p 6464:6464/udp \
   -e SWITCHFRAME_API_TOKEN=your-secret-token \
   -e APP_ENV=production \
   -v /data/recordings:/recordings \
@@ -170,7 +171,8 @@ services:
       - "8080:8080/tcp"    # HTTP/3 Alt-Svc
       - "8081:8081/tcp"    # Plain HTTP API (--http-fallback)
       - "9090:9090/tcp"    # Admin (metrics, health, pprof)
-      - "9000:9000/udp"    # SRT listener
+      - "6464:6464/udp"    # SRT input listener (encoder push)
+      - "9000:9000/udp"    # SRT output listener (downstream pull)
     environment:
       SWITCHFRAME_API_TOKEN: "${SWITCHFRAME_API_TOKEN}"
       APP_ENV: production
@@ -207,7 +209,7 @@ volumes:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--demo` | `false` | Start with 4 simulated H.264 cameras + 2 raw MXL sources. Disables auth. |
+| `--demo` | `false` | Start with 4 simulated H.264 cameras + 2 raw MXL sources + 2 SRT sources. Disables auth. Auto-enables `--srt-listen :6464`. |
 | `--demo-video <dir>` | — | Directory of MPEG-TS clips for realistic demo video (requires `--demo`) |
 | `--log-level` | `info` | `debug` · `info` · `warn` · `error` |
 | `--admin-addr` | `:9090` | Admin/metrics server listen address |
@@ -251,6 +253,15 @@ volumes:
 | `--mxl-output-audio-def` | — | NMOS IS-04 audio flow definition JSON path |
 | `--mxl-domain` | `/dev/shm/mxl` | MXL shared memory domain directory |
 | `--mxl-discover` | `false` | List available MXL flows and exit |
+
+#### SRT Input
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--srt-listen` | — | SRT listener address (e.g., `:6464`). Enables SRT input. Auto-enabled in `--demo` mode. |
+| `--srt-latency` | `120` | Default SRT latency in milliseconds for new sources (0-10000) |
+
+When `--srt-listen` is set, the server accepts incoming SRT push connections on the specified UDP port. Encoders connect using the SRT `streamid` to identify themselves (e.g., `srt://server:6464?streamid=live/camera1`). SRT caller (pull) sources are created via the REST API (`POST /api/sources`).
 
 ### Environment Variables
 
@@ -306,8 +317,9 @@ These listen addresses are not currently configurable via flags.
 | **8080** | TCP | Inbound | HTTP/3 Alt-Svc advertisement (browsers discover QUIC via TCP first) |
 | **8081** | TCP | Inbound | Plain HTTP REST API (opt-in via `--http-fallback`) |
 | **9090** | TCP | Inbound | Admin: `/metrics` · `/health` · `/ready` · `/api/cert-hash` · `/debug/pprof/*` |
-| **9000** | UDP | Inbound | SRT listener mode (pull connections from downstream) |
-| *Ephemeral* | UDP | Outbound | SRT caller mode (push to platform — no inbound rule needed) |
+| **6464** | UDP | Inbound | SRT input listener (encoder push, `--srt-listen`, default in demo mode) |
+| **9000** | UDP | Inbound | SRT output listener (downstream pull connections) |
+| *Ephemeral* | UDP | Outbound | SRT caller — both input (pull sources) and output (push to platform) |
 
 ### Firewall Rules
 
@@ -322,7 +334,10 @@ iptables -A INPUT -p tcp --dport 8081 -j ACCEPT
 # Restrict: Admin (monitoring network only — exposes pprof)
 iptables -A INPUT -p tcp --dport 9090 -s 10.0.0.0/8 -j ACCEPT
 
-# Optional: SRT listener
+# Optional: SRT input listener (encoder push)
+iptables -A INPUT -p udp --dport 6464 -j ACCEPT
+
+# Optional: SRT output listener (downstream pull)
 iptables -A INPUT -p udp --dport 9000 -j ACCEPT
 ```
 
@@ -616,6 +631,49 @@ Automatically available on macOS (Intel and Apple Silicon). No setup needed for 
 
 ## 9. Output
 
+### SRT Input Sources
+
+SRT input supports two modes for ingesting video sources:
+
+**Listener (Push) Mode** — Encoders push to the server:
+
+```bash
+# Enable SRT listener
+./switchframe --srt-listen :6464
+
+# Encoder connects with streamid
+ffmpeg -i input.mp4 -f mpegts "srt://server:6464?streamid=live/camera1"
+```
+
+The source key is derived from the streamid: `live/camera1` → `srt:camera1`. Configuration (label, position, delay) persists across encoder reconnects.
+
+**Caller (Pull) Mode** — Server pulls from a remote source:
+
+```bash
+# Create via REST API
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"srt","mode":"caller","address":"srt://192.168.1.100:6464","streamID":"live/camera1","label":"Remote Camera","latencyMs":200}' \
+  https://localhost:8080/api/sources
+
+# Remove
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  https://localhost:8080/api/sources/srt:camera1
+```
+
+| Behavior | Detail |
+|----------|--------|
+| Codec support | Any codec FFmpeg can decode (H.264, HEVC, VP9, etc.) → normalized to YUV420 |
+| Audio | Any codec → resampled to stereo float32 48kHz |
+| Decode threads | 1 (single-threaded for live latency; multi-threaded causes burst/gap patterns) |
+| Reconnection | Exponential backoff: 1s → 30s max, ±25% jitter (caller mode) |
+| Persistence | `~/.switchframe/srt_sources.json` — survives server restart |
+| Probe size | 500 TS packets (~94KB) for fast stream detection |
+| Latency override | Per-source via `PUT /api/sources/{key}/srt` |
+| Stats | `GET /api/sources/{key}/srt/stats` — RTT, loss, bitrate, buffer fill |
+| SCTE-35 | Pass-through extraction from MPEG-TS data PID |
+| Captions | H.264 SEI A53 caption extraction |
+
 ### SRT Caller (Push)
 
 Pushes MPEG-TS to a remote SRT receiver. The server initiates the outbound UDP connection.
@@ -859,7 +917,9 @@ JSON files stored in `~/.switchframe/`:
 | `operators.json` | Registered operators (name, role, bearer token) |
 | `scte35_rules.json` | SCTE-35 signal conditioning rules |
 | `layout_presets.json` | PIP/multi-layout preset definitions |
+| `srt_sources.json` | SRT source configurations (key, mode, address, streamID, label, position, latency, delay) |
 | `stingers/` | Uploaded stinger transition clips (PNG sequences + WAV audio) |
+| `clips/` | Uploaded media clips for playback |
 
 In Docker, mount a volume at `/home/switchframe/.switchframe` to persist across restarts.
 
@@ -895,6 +955,8 @@ ulimit -n 65536
 - [ ] Plan certificate renewal (restart every 14 days for self-signed, or use `--tls-cert`)
 - [ ] Set `ulimit -n 65536` or higher on Linux hosts
 - [ ] Review operator tokens if using multi-operator mode (persisted in `operators.json`)
+- [ ] Configure `--srt-listen` port if accepting SRT push sources
+- [ ] Monitor SRT source health via `GET /api/sources` status field
 
 ---
 
