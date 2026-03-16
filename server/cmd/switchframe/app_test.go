@@ -59,7 +59,7 @@ func TestStatePath_Nested(t *testing.T) {
 
 func TestParseConfig_StateDir_Default(t *testing.T) {
 	// When SWITCHFRAME_STATE_DIR is unset, StateDir should default to ~/.switchframe.
-	os.Unsetenv("SWITCHFRAME_STATE_DIR")
+	t.Setenv("SWITCHFRAME_STATE_DIR", "")
 
 	homeDir, err := os.UserHomeDir()
 	require.NoError(t, err)

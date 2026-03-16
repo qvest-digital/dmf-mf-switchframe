@@ -18,7 +18,7 @@ func TestAdminServer_HealthNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("GET /health = %d, want 200", resp.StatusCode)
 	}
@@ -33,7 +33,7 @@ func TestAdminServer_ReadyNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// 503 is expected since readyFlag is not set, but 401 would be wrong.
 	if resp.StatusCode == 401 {
 		t.Error("GET /ready should not require auth")
@@ -49,7 +49,7 @@ func TestAdminServer_CertHashNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 401 {
 		t.Error("GET /api/cert-hash should not require auth")
 	}
@@ -64,7 +64,7 @@ func TestAdminServer_MetricsRequiresToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 401 {
 		t.Errorf("GET /metrics without token = %d, want 401", resp.StatusCode)
 	}
@@ -76,7 +76,7 @@ func TestAdminServer_MetricsRequiresToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != 401 {
 		t.Errorf("GET /metrics with wrong token = %d, want 401", resp2.StatusCode)
 	}
@@ -88,7 +88,7 @@ func TestAdminServer_MetricsRequiresToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp3.Body.Close()
+	_ = resp3.Body.Close()
 	if resp3.StatusCode != 200 {
 		t.Errorf("GET /metrics with token = %d, want 200", resp3.StatusCode)
 	}
@@ -103,7 +103,7 @@ func TestAdminServer_DebugRequiresToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 401 {
 		t.Errorf("GET /debug/pprof/ without token = %d, want 401", resp.StatusCode)
 	}
@@ -115,7 +115,7 @@ func TestAdminServer_DebugRequiresToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != 200 {
 		t.Errorf("GET /debug/pprof/ with token = %d, want 200", resp2.StatusCode)
 	}
@@ -130,7 +130,7 @@ func TestAdminServer_NoTokenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("GET /metrics without token config = %d, want 200", resp.StatusCode)
 	}
@@ -139,7 +139,7 @@ func TestAdminServer_NoTokenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != 200 {
 		t.Errorf("GET /debug/pprof/ without token config = %d, want 200", resp2.StatusCode)
 	}
