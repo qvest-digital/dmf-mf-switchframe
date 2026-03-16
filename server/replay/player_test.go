@@ -1720,10 +1720,10 @@ func TestEstimateFPSFromClip(t *testing.T) {
 		// B-frame decode order: I0, P3, B1, B2 — PTS are out of order.
 		// PTS span should be max(9000) - min(0) = 9000, giving 30fps.
 		clip := []bufferedFrame{
-			{pts: 0, isKeyframe: true},  // I-frame (display order 0)
-			{pts: 9000},                 // P-frame (display order 3)
-			{pts: 3000},                 // B-frame (display order 1)
-			{pts: 6000},                 // B-frame (display order 2)
+			{pts: 0, isKeyframe: true}, // I-frame (display order 0)
+			{pts: 9000},                // P-frame (display order 3)
+			{pts: 3000},                // B-frame (display order 1)
+			{pts: 6000},                // B-frame (display order 2)
 		}
 		fps := estimateFPSFromClip(clip)
 		// With the bug (last-first): (6000-0)/3 = 2000 ticks/frame = 45fps — WRONG.
@@ -1887,11 +1887,11 @@ func TestReplayPlayer_AudioPTSAlignedWithVideo(t *testing.T) {
 	done := make(chan struct{})
 
 	cfg := PlayerConfig{
-		Clip:      clip,
-		AudioClip: audioClip,
-		Speed:     1.0,
-		Loop:      false,
-		InitialPTS: initialPTS,
+		Clip:          clip,
+		AudioClip:     audioClip,
+		Speed:         1.0,
+		Loop:          false,
+		InitialPTS:    initialPTS,
 		Interpolation: InterpolationNone,
 		DecoderFactory: func() (transition.VideoDecoder, error) {
 			return &mockReplayDecoder{width: 320, height: 240}, nil

@@ -46,8 +46,8 @@ type sourceDecoder struct {
 	pipelineFormat *atomic.Pointer[PipelineFormat]
 
 	// Reusable buffer for resolution scaling (lazy-allocated on first use).
-	scaleBuf       []byte
-	scaleWarnOnce  sync.Once // log mismatch warning once per source
+	scaleBuf      []byte
+	scaleWarnOnce sync.Once // log mismatch warning once per source
 
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine

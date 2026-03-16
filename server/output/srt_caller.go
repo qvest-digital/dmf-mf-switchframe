@@ -34,20 +34,20 @@ type SRTCallerConfig struct {
 type SRTCaller struct {
 	config SRTCallerConfig
 
-	mu            sync.Mutex
-	conn          srtConn
-	ctx           context.Context
-	cancel        context.CancelFunc
-	ringBuf       *ringBuffer
-	backoff       time.Duration
-	reconnecting  atomic.Bool // guards against duplicate reconnect goroutines
+	mu              sync.Mutex
+	conn            srtConn
+	ctx             context.Context
+	cancel          context.CancelFunc
+	ringBuf         *ringBuffer
+	backoff         time.Duration
+	reconnecting    atomic.Bool  // guards against duplicate reconnect goroutines
 	pendingIDR      atomic.Bool  // when true, drop writes until a keyframe arrives
 	pendingIDRSince atomic.Int64 // UnixMilli timestamp when pendingIDR was set (for timeout)
-	bytesWritten  atomic.Int64
-	overflowCount atomic.Int64 // number of ring buffer overflow events
-	state         atomic.Pointer[AdapterState]
-	lastError     atomic.Pointer[string]
-	startedAt     time.Time
+	bytesWritten    atomic.Int64
+	overflowCount   atomic.Int64 // number of ring buffer overflow events
+	state           atomic.Pointer[AdapterState]
+	lastError       atomic.Pointer[string]
+	startedAt       time.Time
 
 	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)

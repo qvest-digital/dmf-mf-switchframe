@@ -79,7 +79,7 @@ func newKWeightPreFilter(sampleRate int) BiquadFilter {
 	// Analog prototype parameters from BS.1770-4 Annex 1
 	const (
 		f0        = 1681.974450955533
-		G         = 3.999843853973347  // dB
+		G         = 3.999843853973347 // dB
 		Q         = 0.7071752369554196
 		vbExpHigh = 0.4996667741545416 // exponent for Vb derivation (boost)
 	)
@@ -155,12 +155,12 @@ func NewLoudnessMeter(sampleRate, channels int) *LoudnessMeter {
 	channelWeights := make([]float64, channels)
 	switch channels {
 	case 6: // 5.1 surround
-		channelWeights[0] = 1.0                      // L
-		channelWeights[1] = 1.0                      // R
-		channelWeights[2] = 1.0                      // C
-		channelWeights[3] = 0.0                      // LFE (excluded)
-		channelWeights[4] = math.Pow(10, 1.5/10.0)   // Ls (~1.41)
-		channelWeights[5] = math.Pow(10, 1.5/10.0)   // Rs (~1.41)
+		channelWeights[0] = 1.0                    // L
+		channelWeights[1] = 1.0                    // R
+		channelWeights[2] = 1.0                    // C
+		channelWeights[3] = 0.0                    // LFE (excluded)
+		channelWeights[4] = math.Pow(10, 1.5/10.0) // Ls (~1.41)
+		channelWeights[5] = math.Pow(10, 1.5/10.0) // Rs (~1.41)
 	default: // mono, stereo, or other layouts: all channels weighted equally
 		for i := range channelWeights {
 			channelWeights[i] = 1.0

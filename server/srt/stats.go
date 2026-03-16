@@ -7,27 +7,27 @@ import (
 
 // ConnStatsSnapshot is a point-in-time snapshot of SRT connection statistics.
 type ConnStatsSnapshot struct {
-	Mode                string  `json:"mode"`
-	StreamID            string  `json:"streamID"`
-	RemoteAddr          string  `json:"remoteAddr,omitempty"`
-	State               string  `json:"state"`
-	Connected           bool    `json:"connected"`
-	UptimeMs            int64   `json:"uptimeMs"`
-	LatencyMs           int     `json:"latencyMs"`
-	NegotiatedLatencyMs int     `json:"negotiatedLatencyMs"`
-	RTTMs               float64 `json:"rttMs"`
-	RTTVarMs            float64 `json:"rttVarMs"`
-	RecvRateMbps        float64 `json:"recvRateMbps"`
-	LossRatePct         float64 `json:"lossRatePct"`
-	PacketsReceived     int64   `json:"packetsReceived"`
-	PacketsLost         int64   `json:"packetsLost"`
-	PacketsDropped      int64   `json:"packetsDropped"`
-	PacketsRetransmitted int64  `json:"packetsRetransmitted"`
-	PacketsBelated      int64   `json:"packetsBelated"`
-	RecvBufMs           float64 `json:"recvBufMs"`
-	RecvBufPackets      int     `json:"recvBufPackets"`
-	FlightSize          int     `json:"flightSize"`
-	ReconnectCount      int     `json:"reconnectCount,omitempty"`
+	Mode                 string  `json:"mode"`
+	StreamID             string  `json:"streamID"`
+	RemoteAddr           string  `json:"remoteAddr,omitempty"`
+	State                string  `json:"state"`
+	Connected            bool    `json:"connected"`
+	UptimeMs             int64   `json:"uptimeMs"`
+	LatencyMs            int     `json:"latencyMs"`
+	NegotiatedLatencyMs  int     `json:"negotiatedLatencyMs"`
+	RTTMs                float64 `json:"rttMs"`
+	RTTVarMs             float64 `json:"rttVarMs"`
+	RecvRateMbps         float64 `json:"recvRateMbps"`
+	LossRatePct          float64 `json:"lossRatePct"`
+	PacketsReceived      int64   `json:"packetsReceived"`
+	PacketsLost          int64   `json:"packetsLost"`
+	PacketsDropped       int64   `json:"packetsDropped"`
+	PacketsRetransmitted int64   `json:"packetsRetransmitted"`
+	PacketsBelated       int64   `json:"packetsBelated"`
+	RecvBufMs            float64 `json:"recvBufMs"`
+	RecvBufPackets       int     `json:"recvBufPackets"`
+	FlightSize           int     `json:"flightSize"`
+	ReconnectCount       int     `json:"reconnectCount,omitempty"`
 }
 
 // ConnStats tracks live SRT connection metrics. Thread-safe.
@@ -46,18 +46,18 @@ type ConnStats struct {
 	reconnectCount      int
 
 	// Live metrics
-	rttMs               float64
-	rttVarMs            float64
-	recvRateMbps        float64
-	lossRatePct         float64
-	packetsReceived     int64
-	packetsLost         int64
-	packetsDropped      int64
+	rttMs                float64
+	rttVarMs             float64
+	recvRateMbps         float64
+	lossRatePct          float64
+	packetsReceived      int64
+	packetsLost          int64
+	packetsDropped       int64
 	packetsRetransmitted int64
-	packetsBelated      int64
-	recvBufMs           float64
-	recvBufPackets      int
-	flightSize          int
+	packetsBelated       int64
+	recvBufMs            float64
+	recvBufPackets       int
+	flightSize           int
 }
 
 // NewConnStats creates a ConnStats tracker for an SRT connection.
@@ -89,18 +89,18 @@ func (cs *ConnStats) SetDisconnected() {
 
 // StatsUpdate holds a batch of SRT connection metrics for ConnStats.Update.
 type StatsUpdate struct {
-	RTTMs            float64
-	RTTVarMs         float64
-	RecvRateMbps     float64
-	LossRatePct      float64
-	PacketsReceived  int64
-	PacketsLost      int64
-	PacketsDropped   int64
-	PacketsRetrans   int64
-	PacketsBelated   int64
-	RecvBufMs        float64
-	RecvBufPackets   int
-	FlightSize       int
+	RTTMs           float64
+	RTTVarMs        float64
+	RecvRateMbps    float64
+	LossRatePct     float64
+	PacketsReceived int64
+	PacketsLost     int64
+	PacketsDropped  int64
+	PacketsRetrans  int64
+	PacketsBelated  int64
+	RecvBufMs       float64
+	RecvBufPackets  int
+	FlightSize      int
 }
 
 // Update applies a bulk stats update from srtgo.

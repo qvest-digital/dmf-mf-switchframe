@@ -431,8 +431,8 @@ func TestSampler_StaleMapEntryCleanup(t *testing.T) {
 		},
 		PipelineLastNs: 10000,
 		NodeTimings: map[string]int64{
-			"encode":  3000,
-			"keyer":   1000,
+			"encode": 3000,
+			"keyer":  1000,
 		},
 		E2ELastNs:     15000,
 		FrameBudgetNs: 33333,

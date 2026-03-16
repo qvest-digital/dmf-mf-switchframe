@@ -35,8 +35,8 @@ type ListenerConfig struct {
 // Listener accepts incoming SRT push connections. It uses srtgo's Server
 // abstraction for connection lifecycle management.
 type Listener struct {
-	cfg ListenerConfig
-	log *slog.Logger
+	cfg         ListenerConfig
+	log         *slog.Logger
 	mu          sync.Mutex
 	activeCount int
 }

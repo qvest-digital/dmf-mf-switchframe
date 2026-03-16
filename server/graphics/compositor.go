@@ -113,15 +113,15 @@ type graphicsLayer struct {
 // (speed / pipelineFPS) pixels on each ProcessYUV call, producing
 // perfectly smooth scrolling at any pipeline frame rate.
 type tickerState struct {
-	strip     *image.RGBA // pre-rendered text strip
-	viewport  []byte      // reusable viewport buffer (progW * barH * 4)
-	xOffset   float64     // current scroll position (sub-pixel precision)
-	speed     float64     // pixels per second
-	loopPoint int         // wrap position for loop mode (0 = no loop)
-	viewW     int         // viewport width
-	viewH     int         // viewport height
-	done   bool        // true when non-loop ticker has scrolled off the end
-	doneCh chan struct{} // closed when non-loop ticker completes (signals goroutine to exit)
+	strip     *image.RGBA   // pre-rendered text strip
+	viewport  []byte        // reusable viewport buffer (progW * barH * 4)
+	xOffset   float64       // current scroll position (sub-pixel precision)
+	speed     float64       // pixels per second
+	loopPoint int           // wrap position for loop mode (0 = no loop)
+	viewW     int           // viewport width
+	viewH     int           // viewport height
+	done      bool          // true when non-loop ticker has scrolled off the end
+	doneCh    chan struct{} // closed when non-loop ticker completes (signals goroutine to exit)
 }
 
 // Compositor manages multiple downstream keyer (DSK) graphics overlay layers.

@@ -352,14 +352,14 @@ func TestParseAccessUnits_VideoFrameAligned(t *testing.T) {
 	// Build a TS stream: [video PES frame1] [audio PES] [video PES frame2] [audio PES]
 	var data []byte
 	// Video frame 1 (PTS=0): 3 packets (PUSI + 2 continuation)
-	data = append(data, buildTSPacketWithPTS(0xE0, 0)...)      // video PUSI
-	data = append(data, buildTSContinuation(0x100)...)          // video cont
-	data = append(data, buildTSContinuation(0x100)...)          // video cont
+	data = append(data, buildTSPacketWithPTS(0xE0, 0)...) // video PUSI
+	data = append(data, buildTSContinuation(0x100)...)    // video cont
+	data = append(data, buildTSContinuation(0x100)...)    // video cont
 	// Audio (PTS=500): 1 packet
 	data = append(data, buildTSPacketWithPTSOnPID(0xC0, 500, 0x101)...)
 	// Video frame 2 (PTS=3750): 2 packets
-	data = append(data, buildTSPacketWithPTS(0xE0, 3750)...)    // video PUSI
-	data = append(data, buildTSContinuation(0x100)...)          // video cont
+	data = append(data, buildTSPacketWithPTS(0xE0, 3750)...) // video PUSI
+	data = append(data, buildTSContinuation(0x100)...)       // video cont
 	// Audio (PTS=4250): 1 packet
 	data = append(data, buildTSPacketWithPTSOnPID(0xC0, 4250, 0x101)...)
 
@@ -392,7 +392,7 @@ func TestParseAccessUnits_VideoFrameAligned(t *testing.T) {
 func TestParseAccessUnits_PreambleMerge(t *testing.T) {
 	// PAT/PMT before first video PES should be merged into first video unit.
 	var data []byte
-	data = append(data, buildTSContinuation(0x00)...)      // PAT (PID 0 — skipped in preamble, becomes preamble)
+	data = append(data, buildTSContinuation(0x00)...)        // PAT (PID 0 — skipped in preamble, becomes preamble)
 	data = append(data, buildTSPacketWithPTS(0xE0, 1000)...) // video PUSI
 
 	units := parseAccessUnits(data)
@@ -467,7 +467,7 @@ func buildTSPacketWithPTSOnPID(streamID byte, pts int64, pid int) []byte {
 	pkt := buildTSPacketWithPTS(streamID, pts)
 	// Override PID (bytes 1-2, preserving PUSI bit).
 	pkt[1] = 0x40 | byte((pid>>8)&0x1F) // PUSI=1 + PID high
-	pkt[2] = byte(pid & 0xFF)            // PID low
+	pkt[2] = byte(pid & 0xFF)           // PID low
 	return pkt
 }
 
@@ -513,7 +513,7 @@ func buildTSPacketWithPTS(streamID byte, pts int64) []byte {
 	// Encode PTS (5 bytes, same format as MPEG PES)
 	pkt[off+9] = byte(0x20|((pts>>29)&0x0E)) | 0x01
 	pkt[off+10] = byte(pts >> 22)
-	pkt[off+11] = byte(((pts>>14)&0xFE) | 0x01)
+	pkt[off+11] = byte(((pts >> 14) & 0xFE) | 0x01)
 	pkt[off+12] = byte(pts >> 7)
 	pkt[off+13] = byte(((pts << 1) & 0xFE) | 0x01)
 

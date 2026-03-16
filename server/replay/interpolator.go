@@ -6,9 +6,9 @@ import "github.com/zsiec/switchframe/server/switcher"
 type InterpolationMode string
 
 const (
-	InterpolationNone     InterpolationMode = "none"     // frame duplication (current behavior)
-	InterpolationBlend    InterpolationMode = "blend"    // alpha blend adjacent frames
-	InterpolationMCFI     InterpolationMode = "mcfi"     // motion-compensated frame interpolation
+	InterpolationNone          InterpolationMode = "none"           // frame duplication (current behavior)
+	InterpolationBlend         InterpolationMode = "blend"          // alpha blend adjacent frames
+	InterpolationMCFI          InterpolationMode = "mcfi"           // motion-compensated frame interpolation
 	InterpolationHoldCrossfade InterpolationMode = "hold-crossfade" // hold clean frames, crossfade at transitions
 )
 

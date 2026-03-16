@@ -42,16 +42,16 @@ var endpointPrefixSubsystemMap = []struct {
 	subsystem Subsystem
 }{
 	{"/api/audio/", SubsystemAudio},
-	{"/api/sources/", SubsystemSwitching},           // label, delay, key
-	{"/api/macros/", SubsystemSwitching},             // macro run
-	{"/api/presets/", SubsystemSwitching},            // preset create, update, delete, recall
-	{"/api/captions/", SubsystemCaptions},            // caption mode, text, clear
-	{"/api/graphics/", SubsystemGraphics},            // layer on/off/frame/animate/fly/image
-	{"/api/layout/", SubsystemSwitching},             // PIP slots, layout presets
-	{"/api/output/destinations/", SubsystemOutput},   // multi-destination SRT
-	{"/api/clips/", SubsystemSwitching},              // clip CRUD, player controls
-	{"/api/scte35/", SubsystemOutput},                // SCTE-35 ad insertion
-	{"/api/stinger/", SubsystemGraphics},             // stinger upload/delete/cut-point
+	{"/api/sources/", SubsystemSwitching},          // label, delay, key
+	{"/api/macros/", SubsystemSwitching},           // macro run
+	{"/api/presets/", SubsystemSwitching},          // preset create, update, delete, recall
+	{"/api/captions/", SubsystemCaptions},          // caption mode, text, clear
+	{"/api/graphics/", SubsystemGraphics},          // layer on/off/frame/animate/fly/image
+	{"/api/layout/", SubsystemSwitching},           // PIP slots, layout presets
+	{"/api/output/destinations/", SubsystemOutput}, // multi-destination SRT
+	{"/api/clips/", SubsystemSwitching},            // clip CRUD, player controls
+	{"/api/scte35/", SubsystemOutput},              // SCTE-35 ad insertion
+	{"/api/stinger/", SubsystemGraphics},           // stinger upload/delete/cut-point
 }
 
 // EndpointSubsystem maps an API path to its subsystem. Returns the subsystem

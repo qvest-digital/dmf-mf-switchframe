@@ -29,7 +29,7 @@ type srtSourceState struct {
 	source       *srt.Source
 	relay        *distribution.Relay
 	videoEncoder transition.VideoEncoder // set by relay goroutine, for stats
-	audioEncoder audio.Encoder          // set by audio goroutine, for stats
+	audioEncoder audio.Encoder           // set by audio goroutine, for stats
 }
 
 // initSRT initializes the SRT listener, caller, store, and stats manager.
@@ -278,12 +278,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	go func() {
 		for job := range pipelineCh {
 			pfr := &switcher.ProcessingFrame{
-				YUV:   job.yuv,
-				Width: job.w,
+				YUV:    job.yuv,
+				Width:  job.w,
 				Height: job.h,
-				PTS:   job.pts,
-				DTS:   job.pts,
-				Codec: "h264",
+				PTS:    job.pts,
+				DTS:    job.pts,
+				Codec:  "h264",
 			}
 			a.sw.IngestRawVideo(key, pfr)
 		}

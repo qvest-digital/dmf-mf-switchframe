@@ -1028,10 +1028,10 @@ func (m *mockVideoEncoder) Close() {
 // --- Mock DrainableDecoder for B-frame drain tests ---
 
 type mockDrainableDecoder struct {
-	decodeFn      func(h264 []byte) (yuv []byte, w, h int, err error)
-	sendEOSFn     func() error
+	decodeFn       func(h264 []byte) (yuv []byte, w, h int, err error)
+	sendEOSFn      func() error
 	receiveFrameFn func() (yuv []byte, w, h int, err error)
-	closeFn       func()
+	closeFn        func()
 }
 
 func (m *mockDrainableDecoder) Decode(h264 []byte) (yuv []byte, w, h int, err error) {

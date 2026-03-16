@@ -28,9 +28,9 @@ func init() {
 
 // AppConfig holds all configuration parsed from flags and environment.
 type AppConfig struct {
-	Demo       bool
-	FrameSync  bool
-	FRCQuality string
+	Demo             bool
+	FrameSync        bool
+	FRCQuality       string
 	Format           string
 	DemoVideoDir     string
 	LogLevel         string
@@ -221,9 +221,9 @@ func parseConfig() (AppConfig, error) {
 	}
 
 	return AppConfig{
-		Demo:       *demoFlag,
-		FrameSync:  *frameSyncFlag,
-		FRCQuality: *frcQualityFlag,
+		Demo:              *demoFlag,
+		FrameSync:         *frameSyncFlag,
+		FRCQuality:        *frcQualityFlag,
 		Format:            *formatFlag,
 		DemoVideoDir:      *demoVideoDir,
 		LogLevel:          *logLevel,

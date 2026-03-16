@@ -30,11 +30,11 @@ func TestSourceCallbackWiring(t *testing.T) {
 		gotVideoPTS    int64
 		gotVideoYUV    []byte
 
-		gotAudioKey     string
-		gotAudioPCM     []float32
-		gotAudioPTS     int64
-		gotAudioRate    int
-		gotAudioChans   int
+		gotAudioKey   string
+		gotAudioPCM   []float32
+		gotAudioPTS   int64
+		gotAudioRate  int
+		gotAudioChans int
 	)
 
 	src.OnRawVideo = func(key string, yuv []byte, width, height int, pts int64) {
@@ -317,8 +317,8 @@ func (m *mockDecoder) Stop() { m.stopFunc() }
 
 type mockSRTConn struct {
 	mockReadCloser
-	stats            srtgo.ConnStats
-	statsCalled      atomic.Bool
+	stats             srtgo.ConnStats
+	statsCalled       atomic.Bool
 	statsIntervalMode atomic.Bool
 }
 

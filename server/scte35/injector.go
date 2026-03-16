@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	errInjectorClosed      = errors.New("injector is closed")
-	errNoActiveEvents      = errors.New("no active events")
-	errActiveEventsLimit   = errors.New("active events limit exceeded")
+	errInjectorClosed    = errors.New("injector is closed")
+	errNoActiveEvents    = errors.New("no active events")
+	errActiveEventsLimit = errors.New("active events limit exceeded")
 )
 
 // InjectorConfig holds injector configuration.
@@ -395,7 +395,7 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 					delta := maskPTS33(*msg.SpliceTimePTS - currentPTS)
 					// If delta is in the lower half of the 33-bit range,
 					// the splice point is in the future.
-					if delta > 0 && delta < (1 << 32) {
+					if delta > 0 && delta < (1<<32) {
 						dur += time.Duration(delta) * time.Second / 90000
 					}
 				}

@@ -117,7 +117,7 @@ func TestSRTSource_IngestRawVideo(t *testing.T) {
 		PTS:        1000,
 		DTS:        1000,
 		IsKeyframe: true,
-		GroupID:     1,
+		GroupID:    1,
 		Codec:      "h264",
 	}
 

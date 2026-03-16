@@ -24,12 +24,12 @@ type SourceKeyConfig struct {
 type SourceInfo struct {
 	Key         string           `json:"key"`
 	Label       string           `json:"label,omitempty"`
-	Type        string           `json:"type"`              // "demo", "mxl", "srt", "replay", "clip"
+	Type        string           `json:"type"` // "demo", "mxl", "srt", "replay", "clip"
 	Status      string           `json:"status"`
 	Position    int              `json:"position"`
 	DelayMs     int              `json:"delayMs,omitempty"`
 	KeyConfig   *SourceKeyConfig `json:"keyConfig,omitempty"`
-	SRTInfo     *SRTSourceInfo   `json:"srt,omitempty"`     // non-nil for SRT sources
+	SRTInfo     *SRTSourceInfo   `json:"srt,omitempty"` // non-nil for SRT sources
 	IsVirtual   bool             `json:"isVirtual,omitempty"`
 	HasCaptions bool             `json:"hasCaptions,omitempty"`
 }
@@ -369,8 +369,8 @@ type ClipPlayerInfo struct {
 
 // ClipUploadProgress tracks server-side clip upload stages for state broadcast.
 type ClipUploadProgress struct {
-	Stage    string `json:"stage"`              // "uploading","analyzing","transcoding","validating"
-	Percent  int    `json:"percent"`            // 0-100 within current stage
+	Stage    string `json:"stage"`   // "uploading","analyzing","transcoding","validating"
+	Percent  int    `json:"percent"` // 0-100 within current stage
 	Filename string `json:"filename,omitempty"`
 }
 

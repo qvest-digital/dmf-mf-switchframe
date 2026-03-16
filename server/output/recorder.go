@@ -39,9 +39,9 @@ type FileRecorder struct {
 	baseTimestamp  string    // shared timestamp across rotated files
 	bytes          atomic.Int64
 	errMsg         string
-	pendingRotate  bool   // true when rotation threshold reached but awaiting keyframe
-	cachedPATMPT   []byte // cached PAT+PMT packets from stream for rotated files
-	bytesSinceSync int64  // bytes written since last fsync
+	pendingRotate  bool      // true when rotation threshold reached but awaiting keyframe
+	cachedPATMPT   []byte    // cached PAT+PMT packets from stream for rotated files
+	bytesSinceSync int64     // bytes written since last fsync
 	lastSyncTime   time.Time // time of last periodic fsync
 }
 

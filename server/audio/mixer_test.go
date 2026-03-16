@@ -2906,7 +2906,7 @@ func TestMixer_AddStingerAudio_StereoFadeSymmetry(t *testing.T) {
 	// Create stereo stinger audio with all 1.0 values so gain is directly visible.
 	// fade-in is 10ms = 480 sample-frames, fade-out is 50ms = 2400 sample-frames.
 	// Use a long enough clip so the regions don't overlap.
-	totalFrames := 480 + 2400 + 1000 // fade-in + fade-out + middle
+	totalFrames := 480 + 2400 + 1000             // fade-in + fade-out + middle
 	stingerPCM := make([]float32, totalFrames*2) // stereo
 	for i := range stingerPCM {
 		stingerPCM[i] = 1.0
