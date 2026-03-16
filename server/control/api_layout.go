@@ -236,6 +236,10 @@ func (a *API) handleSaveLayoutPreset(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "provide a name")
 		return
 	}
+	if err := validateStringLen("name", req.Name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	saved := layout.Layout{
 		Name:  req.Name,
 		Slots: make([]layout.Slot, len(l.Slots)),

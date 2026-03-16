@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 )
@@ -145,9 +147,15 @@ func TestAdminServer_NoTokenConfigured(t *testing.T) {
 
 func TestAdminServer_DefaultBindLocalhost(t *testing.T) {
 	// Verify the default admin-addr flag binds to localhost.
-	// We test this by checking the parseConfig default value.
-	// Reset flag.CommandLine to avoid "flag already defined" errors.
-	// The actual test is in TestParseConfig_DefaultAdminAddr below.
+	os.Args = []string{"switchframe"}
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	cfg, err := parseConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminAddr != "127.0.0.1:9090" {
+		t.Errorf("default AdminAddr = %q, want 127.0.0.1:9090", cfg.AdminAddr)
+	}
 }
 
 func startTestAdminServer(t *testing.T, adminToken string) (stop func(), addr string) {

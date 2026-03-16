@@ -27,7 +27,7 @@ const (
 // validateStringLen checks that value does not exceed max bytes.
 func validateStringLen(name, value string, max int) error {
 	if len(value) > max {
-		return fmt.Errorf("%s too long: %d characters (max %d)", name, len(value), max)
+		return fmt.Errorf("%s too long: %d bytes (max %d)", name, len(value), max)
 	}
 	return nil
 }
