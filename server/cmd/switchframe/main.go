@@ -36,7 +36,8 @@ type AppConfig struct {
 	DemoVideoDir     string
 	LogLevel         string
 	AdminAddr        string
-	AdminToken       string // Bearer token for admin endpoints (/metrics, /debug)
+	AdminToken       string   // Bearer token for admin endpoints (/metrics, /debug)
+	AllowedOrigins   []string // CORS allowed origins (empty = wildcard *)
 	APIToken         string
 	ReplayBufferSecs int
 	Addr             string
@@ -151,6 +152,7 @@ func parseConfig() (AppConfig, error) {
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	adminAddr := flag.String("admin-addr", "127.0.0.1:9090", "Admin/metrics server listen address")
 	adminTokenFlag := flag.String("admin-token", "", "Bearer token for admin endpoints (/metrics, /debug); if empty, these endpoints are unprotected")
+	allowedOriginsFlag := flag.String("allowed-origins", "", "Comma-separated allowed CORS origins (e.g., https://switchframe.dev); empty = allow all")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
 	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
@@ -235,6 +237,12 @@ func parseConfig() (AppConfig, error) {
 		stateDir = filepath.Join(homeDir, ".switchframe")
 	}
 
+	// Parse allowed origins for CORS.
+	var allowedOrigins []string
+	if *allowedOriginsFlag != "" {
+		allowedOrigins = splitAndTrim(*allowedOriginsFlag)
+	}
+
 	return AppConfig{
 		Demo:              *demoFlag,
 		FrameSync:         *frameSyncFlag,
@@ -244,6 +252,7 @@ func parseConfig() (AppConfig, error) {
 		LogLevel:          *logLevel,
 		AdminAddr:         *adminAddr,
 		AdminToken:        *adminTokenFlag,
+		AllowedOrigins:    allowedOrigins,
 		APIToken:          apiToken,
 		ReplayBufferSecs:  *replayBufferSecs,
 		Addr:              *addrFlag,

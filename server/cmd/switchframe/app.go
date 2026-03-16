@@ -253,7 +253,7 @@ func (a *App) initPrismServer() error {
 			apiHandler = a.authMW(apiHandler)
 			apiHandler = control.MetricsMiddleware(apiHandler)
 			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
-			apiHandler = control.CORSMiddleware(nil)(apiHandler)
+			apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 
 			// Cert-hash is already registered by Prism (distribution/server.go)
 			// on this mux — no need to register it here.
