@@ -58,6 +58,10 @@ func (a *API) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "name required")
 		return
 	}
+	if err := validateStringLen("name", req.Name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	state := a.enrichedState()
 	snapshot := stateToSnapshot(state)
@@ -92,6 +96,11 @@ func (a *API) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 	var req updatePresetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if err := validateStringLen("name", req.Name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

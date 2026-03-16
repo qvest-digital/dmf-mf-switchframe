@@ -99,6 +99,10 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "source required")
 		return
 	}
+	if err := validateRange("trim", req.Trim, MinTrimDB, MaxTrimDB); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.mixer.SetTrim(req.Source, req.Trim); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -121,6 +125,10 @@ func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Source == "" {
 		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if err := validateRange("level", req.Level, MinLevelDB, MaxLevelDB); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.mixer.SetLevel(req.Source, req.Level); err != nil {
@@ -191,6 +199,10 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if err := validateRange("level", req.Level, MinLevelDB, MaxLevelDB); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.mixer.SetMasterLevel(req.Level); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
@@ -214,6 +226,18 @@ func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
 	var req eqRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateRange("frequency", req.Frequency, MinEQFreq, MaxEQFreq); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("gain", req.Gain, MinEQGainDB, MaxEQGainDB); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("q", req.Q, MinEQQ, MaxEQQ); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.mixer.SetEQ(source, req.Band, req.Frequency, req.Gain, req.Q, req.Enabled); err != nil {
@@ -259,6 +283,26 @@ func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
 	var req compressorRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateRange("threshold", req.Threshold, -40.0, 0.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("ratio", req.Ratio, 1.0, 20.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("attack", req.Attack, 0.1, 100.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("release", req.Release, 10.0, 1000.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("makeupGain", req.MakeupGain, 0.0, 24.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.mixer.SetCompressor(source, req.Threshold, req.Ratio, req.Attack, req.Release, req.MakeupGain); err != nil {
@@ -311,6 +355,10 @@ func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
 	var req audioDelayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateIntRange("delayMs", req.DelayMs, MinDelayMs, MaxDelayMs); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.mixer.SetAudioDelay(source, req.DelayMs); err != nil {

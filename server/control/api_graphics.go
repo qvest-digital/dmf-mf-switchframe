@@ -740,6 +740,10 @@ func (a *API) handleStingerList(w http.ResponseWriter, r *http.Request) {
 // handleStingerDelete removes a stinger clip by name.
 func (a *API) handleStingerDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if err := validateStringLen("name", name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.stingerStore.Delete(name); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -755,6 +759,10 @@ type stingerCutPointRequest struct {
 // handleStingerCutPoint updates the cut point for a stinger clip.
 func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if err := validateStringLen("name", name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	var req stingerCutPointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
@@ -771,6 +779,10 @@ func (a *API) handleStingerCutPoint(w http.ResponseWriter, r *http.Request) {
 // handleStingerUpload accepts a zip file upload containing PNG frames for a stinger.
 func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	if err := validateStringLen("name", name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 256<<20)
 

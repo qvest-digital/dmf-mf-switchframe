@@ -65,6 +65,10 @@ func (a *API) handleSaveMacro(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.Name = name
+	if err := validateStringLen("name", name, MaxNameLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if err := a.macroStore.Save(m); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)

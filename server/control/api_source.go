@@ -58,6 +58,10 @@ func (a *API) handleSetLabel(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if err := validateStringLen("label", req.Label, MaxLabelLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := a.switcher.SetLabel(r.Context(), key, req.Label); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -78,6 +82,10 @@ func (a *API) handleSetDelay(w http.ResponseWriter, r *http.Request) {
 	var req delayRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateIntRange("delayMs", req.DelayMs, MinDelayMs, MaxDelayMs); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.switcher.SetSourceDelay(key, req.DelayMs); err != nil {
@@ -158,6 +166,11 @@ func (a *API) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 	// Only caller (pull) mode is supported for API-created sources.
 	if !strings.EqualFold(req.Mode, "caller") {
 		httperr.Write(w, http.StatusBadRequest, "only mode \"caller\" is supported for source creation")
+		return
+	}
+
+	if err := validateStringLen("label", req.Label, MaxLabelLen); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
