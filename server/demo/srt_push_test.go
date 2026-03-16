@@ -269,9 +269,10 @@ func TestAddTimestampOffset_PatchingLatency(t *testing.T) {
 	addTimestampOffset(data, entries, delta)
 	elapsed := time.Since(start)
 
-	// Patching should be fast — well under 5ms even for thousands of entries.
-	if elapsed > 5*time.Millisecond {
-		t.Errorf("addTimestampOffset took %v for %d entries, want < 5ms", elapsed, len(entries))
+	// Patching should be fast — well under 10ms even for thousands of entries.
+	// Use 10ms threshold to avoid flakes under -race with parallel test load.
+	if elapsed > 10*time.Millisecond {
+		t.Errorf("addTimestampOffset took %v for %d entries, want < 10ms", elapsed, len(entries))
 	}
 
 	// Verify correctness: first PTS should be delta (was 0).
