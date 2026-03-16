@@ -1238,8 +1238,34 @@ func logSystemTuning(log *slog.Logger) {
 	}
 }
 
-// Close cleans up all subsystems in reverse initialization order.
+// Close cleans up all subsystems with a 10-second drain timeout.
+// If subsystem cleanup hangs (e.g. SRT connections or output buffers),
+// shutdown proceeds after the timeout to avoid indefinite blocking
+// (which would cause a SIGKILL in Kubernetes).
 func (a *App) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a.closeWithContext(ctx)
+}
+
+// closeWithContext runs subsystem cleanup in a goroutine and waits for
+// either completion or context cancellation/timeout.
+func (a *App) closeWithContext(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		a.closeSubsystems()
+		close(done)
+	}()
+	select {
+	case <-done:
+		slog.Info("clean shutdown complete")
+	case <-ctx.Done():
+		slog.Warn("shutdown timed out, forcing exit")
+	}
+}
+
+// closeSubsystems cleans up all subsystems in reverse initialization order.
+func (a *App) closeSubsystems() {
 	// Wait for background goroutines (metering ticker) to exit.
 	a.bgWG.Wait()
 

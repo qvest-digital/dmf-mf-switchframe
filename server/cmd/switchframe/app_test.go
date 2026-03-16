@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -93,6 +95,22 @@ func TestParseConfig_DefaultAddr(t *testing.T) {
 	}
 	if cfg.Addr != ":8080" {
 		t.Errorf("default Addr = %q, want :8080", cfg.Addr)
+	}
+}
+
+func TestCloseWithTimeout(t *testing.T) {
+	// Test that closeWithContext respects context timeout
+	app := &App{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	app.closeWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should complete quickly since there's nothing to clean up
+	if elapsed > 1*time.Second {
+		t.Errorf("closeWithContext took %v, expected < 1s", elapsed)
 	}
 }
 
