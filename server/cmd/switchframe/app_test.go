@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +81,18 @@ func TestParseConfig_StateDir_EnvOverride(t *testing.T) {
 	want := "/custom/state/macros.json"
 	if got != want {
 		t.Errorf("statePath() = %q, want %q", got, want)
+	}
+}
+
+func TestParseConfig_DefaultAddr(t *testing.T) {
+	os.Args = []string{"switchframe"}
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	cfg, err := parseConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Addr != ":8080" {
+		t.Errorf("default Addr = %q, want :8080", cfg.Addr)
 	}
 }
 
