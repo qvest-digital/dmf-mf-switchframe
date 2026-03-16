@@ -20,6 +20,7 @@
 		// Layout
 		{ key: 'P', action: 'Toggle PIP layout' },
 		{ key: 'Shift + P', action: 'Pipeline stats panel' },
+		{ key: 'Shift + I', action: 'I/O management panel' },
 		// Misc
 		{ key: '` (backtick)', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },
