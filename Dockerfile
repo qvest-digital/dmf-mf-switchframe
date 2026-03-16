@@ -58,4 +58,4 @@ EXPOSE 9090
 EXPOSE 9000/udp
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:9090/health || exit 1
-ENTRYPOINT ["switchframe"]
+ENTRYPOINT ["switchframe", "--admin-addr=0.0.0.0:9090"]
