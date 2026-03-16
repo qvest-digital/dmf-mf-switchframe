@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-//go:embed ui
+//go:embed all:ui
 var uiFS embed.FS
 
 func uiHandler() http.Handler {
