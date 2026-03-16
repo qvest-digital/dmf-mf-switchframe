@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
 import OutputControls from './OutputControls.svelte';
@@ -30,24 +30,30 @@ describe('OutputControls', () => {
 		expect(container.textContent).toContain('REC');
 	});
 
-	it('should render SRT button', () => {
+	it('should render I/O button', () => {
 		const { container } = render(OutputControls, { props: { state: baseState } });
-		expect(container.textContent).toContain('SRT');
+		expect(container.textContent).toContain('I/O');
 	});
 
-	it('should show SRT active indicator', () => {
+	it('should show I/O active indicator when ioPanelVisible', () => {
+		const { container } = render(OutputControls, { props: { state: baseState, ioPanelVisible: true } });
+		const indicator = container.querySelector('.io-active');
+		expect(indicator).toBeTruthy();
+	});
+
+	it('should show I/O active indicator when SRT output is active', () => {
 		const state = {
 			...baseState,
 			srtOutput: { active: true, mode: 'caller' as const, state: 'active' },
 		};
 		const { container } = render(OutputControls, { props: { state } });
-		const indicator = container.querySelector('.srt-active');
+		const indicator = container.querySelector('.io-active');
 		expect(indicator).toBeTruthy();
 	});
 
-	it('should not show SRT active indicator when inactive', () => {
+	it('should not show I/O active indicator when inactive and panel closed', () => {
 		const { container } = render(OutputControls, { props: { state: baseState } });
-		const indicator = container.querySelector('.srt-active');
+		const indicator = container.querySelector('.io-active');
 		expect(indicator).toBeFalsy();
 	});
 
@@ -80,5 +86,51 @@ describe('OutputControls', () => {
 		const btn = container.querySelector('.confirm-btn');
 		expect(btn).toBeTruthy();
 		expect(btn?.classList.contains('confirm-active')).toBe(true);
+	});
+
+	it('I/O button calls onToggleIOPanel callback', async () => {
+		const onToggleIOPanel = vi.fn();
+		const { container } = render(OutputControls, { props: { state: baseState, onToggleIOPanel } });
+		const ioBtn = container.querySelector('.io-btn') as HTMLButtonElement;
+		expect(ioBtn).toBeTruthy();
+		await fireEvent.click(ioBtn);
+		expect(onToggleIOPanel).toHaveBeenCalledOnce();
+	});
+
+	it('I/O button shows io-active class when ioPanelVisible is true', () => {
+		const { container } = render(OutputControls, { props: { state: baseState, ioPanelVisible: true } });
+		const ioBtn = container.querySelector('.io-btn');
+		expect(ioBtn).toBeTruthy();
+		expect(ioBtn?.classList.contains('io-active')).toBe(true);
+	});
+
+	it('I/O button shows io-warning class when SRT input is unhealthy', () => {
+		const state = {
+			...baseState,
+			sources: {
+				...baseState.sources,
+				srt1: { key: 'srt1', label: 'SRT 1', type: 'srt' as const, status: 'no_signal' as const },
+			},
+		};
+		const { container } = render(OutputControls, { props: { state } });
+		const ioBtn = container.querySelector('.io-btn');
+		expect(ioBtn).toBeTruthy();
+		expect(ioBtn?.classList.contains('io-warning')).toBe(true);
+	});
+
+	it('I/O button does not show io-warning when io-active takes precedence', () => {
+		const state = {
+			...baseState,
+			sources: {
+				...baseState.sources,
+				srt1: { key: 'srt1', label: 'SRT 1', type: 'srt' as const, status: 'no_signal' as const },
+			},
+		};
+		const { container } = render(OutputControls, { props: { state, ioPanelVisible: true } });
+		const ioBtn = container.querySelector('.io-btn');
+		expect(ioBtn).toBeTruthy();
+		// When active, io-active takes priority over io-warning
+		expect(ioBtn?.classList.contains('io-active')).toBe(true);
+		expect(ioBtn?.classList.contains('io-warning')).toBe(false);
 	});
 });

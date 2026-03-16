@@ -15,6 +15,7 @@
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
 	import StatsPanel from '../components/StatsPanel.svelte';
+	import IOPanel from '../components/IOPanel.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import KeyPanel from '../components/KeyPanel.svelte';
@@ -49,6 +50,7 @@
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
 	let statsPanelVisible = $state(false);
+	let ioPanelVisible = $state(false);
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
 	let graphicsSelectedLayerId = $state<number | null>(null);
@@ -288,6 +290,12 @@
 			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
 			e.preventDefault();
 			statsPanelVisible = !statsPanelVisible;
+		}
+		// Shift+I toggles I/O panel
+		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyI') {
+			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+			e.preventDefault();
+			ioPanelVisible = !ioPanelVisible;
 		}
 		// Escape closes stats panel
 		if (e.code === 'Escape' && statsPanelVisible) {
@@ -557,7 +565,10 @@
 		<div class="control-room">
 			<header class="header">
 				<div class="header-row">
-					<OutputControls state={store.effectiveState} {connectionState} {switchLayout} />
+					<OutputControls state={store.effectiveState} {connectionState} {switchLayout}
+					onToggleIOPanel={() => { ioPanelVisible = !ioPanelVisible; }}
+					{ioPanelVisible}
+				/>
 					<div class="header-right">
 						<LockIndicator state={store.effectiveState} subsystem="output" />
 						<OperatorBadge state={store.effectiveState} />
@@ -657,6 +668,7 @@
 </ErrorBoundary>
 
 <StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} {pipeline} />
+<IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>

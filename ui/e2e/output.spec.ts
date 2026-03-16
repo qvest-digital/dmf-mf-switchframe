@@ -15,90 +15,79 @@ test.describe('Output Controls', () => {
 		await expect(recBtn).toHaveText('REC');
 	});
 
-	test('renders SRT button in header', async ({ page }) => {
+	test('renders I/O button in header', async ({ page }) => {
 		await page.goto('/');
-		const srtBtn = page.locator('.srt-btn');
-		await expect(srtBtn).toBeVisible();
-		await expect(srtBtn).toHaveText('SRT');
+		const ioBtn = page.locator('.io-btn');
+		await expect(ioBtn).toBeVisible();
+		await expect(ioBtn).toHaveText('I/O');
 	});
 
-	test('SRT button opens modal', async ({ page }) => {
+	test('I/O button opens panel', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		await expect(page.locator('.srt-modal')).toBeVisible();
-		// Default mode is "caller", so both radio options should be visible
-		await expect(page.locator('.mode-option').filter({ hasText: 'Caller' })).toBeVisible();
-		await expect(page.locator('.mode-option').filter({ hasText: 'Listener' })).toBeVisible();
+		await page.locator('.io-btn').click();
+		const panel = page.locator('.io-panel');
+		await expect(panel).toHaveClass(/visible/);
+		await expect(panel.locator('text=INPUTS')).toBeVisible();
+		await expect(panel.locator('text=OUTPUTS')).toBeVisible();
 	});
 
-	test('SRT modal has port field', async ({ page }) => {
+	test('I/O panel has Add SRT Source button', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		const portInput = page.locator('input[name="port"]');
-		await expect(portInput).toBeVisible();
-		// Default port is 9000
-		await expect(portInput).toHaveValue('9000');
+		await page.locator('.io-btn').click();
+		await expect(page.locator('text=Add SRT Source')).toBeVisible();
 	});
 
-	test('SRT modal shows address field in caller mode', async ({ page }) => {
+	test('I/O panel has Add Destination button', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		// Default mode is "caller" so address field should be visible
-		const addressInput = page.locator('input[name="address"]');
-		await expect(addressInput).toBeVisible();
+		await page.locator('.io-btn').click();
+		await expect(page.locator('text=Add Destination')).toBeVisible();
 	});
 
-	test('SRT modal shows latency field', async ({ page }) => {
+	test('I/O panel shows recording inactive when not recording', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		const latencyInput = page.locator('input[name="latency"]');
-		await expect(latencyInput).toBeVisible();
-		await expect(latencyInput).toHaveValue('200');
+		await page.locator('.io-btn').click();
+		await expect(page.locator('text=Recording inactive')).toBeVisible();
 	});
 
-	test('SRT modal hides address field in listener mode', async ({ page }) => {
+	test('I/O panel can be closed via close button', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		// Switch to listener mode
-		await page.locator('.mode-option').filter({ hasText: 'Listener' }).click();
-		// Address field should be hidden in listener mode
-		const addressInput = page.locator('input[name="address"]');
-		await expect(addressInput).not.toBeVisible();
-		// Port should still be visible
-		await expect(page.locator('input[name="port"]')).toBeVisible();
+		await page.locator('.io-btn').click();
+		const panel = page.locator('.io-panel');
+		await expect(panel).toHaveClass(/visible/);
+		await page.locator('.io-panel .close-btn').click();
+		await expect(panel).not.toHaveClass(/visible/);
 	});
 
-	test('SRT modal can be closed via close button', async ({ page }) => {
+	test('I/O panel can be closed via Escape', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		await expect(page.locator('.srt-modal')).toBeVisible();
-		await page.locator('.srt-modal .close-btn').click();
-		await expect(page.locator('.srt-modal')).not.toBeVisible();
+		await page.locator('.io-btn').click();
+		const panel = page.locator('.io-panel');
+		await expect(panel).toHaveClass(/visible/);
+		await page.keyboard.press('Escape');
+		await expect(panel).not.toHaveClass(/visible/);
 	});
 
-	test('SRT modal can be closed via backdrop click', async ({ page }) => {
+	test('I/O panel toggles on repeated I/O button clicks', async ({ page }) => {
 		await page.goto('/');
 		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		await expect(page.locator('.srt-modal')).toBeVisible();
-		// Click the backdrop (top-left corner, outside the modal)
-		await page.locator('.srt-modal-backdrop').click({ position: { x: 5, y: 5 } });
-		await expect(page.locator('.srt-modal')).not.toBeVisible();
+		const panel = page.locator('.io-panel');
+		await page.locator('.io-btn').click();
+		await expect(panel).toHaveClass(/visible/);
+		await page.locator('.io-btn').click();
+		await expect(panel).not.toHaveClass(/visible/);
 	});
 
-	test('SRT modal has Start button', async ({ page }) => {
+	test('CONFIRM button is visible', async ({ page }) => {
 		await page.goto('/');
-		await dismissOverlays(page);
-		await page.locator('.srt-btn').click();
-		const startBtn = page.locator('.start-btn');
-		await expect(startBtn).toBeVisible();
-		await expect(startBtn).toHaveText('Start');
+		const confirmBtn = page.locator('.confirm-btn');
+		await expect(confirmBtn).toBeVisible();
+		await expect(confirmBtn).toHaveText('CONFIRM');
 	});
 
 	test('page loads without console errors', async ({ page }) => {

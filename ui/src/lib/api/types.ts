@@ -84,6 +84,39 @@ export interface SRTOutputConfig {
 	streamID?: string;
 }
 
+export interface CreateSRTSourceConfig {
+	type: 'srt';
+	mode: 'caller';
+	address: string;
+	streamID: string;
+	label?: string;
+	latencyMs?: number;
+}
+
+export interface SRTSourceStats {
+	mode: string;
+	streamID: string;
+	remoteAddr?: string;
+	state: string;
+	connected: boolean;
+	uptimeMs: number;
+	latencyMs: number;
+	negotiatedLatencyMs: number;
+	rttMs: number;
+	rttVarMs: number;
+	recvRateMbps: number;
+	lossRatePct: number;
+	packetsReceived: number;
+	packetsLost: number;
+	packetsDropped: number;
+	packetsRetransmitted: number;
+	packetsBelated: number;
+	recvBufMs: number;
+	recvBufPackets: number;
+	flightSize: number;
+	reconnectCount?: number;
+}
+
 export interface DestinationConfig {
 	type: 'srt-caller' | 'srt-listener';
 	address?: string;
@@ -95,6 +128,7 @@ export interface DestinationConfig {
 	maxBandwidth?: number;
 	maxConns?: number;
 	name?: string;
+	scte35Enabled?: boolean;
 }
 
 export interface DestinationInfo {

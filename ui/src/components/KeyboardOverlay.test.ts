@@ -9,10 +9,10 @@ describe('KeyboardOverlay', () => {
 		expect(heading?.textContent).toBe('Keyboard Shortcuts');
 	});
 
-	it('should render all 18 shortcuts in table rows', () => {
+	it('should render all 19 shortcuts in table rows', () => {
 		const { container } = render(KeyboardOverlay, { props: { onclose: vi.fn() } });
 		const rows = container.querySelectorAll('tbody tr');
-		expect(rows.length).toBe(18);
+		expect(rows.length).toBe(19);
 	});
 
 	it('should render expected shortcut keys', () => {

@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -84,6 +84,32 @@ export function getState(): Promise<ControlRoomState> {
 
 export function getSources(): Promise<Record<string, SourceInfo>> {
 	return request('/api/sources');
+}
+
+export function createSRTSource(config: CreateSRTSourceConfig): Promise<{ key: string }> {
+	return request('/api/sources', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
+}
+
+export function deleteSRTSource(key: string): Promise<void> {
+	return request(`/api/sources/${encodeURIComponent(key)}`, {
+		method: 'DELETE',
+	});
+}
+
+export function getSRTSourceStats(key: string): Promise<SRTSourceStats> {
+	return request(`/api/sources/${encodeURIComponent(key)}/srt/stats`);
+}
+
+export function updateSRTLatency(key: string, latencyMs: number): Promise<void> {
+	return request(`/api/sources/${encodeURIComponent(key)}/srt`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ latencyMs }),
+	});
 }
 
 export function setTrim(source: string, trim: number): Promise<ControlRoomState> {

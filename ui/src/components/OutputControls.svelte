@@ -3,21 +3,42 @@
 	import { getConfirmMode, setConfirmMode } from '$lib/state/preferences.svelte';
 	import Clock from './Clock.svelte';
 	import RecordingControl from './RecordingControl.svelte';
-	import SRTOutputModal from './SRTOutputModal.svelte';
 	import ConnectionStatus from './ConnectionStatus.svelte';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
-	interface Props { state: ControlRoomState; connectionState?: ConnectionIndicatorState; switchLayout?: () => void; }
-	let { state: crState, connectionState = 'disconnected', switchLayout }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		connectionState?: ConnectionIndicatorState;
+		switchLayout?: () => void;
+		onToggleIOPanel?: () => void;
+		ioPanelVisible?: boolean;
+	}
+	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false }: Props = $props();
 
-	let showSRTModal = $state(false);
 	let thumbKey = $state(0);
 	let thumbInterval: ReturnType<typeof setInterval> | undefined;
 
 	const srtActive = $derived(crState.srtOutput?.active ?? false);
 	const recActive = $derived(crState.recording?.active ?? false);
 	const showConfidence = $derived(recActive || srtActive);
+
+	// I/O button is active when panel is open OR any SRT output/destination is active
+	const hasActiveDestination = $derived(
+		(crState.destinations ?? []).some((d) => d.state === 'active' || d.state === 'starting')
+	);
+	const ioActive = $derived(ioPanelVisible || srtActive || hasActiveDestination);
+
+	// I/O button shows warning when any SRT input is unhealthy or any output has errors
+	const hasUnhealthySRTInput = $derived(
+		Object.values(crState.sources).some(
+			(s) => s.type === 'srt' && s.status !== 'healthy'
+		)
+	);
+	const hasOutputError = $derived(
+		(crState.destinations ?? []).some((d) => d.state === 'error')
+	);
+	const ioWarning = $derived(hasUnhealthySRTInput || hasOutputError);
 
 	$effect(() => {
 		if (showConfidence) {
@@ -44,10 +65,11 @@
 	{/if}
 	<RecordingControl state={crState} />
 	<button
-		class="header-btn srt-btn"
-		class:srt-active={srtActive}
-		onclick={() => showSRTModal = !showSRTModal}
-	>SRT</button>
+		class="header-btn io-btn"
+		class:io-active={ioActive}
+		class:io-warning={ioWarning && !ioActive}
+		onclick={() => onToggleIOPanel?.()}
+	>I/O</button>
 	<button
 		class="header-btn confirm-btn"
 		class:confirm-active={getConfirmMode()}
@@ -58,8 +80,6 @@
 		<button class="header-btn mode-btn" onclick={switchLayout} title="Switch layout mode">MODE</button>
 	{/if}
 </div>
-
-<SRTOutputModal state={crState} visible={showSRTModal} onclose={() => showSRTModal = false} />
 
 <style>
 	.output-controls {
@@ -93,10 +113,16 @@
 		background: var(--bg-hover);
 	}
 
-	.srt-active {
+	.io-active {
 		border-color: var(--accent-blue);
 		background: var(--accent-blue-dim);
 		color: var(--accent-blue);
+	}
+
+	.io-warning {
+		border-color: var(--color-warning);
+		background: var(--color-warning-dim);
+		color: var(--color-warning);
 	}
 
 	.confirm-btn {
