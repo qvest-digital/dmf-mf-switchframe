@@ -166,7 +166,7 @@ func startTestAdminServer(t *testing.T, adminToken string) (stop func(), addr st
 	for time.Now().Before(deadline) {
 		resp, err := http.Get("http://" + addr + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return stop, addr
 		}
 		time.Sleep(10 * time.Millisecond)
