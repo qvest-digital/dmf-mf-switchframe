@@ -251,7 +251,7 @@ func parseConfig() (AppConfig, error) {
 		DemoVideoDir:      *demoVideoDir,
 		LogLevel:          *logLevel,
 		AdminAddr:         *adminAddr,
-		AdminToken:        *adminTokenFlag,
+		AdminToken:        resolveEnvOrFlag(*adminTokenFlag, "SWITCHFRAME_ADMIN_TOKEN"),
 		AllowedOrigins:    allowedOrigins,
 		APIToken:          apiToken,
 		ReplayBufferSecs:  *replayBufferSecs,
@@ -281,6 +281,14 @@ func parseConfig() (AppConfig, error) {
 		MXLDiscover:       *mxlDiscover,
 		StateDir:          stateDir,
 	}, nil
+}
+
+// resolveEnvOrFlag returns the flag value if non-empty, else the env var value.
+func resolveEnvOrFlag(flagVal, envKey string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	return os.Getenv(envKey)
 }
 
 // validateSCTE35PID checks that the given PID is in the valid MPEG-TS range
