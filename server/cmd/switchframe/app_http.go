@@ -20,9 +20,6 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiMux := http.NewServeMux()
 	a.api.RegisterOnMux(apiMux)
 
-	// Cert-hash outside auth chain (browsers need it before they have tokens).
-	apiMux.HandleFunc("GET /api/cert-hash", a.handleCertHash)
-
 	// Middleware chain matches ExtraRoutes: CORS -> logger -> metrics -> auth -> operator -> maxbytes
 	var apiHandler http.Handler = apiMux
 	apiHandler = control.MaxBytesMiddleware(apiHandler)
@@ -32,8 +29,16 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 	apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
 
+	// Top-level mux: cert-hash (public) + API routes (authenticated) + UI files (public).
+	topMux := http.NewServeMux()
+	topMux.HandleFunc("GET /api/cert-hash", a.handleCertHash)
+	topMux.Handle("/api/", apiHandler)
+	if h := uiHandler(); h != nil {
+		topMux.Handle("/", h)
+	}
+
 	httpSrv := &http.Server{
-		Handler: apiHandler,
+		Handler: topMux,
 	}
 	httpLn, err := net.Listen("tcp", ":8081")
 	if err != nil {
