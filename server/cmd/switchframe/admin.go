@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	_ "net/http/pprof" // Register pprof handlers on http.DefaultServeMux.
 	"os"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -34,21 +36,41 @@ var readyFlag atomic.Bool
 // StartAdminServer launches an HTTP server on addr that exposes operational
 // endpoints: Prometheus metrics, health/readiness probes, Go pprof, and the
 // cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
-// It returns a stop function that gracefully shuts down the server.
-func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string, trusted bool) (stop func()) {
+// If adminToken is non-empty, /metrics and /debug/* require a matching
+// Bearer token; /health, /ready, and /api/cert-hash remain unauthenticated
+// so that k8s probes and browser bootstrapping always work.
+// It returns a stop function and the actual listen address (useful when
+// adminAddr uses port 0 for auto-assignment).
+func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string, trusted bool, adminToken string) (stop func(), listenAddr string) {
 	mux := http.NewServeMux()
 
-	// Prometheus metrics scrape endpoint.
-	mux.Handle("GET /metrics", metrics.Handler())
+	// Admin auth middleware: protects sensitive endpoints when a token is configured.
+	adminAuth := func(next http.Handler) http.Handler {
+		if adminToken == "" {
+			return next // No auth configured — pass through.
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := r.Header.Get("Authorization")
+			if !strings.HasPrefix(token, "Bearer ") ||
+				subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(token, "Bearer ")), []byte(adminToken)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 
-	// Liveness probe — always 200 if the process is running.
+	// Prometheus metrics scrape endpoint (protected by admin token).
+	mux.Handle("GET /metrics", adminAuth(metrics.Handler()))
+
+	// Liveness probe — always 200 if the process is running. No auth.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
 
-	// Readiness probe — 503 until readyFlag is set, then 200.
+	// Readiness probe — 503 until readyFlag is set, then 200. No auth.
 	mux.HandleFunc("GET /ready", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if !readyFlag.Load() {
@@ -61,11 +83,12 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 	})
 
 	// Go pprof — net/http/pprof registers on http.DefaultServeMux via init().
-	// Mount it under /debug/ so all /debug/pprof/* paths work.
-	mux.Handle("/debug/", http.DefaultServeMux)
+	// Mount it under /debug/ so all /debug/pprof/* paths work. Protected by admin token.
+	mux.Handle("/debug/", adminAuth(http.DefaultServeMux))
 
 	// Cert-hash endpoint for dev bootstrapping (Vite proxy can reach TCP :9090).
 	// Wrapped with CORSMiddleware to handle OPTIONS preflight from cross-origin browsers.
+	// No auth — browsers need this to establish WebTransport connections.
 	certHashHandler := control.CORSMiddleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -83,11 +106,13 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 	ln, err := net.Listen("tcp", adminAddr)
 	if err != nil {
 		slog.Error("admin server listen failed", "addr", adminAddr, "err", err)
-		return func() {}
+		return func() {}, ""
 	}
 
+	actualAddr := ln.Addr().String()
+
 	go func() {
-		slog.Info("admin server listening", "addr", adminAddr)
+		slog.Info("admin server listening", "addr", actualAddr)
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("admin server error", "err", err)
 		}
@@ -99,5 +124,5 @@ func StartAdminServer(ctx context.Context, adminAddr, quicAddr, certHash string,
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("admin server shutdown error", "err", err)
 		}
-	}
+	}, actualAddr
 }
