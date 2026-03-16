@@ -38,7 +38,7 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	}
 
 	httpSrv := &http.Server{
-		Handler: topMux,
+		Handler: control.SecurityHeadersMiddleware(topMux),
 	}
 	httpLn, err := net.Listen("tcp", ":8081")
 	if err != nil {

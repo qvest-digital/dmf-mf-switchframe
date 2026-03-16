@@ -254,6 +254,7 @@ func (a *App) initPrismServer() error {
 			apiHandler = control.MetricsMiddleware(apiHandler)
 			apiHandler = control.LoggerMiddleware(slog.Default())(apiHandler)
 			apiHandler = control.CORSMiddleware(a.cfg.AllowedOrigins)(apiHandler)
+			apiHandler = control.SecurityHeadersMiddleware(apiHandler)
 
 			// Cert-hash is already registered by Prism (distribution/server.go)
 			// on this mux — no need to register it here.
@@ -261,7 +262,7 @@ func (a *App) initPrismServer() error {
 			mux.Handle("/api/", apiHandler)
 
 			if h := uiHandler(); h != nil {
-				mux.Handle("/", h)
+				mux.Handle("/", control.SecurityHeadersMiddleware(h))
 			}
 		},
 		OnStreamRegistered:   a.onStreamRegistered,
