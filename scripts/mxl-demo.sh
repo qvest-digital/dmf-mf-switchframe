@@ -150,6 +150,7 @@ MXL_SOURCES="${SRC1_VIDEO}:${SRC1_AUDIO},${SRC2_VIDEO}:${SRC2_AUDIO}"
 # MXL sources, which is useful for verifying both pipelines coexist.
 "$PROJECT_DIR/bin/switchframe" \
     --demo \
+    --http-fallback \
     --mxl-domain "$MXL_DOMAIN" \
     --mxl-sources "$MXL_SOURCES" \
     --mxl-output program \
