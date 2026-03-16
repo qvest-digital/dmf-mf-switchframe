@@ -320,7 +320,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				lastVideoH = h
 			}
 
-			// Copy YUV for encoder (job.yuv may be retained by pipeline goroutine).
+			// Copy YUV for encoder — job.yuv is shared with the pipeline
+			// goroutine which may hold it in the frame sync ring buffer.
+			// This copy isolates the encoder input from pipeline retention.
 			needed := len(job.yuv)
 			if cap(encoderYUV) < needed {
 				encoderYUV = make([]byte, needed)
@@ -438,6 +440,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		pts = linearize(&videoLinear, pts)
 
 		// Single deep copy shared by pipeline and relay goroutines.
+		// Safe because the relay goroutine copies into its own encoderYUV
+		// buffer before encoding, so it never retains this slice.
 		yuvCopy := make([]byte, len(yuv))
 		copy(yuvCopy, yuv)
 
@@ -446,12 +450,10 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		case pipelineCh <- videoJob{yuv: yuvCopy, w: w, h: h, pts: pts}:
 		default:
 		}
-		// Relay encode (non-blocking, separate copy needed since pipeline
-		// goroutine may hold yuvCopy in frame sync ring buffer).
-		encCopy := make([]byte, len(yuv))
-		copy(encCopy, yuv)
+		// Relay encode (non-blocking, shares yuvCopy — relay goroutine
+		// copies into encoderYUV before calling Encode).
 		select {
-		case relayVideoCh <- videoJob{yuv: encCopy, w: w, h: h, pts: pts}:
+		case relayVideoCh <- videoJob{yuv: yuvCopy, w: w, h: h, pts: pts}:
 		default:
 		}
 	}
