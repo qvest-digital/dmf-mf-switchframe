@@ -20,12 +20,7 @@ import (
 // registers per-player MoQ relays for browser streaming, and performs
 // ephemeral cleanup. Follows the pattern of initCaptions/replay.
 func (a *App) initClips() error {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
-	}
-
-	clipDir := filepath.Join(homeDir, ".switchframe", "clips")
+	clipDir := a.statePath("clips")
 	store, err := clip.NewStore(clipDir, a.cfg.ClipStorageMax)
 	if err != nil {
 		return fmt.Errorf("create clip store: %w", err)

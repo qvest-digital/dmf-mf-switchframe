@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -43,11 +41,7 @@ func (a *App) initSRT() error {
 	a.srtSources = make(map[string]*srtSourceState)
 
 	// Create store for persisting source configs.
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("srt: get home directory: %w", err)
-	}
-	storePath := filepath.Join(homeDir, ".switchframe", "srt_sources.json")
+	storePath := a.statePath("srt_sources.json")
 	store, err := srt.NewStore(storePath)
 	if err != nil {
 		return fmt.Errorf("srt: create store: %w", err)

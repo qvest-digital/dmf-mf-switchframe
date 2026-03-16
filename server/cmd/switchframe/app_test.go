@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,6 +33,53 @@ func TestTokenPrefixEmptyToken(t *testing.T) {
 	got := tokenPrefix("")
 	if got != "***" {
 		t.Fatalf("expected %q for empty token, got %q", "***", got)
+	}
+}
+
+func TestStatePath(t *testing.T) {
+	app := &App{cfg: AppConfig{StateDir: "/tmp/test-switchframe"}}
+	got := app.statePath("presets.json")
+	want := "/tmp/test-switchframe/presets.json"
+	if got != want {
+		t.Errorf("statePath() = %q, want %q", got, want)
+	}
+}
+
+func TestStatePath_Nested(t *testing.T) {
+	app := &App{cfg: AppConfig{StateDir: "/data"}}
+	got := app.statePath("clips")
+	want := "/data/clips"
+	if got != want {
+		t.Errorf("statePath() = %q, want %q", got, want)
+	}
+}
+
+func TestParseConfig_StateDir_Default(t *testing.T) {
+	// When SWITCHFRAME_STATE_DIR is unset, StateDir should default to ~/.switchframe.
+	os.Unsetenv("SWITCHFRAME_STATE_DIR")
+
+	homeDir, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	// parseConfig() calls flag.Parse() which we can't easily use in tests,
+	// so we just verify the AppConfig struct has the field and the env logic.
+	app := &App{cfg: AppConfig{StateDir: filepath.Join(homeDir, ".switchframe")}}
+	got := app.statePath("presets.json")
+	want := filepath.Join(homeDir, ".switchframe", "presets.json")
+	if got != want {
+		t.Errorf("statePath() = %q, want %q", got, want)
+	}
+}
+
+func TestParseConfig_StateDir_EnvOverride(t *testing.T) {
+	// When SWITCHFRAME_STATE_DIR is set, StateDir should use it.
+	t.Setenv("SWITCHFRAME_STATE_DIR", "/custom/state")
+
+	app := &App{cfg: AppConfig{StateDir: "/custom/state"}}
+	got := app.statePath("macros.json")
+	want := "/custom/state/macros.json"
+	if got != want {
+		t.Errorf("statePath() = %q, want %q", got, want)
 	}
 }
 

@@ -149,6 +149,11 @@ type App struct {
 	bgWG sync.WaitGroup
 }
 
+// statePath joins path components under the state directory.
+func (a *App) statePath(elem ...string) string {
+	return filepath.Join(append([]string{a.cfg.StateDir}, elem...)...)
+}
+
 // initInfra sets up certificates, logging, codec probing, metrics, and the
 // control publisher.
 func (a *App) initInfra() error {
@@ -376,34 +381,36 @@ func (a *App) initSubsystems() error {
 	a.debugCollector.Register("mixer", a.mixer)
 	a.debugCollector.Register("output", a.outputMgr)
 
-	// Stores: presets, macros, operators.
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
+	// Ensure state directory exists.
+	if err := os.MkdirAll(a.cfg.StateDir, 0700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
 	}
 
-	presetPath := filepath.Join(homeDir, ".switchframe", "presets.json")
+	// Stores: presets, macros, operators.
+	var err error
+
+	presetPath := a.statePath("presets.json")
 	a.presetStore, err = preset.NewStore(presetPath)
 	if err != nil {
 		return fmt.Errorf("create preset store: %w", err)
 	}
 	slog.Info("preset store initialized", "path", presetPath)
 
-	macroPath := filepath.Join(homeDir, ".switchframe", "macros.json")
+	macroPath := a.statePath("macros.json")
 	a.macroStore, err = macro.NewStore(macroPath)
 	if err != nil {
 		return fmt.Errorf("create macro store: %w", err)
 	}
 	slog.Info("macro store initialized", "path", macroPath)
 
-	operatorPath := filepath.Join(homeDir, ".switchframe", "operators.json")
+	operatorPath := a.statePath("operators.json")
 	a.operatorStore, err = operator.NewStore(operatorPath)
 	if err != nil {
 		return fmt.Errorf("create operator store: %w", err)
 	}
 	slog.Info("operator store initialized", "path", operatorPath)
 
-	stingerDir := filepath.Join(homeDir, ".switchframe", "stingers")
+	stingerDir := a.statePath("stingers")
 	a.stingerStore, err = stinger.NewStore(stingerDir, 0)
 	if err != nil {
 		return fmt.Errorf("create stinger store: %w", err)
@@ -439,7 +446,7 @@ func (a *App) initSubsystems() error {
 	a.layoutCompositor = layout.NewCompositor(format.Width, format.Height)
 	a.sw.SetLayoutCompositor(a.layoutCompositor)
 
-	layoutPresetPath := filepath.Join(homeDir, ".switchframe", "layout_presets.json")
+	layoutPresetPath := a.statePath("layout_presets.json")
 	a.layoutStore = layout.NewStore(layoutPresetPath)
 	slog.Info("layout store initialized", "path", layoutPresetPath)
 
@@ -785,8 +792,7 @@ func (a *App) initSCTE35() error {
 		return nil
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	rulesPath := filepath.Join(homeDir, ".switchframe", "scte35_rules.json")
+	rulesPath := a.statePath("scte35_rules.json")
 	var err error
 	a.scte35Rules, err = scte35.LoadRulesStore(rulesPath)
 	if err != nil {

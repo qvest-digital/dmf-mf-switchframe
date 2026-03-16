@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ type AppConfig struct {
 	HTTPFallback     bool
 	TLSCert          string
 	TLSKey           string
+	StateDir         string // State directory (env: SWITCHFRAME_STATE_DIR, default: ~/.switchframe)
 
 	// Raw program monitor.
 	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
@@ -220,6 +222,16 @@ func parseConfig() (AppConfig, error) {
 		}
 	}
 
+	// Resolve state directory: env > default (~/.switchframe).
+	stateDir := os.Getenv("SWITCHFRAME_STATE_DIR")
+	if stateDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return AppConfig{}, fmt.Errorf("determine home directory: %w", err)
+		}
+		stateDir = filepath.Join(homeDir, ".switchframe")
+	}
+
 	return AppConfig{
 		Demo:              *demoFlag,
 		FrameSync:         *frameSyncFlag,
@@ -254,6 +266,7 @@ func parseConfig() (AppConfig, error) {
 		MXLOutputAudioDef: *mxlOutputAudioDef,
 		MXLDomain:         *mxlDomain,
 		MXLDiscover:       *mxlDiscover,
+		StateDir:          stateDir,
 	}, nil
 }
 
