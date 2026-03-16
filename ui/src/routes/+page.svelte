@@ -30,7 +30,7 @@
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff } from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -449,6 +449,7 @@
 	}
 
 	onMount(async () => {
+		checkFragmentToken();
 		keyboard.attach();
 		document.addEventListener('keydown', handleGlobalShortcuts);
 		mounted = true;

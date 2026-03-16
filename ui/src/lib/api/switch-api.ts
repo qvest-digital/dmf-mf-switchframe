@@ -21,6 +21,23 @@ export function setAuthToken(token: string): void {
 	sessionStorage.setItem('switchframe_operator_token', token);
 }
 
+/**
+ * Check URL fragment for token handoff from control plane.
+ * If #token=xxx is present, store it and clear the fragment.
+ */
+export function checkFragmentToken(): void {
+	if (typeof window === 'undefined') return;
+	const hash = window.location.hash;
+	if (!hash.startsWith('#token=')) return;
+
+	const token = hash.slice('#token='.length);
+	if (token) {
+		setAuthToken(token);
+		// Clear fragment from URL bar without triggering navigation
+		history.replaceState(null, '', window.location.pathname + window.location.search);
+	}
+}
+
 export function authHeaders(): Record<string, string> {
 	const token = getAuthToken();
 	const headers: Record<string, string> = {};

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency } from './switch-api';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
 
@@ -795,5 +795,56 @@ describe('SRT source API', () => {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ latencyMs: 250 }),
 		});
+	});
+});
+
+describe('checkFragmentToken', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		sessionStorage.clear();
+		// Reset hash to empty
+		window.location.hash = '';
+	});
+
+	it('reads token from #token=xxx, stores in sessionStorage, and clears hash', () => {
+		window.location.hash = '#token=abc123secret';
+
+		checkFragmentToken();
+
+		expect(sessionStorage.getItem('switchframe_operator_token')).toBe('abc123secret');
+		expect(window.location.hash).toBe('');
+	});
+
+	it('does nothing when no fragment is present', () => {
+		window.location.hash = '';
+
+		checkFragmentToken();
+
+		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+	});
+
+	it('does nothing for non-token fragments like #section', () => {
+		window.location.hash = '#section';
+
+		checkFragmentToken();
+
+		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+	});
+
+	it('does nothing for empty token value in #token=', () => {
+		window.location.hash = '#token=';
+
+		checkFragmentToken();
+
+		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+	});
+
+	it('handles tokens with special characters', () => {
+		window.location.hash = '#token=abc-123_XYZ.456';
+
+		checkFragmentToken();
+
+		expect(sessionStorage.getItem('switchframe_operator_token')).toBe('abc-123_XYZ.456');
+		expect(window.location.hash).toBe('');
 	});
 });
