@@ -1186,7 +1186,7 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
-	stopAdmin := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert)
+	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
 	defer stopAdmin()
 
 	// Optionally start HTTP/1.1 fallback for curl/scripts.

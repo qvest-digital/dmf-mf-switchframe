@@ -36,6 +36,7 @@ type AppConfig struct {
 	DemoVideoDir     string
 	LogLevel         string
 	AdminAddr        string
+	AdminToken       string // Bearer token for admin endpoints (/metrics, /debug)
 	APIToken         string
 	ReplayBufferSecs int
 	Addr             string
@@ -148,7 +149,8 @@ func parseConfig() (AppConfig, error) {
 	demoFlag := flag.Bool("demo", false, "Start with simulated camera sources")
 	demoVideoDir := flag.String("demo-video", "", "Directory containing MPEG-TS clips for real video demo (requires --demo)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
-	adminAddr := flag.String("admin-addr", ":9090", "Admin/metrics server listen address")
+	adminAddr := flag.String("admin-addr", "127.0.0.1:9090", "Admin/metrics server listen address")
+	adminTokenFlag := flag.String("admin-token", "", "Bearer token for admin endpoints (/metrics, /debug); if empty, these endpoints are unprotected")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
 	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
@@ -241,6 +243,7 @@ func parseConfig() (AppConfig, error) {
 		DemoVideoDir:      *demoVideoDir,
 		LogLevel:          *logLevel,
 		AdminAddr:         *adminAddr,
+		AdminToken:        *adminTokenFlag,
 		APIToken:          apiToken,
 		ReplayBufferSecs:  *replayBufferSecs,
 		Addr:              *addrFlag,
