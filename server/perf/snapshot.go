@@ -79,6 +79,8 @@ type PerfSnapshot struct {
 
 	Output PerfOutputSnapshot `json:"output"`
 
+	Preview map[string]PerfPreviewSnapshot `json:"preview,omitempty"`
+
 	Baseline *BaselineDiff `json:"baseline"`
 }
 
@@ -246,6 +248,15 @@ type PerfRecordingSnapshot struct {
 	Active bool `json:"active"`
 }
 
+// PerfPreviewSnapshot holds per-source preview encoder stats.
+type PerfPreviewSnapshot struct {
+	FramesIn      int64   `json:"frames_in"`
+	FramesOut     int64   `json:"frames_out"`
+	FramesDropped int64   `json:"frames_dropped"`
+	LastEncodeMs  float64 `json:"last_encode_ms"`
+	AvgEncodeMs   float64 `json:"avg_encode_ms"`
+}
+
 // Snapshot computes the full PerfSnapshot. If baselineName is non-empty and
 // a baseline with that name exists, includes a diff.
 func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
@@ -387,6 +398,21 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 				Active: out.RecordingActive,
 			},
 		},
+	}
+
+	// Preview encoder stats (point-in-time, not windowed)
+	if s.lastPreviewStats != nil && len(s.lastPreviewStats) > 0 {
+		preview := make(map[string]PerfPreviewSnapshot, len(s.lastPreviewStats))
+		for key, ps := range s.lastPreviewStats {
+			preview[key] = PerfPreviewSnapshot{
+				FramesIn:      ps.FramesIn,
+				FramesOut:     ps.FramesOut,
+				FramesDropped: ps.FramesDropped,
+				LastEncodeMs:  ps.LastEncodeMs,
+				AvgEncodeMs:   ps.AvgEncodeMs,
+			}
+		}
+		snap.Preview = preview
 	}
 
 	// Baseline diff
