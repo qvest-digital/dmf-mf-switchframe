@@ -56,7 +56,7 @@
 	let newDestName = $state('');
 	let newDestType = $state<'srt-caller' | 'srt-listener'>('srt-caller');
 	let newDestAddress = $state('');
-	let newDestPort = $state(6464);
+	let newDestPort = $state(0);
 	let newDestStreamID = $state('');
 	let newDestLatency = $state(120);
 	let newDestSCTE35 = $state(true);
@@ -183,6 +183,15 @@
 		return () => document.removeEventListener('keydown', handleKeyDown);
 	});
 
+	// --- Auto-select first available SRT output port ---
+	$effect(() => {
+		if (showAddDest && hasPortConstraint && newDestType === 'srt-listener') {
+			if (availableOutputPorts.length > 0 && !availableOutputPorts.includes(newDestPort)) {
+				newDestPort = availableOutputPorts[0];
+			}
+		}
+	});
+
 	// --- Source detail text ---
 	function sourceDetail(src: SourceInfo): string {
 		if (src.type === 'srt' && src.srt) {
@@ -252,7 +261,7 @@
 		newDestName = '';
 		newDestType = 'srt-caller';
 		newDestAddress = '';
-		newDestPort = 6464;
+		newDestPort = 0;
 		newDestStreamID = '';
 		newDestLatency = 120;
 		newDestSCTE35 = true;
@@ -308,6 +317,21 @@
 	let destinations = $derived(crState.destinations ?? []);
 	let recording = $derived(crState.recording);
 	let legacySRT = $derived(crState.srtOutput);
+
+	// Available SRT output ports: allocated ports minus already-in-use listener ports.
+	let usedListenerPorts = $derived(
+		new Set(
+			(crState.destinations ?? [])
+				.filter((d) => d.type === 'srt-listener' || d.type?.includes('listener'))
+				.map((d) => d.port)
+		)
+	);
+	let availableOutputPorts = $derived(
+		(crState.connectionInfo?.srtOutputPorts ?? []).filter((p) => !usedListenerPorts.has(p))
+	);
+	let hasPortConstraint = $derived(
+		(crState.connectionInfo?.srtOutputPorts?.length ?? 0) > 0
+	);
 </script>
 
 <div class="io-panel" class:visible>
@@ -694,11 +718,23 @@
 							{/if}
 							<div class="form-row">
 								<span class="form-label">Port</span>
-								<input
-									type="number"
-									class="form-input short"
-									bind:value={newDestPort}
-								/>
+								{#if hasPortConstraint && newDestType === 'srt-listener'}
+									{#if availableOutputPorts.length > 0}
+										<select class="form-input short" bind:value={newDestPort}>
+											{#each availableOutputPorts as port}
+												<option value={port}>{port}</option>
+											{/each}
+										</select>
+									{:else}
+										<span class="form-hint-full">All output ports in use</span>
+									{/if}
+								{:else}
+									<input
+										type="number"
+										class="form-input short"
+										bind:value={newDestPort}
+									/>
+								{/if}
 							</div>
 							<div class="form-row">
 								<span class="form-label">Stream ID</span>
@@ -727,7 +763,11 @@
 								</label>
 							</div>
 							<div class="form-actions">
-								<button class="form-btn primary" onclick={handleCreateDest}>Create</button>
+								<button
+									class="form-btn primary"
+									onclick={handleCreateDest}
+									disabled={hasPortConstraint && newDestType === 'srt-listener' && availableOutputPorts.length === 0}
+								>Create</button>
 								<button class="form-btn" onclick={() => (showAddDest = false)}>Cancel</button>
 							</div>
 						</div>
