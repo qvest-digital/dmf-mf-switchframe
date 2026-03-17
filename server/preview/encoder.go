@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
@@ -41,6 +42,26 @@ type Config struct {
 	Relay     Relay  // MoQ relay for broadcast
 }
 
+// Stats tracks preview encoder performance counters using atomic operations.
+type Stats struct {
+	FramesIn      atomic.Int64
+	FramesOut     atomic.Int64
+	FramesDropped atomic.Int64
+	EncodeErrors  atomic.Int64
+	LastEncodeNs  atomic.Int64 // last encode duration in nanoseconds
+	AvgEncodeNs   atomic.Int64 // exponential moving average
+}
+
+// StatsSnapshot is the JSON-serializable view of encoder stats.
+type StatsSnapshot struct {
+	FramesIn      int64   `json:"framesIn"`
+	FramesOut     int64   `json:"framesOut"`
+	FramesDropped int64   `json:"framesDropped"`
+	EncodeErrors  int64   `json:"encodeErrors"`
+	LastEncodeMs  float64 `json:"lastEncodeMs"`
+	AvgEncodeMs   float64 `json:"avgEncodeMs"`
+}
+
 // encodeJob carries a YUV420 frame to the encode goroutine.
 type encodeJob struct {
 	yuv []byte
@@ -57,6 +78,7 @@ type Encoder struct {
 	ch       chan encodeJob
 	done     chan struct{}
 	stopOnce sync.Once
+	stats    Stats
 }
 
 // NewEncoder creates and starts a preview encoder goroutine.
@@ -76,6 +98,8 @@ func NewEncoder(cfg Config) (*Encoder, error) {
 // the oldest frame is drained and replaced with the new one.
 // The YUV data is deep-copied so the caller can reuse or release the buffer.
 func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
+	e.stats.FramesIn.Add(1)
+
 	// Deep copy -- caller may reuse the buffer.
 	cp := make([]byte, len(yuv))
 	copy(cp, yuv)
@@ -90,6 +114,7 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 	}
 
 	// Channel full -- drain one (newest-wins) and send.
+	e.stats.FramesDropped.Add(1)
 	select {
 	case <-e.ch:
 	default:
@@ -175,10 +200,25 @@ func (e *Encoder) loop() {
 		copy(encYUV, frameYUV)
 
 		// Encode.
+		encStart := time.Now()
 		encoded, isKeyframe, err := encoder.Encode(encYUV, pts, false)
+		encDur := time.Since(encStart).Nanoseconds()
+		e.stats.LastEncodeNs.Store(encDur)
+		// EMA: avg = avg*0.9 + sample*0.1
+		oldAvg := e.stats.AvgEncodeNs.Load()
+		if oldAvg == 0 {
+			e.stats.AvgEncodeNs.Store(encDur)
+		} else {
+			newAvg := int64(float64(oldAvg)*0.9 + float64(encDur)*0.1)
+			e.stats.AvgEncodeNs.Store(newAvg)
+		}
 		if err != nil || len(encoded) == 0 {
+			if err != nil {
+				e.stats.EncodeErrors.Add(1)
+			}
 			continue
 		}
+		e.stats.FramesOut.Add(1)
 
 		// Convert Annex B -> AVC1 for MoQ wire format.
 		// SPS/PPS are inline on keyframes (no GLOBAL_HEADER flag).
@@ -240,5 +280,31 @@ func (e *Encoder) loop() {
 	// Channel closed -- clean up encoder.
 	if encoder != nil {
 		encoder.Close()
+	}
+}
+
+// GetStats returns a JSON-friendly snapshot of encoder performance metrics.
+func (e *Encoder) GetStats() StatsSnapshot {
+	return StatsSnapshot{
+		FramesIn:      e.stats.FramesIn.Load(),
+		FramesOut:     e.stats.FramesOut.Load(),
+		FramesDropped: e.stats.FramesDropped.Load(),
+		EncodeErrors:  e.stats.EncodeErrors.Load(),
+		LastEncodeMs:  float64(e.stats.LastEncodeNs.Load()) / 1e6,
+		AvgEncodeMs:   float64(e.stats.AvgEncodeNs.Load()) / 1e6,
+	}
+}
+
+// DebugSnapshot implements debug.SnapshotProvider for registration
+// with the debug collector.
+func (e *Encoder) DebugSnapshot() map[string]any {
+	s := e.GetStats()
+	return map[string]any{
+		"framesIn":      s.FramesIn,
+		"framesOut":     s.FramesOut,
+		"framesDropped": s.FramesDropped,
+		"encodeErrors":  s.EncodeErrors,
+		"lastEncodeMs":  s.LastEncodeMs,
+		"avgEncodeMs":   s.AvgEncodeMs,
 	}
 }

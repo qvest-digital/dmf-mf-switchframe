@@ -30,6 +30,10 @@ type srtSourceState struct {
 	videoEncoder transition.VideoEncoder // set by relay goroutine, for stats
 	audioEncoder audio.Encoder           // set by audio goroutine, for stats
 	previewEnc   *preview.Encoder        // set when preview proxy is enabled
+
+	// Relay path drop counters (incremented in decode callbacks).
+	relayVideoDrops *atomic.Int64
+	relayAudioDrops *atomic.Int64
 }
 
 // initSRT initializes the SRT listener, caller, store, and stats manager.
@@ -55,6 +59,7 @@ func (a *App) initSRT() error {
 	statsMgr := srt.NewStatsManager()
 	a.srtStats = statsMgr
 	a.debugCollector.Register("srt", statsMgr)
+	a.debugCollector.Register("relay_drops", &relayDropProvider{app: a})
 
 	latency := time.Duration(a.cfg.SRTLatencyMs) * time.Millisecond
 
@@ -196,10 +201,15 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// Create source orchestrator.
 	src := srt.NewSource(cfg, conn, cs, slog.Default())
 
+	// Relay path drop counters (incremented in decode callbacks, exposed in debug snapshots).
+	var relayVideoDrops, relayAudioDrops atomic.Int64
+
 	// Source state for tracking encoder lifecycle and cleanup.
 	state := &srtSourceState{
-		source: src,
-		relay:  relay,
+		source:          src,
+		relay:           relay,
+		relayVideoDrops: &relayVideoDrops,
+		relayAudioDrops: &relayAudioDrops,
 	}
 
 	// === FULLY ASYNC ARCHITECTURE ===
@@ -478,6 +488,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		}
 	}()
 
+	// --- Register preview encoder with debug collector ---
+	if previewEnc != nil {
+		a.debugCollector.Register("preview:"+key, previewEnc)
+	}
+
 	// --- Decode callbacks: ZERO blocking work ---
 	// Only: linearize PTS + deep copy + non-blocking channel send.
 
@@ -518,6 +533,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		select {
 		case relayVideoCh <- videoJob{yuv: relayBuf, w: w, h: h, pts: pts}:
 		default:
+			relayVideoDrops.Add(1)
 			if framePool != nil {
 				framePool.Release(relayBuf)
 			}
@@ -532,6 +548,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		select {
 		case audioCh <- audioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels}:
 		default:
+			relayAudioDrops.Add(1)
 		}
 	}
 
@@ -688,4 +705,29 @@ func (m *srtManagerAdapter) UpdateLatency(key string, latencyMs int) error {
 	}
 	cfg.LatencyMs = latencyMs
 	return m.store.Save(cfg)
+}
+
+// relayDropProvider exposes per-source relay path drop counters via debug snapshots.
+type relayDropProvider struct {
+	app *App
+}
+
+func (p *relayDropProvider) DebugSnapshot() map[string]any {
+	p.app.srtSourcesMu.Lock()
+	defer p.app.srtSourcesMu.Unlock()
+
+	sources := make(map[string]any, len(p.app.srtSources))
+	for key, state := range p.app.srtSources {
+		entry := map[string]int64{}
+		if state.relayVideoDrops != nil {
+			entry["videoDrops"] = state.relayVideoDrops.Load()
+		}
+		if state.relayAudioDrops != nil {
+			entry["audioDrops"] = state.relayAudioDrops.Load()
+		}
+		sources[key] = entry
+	}
+	return map[string]any{
+		"sources": sources,
+	}
 }

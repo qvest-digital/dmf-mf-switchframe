@@ -314,8 +314,15 @@
 
 		let backend: Record<string, unknown> | null = null;
 		try {
-			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'), { headers: authHeaders() });
-			if (resp.ok) backend = await resp.json();
+			const [debugResp, perfResp] = await Promise.all([
+				fetch(resolveApiUrl('/api/debug/snapshot'), { headers: authHeaders() }).catch(() => null),
+				fetch(resolveApiUrl('/api/perf'), { headers: authHeaders() }).catch(() => null),
+			]);
+			const debug = debugResp?.ok ? await debugResp.json() : null;
+			const perf = perfResp?.ok ? await perfResp.json() : null;
+			if (debug || perf) {
+				backend = { ...debug, perf };
+			}
 		} catch { /* ignore */ }
 
 		const snapshot = {
