@@ -59,8 +59,8 @@ github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD
 github.com/sunfish-shogi/bufseekio v0.0.0-20210207115823-a4185644b365/go.mod h1:dEzdXgvImkQ3WLI+0KQpmEx8T/C/ma9KeS3AfmU899I=
 github.com/zsiec/ccx v0.2.0 h1:RaCC4a0ng9wa6AUvT9Kg9kfiEy9svfXL5mmRbi6Ykmo=
 github.com/zsiec/ccx v0.2.0/go.mod h1:Y30W1TCZX7HAXM0miCzG18kSyKtJvqbOk7zrFcTGpU4=
-github.com/zsiec/prism v0.1.6-0.20260317014623-09876f7e5d48 h1:Nm6rkfvUvv9R7bj/gw5REHbL1iJv7Zsk44HwB8EAA6M=
-github.com/zsiec/prism v0.1.6-0.20260317014623-09876f7e5d48/go.mod h1:9dvxkIwtPwmbFObzRx31xz8yZLd0LFnmLbheQuGPToQ=
+github.com/zsiec/prism v0.1.6-0.20260317031410-a6a8b74c428e h1:RYSQFcqKikKyoBeFghI6xNp0Vc3LnvLXWlqB0gXH2qI=
+github.com/zsiec/prism v0.1.6-0.20260317031410-a6a8b74c428e/go.mod h1:9dvxkIwtPwmbFObzRx31xz8yZLd0LFnmLbheQuGPToQ=
 github.com/zsiec/srtgo v0.2.4 h1:WzQfUMSiQglWJDilcXgFvW/23IGLr7FXNRdrbNKJyS8=
 github.com/zsiec/srtgo v0.2.4/go.mod h1:0iqZpF/SA85R06PxqaerYVXUuC0J+Q6YW8JiRslcjs4=
 go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
