@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -79,6 +80,11 @@ type AppConfig struct {
 	// SRT input.
 	SRTListen    string // SRT listener address (e.g., ":6464")
 	SRTLatencyMs int    // Default SRT latency in milliseconds
+
+	// SRT output port range (cloud-allocated).
+	SRTOutputPortBase int    // --srt-output-ports base (0 = unconstrained)
+	SRTOutputPortEnd  int    // --srt-output-ports end
+	Domain            string // --domain (public hostname for connection URLs)
 
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
@@ -209,6 +215,10 @@ func parseConfig() (AppConfig, error) {
 	srtListenFlag := flag.String("srt-listen", "", "SRT listener address for incoming push connections (e.g., :6464)")
 	srtLatencyFlag := flag.Int("srt-latency", 120, "Default SRT latency in milliseconds")
 
+	// Cloud integration flags.
+	srtOutputPortsFlag := flag.String("srt-output-ports", "", "Allowed SRT output port range (e.g., 7464-7467)")
+	domainFlag := flag.String("domain", "", "Public domain for connection URLs (e.g., switchframe.dev)")
+
 	// MXL integration flags.
 	mxlSourcesFlag := flag.String("mxl-sources", "", "Comma-separated MXL source specs as videoUUID or videoUUID:audioUUID or videoUUID:audioUUID:dataUUID (env: SWITCHFRAME_MXL_SOURCES)")
 	mxlOutput := flag.String("mxl-output", "", "MXL flow name for program output")
@@ -218,6 +228,28 @@ func parseConfig() (AppConfig, error) {
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
 
 	flag.Parse()
+
+	// Parse SRT output port range if provided.
+	var srtOutputBase, srtOutputEnd int
+	if *srtOutputPortsFlag != "" {
+		parts := strings.SplitN(*srtOutputPortsFlag, "-", 2)
+		if len(parts) != 2 {
+			return AppConfig{}, fmt.Errorf("--srt-output-ports must be base-end (e.g., 7464-7467)")
+		}
+		base, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return AppConfig{}, fmt.Errorf("--srt-output-ports base: %w", err)
+		}
+		end, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return AppConfig{}, fmt.Errorf("--srt-output-ports end: %w", err)
+		}
+		if base > end || base <= 0 {
+			return AppConfig{}, fmt.Errorf("--srt-output-ports: base (%d) must be > 0 and <= end (%d)", base, end)
+		}
+		srtOutputBase = base
+		srtOutputEnd = end
+	}
 
 	// Validate SCTE-35 PID when enabled.
 	if *scte35Flag {
@@ -299,6 +331,9 @@ func parseConfig() (AppConfig, error) {
 		ClipEphemeralTTL:  *clipEphemeralTTLFlag,
 		SRTListen:         *srtListenFlag,
 		SRTLatencyMs:      *srtLatencyFlag,
+		SRTOutputPortBase: srtOutputBase,
+		SRTOutputPortEnd:  srtOutputEnd,
+		Domain:            *domainFlag,
 		MXLSources:        mxlSources,
 		MXLOutput:         *mxlOutput,
 		MXLOutputVideoDef: *mxlOutputVideoDef,
