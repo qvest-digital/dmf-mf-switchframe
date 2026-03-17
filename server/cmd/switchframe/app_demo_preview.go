@@ -142,7 +142,7 @@ func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distributio
 	relay.AddViewer(viewer)
 	defer relay.RemoveViewer(viewer.ID())
 
-	dec, err := codec.NewVideoDecoderSingleThread()
+	dec, err := codec.NewVideoDecoder()
 	if err != nil {
 		slog.Error("demo preview: decoder failed", "key", key, "error", err)
 		return
