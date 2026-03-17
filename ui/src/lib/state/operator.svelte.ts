@@ -69,7 +69,10 @@ export async function reconnect(): Promise<boolean> {
 		startHeartbeat();
 		return true;
 	} catch {
-		clearStoredToken();
+		// Don't clear the stored token on reconnect failure —
+		// it's also the API auth token. Clearing it would cause
+		// all subsequent API calls to fail with 401.
+		session = null;
 		return false;
 	}
 }
