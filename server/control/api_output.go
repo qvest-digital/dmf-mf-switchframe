@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -207,6 +208,12 @@ func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
 	if config.Port <= 0 {
 		httperr.Write(w, http.StatusBadRequest, "port is required")
 		return
+	}
+	if config.Type == "srt-listener" && a.allowedOutputPorts != nil {
+		if !a.allowedOutputPorts[config.Port] {
+			httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("port %d is not in the allowed output port range", config.Port))
+			return
+		}
 	}
 	if config.Type == "srt-caller" && config.Address == "" {
 		httperr.Write(w, http.StatusBadRequest, "address is required for srt-caller")

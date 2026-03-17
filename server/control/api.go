@@ -243,6 +243,18 @@ func WithSRTManager(m SRTManager) APIOption {
 	return func(a *API) { a.srtMgr = m }
 }
 
+// WithAllowedOutputPorts constrains SRT listener output to the given ports.
+func WithAllowedOutputPorts(ports []int) APIOption {
+	return func(a *API) {
+		if len(ports) > 0 {
+			a.allowedOutputPorts = make(map[int]bool, len(ports))
+			for _, p := range ports {
+				a.allowedOutputPorts[p] = true
+			}
+		}
+	}
+}
+
 // WithRecordingDir sets the directory where recordings are stored.
 // Used by handleClipRecordings to list available recordings for import.
 func WithRecordingDir(dir string) APIOption {
@@ -275,8 +287,9 @@ type API struct {
 	perf             PerfAPI
 	textAnimEngine   *graphics.TextAnimationEngine
 	tickerEngine     *graphics.TickerEngine
-	srtMgr           SRTManager
-	mux              *http.ServeMux
+	srtMgr             SRTManager
+	allowedOutputPorts map[int]bool // nil = unconstrained
+	mux                *http.ServeMux
 	enrichFn         atomic.Pointer[enrichFunc]
 	lastOperator     atomic.Pointer[string]
 	macroMu          sync.Mutex

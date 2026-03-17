@@ -927,3 +927,66 @@ func TestSRTStartCallerMissingAddress(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+func TestAddDestination_AllowedOutputPorts(t *testing.T) {
+	allowedPorts := []int{7464, 7465, 7466, 7467}
+
+	t.Run("allowed port succeeds", func(t *testing.T) {
+		programRelay := distribution.NewRelay()
+		sw := switcher.New(programRelay)
+		mock := &mockOutputManager{}
+		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
+
+		body := `{"type":"srt-listener","port":7464,"name":"Output 1"}`
+		req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+		require.Equal(t, 7464, mock.lastDestConfig.Port)
+	})
+
+	t.Run("disallowed port rejected", func(t *testing.T) {
+		programRelay := distribution.NewRelay()
+		sw := switcher.New(programRelay)
+		mock := &mockOutputManager{}
+		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
+
+		body := `{"type":"srt-listener","port":9999,"name":"Output 1"}`
+		req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Contains(t, rec.Body.String(), "not in the allowed output port range")
+	})
+
+	t.Run("caller mode ignores constraint", func(t *testing.T) {
+		programRelay := distribution.NewRelay()
+		sw := switcher.New(programRelay)
+		mock := &mockOutputManager{}
+		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
+
+		body := `{"type":"srt-caller","address":"192.168.1.100","port":9999,"name":"External"}`
+		req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	})
+
+	t.Run("no constraint allows any port", func(t *testing.T) {
+		api, _ := setupOutputTestAPI(t) // no WithAllowedOutputPorts
+
+		body := `{"type":"srt-listener","port":12345,"name":"Anywhere"}`
+		req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	})
+}
