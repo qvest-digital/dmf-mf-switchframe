@@ -149,6 +149,14 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 	pf.pool = pool
 }
 
+// SetPool sets the FramePool that owns this frame's YUV buffer.
+// ReleaseYUV will return the buffer to the pool when all references
+// are dropped. Exported so external packages (e.g., SRT wiring in
+// main) can set pool ownership on frames they create.
+func (pf *ProcessingFrame) SetPool(pool *FramePool) {
+	pf.pool = pool
+}
+
 // DeepCopy returns a new ProcessingFrame with a copied YUV buffer.
 // The copy starts with nil refs (unmanaged, independent lifecycle).
 // Caller should call SetRefs(1) if the copy will flow through the pipeline.

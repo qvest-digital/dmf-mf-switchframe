@@ -1064,3 +1064,40 @@ func BenchmarkMedianSAD(b *testing.B) {
 		fs.medianSAD()
 	}
 }
+
+func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
+	frc := newFRCSource(FRCNearest, 3000)
+
+	pf1 := &ProcessingFrame{
+		YUV:    make([]byte, 1920*1080*3/2),
+		Width:  1920,
+		Height: 1080,
+		PTS:    0,
+	}
+	pf1.SetRefs(2)
+
+	pf2 := &ProcessingFrame{
+		YUV:    make([]byte, 1920*1080*3/2),
+		Width:  1920,
+		Height: 1080,
+		PTS:    3000,
+	}
+	pf2.SetRefs(2)
+
+	frc.ingest(pf1)
+	frc.ingest(pf2)
+
+	// For FRCNearest, sceneChange should never be set
+	if frc.sceneChange {
+		t.Error("FRCNearest should skip scene change detection")
+	}
+
+	// meLastNs should be 0 (no ME ran)
+	if frc.meLastNs != 0 {
+		t.Errorf("FRCNearest should not run ME, got meLastNs=%d", frc.meLastNs)
+	}
+
+	pf1.ReleaseYUV()
+	pf2.ReleaseYUV()
+	frc.reset()
+}

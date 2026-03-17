@@ -351,6 +351,9 @@ func tickRateToRational(d time.Duration) (int, int) {
 
 // AddSource registers a source for frame synchronization. Safe to call
 // while the ticker is running.
+// When FRC is enabled (quality >= FRCMCFI), the program source gets full
+// quality while non-program sources get FRCNearest (near-zero CPU).
+// For quality levels below FRCMCFI, all sources get the same quality.
 func (fs *FrameSynchronizer) AddSource(key string) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -359,7 +362,15 @@ func (fs *FrameSynchronizer) AddSource(key string) {
 	}
 	ss := &syncSource{}
 	if fs.frcQuality != FRCNone {
-		frc := newFRCSource(fs.frcQuality, fs.tickPTSInterval())
+		// Program source gets full quality; others get FRCNearest when
+		// the global quality is MCFI (expensive). Below MCFI, all sources
+		// get the same quality since they're cheap enough. When no program
+		// source is set, all sources get full quality (backward compat).
+		quality := fs.frcQuality
+		if fs.frcQuality >= FRCMCFI && fs.programSource != "" && key != fs.programSource {
+			quality = FRCNearest
+		}
+		frc := newFRCSource(quality, fs.tickPTSInterval())
 		frc.pool = fs.framePool
 		ss.frc = frc
 	}
@@ -544,13 +555,15 @@ func (fs *FrameSynchronizer) SetFramePool(pool *FramePool) {
 }
 
 // SetFRCQuality sets the frame rate conversion quality for all sources.
-// FRCNone disables FRC and removes frcSource instances. Other values
-// create or update frcSource on each syncSource.
+// FRCNone disables FRC and removes frcSource instances. When quality is
+// FRCMCFI or above, the program source gets full quality while non-program
+// sources get FRCNearest (near-zero CPU). Below FRCMCFI, all sources get
+// the same quality since they're cheap enough.
 func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	fs.frcQuality = q
-	for _, ss := range fs.sources {
+	for key, ss := range fs.sources {
 		ss.mu.Lock()
 		if q == FRCNone {
 			if ss.frc != nil {
@@ -558,14 +571,56 @@ func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 				ss.frc = nil
 			}
 		} else if ss.frc == nil {
-			frc := newFRCSource(q, fs.tickPTSInterval())
+			// Determine per-source quality: program gets full, others get nearest
+			// when global quality is MCFI. When no program source is set, all
+			// sources get full quality (backward compat).
+			sourceQ := q
+			if q >= FRCMCFI && fs.programSource != "" && key != fs.programSource {
+				sourceQ = FRCNearest
+			}
+			frc := newFRCSource(sourceQ, fs.tickPTSInterval())
 			frc.pool = fs.framePool
 			ss.frc = frc
 		} else {
-			ss.frc.requestedQuality = q
-			ss.frc.effectiveQuality = q
+			// Update existing: program gets full quality, others get nearest
+			// when global quality is MCFI. When no program source is set, all
+			// sources get full quality (backward compat).
+			if q >= FRCMCFI && fs.programSource != "" && key != fs.programSource {
+				ss.frc.requestedQuality = FRCNearest
+				ss.frc.effectiveQuality = FRCNearest
+			} else {
+				ss.frc.requestedQuality = q
+				ss.frc.effectiveQuality = q
+			}
 		}
 		ss.mu.Unlock()
+	}
+}
+
+// SetSourceFRCQuality sets the FRC quality for a specific source.
+// Used to run full MCFI only on the program source while other sources
+// use cheaper interpolation (e.g., FRCNearest).
+func (fs *FrameSynchronizer) SetSourceFRCQuality(key string, q FRCQuality) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	ss, ok := fs.sources[key]
+	if !ok {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if q == FRCNone {
+		if ss.frc != nil {
+			ss.frc.reset()
+			ss.frc = nil
+		}
+	} else if ss.frc == nil {
+		frc := newFRCSource(q, fs.tickPTSInterval())
+		frc.pool = fs.framePool
+		ss.frc = frc
+	} else {
+		ss.frc.requestedQuality = q
+		ss.frc.effectiveQuality = q
 	}
 }
 
@@ -594,9 +649,37 @@ func (fs *FrameSynchronizer) GetSourcePTSCorrection(sourceKey string) int64 {
 // SetProgramSource sets which source drives early release of the tick loop.
 // When the program source ingests a fresh frame, the tick fires immediately
 // instead of waiting for the fixed-rate timer.
+//
+// When FRC quality is FRCMCFI or above, this also demotes the old program
+// source to FRCNearest and promotes the new program source to full quality.
+// This ensures only the on-air source pays the MCFI CPU cost (~16% per source).
 func (fs *FrameSynchronizer) SetProgramSource(key string) {
 	fs.mu.Lock()
+	oldProgram := fs.programSource
 	fs.programSource = key
+
+	// Auto-adjust FRC quality when MCFI is active: demote ALL non-program
+	// sources to FRCNearest, promote the program source to full quality.
+	// This handles both the initial case (sources added before program is set)
+	// and subsequent program switches.
+	if fs.frcQuality >= FRCMCFI && oldProgram != key {
+		for srcKey, ss := range fs.sources {
+			ss.mu.Lock()
+			if ss.frc != nil {
+				if srcKey == key {
+					// Promote new program source to full quality.
+					ss.frc.requestedQuality = fs.frcQuality
+					ss.frc.effectiveQuality = fs.frcQuality
+				} else {
+					// Demote all non-program sources to FRCNearest.
+					ss.frc.requestedQuality = FRCNearest
+					ss.frc.effectiveQuality = FRCNearest
+				}
+			}
+			ss.mu.Unlock()
+		}
+	}
+
 	fs.mu.Unlock()
 }
 

@@ -33,7 +33,7 @@ func TestLayoutCompositor_InSwitcher(t *testing.T) {
 	for i := 4 * 4; i < len(src); i++ {
 		src[i] = 128 // neutral chroma
 	}
-	lc.IngestSourceFrame("cam2", src, 4, 4)
+	lc.IngestSourceFrame("cam2", src, 4, 4, 0)
 	require.True(t, lc.HasFrame("cam2"))
 
 	// Process on a black background

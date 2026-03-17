@@ -736,6 +736,37 @@ func TestStingerStore_UploadRejectsTooManyFrames(t *testing.T) {
 	require.False(t, ok, "clip with too many frames should not be loaded")
 }
 
+// BenchmarkRGBAToFrame_DirectPix benchmarks the fast path (direct Pix access).
+func BenchmarkRGBAToFrame_DirectPix(b *testing.B) {
+	img := image.NewNRGBA(image.Rect(0, 0, 1920, 1080))
+	for i := range img.Pix {
+		img.Pix[i] = byte(i % 256)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		RGBAToFrame(img, 1920, 1080)
+	}
+}
+
+// genericImage wraps an image.Image to prevent type assertion to *image.NRGBA,
+// forcing the generic (slow) path through img.At().RGBA().
+type genericImage struct{ image.Image }
+
+// BenchmarkRGBAToFrame_GenericAt benchmarks the old path (img.At boxing).
+func BenchmarkRGBAToFrame_GenericAt(b *testing.B) {
+	img := image.NewNRGBA(image.Rect(0, 0, 1920, 1080))
+	for i := range img.Pix {
+		img.Pix[i] = byte(i % 256)
+	}
+	wrapped := genericImage{img} // prevents type assertion to *image.NRGBA
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		RGBAToFrame(wrapped, 1920, 1080)
+	}
+}
+
 func TestStingerStore_UploadAtFrameLimit(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir, 0)

@@ -702,6 +702,10 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
 			continue
 		}
+		// Skip fully transparent overlays (empty layers, cleared graphics).
+		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
+			continue
+		}
 		if (layer.rect == image.Rectangle{} || layer.rect == fullFrame) &&
 			layer.overlayWidth == width && layer.overlayHeight == height {
 			// Fast path: full-frame overlay (existing behavior).

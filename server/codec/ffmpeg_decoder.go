@@ -591,19 +591,44 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 // C buffer. In both cases, d.yuvBuf is updated for the next call and the returned
 // slice is always an independent copy safe for the caller to retain.
 func (d *FFmpegDecoder) adoptOrCopy(outBuf *C.uchar, outLen C.int, w, h int) ([]byte, int, int, error) {
+	return d.adoptOrCopyInto(outBuf, outLen, w, h, nil)
+}
+
+// adoptOrCopyInto handles the output from ffdec_decode/ffdec_receive_only,
+// optionally writing into a caller-provided dst buffer to avoid allocation.
+// If dst is large enough, the decoded frame is copied directly into dst.
+// If dst is nil or too small, falls back to fresh allocation.
+func (d *FFmpegDecoder) adoptOrCopyInto(outBuf *C.uchar, outLen C.int, w, h int, dst []byte) ([]byte, int, int, error) {
 	n := int(outLen)
 	needed := w * h * 3 / 2
 
 	if len(d.yuvBuf) > 0 && outBuf == (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0])) {
-		// C wrote directly into our Go buffer — deep copy to prevent aliasing.
-		// Without this, callers holding a reference to a previous decode output
-		// see their data overwritten on the next Decode() call.
+		// C wrote directly into our Go buffer — copy to dst or allocate.
+		if len(dst) >= n {
+			copy(dst[:n], d.yuvBuf[:n])
+			return dst[:n], w, h, nil
+		}
+		// dst too small or nil, allocate fresh.
 		result := make([]byte, n)
 		copy(result, d.yuvBuf[:n])
 		return result, w, h, nil
 	}
 
 	// C malloc'd its own buffer (first call or resolution changed).
+	if len(dst) >= n {
+		// Copy directly into caller's buffer via C.memcpy.
+		C.memcpy(unsafe.Pointer(&dst[0]), unsafe.Pointer(outBuf), C.size_t(n))
+		C.free(unsafe.Pointer(outBuf))
+		// Cache the buffer for future frames at this resolution.
+		if cap(d.yuvBuf) < needed {
+			d.yuvBuf = make([]byte, needed)
+		} else {
+			d.yuvBuf = d.yuvBuf[:needed]
+		}
+		return dst[:n], w, h, nil
+	}
+
+	// Fallback: C.GoBytes (existing path).
 	result := C.GoBytes(unsafe.Pointer(outBuf), outLen)
 	C.free(unsafe.Pointer(outBuf))
 
@@ -615,6 +640,51 @@ func (d *FFmpegDecoder) adoptOrCopy(outBuf *C.uchar, outLen C.int, w, h int) ([]
 	}
 
 	return result, w, h, nil
+}
+
+// DecodeInto decodes H.264 data, writing the result into dst if it fits.
+// If dst is large enough for the decoded YUV420, the frame is copied directly
+// into dst (eliminating the intermediate allocation). If dst is nil or too
+// small, falls back to standard allocation behavior.
+// Returns the YUV buffer (which may or may not be dst), width, height, error.
+func (d *FFmpegDecoder) DecodeInto(data []byte, dst []byte) ([]byte, int, int, error) {
+	if d.closed {
+		return nil, 0, 0, errors.New("decoder is closed")
+	}
+	if len(data) == 0 {
+		return nil, 0, 0, errors.New("empty input data")
+	}
+
+	var dstBuf *C.uchar
+	var dstCap C.int
+	if len(d.yuvBuf) > 0 {
+		dstBuf = (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0]))
+		dstCap = C.int(cap(d.yuvBuf))
+	}
+
+	var outBuf *C.uchar
+	var outLen, outWidth, outHeight C.int
+
+	rc := C.ffdec_decode(
+		&d.handle,
+		(*C.uchar)(unsafe.Pointer(&data[0])),
+		C.int(len(data)),
+		dstBuf, dstCap,
+		&outBuf, &outLen, &outWidth, &outHeight,
+	)
+	if rc == 1 {
+		return nil, 0, 0, errors.New("no output frame yet (buffering)")
+	}
+	if rc < 0 {
+		return nil, 0, 0, fmt.Errorf("FFmpeg decode error: code %d", int(rc))
+	}
+
+	n := int(outLen)
+	if n == 0 || outBuf == nil {
+		return nil, 0, 0, errors.New("decoder produced no output")
+	}
+
+	return d.adoptOrCopyInto(outBuf, outLen, int(outWidth), int(outHeight), dst)
 }
 
 // Flush resets the decoder's internal state (reference frames, reorder buffer)

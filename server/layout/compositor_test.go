@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"bytes"
 	"image"
 	"sync/atomic"
 	"testing"
@@ -57,7 +58,7 @@ func BenchmarkCompositor_ProcessFrame_PIP(b *testing.B) {
 	c.SetLayout(l)
 
 	// Ingest 1080p source (requires scaling to 480×270 PIP slot)
-	c.IngestSourceFrame("cam2", makeYUV420(1920, 1080, 200, 128, 128), 1920, 1080)
+	c.IngestSourceFrame("cam2", makeYUV420(1920, 1080, 200, 128, 128), 1920, 1080, 0)
 
 	bg := makeYUV420(1920, 1080, 16, 128, 128)
 	b.ResetTimer()
@@ -82,12 +83,66 @@ func BenchmarkCompositor_ProcessFrame_Quad(b *testing.B) {
 
 	// Ingest 720p sources (requires scaling to 960×540 slots)
 	for _, name := range []string{"cam1", "cam2", "cam3", "cam4"} {
-		c.IngestSourceFrame(name, makeYUV420(1280, 720, 200, 128, 128), 1280, 720)
+		c.IngestSourceFrame(name, makeYUV420(1280, 720, 200, 128, 128), 1280, 720, 0)
 	}
 
 	bg := makeYUV420(1920, 1080, 16, 128, 128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		c.ProcessFrame(bg, 1920, 1080)
+	}
+}
+
+// BenchmarkCompositor_ProcessFrame_Quad_CacheHit benchmarks quad layout when
+// all sources have the same PTS (cache hit — scaling skipped).
+func BenchmarkCompositor_ProcessFrame_Quad_CacheHit(b *testing.B) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "quad",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 960, 540), Enabled: true},
+			{SourceKey: "cam2", Rect: image.Rect(960, 0, 1920, 540), Enabled: true},
+			{SourceKey: "cam3", Rect: image.Rect(0, 540, 960, 1080), Enabled: true},
+			{SourceKey: "cam4", Rect: image.Rect(960, 540, 1920, 1080), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	for _, name := range []string{"cam1", "cam2", "cam3", "cam4"} {
+		c.IngestSourceFrame(name, makeYUV420(1280, 720, 200, 128, 128), 1280, 720, 1000)
+	}
+	bg := makeYUV420(1920, 1080, 16, 128, 128)
+	// First call populates cache
+	c.ProcessFrame(bg, 1920, 1080)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		c.ProcessFrame(bg, 1920, 1080)
+	}
+}
+
+// BenchmarkCompositor_ProcessFrame_Quad_CacheMiss benchmarks quad layout when
+// sources change PTS every frame (cache miss — scaling every time).
+func BenchmarkCompositor_ProcessFrame_Quad_CacheMiss(b *testing.B) {
+	c := NewCompositor(1920, 1080)
+	l := &Layout{
+		Name: "quad",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 960, 540), Enabled: true},
+			{SourceKey: "cam2", Rect: image.Rect(960, 0, 1920, 540), Enabled: true},
+			{SourceKey: "cam3", Rect: image.Rect(0, 540, 960, 1080), Enabled: true},
+			{SourceKey: "cam4", Rect: image.Rect(960, 540, 1920, 1080), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+	bg := makeYUV420(1920, 1080, 16, 128, 128)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		// Different PTS each iteration = cache miss, forces re-scale
+		pts := int64(i * 3000)
+		for _, name := range []string{"cam1", "cam2", "cam3", "cam4"} {
+			c.IngestSourceFrame(name, makeYUV420(1280, 720, 200, 128, 128), 1280, 720, pts)
+		}
 		c.ProcessFrame(bg, 1920, 1080)
 	}
 }
@@ -108,7 +163,7 @@ func TestCompositor_IngestAndNeedsSource(t *testing.T) {
 
 	// Ingest a frame
 	yuv := makeYUV420(1920, 1080, 235, 128, 128)
-	c.IngestSourceFrame("cam2", yuv, 1920, 1080)
+	c.IngestSourceFrame("cam2", yuv, 1920, 1080, 0)
 
 	require.True(t, c.HasFrame("cam2"))
 }
@@ -127,7 +182,7 @@ func TestCompositor_ProcessFrame(t *testing.T) {
 
 	// Ingest white source
 	src := makeYUV420(4, 4, 235, 128, 128)
-	c.IngestSourceFrame("cam2", src, 4, 4)
+	c.IngestSourceFrame("cam2", src, 4, 4, 0)
 
 	// Process on black background
 	bg := makeYUV420(8, 8, 16, 128, 128)
@@ -184,7 +239,7 @@ func TestCompositor_DisabledSlotSkipped(t *testing.T) {
 	c.SetLayout(l)
 
 	src := makeYUV420(4, 4, 235, 128, 128)
-	c.IngestSourceFrame("cam2", src, 4, 4)
+	c.IngestSourceFrame("cam2", src, 4, 4, 0)
 
 	bg := makeYUV420(8, 8, 16, 128, 128)
 	result := c.ProcessFrame(bg, 8, 8)
@@ -207,9 +262,9 @@ func TestCompositor_ZOrderSorting(t *testing.T) {
 	c.SetLayout(l)
 
 	// Bottom source: mid-gray
-	c.IngestSourceFrame("bottom", makeYUV420(8, 8, 100, 128, 128), 8, 8)
+	c.IngestSourceFrame("bottom", makeYUV420(8, 8, 100, 128, 128), 8, 8, 0)
 	// Top source: white
-	c.IngestSourceFrame("top", makeYUV420(4, 4, 235, 128, 128), 4, 4)
+	c.IngestSourceFrame("top", makeYUV420(4, 4, 235, 128, 128), 4, 4, 0)
 
 	bg := makeYUV420(8, 8, 16, 128, 128)
 	result := c.ProcessFrame(bg, 8, 8)
@@ -237,7 +292,7 @@ func TestCompositor_FlyInPartiallyOffScreen(t *testing.T) {
 
 	// Ingest a source at different resolution (will need scaling)
 	src := makeYUV420(8, 8, 235, 128, 128)
-	c.IngestSourceFrame("cam2", src, 8, 8)
+	c.IngestSourceFrame("cam2", src, 8, 8, 0)
 
 	// Trigger fly-in animation
 	c.SlotOn(0)
@@ -277,7 +332,7 @@ func TestCompositor_FlyInClampedDoesNotCorrupt(t *testing.T) {
 	c.mu.Unlock()
 
 	src := makeYUV420(8, 8, 200, 128, 128)
-	c.IngestSourceFrame("cam2", src, 8, 8)
+	c.IngestSourceFrame("cam2", src, 8, 8, 0)
 
 	bg := makeYUV420(16, 16, 16, 128, 128)
 	require.NotPanics(t, func() {
@@ -354,7 +409,7 @@ func TestCompositor_DissolveEndpoint_NoVisualPop(t *testing.T) {
 	c.SetLayout(l)
 
 	src := makeYUV420(4, 4, 235, 128, 128)
-	c.IngestSourceFrame("cam2", src, 4, 4)
+	c.IngestSourceFrame("cam2", src, 4, 4, 0)
 
 	c.SlotOn(0)
 
@@ -404,7 +459,7 @@ func TestCompositor_FillMode_CropsBeforeScale(t *testing.T) {
 	for i := ySize; i < len(src); i++ {
 		src[i] = 128
 	}
-	c.IngestSourceFrame("cam1", src, 8, 4)
+	c.IngestSourceFrame("cam1", src, 8, 4, 0)
 
 	bg := makeYUV420(16, 16, 16, 128, 128)
 	result := c.ProcessFrame(bg, 16, 16)
@@ -446,7 +501,7 @@ func TestCompositor_FillMode_MatchingAspect(t *testing.T) {
 
 	// Source exactly matches slot aspect (16:9 → 8:4 = 2:1 both).
 	src := makeYUV420(8, 4, 200, 100, 150)
-	c.IngestSourceFrame("cam1", src, 8, 4)
+	c.IngestSourceFrame("cam1", src, 8, 4, 0)
 
 	bg := makeYUV420(16, 16, 16, 128, 128)
 	result := c.ProcessFrame(bg, 16, 16)
@@ -468,7 +523,7 @@ func TestCompositor_StretchDefault_Unchanged(t *testing.T) {
 	c.SetLayout(l)
 
 	src := makeYUV420(4, 4, 235, 128, 128)
-	c.IngestSourceFrame("cam2", src, 4, 4)
+	c.IngestSourceFrame("cam2", src, 4, 4, 0)
 
 	bg := makeYUV420(8, 8, 16, 128, 128)
 	result := c.ProcessFrame(bg, 8, 8)
@@ -634,7 +689,7 @@ func TestCompositor_FillDataRace(t *testing.T) {
 	c.SetLayout(l)
 
 	// Seed with an initial frame so ProcessFrame has something to snapshot.
-	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 128, 128, 128), 8, 8)
+	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 128, 128, 128), 8, 8, 0)
 
 	done := make(chan struct{})
 
@@ -642,7 +697,7 @@ func TestCompositor_FillDataRace(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 1000; i++ {
-			c.IngestSourceFrame("cam1", makeYUV420(8, 8, byte(i%256), 128, 128), 8, 8)
+			c.IngestSourceFrame("cam1", makeYUV420(8, 8, byte(i%256), 128, 128), 8, 8, 0)
 		}
 	}()
 
@@ -686,8 +741,8 @@ func TestSetLayout_ProcessFrame_Race(t *testing.T) {
 		},
 	}
 	c.SetLayout(l1)
-	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 200, 128, 128), 8, 8)
-	c.IngestSourceFrame("cam2", makeYUV420(8, 8, 100, 128, 128), 8, 8)
+	c.IngestSourceFrame("cam1", makeYUV420(8, 8, 200, 128, 128), 8, 8, 0)
+	c.IngestSourceFrame("cam2", makeYUV420(8, 8, 100, 128, 128), 8, 8, 0)
 
 	// Two-slot layout — allocateBuffers produces different-length slices.
 	l2 := &Layout{
@@ -835,4 +890,66 @@ func TestSlotOn_ActiveChange_NotMissed(t *testing.T) {
 	// SlotOff again (already disabled): should NOT fire callback.
 	c.SlotOff(0)
 	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "SlotOff inactive→inactive should not trigger callback")
+}
+
+func TestCompositor_SkipsScaleOnSamePTS(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	layout := &Layout{
+		Slots: []Slot{
+			{SourceKey: "cam1", Enabled: true, Rect: image.Rect(0, 0, 960, 540)},
+		},
+	}
+	c.SetLayout(layout)
+
+	// Create a source frame at different resolution (forces scaling)
+	yuv := make([]byte, 1280*720*3/2)
+	for i := range yuv {
+		yuv[i] = byte(i % 256)
+	}
+
+	// First ingest + process -- must scale
+	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
+	frame1 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame1, 1920, 1080)
+
+	// Same PTS again -- should use cache
+	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
+	frame2 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame2, 1920, 1080)
+
+	if !bytes.Equal(frame1, frame2) {
+		t.Error("same PTS should produce identical output")
+	}
+}
+
+func TestCompositor_InvalidatesCacheOnPTSChange(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	layout := &Layout{
+		Slots: []Slot{
+			{SourceKey: "cam1", Enabled: true, Rect: image.Rect(0, 0, 960, 540)},
+		},
+	}
+	c.SetLayout(layout)
+
+	yuv1 := make([]byte, 1280*720*3/2)
+	for i := range yuv1 {
+		yuv1[i] = byte(i % 256)
+	}
+	yuv2 := make([]byte, 1280*720*3/2)
+	for i := range yuv2 {
+		yuv2[i] = byte((i + 50) % 256)
+	}
+
+	c.IngestSourceFrame("cam1", yuv1, 1280, 720, 1000)
+	frame1 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame1, 1920, 1080)
+
+	// Different PTS + different content
+	c.IngestSourceFrame("cam1", yuv2, 1280, 720, 2000)
+	frame2 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame2, 1920, 1080)
+
+	if bytes.Equal(frame1, frame2) {
+		t.Error("different PTS should produce different output")
+	}
 }

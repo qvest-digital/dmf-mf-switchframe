@@ -2458,6 +2458,289 @@ func TestFrameSync_SetFramePool_UpdatesPool(t *testing.T) {
 	fs.mu.Unlock()
 }
 
+// --- Per-source FRC quality tests ---
+
+func TestFrameSync_AddSourceNonProgramGetsFRCNearest(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCMCFI)
+
+	// Add program source — should get full MCFI quality.
+	fs.AddSource("cam1")
+	// Add non-program source — should get FRCNearest.
+	fs.AddSource("cam2")
+	fs.AddSource("cam3")
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	cam3 := fs.sources["cam3"]
+	fs.mu.Unlock()
+
+	cam1.mu.Lock()
+	require.NotNil(t, cam1.frc, "program source should have FRC")
+	require.Equal(t, FRCMCFI, cam1.frc.requestedQuality, "program source should have MCFI quality")
+	require.Equal(t, FRCMCFI, cam1.frc.effectiveQuality, "program source should have MCFI effective quality")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.NotNil(t, cam2.frc, "non-program source should have FRC")
+	require.Equal(t, FRCNearest, cam2.frc.requestedQuality, "non-program source should have FRCNearest")
+	require.Equal(t, FRCNearest, cam2.frc.effectiveQuality, "non-program source should have FRCNearest effective quality")
+	cam2.mu.Unlock()
+
+	cam3.mu.Lock()
+	require.NotNil(t, cam3.frc, "non-program source should have FRC")
+	require.Equal(t, FRCNearest, cam3.frc.requestedQuality, "non-program source should have FRCNearest")
+	cam3.mu.Unlock()
+}
+
+func TestFrameSync_AddSourceWithFRCNoneSkipsFRC(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.SetProgramSource("cam1")
+	// FRCNone is the default — no FRC should be created for any source.
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	fs.mu.Unlock()
+
+	cam1.mu.Lock()
+	require.Nil(t, cam1.frc, "FRCNone should not create FRC on program source")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Nil(t, cam2.frc, "FRCNone should not create FRC on non-program source")
+	cam2.mu.Unlock()
+}
+
+func TestFrameSync_SetProgramSourcePromotesAndDemotes(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.AddSource("cam3")
+
+	// Set program source to cam1 and enable MCFI.
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCMCFI)
+
+	// Verify initial state: cam1 = MCFI, cam2/cam3 = Nearest.
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	cam3 := fs.sources["cam3"]
+	fs.mu.Unlock()
+
+	cam1.mu.Lock()
+	require.Equal(t, FRCMCFI, cam1.frc.requestedQuality, "cam1 should have MCFI")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCNearest, cam2.frc.requestedQuality, "cam2 should have FRCNearest")
+	cam2.mu.Unlock()
+
+	cam3.mu.Lock()
+	require.Equal(t, FRCNearest, cam3.frc.requestedQuality, "cam3 should have FRCNearest")
+	cam3.mu.Unlock()
+
+	// Switch program source from cam1 to cam2.
+	fs.SetProgramSource("cam2")
+
+	// cam1 should be demoted to FRCNearest, cam2 promoted to MCFI.
+	cam1.mu.Lock()
+	require.Equal(t, FRCNearest, cam1.frc.requestedQuality, "old program cam1 should be demoted to FRCNearest")
+	require.Equal(t, FRCNearest, cam1.frc.effectiveQuality, "old program cam1 effective should be FRCNearest")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCMCFI, cam2.frc.requestedQuality, "new program cam2 should be promoted to MCFI")
+	require.Equal(t, FRCMCFI, cam2.frc.effectiveQuality, "new program cam2 effective should be MCFI")
+	cam2.mu.Unlock()
+
+	cam3.mu.Lock()
+	require.Equal(t, FRCNearest, cam3.frc.requestedQuality, "cam3 should remain FRCNearest")
+	cam3.mu.Unlock()
+
+	// Switch to cam3.
+	fs.SetProgramSource("cam3")
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCNearest, cam2.frc.requestedQuality, "old program cam2 should be demoted")
+	cam2.mu.Unlock()
+
+	cam3.mu.Lock()
+	require.Equal(t, FRCMCFI, cam3.frc.requestedQuality, "new program cam3 should be promoted")
+	cam3.mu.Unlock()
+}
+
+func TestFrameSync_SetProgramSourceSameSourceNoOp(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCMCFI)
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	fs.mu.Unlock()
+
+	// Set program source to the same source — should not change anything.
+	fs.SetProgramSource("cam1")
+
+	cam1.mu.Lock()
+	require.Equal(t, FRCMCFI, cam1.frc.requestedQuality, "same source should keep MCFI")
+	require.Equal(t, FRCMCFI, cam1.frc.effectiveQuality, "same source should keep MCFI effective")
+	cam1.mu.Unlock()
+}
+
+func TestFrameSync_SetProgramSourceBelowMCFI_NoDemotion(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCBlend) // below MCFI — no demotion logic needed
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	fs.mu.Unlock()
+
+	// Both sources should have FRCBlend (no program/non-program distinction
+	// when quality is below MCFI).
+	cam1.mu.Lock()
+	require.Equal(t, FRCBlend, cam1.frc.requestedQuality, "cam1 should have FRCBlend")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCBlend, cam2.frc.requestedQuality, "cam2 should have FRCBlend")
+	cam2.mu.Unlock()
+
+	// Switch program source — should NOT demote old source when quality < MCFI.
+	fs.SetProgramSource("cam2")
+
+	cam1.mu.Lock()
+	require.Equal(t, FRCBlend, cam1.frc.requestedQuality, "cam1 should remain FRCBlend")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCBlend, cam2.frc.requestedQuality, "cam2 should remain FRCBlend")
+	cam2.mu.Unlock()
+}
+
+func TestFrameSync_SetFRCQualityRespectsPerSourceDistinction(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCMCFI)
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	fs.mu.Unlock()
+
+	// Verify initial: cam1=MCFI, cam2=Nearest.
+	cam1.mu.Lock()
+	require.Equal(t, FRCMCFI, cam1.frc.requestedQuality)
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCNearest, cam2.frc.requestedQuality)
+	cam2.mu.Unlock()
+
+	// Disable FRC globally.
+	fs.SetFRCQuality(FRCNone)
+
+	cam1.mu.Lock()
+	require.Nil(t, cam1.frc, "FRCNone should remove FRC from program source")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Nil(t, cam2.frc, "FRCNone should remove FRC from non-program source")
+	cam2.mu.Unlock()
+
+	// Re-enable with MCFI — should restore per-source distinction.
+	fs.SetFRCQuality(FRCMCFI)
+
+	cam1.mu.Lock()
+	require.NotNil(t, cam1.frc, "should re-create FRC for program source")
+	require.Equal(t, FRCMCFI, cam1.frc.requestedQuality, "program source should get MCFI")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.NotNil(t, cam2.frc, "should re-create FRC for non-program source")
+	require.Equal(t, FRCNearest, cam2.frc.requestedQuality, "non-program source should get FRCNearest")
+	cam2.mu.Unlock()
+}
+
+func TestFrameSync_SetSourceFRCQuality(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	fs.SetProgramSource("cam1")
+	fs.SetFRCQuality(FRCMCFI)
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	fs.mu.Unlock()
+
+	// Explicitly set cam2 to MCFI (override the auto-demotion).
+	fs.SetSourceFRCQuality("cam2", FRCMCFI)
+
+	cam2.mu.Lock()
+	require.Equal(t, FRCMCFI, cam2.frc.requestedQuality, "explicit override should set MCFI")
+	require.Equal(t, FRCMCFI, cam2.frc.effectiveQuality, "explicit override should set MCFI effective")
+	cam2.mu.Unlock()
+
+	// Set cam1 to FRCNone — should remove FRC entirely.
+	fs.SetSourceFRCQuality("cam1", FRCNone)
+
+	cam1.mu.Lock()
+	require.Nil(t, cam1.frc, "FRCNone should remove FRC from source")
+	cam1.mu.Unlock()
+
+	// Set unknown source — should not panic.
+	fs.SetSourceFRCQuality("unknown", FRCMCFI)
+
+	// Set cam1 back to FRCBlend — should create new FRC.
+	fs.SetSourceFRCQuality("cam1", FRCBlend)
+
+	cam1.mu.Lock()
+	require.NotNil(t, cam1.frc, "should create new FRC")
+	require.Equal(t, FRCBlend, cam1.frc.requestedQuality, "should have FRCBlend")
+	cam1.mu.Unlock()
+}
+
+func TestFrameSync_SetProgramSourceWithFRCNoneNoChange(t *testing.T) {
+	fs := NewFrameSynchronizer(33*time.Millisecond, nil, nil)
+	fs.AddSource("cam1")
+	fs.AddSource("cam2")
+	// FRCQuality is FRCNone by default — no FRC instances exist.
+	fs.SetProgramSource("cam1")
+
+	fs.mu.Lock()
+	cam1 := fs.sources["cam1"]
+	cam2 := fs.sources["cam2"]
+	fs.mu.Unlock()
+
+	cam1.mu.Lock()
+	require.Nil(t, cam1.frc, "no FRC when quality is FRCNone")
+	cam1.mu.Unlock()
+
+	// Switch program source — should not panic or create FRC.
+	fs.SetProgramSource("cam2")
+
+	cam1.mu.Lock()
+	require.Nil(t, cam1.frc, "should remain nil after program switch")
+	cam1.mu.Unlock()
+
+	cam2.mu.Lock()
+	require.Nil(t, cam2.frc, "should remain nil after program switch")
+	cam2.mu.Unlock()
+}
+
 func TestFrameSync_AudioQueueCapped(t *testing.T) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)

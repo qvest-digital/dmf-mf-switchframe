@@ -15,6 +15,18 @@ import (
 type fillEntry struct {
 	yuv           []byte
 	width, height int
+	pts           int64 // last ingested PTS
+
+	// Per-slot cache of scaled output. Invalidated when source PTS changes.
+	scaledCache map[int]*scaledCacheEntry
+}
+
+// scaledCacheEntry caches a scaled YUV420 frame for a specific slot.
+type scaledCacheEntry struct {
+	yuv        []byte // cached scaled YUV420
+	srcW, srcH int    // source dimensions when scaled
+	dstW, dstH int    // slot dimensions when scaled
+	pts        int64  // source PTS when scaled
 }
 
 // Compositor manages the layout composition pipeline.
@@ -195,7 +207,7 @@ func (c *Compositor) HasFrame(sourceKey string) bool {
 }
 
 // IngestSourceFrame caches a decoded YUV frame for a source.
-func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, height int) {
+func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, height int, pts int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -208,25 +220,35 @@ func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, heig
 	if entry == nil || len(entry.yuv) != yuvSize {
 		entry = &fillEntry{yuv: make([]byte, yuvSize)}
 	}
+
+	// Invalidate scaled cache when PTS changes or dimensions change.
+	if entry.pts != pts || entry.width != width || entry.height != height {
+		clear(entry.scaledCache)
+	}
+
 	copy(entry.yuv, yuv[:yuvSize])
 	entry.width = width
 	entry.height = height
+	entry.pts = pts
 	c.fills[sourceKey] = entry
 }
 
 // slotSnapshot holds source data for a single slot, captured under lock.
 type slotSnapshot struct {
-	slot     Slot
-	idx      int
-	srcYUV   []byte
-	srcW     int
-	srcH     int
-	rect     image.Rectangle
-	alpha    float64
-	hasFill  bool
-	hasGray  bool
-	scaleBuf []byte
-	cropBuf  []byte // non-nil when fill mode needs cropping
+	slot         Slot
+	idx          int
+	srcYUV       []byte
+	srcW         int
+	srcH         int
+	rect         image.Rectangle
+	alpha        float64
+	hasFill      bool
+	hasGray      bool
+	scaleBuf     []byte
+	cropBuf      []byte             // non-nil when fill mode needs cropping
+	fillPTS      int64              // PTS of the fill entry at snapshot time
+	cachedScaled *scaledCacheEntry  // cached scaled frame (may be nil)
+	fillKey      string             // source key for cache writeback
 }
 
 // ProcessFrame composites all enabled layout slots onto the frame.
@@ -325,6 +347,11 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			snap.srcW = entry.width
 			snap.srcH = entry.height
 			snap.hasFill = true
+			snap.fillPTS = entry.pts
+			snap.fillKey = slot.SourceKey
+			if entry.scaledCache != nil {
+				snap.cachedScaled = entry.scaledCache[idx]
+			}
 		} else if idx < len(c.grayBufs) {
 			snap.srcYUV = c.grayBufs[idx]
 			// Use the actual gray buffer dimensions, not the slot rect
@@ -415,14 +442,45 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			}
 		}
 
-		// Scale source to slot dimensions.
+		// Scale source to slot dimensions, using cached result when possible.
 		var scaled []byte
-		if srcW == slotW && srcH == slotH {
+		if snap.cachedScaled != nil && snap.cropBuf == nil &&
+			snap.cachedScaled.pts == snap.fillPTS &&
+			snap.cachedScaled.srcW == srcW && snap.cachedScaled.srcH == srcH &&
+			snap.cachedScaled.dstW == slotW && snap.cachedScaled.dstH == slotH {
+			// Cache hit — reuse previously scaled frame.
+			scaled = snap.cachedScaled.yuv
+		} else if srcW == slotW && srcH == slotH {
 			scaled = srcYUV
 		} else {
 			quality := c.selectScaleQuality()
 			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, snap.scaleBuf, slotW, slotH, quality)
 			scaled = snap.scaleBuf
+
+			// Write scaled result back to cache (under lock since fillEntry is shared).
+			if snap.hasFill && snap.cropBuf == nil {
+				c.mu.Lock()
+				if entry, ok := c.fills[snap.fillKey]; ok {
+					if entry.scaledCache == nil {
+						entry.scaledCache = make(map[int]*scaledCacheEntry)
+					}
+					cacheEntry := entry.scaledCache[snap.idx]
+					scaledSize := slotW * slotH * 3 / 2
+					if cacheEntry == nil || len(cacheEntry.yuv) != scaledSize {
+						cacheEntry = &scaledCacheEntry{
+							yuv: make([]byte, scaledSize),
+						}
+					}
+					copy(cacheEntry.yuv, scaled[:scaledSize])
+					cacheEntry.srcW = srcW
+					cacheEntry.srcH = srcH
+					cacheEntry.dstW = slotW
+					cacheEntry.dstH = slotH
+					cacheEntry.pts = snap.fillPTS
+					entry.scaledCache[snap.idx] = cacheEntry
+				}
+				c.mu.Unlock()
+			}
 		}
 
 		// Composite onto frame.

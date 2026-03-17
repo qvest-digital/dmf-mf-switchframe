@@ -1,6 +1,7 @@
 package graphics
 
 import (
+	"bytes"
 	"image"
 	"testing"
 
@@ -443,6 +444,64 @@ func BenchmarkAlphaBlendRGBA_TypicalLowerThird(b *testing.B) {
 	}
 }
 
+func TestIsOverlayTransparent(t *testing.T) {
+	t.Parallel()
+
+	// Fully transparent.
+	rgba := make([]byte, 100*100*4)
+	if !isOverlayTransparent(rgba, 100*100) {
+		t.Error("all-zero overlay should be transparent")
+	}
+
+	// One non-transparent pixel at the start.
+	rgba[3] = 255
+	if isOverlayTransparent(rgba, 100*100) {
+		t.Error("overlay with non-zero alpha should not be transparent")
+	}
+
+	// Reset and set a pixel at a non-sampled position (between sample points).
+	rgba[3] = 0
+	// Set pixel 32 (which is between sample points 0 and 64).
+	rgba[32*4+3] = 128
+	// Sparse check every 64th pixel won't catch pixel 32.
+	if !isOverlayTransparent(rgba, 100*100) {
+		t.Error("pixel at non-sampled position should not be detected by sparse check")
+	}
+
+	// Set pixel at exactly the 64th position (second sample point).
+	rgba[32*4+3] = 0
+	rgba[64*4+3] = 1
+	if isOverlayTransparent(rgba, 100*100) {
+		t.Error("pixel at sampled position 64 should be detected")
+	}
+}
+
+func TestAlphaBlendRGBARectInto_TransparentOverlayNoOp(t *testing.T) {
+	t.Parallel()
+
+	frameW, frameH := 1920, 1080
+	yuv := make([]byte, frameW*frameH*3/2)
+	// Fill with known value.
+	for i := range yuv {
+		yuv[i] = 128
+	}
+	original := make([]byte, len(yuv))
+	copy(original, yuv)
+
+	// Fully transparent overlay.
+	overlayW, overlayH := 640, 360
+	rgba := make([]byte, overlayW*overlayH*4)
+	rect := image.Rect(100, 100, 740, 460)
+
+	// The per-pixel kernels skip alpha=0, so output should be unchanged.
+	AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH, overlayW, overlayH,
+		rect, 1.0, nil, nil)
+
+	if !bytes.Equal(yuv, original) {
+		t.Error("transparent overlay should not modify frame")
+	}
+}
+
 func TestAlphaBlendRGBARect_ShortRGBA(t *testing.T) {
 	yuv := makeYUV420(8, 8, 16, 128, 128)
 	original := make([]byte, len(yuv))
@@ -685,5 +744,47 @@ func BenchmarkAlphaBlendRGBA_FullFrame_ForComparison(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		AlphaBlendRGBA(yuv, rgba, frameW, frameH, 1.0)
+	}
+}
+
+// BenchmarkAlphaBlendRGBARectInto_Transparent benchmarks the rect blend with
+// a fully transparent overlay to measure the row-level skip optimization.
+func BenchmarkAlphaBlendRGBARectInto_Transparent(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := make([]byte, frameW*frameH*3/2)
+	overlayW, overlayH := 640, 360
+	rgba := make([]byte, overlayW*overlayH*4)
+	rect := image.Rect(100, 100, 740, 460)
+	var scratch []byte
+	var colLUT []int
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scratch, colLUT = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH,
+			overlayW, overlayH, rect, 1.0, scratch, colLUT)
+	}
+}
+
+// BenchmarkAlphaBlendRGBARectInto_Opaque benchmarks the rect blend with
+// a fully opaque overlay for comparison against the transparent case.
+func BenchmarkAlphaBlendRGBARectInto_Opaque(b *testing.B) {
+	frameW, frameH := 1920, 1080
+	yuv := make([]byte, frameW*frameH*3/2)
+	overlayW, overlayH := 640, 360
+	rgba := make([]byte, overlayW*overlayH*4)
+	for i := 0; i < len(rgba); i += 4 {
+		rgba[i] = 200
+		rgba[i+1] = 100
+		rgba[i+2] = 50
+		rgba[i+3] = 255
+	}
+	rect := image.Rect(100, 100, 740, 460)
+	var scratch []byte
+	var colLUT []int
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scratch, colLUT = AlphaBlendRGBARectInto(yuv, rgba, frameW, frameH,
+			overlayW, overlayH, rect, 1.0, scratch, colLUT)
 	}
 }

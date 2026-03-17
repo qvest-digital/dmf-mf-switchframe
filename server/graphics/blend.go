@@ -58,6 +58,21 @@ func AlphaBlendRGBA(yuv []byte, rgba []byte, width, height int, alphaScale float
 	}
 }
 
+// isOverlayTransparent performs a fast sparse check of the overlay's alpha
+// channel. Samples every 64th pixel. Returns true if all sampled alphas are 0.
+// This catches fully transparent overlays (empty layers, cleared graphics)
+// at ~1.5% of the full scan cost.
+func isOverlayTransparent(rgba []byte, pixelCount int) bool {
+	// Check alpha byte (offset 3) of every 64th pixel.
+	stride := 64 * 4
+	for i := 3; i < len(rgba); i += stride {
+		if rgba[i] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // AlphaBlendRGBARect composites an RGBA overlay into a sub-region of a YUV420
 // planar frame. The overlay is scaled to fit the given rect (nearest-neighbor).
 // The rect is clipped to frame bounds and even-aligned for YUV420 compatibility.
@@ -175,6 +190,18 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 			rowBuf[dstOff+3] = rgba[srcOff+3]
 		}
 
+		// Skip rows that are entirely transparent (sparse check every 16th pixel).
+		rowTransparent := true
+		for px := 3; px < rectW*4; px += 16 * 4 {
+			if rowBuf[px] != 0 {
+				rowTransparent = false
+				break
+			}
+		}
+		if rowTransparent {
+			continue
+		}
+
 		// Dispatch to SIMD Y blend kernel (same as full-frame path).
 		yStart := frameRow*frameW + rect.Min.X
 		alphaBlendRGBARowY(&yuv[yStart], &rowBuf[0], rectW, alphaScale256)
@@ -206,6 +233,18 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 			rowBuf[dstOff+1] = rgba[srcOff+1]
 			rowBuf[dstOff+2] = rgba[srcOff+2]
 			rowBuf[dstOff+3] = rgba[srcOff+3]
+		}
+
+		// Skip rows that are entirely transparent (sparse check every 16th chroma pixel).
+		chromaRowTransparent := true
+		for px := 3; px < halfRectW*8; px += 16 * 8 {
+			if rowBuf[px] != 0 {
+				chromaRowTransparent = false
+				break
+			}
+		}
+		if chromaRowTransparent {
+			continue
 		}
 
 		// Dispatch to SIMD chroma blend kernel.

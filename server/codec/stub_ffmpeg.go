@@ -50,6 +50,11 @@ func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	return nil, 0, 0, errFFmpegDisabled
 }
 
+// DecodeInto is a stub that always returns an error.
+func (d *FFmpegDecoder) DecodeInto(data []byte, dst []byte) ([]byte, int, int, error) {
+	return nil, 0, 0, errFFmpegDisabled
+}
+
 // Flush is a no-op stub.
 func (d *FFmpegDecoder) Flush() {}
 

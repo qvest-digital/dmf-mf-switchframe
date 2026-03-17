@@ -117,6 +117,11 @@ func V210ToYUV420pInto(v210, out, cb422Tmp, cr422Tmp []byte, width, height int) 
 //
 // 8-bit to 10-bit conversion: left shift by 2.
 // 4:2:0 to 4:2:2 chroma upsampling: duplicate each chroma row for the row below.
+// V210BufSize returns the required buffer size for V210 output at the given dimensions.
+func V210BufSize(width, height int) int {
+	return V210LineStride(width) * height
+}
+
 func YUV420pToV210(yuv []byte, width, height int) ([]byte, error) {
 	stride := V210LineStride(width)
 	out := make([]byte, stride*height)

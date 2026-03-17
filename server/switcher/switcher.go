@@ -427,7 +427,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(32, defaultFmt.Width, defaultFmt.Height),
+		framePool:     NewFramePool(96, defaultFmt.Width, defaultFmt.Height),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -983,6 +983,13 @@ func (s *Switcher) PipelineFormat() PipelineFormat {
 	return DefaultFormat
 }
 
+// GetFramePool returns the current FramePool for YUV buffer allocation.
+// Used by external packages (e.g., SRT wiring) that create ProcessingFrames
+// and want pool-managed buffer lifecycle instead of heap allocation.
+func (s *Switcher) GetFramePool() *FramePool {
+	return s.framePool
+}
+
 // SetPipelineFormat changes the global pipeline format at runtime.
 // Returns error if a transition is currently active.
 // Propagates change to: frame budget, frame sync tick rate, encoder.
@@ -999,7 +1006,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
 	// Release() discards wrong-sized buffers via cap check.
-	s.framePool = NewFramePool(32, f.Width, f.Height)
+	s.framePool = NewFramePool(96, f.Width, f.Height)
 
 	// Update frame sync tick rate and pool reference if active.
 	if s.frameSyncActive && s.frameSync != nil {
@@ -2798,7 +2805,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 
 	// Feed layout compositor with decoded YUV (for PIP/split-screen).
 	if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-		layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height)
+		layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
 	}
 
 	// During transition (including FTB): route to engine for blending.

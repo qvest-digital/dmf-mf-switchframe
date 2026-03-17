@@ -444,66 +444,194 @@ func loadPNGFrame(path string) (*Frame, int, int, error) {
 // Uses limited-range BT.709 colorspace (Y [16,235], Cb/Cr [16,240]) to match
 // the pipeline's limited-range convention.
 // Exported for testing.
+//
+// Fast paths for *image.NRGBA and *image.RGBA access the Pix buffer directly,
+// eliminating the interface boxing allocations from img.At().RGBA().
 func RGBAToFrame(img image.Image, w, h int) *Frame {
 	ySize := w * h
 	uvSize := (w / 2) * (h / 2)
 	yuv := make([]byte, ySize+2*uvSize)
 	alpha := make([]byte, ySize)
 
-	// Convert RGBA to limited-range BT.709 YUV420 + extract alpha plane
 	halfW := w / 2
 	uOffset := ySize
 	vOffset := ySize + uvSize
 
 	bounds := img.Bounds()
-	for row := 0; row < h; row++ {
-		for col := 0; col < w; col++ {
-			r, g, b, a := img.At(bounds.Min.X+col, bounds.Min.Y+row).RGBA()
-			// RGBA() returns pre-multiplied 16-bit values. Un-premultiply to get
-			// straight RGB before YUV conversion, otherwise alpha gets applied twice
-			// (once here via darkened RGB, once in the blend kernel).
-			af := uint8(a >> 8)
-			var r8, g8, b8 uint8
-			if a > 0 {
-				r8 = uint8((r * 0xFFFF / a) >> 8)
-				g8 = uint8((g * 0xFFFF / a) >> 8)
-				b8 = uint8((b * 0xFFFF / a) >> 8)
+
+	switch src := img.(type) {
+	case *image.NRGBA:
+		// Fast path: NRGBA stores straight alpha [R,G,B,A,...] — no un-premultiply needed.
+		// When alpha=0, treat as black (r8=g8=b8=0) to match the generic path behavior
+		// where pre-multiplied RGBA() returns zeros and the a>0 check yields black.
+		pix := src.Pix
+		stride := src.Stride
+		minX := bounds.Min.X
+		minY := bounds.Min.Y
+
+		// Luma + alpha pass
+		for row := 0; row < h; row++ {
+			rowOff := (row + minY - src.Rect.Min.Y) * stride
+			for col := 0; col < w; col++ {
+				off := rowOff + (col+minX-src.Rect.Min.X)*4
+				a8 := pix[off+3]
+				var r8, g8, b8 uint8
+				if a8 > 0 {
+					r8 = pix[off]
+					g8 = pix[off+1]
+					b8 = pix[off+2]
+				}
+
+				idx := row*w + col
+				yVal, _, _ := transition.RGBToYUV_BT709Limited(r8, g8, b8)
+				yuv[idx] = yVal
+				alpha[idx] = a8
 			}
-
-			idx := row*w + col
-			// Limited-range BT.709 luma
-			yVal, _, _ := transition.RGBToYUV_BT709Limited(r8, g8, b8)
-			yuv[idx] = yVal
-			alpha[idx] = af
 		}
-	}
 
-	// Compute chroma by averaging 2x2 blocks of un-premultiplied RGB,
-	// then converting to limited-range Cb/Cr
-	for row := 0; row < h; row += 2 {
-		for col := 0; col < w; col += 2 {
-			var sumR, sumG, sumB float64
-			for dy := 0; dy < 2; dy++ {
-				for dx := 0; dx < 2; dx++ {
-					r, g, b, a := img.At(bounds.Min.X+col+dx, bounds.Min.Y+row+dy).RGBA()
-					// Un-premultiply before averaging
-					if a > 0 {
-						sumR += float64((r * 0xFFFF / a) >> 8)
-						sumG += float64((g * 0xFFFF / a) >> 8)
-						sumB += float64((b * 0xFFFF / a) >> 8)
+		// Chroma pass: average 2x2 blocks
+		for row := 0; row < h; row += 2 {
+			rowOff0 := (row + minY - src.Rect.Min.Y) * stride
+			rowOff1 := (row + 1 + minY - src.Rect.Min.Y) * stride
+			for col := 0; col < w; col += 2 {
+				baseCol := (col + minX - src.Rect.Min.X) * 4
+				var sumR, sumG, sumB int
+				for _, off := range [4]int{
+					rowOff0 + baseCol,
+					rowOff0 + baseCol + 4,
+					rowOff1 + baseCol,
+					rowOff1 + baseCol + 4,
+				} {
+					if pix[off+3] > 0 {
+						sumR += int(pix[off])
+						sumG += int(pix[off+1])
+						sumB += int(pix[off+2])
 					}
 				}
+
+				avgR := uint8((sumR + 2) / 4)
+				avgG := uint8((sumG + 2) / 4)
+				avgB := uint8((sumB + 2) / 4)
+
+				_, cb, cr := transition.RGBToYUV_BT709Limited(avgR, avgG, avgB)
+
+				uvIdx := (row/2)*halfW + col/2
+				yuv[uOffset+uvIdx] = cb
+				yuv[vOffset+uvIdx] = cr
 			}
-			avgR := uint8(sumR/4 + 0.5)
-			avgG := uint8(sumG/4 + 0.5)
-			avgB := uint8(sumB/4 + 0.5)
+		}
 
-			// Limited-range BT.709 chroma from averaged RGB
-			_, cb, cr := transition.RGBToYUV_BT709Limited(avgR, avgG, avgB)
+	case *image.RGBA:
+		// Fast path: RGBA stores pre-multiplied alpha [R,G,B,A,...] — un-premultiply needed.
+		pix := src.Pix
+		stride := src.Stride
+		minX := bounds.Min.X
+		minY := bounds.Min.Y
 
-			uvIdx := (row/2)*halfW + col/2
-			yuv[uOffset+uvIdx] = cb
-			yuv[vOffset+uvIdx] = cr
+		// Luma + alpha pass
+		for row := 0; row < h; row++ {
+			rowOff := (row + minY - src.Rect.Min.Y) * stride
+			for col := 0; col < w; col++ {
+				off := rowOff + (col+minX-src.Rect.Min.X)*4
+				a8 := pix[off+3]
+				var r8, g8, b8 uint8
+				if a8 == 255 {
+					r8 = pix[off]
+					g8 = pix[off+1]
+					b8 = pix[off+2]
+				} else if a8 > 0 {
+					r8 = uint8(uint16(pix[off]) * 255 / uint16(a8))
+					g8 = uint8(uint16(pix[off+1]) * 255 / uint16(a8))
+					b8 = uint8(uint16(pix[off+2]) * 255 / uint16(a8))
+				}
+
+				idx := row*w + col
+				yVal, _, _ := transition.RGBToYUV_BT709Limited(r8, g8, b8)
+				yuv[idx] = yVal
+				alpha[idx] = a8
+			}
+		}
+
+		// Chroma pass: average 2x2 blocks of un-premultiplied RGB
+		for row := 0; row < h; row += 2 {
+			rowOff0 := (row + minY - src.Rect.Min.Y) * stride
+			rowOff1 := (row + 1 + minY - src.Rect.Min.Y) * stride
+			for col := 0; col < w; col += 2 {
+				baseCol := (col + minX - src.Rect.Min.X) * 4
+				var sumR, sumG, sumB int
+				for _, off := range [4]int{
+					rowOff0 + baseCol,
+					rowOff0 + baseCol + 4,
+					rowOff1 + baseCol,
+					rowOff1 + baseCol + 4,
+				} {
+					a8 := pix[off+3]
+					if a8 == 255 {
+						sumR += int(pix[off])
+						sumG += int(pix[off+1])
+						sumB += int(pix[off+2])
+					} else if a8 > 0 {
+						sumR += int(uint16(pix[off]) * 255 / uint16(a8))
+						sumG += int(uint16(pix[off+1]) * 255 / uint16(a8))
+						sumB += int(uint16(pix[off+2]) * 255 / uint16(a8))
+					}
+				}
+
+				avgR := uint8((sumR + 2) / 4)
+				avgG := uint8((sumG + 2) / 4)
+				avgB := uint8((sumB + 2) / 4)
+
+				_, cb, cr := transition.RGBToYUV_BT709Limited(avgR, avgG, avgB)
+
+				uvIdx := (row/2)*halfW + col/2
+				yuv[uOffset+uvIdx] = cb
+				yuv[vOffset+uvIdx] = cr
+			}
+		}
+
+	default:
+		// Fallback: generic image.Image via interface method (allocates per pixel).
+		for row := 0; row < h; row++ {
+			for col := 0; col < w; col++ {
+				r, g, b, a := img.At(bounds.Min.X+col, bounds.Min.Y+row).RGBA()
+				af := uint8(a >> 8)
+				var r8, g8, b8 uint8
+				if a > 0 {
+					r8 = uint8((r * 0xFFFF / a) >> 8)
+					g8 = uint8((g * 0xFFFF / a) >> 8)
+					b8 = uint8((b * 0xFFFF / a) >> 8)
+				}
+
+				idx := row*w + col
+				yVal, _, _ := transition.RGBToYUV_BT709Limited(r8, g8, b8)
+				yuv[idx] = yVal
+				alpha[idx] = af
+			}
+		}
+
+		for row := 0; row < h; row += 2 {
+			for col := 0; col < w; col += 2 {
+				var sumR, sumG, sumB float64
+				for dy := 0; dy < 2; dy++ {
+					for dx := 0; dx < 2; dx++ {
+						r, g, b, a := img.At(bounds.Min.X+col+dx, bounds.Min.Y+row+dy).RGBA()
+						if a > 0 {
+							sumR += float64((r * 0xFFFF / a) >> 8)
+							sumG += float64((g * 0xFFFF / a) >> 8)
+							sumB += float64((b * 0xFFFF / a) >> 8)
+						}
+					}
+				}
+				avgR := uint8(sumR/4 + 0.5)
+				avgG := uint8(sumG/4 + 0.5)
+				avgB := uint8(sumB/4 + 0.5)
+
+				_, cb, cr := transition.RGBToYUV_BT709Limited(avgR, avgG, avgB)
+
+				uvIdx := (row/2)*halfW + col/2
+				yuv[uOffset+uvIdx] = cb
+				yuv[vOffset+uvIdx] = cr
+			}
 		}
 	}
 

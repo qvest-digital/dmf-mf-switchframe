@@ -62,6 +62,11 @@ func (fp *FramePool) Release(buf []byte) {
 	fp.mu.Unlock()
 }
 
+// BufSize returns the buffer size in bytes (for external size checks).
+func (fp *FramePool) BufSize() int {
+	return fp.bufSize
+}
+
 // Stats returns hit/miss counts for diagnostics.
 func (fp *FramePool) Stats() (hits, misses uint64) {
 	fp.mu.Lock()

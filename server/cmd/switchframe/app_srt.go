@@ -221,6 +221,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// PTS linearization runs in the callback (fast, no allocation).
 
 	pf := a.sw.PipelineFormat()
+	framePool := a.sw.GetFramePool()
 
 	type videoJob struct {
 		yuv []byte
@@ -279,6 +280,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				DTS:    job.pts,
 				Codec:  "h264",
 			}
+			if framePool != nil {
+				pfr.SetPool(framePool)
+			}
 			a.sw.IngestRawVideo(key, pfr)
 		}
 	}()
@@ -320,15 +324,18 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				lastVideoH = h
 			}
 
-			// Copy YUV for encoder — job.yuv is shared with the pipeline
-			// goroutine which may hold it in the frame sync ring buffer.
-			// This copy isolates the encoder input from pipeline retention.
+			// Copy YUV into reusable encoder buffer, then release the
+			// relay's pool buffer. The relay has its own buffer (not shared
+			// with the pipeline) so this release is always safe.
 			needed := len(job.yuv)
 			if cap(encoderYUV) < needed {
 				encoderYUV = make([]byte, needed)
 			}
 			encoderYUV = encoderYUV[:needed]
 			copy(encoderYUV, job.yuv)
+			if framePool != nil {
+				framePool.Release(job.yuv)
+			}
 
 			encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
 			if err != nil || len(encoded) == 0 {
@@ -439,22 +446,43 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
 		pts = linearize(&videoLinear, pts)
 
-		// Single deep copy shared by pipeline and relay goroutines.
-		// Safe because the relay goroutine copies into its own encoderYUV
-		// buffer before encoding, so it never retains this slice.
-		yuvCopy := make([]byte, len(yuv))
-		copy(yuvCopy, yuv)
+		// Pipeline and relay get SEPARATE buffers to prevent wrong-frame
+		// corruption if the relay falls behind. Pipeline buffer is owned by
+		// ProcessingFrame lifecycle; relay buffer is released by the relay
+		// goroutine after copying to encoderYUV.
 
-		// Pipeline ingest (non-blocking).
-		select {
-		case pipelineCh <- videoJob{yuv: yuvCopy, w: w, h: h, pts: pts}:
-		default:
+		// Pipeline path: pool buffer with ProcessingFrame lifecycle.
+		var pipelineBuf []byte
+		if framePool != nil && len(yuv) <= framePool.BufSize() {
+			pipelineBuf = framePool.Acquire()[:len(yuv)]
+		} else {
+			pipelineBuf = make([]byte, len(yuv))
 		}
-		// Relay encode (non-blocking, shares yuvCopy — relay goroutine
-		// copies into encoderYUV before calling Encode).
+		copy(pipelineBuf, yuv)
+
 		select {
-		case relayVideoCh <- videoJob{yuv: yuvCopy, w: w, h: h, pts: pts}:
+		case pipelineCh <- videoJob{yuv: pipelineBuf, w: w, h: h, pts: pts}:
 		default:
+			if framePool != nil {
+				framePool.Release(pipelineBuf)
+			}
+		}
+
+		// Relay path: separate pool buffer, released after copy to encoderYUV.
+		var relayBuf []byte
+		if framePool != nil && len(yuv) <= framePool.BufSize() {
+			relayBuf = framePool.Acquire()[:len(yuv)]
+		} else {
+			relayBuf = make([]byte, len(yuv))
+		}
+		copy(relayBuf, yuv)
+
+		select {
+		case relayVideoCh <- videoJob{yuv: relayBuf, w: w, h: h, pts: pts}:
+		default:
+			if framePool != nil {
+				framePool.Release(relayBuf)
+			}
 		}
 	}
 

@@ -33,6 +33,10 @@ type DemoVideoReader struct {
 	mu     sync.Mutex
 	index  uint64
 	closed bool
+
+	// Reusable buffers (avoids per-frame allocations).
+	yuvBuf  []byte // YUV420p pattern buffer
+	v210Buf []byte // V210 output buffer
 }
 
 // NewDemoVideoReader creates a video reader that generates colored test
@@ -69,21 +73,32 @@ func (d *DemoVideoReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, erro
 	d.mu.Unlock()
 
 	// Generate YUV420p test pattern, then convert to V210.
-	var yuv []byte
+	// Pre-allocate the yuv buffer and let generate functions write into it.
+	yuvSize := d.width * d.height * 3 / 2
+	if cap(d.yuvBuf) < yuvSize {
+		d.yuvBuf = make([]byte, yuvSize)
+	}
+	d.yuvBuf = d.yuvBuf[:yuvSize]
 	switch d.pattern {
 	case PatternGreenScreen:
-		yuv = generateGreenScreenYUV420p(d.width, d.height, idx)
+		generateGreenScreenYUV420pInto(d.yuvBuf, d.width, d.height, idx)
 	default:
-		yuv = generateDemoYUV420p(d.width, d.height, d.colorIdx, idx)
+		generateDemoYUV420pInto(d.yuvBuf, d.width, d.height, d.colorIdx, idx)
 	}
-	v210, err := YUV420pToV210(yuv, d.width, d.height)
-	if err != nil {
+	yuv := d.yuvBuf
+	// Reuse V210 buffer to avoid per-frame allocation.
+	v210Size := V210BufSize(d.width, d.height)
+	if cap(d.v210Buf) < v210Size {
+		d.v210Buf = make([]byte, v210Size)
+	}
+	d.v210Buf = d.v210Buf[:v210Size]
+	if err := YUV420pToV210Into(yuv, d.v210Buf, d.width, d.height); err != nil {
 		return nil, GrainInfo{}, fmt.Errorf("mxl: demo V210 conversion: %w", err)
 	}
 
-	return v210, GrainInfo{
+	return d.v210Buf, GrainInfo{
 		Index:       idx,
-		GrainSize:   uint32(len(v210)),
+		GrainSize:   uint32(len(d.v210Buf)),
 		TotalSlices: 1,
 		ValidSlices: 1,
 	}, nil
@@ -199,12 +214,11 @@ func (d *DemoAudioReader) Close() error {
 // pattern. The color shifts based on colorIdx (per-source identity) and
 // frameNum (animation). The pattern has horizontal bars with a vertical
 // sweep line so you can see it's updating in real-time.
-func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
+func generateDemoYUV420pInto(buf []byte, width, height, colorIdx int, frameNum uint64) {
 	ySize := width * height
 	cw := width / 2
 	ch := height / 2
 	cSize := cw * ch
-	buf := make([]byte, ySize+2*cSize)
 
 	yPlane := buf[:ySize]
 	cbPlane := buf[ySize : ySize+cSize]
@@ -257,7 +271,11 @@ func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
 		cbPlane[i] = cbMod
 		crPlane[i] = crMod
 	}
+}
 
+func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
+	buf := make([]byte, width*height*3/2)
+	generateDemoYUV420pInto(buf, width, height, colorIdx, frameNum)
 	return buf
 }
 
@@ -267,12 +285,11 @@ func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
 //   - Moving white rectangle (~width/4 wide, ~height/6 tall) sweeping horizontally
 //     near the bottom third — simulates a "lower third" overlay
 //   - Static white square in top-right corner — simulates a "logo" bug
-func generateGreenScreenYUV420p(width, height int, frameNum uint64) []byte {
+func generateGreenScreenYUV420pInto(buf []byte, width, height int, frameNum uint64) {
 	ySize := width * height
 	cw := width / 2
 	ch := height / 2
 	cSize := cw * ch
-	buf := make([]byte, ySize+2*cSize)
 
 	yPlane := buf[:ySize]
 	cbPlane := buf[ySize : ySize+cSize]
@@ -343,6 +360,10 @@ func generateGreenScreenYUV420p(width, height int, frameNum uint64) []byte {
 			}
 		}
 	}
+}
 
+func generateGreenScreenYUV420p(width, height int, frameNum uint64) []byte {
+	buf := make([]byte, width*height*3/2)
+	generateGreenScreenYUV420pInto(buf, width, height, frameNum)
 	return buf
 }

@@ -149,62 +149,126 @@ func (sd *sourceDecoder) decodeLoop() {
 			sd.annexBBuf, sd.prependBuf = sd.prependBuf, sd.annexBBuf
 		}
 
+		// DecodeInto interface: if the decoder supports it, we can decode
+		// directly into a pre-acquired pool buffer, eliminating one alloc+copy.
+		type decodeIntoer interface {
+			DecodeInto(data []byte, dst []byte) ([]byte, int, int, error)
+		}
+
+		var yuv []byte
+		var w, h int
+		var err error
+		var poolBuf []byte
+		var usedPoolBuf bool
+
 		t0 := time.Now().UnixNano()
-		yuv, w, h, err := sd.decoder.Decode(sd.annexBBuf)
+		if di, ok := sd.decoder.(decodeIntoer); ok && sd.pool != nil {
+			poolBuf = sd.pool.Acquire()
+			yuv, w, h, err = di.DecodeInto(sd.annexBBuf, poolBuf)
+			if err == nil && len(yuv) > 0 && len(poolBuf) > 0 && &yuv[0] == &poolBuf[0] {
+				usedPoolBuf = true
+			}
+		} else {
+			yuv, w, h, err = sd.decoder.Decode(sd.annexBBuf)
+		}
 		decodeEndNano := time.Now().UnixNano()
 		dur := decodeEndNano - t0
 		sd.lastDecodeNs.Store(dur)
 		atomicutil.UpdateMax(&sd.maxDecodeNs, dur)
 
 		if err != nil {
+			if poolBuf != nil && !usedPoolBuf {
+				sd.pool.Release(poolBuf)
+			}
 			slog.Debug("source decoder: decode failed",
 				"source", sd.sourceKey, "error", err)
 			continue
 		}
 
 		// Scale to pipeline format if resolution differs.
+		needsScale := false
+		var pipeFmt *PipelineFormat
 		if sd.pipelineFormat != nil {
-			if pf := sd.pipelineFormat.Load(); pf != nil && pf.Width > 0 && pf.Height > 0 && (w != pf.Width || h != pf.Height) {
-				sd.scaleWarnOnce.Do(func() {
-					slog.Info("source resolution differs from pipeline format; scaling with bilinear",
-						"source", sd.sourceKey, "source_w", w, "source_h", h,
-						"pipeline_w", pf.Width, "pipeline_h", pf.Height)
-				})
-				dstSize := pf.Width * pf.Height * 3 / 2
-				if len(sd.scaleBuf) < dstSize {
-					sd.scaleBuf = make([]byte, dstSize)
-				}
-				transition.ScaleYUV420(yuv[:w*h*3/2], w, h, sd.scaleBuf[:dstSize], pf.Width, pf.Height)
-				yuv = sd.scaleBuf
-				w = pf.Width
-				h = pf.Height
+			pipeFmt = sd.pipelineFormat.Load()
+			if pipeFmt != nil && pipeFmt.Width > 0 && pipeFmt.Height > 0 && (w != pipeFmt.Width || h != pipeFmt.Height) {
+				needsScale = true
 			}
 		}
 
-		// Deep-copy YUV (decoder reuses internal buffer)
 		yuvSize := w * h * 3 / 2
 		if len(yuv) < yuvSize {
+			if poolBuf != nil {
+				sd.pool.Release(poolBuf)
+			}
 			continue
 		}
+
 		var buf []byte
 		var framePool *FramePool
-		if sd.pool != nil {
-			buf = sd.pool.Acquire()
-			if len(buf) < yuvSize {
-				// Pool buffer too small for this frame (e.g., 4K source with 1080p pool).
-				// Return the undersized buffer and fall back to heap allocation.
-				// Set framePool to nil so ReleaseYUV won't put the oversized
-				// buffer back into the pool.
-				sd.pool.Release(buf)
-				buf = make([]byte, yuvSize)
-				framePool = nil
-			} else {
-				framePool = sd.pool
+
+		if usedPoolBuf && !needsScale {
+			// Common fast path: decoder wrote directly into pool buffer,
+			// no scaling needed. Skip the copy entirely.
+			buf = poolBuf[:yuvSize]
+			framePool = sd.pool
+		} else if usedPoolBuf && needsScale {
+			// Decoder wrote into pool buffer but we need to scale.
+			sd.scaleWarnOnce.Do(func() {
+				slog.Info("source resolution differs from pipeline format; scaling with bilinear",
+					"source", sd.sourceKey, "source_w", w, "source_h", h,
+					"pipeline_w", pipeFmt.Width, "pipeline_h", pipeFmt.Height)
+			})
+			dstSize := pipeFmt.Width * pipeFmt.Height * 3 / 2
+			if len(sd.scaleBuf) < dstSize {
+				sd.scaleBuf = make([]byte, dstSize)
 			}
+			transition.ScaleYUV420(yuv[:yuvSize], w, h, sd.scaleBuf[:dstSize], pipeFmt.Width, pipeFmt.Height)
+			// Return the pool buffer (wrong resolution data) and allocate for scaled output.
+			sd.pool.Release(poolBuf)
+			buf = make([]byte, dstSize)
+			copy(buf, sd.scaleBuf[:dstSize])
+			framePool = nil
+			w = pipeFmt.Width
+			h = pipeFmt.Height
+			yuvSize = dstSize
 		} else {
-			buf = make([]byte, yuvSize)
+			// Original path: decoder allocated its own buffer.
+			if poolBuf != nil {
+				sd.pool.Release(poolBuf) // unused pre-acquired buffer
+			}
+
+			if needsScale {
+				sd.scaleWarnOnce.Do(func() {
+					slog.Info("source resolution differs from pipeline format; scaling with bilinear",
+						"source", sd.sourceKey, "source_w", w, "source_h", h,
+						"pipeline_w", pipeFmt.Width, "pipeline_h", pipeFmt.Height)
+				})
+				dstSize := pipeFmt.Width * pipeFmt.Height * 3 / 2
+				if len(sd.scaleBuf) < dstSize {
+					sd.scaleBuf = make([]byte, dstSize)
+				}
+				transition.ScaleYUV420(yuv[:yuvSize], w, h, sd.scaleBuf[:dstSize], pipeFmt.Width, pipeFmt.Height)
+				yuv = sd.scaleBuf
+				w = pipeFmt.Width
+				h = pipeFmt.Height
+				yuvSize = dstSize
+			}
+
+			// Deep-copy YUV (decoder reuses internal buffer)
+			if sd.pool != nil {
+				buf = sd.pool.Acquire()
+				if len(buf) < yuvSize {
+					sd.pool.Release(buf)
+					buf = make([]byte, yuvSize)
+					framePool = nil
+				} else {
+					framePool = sd.pool
+				}
+			} else {
+				buf = make([]byte, yuvSize)
+			}
+			copy(buf, yuv[:yuvSize])
 		}
-		copy(buf, yuv[:yuvSize])
 
 		pf := &ProcessingFrame{
 			YUV:    buf[:yuvSize],

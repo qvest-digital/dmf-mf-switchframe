@@ -234,3 +234,35 @@ func TestGenerateDemoYUV420p_ValidSize(t *testing.T) {
 		t.Fatal("Y plane is all zeros — expected gradient pattern")
 	}
 }
+
+// BenchmarkDemoVideoReader_ReadGrain benchmarks the hot path for MXL demo
+// video generation. The Into variants reuse buffers across frames.
+func BenchmarkDemoVideoReader_ReadGrain(b *testing.B) {
+	reader := NewDemoVideoReaderWithPattern(360, 240, 30, 0, PatternColorBars)
+	reader.interval = 0 // disable sleep for benchmark
+	defer func() { _ = reader.Close() }()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _, err := reader.ReadGrain(0, 0)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDemoVideoReader_ReadGrain_Allocating benchmarks the old path
+// (allocates fresh YUV + V210 buffers each frame) for comparison.
+func BenchmarkDemoVideoReader_ReadGrain_Allocating(b *testing.B) {
+	w, h := 360, 240
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		yuv := generateDemoYUV420p(w, h, 0, uint64(i))
+		_, err := YUV420pToV210(yuv, w, h)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
