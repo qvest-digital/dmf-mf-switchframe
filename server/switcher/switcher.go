@@ -203,6 +203,11 @@ type sourceState struct {
 	lastPTS          atomic.Int64  // PTS of the most recent video frame (90kHz clock units)
 	frameCount       atomic.Int32  // total video frames received (for EMA warmup)
 	lastGroupID      atomic.Uint32 // most recent GroupID from this source's video frames
+
+	// Raw video ingest counter — incremented on every handleRawVideoFrame call.
+	// Used to compute per-source ingest FPS in PerfSample(). Atomic for lock-free
+	// writes from frame delivery goroutines.
+	rawFrameCount atomic.Int64
 }
 
 // getAvgFrameSize returns the rolling average frame size. Safe for concurrent access.
@@ -2762,6 +2767,9 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 
 	s.mu.RLock()
 	ss, ok := s.sources[sourceKey]
+	if ok && ss != nil {
+		ss.rawFrameCount.Add(1)
+	}
 	programSource := s.programSource
 	fTBActive := s.state.isFTBActive()
 	inTrans := s.state.isInTransition()

@@ -288,6 +288,12 @@ type FrameSynchronizer struct {
 	// Observability counters for release trigger type.
 	programDrivenReleases atomic.Int64
 	timerDrivenReleases   atomic.Int64
+
+	// Release FPS tracking — used by PerfSample() to compute frame sync output rate.
+	// Only accessed under fs.mu (via ReleaseFPS which acquires the lock).
+	releaseFPSLastTotal int64
+	releaseFPSLastTime  time.Time
+	releaseFPSCached    float64
 }
 
 // NewFrameSynchronizer creates a FrameSynchronizer with the given tick rate
@@ -720,6 +726,36 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		"program_driven_releases": fs.programDrivenReleases.Load(),
 		"timer_driven_releases":   fs.timerDrivenReleases.Load(),
 	}
+}
+
+// ReleaseFPS computes the frame sync output rate (releases per second)
+// from the delta in total releases since the last call. Designed to be
+// called once per second by the perf sampler. Must be called under the
+// Switcher's RLock (fs is accessed via s.frameSync).
+func (fs *FrameSynchronizer) ReleaseFPS() float64 {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	total := fs.programDrivenReleases.Load() + fs.timerDrivenReleases.Load()
+	now := time.Now()
+	if !fs.releaseFPSLastTime.IsZero() {
+		elapsed := now.Sub(fs.releaseFPSLastTime).Seconds()
+		if elapsed > 0 {
+			delta := total - fs.releaseFPSLastTotal
+			fs.releaseFPSCached = float64(delta) / elapsed
+		}
+	}
+	fs.releaseFPSLastTotal = total
+	fs.releaseFPSLastTime = now
+	return fs.releaseFPSCached
+}
+
+// SourceCount returns the number of sources registered with the frame
+// synchronizer.
+func (fs *FrameSynchronizer) SourceCount() int {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return len(fs.sources)
 }
 
 // Start begins the background ticker goroutine that releases frames at

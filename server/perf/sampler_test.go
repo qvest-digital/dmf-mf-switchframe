@@ -712,6 +712,142 @@ func TestSampler_PreviewEncoderStats_AppearsInJSON(t *testing.T) {
 	require.InDelta(t, 1.5, cam1["avg_encode_ms"].(float64), 0.001)
 }
 
+func TestSampler_IngestFPS_ComputedFromRawFrameCount(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"mxl:cam1": {Health: "active", RawFrameCount: 0},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+
+	// First tick: initializes baseline, no FPS yet.
+	s.tick()
+
+	snap := s.Snapshot("")
+	src, ok := snap.Sources["mxl:cam1"]
+	require.True(t, ok, "mxl:cam1 should be in sources")
+	require.Equal(t, float64(0), src.Decode.Current.IngestFPS,
+		"first tick should have 0 ingest FPS (no baseline delta)")
+
+	// Simulate 30 frames arriving in the next tick.
+	sw.set(SwitcherSample{
+		Sources: map[string]SourceSample{
+			"mxl:cam1": {Health: "active", RawFrameCount: 30},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	})
+
+	s.tick()
+
+	snap = s.Snapshot("")
+	src = snap.Sources["mxl:cam1"]
+	// The tick interval is very small in tests, so FPS will be very high.
+	// Just verify it's > 0 (frames were counted).
+	require.Greater(t, src.Decode.Current.IngestFPS, float64(0),
+		"ingest FPS should be > 0 after frames arrive")
+}
+
+func TestSampler_IngestFPS_StaleSourceCleanup(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"mxl:cam1": {Health: "active", RawFrameCount: 10},
+			"mxl:cam2": {Health: "active", RawFrameCount: 20},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.tick()
+
+	// Verify both trackers exist
+	s.mu.RLock()
+	require.Contains(t, s.ingestFPSState, "mxl:cam1")
+	require.Contains(t, s.ingestFPSState, "mxl:cam2")
+	s.mu.RUnlock()
+
+	// Remove cam2 from sample
+	sw.set(SwitcherSample{
+		Sources: map[string]SourceSample{
+			"mxl:cam1": {Health: "active", RawFrameCount: 20},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	})
+
+	s.tick()
+
+	s.mu.RLock()
+	require.Contains(t, s.ingestFPSState, "mxl:cam1", "cam1 tracker should still exist")
+	require.NotContains(t, s.ingestFPSState, "mxl:cam2", "cam2 tracker should be cleaned up")
+	s.mu.RUnlock()
+}
+
+func TestSampler_FrameSync_AppearsInSnapshot(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:              map[string]SourceSample{},
+		PipelineLastNs:       10000,
+		NodeTimings:          map[string]int64{},
+		FrameBudgetNs:        33333,
+		FrameSyncReleaseFPS:  29.97,
+		FrameSyncSourceCount: 4,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.tick()
+
+	snap := s.Snapshot("")
+	require.InDelta(t, 29.97, snap.FrameSync.ReleaseFPS, 0.001,
+		"FrameSync.ReleaseFPS should match switcher sample")
+	require.Equal(t, 4, snap.FrameSync.SourceCount,
+		"FrameSync.SourceCount should match switcher sample")
+}
+
+func TestSampler_FrameSync_AppearsInJSON(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:              map[string]SourceSample{},
+		PipelineLastNs:       10000,
+		NodeTimings:          map[string]int64{},
+		FrameBudgetNs:        33333,
+		FrameSyncReleaseFPS:  30.0,
+		FrameSyncSourceCount: 3,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.tick()
+
+	req := httptest.NewRequest("GET", "/api/perf", nil)
+	w := httptest.NewRecorder()
+	s.HandlePerf(w, req)
+
+	require.Equal(t, 200, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+
+	frameSync, ok := result["frame_sync"].(map[string]any)
+	require.True(t, ok, "frame_sync field should be present in JSON")
+	require.InDelta(t, 30.0, frameSync["release_fps"].(float64), 0.001)
+	require.InDelta(t, 3.0, frameSync["source_count"].(float64), 0.001)
+}
+
 func TestSamplerDoubleStopNoPanic(t *testing.T) {
 	sw := &mockSwitcherPerf{sample: SwitcherSample{
 		Sources:     map[string]SourceSample{},

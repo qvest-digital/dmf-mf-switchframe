@@ -81,7 +81,15 @@ type PerfSnapshot struct {
 
 	Preview map[string]PerfPreviewSnapshot `json:"preview,omitempty"`
 
+	FrameSync PerfFrameSyncSnapshot `json:"frame_sync"`
+
 	Baseline *BaselineDiff `json:"baseline"`
+}
+
+// PerfFrameSyncSnapshot holds frame synchronizer output stats.
+type PerfFrameSyncSnapshot struct {
+	SourceCount int     `json:"source_count"`
+	ReleaseFPS  float64 `json:"release_fps"`
 }
 
 // PerfSourceSnapshot holds per-source decode performance.
@@ -110,6 +118,7 @@ type PerfSourceDecodeCurrent struct {
 	Drops         int64   `json:"drops"`
 	AvgFPS        float64 `json:"avg_fps"`
 	AvgFrameBytes int     `json:"avg_frame_bytes"`
+	IngestFPS     float64 `json:"ingest_fps"`
 }
 
 // PerfPipelineSnapshot holds pipeline performance data.
@@ -283,6 +292,7 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 					Drops:         src.DecodeDrops,
 					AvgFPS:        src.AvgFPS,
 					AvgFrameBytes: src.AvgFrameBytes,
+					IngestFPS:     src.IngestFPS,
 				},
 				Windows: windows,
 			},
@@ -397,6 +407,10 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 			Recording: PerfRecordingSnapshot{
 				Active: out.RecordingActive,
 			},
+		},
+		FrameSync: PerfFrameSyncSnapshot{
+			SourceCount: sw.FrameSyncSourceCount,
+			ReleaseFPS:  sw.FrameSyncReleaseFPS,
 		},
 	}
 

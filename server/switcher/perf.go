@@ -18,6 +18,10 @@ type PerfSwitcherSample struct {
 	DecodeNs           int64
 	SyncWaitNs         int64
 	ProcQueueNs        int64
+
+	// Frame synchronizer stats
+	FrameSyncReleaseFPS  float64
+	FrameSyncSourceCount int
 }
 
 // PerfSourceSample mirrors perf.SourceSample.
@@ -27,6 +31,10 @@ type PerfSourceSample struct {
 	AvgFPS        float64
 	AvgFrameBytes int
 	Health        string
+
+	// RawFrameCount is the monotonic raw video ingest counter.
+	// The perf sampler computes IngestFPS from deltas between ticks.
+	RawFrameCount int64
 }
 
 // PerfSample returns a performance snapshot of the switcher's current state.
@@ -46,8 +54,18 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 				sample.AvgFrameBytes = int(avgSize)
 			}
 		}
+		sample.RawFrameCount = ss.rawFrameCount.Load()
 		sources[key] = sample
 	}
+
+	// Frame sync stats
+	var frameSyncReleaseFPS float64
+	var frameSyncSourceCount int
+	if fs := s.frameSync; fs != nil {
+		frameSyncReleaseFPS = fs.ReleaseFPS()
+		frameSyncSourceCount = fs.SourceCount()
+	}
+
 	s.mu.RUnlock()
 
 	// Read pipeline node timings
@@ -66,19 +84,21 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 	}
 
 	return PerfSwitcherSample{
-		Sources:            sources,
-		PipelineLastNs:     s.videoProcLastNano.Load(),
-		NodeTimings:        nodeTimings,
-		E2ELastNs:          s.lastE2ENs.Load(),
-		QueueLen:           len(s.videoProcCh),
-		OutputFPS:          float64(s.outputFPSLastSecond.Load()),
-		BroadcastGapNs:     s.maxBroadcastIntervalNano.Load(),
-		VideoBroadcast:     s.videoBroadcastCount.Load(),
-		DeadlineViolations: s.deadlineViolations.Load(),
-		FrameBudgetNs:      s.frameBudgetNs.Load(),
-		DecodeQueueNs:      s.lastDecodeQueueNs.Load(),
-		DecodeNs:           s.lastDecodeNs.Load(),
-		SyncWaitNs:         s.lastSyncWaitNs.Load(),
-		ProcQueueNs:        s.lastProcQueueNs.Load(),
+		Sources:              sources,
+		PipelineLastNs:       s.videoProcLastNano.Load(),
+		NodeTimings:          nodeTimings,
+		E2ELastNs:            s.lastE2ENs.Load(),
+		QueueLen:             len(s.videoProcCh),
+		OutputFPS:            float64(s.outputFPSLastSecond.Load()),
+		BroadcastGapNs:       s.maxBroadcastIntervalNano.Load(),
+		VideoBroadcast:       s.videoBroadcastCount.Load(),
+		DeadlineViolations:   s.deadlineViolations.Load(),
+		FrameBudgetNs:        s.frameBudgetNs.Load(),
+		DecodeQueueNs:        s.lastDecodeQueueNs.Load(),
+		DecodeNs:             s.lastDecodeNs.Load(),
+		SyncWaitNs:           s.lastSyncWaitNs.Load(),
+		ProcQueueNs:          s.lastProcQueueNs.Load(),
+		FrameSyncReleaseFPS:  frameSyncReleaseFPS,
+		FrameSyncSourceCount: frameSyncSourceCount,
 	}
 }

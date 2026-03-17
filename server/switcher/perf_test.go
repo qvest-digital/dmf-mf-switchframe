@@ -2,8 +2,10 @@ package switcher
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/media"
 )
 
 func TestSwitcher_PerfSubStages(t *testing.T) {
@@ -115,4 +117,101 @@ func TestPerfSample_FreshFramePreservesSyncWait(t *testing.T) {
 	sample := sw.PerfSample()
 	require.Equal(t, int64(5_000_000), sample.SyncWaitNs,
 		"fresh frame sync wait should be SyncReleaseNano - DecodeEndNano")
+}
+
+func TestPerfSample_RawFrameCount(t *testing.T) {
+	// Raw frame count should be reported per-source in PerfSourceSample.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	// Register a raw source (MXL-style, no viewer).
+	sw.RegisterMXLSource("mxl:cam1")
+
+	// Initially zero
+	sample := sw.PerfSample()
+	src, ok := sample.Sources["mxl:cam1"]
+	require.True(t, ok, "mxl:cam1 should be in sources")
+	require.Equal(t, int64(0), src.RawFrameCount, "initial raw frame count should be 0")
+
+	// Ingest some raw video frames
+	for i := 0; i < 30; i++ {
+		pf := &ProcessingFrame{
+			YUV:    make([]byte, 64),
+			Width:  8,
+			Height: 4,
+			PTS:    int64(i * 3000),
+		}
+		sw.IngestRawVideo("mxl:cam1", pf)
+	}
+
+	sample = sw.PerfSample()
+	src = sample.Sources["mxl:cam1"]
+	require.Equal(t, int64(30), src.RawFrameCount, "raw frame count should be 30 after 30 ingests")
+}
+
+func TestPerfSample_FrameSyncFields(t *testing.T) {
+	// FrameSync fields should be zero when no frame sync is active.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sample := sw.PerfSample()
+	require.Equal(t, float64(0), sample.FrameSyncReleaseFPS, "frame sync release FPS should be 0 without frame sync")
+	require.Equal(t, 0, sample.FrameSyncSourceCount, "frame sync source count should be 0 without frame sync")
+
+	// Enable frame sync
+	sw.SetFrameSync(true, 33*time.Millisecond)
+
+	// Register a relay-based source (has viewer → gets added to frame sync)
+	sourceRelay := newTestRelay()
+	sw.RegisterSource("cam1", sourceRelay)
+
+	sample = sw.PerfSample()
+	require.Equal(t, 1, sample.FrameSyncSourceCount, "frame sync source count should be 1 after adding relay source")
+}
+
+func TestFrameSynchronizer_ReleaseFPS(t *testing.T) {
+	fs := NewFrameSynchronizer(
+		33*time.Millisecond,
+		func(key string, frame media.VideoFrame) {},
+		func(key string, frame media.AudioFrame) {},
+	)
+
+	// First call initializes state, returns 0.
+	fps := fs.ReleaseFPS()
+	require.Equal(t, float64(0), fps, "first call should return 0 (no baseline)")
+
+	// Simulate some releases via the atomic counters.
+	fs.programDrivenReleases.Store(30)
+	fs.timerDrivenReleases.Store(0)
+
+	// Hack: set the last time slightly in the past so elapsed > 0.
+	fs.mu.Lock()
+	fs.releaseFPSLastTime = time.Now().Add(-1 * time.Second)
+	fs.releaseFPSLastTotal = 0
+	fs.mu.Unlock()
+
+	fps = fs.ReleaseFPS()
+	require.InDelta(t, 30.0, fps, 2.0,
+		"should compute ~30 FPS from 30 releases in ~1 second")
+}
+
+func TestFrameSynchronizer_SourceCount(t *testing.T) {
+	fs := NewFrameSynchronizer(
+		33*time.Millisecond,
+		func(key string, frame media.VideoFrame) {},
+		func(key string, frame media.AudioFrame) {},
+	)
+
+	require.Equal(t, 0, fs.SourceCount(), "initial source count should be 0")
+
+	fs.AddSource("cam1")
+	require.Equal(t, 1, fs.SourceCount())
+
+	fs.AddSource("cam2")
+	require.Equal(t, 2, fs.SourceCount())
+
+	fs.RemoveSource("cam1")
+	require.Equal(t, 1, fs.SourceCount())
 }

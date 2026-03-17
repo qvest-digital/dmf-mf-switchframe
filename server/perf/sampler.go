@@ -89,6 +89,10 @@ type SwitcherSample struct {
 	DecodeNs           int64
 	SyncWaitNs         int64
 	ProcQueueNs        int64
+
+	// Frame synchronizer stats
+	FrameSyncReleaseFPS  float64
+	FrameSyncSourceCount int
 }
 
 // SourceSample holds per-source performance data.
@@ -98,6 +102,11 @@ type SourceSample struct {
 	AvgFPS        float64
 	AvgFrameBytes int
 	Health        string
+	IngestFPS     float64
+
+	// RawFrameCount is a monotonic counter of raw video frames ingested.
+	// The sampler computes IngestFPS from deltas between ticks.
+	RawFrameCount int64
 
 	// SRT connection stats (populated only for srt: sources)
 	SRTRTTMs     float64
@@ -152,6 +161,13 @@ type PreviewEncoderStats struct {
 	AvgEncodeMs   float64
 }
 
+// ingestFPSTracker holds per-source state for computing raw ingest FPS
+// from monotonic frame count deltas between sampler ticks.
+type ingestFPSTracker struct {
+	lastCount int64
+	lastTime  time.Time
+}
+
 // Sampler collects performance samples at 1Hz and maintains rolling
 // ring buffers for windowed statistics.
 type Sampler struct {
@@ -159,6 +175,10 @@ type Sampler struct {
 
 	// Per-source decode rings (key = source key)
 	decodeRings map[string]*RingStat
+
+	// Per-source raw ingest FPS tracking (key = source key).
+	// Stores the raw frame count from the previous tick for delta computation.
+	ingestFPSState map[string]*ingestFPSTracker
 
 	// Pipeline total + per-node rings
 	pipelineRing *RingStat
@@ -206,7 +226,8 @@ type Sampler struct {
 // NewSampler creates a Sampler that reads from the given providers.
 func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 	return &Sampler{
-		decodeRings:      make(map[string]*RingStat),
+		decodeRings:    make(map[string]*RingStat),
+		ingestFPSState: make(map[string]*ingestFPSTracker),
 		pipelineRing:     &RingStat{},
 		nodeRings:        make(map[string]*RingStat),
 		e2eRing:          &RingStat{},
@@ -289,6 +310,32 @@ func (s *Sampler) tick() {
 					sw.Sources[key] = src
 				}
 			}
+		}
+	}
+
+	// Compute per-source raw ingest FPS from frame count deltas
+	now := time.Now()
+	for key, src := range sw.Sources {
+		tracker, ok := s.ingestFPSState[key]
+		if !ok {
+			tracker = &ingestFPSTracker{}
+			s.ingestFPSState[key] = tracker
+		}
+		if !tracker.lastTime.IsZero() {
+			elapsed := now.Sub(tracker.lastTime).Seconds()
+			if elapsed > 0 {
+				delta := src.RawFrameCount - tracker.lastCount
+				src.IngestFPS = float64(delta) / elapsed
+				sw.Sources[key] = src
+			}
+		}
+		tracker.lastCount = src.RawFrameCount
+		tracker.lastTime = now
+	}
+	// Remove stale ingest FPS trackers
+	for key := range s.ingestFPSState {
+		if _, ok := sw.Sources[key]; !ok {
+			delete(s.ingestFPSState, key)
 		}
 	}
 
