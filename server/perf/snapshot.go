@@ -401,16 +401,10 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 	}
 
 	// Preview encoder stats (point-in-time, not windowed)
-	if s.lastPreviewStats != nil && len(s.lastPreviewStats) > 0 {
+	if len(s.lastPreviewStats) > 0 {
 		preview := make(map[string]PerfPreviewSnapshot, len(s.lastPreviewStats))
 		for key, ps := range s.lastPreviewStats {
-			preview[key] = PerfPreviewSnapshot{
-				FramesIn:      ps.FramesIn,
-				FramesOut:     ps.FramesOut,
-				FramesDropped: ps.FramesDropped,
-				LastEncodeMs:  ps.LastEncodeMs,
-				AvgEncodeMs:   ps.AvgEncodeMs,
-			}
+			preview[key] = PerfPreviewSnapshot(ps)
 		}
 		snap.Preview = preview
 	}
