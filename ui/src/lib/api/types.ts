@@ -534,6 +534,12 @@ export interface SCTE35RuleCondition {
 	value: string;
 }
 
+export interface ConnectionInfo {
+	domain?: string;
+	srtIngestPort?: number;
+	srtOutputPorts?: number[];
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -564,6 +570,7 @@ export interface ControlRoomState {
 	pipelineFormat?: PipelineFormatInfo;
 	encoder?: EncoderState;
 	scte35?: SCTE35State;
+	connectionInfo?: ConnectionInfo;
 	captions?: CaptionState;
 	clipPlayers?: ClipPlayerState[];
 	clipCount?: number;

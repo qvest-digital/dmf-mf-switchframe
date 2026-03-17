@@ -222,6 +222,13 @@ type CBRStatus struct {
 	BurstTicksTotal  int64 `json:"burstTicksTotal"`
 }
 
+// ConnectionInfo holds SRT connection details for the UI.
+type ConnectionInfo struct {
+	Domain         string `json:"domain,omitempty"`
+	SRTIngestPort  int    `json:"srtIngestPort,omitempty"`
+	SRTOutputPorts []int  `json:"srtOutputPorts,omitempty"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -258,6 +265,7 @@ type ControlRoomState struct {
 	Encoder              *EncoderState           `json:"encoder,omitempty"`
 	SCTE35               *SCTE35State            `json:"scte35,omitempty"`
 	CBR                  *CBRStatus              `json:"cbr,omitempty"`
+	ConnectionInfo       *ConnectionInfo         `json:"connectionInfo,omitempty"`
 	Captions             *CaptionState           `json:"captions,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
