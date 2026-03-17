@@ -47,6 +47,11 @@
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
+	// Extract token from URL fragment BEFORE any connections are created.
+	// Must run at module level, not in onMount, to avoid race conditions
+	// where API calls fire before the token is stored.
+	checkFragmentToken();
+
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
 	let statsPanelVisible = $state(false);
@@ -449,7 +454,6 @@
 	}
 
 	onMount(async () => {
-		checkFragmentToken();
 		keyboard.attach();
 		document.addEventListener('keydown', handleGlobalShortcuts);
 		mounted = true;
