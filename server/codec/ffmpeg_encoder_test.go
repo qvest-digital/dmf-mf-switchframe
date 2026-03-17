@@ -394,3 +394,100 @@ func TestFFmpegEncoderSlicedThreadingImmediate(t *testing.T) {
 // Old CBR tests (TestFFmpegEncoderCBRMode, TestFFmpegEncoderCBRProducesFillerNALUs,
 // TestFFmpegEncoderCBRVsBRBitrateVariance) removed — nal-hrd=cbr is no longer used.
 // Replacement tests are in ffmpeg_encoder_cvbr_test.go.
+
+func TestNewPreviewEncoder(t *testing.T) {
+	enc, err := NewPreviewEncoder(854, 480, 500_000, 30, 1)
+	require.NoError(t, err)
+	require.NotNil(t, enc)
+	defer enc.Close()
+
+	// Verify it can encode a frame.
+	w, h := 854, 480
+	yuv := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		yuv[i] = byte((i * 7) % 256)
+	}
+	for i := w * h; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+
+	// First frame with forceIDR should produce a keyframe immediately
+	// (ultrafast + zerolatency = sliced threading, no buffering).
+	data, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotNil(t, data, "preview encoder should produce output on first frame")
+	require.True(t, isKey, "first frame with forceIDR should be a keyframe")
+	require.Greater(t, len(data), 0, "encoded data should be non-empty")
+}
+
+func TestPreviewEncoderUsesBaselineProfile(t *testing.T) {
+	enc, err := NewFFmpegPreviewEncoder(320, 240, 300_000, 30, 1, 2)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	// With AV_CODEC_FLAG_GLOBAL_HEADER, SPS/PPS are in extradata (not inline
+	// in the bitstream). Extract extradata from the encoder context to verify
+	// the baseline profile (profile_idc = 66).
+	extradata := enc.Extradata()
+	require.NotEmpty(t, extradata, "encoder extradata should contain SPS/PPS")
+
+	// Extradata is in AVC1 format: version(1) + profile(1) + compat(1) + level(1) + ...
+	// Or it may be in Annex B format depending on libx264 + global_header interaction.
+	// Try Annex B first (00 00 00 01 ...), then AVC1.
+	if len(extradata) >= 4 && extradata[0] == 0 && extradata[1] == 0 &&
+		(extradata[2] == 1 || (extradata[2] == 0 && extradata[3] == 1)) {
+		// Annex B format — find SPS NALU (type 7).
+		avc1 := AnnexBToAVC1(extradata)
+		for _, nalu := range ExtractNALUs(avc1) {
+			if len(nalu) > 1 && nalu[0]&0x1F == 7 {
+				profileIdc := nalu[1]
+				require.Equal(t, byte(66), profileIdc,
+					"preview encoder should use baseline profile (66), got %d", profileIdc)
+				return
+			}
+		}
+		t.Fatal("no SPS NALU found in Annex B extradata")
+	} else if len(extradata) >= 4 && extradata[0] == 1 {
+		// AVC1 (AVCDecoderConfigurationRecord) format.
+		profileIdc := extradata[1]
+		require.Equal(t, byte(66), profileIdc,
+			"preview encoder should use baseline profile (66), got %d", profileIdc)
+	} else {
+		t.Fatalf("unrecognized extradata format (len=%d, first bytes: %x)", len(extradata), extradata[:min(8, len(extradata))])
+	}
+}
+
+func TestPreviewEncoderMultipleFrames(t *testing.T) {
+	w, h := 320, 240
+	enc, err := NewPreviewEncoder(w, h, 300_000, 30, 1)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	outputCount := 0
+	for i := 0; i < 30; i++ {
+		for j := 0; j < w*h; j++ {
+			yuv[j] = byte((j*7 + i*13) % 256)
+		}
+		for j := w * h; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, err, "frame %d", i)
+		if data != nil {
+			outputCount++
+		}
+	}
+	require.Equal(t, 30, outputCount, "sliced threading should produce output for every frame")
+}
+
+func TestPreviewEncoderInterface(t *testing.T) {
+	// Verify preview encoder satisfies transition.VideoEncoder.
+	var enc transition.VideoEncoder
+	e, err := NewPreviewEncoder(320, 240, 300_000, 30, 1)
+	require.NoError(t, err)
+	enc = e
+	require.NotNil(t, enc)
+	enc.Close()
+}

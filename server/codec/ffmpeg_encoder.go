@@ -199,6 +199,91 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	return 0;
 }
 
+// ffenc_open_preview initializes a lightweight preview encoder.
+// Always uses libx264 with ultrafast preset, baseline profile, zerolatency tune.
+// Designed for low-bitrate preview proxy encoding — hardware encoders are
+// reserved for the program output path.
+// Returns 0 on success, negative on error.
+static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
+                              int fps_num, int fps_den, int gop_secs) {
+	memset(h, 0, sizeof(ffenc_t));
+
+	const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
+	if (!codec) {
+		return -1;
+	}
+
+	h->ctx = avcodec_alloc_context3(codec);
+	if (!h->ctx) {
+		return -2;
+	}
+
+	h->width = width;
+	h->height = height;
+
+	h->ctx->width = width;
+	h->ctx->height = height;
+	h->ctx->time_base = (AVRational){fps_den, fps_num};
+	h->ctx->framerate = (AVRational){fps_num, fps_den};
+
+	// Constrained VBR: same formula as production encoder.
+	h->ctx->bit_rate = bitrate;
+	h->ctx->rc_max_rate = bitrate + bitrate / 5; // 1.2x target
+	h->ctx->rc_buffer_size = bitrate + bitrate / 5;
+
+	h->ctx->gop_size = fps_num * gop_secs / fps_den;
+	h->ctx->max_b_frames = 0;
+	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+	h->ctx->thread_count = 2;
+
+	// BT.709 colorspace signaling, limited range.
+	h->ctx->color_primaries = AVCOL_PRI_BT709;
+	h->ctx->color_trc = AVCOL_TRC_BT709;
+	h->ctx->colorspace = AVCOL_SPC_BT709;
+	h->ctx->color_range = AVCOL_RANGE_MPEG;
+
+	// Global header for downstream muxer compatibility.
+	h->ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+	// ultrafast preset, baseline profile, zerolatency tune.
+	av_opt_set(h->ctx->priv_data, "preset", "ultrafast", 0);
+	av_opt_set(h->ctx->priv_data, "profile", "baseline", 0);
+	av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
+	av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
+	av_opt_set(h->ctx->priv_data, "aud", "1", 0);
+
+	int rc = avcodec_open2(h->ctx, codec, NULL);
+	if (rc < 0) {
+		avcodec_free_context(&h->ctx);
+		return -3;
+	}
+
+	h->frame = av_frame_alloc();
+	if (!h->frame) {
+		avcodec_free_context(&h->ctx);
+		return -4;
+	}
+	h->frame->format = AV_PIX_FMT_YUV420P;
+	h->frame->width = width;
+	h->frame->height = height;
+
+	rc = av_frame_get_buffer(h->frame, 0);
+	if (rc < 0) {
+		av_frame_free(&h->frame);
+		avcodec_free_context(&h->ctx);
+		return -5;
+	}
+
+	h->pkt = av_packet_alloc();
+	if (!h->pkt) {
+		av_frame_free(&h->frame);
+		avcodec_free_context(&h->ctx);
+		return -6;
+	}
+
+	return 0;
+}
+
 // ffenc_encode encodes one YUV420 frame.
 // yuv_data points to packed planar YUV420 (Y: w*h, U: w/2*h/2, V: w/2*h/2).
 // If force_idr is non-zero, the frame is forced to be an IDR keyframe.
@@ -368,6 +453,64 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: %s (code %d)", codecName, msg, int(rc))
 	}
 	return e, nil
+}
+
+// NewFFmpegPreviewEncoder creates a lightweight preview encoder using libx264
+// with ultrafast preset and baseline profile. It always uses software encoding
+// (hardware encoders are reserved for the program output path).
+//
+// width, height, bitrate, fpsNum, and fpsDen configure the output stream.
+// gopSecs sets the IDR keyframe interval in seconds.
+func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegEncoder, error) {
+	initFFmpegLogLevel()
+
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
+	}
+	if bitrate <= 0 {
+		return nil, fmt.Errorf("invalid bitrate: %d", bitrate)
+	}
+	if fpsNum <= 0 || fpsDen <= 0 {
+		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
+	}
+	if gopSecs <= 0 {
+		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	}
+
+	e := &FFmpegEncoder{}
+	rc := C.ffenc_open_preview(&e.handle,
+		C.int(width), C.int(height), C.int(bitrate),
+		C.int(fpsNum), C.int(fpsDen),
+		C.int(gopSecs))
+	if rc != 0 {
+		desc := map[int]string{
+			-1: "codec not found",
+			-2: "context allocation failed",
+			-3: "avcodec_open2 failed",
+			-4: "frame allocation failed",
+			-5: "frame buffer allocation failed",
+			-6: "packet allocation failed",
+		}
+		msg := desc[int(rc)]
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("failed to create FFmpeg preview encoder: %s (code %d)", msg, int(rc))
+	}
+	return e, nil
+}
+
+// Extradata returns the encoder's extradata (SPS/PPS) when AV_CODEC_FLAG_GLOBAL_HEADER
+// is set. Returns nil if no extradata is available.
+func (e *FFmpegEncoder) Extradata() []byte {
+	if e.closed || e.handle.ctx == nil {
+		return nil
+	}
+	size := int(e.handle.ctx.extradata_size)
+	if size <= 0 || e.handle.ctx.extradata == nil {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(e.handle.ctx.extradata), C.int(size))
 }
 
 // Encode encodes a packed YUV420 planar frame to Annex B H.264 data.

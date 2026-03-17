@@ -24,6 +24,9 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	return nil, errFFmpegDisabled
 }
 
+// Extradata is a stub that always returns nil.
+func (e *FFmpegEncoder) Extradata() []byte { return nil }
+
 // Encode is a stub that always returns an error.
 func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
 	return nil, false, errFFmpegDisabled
@@ -80,9 +83,19 @@ func ListAvailableEncoders() []EncoderInfo { return nil }
 // HWDeviceCtx is a stub that returns nil when FFmpeg is not available.
 func HWDeviceCtx() unsafe.Pointer { return nil }
 
+// NewFFmpegPreviewEncoder returns an error when FFmpeg is not available.
+func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
 // NewVideoEncoder is a stub that returns an error when FFmpeg is not available.
 // When FFmpeg is available, the real implementation auto-selects the best encoder.
 func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewPreviewEncoder is a stub that returns an error when FFmpeg is not available.
+func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
