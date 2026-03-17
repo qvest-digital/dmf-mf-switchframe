@@ -30,14 +30,6 @@ type Relay interface {
 	SetVideoInfo(info distribution.VideoInfo)
 }
 
-// extradataProvider is an optional interface for encoders that store SPS/PPS
-// in extradata (via AV_CODEC_FLAG_GLOBAL_HEADER) rather than inline in the
-// encoded bitstream. The preview encoder uses this flag for downstream muxer
-// compatibility, so we extract SPS/PPS from extradata after encoder creation.
-type extradataProvider interface {
-	Extradata() []byte
-}
-
 // Config configures a preview encoder instance.
 type Config struct {
 	SourceKey string // Source identifier (e.g. "cam1", "srt:feed1")
@@ -118,32 +110,6 @@ func (e *Encoder) Stop() {
 	<-e.done
 }
 
-// extractSPSPPSFromExtradata parses SPS and PPS NALUs from encoder extradata.
-// The preview encoder uses AV_CODEC_FLAG_GLOBAL_HEADER, which stores SPS/PPS
-// in extradata rather than inline in the encoded bitstream. The extradata is
-// in Annex B format (start-code prefixed NALUs).
-func extractSPSPPSFromExtradata(extradata []byte) (sps, pps []byte) {
-	if len(extradata) == 0 {
-		return nil, nil
-	}
-	// Convert Annex B extradata to AVC1, then extract NALUs.
-	avc1 := codec.AnnexBToAVC1(extradata)
-	for _, nalu := range codec.ExtractNALUs(avc1) {
-		if len(nalu) == 0 {
-			continue
-		}
-		switch nalu[0] & 0x1F {
-		case 7: // SPS
-			sps = make([]byte, len(nalu))
-			copy(sps, nalu)
-		case 8: // PPS
-			pps = make([]byte, len(nalu))
-			copy(pps, nalu)
-		}
-	}
-	return sps, pps
-}
-
 // loop is the encode goroutine. It reads from the channel, scales, encodes,
 // and broadcasts to the relay. All encoder/buffer state is goroutine-local.
 func (e *Encoder) loop() {
@@ -157,8 +123,6 @@ func (e *Encoder) loop() {
 		encYUV    []byte // persistent encoder input buffer (reused)
 		lastSrcW  int
 		lastSrcH  int
-		sps       []byte // cached SPS from extradata
-		pps       []byte // cached PPS from extradata
 	)
 
 	targetW := e.cfg.Width
@@ -173,8 +137,6 @@ func (e *Encoder) loop() {
 			encoder.Close()
 			encoder = nil
 			infoSent = false
-			sps = nil
-			pps = nil
 		}
 		lastSrcW = w
 		lastSrcH = h
@@ -188,13 +150,6 @@ func (e *Encoder) loop() {
 				continue
 			}
 			encoder = enc
-
-			// Extract SPS/PPS from extradata. The preview encoder uses
-			// AV_CODEC_FLAG_GLOBAL_HEADER which stores parameter sets in
-			// extradata rather than inline in the Annex B output.
-			if ep, ok := enc.(extradataProvider); ok {
-				sps, pps = extractSPSPPSFromExtradata(ep.Extradata())
-			}
 		}
 
 		// Scale to target resolution if needed.
@@ -225,14 +180,8 @@ func (e *Encoder) loop() {
 			continue
 		}
 
-		// On keyframes, prepend SPS/PPS from extradata to the Annex B
-		// output. The preview encoder uses AV_CODEC_FLAG_GLOBAL_HEADER
-		// which strips SPS/PPS from the bitstream.
-		if isKeyframe && sps != nil && pps != nil {
-			encoded = codec.PrependSPSPPS(sps, pps, encoded)
-		}
-
 		// Convert Annex B -> AVC1 for MoQ wire format.
+		// SPS/PPS are inline on keyframes (no GLOBAL_HEADER flag).
 		avc1 := codec.AnnexBToAVC1(encoded)
 		if len(avc1) == 0 {
 			continue

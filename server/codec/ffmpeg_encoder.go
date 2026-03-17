@@ -242,8 +242,9 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG;
 
-	// Global header for downstream muxer compatibility.
-	h->ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	// NOTE: No AV_CODEC_FLAG_GLOBAL_HEADER. SPS/PPS are emitted inline
+	// in the Annex B bitstream on keyframes, matching the production encoder
+	// pattern. The MoQ relay extracts them from AVC1 NALUs directly.
 
 	// ultrafast preset, baseline profile, zerolatency tune.
 	av_opt_set(h->ctx->priv_data, "preset", "ultrafast", 0);

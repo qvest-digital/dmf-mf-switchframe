@@ -421,40 +421,31 @@ func TestNewPreviewEncoder(t *testing.T) {
 }
 
 func TestPreviewEncoderUsesBaselineProfile(t *testing.T) {
-	enc, err := NewFFmpegPreviewEncoder(320, 240, 300_000, 30, 1, 2)
+	w, h := 320, 240
+	enc, err := NewFFmpegPreviewEncoder(w, h, 300_000, 30, 1, 2)
 	require.NoError(t, err)
 	defer enc.Close()
 
-	// With AV_CODEC_FLAG_GLOBAL_HEADER, SPS/PPS are in extradata (not inline
-	// in the bitstream). Extract extradata from the encoder context to verify
-	// the baseline profile (profile_idc = 66).
-	extradata := enc.Extradata()
-	require.NotEmpty(t, extradata, "encoder extradata should contain SPS/PPS")
-
-	// Extradata is in AVC1 format: version(1) + profile(1) + compat(1) + level(1) + ...
-	// Or it may be in Annex B format depending on libx264 + global_header interaction.
-	// Try Annex B first (00 00 00 01 ...), then AVC1.
-	if len(extradata) >= 4 && extradata[0] == 0 && extradata[1] == 0 &&
-		(extradata[2] == 1 || (extradata[2] == 0 && extradata[3] == 1)) {
-		// Annex B format — find SPS NALU (type 7).
-		avc1 := AnnexBToAVC1(extradata)
-		for _, nalu := range ExtractNALUs(avc1) {
-			if len(nalu) > 1 && nalu[0]&0x1F == 7 {
-				profileIdc := nalu[1]
-				require.Equal(t, byte(66), profileIdc,
-					"preview encoder should use baseline profile (66), got %d", profileIdc)
-				return
-			}
-		}
-		t.Fatal("no SPS NALU found in Annex B extradata")
-	} else if len(extradata) >= 4 && extradata[0] == 1 {
-		// AVC1 (AVCDecoderConfigurationRecord) format.
-		profileIdc := extradata[1]
-		require.Equal(t, byte(66), profileIdc,
-			"preview encoder should use baseline profile (66), got %d", profileIdc)
-	} else {
-		t.Fatalf("unrecognized extradata format (len=%d, first bytes: %x)", len(extradata), extradata[:min(8, len(extradata))])
+	// Encode a keyframe — SPS/PPS are inline in the Annex B output
+	// (no GLOBAL_HEADER flag). Extract SPS to verify baseline profile.
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
 	}
+	data, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.True(t, isKey)
+
+	avc1 := AnnexBToAVC1(data)
+	for _, nalu := range ExtractNALUs(avc1) {
+		if len(nalu) > 1 && nalu[0]&0x1F == 7 {
+			profileIdc := nalu[1]
+			require.Equal(t, byte(66), profileIdc,
+				"preview encoder should use baseline profile (66), got %d", profileIdc)
+			return
+		}
+	}
+	t.Fatal("no SPS NALU found in encoded keyframe")
 }
 
 func TestPreviewEncoderMultipleFrames(t *testing.T) {
