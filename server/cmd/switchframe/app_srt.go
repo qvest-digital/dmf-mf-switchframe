@@ -360,7 +360,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 				// Lazy encoder creation.
 				if videoEncoder == nil {
-					enc, err := codec.NewVideoEncoder(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
+					enc, err := codec.NewVideoEncoder(w, h, a.cfg.RelayBitrate, pf.FPSNum, pf.FPSDen)
 					if err != nil {
 						slog.Error("srt: video encoder init failed", "key", key, "error", err)
 						continue
