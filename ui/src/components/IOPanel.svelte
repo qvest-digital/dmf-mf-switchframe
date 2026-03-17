@@ -363,11 +363,11 @@
 							<div class="guide-block">
 								<div class="guide-heading">SRT Ingest</div>
 								<div class="guide-url-row">
-									<span class="guide-url">srt://{ingestHost}:{ci.srtIngestPort}?streamid=camera-1</span>
-									<button class="copy-btn" onclick={() => copyText(`srt://${ingestHost}:${ci.srtIngestPort}?streamid=camera-1`)}>Copy</button>
+									<span class="guide-url">srt://{ingestHost}:{ci.srtIngestPort}?streamid=live/camera-1</span>
+									<button class="copy-btn" onclick={() => copyText(`srt://${ingestHost}:${ci.srtIngestPort}?streamid=live/camera-1`)}>Copy</button>
 								</div>
 								<div class="guide-hint">
-									Set <code>streamid</code> to name your source (e.g. camera-1, camera-2).
+									Set <code>streamid</code> to name your source (e.g. live/camera-1, live/camera-2).
 									Add <code>&latency=120000</code> for 120ms SRT latency.
 								</div>
 							</div>

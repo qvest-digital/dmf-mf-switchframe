@@ -58,9 +58,9 @@ demo: build-server node_modules_check
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
-			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CERT_FLAGS & \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CERT_FLAGS & \
 		else \
-			./bin/switchframe --demo --srt-listen :6464 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CERT_FLAGS & \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
