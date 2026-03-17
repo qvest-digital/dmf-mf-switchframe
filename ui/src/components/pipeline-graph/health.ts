@@ -1,16 +1,18 @@
 import type { HealthStatus } from './types';
 
-/** Source health based on status string from server. */
+/** Source health based on status string from server.
+ *  Server sends: 'healthy', 'stale', 'no_signal', 'offline'. */
 export function sourceHealth(status: string): HealthStatus {
-	if (status === 'online') return 'healthy';
+	if (status === 'healthy') return 'healthy';
 	if (status === 'stale') return 'degraded';
-	return 'error';
+	return 'error'; // no_signal, offline, or unknown
 }
 
-/** Decoder health based on last decode time and drop count. */
+/** Decoder health based on last decode time.
+ *  Drop count is cumulative (newest-wins policy), so only high counts degrade. */
 export function decodeHealth(lastNs: number, drops: number): HealthStatus {
-	if (drops > 0 || lastNs > 25_000_000) return 'error';
-	if (lastNs > 10_000_000) return 'degraded';
+	if (lastNs > 25_000_000) return 'error';
+	if (lastNs > 10_000_000 || drops > 100) return 'degraded';
 	return 'healthy';
 }
 
@@ -23,17 +25,19 @@ export function pipelineNodeHealth(lastNs: number, budgetNs: number): HealthStat
 	return 'healthy';
 }
 
-/** Audio mixer health based on mode, latency, and error counts. */
+/** Audio mixer health based on mode and latency.
+ *  Error counts are cumulative (lifetime) so we only degrade, not error,
+ *  to avoid permanent red from a single past hiccup. */
 export function audioMixerHealth(
 	mode: string,
 	lastNs: number,
 	decodeErrors: number,
 	encodeErrors: number
 ): HealthStatus {
-	if (decodeErrors > 0 || encodeErrors > 0) return 'error';
 	if (mode === 'passthrough') return 'healthy';
 	if (lastNs > 15_000_000) return 'error';
 	if (lastNs > 5_000_000) return 'degraded';
+	if (decodeErrors > 10 || encodeErrors > 10) return 'degraded';
 	return 'healthy';
 }
 
@@ -50,10 +54,11 @@ export function srtOutputHealth(overflowCount: number): HealthStatus {
 	return 'healthy';
 }
 
-/** Preview encoder health based on encode time and dropped frames. */
+/** Preview encoder health based on encode time.
+ *  Dropped frames are cumulative, so high counts only degrade. */
 export function previewEncodeHealth(lastEncodeMs: number, framesDropped: number): HealthStatus {
-	if (framesDropped > 0 || lastEncodeMs > 15) return 'error';
-	if (lastEncodeMs > 5) return 'degraded';
+	if (lastEncodeMs > 15) return 'error';
+	if (lastEncodeMs > 5 || framesDropped > 100) return 'degraded';
 	return 'healthy';
 }
 

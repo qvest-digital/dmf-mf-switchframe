@@ -15,8 +15,8 @@ import {
 } from './health';
 
 describe('sourceHealth', () => {
-	it('returns healthy for online', () => {
-		expect(sourceHealth('online')).toBe('healthy');
+	it('returns healthy for healthy', () => {
+		expect(sourceHealth('healthy')).toBe('healthy');
 	});
 
 	it('returns degraded for stale', () => {
@@ -61,11 +61,15 @@ describe('decodeHealth', () => {
 		expect(decodeHealth(25_000_001, 0)).toBe('error');
 	});
 
-	it('returns error when drops > 0 even if fast', () => {
-		expect(decodeHealth(1_000_000, 1)).toBe('error');
+	it('returns healthy with few cumulative drops', () => {
+		expect(decodeHealth(1_000_000, 1)).toBe('healthy');
 	});
 
-	it('returns error when drops > 0 and slow', () => {
+	it('returns degraded with many cumulative drops', () => {
+		expect(decodeHealth(1_000_000, 101)).toBe('degraded');
+	});
+
+	it('returns error when slow with drops', () => {
 		expect(decodeHealth(30_000_000, 5)).toBe('error');
 	});
 
@@ -129,16 +133,20 @@ describe('audioMixerHealth', () => {
 		expect(audioMixerHealth('mixing', 15_000_001, 0, 0)).toBe('error');
 	});
 
-	it('returns error with decode errors even if fast', () => {
-		expect(audioMixerHealth('mixing', 1_000_000, 1, 0)).toBe('error');
+	it('returns healthy with few cumulative decode errors', () => {
+		expect(audioMixerHealth('mixing', 1_000_000, 5, 0)).toBe('healthy');
 	});
 
-	it('returns error with encode errors even if fast', () => {
-		expect(audioMixerHealth('mixing', 1_000_000, 0, 1)).toBe('error');
+	it('returns degraded with many cumulative errors', () => {
+		expect(audioMixerHealth('mixing', 1_000_000, 11, 0)).toBe('degraded');
 	});
 
-	it('returns error with errors even in passthrough mode', () => {
-		expect(audioMixerHealth('passthrough', 0, 1, 0)).toBe('error');
+	it('returns degraded with many encode errors', () => {
+		expect(audioMixerHealth('mixing', 1_000_000, 0, 11)).toBe('degraded');
+	});
+
+	it('returns healthy in passthrough with few errors', () => {
+		expect(audioMixerHealth('passthrough', 0, 5, 0)).toBe('healthy');
 	});
 });
 
@@ -203,8 +211,12 @@ describe('previewEncodeHealth', () => {
 		expect(previewEncodeHealth(15.1, 0)).toBe('error');
 	});
 
-	it('returns error with drops even if fast', () => {
-		expect(previewEncodeHealth(1, 1)).toBe('error');
+	it('returns healthy with few cumulative drops', () => {
+		expect(previewEncodeHealth(1, 10)).toBe('healthy');
+	});
+
+	it('returns degraded with many cumulative drops', () => {
+		expect(previewEncodeHealth(1, 101)).toBe('degraded');
 	});
 
 	it('returns error with drops and slow', () => {

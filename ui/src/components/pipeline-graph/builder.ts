@@ -21,12 +21,15 @@ import {
 
 /* ---------- helpers ---------- */
 
-/** Determine source type badge from source key prefix. */
+/** Determine source type badge from source key prefix.
+ *  Demo sources have NO prefix (just 'cam1', 'cam2', etc.). */
 export function sourceType(key: string): string {
 	if (key.startsWith('srt:')) return 'SRT';
 	if (key.startsWith('mxl:')) return 'MXL';
 	if (key.startsWith('clip-player-')) return 'Clip';
 	if (key.startsWith('demo:')) return 'Demo';
+	if (/^cam\d+$/.test(key)) return 'Demo';
+	if (key === 'replay') return 'Replay';
 	return 'Source';
 }
 
@@ -82,9 +85,13 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 
 	sourceKeys.forEach((key, row) => {
 		const src = sources[key];
-		const kpis: Record<string, string> = {
-			fps: (src.decode?.current?.avg_fps ?? 0).toFixed(1)
-		};
+		const avgFps = src.decode?.current?.avg_fps ?? 0;
+		const kpis: Record<string, string> = {};
+
+		// Only show FPS if the source actually reports it (raw sources report 0)
+		if (avgFps > 0) {
+			kpis.fps = avgFps.toFixed(1);
+		}
 
 		let health: HealthStatus = sourceHealth(src.health ?? 'offline');
 
@@ -98,6 +105,11 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			else if (srtH === 'degraded' || health === 'degraded') health = 'degraded';
 		}
 
+		// Show health status text for non-healthy sources
+		if (health !== 'healthy') {
+			kpis.status = src.health ?? 'unknown';
+		}
+
 		nodes.push({
 			id: `source-${key}`,
 			label: sourceLabel(key),
@@ -106,7 +118,8 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			row,
 			badge: sourceType(key),
 			kpis,
-			health
+			health,
+			detail: src
 		});
 	});
 
@@ -116,20 +129,26 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		const src = sources[key];
 		const lastNs = src.decode?.current?.last_ns ?? 0;
 		const drops = src.decode?.current?.drops ?? 0;
+		const avgFps = src.decode?.current?.avg_fps ?? 0;
+		const isRaw = avgFps === 0 && lastNs === 0;
 
-		const kpis: Record<string, string> = {
-			latency: nsToMs(lastNs),
-			drops: String(drops)
-		};
+		const kpis: Record<string, string> = {};
+		if (isRaw) {
+			kpis.mode = 'raw YUV';
+		} else {
+			kpis.latency = nsToMs(lastNs);
+			if (drops > 0) kpis.drops = String(drops);
+		}
 
 		nodes.push({
 			id: `decode-${key}`,
-			label: 'Decode',
+			label: isRaw ? 'Raw Input' : 'Decode',
 			category: 'decode',
 			column: 'decode',
 			row,
 			kpis,
-			health: decodeHealth(lastNs, drops)
+			health: isRaw ? 'healthy' : decodeHealth(lastNs, drops),
+			detail: src.decode
 		});
 
 		// Edge: source → decode
@@ -149,7 +168,9 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			category: 'frame-sync',
 			column: 'processing',
 			row: processingRow++,
-			kpis: {},
+			kpis: {
+				sources: String(sourceKeys.length)
+			},
 			health: 'healthy'
 		});
 
@@ -178,7 +199,8 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			kpis: {
 				latency: nsToMs(lastNs)
 			},
-			health: pipelineNodeHealth(lastNs, frameBudgetNs)
+			health: pipelineNodeHealth(lastNs, frameBudgetNs),
+			detail: nodeData
 		});
 
 		// Edge from previous node (or frame-sync)
@@ -227,7 +249,8 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		column: 'processing',
 		row: audioRow,
 		kpis: audioKpis,
-		health: audioMixerHealth(audioMode, mixCycleNs, audioDecodeErrors, audioEncodeErrors)
+		health: audioMixerHealth(audioMode, mixCycleNs, audioDecodeErrors, audioEncodeErrors),
+		detail: perf.audio
 	});
 
 	/* ---------- Column 4: Output ---------- */
@@ -238,6 +261,13 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 	const outputFPS = perf.broadcast?.output_fps ?? 0;
 	const broadcastGapNs = perf.broadcast?.gap?.current?.max_ns ?? 0;
 
+	// Relay health: low FPS or high gap is degraded
+	let relayHealth: HealthStatus = 'healthy';
+	if (outputFPS > 0 && outputFPS < 20) relayHealth = 'degraded';
+	const gapMs = broadcastGapNs / 1_000_000;
+	if (gapMs > 100) relayHealth = 'degraded';
+	if (gapMs > 500) relayHealth = 'error';
+
 	nodes.push({
 		id: 'program-relay',
 		label: 'Program Relay',
@@ -246,9 +276,11 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		row: outputRow++,
 		kpis: {
 			fps: outputFPS.toFixed(1),
-			gap: nsToMs(broadcastGapNs)
+			gap: nsToMs(broadcastGapNs),
+			sent: String(perf.output?.viewer?.video_sent ?? 0)
 		},
-		health: 'healthy'
+		health: relayHealth,
+		detail: { broadcast: perf.broadcast, output: perf.output }
 	});
 
 	// Edge: last pipeline node → relay
@@ -318,8 +350,11 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 
 	/* ---------- Column 5: Browser ---------- */
 
-	if (browserDiag) {
+	// browserDiag is Record<string, SourceDiagnostics> directly (NOT {sources: ...})
+	// Each SourceDiagnostics has: renderer, videoDecoder, audio, transport
+	if (browserDiag && Object.keys(browserDiag).length > 0) {
 		let browserRow = 0;
+		const browserSourceKeys = Object.keys(browserDiag).sort();
 
 		// Browser transport node
 		nodes.push({
@@ -328,29 +363,39 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			category: 'browser-transport',
 			column: 'browser',
 			row: browserRow++,
-			kpis: {},
+			kpis: {
+				sources: String(browserSourceKeys.length)
+			},
 			health: 'healthy'
 		});
 		edges.push({ from: 'program-relay', to: 'browser-transport' });
 
 		// Per-source browser decode nodes
-		const browserSources: Record<string, any> = browserDiag.sources ?? {};
-		const browserSourceKeys = Object.keys(browserSources).sort();
-
 		browserSourceKeys.forEach((key) => {
-			const bsrc = browserSources[key];
-			const decodeErrors = bsrc?.decode_errors ?? 0;
+			const diag = browserDiag[key];
+			// decode errors are nested inside videoDecoder diagnostics
+			const decodeErrors = (diag?.videoDecoder as any)?.decodeErrorCount
+				?? (diag?.videoDecoder as any)?.decodeErrors
+				?? (diag?.videoDecoder as any)?.errors
+				?? 0;
+			const framesDecoded = (diag?.videoDecoder as any)?.framesDecoded
+				?? (diag?.videoDecoder as any)?.decodedFrames
+				?? 0;
+
+			const kpis: Record<string, string> = {};
+			if (framesDecoded > 0) kpis.decoded = String(framesDecoded);
+			if (decodeErrors > 0) kpis.errors = String(decodeErrors);
+			if (Object.keys(kpis).length === 0) kpis.status = 'active';
 
 			nodes.push({
 				id: `browser-decode-${key}`,
-				label: `Decode ${sourceLabel(key)}`,
+				label: sourceLabel(key),
 				category: 'browser-decode',
 				column: 'browser',
 				row: browserRow++,
-				kpis: {
-					errors: String(decodeErrors)
-				},
-				health: browserDecodeHealth(decodeErrors)
+				kpis,
+				health: browserDecodeHealth(decodeErrors),
+				detail: diag
 			});
 			edges.push({ from: 'browser-transport', to: `browser-decode-${key}` });
 		});
@@ -362,7 +407,9 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			category: 'browser-render',
 			column: 'browser',
 			row: browserRow++,
-			kpis: {},
+			kpis: {
+				sources: String(browserSourceKeys.length)
+			},
 			health: 'healthy'
 		});
 

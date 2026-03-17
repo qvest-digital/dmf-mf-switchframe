@@ -14,7 +14,7 @@ function minimalPerf(): any {
 		frame_budget_ns: 33_333_333,
 		sources: {
 			'demo:cam1': {
-				health: 'online',
+				health: 'healthy',
 				decode: {
 					current: { last_ns: 2_000_000, drops: 0, avg_fps: 29.97, avg_frame_bytes: 50000 },
 					windows: {
@@ -25,7 +25,7 @@ function minimalPerf(): any {
 				}
 			},
 			'srt:camera2': {
-				health: 'online',
+				health: 'healthy',
 				decode: {
 					current: { last_ns: 3_000_000, drops: 1, avg_fps: 30.0, avg_frame_bytes: 60000 },
 					windows: {
@@ -570,11 +570,10 @@ describe('buildGraph', () => {
 	describe('browser nodes', () => {
 		it('includes browser nodes when diagnostics provided', () => {
 			const perf = minimalPerf();
-			const browserDiag = {
-				sources: {
-					'demo:cam1': { decode_errors: 0 },
-					'srt:camera2': { decode_errors: 2 }
-				}
+			// browserDiag is Record<string, SourceDiagnostics> directly (flat map)
+			const browserDiag: any = {
+				'demo:cam1': { videoDecoder: { decodeErrors: 0 }, renderer: null, audio: null, transport: null },
+				'srt:camera2': { videoDecoder: { decodeErrors: 2 }, renderer: null, audio: null, transport: null }
 			};
 			const graph = buildGraph(perf, browserDiag);
 
@@ -623,10 +622,8 @@ describe('buildGraph', () => {
 
 		it('shows decode errors for browser decode nodes', () => {
 			const perf = minimalPerf();
-			const browserDiag = {
-				sources: {
-					'srt:camera2': { decode_errors: 6 }
-				}
+			const browserDiag: any = {
+				'srt:camera2': { videoDecoder: { decodeErrors: 6 }, renderer: null, audio: null, transport: null }
 			};
 			const graph = buildGraph(perf, browserDiag);
 
@@ -679,13 +676,13 @@ describe('buildGraph', () => {
 	});
 
 	describe('decode health', () => {
-		it('marks decode with drops as error', () => {
+		it('marks decode with few cumulative drops as healthy', () => {
 			const perf = minimalPerf();
-			// srt:camera2 has drops: 1 in the fixture
+			// srt:camera2 has drops: 1 in the fixture — cumulative, not instant
 			const graph = buildGraph(perf);
 
 			const decNode = graph.nodes.find((n) => n.id === 'decode-srt:camera2');
-			expect(decNode?.health).toBe('error');
+			expect(decNode?.health).toBe('healthy');
 		});
 
 		it('marks decode with high latency as degraded', () => {
