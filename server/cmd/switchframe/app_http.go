@@ -40,13 +40,13 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	httpSrv := &http.Server{
 		Handler: control.SecurityHeadersMiddleware(topMux),
 	}
-	httpLn, err := net.Listen("tcp", a.cfg.HTTPAddr)
+	httpLn, err := net.Listen("tcp", ":8081")
 	if err != nil {
-		return nil, fmt.Errorf("listen TCP %s: %w", a.cfg.HTTPAddr, err)
+		return nil, fmt.Errorf("listen TCP :8081: %w", err)
 	}
 
 	go func() {
-		slog.Info("HTTP API server listening", "addr", a.cfg.HTTPAddr)
+		slog.Info("HTTP API server listening", "addr", ":8081")
 		if err := httpSrv.Serve(httpLn); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP API server error", "err", err)
 		}
