@@ -2027,6 +2027,8 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 // registerRawSource is the shared implementation for RegisterMXLSource and
 // RegisterSRTSource. It creates a sourceState with no relay/viewer (raw YUV
 // frames arrive via IngestRawVideo) and notifies state listeners.
+// When frame sync is active, the source is added to the synchronizer so that
+// IngestRawVideo routes through the ring buffer for steady-rate release.
 func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 	s.mu.Lock()
 	s.sources[key] = &sourceState{
@@ -2036,6 +2038,9 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 		isMXL:    mxl,
 	}
 	s.health.registerSource(key)
+	if s.frameSyncActive && s.frameSync != nil {
+		s.frameSync.AddSource(key)
+	}
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -2090,12 +2095,18 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 	s.handleRawVideoFrame(sourceKey, pf)
 }
 
-// IngestRawVideo accepts a raw YUV420p frame from an MXL source.
-// Delegates to handleRawVideoFrame which handles the full pipeline:
-// health tracking → key fill ingest → transition routing → keying →
-// compositor → encode → program relay. The srcDecoder stats block in
-// handleRawVideoFrame safely handles nil viewers (MXL sources have none).
+// IngestRawVideo accepts a raw YUV420p frame from an MXL or SRT source.
+// When frame sync is active, frames are buffered in the synchronizer's
+// per-source ring and released at steady tick rate. Otherwise, delegates
+// directly to handleRawVideoFrame for immediate processing.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
+	s.mu.RLock()
+	fs := s.frameSync
+	s.mu.RUnlock()
+	if fs != nil {
+		fs.IngestRawVideo(sourceKey, pf)
+		return
+	}
 	s.handleRawVideoFrame(sourceKey, pf)
 }
 

@@ -374,6 +374,84 @@ func TestIngestRawVideo_KeyBridgeFillCachedForNonProgram(t *testing.T) {
 		"bridge should have cached fill after IngestRawVideo for keyed source")
 }
 
+func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
+	// Verify that SRT/MXL raw sources are added to the frame synchronizer
+	// and that IngestRawVideo routes through it for steady-rate release.
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test")
+	programRelay.AddViewer(viewer)
+
+	sw := New(programRelay)
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	// Enable frame sync BEFORE registering the raw source.
+	sw.SetFrameSync(true, 10*time.Millisecond)
+
+	sw.RegisterSRTSource("srt:cam1")
+	require.NoError(t, sw.Cut(context.Background(), "srt:cam1"))
+
+	// Verify source was added to frame sync.
+	sw.mu.RLock()
+	fs := sw.frameSync
+	sw.mu.RUnlock()
+	require.NotNil(t, fs)
+
+	fs.mu.Lock()
+	_, inSync := fs.sources["srt:cam1"]
+	fs.mu.Unlock()
+	require.True(t, inSync, "SRT source should be registered in frame sync")
+
+	// Ingest a frame — it should route through frame sync and eventually
+	// be released to handleRawVideoFrame → pipeline → program relay.
+	pf := &ProcessingFrame{
+		YUV:    make([]byte, 4*4*3/2),
+		Width:  4,
+		Height: 4,
+		PTS:    1000,
+		DTS:    1000,
+		Codec:  "h264",
+	}
+	sw.IngestRawVideo("srt:cam1", pf)
+
+	// Frame sync releases on tick — wait for it to reach the program relay.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 1
+	}, 500*time.Millisecond, 5*time.Millisecond,
+		"frame should reach program relay via frame sync → pipeline")
+}
+
+func TestRegisterRawSource_FrameSyncWiring_PostEnable(t *testing.T) {
+	// Verify that raw sources registered BEFORE frame sync is enabled
+	// also get added to the synchronizer.
+	programRelay := newTestRelay()
+	sw := New(programRelay)
+	defer sw.Close()
+
+	sw.RegisterSRTSource("srt:cam1")
+
+	// Enable frame sync AFTER the source is registered.
+	sw.SetFrameSync(true, 10*time.Millisecond)
+
+	sw.mu.RLock()
+	fs := sw.frameSync
+	sw.mu.RUnlock()
+	require.NotNil(t, fs)
+
+	fs.mu.Lock()
+	_, inSync := fs.sources["srt:cam1"]
+	fs.mu.Unlock()
+	require.True(t, inSync,
+		"SRT source registered before SetFrameSync should still be in sync")
+}
+
 func TestMXLSource_DebugSnapshotSafe(t *testing.T) {
 	// Ensure DebugSnapshot handles MXL sources (nil viewer) without panic.
 	programRelay := newTestRelay()

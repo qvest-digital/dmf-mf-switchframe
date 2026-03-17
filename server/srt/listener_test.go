@@ -35,6 +35,25 @@ func tempStore(t *testing.T) *Store {
 	return s
 }
 
+// dialWithRetry attempts to connect to an SRT listener, retrying with
+// exponential backoff if the listener hasn't started accepting yet.
+func dialWithRetry(t *testing.T, addr string, streamID string) *srtgo.Conn {
+	t.Helper()
+	cfg := srtgo.DefaultConfig()
+	cfg.StreamID = streamID
+	var conn *srtgo.Conn
+	var err error
+	for i := 0; i < 10; i++ {
+		conn, err = srtgo.Dial(addr, cfg)
+		if err == nil {
+			return conn
+		}
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+	}
+	t.Fatalf("dialWithRetry(%s, %s) failed after retries: %v", addr, streamID, err)
+	return nil
+}
+
 func TestListenerAcceptsConnection(t *testing.T) {
 	addr := findFreePort(t)
 	store := tempStore(t)
@@ -302,17 +321,10 @@ func TestListenerMaxSources(t *testing.T) {
 		runDone <- l.Run(ctx)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Connect 2 sources — both should succeed.
+	// Connect 2 sources — both should succeed (retry handles listener startup).
 	conns := make([]*srtgo.Conn, 0, 3)
 	for i := 0; i < 2; i++ {
-		cfg := srtgo.DefaultConfig()
-		cfg.StreamID = fmt.Sprintf("live/camera%d", i+1)
-		conn, err := srtgo.Dial(addr, cfg)
-		if err != nil {
-			t.Fatalf("Dial %d failed: %v", i+1, err)
-		}
+		conn := dialWithRetry(t, addr, fmt.Sprintf("live/camera%d", i+1))
 		conns = append(conns, conn)
 	}
 
