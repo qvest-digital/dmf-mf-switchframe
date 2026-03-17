@@ -953,6 +953,15 @@ func (a *App) initAPI() error {
 		}
 	}
 
+	// Constrain SRT listener output ports if cloud provided a range.
+	if a.cfg.SRTOutputPortBase > 0 {
+		var ports []int
+		for p := a.cfg.SRTOutputPortBase; p <= a.cfg.SRTOutputPortEnd; p++ {
+			ports = append(ports, p)
+		}
+		apiOpts = append(apiOpts, control.WithAllowedOutputPorts(ports))
+	}
+
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
 	// Wire all state callbacks (enrichState, broadcastState, etc.).
