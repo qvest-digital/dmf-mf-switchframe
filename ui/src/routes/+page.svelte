@@ -314,7 +314,7 @@
 
 		let backend: Record<string, unknown> | null = null;
 		try {
-			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'));
+			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'), { headers: authHeaders() });
 			if (resp.ok) backend = await resp.json();
 		} catch { /* ignore */ }
 

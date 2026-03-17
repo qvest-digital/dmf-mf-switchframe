@@ -1,6 +1,7 @@
 import type { AudioDiagnostics } from "./audio-decoder";
 import type { VideoDecoderDiagnostics } from "./video-decoder";
 import type { RendererDiagnostics } from "./renderer";
+import { authHeaders } from "$lib/api/switch-api";
 
 /**
  * Complete diagnostic snapshot for a single stream, aggregating state from
@@ -119,7 +120,7 @@ export class PerfOverlay {
 
 	private async fetchServerDebug(): Promise<Record<string, unknown> | null> {
 		try {
-			const resp = await fetch('/api/debug/snapshot');
+			const resp = await fetch('/api/debug/snapshot', { headers: authHeaders() });
 			if (!resp.ok) return null;
 			return await resp.json();
 		} catch {

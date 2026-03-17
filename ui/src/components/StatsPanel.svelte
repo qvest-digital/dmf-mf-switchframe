@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { resolveApiUrl } from '$lib/api/base-url';
-	import { setEncoderBackend } from '$lib/api/switch-api';
+	import { setEncoderBackend, authHeaders } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
 	import type { MediaPipeline, SourceDiagnostics } from '$lib/transport/media-pipeline';
@@ -355,7 +355,7 @@
 
 	async function fetchEncoderInfo() {
 		try {
-			const resp = await fetch(resolveApiUrl('/api/encoder'));
+			const resp = await fetch(resolveApiUrl('/api/encoder'), { headers: authHeaders() });
 			if (resp.ok) {
 				const data = await resp.json();
 				availableEncoders = data.available ?? [];
@@ -395,6 +395,7 @@
 			abortController = new AbortController();
 			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'), {
 				signal: abortController.signal,
+				headers: authHeaders(),
 			});
 			if (resp.ok) {
 				snapshot = await resp.json();
@@ -424,7 +425,7 @@
 			const url = activeBaseline
 				? resolveApiUrl(`/api/perf?baseline=${encodeURIComponent(activeBaseline)}`)
 				: resolveApiUrl('/api/perf');
-			const resp = await fetch(url, { signal: abortController.signal });
+			const resp = await fetch(url, { signal: abortController.signal, headers: authHeaders() });
 			if (resp.ok) {
 				perfData = await resp.json();
 				lastUpdateTime = Date.now();
@@ -609,7 +610,7 @@
 		try {
 			await fetch(resolveApiUrl('/api/perf/baseline'), {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: { 'Content-Type': 'application/json', ...authHeaders() },
 				body: JSON.stringify({ name: baselineName }),
 			});
 			activeBaseline = baselineName;
