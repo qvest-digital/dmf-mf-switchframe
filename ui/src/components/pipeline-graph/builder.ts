@@ -370,21 +370,28 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		});
 		edges.push({ from: 'program-relay', to: 'browser-transport' });
 
-		// Per-source browser decode nodes
+		// Per-source browser decode + render nodes
+		// SourceDiagnostics has: videoDecoder (VideoDecoderDiagnostics), renderer (RendererDiagnostics), audio, transport
+		let totalFramesDrawn = 0;
+		let totalFramesSkipped = 0;
+
 		browserSourceKeys.forEach((key) => {
 			const diag = browserDiag[key];
-			// decode errors are nested inside videoDecoder diagnostics
-			const decodeErrors = (diag?.videoDecoder as any)?.decodeErrorCount
-				?? (diag?.videoDecoder as any)?.decodeErrors
-				?? (diag?.videoDecoder as any)?.errors
-				?? 0;
-			const framesDecoded = (diag?.videoDecoder as any)?.framesDecoded
-				?? (diag?.videoDecoder as any)?.decodedFrames
-				?? 0;
+			const vd = diag?.videoDecoder as any;
+			const rd = diag?.renderer as any;
+
+			// VideoDecoderDiagnostics fields (camelCase):
+			// inputCount, outputCount, decodeErrors, inputFps, outputFps, decodeQueueSize, discardedDelta, bufferDropped
+			const decodeErrors = vd?.decodeErrors ?? 0;
+			const outputFps = vd?.outputFps ?? 0;
+			const outputCount = vd?.outputCount ?? 0;
+			const discarded = (vd?.discardedDelta ?? 0) + (vd?.discardedBufferFull ?? 0) + (vd?.bufferDropped ?? 0);
 
 			const kpis: Record<string, string> = {};
-			if (framesDecoded > 0) kpis.decoded = String(framesDecoded);
+			if (outputFps > 0) kpis.fps = outputFps.toFixed(1);
+			if (outputCount > 0 && outputFps === 0) kpis.frames = String(outputCount);
 			if (decodeErrors > 0) kpis.errors = String(decodeErrors);
+			if (discarded > 0) kpis.dropped = String(discarded);
 			if (Object.keys(kpis).length === 0) kpis.status = 'active';
 
 			nodes.push({
@@ -398,19 +405,28 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 				detail: diag
 			});
 			edges.push({ from: 'browser-transport', to: `browser-decode-${key}` });
+
+			// Accumulate render stats
+			if (rd) {
+				totalFramesDrawn += rd.framesDrawn ?? 0;
+				totalFramesSkipped += rd.framesSkipped ?? 0;
+			}
 		});
 
-		// Browser render node
+		// Browser render node (aggregate)
+		const renderKpis: Record<string, string> = {};
+		if (totalFramesDrawn > 0) renderKpis.drawn = String(totalFramesDrawn);
+		if (totalFramesSkipped > 0) renderKpis.skipped = String(totalFramesSkipped);
+		if (Object.keys(renderKpis).length === 0) renderKpis.sources = String(browserSourceKeys.length);
+
 		nodes.push({
 			id: 'browser-render',
 			label: 'Render',
 			category: 'browser-render',
 			column: 'browser',
 			row: browserRow++,
-			kpis: {
-				sources: String(browserSourceKeys.length)
-			},
-			health: 'healthy'
+			kpis: renderKpis,
+			health: totalFramesSkipped > 100 ? 'degraded' : 'healthy'
 		});
 
 		browserSourceKeys.forEach((key) => {
