@@ -242,12 +242,13 @@
 </script>
 
 {#if visible}
-	<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus a11y_no_static_element_interactions -->
 	<div
 		class="pipeline-graph-backdrop"
 		role="dialog"
 		aria-modal="true"
 		aria-label="Pipeline Graph"
+		tabindex="-1"
 		onkeydown={handleKeydown}
 		onclick={handleBackdropClick}
 	>
@@ -272,12 +273,14 @@
 				{:else if graph.nodes.length === 0}
 					<div class="connecting-msg">No pipeline data</div>
 				{:else}
-					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 					<svg
 						class="graph-svg"
 						viewBox="0 0 {graphLayout.width} {graphLayout.height}"
 						width={graphLayout.width}
 						height={graphLayout.height}
+						role="img"
+						aria-label="Pipeline graph visualization"
 						onclick={handleSvgClick}
 					>
 						<!-- Defs: arrowhead marker -->
@@ -347,9 +350,11 @@
 						{#each graph.nodes as node}
 							{@const layout = nodePosition(node.id)}
 							{#if layout}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions a11y_interactive_supports_focus -->
 								<g
 									class="graph-node"
+									role="button"
+									tabindex="0"
 									class:selected={selectedNode?.id === node.id}
 									onclick={(e) => handleNodeClick(e, node)}
 								>
@@ -412,9 +417,10 @@
 					<!-- Detail tooltip -->
 					{#if selectedNode}
 						{@const entries = detailEntries(selectedNode)}
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 						<div
 							class="detail-tooltip"
+							role="tooltip"
 							style={tooltipStyle(selectedNode)}
 							onclick={(e) => e.stopPropagation()}
 						>

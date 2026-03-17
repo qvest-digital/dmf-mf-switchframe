@@ -6,7 +6,8 @@ import { buildGraph, sourceType, sourceLabel, pipelineNodeLabel } from './builde
  * Includes 2 sources (one demo, one SRT), 3 pipeline nodes,
  * audio, broadcast, output, and one preview encoder.
  */
-function minimalPerf() {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function minimalPerf(): any {
 	return {
 		timestamp: '2026-03-17T12:00:00Z',
 		uptime_ms: 60000,
