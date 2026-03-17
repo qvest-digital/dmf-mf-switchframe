@@ -277,6 +277,17 @@ func (s *Source) Stop() {
 	})
 }
 
+// FlowName returns the human-readable source name from the config.
+func (s *Source) FlowName() string {
+	return s.config.FlowName
+}
+
+// PreviewEncoderRaw returns the preview encoder interface from the config,
+// or nil if not set. Callers can type-assert to *preview.Encoder for stats.
+func (s *Source) PreviewEncoderRaw() interface{} {
+	return s.config.PreviewEncoder
+}
+
 func (s *Source) videoFanOut(ctx context.Context) {
 	defer s.wg.Done()
 

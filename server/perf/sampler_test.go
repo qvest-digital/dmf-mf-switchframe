@@ -602,6 +602,116 @@ func TestSampler_SRTStats_AppearsInJSON(t *testing.T) {
 	require.InDelta(t, 20.0, srt["recv_buf_ms"].(float64), 0.001)
 }
 
+func TestSampler_PreviewEncoderStats(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:cam1": {DecodeLastNs: 3000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.SetPreviewStats(func() map[string]PreviewEncoderStats {
+		return map[string]PreviewEncoderStats{
+			"srt:cam1": {
+				FramesIn:    1000,
+				FramesOut:   990,
+				FramesDropped: 10,
+				LastEncodeMs: 2.5,
+				AvgEncodeMs:  2.1,
+			},
+		}
+	})
+
+	s.tick()
+
+	snap := s.Snapshot("")
+
+	require.NotNil(t, snap.Preview, "preview stats should be present")
+	require.Len(t, snap.Preview, 1)
+
+	ps, ok := snap.Preview["srt:cam1"]
+	require.True(t, ok, "srt:cam1 should be in preview stats")
+	require.Equal(t, int64(1000), ps.FramesIn)
+	require.Equal(t, int64(990), ps.FramesOut)
+	require.Equal(t, int64(10), ps.FramesDropped)
+	require.InDelta(t, 2.5, ps.LastEncodeMs, 0.001)
+	require.InDelta(t, 2.1, ps.AvgEncodeMs, 0.001)
+}
+
+func TestSampler_PreviewEncoderStats_OmittedWhenNoProvider(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:cam1": {DecodeLastNs: 3000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	// No SetPreviewStats call
+
+	s.tick()
+
+	snap := s.Snapshot("")
+	require.Nil(t, snap.Preview, "preview stats should be nil when no provider is set")
+}
+
+func TestSampler_PreviewEncoderStats_AppearsInJSON(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources: map[string]SourceSample{
+			"srt:cam1": {DecodeLastNs: 1000, Health: "active"},
+		},
+		PipelineLastNs: 10000,
+		NodeTimings:    map[string]int64{},
+		FrameBudgetNs:  33333,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.SetPreviewStats(func() map[string]PreviewEncoderStats {
+		return map[string]PreviewEncoderStats{
+			"srt:cam1": {
+				FramesIn:      500,
+				FramesOut:     495,
+				FramesDropped: 5,
+				LastEncodeMs:  1.8,
+				AvgEncodeMs:   1.5,
+			},
+		}
+	})
+	s.tick()
+
+	req := httptest.NewRequest("GET", "/api/perf", nil)
+	w := httptest.NewRecorder()
+	s.HandlePerf(w, req)
+
+	require.Equal(t, 200, w.Code)
+
+	var result map[string]any
+	err := json.Unmarshal(w.Body.Bytes(), &result)
+	require.NoError(t, err)
+
+	preview, ok := result["preview"].(map[string]any)
+	require.True(t, ok, "preview field should be present in JSON")
+
+	cam1, ok := preview["srt:cam1"].(map[string]any)
+	require.True(t, ok, "srt:cam1 should be present in preview JSON")
+	require.InDelta(t, 500.0, cam1["frames_in"].(float64), 0.001)
+	require.InDelta(t, 495.0, cam1["frames_out"].(float64), 0.001)
+	require.InDelta(t, 5.0, cam1["frames_dropped"].(float64), 0.001)
+	require.InDelta(t, 1.8, cam1["last_encode_ms"].(float64), 0.001)
+	require.InDelta(t, 1.5, cam1["avg_encode_ms"].(float64), 0.001)
+}
+
 func TestSamplerDoubleStopNoPanic(t *testing.T) {
 	sw := &mockSwitcherPerf{sample: SwitcherSample{
 		Sources:     map[string]SourceSample{},

@@ -143,6 +143,15 @@ type OutputSample struct {
 	RecordingActive    bool
 }
 
+// PreviewEncoderStats holds point-in-time stats for a single preview encoder.
+type PreviewEncoderStats struct {
+	FramesIn      int64
+	FramesOut     int64
+	FramesDropped int64
+	LastEncodeMs  float64
+	AvgEncodeMs   float64
+}
+
 // Sampler collects performance samples at 1Hz and maintains rolling
 // ring buffers for windowed statistics.
 type Sampler struct {
@@ -173,6 +182,10 @@ type Sampler struct {
 
 	// Optional SRT stats provider (called per srt: source on each tick)
 	srtStats func(key string) (rttMs, lossRate, recvBufMs float64, ok bool)
+
+	// Optional preview encoder stats provider (called once per tick)
+	previewStats     func() map[string]PreviewEncoderStats
+	lastPreviewStats map[string]PreviewEncoderStats
 
 	// Latest sample cache (for snapshot current values)
 	lastSwitcherSample SwitcherSample
@@ -218,6 +231,14 @@ func (s *Sampler) SetSRTStats(fn func(key string) (rttMs, lossRate, recvBufMs fl
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.srtStats = fn
+}
+
+// SetPreviewStats registers an optional function that returns preview encoder
+// stats for all active preview encoders. Called once per tick.
+func (s *Sampler) SetPreviewStats(fn func() map[string]PreviewEncoderStats) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.previewStats = fn
 }
 
 // Start launches the 1Hz sampling goroutine.
@@ -269,6 +290,11 @@ func (s *Sampler) tick() {
 				}
 			}
 		}
+	}
+
+	// Collect preview encoder stats (point-in-time)
+	if s.previewStats != nil {
+		s.lastPreviewStats = s.previewStats()
 	}
 
 	s.lastSwitcherSample = sw
