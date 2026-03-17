@@ -51,9 +51,12 @@ export function wtBaseURL(info: ServerInfo): string {
  * cause Chrome to use the final RFC protocol, which Prism doesn't
  * support yet.
  */
-export async function connectWebTransport(url: string, certHash: Uint8Array, _trusted: boolean): Promise<WebTransport> {
+export async function connectWebTransport(url: string, certHash: Uint8Array, trusted: boolean): Promise<WebTransport> {
 	const opts: WebTransportOptions = {};
-	if (certHash.length > 0) {
+	// Only use certificate pinning for self-signed certs (dev mode).
+	// CA-signed certs (production) use standard TLS verification —
+	// Chrome rejects serverCertificateHashes with trusted certificates.
+	if (!trusted && certHash.length > 0) {
 		opts.serverCertificateHashes = [
 			{
 				algorithm: "sha-256",
