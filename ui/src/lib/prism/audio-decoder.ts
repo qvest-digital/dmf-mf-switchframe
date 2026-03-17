@@ -548,6 +548,14 @@ export class PrismAudioDecoder {
 	/** Resume the AudioContext. Must be called from a user gesture handler. */
 	async resumeContext(): Promise<void> {
 		if (this.context && this.context.state === "suspended") {
+			// Send PTS to worklet before resuming so playback starts at the right position.
+			if (this.workletNode && this.playing) {
+				this.workletNode.port.postMessage({
+					type: "set-pts",
+					pts: this.firstPTS,
+					sampleOffset: 0,
+				});
+			}
 			await this.context.resume();
 		}
 	}
@@ -558,6 +566,19 @@ export class PrismAudioDecoder {
 		if (this._suspended) {
 			return;
 		}
+
+		// Don't attempt to resume a suspended context here — it will fail
+		// without a user gesture (Chrome autoplay policy). The context will
+		// be resumed by the gesture handler in +page.svelte, which calls
+		// resumeContext(). Once resumed, the worklet will start pulling
+		// samples from the ring buffer automatically.
+		if (this.context.state === "suspended") {
+			// Buffer data so playback starts immediately when context resumes.
+			this.ringBuffer.play();
+			this.playing = true;
+			return;
+		}
+
 		this.starting = true;
 
 		if (this.workletNode) {
