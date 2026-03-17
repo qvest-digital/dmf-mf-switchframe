@@ -10,6 +10,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/preview"
@@ -135,6 +136,8 @@ func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distributio
 		id:         "demo-decode:" + key,
 		ch:         ch,
 		audioRelay: browserRelay,
+		mixer:      a.mixer,
+		sourceKey:  key,
 	}
 	relay.AddViewer(viewer)
 	defer relay.RemoveViewer(viewer.ID())
@@ -196,12 +199,14 @@ func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distributio
 
 // demoDecodeViewer implements distribution.Viewer for the decode goroutine.
 // It receives H.264 frames from the internal demo relay and forwards video
-// to the decode loop via a buffered channel, and audio directly to the
-// browser-facing relay.
+// to the decode loop via a buffered channel, and audio to both the
+// browser-facing relay and the server-side mixer.
 type demoDecodeViewer struct {
 	id         string
 	ch         chan *media.VideoFrame
 	audioRelay *distribution.Relay // browser relay for audio forwarding
+	mixer      *audio.Mixer       // server-side audio mixer
+	sourceKey  string              // source key for mixer routing
 }
 
 func (v *demoDecodeViewer) ID() string { return v.id }
@@ -224,8 +229,13 @@ func (v *demoDecodeViewer) SendVideo(frame *media.VideoFrame) {
 }
 
 func (v *demoDecodeViewer) SendAudio(frame *media.AudioFrame) {
+	// Forward to browser relay (already AAC).
 	if v.audioRelay != nil {
 		v.audioRelay.BroadcastAudio(frame)
+	}
+	// Forward to server-side mixer for program audio mixing.
+	if v.mixer != nil {
+		v.mixer.IngestFrame(v.sourceKey, frame)
 	}
 }
 func (v *demoDecodeViewer) SendCaptions(_ *ccx.CaptionFrame) {}
