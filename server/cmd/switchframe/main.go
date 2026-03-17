@@ -51,6 +51,11 @@ type AppConfig struct {
 	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
 	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
 
+	// Preview proxy encoding.
+	PreviewProxy      bool   // Enable low-bitrate preview encoding for source relays
+	PreviewResolution string // Preview resolution (e.g. "480p", "360p")
+	PreviewBitrate    int    // Preview bitrate in bps (default 500000)
+
 	// SCTE-35 signaling.
 	SCTE35            bool   // Enable SCTE-35 insertion
 	SCTE35PID         uint16 // MPEG-TS PID for SCTE-35 data
@@ -169,6 +174,11 @@ func parseConfig() (AppConfig, error) {
 	rawProgramMonitorFlag := flag.Bool("raw-program-monitor", false, "Enable raw YUV420 program monitor track for low-latency local display")
 	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
 
+	// Preview proxy encoding flags.
+	previewProxyFlag := flag.Bool("preview-proxy", false, "Enable low-bitrate preview encoding for browser source previews")
+	previewResolutionFlag := flag.String("preview-resolution", "480p", "Preview encode resolution (e.g. 480p, 360p, 720p)")
+	previewBitrateFlag := flag.Int("preview-bitrate", 500000, "Preview encode bitrate in bps")
+
 	// SCTE-35 flags.
 	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
 	scte35PIDFlag := flag.Int("scte35-pid", 0x102, "SCTE-35 PID in MPEG-TS output")
@@ -264,6 +274,9 @@ func parseConfig() (AppConfig, error) {
 		TLSKey:            *tlsKeyFlag,
 		RawProgramMonitor: *rawProgramMonitorFlag,
 		RawMonitorScale:   *rawMonitorScaleFlag,
+		PreviewProxy:      *previewProxyFlag,
+		PreviewResolution: *previewResolutionFlag,
+		PreviewBitrate:    *previewBitrateFlag,
 		SCTE35:            *scte35Flag,
 		SCTE35PID:         uint16(*scte35PIDFlag),
 		SCTE35PreRollMs:   int64(*scte35PreRollFlag),
