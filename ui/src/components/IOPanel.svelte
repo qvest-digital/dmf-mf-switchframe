@@ -1410,11 +1410,11 @@
 
 	/* --- Connection Guide --- */
 	.guide-content {
-		padding: 6px 16px 10px;
+		padding: 8px 16px 12px;
 	}
 
 	.guide-block {
-		margin-bottom: 10px;
+		margin-bottom: 14px;
 	}
 
 	.guide-block:last-child {
@@ -1422,25 +1422,25 @@
 	}
 
 	.guide-heading {
-		font-size: var(--text-2xs);
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--text-primary);
-		margin-bottom: 4px;
+		margin-bottom: 6px;
 	}
 
 	.guide-url-row {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		margin-bottom: 4px;
+		gap: 8px;
+		margin-bottom: 6px;
 	}
 
 	.guide-url {
 		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		color: var(--accent-blue);
 		background: var(--bg-surface);
-		padding: 3px 8px;
+		padding: 6px 10px;
 		border-radius: var(--radius-xs);
 		border: 1px solid var(--border-subtle);
 		flex: 1;
@@ -1450,13 +1450,13 @@
 	}
 
 	.copy-btn {
-		padding: 2px 8px;
+		padding: 4px 10px;
 		background: var(--bg-control);
 		border: var(--btn-border);
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		cursor: pointer;
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		font-family: var(--font-ui);
 		flex-shrink: 0;
 		transition: var(--btn-transition);
@@ -1468,16 +1468,17 @@
 	}
 
 	.guide-hint {
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
-		line-height: 1.5;
+		line-height: 1.6;
 	}
 
 	.guide-hint code {
 		font-family: var(--font-mono);
+		font-size: var(--text-xs);
 		color: var(--text-primary);
 		background: var(--bg-surface);
-		padding: 1px 4px;
+		padding: 2px 5px;
 		border-radius: 2px;
 	}
 
