@@ -315,8 +315,8 @@
 		let backend: Record<string, unknown> | null = null;
 		try {
 			const [debugResp, perfResp] = await Promise.all([
-				fetch(resolveApiUrl('/api/debug/snapshot'), { headers: authHeaders() }).catch(() => null),
-				fetch(resolveApiUrl('/api/perf'), { headers: authHeaders() }).catch(() => null),
+				fetch('/api/debug/snapshot', { headers: authHeaders() }).catch(() => null),
+				fetch('/api/perf', { headers: authHeaders() }).catch(() => null),
 			]);
 			const debug = debugResp?.ok ? await debugResp.json() : null;
 			const perf = perfResp?.ok ? await perfResp.json() : null;
