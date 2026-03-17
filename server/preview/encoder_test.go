@@ -7,7 +7,20 @@ import (
 
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
+
+	"github.com/zsiec/switchframe/server/codec"
 )
+
+// skipWithoutEncoder skips the test if no H.264 encoder is available
+// (e.g., CI builds without FFmpeg/cgo).
+func skipWithoutEncoder(t *testing.T) {
+	t.Helper()
+	enc, err := codec.NewPreviewEncoder(320, 240, 100_000, 30, 1)
+	if err != nil {
+		t.Skipf("no preview encoder available: %v", err)
+	}
+	enc.Close()
+}
 
 // mockRelay captures broadcast calls for verification.
 type mockRelay struct {
@@ -81,6 +94,7 @@ func makeYUV420(w, h int, fill byte) []byte {
 }
 
 func TestEncoder_ProducesFrames(t *testing.T) {
+	skipWithoutEncoder(t)
 	relay := &mockRelay{}
 
 	enc, err := NewEncoder(Config{
@@ -137,6 +151,7 @@ func TestEncoder_ProducesFrames(t *testing.T) {
 }
 
 func TestEncoder_NewestWinsDrop(t *testing.T) {
+	skipWithoutEncoder(t)
 	relay := &mockRelay{}
 
 	enc, err := NewEncoder(Config{
@@ -174,6 +189,7 @@ func TestEncoder_NewestWinsDrop(t *testing.T) {
 }
 
 func TestEncoder_StopDrainsCleanly(t *testing.T) {
+	skipWithoutEncoder(t)
 	relay := &mockRelay{}
 
 	enc, err := NewEncoder(Config{

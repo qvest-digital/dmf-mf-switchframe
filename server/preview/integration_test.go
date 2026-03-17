@@ -8,6 +8,7 @@ import (
 )
 
 func TestMultipleEncoders_Independent(t *testing.T) {
+	skipWithoutEncoder(t)
 	const nSources = 4
 	relays := make([]*mockRelay, nSources)
 	encoders := make([]*Encoder, nSources)
