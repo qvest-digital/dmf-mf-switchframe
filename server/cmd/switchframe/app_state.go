@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/hex"
 	"log/slog"
+	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -267,6 +269,28 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 			Current:   a.sw.EncoderName(),
 			Available: avail,
 		}
+	}
+
+	// Connection info for the UI (SRT ingest + output ports).
+	if a.cfg.SRTListen != "" || a.cfg.SRTOutputPortBase > 0 {
+		ci := &internal.ConnectionInfo{
+			Domain: a.cfg.Domain,
+		}
+		// Parse ingest port from --srt-listen (e.g., ":6464" -> 6464).
+		if a.cfg.SRTListen != "" {
+			if _, portStr, err := net.SplitHostPort(a.cfg.SRTListen); err == nil {
+				if p, err := strconv.Atoi(portStr); err == nil {
+					ci.SRTIngestPort = p
+				}
+			}
+		}
+		// Expand output port range to slice.
+		if a.cfg.SRTOutputPortBase > 0 {
+			for p := a.cfg.SRTOutputPortBase; p <= a.cfg.SRTOutputPortEnd; p++ {
+				ci.SRTOutputPorts = append(ci.SRTOutputPorts, p)
+			}
+		}
+		state.ConnectionInfo = ci
 	}
 
 	return state
