@@ -16,6 +16,7 @@
 		decode: 'DECODE',
 		processing: 'PROCESSING',
 		output: 'OUTPUT',
+		transport: 'TRANSPORT',
 		browser: 'BROWSER'
 	};
 

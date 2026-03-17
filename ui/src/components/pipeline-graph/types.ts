@@ -1,5 +1,5 @@
 /** Column positions in the pipeline graph (left to right). */
-export type GraphColumn = 'ingest' | 'decode' | 'processing' | 'output' | 'browser';
+export type GraphColumn = 'ingest' | 'decode' | 'processing' | 'output' | 'transport' | 'browser';
 
 /** Health status determines node border color. */
 export type HealthStatus = 'healthy' | 'degraded' | 'error';

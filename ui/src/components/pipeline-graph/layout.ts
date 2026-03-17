@@ -8,7 +8,7 @@ export const ROW_GAP = 24;
 export const PADDING = 40;
 
 /** Canonical left-to-right column order. */
-const COLUMN_ORDER: GraphColumn[] = ['ingest', 'decode', 'processing', 'output', 'browser'];
+const COLUMN_ORDER: GraphColumn[] = ['ingest', 'decode', 'processing', 'output', 'transport', 'browser'];
 
 export interface NodeLayout {
 	x: number;

@@ -501,7 +501,7 @@ describe('buildGraph', () => {
 			expect(previewNode).toBeDefined();
 			expect(previewNode?.category).toBe('preview-encode');
 			expect(previewNode?.column).toBe('output');
-			expect(previewNode?.kpis.encode).toBe('3.2ms');
+			expect(previewNode?.kpis.latency).toBe('3.2ms');
 			expect(previewNode?.kpis.dropped).toBe('5');
 
 			// Edge from decode -> preview
@@ -581,7 +581,7 @@ describe('buildGraph', () => {
 			const transportNode = graph.nodes.find((n) => n.id === 'browser-transport');
 			expect(transportNode).toBeDefined();
 			expect(transportNode?.category).toBe('browser-transport');
-			expect(transportNode?.column).toBe('browser');
+			expect(transportNode?.column).toBe('transport');
 
 			// Per-source browser decode
 			const browserDecodes = graph.nodes.filter((n) => n.category === 'browser-decode');

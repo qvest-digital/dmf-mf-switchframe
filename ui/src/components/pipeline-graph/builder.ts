@@ -80,17 +80,20 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 	const sources: Record<string, any> = perf.sources ?? {};
 	const sourceKeys = Object.keys(sources).sort();
 	const frameBudgetNs: number = perf.frame_budget_ns ?? 0;
+	const outputFPS: number = perf.broadcast?.output_fps ?? 0;
 
 	/* ---------- Column 1: Ingest ---------- */
 
 	sourceKeys.forEach((key, row) => {
 		const src = sources[key];
 		const avgFps = src.decode?.current?.avg_fps ?? 0;
+		const ingestFps = src.decode?.current?.ingest_fps ?? 0;
 		const kpis: Record<string, string> = {};
 
-		// Only show FPS if the source actually reports it (raw sources report 0)
-		if (avgFps > 0) {
-			kpis.fps = avgFps.toFixed(1);
+		// Show FPS: prefer ingest_fps (works for all source types), fall back to decode avg_fps
+		const displayFps = ingestFps > 0 ? ingestFps : avgFps;
+		if (displayFps > 0) {
+			kpis.fps = displayFps.toFixed(1);
 		}
 
 		let health: HealthStatus = sourceHealth(src.health ?? 'offline');
@@ -162,15 +165,24 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 	// Frame sync node (fan-in point)
 	const hasFrameSync = sourceKeys.length > 0;
 	if (hasFrameSync) {
+		const frameSyncKpis: Record<string, string> = {
+			sources: String(sourceKeys.length)
+		};
+		// Show frame sync FPS and release stats if available
+		if (perf.frame_sync?.release_fps) {
+			frameSyncKpis.fps = perf.frame_sync.release_fps.toFixed(1);
+		} else if (outputFPS > 0) {
+			// Fall back to pipeline output FPS as a proxy
+			frameSyncKpis.fps = outputFPS.toFixed(1);
+		}
+
 		nodes.push({
 			id: 'frame-sync',
 			label: 'Frame Sync',
 			category: 'frame-sync',
 			column: 'processing',
 			row: processingRow++,
-			kpis: {
-				sources: String(sourceKeys.length)
-			},
+			kpis: frameSyncKpis,
 			health: 'healthy'
 		});
 
@@ -187,8 +199,25 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 
 	activePipelineNodes.forEach((name, idx) => {
 		const nodeData = perfNodes[name];
-		const lastNs = nodeData?.current?.last_ns ?? 0;
+		let lastNs = nodeData?.current?.last_ns ?? 0;
 		const nodeId = `pipeline-${name}`;
+
+		const kpis: Record<string, string> = {};
+
+		// For the encode node, show the real async encode latency instead of the near-zero enqueue time
+		// The async encode latency is in encode_last_ns (from AsyncMetricsProvider)
+		if (name === 'h264-encode' && nodeData?.encode_last_ns) {
+			lastNs = nodeData.encode_last_ns;
+			kpis.latency = nsToMs(lastNs);
+			if (nodeData.encode_total) kpis.frames = String(nodeData.encode_total);
+		} else {
+			kpis.latency = nsToMs(lastNs);
+		}
+
+		// Show pipeline output FPS on the encode node since it's the last processing step
+		if (name === 'h264-encode' && outputFPS > 0) {
+			kpis.fps = outputFPS.toFixed(1);
+		}
 
 		nodes.push({
 			id: nodeId,
@@ -196,9 +225,7 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			category: 'pipeline-node',
 			column: 'processing',
 			row: processingRow++,
-			kpis: {
-				latency: nsToMs(lastNs)
-			},
+			kpis,
 			health: pipelineNodeHealth(lastNs, frameBudgetNs),
 			detail: nodeData
 		});
@@ -258,7 +285,6 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 	let outputRow = 0;
 
 	// Program relay (always present)
-	const outputFPS = perf.broadcast?.output_fps ?? 0;
 	const broadcastGapNs = perf.broadcast?.gap?.current?.max_ns ?? 0;
 
 	// Relay health: low FPS or high gap is degraded
@@ -299,16 +325,18 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		const lastEncMs = ps.last_encode_ms ?? 0;
 		const framesDropped = ps.frames_dropped ?? 0;
 
+		const prevKpis: Record<string, string> = {
+			latency: lastEncMs.toFixed(1) + 'ms'
+		};
+		if (framesDropped > 0) prevKpis.dropped = String(framesDropped);
+
 		nodes.push({
 			id: `preview-${key}`,
 			label: `Preview ${sourceLabel(key)}`,
 			category: 'preview-encode',
 			column: 'output',
 			row: outputRow++,
-			kpis: {
-				encode: lastEncMs.toFixed(1) + 'ms',
-				dropped: String(framesDropped)
-			},
+			kpis: prevKpis,
 			health: previewEncodeHealth(lastEncMs, framesDropped)
 		});
 
@@ -348,30 +376,30 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 		edges.push({ from: 'program-relay', to: 'srt-output' });
 	}
 
-	/* ---------- Column 5: Browser ---------- */
+	/* ---------- Column 5: Transport ---------- */
+	/* ---------- Column 6: Browser Decode/Render ---------- */
 
 	// browserDiag is Record<string, SourceDiagnostics> directly (NOT {sources: ...})
-	// Each SourceDiagnostics has: renderer, videoDecoder, audio, transport
+	// Each SourceDiagnostics has: videoDecoder (VideoDecoderDiagnostics), renderer (RendererDiagnostics), audio, transport
 	if (browserDiag && Object.keys(browserDiag).length > 0) {
-		let browserRow = 0;
 		const browserSourceKeys = Object.keys(browserDiag).sort();
 
-		// Browser transport node
+		// Transport node (its own column, between output and browser)
 		nodes.push({
 			id: 'browser-transport',
 			label: 'WebTransport',
 			category: 'browser-transport',
-			column: 'browser',
-			row: browserRow++,
+			column: 'transport',
+			row: 0,
 			kpis: {
-				sources: String(browserSourceKeys.length)
+				streams: String(browserSourceKeys.length)
 			},
 			health: 'healthy'
 		});
 		edges.push({ from: 'program-relay', to: 'browser-transport' });
 
-		// Per-source browser decode + render nodes
-		// SourceDiagnostics has: videoDecoder (VideoDecoderDiagnostics), renderer (RendererDiagnostics), audio, transport
+		// Per-source browser decode nodes (browser column)
+		let browserRow = 0;
 		let totalFramesDrawn = 0;
 		let totalFramesSkipped = 0;
 
@@ -384,12 +412,17 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			// inputCount, outputCount, decodeErrors, inputFps, outputFps, decodeQueueSize, discardedDelta, bufferDropped
 			const decodeErrors = vd?.decodeErrors ?? 0;
 			const outputFps = vd?.outputFps ?? 0;
-			const outputCount = vd?.outputCount ?? 0;
 			const discarded = (vd?.discardedDelta ?? 0) + (vd?.discardedBufferFull ?? 0) + (vd?.bufferDropped ?? 0);
 
+			// Renderer stats
+			const framesDrawn = rd?.framesDrawn ?? 0;
+			const framesSkipped = rd?.framesSkipped ?? 0;
+			const renderFps = framesDrawn > 0 && rd?.avgFrameIntervalMs > 0
+				? (1000 / rd.avgFrameIntervalMs) : 0;
+
 			const kpis: Record<string, string> = {};
+			// Always show FPS if available
 			if (outputFps > 0) kpis.fps = outputFps.toFixed(1);
-			if (outputCount > 0 && outputFps === 0) kpis.frames = String(outputCount);
 			if (decodeErrors > 0) kpis.errors = String(decodeErrors);
 			if (discarded > 0) kpis.dropped = String(discarded);
 			if (Object.keys(kpis).length === 0) kpis.status = 'active';
@@ -407,13 +440,11 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 			edges.push({ from: 'browser-transport', to: `browser-decode-${key}` });
 
 			// Accumulate render stats
-			if (rd) {
-				totalFramesDrawn += rd.framesDrawn ?? 0;
-				totalFramesSkipped += rd.framesSkipped ?? 0;
-			}
+			totalFramesDrawn += framesDrawn;
+			totalFramesSkipped += framesSkipped;
 		});
 
-		// Browser render node (aggregate)
+		// Browser render node (aggregate, same column)
 		const renderKpis: Record<string, string> = {};
 		if (totalFramesDrawn > 0) renderKpis.drawn = String(totalFramesDrawn);
 		if (totalFramesSkipped > 0) renderKpis.skipped = String(totalFramesSkipped);
