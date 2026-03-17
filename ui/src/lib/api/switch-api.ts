@@ -13,12 +13,12 @@ export class SwitchApiError extends Error {
 }
 
 function getAuthToken(): string | null {
-	if (typeof sessionStorage === 'undefined') return null;
-	return sessionStorage.getItem('switchframe_operator_token');
+	if (typeof localStorage === 'undefined') return null;
+	return localStorage.getItem('switchframe_operator_token');
 }
 
 export function setAuthToken(token: string): void {
-	sessionStorage.setItem('switchframe_operator_token', token);
+	localStorage.setItem('switchframe_operator_token', token);
 }
 
 /**

@@ -6,7 +6,7 @@ import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from '.
 describe('switch-api', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		sessionStorage.clear();
+		localStorage.clear();
 	});
 
 	it('cut sends POST with source', async () => {
@@ -429,7 +429,7 @@ describe('apiCall', () => {
 describe('Auth token', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		sessionStorage.clear();
+		localStorage.clear();
 	});
 
 	it('includes Authorization header when token is set', async () => {
@@ -479,7 +479,7 @@ describe('Auth token', () => {
 describe('SCTE-35 API', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		sessionStorage.clear();
+		localStorage.clear();
 	});
 
 	it('scte35Cue sends POST with body', async () => {
@@ -703,7 +703,7 @@ describe('SCTE-35 API', () => {
 describe('SRT source API', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		sessionStorage.clear();
+		localStorage.clear();
 	});
 
 	it('createSRTSource sends POST /api/sources with correct body', async () => {
@@ -801,17 +801,17 @@ describe('SRT source API', () => {
 describe('checkFragmentToken', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		sessionStorage.clear();
+		localStorage.clear();
 		// Reset hash to empty
 		window.location.hash = '';
 	});
 
-	it('reads token from #token=xxx, stores in sessionStorage, and clears hash', () => {
+	it('reads token from #token=xxx, stores in localStorage, and clears hash', () => {
 		window.location.hash = '#token=abc123secret';
 
 		checkFragmentToken();
 
-		expect(sessionStorage.getItem('switchframe_operator_token')).toBe('abc123secret');
+		expect(localStorage.getItem('switchframe_operator_token')).toBe('abc123secret');
 		expect(window.location.hash).toBe('');
 	});
 
@@ -820,7 +820,7 @@ describe('checkFragmentToken', () => {
 
 		checkFragmentToken();
 
-		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+		expect(localStorage.getItem('switchframe_operator_token')).toBeNull();
 	});
 
 	it('does nothing for non-token fragments like #section', () => {
@@ -828,7 +828,7 @@ describe('checkFragmentToken', () => {
 
 		checkFragmentToken();
 
-		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+		expect(localStorage.getItem('switchframe_operator_token')).toBeNull();
 	});
 
 	it('does nothing for empty token value in #token=', () => {
@@ -836,7 +836,7 @@ describe('checkFragmentToken', () => {
 
 		checkFragmentToken();
 
-		expect(sessionStorage.getItem('switchframe_operator_token')).toBeNull();
+		expect(localStorage.getItem('switchframe_operator_token')).toBeNull();
 	});
 
 	it('handles tokens with special characters', () => {
@@ -844,7 +844,7 @@ describe('checkFragmentToken', () => {
 
 		checkFragmentToken();
 
-		expect(sessionStorage.getItem('switchframe_operator_token')).toBe('abc-123_XYZ.456');
+		expect(localStorage.getItem('switchframe_operator_token')).toBe('abc-123_XYZ.456');
 		expect(window.location.hash).toBe('');
 	});
 });

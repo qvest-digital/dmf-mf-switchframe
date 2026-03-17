@@ -15,12 +15,12 @@ let session = $state<OperatorSession | null>(null);
 let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
 function getStoredToken(): string | null {
-	if (typeof sessionStorage === 'undefined') return null;
-	return sessionStorage.getItem(STORAGE_KEY);
+	if (typeof localStorage === 'undefined') return null;
+	return localStorage.getItem(STORAGE_KEY);
 }
 
 function clearStoredToken(): void {
-	sessionStorage.removeItem(STORAGE_KEY);
+	localStorage.removeItem(STORAGE_KEY);
 }
 
 function startHeartbeat(): void {
