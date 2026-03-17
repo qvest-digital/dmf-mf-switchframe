@@ -102,10 +102,11 @@ func (a *App) startDemoWithPreview(ctx context.Context, demoStats *demo.Stats, n
 		pe := previewEncoders[i]
 		internalRelay := internalRelays[i]
 
+		browserRelay := browserRelays[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			a.demoDecodeLoop(decodeCtx, key, internalRelay, pe, framePool)
+			a.demoDecodeLoop(decodeCtx, key, internalRelay, browserRelay, pe, framePool)
 		}()
 	}
 
@@ -126,10 +127,15 @@ func (a *App) startDemoWithPreview(ctx context.Context, demoStats *demo.Stats, n
 
 // demoDecodeLoop reads H.264 from an internal relay, decodes to YUV,
 // and fans out to switcher pipeline (IngestRawVideo) and preview encoder.
-func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distribution.Relay, pe *preview.Encoder, pool *switcher.FramePool) {
-	// Create a viewer on the internal relay to receive H.264 frames.
+// Audio frames are forwarded directly to the browser relay (already AAC).
+func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distribution.Relay, browserRelay *distribution.Relay, pe *preview.Encoder, pool *switcher.FramePool) {
+	// Create a viewer on the internal relay to receive H.264 + AAC frames.
 	ch := make(chan *media.VideoFrame, 4)
-	viewer := &demoDecodeViewer{id: "demo-decode:" + key, ch: ch}
+	viewer := &demoDecodeViewer{
+		id:         "demo-decode:" + key,
+		ch:         ch,
+		audioRelay: browserRelay,
+	}
 	relay.AddViewer(viewer)
 	defer relay.RemoveViewer(viewer.ID())
 
@@ -164,8 +170,13 @@ func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distributio
 			}
 
 			// Feed switcher pipeline via IngestRawVideo.
+			// Slice pool buffer to actual frame size — pool buffers are
+			// sized for the pipeline format (e.g. 1080p) but the decoded
+			// frame may be smaller (e.g. 720p demo clips).
+			yuvSize := w * h * 3 / 2
 			poolBuf := pool.Acquire()
-			copy(poolBuf, yuv)
+			poolBuf = poolBuf[:yuvSize]
+			copy(poolBuf, yuv[:yuvSize])
 			pf := &switcher.ProcessingFrame{
 				YUV:    poolBuf,
 				Width:  w,
@@ -184,11 +195,13 @@ func (a *App) demoDecodeLoop(ctx context.Context, key string, relay *distributio
 }
 
 // demoDecodeViewer implements distribution.Viewer for the decode goroutine.
-// It receives H.264 frames from the internal demo relay and forwards them
-// to the decode loop via a buffered channel.
+// It receives H.264 frames from the internal demo relay and forwards video
+// to the decode loop via a buffered channel, and audio directly to the
+// browser-facing relay.
 type demoDecodeViewer struct {
-	id string
-	ch chan *media.VideoFrame
+	id         string
+	ch         chan *media.VideoFrame
+	audioRelay *distribution.Relay // browser relay for audio forwarding
 }
 
 func (v *demoDecodeViewer) ID() string { return v.id }
@@ -210,6 +223,10 @@ func (v *demoDecodeViewer) SendVideo(frame *media.VideoFrame) {
 	}
 }
 
-func (v *demoDecodeViewer) SendAudio(_ *media.AudioFrame)    {}
+func (v *demoDecodeViewer) SendAudio(frame *media.AudioFrame) {
+	if v.audioRelay != nil {
+		v.audioRelay.BroadcastAudio(frame)
+	}
+}
 func (v *demoDecodeViewer) SendCaptions(_ *ccx.CaptionFrame) {}
 func (v *demoDecodeViewer) Stats() distribution.ViewerStats  { return distribution.ViewerStats{} }
