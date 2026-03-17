@@ -52,7 +52,8 @@ type AppConfig struct {
 	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
 
 	// Relay encoding (SRT source → WebTransport).
-	RelayBitrate int // Relay encode bitrate in bps (default 6000000)
+	RelayBitrate    int    // Relay encode bitrate in bps (default 2000000)
+	RelayResolution string // Relay encode resolution (e.g. "720p", "480p", "source")
 
 	// Preview proxy encoding.
 	PreviewProxy      bool   // Enable low-bitrate preview encoding for source relays
@@ -178,7 +179,8 @@ func parseConfig() (AppConfig, error) {
 	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
 
 	// Relay encoding flags.
-	relayBitrateFlag := flag.Int("relay-bitrate", 6000000, "Relay encode bitrate in bps for SRT source WebTransport distribution")
+	relayBitrateFlag := flag.Int("relay-bitrate", 2000000, "Relay encode bitrate in bps for SRT source WebTransport distribution")
+	relayResolutionFlag := flag.String("relay-resolution", "720p", "Relay encode resolution (720p, 480p, 360p, or source for no scaling)")
 
 	// Preview proxy encoding flags.
 	previewProxyFlag := flag.Bool("preview-proxy", false, "Enable low-bitrate preview encoding for browser source previews")
@@ -281,6 +283,7 @@ func parseConfig() (AppConfig, error) {
 		RawProgramMonitor: *rawProgramMonitorFlag,
 		RawMonitorScale:   *rawMonitorScaleFlag,
 		RelayBitrate:      *relayBitrateFlag,
+		RelayResolution:   *relayResolutionFlag,
 		PreviewProxy:      *previewProxyFlag,
 		PreviewResolution: *previewResolutionFlag,
 		PreviewBitrate:    *previewBitrateFlag,

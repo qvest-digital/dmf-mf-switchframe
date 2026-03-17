@@ -334,11 +334,14 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			previewEnc.Stop()
 		}()
 	} else {
-		// Original full-quality relay encode goroutine.
+		// Relay encode goroutine: ultrafast/baseline at configured resolution.
+		relayW, relayH := parseRelayResolution(a.cfg.RelayResolution)
+
 		var (
 			videoEncoder  transition.VideoEncoder
 			groupID       atomic.Uint32
 			videoInfoSent bool
+			scaledYUV     []byte // persistent scale buffer
 			encoderYUV    []byte
 			lastVideoW    int
 			lastVideoH    int
@@ -350,6 +353,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				}
 				w, h, pts := job.w, job.h, job.pts
 
+				// Determine encode dimensions: scale or use source.
+				encW, encH := relayW, relayH
+				if encW == 0 || encH == 0 {
+					encW, encH = w, h // "source" mode: no scaling
+				}
+
 				// Resolution change → recreate encoder.
 				if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
 					videoEncoder.Close()
@@ -358,11 +367,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 					videoInfoSent = false
 				}
 
-				// Lazy encoder creation.
+				// Lazy encoder creation (ultrafast/baseline for low CPU).
 				if videoEncoder == nil {
-					enc, err := codec.NewVideoEncoder(w, h, a.cfg.RelayBitrate, pf.FPSNum, pf.FPSDen)
+					enc, err := codec.NewPreviewEncoder(encW, encH, a.cfg.RelayBitrate, pf.FPSNum, pf.FPSDen)
 					if err != nil {
-						slog.Error("srt: video encoder init failed", "key", key, "error", err)
+						slog.Error("srt: relay encoder init failed", "key", key, "error", err)
 						continue
 					}
 					videoEncoder = enc
@@ -371,15 +380,26 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 					lastVideoH = h
 				}
 
-				// Copy YUV into reusable encoder buffer, then release the
-				// relay's pool buffer. The relay has its own buffer (not shared
-				// with the pipeline) so this release is always safe.
-				needed := len(job.yuv)
+				// Scale if needed, then copy into encoder buffer.
+				var frameYUV []byte
+				if w == encW && h == encH {
+					frameYUV = job.yuv
+				} else {
+					targetSize := encW * encH * 3 / 2
+					if cap(scaledYUV) < targetSize {
+						scaledYUV = make([]byte, targetSize)
+					}
+					scaledYUV = scaledYUV[:targetSize]
+					transition.ScaleYUV420(job.yuv, w, h, scaledYUV, encW, encH)
+					frameYUV = scaledYUV
+				}
+
+				needed := len(frameYUV)
 				if cap(encoderYUV) < needed {
 					encoderYUV = make([]byte, needed)
 				}
 				encoderYUV = encoderYUV[:needed]
-				copy(encoderYUV, job.yuv)
+				copy(encoderYUV, frameYUV)
 				if framePool != nil {
 					framePool.Release(job.yuv)
 				}
@@ -416,9 +436,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 						if avcC != nil {
 							relay.SetVideoInfo(distribution.VideoInfo{
 								Codec: codec.ParseSPSCodecString(frame.SPS),
-								Width: w, Height: h, DecoderConfig: avcC,
+								Width: encW, Height: encH, DecoderConfig: avcC,
 							})
-							slog.Info("SRT source: relay VideoInfo set", "key", key, "w", w, "h", h)
+							slog.Info("SRT source: relay VideoInfo set", "key", key, "w", encW, "h", encH)
 							videoInfoSent = true
 						}
 					}
