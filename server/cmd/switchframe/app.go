@@ -897,6 +897,43 @@ func (a *App) initAPI() error {
 	)
 	a.perfSampler.Start()
 
+	// Wire preview encoder stats for the perf sampler (1Hz tick).
+	a.perfSampler.SetPreviewStats(func() map[string]perf.PreviewEncoderStats {
+		result := make(map[string]perf.PreviewEncoderStats)
+
+		// Collect SRT source preview encoders.
+		a.srtSourcesMu.Lock()
+		for key, ss := range a.srtSources {
+			if ss.previewEnc != nil {
+				snap := ss.previewEnc.GetStats()
+				result[key] = perf.PreviewEncoderStats{
+					FramesIn:      snap.FramesIn,
+					FramesOut:     snap.FramesOut,
+					FramesDropped: snap.FramesDropped,
+					LastEncodeMs:  snap.LastEncodeMs,
+					AvgEncodeMs:   snap.AvgEncodeMs,
+				}
+			}
+		}
+		a.srtSourcesMu.Unlock()
+
+		// Collect MXL source preview encoders.
+		for _, src := range a.mxlSources {
+			if pe, ok := src.PreviewEncoderRaw().(*preview.Encoder); ok && pe != nil {
+				snap := pe.GetStats()
+				result[src.FlowName()] = perf.PreviewEncoderStats{
+					FramesIn:      snap.FramesIn,
+					FramesOut:     snap.FramesOut,
+					FramesDropped: snap.FramesDropped,
+					LastEncodeMs:  snap.LastEncodeMs,
+					AvgEncodeMs:   snap.AvgEncodeMs,
+				}
+			}
+		}
+
+		return result
+	})
+
 	apiOpts := []control.APIOption{
 		control.WithMixer(a.mixer),
 		control.WithOutputManager(a.outputMgr),
