@@ -32,6 +32,7 @@
 	// --- Section collapse state ---
 	let inputsExpanded = $state(true);
 	let outputsExpanded = $state(true);
+	let guideExpanded = $state(true);
 
 	// --- Expanded rows ---
 	let expandedSources = $state<Set<string>>(new Set());
@@ -69,6 +70,14 @@
 	let editDelay = $state<Record<string, number>>({});
 
 	// --- Helpers ---
+	async function copyText(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+		} catch {
+			// Ignore clipboard errors
+		}
+	}
+
 	function fmtBytes(bytes: number): string {
 		if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
 		if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
@@ -311,6 +320,51 @@
 	</div>
 
 	<div class="panel-body">
+		<!-- CONNECTION GUIDE Section -->
+		{#if crState.connectionInfo?.srtIngestPort || crState.connectionInfo?.srtOutputPorts?.length}
+			{@const ci = crState.connectionInfo}
+			{@const ingestHost = ci?.domain ? `ingest.${ci.domain}` : 'localhost'}
+			<div class="section">
+				<button
+					class="section-header"
+					onclick={() => (guideExpanded = !guideExpanded)}
+				>
+					<span class="section-chevron">{guideExpanded ? '\u25BE' : '\u25B8'}</span>
+					<span class="section-label">CONNECTION GUIDE</span>
+				</button>
+
+				{#if guideExpanded}
+					<div class="guide-content">
+						{#if ci?.srtIngestPort}
+							<div class="guide-block">
+								<div class="guide-heading">SRT Ingest</div>
+								<div class="guide-url-row">
+									<span class="guide-url">srt://{ingestHost}:{ci.srtIngestPort}?streamid=camera-1</span>
+									<button class="copy-btn" onclick={() => copyText(`srt://${ingestHost}:${ci.srtIngestPort}?streamid=camera-1`)}>Copy</button>
+								</div>
+								<div class="guide-hint">
+									Set <code>streamid</code> to name your source (e.g. camera-1, camera-2).
+									Add <code>&latency=120000</code> for 120ms SRT latency.
+								</div>
+							</div>
+						{/if}
+						{#if ci?.srtOutputPorts?.length}
+							<div class="guide-block">
+								<div class="guide-heading">SRT Output Ports</div>
+								<div class="guide-url-row">
+									<span class="guide-url">{ci.srtOutputPorts.join(', ')}</span>
+								</div>
+								<div class="guide-hint">
+									Create an SRT Listener output below, then pull with:<br/>
+									<code>ffplay srt://{ci?.domain ?? 'localhost'}:{ci.srtOutputPorts[0]}?mode=caller</code>
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<!-- INPUTS Section -->
 		<div class="section">
 			<button
@@ -1312,5 +1366,84 @@
 
 	.rec-inactive {
 		color: var(--text-tertiary);
+	}
+
+	/* --- Connection Guide --- */
+	.guide-content {
+		padding: 6px 16px 10px;
+	}
+
+	.guide-block {
+		margin-bottom: 10px;
+	}
+
+	.guide-block:last-child {
+		margin-bottom: 0;
+	}
+
+	.guide-heading {
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-primary);
+		margin-bottom: 4px;
+	}
+
+	.guide-url-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 4px;
+	}
+
+	.guide-url {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--accent-blue);
+		background: var(--bg-surface);
+		padding: 3px 8px;
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-subtle);
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.copy-btn {
+		padding: 2px 8px;
+		background: var(--bg-control);
+		border: var(--btn-border);
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-size: var(--text-2xs);
+		font-family: var(--font-ui);
+		flex-shrink: 0;
+		transition: var(--btn-transition);
+	}
+
+	.copy-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.guide-hint {
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		line-height: 1.5;
+	}
+
+	.guide-hint code {
+		font-family: var(--font-mono);
+		color: var(--text-primary);
+		background: var(--bg-surface);
+		padding: 1px 4px;
+		border-radius: 2px;
+	}
+
+	.form-hint-full {
+		font-size: var(--text-2xs);
+		color: var(--color-warning);
+		flex: 1;
 	}
 </style>
