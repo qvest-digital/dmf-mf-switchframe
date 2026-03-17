@@ -133,9 +133,6 @@ type App struct {
 	srtSourcesMu sync.Mutex
 	srtCtx       context.Context
 
-	// Preview proxy
-	previewDemoKeys map[string]bool // demo source keys using preview proxy path
-
 	// MXL integration
 	mxlInstance *mxl.Instance
 	mxlSources  []*mxl.Source
@@ -996,32 +993,27 @@ func (a *App) Run(ctx context.Context) error {
 		const nCams = 4
 		slog.Info("demo mode: starting simulated camera sources", "count", nCams, "videoDir", a.cfg.DemoVideoDir)
 
-		if a.cfg.PreviewProxy {
-			// Preview proxy path: demo sources use raw YUV ingest (SRT-style)
-			// with per-source preview encoders for browser relay.
-			stopDemo := a.startDemoWithPreview(ctx, demoStats, nCams)
-			defer stopDemo()
-		} else {
-			// Standard path: demo sources go through Prism relay → sourceViewer.
-			relays := make([]*distribution.Relay, nCams)
-			for i := range nCams {
-				key := fmt.Sprintf("cam%d", i+1)
-				relays[i] = a.server.RegisterStream(key)
-				if a.cfg.DemoVideoDir == "" {
-					relays[i].SetVideoInfo(distribution.VideoInfo{
-						Codec:  "avc1.42C01E",
-						Width:  320,
-						Height: 240,
-					})
-				}
+		// Demo sources always use the standard Prism relay → sourceViewer path.
+		// Preview proxy encoding only applies to SRT/MXL sources where
+		// the relay encode path is independent of the switcher pipeline.
+		relays := make([]*distribution.Relay, nCams)
+		for i := range nCams {
+			key := fmt.Sprintf("cam%d", i+1)
+			relays[i] = a.server.RegisterStream(key)
+			if a.cfg.DemoVideoDir == "" {
+				relays[i].SetVideoInfo(distribution.VideoInfo{
+					Codec:  "avc1.42C01E",
+					Width:  320,
+					Height: 240,
+				})
 			}
-			stopDemo := demo.StartSources(ctx, a.sw, relays, demoStats, a.cfg.DemoVideoDir, a.sw.PipelineFormat().FrameDuration())
-			defer stopDemo()
+		}
+		stopDemo := demo.StartSources(ctx, a.sw, relays, demoStats, a.cfg.DemoVideoDir, a.sw.PipelineFormat().FrameDuration())
+		defer stopDemo()
 
-			// Copy video info from first source to program relay.
-			if len(relays) > 0 {
-				a.programRelay.SetVideoInfo(relays[0].VideoInfo())
-			}
+		// Copy video info from first source to program relay.
+		if len(relays) > 0 {
+			a.programRelay.SetVideoInfo(relays[0].VideoInfo())
 		}
 
 		// Add raw MXL demo sources (exercises IngestRawVideo/IngestPCM path).
