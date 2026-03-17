@@ -42,6 +42,7 @@ type AppConfig struct {
 	ReplayBufferSecs int
 	Addr             string
 	HTTPFallback     bool
+	HTTPAddr         string
 	TLSCert          string
 	TLSKey           string
 	StateDir         string // State directory (env: SWITCHFRAME_STATE_DIR, default: ~/.switchframe)
@@ -160,6 +161,7 @@ func parseConfig() (AppConfig, error) {
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	addrFlag := flag.String("addr", ":8080", "QUIC/HTTP3 listen address (e.g., :8080, 0.0.0.0:443)")
 	httpFallbackFlag := flag.Bool("http-fallback", false, "Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts")
+	httpAddrFlag := flag.String("http-addr", ":8081", "HTTP/1.1 fallback listen address (requires --http-fallback)")
 	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
 
@@ -257,6 +259,7 @@ func parseConfig() (AppConfig, error) {
 		ReplayBufferSecs:  *replayBufferSecs,
 		Addr:              *addrFlag,
 		HTTPFallback:      *httpFallbackFlag,
+		HTTPAddr:          *httpAddrFlag,
 		TLSCert:           *tlsCertFlag,
 		TLSKey:            *tlsKeyFlag,
 		RawProgramMonitor: *rawProgramMonitorFlag,
