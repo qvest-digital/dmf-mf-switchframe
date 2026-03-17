@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -28,6 +29,7 @@ type srtSourceState struct {
 	relay        *distribution.Relay
 	videoEncoder transition.VideoEncoder // set by relay goroutine, for stats
 	audioEncoder audio.Encoder           // set by audio goroutine, for stats
+	previewEnc   *preview.Encoder        // set when preview proxy is enabled
 }
 
 // initSRT initializes the SRT listener, caller, store, and stats manager.
@@ -287,102 +289,138 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		}
 	}()
 
+	// --- Preview proxy encoder (replaces full-quality relay encode) ---
+	var previewEnc *preview.Encoder
+	if a.cfg.PreviewProxy {
+		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+		var err error
+		previewEnc, err = preview.NewEncoder(preview.Config{
+			SourceKey: key,
+			Width:     pw,
+			Height:    ph,
+			Bitrate:   a.cfg.PreviewBitrate,
+			FPSNum:    pf.FPSNum,
+			FPSDen:    pf.FPSDen,
+			Relay:     relay,
+		})
+		if err != nil {
+			slog.Error("srt: preview encoder failed, falling back to full quality", "key", key, "error", err)
+		} else {
+			state.previewEnc = previewEnc
+		}
+	}
+
 	// --- Goroutine 2: Relay video encode ---
-	var (
-		videoEncoder  transition.VideoEncoder
-		groupID       atomic.Uint32
-		videoInfoSent bool
-		encoderYUV    []byte
-		lastVideoW    int
-		lastVideoH    int
-	)
-	go func() {
-		for job := range relayVideoCh {
-			if relay == nil {
-				continue
+	// When preview proxy is enabled, the preview.Encoder handles scaling
+	// and encoding at low bitrate. Otherwise, use existing full-quality encode.
+	if previewEnc != nil {
+		go func() {
+			for job := range relayVideoCh {
+				previewEnc.Send(job.yuv, job.w, job.h, job.pts)
+				if framePool != nil {
+					framePool.Release(job.yuv)
+				}
 			}
-			w, h, pts := job.w, job.h, job.pts
-
-			// Resolution change → recreate encoder.
-			if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
-				videoEncoder.Close()
-				videoEncoder = nil
-				state.videoEncoder = nil
-				videoInfoSent = false
-			}
-
-			// Lazy encoder creation.
-			if videoEncoder == nil {
-				enc, err := codec.NewVideoEncoder(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
-				if err != nil {
-					slog.Error("srt: video encoder init failed", "key", key, "error", err)
+			previewEnc.Stop()
+		}()
+	} else {
+		// Original full-quality relay encode goroutine.
+		var (
+			videoEncoder  transition.VideoEncoder
+			groupID       atomic.Uint32
+			videoInfoSent bool
+			encoderYUV    []byte
+			lastVideoW    int
+			lastVideoH    int
+		)
+		go func() {
+			for job := range relayVideoCh {
+				if relay == nil {
 					continue
 				}
-				videoEncoder = enc
-				state.videoEncoder = enc
-				lastVideoW = w
-				lastVideoH = h
-			}
+				w, h, pts := job.w, job.h, job.pts
 
-			// Copy YUV into reusable encoder buffer, then release the
-			// relay's pool buffer. The relay has its own buffer (not shared
-			// with the pipeline) so this release is always safe.
-			needed := len(job.yuv)
-			if cap(encoderYUV) < needed {
-				encoderYUV = make([]byte, needed)
-			}
-			encoderYUV = encoderYUV[:needed]
-			copy(encoderYUV, job.yuv)
-			if framePool != nil {
-				framePool.Release(job.yuv)
-			}
+				// Resolution change → recreate encoder.
+				if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
+					videoEncoder.Close()
+					videoEncoder = nil
+					state.videoEncoder = nil
+					videoInfoSent = false
+				}
 
-			encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
-			if err != nil || len(encoded) == 0 {
-				continue
-			}
-
-			avc1 := codec.AnnexBToAVC1(encoded)
-			if isKeyframe {
-				groupID.Add(1)
-			}
-
-			frame := &media.VideoFrame{
-				PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-				WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
-			}
-
-			if isKeyframe {
-				for _, nalu := range codec.ExtractNALUs(avc1) {
-					if len(nalu) == 0 {
+				// Lazy encoder creation.
+				if videoEncoder == nil {
+					enc, err := codec.NewVideoEncoder(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
+					if err != nil {
+						slog.Error("srt: video encoder init failed", "key", key, "error", err)
 						continue
 					}
-					switch nalu[0] & 0x1F {
-					case 7:
-						frame.SPS = nalu
-					case 8:
-						frame.PPS = nalu
+					videoEncoder = enc
+					state.videoEncoder = enc
+					lastVideoW = w
+					lastVideoH = h
+				}
+
+				// Copy YUV into reusable encoder buffer, then release the
+				// relay's pool buffer. The relay has its own buffer (not shared
+				// with the pipeline) so this release is always safe.
+				needed := len(job.yuv)
+				if cap(encoderYUV) < needed {
+					encoderYUV = make([]byte, needed)
+				}
+				encoderYUV = encoderYUV[:needed]
+				copy(encoderYUV, job.yuv)
+				if framePool != nil {
+					framePool.Release(job.yuv)
+				}
+
+				encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
+				if err != nil || len(encoded) == 0 {
+					continue
+				}
+
+				avc1 := codec.AnnexBToAVC1(encoded)
+				if isKeyframe {
+					groupID.Add(1)
+				}
+
+				frame := &media.VideoFrame{
+					PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+					WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+				}
+
+				if isKeyframe {
+					for _, nalu := range codec.ExtractNALUs(avc1) {
+						if len(nalu) == 0 {
+							continue
+						}
+						switch nalu[0] & 0x1F {
+						case 7:
+							frame.SPS = nalu
+						case 8:
+							frame.PPS = nalu
+						}
+					}
+					if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
+						avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
+						if avcC != nil {
+							relay.SetVideoInfo(distribution.VideoInfo{
+								Codec: codec.ParseSPSCodecString(frame.SPS),
+								Width: w, Height: h, DecoderConfig: avcC,
+							})
+							slog.Info("SRT source: relay VideoInfo set", "key", key, "w", w, "h", h)
+							videoInfoSent = true
+						}
 					}
 				}
-				if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
-					avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
-					if avcC != nil {
-						relay.SetVideoInfo(distribution.VideoInfo{
-							Codec: codec.ParseSPSCodecString(frame.SPS),
-							Width: w, Height: h, DecoderConfig: avcC,
-						})
-						slog.Info("SRT source: relay VideoInfo set", "key", key, "w", w, "h", h)
-						videoInfoSent = true
-					}
-				}
+				relay.BroadcastVideo(frame)
 			}
-			relay.BroadcastVideo(frame)
-		}
-		if videoEncoder != nil {
-			videoEncoder.Close()
-			videoEncoder = nil
-		}
-	}()
+			if videoEncoder != nil {
+				videoEncoder.Close()
+				videoEncoder = nil
+			}
+		}()
+	}
 
 	// --- Goroutine 3: Audio (mixer + relay encode) ---
 	const aacFrameSamples = 1024
