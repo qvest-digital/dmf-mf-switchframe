@@ -24,7 +24,6 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if strings.HasPrefix(key, "clip:") {
 		return // Clip sources are manually wired in initClips()
 	}
-
 	if a.sw == nil || a.mixer == nil {
 		slog.Error("BUG: stream registered before switcher/mixer initialized", "key", key)
 		return

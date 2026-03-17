@@ -394,3 +394,91 @@ func TestFFmpegEncoderSlicedThreadingImmediate(t *testing.T) {
 // Old CBR tests (TestFFmpegEncoderCBRMode, TestFFmpegEncoderCBRProducesFillerNALUs,
 // TestFFmpegEncoderCBRVsBRBitrateVariance) removed — nal-hrd=cbr is no longer used.
 // Replacement tests are in ffmpeg_encoder_cvbr_test.go.
+
+func TestNewPreviewEncoder(t *testing.T) {
+	enc, err := NewPreviewEncoder(854, 480, 500_000, 30, 1)
+	require.NoError(t, err)
+	require.NotNil(t, enc)
+	defer enc.Close()
+
+	// Verify it can encode a frame.
+	w, h := 854, 480
+	yuv := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		yuv[i] = byte((i * 7) % 256)
+	}
+	for i := w * h; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+
+	// First frame with forceIDR should produce a keyframe immediately
+	// (ultrafast + zerolatency = sliced threading, no buffering).
+	data, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.NotNil(t, data, "preview encoder should produce output on first frame")
+	require.True(t, isKey, "first frame with forceIDR should be a keyframe")
+	require.Greater(t, len(data), 0, "encoded data should be non-empty")
+}
+
+func TestPreviewEncoderUsesBaselineProfile(t *testing.T) {
+	w, h := 320, 240
+	enc, err := NewFFmpegPreviewEncoder(w, h, 300_000, 30, 1, 2)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	// Encode a keyframe — SPS/PPS are inline in the Annex B output
+	// (no GLOBAL_HEADER flag). Extract SPS to verify baseline profile.
+	yuv := make([]byte, w*h*3/2)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+	data, isKey, err := enc.Encode(yuv, 0, true)
+	require.NoError(t, err)
+	require.True(t, isKey)
+
+	avc1 := AnnexBToAVC1(data)
+	for _, nalu := range ExtractNALUs(avc1) {
+		if len(nalu) > 1 && nalu[0]&0x1F == 7 {
+			profileIdc := nalu[1]
+			require.Equal(t, byte(66), profileIdc,
+				"preview encoder should use baseline profile (66), got %d", profileIdc)
+			return
+		}
+	}
+	t.Fatal("no SPS NALU found in encoded keyframe")
+}
+
+func TestPreviewEncoderMultipleFrames(t *testing.T) {
+	w, h := 320, 240
+	enc, err := NewPreviewEncoder(w, h, 300_000, 30, 1)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	outputCount := 0
+	for i := 0; i < 30; i++ {
+		for j := 0; j < w*h; j++ {
+			yuv[j] = byte((j*7 + i*13) % 256)
+		}
+		for j := w * h; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
+		require.NoError(t, err, "frame %d", i)
+		if data != nil {
+			outputCount++
+		}
+	}
+	require.Equal(t, 30, outputCount, "sliced threading should produce output for every frame")
+}
+
+func TestPreviewEncoderInterface(t *testing.T) {
+	// Verify preview encoder satisfies transition.VideoEncoder.
+	var enc transition.VideoEncoder
+	e, err := NewPreviewEncoder(320, 240, 300_000, 30, 1)
+	require.NoError(t, err)
+	enc = e
+	require.NotNil(t, enc)
+	enc.Close()
+}

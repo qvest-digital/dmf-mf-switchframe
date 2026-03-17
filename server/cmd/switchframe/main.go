@@ -42,6 +42,7 @@ type AppConfig struct {
 	ReplayBufferSecs int
 	Addr             string
 	HTTPFallback     bool
+	HTTPAddr         string
 	TLSCert          string
 	TLSKey           string
 	StateDir         string // State directory (env: SWITCHFRAME_STATE_DIR, default: ~/.switchframe)
@@ -49,6 +50,11 @@ type AppConfig struct {
 	// Raw program monitor.
 	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
 	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
+
+	// Preview proxy encoding.
+	PreviewProxy      bool   // Enable low-bitrate preview encoding for source relays
+	PreviewResolution string // Preview resolution (e.g. "480p", "360p")
+	PreviewBitrate    int    // Preview bitrate in bps (default 500000)
 
 	// SCTE-35 signaling.
 	SCTE35            bool   // Enable SCTE-35 insertion
@@ -160,12 +166,18 @@ func parseConfig() (AppConfig, error) {
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	addrFlag := flag.String("addr", ":8080", "QUIC/HTTP3 listen address (e.g., :8080, 0.0.0.0:443)")
 	httpFallbackFlag := flag.Bool("http-fallback", false, "Start a plain HTTP/1.1 API server on TCP :8081 for curl/scripts")
+	httpAddrFlag := flag.String("http-addr", ":8081", "HTTP/1.1 fallback listen address (requires --http-fallback)")
 	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
 
 	// Raw program monitor flags.
 	rawProgramMonitorFlag := flag.Bool("raw-program-monitor", false, "Enable raw YUV420 program monitor track for low-latency local display")
 	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
+
+	// Preview proxy encoding flags.
+	previewProxyFlag := flag.Bool("preview-proxy", false, "Enable low-bitrate preview encoding for browser source previews")
+	previewResolutionFlag := flag.String("preview-resolution", "480p", "Preview encode resolution (e.g. 480p, 360p, 720p)")
+	previewBitrateFlag := flag.Int("preview-bitrate", 500000, "Preview encode bitrate in bps")
 
 	// SCTE-35 flags.
 	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
@@ -257,10 +269,14 @@ func parseConfig() (AppConfig, error) {
 		ReplayBufferSecs:  *replayBufferSecs,
 		Addr:              *addrFlag,
 		HTTPFallback:      *httpFallbackFlag,
+		HTTPAddr:          *httpAddrFlag,
 		TLSCert:           *tlsCertFlag,
 		TLSKey:            *tlsKeyFlag,
 		RawProgramMonitor: *rawProgramMonitorFlag,
 		RawMonitorScale:   *rawMonitorScaleFlag,
+		PreviewProxy:      *previewProxyFlag,
+		PreviewResolution: *previewResolutionFlag,
+		PreviewBitrate:    *previewBitrateFlag,
 		SCTE35:            *scte35Flag,
 		SCTE35PID:         uint16(*scte35PIDFlag),
 		SCTE35PreRollMs:   int64(*scte35PreRollFlag),

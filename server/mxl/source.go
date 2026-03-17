@@ -74,6 +74,13 @@ type SourceConfig struct {
 	// If nil, audio is not encoded for relay.
 	AudioEncoderFactory func(sampleRate, channels int) (AudioEnc, error)
 
+	// PreviewEncoder, if set, handles relay encoding at preview quality.
+	// When set, the source skips its own full-quality encode and delegates
+	// to this encoder instead.
+	PreviewEncoder interface {
+		Send(yuv []byte, w, h int, pts int64)
+	}
+
 	// OnVideoInfo is called once after the first keyframe is encoded,
 	// providing SPS/PPS so the caller can set VideoInfo on the relay
 	// (required for browser decoder initialization).
@@ -335,6 +342,11 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 // encodeAndBroadcastVideo encodes a YUV420p frame to H.264 and broadcasts it.
 // Called only from the single videoFanOut goroutine, so lazy-init is safe.
 func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int64) {
+	if s.config.PreviewEncoder != nil {
+		s.config.PreviewEncoder.Send(yuv, width, height, pts)
+		return
+	}
+
 	if s.videoEncoder == nil {
 		bitrate := s.config.Bitrate
 		if bitrate == 0 {

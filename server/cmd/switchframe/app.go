@@ -39,6 +39,7 @@ import (
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/perf"
+	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte104"
@@ -712,6 +713,24 @@ func (a *App) initMXL() error {
 			}
 		}
 
+		if a.cfg.PreviewProxy {
+			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+			pe, err := preview.NewEncoder(preview.Config{
+				SourceKey: flowName,
+				Width:     pw,
+				Height:    ph,
+				Bitrate:   a.cfg.PreviewBitrate,
+				FPSNum:    srcCfg.FPSNum,
+				FPSDen:    srcCfg.FPSDen,
+				Relay:     relay,
+			})
+			if err != nil {
+				slog.Error("mxl: preview encoder failed", "flow", flowName, "error", err)
+			} else {
+				srcCfg.PreviewEncoder = pe
+			}
+		}
+
 		src := mxl.NewSource(srcCfg)
 
 		src.Start(context.Background(), videoFlow, audioFlow, dataFlow)
@@ -973,6 +992,10 @@ func (a *App) Run(ctx context.Context) error {
 	if a.cfg.Demo {
 		const nCams = 4
 		slog.Info("demo mode: starting simulated camera sources", "count", nCams, "videoDir", a.cfg.DemoVideoDir)
+
+		// Demo sources always use the standard Prism relay → sourceViewer path.
+		// Preview proxy encoding only applies to SRT/MXL sources where
+		// the relay encode path is independent of the switcher pipeline.
 		relays := make([]*distribution.Relay, nCams)
 		for i := range nCams {
 			key := fmt.Sprintf("cam%d", i+1)
