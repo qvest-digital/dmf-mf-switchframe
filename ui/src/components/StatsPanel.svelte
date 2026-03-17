@@ -335,10 +335,11 @@
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
+		onopengraph?: () => void;
 		pipeline?: MediaPipeline | null;
 	}
 
-	let { visible, onclose, pipeline = null }: Props = $props();
+	let { visible, onclose, onopengraph, pipeline = null }: Props = $props();
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
@@ -874,6 +875,9 @@
 				<button class="toggle-btn" class:active={viewMode === 'debug'} onclick={() => viewMode = 'debug'}>Debug</button>
 				<button class="toggle-btn" class:active={viewMode === 'perf'} onclick={() => viewMode = 'perf'}>Perf</button>
 				<button class="toggle-btn" class:active={viewMode === 'browser'} onclick={() => viewMode = 'browser'}>Browser</button>
+				{#if onopengraph}
+					<button class="toggle-btn graph-btn" onclick={onopengraph}>Graph</button>
+				{/if}
 			</div>
 			<span class="shortcut-hint">Shift+P</span>
 		</div>
@@ -2925,6 +2929,17 @@
 
 	.toggle-btn.active {
 		background: rgba(59, 130, 246, 0.3);
+		color: var(--text-primary);
+	}
+
+	.toggle-btn.graph-btn {
+		margin-left: 4px;
+		border-left: 1px solid rgba(255, 255, 255, 0.1);
+		padding-left: 10px;
+	}
+
+	.toggle-btn.graph-btn:hover {
+		background: rgba(59, 130, 246, 0.2);
 		color: var(--text-primary);
 	}
 

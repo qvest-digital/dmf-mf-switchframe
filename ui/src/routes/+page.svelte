@@ -15,6 +15,7 @@
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
 	import StatsPanel from '../components/StatsPanel.svelte';
+	import PipelineGraph from '../components/PipelineGraph.svelte';
 	import IOPanel from '../components/IOPanel.svelte';
 	import GraphicsPanel from '../components/GraphicsPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
@@ -55,6 +56,7 @@
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
 	let statsPanelVisible = $state(false);
+	let pipelineGraphVisible = $state(false);
 	let ioPanelVisible = $state(false);
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
@@ -290,6 +292,13 @@
 			e.preventDefault();
 			exportDebugSnapshot();
 		}
+		// Shift+G toggles pipeline graph
+		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyG') {
+			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
+			e.preventDefault();
+			pipelineGraphVisible = !pipelineGraphVisible;
+			return;
+		}
 		// Shift+P toggles stats panel
 		if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyP') {
 			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
@@ -301,6 +310,12 @@
 			if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
 			e.preventDefault();
 			ioPanelVisible = !ioPanelVisible;
+		}
+		// Escape closes pipeline graph (higher priority than stats panel)
+		if (e.code === 'Escape' && pipelineGraphVisible) {
+			e.preventDefault();
+			pipelineGraphVisible = false;
+			return;
 		}
 		// Escape closes stats panel
 		if (e.code === 'Escape' && statsPanelVisible) {
@@ -679,7 +694,8 @@
 	{/if}
 </ErrorBoundary>
 
-<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} {pipeline} />
+<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} onopengraph={() => { pipelineGraphVisible = true; statsPanelVisible = false; }} {pipeline} />
+<PipelineGraph visible={pipelineGraphVisible} onclose={() => { pipelineGraphVisible = false; }} {pipeline} />
 <IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
