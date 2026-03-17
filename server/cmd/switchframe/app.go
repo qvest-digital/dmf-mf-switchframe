@@ -39,6 +39,7 @@ import (
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/perf"
+	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte104"
@@ -709,6 +710,24 @@ func (a *App) initMXL() error {
 						slog.Warn("scte104: failed to inject cue", "source", key, "error", err)
 					}
 				}
+			}
+		}
+
+		if a.cfg.PreviewProxy {
+			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+			pe, err := preview.NewEncoder(preview.Config{
+				SourceKey: flowName,
+				Width:     pw,
+				Height:    ph,
+				Bitrate:   a.cfg.PreviewBitrate,
+				FPSNum:    srcCfg.FPSNum,
+				FPSDen:    srcCfg.FPSDen,
+				Relay:     relay,
+			})
+			if err != nil {
+				slog.Error("mxl: preview encoder failed", "flow", flowName, "error", err)
+			} else {
+				srcCfg.PreviewEncoder = pe
 			}
 		}
 
