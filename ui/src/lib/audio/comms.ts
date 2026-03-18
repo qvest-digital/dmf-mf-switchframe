@@ -148,6 +148,15 @@ export class CommsAudioManager {
 	}
 
 	/**
+	 * Set comms playback volume. 1.0 = unity gain, 2.0 = +6dB, etc.
+	 */
+	setVolume(gain: number): void {
+		if (this.commsGain) {
+			this.commsGain.gain.value = gain;
+		}
+	}
+
+	/**
 	 * Toggle microphone mute by enabling/disabling the mic track directly.
 	 */
 	setMuted(muted: boolean): void {

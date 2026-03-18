@@ -25,8 +25,16 @@
 		(commsState?.participants ?? []).find((p) => p.operatorId === operatorId)
 	);
 	const isMuted = $derived(selfParticipant?.muted ?? true);
+	let commsVolume = $state(75); // 0-100, default 75% (maps to gain 1.5)
 
 	let audioManager: CommsAudioManager | null = null;
+
+	function handleVolumeChange(e: Event) {
+		commsVolume = parseInt((e.target as HTMLInputElement).value);
+		// Map 0-100 to gain 0.0-3.0 (quadratic for natural feel)
+		const normalized = commsVolume / 100;
+		audioManager?.setVolume(normalized * normalized * 3.0);
+	}
 
 	function handleMuteToggle() {
 		apiCall(commsMute(operatorId, !isMuted), 'Comms mute');
@@ -56,6 +64,9 @@
 					onCommsActive,
 				});
 				await audioManager.start(transport);
+				// Apply initial volume from slider
+				const normalized = commsVolume / 100;
+				audioManager.setVolume(normalized * normalized * 3.0);
 			}
 		} catch (e) {
 			notify('error', `Failed to join comms: ${e}`);
@@ -109,6 +120,18 @@
 		>
 			DIM
 		</button>
+
+		<label class="volume-control" title="Comms volume">
+			<span class="volume-label">VOL</span>
+			<input
+				type="range"
+				min="0"
+				max="100"
+				value={commsVolume}
+				oninput={handleVolumeChange}
+				class="volume-slider"
+			/>
+		</label>
 
 		<div class="participants">
 			{#each commsState?.participants ?? [] as participant}
@@ -198,6 +221,27 @@
 	.dim-btn.dim-active:hover {
 		background: #f59e0b;
 		border-color: #f59e0b;
+	}
+
+	.volume-control {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		cursor: default;
+	}
+
+	.volume-label {
+		font-size: 9px;
+		font-weight: 600;
+		color: var(--text-muted);
+		letter-spacing: 0.05em;
+	}
+
+	.volume-slider {
+		width: 60px;
+		height: 4px;
+		accent-color: var(--color-green, #4ade80);
+		cursor: pointer;
 	}
 
 	.leave-btn {
