@@ -35,9 +35,19 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 			sources = append(sources, k)
 			lengths = append(lengths, len(v))
 		}
+		activeUnmuted := 0
+		activeKeys := make([]string, 0)
+		for key, c := range m.channels {
+			if c.active && !c.muted {
+				activeUnmuted++
+				activeKeys = append(activeKeys, key)
+			}
+		}
 		m.log.Info("mix-cycle-diag",
 			"sources", sources,
 			"pcm_lengths", lengths,
+			"active_unmuted", activeUnmuted,
+			"active_keys", activeKeys,
 			"encodeBuf_len", len(m.encodeBuf),
 			"trans_pos", m.mixCycleTransPos,
 			"audio_pos", m.transCrossfadeAudioPos,
