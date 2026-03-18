@@ -5,7 +5,7 @@
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
 	interface Props {
-		state: ControlRoomState;
+		crState: ControlRoomState;
 		onSwitchLayout?: () => void;
 		onCanvasReady?: (previewCanvas: HTMLCanvasElement, programCanvas: HTMLCanvasElement) => void;
 		onPreview?: (key: string) => void;
@@ -14,7 +14,7 @@
 		onFTB?: () => void;
 	}
 
-	let { state, onSwitchLayout, onCanvasReady, onPreview, onCut, onDissolve, onFTB }: Props = $props();
+	let { crState, onSwitchLayout, onCanvasReady, onPreview, onCut, onDissolve, onFTB }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -54,21 +54,21 @@
 		return () => observers.forEach((obs) => obs.disconnect());
 	});
 
-	let sourceKeys = $derived(sortedSourceKeys(state.sources));
+	let sourceKeys = $derived(sortedSourceKeys(crState.sources));
 	let previewLabel = $derived(
-		state.previewSource && state.sources[state.previewSource]
-			? state.sources[state.previewSource].label || state.previewSource
+		crState.previewSource && crState.sources[crState.previewSource]
+			? crState.sources[crState.previewSource].label || crState.previewSource
 			: '—',
 	);
 	let programLabel = $derived(
-		state.programSource && state.sources[state.programSource]
-			? state.sources[state.programSource].label || state.programSource
+		crState.programSource && crState.sources[crState.programSource]
+			? crState.sources[crState.programSource].label || crState.programSource
 			: '—',
 	);
 	let canTransition = $derived(
-		state.previewSource !== '' && !state.inTransition && !state.ftbActive,
+		crState.previewSource !== '' && !crState.inTransition && !crState.ftbActive,
 	);
-	let canCut = $derived(state.previewSource !== '' && !state.inTransition);
+	let canCut = $derived(crState.previewSource !== '' && !crState.inTransition);
 
 	function handleSourceClick(key: string) {
 		if (onPreview) {
@@ -83,7 +83,7 @@
 		if (onCut) {
 			onCut();
 		} else {
-			apiCall(cut(state.previewSource), 'Cut failed');
+			apiCall(cut(crState.previewSource), 'Cut failed');
 		}
 	}
 
@@ -92,7 +92,7 @@
 		if (onDissolve) {
 			onDissolve();
 		} else {
-			apiCall(startTransition(state.previewSource, 'mix', 1000), 'Dissolve failed');
+			apiCall(startTransition(crState.previewSource, 'mix', 1000), 'Dissolve failed');
 		}
 	}
 
@@ -104,9 +104,9 @@
 		}
 	}
 
-	let simpleSpeed = $state(0.5);
+	let simpleSpeed = $state(0.5); // $state is safe now that prop is renamed to crState
 	const isReplayActive = $derived(
-		state.replay?.state === 'playing' || state.replay?.state === 'paused'
+		crState.replay?.state === 'playing' || crState.replay?.state === 'paused'
 	);
 
 	function handleSimpleReplay() {
@@ -125,7 +125,7 @@
 	}
 
 	function tallyClass(key: string): string {
-		const tally = state.tallyState[key];
+		const tally = crState.tallyState[key];
 		if (tally === 'program') return 'tally-program';
 		if (tally === 'preview') return 'tally-preview';
 		return '';
@@ -155,7 +155,7 @@
 
 	<section class="source-buttons">
 		{#each sourceKeys as key, i}
-			{@const health = state.sources[key]?.status}
+			{@const health = crState.sources[key]?.status}
 			<button
 				class="source-btn {tallyClass(key)}"
 				class:source-stale={health === 'stale' || health === 'no_signal'}
@@ -167,7 +167,7 @@
 				{#if health === 'offline'}
 					OFFLINE
 				{:else}
-					{state.sources[key].label || key}
+					{crState.sources[key].label || key}
 				{/if}
 				{#if health === 'stale' || health === 'no_signal'}
 					<span class="health-warning">!</span>
@@ -187,7 +187,7 @@
 		>
 			DISSOLVE
 		</button>
-		<button class="action-btn ftb-btn" class:ftb-active={state.ftbActive} onclick={handleFTB} disabled={state.inTransition && !state.ftbActive}>
+		<button class="action-btn ftb-btn" class:ftb-active={crState.ftbActive} onclick={handleFTB} disabled={crState.inTransition && !crState.ftbActive}>
 			FADE TO BLACK
 		</button>
 	</section>

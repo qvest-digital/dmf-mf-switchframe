@@ -648,7 +648,7 @@
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode
-			state={store.effectiveState}
+			crState={store.effectiveState}
 			onSwitchLayout={switchLayout}
 			{onCanvasReady}
 			onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }}

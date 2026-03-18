@@ -41,65 +41,65 @@ describe('SimpleMode', () => {
 	});
 
 	it('renders source buttons for each source', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		expect(screen.getAllByText(/Camera 1/).length).toBeGreaterThanOrEqual(1);
 		expect(screen.getAllByText(/Camera 2/).length).toBeGreaterThanOrEqual(1);
 		expect(screen.getAllByText(/Camera 3/).length).toBeGreaterThanOrEqual(1);
 	});
 
 	it('renders CUT and DISSOLVE buttons', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		expect(screen.getByText('CUT')).toBeTruthy();
 		expect(screen.getByText('DISSOLVE')).toBeTruthy();
 	});
 
 	it('CUT button calls cut API', async () => {
 		const { cut } = await import('$lib/api/switch-api');
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		await fireEvent.click(screen.getByText('CUT'));
 		expect(cut).toHaveBeenCalledWith('cam2');
 	});
 
 	it('DISSOLVE button calls startTransition API', async () => {
 		const { startTransition } = await import('$lib/api/switch-api');
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		await fireEvent.click(screen.getByText('DISSOLVE'));
 		expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000);
 	});
 
 	it('CUT button disabled when no preview source', () => {
-		render(SimpleMode, { props: { state: makeState({ previewSource: '' }) } });
+		render(SimpleMode, { props: { crState: makeState({ previewSource: '' }) } });
 		const btn = screen.getByText('CUT');
 		expect(btn.hasAttribute('disabled')).toBe(true);
 	});
 
 	it('CUT button disabled during transition', () => {
-		render(SimpleMode, { props: { state: makeState({ inTransition: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ inTransition: true }) } });
 		const btn = screen.getByText('CUT');
 		expect(btn.hasAttribute('disabled')).toBe(true);
 	});
 
 	it('DISSOLVE button disabled when no preview source', () => {
-		render(SimpleMode, { props: { state: makeState({ previewSource: '' }) } });
+		render(SimpleMode, { props: { crState: makeState({ previewSource: '' }) } });
 		const btn = screen.getByText('DISSOLVE');
 		expect(btn.hasAttribute('disabled')).toBe(true);
 	});
 
 	it('DISSOLVE button disabled during transition', () => {
-		render(SimpleMode, { props: { state: makeState({ inTransition: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ inTransition: true }) } });
 		const btn = screen.getByText('DISSOLVE');
 		expect(btn.hasAttribute('disabled')).toBe(true);
 	});
 
 	it('DISSOLVE button disabled during FTB', () => {
-		render(SimpleMode, { props: { state: makeState({ ftbActive: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ ftbActive: true }) } });
 		const btn = screen.getByText('DISSOLVE');
 		expect(btn.hasAttribute('disabled')).toBe(true);
 	});
 
 	it('source button click calls setPreview', async () => {
 		const { setPreview } = await import('$lib/api/switch-api');
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		// Camera 3 only appears in the source button (not in preview/program labels)
 		const cam3btns = screen.getAllByText(/Camera 3/);
 		const cam3btn = cam3btns.find((el) => el.closest('.source-btn'));
@@ -108,14 +108,14 @@ describe('SimpleMode', () => {
 	});
 
 	it('applies tally-program class to program source button', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		const buttons = screen.getAllByText(/Camera 1/);
 		const cam1btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
 		expect(cam1btn?.classList.contains('tally-program')).toBe(true);
 	});
 
 	it('applies tally-preview class to preview source button', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		const buttons = screen.getAllByText(/Camera 2/);
 		const cam2btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
 		expect(cam2btn?.classList.contains('tally-preview')).toBe(true);
@@ -123,50 +123,50 @@ describe('SimpleMode', () => {
 
 	it('gear icon fires layout switch callback', async () => {
 		const switchFn = vi.fn();
-		render(SimpleMode, { props: { state: makeState(), onSwitchLayout: switchFn } });
+		render(SimpleMode, { props: { crState: makeState(), onSwitchLayout: switchFn } });
 		const gearBtn = screen.getByTitle('Switch to traditional mode');
 		await fireEvent.click(gearBtn);
 		expect(switchFn).toHaveBeenCalled();
 	});
 
 	it('displays SwitchFrame brand', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		expect(screen.getByText('SwitchFrame')).toBeTruthy();
 	});
 
 	it('renders a FADE TO BLACK button', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		expect(screen.getByText('FADE TO BLACK')).toBeTruthy();
 	});
 
 	it('FADE TO BLACK button calls onFTB callback when clicked', async () => {
 		const ftbFn = vi.fn();
-		render(SimpleMode, { props: { state: makeState(), onFTB: ftbFn } });
+		render(SimpleMode, { props: { crState: makeState(), onFTB: ftbFn } });
 		await fireEvent.click(screen.getByText('FADE TO BLACK'));
 		expect(ftbFn).toHaveBeenCalled();
 	});
 
 	it('FADE TO BLACK button calls fadeToBlack API when no callback provided', async () => {
 		const { fadeToBlack } = await import('$lib/api/switch-api');
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		await fireEvent.click(screen.getByText('FADE TO BLACK'));
 		expect(fadeToBlack).toHaveBeenCalled();
 	});
 
 	it('FADE TO BLACK button shows ftb-active class when ftbActive is true', () => {
-		render(SimpleMode, { props: { state: makeState({ ftbActive: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ ftbActive: true }) } });
 		const btn = screen.getByText('FADE TO BLACK');
 		expect(btn.classList.contains('ftb-active')).toBe(true);
 	});
 
 	it('FADE TO BLACK button disabled during transition', () => {
-		render(SimpleMode, { props: { state: makeState({ inTransition: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ inTransition: true }) } });
 		const btn = screen.getByText('FADE TO BLACK');
 		expect(btn.closest('button')?.disabled ?? (btn as HTMLButtonElement).disabled).toBe(true);
 	});
 
 	it('FADE TO BLACK button enabled during FTB release (inTransition + ftbActive)', () => {
-		render(SimpleMode, { props: { state: makeState({ inTransition: true, ftbActive: true }) } });
+		render(SimpleMode, { props: { crState: makeState({ inTransition: true, ftbActive: true }) } });
 		const btn = screen.getByText('FADE TO BLACK');
 		expect(btn.closest('button')?.disabled ?? (btn as HTMLButtonElement).disabled).toBe(false);
 	});
@@ -181,7 +181,7 @@ describe('SimpleMode', () => {
 				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
-		render(SimpleMode, { props: { state } });
+		render(SimpleMode, { props: { crState: state } });
 		const buttons = screen.getAllByText(/Camera 2/);
 		const cam2btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
 		expect(cam2btn?.classList.contains('source-stale')).toBe(true);
@@ -195,7 +195,7 @@ describe('SimpleMode', () => {
 				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
-		render(SimpleMode, { props: { state } });
+		render(SimpleMode, { props: { crState: state } });
 		const buttons = screen.getAllByText(/Camera 2/);
 		const cam2btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
 		expect(cam2btn?.classList.contains('source-stale')).toBe(true);
@@ -209,7 +209,7 @@ describe('SimpleMode', () => {
 				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
-		render(SimpleMode, { props: { state } });
+		render(SimpleMode, { props: { crState: state } });
 		// The button should have the source-offline class
 		const offlineOverlays = screen.getAllByText('OFFLINE');
 		expect(offlineOverlays.length).toBeGreaterThanOrEqual(1);
@@ -228,7 +228,7 @@ describe('SimpleMode', () => {
 				cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 			},
 		});
-		render(SimpleMode, { props: { state } });
+		render(SimpleMode, { props: { crState: state } });
 		const warnings = screen.getAllByText('!');
 		const cam1warning = warnings.find((el) => el.closest('.source-btn'));
 		expect(cam1warning).toBeTruthy();
@@ -236,7 +236,7 @@ describe('SimpleMode', () => {
 	});
 
 	it('healthy source button does not get stale or offline classes', () => {
-		render(SimpleMode, { props: { state: makeState() } });
+		render(SimpleMode, { props: { crState: makeState() } });
 		const buttons = screen.getAllByText(/Camera 1/);
 		const cam1btn = buttons.find((el) => el.closest('.source-btn'))?.closest('button');
 		expect(cam1btn?.classList.contains('source-stale')).toBe(false);
