@@ -36,6 +36,7 @@ func (a *SwitcherAdapter) PerfSample() SwitcherSample {
 		VideoBroadcast:       raw.VideoBroadcast,
 		DeadlineViolations:   raw.DeadlineViolations,
 		FrameBudgetNs:        raw.FrameBudgetNs,
+		ProcDropped:          raw.ProcDropped,
 		DecodeQueueNs:        raw.DecodeQueueNs,
 		DecodeNs:             raw.DecodeNs,
 		SyncWaitNs:           raw.SyncWaitNs,

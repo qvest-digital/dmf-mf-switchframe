@@ -127,6 +127,7 @@ type PerfPipelineSnapshot struct {
 	Windows            PerfWindows                 `json:"windows"`
 	Nodes              map[string]PerfNodeSnapshot `json:"nodes"`
 	DeadlineViolations int64                       `json:"deadline_violations"`
+	ProcDropped        int64                       `json:"proc_dropped"`
 	BudgetPct          float64                     `json:"budget_pct"`
 }
 
@@ -342,6 +343,7 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 			Windows:            ringToWindows(s.pipelineRing),
 			Nodes:              nodes,
 			DeadlineViolations: sw.DeadlineViolations,
+			ProcDropped:        sw.ProcDropped,
 			BudgetPct:          budgetPct,
 		},
 		E2E: PerfE2ESnapshot{

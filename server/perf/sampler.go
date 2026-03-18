@@ -85,6 +85,7 @@ type SwitcherSample struct {
 	VideoBroadcast     int64
 	DeadlineViolations int64
 	FrameBudgetNs      int64
+	ProcDropped        int64
 	DecodeQueueNs      int64
 	DecodeNs           int64
 	SyncWaitNs         int64
