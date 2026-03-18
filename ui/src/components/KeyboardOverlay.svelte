@@ -33,7 +33,7 @@
 		{ key: 'Shift + G', action: 'Pipeline graph' },
 		{ key: 'Shift + I', action: 'I/O management panel' },
 		// Misc
-		{ key: '` (backtick)', action: 'Toggle fullscreen' },
+		{ key: '` (backtick)', action: 'Toggle comms mute' },
 		{ key: '?', action: 'Toggle this overlay' },
 		{ key: 'Esc', action: 'Close overlay' },
 		{ key: 'Ctrl+Shift + D', action: 'Export debug snapshot' },

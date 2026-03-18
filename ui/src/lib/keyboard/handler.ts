@@ -27,6 +27,7 @@ export interface KeyboardActions {
 	replaySpeedUp?: () => void;
 	replayFrameBack?: () => void;
 	replayFrameForward?: () => void;
+	commsToggleMute?: () => void;
 	isReplayTabActive?: () => boolean;
 	getSourceKeys: () => string[];
 }
@@ -111,6 +112,14 @@ export class KeyboardHandler {
 				this.actions.onSetTransitionType?.('dip');
 				return;
 			}
+		}
+
+		// Backtick: toggle comms mute
+		if (e.code === 'Backquote' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+			e.preventDefault();
+			e.stopPropagation();
+			this.actions.commsToggleMute?.();
+			return;
 		}
 
 		// Ignore when modifier keys are held (avoid conflicts with browser shortcuts)
@@ -269,11 +278,6 @@ export class KeyboardHandler {
 				e.preventDefault();
 				e.stopPropagation();
 				this.actions.onToggleDSK?.();
-				break;
-			case 'Backquote':
-				e.preventDefault();
-				e.stopPropagation();
-				this.actions.onToggleFullscreen();
 				break;
 			case 'Slash':
 				e.preventDefault();
