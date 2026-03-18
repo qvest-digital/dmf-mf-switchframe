@@ -336,10 +336,7 @@ func TestOutputTicker_ProducesFramesAtCadence(t *testing.T) {
 			return enc, nil
 		},
 	})
-
-	// Start the output ticker in a separate goroutine
-	m.tickerWg.Add(1)
-	go m.outputTicker()
+	// NewMixer already starts the outputTicker — no need to start a second one.
 
 	// Let it run for ~100ms — should produce ~4-5 frames at ~21.3ms cadence
 	time.Sleep(100 * time.Millisecond)

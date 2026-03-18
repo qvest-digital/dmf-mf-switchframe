@@ -218,7 +218,7 @@ func NewMixer(config MixerConfig) *Mixer {
 		sampleRate:     config.SampleRate,
 		numChannels:    config.Channels,
 		output:         config.Output,
-		passthrough:    true,
+		passthrough:    false, // clock-driven mixer always mixes
 		config:         config,
 		stopTicker:     make(chan struct{}),
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
@@ -227,7 +227,7 @@ func NewMixer(config MixerConfig) *Mixer {
 		mixBuffer:      make(map[string][]float32),
 	}
 	m.tickerWg.Add(1)
-	go m.mixDeadlineTicker()
+	go m.outputTicker()
 	return m
 }
 
