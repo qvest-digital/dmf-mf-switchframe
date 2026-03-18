@@ -9,17 +9,18 @@ package audio
 // returned (freeze-repeat) to avoid silence gaps.
 type PCMRingBuffer struct {
 	buf       []float32 // circular sample buffer
-	head      int       // next write position
+	rd        int       // read position
+	wr        int       // write position
 	count     int       // current number of samples in buffer
 	cap       int       // total capacity in samples
 	lastFrame []float32 // last successfully popped frame (for freeze-repeat)
 }
 
 // NewPCMRingBuffer creates a ring buffer with the given capacity in samples.
-// For stereo 48kHz with 3 frames of buffer: 3 * 1024 * 2 = 6144 samples.
+// For stereo 48kHz with 10 frames of buffer: 10 * 1024 * 2 = 20480 samples.
 func NewPCMRingBuffer(capacitySamples int) *PCMRingBuffer {
-	if capacitySamples < 1024 {
-		capacitySamples = 1024
+	if capacitySamples < 2048 {
+		capacitySamples = 2048
 	}
 	return &PCMRingBuffer{
 		buf: make([]float32, capacitySamples),
@@ -41,23 +42,23 @@ func (rb *PCMRingBuffer) Push(pcm []float32) {
 		n = rb.cap
 	}
 
-	// Make room if needed by dropping oldest samples.
-	if rb.count+n > rb.cap {
-		drop := rb.count + n - rb.cap
+	// Make room if needed by advancing read pointer past oldest data.
+	avail := rb.cap - rb.count
+	if n > avail {
+		drop := n - avail
+		rb.rd = (rb.rd + drop) % rb.cap
 		rb.count -= drop
-		// No need to move tail pointer — we use head-based addressing.
 	}
 
-	// Write samples. May wrap around.
-	writeStart := (rb.head) % rb.cap
-	firstChunk := rb.cap - writeStart
-	if firstChunk >= n {
-		copy(rb.buf[writeStart:writeStart+n], pcm)
+	// Write samples, wrapping around if needed.
+	first := rb.cap - rb.wr
+	if first >= n {
+		copy(rb.buf[rb.wr:rb.wr+n], pcm)
 	} else {
-		copy(rb.buf[writeStart:], pcm[:firstChunk])
-		copy(rb.buf[:n-firstChunk], pcm[firstChunk:])
+		copy(rb.buf[rb.wr:], pcm[:first])
+		copy(rb.buf[:n-first], pcm[first:])
 	}
-	rb.head = (rb.head + n) % rb.cap
+	rb.wr = (rb.wr + n) % rb.cap
 	rb.count += n
 }
 
@@ -79,17 +80,16 @@ func (rb *PCMRingBuffer) Pop(n int) []float32 {
 		return out
 	}
 
-	// Read n samples from tail position.
-	tail := (rb.head - rb.count + rb.cap) % rb.cap
+	// Read n samples from read position.
 	out := make([]float32, n)
-
-	firstChunk := rb.cap - tail
-	if firstChunk >= n {
-		copy(out, rb.buf[tail:tail+n])
+	first := rb.cap - rb.rd
+	if first >= n {
+		copy(out, rb.buf[rb.rd:rb.rd+n])
 	} else {
-		copy(out[:firstChunk], rb.buf[tail:])
-		copy(out[firstChunk:], rb.buf[:n-firstChunk])
+		copy(out[:first], rb.buf[rb.rd:])
+		copy(out[first:], rb.buf[:n-first])
 	}
+	rb.rd = (rb.rd + n) % rb.cap
 	rb.count -= n
 
 	// Update lastFrame for freeze-repeat.
@@ -110,6 +110,7 @@ func (rb *PCMRingBuffer) Len() int {
 
 // Reset clears all buffered samples but preserves lastFrame for freeze-repeat.
 func (rb *PCMRingBuffer) Reset() {
-	rb.head = 0
+	rb.rd = 0
+	rb.wr = 0
 	rb.count = 0
 }

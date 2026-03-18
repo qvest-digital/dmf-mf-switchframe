@@ -33,12 +33,17 @@ func TestPCMRingBuffer_PushPop_MultipleChunks(t *testing.T) {
 }
 
 func TestPCMRingBuffer_Overflow_DropsOldest(t *testing.T) {
-	rb := NewPCMRingBuffer(4)
-	rb.Push([]float32{1, 2, 3, 4})
-	rb.Push([]float32{5, 6})
+	// Use a buffer just big enough to test overflow.
+	// Capacity 2048 (minimum), push 2048 then 1024 more.
+	rb := &PCMRingBuffer{
+		buf: make([]float32, 6),
+		cap: 6,
+	}
+	rb.Push([]float32{1, 2, 3, 4, 5, 6}) // fill
+	rb.Push([]float32{7, 8})              // overflow, drops 1,2
 
-	out := rb.Pop(4)
-	assert.Equal(t, []float32{3, 4, 5, 6}, out)
+	out := rb.Pop(6)
+	assert.Equal(t, []float32{3, 4, 5, 6, 7, 8}, out)
 }
 
 func TestPCMRingBuffer_PopEmpty_FreezeRepeat(t *testing.T) {
