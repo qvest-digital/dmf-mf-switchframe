@@ -411,39 +411,39 @@ func (m *Mixer) frameDuration90k() int64 {
 func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.outputPTSInited {
-		return // already seeded
-	}
+	// Always override — audio may have already seeded via advanceOutputPTS
+	// (audio frames arrive before video during FFmpeg probe). The video seed
+	// is authoritative because it aligns with the frame sync's video PTS.
 	m.outputPTSStart = videoPTS
 	m.outputPTSEpoch = time.Now()
 	m.outputPTS = videoPTS
 	m.outputPTSInited = true
 }
 
-// advanceOutputPTS returns a wall-clock-based output PTS.
-// Seeded from the video pipeline's first frame (SeedPTSFromVideo) or
-// the first audio input PTS. Tracks elapsed wall-clock time to stay
-// aligned with the video frame sync (which also advances on wall clock).
-// Never follows source PTS jumps on cuts.
+// advanceOutputPTS returns a monotonically increasing output PTS.
+// Seeded from the video pipeline's first frame (SeedPTSFromVideo) to
+// align with the video PTS timeline. Advances by exactly frameDuration
+// per call (regular spacing for the browser's audio scheduler). Source
+// PTS jumps on cuts are ignored.
+//
+// The silence fill ticker calls this during no-audio periods, keeping
+// the counter advancing to prevent drift vs video PTS. The frame sync
+// also advances by frameDuration per tick, so both stay in sync.
 // Caller must hold m.mu.
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
-	now := time.Now()
 	if !m.outputPTSInited {
 		if inputPTS > 0 {
 			m.outputPTSStart = inputPTS
-			m.outputPTSEpoch = now
+			m.outputPTSEpoch = time.Now()
 			m.outputPTS = inputPTS
 			m.outputPTSInited = true
 		} else {
 			// Silence fill before first real frame — advance from 0.
 			m.outputPTS += m.frameDuration90k()
-			m.outputPTS &= 0x1FFFFFFFF
-			return m.outputPTS
 		}
+	} else {
+		m.outputPTS += m.frameDuration90k()
 	}
-	// Wall-clock PTS: startPTS + elapsed_time_in_90kHz_ticks.
-	elapsed := now.Sub(m.outputPTSEpoch)
-	m.outputPTS = m.outputPTSStart + int64(elapsed.Seconds()*90000)
 	m.outputPTS &= 0x1FFFFFFFF
 	return m.outputPTS
 }
