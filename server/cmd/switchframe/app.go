@@ -339,6 +339,9 @@ func (a *App) initCoreEngine() error {
 		a.mixer.IngestFrame(sourceKey, frame)
 	})
 	a.sw.SetMixer(a.mixer)
+	a.sw.SetOnFirstVideoPTS(func(pts int64) {
+		a.mixer.SeedPTSFromVideo(pts)
+	})
 
 	// Configure transition engine with auto-detected video codec.
 	a.sw.SetTransitionConfig(switcher.TransitionConfig{

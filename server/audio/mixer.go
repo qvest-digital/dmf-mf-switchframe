@@ -148,11 +148,13 @@ type Mixer struct {
 	programMuted        bool
 	unmuteFadeRemaining int // samples remaining in unmute fade-in ramp (0 = inactive)
 
-	// Monotonic output PTS: seeded from first input, advances by frameDuration.
-	// Follows source PTS for normal progression (preserving A/V sync from
-	// the source) but never jumps forward on source cuts (prevents desync).
+	// Wall-clock-based output PTS: seeded from video pipeline's first frame
+	// PTS + wall time (SeedPTSFromVideo), then tracks elapsed wall clock.
+	// Both video and audio use wall clock, so they stay aligned during gaps.
 	outputPTS       int64
 	outputPTSInited bool
+	outputPTSStart  int64     // source PTS at epoch
+	outputPTSEpoch  time.Time // wall-clock time at epoch
 
 	// Program bus limiter (always active)
 	limiter *Limiter
@@ -400,31 +402,48 @@ func (m *Mixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
-// advanceOutputPTS returns a monotonically increasing output PTS.
-// Seeded from the first input PTS (aligning with the video pipeline's
-// starting PTS from the same source). Advances by frameDuration on each
-// call. Follows source PTS forward when close to expected (normal delivery)
-// but never jumps on source cuts (prevents desync across different sources).
-// The silence fill ticker calls this during no-audio periods, keeping the
-// counter advancing in sync with the frame sync's video PTS.
+// SeedPTSFromVideo sets the audio PTS epoch from the video pipeline's first
+// frame. Called by the switcher when the first program video frame is
+// processed, ensuring audio and video PTS share the same starting point.
+// Without this, the audio epoch would start ~500ms late (FFmpeg produces
+// the first video frame before the first audio frame during probe).
+// Thread-safe — can be called from any goroutine.
+func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.outputPTSInited {
+		return // already seeded
+	}
+	m.outputPTSStart = videoPTS
+	m.outputPTSEpoch = time.Now()
+	m.outputPTS = videoPTS
+	m.outputPTSInited = true
+}
+
+// advanceOutputPTS returns a wall-clock-based output PTS.
+// Seeded from the video pipeline's first frame (SeedPTSFromVideo) or
+// the first audio input PTS. Tracks elapsed wall-clock time to stay
+// aligned with the video frame sync (which also advances on wall clock).
+// Never follows source PTS jumps on cuts.
 // Caller must hold m.mu.
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
+	now := time.Now()
 	if !m.outputPTSInited {
 		if inputPTS > 0 {
+			m.outputPTSStart = inputPTS
+			m.outputPTSEpoch = now
 			m.outputPTS = inputPTS
 			m.outputPTSInited = true
 		} else {
 			// Silence fill before first real frame — advance from 0.
 			m.outputPTS += m.frameDuration90k()
+			m.outputPTS &= 0x1FFFFFFFF
+			return m.outputPTS
 		}
-	} else {
-		// Always advance by exactly one frame duration. This matches the
-		// frame sync's behavior (advance video PTS by frameDuration per tick).
-		// Source PTS jumps from cuts are ignored — both video and audio
-		// advance monotonically from their shared starting point.
-		m.outputPTS += m.frameDuration90k()
 	}
-	// MPEG-TS PTS is 33 bits; mask to prevent overflow after ~26.5 hours.
+	// Wall-clock PTS: startPTS + elapsed_time_in_90kHz_ticks.
+	elapsed := now.Sub(m.outputPTSEpoch)
+	m.outputPTS = m.outputPTSStart + int64(elapsed.Seconds()*90000)
 	m.outputPTS &= 0x1FFFFFFFF
 	return m.outputPTS
 }

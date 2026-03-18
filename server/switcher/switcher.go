@@ -254,6 +254,13 @@ type Switcher struct {
 	frameSync       *FrameSynchronizer
 	frameSyncActive bool
 
+	// Callback to seed audio PTS epoch from first program video frame.
+	// Called once — sets the mixer's wall-clock PTS to the same starting
+	// point as the video pipeline, eliminating A/V offset from FFmpeg's
+	// delayed audio decoder warmup.
+	onFirstVideoPTS     func(pts int64)
+	firstVideoPTSSeeded bool
+
 	// DSK graphics compositor — applies overlay in YUV420 domain.
 	compositorRef *graphics.Compositor
 
@@ -701,6 +708,15 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audioTransition = handler
+}
+
+// SetOnFirstVideoPTS registers a callback invoked once when the first
+// program video frame enters the pipeline. Used to seed the audio mixer's
+// PTS epoch so audio and video start from the same wall-clock moment.
+func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onFirstVideoPTS = fn
 }
 
 // RequestKeyframe forces the next encoded frame to be an IDR keyframe.
@@ -2851,6 +2867,12 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	s.routeToPipeline.Add(1)
+
+	// Seed audio PTS epoch from first program video frame.
+	if !s.firstVideoPTSSeeded && s.onFirstVideoPTS != nil {
+		s.firstVideoPTSSeeded = true
+		s.onFirstVideoPTS(pf.PTS)
+	}
 
 	// Enqueue as yuvFrame — the processing loop handles key→compositor→encode→broadcast.
 	s.broadcastProcessedFromPF(pf)
