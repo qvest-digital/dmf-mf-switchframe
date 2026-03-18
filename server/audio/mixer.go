@@ -173,7 +173,6 @@ type Mixer struct {
 
 	// Mix cycle timing (atomic, lock-free)
 	lastMixCycleNs atomic.Int64
-	maxMixCycleNs  atomic.Int64
 }
 
 // NewMixer creates a Mixer.
@@ -639,8 +638,6 @@ func (m *Mixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, en
 	if err := eq.SetBand(band, frequency, gain, q, enabled); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.mu.Unlock()
 	return nil
 }
 
@@ -668,8 +665,6 @@ func (m *Mixer) SetCompressor(sourceKey string, threshold, ratio, attack, releas
 	if err := comp.SetParams(threshold, ratio, attack, release, makeupGain); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	m.mu.Unlock()
 	return nil
 }
 
