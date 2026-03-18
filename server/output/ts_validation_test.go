@@ -41,7 +41,7 @@ func loadFixture(t *testing.T, path string) *fixtureFrames {
 
 	f, err := os.Open(path)
 	require.NoError(t, err, "open fixture file")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ctx := context.Background()
 	dmx := astits.NewDemuxer(ctx, f)
@@ -461,9 +461,7 @@ func analyzeTSStream(data []byte) *tsAnalysis {
 	}
 
 	const pktSize = 188
-	if len(data)%pktSize != 0 {
-		// Not packet-aligned — count the aligned portion anyway.
-	}
+	// Process aligned portion even if data isn't packet-aligned.
 
 	// Continuity counter tracking per PID.
 	ccTracker := make(map[uint16]int) // PID → last CC seen (-1 = not seen)

@@ -24,7 +24,7 @@ type commsMuteCmd struct {
 // It reads a handshake message containing the operator ID, then delegates
 // to handleCommsStream for the audio read/write loop.
 func (a *App) handleCommsBidiStream(_ string, stream io.ReadWriteCloser) {
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	if a.commsMgr == nil {
 		return

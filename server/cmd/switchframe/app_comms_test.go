@@ -114,7 +114,7 @@ func TestHandleCommsStream_WriteLoop(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		handleCommsStreamForTest(mgr, "op1", blockingReader, pw)
-		pw.Close()
+		_ = pw.Close()
 	}()
 
 	// Push a packet into the participant's send channel via the test helper.
