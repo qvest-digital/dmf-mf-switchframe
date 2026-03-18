@@ -80,6 +80,7 @@ type Encoder struct {
 	ch            chan encodeJob
 	done          chan struct{}
 	stopOnce      sync.Once
+	stopped       atomic.Bool
 	stats         Stats
 	frameInterval int // resolved from Config (min 1)
 }
@@ -106,6 +107,10 @@ func NewEncoder(cfg Config) (*Encoder, error) {
 // the oldest frame is drained and replaced with the new one.
 // The YUV data is deep-copied so the caller can reuse or release the buffer.
 func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
+	if e.stopped.Load() {
+		return
+	}
+
 	e.stats.FramesIn.Add(1)
 
 	// Deep copy -- caller may reuse the buffer.
@@ -114,7 +119,13 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 
 	job := encodeJob{yuv: cp, w: w, h: h, pts: pts}
 
-	// Try non-blocking send.
+	// Try non-blocking send. Guard against channel close race with Stop().
+	defer func() {
+		if r := recover(); r != nil {
+			// Channel closed by Stop() between stopped check and send -- drop silently.
+		}
+	}()
+
 	select {
 	case e.ch <- job:
 		return
@@ -143,9 +154,25 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 // is called after the buffer is no longer needed (after scaling), or
 // immediately if the frame is dropped due to channel overflow.
 func (e *Encoder) SendOwned(yuv []byte, w, h int, pts int64, release func([]byte)) {
+	if e.stopped.Load() {
+		if release != nil {
+			release(yuv)
+		}
+		return
+	}
+
 	e.stats.FramesIn.Add(1)
 
 	job := encodeJob{yuv: yuv, w: w, h: h, pts: pts, release: release}
+
+	// Guard against channel close race with Stop().
+	defer func() {
+		if r := recover(); r != nil {
+			if release != nil {
+				release(yuv)
+			}
+		}
+	}()
 
 	// Try non-blocking send.
 	select {
@@ -178,6 +205,7 @@ func (e *Encoder) SendOwned(yuv []byte, w, h int, pts int64, release func([]byte
 // Safe to call multiple times.
 func (e *Encoder) Stop() {
 	e.stopOnce.Do(func() {
+		e.stopped.Store(true)
 		close(e.ch)
 	})
 	<-e.done
