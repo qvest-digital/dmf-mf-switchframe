@@ -104,10 +104,7 @@
 		}
 	}
 
-	// Replay state — cannot use $state() rune here because the local prop
-	// named `state` causes Svelte 5 to misinterpret $state as a store
-	// subscription (store_rune_conflict). Plain let is reactive in .svelte files.
-	let simpleSpeed = 0.5;
+	let simpleSpeed = $state(0.5);
 	const isReplayActive = $derived(
 		state.replay?.state === 'playing' || state.replay?.state === 'paused'
 	);

@@ -10,7 +10,8 @@
 8. [Instant Replay](#8-instant-replay)
 9. [The Browser](#9-the-browser)
 10. [Control & Coordination](#10-control--coordination)
-11. [Performance & Design Philosophy](#11-performance--design-philosophy)
+11. [Operator Voice Comms](#11-operator-voice-comms)
+12. [Performance & Design Philosophy](#12-performance--design-philosophy)
 
 ---
 
@@ -309,8 +310,9 @@ flowchart TD
     Trim --> EQ["3-Band Parametric EQ<br/>(RBJ biquad,<br/>per-channel state)"]
     EQ --> Comp["Compressor<br/>(envelope follower,<br/>makeup gain)"]
     Comp --> Fader["Channel Fader"]
-    Fader --> Accum["Accumulate<br/>(wait for all active<br/>unmuted channels<br/>or 25 ms deadline)"]
-    Accum --> Sum["Sum + Master Gain"]
+    Fader --> Ring["PCMRingBuffer<br/>(per-channel processed PCM)"]
+    Ring --> Tick["outputTicker<br/>(clock-driven,<br/>~21.3 ms cadence)"]
+    Tick --> Sum["Sum + Master Gain"]
     Sum --> LUFS["BS.1770-4<br/>LUFS Metering"]
     LUFS --> Lim["Brickwall Limiter<br/>(−1 dBFS)"]
     Lim --> Enc["FDK AAC Encode"]

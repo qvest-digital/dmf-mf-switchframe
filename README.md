@@ -36,13 +36,15 @@ Every source is continuously decoded to raw YUV420. Cuts are instant. All video 
 
 **Graphics & Keying** — 8-layer downstream key compositor with fade, fly-in/out, slide, and pulse animations. 6 built-in broadcast templates. Per-source upstream chroma and luma keying. PIP, side-by-side, and quad layouts with slot transitions and live drag positioning via WebTransport datagrams.
 
-**Instant Replay** — Per-source circular buffers (configurable up to 5 minutes), mark-in/out, variable-speed playback down to 0.25x. Pitch-preserved audio via phase vocoder. Frame interpolation: duplication, alpha blend, motion-compensated (MCFI), or hold-crossfade (default).
+**Instant Replay** — Per-source circular buffers (configurable up to 5 minutes), mark-in/out, variable-speed playback down to 0.25x with pause/resume/seek. Quick-replay buttons and JKL shuttle control. Pitch-preserved audio via phase vocoder. Frame interpolation: duplication, alpha blend, motion-compensated (MCFI), or hold-crossfade (default).
 
 **SRT Input** — Listener (push) and caller (pull) modes for ingesting SRT sources. Any codec FFmpeg can decode, normalized to YUV420. Persistent config across reconnects. Exponential backoff reconnection. Per-source latency override and connection stats.
 
 **Output** — MPEG-TS recording with time and size rotation. Multi-destination SRT output, push and pull. CEA-608 closed captions. Per-destination SCTE-35 ad insertion with signal conditioning rules engine. SCTE-104 automation on MXL data flows.
 
 **Multi-Operator** — Director, audio, graphics, and viewer roles with per-subsystem locking. Macro system covering switching, audio, graphics, replay, layout, and SCTE-35 with step validation and keyboard triggers.
+
+**Operator Comms** — Built-in voice channel for multi-operator coordination. Opus codec over WebTransport bidirectional streams. N-1 mixing (hear everyone except yourself). Push-to-talk with backtick key. Auto-duck dims program audio during active comms. Up to 6 participants.
 
 **MXL** — Optional shared-memory transport for uncompressed V210 video and float32 audio. Sources bypass H.264 decode entirely — raw YUV420p into the pipeline. Program output routes back to MXL. NMOS IS-04 flow discovery.
 
@@ -107,6 +109,7 @@ The video pipeline is a chain of immutable processing nodes, atomically swapped 
 | Fade to black | FTB button | `F1` |
 | Hot-punch to program | — | `Shift`+`1`–`9` |
 | Run macro | — | `Ctrl`+`1`–`9` |
+| Comms mute toggle | — | `` ` `` (backtick) |
 
 Press **?** for the full shortcut overlay. Append `?mode=simple` for a volunteer-friendly layout.
 

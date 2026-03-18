@@ -23,8 +23,8 @@ test('replay panel has mark and transport controls', async ({ page }) => {
 	await expect(replayPanel).toBeVisible();
 	await expect(replayPanel.locator('.mark-btn.mark-in')).toBeVisible();
 	await expect(replayPanel.locator('.mark-btn.mark-out')).toBeVisible();
-	// Transport button (play or stop) should be visible
-	await expect(replayPanel.locator('.transport-btn')).toBeVisible();
+	// At least one transport button should be visible
+	await expect(replayPanel.locator('.transport-btn').first()).toBeVisible();
 });
 
 test('keyboard overlay opens on / and closes on Escape', async ({ page }) => {
