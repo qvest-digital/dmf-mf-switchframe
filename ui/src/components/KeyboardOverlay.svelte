@@ -34,6 +34,7 @@
 		{ key: 'Shift + I', action: 'I/O management panel' },
 		// Misc
 		{ key: '` (backtick)', action: 'Toggle comms mute' },
+		{ key: 'F4', action: 'Toggle fullscreen' },
 		{ key: '?', action: 'Toggle this overlay' },
 		{ key: 'Esc', action: 'Close overlay' },
 		{ key: 'Ctrl+Shift + D', action: 'Export debug snapshot' },

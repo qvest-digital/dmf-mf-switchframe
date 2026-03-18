@@ -279,6 +279,11 @@ export class KeyboardHandler {
 				e.stopPropagation();
 				this.actions.onToggleDSK?.();
 				break;
+			case 'F4':
+				e.preventDefault();
+				e.stopPropagation();
+				this.actions.onToggleFullscreen();
+				break;
 			case 'Slash':
 				e.preventDefault();
 				e.stopPropagation();
