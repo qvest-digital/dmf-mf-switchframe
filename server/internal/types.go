@@ -302,9 +302,8 @@ type CaptionState struct {
 
 // CommsState represents the current operator voice comms state.
 type CommsState struct {
-	Active         bool               `json:"active"`
-	Participants   []CommsParticipant `json:"participants"`
-	TalkbackTarget string             `json:"talkbackTarget,omitempty"`
+	Active       bool               `json:"active"`
+	Participants []CommsParticipant `json:"participants"`
 }
 
 // CommsParticipant represents a single operator in the voice comms channel.

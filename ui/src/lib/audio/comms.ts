@@ -46,6 +46,9 @@ export class CommsAudioManager {
 	private commsActivityTimer: ReturnType<typeof setTimeout> | null = null;
 	private commsActive = false;
 
+	// Monotonic decode timestamp (microseconds, 20ms per frame)
+	private decodeTimestamp = 0;
+
 	constructor(config: CommsConfig) {
 		this.config = config;
 	}
@@ -252,9 +255,10 @@ export class CommsAudioManager {
 						// Feed Opus data to WebCodecs decoder
 						const chunk = new EncodedAudioChunk({
 							type: 'key', // Opus frames are independent
-							timestamp: 0, // decoder handles timing
+							timestamp: this.decodeTimestamp,
 							data: payload,
 						});
+						this.decodeTimestamp += 20_000; // 20ms per frame in microseconds
 						this.decoder.decode(chunk);
 					} else if (type === MSG_CONTROL) {
 						// eslint-disable-next-line no-console
@@ -274,6 +278,9 @@ export class CommsAudioManager {
 	 * Set up the microphone capture pipeline.
 	 * Uses ScriptProcessorNode to collect PCM samples and feed them
 	 * to the WebCodecs AudioEncoder in 20ms (960 sample) chunks.
+	 *
+	 * TODO: Migrate to AudioWorkletNode (ScriptProcessorNode is deprecated
+	 * and runs on the main thread, which can cause glitches under load).
 	 */
 	private captureLoop(): void {
 		if (!this.captureCtx || !this.mediaStream) return;

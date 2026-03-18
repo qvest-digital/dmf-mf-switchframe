@@ -58,13 +58,15 @@ func newParticipant(id, name string) (*participant, error) {
 func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	p.mu.Lock()
 	n, err := p.decoder.Decode(opusData, p.pcmBuf, FrameSize)
-	p.mu.Unlock()
 	if err != nil {
+		p.mu.Unlock()
 		return nil, err
 	}
-
+	// Copy while still holding the lock so pcmBuf can't be overwritten
+	// by a concurrent decode (single-writer today, but defensive).
 	out := make([]int16, n)
 	copy(out, p.pcmBuf[:n])
+	p.mu.Unlock()
 
 	// Non-blocking enqueue — drop oldest if full.
 	select {

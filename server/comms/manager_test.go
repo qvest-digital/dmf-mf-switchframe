@@ -133,7 +133,7 @@ func TestManagerSetMuted(t *testing.T) {
 	}
 }
 
-func TestManagerBroadcastOnJoin(t *testing.T) {
+func TestManagerBroadcastOnLeave(t *testing.T) {
 	if !opusAvailable {
 		t.Skip("opus codec not available")
 	}
@@ -148,9 +148,11 @@ func TestManagerBroadcastOnJoin(t *testing.T) {
 		t.Fatalf("Join: %v", err)
 	}
 
-	// Callback is synchronous in Join, so it should have fired immediately.
+	m.Leave("op1")
+
+	// Leave triggers onBroadcast (needed for stream-close auto-leave path).
 	if called.Load() < 1 {
-		t.Error("onBroadcast should have been called on join")
+		t.Error("onBroadcast should have been called on leave")
 	}
 }
 

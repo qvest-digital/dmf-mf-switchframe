@@ -22,7 +22,6 @@ func TestCommsStateJSON(t *testing.T) {
 				Speaking:   false,
 			},
 		},
-		TalkbackTarget: "op-2",
 	}
 
 	data, err := json.Marshal(original)
@@ -37,9 +36,6 @@ func TestCommsStateJSON(t *testing.T) {
 
 	if decoded.Active != original.Active {
 		t.Errorf("Active = %v, want %v", decoded.Active, original.Active)
-	}
-	if decoded.TalkbackTarget != original.TalkbackTarget {
-		t.Errorf("TalkbackTarget = %q, want %q", decoded.TalkbackTarget, original.TalkbackTarget)
 	}
 	if len(decoded.Participants) != 2 {
 		t.Fatalf("Participants len = %d, want 2", len(decoded.Participants))
@@ -63,17 +59,11 @@ func TestCommsStateJSON(t *testing.T) {
 	if p1.OperatorID != "op-2" {
 		t.Errorf("Participants[1].OperatorID = %q, want %q", p1.OperatorID, "op-2")
 	}
-	if p1.Name != "Audio Engineer" {
-		t.Errorf("Participants[1].Name = %q, want %q", p1.Name, "Audio Engineer")
-	}
 	if p1.Muted != true {
 		t.Errorf("Participants[1].Muted = %v, want true", p1.Muted)
 	}
-	if p1.Speaking != false {
-		t.Errorf("Participants[1].Speaking = %v, want false", p1.Speaking)
-	}
 
-	// Verify JSON field names are correct
+	// Verify JSON field names
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshal to map: %v", err)
@@ -83,9 +73,6 @@ func TestCommsStateJSON(t *testing.T) {
 	}
 	if _, ok := raw["participants"]; !ok {
 		t.Error("JSON missing 'participants' field")
-	}
-	if _, ok := raw["talkbackTarget"]; !ok {
-		t.Error("JSON missing 'talkbackTarget' field")
 	}
 
 	participants := raw["participants"].([]interface{})

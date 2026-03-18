@@ -544,7 +544,6 @@ export interface CommsParticipant {
 export interface CommsState {
 	active: boolean;
 	participants: CommsParticipant[];
-	talkbackTarget?: string;
 }
 
 export interface ConnectionInfo {
