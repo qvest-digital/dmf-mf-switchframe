@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { setPreview, cut, startTransition, fadeToBlack, apiCall } from '$lib/api/switch-api';
+	import { setPreview, cut, startTransition, fadeToBlack, replayQuick, replayStop, replaySetSpeed, apiCall } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
@@ -104,6 +104,29 @@
 		}
 	}
 
+	// Replay state — cannot use $state() rune here because the local prop
+	// named `state` causes Svelte 5 to misinterpret $state as a store
+	// subscription (store_rune_conflict). Plain let is reactive in .svelte files.
+	let simpleSpeed = 0.5;
+	const isReplayActive = $derived(
+		state.replay?.state === 'playing' || state.replay?.state === 'paused'
+	);
+
+	function handleSimpleReplay() {
+		if (isReplayActive) {
+			apiCall(replayStop(), 'Stop replay');
+		} else {
+			apiCall(replayQuick(15, simpleSpeed), 'Quick replay');
+		}
+	}
+
+	function toggleSpeed() {
+		simpleSpeed = simpleSpeed === 0.5 ? 1.0 : 0.5;
+		if (isReplayActive) {
+			apiCall(replaySetSpeed(simpleSpeed), 'Set speed');
+		}
+	}
+
 	function tallyClass(key: string): string {
 		const tally = state.tallyState[key];
 		if (tally === 'program') return 'tally-program';
@@ -169,6 +192,24 @@
 		</button>
 		<button class="action-btn ftb-btn" class:ftb-active={state.ftbActive} onclick={handleFTB} disabled={state.inTransition && !state.ftbActive}>
 			FADE TO BLACK
+		</button>
+	</section>
+
+	<!-- Replay Strip -->
+	<section class="replay-strip">
+		<button
+			class="action-btn replay-btn"
+			class:replay-active={isReplayActive}
+			onclick={handleSimpleReplay}
+		>
+			{isReplayActive ? '■ STOP' : '⟲ REPLAY'}
+		</button>
+		<button
+			class="action-btn speed-toggle-btn"
+			onclick={toggleSpeed}
+			disabled={!isReplayActive}
+		>
+			{simpleSpeed === 0.5 ? 'SLOW' : 'NORMAL'}
 		</button>
 	</section>
 </div>
@@ -440,6 +481,44 @@
 	@keyframes ftb-pulse {
 		0%, 100% { opacity: 1; }
 		50% { opacity: 0.7; }
+	}
+
+	.replay-strip {
+		display: grid;
+		grid-template-columns: 2fr 1fr;
+		gap: 8px;
+		padding: 0 12px 14px;
+		margin-top: 8px;
+	}
+
+	.replay-btn {
+		background: var(--accent-orange-dim);
+		border-color: var(--accent-orange-medium);
+		color: var(--accent-orange);
+	}
+
+	.replay-btn:hover {
+		background: var(--accent-orange-light);
+	}
+
+	.replay-btn.replay-active {
+		background: var(--accent-orange);
+		color: var(--bg-base);
+		border-color: var(--accent-orange);
+	}
+
+	.speed-toggle-btn {
+		background: var(--bg-surface);
+		border-color: var(--border-default);
+		color: var(--text-secondary);
+	}
+
+	.speed-toggle-btn:hover:not(:disabled) {
+		background: rgba(255, 255, 255, 0.06);
+	}
+
+	.speed-toggle-btn:disabled {
+		opacity: 0.3;
 	}
 
 	/* Stack monitors vertically on narrow viewports */
