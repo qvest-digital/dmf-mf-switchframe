@@ -169,12 +169,16 @@ func TestEncoder_NewestWinsDrop(t *testing.T) {
 	}
 	defer enc.Stop()
 
-	srcW, srcH := 640, 480
+	// Use small frames -- this test validates the drop policy, not encoding.
+	// Large frames (640x480 = 460KB each) cause 46MB of allocations under
+	// -race + -coverprofile which can exceed the timeout on slow CI runners.
+	srcW, srcH := 160, 120
 
-	// Flood 100 frames in a tight loop -- Send must never block.
+	// Flood 20 frames in a tight loop -- Send must never block.
+	// Channel capacity is 4, so 20 frames is 5x overflow -- plenty to test drop.
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 100; i++ {
+		for i := 0; i < 20; i++ {
 			yuv := makeYUV420(srcW, srcH, byte(i))
 			enc.Send(yuv, srcW, srcH, int64(i)*3000)
 		}
@@ -184,8 +188,8 @@ func TestEncoder_NewestWinsDrop(t *testing.T) {
 	select {
 	case <-done:
 		// Good -- Send never blocked.
-	case <-time.After(2 * time.Second):
-		t.Fatal("Send blocked for >2s, expected non-blocking newest-wins drop")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send blocked for >5s, expected non-blocking newest-wins drop")
 	}
 }
 
