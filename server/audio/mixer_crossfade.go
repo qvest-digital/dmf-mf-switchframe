@@ -113,6 +113,64 @@ func (m *Mixer) OnTransitionPosition(position float64) {
 	m.transCrossfadePosition = position
 }
 
+// fillMissingTransitionSources checks if any transition participant is missing
+// from the current mix buffer and fills it from lastDecodedPCM. This prevents
+// deadline flushes from producing partial mixes (only one source) which cause
+// gain-pumping "blip" artifacts during transitions.
+//
+// The filled PCM goes through the same gain pipeline as normal frames:
+// trim → fader → transition gain interpolation. This ensures the crossfade
+// blend is correct even with synthetic fill.
+//
+// Caller must hold m.mu write lock.
+func (m *Mixer) fillMissingTransitionSources() {
+	participants := [2]string{m.transCrossfadeFrom, m.transCrossfadeTo}
+	for _, src := range participants {
+		if src == "" {
+			continue
+		}
+		if _, present := m.mixBuffer[src]; present {
+			continue // already contributed this cycle
+		}
+		ch, ok := m.channels[src]
+		if !ok || ch.muted {
+			continue
+		}
+		lastPCM, ok := m.lastDecodedPCM[src]
+		if !ok || len(lastPCM) == 0 {
+			continue
+		}
+
+		// Apply the same per-channel pipeline as mixFrameLocked:
+		// trim → fader × transition gain interpolation.
+		ch.gainBuf = growBuf(ch.gainBuf, len(lastPCM))
+		filled := ch.gainBuf
+
+		var gainFn func(float64) float64
+		if src == m.transCrossfadeFrom {
+			gainFn = func(p float64) float64 { return transitionFromGain(m.transCrossfadeMode, p) }
+		} else {
+			gainFn = func(p float64) float64 { return transitionToGain(m.transCrossfadeMode, p) }
+		}
+		gStart := float32(gainFn(m.transCrossfadeAudioPos))
+		gEnd := float32(gainFn(m.mixCycleTransPos))
+		faderGain := ch.levelLinear * ch.trimLinear
+		channels := m.numChannels
+		pairCount := len(lastPCM) / channels
+		divisor := float32(pairCount)
+		if pairCount > 1 {
+			divisor = float32(pairCount - 1)
+		}
+		for i, s := range lastPCM {
+			t := float32(i/channels) / divisor
+			transGain := gStart + (gEnd-gStart)*t
+			filled[i] = s * faderGain * transGain
+		}
+
+		m.mixBuffer[src] = filled
+	}
+}
+
 // OnTransitionComplete clears the transition crossfade state.
 // Called by the switcher when the video transition finishes.
 func (m *Mixer) OnTransitionComplete() {
