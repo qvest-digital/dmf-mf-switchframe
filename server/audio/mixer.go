@@ -83,6 +83,7 @@ type Channel struct {
 	sampleRateWarned bool         // true after first sample rate mismatch log (once per channel)
 	resampler        *Resampler   // nil when source rate matches mixer rate; lazy-init on mismatch
 	resamplerSrcRate int          // source rate the resampler was created for (detect rate changes)
+	ringBuf          *PCMRingBuffer // processed PCM ring buffer for clock-driven output
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -492,6 +493,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
 		audioDelay:  NewDelayBuffer(0),
+		ringBuf:     NewPCMRingBuffer(3),
 	}
 	m.recalcPassthrough()
 }
