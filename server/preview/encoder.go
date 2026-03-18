@@ -33,13 +33,14 @@ type Relay interface {
 
 // Config configures a preview encoder instance.
 type Config struct {
-	SourceKey string // Source identifier (e.g. "cam1", "srt:feed1")
-	Width     int    // Preview output width (e.g. 854)
-	Height    int    // Preview output height (e.g. 480)
-	Bitrate   int    // Target bitrate in bps (e.g. 500_000)
-	FPSNum    int    // Frame rate numerator (e.g. 30)
-	FPSDen    int    // Frame rate denominator (e.g. 1)
-	Relay     Relay  // MoQ relay for broadcast
+	SourceKey     string // Source identifier (e.g. "cam1", "srt:feed1")
+	Width         int    // Preview output width (e.g. 854)
+	Height        int    // Preview output height (e.g. 480)
+	Bitrate       int    // Target bitrate in bps (e.g. 500_000)
+	FPSNum        int    // Frame rate numerator (e.g. 30)
+	FPSDen        int    // Frame rate denominator (e.g. 1)
+	Relay         Relay  // MoQ relay for broadcast
+	FrameInterval int    // Encode every Nth frame (1=all, 2=half rate, etc). 0 treated as 1.
 }
 
 // Stats tracks preview encoder performance counters using atomic operations.
@@ -75,20 +76,26 @@ type encodeJob struct {
 // Each source gets its own Encoder instance -- they run completely
 // independently with no shared state.
 type Encoder struct {
-	cfg      Config
-	ch       chan encodeJob
-	done     chan struct{}
-	stopOnce sync.Once
-	stats    Stats
+	cfg           Config
+	ch            chan encodeJob
+	done          chan struct{}
+	stopOnce      sync.Once
+	stats         Stats
+	frameInterval int // resolved from Config (min 1)
 }
 
 // NewEncoder creates and starts a preview encoder goroutine.
 // The goroutine runs until Stop() is called.
 func NewEncoder(cfg Config) (*Encoder, error) {
+	frameInterval := cfg.FrameInterval
+	if frameInterval < 1 {
+		frameInterval = 1
+	}
 	e := &Encoder{
-		cfg:  cfg,
-		ch:   make(chan encodeJob, 4),
-		done: make(chan struct{}),
+		cfg:           cfg,
+		ch:            make(chan encodeJob, 4),
+		done:          make(chan struct{}),
+		frameInterval: frameInterval,
 	}
 	go e.loop()
 	return e, nil
@@ -195,8 +202,19 @@ func (e *Encoder) loop() {
 	targetH := e.cfg.Height
 	targetSize := targetW * targetH * 3 / 2
 
+	var frameCount int64
+
 	for job := range e.ch {
 		w, h, pts := job.w, job.h, job.pts
+
+		// Frame skip: only encode every Nth frame.
+		frameCount++
+		if e.frameInterval > 1 && frameCount%int64(e.frameInterval) != 1 {
+			if job.release != nil {
+				job.release(job.yuv)
+			}
+			continue
+		}
 
 		// Source resolution changed -- recreate encoder.
 		if encoder != nil && (w != lastSrcW || h != lastSrcH) {

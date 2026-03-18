@@ -338,3 +338,72 @@ func TestEncoder_StopDrainsCleanly(t *testing.T) {
 		t.Fatal("Stop did not return within 2s")
 	}
 }
+
+func TestEncoder_FrameInterval_SkipsFrames(t *testing.T) {
+	skipWithoutEncoder(t)
+	relay := &mockRelay{}
+
+	enc, err := NewEncoder(Config{
+		SourceKey:     "test-skip",
+		Width:         320,
+		Height:        240,
+		Bitrate:       100_000,
+		FPSNum:        30,
+		FPSDen:        1,
+		Relay:         relay,
+		FrameInterval: 2, // encode every 2nd frame
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send 10 frames synchronously
+	for i := 0; i < 10; i++ {
+		yuv := makeYUV420(320, 240, byte(i))
+		enc.Send(yuv, 320, 240, int64(i)*3003)
+	}
+
+	// Wait for processing
+	time.Sleep(500 * time.Millisecond)
+	enc.Stop()
+
+	framesIn := enc.stats.FramesIn.Load()
+	framesOut := enc.stats.FramesOut.Load()
+
+	if framesIn != 10 {
+		t.Errorf("expected 10 frames in, got %d", framesIn)
+	}
+
+	// With interval=2, roughly half should be encoded (some may be dropped by channel)
+	if framesOut > 6 {
+		t.Errorf("expected ≤6 frames out with interval=2 from 10 input, got %d", framesOut)
+	}
+	if framesOut == 0 {
+		t.Error("expected at least 1 frame out")
+	}
+}
+
+func TestEncoder_FrameInterval_Default(t *testing.T) {
+	// FrameInterval=0 should behave as 1 (encode all frames)
+	skipWithoutEncoder(t)
+	relay := &mockRelay{}
+
+	enc, err := NewEncoder(Config{
+		SourceKey:     "test-default",
+		Width:         320,
+		Height:        240,
+		Bitrate:       100_000,
+		FPSNum:        30,
+		FPSDen:        1,
+		Relay:         relay,
+		FrameInterval: 0, // should default to 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if enc.frameInterval != 1 {
+		t.Errorf("expected frameInterval=1 for Config.FrameInterval=0, got %d", enc.frameInterval)
+	}
+	enc.Stop()
+}

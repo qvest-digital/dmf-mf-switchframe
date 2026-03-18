@@ -57,9 +57,10 @@ type AppConfig struct {
 	RelayResolution string // Relay encode resolution (e.g. "720p", "480p", "source")
 
 	// Preview proxy encoding.
-	PreviewProxy      bool   // Enable low-bitrate preview encoding for source relays
-	PreviewResolution string // Preview resolution (e.g. "480p", "360p")
-	PreviewBitrate    int    // Preview bitrate in bps (default 500000)
+	PreviewProxy         bool   // Enable low-bitrate preview encoding for source relays
+	PreviewResolution    string // Preview resolution (e.g. "480p", "360p")
+	PreviewBitrate       int    // Preview bitrate in bps (default 500000)
+	PreviewFrameInterval int    // Encode every Nth frame (1=all, 2=half rate). Default 1.
 
 	// SCTE-35 signaling.
 	SCTE35            bool   // Enable SCTE-35 insertion
@@ -192,6 +193,7 @@ func parseConfig() (AppConfig, error) {
 	previewProxyFlag := flag.Bool("preview-proxy", false, "Enable low-bitrate preview encoding for browser source previews")
 	previewResolutionFlag := flag.String("preview-resolution", "480p", "Preview encode resolution (e.g. 480p, 360p, 720p)")
 	previewBitrateFlag := flag.Int("preview-bitrate", 500000, "Preview encode bitrate in bps")
+	previewFrameIntervalFlag := flag.Int("preview-frame-interval", 1, "Preview encode every Nth frame (1=all, 2=half rate)")
 
 	// SCTE-35 flags.
 	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
@@ -316,9 +318,10 @@ func parseConfig() (AppConfig, error) {
 		RawMonitorScale:   *rawMonitorScaleFlag,
 		RelayBitrate:      *relayBitrateFlag,
 		RelayResolution:   *relayResolutionFlag,
-		PreviewProxy:      *previewProxyFlag,
-		PreviewResolution: *previewResolutionFlag,
-		PreviewBitrate:    *previewBitrateFlag,
+		PreviewProxy:         *previewProxyFlag,
+		PreviewResolution:    *previewResolutionFlag,
+		PreviewBitrate:       *previewBitrateFlag,
+		PreviewFrameInterval: *previewFrameIntervalFlag,
 		SCTE35:            *scte35Flag,
 		SCTE35PID:         uint16(*scte35PIDFlag),
 		SCTE35PreRollMs:   int64(*scte35PreRollFlag),

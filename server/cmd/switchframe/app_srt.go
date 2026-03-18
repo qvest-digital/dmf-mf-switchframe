@@ -280,13 +280,14 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 		var err error
 		previewEnc, err = preview.NewEncoder(preview.Config{
-			SourceKey: key,
-			Width:     pw,
-			Height:    ph,
-			Bitrate:   a.cfg.PreviewBitrate,
-			FPSNum:    pf.FPSNum,
-			FPSDen:    pf.FPSDen,
-			Relay:     relay,
+			SourceKey:     key,
+			Width:         pw,
+			Height:        ph,
+			Bitrate:       a.cfg.PreviewBitrate,
+			FPSNum:        pf.FPSNum,
+			FPSDen:        pf.FPSDen,
+			Relay:         relay,
+			FrameInterval: a.cfg.PreviewFrameInterval,
 		})
 		if err != nil {
 			slog.Error("srt: preview encoder failed, falling back to full quality", "key", key, "error", err)

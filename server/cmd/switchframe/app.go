@@ -721,13 +721,14 @@ func (a *App) initMXL() error {
 		if a.cfg.PreviewProxy {
 			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 			pe, err := preview.NewEncoder(preview.Config{
-				SourceKey: flowName,
-				Width:     pw,
-				Height:    ph,
-				Bitrate:   a.cfg.PreviewBitrate,
-				FPSNum:    srcCfg.FPSNum,
-				FPSDen:    srcCfg.FPSDen,
-				Relay:     relay,
+				SourceKey:     flowName,
+				Width:         pw,
+				Height:        ph,
+				Bitrate:       a.cfg.PreviewBitrate,
+				FPSNum:        srcCfg.FPSNum,
+				FPSDen:        srcCfg.FPSDen,
+				Relay:         relay,
+				FrameInterval: a.cfg.PreviewFrameInterval,
 			})
 			if err != nil {
 				slog.Error("mxl: preview encoder failed", "flow", flowName, "error", err)
