@@ -53,14 +53,16 @@ func TestMixerPassthrough(t *testing.T) {
 	require.Equal(t, int64(1000), output[0].PTS, "first frame should seed from source PTS")
 	mu.Unlock()
 
-	// Second frame verifies the monotonic counter advances by frame duration
+	// Second frame: PTS should advance based on wall clock (not source PTS).
+	// In tests frames arrive almost instantly, so PTS advances minimally.
 	frame2 := &media.AudioFrame{PTS: 2920, Data: []byte{0xCC}, SampleRate: 48000, Channels: 2}
 	m.IngestFrame("cam1", frame2)
 
 	mu.Lock()
 	require.Equal(t, 2, len(output))
-	// 1024 samples / 48000 Hz * 90000 = 1920 ticks
-	require.Equal(t, int64(1000+1920), output[1].PTS, "second frame should use monotonic PTS")
+	// Wall-clock PTS: should be >= first PTS and monotonically non-decreasing.
+	require.GreaterOrEqual(t, output[1].PTS, output[0].PTS,
+		"second frame PTS should be >= first frame PTS (wall-clock based)")
 	mu.Unlock()
 }
 
@@ -2376,15 +2378,12 @@ func TestMixer_MonotonicPTS_ResetOnGap(t *testing.T) {
 
 	require.Greater(t, len(frames), countBefore, "should produce frames after gap")
 
-	// The frame after the gap should have reseeded PTS (not necessarily
-	// continuous from before the gap)
+	// With wall-clock PTS, frames should be monotonically non-decreasing
+	// regardless of source PTS gaps.
 	lastIdx := len(frames) - 1
 	if lastIdx >= 1 {
-		delta := frames[lastIdx].PTS - frames[lastIdx-1].PTS
-		expectedDelta := int64(1024) * 90000 / int64(48000)
-		// After reseed, the next frame should still increment by frameDuration
-		require.Equal(t, expectedDelta, delta,
-			"frame after gap reseed should still have correct delta")
+		require.GreaterOrEqual(t, frames[lastIdx].PTS, frames[lastIdx-1].PTS,
+			"PTS should be monotonically non-decreasing across source PTS gaps")
 	}
 }
 
@@ -4185,15 +4184,12 @@ func TestAdvanceOutputPTS_33BitWraparound(t *testing.T) {
 	mu.Unlock()
 
 	// The PTS must be within the valid 33-bit range [0, 2^33 - 1].
+	// With wall-clock PTS, the exact value depends on elapsed time, but
+	// the 33-bit mask must always be applied.
 	require.LessOrEqual(t, resultPTS, ptsMask33,
 		"output PTS %d exceeds 33-bit max %d; advanceOutputPTS must mask to 33 bits", resultPTS, ptsMask33)
 	require.GreaterOrEqual(t, resultPTS, int64(0),
 		"output PTS must be non-negative")
-
-	// Specifically: nearBoundary + 1920 = ptsMask33 + 1420, masked to 33 bits = 1419
-	expectedWrapped := (nearBoundary + 1920) & ptsMask33
-	require.Equal(t, expectedWrapped, resultPTS,
-		"output PTS should wrap correctly via 33-bit mask")
 }
 
 func TestMixer_OutputPTSDoesNotFollowSourceJumps(t *testing.T) {
