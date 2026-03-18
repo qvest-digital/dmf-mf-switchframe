@@ -227,8 +227,8 @@ type Sampler struct {
 // NewSampler creates a Sampler that reads from the given providers.
 func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 	return &Sampler{
-		decodeRings:    make(map[string]*RingStat),
-		ingestFPSState: make(map[string]*ingestFPSTracker),
+		decodeRings:      make(map[string]*RingStat),
+		ingestFPSState:   make(map[string]*ingestFPSTracker),
 		pipelineRing:     &RingStat{},
 		nodeRings:        make(map[string]*RingStat),
 		e2eRing:          &RingStat{},

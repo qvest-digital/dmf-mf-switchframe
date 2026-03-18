@@ -40,7 +40,7 @@ func (r *mockRelay) BroadcastVideo(frame *media.VideoFrame) {
 		DTS:        frame.DTS,
 		IsKeyframe: frame.IsKeyframe,
 		Codec:      frame.Codec,
-		GroupID:     frame.GroupID,
+		GroupID:    frame.GroupID,
 	}
 	if frame.WireData != nil {
 		cp.WireData = make([]byte, len(frame.WireData))

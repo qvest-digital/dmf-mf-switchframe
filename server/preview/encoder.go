@@ -305,7 +305,7 @@ func (e *Encoder) loop() {
 			IsKeyframe: isKeyframe,
 			WireData:   avc1,
 			Codec:      "h264",
-			GroupID:     groupID.Load(),
+			GroupID:    groupID.Load(),
 		}
 
 		// Extract SPS/PPS from AVC1 data for the frame metadata.

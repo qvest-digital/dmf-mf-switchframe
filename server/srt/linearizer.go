@@ -36,10 +36,10 @@ type PTSLinearizer struct {
 }
 
 type streamState struct {
-	lastInput      int64
-	frameDur       int64
-	inited         bool
-	lastJumpGen    int64 // generation when this stream last applied a jump correction
+	lastInput   int64
+	frameDur    int64
+	inited      bool
+	lastJumpGen int64 // generation when this stream last applied a jump correction
 }
 
 // NewPTSLinearizer creates a linearizer for a single SRT source.

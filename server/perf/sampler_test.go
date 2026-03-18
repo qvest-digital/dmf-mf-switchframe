@@ -618,11 +618,11 @@ func TestSampler_PreviewEncoderStats(t *testing.T) {
 	s.SetPreviewStats(func() map[string]PreviewEncoderStats {
 		return map[string]PreviewEncoderStats{
 			"srt:cam1": {
-				FramesIn:    1000,
-				FramesOut:   990,
+				FramesIn:      1000,
+				FramesOut:     990,
 				FramesDropped: 10,
-				LastEncodeMs: 2.5,
-				AvgEncodeMs:  2.1,
+				LastEncodeMs:  2.5,
+				AvgEncodeMs:   2.1,
 			},
 		}
 	})

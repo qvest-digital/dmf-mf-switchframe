@@ -1139,8 +1139,8 @@ func TestFRCMCFI_SkipsMEWhenSourceAtPipelineRate(t *testing.T) {
 func TestFRCMCFI_RunsMEForSlowerSource(t *testing.T) {
 	// When the source frame rate is significantly different from the pipeline
 	// tick rate, ME should still run. Here: 15fps source on 30fps pipeline.
-	tickInterval := int64(3003)        // ~30fps pipeline
-	sourceInterval := int64(3003 * 2)  // 15fps source (double the pipeline interval)
+	tickInterval := int64(3003)       // ~30fps pipeline
+	sourceInterval := int64(3003 * 2) // 15fps source (double the pipeline interval)
 	fs := newFRCSource(FRCMCFI, tickInterval)
 
 	// Ingest 20 frames at half the pipeline rate (15fps).

@@ -320,10 +320,10 @@ func (m *Mixer) ensureEncoder() error {
 const silenceFillThreshold int64 = 500 // ms
 
 // mixDeadlineTicker runs in the background and:
-// 1. Forces a mix cycle flush when the per-cycle deadline expires (prevents
-//    deadlock when a source stops sending audio mid-cycle).
-// 2. Produces silence frames when no output has occurred for >42ms (keeps
-//    the browser's audio pipeline fed during no-audio program periods).
+//  1. Forces a mix cycle flush when the per-cycle deadline expires (prevents
+//     deadlock when a source stops sending audio mid-cycle).
+//  2. Produces silence frames when no output has occurred for >42ms (keeps
+//     the browser's audio pipeline fed during no-audio program periods).
 func (m *Mixer) mixDeadlineTicker() {
 	defer m.tickerWg.Done()
 	ticker := time.NewTicker(10 * time.Millisecond)

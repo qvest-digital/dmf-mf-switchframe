@@ -245,10 +245,10 @@ type slotSnapshot struct {
 	hasFill      bool
 	hasGray      bool
 	scaleBuf     []byte
-	cropBuf      []byte             // non-nil when fill mode needs cropping
-	fillPTS      int64              // PTS of the fill entry at snapshot time
-	cachedScaled *scaledCacheEntry  // cached scaled frame (may be nil)
-	fillKey      string             // source key for cache writeback
+	cropBuf      []byte            // non-nil when fill mode needs cropping
+	fillPTS      int64             // PTS of the fill entry at snapshot time
+	cachedScaled *scaledCacheEntry // cached scaled frame (may be nil)
+	fillKey      string            // source key for cache writeback
 }
 
 // ProcessFrame composites all enabled layout slots onto the frame.
