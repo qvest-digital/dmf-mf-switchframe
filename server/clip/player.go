@@ -329,7 +329,20 @@ func (p *Player) run(ctx context.Context) {
 			return
 		}
 
-		// Loop: reset frame index, PTS continues monotonically.
+		// Loop: flush decoder so it can handle the new stream cleanly
+		// (SPS/PPS may differ between playthroughs), then reset indices.
+		if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
+			fd.Flush()
+		}
+		// Reset decode error tracking so first-error logging triggers again.
+		p.decodeErrors = 0
+		p.decodeErrorFirst = ""
+		p.decodeAttempts = 0
+		p.decodeSuccesses = 0
+		p.decodeBuffering = 0
+		// Reset videoInfoSent so browser gets fresh SPS/PPS on loop restart.
+		p.videoInfoSent = false
+
 		p.audioIdx = 0
 		p.audioCallCount = 0
 	}

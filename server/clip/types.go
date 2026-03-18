@@ -87,6 +87,14 @@ type VideoDecoder interface {
 	Close()
 }
 
+// FlushableDecoder extends VideoDecoder with codec flush support.
+// Flush resets the decoder state so a new stream (e.g., loop restart
+// with different SPS/PPS) can be decoded without errors.
+type FlushableDecoder interface {
+	VideoDecoder
+	Flush()
+}
+
 // DrainableDecoder extends VideoDecoder with EOS drain support.
 // When the decoder uses frame-level buffering (B-frame reordering),
 // SendEOS + ReceiveFrame drains remaining buffered frames.
