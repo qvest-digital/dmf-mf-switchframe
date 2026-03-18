@@ -307,9 +307,18 @@ func (m *Mixer) ensureEncoder() error {
 	return nil
 }
 
-// mixDeadlineTicker runs in the background and forces a mix cycle flush
-// when the per-cycle deadline expires. This prevents deadlock when a source
-// stops sending audio while the mixer waits for all channels to contribute.
+// silenceFillThreshold is the maximum gap (in milliseconds) between output
+// frames before the deadline ticker produces silence. Keeps the browser's
+// audio pipeline fed when the program source has no audio (video-only source).
+// Two AAC frames (~42.7ms at 48kHz) allows normal event-driven output to
+// proceed without interference, while quickly filling gaps for no-audio sources.
+const silenceFillThreshold int64 = 42 // ms
+
+// mixDeadlineTicker runs in the background and:
+// 1. Forces a mix cycle flush when the per-cycle deadline expires (prevents
+//    deadlock when a source stops sending audio mid-cycle).
+// 2. Produces silence frames when no output has occurred for >42ms (keeps
+//    the browser's audio pipeline fed during no-audio program periods).
 func (m *Mixer) mixDeadlineTicker() {
 	defer m.tickerWg.Done()
 	ticker := time.NewTicker(10 * time.Millisecond)
@@ -325,11 +334,62 @@ func (m *Mixer) mixDeadlineTicker() {
 				outputFrame = m.collectMixCycleLocked()
 				m.deadlineFlushes.Add(1)
 			}
+
+			// Silence fill: when no output has occurred recently and there
+			// are active channels (program source is set), produce silence.
+			// This handles the case where the program source has no audio
+			// track — the mixer would otherwise produce nothing indefinitely.
+			if outputFrame == nil && !m.crossfadeActive {
+				lastNano := m.lastOutputNano.Load()
+				hasActive := false
+				for _, ch := range m.channels {
+					if ch.active && !ch.muted {
+						hasActive = true
+						break
+					}
+				}
+				gapMs := int64(0)
+				if lastNano > 0 {
+					gapMs = (time.Now().UnixNano() - lastNano) / int64(time.Millisecond)
+				} else if hasActive {
+					// Never produced output but have active channels — fill immediately.
+					gapMs = silenceFillThreshold + 1
+				}
+				if hasActive && gapMs > silenceFillThreshold {
+					outputFrame = m.encodeSilenceLocked()
+				}
+			}
+
 			m.mu.Unlock()
 			if outputFrame != nil {
 				m.recordAndOutput(outputFrame)
 			}
 		}
+	}
+}
+
+// encodeSilenceLocked produces a single silent AAC frame.
+// Caller must hold m.mu.
+func (m *Mixer) encodeSilenceLocked() *media.AudioFrame {
+	if err := m.ensureEncoder(); err != nil {
+		return nil
+	}
+	chunkSize := 1024 * m.numChannels
+	silence := make([]float32, chunkSize)
+	pts := m.advanceOutputPTS(0)
+
+	encoded, err := m.encoder.Encode(silence)
+	if err != nil || len(encoded) == 0 {
+		return nil
+	}
+	data := make([]byte, len(encoded))
+	copy(data, encoded)
+	m.deadlineFlushes.Add(1)
+	return &media.AudioFrame{
+		PTS:        pts,
+		Data:       data,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
 	}
 }
 

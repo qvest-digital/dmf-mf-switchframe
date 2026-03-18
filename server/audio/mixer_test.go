@@ -4195,3 +4195,42 @@ func TestAdvanceOutputPTS_33BitWraparound(t *testing.T) {
 	require.Equal(t, expectedWrapped, resultPTS,
 		"output PTS should wrap correctly via 33-bit mask")
 }
+
+func TestMixer_SilenceFillWhenNoActiveAudio(t *testing.T) {
+	// When no active channel produces audio (e.g., program on a video-only
+	// source), the mixer should produce silence frames to keep the browser's
+	// audio pipeline fed, instead of producing nothing for the entire duration.
+	var mu sync.Mutex
+	var frames []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(f *media.AudioFrame) {
+			mu.Lock()
+			frames = append(frames, f)
+			mu.Unlock()
+		},
+		EncoderFactory: func(sr, ch int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
+		},
+	})
+	defer m.Close()
+
+	// Add a channel and activate it, but never send any audio.
+	// This simulates a video-only source on program.
+	m.AddChannel("video_only")
+	m.SetActive("video_only", true)
+
+	// Wait for the deadline ticker to produce silence frames.
+	// Ticker runs every 10ms. Silence fill threshold is ~42ms.
+	// After 300ms we should get at least a few silence frames.
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	count := len(frames)
+	mu.Unlock()
+
+	require.GreaterOrEqual(t, count, 2,
+		"mixer should produce silence frames when active channel has no audio")
+}
