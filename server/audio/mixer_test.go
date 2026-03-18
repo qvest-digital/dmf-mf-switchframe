@@ -4279,9 +4279,9 @@ func TestMixer_SilenceFillWhenNoActiveAudio(t *testing.T) {
 	m.SetActive("video_only", true)
 
 	// Wait for the deadline ticker to produce silence frames.
-	// Ticker runs every 10ms. Silence fill threshold is ~42ms.
-	// After 300ms we should get at least a few silence frames.
-	time.Sleep(300 * time.Millisecond)
+	// Ticker runs every 10ms. Silence fill threshold is 500ms.
+	// After 1200ms we should get at least a few silence frames.
+	time.Sleep(1200 * time.Millisecond)
 
 	mu.Lock()
 	count := len(frames)

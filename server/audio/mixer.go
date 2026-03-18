@@ -310,9 +310,9 @@ func (m *Mixer) ensureEncoder() error {
 // silenceFillThreshold is the maximum gap (in milliseconds) between output
 // frames before the deadline ticker produces silence. Keeps the browser's
 // audio pipeline fed when the program source has no audio (video-only source).
-// Two AAC frames (~42.7ms at 48kHz) allows normal event-driven output to
-// proceed without interference, while quickly filling gaps for no-audio sources.
-const silenceFillThreshold int64 = 42 // ms
+// Set high enough (500ms) to avoid interfering with normal bursty SRT audio
+// delivery — only fires for genuinely absent audio (no-audio source on program).
+const silenceFillThreshold int64 = 500 // ms
 
 // mixDeadlineTicker runs in the background and:
 // 1. Forces a mix cycle flush when the per-cycle deadline expires (prevents
