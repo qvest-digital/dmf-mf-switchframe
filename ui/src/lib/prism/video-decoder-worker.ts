@@ -2,10 +2,11 @@
 declare const self: DedicatedWorkerGlobalScope;
 export {};
 
-// Cap the decode queue to prevent unbounded backlog. MoQ/QUIC delivers frames in
-// bursts (one GOG worth at a time), so the queue must be large enough to absorb
-// an entire GOP without dropping. 60 frames ≈ 2.5s at 24fps.
-const MAX_QUEUED_CHUNKS = 60;
+// Cap the decode queue. Must absorb a keyframe + a few delta frames from
+// MoQ burst delivery without dropping, but not so large that decoded frames
+// accumulate far ahead of audio. 16 frames ≈ 533ms at 30fps — enough for
+// burst absorption while keeping video latency bounded.
+const MAX_QUEUED_CHUNKS = 16;
 
 let videoDecoder: VideoDecoder | null = null;
 let waitForKeyframe = true;

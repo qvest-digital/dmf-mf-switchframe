@@ -257,21 +257,18 @@ export class PrismRenderer {
 				}
 			}
 
-			// Look-ahead for video-ahead-of-audio: the server's frame sync
-			// (video PTS) and mixer (audio PTS) rewrite timestamps
-			// independently, so after cuts/transitions video PTS can be
-			// 200-500ms ahead of audio. Base tolerance of 500ms covers
-			// audio buffer depth (HIGH_WATER=200ms) plus typical server
-			// PTS offset. When the queue is under pressure (>2/3 capacity),
-			// tolerance extends to 1s to prevent permanent display freeze
-			// from persistent desync.
+			// Look-ahead for video-ahead-of-audio: if the binary search found
+			// no frame ≤ audioPTS but the next frame is only slightly ahead,
+			// display it rather than showing nothing. Tight tolerance (100ms)
+			// keeps video from running visually ahead of audio. Server-side
+			// PTS alignment (SeedPTSFromVideo + frame counter) keeps the
+			// offset small, so 100ms covers normal jitter without allowing
+			// persistent desync.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS) {
 					const gap = peek.timestamp - targetPTS;
-					const stats = this.videoBuffer.getStats();
-					const tolerance = stats.queueSize > 60 ? 1_000_000 : 500_000;
-					if (gap < tolerance) {
+					if (gap < 100_000) { // 100ms tolerance
 						frame = this.videoBuffer.takeNextFrame();
 					}
 				}
