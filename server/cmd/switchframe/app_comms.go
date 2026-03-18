@@ -53,6 +53,10 @@ func (a *App) handleCommsBidiStream(_ string, stream io.ReadWriteCloser) {
 		return
 	}
 
+	// Auto-leave when the stream closes (browser disconnect, refresh, etc.)
+	// so the participant doesn't remain as a ghost in the comms session.
+	defer a.commsMgr.Leave(hello.OperatorID)
+
 	a.handleCommsStream(hello.OperatorID, stream, stream)
 }
 
@@ -121,6 +125,12 @@ func (a *App) handleCommsStream(operatorID string, readable io.Reader, writable 
 
 		msgType := header[0]
 		payloadLen := binary.BigEndian.Uint16(header[1:3])
+
+		// Guard against oversized payloads (Opus frames are typically <200 bytes).
+		if payloadLen > 4096 {
+			log.Debug("comms stream payload too large", "len", payloadLen)
+			break
+		}
 
 		payload := make([]byte, payloadLen)
 		if payloadLen > 0 {

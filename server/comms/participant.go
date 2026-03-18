@@ -84,29 +84,6 @@ func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	return out, nil
 }
 
-// ingestRawPCM stores raw PCM samples directly (bypassing Opus decode).
-func (p *participant) ingestRawPCM(pcm []int16) {
-	frame := make([]int16, FrameSize)
-	n := len(pcm)
-	if n > FrameSize {
-		n = FrameSize
-	}
-	copy(frame[:n], pcm[:n])
-
-	select {
-	case p.pcmQ <- frame:
-	default:
-		select {
-		case <-p.pcmQ:
-		default:
-		}
-		select {
-		case p.pcmQ <- frame:
-		default:
-		}
-	}
-}
-
 // consumePCM returns the next queued PCM frame for mixing.
 // Returns nil if no frames are available or the participant is muted.
 func (p *participant) consumePCM() []int16 {
@@ -176,15 +153,15 @@ func (p *participant) SendCh() <-chan []byte {
 
 // trySend attempts a non-blocking send to the participant's send channel.
 // Returns false if the channel is full or the participant is closed.
-// Safe to call concurrently with close().
+// Safe to call concurrently with close(). Holds mutex through the send
+// to prevent TOCTOU race with close() (sendCh is buffered, so the
+// non-blocking select never blocks under the lock).
 func (p *participant) trySend(data []byte) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.closed {
-		p.mu.Unlock()
 		return false
 	}
-	p.mu.Unlock()
-
 	select {
 	case p.sendCh <- data:
 		return true

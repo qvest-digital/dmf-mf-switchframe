@@ -158,37 +158,6 @@ func (m *Manager) IngestAudio(operatorID string, opusData []byte) error {
 	return nil
 }
 
-// IngestRawPCM accepts raw int16 PCM samples from a participant (bypassing
-// Opus decode). Used when the browser sends unencoded audio. The data byte
-// slice is interpreted as little-endian int16 samples.
-func (m *Manager) IngestRawPCM(operatorID string, data []byte) error {
-	m.mu.Lock()
-	p, ok := m.participants[operatorID]
-	m.mu.Unlock()
-
-	if !ok {
-		return ErrNotInComms
-	}
-
-	// Convert bytes to int16 (little-endian, matching browser's Int16Array)
-	sampleCount := len(data) / 2
-	if sampleCount == 0 {
-		return nil
-	}
-	if sampleCount > FrameSize {
-		sampleCount = FrameSize
-	}
-
-	pcm := make([]int16, sampleCount)
-	for i := 0; i < sampleCount; i++ {
-		pcm[i] = int16(data[2*i]) | int16(data[2*i+1])<<8
-	}
-
-	p.ingestRawPCM(pcm)
-	p.updateSpeaking(pcm)
-	return nil
-}
-
 // GetParticipant returns the participant for the given operator ID.
 func (m *Manager) GetParticipant(operatorID string) (*participant, bool) {
 	m.mu.Lock()
@@ -257,8 +226,6 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 		return
 	}
 
-	speakingChanged := false
-
 	// For each participant, produce their N-1 mix, Opus encode, and send.
 	for id, p := range participants {
 		mix := m.mixer.mixFor(id, inputs)
@@ -274,27 +241,8 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 
 		// Non-blocking send — drop if channel full or participant closed.
 		p.trySend(packet)
-
-		// Track speaking state changes.
-		p.mu.Lock()
-		wasSpeaking := p.speaking
-		p.mu.Unlock()
-
-		// Check if this participant contributed audio and recompute speaking.
-		if pcm, ok := inputs[id]; ok {
-			p.updateSpeaking(pcm)
-			p.mu.Lock()
-			nowSpeaking := p.speaking
-			p.mu.Unlock()
-			if wasSpeaking != nowSpeaking {
-				speakingChanged = true
-			}
-		}
 	}
-
-	if speakingChanged && m.onBroadcast != nil {
-		m.onBroadcast()
-	}
+	// Speaking state is updated in IngestAudio — no need to recompute here.
 }
 
 // Close shuts down the manager, stopping the mix loop and closing all participants.

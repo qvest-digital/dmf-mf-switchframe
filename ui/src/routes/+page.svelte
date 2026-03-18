@@ -73,6 +73,7 @@
 	let showOperatorRegistration = $state(false);
 	let fastControl = $state<FastControl | null>(null);
 	let commsVisible = $state(false);
+	let commsDimmed = $state(false);
 
 	// Caption renderer for program monitor overlay
 	let captionRenderer: CaptionRenderer | null = null;
@@ -693,8 +694,8 @@
 				onToggle={() => commsVisible = !commsVisible}
 				getTransport={() => pipeline.getSourceTransport('program')}
 				onCommsActive={(active) => pflManager.setCommsActive(active)}
-				onDimToggle={() => pflManager.setDim(!pflManager.dimmed)}
-				dimmed={pflManager.dimmed}
+				onDimToggle={() => { commsDimmed = !commsDimmed; pflManager.setDim(commsDimmed); }}
+				dimmed={commsDimmed}
 			/>
 
 			<section class="monitors">
