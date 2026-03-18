@@ -237,10 +237,10 @@ func TestClockDrivenMixer_IngestPCMPopulatesRingBuffer(t *testing.T) {
 	m.mu.Lock()
 	ch := m.channels["cam1"]
 	require.NotNil(t, ch.ringBuf, "ring buffer should exist")
-	assert.Equal(t, 1, ch.ringBuf.Len(), "ring buffer should have 1 frame after IngestPCM")
+	assert.Greater(t, ch.ringBuf.Len(), 0, "ring buffer should have samples after IngestPCM")
 
 	// Pop and verify content
-	popped := ch.ringBuf.Pop()
+	popped := ch.ringBuf.Pop(2048)
 	m.mu.Unlock()
 
 	require.NotNil(t, popped)

@@ -366,7 +366,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
 		audioDelay:  NewDelayBuffer(0),
-		ringBuf:     NewPCMRingBuffer(3),
+		ringBuf:     NewPCMRingBuffer(3 * 1024 * m.numChannels),
 	}
 }
 

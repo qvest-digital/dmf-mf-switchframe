@@ -64,7 +64,11 @@ func (m *Mixer) tick() *media.AudioFrame {
 			continue
 		}
 
-		pcm := ch.ringBuf.Pop()
+		bufLen := ch.ringBuf.Len()
+		pcm := ch.ringBuf.Pop(aacFrameSamples)
+		if pcm != nil {
+			m.log.Info("tick-pop", "source", sourceKey, "buf_before", bufLen, "popped", len(pcm), "buf_after", ch.ringBuf.Len())
+		}
 		if pcm == nil {
 			continue // never pushed — skip
 		}

@@ -1,62 +1,76 @@
 package audio
 
-// PCMRingBuffer is a fixed-capacity FIFO for processed PCM frames.
+// PCMRingBuffer is a sample-level circular buffer for processed PCM.
 // NOT thread-safe — caller must provide synchronization (mixer mutex).
 //
-// Sources push processed PCM frames as they arrive (bursty). An output
-// ticker pops frames at a fixed rate (~21ms). When the buffer is empty,
-// Pop returns a copy of the last successfully popped frame (freeze-repeat)
-// to avoid silence gaps.
+// Sources push variable-length PCM chunks as they arrive (bursty).
+// The output ticker pulls exactly N samples per tick (fixed cadence).
+// When the buffer has fewer than N samples, the last N samples are
+// returned (freeze-repeat) to avoid silence gaps.
 type PCMRingBuffer struct {
-	frames    [][]float32 // circular buffer slots (pre-allocated)
-	head      int         // next write position
-	tail      int         // next read position
-	count     int         // current number of frames in buffer
-	cap       int         // max frames
-	lastFrame []float32   // last successfully popped frame (for freeze-repeat)
+	buf       []float32 // circular sample buffer
+	head      int       // next write position
+	count     int       // current number of samples in buffer
+	cap       int       // total capacity in samples
+	lastFrame []float32 // last successfully popped frame (for freeze-repeat)
 }
 
-// NewPCMRingBuffer creates a ring buffer with the given capacity.
-// Capacity must be at least 1.
-func NewPCMRingBuffer(capacity int) *PCMRingBuffer {
-	if capacity < 1 {
-		capacity = 1
+// NewPCMRingBuffer creates a ring buffer with the given capacity in samples.
+// For stereo 48kHz with 3 frames of buffer: 3 * 1024 * 2 = 6144 samples.
+func NewPCMRingBuffer(capacitySamples int) *PCMRingBuffer {
+	if capacitySamples < 1024 {
+		capacitySamples = 1024
 	}
 	return &PCMRingBuffer{
-		frames: make([][]float32, capacity),
-		cap:    capacity,
+		buf: make([]float32, capacitySamples),
+		cap: capacitySamples,
 	}
 }
 
-// Push adds a processed PCM frame. If full, drops the oldest frame
-// (newest-wins policy). The input slice is deep-copied.
+// Push appends processed PCM samples to the buffer. If the buffer would
+// overflow, the oldest samples are discarded (newest-wins).
 func (rb *PCMRingBuffer) Push(pcm []float32) {
-	if rb.count == rb.cap {
-		// Buffer full — drop oldest by advancing tail.
-		rb.tail = (rb.tail + 1) % rb.cap
-		rb.count--
+	n := len(pcm)
+	if n == 0 {
+		return
 	}
 
-	// Reuse existing slot slice if capacity is sufficient (growBuf pattern).
-	slot := rb.frames[rb.head]
-	if cap(slot) >= len(pcm) {
-		slot = slot[:len(pcm)]
+	// If pushing more than capacity, only keep the newest samples.
+	if n > rb.cap {
+		pcm = pcm[n-rb.cap:]
+		n = rb.cap
+	}
+
+	// Make room if needed by dropping oldest samples.
+	if rb.count+n > rb.cap {
+		drop := rb.count + n - rb.cap
+		rb.count -= drop
+		// No need to move tail pointer — we use head-based addressing.
+	}
+
+	// Write samples. May wrap around.
+	writeStart := (rb.head) % rb.cap
+	firstChunk := rb.cap - writeStart
+	if firstChunk >= n {
+		copy(rb.buf[writeStart:writeStart+n], pcm)
 	} else {
-		slot = make([]float32, len(pcm))
+		copy(rb.buf[writeStart:], pcm[:firstChunk])
+		copy(rb.buf[:n-firstChunk], pcm[firstChunk:])
 	}
-	copy(slot, pcm)
-	rb.frames[rb.head] = slot
-
-	rb.head = (rb.head + 1) % rb.cap
-	rb.count++
+	rb.head = (rb.head + n) % rb.cap
+	rb.count += n
 }
 
-// Pop removes and returns the oldest frame as a deep copy. If the buffer
-// is empty, returns a copy of the last successfully popped frame
-// (freeze-repeat). Returns nil if no frame has ever been pushed.
-func (rb *PCMRingBuffer) Pop() []float32 {
-	if rb.count == 0 {
-		// Freeze-repeat: return a copy of lastFrame.
+// Pop removes and returns exactly n samples from the buffer. If fewer
+// than n samples are available, returns a copy of the last popped frame
+// (freeze-repeat). Returns nil if no samples have ever been pushed.
+func (rb *PCMRingBuffer) Pop(n int) []float32 {
+	if n <= 0 {
+		return nil
+	}
+
+	if rb.count < n {
+		// Freeze-repeat: return last frame.
 		if rb.lastFrame == nil {
 			return nil
 		}
@@ -65,35 +79,37 @@ func (rb *PCMRingBuffer) Pop() []float32 {
 		return out
 	}
 
-	// Deep-copy from internal slot to caller.
-	src := rb.frames[rb.tail]
-	out := make([]float32, len(src))
-	copy(out, src)
+	// Read n samples from tail position.
+	tail := (rb.head - rb.count + rb.cap) % rb.cap
+	out := make([]float32, n)
 
-	rb.tail = (rb.tail + 1) % rb.cap
-	rb.count--
-
-	// Update lastFrame for freeze-repeat. Reuse allocation if possible.
-	if cap(rb.lastFrame) >= len(out) {
-		rb.lastFrame = rb.lastFrame[:len(out)]
+	firstChunk := rb.cap - tail
+	if firstChunk >= n {
+		copy(out, rb.buf[tail:tail+n])
 	} else {
-		rb.lastFrame = make([]float32, len(out))
+		copy(out[:firstChunk], rb.buf[tail:])
+		copy(out[firstChunk:], rb.buf[:n-firstChunk])
+	}
+	rb.count -= n
+
+	// Update lastFrame for freeze-repeat.
+	if cap(rb.lastFrame) >= n {
+		rb.lastFrame = rb.lastFrame[:n]
+	} else {
+		rb.lastFrame = make([]float32, n)
 	}
 	copy(rb.lastFrame, out)
 
 	return out
 }
 
-// Len returns the current number of buffered frames.
+// Len returns the current number of buffered samples.
 func (rb *PCMRingBuffer) Len() int {
 	return rb.count
 }
 
-// Reset clears all buffered frames but preserves lastFrame for freeze-repeat.
+// Reset clears all buffered samples but preserves lastFrame for freeze-repeat.
 func (rb *PCMRingBuffer) Reset() {
 	rb.head = 0
-	rb.tail = 0
 	rb.count = 0
-	// Note: we keep rb.frames allocated (slots stay for reuse) and
-	// rb.lastFrame intact so freeze-repeat continues to work.
 }
