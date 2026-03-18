@@ -46,6 +46,11 @@ type LoudnessMeter struct {
 
 	integratedBlocks []float64
 
+	// integratedCounter counts blocks since last integrated LUFS recomputation.
+	// Integrated LUFS is recomputed every integratedUpdateInterval blocks to
+	// avoid O(n²) total work when many blocks are emitted in rapid succession.
+	integratedCounter int
+
 	// Cached LUFS readouts — updated atomically by emitBlock(),
 	// read lock-free by MomentaryLUFS() / ShortTermLUFS() / IntegratedLUFS().
 	momentaryLUFSBits  atomic.Uint64
@@ -282,8 +287,30 @@ func (m *LoudnessMeter) updateCachedLUFS() {
 		m.shortTermLUFSBits.Store(math.Float64bits(energyToLUFS(sum / float64(len(m.shortTermRing)))))
 	}
 
-	// Integrated (two-pass gating) -- unchanged.
-	m.integratedLUFSBits.Store(math.Float64bits(m.computeIntegratedLUFS()))
+	// Integrated: O(n) two-pass gating over all blocks. Amortize to every
+	// integratedUpdateInterval blocks to avoid O(n²) total work under rapid
+	// block emission (tests, offline processing). Always update when the block
+	// list is small (< interval) for responsiveness on short audio.
+	m.integratedCounter++
+	interval := m.integratedUpdateInterval()
+	if m.integratedCounter >= interval || len(m.integratedBlocks) <= interval {
+		m.integratedLUFSBits.Store(math.Float64bits(m.computeIntegratedLUFS()))
+		m.integratedCounter = 0
+	}
+}
+
+// integratedUpdateInterval returns how often (in blocks) to recompute
+// integrated LUFS. Scales with block count to keep amortized cost bounded.
+func (m *LoudnessMeter) integratedUpdateInterval() int {
+	n := len(m.integratedBlocks)
+	switch {
+	case n < 100:
+		return 1 // tiny list, always update
+	case n < 10_000:
+		return 10 // ~1 second between updates
+	default:
+		return 100 // ~10 seconds between updates
+	}
 }
 
 // computeIntegratedLUFS performs BS.1770-4 gated integration.
@@ -390,5 +417,6 @@ func (m *LoudnessMeter) drainReset() {
 	m.shortTermFull = false
 
 	m.integratedBlocks = m.integratedBlocks[:0]
+	m.integratedCounter = 0
 	m.truncationWarned = false
 }

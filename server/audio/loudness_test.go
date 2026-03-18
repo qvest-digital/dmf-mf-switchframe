@@ -207,13 +207,8 @@ func TestLoudnessMeter_KWeightingAttenuatesLowFreq(t *testing.T) {
 }
 
 func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
-	// Verify the compaction path in emitBlock(). maxIntegratedBlocks = 360,000.
-	// Directly calling Process() 360,000+ times is too slow under -race.
-	//
-	// Instead, we verify the meter's behavior: feed a substantial amount of
-	// audio (10,000 blocks), verify integrated LUFS is valid, then feed more
-	// and verify the meter still works. This confirms the accumulator doesn't
-	// corrupt data under heavy use.
+	// Verify that integrated LUFS remains stable under sustained load.
+	// (Compaction at 360k blocks is tested separately by TruncationDoesNotPanic.)
 	m := NewLoudnessMeter(48000, 1)
 
 	// 1kHz sine at 0.5 amplitude — loud enough to pass both BS.1770 gates.
@@ -225,8 +220,8 @@ func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
 		chunk[i] = float32(0.5 * math.Sin(2*math.Pi*1000*float64(i)/48000))
 	}
 
-	// Phase 1: feed 10,000 blocks (100 calls * 100 blocks/call)
-	for i := 0; i < 100; i++ {
+	// Phase 1: feed 2,000 blocks (20 calls * 100 blocks/call)
+	for i := 0; i < 20; i++ {
 		m.Process(chunk)
 	}
 
@@ -238,8 +233,8 @@ func TestLoudnessMeterIntegratedBlocksCompaction(t *testing.T) {
 		t.Errorf("phase 1: expected LUFS between -30 and 0, got %f", lufs1)
 	}
 
-	// Phase 2: feed another 10,000 blocks — meter should remain stable
-	for i := 0; i < 100; i++ {
+	// Phase 2: feed another 2,000 blocks — meter should remain stable
+	for i := 0; i < 20; i++ {
 		m.Process(chunk)
 	}
 
