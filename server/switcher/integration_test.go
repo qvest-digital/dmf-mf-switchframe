@@ -236,16 +236,10 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 	// Clear IDR gate.
 	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true})
 
-	// Mixer should be in passthrough (single active source at 0dB).
-	require.True(t, mixer.IsPassthrough())
-
-	// Send audio — should pass through to program relay.
-	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
-
-	capture.mu.Lock()
-	require.Equal(t, 1, len(capture.audios), "audio should reach program via passthrough")
-	require.Equal(t, int64(100), capture.audios[0].PTS)
-	capture.mu.Unlock()
+	// Clock-driven mixer always mixes (no passthrough mode).
+	// Audio output is produced by the ticker, not directly from IngestFrame.
+	// Verify the mixer is active by checking that the channel is active.
+	require.True(t, mixer.IsChannelActive("cam1"), "cam1 should be active after AFV cut")
 }
 
 func TestIntegrationMixerAFVOnCut(t *testing.T) {

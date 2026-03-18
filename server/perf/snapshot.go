@@ -201,7 +201,6 @@ type PerfMixCycleCurrent struct {
 // PerfAudioCounters holds audio frame counts.
 type PerfAudioCounters struct {
 	Output       int64 `json:"output"`
-	Passthrough  int64 `json:"passthrough"`
 	Mixed        int64 `json:"mixed"`
 	DecodeErrors int64 `json:"decode_errors"`
 	EncodeErrors int64 `json:"encode_errors"`
@@ -376,7 +375,6 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 			},
 			Counters: PerfAudioCounters{
 				Output:       mx.FramesOutput,
-				Passthrough:  mx.FramesPassthrough,
 				Mixed:        mx.FramesMixed,
 				DecodeErrors: mx.DecodeErrors,
 				EncodeErrors: mx.EncodeErrors,

@@ -2,9 +2,10 @@
 //
 // The [Mixer] decodes AAC audio from each source, applies per-channel
 // processing, mixes to a stereo master bus, and re-encodes to AAC for the
-// program output. A passthrough optimization bypasses decode/mix/encode
-// entirely when only one source is active at 0 dB with EQ and compressor
-// bypassed, achieving zero CPU usage in the common single-camera case.
+// program output. A clock-driven output ticker produces one AAC frame per
+// ~21ms tick (1024 samples at 48kHz), reading from per-channel ring buffers
+// populated by the ingest path. This decouples output cadence from source
+// arrival timing.
 //
 // Per-channel processing pipeline (in order):
 //   - Trim (-20 to +20 dB input gain)

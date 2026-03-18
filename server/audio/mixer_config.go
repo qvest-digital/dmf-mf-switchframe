@@ -1,23 +1,8 @@
 package audio
 
-// Package-level imports removed: clock-driven mixer disables passthrough.
-
-// recalcPassthrough updates the passthrough flag. Caller must hold m.mu write lock.
-// Clock-driven mixer always mixes — passthrough is disabled.
-func (m *Mixer) recalcPassthrough() {
-	m.passthrough = false
-}
-
-// ProgramPeak returns the current program output peak levels in dBFS.
-// Returns [leftDBFS, rightDBFS]. Silence is -Inf.
-
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *Mixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
-	mode := "mixing"
-	if m.passthrough {
-		mode = "passthrough"
-	}
 	activeCount := 0
 	mutedCount := 0
 	channelDetails := make(map[string]any, len(m.channels))
@@ -52,15 +37,13 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 	maxGapMs := m.maxInterFrameNano.Load() / 1e6
 
 	result := map[string]any{
-		"mode":                   mode,
+		"mode":                   "mixing",
 		"program_peak_dbfs":      peak,
 		"channels_active":        activeCount,
 		"channels_muted":         mutedCount,
 		"channels":               channelDetails,
-		"frames_passthrough":     m.framesPassthrough.Load(),
 		"frames_mixed":           m.framesMixed.Load(),
 		"frames_output_total":    m.outputFrameCount.Load(),
-		"crossfade_count":        m.crossfadeCount.Load(),
 		"trans_crossfade_active": transCrossfadeActive,
 		"trans_crossfade_pos":    transCrossfadePos,
 		"trans_crossfade_from":   transCrossfadeFrom,
@@ -68,9 +51,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		"trans_crossfade_count":  m.transCrossfades.Load(),
 		"decode_errors":          m.decodeErrors.Load(),
 		"encode_errors":          m.encodeErrors.Load(),
-		"deadline_flushes":       m.deadlineFlushes.Load(),
 		"max_inter_frame_gap_ms": maxGapMs,
-		"mode_transitions":       m.modeTransitions.Load(),
 	}
 
 	if m.loudness != nil {

@@ -7,10 +7,8 @@ type PerfMixerSample struct {
 	Mode               string
 	MixCycleLastNs     int64
 	FramesOutput       int64
-	FramesPassthrough  int64
 	FramesMixed        int64
 	MaxInterFrameGapNs int64
-	DeadlineFlushes    int64
 	DecodeErrors       int64
 	EncodeErrors       int64
 	MomentaryLUFS      float64
@@ -21,21 +19,12 @@ type PerfMixerSample struct {
 // PerfSample returns a performance snapshot of the mixer's current state.
 // Safe for concurrent access from any goroutine.
 func (m *Mixer) PerfSample() PerfMixerSample {
-	m.mu.RLock()
-	mode := "mixing"
-	if m.passthrough {
-		mode = "passthrough"
-	}
-	m.mu.RUnlock()
-
 	return PerfMixerSample{
-		Mode:               mode,
+		Mode:               "mixing",
 		MixCycleLastNs:     m.lastMixCycleNs.Load(),
 		FramesOutput:       m.outputFrameCount.Load(),
-		FramesPassthrough:  m.framesPassthrough.Load(),
 		FramesMixed:        m.framesMixed.Load(),
 		MaxInterFrameGapNs: m.maxInterFrameNano.Load(),
-		DeadlineFlushes:    m.deadlineFlushes.Load(),
 		DecodeErrors:       m.decodeErrors.Load(),
 		EncodeErrors:       m.encodeErrors.Load(),
 		MomentaryLUFS:      m.loudness.MomentaryLUFS(),

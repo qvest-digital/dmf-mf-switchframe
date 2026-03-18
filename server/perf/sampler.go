@@ -125,10 +125,8 @@ type MixerSample struct {
 	Mode               string
 	MixCycleLastNs     int64
 	FramesOutput       int64
-	FramesPassthrough  int64
 	FramesMixed        int64
 	MaxInterFrameGapNs int64
-	DeadlineFlushes    int64
 	DecodeErrors       int64
 	EncodeErrors       int64
 	MomentaryLUFS      float64

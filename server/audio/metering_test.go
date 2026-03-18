@@ -110,7 +110,6 @@ func TestMixerChannelStates(t *testing.T) {
 }
 
 func TestMixer_DebugSnapshot(t *testing.T) {
-	t.Skip("TODO: update for clock-driven mixer — passthrough mode check changed")
 	t.Parallel()
 	m := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
@@ -120,8 +119,7 @@ func TestMixer_DebugSnapshot(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	snap := m.DebugSnapshot()
-	require.Equal(t, "passthrough", snap["mode"])
-	require.Equal(t, int64(0), snap["frames_passthrough"])
+	require.Equal(t, "mixing", snap["mode"])
 	require.Equal(t, int64(0), snap["decode_errors"])
 }
 

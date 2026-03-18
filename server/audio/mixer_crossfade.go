@@ -16,7 +16,6 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 		}
 		ch.active = (key == newProgramSource)
 	}
-	m.recalcPassthrough()
 }
 
 // OnCut initiates a 2-tick (~42ms) crossfade between old and new source,
@@ -29,7 +28,6 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 
 	m.transCrossfadeActive = true
 	m.transCrossfades.Add(1)
-	m.crossfadeCount.Add(1)
 	m.transCrossfadeFrom = oldSource
 	m.transCrossfadeTo = newSource
 	m.transCrossfadeMode = Crossfade
@@ -80,14 +78,6 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	// Pre-warm the encoder so the first real output frame doesn't have
 	// MDCT warmup artifacts (audible pop at passthrough->mixing boundary).
 	_ = m.ensureEncoder()
-
-	m.recalcPassthrough()
-
-	m.log.Info("trans-audio-start",
-		"from", oldSource,
-		"to", newSource,
-		"mode", mode,
-	)
 }
 
 // OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
@@ -103,11 +93,6 @@ func (m *Mixer) OnTransitionPosition(position float64) {
 // Called by the switcher when the video transition finishes.
 func (m *Mixer) OnTransitionComplete() {
 	m.mu.Lock()
-	m.log.Info("trans-audio-complete",
-		"from", m.transCrossfadeFrom,
-		"to", m.transCrossfadeTo,
-		"final_pos", m.transCrossfadePosition,
-	)
 	m.transCrossfadeActive = false
 	m.transCrossfadeFrom = ""
 	m.transCrossfadeTo = ""
@@ -120,7 +105,6 @@ func (m *Mixer) OnTransitionComplete() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.recalcPassthrough()
 	m.mu.Unlock()
 }
 
@@ -141,7 +125,6 @@ func (m *Mixer) OnTransitionAbort() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
-	m.recalcPassthrough()
 	m.mu.Unlock()
 }
 
