@@ -683,7 +683,10 @@ func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, l
 	// (mode, streamID, latencyMs) in the state broadcast.
 	m.stats.Create(key, srt.ModeCaller, streamID, latencyMs)
 
-	err := m.caller.Pull(ctx, srt.SourceConfig{
+	// Use the app-level SRT context, NOT the HTTP request context.
+	// r.Context() is cancelled when the HTTP response is sent, which
+	// would immediately kill the connect loop goroutine before it can dial.
+	err := m.caller.Pull(m.app.srtCtx, srt.SourceConfig{
 		Key:       key,
 		Mode:      srt.ModeCaller,
 		Address:   address,
