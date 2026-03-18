@@ -10,9 +10,9 @@ import (
 
 // Sentinel errors for the comms manager.
 var (
-	ErrCommsFull      = errors.New("comms session full")
+	ErrCommsFull       = errors.New("comms session full")
 	ErrOpusUnavailable = errors.New("opus codec not available")
-	ErrNotInComms     = errors.New("operator not in comms")
+	ErrNotInComms      = errors.New("operator not in comms")
 )
 
 // Manager orchestrates the voice comms channel, managing participant

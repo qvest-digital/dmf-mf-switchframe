@@ -27,7 +27,7 @@ type participant struct {
 	encoder *opusEncoder
 	decoder *opusDecoder
 	pcmBuf  []int16      // scratch buffer for Opus decode
-	pcmQ    chan []int16  // queued decoded PCM frames for mix loop
+	pcmQ    chan []int16 // queued decoded PCM frames for mix loop
 
 	sendCh chan []byte
 }

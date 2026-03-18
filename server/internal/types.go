@@ -311,7 +311,7 @@ type CommsParticipant struct {
 	OperatorID string `json:"operatorId"`
 	Name       string `json:"name"`
 	Muted      bool   `json:"muted"`
-	Speaking    bool   `json:"speaking"`
+	Speaking   bool   `json:"speaking"`
 }
 
 // SCTE35State represents the current SCTE-35 signaling state.
