@@ -79,7 +79,6 @@ func TestMixerIgnoresInactiveChannel(t *testing.T) {
 	require.Equal(t, 0, len(output), "inactive channel should not output frames")
 }
 
-
 func TestMixerMutedChannelSilent(t *testing.T) {
 	var output []*media.AudioFrame
 
@@ -101,7 +100,6 @@ func TestMixerMutedChannelSilent(t *testing.T) {
 	require.Equal(t, 0, len(output), "muted channel should produce no output")
 }
 
-
 func TestMixerGainApplication(t *testing.T) {
 	require.InDelta(t, 1.0, DBToLinear(0), 0.001)
 	require.InDelta(t, 0.5012, DBToLinear(-6.0), 0.001)
@@ -109,7 +107,6 @@ func TestMixerGainApplication(t *testing.T) {
 	require.InDelta(t, 2.0, DBToLinear(6.02), 0.01)
 	require.Equal(t, 0.0, DBToLinear(math.Inf(-1)))
 }
-
 
 func TestSetMasterLevelRejectsNaN(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -123,7 +120,6 @@ func TestSetMasterLevelRejectsNaN(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "finite")
 }
-
 
 func TestSetMasterLevelRejectsInf(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -142,7 +138,6 @@ func TestSetMasterLevelRejectsInf(t *testing.T) {
 	require.Contains(t, err.Error(), "finite")
 }
 
-
 func TestSetMasterLevelRejectsOutOfRange(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -160,7 +155,6 @@ func TestSetMasterLevelRejectsOutOfRange(t *testing.T) {
 	require.Contains(t, err.Error(), "out of range")
 }
 
-
 func TestSetMasterLevelAcceptsValidRange(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -173,7 +167,6 @@ func TestSetMasterLevelAcceptsValidRange(t *testing.T) {
 		require.NoError(t, m.SetMasterLevel(level), "level %f should be accepted", level)
 	}
 }
-
 
 func TestMixerEnsureEncoderPrimesOnTransitionStart(t *testing.T) {
 	// Verify that OnTransitionStart also primes the encoder.
@@ -203,7 +196,6 @@ func TestMixerEnsureEncoderPrimesOnTransitionStart(t *testing.T) {
 	require.GreaterOrEqual(t, enc.CallCount(), 1, "encoder should be primed with silent frame")
 }
 
-
 func TestMixerSetAFV(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -220,7 +212,6 @@ func TestMixerSetAFV(t *testing.T) {
 	err = m.SetAFV("nonexistent", true)
 	require.Error(t, err, "SetAFV on unknown channel should error")
 }
-
 
 func TestMixerAFVActivatesOnCut(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -252,7 +243,6 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 	require.True(t, m.IsChannelActive("cam2"), "cam2 should activate on program")
 }
 
-
 func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -280,7 +270,6 @@ func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {
 	require.True(t, m.IsChannelActive("music"), "non-AFV music still active")
 }
 
-
 func TestMixerAFVToggledOff(t *testing.T) {
 	// When AFV is toggled off, channel keeps its current active state
 	m := NewMixer(MixerConfig{
@@ -306,7 +295,6 @@ func TestMixerAFVToggledOff(t *testing.T) {
 	require.True(t, m.IsChannelActive("cam1"), "non-AFV channel unaffected by program change")
 }
 
-
 func TestMixerIsChannelActive(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -324,7 +312,6 @@ func TestMixerIsChannelActive(t *testing.T) {
 	m.SetActive("cam1", true)
 	require.True(t, m.IsChannelActive("cam1"))
 }
-
 
 func TestMixerOnTransitionStart(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -356,7 +343,6 @@ func TestMixerOnTransitionStart(t *testing.T) {
 	require.True(t, active, "new source channel should be activated on transition start")
 }
 
-
 func TestMixerOnTransitionPosition(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -379,7 +365,6 @@ func TestMixerOnTransitionPosition(t *testing.T) {
 	require.InDelta(t, 0.75, m.TransitionPosition(), 0.001)
 }
 
-
 func TestMixerOnTransitionComplete(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -401,7 +386,6 @@ func TestMixerOnTransitionComplete(t *testing.T) {
 	require.False(t, m.IsInTransitionCrossfade(), "transition crossfade should be cleared")
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should be reset")
 }
-
 
 func TestMixerOnTransitionAbortSnapsPosition(t *testing.T) {
 	// OnTransitionAbort should snap position to 0.0 before clearing state,
@@ -450,7 +434,6 @@ func TestMixerOnTransitionAbortSnapsPosition(t *testing.T) {
 	require.InDelta(t, 0.0, m.TransitionPosition(), 0.001, "position should be reset after abort")
 }
 
-
 func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -484,7 +467,6 @@ func TestMixerTransitionCrossfadeGains(t *testing.T) {
 	require.InDelta(t, 1.0, newGain, 0.001, "new gain at 1.0")
 }
 
-
 func TestMixerTransitionGainsNotActive(t *testing.T) {
 	// When no transition is active, gains should return 1.0, 0.0
 	m := NewMixer(MixerConfig{
@@ -498,7 +480,6 @@ func TestMixerTransitionGainsNotActive(t *testing.T) {
 	require.InDelta(t, 1.0, oldGain, 0.001, "old gain when inactive")
 	require.InDelta(t, 0.0, newGain, 0.001, "new gain when inactive")
 }
-
 
 func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -533,7 +514,6 @@ func TestMixerTransitionFTBReverseGains(t *testing.T) {
 	require.InDelta(t, 0.0, newGain, 0.001, "FTB reverse: no 'to' source")
 }
 
-
 func TestMixerTransitionFTBForwardGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -565,7 +545,6 @@ func TestMixerTransitionFTBForwardGains(t *testing.T) {
 }
 
 // Program mute silences output when FTB is held.
-
 
 func TestMixerTransitionDipGains(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -612,7 +591,6 @@ func TestMixerTransitionDipGains(t *testing.T) {
 	require.InDelta(t, 1.0, newGain, 0.001, "dip at 1.0: source B full")
 }
 
-
 func TestMixerTickerProducesOutputWithPartialChannels(t *testing.T) {
 	// Two active channels, but only one has data in its ring buffer.
 	// The clock-driven ticker still produces output regardless.
@@ -656,7 +634,6 @@ func TestMixerTickerProducesOutputWithPartialChannels(t *testing.T) {
 	mu.Unlock()
 	require.GreaterOrEqual(t, count, 1, "ticker should produce output even if one channel has no data")
 }
-
 
 func TestChannelDecoderInitOnce(t *testing.T) {
 	// Verify that the decoder factory is called exactly once per channel,
@@ -718,7 +695,6 @@ func TestChannelDecoderInitOnce(t *testing.T) {
 		"decoder factory should be called exactly once per channel, got %d", factoryCalls.Load())
 }
 
-
 func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -754,7 +730,6 @@ func TestMixerRemoveChannelCleansUpPCMBuffer(t *testing.T) {
 	require.False(t, hasPCM, "lastDecodedPCM should be cleaned up after RemoveChannel")
 }
 
-
 func TestMixerTrimRangeValidation(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -770,7 +745,6 @@ func TestMixerTrimRangeValidation(t *testing.T) {
 	require.NoError(t, m.SetTrim("cam1", -20.0), "trim at -20 should be OK")
 	require.NoError(t, m.SetTrim("cam1", 20.0), "trim at +20 should be OK")
 }
-
 
 func TestMixerPerChannelPeaks(t *testing.T) {
 	var outputFrames []*media.AudioFrame
@@ -807,7 +781,6 @@ func TestMixerPerChannelPeaks(t *testing.T) {
 	require.True(t, ch.PeakL > -96 || ch.PeakR > -96,
 		"per-channel peaks should be populated after frame ingestion")
 }
-
 
 func TestChannelDecoderInitOnceCrossfade(t *testing.T) {
 	// Verify sync.Once works for the crossfade path too.
@@ -893,7 +866,6 @@ func TestMixer_SetProgramMute_ResetsEnvelopes(t *testing.T) {
 		"compressor GR should be 0 after mute/reset")
 }
 
-
 func TestGrowBuf(t *testing.T) {
 	// nil input — should allocate new slice
 	buf := growBuf(nil, 10)
@@ -960,7 +932,6 @@ func BenchmarkMixerMixingPath(b *testing.B) {
 	}
 }
 
-
 func TestStereoGainInterpolation(t *testing.T) {
 	t.Parallel()
 	m := NewMixer(MixerConfig{
@@ -1026,7 +997,6 @@ func TestStereoGainInterpolation(t *testing.T) {
 	}
 }
 
-
 func TestTransitionGainInterpolation_LastPairReachesTarget(t *testing.T) {
 	// Verify that the transition gain interpolation ramp reaches gEnd on the
 	// The interpolation ramp reaches gEnd exactly on the last sample pair using (pairCount-1) denominator.
@@ -1068,7 +1038,6 @@ func TestTransitionGainInterpolation_LastPairReachesTarget(t *testing.T) {
 	require.InDelta(t, float64(gEnd), float64(lastR), 1e-6,
 		"last sample R should have gain = gEnd exactly, got %f", lastR)
 }
-
 
 func TestChannelGainCached(t *testing.T) {
 	t.Parallel()
@@ -1114,7 +1083,6 @@ func TestChannelGainCached(t *testing.T) {
 	m.mu.RUnlock()
 }
 
-
 func TestMixer_SetStingerAudio(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -1146,7 +1114,6 @@ func TestMixer_SetStingerAudio(t *testing.T) {
 	m.mu.Unlock()
 }
 
-
 func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -1164,7 +1131,6 @@ func TestMixer_SetStingerAudio_SampleRateMismatch(t *testing.T) {
 	require.NotNil(t, stinger, "stingerAudio should be resampled, not rejected")
 }
 
-
 func TestMixer_SetStingerAudio_ChannelMismatch(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -1180,7 +1146,6 @@ func TestMixer_SetStingerAudio_ChannelMismatch(t *testing.T) {
 	require.Nil(t, m.stingerAudio, "stingerAudio should be nil on channel mismatch")
 	m.mu.Unlock()
 }
-
 
 func TestMixer_AddStingerAudio_Basic(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -1220,7 +1185,6 @@ func TestMixer_AddStingerAudio_Basic(t *testing.T) {
 	require.Equal(t, 960+100, m.stingerOffset, "offset should advance by mixed length")
 	m.mu.Unlock()
 }
-
 
 func TestMixer_AddStingerAudio_FadeEnvelope(t *testing.T) {
 	m := NewMixer(MixerConfig{
@@ -1286,7 +1250,6 @@ func TestMixer_AddStingerAudio_FadeEnvelope(t *testing.T) {
 	m.mu.Unlock()
 }
 
-
 func TestMixer_AddStingerAudio_Exhaustion(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -1318,7 +1281,6 @@ func TestMixer_AddStingerAudio_Exhaustion(t *testing.T) {
 	require.Nil(t, m.stingerAudio, "stingerAudio should be nil after exhaustion")
 	m.mu.Unlock()
 }
-
 
 func TestMixer_AddStingerAudio_StereoFadeSymmetry(t *testing.T) {
 	// Bug: fade envelope advanced per-sample instead of per sample-frame,
@@ -1364,7 +1326,6 @@ func TestMixer_AddStingerAudio_StereoFadeSymmetry(t *testing.T) {
 	m.mu.Unlock()
 }
 
-
 func TestMixer_StingerAudioClearedOnComplete(t *testing.T) {
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
@@ -1389,7 +1350,6 @@ func TestMixer_StingerAudioClearedOnComplete(t *testing.T) {
 	require.Equal(t, 0, m.stingerChannels, "stingerChannels should be 0 after OnTransitionComplete")
 	m.mu.Unlock()
 }
-
 
 func TestMixerUnmuteFadeInRamp(t *testing.T) {
 	// When SetProgramMute transitions from true→false, the mixer should apply
@@ -1437,7 +1397,6 @@ func TestMixerUnmuteFadeInRamp(t *testing.T) {
 	require.Equal(t, expectedRampLen, fadeRemaining, "ramp length should be 5ms of samples")
 }
 
-
 func TestMixerUnmuteFadeNotScheduledOnMute(t *testing.T) {
 	// SetProgramMute(true) should clear any pending fade-in ramp.
 	m := NewMixer(MixerConfig{
@@ -1462,7 +1421,6 @@ func TestMixerUnmuteFadeNotScheduledOnMute(t *testing.T) {
 	require.Equal(t, 0, m.unmuteFadeRemaining, "mute should clear pending fade-in ramp")
 	m.mu.RUnlock()
 }
-
 
 func TestMixerResamplerCreatedOncePerChannel(t *testing.T) {
 	t.Parallel()
@@ -1547,4 +1505,3 @@ func TestMixer_TickerProducesOutputWithNoSourceData(t *testing.T) {
 	require.GreaterOrEqual(t, count, 2,
 		"ticker should produce output frames even when no source audio arrives")
 }
-

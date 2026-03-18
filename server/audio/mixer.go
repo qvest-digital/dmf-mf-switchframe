@@ -64,17 +64,17 @@ type Channel struct {
 	muted            bool
 	afv              bool
 	active           bool
-	decoder          Decoder      // lazy init on first IngestFrame
-	decoderOnce      sync.Once    // ensures decoder factory is called at most once
-	peakL            float64      // linear amplitude [0,1] — updated on every decoded frame
-	peakR            float64      // linear amplitude [0,1]
-	eq               *EQ          // 3-band parametric EQ (always initialized)
-	compressor       *Compressor  // single-band compressor (always initialized)
-	audioDelay       *DelayBuffer // per-source audio delay for lip-sync correction
-	isPCM            bool         // true if this channel receives raw PCM (not AAC)
-	sampleRateWarned bool         // true after first sample rate mismatch log (once per channel)
-	resampler        *Resampler   // nil when source rate matches mixer rate; lazy-init on mismatch
-	resamplerSrcRate int          // source rate the resampler was created for (detect rate changes)
+	decoder          Decoder        // lazy init on first IngestFrame
+	decoderOnce      sync.Once      // ensures decoder factory is called at most once
+	peakL            float64        // linear amplitude [0,1] — updated on every decoded frame
+	peakR            float64        // linear amplitude [0,1]
+	eq               *EQ            // 3-band parametric EQ (always initialized)
+	compressor       *Compressor    // single-band compressor (always initialized)
+	audioDelay       *DelayBuffer   // per-source audio delay for lip-sync correction
+	isPCM            bool           // true if this channel receives raw PCM (not AAC)
+	sampleRateWarned bool           // true after first sample rate mismatch log (once per channel)
+	resampler        *Resampler     // nil when source rate matches mixer rate; lazy-init on mismatch
+	resamplerSrcRate int            // source rate the resampler was created for (detect rate changes)
 	ringBuf          *PCMRingBuffer // processed PCM ring buffer for clock-driven output
 
 	// Reusable work buffers (hot-path allocation elimination)
@@ -278,7 +278,6 @@ func (m *Mixer) ensureEncoder() error {
 	return nil
 }
 
-
 // frameDuration90k returns the duration of one AAC frame (1024 samples) in 90 kHz PTS ticks.
 func (m *Mixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
@@ -388,7 +387,7 @@ func (m *Mixer) SetActive(sourceKey string, active bool) {
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
 		ch.active = active
-		}
+	}
 }
 
 // SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
@@ -784,7 +783,7 @@ func (m *Mixer) resampleIfNeeded(ch *Channel, pcm []float32, srcRate int) []floa
 				"L", ch.resampler.UpFactor(),
 				"M", ch.resampler.DownFactor())
 		}
-		}
+	}
 	return ch.resampler.Resample(pcm)
 }
 

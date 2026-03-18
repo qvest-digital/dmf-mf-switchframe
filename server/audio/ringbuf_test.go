@@ -40,7 +40,7 @@ func TestPCMRingBuffer_Overflow_DropsOldest(t *testing.T) {
 		cap: 6,
 	}
 	rb.Push([]float32{1, 2, 3, 4, 5, 6}) // fill
-	rb.Push([]float32{7, 8})              // overflow, drops 1,2
+	rb.Push([]float32{7, 8})             // overflow, drops 1,2
 
 	out := rb.Pop(6)
 	assert.Equal(t, []float32{3, 4, 5, 6, 7, 8}, out)

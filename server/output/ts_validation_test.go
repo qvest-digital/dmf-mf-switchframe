@@ -888,11 +888,11 @@ func TestTSOutputValidation(t *testing.T) {
 
 	t.Run("no_orphan_pids", func(t *testing.T) {
 		allowedPIDs := map[uint16]string{
-			0x0000: "PAT",
-			0x1000: "PMT",
+			0x0000:   "PAT",
+			0x1000:   "PMT",
 			videoPID: "video",
 			audioPID: "audio",
-			0x1FFF: "null",
+			0x1FFF:   "null",
 		}
 		for pid := range a.PIDs {
 			_, ok := allowedPIDs[pid]
@@ -972,4 +972,3 @@ func TestTSOutputValidation(t *testing.T) {
 			a.MaxAudioPTSGapMs)
 	})
 }
-
