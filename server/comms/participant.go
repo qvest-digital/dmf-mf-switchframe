@@ -8,6 +8,11 @@ import (
 // speakingThresholdRMS is roughly -40 dBFS for int16: 32768 * 10^(-40/20).
 const speakingThresholdRMS = 328
 
+// pcmQueueSize is the number of decoded PCM frames buffered per participant.
+// At 20ms per frame, 8 frames = 160ms of buffer — enough to absorb jitter
+// from the browser's ScriptProcessorNode (~85ms bursts of 4 frames).
+const pcmQueueSize = 8
+
 // participant represents a single operator in the voice comms channel,
 // managing their Opus codec pair, PCM buffer, and speaking state.
 type participant struct {
@@ -21,8 +26,8 @@ type participant struct {
 
 	encoder *opusEncoder
 	decoder *opusDecoder
-	pcmBuf  []int16
-	hasPCM  bool
+	pcmBuf  []int16      // scratch buffer for Opus decode
+	pcmQ    chan []int16  // queued decoded PCM frames for mix loop
 
 	sendCh chan []byte
 }
@@ -43,55 +48,89 @@ func newParticipant(id, name string) (*participant, error) {
 		encoder: enc,
 		decoder: dec,
 		pcmBuf:  make([]int16, FrameSize),
+		pcmQ:    make(chan []int16, pcmQueueSize),
 		sendCh:  make(chan []byte, 4),
 	}, nil
 }
 
-// decodeAudio decodes Opus data into PCM, stores it in the participant's buffer,
-// and returns the decoded samples.
+// decodeAudio decodes Opus data into PCM and queues the frame for the mix loop.
+// Returns the decoded samples (for speaking detection).
 func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	n, err := p.decoder.Decode(opusData, p.pcmBuf, FrameSize)
+	p.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	p.hasPCM = true
+
 	out := make([]int16, n)
 	copy(out, p.pcmBuf[:n])
+
+	// Non-blocking enqueue — drop oldest if full.
+	select {
+	case p.pcmQ <- out:
+	default:
+		// Queue full — drop oldest frame to make room.
+		select {
+		case <-p.pcmQ:
+		default:
+		}
+		select {
+		case p.pcmQ <- out:
+		default:
+		}
+	}
+
 	return out, nil
 }
 
 // ingestRawPCM stores raw PCM samples directly (bypassing Opus decode).
 func (p *participant) ingestRawPCM(pcm []int16) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	frame := make([]int16, FrameSize)
 	n := len(pcm)
 	if n > FrameSize {
 		n = FrameSize
 	}
-	copy(p.pcmBuf[:n], pcm[:n])
-	for i := n; i < FrameSize; i++ {
-		p.pcmBuf[i] = 0
+	copy(frame[:n], pcm[:n])
+
+	select {
+	case p.pcmQ <- frame:
+	default:
+		select {
+		case <-p.pcmQ:
+		default:
+		}
+		select {
+		case p.pcmQ <- frame:
+		default:
+		}
 	}
-	p.hasPCM = true
 }
 
-// consumePCM returns a copy of the buffered PCM data and clears the buffer flag.
-// Returns nil if no data is available or the participant is muted.
+// consumePCM returns the next queued PCM frame for mixing.
+// Returns nil if no frames are available or the participant is muted.
 func (p *participant) consumePCM() []int16 {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	muted := p.muted
+	p.mu.Unlock()
 
-	if !p.hasPCM || p.muted {
+	if muted {
+		// Drain queue while muted so we don't play stale audio on unmute.
+		for {
+			select {
+			case <-p.pcmQ:
+			default:
+				return nil
+			}
+		}
+	}
+
+	select {
+	case pcm := <-p.pcmQ:
+		return pcm
+	default:
 		return nil
 	}
-	p.hasPCM = false
-	out := make([]int16, FrameSize)
-	copy(out, p.pcmBuf)
-	return out
 }
 
 // setMuted sets the participant's mute state.
