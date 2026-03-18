@@ -103,6 +103,9 @@ func TestErrorStatus(t *testing.T) {
 		{replay.ErrBufferDisabled, http.StatusBadRequest},
 		{replay.ErrSourceMismatch, http.StatusBadRequest},
 		{replay.ErrMaxSources, http.StatusConflict},
+		{replay.ErrNotPlaying, http.StatusBadRequest},
+		{replay.ErrNotPaused, http.StatusBadRequest},
+		{replay.ErrInvalidSeek, http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

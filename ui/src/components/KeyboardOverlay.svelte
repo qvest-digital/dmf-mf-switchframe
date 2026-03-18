@@ -13,6 +13,16 @@
 		{ key: 'Enter', action: 'Auto transition (mix/dip)' },
 		{ key: 'F1', action: 'Fade to black' },
 		{ key: 'F2', action: 'Toggle DSK' },
+		// Replay
+		{ key: 'Shift + 1/2/3', action: 'Quick replay preset (global)' },
+		{ key: 'I', action: 'Mark in (replay tab)' },
+		{ key: 'O', action: 'Mark out (replay tab)' },
+		{ key: 'Space', action: 'Play / Pause (replay tab)' },
+		{ key: 'Esc', action: 'Stop (replay tab)' },
+		{ key: 'J', action: 'Slower (replay tab)' },
+		{ key: 'K', action: 'Play / Pause (replay tab)' },
+		{ key: 'L', action: 'Faster (replay tab)' },
+		{ key: '← →', action: 'Frame step (replay tab, paused)' },
 		// Macros
 		{ key: 'Ctrl + 1-9', action: 'Run macro' },
 		// Tabs

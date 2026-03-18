@@ -31,7 +31,7 @@
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut } from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -60,6 +60,7 @@
 	let ioPanelVisible = $state(false);
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
+	let activeBottomTab = $state('Audio');
 	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -188,6 +189,66 @@
 				const slot = slots[0];
 				apiCall(slot.enabled ? layoutSlotOff(0) : layoutSlotOn(0), 'PIP toggle');
 			}
+		},
+		isReplayTabActive: () => activeBottomTab === 'Replay',
+		replayQuickPreset: (index: number) => {
+			const presets = [
+				{ seconds: 15 }, { seconds: 30 }, { seconds: 60 }
+			];
+			try {
+				const saved = localStorage.getItem('switchframe:replay-presets');
+				if (saved) {
+					const parsed = JSON.parse(saved);
+					if (index < parsed.length) {
+						apiCall(replayQuick(parsed[index].seconds), 'Quick replay');
+						return;
+					}
+				}
+			} catch { /* ignore */ }
+			if (index < presets.length) {
+				apiCall(replayQuick(presets[index].seconds), 'Quick replay');
+			}
+		},
+		replayMarkIn: () => {
+			const src = store.effectiveState.programSource || Object.keys(store.effectiveState.sources)[0] || '';
+			if (src) apiCall(replayMarkIn(src), 'Mark IN');
+		},
+		replayMarkOut: () => {
+			const src = store.effectiveState.replay?.markSource || '';
+			if (src) apiCall(replayMarkOut(src), 'Mark OUT');
+		},
+		replayPlayPause: () => {
+			const r = store.effectiveState.replay;
+			if (r?.state === 'playing') {
+				apiCall(replayPause(), 'Pause');
+			} else if (r?.state === 'paused') {
+				apiCall(replayResume(), 'Resume');
+			} else if (r?.markIn && r?.markOut && r?.markSource) {
+				apiCall(replayPlay(r.markSource, 0.5, false), 'Play');
+			}
+		},
+		replayStop: () => {
+			apiCall(replayStop(), 'Stop replay');
+		},
+		replaySpeedDown: () => {
+			const speeds = [0.25, 0.5, 0.75, 1.0];
+			const current = store.effectiveState.replay?.speed ?? 1.0;
+			const idx = speeds.indexOf(current);
+			if (idx > 0) apiCall(replaySetSpeed(speeds[idx - 1]), 'Speed down');
+		},
+		replaySpeedUp: () => {
+			const speeds = [0.25, 0.5, 0.75, 1.0];
+			const current = store.effectiveState.replay?.speed ?? 1.0;
+			const idx = speeds.indexOf(current);
+			if (idx < speeds.length - 1) apiCall(replaySetSpeed(speeds[idx + 1]), 'Speed up');
+		},
+		replayFrameBack: () => {
+			const pos = Math.max(0, (store.effectiveState.replay?.position ?? 0) - 0.002);
+			apiCall(replaySeek(pos), 'Frame back');
+		},
+		replayFrameForward: () => {
+			const pos = Math.min(1, (store.effectiveState.replay?.position ?? 0) + 0.002);
+			apiCall(replaySeek(pos), 'Frame forward');
 		},
 		getSourceKeys: () => store.sourceKeys,
 	});
@@ -624,7 +685,10 @@
 			</section>
 
 			<section class="bottom-panel">
-				<BottomTabs onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; }}>
+					<BottomTabs
+					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
+					onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; activeBottomTab = tab; }}
+				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">

@@ -739,6 +739,347 @@ func TestReplayManager_CloseWaitsForExportGoroutine(t *testing.T) {
 		"export goroutine should have completed before Close() returned")
 }
 
+// setupPlayingManager creates a manager with an active player for testing
+// pause/resume/seek/speed methods. The player is looping so it stays active.
+func setupPlayingManager(t *testing.T) (*Manager, func()) {
+	t.Helper()
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+	_ = m.MarkOut("cam1")
+
+	err := m.Play("cam1", 0.5, true) // slow + loop = stays active
+	require.NoError(t, err)
+
+	// Wait for player to reach playing state.
+	require.Eventually(t, func() bool {
+		return m.Status().State == PlayerPlaying
+	}, 3*time.Second, 10*time.Millisecond, "player did not reach playing state")
+
+	cleanup := func() {
+		_ = m.Stop()
+		m.Close()
+	}
+	return m, cleanup
+}
+
+func TestManager_Pause_NotPlaying(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// No player at all.
+	err := m.Pause()
+	require.ErrorIs(t, err, ErrNotPlaying)
+}
+
+func TestManager_Pause_Success(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	err := m.Pause()
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.Equal(t, PlayerPaused, status.State)
+}
+
+func TestManager_Resume_NotPaused(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// No player at all.
+	err := m.Resume()
+	require.ErrorIs(t, err, ErrNotPaused)
+}
+
+func TestManager_Resume_NotPaused_WhilePlaying(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	// Player is playing, not paused.
+	err := m.Resume()
+	require.ErrorIs(t, err, ErrNotPaused)
+}
+
+func TestManager_Resume_Success(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	// Pause first.
+	err := m.Pause()
+	require.NoError(t, err)
+	require.Equal(t, PlayerPaused, m.Status().State)
+
+	// Resume.
+	err = m.Resume()
+	require.NoError(t, err)
+	require.Equal(t, PlayerPlaying, m.Status().State)
+}
+
+func TestManager_SetSpeed_NoPlayer(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	err := m.SetSpeed(0.5)
+	require.ErrorIs(t, err, ErrNoPlayer)
+}
+
+func TestManager_SetSpeed_InvalidSpeed(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	err := m.SetSpeed(0.1)
+	require.ErrorIs(t, err, ErrInvalidSpeed)
+
+	err = m.SetSpeed(2.0)
+	require.ErrorIs(t, err, ErrInvalidSpeed)
+}
+
+func TestManager_SetSpeed_Success(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	stateChanged := make(chan struct{}, 10)
+	m.OnStateChange(func() {
+		select {
+		case stateChanged <- struct{}{}:
+		default:
+		}
+	})
+
+	err := m.SetSpeed(0.75)
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.Equal(t, 0.75, status.Speed)
+
+	// Verify state change was notified.
+	select {
+	case <-stateChanged:
+	case <-time.After(1 * time.Second):
+		t.Error("OnStateChange not called for SetSpeed")
+	}
+}
+
+func TestManager_Seek_NoPlayer(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	err := m.Seek(0.5)
+	require.ErrorIs(t, err, ErrNoPlayer)
+}
+
+func TestManager_Seek_InvalidPosition(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	err := m.Seek(-0.1)
+	require.ErrorIs(t, err, ErrInvalidSeek)
+
+	err = m.Seek(1.5)
+	require.ErrorIs(t, err, ErrInvalidSeek)
+}
+
+func TestManager_Seek_Success(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	err := m.Seek(0.5)
+	require.NoError(t, err)
+
+	// Seek at boundaries.
+	err = m.Seek(0.0)
+	require.NoError(t, err)
+
+	err = m.Seek(1.0)
+	require.NoError(t, err)
+}
+
+func TestManager_SetMarks(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+	_ = m.AddSource("cam1")
+
+	// Set initial marks via MarkIn/MarkOut.
+	_ = m.MarkIn("cam1")
+	time.Sleep(10 * time.Millisecond)
+	_ = m.MarkOut("cam1")
+
+	// Now adjust via SetMarks.
+	inMs := time.Now().Add(-30 * time.Second).UnixMilli()
+	outMs := time.Now().Add(-5 * time.Second).UnixMilli()
+	err := m.SetMarks(&inMs, &outMs)
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.NotNil(t, status.MarkIn)
+	require.NotNil(t, status.MarkOut)
+	require.Equal(t, inMs, status.MarkIn.UnixMilli())
+	require.Equal(t, outMs, status.MarkOut.UnixMilli())
+}
+
+func TestManager_SetMarks_InvalidOrder(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// Set markOut before markIn.
+	inMs := time.Now().UnixMilli()
+	outMs := time.Now().Add(-10 * time.Second).UnixMilli() // Before markIn
+	err := m.SetMarks(&inMs, &outMs)
+	require.ErrorIs(t, err, ErrInvalidMarks)
+}
+
+func TestManager_SetMarks_PartialUpdate(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	// Set only markIn.
+	inMs := time.Now().Add(-30 * time.Second).UnixMilli()
+	err := m.SetMarks(&inMs, nil)
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.NotNil(t, status.MarkIn)
+	require.Nil(t, status.MarkOut)
+
+	// Now set only markOut.
+	outMs := time.Now().UnixMilli()
+	err = m.SetMarks(nil, &outMs)
+	require.NoError(t, err)
+
+	status = m.Status()
+	require.NotNil(t, status.MarkIn)
+	require.NotNil(t, status.MarkOut)
+}
+
+func TestManager_QuickReplay_NoSource(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	err := m.QuickReplay("nonexistent", 10, 0.5)
+	require.ErrorIs(t, err, ErrNoSource)
+}
+
+func TestManager_QuickReplay_DefaultSpeed(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	_ = m.AddSource("cam1")
+	m.RecordFrame("cam1", makeVideoFrameAVC1(0, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(3003, false, 50))
+	time.Sleep(10 * time.Millisecond)
+	m.RecordFrame("cam1", makeVideoFrameAVC1(6006, true, 100))
+	m.RecordFrame("cam1", makeVideoFrameAVC1(9009, false, 50))
+
+	err := m.QuickReplay("cam1", 10, 0) // 0 = default to 0.5
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.Equal(t, 0.5, status.Speed)
+	require.NotNil(t, status.MarkIn)
+	require.NotNil(t, status.MarkOut)
+	require.Equal(t, "cam1", status.MarkSource)
+
+	// Wait for completion or stop.
+	_ = m.Stop()
+}
+
+func TestManager_QuickReplay_StopsActivePlayer(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	// Player is already active and looping. QuickReplay should stop it.
+	err := m.QuickReplay("cam1", 10, 0.5)
+	require.NoError(t, err)
+
+	status := m.Status()
+	require.True(t, status.State == PlayerPlaying || status.State == PlayerLoading,
+		"expected playing or loading after QuickReplay, got %v", status.State)
+}
+
+func TestManager_PeekFrame_NoSource(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	_, err := m.PeekFrame("nonexistent")
+	require.ErrorIs(t, err, ErrNoSource)
+}
+
+func TestManager_PeekFrame_NoFrames(t *testing.T) {
+	relay := &mockRelay{}
+	m := NewManager(relay, DefaultConfig(), mockDecoderFactory, mockEncoderFactory)
+	defer m.Close()
+
+	_ = m.AddSource("cam1")
+
+	data, err := m.PeekFrame("cam1")
+	require.NoError(t, err)
+	require.Nil(t, data, "expected nil data (no thumbnail available)")
+}
+
+func TestManager_Pause_StateChangeNotified(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	stateChanged := make(chan struct{}, 10)
+	m.OnStateChange(func() {
+		select {
+		case stateChanged <- struct{}{}:
+		default:
+		}
+	})
+
+	err := m.Pause()
+	require.NoError(t, err)
+
+	select {
+	case <-stateChanged:
+	case <-time.After(1 * time.Second):
+		t.Error("OnStateChange not called for Pause")
+	}
+}
+
+func TestManager_Resume_StateChangeNotified(t *testing.T) {
+	m, cleanup := setupPlayingManager(t)
+	defer cleanup()
+
+	_ = m.Pause()
+
+	stateChanged := make(chan struct{}, 10)
+	m.OnStateChange(func() {
+		select {
+		case stateChanged <- struct{}{}:
+		default:
+		}
+	})
+
+	err := m.Resume()
+	require.NoError(t, err)
+
+	select {
+	case <-stateChanged:
+	case <-time.After(1 * time.Second):
+		t.Error("OnStateChange not called for Resume")
+	}
+}
+
 func makeVideoFrameAVC1(pts int64, keyframe bool, size int) *media.VideoFrame {
 	f := makeVideoFrame(pts, keyframe, size)
 	// Override wireData with valid AVC1 format.

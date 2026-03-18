@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, EasingConfig } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, replayQuick, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
@@ -47,6 +47,29 @@
 
 	/** Idle timer for wheel/trackpad scrub sessions. */
 	let wheelIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const isReplayActive = $derived(
+		crState.replay?.state === 'playing' || crState.replay?.state === 'paused'
+	);
+
+	const defaultPresets = [
+		{ seconds: 15, label: '15s' },
+		{ seconds: 30, label: '30s' },
+		{ seconds: 60, label: '60s' },
+	];
+
+	function loadReplayPresets() {
+		try {
+			const saved = localStorage.getItem('switchframe:replay-presets');
+			return saved ? JSON.parse(saved) : defaultPresets;
+		} catch { return defaultPresets; }
+	}
+
+	let replayPresets = $state(loadReplayPresets());
+
+	function handleQuickReplay(seconds: number) {
+		apiCall(replayQuick(seconds), 'Quick replay');
+	}
 
 	// Clear guard once server confirms the transition is active
 	$effect(() => {
@@ -307,6 +330,20 @@
 			FTB
 			<span class="shortcut">F1</span>
 		</button>
+	</div>
+
+	<!-- Quick Replay Presets -->
+	<div class="replay-presets">
+		{#each replayPresets as preset, i}
+			<button
+				class="replay-quick-btn"
+				class:replay-active={isReplayActive}
+				onclick={() => handleQuickReplay(preset.seconds)}
+				title="Replay last {preset.seconds}s (Shift+{i + 1})"
+			>
+				&#10226;{preset.label}
+			</button>
+		{/each}
 	</div>
 
 	<div class="transition-options">
@@ -844,5 +881,43 @@
 		border-radius: 50%;
 		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 		transform: translateX(-50%);
+	}
+
+	.replay-presets {
+		display: flex;
+		gap: 3px;
+		margin-top: 4px;
+	}
+
+	.replay-quick-btn {
+		flex: 1;
+		padding: 3px 4px;
+		background: var(--accent-orange-dim);
+		border: 1px solid rgba(245, 158, 11, 0.15);
+		border-radius: var(--radius-sm);
+		color: var(--accent-orange);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		cursor: pointer;
+		transition: all var(--transition-fast);
+		letter-spacing: 0.02em;
+	}
+
+	.replay-quick-btn:hover {
+		background: var(--accent-orange-light);
+		border-color: var(--accent-orange-medium);
+	}
+
+	.replay-quick-btn.replay-active {
+		background: var(--accent-orange);
+		color: var(--bg-base);
+		border-color: var(--accent-orange);
+		animation: replay-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes replay-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.7; }
 	}
 </style>

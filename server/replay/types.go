@@ -18,6 +18,9 @@ var (
 	ErrBufferDisabled = errors.New("replay: buffer is disabled (0 duration)")
 	ErrSourceMismatch = errors.New("replay: mark-out source must match mark-in source")
 	ErrMaxSources     = errors.New("replay: maximum sources reached")
+	ErrNotPlaying     = errors.New("replay: not playing")
+	ErrNotPaused      = errors.New("replay: not paused")
+	ErrInvalidSeek    = errors.New("replay: seek position must be between 0.0 and 1.0")
 )
 
 // PlayerState represents the current state of the replay player.
@@ -27,6 +30,7 @@ const (
 	PlayerIdle    PlayerState = "idle"
 	PlayerLoading PlayerState = "loading"
 	PlayerPlaying PlayerState = "playing"
+	PlayerPaused  PlayerState = "paused"
 )
 
 // Config holds configuration for the replay manager.
@@ -135,4 +139,27 @@ type PlayRequest struct {
 	Source string  `json:"source"`
 	Speed  float64 `json:"speed"`
 	Loop   bool    `json:"loop"`
+}
+
+// QuickReplayRequest is the JSON body for the quick-replay endpoint.
+type QuickReplayRequest struct {
+	Seconds int     `json:"seconds"`
+	Speed   float64 `json:"speed"`
+	Source  string  `json:"source"` // Empty = current program source
+}
+
+// SeekRequest is the JSON body for the seek endpoint.
+type SeekRequest struct {
+	Position float64 `json:"position"` // 0.0-1.0
+}
+
+// SpeedRequest is the JSON body for the speed-change endpoint.
+type SpeedRequest struct {
+	Speed float64 `json:"speed"` // 0.25-1.0
+}
+
+// AdjustMarksRequest is the JSON body for adjusting mark points.
+type AdjustMarksRequest struct {
+	MarkIn  *int64 `json:"markIn,omitempty"`  // Unix ms
+	MarkOut *int64 `json:"markOut,omitempty"` // Unix ms
 }
