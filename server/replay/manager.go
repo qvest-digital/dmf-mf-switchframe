@@ -339,6 +339,163 @@ func (m *Manager) Stop() error {
 	return nil
 }
 
+// Pause pauses the active player.
+func (m *Manager) Pause() error {
+	m.mu.Lock()
+	player := m.player
+	state := m.playerState
+	m.mu.Unlock()
+
+	if player == nil || state != PlayerPlaying {
+		return ErrNotPlaying
+	}
+
+	player.Pause()
+
+	m.mu.Lock()
+	m.playerState = PlayerPaused
+	m.mu.Unlock()
+	m.notifyStateChange()
+	return nil
+}
+
+// Resume resumes the active player from a paused state.
+func (m *Manager) Resume() error {
+	m.mu.Lock()
+	player := m.player
+	state := m.playerState
+	m.mu.Unlock()
+
+	if player == nil || state != PlayerPaused {
+		return ErrNotPaused
+	}
+
+	player.Resume()
+
+	m.mu.Lock()
+	m.playerState = PlayerPlaying
+	m.mu.Unlock()
+	m.notifyStateChange()
+	return nil
+}
+
+// Seek seeks the active player to the given position (0.0-1.0).
+func (m *Manager) Seek(position float64) error {
+	m.mu.Lock()
+	player := m.player
+	m.mu.Unlock()
+
+	if player == nil {
+		return ErrNoPlayer
+	}
+	if position < 0.0 || position > 1.0 {
+		return ErrInvalidSeek
+	}
+
+	player.Seek(position)
+	return nil
+}
+
+// SetSpeed changes the playback speed of the active player.
+func (m *Manager) SetSpeed(speed float64) error {
+	m.mu.Lock()
+	player := m.player
+	m.mu.Unlock()
+
+	if player == nil {
+		return ErrNoPlayer
+	}
+	if speed < 0.25 || speed > 1.0 {
+		return ErrInvalidSpeed
+	}
+
+	player.SetSpeed(speed)
+
+	m.mu.Lock()
+	m.playerSpeed = speed
+	m.mu.Unlock()
+	m.notifyStateChange()
+	return nil
+}
+
+// SetMarks adjusts the mark-in and/or mark-out points from Unix milliseconds.
+func (m *Manager) SetMarks(markInMs, markOutMs *int64) error {
+	m.mu.Lock()
+
+	if markInMs != nil {
+		t := time.UnixMilli(*markInMs)
+		m.markIn = &t
+	}
+	if markOutMs != nil {
+		t := time.UnixMilli(*markOutMs)
+		m.markOut = &t
+	}
+
+	// Validate marks if both are set.
+	if m.markIn != nil && m.markOut != nil && !m.markOut.After(*m.markIn) {
+		m.mu.Unlock()
+		return ErrInvalidMarks
+	}
+
+	m.mu.Unlock()
+	m.notifyStateChange()
+	return nil
+}
+
+// QuickReplay combines mark + play in one call, auto-stopping any active
+// player first. Sets marks to [now-seconds, now] and starts playback.
+func (m *Manager) QuickReplay(source string, seconds int, speed float64) error {
+	// Stop any active player first.
+	m.mu.Lock()
+	if m.player != nil {
+		player := m.player
+		m.mu.Unlock()
+		player.Stop()
+		player.Wait()
+	} else {
+		m.mu.Unlock()
+	}
+
+	now := time.Now()
+	inTime := now.Add(-time.Duration(seconds) * time.Second)
+
+	// Set marks.
+	m.mu.Lock()
+	if _, ok := m.buffers[source]; !ok {
+		m.mu.Unlock()
+		return ErrNoSource
+	}
+	m.markSource = source
+	m.markIn = &inTime
+	m.markOut = &now
+	m.mu.Unlock()
+
+	// Default speed to 0.5 if not specified.
+	if speed == 0 {
+		speed = 0.5
+	}
+
+	// Play delegates to the existing Play method.
+	return m.Play(source, speed, false)
+}
+
+// PeekFrame returns a JPEG thumbnail of the most recent frame for a source.
+// Currently returns nil (no thumbnail available) — the frontend falls back
+// to the replay canvas.
+func (m *Manager) PeekFrame(source string) ([]byte, error) {
+	m.mu.Lock()
+	_, ok := m.buffers[source]
+	m.mu.Unlock()
+
+	if !ok {
+		return nil, ErrNoSource
+	}
+
+	// Full JPEG generation requires a decoder in the buffer context.
+	// For now, return nil — frontend falls back to replay canvas.
+	return nil, nil
+}
+
 // Status returns the current replay status for state broadcasts.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
