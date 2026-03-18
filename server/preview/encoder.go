@@ -194,6 +194,7 @@ func (e *Encoder) loop() {
 		infoSent  bool
 		scaledYUV []byte // persistent scale buffer (reused across frames)
 		encYUV    []byte // persistent encoder input buffer (reused)
+		boxBuf    []byte // persistent box-shrink intermediate (amd64 only)
 		lastSrcW  int
 		lastSrcH  int
 	)
@@ -250,7 +251,7 @@ func (e *Encoder) loop() {
 				scaledYUV = make([]byte, targetSize)
 			}
 			scaledYUV = scaledYUV[:targetSize]
-			transition.ScaleYUV420(job.yuv, w, h, scaledYUV, targetW, targetH)
+			transition.ScaleYUV420Preview(job.yuv, w, h, scaledYUV, targetW, targetH, &boxBuf)
 			frameYUV = scaledYUV
 		}
 
