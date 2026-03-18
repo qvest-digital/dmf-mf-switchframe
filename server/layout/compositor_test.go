@@ -953,3 +953,36 @@ func TestCompositor_InvalidatesCacheOnPTSChange(t *testing.T) {
 		t.Error("different PTS should produce different output")
 	}
 }
+
+func TestCompositor_InvalidatesCacheOnDimensionChange(t *testing.T) {
+	c := NewCompositor(1920, 1080)
+	layout := &Layout{
+		Slots: []Slot{
+			{SourceKey: "cam1", Enabled: true, Rect: image.Rect(0, 0, 960, 540)},
+		},
+	}
+	c.SetLayout(layout)
+
+	// Ingest a 1280x720 source and process to populate cache.
+	yuv720 := make([]byte, 1280*720*3/2)
+	for i := range yuv720 {
+		yuv720[i] = byte(i % 256)
+	}
+	c.IngestSourceFrame("cam1", yuv720, 1280, 720, 1000)
+	frame1 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame1, 1920, 1080)
+
+	// Same PTS but different source dimensions (640x480).
+	// This must invalidate the cache and re-scale.
+	yuv480 := make([]byte, 640*480*3/2)
+	for i := range yuv480 {
+		yuv480[i] = byte((i + 30) % 256)
+	}
+	c.IngestSourceFrame("cam1", yuv480, 640, 480, 1000)
+	frame2 := make([]byte, 1920*1080*3/2)
+	c.ProcessFrame(frame2, 1920, 1080)
+
+	if bytes.Equal(frame1, frame2) {
+		t.Error("dimension change at same PTS should invalidate cache and produce different output")
+	}
+}
