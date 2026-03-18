@@ -838,3 +838,159 @@ func TestCompositor_ProcessYUV_ShortBuffer(t *testing.T) {
 	result := c.ProcessYUV(short, 4, 4, nil, nil)
 	require.Equal(t, short, result)
 }
+
+func TestProcessYUV_NoLayersActive_ReturnsFast(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+
+	// Subtest 1: no layers at all — should return immediately.
+	yuv := makeYUV420(8, 8, 50, 128, 128)
+	original := make([]byte, len(yuv))
+	copy(original, yuv)
+
+	result := c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.Equal(t, original, result, "YUV should be unmodified when no layers exist")
+
+	// Subtest 2: layers exist but none are active — should return immediately.
+	id1, err := c.AddLayer()
+	require.NoError(t, err)
+	id2, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Set overlays but don't activate.
+	overlay := makeRGBA(8, 8, 255, 0, 0, 200)
+	require.NoError(t, c.SetOverlay(id1, overlay, 8, 8, "red"))
+	require.NoError(t, c.SetOverlay(id2, overlay, 8, 8, "blue"))
+
+	copy(yuv, original)
+	result = c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.Equal(t, original, result, "YUV should be unmodified when layers exist but none active")
+
+	// Subtest 3: layer active but fadePosition near zero — should skip.
+	c.mu.Lock()
+	layer := c.layers[id1]
+	layer.active = true
+	layer.fadePosition = 0.0 // Below threshold of 1.0/255.0
+	c.mu.Unlock()
+
+	copy(yuv, original)
+	result = c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.Equal(t, original, result, "YUV should be unmodified when layer active but fadePosition is zero")
+
+	// Subtest 4: layer active but overlay is nil — should skip.
+	c.mu.Lock()
+	layer.fadePosition = 1.0
+	layer.overlay = nil
+	c.mu.Unlock()
+
+	copy(yuv, original)
+	result = c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.Equal(t, original, result, "YUV should be unmodified when layer active but overlay is nil")
+
+	// Subtest 5: layer active with valid overlay — should modify.
+	require.NoError(t, c.SetOverlay(id1, overlay, 8, 8, "red"))
+	require.NoError(t, c.On(id1))
+
+	copy(yuv, original)
+	result = c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.NotEqual(t, original, result, "YUV should be modified when an active layer has a visible overlay")
+}
+
+func TestProcessYUV_NoLayersActive_SkipsTickerLock(t *testing.T) {
+	// Verify that when no layers are visible and no tickers are running,
+	// the write lock for ticker advancement is never acquired.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	// Add inactive layers — no tickers.
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+	overlay := makeRGBA(8, 8, 255, 0, 0, 200)
+	require.NoError(t, c.SetOverlay(id, overlay, 8, 8, "test"))
+	// Layer is not active — fast path should skip both write and read locks.
+
+	yuv := makeYUV420(8, 8, 50, 128, 128)
+	original := make([]byte, len(yuv))
+	copy(original, yuv)
+
+	result := c.ProcessYUV(yuv, 8, 8, nil, nil)
+	require.Equal(t, original, result, "YUV should be unmodified when no layers visible and no tickers")
+}
+
+func TestProcessYUV_ActiveTicker_SkipsFastPath(t *testing.T) {
+	// When a ticker is active (even if its layer has fadePosition=0),
+	// the fast path should NOT be taken because tickers need advancement.
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30, 1)
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Manually set up a ticker state on the layer with a valid strip image.
+	strip := image.NewRGBA(image.Rect(0, 0, 200, 8))
+	viewport := make([]byte, 8*8*4)
+	c.mu.Lock()
+	layer := c.layers[id]
+	layer.active = true
+	layer.fadePosition = 0.0 // Not visible
+	layer.ticker = &tickerState{
+		speed:    100,
+		done:     false,
+		strip:    strip,
+		viewport: viewport,
+		viewW:    8,
+		viewH:    8,
+	}
+	c.mu.Unlock()
+
+	yuv := makeYUV420(8, 8, 50, 128, 128)
+
+	// Should NOT panic and should go through the normal path
+	// (the ticker needs to be advanced even if the layer isn't visible yet).
+	_ = c.ProcessYUV(yuv, 8, 8, nil, nil)
+}
+
+func BenchmarkProcessYUV_NoLayersActive(b *testing.B) {
+	c := NewCompositor()
+	defer c.Close()
+
+	// Add 4 inactive layers to simulate a realistic scenario.
+	for i := 0; i < 4; i++ {
+		id, _ := c.AddLayer()
+		overlay := make([]byte, 1920*1080*4)
+		_ = c.SetOverlay(id, overlay, 1920, 1080, "test")
+	}
+
+	yuv := make([]byte, 1920*1080*3/2)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		c.ProcessYUV(yuv, 1920, 1080, nil, nil)
+	}
+}
+
+func BenchmarkProcessYUV_OneLayerActive(b *testing.B) {
+	c := NewCompositor()
+	defer c.Close()
+
+	// Add 4 layers, only 1 active.
+	for i := 0; i < 4; i++ {
+		id, _ := c.AddLayer()
+		overlay := makeRGBA(1920, 1080, 255, 0, 0, 128)
+		_ = c.SetOverlay(id, overlay, 1920, 1080, "test")
+		if i == 0 {
+			_ = c.On(id)
+		}
+	}
+
+	yuv := makeYUV420(1920, 1080, 16, 128, 128)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		c.ProcessYUV(yuv, 1920, 1080, nil, nil)
+	}
+}

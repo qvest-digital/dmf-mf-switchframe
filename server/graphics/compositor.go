@@ -641,6 +641,16 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 		return yuv
 	}
 
+	// Fast path: skip all processing when no layers are visible and no
+	// tickers need advancement. Avoids write lock (ticker) + read lock
+	// (compositing) + layer iteration on every frame.
+	c.mu.RLock()
+	hasWork := c.hasVisibleLayersLocked() || c.hasActiveTickersLocked()
+	c.mu.RUnlock()
+	if !hasWork {
+		return yuv
+	}
+
 	c.mu.Lock()
 
 	// Advance frame-locked tickers before compositing.
@@ -744,6 +754,28 @@ func (c *Compositor) IsActive() bool {
 	defer c.mu.RUnlock()
 	for _, layer := range c.layers {
 		if layer.active {
+			return true
+		}
+	}
+	return false
+}
+
+// hasVisibleLayersLocked returns true if any layer is active with a visible
+// fade position and a non-nil overlay. Caller must hold at least c.mu.RLock.
+func (c *Compositor) hasVisibleLayersLocked() bool {
+	for _, layer := range c.layers {
+		if layer.active && layer.fadePosition >= 1.0/255.0 && layer.overlay != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// hasActiveTickersLocked returns true if any layer has an active, non-done
+// ticker that needs frame-by-frame advancement. Caller must hold c.mu.RLock.
+func (c *Compositor) hasActiveTickersLocked() bool {
+	for _, layer := range c.layers {
+		if layer.active && layer.ticker != nil && !layer.ticker.done {
 			return true
 		}
 	}
