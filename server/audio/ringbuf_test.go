@@ -46,23 +46,21 @@ func TestPCMRingBuffer_Overflow_DropsOldest(t *testing.T) {
 	assert.Equal(t, []float32{3, 4, 5, 6, 7, 8}, out)
 }
 
-func TestPCMRingBuffer_PopEmpty_FreezeRepeat(t *testing.T) {
-	rb := NewPCMRingBuffer(8)
+func TestPCMRingBuffer_PopEmpty_ReturnsSilence(t *testing.T) {
+	rb := NewPCMRingBuffer(2048)
 	rb.Push([]float32{10, 20, 30, 40})
 	out1 := rb.Pop(4)
 	assert.Equal(t, []float32{10, 20, 30, 40}, out1)
 
+	// Empty buffer returns silence (zeros), not freeze-repeat
 	out2 := rb.Pop(4)
-	assert.Equal(t, []float32{10, 20, 30, 40}, out2)
-
-	out2[0] = 999
-	out3 := rb.Pop(4)
-	assert.Equal(t, float32(10), out3[0])
+	assert.Equal(t, []float32{0, 0, 0, 0}, out2)
 }
 
-func TestPCMRingBuffer_PopNeverPushed_ReturnsNil(t *testing.T) {
-	rb := NewPCMRingBuffer(1024)
-	assert.Nil(t, rb.Pop(4))
+func TestPCMRingBuffer_PopNeverPushed_ReturnsSilence(t *testing.T) {
+	rb := NewPCMRingBuffer(2048)
+	out := rb.Pop(4)
+	assert.Equal(t, []float32{0, 0, 0, 0}, out)
 }
 
 func TestPCMRingBuffer_DeepCopy(t *testing.T) {
@@ -115,13 +113,14 @@ func TestPCMRingBuffer_VariablePushFixedPop(t *testing.T) {
 }
 
 func TestPCMRingBuffer_Reset(t *testing.T) {
-	rb := NewPCMRingBuffer(1024)
+	rb := NewPCMRingBuffer(2048)
 	rb.Push([]float32{1, 2, 3, 4})
 	rb.Pop(4)
 
 	rb.Reset()
 	assert.Equal(t, 0, rb.Len())
 
+	// After reset, empty pop returns silence
 	out := rb.Pop(4)
-	assert.Equal(t, []float32{1, 2, 3, 4}, out)
+	assert.Equal(t, []float32{0, 0, 0, 0}, out)
 }

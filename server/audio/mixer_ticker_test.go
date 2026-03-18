@@ -167,7 +167,7 @@ func TestTick_TwoChannels_SumsOutput(t *testing.T) {
 		"output should be sum of both channels (0.3 + 0.2 = 0.5)")
 }
 
-func TestTick_EmptyRingBuf_FreezeRepeat(t *testing.T) {
+func TestTick_EmptyRingBuf_ProducesSilence(t *testing.T) {
 	t.Parallel()
 	m, enc := newTickTestMixer(t)
 
@@ -187,16 +187,16 @@ func TestTick_EmptyRingBuf_FreezeRepeat(t *testing.T) {
 	frame1 := m.tick()
 	require.NotNil(t, frame1, "first tick should produce output")
 
-	// Second tick: ring buffer is empty, should freeze-repeat the last frame
+	// Second tick: ring buffer is empty, should produce silence (not freeze-repeat)
 	frame2 := m.tick()
-	require.NotNil(t, frame2, "second tick should produce output via freeze-repeat")
+	require.NotNil(t, frame2, "second tick should produce output (silence)")
 	require.NotEmpty(t, frame2.Data)
 
-	// The freeze-repeated PCM should also contain our 0.4 values
+	// The silence PCM should be zeros
 	lastPCM := enc.getLastInput()
 	require.NotNil(t, lastPCM)
-	assert.InDelta(t, 0.4, lastPCM[0], 0.01,
-		"freeze-repeat should replay the last popped frame")
+	assert.InDelta(t, 0.0, lastPCM[0], 0.01,
+		"empty ring buffer should produce silence, not freeze-repeat")
 }
 
 func TestTick_MutedChannel_Excluded(t *testing.T) {

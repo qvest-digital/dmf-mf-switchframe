@@ -71,13 +71,10 @@ func (rb *PCMRingBuffer) Pop(n int) []float32 {
 	}
 
 	if rb.count < n {
-		// Freeze-repeat: return last frame.
-		if rb.lastFrame == nil {
-			return nil
-		}
-		out := make([]float32, len(rb.lastFrame))
-		copy(out, rb.lastFrame)
-		return out
+		// Not enough samples — return silence (zeros).
+		// Silence is less audible than repeating the last chunk,
+		// which sounds robotic with bursty SRT delivery.
+		return make([]float32, n)
 	}
 
 	// Read n samples from read position.
