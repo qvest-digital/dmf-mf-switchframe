@@ -20,6 +20,7 @@
 		stopSRTOutput,
 		apiCall,
 	} from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -237,13 +238,17 @@
 			label: newSourceLabel || undefined,
 			latencyMs: newSourceLatency,
 		};
-		apiCall(createSRTSource(config), 'Create SRT source');
-		// Reset form
-		newSourceAddress = '';
-		newSourceStreamID = '';
-		newSourceLabel = '';
-		newSourceLatency = 120;
-		showAddSource = false;
+		try {
+			await createSRTSource(config);
+			// Reset form only on success.
+			newSourceAddress = '';
+			newSourceStreamID = '';
+			newSourceLabel = '';
+			newSourceLatency = 120;
+			showAddSource = false;
+		} catch (err) {
+			notify('error', `Create SRT source: ${err instanceof Error ? err.message : 'Network error'}`);
+		}
 	}
 
 	async function handleCreateDest() {

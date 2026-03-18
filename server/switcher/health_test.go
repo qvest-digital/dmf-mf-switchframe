@@ -58,7 +58,7 @@ func TestHealthMonitorUnknownSource(t *testing.T) {
 
 func TestProactiveHealthBroadcast(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	var mu sync.Mutex

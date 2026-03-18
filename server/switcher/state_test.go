@@ -75,7 +75,7 @@ func TestValidTransitions(t *testing.T) {
 
 func TestSwitcherStartsInIdleState(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	require.Equal(t, StateIdle, sw.state, "new switcher should be in idle state")
@@ -305,7 +305,7 @@ func TestStateFTBBlocksPassthrough(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	defer sw.Close()
 

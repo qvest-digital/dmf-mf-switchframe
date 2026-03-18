@@ -27,7 +27,7 @@ func TestStress_RapidCuts(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Register 4 sources.
@@ -109,7 +109,7 @@ func TestStress_CutDuringTransition(t *testing.T) {
 		t.Skip("stress test")
 	}
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetTransitionConfig(TransitionConfig{
@@ -176,7 +176,7 @@ func TestStress_20Sources(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	const numSources = 20
@@ -249,7 +249,7 @@ func TestStress_SimultaneousOutputs(t *testing.T) {
 	programRelay.AddViewer(recorder)
 	programRelay.AddViewer(srtOutput)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -338,7 +338,7 @@ func TestStress_ConcurrentStateReads(t *testing.T) {
 		t.Skip("stress test")
 	}
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Register initial sources.
@@ -458,7 +458,7 @@ func TestStress_AllChannelsMixing(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Create mixer wired to program relay.

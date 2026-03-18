@@ -49,7 +49,7 @@ func TestSoak(t *testing.T) {
 	programRelay.AddViewer(capture)
 
 	// Switcher.
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Audio mixer wired to program relay.

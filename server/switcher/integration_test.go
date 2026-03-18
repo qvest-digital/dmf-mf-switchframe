@@ -27,7 +27,7 @@ func TestIntegrationCutSwitchesFrames(t *testing.T) {
 	programRelay.AddViewer(capture)
 
 	// Create switcher.
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	// Track state changes.
 	var states []internal.ControlRoomState
@@ -90,7 +90,7 @@ func TestIntegrationAudioFollowsVideo(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -126,7 +126,7 @@ func TestProgramRelayFromPrismServer(t *testing.T) {
 	capture := newMockProgramViewer("moq-viewer")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -149,7 +149,7 @@ func TestIntegrationUnregisterStopsForwarding(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
@@ -178,7 +178,7 @@ func TestIntegrationAudioWithMixerHandler(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
@@ -205,7 +205,7 @@ func TestIntegrationMixerPassthrough(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Create a mixer that outputs to program relay.
@@ -250,7 +250,7 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -314,7 +314,7 @@ func TestIntegrationStateBroadcastIncludesAudio(t *testing.T) {
 		t.Skip("integration test")
 	}
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -356,7 +356,7 @@ func TestIntegrationTransitionCrossfadeWired(t *testing.T) {
 		t.Skip("integration test")
 	}
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -406,7 +406,7 @@ func TestIntegrationDissolveProducesBlendedOutput(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetTransitionConfig(mockTransitionCodecs())
@@ -455,7 +455,7 @@ func TestIntegrationDissolveCompletesAndResumesReEncode(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetTransitionConfig(TransitionConfig{
@@ -519,7 +519,7 @@ func TestIntegrationTBarPartialAbort(t *testing.T) {
 		t.Skip("integration test")
 	}
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetTransitionConfig(TransitionConfig{
@@ -566,7 +566,7 @@ func TestIntegrationFTBProducesBlackFrames(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetTransitionConfig(TransitionConfig{
@@ -610,7 +610,7 @@ func TestIntegrationFTBMutesAudio(t *testing.T) {
 	}
 	programRelay := newTestRelay()
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -664,7 +664,7 @@ func TestIntegrationFTBReverseFadesIn(t *testing.T) {
 	}
 	programRelay := newTestRelay()
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{

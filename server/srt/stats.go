@@ -219,6 +219,18 @@ func (sm *StatsManager) GetOrCreate(key string) *ConnStats {
 	return cs
 }
 
+// Create creates a ConnStats entry with the given configuration.
+// If an entry already exists for the key, it is replaced.
+// Used to pre-populate stats for SRT callers before the connection succeeds,
+// so the UI can display mode/streamID/latency immediately.
+func (sm *StatsManager) Create(key, mode, streamID string, latencyMs int) *ConnStats {
+	cs := NewConnStats(mode, streamID, latencyMs)
+	sm.mu.Lock()
+	sm.stats[key] = cs
+	sm.mu.Unlock()
+	return cs
+}
+
 // Remove deletes stats for the given key.
 func (sm *StatsManager) Remove(key string) {
 	sm.mu.Lock()

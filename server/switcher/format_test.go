@@ -144,7 +144,7 @@ func BenchmarkFormatFrameDuration(b *testing.B) {
 
 func TestSetPipelineFormat_RejectedDuringTransition(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()

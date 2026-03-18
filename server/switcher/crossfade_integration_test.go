@@ -26,7 +26,7 @@ func TestIntegration_DissolveAudioMatchesVideo(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -114,7 +114,7 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	// rather than the multi-frame transition crossfade used by dissolves.
 	programRelay := newTestRelay()
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Track audio frames sent through the mixer.
@@ -192,7 +192,7 @@ func TestIntegration_DissolveCompletionClearsAudioTransition(t *testing.T) {
 	capture := newMockProgramViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -265,7 +265,7 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 	// increases monotonically.
 	programRelay := newTestRelay()
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{

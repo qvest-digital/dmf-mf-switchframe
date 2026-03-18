@@ -19,7 +19,7 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -73,7 +73,7 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -126,7 +126,7 @@ func TestSetRawVideoSink_NilDisables(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -165,7 +165,7 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {

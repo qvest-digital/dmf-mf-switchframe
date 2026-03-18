@@ -615,6 +615,23 @@ func (a *App) startSRT(ctx context.Context) {
 		slog.Info("SRT listener started", "addr", a.cfg.SRTListen)
 	}
 	if a.srtCaller != nil {
+		// Pre-register stored caller sources so they appear immediately
+		// in the UI while connections are being established.
+		for _, cfg := range a.srtStore.List() {
+			if cfg.Mode != srt.ModeCaller {
+				continue
+			}
+			a.sw.RegisterSRTSource(cfg.Key)
+			a.mixer.AddChannel(cfg.Key)
+			_ = a.mixer.SetAFV(cfg.Key, true)
+			if cfg.Label != "" {
+				_ = a.sw.SetLabel(ctx, cfg.Key, cfg.Label)
+			}
+			if cfg.Position > 0 {
+				_ = a.sw.SetSourcePosition(cfg.Key, cfg.Position)
+			}
+			a.srtStats.Create(cfg.Key, srt.ModeCaller, cfg.StreamID, cfg.LatencyMs)
+		}
 		a.srtCaller.RestoreFromStore(ctx)
 	}
 }
@@ -640,6 +657,7 @@ func (a *App) stopSRTSources() {
 // It wraps the SRT caller, store, and stats manager to provide the
 // interface expected by the control API handlers.
 type srtManagerAdapter struct {
+	app    *App
 	caller *srt.Caller
 	stats  *srt.StatsManager
 	store  *srt.Store
@@ -648,8 +666,23 @@ type srtManagerAdapter struct {
 var _ control.SRTManager = (*srtManagerAdapter)(nil)
 
 // CreatePull starts an outbound SRT pull connection and returns the source key.
+// The source is pre-registered with the switcher/mixer so it appears immediately
+// in the UI with "offline" status while the connection is being established.
 func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, label string, latencyMs int) (string, error) {
 	key := srt.KeyPrefix + srt.ExtractStreamKey(streamID)
+
+	// Pre-register source so it appears immediately in the UI.
+	m.app.sw.RegisterSRTSource(key)
+	m.app.mixer.AddChannel(key)
+	_ = m.app.mixer.SetAFV(key, true)
+	if label != "" {
+		_ = m.app.sw.SetLabel(ctx, key, label)
+	}
+
+	// Pre-create stats entry so enrichState populates SRT metadata
+	// (mode, streamID, latencyMs) in the state broadcast.
+	m.stats.Create(key, srt.ModeCaller, streamID, latencyMs)
+
 	err := m.caller.Pull(ctx, srt.SourceConfig{
 		Key:       key,
 		Mode:      srt.ModeCaller,
@@ -659,12 +692,17 @@ func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, l
 		LatencyMs: latencyMs,
 	})
 	if err != nil {
+		// Rollback pre-registration on failure.
+		m.app.sw.UnregisterSource(key)
+		m.app.mixer.RemoveChannel(key)
+		m.stats.Remove(key)
 		return "", err
 	}
 	return key, nil
 }
 
 // StopPull cancels an active pull and removes it from the store.
+// Also unregisters the source from the switcher/mixer so it disappears from the UI.
 func (m *srtManagerAdapter) StopPull(key string) error {
 	if !strings.HasPrefix(key, srt.KeyPrefix) {
 		return control.ErrNotSRTSource
@@ -675,6 +713,10 @@ func (m *srtManagerAdapter) StopPull(key string) error {
 	}
 	m.caller.Stop(key)
 	m.stats.Remove(key)
+
+	// Unregister from switcher/mixer so source disappears from UI.
+	m.app.sw.UnregisterSource(key)
+	m.app.mixer.RemoveChannel(key)
 	return nil
 }
 

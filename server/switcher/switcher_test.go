@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
+	"os"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,8 +23,37 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+func TestMain(m *testing.M) {
+	// The production init() sets GOGC=400 for real-time frame processing.
+	// In tests, 52+ Switcher instances each allocate frame pools. With
+	// GOGC=400, GC runs too infrequently to reclaim pools between tests.
+	debug.SetGCPercent(100)
+	os.Exit(m.Run())
+}
+
 func newTestRelay() *distribution.Relay {
 	return distribution.NewRelay()
+}
+
+// newTestSwitcher creates a Switcher with a tiny frame pool (4 × 320×240)
+// suitable for testing. The production New() allocates 512 × 1080p buffers
+// (~1.5 GB) which causes OOM kills when 50+ tests each create one.
+func newTestSwitcher(programRelay *distribution.Relay) *Switcher {
+	defaultFmt := DefaultFormat
+	s := &Switcher{
+		log:           slog.With("component", "switcher"),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 8),
+		videoProcDone: make(chan struct{}),
+		framePool:     NewFramePool(4, 320, 240),
+	}
+	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
+	s.pipelineFormat.Store(&defaultFmt)
+	s.delayBuffer = NewDelayBuffer(s)
+	go s.videoProcessingLoop()
+	return s
 }
 
 // makeAVC1Frame creates a minimal AVC1-formatted frame (4-byte length prefix + NALU data).
@@ -73,7 +106,7 @@ func (m *mockProgramViewer) VideoFrames() []*media.VideoFrame {
 
 func TestNewSwitcher(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	require.NotNil(t, sw)
 	state := sw.State()
 	require.Equal(t, "", state.ProgramSource)
@@ -84,7 +117,7 @@ func TestNewSwitcher(t *testing.T) {
 
 func TestRegisterSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 
 	sw.RegisterSource("camera1", cam1Relay)
@@ -100,7 +133,7 @@ func TestRegisterSource(t *testing.T) {
 
 func TestUnregisterSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 
 	sw.RegisterSource("camera1", cam1Relay)
@@ -112,7 +145,7 @@ func TestUnregisterSource(t *testing.T) {
 
 func TestRegisterVirtualSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	sw.RegisterVirtualSource("replay", replayRelay)
@@ -127,7 +160,7 @@ func TestRegisterVirtualSource(t *testing.T) {
 
 func TestRegisterVirtualSource_CutToVirtual(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	sw.RegisterVirtualSource("replay", replayRelay)
@@ -142,7 +175,7 @@ func TestRegisterVirtualSource_CutToVirtual(t *testing.T) {
 
 func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	sw.RegisterVirtualSource("replay", replayRelay)
@@ -154,7 +187,7 @@ func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
 
 func TestRegisterVirtualSource_UnregisterClearsProgram(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 	cam1Relay := newTestRelay()
 
@@ -172,7 +205,7 @@ func TestRegisterVirtualSource_UnregisterClearsProgram(t *testing.T) {
 
 func TestRegisterVirtualSource_DoubleRegisterCleansUp(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	sw.RegisterVirtualSource("replay", replayRelay)
@@ -186,7 +219,7 @@ func TestRegisterVirtualSource_DoubleRegisterCleansUp(t *testing.T) {
 
 func TestUnregisterSource_BroadcastsState(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	stateCh := make(chan internal.ControlRoomState, 10)
@@ -214,7 +247,7 @@ func TestUnregisterSource_BroadcastsState(t *testing.T) {
 
 func TestRegisterVirtualSource_SkipsDelayAndFrameSync(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	replayRelay := newTestRelay()
 
 	sw.RegisterVirtualSource("replay", replayRelay)
@@ -227,7 +260,7 @@ func TestRegisterVirtualSource_SkipsDelayAndFrameSync(t *testing.T) {
 
 func TestCutToSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
@@ -242,7 +275,7 @@ func TestCutToSource(t *testing.T) {
 
 func TestCutSwapsPreview(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
@@ -260,7 +293,7 @@ func TestCutSwapsPreview(t *testing.T) {
 
 func TestCutToMissingSourceErrors(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	err := sw.Cut(context.Background(), "nonexistent")
 	require.Error(t, err)
@@ -268,7 +301,7 @@ func TestCutToMissingSourceErrors(t *testing.T) {
 
 func TestCutToCurrentProgramIsNoop(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
@@ -284,7 +317,7 @@ func TestCutToCurrentProgramIsNoop(t *testing.T) {
 
 func TestSetPreview(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
 
@@ -298,7 +331,7 @@ func TestSetPreview(t *testing.T) {
 
 func TestSetPreviewMissingSourceErrors(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	err := sw.SetPreview(context.Background(), "nonexistent")
 	require.Error(t, err)
@@ -306,7 +339,7 @@ func TestSetPreviewMissingSourceErrors(t *testing.T) {
 
 func TestFrameForwarding(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	// Attach a mock viewer to the program relay to capture output.
 	viewer := newMockProgramViewer("test-viewer")
@@ -337,7 +370,7 @@ func TestFrameForwarding(t *testing.T) {
 
 func TestAudioFrameForwarding(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
@@ -371,7 +404,7 @@ func TestCutForwardsAllFrames(t *testing.T) {
 	// In always-decode mode, there is no IDR gating — all frames from the
 	// program source are forwarded immediately after a cut.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
@@ -408,7 +441,7 @@ func TestCutAudioForwardedImmediately(t *testing.T) {
 	// In always-decode mode, there is no IDR gating — audio from the new
 	// program source is forwarded immediately after a cut.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
@@ -439,7 +472,7 @@ func TestCutAudioForwardedImmediately(t *testing.T) {
 
 func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
@@ -459,7 +492,7 @@ func TestHealthStatusUpdatesOnFrames(t *testing.T) {
 
 func TestMultipleStateCallbacks(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	var count1, count2 int
@@ -482,7 +515,7 @@ func TestMultipleStateCallbacks(t *testing.T) {
 
 func TestSetLabel(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	relay := newTestRelay()
@@ -538,7 +571,7 @@ func (m *mockAudioStateProvider) IntegratedLUFS() float64 {
 
 func TestStateIncludesAudioFromMixer(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	relay := newTestRelay()
@@ -571,7 +604,7 @@ func TestStateIncludesAudioFromMixer(t *testing.T) {
 
 func TestSetMixerConcurrentSafe(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	relay := newTestRelay()
@@ -599,7 +632,7 @@ func TestSetMixerConcurrentSafe(t *testing.T) {
 
 func TestSourceKeys(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
 	sw.RegisterSource("camera1", cam1Relay)
@@ -613,7 +646,7 @@ func TestSourceKeys(t *testing.T) {
 
 func TestAllAudioRoutedToMixer(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	var mu sync.Mutex
@@ -652,7 +685,7 @@ func TestAllAudioRoutedToMixer(t *testing.T) {
 
 func TestSwitcher_DebugSnapshot(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Empty switcher snapshot.
@@ -706,7 +739,7 @@ func TestSwitcher_DebugSnapshot(t *testing.T) {
 
 func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -738,7 +771,7 @@ func TestFrameStatsUpdatedOnVideoFrames(t *testing.T) {
 
 func TestSwitcher_DebugSnapshot_HealthStatus(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -793,7 +826,7 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -840,7 +873,7 @@ func TestDebugSnapshot_PipelineStageTiming(t *testing.T) {
 
 func TestSwitcher_SetCodecInfo(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Before SetCodecInfo, codec section should still be present with zero values.
@@ -872,7 +905,7 @@ func TestSwitcher_SetCodecInfo(t *testing.T) {
 
 func TestDebugSnapshot_PerSourceDecoderStats(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Set up a source decoder factory so RegisterSource creates decoders.
@@ -916,7 +949,7 @@ func TestDebugSnapshot_PerSourceDecoderStats(t *testing.T) {
 
 func TestOutputFPSTracking(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -944,7 +977,7 @@ func TestOutputFPSTracking(t *testing.T) {
 // would be flagged as a race. This test is designed to trigger that scenario.
 func TestSeqConcurrentAccess(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -1014,7 +1047,7 @@ func TestSeqConcurrentAccess(t *testing.T) {
 
 func TestHandleVideoFrameSingleRLock(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -1058,7 +1091,7 @@ func TestCutGroupIDMonotonicity(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
@@ -1110,7 +1143,7 @@ func TestCutGroupIDMonotonicity(t *testing.T) {
 
 func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	cam1Relay := newTestRelay()
 	sw.RegisterSource("cam1", cam1Relay)
 
@@ -1145,7 +1178,7 @@ func TestSwitcher_LastBroadcastVideoPTS(t *testing.T) {
 
 func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Register an MXL-style source (nil viewer, nil relay).
@@ -1166,7 +1199,7 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 
 func TestSwitcher_E2ELatency(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	// Set up always-decode mode with mock decoder.
@@ -1217,7 +1250,7 @@ func TestSwitcher_E2ELatency(t *testing.T) {
 
 func TestRegisterReplaySource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	sw.RegisterReplaySource("replay")
 
@@ -1231,7 +1264,7 @@ func TestRegisterReplaySource(t *testing.T) {
 
 func TestRegisterReplaySource_CleansUpOld(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	sw.RegisterReplaySource("replay")
 	sw.RegisterReplaySource("replay")
@@ -1242,7 +1275,7 @@ func TestRegisterReplaySource_CleansUpOld(t *testing.T) {
 
 func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	sw.RegisterReplaySource("replay")
 	require.NoError(t, sw.SetPreview(context.Background(), "replay"))
@@ -1268,9 +1301,14 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 	// If frame sync ticks in that window, enqueueVideoWork sends on a
 	// closed channel, causing a panic. This test enables frame sync with
 	// active sources and calls Close() repeatedly to trigger the race.
-	for i := 0; i < 20; i++ {
+	//
+	// Reduced from 20 to 5 iterations: New() allocates a FramePool with
+	// 512 × 1080p buffers (~1.5 GB). With GOGC=400, 20 iterations can OOM
+	// before GC reclaims closed pools. 5 iterations still exercises the race
+	// while staying under memory limits.
+	for i := 0; i < 5; i++ {
 		programRelay := newTestRelay()
-		sw := New(programRelay)
+		sw := newTestSwitcher(programRelay)
 
 		cam1Relay := newTestRelay()
 		sw.RegisterSource("camera1", cam1Relay)
@@ -1303,6 +1341,9 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 		require.NotPanics(t, func() {
 			sw.Close()
 		}, "Close() panicked on iteration %d", i)
+
+		// Force GC to reclaim the ~1.5 GB frame pool before next iteration.
+		runtime.GC()
 	}
 }
 
@@ -1472,7 +1513,7 @@ func TestBroadcastProcessed_ShortYUVDoesNotPanic(t *testing.T) {
 	// before copying into a pool buffer. A short slice would cause a panic
 	// on the copy(buf, yuv[:expectedSize]) line.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -1498,7 +1539,7 @@ func TestBroadcastProcessed_ShortYUVDoesNotPanic(t *testing.T) {
 func TestBroadcastProcessed_EmptyYUVDoesNotPanic(t *testing.T) {
 	// Edge case: nil/empty YUV slice.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -1523,7 +1564,7 @@ func TestUpdateFrameStats_90kHzPTS(t *testing.T) {
 	// be computed as 1,000,000/3003 ~= 333 fps instead of ~29.97 fps.
 
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	ss := &sourceState{key: "test"}
@@ -1549,7 +1590,7 @@ func TestUpdateFrameStats_90kHzPTS(t *testing.T) {
 func TestUpdateFrameStats_RejectsUnreasonableDelta(t *testing.T) {
 	// Verify that deltas > 1 second (90000 ticks) are rejected.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	ss := &sourceState{key: "test"}
@@ -1581,7 +1622,7 @@ func TestUpdateFrameStats_ConcurrentReadWrite(t *testing.T) {
 	// calls updateFrameStats, while readers (state broadcast, debug snapshot)
 	// access the same fields via sourceState.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	ss := &sourceState{key: "test"}
@@ -1629,7 +1670,7 @@ func TestCutDuringActiveTransition_AbortsThenCuts(t *testing.T) {
 	// transition is aborted, programSource becomes cam3 and stays cam3 even
 	// after the transition engine fires its OnComplete callback.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 
 	cam1Relay := newTestRelay()
 	cam2Relay := newTestRelay()
@@ -1680,7 +1721,7 @@ func TestCutDuringActiveTransition_AbortsThenCuts(t *testing.T) {
 
 func TestSwitcher_SetEncoder(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -1715,7 +1756,7 @@ func TestSwitcher_SetEncoder(t *testing.T) {
 
 func TestSwitcher_SetEncoder_RejectsDuringTransition(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {

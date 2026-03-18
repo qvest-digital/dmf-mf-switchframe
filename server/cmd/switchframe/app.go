@@ -973,6 +973,7 @@ func (a *App) initAPI() error {
 	}
 	if a.srtCaller != nil && a.srtStore != nil && a.srtStats != nil {
 		apiOpts = append(apiOpts, control.WithSRTManager(&srtManagerAdapter{
+			app:    a,
 			caller: a.srtCaller,
 			stats:  a.srtStats,
 			store:  a.srtStore,

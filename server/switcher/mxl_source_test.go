@@ -12,7 +12,7 @@ import (
 
 func TestRegisterMXLSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -34,7 +34,7 @@ func TestRegisterMXLSource(t *testing.T) {
 
 func TestRegisterMXLSource_Position(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -49,7 +49,7 @@ func TestRegisterMXLSource_Position(t *testing.T) {
 
 func TestRegisterMXLSource_HealthRegistered(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -65,7 +65,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -112,7 +112,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 
 func TestIngestRawVideo_NonProgramSourceDropped(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -138,7 +138,7 @@ func TestIngestRawVideo_NonProgramSourceDropped(t *testing.T) {
 
 func TestIngestRawVideo_UnknownSourceDropped(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	initialFiltered := sw.routeFiltered.Load()
@@ -158,7 +158,7 @@ func TestIngestRawVideo_UnknownSourceDropped(t *testing.T) {
 
 func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -186,7 +186,7 @@ func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
 
 func TestIngestRawVideo_HealthTracking(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -217,7 +217,7 @@ func TestIngestRawVideo_HealthTracking(t *testing.T) {
 func TestMXLSource_UnregisterSafe(t *testing.T) {
 	// Ensure UnregisterSource handles MXL sources (nil relay/viewer) without panic.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")
@@ -237,7 +237,7 @@ func TestIngestRawVideo_KeyingApplied(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -333,7 +333,7 @@ func TestIngestRawVideo_KeyingApplied(t *testing.T) {
 func TestIngestRawVideo_KeyBridgeFillCachedForNonProgram(t *testing.T) {
 	// Verify that IngestRawVideo caches fill for non-program keyed sources.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	kp := graphics.NewKeyProcessor()
@@ -381,7 +381,7 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -432,7 +432,7 @@ func TestRegisterRawSource_FrameSyncWiring_PostEnable(t *testing.T) {
 	// Verify that raw sources registered BEFORE frame sync is enabled
 	// also get added to the synchronizer.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterSRTSource("srt:cam1")
@@ -455,7 +455,7 @@ func TestRegisterRawSource_FrameSyncWiring_PostEnable(t *testing.T) {
 func TestMXLSource_DebugSnapshotSafe(t *testing.T) {
 	// Ensure DebugSnapshot handles MXL sources (nil viewer) without panic.
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
 	sw.RegisterMXLSource("mxl-cam1")

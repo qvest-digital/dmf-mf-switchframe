@@ -55,7 +55,7 @@ func TestLayoutCompositor_InSwitcher(t *testing.T) {
 
 func TestSetLayoutCompositor(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := New(programRelay)
+	sw := newTestSwitcher(programRelay)
 	lc := layout.NewCompositor(1920, 1080)
 	sw.SetLayoutCompositor(lc)
 
