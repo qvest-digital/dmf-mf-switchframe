@@ -29,7 +29,7 @@ export class CommsAudioManager {
 	private captureCtx: AudioContext | null = null;
 	private playbackCtx: AudioContext | null = null;
 	private mediaStream: MediaStream | null = null;
-	private scriptProcessor: ScriptProcessorNode | null = null;
+	private workletNode: AudioWorkletNode | null = null;
 	private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 	private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 	private running = false;
@@ -123,7 +123,7 @@ export class CommsAudioManager {
 
 			this.running = true;
 
-			this.captureLoop();
+			await this.captureLoop();
 			this.readLoop();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -275,28 +275,51 @@ export class CommsAudioManager {
 	}
 
 	/**
-	 * Set up the microphone capture pipeline.
-	 * Uses ScriptProcessorNode to collect PCM samples and feed them
-	 * to the WebCodecs AudioEncoder in 20ms (960 sample) chunks.
-	 *
-	 * TODO: Migrate to AudioWorkletNode (ScriptProcessorNode is deprecated
-	 * and runs on the main thread, which can cause glitches under load).
+	 * Set up the microphone capture pipeline using AudioWorkletNode.
+	 * The worklet processor runs on the audio rendering thread, sending
+	 * 128-sample chunks to the main thread. We accumulate them into
+	 * 960-sample (20ms) frames for the WebCodecs Opus encoder.
 	 */
-	private captureLoop(): void {
+	private async captureLoop(): Promise<void> {
 		if (!this.captureCtx || !this.mediaStream) return;
 
+		// Register the worklet processor from an inline Blob URL.
+		const processorCode = `
+			class CommsCaptureProcessor extends AudioWorkletProcessor {
+				process(inputs) {
+					const input = inputs[0];
+					if (input.length > 0 && input[0].length > 0) {
+						this.port.postMessage(input[0]);
+					}
+					return true;
+				}
+			}
+			registerProcessor('comms-capture', CommsCaptureProcessor);
+		`;
+		const blob = new Blob([processorCode], { type: 'application/javascript' });
+		const url = URL.createObjectURL(blob);
+		try {
+			await this.captureCtx.audioWorklet.addModule(url);
+		} finally {
+			URL.revokeObjectURL(url);
+		}
+
 		const source = this.captureCtx.createMediaStreamSource(this.mediaStream);
+		this.workletNode = new AudioWorkletNode(this.captureCtx, 'comms-capture', {
+			channelCount: 1,
+			numberOfInputs: 1,
+			numberOfOutputs: 0,
+		});
 
-		const bufferSize = 4096;
-		this.scriptProcessor = this.captureCtx.createScriptProcessor(bufferSize, 1, 1);
 		this.sampleBuffer = new Float32Array(0);
-
 		let timestamp = 0;
 
-		this.scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
+		// Receive 128-sample chunks from the audio thread, accumulate
+		// into 960-sample frames, and feed to the Opus encoder.
+		this.workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
 			if (!this.running || !this.encoder) return;
 
-			const input = event.inputBuffer.getChannelData(0);
+			const input = event.data;
 
 			// Accumulate samples
 			const newBuffer = new Float32Array(this.sampleBuffer.length + input.length);
@@ -323,16 +346,7 @@ export class CommsAudioManager {
 			}
 		};
 
-		source.connect(this.scriptProcessor);
-		// ScriptProcessorNode must be connected to destination to fire callbacks,
-		// but we don't want mic audio playing through speakers (causes echo
-		// cancellation artifacts). Route through a zero-gain node to silence it.
-		// ScriptProcessorNode must be connected to destination to fire callbacks,
-		// but we don't want mic audio playing through speakers. Zero-gain silencer.
-		const silencer = this.captureCtx.createGain();
-		silencer.gain.value = 0;
-		this.scriptProcessor.connect(silencer);
-		silencer.connect(this.captureCtx.destination);
+		source.connect(this.workletNode);
 	}
 
 	/**
@@ -348,9 +362,10 @@ export class CommsAudioManager {
 			this.config.onCommsActive?.(false);
 		}
 
-		if (this.scriptProcessor) {
-			this.scriptProcessor.disconnect();
-			this.scriptProcessor = null;
+		if (this.workletNode) {
+			this.workletNode.port.onmessage = null;
+			this.workletNode.disconnect();
+			this.workletNode = null;
 		}
 
 		if (this.encoder) {
