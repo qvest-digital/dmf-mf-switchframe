@@ -398,21 +398,23 @@ func (m *Mixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
-// advanceOutputPTS returns a monotonically non-decreasing output PTS derived
-// from the input PTS. This keeps audio on the same PTS timeline as the source
-// (and therefore the video pipeline), maintaining A/V sync. The only adjustment
-// is a monotonic guard: if the input PTS goes backward (e.g., source switch),
-// the counter advances by one frame duration instead.
+// advanceOutputPTS returns a monotonically increasing output PTS.
+// The counter is seeded from the first input PTS (aligning with the video
+// pipeline's starting PTS) and then advances by exactly one AAC frame
+// duration on every subsequent call. It never follows source PTS jumps —
+// this prevents A/V desync when cutting between sources with different
+// PTS timelines (the video frame sync also advances monotonically).
 // Caller must hold m.mu.
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 	if !m.outputPTSInited {
-		m.outputPTS = inputPTS
-		m.outputPTSInited = true
-	} else if inputPTS > m.outputPTS {
-		// Normal forward progression (including large jumps): follow source PTS
-		m.outputPTS = inputPTS
+		if inputPTS > 0 {
+			m.outputPTS = inputPTS
+			m.outputPTSInited = true
+		} else {
+			// Silence fill before first real frame — advance from 0.
+			m.outputPTS += m.frameDuration90k()
+		}
 	} else {
-		// Backward or duplicate — advance by one frame to stay monotonic
 		m.outputPTS += m.frameDuration90k()
 	}
 	// MPEG-TS PTS is 33 bits; mask to prevent overflow after ~26.5 hours.

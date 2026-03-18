@@ -4196,6 +4196,62 @@ func TestAdvanceOutputPTS_33BitWraparound(t *testing.T) {
 		"output PTS should wrap correctly via 33-bit mask")
 }
 
+func TestMixer_OutputPTSDoesNotFollowSourceJumps(t *testing.T) {
+	// When cutting between sources with different PTS timelines, the mixer's
+	// output PTS must not jump to the new source's PTS. It should continue
+	// incrementing monotonically by frameDuration. This keeps audio PTS
+	// aligned with video PTS (which the frame sync also advances monotonically).
+	var mu sync.Mutex
+	var frames []*media.AudioFrame
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   2,
+		Output: func(f *media.AudioFrame) {
+			mu.Lock()
+			frames = append(frames, f)
+			mu.Unlock()
+		},
+		EncoderFactory: func(sr, ch int) (Encoder, error) {
+			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
+		},
+	})
+	defer m.Close()
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+
+	// Source 1 on program, PTS starting at 100,000,000.
+	m.SetActive("cam1", true)
+	pcm := make([]float32, 1024*2)
+	m.IngestPCM("cam1", pcm, 100_000_000, 2)
+	m.IngestPCM("cam1", pcm, 100_001_920, 2)
+	m.IngestPCM("cam1", pcm, 100_003_840, 2)
+
+	mu.Lock()
+	lastPTSBeforeCut := frames[len(frames)-1].PTS
+	mu.Unlock()
+
+	// Cut to source 2 which has PTS at 500,000,000 (very different timeline).
+	m.SetActive("cam1", false)
+	m.SetActive("cam2", true)
+	m.IngestPCM("cam2", pcm, 500_000_000, 2)
+	m.IngestPCM("cam2", pcm, 500_001_920, 2)
+
+	mu.Lock()
+	lastPTSAfterCut := frames[len(frames)-1].PTS
+	mu.Unlock()
+
+	// The output PTS should NOT have jumped to 500M. It should have continued
+	// monotonically from ~100M. The delta should be a few frameDurations,
+	// not 400 million ticks.
+	delta := lastPTSAfterCut - lastPTSBeforeCut
+	require.Less(t, delta, int64(100_000),
+		"output PTS should not follow source PTS jumps on cut; delta=%d (expected ~few frame durations)", delta)
+	require.Greater(t, delta, int64(0),
+		"output PTS should advance forward, not backward")
+}
+
 func TestMixer_SilenceFillWhenNoActiveAudio(t *testing.T) {
 	// When no active channel produces audio (e.g., program on a video-only
 	// source), the mixer should produce silence frames to keep the browser's
