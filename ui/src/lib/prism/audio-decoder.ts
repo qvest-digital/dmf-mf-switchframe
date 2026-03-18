@@ -105,7 +105,7 @@ export class PrismAudioDecoder {
 	private _resampleExtractBuf: Float32Array | null = null;
 	private _resampleOutBufs: Float32Array[] = [];
 
-	async configure(codec: string, sampleRate: number, channels: number, ctx?: AudioContext): Promise<void> {
+	async configure(codec: string, sampleRate: number, channels: number, ctx?: AudioContext, destinationNode?: AudioNode): Promise<void> {
 		this.reset();
 		this.sampleRate = sampleRate;
 		this.numChannels = channels;
@@ -126,7 +126,7 @@ export class PrismAudioDecoder {
 
 		this.gainNode = this.context.createGain();
 		this.gainNode.gain.value = this.muted ? 0 : 1;
-		this.gainNode.connect(this.context.destination);
+		this.gainNode.connect(destinationNode ?? this.context.destination);
 
 		// Use the AudioContext's actual sample rate for the ring buffer, not the source rate.
 		// After resampling (e.g., 44.1kHz → 48kHz), all samples in the ring are at the

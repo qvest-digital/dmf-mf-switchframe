@@ -692,6 +692,9 @@
 				visible={commsVisible}
 				onToggle={() => commsVisible = !commsVisible}
 				getTransport={() => pipeline.getSourceTransport('program')}
+				onCommsActive={(active) => pflManager.setCommsActive(active)}
+				onDimToggle={() => pflManager.setDim(!pflManager.dimmed)}
+				dimmed={pflManager.dimmed}
 			/>
 
 			<section class="monitors">

@@ -11,9 +11,12 @@
 		visible: boolean;
 		onToggle: () => void;
 		getTransport?: () => WebTransport | null;
+		onCommsActive?: (active: boolean) => void;
+		onDimToggle?: () => void;
+		dimmed?: boolean;
 	}
 
-	let { commsState, operatorId, operatorName, visible, onToggle, getTransport }: Props = $props();
+	let { commsState, operatorId, operatorName, visible, onToggle, getTransport, onCommsActive, onDimToggle, dimmed = false }: Props = $props();
 
 	const isJoined = $derived(
 		(commsState?.participants ?? []).some((p) => p.operatorId === operatorId)
@@ -50,6 +53,7 @@
 					operatorId,
 					operatorName,
 					onError: (msg) => notify('error', msg),
+					onCommsActive,
 				});
 				await audioManager.start(transport);
 			}
@@ -95,6 +99,15 @@
 			title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
 		>
 			{isMuted ? 'UNMUTE' : 'MUTE'}
+		</button>
+
+		<button
+			class="comms-btn dim-btn"
+			class:dim-active={dimmed}
+			onclick={() => onDimToggle?.()}
+			title="Dim program audio (-20dB)"
+		>
+			DIM
 		</button>
 
 		<div class="participants">
@@ -174,6 +187,17 @@
 	.mute-btn.muted:hover {
 		background: #ef4444;
 		border-color: #ef4444;
+	}
+
+	.dim-btn.dim-active {
+		background: var(--color-amber, #fbbf24);
+		border-color: var(--color-amber, #fbbf24);
+		color: #000;
+	}
+
+	.dim-btn.dim-active:hover {
+		background: #f59e0b;
+		border-color: #f59e0b;
 	}
 
 	.leave-btn {

@@ -20,6 +20,8 @@ export interface CommsConfig {
 	operatorId: string;
 	operatorName: string;
 	onError?: (error: string) => void;
+	/** Called when comms audio activity changes (for program audio ducking). */
+	onCommsActive?: (active: boolean) => void;
 }
 
 export class CommsAudioManager {
@@ -39,6 +41,10 @@ export class CommsAudioManager {
 
 	// Playback scheduling
 	private nextPlayTime = 0;
+
+	// Comms activity tracking for auto-duck
+	private commsActivityTimer: ReturnType<typeof setTimeout> | null = null;
+	private commsActive = false;
 
 	constructor(config: CommsConfig) {
 		this.config = config;
@@ -176,6 +182,17 @@ export class CommsAudioManager {
 			frame.close();
 			return;
 		}
+
+		// Signal comms activity for auto-duck
+		if (!this.commsActive) {
+			this.commsActive = true;
+			this.config.onCommsActive?.(true);
+		}
+		if (this.commsActivityTimer) clearTimeout(this.commsActivityTimer);
+		this.commsActivityTimer = setTimeout(() => {
+			this.commsActive = false;
+			this.config.onCommsActive?.(false);
+		}, 300); // 300ms after last frame = comms went quiet
 
 		const samples = frame.numberOfFrames;
 		const float32 = new Float32Array(samples);
@@ -315,6 +332,15 @@ export class CommsAudioManager {
 	 * Clean up all resources.
 	 */
 	private cleanup(): void {
+		if (this.commsActivityTimer) {
+			clearTimeout(this.commsActivityTimer);
+			this.commsActivityTimer = null;
+		}
+		if (this.commsActive) {
+			this.commsActive = false;
+			this.config.onCommsActive?.(false);
+		}
+
 		if (this.scriptProcessor) {
 			this.scriptProcessor.disconnect();
 			this.scriptProcessor = null;

@@ -32,6 +32,10 @@ export function createPFLManager() {
 	const decoders = new Map<string, SourceAudio>();
 	let _sharedContext: AudioContext | null = null;
 	let _contextResumed = false;
+	let _duckNode: GainNode | null = null;
+	let _dimmed = false;
+	let _autoDuck = true;
+	let _duckActive = false;
 
 	/**
 	 * Get or create a shared AudioContext. Created lazily on first use.
@@ -42,6 +46,21 @@ export function createPFLManager() {
 			_sharedContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
 		}
 		return _sharedContext;
+	}
+
+	/**
+	 * Get the duck GainNode. All decoder outputs route through this node
+	 * before reaching the AudioContext destination. Comms ducking and manual
+	 * DIM control this node's gain.
+	 */
+	function getDuckNode(): GainNode {
+		const ctx = getAudioContext();
+		if (!_duckNode) {
+			_duckNode = ctx.createGain();
+			_duckNode.gain.value = 1.0;
+			_duckNode.connect(ctx.destination);
+		}
+		return _duckNode;
 	}
 
 	/**
@@ -71,7 +90,7 @@ export function createPFLManager() {
 
 		const decoder = new PrismAudioDecoder();
 		const ctx = getAudioContext();
-		await decoder.configure(codec, sampleRate, channels, ctx);
+		await decoder.configure(codec, sampleRate, channels, ctx, getDuckNode());
 		decoder.setMuted(true); // all muted by default
 		decoder.enableMetering(); // always meter for VU display
 
@@ -188,9 +207,58 @@ export function createPFLManager() {
 		}
 	}
 
+	/** Duck level in dB when dimming program audio (0.1 linear ≈ -20dB). */
+	const DUCK_GAIN = 0.1;
+	const DUCK_ATTACK_MS = 50;
+	const DUCK_RELEASE_MS = 300;
+
+	function applyDuck(): void {
+		if (!_duckNode) return;
+		const shouldDuck = _dimmed || (_autoDuck && _duckActive);
+		const target = shouldDuck ? DUCK_GAIN : 1.0;
+		const rampMs = shouldDuck ? DUCK_ATTACK_MS : DUCK_RELEASE_MS;
+		_duckNode.gain.cancelScheduledValues(_duckNode.context.currentTime);
+		_duckNode.gain.linearRampToValueAtTime(
+			target,
+			_duckNode.context.currentTime + rampMs / 1000,
+		);
+	}
+
+	/** Manual DIM toggle — operator holds/toggles to dim program audio. */
+	function setDim(dim: boolean): void {
+		_dimmed = dim;
+		applyDuck();
+	}
+
+	/** Enable/disable auto-duck (program ducks when comms audio arrives). */
+	function setAutoDuck(enabled: boolean): void {
+		_autoDuck = enabled;
+		if (!enabled) {
+			_duckActive = false;
+			applyDuck();
+		}
+	}
+
+	/**
+	 * Called by CommsAudioManager when comms audio frames are being received.
+	 * Triggers auto-duck if enabled.
+	 */
+	function setCommsActive(active: boolean): void {
+		_duckActive = active;
+		if (_autoDuck) {
+			applyDuck();
+		}
+	}
+
 	return {
 		get activeSource() {
 			return _activeSource;
+		},
+		get dimmed() {
+			return _dimmed;
+		},
+		get autoDuck() {
+			return _autoDuck;
 		},
 		addSource,
 		removeSource,
@@ -201,6 +269,9 @@ export function createPFLManager() {
 		getSourceLevels,
 		getPlaybackPTS,
 		resumeContext,
+		setDim,
+		setAutoDuck,
+		setCommsActive,
 		destroy,
 	};
 }
