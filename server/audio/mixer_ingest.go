@@ -422,10 +422,9 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		m.mixPTS = pts
 	}
 
-	// Flush when all active unmuted channels have contributed OR deadline exceeded.
-	// During transition crossfade, flush on EVERY arrival (see comment in mixFrameLocked).
+	// Flush when all active unmuted channels have contributed OR deadline exceeded
 	var outputFrame *media.AudioFrame
-	if m.transCrossfadeActive || len(m.mixBuffer) >= activeUnmuted {
+	if len(m.mixBuffer) >= activeUnmuted {
 		outputFrame = m.collectMixCycleLocked()
 	}
 	m.mu.Unlock()
