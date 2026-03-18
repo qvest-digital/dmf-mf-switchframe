@@ -49,6 +49,9 @@ export class CommsAudioManager {
 	// Monotonic decode timestamp (microseconds, 20ms per frame)
 	private decodeTimestamp = 0;
 
+	// Comms playback gain (boosts comms audio relative to program)
+	private commsGain: GainNode | null = null;
+
 	constructor(config: CommsConfig) {
 		this.config = config;
 	}
@@ -96,6 +99,9 @@ export class CommsAudioManager {
 			// from treating our playback as echo to suppress.
 			this.captureCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 			this.playbackCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+			this.commsGain = this.playbackCtx.createGain();
+			this.commsGain.gain.value = 2.0; // +6dB boost so comms cuts through program
+			this.commsGain.connect(this.playbackCtx.destination);
 			this.nextPlayTime = 0;
 
 			// Set up WebCodecs Opus encoder
@@ -208,7 +214,7 @@ export class CommsAudioManager {
 
 		const source = this.playbackCtx.createBufferSource();
 		source.buffer = buffer;
-		source.connect(this.playbackCtx.destination);
+		source.connect(this.commsGain ?? this.playbackCtx.destination);
 
 		// Schedule seamlessly after previous buffer
 		const now = this.playbackCtx.currentTime;
@@ -308,7 +314,7 @@ export class CommsAudioManager {
 		this.workletNode = new AudioWorkletNode(this.captureCtx, 'comms-capture', {
 			channelCount: 1,
 			numberOfInputs: 1,
-			numberOfOutputs: 0,
+			numberOfOutputs: 1, // Must have an output for browsers to process inputs
 		});
 
 		this.sampleBuffer = new Float32Array(0);
@@ -398,6 +404,11 @@ export class CommsAudioManager {
 		if (this.captureCtx) {
 			this.captureCtx.close().catch(() => {});
 			this.captureCtx = null;
+		}
+
+		if (this.commsGain) {
+			this.commsGain.disconnect();
+			this.commsGain = null;
 		}
 
 		if (this.playbackCtx) {
