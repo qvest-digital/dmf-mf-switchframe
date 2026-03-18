@@ -71,6 +71,14 @@ function post<T>(url: string, body: unknown): Promise<T> {
 	});
 }
 
+function patch<T>(url: string, body: unknown): Promise<T> {
+	return request<T>(url, {
+		method: 'PATCH',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+}
+
 export function cut(source: string): Promise<ControlRoomState> {
 	return post('/api/switch/cut', { source });
 }
@@ -590,6 +598,30 @@ export function replayStatus(): Promise<ReplayState> {
 
 export function replaySources(): Promise<ReplayBufferInfo[]> {
 	return request('/api/replay/sources');
+}
+
+export function replayQuick(seconds: number, speed: number = 0.5, source: string = ''): Promise<ControlRoomState> {
+	return post('/api/replay/quick', { seconds, speed, source });
+}
+
+export function replayPause(): Promise<ControlRoomState> {
+	return post('/api/replay/pause', {});
+}
+
+export function replayResume(): Promise<ControlRoomState> {
+	return post('/api/replay/resume', {});
+}
+
+export function replaySeek(position: number): Promise<ControlRoomState> {
+	return patch('/api/replay/seek', { position });
+}
+
+export function replaySetSpeed(speed: number): Promise<ControlRoomState> {
+	return patch('/api/replay/speed', { speed });
+}
+
+export function replaySetMarks(markIn?: number, markOut?: number): Promise<ControlRoomState> {
+	return patch('/api/replay/marks', { markIn, markOut });
 }
 
 // --- Operator API ---

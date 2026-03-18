@@ -330,7 +330,7 @@ export interface KeyConfig {
 	fillSource?: string;
 }
 
-export type ReplayPlayerState = 'idle' | 'loading' | 'playing';
+export type ReplayPlayerState = 'idle' | 'loading' | 'playing' | 'paused';
 
 export interface ReplayBufferInfo {
 	source: string;
