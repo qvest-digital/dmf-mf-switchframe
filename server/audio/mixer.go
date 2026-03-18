@@ -420,30 +420,30 @@ func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
 	m.outputPTSInited = true
 }
 
-// advanceOutputPTS returns a monotonically increasing output PTS.
+// advanceOutputPTS returns a wall-clock-based output PTS.
 // Seeded from the video pipeline's first frame (SeedPTSFromVideo) to
-// align with the video PTS timeline. Advances by exactly frameDuration
-// per call (regular spacing for the browser's audio scheduler). Source
-// PTS jumps on cuts are ignored.
-//
-// The silence fill ticker calls this during no-audio periods, keeping
-// the counter advancing to prevent drift vs video PTS. The frame sync
-// also advances by frameDuration per tick, so both stay in sync.
+// share the same epoch as the video frame sync. Tracks elapsed wall
+// clock time so audio PTS never falls behind during production gaps
+// (source cuts, SRT reconnection, no-audio periods). The frame sync
+// also tracks wall clock, so both stay aligned.
 // Caller must hold m.mu.
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
+	now := time.Now()
 	if !m.outputPTSInited {
 		if inputPTS > 0 {
 			m.outputPTSStart = inputPTS
-			m.outputPTSEpoch = time.Now()
+			m.outputPTSEpoch = now
 			m.outputPTS = inputPTS
 			m.outputPTSInited = true
 		} else {
 			// Silence fill before first real frame — advance from 0.
 			m.outputPTS += m.frameDuration90k()
+			m.outputPTS &= 0x1FFFFFFFF
+			return m.outputPTS
 		}
-	} else {
-		m.outputPTS += m.frameDuration90k()
 	}
+	elapsed := now.Sub(m.outputPTSEpoch)
+	m.outputPTS = m.outputPTSStart + int64(elapsed.Seconds()*90000)
 	m.outputPTS &= 0x1FFFFFFFF
 	return m.outputPTS
 }
