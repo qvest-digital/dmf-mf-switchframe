@@ -178,12 +178,11 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
         goto fail;
     }
 
-    // Thread count for live streaming: default 1 for immediate per-frame
-    // output. Frame-level threading (N threads) buffers N frames before
-    // producing output, creating ~N*41ms burst/gap patterns (e.g., 4 threads
-    // = 165ms gaps at 24fps). For live SRT input, low latency matters more
-    // than decode throughput. Single-threaded H.264 decode at 720p/1080p
-    // is fast enough for 24-30fps on modern hardware.
+    // Thread count for video decode. We use slice threading (set below)
+    // which parallelizes within a single frame without buffering, reducing
+    // per-frame decode time. This is critical because the decode loop is
+    // single-threaded — while a video frame decodes, no audio packets are
+    // read. Faster video decode = shorter audio stall = less bursty delivery.
     int thread_count = max_threads;
     if (thread_count <= 0) {
         thread_count = 1;
@@ -207,6 +206,12 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
             }
             avcodec_parameters_to_context(h->video_dec_ctx, vstream->codecpar);
             h->video_dec_ctx->thread_count = thread_count;
+            // Slice threading only: parallelizes within a single frame without
+            // buffering. Frame threading (FF_THREAD_FRAME) buffers N frames
+            // before producing output, creating N*41ms burst/gap patterns that
+            // starve the audio path. Slice threading reduces per-frame decode
+            // time (e.g., 25ms → 8ms) so audio packets aren't blocked as long.
+            h->video_dec_ctx->thread_type = FF_THREAD_SLICE;
             h->video_dec_ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
 
             ret = avcodec_open2(h->video_dec_ctx, vdec, NULL);
