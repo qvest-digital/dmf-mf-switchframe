@@ -146,7 +146,7 @@ func TestFramePoolFormatChange(t *testing.T) {
 }
 
 func BenchmarkFramePoolAcquireRelease(b *testing.B) {
-	fp := NewFramePool(32, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
 
 	b.ResetTimer()

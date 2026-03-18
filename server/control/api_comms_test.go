@@ -72,7 +72,7 @@ func (e *mockNotInCommsError) Error() string { return "operator not in comms" }
 // newTestCommsAPI creates an API with a real switcher and mock comms manager.
 func newTestCommsAPI(t *testing.T, mcm *mockCommsManager) *API {
 	t.Helper()
-	sw := switcher.New(distribution.NewRelay())
+	sw := switcher.NewTestSwitcher(distribution.NewRelay())
 	return NewAPI(sw, WithCommsManager(mcm))
 }
 
@@ -229,7 +229,7 @@ func TestHandleCommsStatus_Empty(t *testing.T) {
 }
 
 func TestHandleCommsNotEnabled(t *testing.T) {
-	sw := switcher.New(distribution.NewRelay())
+	sw := switcher.NewTestSwitcher(distribution.NewRelay())
 	api := NewAPI(sw) // no comms manager
 
 	// All comms routes should not be registered → 404/405.

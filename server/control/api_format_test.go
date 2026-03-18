@@ -167,7 +167,7 @@ func TestSetFormatInvalidJSON(t *testing.T) {
 func TestSetFormatDuringTransition(t *testing.T) {
 	// Use transition-capable setup so we can start a transition.
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	defer sw.Close()
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)

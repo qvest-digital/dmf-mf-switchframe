@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log/slog"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -35,25 +34,9 @@ func newTestRelay() *distribution.Relay {
 	return distribution.NewRelay()
 }
 
-// newTestSwitcher creates a Switcher with a tiny frame pool (4 × 320×240)
-// suitable for testing. The production New() allocates 512 × 1080p buffers
-// (~1.5 GB) which causes OOM kills when 50+ tests each create one.
+// newTestSwitcher is a convenience alias for NewTestSwitcher within the package.
 func newTestSwitcher(programRelay *distribution.Relay) *Switcher {
-	defaultFmt := DefaultFormat
-	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(4, 320, 240),
-	}
-	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
-	s.pipelineFormat.Store(&defaultFmt)
-	s.delayBuffer = NewDelayBuffer(s)
-	go s.videoProcessingLoop()
-	return s
+	return NewTestSwitcher(programRelay)
 }
 
 // makeAVC1Frame creates a minimal AVC1-formatted frame (4-byte length prefix + NALU data).

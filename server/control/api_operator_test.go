@@ -27,7 +27,7 @@ func setupOperatorTestAPI(t *testing.T) (*API, *http.ServeMux) {
 	t.Cleanup(sm.Close)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 
 	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm))
 

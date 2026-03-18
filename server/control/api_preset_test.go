@@ -18,7 +18,7 @@ import (
 func setupPresetTestAPI(t *testing.T) (*API, *switcher.Switcher, *preset.Store) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()

@@ -49,7 +49,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.Store) {
 	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()

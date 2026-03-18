@@ -91,7 +91,7 @@ func (m *mockSRTManager) UpdateLatency(key string, latencyMs int) error {
 func setupSRTTestAPI(t *testing.T) (*API, *switcher.Switcher, *mockSRTManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()

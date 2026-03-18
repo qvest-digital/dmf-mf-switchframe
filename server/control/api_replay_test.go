@@ -17,7 +17,7 @@ import (
 func setupTestAPIWithReplay(t *testing.T) (*API, *replay.Manager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -32,7 +32,7 @@ func setupTestAPIWithReplay(t *testing.T) (*API, *replay.Manager) {
 
 func TestReplayPause_NotEnabled(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	api := NewAPI(sw) // no replay manager
 	req := httptest.NewRequest("POST", "/api/replay/pause", nil)
 	rec := httptest.NewRecorder()

@@ -17,7 +17,7 @@ import (
 func setupEncoderTestAPI(t *testing.T) (*API, *switcher.Switcher) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 		return transition.NewMockEncoder(), nil
 	})

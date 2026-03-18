@@ -26,7 +26,7 @@ import (
 func setupGraphicsTestAPI(t *testing.T) (*API, *graphics.Compositor) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	comp := graphics.NewCompositor()
 	t.Cleanup(comp.Close)
 	api := NewAPI(sw, WithCompositor(comp))
@@ -215,7 +215,7 @@ func TestGraphicsFrame_InvalidDimensions(t *testing.T) {
 func TestGraphicsNotConfigured(t *testing.T) {
 	// API without compositor — routes should not be registered
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest("GET", "/api/graphics", nil)
@@ -248,7 +248,7 @@ func TestGraphicsHandlers_SetLastOperator(t *testing.T) {
 	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	comp := graphics.NewCompositor()
 	t.Cleanup(comp.Close)
 
@@ -680,7 +680,7 @@ func TestGraphicsLayerNotFound(t *testing.T) {
 func setupGraphicsTestAPIWithEngines(t *testing.T) (*API, *graphics.Compositor) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.New(programRelay)
+	sw := switcher.NewTestSwitcher(programRelay)
 	comp := graphics.NewCompositor()
 	comp.SetResolutionProvider(func() (int, int) { return 1920, 1080 })
 	t.Cleanup(comp.Close)
