@@ -343,8 +343,9 @@ type Switcher struct {
 	lastBroadcastPTS atomic.Int64
 
 	// Broadcast interval diagnostics (atomic, lock-free).
-	lastBroadcastNano        atomic.Int64 // UnixNano of last program broadcast
-	maxBroadcastIntervalNano atomic.Int64 // max gap between consecutive broadcasts (ns)
+	lastBroadcastNano         atomic.Int64 // UnixNano of last program broadcast
+	maxBroadcastIntervalNano  atomic.Int64 // max gap between consecutive broadcasts (ns)
+	lastBroadcastIntervalNano atomic.Int64 // most recent gap between consecutive broadcasts (ns)
 
 	// Per-transition gap tracking: measures gap between last transition
 	// frame and first post-transition frame (the "transition seam").
@@ -1106,6 +1107,7 @@ func (s *Switcher) trackBroadcastInterval() {
 		return // first broadcast
 	}
 	gap := now - prev
+	s.lastBroadcastIntervalNano.Store(gap)
 	atomicutil.UpdateMax(&s.maxBroadcastIntervalNano, gap)
 	// Log when gap exceeds 100ms (>2 frame times at 24fps) to pinpoint stalls
 	if gap > 100_000_000 { // 100ms in nanoseconds

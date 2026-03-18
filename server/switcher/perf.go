@@ -91,7 +91,7 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		E2ELastNs:            s.lastE2ENs.Load(),
 		QueueLen:             len(s.videoProcCh),
 		OutputFPS:            float64(s.outputFPSLastSecond.Load()),
-		BroadcastGapNs:       s.maxBroadcastIntervalNano.Load(),
+		BroadcastGapNs:       s.lastBroadcastIntervalNano.Load(),
 		VideoBroadcast:       s.videoBroadcastCount.Load(),
 		DeadlineViolations:   s.deadlineViolations.Load(),
 		FrameBudgetNs:        s.frameBudgetNs.Load(),
