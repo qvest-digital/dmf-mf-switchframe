@@ -87,7 +87,7 @@ type Encoder struct {
 func NewEncoder(cfg Config) (*Encoder, error) {
 	e := &Encoder{
 		cfg:  cfg,
-		ch:   make(chan encodeJob, 2),
+		ch:   make(chan encodeJob, 4),
 		done: make(chan struct{}),
 	}
 	go e.loop()
