@@ -119,12 +119,8 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 
 	job := encodeJob{yuv: cp, w: w, h: h, pts: pts}
 
-	// Try non-blocking send. Guard against channel close race with Stop().
-	defer func() {
-		if r := recover(); r != nil {
-			// Channel closed by Stop() between stopped check and send -- drop silently.
-		}
-	}()
+	// Guard against channel close race with Stop().
+	defer func() { _ = recover() }()
 
 	select {
 	case e.ch <- job:
