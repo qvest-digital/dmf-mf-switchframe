@@ -267,6 +267,7 @@ type ControlRoomState struct {
 	CBR                  *CBRStatus              `json:"cbr,omitempty"`
 	ConnectionInfo       *ConnectionInfo         `json:"connectionInfo,omitempty"`
 	Captions             *CaptionState           `json:"captions,omitempty"`
+	Comms                *CommsState             `json:"comms,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
@@ -297,6 +298,21 @@ type CaptionState struct {
 	Mode           string          `json:"mode"`
 	AuthorBuffer   string          `json:"authorBuffer,omitempty"`
 	SourceCaptions map[string]bool `json:"sourceCaptions,omitempty"`
+}
+
+// CommsState represents the current operator voice comms state.
+type CommsState struct {
+	Active         bool               `json:"active"`
+	Participants   []CommsParticipant `json:"participants"`
+	TalkbackTarget string             `json:"talkbackTarget,omitempty"`
+}
+
+// CommsParticipant represents a single operator in the voice comms channel.
+type CommsParticipant struct {
+	OperatorID string `json:"operatorId"`
+	Name       string `json:"name"`
+	Muted      bool   `json:"muted"`
+	Speaking    bool   `json:"speaking"`
 }
 
 // SCTE35State represents the current SCTE-35 signaling state.

@@ -15,6 +15,7 @@ require (
 	github.com/zsiec/srtgo v0.2.4
 	golang.org/x/image v0.37.0
 	golang.org/x/sys v0.41.0
+	gopkg.in/hraban/opus.v2 v2.0.0-20230925203106-0188a62cb302
 )
 
 require (

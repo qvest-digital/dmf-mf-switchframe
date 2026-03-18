@@ -218,6 +218,14 @@ type CaptionManagerAPI interface {
 	State() caption.State
 }
 
+// CommsManagerAPI is the interface for operator voice comms operations.
+type CommsManagerAPI interface {
+	Join(operatorID, name string) error
+	Leave(operatorID string)
+	SetMuted(operatorID string, muted bool) error
+	State() *internal.CommsState
+}
+
 // WithCaptionManager attaches a caption manager to the API.
 func WithCaptionManager(cm CaptionManagerAPI) APIOption {
 	return func(a *API) { a.captionMgr = cm }
@@ -241,6 +249,11 @@ func WithTickerEngine(te *graphics.TickerEngine) APIOption {
 // WithSRTManager attaches an SRT source manager to the API.
 func WithSRTManager(m SRTManager) APIOption {
 	return func(a *API) { a.srtMgr = m }
+}
+
+// WithCommsManager attaches a comms manager to the API.
+func WithCommsManager(cm CommsManagerAPI) APIOption {
+	return func(a *API) { a.commsMgr = cm }
 }
 
 // WithAllowedOutputPorts constrains SRT listener output to the given ports.
@@ -288,6 +301,7 @@ type API struct {
 	textAnimEngine     *graphics.TextAnimationEngine
 	tickerEngine       *graphics.TickerEngine
 	srtMgr             SRTManager
+	commsMgr           CommsManagerAPI
 	allowedOutputPorts map[int]bool // nil = unconstrained
 	mux                *http.ServeMux
 	enrichFn           atomic.Pointer[enrichFunc]
@@ -446,6 +460,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerCaptionRoutes(mux)
 	a.registerLayoutRoutes(mux)
 	a.registerClipRoutes(mux)
+	a.registerCommsRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }

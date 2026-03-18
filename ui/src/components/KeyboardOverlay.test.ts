@@ -12,7 +12,7 @@ describe('KeyboardOverlay', () => {
 	it('should render all shortcuts in table rows', () => {
 		const { container } = render(KeyboardOverlay, { props: { onclose: vi.fn() } });
 		const rows = container.querySelectorAll('tbody tr');
-		expect(rows.length).toBe(29);
+		expect(rows.length).toBe(30);
 	});
 
 	it('should render expected shortcut keys', () => {

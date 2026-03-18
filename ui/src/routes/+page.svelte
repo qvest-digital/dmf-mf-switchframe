@@ -29,9 +29,10 @@
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
+	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute } from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -71,6 +72,7 @@
 	let tokenInput = $state('');
 	let showOperatorRegistration = $state(false);
 	let fastControl = $state<FastControl | null>(null);
+	let commsVisible = $state(false);
 
 	// Caption renderer for program monitor overlay
 	let captionRenderer: CaptionRenderer | null = null;
@@ -249,6 +251,18 @@
 		replayFrameForward: () => {
 			const pos = Math.min(1, (store.effectiveState.replay?.position ?? 0) + 0.002);
 			apiCall(replaySeek(pos), 'Frame forward');
+		},
+		commsToggleMute: () => {
+			const comms = store.effectiveState.comms;
+			if (comms?.active) {
+				const session = operatorState.getSession();
+				if (session) {
+					const self = comms.participants.find(p => p.operatorId === session.id);
+					if (self) {
+						commsMute(session.id, !self.muted);
+					}
+				}
+			}
 		},
 		getSourceKeys: () => store.sourceKeys,
 	});
@@ -656,6 +670,8 @@
 					<OutputControls state={store.effectiveState} {connectionState} {switchLayout}
 					onToggleIOPanel={() => { ioPanelVisible = !ioPanelVisible; }}
 					{ioPanelVisible}
+					onToggleComms={() => { commsVisible = !commsVisible; }}
+					commsActive={store.effectiveState.comms?.active ?? false}
 				/>
 					<div class="header-right">
 						<LockIndicator state={store.effectiveState} subsystem="output" />
@@ -668,6 +684,14 @@
 					</div>
 				</div>
 			</header>
+
+			<CommsBar
+				commsState={store.effectiveState.comms}
+				operatorId={operatorState.getSession()?.id ?? ''}
+				operatorName={operatorState.getSession()?.name ?? ''}
+				visible={commsVisible}
+				onToggle={() => commsVisible = !commsVisible}
+			/>
 
 			<section class="monitors">
 				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} showGraphicsOverlay={graphicsTabActive} {fastControl} onGraphicsLayerSelect={(id) => { graphicsSelectedLayerId = id; }} />

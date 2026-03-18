@@ -98,8 +98,15 @@ describe('KeyboardHandler', () => {
 		expect(toggleDSK).toHaveBeenCalled();
 	});
 
-	it('Backquote dispatches toggle-fullscreen', () => {
+	it('Backquote dispatches comms-toggle-mute', () => {
+		const commsMute = vi.fn();
+		actions.commsToggleMute = commsMute;
 		press('Backquote');
+		expect(commsMute).toHaveBeenCalled();
+	});
+
+	it('F4 dispatches toggle-fullscreen', () => {
+		press('F4');
 		expect(actions.onToggleFullscreen).toHaveBeenCalled();
 	});
 
