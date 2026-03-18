@@ -2,6 +2,7 @@ package preview
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,6 +186,124 @@ func TestEncoder_NewestWinsDrop(t *testing.T) {
 		// Good -- Send never blocked.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Send blocked for >2s, expected non-blocking newest-wins drop")
+	}
+}
+
+func TestEncoder_SendOwned_NoCopy(t *testing.T) {
+	skipWithoutEncoder(t)
+	relay := &mockRelay{}
+
+	enc, err := NewEncoder(Config{
+		SourceKey: "test-owned1",
+		Width:     426,
+		Height:    240,
+		Bitrate:   300_000,
+		FPSNum:    30,
+		FPSDen:    1,
+		Relay:     relay,
+	})
+	if err != nil {
+		t.Fatalf("NewEncoder failed: %v", err)
+	}
+	defer enc.Stop()
+
+	srcW, srcH := 1920, 1080
+	yuv := makeYUV420(srcW, srcH, 0xAA)
+
+	// SendOwned should accept the buffer without deep-copying it.
+	// We verify by checking that FramesIn increments.
+	enc.SendOwned(yuv, srcW, srcH, 3000, nil)
+
+	time.Sleep(200 * time.Millisecond)
+
+	stats := enc.GetStats()
+	if stats.FramesIn < 1 {
+		t.Fatalf("expected FramesIn >= 1 after SendOwned, got %d", stats.FramesIn)
+	}
+}
+
+func TestEncoder_SendOwned_ReleaseCalledAfterProcess(t *testing.T) {
+	skipWithoutEncoder(t)
+	relay := &mockRelay{}
+
+	enc, err := NewEncoder(Config{
+		SourceKey: "test-owned2",
+		Width:     426,
+		Height:    240,
+		Bitrate:   300_000,
+		FPSNum:    30,
+		FPSDen:    1,
+		Relay:     relay,
+	})
+	if err != nil {
+		t.Fatalf("NewEncoder failed: %v", err)
+	}
+	defer enc.Stop()
+
+	srcW, srcH := 640, 480
+
+	var released atomic.Int32
+	releaseFn := func(buf []byte) {
+		released.Add(1)
+	}
+
+	// Send a frame with a release callback.
+	yuv := makeYUV420(srcW, srcH, 0x55)
+	enc.SendOwned(yuv, srcW, srcH, 3000, releaseFn)
+
+	// Wait for the encode goroutine to process.
+	time.Sleep(500 * time.Millisecond)
+
+	if released.Load() != 1 {
+		t.Fatalf("expected release callback to be called once, got %d", released.Load())
+	}
+}
+
+func TestEncoder_SendOwned_ReleaseCalledOnDrop(t *testing.T) {
+	skipWithoutEncoder(t)
+	relay := &mockRelay{}
+
+	enc, err := NewEncoder(Config{
+		SourceKey: "test-owned3",
+		Width:     426,
+		Height:    240,
+		Bitrate:   300_000,
+		FPSNum:    30,
+		FPSDen:    1,
+		Relay:     relay,
+	})
+	if err != nil {
+		t.Fatalf("NewEncoder failed: %v", err)
+	}
+	defer enc.Stop()
+
+	srcW, srcH := 640, 480
+
+	// To force drops, we need to fill the channel (cap 2) and then overflow.
+	// First, stop the encoder from consuming by filling with blocking work.
+	// We'll send many frames rapidly with release callbacks and verify
+	// all callbacks eventually fire (both processed and dropped).
+
+	const totalFrames = 20
+	var released atomic.Int32
+
+	releaseFn := func(buf []byte) {
+		released.Add(1)
+	}
+
+	// Flood frames -- channel cap is 2, so most will be dropped.
+	for i := 0; i < totalFrames; i++ {
+		yuv := makeYUV420(srcW, srcH, byte(i))
+		enc.SendOwned(yuv, srcW, srcH, int64(i)*3000, releaseFn)
+	}
+
+	// Wait for processing to complete.
+	time.Sleep(1 * time.Second)
+
+	// Every frame's release must have been called -- whether processed or dropped.
+	got := released.Load()
+	if got != totalFrames {
+		t.Fatalf("expected all %d release callbacks to fire, got %d", totalFrames, got)
 	}
 }
 

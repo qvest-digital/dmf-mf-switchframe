@@ -64,10 +64,11 @@ type StatsSnapshot struct {
 
 // encodeJob carries a YUV420 frame to the encode goroutine.
 type encodeJob struct {
-	yuv []byte
-	w   int
-	h   int
-	pts int64
+	yuv     []byte
+	w       int
+	h       int
+	pts     int64
+	release func([]byte) // optional: called after yuv is no longer needed
 }
 
 // Encoder scales and encodes preview frames for a single source.
@@ -116,13 +117,53 @@ func (e *Encoder) Send(yuv []byte, w, h int, pts int64) {
 	// Channel full -- drain one (newest-wins) and send.
 	e.stats.FramesDropped.Add(1)
 	select {
-	case <-e.ch:
+	case dropped := <-e.ch:
+		// Release the dropped frame's buffer if it was submitted via SendOwned.
+		if dropped.release != nil {
+			dropped.release(dropped.yuv)
+		}
 	default:
 	}
 	select {
 	case e.ch <- job:
 	default:
 		// Channel closed or race -- drop silently.
+	}
+}
+
+// SendOwned submits a raw YUV420 frame for preview encoding, taking
+// ownership of the buffer (no deep copy). The optional release callback
+// is called after the buffer is no longer needed (after scaling), or
+// immediately if the frame is dropped due to channel overflow.
+func (e *Encoder) SendOwned(yuv []byte, w, h int, pts int64, release func([]byte)) {
+	e.stats.FramesIn.Add(1)
+
+	job := encodeJob{yuv: yuv, w: w, h: h, pts: pts, release: release}
+
+	// Try non-blocking send.
+	select {
+	case e.ch <- job:
+		return
+	default:
+	}
+
+	// Channel full -- drain one (newest-wins) and send.
+	e.stats.FramesDropped.Add(1)
+	select {
+	case dropped := <-e.ch:
+		// Release the dropped frame's buffer.
+		if dropped.release != nil {
+			dropped.release(dropped.yuv)
+		}
+	default:
+	}
+	select {
+	case e.ch <- job:
+	default:
+		// Channel closed or race -- release the buffer we failed to send.
+		if release != nil {
+			release(yuv)
+		}
 	}
 }
 
@@ -172,6 +213,9 @@ func (e *Encoder) loop() {
 			if err != nil {
 				slog.Error("preview: encoder init failed",
 					"key", e.cfg.SourceKey, "error", err)
+				if job.release != nil {
+					job.release(job.yuv)
+				}
 				continue
 			}
 			encoder = enc
@@ -198,6 +242,11 @@ func (e *Encoder) loop() {
 		}
 		encYUV = encYUV[:targetSize]
 		copy(encYUV, frameYUV)
+
+		// Release the source buffer now that it's been copied/scaled.
+		if job.release != nil {
+			job.release(job.yuv)
+		}
 
 		// Encode.
 		encStart := time.Now()

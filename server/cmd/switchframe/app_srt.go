@@ -301,10 +301,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	if previewEnc != nil {
 		go func() {
 			for job := range relayVideoCh {
-				previewEnc.Send(job.yuv, job.w, job.h, job.pts)
-				if framePool != nil {
-					framePool.Release(job.yuv)
+				release := func(buf []byte) {
+					if framePool != nil {
+						framePool.Release(buf)
+					}
 				}
+				previewEnc.SendOwned(job.yuv, job.w, job.h, job.pts, release)
 			}
 			previewEnc.Stop()
 		}()
