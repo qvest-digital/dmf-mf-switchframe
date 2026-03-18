@@ -580,10 +580,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	a.srtSources[key] = state
 	a.srtSourcesMu.Unlock()
 
-	// Register replay viewer if replay is active.
+	// Register replay viewer on the source relay (same pattern as app_streams.go).
 	if a.replayMgr != nil {
 		if err := a.replayMgr.AddSource(key); err != nil {
 			slog.Warn("srt: could not add replay source", "key", key, "err", err)
+		} else if v := a.replayMgr.Viewer(key); v != nil {
+			relay.AddViewer(v)
 		}
 	}
 

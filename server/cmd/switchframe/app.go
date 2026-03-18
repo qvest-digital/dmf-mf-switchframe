@@ -742,10 +742,12 @@ func (a *App) initMXL() error {
 		src.Start(context.Background(), videoFlow, audioFlow, dataFlow)
 		a.mxlSources = append(a.mxlSources, src)
 
-		// Register replay viewer.
+		// Register replay viewer on source relay (same pattern as app_streams.go).
 		if a.replayMgr != nil {
 			if err := a.replayMgr.AddSource(flowName); err != nil {
 				slog.Warn("mxl: could not add replay source", "key", flowName, "err", err)
+			} else if v := a.replayMgr.Viewer(flowName); v != nil {
+				relay.AddViewer(v)
 			}
 		}
 
