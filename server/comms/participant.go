@@ -113,6 +113,11 @@ func (p *participant) info() ParticipantInfo {
 	}
 }
 
+// SendCh returns the channel for receiving encoded mix packets to send to this participant.
+func (p *participant) SendCh() <-chan []byte {
+	return p.sendCh
+}
+
 // close shuts down the participant's send channel.
 func (p *participant) close() {
 	close(p.sendCh)

@@ -162,6 +162,26 @@ func (m *Manager) GetParticipant(operatorID string) (*participant, bool) {
 	return p, ok
 }
 
+// SendTestPacket enqueues an encoded audio packet directly to a participant's
+// send channel for testing the write path. Returns false if the participant is
+// not found or the channel is full.
+func (m *Manager) SendTestPacket(operatorID string, data []byte) bool {
+	m.mu.Lock()
+	p, ok := m.participants[operatorID]
+	m.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	select {
+	case p.sendCh <- data:
+		return true
+	default:
+		return false
+	}
+}
+
 // mixLoop runs at 20ms intervals, mixing audio for all participants.
 func (m *Manager) mixLoop(ctx context.Context) {
 	defer close(m.done)
