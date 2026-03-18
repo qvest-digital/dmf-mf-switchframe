@@ -4,8 +4,9 @@
 	interface Props {
 		children: import('svelte').Snippet<[string]>;
 		onTabChange?: (tab: string) => void;
+		replayActive?: boolean;
 	}
-	let { children, onTabChange }: Props = $props();
+	let { children, onTabChange, replayActive = false }: Props = $props();
 
 	const tabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips'] as const;
 	type TabId = typeof tabs[number];
@@ -60,6 +61,9 @@
 				onclick={() => setTab(tab)}
 			>
 				{tab}
+				{#if tab === 'Replay' && replayActive}
+					<span class="replay-dot"></span>
+				{/if}
 				<span class="tab-shortcut">^{(i + 1) % 10}</span>
 			</button>
 		{/each}
@@ -115,6 +119,21 @@
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-yellow);
 		background: rgba(255, 255, 255, 0.02);
+	}
+
+	.replay-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		background: var(--accent-orange);
+		border-radius: 50%;
+		margin-left: 2px;
+		animation: pulse-dot 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse-dot {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
 	}
 
 	.tab-shortcut {

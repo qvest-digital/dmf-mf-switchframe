@@ -624,7 +624,10 @@
 			</section>
 
 			<section class="bottom-panel">
-				<BottomTabs onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; }}>
+					<BottomTabs
+					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
+					onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; }}
+				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
