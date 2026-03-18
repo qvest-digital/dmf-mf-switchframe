@@ -8,7 +8,7 @@ import (
 // acquire/release under no contention. This is the per-frame overhead
 // added by DecodeInto's pre-acquire pattern.
 func BenchmarkFramePool_AcquireRelease(b *testing.B) {
-	fp := NewFramePool(96, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -26,8 +26,8 @@ func BenchmarkFramePool_AcquireMiss(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf := fp.Acquire()
-		_ = buf
-		// Don't release — simulates the miss path where buffer becomes GC garbage
+		// Release so GC can reclaim — we're measuring alloc cost, not accumulation.
+		fp.Release(buf)
 	}
 }
 
@@ -35,7 +35,7 @@ func BenchmarkFramePool_AcquireMiss(b *testing.B) {
 // decoder.Decode() returns a fresh allocation, then we copy into a pool buffer.
 // Two allocations, two copies per frame.
 func BenchmarkDecodeLoop_OldPath(b *testing.B) {
-	fp := NewFramePool(96, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
 	yuvSize := 1920 * 1080 * 3 / 2
 	// Simulate decoder output (fresh allocation each time)
@@ -64,7 +64,7 @@ func BenchmarkDecodeLoop_OldPath(b *testing.B) {
 // pre-acquire pool buffer, decoder writes directly into it.
 // One pool acquire, one copy (decoder internal → pool buffer), zero extra alloc on hit.
 func BenchmarkDecodeLoop_DecodeIntoPath(b *testing.B) {
-	fp := NewFramePool(96, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
 	yuvSize := 1920 * 1080 * 3 / 2
 	// Simulate decoder's internal buffer
@@ -103,7 +103,8 @@ func BenchmarkDecodeLoop_DecodeIntoPath_PoolMiss(b *testing.B) {
 		// Pool miss: make(3.1MB) + memclr
 		poolBuf := fp.Acquire()
 		copy(poolBuf, decoderInternal[:yuvSize])
-		// Don't release — simulates buffer being held by pipeline
+		// Release to prevent unbounded memory growth in benchmark
+		fp.Release(poolBuf)
 	}
 }
 
@@ -125,7 +126,8 @@ func BenchmarkDecodeLoop_OldPath_PoolMiss(b *testing.B) {
 		// Pool miss: make + copy
 		buf := fp.Acquire()
 		copy(buf, decoded[:yuvSize])
-		// Don't release
+		// Release to prevent unbounded memory growth in benchmark
+		fp.Release(buf)
 	}
 }
 
@@ -134,12 +136,15 @@ func BenchmarkDecodeLoop_OldPath_PoolMiss(b *testing.B) {
 func BenchmarkFRCIngest_WithSceneChange(b *testing.B) {
 	frc := newFRCSource(FRCMCFI, 3000)
 	yuvSize := 1920 * 1080 * 3 / 2
+	// Pre-allocate a single buffer and reuse — we're benchmarking FRC ingest
+	// cost, not allocation cost (that's covered by FramePool benchmarks).
+	yuv := make([]byte, yuvSize)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, yuvSize),
+			YUV:    yuv,
 			Width:  1920,
 			Height: 1080,
 			PTS:    int64(i * 3000),
@@ -155,12 +160,13 @@ func BenchmarkFRCIngest_WithSceneChange(b *testing.B) {
 func BenchmarkFRCIngest_Nearest(b *testing.B) {
 	frc := newFRCSource(FRCNearest, 3000)
 	yuvSize := 1920 * 1080 * 3 / 2
+	yuv := make([]byte, yuvSize)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, yuvSize),
+			YUV:    yuv,
 			Width:  1920,
 			Height: 1080,
 			PTS:    int64(i * 3000),
@@ -176,21 +182,20 @@ func BenchmarkFRCIngest_Nearest(b *testing.B) {
 func BenchmarkSRTCallback_OldSharedBuffer(b *testing.B) {
 	yuvSize := 1920 * 1080 * 3 / 2
 	srcBuf := make([]byte, yuvSize) // simulates d.videoGoBuf
+	dstBuf := make([]byte, yuvSize) // reuse to measure copy cost, not alloc
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		// Old path: one make + copy, shared by both consumers
-		yuvCopy := make([]byte, len(srcBuf))
-		copy(yuvCopy, srcBuf)
-		_ = yuvCopy
+		// Old path: copy (measuring copy throughput, not allocation)
+		copy(dstBuf, srcBuf)
 	}
 }
 
 // BenchmarkSRTCallback_PoolSeparateBuffers simulates the new SRT path:
 // two pool acquires (pipeline + relay), no make() on hit.
 func BenchmarkSRTCallback_PoolSeparateBuffers(b *testing.B) {
-	fp := NewFramePool(96, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
 	yuvSize := 1920 * 1080 * 3 / 2
 	srcBuf := make([]byte, yuvSize)
