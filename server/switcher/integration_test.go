@@ -259,6 +259,13 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			programRelay.BroadcastAudio(frame)
 		},
+		// Clock-driven mixer always encodes — needs codec factories.
+		DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
+			return audio.NewFDKDecoder(sampleRate, channels)
+		},
+		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
+			return audio.NewFDKEncoder(sampleRate, channels)
+		},
 	})
 	defer func() { _ = mixer.Close() }()
 
@@ -284,11 +291,14 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	require.True(t, mixer.IsChannelActive("cam1"))
 	require.False(t, mixer.IsChannelActive("cam2"))
 
-	// Send audio from cam1 (active) — should arrive.
+	// Send audio from cam1 (active) — should arrive via clock-driven ticker.
 	cam1Relay.BroadcastAudio(&media.AudioFrame{PTS: 100, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 
+	// Wait for the output ticker to fire (~21ms cadence).
+	time.Sleep(50 * time.Millisecond)
+
 	capture.mu.Lock()
-	require.Equal(t, 1, len(capture.audios))
+	require.GreaterOrEqual(t, len(capture.audios), 1, "ticker should have produced at least 1 output frame")
 	capture.mu.Unlock()
 
 	// Cut to cam2 — cam2 activates, cam1 deactivates (auto-wired).
