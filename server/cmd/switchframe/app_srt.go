@@ -252,34 +252,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	relayVideoCh := make(chan videoJob, 4) // → H.264 encode + relay
 	audioCh := make(chan audioJob, 8)      // → IngestPCM + AAC encode + relay
 
-	// PTS linearizers (separate for video/audio — they're interleaved).
-	type ptsLinearizer struct {
-		lastInput int64
-		offset    int64
-		frameDur  int64
-		inited    bool
-	}
-	const ptsJumpThreshold = 45000 // 0.5s in 90kHz ticks
-
-	linearize := func(lin *ptsLinearizer, rawPTS int64) int64 {
-		if !lin.inited {
-			lin.lastInput = rawPTS
-			lin.inited = true
-			return rawPTS
-		}
-		delta := rawPTS - lin.lastInput
-		if delta < 0 || delta > ptsJumpThreshold {
-			if lin.frameDur <= 0 {
-				lin.frameDur = 3750
-			}
-			lin.offset += lin.frameDur - delta
-		} else if delta > 0 {
-			lin.frameDur = delta
-		}
-		lin.lastInput = rawPTS
-		return (rawPTS + lin.offset) & 0x1FFFFFFFF
-	}
-	var videoLinear, audioLinear ptsLinearizer
+	// Shared PTS linearizer for video and audio. Uses a single offset so
+	// both streams stay aligned after PTS jumps (SRT source loop/reconnect).
+	ptsLin := srt.NewPTSLinearizer()
 
 	// --- Goroutine 1: Pipeline ingest (program path) ---
 	go func() {
@@ -517,7 +492,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// Only: linearize PTS + deep copy + non-blocking channel send.
 
 	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
-		pts = linearize(&videoLinear, pts)
+		pts = ptsLin.Linearize(pts, srt.StreamVideo)
 
 		// Pipeline and relay get SEPARATE buffers to prevent wrong-frame
 		// corruption if the relay falls behind. Pipeline buffer is owned by
@@ -561,7 +536,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	}
 
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
-		pts = linearize(&audioLinear, pts)
+		pts = ptsLin.Linearize(pts, srt.StreamAudio)
 
 		pcmCopy := make([]float32, len(pcm))
 		copy(pcmCopy, pcm)
