@@ -281,6 +281,7 @@ func (a *App) initPrismServer() error {
 				slog.Debug("fast-control datagram error", "error", err, "stream", streamKey)
 			}
 		},
+		OnBidirectionalStream: a.handleCommsBidiStream,
 	}
 
 	server, err := distribution.NewServer(config)

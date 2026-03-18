@@ -20,6 +20,42 @@ type commsMuteCmd struct {
 	Muted  bool   `json:"muted"`
 }
 
+// handleCommsBidiStream is the OnBidirectionalStream callback for Prism.
+// It reads a handshake message containing the operator ID, then delegates
+// to handleCommsStream for the audio read/write loop.
+func (a *App) handleCommsBidiStream(_ string, stream io.ReadWriteCloser) {
+	defer stream.Close()
+
+	if a.commsMgr == nil {
+		return
+	}
+
+	// The first message on the stream is a control message containing the
+	// operator ID as a JSON handshake: {"action":"hello","operatorId":"..."}
+	header := make([]byte, 3)
+	if _, err := io.ReadFull(stream, header); err != nil {
+		return
+	}
+	if header[0] != commsMsgControl {
+		return
+	}
+	payloadLen := binary.BigEndian.Uint16(header[1:3])
+	payload := make([]byte, payloadLen)
+	if _, err := io.ReadFull(stream, payload); err != nil {
+		return
+	}
+
+	var hello struct {
+		Action     string `json:"action"`
+		OperatorID string `json:"operatorId"`
+	}
+	if err := json.Unmarshal(payload, &hello); err != nil || hello.Action != "hello" || hello.OperatorID == "" {
+		return
+	}
+
+	a.handleCommsStream(hello.OperatorID, stream, stream)
+}
+
 // handleCommsStream processes a bidirectional WebTransport stream for operator
 // comms audio. It reads wire-protocol framed messages from the readable side
 // and writes mixed audio back on the writable side.
@@ -98,7 +134,8 @@ func (a *App) handleCommsStream(operatorID string, readable io.Reader, writable 
 
 		switch msgType {
 		case commsMsgAudio:
-			if err := a.commsMgr.IngestAudio(operatorID, payload); err != nil {
+			// Browser sends raw int16 PCM until Opus WASM is integrated.
+			if err := a.commsMgr.IngestRawPCM(operatorID, payload); err != nil {
 				log.Debug("comms audio ingest error", "err", err)
 			}
 

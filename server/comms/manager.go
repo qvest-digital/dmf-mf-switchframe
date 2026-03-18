@@ -154,6 +154,37 @@ func (m *Manager) IngestAudio(operatorID string, opusData []byte) error {
 	return nil
 }
 
+// IngestRawPCM accepts raw int16 PCM samples from a participant (bypassing
+// Opus decode). Used when the browser sends unencoded audio. The data byte
+// slice is interpreted as little-endian int16 samples.
+func (m *Manager) IngestRawPCM(operatorID string, data []byte) error {
+	m.mu.Lock()
+	p, ok := m.participants[operatorID]
+	m.mu.Unlock()
+
+	if !ok {
+		return ErrNotInComms
+	}
+
+	// Convert bytes to int16 (little-endian, matching browser's Int16Array)
+	sampleCount := len(data) / 2
+	if sampleCount == 0 {
+		return nil
+	}
+	if sampleCount > FrameSize {
+		sampleCount = FrameSize
+	}
+
+	pcm := make([]int16, sampleCount)
+	for i := 0; i < sampleCount; i++ {
+		pcm[i] = int16(data[2*i]) | int16(data[2*i+1])<<8
+	}
+
+	p.ingestRawPCM(pcm)
+	p.updateSpeaking(pcm)
+	return nil
+}
+
 // GetParticipant returns the participant for the given operator ID.
 func (m *Manager) GetParticipant(operatorID string) (*participant, bool) {
 	m.mu.Lock()
@@ -184,20 +215,18 @@ func (m *Manager) mixLoop(ctx context.Context) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
-	encodeBuf := make([]byte, 1024)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.mixTick(encodeBuf)
+			m.mixTick()
 		}
 	}
 }
 
-// mixTick performs one mix cycle: collect PCM, mix N-1, encode, distribute.
-func (m *Manager) mixTick(encodeBuf []byte) {
+// mixTick performs one mix cycle: collect PCM, mix N-1, distribute.
+func (m *Manager) mixTick() {
 	m.mu.Lock()
 
 	// Skip if fewer than 2 participants.
@@ -224,20 +253,16 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 
 	speakingChanged := false
 
-	// For each participant, produce their N-1 mix, encode, and send.
+	// For each participant, produce their N-1 mix and send as raw PCM.
 	for id, p := range participants {
 		mix := m.mixer.mixFor(id, inputs)
 
-		// Encode the mix using this participant's encoder.
-		n, err := p.encoder.Encode(mix, FrameSize, encodeBuf)
-		if err != nil {
-			m.log.Warn("failed to encode mix", "operator", id, "err", err)
-			continue
+		// Convert int16 PCM to little-endian bytes (matching browser Int16Array).
+		packet := make([]byte, len(mix)*2)
+		for i, s := range mix {
+			packet[2*i] = byte(s)
+			packet[2*i+1] = byte(s >> 8)
 		}
-
-		// Copy encoded data for the send channel.
-		packet := make([]byte, n)
-		copy(packet, encodeBuf[:n])
 
 		// Non-blocking send — drop if channel full or participant closed.
 		p.trySend(packet)

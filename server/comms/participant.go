@@ -63,6 +63,22 @@ func (p *participant) decodeAudio(opusData []byte) ([]int16, error) {
 	return out, nil
 }
 
+// ingestRawPCM stores raw PCM samples directly (bypassing Opus decode).
+func (p *participant) ingestRawPCM(pcm []int16) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	n := len(pcm)
+	if n > FrameSize {
+		n = FrameSize
+	}
+	copy(p.pcmBuf[:n], pcm[:n])
+	for i := n; i < FrameSize; i++ {
+		p.pcmBuf[i] = 0
+	}
+	p.hasPCM = true
+}
+
 // consumePCM returns a copy of the buffered PCM data and clears the buffer flag.
 // Returns nil if no data is available or the participant is muted.
 func (p *participant) consumePCM() []int16 {

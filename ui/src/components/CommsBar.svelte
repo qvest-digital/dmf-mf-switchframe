@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { CommsState } from '$lib/api/types';
 	import { commsJoin, commsLeave, commsMute, apiCall } from '$lib/api/switch-api';
+	import { CommsAudioManager } from '$lib/audio/comms';
 	import { notify } from '$lib/state/notifications.svelte';
 
 	interface Props {
@@ -9,9 +10,10 @@
 		operatorName: string;
 		visible: boolean;
 		onToggle: () => void;
+		getTransport?: () => WebTransport | null;
 	}
 
-	let { commsState, operatorId, operatorName, visible, onToggle }: Props = $props();
+	let { commsState, operatorId, operatorName, visible, onToggle, getTransport }: Props = $props();
 
 	const isJoined = $derived(
 		(commsState?.participants ?? []).some((p) => p.operatorId === operatorId)
@@ -21,8 +23,11 @@
 	);
 	const isMuted = $derived(selfParticipant?.muted ?? true);
 
+	let audioManager: CommsAudioManager | null = null;
+
 	function handleMuteToggle() {
 		apiCall(commsMute(operatorId, !isMuted), 'Comms mute');
+		audioManager?.setMuted(!isMuted);
 	}
 
 	let joining = $state(false);
@@ -35,6 +40,17 @@
 		joining = true;
 		try {
 			await commsJoin(operatorId, operatorName);
+
+			// Start audio after REST join succeeds
+			const transport = getTransport?.();
+			if (transport) {
+				audioManager = new CommsAudioManager({
+					operatorId,
+					operatorName,
+					onError: (msg) => notify(msg, 'error'),
+				});
+				await audioManager.start(transport);
+			}
 		} catch (e) {
 			notify(`Failed to join comms: ${e}`, 'error');
 		} finally {
@@ -42,8 +58,12 @@
 		}
 	}
 
-	function handleLeave() {
+	async function handleLeave() {
 		apiCall(commsLeave(operatorId), 'Leave comms');
+		if (audioManager) {
+			await audioManager.stop();
+			audioManager = null;
+		}
 	}
 </script>
 

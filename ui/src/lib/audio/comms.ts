@@ -61,6 +61,19 @@ export class CommsAudioManager {
 			this.writer = bidiStream.writable.getWriter();
 			this.reader = bidiStream.readable.getReader();
 
+			// Send handshake identifying this operator
+			const hello = JSON.stringify({
+				action: 'hello',
+				operatorId: this.config.operatorId,
+			});
+			const helloBytes = new TextEncoder().encode(hello);
+			const helloMsg = new Uint8Array(3 + helloBytes.length);
+			helloMsg[0] = MSG_CONTROL;
+			helloMsg[1] = (helloBytes.length >> 8) & 0xff;
+			helloMsg[2] = helloBytes.length & 0xff;
+			helloMsg.set(helloBytes, 3);
+			await this.writer.write(helloMsg);
+
 			// Create AudioContext and start capture
 			this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
 			this.running = true;
@@ -219,16 +232,31 @@ export class CommsAudioManager {
 	}
 
 	/**
-	 * Play received audio data.
+	 * Play received audio data. Currently receives raw int16 PCM from the
+	 * server's N-1 mix. Converts to float32 and plays via AudioContext.
 	 *
-	 * TODO: Integrate WASM Opus decoder here. For now this is a placeholder
-	 * that would decode the payload and play it through the AudioContext.
+	 * When Opus WASM is integrated, this will decode Opus frames instead.
 	 */
-	private playAudio(_opusData: Uint8Array): void {
-		// TODO: Opus WASM decode + AudioContext playback
-		// 1. Decode Opus frame to float32 PCM via WASM module
-		// 2. Create AudioBuffer from decoded PCM
-		// 3. Schedule playback via AudioBufferSourceNode
+	private playAudio(data: Uint8Array): void {
+		if (!this.audioContext || data.length < 2) return;
+
+		// Convert little-endian int16 bytes to float32 [-1.0, 1.0]
+		const sampleCount = Math.floor(data.length / 2);
+		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+		const float32 = new Float32Array(sampleCount);
+		for (let i = 0; i < sampleCount; i++) {
+			const s = view.getInt16(i * 2, true); // little-endian
+			float32[i] = s / 32768;
+		}
+
+		// Create an AudioBuffer and schedule playback
+		const buffer = this.audioContext.createBuffer(1, sampleCount, SAMPLE_RATE);
+		buffer.getChannelData(0).set(float32);
+
+		const source = this.audioContext.createBufferSource();
+		source.buffer = buffer;
+		source.connect(this.audioContext.destination);
+		source.start();
 	}
 
 	/**

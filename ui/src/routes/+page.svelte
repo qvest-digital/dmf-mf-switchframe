@@ -691,6 +691,7 @@
 				operatorName={operatorState.getSession()?.name ?? ''}
 				visible={commsVisible}
 				onToggle={() => commsVisible = !commsVisible}
+				getTransport={() => pipeline.getSourceTransport('program')}
 			/>
 
 			<section class="monitors">
