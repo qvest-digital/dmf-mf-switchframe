@@ -1,8 +1,7 @@
-// Cap render buffer to 10 frames (~333ms at 30fps). A large buffer (was 90)
-// allows video to accumulate far ahead of audio, creating A/V desync.
-// 10 frames provides enough headroom for decode bursts while keeping
-// latency bounded.
-const MAX_ELEMENTS = 10;
+// Cap render buffer to 30 frames (~1s at 30fps). Large enough to absorb
+// decode bursts and PTS discontinuities during source cuts, while keeping
+// latency bounded (was 90 = 3s which caused persistent A/V desync).
+const MAX_ELEMENTS = 30;
 
 /** Result of a timestamp-based frame lookup, including the selected frame and discard statistics. */
 interface VideoRenderResult {

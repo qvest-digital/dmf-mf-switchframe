@@ -90,7 +90,9 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(1);
 		});
 
-		it('skips frame when video is 2+ seconds ahead (PTS discontinuity)', () => {
+		it('recovers from PTS discontinuity when video is 2+ seconds ahead', () => {
+			// Large PTS gap triggers discontinuity recovery — re-anchors clock
+			// and draws the frame instead of freezing after source cuts.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -100,8 +102,7 @@ describe('PrismRenderer', () => {
 			renderer.renderOnce();
 
 			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(0);
-			expect(diag.framesSkipped).toBe(1);
+			expect(diag.framesDrawn).toBe(1);
 		});
 	});
 
@@ -221,14 +222,13 @@ describe('PrismRenderer', () => {
 	});
 
 	describe('queue-pressure desync recovery', () => {
-		it('skips frame when video is 800ms ahead even under queue pressure', () => {
-			// With tight 100ms tolerance, queue pressure does not extend
-			// tolerance. Server-side PTS alignment prevents persistent offsets.
+		it('recovers from 800ms offset via PTS discontinuity detection', () => {
+			// 800ms > 500ms threshold triggers PTS discontinuity recovery —
+			// re-anchors clock and draws instead of freezing.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			// Fill queue with frames 800ms ahead of audio
 			for (let i = 0; i < 8; i++) {
 				buffer.addFrame(new MockVideoFrame(1_800_000 + i * 16_667) as unknown as VideoFrame);
 			}
@@ -236,7 +236,7 @@ describe('PrismRenderer', () => {
 			renderer.renderOnce();
 
 			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(0);
+			expect(diag.framesDrawn).toBe(1);
 		});
 
 		it('draws frames when video is within 100ms of audio (normal operation)', () => {

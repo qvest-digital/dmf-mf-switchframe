@@ -257,18 +257,28 @@ export class PrismRenderer {
 				}
 			}
 
-			// Look-ahead for video-ahead-of-audio: if the binary search found
-			// no frame ≤ audioPTS but the next frame is only slightly ahead,
-			// display it rather than showing nothing. Tight tolerance (100ms)
-			// keeps video from running visually ahead of audio. Server-side
-			// PTS alignment (SeedPTSFromVideo + frame counter) keeps the
-			// offset small, so 100ms covers normal jitter without allowing
-			// persistent desync.
+			// Look-ahead + PTS discontinuity recovery:
+			// 1. If next frame is within 100ms of audio → display (normal jitter)
+			// 2. If next frame is >500ms from target → PTS discontinuity (source
+			//    cut), re-anchor the clock to recover instead of freezing
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS) {
 					const gap = peek.timestamp - targetPTS;
-					if (gap < 100_000) { // 100ms tolerance
+					if (gap < 100_000) {
+						// Normal jitter — display the slightly-ahead frame
+						frame = this.videoBuffer.takeNextFrame();
+					} else if (gap > 500_000) {
+						// PTS discontinuity (source cut) — re-anchor clock to
+						// the new PTS timeline and display the frame.
+						if (this.audioStallFreeRunStart >= 0) {
+							this.audioStallFreeRunStart = now;
+							this.audioStallFreeRunBasePTS = peek.timestamp;
+						}
+						if (this.freeRunStart >= 0) {
+							this.freeRunStart = now;
+							this.freeRunBasePTS = peek.timestamp;
+						}
 						frame = this.videoBuffer.takeNextFrame();
 					}
 				}
