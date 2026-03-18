@@ -1404,6 +1404,18 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	if len(yuv) < expectedSize {
 		return
 	}
+
+	// Defensive: if the frame exceeds pool buffer capacity (e.g., 4K clip
+	// in a 1080p pipeline), skip rather than panic on slice bounds.
+	poolBufSize := s.framePool.BufSize()
+	if expectedSize > poolBufSize {
+		s.log.Warn("broadcastProcessed: frame exceeds pool buffer size, dropping",
+			"frame_w", width, "frame_h", height,
+			"frame_bytes", expectedSize, "pool_bytes", poolBufSize,
+		)
+		return
+	}
+
 	buf := s.framePool.Acquire()
 	copy(buf, yuv[:expectedSize])
 

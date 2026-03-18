@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // initClips creates the clip store and manager, wires lifecycle callbacks,
@@ -69,7 +70,10 @@ func (a *App) initClips() error {
 	)
 
 	// Raw video output: clip player sends decoded YUV to switcher pipeline.
+	// Clips may be any resolution; scale to pipeline format before ingest
+	// (same pattern as MXL/SRT sources which scale before IngestRawVideo).
 	var clipRawFrameCount [clip.MaxPlayers]int64
+	var clipScaleBuf []byte // persistent scale buffer, reused across frames
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		idx := clipPlayerIDFromKey(key) - 1
 		if idx >= 0 && idx < clip.MaxPlayers {
@@ -87,15 +91,29 @@ func (a *App) initClips() error {
 				)
 			}
 		}
-		pf := &switcher.ProcessingFrame{
-			YUV:        yuv,
-			Width:      w,
-			Height:     h,
+
+		// Scale to pipeline format if clip resolution differs.
+		pf := a.sw.PipelineFormat()
+		outYUV, outW, outH := yuv, w, h
+		if w != pf.Width || h != pf.Height {
+			targetSize := pf.Width * pf.Height * 3 / 2
+			if cap(clipScaleBuf) < targetSize {
+				clipScaleBuf = make([]byte, targetSize)
+			}
+			clipScaleBuf = clipScaleBuf[:targetSize]
+			transition.ScaleYUV420(yuv, w, h, clipScaleBuf, pf.Width, pf.Height)
+			outYUV, outW, outH = clipScaleBuf, pf.Width, pf.Height
+		}
+
+		frame := &switcher.ProcessingFrame{
+			YUV:        outYUV,
+			Width:      outW,
+			Height:     outH,
 			PTS:        pts,
 			DTS:        pts,
 			IsKeyframe: isKeyframe,
 		}
-		a.sw.IngestReplayVideo(key, pf)
+		a.sw.IngestReplayVideo(key, frame)
 	})
 
 	// Video output: forward H.264 wire data from clip players to per-player
