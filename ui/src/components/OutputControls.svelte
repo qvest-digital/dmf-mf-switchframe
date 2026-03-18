@@ -13,8 +13,10 @@
 		switchLayout?: () => void;
 		onToggleIOPanel?: () => void;
 		ioPanelVisible?: boolean;
+		onToggleComms?: () => void;
+		commsActive?: boolean;
 	}
-	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false }: Props = $props();
+	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false }: Props = $props();
 
 	let thumbKey = $state(0);
 	let thumbInterval: ReturnType<typeof setInterval> | undefined;
@@ -71,6 +73,12 @@
 		onclick={() => onToggleIOPanel?.()}
 	>I/O</button>
 	<button
+		class="header-btn comms-btn-header"
+		class:comms-active={commsActive}
+		onclick={() => onToggleComms?.()}
+		title="Operator voice comms"
+	>COMMS</button>
+	<button
 		class="header-btn confirm-btn"
 		class:confirm-active={getConfirmMode()}
 		onclick={() => setConfirmMode(!getConfirmMode())}
@@ -123,6 +131,12 @@
 		border-color: var(--color-warning);
 		background: var(--color-warning-dim);
 		color: var(--color-warning);
+	}
+
+	.comms-active {
+		border-color: var(--color-green, #4ade80);
+		background: rgba(74, 222, 128, 0.15);
+		color: #fff;
 	}
 
 	.confirm-btn {
