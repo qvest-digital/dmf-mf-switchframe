@@ -23,6 +23,7 @@
 	let replayCanvas: HTMLCanvasElement | undefined = $state();
 	let progressBarEl: HTMLDivElement | undefined = $state();
 	let isDragging = $state(false);
+	let clipWorkspaceOpen = $state(false);
 
 	// Quick replay presets (from localStorage)
 	const defaultPresets = [
@@ -185,9 +186,16 @@
 	function getSourceLabel(key: string): string {
 		return crState.sources[key]?.label || key;
 	}
+
+	function formatDuration(secs: number): string {
+		const m = Math.floor(secs / 60);
+		const s = Math.floor(secs % 60);
+		return `${m}:${s.toString().padStart(2, '0')}`;
+	}
 </script>
 
 <div class="replay-panel">
+  <div class="replay-columns">
 	<!-- Left column: Source + Monitor + Progress + Timecodes -->
 	<div class="left-col">
 		<!-- Source selector -->
@@ -390,15 +398,75 @@
 			</div>
 		{/if}
 	</div>
+  </div>
+
+	<!-- Clip Workspace (collapsible) -->
+	<div class="clip-workspace">
+		<button class="workspace-toggle" onclick={() => clipWorkspaceOpen = !clipWorkspaceOpen}>
+			<span class="toggle-arrow">{clipWorkspaceOpen ? '\u25BE' : '\u25B8'}</span>
+			CLIP WORKSPACE
+		</button>
+
+		{#if clipWorkspaceOpen}
+			<div class="workspace-content">
+				<!-- Mark controls + timecodes -->
+				<div class="mark-row">
+					<button class="mark-btn mark-in-btn" onclick={handleMarkIn} disabled={!selectedSource && !programSource}>
+						MARK IN
+					</button>
+					<button class="mark-btn mark-out-btn" onclick={handleMarkOut}
+						disabled={!replay?.markIn}>
+						MARK OUT
+					</button>
+					<div class="mark-info">
+						{#if replay?.markIn}
+							<span class="mark-label">IN</span>
+							<span class="mark-time">{formatTimecode(replay.markIn)}</span>
+						{/if}
+						{#if replay?.markOut}
+							<span class="mark-sep">/</span>
+							<span class="mark-label">OUT</span>
+							<span class="mark-time">{formatTimecode(replay.markOut)}</span>
+							<span class="clip-dur">({formatClipDuration((replay.markOut ?? 0) - (replay.markIn ?? 0))})</span>
+						{/if}
+					</div>
+				</div>
+
+				<!-- Buffer status -->
+				<div class="buffer-strip">
+					{#each buffers as buf}
+						<button
+							class="buffer-chip-ws"
+							class:active={buf.source === selectedSource}
+							onclick={() => selectedSource = buf.source}
+						>
+							<span class="chip-label">{crState.sources[buf.source]?.label || buf.source}</span>
+							<div class="chip-bar">
+								<div class="chip-fill" style="width: {Math.min(100, (buf.durationSecs / 300) * 100)}%"></div>
+							</div>
+							<span class="chip-dur">{formatDuration(buf.durationSecs)}</span>
+						</button>
+					{/each}
+				</div>
+			</div>
+		{/if}
+	</div>
 </div>
 
 <style>
 	.replay-panel {
 		display: flex;
-		gap: 10px;
+		flex-direction: column;
 		padding: 6px;
 		height: 100%;
 		overflow: hidden;
+	}
+
+	.replay-columns {
+		display: flex;
+		gap: 10px;
+		flex: 1;
+		min-height: 0;
 	}
 
 	/* ── Left column: monitor area ── */
@@ -871,5 +939,142 @@
 		font-family: var(--font-mono);
 		font-size: 8px;
 		opacity: 0.7;
+	}
+
+	/* ── Clip Workspace ── */
+	.clip-workspace {
+		border-top: 1px solid var(--border-default);
+		margin-top: 4px;
+	}
+
+	.workspace-toggle {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		width: 100%;
+		padding: 4px 6px;
+		background: none;
+		border: none;
+		color: var(--text-tertiary);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		cursor: pointer;
+	}
+
+	.workspace-toggle:hover {
+		color: var(--text-secondary);
+	}
+
+	.toggle-arrow {
+		font-size: 10px;
+	}
+
+	.workspace-content {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 0 6px 6px;
+	}
+
+	.mark-row {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.mark-in-btn {
+		background: rgba(22, 163, 74, 0.12);
+		border-color: var(--tally-preview-medium);
+		color: var(--tally-preview);
+	}
+
+	.mark-in-btn:hover:not(:disabled) {
+		background: rgba(22, 163, 74, 0.2);
+	}
+
+	.mark-out-btn {
+		background: rgba(220, 38, 38, 0.12);
+		border-color: var(--tally-program-medium);
+		color: var(--tally-program);
+	}
+
+	.mark-out-btn:hover:not(:disabled) {
+		background: rgba(220, 38, 38, 0.2);
+	}
+
+	.mark-info {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-left: auto;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+	}
+
+	.mark-label {
+		color: var(--text-secondary);
+		font-weight: 600;
+	}
+
+	.mark-sep {
+		opacity: 0.4;
+	}
+
+	.clip-dur {
+		color: var(--accent-orange);
+		margin-left: 4px;
+	}
+
+	.buffer-strip {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+	}
+
+	.buffer-chip-ws {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 6px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+	}
+
+	.buffer-chip-ws.active {
+		border-color: var(--accent-orange-medium);
+		background: var(--accent-orange-dim);
+		color: var(--text-primary);
+	}
+
+	.chip-label {
+		min-width: 48px;
+	}
+
+	.chip-bar {
+		width: 40px;
+		height: 4px;
+		background: rgba(255, 255, 255, 0.06);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.chip-fill {
+		height: 100%;
+		background: var(--accent-orange);
+		border-radius: 2px;
+	}
+
+	.chip-dur {
+		min-width: 28px;
+		text-align: right;
 	}
 </style>
