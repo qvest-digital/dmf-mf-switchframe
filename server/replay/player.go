@@ -78,14 +78,39 @@ type replayPlayer struct {
 	// frame N's deadline is playbackStart + N*frameDuration, preventing
 	// per-frame drift from encode overhead accumulation.
 	playbackStart time.Time
+
+	// Pause mechanism (mirrors clip/player.go pattern).
+	pauseCh atomic.Pointer[chan struct{}]
+	pauseMu sync.Mutex
+	state   atomic.Value // PlayerState
+
+	// Seek: send desired progress (0.0-1.0) via seekCh.
+	seekCh chan float64
+
+	// Speed changes mid-playback.
+	speed atomic.Value // float64
+
+	// Stored for speed-change recalculation.
+	sourceFPS       float64
+	totalClipFrames int
 }
 
 // newReplayPlayer creates a player for the given clip and configuration.
 func newReplayPlayer(cfg PlayerConfig) *replayPlayer {
-	return &replayPlayer{
+	p := &replayPlayer{
 		config: cfg,
 		done:   make(chan struct{}),
+		seekCh: make(chan float64, 1),
 	}
+	p.speed.Store(cfg.Speed)
+
+	// Initialize pause channel as closed (not paused).
+	ch := make(chan struct{})
+	close(ch)
+	p.pauseCh.Store(&ch)
+
+	p.state.Store(PlayerPlaying)
+	return p
 }
 
 // Start begins playback in a background goroutine.
@@ -111,6 +136,88 @@ func (p *replayPlayer) Wait() {
 // Progress returns the current playback progress as a float64 between 0.0 and 1.0.
 func (p *replayPlayer) Progress() float64 {
 	return float64(p.progress.Load()) / 1000.0
+}
+
+// State returns the current player state.
+func (p *replayPlayer) State() PlayerState {
+	v := p.state.Load()
+	if v == nil {
+		return PlayerIdle
+	}
+	return v.(PlayerState)
+}
+
+// Speed returns the current playback speed.
+func (p *replayPlayer) Speed() float64 {
+	v := p.speed.Load()
+	if v == nil {
+		return 1.0
+	}
+	return v.(float64)
+}
+
+// Pause pauses playback, holding the current frame.
+func (p *replayPlayer) Pause() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+	if p.State() != PlayerPlaying {
+		return
+	}
+	ch := make(chan struct{})
+	p.pauseCh.Store(&ch)
+	p.state.Store(PlayerPaused)
+}
+
+// Resume resumes playback from a paused state.
+func (p *replayPlayer) Resume() {
+	p.pauseMu.Lock()
+	defer p.pauseMu.Unlock()
+	if p.State() != PlayerPaused {
+		return
+	}
+	p.state.Store(PlayerPlaying)
+	chPtr := p.pauseCh.Load()
+	if chPtr != nil {
+		select {
+		case <-*chPtr:
+		default:
+			close(*chPtr)
+		}
+	}
+}
+
+// SetSpeed changes the playback speed. Clamped to 0.25-1.0.
+func (p *replayPlayer) SetSpeed(speed float64) {
+	if speed < 0.25 {
+		speed = 0.25
+	}
+	if speed > 1.0 {
+		speed = 1.0
+	}
+	p.speed.Store(speed)
+}
+
+// Seek seeks to the given position (0.0-1.0) within the clip.
+func (p *replayPlayer) Seek(position float64) {
+	if position < 0.0 {
+		position = 0.0
+	}
+	if position > 1.0 {
+		position = 1.0
+	}
+	// Non-blocking send; if a seek is already pending, replace it.
+	select {
+	case p.seekCh <- position:
+	default:
+		select {
+		case <-p.seekCh:
+		default:
+		}
+		select {
+		case p.seekCh <- position:
+		default:
+		}
+	}
 }
 
 // gopLookahead is the number of GOPs to keep decoded ahead of the current
@@ -179,6 +286,7 @@ func (p *replayPlayer) run(ctx context.Context) {
 	if p.config.OnReady != nil {
 		p.config.OnReady()
 	}
+	p.state.Store(PlayerPlaying)
 
 	// Pre-stretch audio for slow-motion if needed.
 	p.preStretchAudio()
@@ -204,6 +312,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	// Count total frames for progress tracking.
 	totalClipFrames := len(clip)
+	p.sourceFPS = sourceFPS
+	p.totalClipFrames = totalClipFrames
 	dupCount, frameDuration := computeReplayTiming(p.config.Speed, sourceFPS, totalClipFrames)
 	totalFrames := totalClipFrames * dupCount
 
@@ -275,6 +385,52 @@ func (p *replayPlayer) run(ctx context.Context) {
 				nextDecoded++
 			}
 
+			// Check for seek requests.
+			select {
+			case pos := <-p.seekCh:
+				targetGOP := int(pos * float64(len(gops)))
+				if targetGOP >= len(gops) {
+					targetGOP = len(gops) - 1
+				}
+				if targetGOP < 0 {
+					targetGOP = 0
+				}
+				// Reset output state for the new position.
+				gs.outputIdx = 0
+				for i := 0; i < targetGOP; i++ {
+					gs.outputIdx += len(gops[i]) * gs.dupCount
+				}
+				gs.firstFrame = true
+				p.playbackStart = time.Now()
+				gs.pacingIdx = 0
+				// Re-decode the window starting at the target GOP.
+				decodedWindow = decodedWindow[:0]
+				endGOP := targetGOP + prefetchCount
+				if endGOP > len(gops) {
+					endGOP = len(gops)
+				}
+				for i := targetGOP; i < endGOP; i++ {
+					dec, err := decodeGOP(gops[i], p.config.DecoderFactory)
+					if err != nil {
+						slog.Error("replay player: decode GOP on seek failed", "gop", i, "err", err)
+						return
+					}
+					slices.SortFunc(dec, func(a, b decodedFrame) int {
+						return cmp.Compare(a.pts, b.pts)
+					})
+					decodedWindow = append(decodedWindow, dec)
+				}
+				nextDecoded = endGOP
+				// Reset audio index proportionally.
+				if len(p.config.AudioClip) > 0 {
+					p.audioIdx = gs.outputIdx * len(p.config.AudioClip) / gs.totalFrames
+					p.audioCallCount = gs.outputIdx
+				}
+				gopIdx = targetGOP - 1 // -1 because loop increments
+				continue
+			default:
+			}
+
 			// Output the current GOP.
 			if p.outputGOP(ctx, decoded, gs) {
 				return
@@ -323,11 +479,40 @@ func (p *replayPlayer) outputGOP(
 	gs *gopOutputState,
 ) bool {
 	for di, df := range decoded {
+		// Check for speed changes.
+		newSpeed := p.speed.Load().(float64)
+		if newSpeed != p.config.Speed {
+			p.config.Speed = newSpeed
+			gs.dupCount, gs.frameDuration = computeReplayTiming(newSpeed, p.sourceFPS, p.totalClipFrames)
+			gs.totalFrames = p.totalClipFrames * gs.dupCount
+			p.totalOutputFrames = gs.totalFrames
+			p.playbackStart = time.Now()
+			gs.pacingIdx = 0
+		}
+
 		for dup := 0; dup < gs.dupCount; dup++ {
 			select {
 			case <-ctx.Done():
 				return true
 			default:
+			}
+
+			// Check for pause. If paused, block until resumed or cancelled.
+			chPtr := p.pauseCh.Load()
+			if chPtr != nil {
+				select {
+				case <-*chPtr:
+					// Not paused or resumed — continue.
+				case <-ctx.Done():
+					return true
+				}
+			}
+
+			// If deadline is far in the past (e.g. after pause/resume), reset pacing.
+			deadline := p.playbackStart.Add(time.Duration(gs.pacingIdx) * gs.frameDuration)
+			if time.Until(deadline) < -gs.frameDuration*2 {
+				p.playbackStart = time.Now()
+				gs.pacingIdx = 0
 			}
 
 			// Force IDR only on the very first frame of playback.
@@ -368,7 +553,7 @@ func (p *replayPlayer) outputGOP(
 			// Pace BEFORE output: wait until the deadline, then emit
 			// the frame right at the target time. This ensures uniform
 			// output intervals regardless of variable encode durations.
-			deadline := p.playbackStart.Add(time.Duration(gs.pacingIdx) * gs.frameDuration)
+			deadline = p.playbackStart.Add(time.Duration(gs.pacingIdx) * gs.frameDuration)
 			wait := time.Until(deadline)
 			if wait > 0 {
 				gs.timer.Reset(wait)

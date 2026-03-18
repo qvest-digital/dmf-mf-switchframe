@@ -1935,3 +1935,154 @@ func TestReplayPlayer_AudioPTSAlignedWithVideo(t *testing.T) {
 			"audio PTS should be monotonically increasing")
 	}
 }
+
+func TestReplayPlayer_State(t *testing.T) {
+	p := newReplayPlayer(PlayerConfig{Speed: 1.0})
+	if p.State() != PlayerPlaying {
+		t.Fatalf("expected playing, got %s", p.State())
+	}
+}
+
+func TestReplayPlayer_PauseResume(t *testing.T) {
+	p := newReplayPlayer(PlayerConfig{Speed: 1.0})
+
+	p.Pause()
+	if p.State() != PlayerPaused {
+		t.Fatalf("expected paused, got %s", p.State())
+	}
+
+	// Pause while already paused is no-op.
+	p.Pause()
+	if p.State() != PlayerPaused {
+		t.Fatalf("expected still paused, got %s", p.State())
+	}
+
+	p.Resume()
+	if p.State() != PlayerPlaying {
+		t.Fatalf("expected playing, got %s", p.State())
+	}
+
+	// Resume while already playing is no-op.
+	p.Resume()
+	if p.State() != PlayerPlaying {
+		t.Fatalf("expected still playing, got %s", p.State())
+	}
+}
+
+func TestReplayPlayer_Speed(t *testing.T) {
+	p := newReplayPlayer(PlayerConfig{Speed: 1.0})
+
+	if p.Speed() != 1.0 {
+		t.Fatalf("expected 1.0, got %f", p.Speed())
+	}
+
+	p.SetSpeed(0.5)
+	if p.Speed() != 0.5 {
+		t.Fatalf("expected 0.5, got %f", p.Speed())
+	}
+
+	// Clamping.
+	p.SetSpeed(0.1)
+	if p.Speed() != 0.25 {
+		t.Fatalf("expected 0.25 (clamped), got %f", p.Speed())
+	}
+
+	p.SetSpeed(5.0)
+	if p.Speed() != 1.0 {
+		t.Fatalf("expected 1.0 (clamped), got %f", p.Speed())
+	}
+}
+
+func TestReplayPlayer_Seek(t *testing.T) {
+	p := newReplayPlayer(PlayerConfig{Speed: 1.0})
+
+	// Seek should not block.
+	p.Seek(0.5)
+
+	// Should be able to read from seekCh.
+	select {
+	case pos := <-p.seekCh:
+		if pos != 0.5 {
+			t.Fatalf("expected 0.5, got %f", pos)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("seek value not received")
+	}
+
+	// Seek clamps to valid range.
+	p.Seek(-1.0)
+	select {
+	case pos := <-p.seekCh:
+		if pos != 0.0 {
+			t.Fatalf("expected 0.0 (clamped), got %f", pos)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("seek value not received")
+	}
+}
+
+func TestReplayPlayer_SeekReplacePending(t *testing.T) {
+	p := newReplayPlayer(PlayerConfig{Speed: 1.0})
+
+	// Send a seek, then replace it before consuming.
+	p.Seek(0.3)
+	p.Seek(0.7)
+
+	// Should get the latest value.
+	select {
+	case pos := <-p.seekCh:
+		if pos != 0.7 {
+			t.Fatalf("expected 0.7, got %f", pos)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("seek value not received")
+	}
+}
+
+func TestReplayPlayer_PauseBlocksOutputGOP(t *testing.T) {
+	// Verify that pause actually blocks the output loop and resume unblocks it.
+	clip := buildTestClip(1, 5)
+	var frameCount atomic.Int64
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           true, // Loop so the player doesn't finish before we can pause.
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		Output: func(frame *media.VideoFrame) {
+			frameCount.Add(1)
+		},
+		OnDone:  func() {},
+		OnReady: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+
+	// Let it produce some frames.
+	time.Sleep(200 * time.Millisecond)
+	countBeforePause := frameCount.Load()
+	require.Greater(t, countBeforePause, int64(0), "should have produced frames before pause")
+
+	// Pause and verify output stops.
+	p.Pause()
+	time.Sleep(200 * time.Millisecond)
+	countWhilePaused := frameCount.Load()
+
+	// Allow at most 1 frame of slack (the frame that was in-flight when we paused).
+	require.LessOrEqual(t, countWhilePaused-countBeforePause, int64(1),
+		"no new frames should be produced while paused")
+
+	// Resume and verify output resumes.
+	p.Resume()
+	time.Sleep(200 * time.Millisecond)
+	countAfterResume := frameCount.Load()
+	require.Greater(t, countAfterResume, countWhilePaused+1,
+		"frames should resume after unpause")
+
+	p.Stop()
+	p.Wait()
+}
