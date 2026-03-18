@@ -21,6 +21,8 @@ RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list
         libswresample-dev \
         libx264-dev \
         libfdk-aac-dev \
+        libopus-dev \
+        libopusfile-dev \
         pkg-config && \
     rm -rf /var/lib/apt/lists/*
 
@@ -44,6 +46,8 @@ RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list
         libswresample4 \
         libx264-164 \
         libfdk-aac2 \
+        libopus0 \
+        libopusfile0 \
         ca-certificates \
         curl && \
     rm -rf /var/lib/apt/lists/* && \
