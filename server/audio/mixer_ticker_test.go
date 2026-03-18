@@ -398,3 +398,282 @@ func TestTick_TransitionGainInterpolation(t *testing.T) {
 	// We just check it's non-zero (positive).
 	assert.Greater(t, lastPCM[0], float32(0), "output should be positive with crossfade")
 }
+
+func TestClockDrivenMixer_CutCrossfade(t *testing.T) {
+	t.Parallel()
+	m, enc := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	// cam2 starts inactive -- OnCut should activate it
+
+	// Push known PCM into both ring buffers so the ticker has data.
+	// cam1 = old source (full amplitude), cam2 = new source (half amplitude).
+	pcmOld := make([]float32, 1024*2)
+	pcmNew := make([]float32, 1024*2)
+	for i := range pcmOld {
+		pcmOld[i] = 0.6
+		pcmNew[i] = 0.3
+	}
+
+	// Push enough frames for 3 ticks (cut crossfade uses 2 + 1 after)
+	m.mu.Lock()
+	m.channels["cam1"].ringBuf.Push(pcmOld)
+	m.channels["cam1"].ringBuf.Push(pcmOld)
+	m.channels["cam1"].ringBuf.Push(pcmOld)
+	m.channels["cam2"].ringBuf.Push(pcmNew)
+	m.channels["cam2"].ringBuf.Push(pcmNew)
+	m.channels["cam2"].ringBuf.Push(pcmNew)
+	m.mu.Unlock()
+
+	// Trigger cut crossfade
+	m.OnCut("cam1", "cam2")
+
+	// Verify transition state was set up
+	m.mu.RLock()
+	assert.True(t, m.transCrossfadeActive, "transCrossfadeActive should be true after OnCut")
+	assert.Equal(t, "cam1", m.transCrossfadeFrom)
+	assert.Equal(t, "cam2", m.transCrossfadeTo)
+	assert.Equal(t, 2, m.cutFramesRemaining, "should have 2 frames remaining")
+	assert.Equal(t, 2, m.cutTotalFrames, "total frames should be 2")
+	m.mu.RUnlock()
+
+	// Tick 1: crossfade at position 0.0, then auto-advances to 0.5
+	frame1 := m.tick()
+	require.NotNil(t, frame1, "first tick should produce output")
+
+	m.mu.RLock()
+	assert.Equal(t, 1, m.cutFramesRemaining, "should have 1 frame remaining after first tick")
+	assert.InDelta(t, 0.5, m.transCrossfadePosition, 0.01, "position should be 0.5 after first tick")
+	assert.True(t, m.transCrossfadeActive, "should still be active after first tick")
+	m.mu.RUnlock()
+
+	// Tick 2: crossfade at position 0.5, then auto-advances to 1.0 and completes
+	frame2 := m.tick()
+	require.NotNil(t, frame2, "second tick should produce output")
+
+	m.mu.RLock()
+	assert.False(t, m.transCrossfadeActive, "crossfade should be complete after 2 ticks")
+	assert.Equal(t, 0, m.cutFramesRemaining, "no frames remaining after completion")
+	assert.Equal(t, "", m.transCrossfadeFrom, "from should be cleared")
+	assert.Equal(t, "", m.transCrossfadeTo, "to should be cleared")
+	m.mu.RUnlock()
+
+	// Tick 3: normal operation, no crossfade
+	frame3 := m.tick()
+	require.NotNil(t, frame3, "third tick should produce output normally")
+
+	// Verify encoder was called for all 3 ticks (plus 1 priming call)
+	assert.Equal(t, 4, enc.getCalls(), "encoder should be called: 1 priming + 3 ticks")
+}
+
+func TestClockDrivenMixer_CutCrossfade_ActivatesNewSource(t *testing.T) {
+	t.Parallel()
+	m, _ := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	// cam2 starts inactive
+
+	m.mu.RLock()
+	assert.False(t, m.channels["cam2"].active, "cam2 should be inactive before cut")
+	m.mu.RUnlock()
+
+	m.OnCut("cam1", "cam2")
+
+	m.mu.RLock()
+	assert.True(t, m.channels["cam2"].active, "cam2 should be activated by OnCut")
+	m.mu.RUnlock()
+}
+
+func TestClockDrivenMixer_TransitionCrossfade(t *testing.T) {
+	t.Parallel()
+	m, enc := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	// cam2 starts inactive -- OnTransitionStart should activate it
+
+	// Start a dissolve transition
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+
+	m.mu.RLock()
+	assert.True(t, m.transCrossfadeActive, "should be active after OnTransitionStart")
+	assert.Equal(t, "cam1", m.transCrossfadeFrom)
+	assert.Equal(t, "cam2", m.transCrossfadeTo)
+	assert.True(t, m.channels["cam2"].active, "cam2 should be activated")
+	assert.Equal(t, 0, m.cutFramesRemaining, "cut frames should not be set for transitions")
+	m.mu.RUnlock()
+
+	// Push PCM data
+	pcm1 := make([]float32, 1024*2)
+	pcm2 := make([]float32, 1024*2)
+	for i := range pcm1 {
+		pcm1[i] = 0.5
+		pcm2[i] = 0.5
+	}
+
+	// Tick at position 0.0 (fully old source)
+	m.mu.Lock()
+	m.channels["cam1"].ringBuf.Push(pcm1)
+	m.channels["cam2"].ringBuf.Push(pcm2)
+	m.mu.Unlock()
+
+	frame1 := m.tick()
+	require.NotNil(t, frame1, "should produce output at position 0.0")
+
+	// Advance position to 0.5
+	m.OnTransitionPosition(0.5)
+
+	m.mu.Lock()
+	m.channels["cam1"].ringBuf.Push(pcm1)
+	m.channels["cam2"].ringBuf.Push(pcm2)
+	m.mu.Unlock()
+
+	frame2 := m.tick()
+	require.NotNil(t, frame2, "should produce output at position 0.5")
+
+	// At 50% equal-power crossfade, both sources contribute ~0.707 * 0.5 = 0.354 each
+	// Sum ~= 0.707. Verify non-zero output.
+	lastPCM := enc.getLastInput()
+	require.NotNil(t, lastPCM)
+	assert.Greater(t, lastPCM[0], float32(0), "blended output should be non-zero")
+
+	// Advance position to 1.0
+	m.OnTransitionPosition(1.0)
+
+	m.mu.Lock()
+	m.channels["cam1"].ringBuf.Push(pcm1)
+	m.channels["cam2"].ringBuf.Push(pcm2)
+	m.mu.Unlock()
+
+	frame3 := m.tick()
+	require.NotNil(t, frame3, "should produce output at position 1.0")
+
+	// Complete the transition
+	m.OnTransitionComplete()
+
+	m.mu.RLock()
+	assert.False(t, m.transCrossfadeActive, "should not be active after complete")
+	m.mu.RUnlock()
+
+	// Verify encoder was called (1 priming + 3 ticks)
+	assert.Equal(t, 4, enc.getCalls())
+}
+
+func TestClockDrivenMixer_CutCrossfade_GainProgression(t *testing.T) {
+	t.Parallel()
+	// This test verifies that cut crossfade position progresses correctly:
+	// Tick 1: position starts at 0.0, audio pos at 0.0
+	// After tick 1: position advances to 0.5
+	// Tick 2: position at 0.5, audio pos at 0.5 from previous tick
+	// After tick 2: position advances to 1.0, crossfade completes
+
+	m, _ := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+	m.SetActive("cam2", true)
+
+	// Pre-fill ring buffers
+	for i := 0; i < 4; i++ {
+		pcm := make([]float32, 1024*2)
+		for j := range pcm {
+			pcm[j] = 0.5
+		}
+		m.mu.Lock()
+		m.channels["cam1"].ringBuf.Push(pcm)
+		m.channels["cam2"].ringBuf.Push(pcm)
+		m.mu.Unlock()
+	}
+
+	m.OnCut("cam1", "cam2")
+
+	// Track positions across ticks
+	type posSnapshot struct {
+		active    bool
+		pos       float64
+		audioPos  float64
+		remaining int
+	}
+
+	var snapshots []posSnapshot
+
+	// Tick 1
+	m.tick()
+	m.mu.RLock()
+	snapshots = append(snapshots, posSnapshot{
+		active:    m.transCrossfadeActive,
+		pos:       m.transCrossfadePosition,
+		audioPos:  m.transCrossfadeAudioPos,
+		remaining: m.cutFramesRemaining,
+	})
+	m.mu.RUnlock()
+
+	// Tick 2
+	m.tick()
+	m.mu.RLock()
+	snapshots = append(snapshots, posSnapshot{
+		active:    m.transCrossfadeActive,
+		pos:       m.transCrossfadePosition,
+		audioPos:  m.transCrossfadeAudioPos,
+		remaining: m.cutFramesRemaining,
+	})
+	m.mu.RUnlock()
+
+	// After tick 1: position should be 0.5, 1 frame remaining
+	assert.True(t, snapshots[0].active, "should still be active after tick 1")
+	assert.InDelta(t, 0.5, snapshots[0].pos, 0.01, "position should be 0.5 after tick 1")
+	assert.Equal(t, 1, snapshots[0].remaining, "should have 1 frame remaining after tick 1")
+
+	// After tick 2: crossfade should be complete (position cleared to 0.0)
+	assert.False(t, snapshots[1].active, "should be complete after tick 2")
+	assert.Equal(t, 0, snapshots[1].remaining, "no frames remaining after tick 2")
+}
+
+func TestClockDrivenMixer_OnTransitionAbort(t *testing.T) {
+	t.Parallel()
+	m, _ := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+	m.OnTransitionPosition(0.5)
+
+	m.mu.RLock()
+	assert.True(t, m.transCrossfadeActive)
+	m.mu.RUnlock()
+
+	m.OnTransitionAbort()
+
+	m.mu.RLock()
+	assert.False(t, m.transCrossfadeActive, "should be inactive after abort")
+	assert.Equal(t, "", m.transCrossfadeFrom, "from should be cleared after abort")
+	assert.Equal(t, "", m.transCrossfadeTo, "to should be cleared after abort")
+	assert.InDelta(t, 0.0, m.transCrossfadePosition, 0.001, "position should be reset after abort")
+	m.mu.RUnlock()
+}
+
+func TestClockDrivenMixer_CutDoesNotSetCutFramesForTransitions(t *testing.T) {
+	t.Parallel()
+	// Verify that OnTransitionStart does NOT set cutFramesRemaining
+	// (only OnCut should set it).
+	m, _ := newTickTestMixer(t)
+
+	m.AddChannel("cam1")
+	m.AddChannel("cam2")
+	m.SetActive("cam1", true)
+
+	m.OnTransitionStart("cam1", "cam2", Crossfade, 1000)
+
+	m.mu.RLock()
+	assert.Equal(t, 0, m.cutFramesRemaining, "transitions should not set cutFramesRemaining")
+	assert.Equal(t, 0, m.cutTotalFrames, "transitions should not set cutTotalFrames")
+	m.mu.RUnlock()
+}

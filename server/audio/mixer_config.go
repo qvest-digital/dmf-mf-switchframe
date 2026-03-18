@@ -61,7 +61,6 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 		"frames_mixed":           m.framesMixed.Load(),
 		"frames_output_total":    m.outputFrameCount.Load(),
 		"crossfade_count":        m.crossfadeCount.Load(),
-		"crossfade_timeouts":     m.crossfadeTimeouts.Load(),
 		"trans_crossfade_active": transCrossfadeActive,
 		"trans_crossfade_pos":    transCrossfadePos,
 		"trans_crossfade_from":   transCrossfadeFrom,

@@ -1,16 +1,14 @@
 package audio
 
 import (
-	"time"
-
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 )
 
 // IngestFrame processes an AAC audio frame from a source. Decodes to PCM,
-// applies the per-channel processing chain (trim → EQ → compressor), and
+// applies the per-channel processing chain (trim -> EQ -> compressor), and
 // pushes the processed result into the channel's ring buffer for clock-driven
-// output. No immediate output is produced — the outputTicker reads from ring
+// output. No immediate output is produced -- the outputTicker reads from ring
 // buffers at a fixed cadence.
 func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Apply per-source audio delay for lip-sync correction.
@@ -26,34 +24,6 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		m.mu.RUnlock()
 	}
 
-	// Check for active crossfade — participants still route through the legacy
-	// crossfade path (Task 4 will move this into the ticker).
-	m.mu.RLock()
-	crossfadeActive := m.crossfadeActive
-	crossfadeFrom := m.crossfadeFrom
-	crossfadeTo := m.crossfadeTo
-	crossfadeDeadline := m.crossfadeDeadline
-	m.mu.RUnlock()
-
-	isParticipant := sourceKey == crossfadeFrom || sourceKey == crossfadeTo
-
-	// Cancel expired crossfade if a non-participant source triggers it
-	if crossfadeActive && !isParticipant && !crossfadeDeadline.IsZero() && time.Now().After(crossfadeDeadline) {
-		m.mu.Lock()
-		if m.crossfadeActive {
-			m.crossfadeActive = false
-			m.crossfadePCM = nil
-		}
-		m.mu.Unlock()
-		crossfadeActive = false
-	}
-
-	// Handle crossfade mode (participants route here; timeout handled inside)
-	if crossfadeActive && isParticipant {
-		m.ingestCrossfadeFrame(sourceKey, frame)
-		return
-	}
-
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -62,17 +32,17 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		return
 	}
 
-	// Always decode AAC → PCM (no passthrough in clock-driven mixer)
+	// Always decode AAC -> PCM (no passthrough in clock-driven mixer)
 	m.initChannelDecoder(ch)
 	if ch.decoder == nil {
 		m.mu.Unlock()
 		return
 	}
 
-	// Ensure ADTS header is present — FDK decoder requires ADTS framing.
+	// Ensure ADTS header is present -- FDK decoder requires ADTS framing.
 	adtsFrame := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 
-	// Decode AAC → float32 PCM
+	// Decode AAC -> float32 PCM
 	pcm, err := ch.decoder.Decode(adtsFrame)
 	if err != nil {
 		m.decodeErrors.Add(1)
@@ -84,7 +54,7 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Resample if source rate doesn't match mixer rate.
 	pcm = m.resampleIfNeeded(ch, pcm, frame.SampleRate)
 
-	// For inactive/muted channels, do metering only — don't push to ring buffer.
+	// For inactive/muted channels, do metering only -- don't push to ring buffer.
 	if !ch.active || ch.muted {
 		ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 		m.mu.Unlock()
@@ -126,42 +96,15 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 }
 
 // IngestPCM processes raw interleaved float32 PCM from a source (e.g. MXL).
-// Unlike IngestFrame, this skips ADTS parsing and AAC decoding — the PCM is
+// Unlike IngestFrame, this skips ADTS parsing and AAC decoding -- the PCM is
 // already in float32 format. Applies the per-channel processing chain
-// (trim → EQ → compressor) and pushes into the channel's ring buffer.
+// (trim -> EQ -> compressor) and pushes into the channel's ring buffer.
 //
 // PCM input is interleaved float32 (e.g. 1024 samples * 2 channels = 2048 values for stereo).
 // The pts parameter is the presentation timestamp in 90 kHz clock units.
 // The channels parameter is the source's actual channel count (1=mono, 2=stereo).
 // If channels < mixer's numChannels, mono samples are upmixed to stereo.
 func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
-	// Check for active crossfade before acquiring the write lock.
-	m.mu.RLock()
-	crossfadeActive := m.crossfadeActive
-	crossfadeFrom := m.crossfadeFrom
-	crossfadeTo := m.crossfadeTo
-	crossfadeDeadline := m.crossfadeDeadline
-	m.mu.RUnlock()
-
-	isParticipant := sourceKey == crossfadeFrom || sourceKey == crossfadeTo
-
-	// Cancel expired crossfade if a non-participant source triggers it
-	if crossfadeActive && !isParticipant && !crossfadeDeadline.IsZero() && time.Now().After(crossfadeDeadline) {
-		m.mu.Lock()
-		if m.crossfadeActive {
-			m.crossfadeActive = false
-			m.crossfadePCM = nil
-		}
-		m.mu.Unlock()
-		crossfadeActive = false
-	}
-
-	// Handle crossfade mode (participants route here; timeout handled inside)
-	if crossfadeActive && isParticipant {
-		m.ingestCrossfadePCM(sourceKey, pcm, pts, channels)
-		return
-	}
-
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
@@ -170,7 +113,7 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		return
 	}
 
-	// Mono→stereo upmix: if source delivers fewer channels than the mixer
+	// Mono->stereo upmix: if source delivers fewer channels than the mixer
 	// expects, duplicate each sample to fill all channels.
 	if channels > 0 && channels < m.numChannels {
 		pcm = m.upmixMono(ch, pcm, channels)

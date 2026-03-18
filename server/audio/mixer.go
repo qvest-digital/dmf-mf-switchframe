@@ -24,14 +24,6 @@ func growBuf(buf []float32, n int) []float32 {
 	return make([]float32, n)
 }
 
-// crossfadeTimeout is the maximum time to wait for both sources to deliver
-// frames during a crossfade. If the outgoing source disconnects, the crossfade
-// completes with only the incoming source's audio after this deadline.
-// 25ms is sufficient because PCM pre-buffering provides the outgoing source's
-// audio immediately — only the incoming source needs to deliver a frame
-// (one AAC frame is ~21.3ms).
-const crossfadeTimeout = 25 * time.Millisecond
-
 // Sentinel errors for the audio mixer.
 var (
 	ErrChannelNotFound = errors.New("audio: channel not found")
@@ -122,16 +114,8 @@ type Mixer struct {
 	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
 	lastDecodedPCM map[string][]float32
 
-	// Crossfade state: 2-frame (~42ms) equal-power crossfade on cut.
-	crossfadeFrom            string // outgoing source key
-	crossfadeTo              string // incoming source key
-	crossfadeActive          bool
-	crossfadePCM             map[string][]float32 // "from" and "to" PCM buffers
-	crossfadeDeadline        time.Time            // timeout for crossfade completion
-	crossfadeFramesRemaining int                  // frames left in multi-frame crossfade
-	crossfadeTotalFrames     int                  // total frames in crossfade (for position calc)
-
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
+	// Also used for cut crossfade (2-tick ramp driven by cutFramesRemaining).
 	transCrossfadeActive   bool
 	transCrossfadeFrom     string         // outgoing source key
 	transCrossfadeTo       string         // incoming source key
@@ -139,6 +123,11 @@ type Mixer struct {
 	transCrossfadeMode     TransitionMode // gain curve selection
 	transCrossfadeAudioPos float64        // position at end of last audio output (for smooth interpolation)
 	mixCycleTransPos       float64        // snapshotted transition position for current mix cycle
+
+	// Cut crossfade state: driven by tick() frame counter.
+	// When cutFramesRemaining > 0, tick() auto-advances transCrossfadePosition.
+	cutFramesRemaining int // >0 means cut crossfade in progress
+	cutTotalFrames     int // total frames in cut crossfade (usually 2)
 
 	// Stinger audio overlay (optional, active during stinger transitions)
 	stingerAudio    []float32 // interleaved PCM from stinger clip
@@ -172,8 +161,7 @@ type Mixer struct {
 	promMetrics *metrics.Metrics
 
 	// Reusable buffers for hot-path allocation elimination
-	mxlSinkBuf   []float32 // reused by MXL raw audio sink copy
-	crossfadeBuf []float32 // reused by ingestCrossfadeFrame crossfade output
+	mxlSinkBuf []float32 // reused by MXL raw audio sink copy
 
 	// Encode buffer: accumulates mixed PCM across cycles when resampling
 	// produces non-1024-sample chunks. Drained in 1024-sample frames.
@@ -185,8 +173,7 @@ type Mixer struct {
 	// Debug counters (atomic, no lock needed)
 	framesPassthrough atomic.Int64
 	framesMixed       atomic.Int64
-	crossfadeCount    atomic.Int64
-	crossfadeTimeouts atomic.Int64
+	crossfadeCount    atomic.Int64 // legacy counter kept for DebugSnapshot compatibility
 	decodeErrors      atomic.Int64
 	encodeErrors      atomic.Int64
 
@@ -340,10 +327,8 @@ func (m *Mixer) mixDeadlineTicker() {
 				if m.transCrossfadeActive {
 					// Re-snapshot the transition position at deadline time so
 					// the fill uses the latest video position, not the stale
-					// position from when the first source arrived. This prevents
-					// large gain jumps between consecutive mix cycles.
+					// position from when the first source arrived.
 					m.mixCycleTransPos = m.transCrossfadePosition
-					m.fillMissingTransitionSources()
 				}
 				outputFrame = m.collectMixCycleLocked()
 				m.deadlineFlushes.Add(1)
@@ -353,7 +338,7 @@ func (m *Mixer) mixDeadlineTicker() {
 			// are active channels (program source is set), produce silence.
 			// This handles the case where the program source has no audio
 			// track — the mixer would otherwise produce nothing indefinitely.
-			if outputFrame == nil && !m.crossfadeActive {
+			if outputFrame == nil {
 				lastNano := m.lastOutputNano.Load()
 				hasActive := false
 				for _, ch := range m.channels {

@@ -125,6 +125,25 @@ func (m *Mixer) tick() *media.AudioFrame {
 		m.transCrossfadeAudioPos = m.mixCycleTransPos
 	}
 
+	// Auto-advance cut crossfade position (driven by frame counter, not timer).
+	// This runs after the mix so the current tick used the position set above.
+	if m.cutFramesRemaining > 0 {
+		m.cutFramesRemaining--
+		frameIdx := m.cutTotalFrames - m.cutFramesRemaining
+		m.transCrossfadePosition = float64(frameIdx) / float64(m.cutTotalFrames)
+		if m.cutFramesRemaining <= 0 {
+			// Cut crossfade complete: clear all transition state.
+			m.transCrossfadeActive = false
+			m.transCrossfadeFrom = ""
+			m.transCrossfadeTo = ""
+			m.transCrossfadePosition = 0.0
+			m.transCrossfadeAudioPos = 0.0
+			m.mixCycleTransPos = 0.0
+			m.cutFramesRemaining = 0
+			m.cutTotalFrames = 0
+		}
+	}
+
 	// PTS
 	pts := m.advanceOutputPTS(0)
 
