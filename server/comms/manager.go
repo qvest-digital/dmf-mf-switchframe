@@ -49,23 +49,27 @@ func NewManager(onBroadcast func()) *Manager {
 // if the channel is at capacity.
 func (m *Manager) Join(operatorID, name string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	// Idempotent re-join.
 	if _, ok := m.participants[operatorID]; ok {
+		m.mu.Unlock()
 		return nil
 	}
 
 	if len(m.participants) >= MaxParticipants {
+		m.mu.Unlock()
 		return ErrCommsFull
 	}
 
 	p, err := newParticipant(operatorID, name)
 	if err != nil {
+		m.mu.Unlock()
 		return ErrOpusUnavailable
 	}
 
 	m.participants[operatorID] = p
+	m.mu.Unlock()
+
 	m.log.Info("operator joined comms", "operator", operatorID, "name", name)
 
 	if m.onBroadcast != nil {
