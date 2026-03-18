@@ -24,7 +24,8 @@ export interface CommsConfig {
 
 export class CommsAudioManager {
 	private config: CommsConfig;
-	private audioContext: AudioContext | null = null;
+	private captureCtx: AudioContext | null = null;
+	private playbackCtx: AudioContext | null = null;
 	private mediaStream: MediaStream | null = null;
 	private scriptProcessor: ScriptProcessorNode | null = null;
 	private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
@@ -81,7 +82,11 @@ export class CommsAudioManager {
 			await this.writer.write(helloMsg);
 
 			// Create AudioContext for capture and playback
-			this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+			// Separate contexts: capture context for mic processing,
+			// playback context for mix output. Keeps echo cancellation
+			// from treating our playback as echo to suppress.
+			this.captureCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+			this.playbackCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 			this.nextPlayTime = 0;
 
 			// Set up WebCodecs Opus encoder
@@ -167,7 +172,7 @@ export class CommsAudioManager {
 	 * Schedules playback via AudioContext.
 	 */
 	private onDecodedFrame(frame: AudioData): void {
-		if (!this.audioContext) {
+		if (!this.playbackCtx) {
 			frame.close();
 			return;
 		}
@@ -178,15 +183,15 @@ export class CommsAudioManager {
 		frame.close();
 
 		// Create AudioBuffer and schedule playback
-		const buffer = this.audioContext.createBuffer(1, samples, SAMPLE_RATE);
+		const buffer = this.playbackCtx.createBuffer(1, samples, SAMPLE_RATE);
 		buffer.getChannelData(0).set(float32);
 
-		const source = this.audioContext.createBufferSource();
+		const source = this.playbackCtx.createBufferSource();
 		source.buffer = buffer;
-		source.connect(this.audioContext.destination);
+		source.connect(this.playbackCtx.destination);
 
 		// Schedule seamlessly after previous buffer
-		const now = this.audioContext.currentTime;
+		const now = this.playbackCtx.currentTime;
 		if (this.nextPlayTime < now) {
 			this.nextPlayTime = now;
 		}
@@ -254,12 +259,12 @@ export class CommsAudioManager {
 	 * to the WebCodecs AudioEncoder in 20ms (960 sample) chunks.
 	 */
 	private captureLoop(): void {
-		if (!this.audioContext || !this.mediaStream) return;
+		if (!this.captureCtx || !this.mediaStream) return;
 
-		const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+		const source = this.captureCtx.createMediaStreamSource(this.mediaStream);
 
 		const bufferSize = 4096;
-		this.scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
+		this.scriptProcessor = this.captureCtx.createScriptProcessor(bufferSize, 1, 1);
 		this.sampleBuffer = new Float32Array(0);
 
 		let timestamp = 0;
@@ -295,7 +300,15 @@ export class CommsAudioManager {
 		};
 
 		source.connect(this.scriptProcessor);
-		this.scriptProcessor.connect(this.audioContext.destination);
+		// ScriptProcessorNode must be connected to destination to fire callbacks,
+		// but we don't want mic audio playing through speakers (causes echo
+		// cancellation artifacts). Route through a zero-gain node to silence it.
+		// ScriptProcessorNode must be connected to destination to fire callbacks,
+		// but we don't want mic audio playing through speakers. Zero-gain silencer.
+		const silencer = this.captureCtx.createGain();
+		silencer.gain.value = 0;
+		this.scriptProcessor.connect(silencer);
+		silencer.connect(this.captureCtx.destination);
 	}
 
 	/**
@@ -334,9 +347,14 @@ export class CommsAudioManager {
 			this.mediaStream = null;
 		}
 
-		if (this.audioContext) {
-			this.audioContext.close().catch(() => {});
-			this.audioContext = null;
+		if (this.captureCtx) {
+			this.captureCtx.close().catch(() => {});
+			this.captureCtx = null;
+		}
+
+		if (this.playbackCtx) {
+			this.playbackCtx.close().catch(() => {});
+			this.playbackCtx = null;
 		}
 
 		this.sampleBuffer = new Float32Array(0);
