@@ -1,15 +1,14 @@
 /**
  * CommsAudioManager — WebTransport bidirectional stream for operator comms audio.
  *
- * Captures microphone via getUserMedia, sends raw PCM over a WebTransport
- * bidirectional stream, and receives audio from other operators.
+ * Captures microphone via getUserMedia, encodes to Opus via WebCodecs
+ * AudioEncoder, sends over a WebTransport bidirectional stream, receives
+ * Opus from server's N-1 mix, decodes via WebCodecs AudioDecoder, and
+ * plays through AudioContext.
  *
  * Wire protocol: [1 byte type][2 bytes BE length][payload]
- *   - MSG_AUDIO (0x01): raw audio payload
- *   - MSG_CONTROL (0x02): control message payload
- *
- * NOTE: This initial version sends raw int16 PCM as a placeholder.
- * WASM Opus encode/decode will be integrated later (see TODO comments).
+ *   - MSG_AUDIO (0x01): Opus-encoded audio frame
+ *   - MSG_CONTROL (0x02): JSON control message
  */
 
 const MSG_AUDIO = 0x01;
@@ -33,13 +32,20 @@ export class CommsAudioManager {
 	private running = false;
 	private sampleBuffer: Float32Array = new Float32Array(0);
 
+	// WebCodecs Opus encoder/decoder
+	private encoder: AudioEncoder | null = null;
+	private decoder: AudioDecoder | null = null;
+
+	// Playback scheduling
+	private nextPlayTime = 0;
+
 	constructor(config: CommsConfig) {
 		this.config = config;
 	}
 
 	/**
 	 * Start comms audio: request microphone, open a bidirectional stream,
-	 * and begin capture + read loops.
+	 * set up Opus encode/decode, and begin capture + read loops.
 	 */
 	async start(transport: WebTransport): Promise<void> {
 		if (this.running) return;
@@ -74,8 +80,33 @@ export class CommsAudioManager {
 			helloMsg.set(helloBytes, 3);
 			await this.writer.write(helloMsg);
 
-			// Create AudioContext and start capture
+			// Create AudioContext for capture and playback
 			this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+			this.nextPlayTime = 0;
+
+			// Set up WebCodecs Opus encoder
+			this.encoder = new AudioEncoder({
+				output: (chunk) => this.onEncodedChunk(chunk),
+				error: (e) => this.config.onError?.(`Opus encode error: ${e.message}`),
+			});
+			this.encoder.configure({
+				codec: 'opus',
+				sampleRate: SAMPLE_RATE,
+				numberOfChannels: 1,
+				bitrate: 32000,
+			});
+
+			// Set up WebCodecs Opus decoder
+			this.decoder = new AudioDecoder({
+				output: (frame) => this.onDecodedFrame(frame),
+				error: (e) => this.config.onError?.(`Opus decode error: ${e.message}`),
+			});
+			this.decoder.configure({
+				codec: 'opus',
+				sampleRate: SAMPLE_RATE,
+				numberOfChannels: 1,
+			});
+
 			this.running = true;
 
 			this.captureLoop();
@@ -107,13 +138,69 @@ export class CommsAudioManager {
 	}
 
 	/**
+	 * Called by WebCodecs AudioEncoder when an Opus frame is ready.
+	 * Sends the encoded data over the WebTransport stream.
+	 */
+	private onEncodedChunk(chunk: EncodedAudioChunk): void {
+		if (!this.writer || !this.running) return;
+
+		const data = new Uint8Array(chunk.byteLength);
+		chunk.copyTo(data);
+
+		// Wire protocol: [type(1)][length BE(2)][payload]
+		const message = new Uint8Array(3 + data.length);
+		message[0] = MSG_AUDIO;
+		message[1] = (data.length >> 8) & 0xff;
+		message[2] = data.length & 0xff;
+		message.set(data, 3);
+
+		this.writer.write(message).catch((err) => {
+			if (this.running) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.config.onError?.(`Comms send error: ${msg}`);
+			}
+		});
+	}
+
+	/**
+	 * Called by WebCodecs AudioDecoder when a decoded audio frame is ready.
+	 * Schedules playback via AudioContext.
+	 */
+	private onDecodedFrame(frame: AudioData): void {
+		if (!this.audioContext) {
+			frame.close();
+			return;
+		}
+
+		const samples = frame.numberOfFrames;
+		const float32 = new Float32Array(samples);
+		frame.copyTo(float32, { planeIndex: 0 });
+		frame.close();
+
+		// Create AudioBuffer and schedule playback
+		const buffer = this.audioContext.createBuffer(1, samples, SAMPLE_RATE);
+		buffer.getChannelData(0).set(float32);
+
+		const source = this.audioContext.createBufferSource();
+		source.buffer = buffer;
+		source.connect(this.audioContext.destination);
+
+		// Schedule seamlessly after previous buffer
+		const now = this.audioContext.currentTime;
+		if (this.nextPlayTime < now) {
+			this.nextPlayTime = now;
+		}
+		source.start(this.nextPlayTime);
+		this.nextPlayTime += samples / SAMPLE_RATE;
+	}
+
+	/**
 	 * Read incoming messages from the bidirectional stream.
-	 * Parses the wire protocol and routes by message type.
+	 * Parses the wire protocol and feeds Opus data to the decoder.
 	 */
 	private async readLoop(): Promise<void> {
 		if (!this.reader) return;
 
-		// Accumulation buffer for partial reads
 		let buffer = new Uint8Array(0);
 
 		try {
@@ -134,19 +221,22 @@ export class CommsAudioManager {
 					const length = (buffer[1] << 8) | buffer[2];
 					const totalLength = 3 + length;
 
-					if (buffer.length < totalLength) {
-						// Wait for more data
-						break;
-					}
+					if (buffer.length < totalLength) break;
 
 					const payload = buffer.slice(3, totalLength);
 					buffer = buffer.slice(totalLength);
 
-					if (type === MSG_AUDIO) {
-						this.playAudio(payload);
+					if (type === MSG_AUDIO && this.decoder) {
+						// Feed Opus data to WebCodecs decoder
+						const chunk = new EncodedAudioChunk({
+							type: 'key', // Opus frames are independent
+							timestamp: 0, // decoder handles timing
+							data: payload,
+						});
+						this.decoder.decode(chunk);
 					} else if (type === MSG_CONTROL) {
 						// eslint-disable-next-line no-console
-						console.log('[comms] control message:', new TextDecoder().decode(payload));
+						console.log('[comms] control:', new TextDecoder().decode(payload));
 					}
 				}
 			}
@@ -160,22 +250,22 @@ export class CommsAudioManager {
 
 	/**
 	 * Set up the microphone capture pipeline.
-	 * Uses ScriptProcessorNode to collect PCM samples and send them
-	 * in FRAME_SIZE (960 sample / 20ms) chunks.
+	 * Uses ScriptProcessorNode to collect PCM samples and feed them
+	 * to the WebCodecs AudioEncoder in 20ms (960 sample) chunks.
 	 */
 	private captureLoop(): void {
 		if (!this.audioContext || !this.mediaStream) return;
 
 		const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-		// ScriptProcessorNode is deprecated but universally supported.
-		// Will be replaced by AudioWorklet when WASM Opus codec is integrated.
 		const bufferSize = 4096;
 		this.scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 		this.sampleBuffer = new Float32Array(0);
 
+		let timestamp = 0;
+
 		this.scriptProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
-			if (!this.running) return;
+			if (!this.running || !this.encoder) return;
 
 			const input = event.inputBuffer.getChannelData(0);
 
@@ -185,78 +275,27 @@ export class CommsAudioManager {
 			newBuffer.set(input, this.sampleBuffer.length);
 			this.sampleBuffer = newBuffer;
 
-			// Send complete frames
+			// Feed complete 20ms frames to the Opus encoder
 			while (this.sampleBuffer.length >= FRAME_SIZE) {
 				const frame = this.sampleBuffer.slice(0, FRAME_SIZE);
 				this.sampleBuffer = this.sampleBuffer.slice(FRAME_SIZE);
-				this.sendAudio(frame);
+
+				const audioData = new AudioData({
+					format: 'f32',
+					sampleRate: SAMPLE_RATE,
+					numberOfFrames: FRAME_SIZE,
+					numberOfChannels: 1,
+					timestamp: timestamp,
+					data: frame,
+				});
+				this.encoder.encode(audioData);
+				audioData.close();
+				timestamp += (FRAME_SIZE / SAMPLE_RATE) * 1_000_000; // microseconds
 			}
 		};
 
 		source.connect(this.scriptProcessor);
 		this.scriptProcessor.connect(this.audioContext.destination);
-	}
-
-	/**
-	 * Convert float32 PCM to int16 and send over the wire.
-	 * Wire format: [0x01, lenHi, lenLo, ...int16 PCM bytes]
-	 *
-	 * TODO: Replace raw PCM with WASM Opus encode when codec is integrated.
-	 */
-	private sendAudio(pcm: Float32Array): void {
-		if (!this.writer || !this.running) return;
-
-		// Convert float32 [-1.0, 1.0] to int16 [-32768, 32767]
-		const int16 = new Int16Array(pcm.length);
-		for (let i = 0; i < pcm.length; i++) {
-			const s = Math.max(-1, Math.min(1, pcm[i]));
-			int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-		}
-
-		const payload = new Uint8Array(int16.buffer);
-		const payloadLength = payload.length;
-
-		// Wire protocol: [type(1)][length BE(2)][payload]
-		const message = new Uint8Array(3 + payloadLength);
-		message[0] = MSG_AUDIO;
-		message[1] = (payloadLength >> 8) & 0xff;
-		message[2] = payloadLength & 0xff;
-		message.set(payload, 3);
-
-		this.writer.write(message).catch((err) => {
-			if (this.running) {
-				const msg = err instanceof Error ? err.message : String(err);
-				this.config.onError?.(`Comms send error: ${msg}`);
-			}
-		});
-	}
-
-	/**
-	 * Play received audio data. Currently receives raw int16 PCM from the
-	 * server's N-1 mix. Converts to float32 and plays via AudioContext.
-	 *
-	 * When Opus WASM is integrated, this will decode Opus frames instead.
-	 */
-	private playAudio(data: Uint8Array): void {
-		if (!this.audioContext || data.length < 2) return;
-
-		// Convert little-endian int16 bytes to float32 [-1.0, 1.0]
-		const sampleCount = Math.floor(data.length / 2);
-		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-		const float32 = new Float32Array(sampleCount);
-		for (let i = 0; i < sampleCount; i++) {
-			const s = view.getInt16(i * 2, true); // little-endian
-			float32[i] = s / 32768;
-		}
-
-		// Create an AudioBuffer and schedule playback
-		const buffer = this.audioContext.createBuffer(1, sampleCount, SAMPLE_RATE);
-		buffer.getChannelData(0).set(float32);
-
-		const source = this.audioContext.createBufferSource();
-		source.buffer = buffer;
-		source.connect(this.audioContext.destination);
-		source.start();
 	}
 
 	/**
@@ -266,6 +305,16 @@ export class CommsAudioManager {
 		if (this.scriptProcessor) {
 			this.scriptProcessor.disconnect();
 			this.scriptProcessor = null;
+		}
+
+		if (this.encoder) {
+			try { this.encoder.close(); } catch { /* ignore */ }
+			this.encoder = null;
+		}
+
+		if (this.decoder) {
+			try { this.decoder.close(); } catch { /* ignore */ }
+			this.decoder = null;
 		}
 
 		if (this.writer) {

@@ -215,18 +215,20 @@ func (m *Manager) mixLoop(ctx context.Context) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 
+	encodeBuf := make([]byte, 4096)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			m.mixTick()
+			m.mixTick(encodeBuf)
 		}
 	}
 }
 
-// mixTick performs one mix cycle: collect PCM, mix N-1, distribute.
-func (m *Manager) mixTick() {
+// mixTick performs one mix cycle: collect PCM, mix N-1, Opus encode, distribute.
+func (m *Manager) mixTick(encodeBuf []byte) {
 	m.mu.Lock()
 
 	// Skip if fewer than 2 participants.
@@ -253,16 +255,18 @@ func (m *Manager) mixTick() {
 
 	speakingChanged := false
 
-	// For each participant, produce their N-1 mix and send as raw PCM.
+	// For each participant, produce their N-1 mix, Opus encode, and send.
 	for id, p := range participants {
 		mix := m.mixer.mixFor(id, inputs)
 
-		// Convert int16 PCM to little-endian bytes (matching browser Int16Array).
-		packet := make([]byte, len(mix)*2)
-		for i, s := range mix {
-			packet[2*i] = byte(s)
-			packet[2*i+1] = byte(s >> 8)
+		// Encode the mix to Opus using this participant's encoder.
+		n, err := p.encoder.Encode(mix, FrameSize, encodeBuf)
+		if err != nil {
+			m.log.Warn("failed to encode mix", "operator", id, "err", err)
+			continue
 		}
+		packet := make([]byte, n)
+		copy(packet, encodeBuf[:n])
 
 		// Non-blocking send — drop if channel full or participant closed.
 		p.trySend(packet)

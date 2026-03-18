@@ -134,8 +134,7 @@ func (a *App) handleCommsStream(operatorID string, readable io.Reader, writable 
 
 		switch msgType {
 		case commsMsgAudio:
-			// Browser sends raw int16 PCM until Opus WASM is integrated.
-			if err := a.commsMgr.IngestRawPCM(operatorID, payload); err != nil {
+			if err := a.commsMgr.IngestAudio(operatorID, payload); err != nil {
 				log.Debug("comms audio ingest error", "err", err)
 			}
 
