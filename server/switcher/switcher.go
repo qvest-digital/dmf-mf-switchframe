@@ -2921,10 +2921,22 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 
 	s.routeToPipeline.Add(1)
 
-	// Seed audio PTS epoch from first program video frame.
-	if !s.firstVideoPTSSeeded && s.onFirstVideoPTS != nil {
+	// Seed BOTH audio and video PTS epochs from first program video frame.
+	// Both must seed at the same moment with the same PTS to stay aligned.
+	if !s.firstVideoPTSSeeded {
 		s.firstVideoPTSSeeded = true
-		s.onFirstVideoPTS(pf.PTS)
+		now := time.Now()
+		// Seed video epoch directly (same moment as audio).
+		if s.wallClockVideoEnabled && !s.videoPTSInited {
+			s.videoPTSStart = pf.PTS
+			s.videoPTSEpoch = now
+			s.videoPTS = pf.PTS
+			s.videoPTSInited = true
+		}
+		// Seed audio epoch via callback.
+		if s.onFirstVideoPTS != nil {
+			s.onFirstVideoPTS(pf.PTS)
+		}
 	}
 
 	// Enqueue as yuvFrame — the processing loop handles key→compositor→encode→broadcast.

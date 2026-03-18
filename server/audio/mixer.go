@@ -151,10 +151,11 @@ type Mixer struct {
 	// Wall-clock-based output PTS: seeded from video pipeline's first frame
 	// PTS + wall time (SeedPTSFromVideo), then tracks elapsed wall clock.
 	// Both video and audio use wall clock, so they stay aligned during gaps.
-	outputPTS       int64
-	outputPTSInited bool
-	outputPTSStart  int64     // source PTS at epoch
-	outputPTSEpoch  time.Time // wall-clock time at epoch
+	outputPTS         int64
+	outputPTSInited   bool
+	outputPTSStart    int64     // source PTS at epoch
+	outputPTSEpoch    time.Time // wall-clock time at epoch
+	videoSeedExpected bool      // true when wall-clock mode expects SeedPTSFromVideo
 
 	// Program bus limiter (always active)
 	limiter *Limiter
@@ -402,11 +403,18 @@ func (m *Mixer) frameDuration90k() int64 {
 	return int64(1024) * 90000 / int64(m.sampleRate)
 }
 
+// ExpectVideoSeed tells the mixer to wait for SeedPTSFromVideo before
+// self-seeding from audio input. Without this, the mixer seeds from the
+// first IngestPCM call which may use a different PTS timeline.
+func (m *Mixer) ExpectVideoSeed() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoSeedExpected = true
+}
+
 // SeedPTSFromVideo sets the audio PTS epoch from the video pipeline's first
 // frame. Called by the switcher when the first program video frame is
 // processed, ensuring audio and video PTS share the same starting point.
-// Without this, the audio epoch would start ~500ms late (FFmpeg produces
-// the first video frame before the first audio frame during probe).
 // Thread-safe — can be called from any goroutine.
 func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
 	m.mu.Lock()
@@ -427,7 +435,15 @@ func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 	now := time.Now()
 	if !m.outputPTSInited {
+		if m.videoSeedExpected {
+			// Wall-clock mode: wait for SeedPTSFromVideo to align epoch.
+			// Use temp counter until seed arrives (overridden by seed).
+			m.outputPTS += m.frameDuration90k()
+			m.outputPTS &= 0x1FFFFFFFF
+			return m.outputPTS
+		}
 		if inputPTS > 0 {
+			// Legacy mode (no video seed): self-seed from first audio PTS.
 			m.outputPTSStart = inputPTS
 			m.outputPTSEpoch = now
 			m.outputPTS = inputPTS

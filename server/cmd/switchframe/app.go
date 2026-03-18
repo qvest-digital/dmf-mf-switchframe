@@ -339,6 +339,7 @@ func (a *App) initCoreEngine() error {
 		a.mixer.IngestFrame(sourceKey, frame)
 	})
 	a.sw.SetMixer(a.mixer)
+	a.mixer.ExpectVideoSeed()
 	a.sw.SetOnFirstVideoPTS(func(pts int64) {
 		a.mixer.SeedPTSFromVideo(pts)
 	})
