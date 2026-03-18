@@ -34,7 +34,7 @@
 
 	async function handleJoin() {
 		if (!operatorId || !operatorName) {
-			notify('Register as an operator first to use comms', 'error');
+			notify('error', 'Register as an operator first to use comms');
 			return;
 		}
 		joining = true;
@@ -43,16 +43,18 @@
 
 			// Start audio after REST join succeeds
 			const transport = getTransport?.();
-			if (transport) {
+			if (!transport) {
+				notify('warning', 'Comms joined (no WebTransport — audio unavailable)');
+			} else {
 				audioManager = new CommsAudioManager({
 					operatorId,
 					operatorName,
-					onError: (msg) => notify(msg, 'error'),
+					onError: (msg) => notify('error', msg),
 				});
 				await audioManager.start(transport);
 			}
 		} catch (e) {
-			notify(`Failed to join comms: ${e}`, 'error');
+			notify('error', `Failed to join comms: ${e}`);
 		} finally {
 			joining = false;
 		}
