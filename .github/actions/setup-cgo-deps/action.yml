@@ -9,8 +9,8 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev pkg-config
+        sudo apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev libopus-dev pkg-config
     - name: Install cgo deps (macOS)
       if: runner.os == 'macOS'
       shell: bash
-      run: brew install ffmpeg fdk-aac pkg-config
+      run: brew install ffmpeg fdk-aac opus pkg-config
