@@ -255,11 +255,17 @@ type Switcher struct {
 	frameSyncActive bool
 
 	// Callback to seed audio PTS epoch from first program video frame.
-	// Called once — sets the mixer's wall-clock PTS to the same starting
-	// point as the video pipeline, eliminating A/V offset from FFmpeg's
-	// delayed audio decoder warmup.
 	onFirstVideoPTS     func(pts int64)
 	firstVideoPTSSeeded bool
+
+	// Wall-clock video PTS: rewrites program relay video PTS to match the
+	// mixer's wall-clock audio PTS, keeping A/V aligned after source cuts.
+	// Seeded from the first program video frame (same as audio seed).
+	// Enabled via EnableWallClockVideoPTS() — off by default for backward compat.
+	videoPTSStart      int64
+	videoPTSEpoch      time.Time
+	videoPTSInited     bool
+	wallClockVideoEnabled bool
 
 	// DSK graphics compositor — applies overlay in YUV420 domain.
 	compositorRef *graphics.Compositor
@@ -1151,13 +1157,42 @@ func (s *Switcher) measureTransSeam() {
 	s.log.Info("transition seam measured", "gap_ms", float64(gap)/1e6)
 }
 
+// EnableWallClockVideoPTS enables wall-clock PTS rewriting on the program
+// relay. When enabled, video PTS is rewritten to match the mixer's
+// wall-clock audio PTS, keeping A/V aligned after source cuts.
+func (s *Switcher) EnableWallClockVideoPTS() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.wallClockVideoEnabled = true
+}
+
+// wallClockVideoPTS returns a PTS based on wall-clock elapsed time from
+// the first program video frame. Matches the mixer's wall-clock audio PTS
+// so both use the same timeline. After source cuts, source PTS jumps but
+// wall-clock PTS continues monotonically, keeping A/V aligned.
+func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
+	if !s.wallClockVideoEnabled {
+		return sourcePTS
+	}
+	now := time.Now()
+	if !s.videoPTSInited {
+		s.videoPTSStart = sourcePTS
+		s.videoPTSEpoch = now
+		s.videoPTSInited = true
+		return sourcePTS
+	}
+	elapsed := now.Sub(s.videoPTSEpoch)
+	pts := s.videoPTSStart + int64(elapsed.Seconds()*90000)
+	return pts & 0x1FFFFFFFF // 33-bit MPEG-TS mask
+}
+
 // broadcastToProgram sends a video frame to the program relay with a
-// monotonically increasing GroupID. Uses a shallow struct copy to avoid
-// mutating the caller's frame (which may be shared with other viewers).
-// Uses atomic operations for programGroupID so it can be called while
-// s.mu is held.
+// monotonically increasing GroupID. When wall-clock video PTS is enabled,
+// rewrites PTS to stay aligned with the mixer's wall-clock audio PTS.
 func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	f := *frame // shallow struct copy — avoids mutating shared frame
+	f.PTS = s.wallClockVideoPTS(f.PTS)
+	f.DTS = f.PTS
 	if f.IsKeyframe {
 		f.GroupID = s.programGroupID.Add(1)
 	} else {
@@ -1172,9 +1207,11 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
-// program relay with a monotonically increasing GroupID. Use for frames
-// from pipelineCodecs.encode() or GOP replay deep copies.
+// program relay with a monotonically increasing GroupID. Rewrites PTS
+// to wall-clock time.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
+	frame.PTS = s.wallClockVideoPTS(frame.PTS)
+	frame.DTS = frame.PTS
 	if frame.IsKeyframe {
 		frame.GroupID = s.programGroupID.Add(1)
 	} else {

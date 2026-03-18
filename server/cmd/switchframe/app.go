@@ -342,6 +342,7 @@ func (a *App) initCoreEngine() error {
 	a.sw.SetOnFirstVideoPTS(func(pts int64) {
 		a.mixer.SeedPTSFromVideo(pts)
 	})
+	a.sw.EnableWallClockVideoPTS()
 
 	// Configure transition engine with auto-detected video codec.
 	a.sw.SetTransitionConfig(switcher.TransitionConfig{
