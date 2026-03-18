@@ -27,6 +27,25 @@ func (m *Mixer) collectMixCycleLocked() *media.AudioFrame {
 		return nil
 	}
 
+	// Diagnostic logging during transition crossfade
+	if m.transCrossfadeActive {
+		sources := make([]string, 0, len(m.mixBuffer))
+		lengths := make([]int, 0, len(m.mixBuffer))
+		for k, v := range m.mixBuffer {
+			sources = append(sources, k)
+			lengths = append(lengths, len(v))
+		}
+		m.log.Info("mix-cycle-diag",
+			"sources", sources,
+			"pcm_lengths", lengths,
+			"encodeBuf_len", len(m.encodeBuf),
+			"trans_pos", m.mixCycleTransPos,
+			"audio_pos", m.transCrossfadeAudioPos,
+			"from", m.transCrossfadeFrom,
+			"to", m.transCrossfadeTo,
+		)
+	}
+
 	mixStart := time.Now().UnixNano()
 
 	// Sum all channel PCM buffers using reusable accumulator

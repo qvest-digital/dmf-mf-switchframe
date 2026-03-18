@@ -102,6 +102,13 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	_ = m.ensureEncoder()
 
 	m.recalcPassthrough()
+
+	m.log.Info("trans-audio-start",
+		"from", oldSource,
+		"to", newSource,
+		"mode", mode,
+		"encodeBuf_flushed", len(m.encodeBuf) == 0,
+	)
 }
 
 // OnTransitionPosition updates the crossfade position (0.0 = fully old, 1.0 = fully new).
@@ -175,6 +182,12 @@ func (m *Mixer) fillMissingTransitionSources() {
 // Called by the switcher when the video transition finishes.
 func (m *Mixer) OnTransitionComplete() {
 	m.mu.Lock()
+	m.log.Info("trans-audio-complete",
+		"from", m.transCrossfadeFrom,
+		"to", m.transCrossfadeTo,
+		"final_pos", m.transCrossfadePosition,
+		"encodeBuf_residual", len(m.encodeBuf),
+	)
 	// Flush any pending mix cycle before switching modes.
 	// Without this, partially-accumulated frames are abandoned when
 	// passthrough re-enables, causing an audible gap at the boundary.

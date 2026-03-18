@@ -336,11 +336,17 @@ func (m *Mixer) mixDeadlineTicker() {
 			m.mu.Lock()
 			var outputFrame *media.AudioFrame
 			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
-				// During transition crossfade, fill missing participants from
-				// their last decoded PCM so the output always contains both
-				// sources blended together. Without this, deadline flushes
-				// output only one source, causing gain-pumping "blip" artifacts.
 				if m.transCrossfadeActive {
+					sources := make([]string, 0, len(m.mixBuffer))
+					for k := range m.mixBuffer {
+						sources = append(sources, k)
+					}
+					m.log.Warn("trans-deadline-flush",
+						"mix_buffer_sources", sources,
+						"from", m.transCrossfadeFrom,
+						"to", m.transCrossfadeTo,
+						"trans_pos", m.transCrossfadePosition,
+					)
 					m.fillMissingTransitionSources()
 				}
 				outputFrame = m.collectMixCycleLocked()
