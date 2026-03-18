@@ -18,6 +18,16 @@ export interface KeyboardActions {
 	layoutTogglePIP?: () => void;
 	clipPlayerToggle?: (playerID: number) => void;
 	clipPlayerStop?: (playerID: number) => void;
+	replayQuickPreset?: (index: number) => void;
+	replayMarkIn?: () => void;
+	replayMarkOut?: () => void;
+	replayPlayPause?: () => void;
+	replayStop?: () => void;
+	replaySpeedDown?: () => void;
+	replaySpeedUp?: () => void;
+	replayFrameBack?: () => void;
+	replayFrameForward?: () => void;
+	isReplayTabActive?: () => boolean;
 	getSourceKeys: () => string[];
 }
 
@@ -106,6 +116,17 @@ export class KeyboardHandler {
 		// Ignore when modifier keys are held (avoid conflicts with browser shortcuts)
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+		// Shift+1/2/3: Quick replay presets.
+		if (e.shiftKey) {
+			const replayMatch = e.code.match(/^Digit([1-3])$/);
+			if (replayMatch && this.actions.replayQuickPreset) {
+				e.preventDefault();
+				e.stopPropagation();
+				this.actions.replayQuickPreset(parseInt(replayMatch[1]) - 1);
+				return;
+			}
+		}
+
 		// Shift+letter shortcuts for SCTE-35 operations
 		if (e.shiftKey) {
 			switch (e.code) {
@@ -145,6 +166,41 @@ export class KeyboardHandler {
 					this.actions.clipPlayerToggle?.(playerID);
 				}
 				return;
+			}
+		}
+
+		// Replay shortcuts (only when replay tab is active).
+		if (this.actions.isReplayTabActive?.()) {
+			if (!e.shiftKey) {
+				switch (e.code) {
+					case 'KeyI':
+						if (this.actions.replayMarkIn) { e.preventDefault(); e.stopPropagation(); this.actions.replayMarkIn(); return; }
+						break;
+					case 'KeyO':
+						if (this.actions.replayMarkOut) { e.preventDefault(); e.stopPropagation(); this.actions.replayMarkOut(); return; }
+						break;
+					case 'Space':
+						if (this.actions.replayPlayPause) { e.preventDefault(); e.stopPropagation(); this.actions.replayPlayPause(); return; }
+						break;
+					case 'Escape':
+						if (this.actions.replayStop) { e.preventDefault(); e.stopPropagation(); this.actions.replayStop(); return; }
+						break;
+					case 'KeyJ':
+						if (this.actions.replaySpeedDown) { e.preventDefault(); e.stopPropagation(); this.actions.replaySpeedDown(); return; }
+						break;
+					case 'KeyK':
+						if (this.actions.replayPlayPause) { e.preventDefault(); e.stopPropagation(); this.actions.replayPlayPause(); return; }
+						break;
+					case 'KeyL':
+						if (this.actions.replaySpeedUp) { e.preventDefault(); e.stopPropagation(); this.actions.replaySpeedUp(); return; }
+						break;
+					case 'ArrowLeft':
+						if (this.actions.replayFrameBack) { e.preventDefault(); e.stopPropagation(); this.actions.replayFrameBack(); return; }
+						break;
+					case 'ArrowRight':
+						if (this.actions.replayFrameForward) { e.preventDefault(); e.stopPropagation(); this.actions.replayFrameForward(); return; }
+						break;
+				}
 			}
 		}
 
