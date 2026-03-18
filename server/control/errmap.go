@@ -6,6 +6,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
@@ -126,6 +127,11 @@ var errorMappings = []errorMapping{
 	{clip.ErrOddDimensions, http.StatusBadRequest},
 	{clip.ErrNoVideo, http.StatusBadRequest},
 	{srt.ErrInvalidConfig, http.StatusBadRequest},
+
+	// Comms
+	{comms.ErrNotInComms, http.StatusNotFound},
+	{comms.ErrCommsFull, http.StatusConflict},
+	{comms.ErrOpusUnavailable, http.StatusServiceUnavailable},
 }
 
 // errorStatus maps a sentinel error to an HTTP status code.

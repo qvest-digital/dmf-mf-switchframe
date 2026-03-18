@@ -25,12 +25,44 @@
 		apiCall(commsMute(operatorId, !isMuted), 'Comms mute');
 	}
 
+	let joining = $state(false);
+
+	async function handleJoin() {
+		if (!operatorId || !operatorName) {
+			notify('Register as an operator first to use comms', 'error');
+			return;
+		}
+		joining = true;
+		try {
+			await commsJoin(operatorId, operatorName);
+		} catch (e) {
+			notify(`Failed to join comms: ${e}`, 'error');
+		} finally {
+			joining = false;
+		}
+	}
+
 	function handleLeave() {
 		apiCall(commsLeave(operatorId), 'Leave comms');
 	}
 </script>
 
-{#if visible && isJoined}
+{#if visible && !isJoined}
+	<div class="comms-bar comms-join-bar">
+		<span class="comms-label">COMMS</span>
+		<button
+			class="comms-btn join-btn"
+			onclick={handleJoin}
+			disabled={joining || !operatorId}
+			title={!operatorId ? 'Register as an operator first' : 'Join voice comms'}
+		>
+			{joining ? 'JOINING...' : 'JOIN'}
+		</button>
+		<span class="join-hint">
+			{!operatorId ? 'Register as an operator to use comms' : 'Click to join operator voice channel'}
+		</span>
+	</div>
+{:else if visible && isJoined}
 	<div class="comms-bar">
 		<span class="comms-label">COMMS</span>
 
@@ -171,6 +203,27 @@
 	}
 
 	.you-suffix {
+		color: var(--text-muted);
+		font-size: 10px;
+	}
+
+	.join-btn {
+		background: var(--color-green, #4ade80);
+		border-color: var(--color-green, #4ade80);
+		color: #fff;
+	}
+
+	.join-btn:hover:not(:disabled) {
+		background: #22c55e;
+		border-color: #22c55e;
+	}
+
+	.join-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.join-hint {
 		color: var(--text-muted);
 		font-size: 10px;
 	}

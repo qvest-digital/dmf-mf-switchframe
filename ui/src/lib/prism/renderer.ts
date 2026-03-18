@@ -209,10 +209,22 @@ export class PrismRenderer {
 					? Math.abs(audioPTS - this.currentVideoPTS)
 					: 0;
 
-				if (avDelta > 30_000_000) {
-					targetPTS = -1;
-				} else if (this.currentVideoPTS >= 0 && audioPTS - this.currentVideoPTS > 150_000) {
-					targetPTS = -1;
+				if (avDelta > 30_000_000 || (this.currentVideoPTS >= 0 && audioPTS - this.currentVideoPTS > 150_000)) {
+					// A/V desync: audio clock is too far from video. Switch to
+					// wall-clock free-run pacing anchored to the video buffer
+					// instead of blind takeNextFrame (which causes frame bursts).
+					const peek = this.videoBuffer.peekFirstFrame();
+					if (peek) {
+						if (this.audioStallFreeRunStart < 0) {
+							this.audioStallFreeRunStart = now;
+							this.audioStallFreeRunBasePTS = this.currentVideoPTS >= 0
+								? this.currentVideoPTS : peek.timestamp;
+						}
+						targetPTS = this.audioStallFreeRunBasePTS +
+							(now - this.audioStallFreeRunStart) * 1000;
+					} else {
+						targetPTS = -1;
+					}
 				} else {
 					targetPTS = audioPTS;
 				}
@@ -238,8 +250,23 @@ export class PrismRenderer {
 		let frame: VideoFrame | null = null;
 
 		if (targetPTS < 0) {
-			frame = this.videoBuffer.takeNextFrame();
-		} else {
+			// No valid clock reference. Use wall-clock pacing anchored to the
+			// first available frame so we don't burn through bursts unpaced.
+			const peek = this.videoBuffer.peekFirstFrame();
+			if (peek) {
+				if (this.freeRunStart < 0) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = peek.timestamp;
+				}
+				targetPTS = this.freeRunBasePTS + (now - this.freeRunStart) * 1000;
+			} else {
+				this._diagEmptyBufferHits++;
+				this.reportStats(now);
+				return;
+			}
+		}
+
+		if (targetPTS >= 0) {
 			const result = this.videoBuffer.getFrameByTimestamp(targetPTS);
 			frame = result.frame;
 
