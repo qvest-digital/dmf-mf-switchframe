@@ -1101,3 +1101,118 @@ func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
 	pf2.ReleaseYUV()
 	frc.reset()
 }
+
+func TestFRCMCFI_SkipsMEWhenSourceAtPipelineRate(t *testing.T) {
+	// When the source frame rate matches the pipeline tick rate, ME should
+	// be skipped entirely after the EMA converges (intervalCount >= 10).
+	// At 30fps with 90kHz clock, tickIntervalPTS = 3003 ticks/frame.
+	tickInterval := int64(3003) // ~29.97fps in 90kHz units
+	fs := newFRCSource(FRCMCFI, tickInterval)
+
+	// Ingest 20 frames at exactly the pipeline tick rate.
+	for i := 0; i < 20; i++ {
+		pf := &ProcessingFrame{
+			YUV:    make([]byte, 64*64*3/2),
+			Width:  64,
+			Height: 64,
+			PTS:    int64(i) * tickInterval,
+		}
+		pf.SetRefs(2)
+		fs.ingest(pf)
+		pf.ReleaseYUV() // simulate frame_sync releasing its ref
+	}
+
+	// After 19 intervals (20 frames), the EMA should have converged.
+	require.GreaterOrEqual(t, fs.intervalCount, 10,
+		"should have enough intervals for convergence")
+
+	// The ratio avgIntervalTicks / tickIntervalPTS should be ~1.0.
+	ratio := float64(fs.avgIntervalTicks) / float64(tickInterval)
+	require.InDelta(t, 1.0, ratio, 0.1,
+		"avg interval should be within 10%% of tick interval")
+
+	// meLastNs should be 0 because ME was skipped for same-rate source.
+	require.Equal(t, int64(0), fs.meLastNs,
+		"meLastNs should be 0 when ME is skipped for same-rate source")
+}
+
+func TestFRCMCFI_RunsMEForSlowerSource(t *testing.T) {
+	// When the source frame rate is significantly different from the pipeline
+	// tick rate, ME should still run. Here: 15fps source on 30fps pipeline.
+	tickInterval := int64(3003)        // ~30fps pipeline
+	sourceInterval := int64(3003 * 2)  // 15fps source (double the pipeline interval)
+	fs := newFRCSource(FRCMCFI, tickInterval)
+
+	// Ingest 20 frames at half the pipeline rate (15fps).
+	for i := 0; i < 20; i++ {
+		pf := &ProcessingFrame{
+			YUV:    make([]byte, 64*64*3/2),
+			Width:  64,
+			Height: 64,
+			PTS:    int64(i) * sourceInterval,
+		}
+		pf.SetRefs(2)
+		fs.ingest(pf)
+		pf.ReleaseYUV()
+	}
+
+	require.GreaterOrEqual(t, fs.intervalCount, 10,
+		"should have enough intervals for convergence")
+
+	// The ratio should be ~2.0 (source interval is 2x pipeline tick).
+	ratio := float64(fs.avgIntervalTicks) / float64(tickInterval)
+	require.Greater(t, ratio, 1.1,
+		"ratio should be well outside the same-rate window")
+
+	// meLastNs should be non-zero because ME ran for this slower source.
+	require.NotEqual(t, int64(0), fs.meLastNs,
+		"meLastNs should be non-zero when ME runs for slower source")
+}
+
+func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
+	t.Run("skip guard not active before convergence", func(t *testing.T) {
+		// With fewer than 10 intervals, ME should still run even at same rate.
+		tickInterval := int64(3003)
+		fs := newFRCSource(FRCMCFI, tickInterval)
+
+		// Ingest only 5 frames (4 intervals, below convergence threshold).
+		for i := 0; i < 5; i++ {
+			pf := &ProcessingFrame{
+				YUV:    make([]byte, 64*64*3/2),
+				Width:  64,
+				Height: 64,
+				PTS:    int64(i) * tickInterval,
+			}
+			pf.SetRefs(2)
+			fs.ingest(pf)
+			pf.ReleaseYUV()
+		}
+
+		require.Less(t, fs.intervalCount, 10,
+			"should have fewer than 10 intervals")
+		// ME should have run (meLastNs > 0) because we haven't converged yet.
+		require.NotEqual(t, int64(0), fs.meLastNs,
+			"ME should run before EMA convergence even at same rate")
+	})
+
+	t.Run("skip guard safe with zero tickIntervalPTS", func(t *testing.T) {
+		// tickIntervalPTS == 0 should not cause division by zero.
+		fs := newFRCSource(FRCMCFI, 0) // zero tick interval
+
+		for i := 0; i < 15; i++ {
+			pf := &ProcessingFrame{
+				YUV:    make([]byte, 64*64*3/2),
+				Width:  64,
+				Height: 64,
+				PTS:    int64(i) * 3003,
+			}
+			pf.SetRefs(2)
+			fs.ingest(pf)
+			pf.ReleaseYUV()
+		}
+
+		// Should not panic. ME should still run when tickIntervalPTS is 0.
+		require.NotEqual(t, int64(0), fs.meLastNs,
+			"ME should run when tickIntervalPTS is 0 (cannot determine ratio)")
+	})
+}

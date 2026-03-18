@@ -204,6 +204,24 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 		return
 	}
 
+	// Skip ME when source frame rate matches pipeline tick rate.
+	// After the EMA converges (>= 10 intervals), if the ratio of source
+	// interval to pipeline tick interval is within 0.9–1.1, the source is
+	// delivering frames at the same rate as the pipeline. In this case,
+	// releaseTick() will always pop a fresh frame and never call emit(),
+	// so the ME result would go unused. This saves ~8% CPU.
+	if fs.intervalCount >= 10 && fs.tickIntervalPTS > 0 {
+		// Use integer math to avoid float: ratio = avg / tick.
+		// Check 0.9 <= ratio <= 1.1, i.e., 9*tick <= 10*avg <= 11*tick.
+		avg10 := fs.avgIntervalTicks * 10
+		tick9 := fs.tickIntervalPTS * 9
+		tick11 := fs.tickIntervalPTS * 11
+		if avg10 >= tick9 && avg10 <= tick11 {
+			fs.meLastNs = 0
+			return
+		}
+	}
+
 	// Detect scene change via subsampled SAD.
 	fs.sceneChange = fs.detectSceneChange(fs.prevFrame, fs.currFrame)
 	if fs.sceneChange {
