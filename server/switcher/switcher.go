@@ -446,7 +446,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(96, defaultFmt.Width, defaultFmt.Height),
+		framePool:     NewFramePool(128, defaultFmt.Width, defaultFmt.Height),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -1034,7 +1034,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
 	// Release() discards wrong-sized buffers via cap check.
-	s.framePool = NewFramePool(96, f.Width, f.Height)
+	s.framePool = NewFramePool(128, f.Width, f.Height)
 
 	// Update frame sync tick rate and pool reference if active.
 	if s.frameSyncActive && s.frameSync != nil {
