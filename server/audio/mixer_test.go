@@ -4212,7 +4212,7 @@ func TestMixer_OutputPTSDoesNotFollowSourceJumps(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.AddChannel("cam2")
@@ -4267,7 +4267,7 @@ func TestMixer_SilenceFillWhenNoActiveAudio(t *testing.T) {
 			return &mockEncoderCapture{pcmRef: new([]float32)}, nil
 		},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	// Add a channel and activate it, but never send any audio.
 	// This simulates a video-only source on program.
