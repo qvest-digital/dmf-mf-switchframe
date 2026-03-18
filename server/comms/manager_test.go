@@ -3,7 +3,6 @@ package comms
 import (
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestManagerJoinLeave(t *testing.T) {
@@ -149,9 +148,7 @@ func TestManagerBroadcastOnJoin(t *testing.T) {
 		t.Fatalf("Join: %v", err)
 	}
 
-	// Give a moment for the callback to fire (it's synchronous in Join, but be safe).
-	time.Sleep(10 * time.Millisecond)
-
+	// Callback is synchronous in Join, so it should have fired immediately.
 	if called.Load() < 1 {
 		t.Error("onBroadcast should have been called on join")
 	}

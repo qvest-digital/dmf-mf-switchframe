@@ -174,12 +174,7 @@ func (m *Manager) SendTestPacket(operatorID string, data []byte) bool {
 		return false
 	}
 
-	select {
-	case p.sendCh <- data:
-		return true
-	default:
-		return false
-	}
+	return p.trySend(data)
 }
 
 // mixLoop runs at 20ms intervals, mixing audio for all participants.
@@ -244,11 +239,8 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 		packet := make([]byte, n)
 		copy(packet, encodeBuf[:n])
 
-		// Non-blocking send — drop if the participant's channel is full.
-		select {
-		case p.sendCh <- packet:
-		default:
-		}
+		// Non-blocking send — drop if channel full or participant closed.
+		p.trySend(packet)
 
 		// Track speaking state changes.
 		p.mu.Lock()

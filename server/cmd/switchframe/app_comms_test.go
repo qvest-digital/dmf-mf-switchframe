@@ -149,7 +149,15 @@ func TestHandleCommsStream_WriteLoop(t *testing.T) {
 
 	// Close the blocking reader to let handleCommsStream exit.
 	close(readReady)
-	wg.Wait()
+
+	// Wait with timeout to prevent test hang.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleCommsStream did not exit within timeout")
+	}
 }
 
 func TestHandleCommsStream_UnknownMsgType(t *testing.T) {
@@ -319,14 +327,9 @@ func makeWireMsg(msgType byte, payload []byte) []byte {
 // then returns io.EOF. Used to simulate a live connection that stays open.
 type blockingReadCloser struct {
 	done <-chan struct{}
-	once sync.Once
 }
 
 func (b *blockingReadCloser) Read(p []byte) (int, error) {
-	select {
-	case <-b.done:
-		return 0, io.EOF
-	case <-time.After(5 * time.Second):
-		return 0, io.EOF
-	}
+	<-b.done
+	return 0, io.EOF
 }

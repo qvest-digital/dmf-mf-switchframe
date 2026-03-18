@@ -17,6 +17,7 @@ type participant struct {
 	mu       sync.Mutex
 	muted    bool
 	speaking bool
+	closed   bool
 
 	encoder *opusEncoder
 	decoder *opusDecoder
@@ -118,7 +119,30 @@ func (p *participant) SendCh() <-chan []byte {
 	return p.sendCh
 }
 
+// trySend attempts a non-blocking send to the participant's send channel.
+// Returns false if the channel is full or the participant is closed.
+// Safe to call concurrently with close().
+func (p *participant) trySend(data []byte) bool {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return false
+	}
+	p.mu.Unlock()
+
+	select {
+	case p.sendCh <- data:
+		return true
+	default:
+		return false
+	}
+}
+
 // close shuts down the participant's send channel.
+// Must not be called concurrently with itself.
 func (p *participant) close() {
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
 	close(p.sendCh)
 }
