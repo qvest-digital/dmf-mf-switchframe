@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -977,4 +977,26 @@ export function setEncoderBackend(name: string): Promise<ControlRoomState> {
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ encoder: name }),
 	});
+}
+
+// --- Comms ---
+
+export function commsJoin(operatorId: string, name: string): Promise<ControlRoomState> {
+	return post('/api/comms/join', { operatorId, name });
+}
+
+export function commsLeave(operatorId: string): Promise<ControlRoomState> {
+	return post('/api/comms/leave', { operatorId });
+}
+
+export function commsMute(operatorId: string, muted: boolean): Promise<ControlRoomState> {
+	return request('/api/comms/mute', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ operatorId, muted }),
+	});
+}
+
+export function commsStatus(): Promise<CommsState> {
+	return request('/api/comms/status');
 }

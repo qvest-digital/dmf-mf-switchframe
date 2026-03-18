@@ -534,6 +534,19 @@ export interface SCTE35RuleCondition {
 	value: string;
 }
 
+export interface CommsParticipant {
+	operatorId: string;
+	name: string;
+	muted: boolean;
+	speaking: boolean;
+}
+
+export interface CommsState {
+	active: boolean;
+	participants: CommsParticipant[];
+	talkbackTarget?: string;
+}
+
 export interface ConnectionInfo {
 	domain?: string;
 	srtIngestPort?: number;
@@ -576,6 +589,7 @@ export interface ControlRoomState {
 	clipCount?: number;
 	clipUpload?: ClipUploadProgress;
 	macro?: MacroExecutionState;
+	comms?: CommsState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
