@@ -166,7 +166,7 @@ FrameSync retains pf  ←──shared refs──→  Pipeline receives shallow c
 flowchart LR
     subgraph pool ["FramePool (mutex-guarded LIFO)"]
         style pool fill:#1a1a2e,color:#fff,stroke:#16213e
-        STACK["free [][]byte\n32 pre-allocated buffers\nLIFO for cache warmth"]
+        STACK["free [][]byte\n512 pre-allocated buffers\nLIFO for cache warmth"]
     end
 
     ACQ["Acquire()"] -->|pop| STACK
@@ -179,7 +179,7 @@ The `FramePool` replaced `sync.Pool` because Go's GC drains pool entries every ~
 
 ### Buffer Budget (1080p)
 
-Each YUV420 buffer at 1080p is `1920 × 1080 × 3/2 ≈ 3 MB`. The pool pre-allocates 32 buffers (~97 MB).
+Each YUV420 buffer at 1080p is `1920 × 1080 × 3/2 ≈ 3 MB`. The pool pre-allocates 512 buffers (~1.5 GB).
 
 | Consumer | Buffers |
 |----------|---------|
@@ -188,8 +188,11 @@ Each YUV420 buffer at 1080p is `1920 × 1080 × 3/2 ≈ 3 MB`. The pool pre-allo
 | Raw sink taps (MXL + monitor) | 2 |
 | FrameSync retained references | 2–3 |
 | FRC retained frames | 2 |
-| Headroom | ~20 |
-| **Total** | **32** |
+| In-flight across goroutines | ~20 |
+| **Headroom** | **~480** |
+| **Total capacity** | **512** |
+
+The large pool capacity prevents fallback allocations (logged as pool misses) under sustained load with many sources. `NewTestSwitcher()` uses a 4-buffer pool at 320x240 to avoid OOM in tests.
 
 ### Format Change
 
@@ -250,7 +253,7 @@ The compositor maintains a fill cache (`IngestSourceFrame()`) populated by `hand
 
 Wraps [`graphics.Compositor.ProcessYUV()`](../server/graphics/compositor.go). Overlays up to 8 DSK graphics layers onto the program frame with per-layer animations (fade, fly, slide, pulse). Active only when `IsActive()` returns true (at least one layer on).
 
-**File:** [`node_compositor.go`](../server/switcher/node_compositor.go) (27 lines)
+**File:** [`node_compositor.go`](../server/switcher/node_compositor.go) (29 lines)
 
 ### raw-sink
 
@@ -284,7 +287,7 @@ flowchart LR
 
 **Force-IDR logic:** The `forceNextIDR` atomic flag is set when a new output viewer joins the program relay (e.g., SRT output starts) or after a cut/transition. The encode node checks `src.IsKeyframe || forceNextIDR.CompareAndSwap(true, false)` to force immediate keyframe output.
 
-**File:** [`node_encode.go`](../server/switcher/node_encode.go) (72 lines)
+**File:** [`node_encode.go`](../server/switcher/node_encode.go) (214 lines)
 
 ---
 
@@ -382,7 +385,7 @@ flowchart TD
 
 **SPS/PPS deduplication:** After each encode, SPS and PPS NALUs are extracted from the AVC1 output and compared against cached copies. The `onVideoInfoChange` callback fires only when they change — avoiding redundant metadata broadcasts to the program relay.
 
-**Files:** [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) (315 lines)
+**Files:** [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) (340 lines)
 
 ---
 

@@ -107,6 +107,13 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/replay/stop](#post-apireplaystop)
   - [GET /api/replay/status](#get-apireplaystatus)
   - [GET /api/replay/sources](#get-apireplaysources)
+  - [POST /api/replay/quick](#post-apireplayquick)
+  - [POST /api/replay/pause](#post-apireplaypause)
+  - [POST /api/replay/resume](#post-apireplayresume)
+  - [PATCH /api/replay/seek](#patch-apireplayseek)
+  - [PATCH /api/replay/speed](#patch-apireplayspeed)
+  - [PATCH /api/replay/marks](#patch-apireplaymarks)
+  - [GET /api/replay/peek](#get-apireplaypeek)
 - [Macros](#macros)
   - [GET /api/macros](#get-apimacros)
   - [GET /api/macros/{name}](#get-apimacrosname)
@@ -124,6 +131,11 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/operator/unlock](#post-apioperatorunlock)
   - [POST /api/operator/force-unlock](#post-apioperatorforceunlock)
   - [DELETE /api/operator/{id}](#delete-apioperatorid)
+- [Operator Comms](#operator-comms)
+  - [POST /api/comms/join](#post-apicommsjoin)
+  - [POST /api/comms/leave](#post-apicommsleave)
+  - [PUT /api/comms/mute](#put-apicommsmute)
+  - [GET /api/comms/status](#get-apicommsstatus)
 - [SCTE-35 Ad Insertion](#scte-35-ad-insertion)
   - [POST /api/scte35/cue](#post-apiscte35cue)
   - [POST /api/scte35/return](#post-apiscte35return)
@@ -369,6 +381,13 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
   "locks": {
     "audio": { "holderId": "op_def456", "holderName": "Audio Eng", "acquiredAt": 1709654300000 }
   },
+  "comms": {
+    "active": true,
+    "participants": [
+      { "operatorId": "op_abc123", "name": "Director", "muted": false, "speaking": true },
+      { "operatorId": "op_def456", "name": "Audio Eng", "muted": false, "speaking": false }
+    ]
+  },
   "lastChangedBy": "Director",
   "seq": 42,
   "timestamp": 1709654400000
@@ -409,6 +428,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `macro` | `object` or `null` | Macro execution state (`running`, `macroName`, `steps`, `currentStep`). `null` when no macro has run. |
 | `operators` | `array` | List of registered operators. Omitted when empty. |
 | `locks` | `object` | Map of subsystem name to `LockInfo`. Omitted when no locks are held. |
+| `comms` | `object` or `null` | Operator voice comms channel state. See [CommsState](#commsstate). Omitted when comms not active. |
 | `lastChangedBy` | `string` | Name of the operator who last made a change. Omitted when not set. |
 | `seq` | `int` | Monotonically increasing sequence number |
 | `timestamp` | `int` | Unix timestamp in milliseconds |
@@ -480,11 +500,13 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `state` | `string` | Player state: `"idle"`, `"loading"`, or `"playing"` |
+| `state` | `string` | Player state: `"idle"`, `"loading"`, `"playing"`, or `"paused"` |
 | `source` | `string` | Source key being played. Omitted when idle. |
 | `speed` | `float` | Playback speed (`0.25` to `1.0`). Omitted when idle. |
+| `paused` | `bool` | Whether playback is currently paused. Omitted when `false`. |
 | `loop` | `bool` | Whether playback loops. Omitted when idle. |
 | `position` | `float` | Playback progress from `0.0` to `1.0`. Omitted when idle. |
+| `progress` | `float` | Normalized playback progress from `0.0` to `1.0`. Alias for `position`. Omitted when idle. |
 | `markIn` | `int` or `null` | Mark-in point as Unix timestamp in milliseconds. Omitted when not set. |
 | `markOut` | `int` or `null` | Mark-out point as Unix timestamp in milliseconds. Omitted when not set. |
 | `markSource` | `string` | Source key for the current mark points. Omitted when not set. |
@@ -516,6 +538,22 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `holderId` | `string` | Operator ID holding the lock |
 | `holderName` | `string` | Operator name holding the lock |
 | `acquiredAt` | `int` | Unix timestamp in milliseconds when the lock was acquired |
+
+### CommsState
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active` | `bool` | `true` when the comms channel has at least one participant |
+| `participants` | `array` | List of `CommsParticipant` objects. Omitted when empty. |
+
+### CommsParticipant
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `operatorId` | `string` | Operator ID of the participant |
+| `name` | `string` | Display name of the participant |
+| `muted` | `bool` | Whether the participant is muted |
+| `speaking` | `bool` | Whether the participant is currently speaking (voice activity detection) |
 
 ---
 
@@ -3949,6 +3987,233 @@ curl http://localhost:8081/api/replay/sources \
 
 ---
 
+### POST /api/replay/quick
+
+One-call quick replay: automatically sets mark-in/mark-out relative to the current time and begins playback. This is a convenience endpoint that combines mark-in, mark-out, and play into a single request.
+
+**Request Body:**
+
+```json
+{
+  "source": "cam1",
+  "seconds": 10,
+  "speed": 0.5
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `source` | `string` | Yes | -- | Source key to replay from |
+| `seconds` | `float` | Yes | -- | Number of seconds to replay (counted back from now) |
+| `speed` | `float` | No | `1.0` | Playback speed. Range: `0.25` to `1.0`. Values below `1.0` produce slow motion. |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `source` or `seconds`, invalid JSON, `speed` out of range, or insufficient buffer |
+| `404` | Source not found in replay buffers |
+| `409` | A replay is already playing |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/replay/quick \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "cam1", "seconds": 10, "speed": 0.5}'
+```
+
+---
+
+### POST /api/replay/pause
+
+Pause the currently active replay playback. The player holds the current frame on output.
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | No replay is currently playing |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/replay/pause \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### POST /api/replay/resume
+
+Resume a paused replay playback from the current position.
+
+**Request Body:** Empty JSON object `{}`
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Replay is not paused |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/replay/resume \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+---
+
+### PATCH /api/replay/seek
+
+Seek to a normalized position within the current replay clip. Can be used while playing or paused.
+
+**Request Body:**
+
+```json
+{
+  "position": 0.5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `float` | Yes | Normalized seek position from `0.0` (start) to `1.0` (end) |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | No replay is active, `position` out of range, or invalid JSON |
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:8081/api/replay/seek \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"position": 0.5}'
+```
+
+---
+
+### PATCH /api/replay/speed
+
+Change the playback speed of an active replay. Takes effect immediately without interrupting playback.
+
+**Request Body:**
+
+```json
+{
+  "speed": 0.25
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `speed` | `float` | Yes | Playback speed. Range: `0.25` to `1.0`. |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | No replay is active, `speed` out of range, or invalid JSON |
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:8081/api/replay/speed \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"speed": 0.25}'
+```
+
+---
+
+### PATCH /api/replay/marks
+
+Adjust mark-in and/or mark-out points on an active or idle replay. Either or both fields may be provided. Times are Unix timestamps in milliseconds.
+
+**Request Body:**
+
+```json
+{
+  "markInMs": 5000,
+  "markOutMs": 15000
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `markInMs` | `int` | No | New mark-in time as Unix timestamp in milliseconds |
+| `markOutMs` | `int` | No | New mark-out time as Unix timestamp in milliseconds |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | No mark source set, mark-out before mark-in, or invalid JSON |
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:8081/api/replay/marks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"markInMs": 5000, "markOutMs": 15000}'
+```
+
+---
+
+### GET /api/replay/peek
+
+Get a keyframe thumbnail from a source's replay buffer. Returns the most recent H.264 keyframe data for preview purposes.
+
+**Query Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `source` | Yes | Source key to peek into |
+
+**Response:** `200 OK` with H.264 keyframe data (binary)
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `source` query parameter |
+| `404` | Source not found in replay buffers or no frames available |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/replay/peek?source=cam1 \
+  -H "Authorization: Bearer $TOKEN" \
+  -o keyframe.h264
+```
+
+---
+
 ## Macros
 
 Macros automate sequences of switcher operations. A macro is a named list of steps that execute sequentially. Steps can include cuts, preview changes, transitions, audio adjustments, and timed waits. Macros are persisted as JSON to `~/.switchframe/macros.json`. Keyboard shortcut `Ctrl+1` through `Ctrl+9` triggers macros by position.
@@ -4630,6 +4895,161 @@ Remove a registered operator. The operator's session is disconnected and any loc
 
 ```bash
 curl -X DELETE http://localhost:8081/api/operator/op_abc123 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Operator Comms
+
+The operator comms system provides a voice communication channel between registered operators. Operators can join a shared comms channel, mute/unmute themselves, and see who is speaking. The channel supports a maximum of 6 concurrent participants. Comms state is broadcast via `ControlRoomState.comms`.
+
+### POST /api/comms/join
+
+Join the operator voice comms channel. The operator becomes a participant and can send/receive audio.
+
+**Request Body:**
+
+```json
+{
+  "operatorId": "op1",
+  "name": "Director"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operatorId` | `string` | Yes | Operator ID of the participant joining |
+| `name` | `string` | Yes | Display name of the participant |
+
+**Response:** `200 OK`
+
+```json
+{"ok": true}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `operatorId` or `name`, or invalid JSON |
+| `409` | Channel is full (maximum 6 participants) |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/comms/join \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"operatorId": "op1", "name": "Director"}'
+```
+
+---
+
+### POST /api/comms/leave
+
+Leave the comms channel. The operator is removed from the participants list.
+
+**Request Body:**
+
+```json
+{
+  "operatorId": "op1"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operatorId` | `string` | Yes | Operator ID of the participant leaving |
+
+**Response:** `200 OK`
+
+```json
+{"ok": true}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `operatorId` or invalid JSON |
+| `404` | Operator is not in the comms channel |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/comms/leave \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"operatorId": "op1"}'
+```
+
+---
+
+### PUT /api/comms/mute
+
+Set the mute state for a participant in the comms channel.
+
+**Request Body:**
+
+```json
+{
+  "operatorId": "op1",
+  "muted": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `operatorId` | `string` | Yes | Operator ID of the participant |
+| `muted` | `bool` | Yes | `true` to mute, `false` to unmute |
+
+**Response:** `200 OK`
+
+```json
+{"ok": true}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `operatorId` or `muted`, or invalid JSON |
+| `404` | Operator is not in the comms channel |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/comms/mute \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"operatorId": "op1", "muted": true}'
+```
+
+---
+
+### GET /api/comms/status
+
+Get the current comms channel state including all participants and their mute/speaking status.
+
+**Request Body:** None
+
+**Response:** `200 OK` with `CommsState`:
+
+```json
+{
+  "active": true,
+  "participants": [
+    { "operatorId": "op_abc123", "name": "Director", "muted": false, "speaking": true },
+    { "operatorId": "op_def456", "name": "Audio Eng", "muted": false, "speaking": false }
+  ]
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/comms/status \
   -H "Authorization: Bearer $TOKEN"
 ```
 

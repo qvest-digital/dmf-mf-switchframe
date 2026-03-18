@@ -334,7 +334,7 @@ During cuts and transitions, the mixer applies gain curves to the outgoing and i
 
 ### Mix Cycle
 
-When multiple channels are active, each source's AAC frame is decoded to float32 PCM via FDK AAC. Per-channel processing applies trim, 3-band parametric EQ (RBJ biquad coefficients, Direct Form II Transposed, independent left/right filter state to prevent stereo crosstalk), and single-band compression with an exponential envelope follower. The mixer accumulates processed samples in a reusable mix buffer and flushes when all active unmuted channels have contributed -- or when a 25ms deadline expires, which prevents the pipeline from stalling if a source stops sending. The sum is scaled by the master fader, then passed through the brickwall limiter and AAC encoder.
+When multiple channels are active, each source's AAC frame is decoded to float32 PCM via FDK AAC. Per-channel processing applies trim, 3-band parametric EQ (RBJ biquad coefficients, Direct Form II Transposed, independent left/right filter state to prevent stereo crosstalk), and single-band compression with an exponential envelope follower. Processed samples are written into a per-channel `PCMRingBuffer`. A clock-driven `outputTicker` goroutine runs at ~21.3ms cadence (1024 samples at 48 kHz) and reads from all ring buffers on each tick, summing them into a reusable mix buffer. This decouples output timing from source arrival -- the mixer produces output at a steady cadence regardless of when or whether individual sources deliver frames. The sum is scaled by the master fader, then passed through the brickwall limiter and AAC encoder.
 
 ### Loudness Metering
 
@@ -541,6 +541,10 @@ The primary audio path uses a phase vocoder for pitch-preserved slow-motion: STF
 
 The player supports loop mode, automatically restarting from the beginning of the clip after the last frame is emitted, and continuing until the director explicitly stops playback. Replay output is broadcast to a "replay" relay registered as a separate MoQ stream via `server.RegisterStream("replay")`. Browsers subscribe to this relay independently of the program stream, displaying replay in a dedicated monitor panel. This separation ensures that replay playback -- including looping, speed changes, and stop/start -- never interferes with the live program output or its recording and SRT destinations.
 
+### Transport Controls
+
+During playback, the operator has full transport control: pause, resume, seek to an arbitrary position, and speed change (0.25x to 1.0x). A quick-replay API (`POST /api/replay/quick`) combines mark-in, mark-out, and play into a single call -- it marks the last N seconds of a source and immediately begins playback, useful for instant replays without manual in/out marking. `PeekFrame` returns a single decoded JPEG thumbnail at a given position without starting playback, enabling seek bar preview scrubbing. JKL shuttle keyboard shortcuts provide familiar NLE-style transport: J for reverse/slow, K for pause, L for forward/fast. When idle (no clip loaded or playback stopped), the replay monitor shows the live source feed rather than a frozen last frame, so the operator always has a useful picture in the replay panel.
+
 ## 9. The Browser
 
 The frontend is a Svelte 5 SPA (SvelteKit with static adapter) that serves as a thin control surface and monitoring display. It does not produce the program output -- it subscribes to source and program MoQ streams for monitoring, and sends REST commands over the shared QUIC connection. For production deployment, the built UI is embedded into the Go binary as static files via `//go:embed`, serving a single-binary appliance.
@@ -644,12 +648,13 @@ All keyboard shortcuts use capture-phase `keydown` listeners with `event.code` f
 | `F3` / `P` | Toggle PIP |
 | `Alt`+`1` / `Alt`+`2` | Set transition type (mix / dip) |
 | `Shift`+`B` / `R` / `H` / `E` | SCTE-35: ad break / return / hold / extend |
-| `` ` `` | Toggle fullscreen |
+| `J` / `K` / `L` | Replay shuttle: slow/reverse, pause, forward/fast |
+| `` ` `` | Push-to-talk (operator comms) |
 | `?` | Shortcut overlay |
 
 ### Layout Modes
 
-Two layout modes serve different operator skill levels. Traditional mode provides the full control surface -- multiview grid, preview/program monitors, audio mixer, transition controls, and tabbed panels for graphics, macros, replay, presets, SCTE-35, keying, and layouts. Simple mode is a volunteer-friendly layout with just preview/program windows, source buttons, CUT/DISSOLVE/FTB, and basic health indicators. Layout mode is detected from URL parameter (`?mode=simple`), falling back to localStorage, then defaulting to traditional. The URL parameter auto-persists to localStorage so bookmarked URLs are sticky.
+Two layout modes serve different operator skill levels. Traditional mode provides the full control surface -- multiview grid, preview/program monitors, audio mixer, transition controls, tabbed panels for graphics, macros, replay, presets, SCTE-35, keying, and layouts, plus a CommsBar for operator voice communication and a ReplayPanel with seek bar, speed buttons, and JKL shuttle controls. Simple mode is a volunteer-friendly layout with just preview/program windows, source buttons, CUT/DISSOLVE/FTB, and basic health indicators. Layout mode is detected from URL parameter (`?mode=simple`), falling back to localStorage, then defaulting to traditional. The URL parameter auto-persists to localStorage so bookmarked URLs are sticky.
 
 ### Rendering
 
@@ -726,7 +731,54 @@ Five roles map to six lockable subsystems. Each operator receives a 64-character
 
 55 action types across 11 categories (switching, transitions, audio, graphics, stinger, recording, replay, SCTE-35, presets, keying/source, layout, captions). Macros are validated before save via `ValidateSteps()` -- errors block the save, while warnings are informational. The sequential executor runs steps with configurable delays and supports cancellation via context. Execution state is broadcast in real-time through the `ControlRoomState` so the UI can display step-by-step progress with per-step status (pending, running, done, failed, skipped). Only one macro can run at a time; attempting to start a second returns 409 Conflict.
 
-## 11. Performance & Design Philosophy
+## 11. Operator Voice Comms
+
+The `server/comms/` package provides built-in voice communication for multi-operator workflows. In a live production, the director, audio engineer, graphics operator, and other crew need to coordinate in real time. Rather than requiring an external intercom system, SwitchFrame includes a lightweight voice channel that runs over the same WebTransport connection used for media and control.
+
+```mermaid
+flowchart TD
+    subgraph browser ["Browser (per operator)"]
+        MIC["Mic Capture<br/>(AudioWorkletNode)"] --> OPUS_ENC["WebCodecs<br/>AudioEncoder<br/>(Opus, 48 kHz mono,<br/>20 ms frames)"]
+        OPUS_ENC --> WTS["WebTransport<br/>Bidi Stream<br/>(0x01 = audio,<br/>0x02 = control)"]
+        WTS --> OPUS_DEC["WebCodecs<br/>AudioDecoder"]
+        OPUS_DEC --> SPK["Playback<br/>(separate AudioContext,<br/>preserves echo cancellation)"]
+    end
+
+    subgraph server ["Server (comms.Manager)"]
+        RX["Receive streams<br/>(per participant)"]
+        MIX["20 ms Mix Loop<br/>(goroutine)"]
+        TX["Send N-1 mix<br/>(per participant)"]
+
+        RX --> MIX
+        MIX --> TX
+        MIX -.-> DUCK["Auto-Duck<br/>program audio<br/>-12 dB when<br/>VAD active"]
+    end
+
+    WTS --> RX
+    TX --> WTS
+```
+
+### Opus Codec and Mix Loop
+
+Audio is encoded as Opus at 48 kHz mono with 20ms frames, providing high-quality voice at approximately 24 kbps per participant. The server `Manager` runs a mix loop goroutine on a 20ms ticker. On each tick, it reads the latest frame from each participant's receive buffer, sums all participants except the recipient (N-1 mixing), and writes the mixed result to each participant's send buffer. N-1 mixing is essential for intercom -- each operator hears everyone else but not their own voice, preventing echo and confusion.
+
+### Wire Protocol
+
+Communication uses WebTransport bidirectional streams with a simple `[type_byte][payload]` framing: `0x01` for audio data (Opus packets) and `0x02` for control messages (mute state, participant join/leave). This avoids the overhead of REST for high-frequency audio while keeping the protocol simple enough to implement in a browser AudioWorklet.
+
+### Echo Cancellation
+
+The client uses separate `AudioContext` instances for capture and playback. This preserves the browser's built-in acoustic echo cancellation (AEC), which relies on knowing the relationship between the speaker output and microphone input. Merging capture and playback into a single context would defeat AEC and cause feedback loops.
+
+### Auto-Duck
+
+When any participant is speaking (detected via voice activity detection on the server), the program audio monitor in all browsers is attenuated by 12 dB. This ensures crew communication is always audible over program audio without requiring operators to manually adjust their monitoring levels. The duck state is broadcast as part of `ControlRoomState.comms`.
+
+### REST API and UI
+
+Four endpoints manage the comms lifecycle: `POST /api/comms/join` (register as participant), `POST /api/comms/leave`, `PUT /api/comms/mute` (toggle mute state), and `GET /api/comms/status` (participant list and mute states). The `CommsBar` UI component provides push-to-talk (backtick key), a volume slider, and participant badges showing who is connected and speaking. The system supports up to 6 simultaneous participants and is always available -- no CLI flag is required to enable it. Comms state is broadcast via `ControlRoomState.comms` so all browsers see participant presence in real time.
+
+## 12. Performance & Design Philosophy
 
 Several cross-cutting design decisions shape the system's architecture. These choices prioritize real-time correctness and operational simplicity over theoretical flexibility.
 

@@ -66,18 +66,19 @@ The Go build requires cgo and these libraries:
 | `libswresample` | FFmpeg audio resampling (clip transcode) |
 | `libx264` | H.264 software encoding |
 | `libfdk-aac` | AAC audio encode/decode |
+| `libopus` | Opus audio codec for operator voice comms |
 | `pkg-config` | cgo flag resolution |
 
 **Debian/Ubuntu:**
 ```bash
 # fdk-aac is in non-free
 sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list.d/debian.sources
-apt-get update && apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev pkg-config
+apt-get update && apt-get install -y libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libswresample-dev libx264-dev libfdk-aac-dev libopus-dev pkg-config
 ```
 
 **macOS (Homebrew):**
 ```bash
-brew install ffmpeg fdk-aac pkg-config
+brew install ffmpeg fdk-aac opus pkg-config
 ```
 
 ### Dev Build (No UI Embed)
@@ -230,6 +231,9 @@ volumes:
 | `--raw-monitor-scale` | native | Downscale raw monitor: `720p` · `480p` · `360p` |
 | `--replay-buffer-secs` | `60` | Per-source replay buffer in seconds (0 = disabled, max 300) |
 | `--captions` | `false` | Enable CEA-608/708 closed captioning |
+| `--preview-proxy` | `false` | Enable low-bitrate preview encoding for browser source previews (480p) |
+| `--preview-resolution` | `480p` | Preview encode resolution (`360p`, `480p`, `720p`) |
+| `--preview-bitrate` | `500000` | Preview encode bitrate in bits per second |
 
 #### SCTE-35 / SCTE-104
 
@@ -957,6 +961,8 @@ ulimit -n 65536
 - [ ] Review operator tokens if using multi-operator mode (persisted in `operators.json`)
 - [ ] Configure `--srt-listen` port if accepting SRT push sources
 - [ ] Monitor SRT source health via `GET /api/sources` status field
+- [ ] Install `libopus-dev` for operator voice comms (required for cgo build)
+- [ ] Configure `--preview-proxy` for reduced browser bandwidth (recommended for >4 sources)
 
 ---
 

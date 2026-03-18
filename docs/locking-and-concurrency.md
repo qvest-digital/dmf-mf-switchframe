@@ -24,7 +24,7 @@ SwitchFrame processes video at 30--60 fps across dozens of goroutines. Three rul
 2. **Every lock has a tier.** A goroutine holding a tier-N lock never acquires a tier-(N-1) lock. This strict ordering makes deadlocks structurally impossible.
 3. **The hot path is sub-microsecond.** Lock hold times on the per-frame video path total under 1 us, leaving 99.997% of the 33 ms frame budget for actual processing.
 
-The system has ~70 mutexes, ~130 atomic variables, ~90 channels, and 9 long-lived goroutines. This document maps the architecturally significant ones to their roles.
+The system has ~70 mutexes, ~130 atomic variables, ~90 channels, and 10 long-lived goroutines. This document maps the architecturally significant ones to their roles.
 
 ---
 
@@ -63,8 +63,12 @@ flowchart TD
     end
 
     subgraph audio ["Audio Goroutines"]
-        mix["Mixer<br/>(decode → process → encode)"]
-        tick["mixDeadlineTicker<br/>(25ms flush timeout)"]
+        mix["Mixer<br/>(decode → process → ring buffer)"]
+        tick["outputTicker<br/>(clock-driven ~21.3ms output)"]
+    end
+
+    subgraph comms ["Comms Goroutines"]
+        cmix["comms.Manager<br/>mixLoop (20ms)"]
     end
 
     subgraph output ["Output"]
@@ -97,7 +101,7 @@ flowchart TD
     vpl --> pipe
     pipe --> pr
     haf --> mix
-    tick -.-> mix
+    tick -.->|"read ring buffers<br/>→ sum → encode"| mix
     mix --> pr
     pr --> ov
     ov --> mux
@@ -115,7 +119,8 @@ flowchart TD
 | `srt.Source.statsPoller` | `Source.Start()` | Context cancel | 1Hz srtgo connection stats polling |
 | `srt.Listener.acceptLoop` | `Listener.Run()` | Context cancel → listener close | Accept incoming SRT push connections |
 | `srt.Caller.connectLoop` | `Caller.Pull()` | Context cancel | Per-source exponential backoff reconnection |
-| `mixDeadlineTicker` | `NewMixer()` | `stopTicker` close + `tickerWg.Wait()` | 25ms flush timeout for audio mix cycle |
+| `outputTicker` | `NewMixer()` | `stopTicker` close + `tickerWg.Wait()` | Clock-driven audio output at ~21.3ms cadence (1024/48kHz) |
+| `comms.Manager.mixLoop` | `NewManager()` | `cancel()` + `done` signal | 20ms comms mix loop: collect participant PCM, N-1 mix, Opus encode |
 | `output.Viewer.Run` | First output starts | `stopCh` close + `done` signal | Drain video/audio/caption to muxer |
 | `AsyncAdapter.drain` | `NewAsyncAdapter()` | `stopCh` close + `doneCh` signal | Non-blocking write to slow outputs |
 | `healthMonitor.checkLoop` | `start()` | `stopCh` close + `done` signal | Periodic source health with hysteresis |
@@ -290,13 +295,15 @@ The transition engine receives raw YUV (no decode step under its lock) and blend
 
 ## 6. Audio Mixes
 
-Audio flows through the mixer on a path independent of video. The mixer accumulates decoded PCM from all active sources, applies the signal chain, and encodes the mixed output.
+Audio flows through the mixer on a path independent of video. The architecture is clock-driven: ingest decodes and processes source audio into per-channel ring buffers, and a fixed-cadence `outputTicker` reads from all ring buffers, sums, and encodes the output. This decouples output timing from source arrival patterns.
 
 ```mermaid
 sequenceDiagram
     participant SV as sourceViewer
     participant SW as Switcher
-    participant MX as Mixer
+    participant MX as Mixer (ingest)
+    participant RB as PCMRingBuffer (per-channel)
+    participant TK as outputTicker (~21.3ms)
     participant PR as programRelay
 
     SV->>SW: handleAudioFrame(key, frame)
@@ -304,36 +311,56 @@ sequenceDiagram
     Note over SW: s.mu.RLock()<br/>Read: audioHandler<br/>s.mu.RUnlock()
     deactivate SW
 
-    SW->>MX: IngestAudioFrame(key, frame)
+    SW->>MX: IngestFrame(key, frame)
     activate MX
-    Note over MX: m.mu.Lock()<br/>• Init decoder (sync.Once)<br/>• Decode AAC → float32 PCM<br/>• Trim → EQ → Compressor → Fader<br/>• Accumulate in mixBuffer<br/>• Check: all channels contributed?<br/>  Yes → Sum → LUFS → Limiter → Encode<br/>m.mu.Unlock()
+    Note over MX: m.mu.Lock()<br/>• Init decoder (sync.Once)<br/>• Decode AAC → float32 PCM<br/>• Resample if needed<br/>• Trim → EQ → Compressor<br/>• Push to ring buffer<br/>m.mu.Unlock()
     deactivate MX
 
-    MX->>PR: BroadcastAudio(frame)
+    MX->>RB: ringBuf.Push(processedPCM)
+
+    Note over TK: ticker fires every ~21.3ms<br/>(1024 samples / 48kHz)
+
+    TK->>RB: ringBuf.Pop(1024 * numChannels)
+    activate TK
+    Note over TK: m.mu.Lock()<br/>• Read N samples from each active ring buffer<br/>• Apply fader gain + transition gain<br/>• Sum into accumulator (SIMD vec.AddFloat32)<br/>• Stinger audio overlay<br/>• Master chain: gain → LUFS → limiter<br/>• AAC encode<br/>m.mu.Unlock()
+    deactivate TK
+
+    TK->>PR: BroadcastAudio(frame)
     Note over PR: After m.mu released
 ```
 
-### Lock Sequence
+### Lock Sequences
+
+**Ingest path** (per source arrival):
+```
+s.mu RLock → release → m.mu Lock → [decode → process → ring push] → release
+```
+
+**Output path** (clock-driven, every ~21.3ms):
+```
+m.mu Lock → [ring reads → sum → encode] → release → BroadcastAudio (outside lock)
+```
+
+The ingest path holds `m.mu` for decode through ring buffer push (~0.5ms for AAC decode + signal chain). The output path holds `m.mu` for ring buffer reads through AAC encode (~0.5ms). These two paths contend on `m.mu` but never overlap for the same tick since `outputTicker` is the sole output producer.
 
 ```
-s.mu RLock → release → m.mu Lock → release
-```
-
-The full mix cycle (decode through encode) runs under `m.mu`. This is acceptable because audio frames are small (~500 bytes AAC, ~4KB PCM) and the cycle completes in under 1ms. A background `mixDeadlineTicker` goroutine forces a flush after 25ms if a source stops sending, preventing the pipeline from stalling:
-
-```
-mixDeadlineTicker (every 10ms):
-    m.mu.Lock()
-    if mixStarted && time.Now() > mixDeadline:
-        collectMixCycleLocked()
-    m.mu.Unlock()
-    if outputFrame != nil:
+outputTicker (every ~21.3ms):
+    frame := m.tick()
+        m.mu.Lock()
+        for each active channel:
+            pcm := ch.ringBuf.Pop(1024 * numChannels)
+            apply fader + transition gain
+            vec.AddFloat32(accum, gained)
+        stinger overlay
+        master chain → encode
+        m.mu.Unlock()
+    if frame != nil:
         recordAndOutput(frame)    ← outside lock
 ```
 
-### Passthrough Optimization
+### Clock-Driven Architecture
 
-When a single source is at unity gain with no processing enabled (EQ bypassed, compressor bypassed, not muted, master at 0 dB, no active transition), the mixer forwards raw AAC bytes without decoding or re-encoding -- zero CPU for audio. Peak metering still runs so VU meters always have data.
+The previous event-driven mixer produced output when "all channels contributed" within a deadline, with a 25ms flush timeout as a safety net. The clock-driven architecture replaces this with a fixed-cadence timer that fires every ~21.3ms (1024 samples at 48kHz), producing exactly one AAC frame per tick regardless of source arrival patterns. This eliminates timing jitter from variable source delivery rates and simplifies the output path -- there is no passthrough optimization. All audio flows through decode → process → ring buffer → ticker → encode.
 
 ---
 
@@ -420,8 +447,15 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [Mixer](../server/audio/mixer.go) | `m.mu` | `RWMutex` | channels, masterLevel, mixBuffer, crossfade state, stinger audio, outputPTS | Yes |
+| [Mixer](../server/audio/mixer.go) | `m.mu` | `RWMutex` | channels, masterLevel, crossfade state, stinger audio, outputPTS, ring buffer reads | Yes |
 | [DelayBuffer](../server/audio/delay_buffer.go) | `db.mu` | `Mutex` | delayMs, ring buffer (head/tail/count/frames) | Yes |
+
+### Comms
+
+| Component | Field | Type | Protects | Hot Path? |
+|-----------|-------|------|----------|-----------|
+| [Manager](../server/comms/manager.go) | `m.mu` | `Mutex` | participants map, mixer state | Mix loop |
+| [mixer](../server/comms/mixer.go) | (no separate lock -- accessed under Manager.mu) | -- | PCM accumulation buffers | -- |
 
 ### Output
 
@@ -612,7 +646,7 @@ flowchart TD
     end
 
     subgraph tier6 ["Tier 6 — Leaf (No Callbacks)"]
-        leaf["Graphics/Key/Layout Compositors<br/>Replay Buffer/Manager<br/>SRT/File adapters<br/>Caption, EventLog, Debug"]
+        leaf["Graphics/Key/Layout Compositors<br/>Replay Buffer/Manager<br/>SRT/File adapters<br/>Caption, EventLog, Debug<br/>Comms Manager"]
     end
 
     fsmu -->|"Ingest: global then per-source"| ssmu
@@ -641,6 +675,8 @@ flowchart TD
 5. **Transition engine releases before callbacks.** `IngestRawFrame` processes the blend under `e.mu`, then releases before the output callback fires, preventing the engine lock from blocking the switcher's broadcast path.
 
 6. **All state callbacks fire outside locks.** Every component captures the callback function pointer under lock, releases, then invokes it. This applies to Switcher state broadcast, `output.Manager` state changes, graphics compositor state changes, operator session changes, and SCTE-35 event notifications.
+
+7. **Comms manager is a leaf lock.** `comms.Manager.mu` (Tier 6) does not call into any other locked subsystem. The mix loop acquires `m.mu` to snapshot participants and collect PCM, releases, then does N-1 mixing and Opus encoding outside the lock. `onBroadcast` callback fires after lock release.
 
 ---
 
@@ -834,7 +870,7 @@ The system is deadlock-free because five structural properties hold simultaneous
 
 4. **Channels never block producers on the hot path.** All hot-path channel sends use `select { default: }` for non-blocking behavior. The `videoProcCh`, `output.Viewer` channels, and `AsyncAdapter` buffer all use newest-wins or drop-on-full policies.
 
-5. **Timeout-based forward progress.** The audio mixer's 25ms deadline ticker prevents indefinite waits if sources stop sending. The transition engine's 10-second watchdog aborts stuck transitions. SRT reconnect uses exponential backoff with a 30-second ceiling. The operator session manager cleans up stale sessions every 15 seconds.
+5. **Timeout-based forward progress.** The audio mixer's clock-driven `outputTicker` fires every ~21.3ms regardless of source delivery, producing output even when sources are silent (ring buffers return zeros). The transition engine's 10-second watchdog aborts stuck transitions. SRT reconnect uses exponential backoff with a 30-second ceiling. The operator session manager cleans up stale sessions every 15 seconds. The comms mix loop fires every 20ms independently.
 
 ---
 
