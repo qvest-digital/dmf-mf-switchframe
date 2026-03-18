@@ -119,8 +119,7 @@ func TestMixer_DebugSnapshot(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	snap := m.DebugSnapshot()
-	require.Equal(t, "passthrough", snap["mode"])
-	require.Equal(t, int64(0), snap["frames_passthrough"])
+	require.Equal(t, "mixing", snap["mode"])
 	require.Equal(t, int64(0), snap["decode_errors"])
 }
 

@@ -24,14 +24,6 @@ func growBuf(buf []float32, n int) []float32 {
 	return make([]float32, n)
 }
 
-// crossfadeTimeout is the maximum time to wait for both sources to deliver
-// frames during a crossfade. If the outgoing source disconnects, the crossfade
-// completes with only the incoming source's audio after this deadline.
-// 25ms is sufficient because PCM pre-buffering provides the outgoing source's
-// audio immediately — only the incoming source needs to deliver a frame
-// (one AAC frame is ~21.3ms).
-const crossfadeTimeout = 25 * time.Millisecond
-
 // Sentinel errors for the audio mixer.
 var (
 	ErrChannelNotFound = errors.New("audio: channel not found")
@@ -48,8 +40,8 @@ type MixerConfig struct {
 	SampleRate     int
 	Channels       int
 	Output         func(*media.AudioFrame)
-	DecoderFactory DecoderFactory // nil = passthrough only (no mixing)
-	EncoderFactory EncoderFactory // nil = passthrough only (no mixing)
+	DecoderFactory DecoderFactory // nil = no AAC decoding (PCM-only sources)
+	EncoderFactory EncoderFactory // nil = no AAC encoding (tick returns nil)
 }
 
 // CompressorState holds the current state of a channel's compressor.
@@ -72,17 +64,18 @@ type Channel struct {
 	muted            bool
 	afv              bool
 	active           bool
-	decoder          Decoder      // lazy init, nil in passthrough
+	decoder          Decoder      // lazy init on first IngestFrame
 	decoderOnce      sync.Once    // ensures decoder factory is called at most once
 	peakL            float64      // linear amplitude [0,1] — updated on every decoded frame
 	peakR            float64      // linear amplitude [0,1]
 	eq               *EQ          // 3-band parametric EQ (always initialized)
 	compressor       *Compressor  // single-band compressor (always initialized)
 	audioDelay       *DelayBuffer // per-source audio delay for lip-sync correction
-	isPCM            bool         // true if this channel receives raw PCM (not AAC); disables passthrough
+	isPCM            bool         // true if this channel receives raw PCM (not AAC)
 	sampleRateWarned bool         // true after first sample rate mismatch log (once per channel)
 	resampler        *Resampler   // nil when source rate matches mixer rate; lazy-init on mismatch
 	resamplerSrcRate int          // source rate the resampler was created for (detect rate changes)
+	ringBuf          *PCMRingBuffer // processed PCM ring buffer for clock-driven output
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
@@ -102,18 +95,12 @@ type Mixer struct {
 	numChannels  int
 	encoder      Encoder
 	output       func(*media.AudioFrame)
-	passthrough  bool
 	config       MixerConfig
 
-	// Mix accumulation state: tracks which active unmuted channels
-	// have contributed to the current mix cycle.
-	mixBuffer   map[string][]float32 // sourceKey → decoded PCM for current cycle
-	mixAccum    []float32            // reusable accumulator for mix output
-	mixPTS      int64                // PTS of the current mix cycle
-	mixStarted  bool                 // true when at least one channel has contributed
-	mixDeadline time.Time            // deadline for current mix cycle
+	// Reusable accumulator for mix output (used by tick())
+	mixAccum []float32
 
-	// Background ticker for deadline enforcement
+	// Background ticker for clock-driven output
 	stopTicker chan struct{}
 	tickerWg   sync.WaitGroup
 	closeOnce  sync.Once
@@ -121,16 +108,8 @@ type Mixer struct {
 	// Pre-buffered PCM: last decoded frame per source for instant crossfade.
 	lastDecodedPCM map[string][]float32
 
-	// Crossfade state: 2-frame (~42ms) equal-power crossfade on cut.
-	crossfadeFrom            string // outgoing source key
-	crossfadeTo              string // incoming source key
-	crossfadeActive          bool
-	crossfadePCM             map[string][]float32 // "from" and "to" PCM buffers
-	crossfadeDeadline        time.Time            // timeout for crossfade completion
-	crossfadeFramesRemaining int                  // frames left in multi-frame crossfade
-	crossfadeTotalFrames     int                  // total frames in crossfade (for position calc)
-
 	// Transition crossfade state: multi-frame crossfade synced with video transition.
+	// Also used for cut crossfade (2-tick ramp driven by cutFramesRemaining).
 	transCrossfadeActive   bool
 	transCrossfadeFrom     string         // outgoing source key
 	transCrossfadeTo       string         // incoming source key
@@ -138,6 +117,11 @@ type Mixer struct {
 	transCrossfadeMode     TransitionMode // gain curve selection
 	transCrossfadeAudioPos float64        // position at end of last audio output (for smooth interpolation)
 	mixCycleTransPos       float64        // snapshotted transition position for current mix cycle
+
+	// Cut crossfade state: driven by tick() frame counter.
+	// When cutFramesRemaining > 0, tick() auto-advances transCrossfadePosition.
+	cutFramesRemaining int // >0 means cut crossfade in progress
+	cutTotalFrames     int // total frames in cut crossfade (usually 2)
 
 	// Stinger audio overlay (optional, active during stinger transitions)
 	stingerAudio    []float32 // interleaved PCM from stinger clip
@@ -171,41 +155,26 @@ type Mixer struct {
 	promMetrics *metrics.Metrics
 
 	// Reusable buffers for hot-path allocation elimination
-	mxlSinkBuf   []float32 // reused by MXL raw audio sink copy
-	crossfadeBuf []float32 // reused by ingestCrossfadeFrame crossfade output
-
-	// Encode buffer: accumulates mixed PCM across cycles when resampling
-	// produces non-1024-sample chunks. Drained in 1024-sample frames.
-	encodeBuf []float32
+	mxlSinkBuf []float32 // reused by MXL raw audio sink copy
 
 	// Raw audio output tap for MXL (atomic, lock-free read)
 	rawAudioSink atomic.Pointer[RawAudioSink]
 
 	// Debug counters (atomic, no lock needed)
-	framesPassthrough atomic.Int64
-	framesMixed       atomic.Int64
-	crossfadeCount    atomic.Int64
-	crossfadeTimeouts atomic.Int64
-	decodeErrors      atomic.Int64
-	encodeErrors      atomic.Int64
+	framesMixed  atomic.Int64
+	decodeErrors atomic.Int64
+	encodeErrors atomic.Int64
 
 	// Audio timing diagnostics (atomic, lock-free)
-	outputFrameCount  atomic.Int64 // total frames output (passthrough + mixed)
-	deadlineFlushes   atomic.Int64 // mix cycles flushed by deadline timeout
+	outputFrameCount  atomic.Int64 // total frames output
 	lastOutputNano    atomic.Int64 // UnixNano of last output frame
 	maxInterFrameNano atomic.Int64 // max gap between consecutive output frames (ns)
-	modeTransitions   atomic.Int64 // number of passthrough↔mixing mode changes
 	transCrossfades   atomic.Int64 // transition crossfade start count
 
 	// Mix cycle timing (atomic, lock-free)
 	lastMixCycleNs atomic.Int64
 	maxMixCycleNs  atomic.Int64
 }
-
-// mixCycleDeadline is the maximum time to wait for all active channels to
-// contribute a frame before producing output with whatever is available.
-// Prevents deadlock when a source stops sending audio.
-const mixCycleDeadline = 50 * time.Millisecond
 
 // NewMixer creates a Mixer.
 func NewMixer(config MixerConfig) *Mixer {
@@ -217,16 +186,14 @@ func NewMixer(config MixerConfig) *Mixer {
 		sampleRate:     config.SampleRate,
 		numChannels:    config.Channels,
 		output:         config.Output,
-		passthrough:    true,
 		config:         config,
 		stopTicker:     make(chan struct{}),
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
 		loudness:       NewLoudnessMeter(config.SampleRate, config.Channels),
 		lastDecodedPCM: make(map[string][]float32),
-		mixBuffer:      make(map[string][]float32),
 	}
 	m.tickerWg.Add(1)
-	go m.mixDeadlineTicker()
+	go m.outputTicker()
 	return m
 }
 
@@ -312,99 +279,6 @@ func (m *Mixer) ensureEncoder() error {
 	return nil
 }
 
-// silenceFillThreshold is the maximum gap (in milliseconds) between output
-// frames before the deadline ticker produces silence. Keeps the browser's
-// audio pipeline fed when the program source has no audio (video-only source).
-// Set high enough (500ms) to avoid interfering with normal bursty SRT audio
-// delivery — only fires for genuinely absent audio (no-audio source on program).
-const silenceFillThreshold int64 = 500 // ms
-
-// mixDeadlineTicker runs in the background and:
-//  1. Forces a mix cycle flush when the per-cycle deadline expires (prevents
-//     deadlock when a source stops sending audio mid-cycle).
-//  2. Produces silence frames when no output has occurred for >42ms (keeps
-//     the browser's audio pipeline fed during no-audio program periods).
-func (m *Mixer) mixDeadlineTicker() {
-	defer m.tickerWg.Done()
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.stopTicker:
-			return
-		case <-ticker.C:
-			m.mu.Lock()
-			var outputFrame *media.AudioFrame
-			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
-				if m.transCrossfadeActive {
-					// Re-snapshot the transition position at deadline time so
-					// the fill uses the latest video position, not the stale
-					// position from when the first source arrived. This prevents
-					// large gain jumps between consecutive mix cycles.
-					m.mixCycleTransPos = m.transCrossfadePosition
-					m.fillMissingTransitionSources()
-				}
-				outputFrame = m.collectMixCycleLocked()
-				m.deadlineFlushes.Add(1)
-			}
-
-			// Silence fill: when no output has occurred recently and there
-			// are active channels (program source is set), produce silence.
-			// This handles the case where the program source has no audio
-			// track — the mixer would otherwise produce nothing indefinitely.
-			if outputFrame == nil && !m.crossfadeActive {
-				lastNano := m.lastOutputNano.Load()
-				hasActive := false
-				for _, ch := range m.channels {
-					if ch.active && !ch.muted {
-						hasActive = true
-						break
-					}
-				}
-				gapMs := int64(0)
-				if lastNano > 0 {
-					gapMs = (time.Now().UnixNano() - lastNano) / int64(time.Millisecond)
-				} else if hasActive {
-					// Never produced output but have active channels — fill immediately.
-					gapMs = silenceFillThreshold + 1
-				}
-				if hasActive && gapMs > silenceFillThreshold {
-					outputFrame = m.encodeSilenceLocked()
-				}
-			}
-
-			m.mu.Unlock()
-			if outputFrame != nil {
-				m.recordAndOutput(outputFrame)
-			}
-		}
-	}
-}
-
-// encodeSilenceLocked produces a single silent AAC frame.
-// Caller must hold m.mu.
-func (m *Mixer) encodeSilenceLocked() *media.AudioFrame {
-	if err := m.ensureEncoder(); err != nil {
-		return nil
-	}
-	chunkSize := 1024 * m.numChannels
-	silence := make([]float32, chunkSize)
-	pts := m.advanceOutputPTS(0)
-
-	encoded, err := m.encoder.Encode(silence)
-	if err != nil || len(encoded) == 0 {
-		return nil
-	}
-	data := make([]byte, len(encoded))
-	copy(data, encoded)
-	m.deadlineFlushes.Add(1)
-	return &media.AudioFrame{
-		PTS:        pts,
-		Data:       data,
-		SampleRate: m.sampleRate,
-		Channels:   m.numChannels,
-	}
-}
 
 // frameDuration90k returns the duration of one AAC frame (1024 samples) in 90 kHz PTS ticks.
 func (m *Mixer) frameDuration90k() int64 {
@@ -492,8 +366,8 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
 		audioDelay:  NewDelayBuffer(0),
+		ringBuf:     NewPCMRingBuffer(3),
 	}
-	m.recalcPassthrough()
 }
 
 // RemoveChannel unregisters a source.
@@ -507,7 +381,6 @@ func (m *Mixer) RemoveChannel(sourceKey string) {
 		delete(m.channels, sourceKey)
 		delete(m.lastDecodedPCM, sourceKey)
 	}
-	m.recalcPassthrough()
 }
 
 // SetActive activates or deactivates a channel.
@@ -516,8 +389,7 @@ func (m *Mixer) SetActive(sourceKey string, active bool) {
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[sourceKey]; ok {
 		ch.active = active
-		m.recalcPassthrough()
-	}
+		}
 }
 
 // SetTrim sets the input trim in dB for a channel (-20 to +20 dB).
@@ -534,7 +406,6 @@ func (m *Mixer) SetTrim(sourceKey string, trimDB float64) error {
 	}
 	ch.trim = trimDB
 	ch.trimLinear = float32(DBToLinear(trimDB))
-	m.recalcPassthrough()
 	return nil
 }
 
@@ -548,7 +419,6 @@ func (m *Mixer) SetLevel(sourceKey string, levelDB float64) error {
 	}
 	ch.level = levelDB
 	ch.levelLinear = float32(DBToLinear(levelDB))
-	m.recalcPassthrough()
 	return nil
 }
 
@@ -561,7 +431,6 @@ func (m *Mixer) SetMuted(sourceKey string, muted bool) error {
 		return fmt.Errorf("channel %q: %w", sourceKey, ErrChannelNotFound)
 	}
 	ch.muted = muted
-	m.recalcPassthrough()
 	return nil
 }
 
@@ -578,7 +447,6 @@ func (m *Mixer) SetMasterLevel(levelDB float64) error {
 	defer m.mu.Unlock()
 	m.masterLevel = levelDB
 	m.masterLinear = float32(DBToLinear(levelDB))
-	m.recalcPassthrough()
 	return nil
 }
 
@@ -627,7 +495,6 @@ func (m *Mixer) SetProgramMute(muted bool) {
 		// after compressor/limiter envelopes were reset to zero.
 		m.unmuteFadeRemaining = m.sampleRate * m.numChannels * 5 / 1000
 	}
-	m.recalcPassthrough()
 }
 
 // SetStingerAudio provides the stinger clip's audio PCM for additive overlay
@@ -707,13 +574,6 @@ func (m *Mixer) IsProgramMuted() bool {
 	return m.programMuted
 }
 
-// IsPassthrough returns whether the mixer is in passthrough mode.
-func (m *Mixer) IsPassthrough() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.passthrough
-}
-
 // ProgramPeak returns the current program output peak levels in dBFS.
 // Returns [leftDBFS, rightDBFS]. Silence is -Inf.
 func (m *Mixer) ProgramPeak() [2]float64 {
@@ -780,7 +640,6 @@ func (m *Mixer) SetEQ(sourceKey string, band int, frequency, gain, q float64, en
 		return err
 	}
 	m.mu.Lock()
-	m.recalcPassthrough()
 	m.mu.Unlock()
 	return nil
 }
@@ -810,7 +669,6 @@ func (m *Mixer) SetCompressor(sourceKey string, threshold, ratio, attack, releas
 		return err
 	}
 	m.mu.Lock()
-	m.recalcPassthrough()
 	m.mu.Unlock()
 	return nil
 }
@@ -931,8 +789,7 @@ func (m *Mixer) resampleIfNeeded(ch *Channel, pcm []float32, srcRate int) []floa
 				"L", ch.resampler.UpFactor(),
 				"M", ch.resampler.DownFactor())
 		}
-		m.recalcPassthrough()
-	}
+		}
 	return ch.resampler.Resample(pcm)
 }
 

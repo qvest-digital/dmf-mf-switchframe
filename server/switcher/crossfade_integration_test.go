@@ -130,6 +130,9 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 		Output: func(frame *media.AudioFrame) {
 			programRelay.BroadcastAudio(frame)
 		},
+		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
+			return &stubAudioEncoder{}, nil
+		},
 	})
 	defer func() { _ = mixer.Close() }()
 
@@ -161,17 +164,17 @@ func TestIntegration_CutCrossfadeDuration(t *testing.T) {
 	require.False(t, mixer.IsInTransitionCrossfade(),
 		"should not be in transition crossfade before any dissolve")
 
-	// Cut to cam2 — this should trigger OnCut (one-frame crossfade),
-	// NOT OnTransitionStart (multi-frame crossfade).
+	// Cut to cam2 — this triggers OnCut (2-tick cut crossfade),
+	// NOT OnTransitionStart (multi-frame dissolve crossfade).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 
-	// The transition crossfade should NOT be active (Cut uses OnCut, not OnTransitionStart).
-	require.False(t, mixer.IsInTransitionCrossfade(),
-		"a plain Cut should NOT enter multi-frame transition crossfade")
+	// In the clock-driven mixer, OnCut sets a 2-tick cut crossfade
+	// that auto-completes after ~42ms. Wait for it to complete.
+	time.Sleep(100 * time.Millisecond)
 
-	// The transition position should still be 0.0 (no transition started).
-	require.Equal(t, 0.0, mixer.TransitionPosition(),
-		"transition position should be 0.0 after a plain Cut")
+	// After 2 ticks, the cut crossfade should have auto-completed.
+	require.False(t, mixer.IsInTransitionCrossfade(),
+		"cut crossfade should auto-complete after 2 ticks")
 
 	// Verify the state after cut: cam2 is now on program, cam1 is preview.
 	state := sw.State()
@@ -307,3 +310,12 @@ func TestIntegration_DissolveAudioPositionMonotonic(t *testing.T) {
 
 	sw.AbortTransition()
 }
+
+// stubAudioEncoder is a no-op encoder for integration tests that only need
+// the mixer ticker to run (not produce real AAC output).
+type stubAudioEncoder struct{}
+
+func (e *stubAudioEncoder) Encode(pcm []float32) ([]byte, error) {
+	return []byte{0xFF, 0xF1}, nil
+}
+func (e *stubAudioEncoder) Close() error { return nil }

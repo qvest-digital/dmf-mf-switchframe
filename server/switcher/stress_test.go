@@ -462,11 +462,18 @@ func TestStress_AllChannelsMixing(t *testing.T) {
 	defer sw.Close()
 
 	// Create mixer wired to program relay.
+	// Clock-driven mixer always encodes — needs codec factories.
 	mixer := audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
 			programRelay.BroadcastAudio(frame)
+		},
+		DecoderFactory: func(sampleRate, channels int) (audio.Decoder, error) {
+			return audio.NewFDKDecoder(sampleRate, channels)
+		},
+		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
+			return audio.NewFDKEncoder(sampleRate, channels)
 		},
 	})
 	defer func() { _ = mixer.Close() }()
@@ -533,13 +540,16 @@ func TestStress_AllChannelsMixing(t *testing.T) {
 	// Allow any pending mix cycles to flush.
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify: audio was produced (passthrough or mixed). With only cam1 active
-	// via AFV and at 0dB, passthrough should be used. Either way, frames should
-	// have reached the capture viewer.
+	// Verify: the clock-driven ticker produced output frames. The ticker
+	// runs at ~47fps regardless of input, so over 1 second we should see
+	// at least ~40 frames. Note: input AAC data is synthetic (not valid AAC),
+	// so decode fails — but the ticker still produces silence/freeze frames.
 	capture.mu.Lock()
 	audioCount := len(capture.audios)
 	capture.mu.Unlock()
 
+	// The ticker runs unconditionally; even with invalid input data,
+	// it produces encoded silence frames from the freeze-repeat path.
 	require.Greater(t, audioCount, 0,
-		"should have received audio output frames from the mixer (got %d)", audioCount)
+		"clock-driven ticker should have produced output frames (got %d)", audioCount)
 }
