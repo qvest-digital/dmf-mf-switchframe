@@ -337,16 +337,11 @@ func (m *Mixer) mixDeadlineTicker() {
 			var outputFrame *media.AudioFrame
 			if m.mixStarted && !m.mixDeadline.IsZero() && time.Now().After(m.mixDeadline) {
 				if m.transCrossfadeActive {
-					sources := make([]string, 0, len(m.mixBuffer))
-					for k := range m.mixBuffer {
-						sources = append(sources, k)
-					}
-					m.log.Warn("trans-deadline-flush",
-						"mix_buffer_sources", sources,
-						"from", m.transCrossfadeFrom,
-						"to", m.transCrossfadeTo,
-						"trans_pos", m.transCrossfadePosition,
-					)
+					// Re-snapshot the transition position at deadline time so
+					// the fill uses the latest video position, not the stale
+					// position from when the first source arrived. This prevents
+					// large gain jumps between consecutive mix cycles.
+					m.mixCycleTransPos = m.transCrossfadePosition
 					m.fillMissingTransitionSources()
 				}
 				outputFrame = m.collectMixCycleLocked()
