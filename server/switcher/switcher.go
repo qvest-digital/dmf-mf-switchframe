@@ -262,9 +262,10 @@ type Switcher struct {
 	// mixer's wall-clock audio PTS, keeping A/V aligned after source cuts.
 	// Seeded from the first program video frame (same as audio seed).
 	// Enabled via EnableWallClockVideoPTS() — off by default for backward compat.
-	videoPTSStart      int64
-	videoPTSEpoch      time.Time
-	videoPTSInited     bool
+	videoPTSStart         int64
+	videoPTSEpoch         time.Time
+	videoPTS              int64
+	videoPTSInited        bool
 	wallClockVideoEnabled bool
 
 	// DSK graphics compositor — applies overlay in YUV420 domain.
@@ -1166,10 +1167,8 @@ func (s *Switcher) EnableWallClockVideoPTS() {
 	s.wallClockVideoEnabled = true
 }
 
-// wallClockVideoPTS returns a PTS based on wall-clock elapsed time from
-// the first program video frame. Matches the mixer's wall-clock audio PTS
-// so both use the same timeline. After source cuts, source PTS jumps but
-// wall-clock PTS continues monotonically, keeping A/V aligned.
+// wallClockVideoPTS returns a hybrid PTS: frame-counter for regular spacing
+// with wall-clock resync to match the mixer's audio PTS timeline.
 func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 	if !s.wallClockVideoEnabled {
 		return sourcePTS
@@ -1178,12 +1177,29 @@ func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 	if !s.videoPTSInited {
 		s.videoPTSStart = sourcePTS
 		s.videoPTSEpoch = now
+		s.videoPTS = sourcePTS
 		s.videoPTSInited = true
 		return sourcePTS
 	}
-	elapsed := now.Sub(s.videoPTSEpoch)
-	pts := s.videoPTSStart + int64(elapsed.Seconds()*90000)
-	return pts & 0x1FFFFFFFF // 33-bit MPEG-TS mask
+
+	// Frame counter: advance by video frame duration for regular spacing.
+	pf := s.pipelineFormat.Load()
+	var frameDur int64 = 3000 // default 30fps
+	if pf != nil {
+		frameDur = int64(90000) * int64(pf.FPSDen) / int64(pf.FPSNum)
+	}
+	s.videoPTS += frameDur
+
+	// Wall-clock resync: nudge toward wall clock to prevent drift.
+	wallPTS := s.videoPTSStart + int64(now.Sub(s.videoPTSEpoch).Seconds()*90000)
+	drift := wallPTS - s.videoPTS
+	if drift > frameDur {
+		s.videoPTS += frameDur / 2
+	} else if drift < -frameDur {
+		s.videoPTS -= frameDur / 2
+	}
+
+	return s.videoPTS & 0x1FFFFFFFF
 }
 
 // broadcastToProgram sends a video frame to the program relay with a

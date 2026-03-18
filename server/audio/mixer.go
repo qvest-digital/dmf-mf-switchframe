@@ -420,12 +420,9 @@ func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
 	m.outputPTSInited = true
 }
 
-// advanceOutputPTS returns a wall-clock-based output PTS.
-// Seeded from the video pipeline's first frame (SeedPTSFromVideo) to
-// share the same epoch as the video frame sync. Tracks elapsed wall
-// clock time so audio PTS never falls behind during production gaps
-// (source cuts, SRT reconnection, no-audio periods). The frame sync
-// also tracks wall clock, so both stay aligned.
+// advanceOutputPTS returns a hybrid PTS: frame-counter for regular spacing
+// (browser-friendly) with periodic wall-clock resync to prevent drift during
+// gaps. Seeded from the video pipeline's first frame (SeedPTSFromVideo).
 // Caller must hold m.mu.
 func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 	now := time.Now()
@@ -436,14 +433,26 @@ func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 			m.outputPTS = inputPTS
 			m.outputPTSInited = true
 		} else {
-			// Silence fill before first real frame — advance from 0.
 			m.outputPTS += m.frameDuration90k()
 			m.outputPTS &= 0x1FFFFFFFF
 			return m.outputPTS
 		}
+	} else {
+		// Frame counter: regular 1920-tick spacing (no inputPtsJumps).
+		m.outputPTS += m.frameDuration90k()
+
+		// Wall-clock resync: nudge toward wall clock to prevent drift
+		// during no-audio gaps. Gradual correction avoids PTS jumps.
+		wallPTS := m.outputPTSStart + int64(now.Sub(m.outputPTSEpoch).Seconds()*90000)
+		drift := wallPTS - m.outputPTS
+		if drift > m.frameDuration90k() {
+			// Behind wall clock — add half a frame to catch up gradually.
+			m.outputPTS += m.frameDuration90k() / 2
+		} else if drift < -m.frameDuration90k() {
+			// Ahead of wall clock — subtract half a frame to slow down.
+			m.outputPTS -= m.frameDuration90k() / 2
+		}
 	}
-	elapsed := now.Sub(m.outputPTSEpoch)
-	m.outputPTS = m.outputPTSStart + int64(elapsed.Seconds()*90000)
 	m.outputPTS &= 0x1FFFFFFFF
 	return m.outputPTS
 }
