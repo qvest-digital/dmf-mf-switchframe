@@ -67,12 +67,33 @@
 	});
 
 	// ── Canvas effects ──
+	// When active (playing/paused/loading), show replay relay.
+	// When idle, show selected source's live feed as preview.
 	$effect(() => {
-		if (!pipeline || !isActive || !replayCanvas) return;
-		pipeline.attachCanvas('replay', 'replay-monitor', replayCanvas);
-		return () => {
-			pipeline.detachCanvas('replay', 'replay-monitor');
-		};
+		if (!pipeline || !replayCanvas) return;
+
+		if (isActive) {
+			// Attach to the replay relay for playback output.
+			pipeline.attachCanvas('replay', 'replay-monitor', replayCanvas);
+			return () => {
+				pipeline.detachCanvas('replay', 'replay-monitor');
+			};
+		}
+
+		// Idle: show selected source's live feed.
+		const src = selectedSource || programSource;
+		if (src) {
+			pipeline.attachCanvas(src, 'replay-monitor', replayCanvas);
+			return () => {
+				pipeline.detachCanvas(src, 'replay-monitor');
+			};
+		}
+
+		// No source available — clear to black.
+		const ctx = replayCanvas.getContext('2d');
+		if (ctx) {
+			ctx.clearRect(0, 0, replayCanvas.width, replayCanvas.height);
+		}
 	});
 
 	$effect(() => {
@@ -220,9 +241,9 @@
 		<!-- Replay monitor -->
 		<div class="replay-monitor" class:active={isActive}>
 			<canvas bind:this={replayCanvas}></canvas>
-			{#if !isActive}
-				<div class="monitor-idle">
-					<span class="monitor-idle-text">REPLAY</span>
+			{#if !isActive && (selectedSource || programSource)}
+				<div class="monitor-source-badge">
+					{getSourceLabel(selectedSource || programSource)}
 				</div>
 			{/if}
 			{#if isPaused}
@@ -555,21 +576,18 @@
 		display: block;
 	}
 
-	.monitor-idle {
+	.monitor-source-badge {
 		position: absolute;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.monitor-idle-text {
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 700;
+		bottom: 4px;
+		left: 4px;
+		padding: 1px 5px;
+		background: rgba(0, 0, 0, 0.6);
 		color: var(--text-tertiary);
-		letter-spacing: 0.15em;
-		opacity: 0.4;
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		border-radius: 2px;
 	}
 
 	.paused-badge {
