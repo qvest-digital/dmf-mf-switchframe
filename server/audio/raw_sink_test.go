@@ -3,6 +3,7 @@ package audio
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -21,13 +22,16 @@ func TestSetRawAudioSink_ReceivesMixedPCM(t *testing.T) {
 		cam2PCM[i] = 0.15
 	}
 
+	var outMu sync.Mutex
 	var outputFrames []*media.AudioFrame
 
 	m := NewMixer(MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
+			outMu.Lock()
 			outputFrames = append(outputFrames, frame)
+			outMu.Unlock()
 		},
 		DecoderFactory: func(sampleRate, channels int) (Decoder, error) {
 			return &mockDecoder{samples: nil}, nil
@@ -71,8 +75,12 @@ func TestSetRawAudioSink_ReceivesMixedPCM(t *testing.T) {
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
 
-	// Verify output was produced (sanity check)
-	require.Equal(t, 1, len(outputFrames), "should produce one output frame")
+	// Verify output was produced (sanity check).
+	// The deadline ticker goroutine may produce an additional frame.
+	outMu.Lock()
+	outCount := len(outputFrames)
+	outMu.Unlock()
+	require.GreaterOrEqual(t, outCount, 1, "should produce at least one output frame")
 
 	// Verify sink was called with correct metadata
 	mu.Lock()
@@ -175,21 +183,22 @@ func TestSetRawAudioSink_NilDisables(t *testing.T) {
 	m.channels["cam2"].decoder = &mockDecoder{samples: pcm}
 	m.mu.Unlock()
 
-	callCount := 0
+	var callCount atomic.Int32
 	m.SetRawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
-		callCount++
+		callCount.Add(1)
 	})
 
 	// First ingest: sink should be called
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 1000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
-	require.Equal(t, 1, callCount, "sink should have been called once")
+	require.GreaterOrEqual(t, callCount.Load(), int32(1), "sink should have been called at least once")
 
 	// Disable the sink
+	countBefore := callCount.Load()
 	m.SetRawAudioSink(nil)
 
 	// Second ingest: sink should NOT be called (and no panic)
 	m.IngestFrame("cam1", &media.AudioFrame{PTS: 2000, Data: []byte{0xAA}, SampleRate: 48000, Channels: 2})
 	m.IngestFrame("cam2", &media.AudioFrame{PTS: 2000, Data: []byte{0xBB}, SampleRate: 48000, Channels: 2})
-	require.Equal(t, 1, callCount, "sink should not have been called after being set to nil")
+	require.Equal(t, countBefore, callCount.Load(), "sink should not have been called after being set to nil")
 }
