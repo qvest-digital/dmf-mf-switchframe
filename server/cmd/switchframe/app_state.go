@@ -238,6 +238,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	// Caption state.
 	state = a.enrichCaptionState(state)
 
+	// Operator comms state.
+	if a.commsMgr != nil {
+		state.Comms = a.commsMgr.State()
+	}
+
 	// Clip player state.
 	if a.clipMgr != nil {
 		states := a.clipMgr.PlayerStates()

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/srt"
 )
@@ -154,6 +155,11 @@ func run() error {
 	if err := app.initSRT(); err != nil {
 		return err
 	}
+	// Operator voice comms (always available, no config flag needed).
+	app.commsMgr = comms.NewManager(func() {
+		app.broadcastState(nil)
+	})
+
 	if err := app.initAPI(); err != nil {
 		return err
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
@@ -114,6 +115,9 @@ type App struct {
 
 	// Closed captions
 	captionMgr *caption.Manager
+
+	// Operator comms
+	commsMgr *comms.Manager
 
 	// Clip players
 	clipMgr    *clip.Manager
@@ -973,6 +977,9 @@ func (a *App) initAPI() error {
 	if a.clipStore != nil {
 		apiOpts = append(apiOpts, control.WithClipStore(a.clipStore))
 	}
+	if a.commsMgr != nil {
+		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))
+	}
 	if a.srtCaller != nil && a.srtStore != nil && a.srtStats != nil {
 		apiOpts = append(apiOpts, control.WithSRTManager(&srtManagerAdapter{
 			app:    a,
@@ -1373,6 +1380,9 @@ func (a *App) closeSubsystems() {
 		a.scte35Injector.Close()
 	}
 
+	if a.commsMgr != nil {
+		a.commsMgr.Close()
+	}
 	if a.clipMgr != nil {
 		a.clipMgr.Close()
 	}
