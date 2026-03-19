@@ -327,6 +327,9 @@
 	// the canvas renderer before onMount (which connects the MoQ transport).
 	pipeline.setSourceMuted('program', false);
 	pipeline.addSource('program');
+	// Program preview: low-bitrate H.264 (3 Mbps) for browser monitoring.
+	// Preferred over full-quality "program" (10 Mbps) to reduce bandwidth.
+	pipeline.addSource('program-preview');
 	// Only add program-raw if WebGL is available (needed for YUV rendering).
 	// Without WebGL, subscribing to program-raw wastes bandwidth (~1.5 MB/frame).
 	const _testCanvas = document.createElement('canvas');
@@ -571,6 +574,7 @@
 		// Connect the "program" MoQ stream (source was added during init
 		// so the canvas can attach before onMount via ProgramPreview's $effect).
 		pipeline.connectSource('program');
+		pipeline.connectSource('program-preview');
 		if (hasWebGL) {
 			pipeline.connectSource('program-raw');
 		}

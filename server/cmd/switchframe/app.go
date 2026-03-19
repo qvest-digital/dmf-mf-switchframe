@@ -80,10 +80,14 @@ type App struct {
 	controlPub   *control.ChannelPublisher
 
 	// Prism server + relays
-	server          *distribution.Server
-	programRelay    *distribution.Relay
-	rawProgramRelay *distribution.Relay
-	replayRelay     *distribution.Relay
+	server              *distribution.Server
+	programRelay        *distribution.Relay
+	rawProgramRelay     *distribution.Relay
+	programPreviewRelay *distribution.Relay
+	replayRelay         *distribution.Relay
+
+	// Program preview encoder (low-bitrate H.264 for browser program monitor)
+	programPreviewEnc *preview.Encoder
 
 	// Core engine
 	sw    *switcher.Switcher
@@ -305,12 +309,16 @@ func (a *App) initPrismServer() error {
 // initCoreEngine creates the audio mixer and switcher, wires audio handling,
 // and configures the transition engine.
 func (a *App) initCoreEngine() error {
-	// Create audio mixer -- sends mixed audio to the program relay.
+	// Create audio mixer -- sends mixed audio to the program relay
+	// and the program preview relay (for browser low-bitrate monitoring).
 	a.mixer = audio.NewMixer(audio.MixerConfig{
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
 			a.programRelay.BroadcastAudio(frame)
+			if a.programPreviewRelay != nil {
+				a.programPreviewRelay.BroadcastAudio(frame)
+			}
 		},
 		DecoderFactory: audioDecoderFactory(),
 		EncoderFactory: audioEncoderFactory(),
@@ -1301,6 +1309,38 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	// Program preview encoder — low-bitrate H.264 for browser program monitor.
+	// Taps the raw YUV pipeline output (same pattern as MXL and raw monitor sinks)
+	// and re-encodes at 3 Mbps. Browsers subscribe to "program-preview" instead
+	// of the full-quality 10 Mbps "program" relay, reducing bandwidth by ~70%.
+	{
+		pf := a.sw.PipelineFormat()
+		a.programPreviewRelay = a.server.RegisterStream("program-preview")
+		pe, err := preview.NewEncoder(preview.Config{
+			SourceKey: "program-preview",
+			Width:     pf.Width,
+			Height:    pf.Height,
+			Bitrate:   3_000_000,
+			FPSNum:    pf.FPSNum,
+			FPSDen:    pf.FPSDen,
+			Relay:     a.programPreviewRelay,
+		})
+		if err != nil {
+			slog.Error("program preview encoder failed", "error", err)
+		} else {
+			a.programPreviewEnc = pe
+			a.debugCollector.Register("preview:program", pe)
+
+			a.sw.SetRawPreviewSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
+				pe.Send(frame.YUV, frame.Width, frame.Height, frame.PTS)
+			}))
+
+			slog.Info("program preview encoder enabled",
+				"width", pf.Width, "height", pf.Height,
+				"bitrate", 3_000_000)
+		}
+	}
+
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
 	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
 	defer stopAdmin()
@@ -1436,6 +1476,9 @@ func (a *App) closeSubsystems() {
 	}
 	if a.sessionMgr != nil {
 		a.sessionMgr.Close()
+	}
+	if a.programPreviewEnc != nil {
+		a.programPreviewEnc.Stop()
 	}
 	if a.outputMgr != nil {
 		_ = a.outputMgr.Close()

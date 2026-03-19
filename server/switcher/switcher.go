@@ -394,6 +394,9 @@ type Switcher struct {
 	// Raw monitor output — sends YUV copy to program-raw MoQ track.
 	rawMonitorSink atomic.Pointer[RawVideoSink]
 
+	// Raw preview output — feeds program preview encoder (low-bitrate browser delivery).
+	rawPreviewSink atomic.Pointer[RawVideoSink]
+
 	// Caption manager — handles CEA-608/708 caption encoding, pass-through,
 	// and SEI injection into encoded video frames. Optional (nil = no captions).
 	captionMgr captionManager
@@ -630,6 +633,20 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 	s.rebuildPipeline()
 }
 
+
+// SetRawPreviewSink sets or clears the raw preview output tap.
+// Same pattern as RawVideoSink and RawMonitorSink — receives a deep copy
+// of each processed YUV420p frame after all processing but before H.264
+// encode. Used by the program preview encoder for low-bitrate browser delivery.
+func (s *Switcher) SetRawPreviewSink(sink RawVideoSink) {
+	if sink != nil {
+		s.rawPreviewSink.Store(&sink)
+	} else {
+		s.rawPreviewSink.Store(nil)
+	}
+	s.rebuildPipeline()
+}
+
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
 func (s *Switcher) Close() {
 	s.health.stop()
@@ -798,7 +815,7 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
+// Node order: upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
@@ -806,6 +823,7 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 		&compositorNode{compositor: s.compositorRef},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
+		&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
 		newAsyncEncodeNode(s),
 	}
 }

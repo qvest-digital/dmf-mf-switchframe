@@ -148,8 +148,13 @@ export class PipelineManager {
 		programCanvasEl?: HTMLCanvasElement | null,
 		previewCanvasEl?: HTMLCanvasElement | null,
 	): void {
-		// Prefer raw YUV program stream when available (bypasses H.264 decode).
-		const programKey = this.pipeline.isRawYUVSource('program-raw') ? 'program-raw' : 'program';
+		// Prefer low-bitrate program-preview (3 Mbps) over full-quality program
+		// (10 Mbps) once its MoQ catalog has arrived (audio decoder configured).
+		// Fall back to program-raw (raw YUV) or full-quality program.
+		const previewReady = this.pipeline.getAudioDecoder('program-preview') !== null;
+		const programKey = previewReady
+			? 'program-preview'
+			: this.pipeline.isRawYUVSource('program-raw') ? 'program-raw' : 'program';
 
 		// If program-raw exists but catalog hasn't arrived yet, defer PROGRAM
 		// canvas attachment to avoid creating a 2D context that blocks WebGL.
@@ -189,6 +194,11 @@ export class PipelineManager {
 					this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
 					this.currentProgramCanvas = programKey;
 					this.currentProgramCanvasEl = programCanvasEl;
+					// Disconnect full-quality program when preview is active
+					// to stop wasting ~10 Mbps of bandwidth.
+					if (programKey === 'program-preview') {
+						this.pipeline.disconnectSource('program');
+					}
 				} else {
 					this.currentProgramCanvas = null;
 					this.currentProgramCanvasEl = null;

@@ -699,7 +699,7 @@ func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
 
 func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
-	// upstream-key → compositor → raw-sink-mxl → raw-sink-monitor → h264-encode
+	// upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
 
@@ -718,13 +718,14 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	defer sw.Close()
 
 	nodes := sw.buildNodeList()
-	require.Len(t, nodes, 6)
+	require.Len(t, nodes, 7)
 	require.Equal(t, "upstream-key", nodes[0].Name())
 	require.Equal(t, "layout-compositor", nodes[1].Name())
 	require.Equal(t, "compositor", nodes[2].Name())
 	require.Equal(t, "raw-sink-mxl", nodes[3].Name())
 	require.Equal(t, "raw-sink-monitor", nodes[4].Name())
-	require.Equal(t, "h264-encode", nodes[5].Name())
+	require.Equal(t, "raw-sink-preview", nodes[5].Name())
+	require.Equal(t, "h264-encode", nodes[6].Name())
 }
 
 func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
