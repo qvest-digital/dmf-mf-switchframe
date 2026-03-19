@@ -2550,6 +2550,17 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		},
 	}
 
+	if s.pacer != nil {
+		snap := s.pacer.snapshot()
+		result["pacer"] = map[string]any{
+			"paced_frames": snap.paced,
+			"empty_ticks":  snap.emptyTicks,
+			"replaced":     snap.replaced,
+			"interval_ms":  float64(s.pacer.interval.Nanoseconds()) / 1e6,
+			"bypass":       s.pacer.bypass,
+		}
+	}
+
 	if s.framePool != nil {
 		hits, misses := s.framePool.Stats()
 		result["frame_pool"] = map[string]any{

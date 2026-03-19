@@ -1715,6 +1715,18 @@
 							<span class="stat-val">{pool.capacity ?? '-'} cap</span>
 						</div>
 					{/if}
+					{#if snapshot?.switcher?.pacer}
+						{@const pacer = snapshot.switcher.pacer}
+						<div class="stat-row">
+							<span class="stat-key">Pacer</span>
+							<span class="stat-val">{fmtCount(pacer.paced_frames)} paced</span>
+							<span class="stat-val">
+								<span class="health-dot {(pacer.empty_ticks ?? 0) > 0 ? 'warn' : 'ok'}"></span>
+								{fmtCount(pacer.empty_ticks)} empty
+							</span>
+							<span class="stat-val">{fmtCount(pacer.replaced)} replaced</span>
+						</div>
+					{/if}
 					{#if snapshot?.switcher?.source_decoders}
 						{@const dec = snapshot.switcher.source_decoders}
 						<div class="stat-row">
