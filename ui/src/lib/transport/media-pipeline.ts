@@ -466,15 +466,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			return true;
 		}
 
-		// Create audio clock from the source's audio decoder (or a no-op clock).
-		// Program-preview uses free-run (returns -1) for smooth 30fps rendering.
-		// Audio-clock mode fights the ~96ms video-ahead offset, causing 4ms of
-		// slack in the 100ms look-ahead tolerance — any network jitter causes
-		// buffer overflow and frame discards (7fps instead of 30fps).
-		// Audio still plays and provides VU metering; only video rendering is free-run.
+		// Create audio clock from the source's audio decoder (or a no-op clock)
 		const audioClock = {
 			getPlaybackPTS(): number {
-				if (key === 'program-preview') return -1;
 				return source.audioDecoder?.getPlaybackPTS() ?? -1;
 			},
 		};
