@@ -33,6 +33,7 @@ import (
 	"github.com/zsiec/switchframe/server/fastctrl"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
@@ -1336,6 +1337,17 @@ func (a *App) Run(ctx context.Context) error {
 		} else {
 			a.programPreviewEnc = pe
 			a.debugCollector.Register("preview:program", pe)
+
+			// Force IDR on source cuts to prevent P-frame artifacts from the
+			// old scene smearing into the new one. The main encoder uses
+			// forceNextIDR; the preview encoder needs the same treatment.
+			var lastProgramSource string
+			a.sw.OnStateChange(func(state internal.ControlRoomState) {
+				if state.ProgramSource != lastProgramSource {
+					lastProgramSource = state.ProgramSource
+					pe.ForceKeyframe()
+				}
+			})
 
 			a.sw.SetRawPreviewSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
 				// Use the wall-clock-rewritten PTS from the program relay output,

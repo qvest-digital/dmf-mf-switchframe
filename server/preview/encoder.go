@@ -81,8 +81,16 @@ type Encoder struct {
 	done          chan struct{}
 	stopOnce      sync.Once
 	stopped       atomic.Bool
+	forceIDR      atomic.Bool
 	stats         Stats
 	frameInterval int // resolved from Config (min 1)
+}
+
+// ForceKeyframe forces the next encoded frame to be an IDR keyframe.
+// Call on source cuts to prevent P-frame artifacts from the old scene
+// smearing into the new one.
+func (e *Encoder) ForceKeyframe() {
+	e.forceIDR.Store(true)
 }
 
 // NewEncoder creates and starts a preview encoder goroutine.
@@ -291,9 +299,10 @@ func (e *Encoder) loop() {
 			job.release(job.yuv)
 		}
 
-		// Encode.
+		// Encode. Force IDR if requested (source cut).
+		forceIDR := e.forceIDR.Swap(false)
 		encStart := time.Now()
-		encoded, isKeyframe, err := encoder.Encode(encYUV, pts, false)
+		encoded, isKeyframe, err := encoder.Encode(encYUV, pts, forceIDR)
 		encDur := time.Since(encStart).Nanoseconds()
 		e.stats.LastEncodeNs.Store(encDur)
 		// EMA: avg = avg*0.9 + sample*0.1
