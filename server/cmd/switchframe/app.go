@@ -394,18 +394,11 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Enable CBR pacing for SRT output. Without CBR, the muxer outputs
-	// VBR bursts (large video frames produce bursty TS packets) that
-	// overwhelm SRT's send buffer, causing frame drops at the client.
-	// CBR null-pads the TS stream to a constant rate, matching SRT's
-	// expectation of steady delivery.
-	{
-		pf := a.sw.PipelineFormat()
-		videoBps := int64(switcher.DefaultBitrateForResolution(pf.Width, pf.Height))
-		audioBps := int64(128_000) // AAC-LC stereo
-		muxrate := output.ComputeMuxrate(videoBps, audioBps)
-		a.outputMgr.SetCBRMuxrate(muxrate)
-	}
+	// CBR pacing is NOT enabled for SRT output. SRT has its own congestion
+	// control and jitter buffer that handle VBR natively. CBR null-padding
+	// adds buffering latency (10ms tick) and at typical video bitrates the
+	// pacer operates in 92% burst mode, defeating the purpose of CBR.
+	// The 512-slot SRT listener buffer absorbs muxer bursts instead.
 
 	// Attach confidence monitor for 1fps program output thumbnail.
 	a.confidenceMon = output.NewConfidenceMonitor(decoderFactory())
