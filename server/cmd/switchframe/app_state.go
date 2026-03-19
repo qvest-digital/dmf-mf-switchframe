@@ -6,8 +6,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync/atomic"
-
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -346,13 +344,11 @@ func (a *App) wireStateCallbacks() {
 	// Only rebuild the pipeline when the compositor's Active() state actually
 	// changes (e.g., first layer turned on, last layer turned off). Fade ticks
 	// fire onStateChange ~60x/sec but don't change Active() — rebuilding on
-	// every tick would create a new pipeline + encode goroutine per frame.
-	var gfxWasActive atomic.Bool
+	// Graphics state changes no longer trigger pipeline rebuild.
+	// The compositor node is always active in the pipeline with a fast
+	// no-op path when no layers are visible (<1µs RLock check). This
+	// eliminates the single-frame stutter from encode goroutine handoff.
 	a.compositor.OnStateChange(func(gfxState graphics.State) {
-		nowActive := a.compositor.IsActive()
-		if gfxWasActive.Swap(nowActive) != nowActive {
-			a.sw.RebuildPipeline()
-		}
 		a.clearLastOperator()
 		a.broadcastState(&gfxState)
 	})

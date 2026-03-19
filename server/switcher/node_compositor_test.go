@@ -16,10 +16,12 @@ func TestCompositorNode_InactiveWhenNil(t *testing.T) {
 	require.NoError(t, n.Close())
 }
 
-func TestCompositorNode_InactiveWhenNoOverlay(t *testing.T) {
+func TestCompositorNode_AlwaysActiveWhenAttached(t *testing.T) {
+	// Compositor node is always active when attached to avoid pipeline
+	// rebuilds on graphics toggle. ProcessYUV has its own fast path.
 	c := graphics.NewCompositor()
 	n := &compositorNode{compositor: c}
-	require.False(t, n.Active(), "should be inactive when no overlay is set")
+	require.True(t, n.Active(), "should be active even with no overlay (fast no-op path)")
 }
 
 func TestCompositorNode_ActiveWhenOverlayOn(t *testing.T) {
