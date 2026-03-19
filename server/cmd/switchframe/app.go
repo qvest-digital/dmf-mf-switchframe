@@ -746,19 +746,26 @@ func (a *App) initMXL() error {
 			}
 		}
 
-		src := mxl.NewSource(srcCfg)
-
-		src.Start(context.Background(), videoFlow, audioFlow, dataFlow)
-		a.mxlSources = append(a.mxlSources, src)
-
-		// Register replay viewer on source relay (same pattern as app_streams.go).
+		// Register replay viewer on source relay, or pass directly to source
+		// when preview proxy is active (so replay gets full-quality frames).
 		if a.replayMgr != nil {
 			if err := a.replayMgr.AddSource(flowName); err != nil {
 				slog.Warn("mxl: could not add replay source", "key", flowName, "err", err)
 			} else if v := a.replayMgr.Viewer(flowName); v != nil {
-				relay.AddViewer(v)
+				if srcCfg.PreviewEncoder != nil {
+					// Dual-encode mode: replay viewer gets full-quality frames
+					// directly from the source's encoder, not from the relay.
+					srcCfg.ReplayViewer = v
+				} else {
+					relay.AddViewer(v)
+				}
 			}
 		}
+
+		src := mxl.NewSource(srcCfg)
+
+		src.Start(context.Background(), videoFlow, audioFlow, dataFlow)
+		a.mxlSources = append(a.mxlSources, src)
 
 		slog.Info("MXL source registered",
 			"videoFlowID", videoFlowID,
