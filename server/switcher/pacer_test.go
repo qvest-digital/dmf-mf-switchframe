@@ -150,3 +150,37 @@ func TestFramePacer_QueueDepthTracking(t *testing.T) {
 	snap := p.snapshot()
 	assert.GreaterOrEqual(t, snap.queueDepth, int64(1), "queue should have pending frames")
 }
+
+func TestFramePacer_DrainsCatchupWhenQueueBuilds(t *testing.T) {
+	// When frames arrive faster than the tick rate, the pacer should
+	// release multiple frames per tick to drain the queue back to ≤1.
+	// This prevents unbounded queue growth when source FPS > pacer FPS.
+	var mu sync.Mutex
+	var delivered []*media.VideoFrame
+	p := newFramePacer(20*time.Millisecond, func(f *media.VideoFrame) {
+		mu.Lock()
+		delivered = append(delivered, f)
+		mu.Unlock()
+	})
+	defer p.stop()
+
+	// Submit 6 frames at once (simulating burst from faster source)
+	for i := 0; i < 6; i++ {
+		p.submit(&media.VideoFrame{PTS: int64(i * 1000)})
+	}
+
+	// Wait for 3 ticks — should be enough to drain all 6 frames
+	time.Sleep(70 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// All 6 must be delivered, in order
+	require.Equal(t, 6, len(delivered), "all frames must be delivered (no drops)")
+	for i := 0; i < 6; i++ {
+		assert.Equal(t, int64(i*1000), delivered[i].PTS, "frame %d PTS", i)
+	}
+
+	// Queue should be drained
+	snap := p.snapshot()
+	assert.Equal(t, int64(0), snap.queueDepth, "queue should be fully drained")
+}
