@@ -417,7 +417,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	// This should no longer trigger now that per-source normalization scales at
 	// the decoder output. Kept as a defensive fallback.
 	if w != e.width || h != e.height {
-		slog.Warn("transition: unexpected resolution mismatch after normalization",
+		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", w, "source_h", h, "target_w", e.width, "target_h", e.height)
 		targetSize := e.width * e.height * 3 / 2
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
@@ -562,7 +562,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		// This should no longer trigger now that per-source normalization scales at
 		// the decoder output. Kept as a defensive fallback.
 		if decW != e.width || decH != e.height {
-			slog.Warn("transition: unexpected resolution mismatch after normalization",
+			slog.Debug("transition: resolution mismatch, scaling",
 				"source_w", decW, "source_h", decH, "target_w", e.width, "target_h", e.height)
 			targetSize := e.width * e.height * 3 / 2
 			if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
@@ -639,7 +639,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	// per-source normalization scales at the decoder output. Kept as a defensive fallback.
 	src := yuv
 	if width != e.width || height != e.height {
-		slog.Warn("transition: unexpected resolution mismatch after normalization",
+		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", width, "source_h", height, "target_w", e.width, "target_h", e.height)
 		targetSize := e.width * e.height * 3 / 2
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {

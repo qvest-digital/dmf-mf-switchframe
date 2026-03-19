@@ -2988,26 +2988,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			return
 		}
 		s.routeToEngine.Add(1)
-		// Normalize to pipeline format before transition engine blend.
-		// Without this, blending a 720p source with a 1080p source causes
-		// resolution mismatch warnings and corrupt output.
-		yuv, w, h := pf.YUV, pf.Width, pf.Height
-		if fmt := s.pipelineFormat.Load(); fmt != nil && (w != fmt.Width || h != fmt.Height) {
-			dstW, dstH := fmt.Width, fmt.Height
-			dstSize := dstW * dstH * 3 / 2
-			buf := s.framePool.Acquire()
-			if len(buf) >= dstSize {
-				transition.ScaleYUV420(yuv, w, h, buf[:dstSize], dstW, dstH)
-				yuv = buf[:dstSize]
-				w, h = dstW, dstH
-			}
-			// Note: buf is from the pool but we don't track it with refs here.
-			// The transition engine copies the data internally (IngestRawFrame
-			// deep-copies into its own buffers), so this buffer is safe to
-			// reuse after the call returns.
-			defer s.framePool.Release(buf)
-		}
-		engine.IngestRawFrame(sourceKey, yuv, w, h, pf.PTS)
+		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
 		if audioHandler != nil {
 			audioHandler.OnTransitionPosition(engine.Position())
 		}
