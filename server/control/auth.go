@@ -10,11 +10,14 @@ import (
 
 // authExemptPaths lists URL paths that do not require authentication.
 // These include the certificate hash endpoint (needed for WebTransport
-// bootstrapping), health checks, and metrics scraping.
+// bootstrapping), health checks, metrics scraping, and operator
+// registration (authenticated via invite token instead of session API token).
 var authExemptPaths = map[string]bool{
-	"/api/cert-hash": true,
-	"/health":        true,
-	"/metrics":       true,
+	"/api/cert-hash":          true,
+	"/health":                 true,
+	"/metrics":                true,
+	"/api/operator/register":  true,
+	"/api/v1/operator/register": true,
 }
 
 // AuthMiddleware returns HTTP middleware that enforces Bearer token
