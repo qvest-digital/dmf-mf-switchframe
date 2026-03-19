@@ -339,6 +339,10 @@ func (a *App) initCoreEngine() error {
 		}
 	}
 
+	if !a.cfg.FrameSync && a.cfg.FRCQuality != "" && a.cfg.FRCQuality != "none" {
+		slog.Warn("--frc-quality has no effect without --frame-sync")
+	}
+
 	// Wire audio mixer to the switcher.
 	a.sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 		a.mixer.IngestFrame(sourceKey, frame)
