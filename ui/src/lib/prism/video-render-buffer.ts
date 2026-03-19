@@ -111,6 +111,44 @@ export class VideoRenderBuffer {
 		return frame;
 	}
 
+	takeNewestFrame(): VideoRenderResult {
+		const result: VideoRenderResult = {
+			frame: null,
+			discarded: 0,
+			totalDiscarded: this.totalDiscarded,
+			queueSize: this.len,
+			queueLengthMs: this.totalLengthMs,
+		};
+
+		if (this.len === 0) return result;
+
+		// The newest frame is at tail - 1
+		const newestIdx = this.tail - 1;
+		result.frame = this.frames[newestIdx]!;
+		this.frames[newestIdx] = null;
+		this.totalLengthMs -= (result.frame.duration ?? 0) / 1000;
+
+		// Close and discard all older frames
+		for (let i = this.head; i < newestIdx; i++) {
+			const f = this.frames[i]!;
+			this.totalLengthMs -= (f.duration ?? 0) / 1000;
+			f.close();
+			this.frames[i] = null;
+			result.discarded++;
+		}
+
+		this.totalDiscarded += result.discarded;
+		this.head = newestIdx + 1;
+		this.len = 0;
+
+		result.totalDiscarded = this.totalDiscarded;
+		result.queueSize = 0;
+		result.queueLengthMs = this.totalLengthMs;
+
+		this.maybeCompact();
+		return result;
+	}
+
 	getStats(): { queueSize: number; queueLengthMs: number; totalDiscarded: number } {
 		return {
 			queueSize: this.len,

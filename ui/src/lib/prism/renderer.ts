@@ -1,5 +1,10 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
+const LIVE_EDGE_TARGET_DEPTH = 2;
+const RAF_THROTTLE_THRESHOLD_MS = 50;
+const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
+const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
+
 /** Provides the current audio playback PTS for A/V sync. Returns -1 when audio is unavailable. */
 interface AudioClock {
 	getPlaybackPTS(): number;
@@ -12,6 +17,7 @@ export interface RendererStats {
 	videoQueueSize: number;
 	videoQueueLengthMs: number;
 	videoTotalDiscarded: number;
+	liveEdgeSkips: number;
 }
 
 /** Comprehensive renderer diagnostics for perf snapshots, covering rAF timing, draw cost, A/V sync, and buffer state. */
@@ -32,12 +38,14 @@ export interface RendererDiagnostics {
 	avSyncMax: number;
 	avSyncAvg: number;
 	clockMode: string;
+	liveEdgeSkips: number;
 	emptyBufferHits: number;
 	currentVideoPTS: number;
 	currentAudioPTS: number;
 	videoQueueSize: number;
 	videoQueueMs: number;
 	videoTotalDiscarded: number;
+	useSetTimeoutFallback: boolean;
 }
 
 /**
@@ -91,6 +99,13 @@ export class PrismRenderer {
 	private _diagAvSyncMax = -Infinity;
 	private _diagLastAvSync = 0;
 	private _diagEmptyBufferHits = 0;
+	private _diagLiveEdgeSkips = 0;
+
+	// --- rAF throttle detection ---
+	private _slowRafCount = 0;
+	private _normalRafCount = 0;
+	private _useSetTimeoutFallback = false;
+	private _timeoutId: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(
 		canvas: HTMLCanvasElement,
@@ -123,8 +138,8 @@ export class PrismRenderer {
 
 	start(): void {
 		if (this._externallyDriven) return;
-		if (this.animationId !== null) return;
-		this.renderLoop();
+		if (this.animationId !== null || this._timeoutId !== null) return;
+		this.scheduleNextTick();
 	}
 
 	renderOnce(): void {
@@ -132,9 +147,24 @@ export class PrismRenderer {
 		this.renderTick(now);
 	}
 
+	private scheduleNextTick(): void {
+		if (this._useSetTimeoutFallback) {
+			this._timeoutId = setTimeout(this.fallbackLoop, 16);
+		} else {
+			this.animationId = requestAnimationFrame(this.renderLoop);
+		}
+	}
+
 	private renderLoop = (): void => {
-		this.animationId = requestAnimationFrame(this.renderLoop);
+		this.animationId = null;
 		this.renderTick(performance.now());
+		this.scheduleNextTick();
+	};
+
+	private fallbackLoop = (): void => {
+		this._timeoutId = null;
+		this.renderTick(performance.now());
+		this.scheduleNextTick();
 	};
 
 	private renderTick(now: number): void {
@@ -144,8 +174,68 @@ export class PrismRenderer {
 			this._diagRafIntervalSum += interval;
 			if (interval > this._diagRafIntervalMax) this._diagRafIntervalMax = interval;
 			if (interval < this._diagRafIntervalMin) this._diagRafIntervalMin = interval;
+
+			// Detect rAF throttling and switch render strategy
+			if (interval > RAF_THROTTLE_THRESHOLD_MS) {
+				this._slowRafCount++;
+				this._normalRafCount = 0;
+				if (!this._useSetTimeoutFallback && this._slowRafCount >= RAF_THROTTLE_COUNT) {
+					this._useSetTimeoutFallback = true;
+				}
+			} else {
+				this._normalRafCount++;
+				this._slowRafCount = 0;
+				if (this._useSetTimeoutFallback && this._normalRafCount >= RAF_NORMAL_COUNT) {
+					this._useSetTimeoutFallback = false;
+				}
+			}
 		}
 		this._diagLastRafTime = now;
+
+		// Live-edge enforcement: if buffer has accumulated beyond target
+		// depth, skip directly to the newest frame. This prevents latency
+		// buildup from encode jitter, network batching, or decode stalls.
+		const preSkipStats = this.videoBuffer.getStats();
+		if (preSkipStats.queueSize > LIVE_EDGE_TARGET_DEPTH) {
+			const skipResult = this.videoBuffer.takeNewestFrame();
+			if (skipResult.frame) {
+				this._diagLiveEdgeSkips++;
+				if (this.lastDrawnFrame) {
+					this.lastDrawnFrame.close();
+				}
+				this.lastDrawnFrame = skipResult.frame;
+
+				const t0 = performance.now();
+				this.drawFrame(skipResult.frame);
+				const drawMs = performance.now() - t0;
+				this._diagDrawTimeSum += drawMs;
+				if (drawMs > this._diagDrawTimeMax) this._diagDrawTimeMax = drawMs;
+
+				this._diagFramesDrawn++;
+				if (this._diagLastFrameDrawTime > 0) {
+					const fInterval = now - this._diagLastFrameDrawTime;
+					this._diagFrameIntervalSum += fInterval;
+					if (fInterval > this._diagFrameIntervalMax) this._diagFrameIntervalMax = fInterval;
+					if (fInterval < this._diagFrameIntervalMin) this._diagFrameIntervalMin = fInterval;
+				}
+				this._diagLastFrameDrawTime = now;
+
+				this.currentVideoPTS = skipResult.frame.timestamp;
+
+				// Re-anchor any freerun clocks to the new PTS
+				if (this.freeRunStart >= 0) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = skipResult.frame.timestamp;
+				}
+				if (this.audioStallFreeRunStart >= 0) {
+					this.audioStallFreeRunStart = now;
+					this.audioStallFreeRunBasePTS = skipResult.frame.timestamp;
+				}
+
+				this.reportStats(now);
+				return;
+			}
+		}
 
 		let targetPTS: number;
 		// Always check the audio clock — it returns -1 dynamically when
@@ -427,6 +517,7 @@ export class PrismRenderer {
 			videoQueueSize: vStats.queueSize,
 			videoQueueLengthMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
+			liveEdgeSkips: this._diagLiveEdgeSkips,
 		});
 	}
 
@@ -476,12 +567,14 @@ export class PrismRenderer {
 			clockMode: this.freeRunStart >= 0 ? "freerun"
 				: this.audioStallFreeRunStart >= 0 ? "audio-stall-freerun"
 				: "audio",
+			liveEdgeSkips: this._diagLiveEdgeSkips,
 			emptyBufferHits: this._diagEmptyBufferHits,
 			currentVideoPTS: this.currentVideoPTS,
 			currentAudioPTS: this.currentAudioPTS,
 			videoQueueSize: vStats.queueSize,
 			videoQueueMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
+			useSetTimeoutFallback: this._useSetTimeoutFallback,
 		};
 	}
 
@@ -489,6 +582,10 @@ export class PrismRenderer {
 		if (this.animationId !== null) {
 			cancelAnimationFrame(this.animationId);
 			this.animationId = null;
+		}
+		if (this._timeoutId !== null) {
+			clearTimeout(this._timeoutId);
+			this._timeoutId = null;
 		}
 		if (this.lastDrawnFrame) {
 			this.lastDrawnFrame.close();
