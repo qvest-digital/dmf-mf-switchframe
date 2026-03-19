@@ -1,6 +1,9 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
 const LIVE_EDGE_TARGET_DEPTH = 2;
+const RAF_THROTTLE_THRESHOLD_MS = 50;
+const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
+const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
 
 /** Provides the current audio playback PTS for A/V sync. Returns -1 when audio is unavailable. */
 interface AudioClock {
@@ -42,6 +45,7 @@ export interface RendererDiagnostics {
 	videoQueueSize: number;
 	videoQueueMs: number;
 	videoTotalDiscarded: number;
+	useSetTimeoutFallback: boolean;
 }
 
 /**
@@ -97,6 +101,12 @@ export class PrismRenderer {
 	private _diagEmptyBufferHits = 0;
 	private _diagLiveEdgeSkips = 0;
 
+	// --- rAF throttle detection ---
+	private _slowRafCount = 0;
+	private _normalRafCount = 0;
+	private _useSetTimeoutFallback = false;
+	private _timeoutId: ReturnType<typeof setTimeout> | null = null;
+
 	constructor(
 		canvas: HTMLCanvasElement,
 		videoBuffer: VideoRenderBuffer,
@@ -128,8 +138,8 @@ export class PrismRenderer {
 
 	start(): void {
 		if (this._externallyDriven) return;
-		if (this.animationId !== null) return;
-		this.renderLoop();
+		if (this.animationId !== null || this._timeoutId !== null) return;
+		this.scheduleNextTick();
 	}
 
 	renderOnce(): void {
@@ -137,9 +147,24 @@ export class PrismRenderer {
 		this.renderTick(now);
 	}
 
+	private scheduleNextTick(): void {
+		if (this._useSetTimeoutFallback) {
+			this._timeoutId = setTimeout(this.fallbackLoop, 16);
+		} else {
+			this.animationId = requestAnimationFrame(this.renderLoop);
+		}
+	}
+
 	private renderLoop = (): void => {
-		this.animationId = requestAnimationFrame(this.renderLoop);
+		this.animationId = null;
 		this.renderTick(performance.now());
+		this.scheduleNextTick();
+	};
+
+	private fallbackLoop = (): void => {
+		this._timeoutId = null;
+		this.renderTick(performance.now());
+		this.scheduleNextTick();
 	};
 
 	private renderTick(now: number): void {
@@ -149,6 +174,21 @@ export class PrismRenderer {
 			this._diagRafIntervalSum += interval;
 			if (interval > this._diagRafIntervalMax) this._diagRafIntervalMax = interval;
 			if (interval < this._diagRafIntervalMin) this._diagRafIntervalMin = interval;
+
+			// Detect rAF throttling and switch render strategy
+			if (interval > RAF_THROTTLE_THRESHOLD_MS) {
+				this._slowRafCount++;
+				this._normalRafCount = 0;
+				if (!this._useSetTimeoutFallback && this._slowRafCount >= RAF_THROTTLE_COUNT) {
+					this._useSetTimeoutFallback = true;
+				}
+			} else {
+				this._normalRafCount++;
+				this._slowRafCount = 0;
+				if (this._useSetTimeoutFallback && this._normalRafCount >= RAF_NORMAL_COUNT) {
+					this._useSetTimeoutFallback = false;
+				}
+			}
 		}
 		this._diagLastRafTime = now;
 
@@ -534,6 +574,7 @@ export class PrismRenderer {
 			videoQueueSize: vStats.queueSize,
 			videoQueueMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
+			useSetTimeoutFallback: this._useSetTimeoutFallback,
 		};
 	}
 
@@ -541,6 +582,10 @@ export class PrismRenderer {
 		if (this.animationId !== null) {
 			cancelAnimationFrame(this.animationId);
 			this.animationId = null;
+		}
+		if (this._timeoutId !== null) {
+			clearTimeout(this._timeoutId);
+			this._timeoutId = null;
 		}
 		if (this.lastDrawnFrame) {
 			this.lastDrawnFrame.close();
