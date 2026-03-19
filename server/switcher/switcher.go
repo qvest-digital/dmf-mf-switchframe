@@ -1394,6 +1394,12 @@ func (s *Switcher) videoProcessingLoop() {
 
 		start := time.Now()
 
+		// Normalize to pipeline format resolution before processing.
+		// Sources may deliver at different resolutions (e.g., 720p camera
+		// + 1080p file). Scaling here rather than on the delivery hot path
+		// avoids blocking source frame delivery goroutines.
+		work.yuvFrame = s.normalizeResolution(work.yuvFrame)
+
 		if p := s.pipeline.Load(); p != nil {
 			work.yuvFrame = p.Run(work.yuvFrame)
 		}
@@ -1486,6 +1492,39 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 		cp.SetRefs(1)
 		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano})
 	}
+}
+
+// normalizeResolution scales a ProcessingFrame to the pipeline format
+// resolution if it differs. Called in the video processing goroutine
+// (not on the delivery hot path) to avoid blocking source frame delivery.
+// Returns the same frame if no scaling needed, or a new scaled frame.
+func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
+	fmt := s.pipelineFormat.Load()
+	if fmt == nil || (pf.Width == fmt.Width && pf.Height == fmt.Height) {
+		return pf
+	}
+	dstW, dstH := fmt.Width, fmt.Height
+	dstSize := dstW * dstH * 3 / 2
+	buf := s.framePool.Acquire()
+	if len(buf) < dstSize {
+		buf = make([]byte, dstSize)
+	}
+	buf = buf[:dstSize]
+	transition.ScaleYUV420(pf.YUV, pf.Width, pf.Height, buf, dstW, dstH)
+	pf.ReleaseYUV()
+	scaled := &ProcessingFrame{
+		YUV:        buf,
+		Width:      dstW,
+		Height:     dstH,
+		PTS:        pf.PTS,
+		DTS:        pf.DTS,
+		IsKeyframe: pf.IsKeyframe,
+		Codec:      pf.Codec,
+		GroupID:     pf.GroupID,
+		pool:       s.framePool,
+	}
+	scaled.SetRefs(1)
+	return scaled
 }
 
 // StartTransition begins a mix/dip/wipe/stinger transition from the current
@@ -2949,7 +2988,26 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			return
 		}
 		s.routeToEngine.Add(1)
-		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		// Normalize to pipeline format before transition engine blend.
+		// Without this, blending a 720p source with a 1080p source causes
+		// resolution mismatch warnings and corrupt output.
+		yuv, w, h := pf.YUV, pf.Width, pf.Height
+		if fmt := s.pipelineFormat.Load(); fmt != nil && (w != fmt.Width || h != fmt.Height) {
+			dstW, dstH := fmt.Width, fmt.Height
+			dstSize := dstW * dstH * 3 / 2
+			buf := s.framePool.Acquire()
+			if len(buf) >= dstSize {
+				transition.ScaleYUV420(yuv, w, h, buf[:dstSize], dstW, dstH)
+				yuv = buf[:dstSize]
+				w, h = dstW, dstH
+			}
+			// Note: buf is from the pool but we don't track it with refs here.
+			// The transition engine copies the data internally (IngestRawFrame
+			// deep-copies into its own buffers), so this buffer is safe to
+			// reuse after the call returns.
+			defer s.framePool.Release(buf)
+		}
+		engine.IngestRawFrame(sourceKey, yuv, w, h, pf.PTS)
 		if audioHandler != nil {
 			audioHandler.OnTransitionPosition(engine.Position())
 		}
