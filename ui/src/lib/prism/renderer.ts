@@ -1,6 +1,6 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-const LIVE_EDGE_TARGET_DEPTH = 4;
+const LIVE_EDGE_TARGET_DEPTH = 6;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
