@@ -256,6 +256,11 @@ func WithCommsManager(cm CommsManagerAPI) APIOption {
 	return func(a *API) { a.commsMgr = cm }
 }
 
+// WithInviteTokens sets the invite token map (token -> role) for operator registration gating.
+func WithInviteTokens(tokens map[string]string) APIOption {
+	return func(a *API) { a.inviteTokens = tokens }
+}
+
 // WithAllowedOutputPorts constrains SRT listener output to the given ports.
 func WithAllowedOutputPorts(ports []int) APIOption {
 	return func(a *API) {
@@ -302,7 +307,8 @@ type API struct {
 	tickerEngine       *graphics.TickerEngine
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
-	allowedOutputPorts map[int]bool // nil = unconstrained
+	inviteTokens       map[string]string // token -> role; nil = no invite gating
+	allowedOutputPorts map[int]bool      // nil = unconstrained
 	mux                *http.ServeMux
 	enrichFn           atomic.Pointer[enrichFunc]
 	lastOperator       atomic.Pointer[string]

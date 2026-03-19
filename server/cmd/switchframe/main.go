@@ -88,6 +88,9 @@ type AppConfig struct {
 	SRTOutputPortEnd  int    // --srt-output-ports end
 	Domain            string // --domain (public hostname for connection URLs)
 
+	// Invite tokens: token -> role for O(1) lookup (env: SWITCHFRAME_INVITE_TOKENS).
+	InviteTokens map[string]string
+
 	// MXL integration.
 	MXLSources        []string // Flow UUIDs to subscribe as sources
 	MXLOutput         string   // Flow name for program output (empty = disabled)
@@ -297,6 +300,20 @@ func parseConfig() (AppConfig, error) {
 		stateDir = filepath.Join(homeDir, ".switchframe")
 	}
 
+	// Parse invite tokens: "director:tok1,audio:tok2,..."
+	// Stored as token -> role (reversed) for O(1) lookup during registration.
+	var inviteTokens map[string]string
+	if envTokens := os.Getenv("SWITCHFRAME_INVITE_TOKENS"); envTokens != "" {
+		inviteTokens = make(map[string]string)
+		for _, pair := range strings.Split(envTokens, ",") {
+			parts := strings.SplitN(pair, ":", 2)
+			if len(parts) == 2 {
+				role, token := parts[0], parts[1]
+				inviteTokens[token] = role
+			}
+		}
+	}
+
 	// Parse allowed origins for CORS.
 	var allowedOrigins []string
 	if *allowedOriginsFlag != "" {
@@ -343,6 +360,7 @@ func parseConfig() (AppConfig, error) {
 		SRTOutputPortBase:    srtOutputBase,
 		SRTOutputPortEnd:     srtOutputEnd,
 		Domain:               *domainFlag,
+		InviteTokens:         inviteTokens,
 		MXLSources:           mxlSources,
 		MXLOutput:            *mxlOutput,
 		MXLOutputVideoDef:    *mxlOutputVideoDef,
