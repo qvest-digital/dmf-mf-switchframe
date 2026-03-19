@@ -1052,6 +1052,8 @@
 					{@const diag = browserData[sourceKey]}
 					{@const r = diag.renderer as Record<string, any> | null}
 					{@const a = diag.audio as Record<string, any> | null}
+					{@const v = diag.videoDecoder as Record<string, any> | null}
+					{@const t = diag.transport as Record<string, any> | null}
 					<div class="section">
 						<div class="section-label">{sourceKey.toUpperCase()}</div>
 
@@ -1082,6 +1084,13 @@
 									<span class="stat-val">{fmtCount(r.emptyBufferHits)}</span>
 								</div>
 								<div class="stat-row">
+									<span class="stat-key">Edge Skips</span>
+									<span class="stat-val">
+										<span class="health-dot {(r.liveEdgeSkips ?? 0) > 0 ? 'warn' : 'ok'}"></span>
+										{fmtCount(r.liveEdgeSkips ?? 0)}
+									</span>
+								</div>
+								<div class="stat-row">
 									<span class="stat-key">Skipped</span>
 									<span class="stat-val">{fmtCount(r.framesSkipped)}</span>
 								</div>
@@ -1098,6 +1107,60 @@
 								</div>
 							{:else}
 								<div class="stat-row"><span class="stat-key browser-dim">No renderer</span></div>
+							{/if}
+						</div>
+
+						<!-- Video Decoder -->
+						<div class="browser-subsection">
+							<span class="browser-subsection-label">Decoder</span>
+							{#if v}
+								<div class="stat-row">
+									<span class="stat-key">FPS In/Out</span>
+									<span class="stat-val">
+										{(v.inputFps ?? 0).toFixed(1)} / {(v.outputFps ?? 0).toFixed(1)}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Input Interval</span>
+									<span class="stat-val">
+										<span class="health-dot {(v.maxInputIntervalMs ?? 0) > 50 ? 'warn' : 'ok'}"></span>
+										{(v.avgInputIntervalMs ?? 0).toFixed(1)}ms avg, {(v.maxInputIntervalMs ?? 0).toFixed(1)}ms max
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Output Interval</span>
+									<span class="stat-val">
+										<span class="health-dot {(v.maxOutputIntervalMs ?? 0) > 50 ? 'warn' : 'ok'}"></span>
+										{(v.avgOutputIntervalMs ?? 0).toFixed(1)}ms avg, {(v.maxOutputIntervalMs ?? 0).toFixed(1)}ms max
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Decode Queue</span>
+									<span class="stat-val">
+										<span class="health-dot {(v.decodeQueueSize ?? 0) > 8 ? 'crit' : (v.decodeQueueSize ?? 0) > 4 ? 'warn' : 'ok'}"></span>
+										{v.decodeQueueSize ?? 0}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Dropped</span>
+									<span class="stat-val">
+										<span class="health-dot {((v.discardedBufferFull ?? 0) + (v.discardedDelta ?? 0)) > 0 ? 'warn' : 'ok'}"></span>
+										{fmtCount(v.discardedBufferFull ?? 0)} full, {fmtCount(v.discardedDelta ?? 0)} delta
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">PTS Jumps</span>
+									<span class="stat-val">
+										<span class="health-dot {(v.ptsJumps ?? 0) > 0 ? 'warn' : 'ok'}"></span>
+										{v.ptsJumps ?? 0}
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Reconfigs</span>
+									<span class="stat-val">{v.lifetimeConfigureCount ?? 0}</span>
+								</div>
+							{:else}
+								<div class="stat-row"><span class="stat-key browser-dim">No decoder</span></div>
 							{/if}
 						</div>
 
@@ -1207,6 +1270,30 @@
 								</div>
 							{:else}
 								<div class="stat-row"><span class="stat-key browser-dim">No audio</span></div>
+							{/if}
+						</div>
+
+						<!-- Transport -->
+						<div class="browser-subsection">
+							<span class="browser-subsection-label">Transport</span>
+							{#if t}
+								<div class="stat-row">
+									<span class="stat-key">Video Arrival</span>
+									<span class="stat-val">
+										<span class="health-dot {(t.maxVideoArrivalMs ?? 0) > 80 ? 'warn' : 'ok'}"></span>
+										{(t.avgVideoArrivalMs ?? 0).toFixed(1)}ms avg, {(t.maxVideoArrivalMs ?? 0).toFixed(1)}ms max
+									</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Frames</span>
+									<span class="stat-val">{fmtCount(t.videoFramesReceived ?? 0)} video, {fmtCount(t.audioFramesReceived ?? 0)} audio</span>
+								</div>
+								<div class="stat-row">
+									<span class="stat-key">Bytes</span>
+									<span class="stat-val">{((t.bytesReceived ?? 0) / 1024 / 1024).toFixed(1)} MB</span>
+								</div>
+							{:else}
+								<div class="stat-row"><span class="stat-key browser-dim">No transport</span></div>
 							{/if}
 						</div>
 					</div>
