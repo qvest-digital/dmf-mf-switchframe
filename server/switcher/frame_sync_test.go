@@ -550,7 +550,7 @@ func TestFrameSync_AudioFreezeRepeatsLast(t *testing.T) {
 	}
 }
 
-func TestFrameSync_AudioFreezeLimit(t *testing.T) {
+func TestFrameSync_AudioRepeatsIndefinitely(t *testing.T) {
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(10*time.Millisecond, handler.onVideo, handler.onAudio)
 	fs.AddSource("cam1")
@@ -560,15 +560,15 @@ func TestFrameSync_AudioFreezeLimit(t *testing.T) {
 	// Send one audio frame, then never send another.
 	fs.IngestAudio("cam1", &media.AudioFrame{PTS: 1000, Data: []byte{0x01}})
 
-	// Wait for several ticks (more than 3).
-	// With 10ms ticks over 80ms we'd get ~8 ticks, but audio should stop after 3
-	// (1 original emission + 2 repeats = 3 total).
+	// Wait for several ticks. Audio should continue repeating indefinitely
+	// to keep the mixer fed — silence in the output is worse than repeated
+	// audio data for downstream consumers (VLC, SRT, recording).
 	time.Sleep(80 * time.Millisecond)
 
 	count := handler.audioCount()
-	// Must have received the original + at most 2 repeats = 3 audio frames.
-	require.LessOrEqual(t, count, 4, "audio should stop repeating after 2 misses, got %d frames", count)
-	require.GreaterOrEqual(t, count, 2, "should have received at least 2 audio frames")
+	// With 10ms ticks over 80ms, expect ~8 ticks. Audio should keep repeating
+	// (not stop after 2 like the old behavior).
+	require.GreaterOrEqual(t, count, 5, "audio should repeat indefinitely, got %d frames", count)
 }
 
 // --- Frame preservation tests ---
