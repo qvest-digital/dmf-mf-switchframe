@@ -548,14 +548,32 @@ export class PrismAudioDecoder {
 	/** Resume the AudioContext. Must be called from a user gesture handler. */
 	async resumeContext(): Promise<void> {
 		if (this.context && this.context.state === "suspended") {
-			// Send PTS to worklet before resuming so playback starts at the right position.
-			if (this.workletNode && this.playing) {
+			// Re-anchor the worklet PTS to the most recent decoded frame,
+			// accounting for samples already in the ring buffer. This prevents
+			// permanent A/V desync when audio accumulated during autoplay
+			// suspension: firstPTS is stale (from the first frame, possibly
+			// seconds ago), and sampleOffset:0 causes the hard flush to
+			// inflate the PTS by the accumulated buffer duration.
+			if (this.workletNode && this.playing && this.ringBuffer) {
+				const pts = this._diagLastPTS >= 0 ? this._diagLastPTS : this.firstPTS;
+				const contextRate = this.context.sampleRate;
+				const bufferedSamples = Math.round(
+					(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
+				);
+				this.workletNode.port.postMessage({
+					type: "set-pts",
+					pts: pts,
+					sampleOffset: -bufferedSamples,
+				});
+			} else if (this.workletNode && this.playing) {
 				this.workletNode.port.postMessage({
 					type: "set-pts",
 					pts: this.firstPTS,
 					sampleOffset: 0,
 				});
 			}
+			// Clear any pending epoch reset — we just re-anchored authoritatively.
+			this._ptsEpochReset = false;
 			await this.context.resume();
 		}
 	}
