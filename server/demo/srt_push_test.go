@@ -246,9 +246,10 @@ func TestStartSRTSources_MultipleClips(t *testing.T) {
 	}
 }
 
-func TestAddTimestampOffset_Correctness(t *testing.T) {
-	// Verify that addTimestampOffset correctly patches all PTS entries
-	// in a large synthetic TS stream.
+func TestAddTimestampOffset_PatchingLatency(t *testing.T) {
+	// Verify that patching all timestamp entries at a loop boundary
+	// completes in a bounded time (< 5ms for typical files).
+	// Build a large synthetic TS stream with many PTS entries.
 	const numPackets = 5000 // ~940KB, simulating a moderate file
 	data := make([]byte, 0, numPackets*tsPacketLen)
 	for i := 0; i < numPackets; i++ {
@@ -264,7 +265,15 @@ func TestAddTimestampOffset_Correctness(t *testing.T) {
 
 	delta := int64(90000) // 1 second offset
 
+	start := time.Now()
 	addTimestampOffset(data, entries, delta)
+	elapsed := time.Since(start)
+
+	// Patching should be fast — well under 25ms even for thousands of entries.
+	// Use 25ms threshold to avoid flakes on CI shared runners under -race.
+	if elapsed > 25*time.Millisecond {
+		t.Errorf("addTimestampOffset took %v for %d entries, want < 25ms", elapsed, len(entries))
+	}
 
 	// Verify correctness: first PTS should be delta (was 0).
 	_, firstPTS, _ := scanTimestamps(data)

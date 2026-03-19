@@ -27,9 +27,6 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
 	s.delayBuffer = NewDelayBuffer(s)
-	// Bypass pacer in tests for synchronous frame delivery.
-	// Production uses the real frame duration (~33ms at 30fps).
-	s.pacer = newBypassPacer(s.deliverPacedFrame)
 	go s.videoProcessingLoop()
 	return s
 }

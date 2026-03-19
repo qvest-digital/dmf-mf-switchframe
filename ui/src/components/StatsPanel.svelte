@@ -260,7 +260,6 @@
 			codec?: { encoder: string; decoder: string; hw_accel: boolean };
 			frame_sync?: FrameSyncData;
 			frame_rate_converter?: { quality: string };
-			pacer?: { paced_frames: number; empty_ticks: number; queue_depth: number };
 			program_relay_viewers?: RelayViewer[];
 		};
 		mixer?: {
@@ -1714,18 +1713,6 @@
 							<span class="stat-key">Frame Pool</span>
 							<span class="stat-val">{hitRate}% hit</span>
 							<span class="stat-val">{pool.capacity ?? '-'} cap</span>
-						</div>
-					{/if}
-					{#if snapshot?.switcher?.pacer}
-						{@const pacer = snapshot.switcher.pacer}
-						<div class="stat-row">
-							<span class="stat-key">Pacer</span>
-							<span class="stat-val">{fmtCount(pacer.paced_frames)} paced</span>
-							<span class="stat-val">
-								<span class="health-dot {(pacer.empty_ticks ?? 0) > 0 ? 'warn' : 'ok'}"></span>
-								{fmtCount(pacer.empty_ticks)} empty
-							</span>
-							<span class="stat-val">q:{pacer.queue_depth ?? 0}</span>
 						</div>
 					{/if}
 					{#if snapshot?.switcher?.source_decoders}

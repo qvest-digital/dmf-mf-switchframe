@@ -416,9 +416,6 @@ type Switcher struct {
 	// audio delivery from the same goroutine gets starved.
 	videoProcCh   chan videoProcWork
 	videoProcDone chan struct{}
-
-	// Frame pacer — smooths bursty encode output into fixed-cadence delivery.
-	pacer *framePacer
 }
 
 // videoProcWork represents a unit of work for the async video processing
@@ -455,7 +452,6 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
 	s.delayBuffer = NewDelayBuffer(s)
-	s.pacer = newFramePacer(time.Duration(defaultFmt.FrameBudgetNs()), s.deliverPacedFrame)
 	go s.videoProcessingLoop()
 	return s
 }
@@ -658,14 +654,6 @@ func (s *Switcher) Close() {
 	// Shut down async video processing goroutine.
 	close(s.videoProcCh)
 	<-s.videoProcDone
-
-	// Stop the frame pacer after videoProcDone — the processing loop's
-	// encode callback calls broadcastOwnedToProgram → pacer.submit(), so
-	// the pacer must outlive the processing goroutine.
-	if s.pacer != nil {
-		s.pacer.stop()
-	}
-
 	// Release pre-allocated frame pool buffers. Safe after videoProcDone
 	// guarantees no more pipeline work (no concurrent Acquire calls).
 	if s.framePool != nil {
@@ -1045,12 +1033,6 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
 
-	// Recreate frame pacer at new cadence.
-	if s.pacer != nil {
-		s.pacer.stop()
-	}
-	s.pacer = newFramePacer(time.Duration(f.FrameBudgetNs()), s.deliverPacedFrame)
-
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
 	// Release() discards wrong-sized buffers via cap check.
 	s.framePool = NewFramePool(512, f.Width, f.Height)
@@ -1222,22 +1204,9 @@ func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 	return s.videoPTS & 0x1FFFFFFFF
 }
 
-// deliverPacedFrame is the pacer's delivery callback. It runs diagnostics
-// and broadcasts the frame to the program relay. Timing counters are updated
-// here (at actual delivery time) rather than at submit time.
-func (s *Switcher) deliverPacedFrame(f *media.VideoFrame) {
-	s.lastBroadcastPTS.Store(f.PTS)
-	s.measureTransSeam()
-	s.trackBroadcastInterval()
-	s.trackOutputFPS()
-	s.videoBroadcastCount.Add(1)
-	s.programRelay.BroadcastVideo(f)
-}
-
 // broadcastToProgram sends a video frame to the program relay with a
 // monotonically increasing GroupID. When wall-clock video PTS is enabled,
 // rewrites PTS to stay aligned with the mixer's wall-clock audio PTS.
-// The frame is submitted to the pacer for fixed-cadence delivery.
 func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	f := *frame // shallow struct copy — avoids mutating shared frame
 	f.PTS = s.wallClockVideoPTS(f.PTS)
@@ -1247,13 +1216,17 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	} else {
 		f.GroupID = s.programGroupID.Load()
 	}
-	s.pacer.submit(&f)
+	s.lastBroadcastPTS.Store(f.PTS)
+	s.measureTransSeam()
+	s.trackBroadcastInterval()
+	s.trackOutputFPS()
+	s.videoBroadcastCount.Add(1)
+	s.programRelay.BroadcastVideo(&f)
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
 // program relay with a monotonically increasing GroupID. Rewrites PTS
-// to wall-clock time. The frame is submitted to the pacer for fixed-cadence
-// delivery.
+// to wall-clock time.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	frame.PTS = s.wallClockVideoPTS(frame.PTS)
 	frame.DTS = frame.PTS
@@ -1262,7 +1235,12 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	} else {
 		frame.GroupID = s.programGroupID.Load()
 	}
-	s.pacer.submit(frame)
+	s.lastBroadcastPTS.Store(frame.PTS)
+	s.measureTransSeam()
+	s.trackBroadcastInterval()
+	s.trackOutputFPS()
+	s.videoBroadcastCount.Add(1)
+	s.programRelay.BroadcastVideo(frame)
 }
 
 // ProgramRelay returns the program relay for external broadcast (e.g. authored captions).
@@ -2548,17 +2526,6 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 			"decoder":  s.codecDecoder,
 			"hw_accel": s.codecHWAccel,
 		},
-	}
-
-	if s.pacer != nil {
-		snap := s.pacer.snapshot()
-		result["pacer"] = map[string]any{
-			"paced_frames": snap.paced,
-			"empty_ticks":  snap.emptyTicks,
-			"queue_depth":  snap.queueDepth,
-			"interval_ms":  float64(s.pacer.interval.Nanoseconds()) / 1e6,
-			"bypass":       s.pacer.bypass,
-		}
 	}
 
 	if s.framePool != nil {
