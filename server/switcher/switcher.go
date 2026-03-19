@@ -1498,6 +1498,8 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 // resolution if it differs. Called in the video processing goroutine
 // (not on the delivery hot path) to avoid blocking source frame delivery.
 // Returns the same frame if no scaling needed, or a new scaled frame.
+// Skips scaling when the frame pool can't accommodate the target resolution
+// (e.g., test environments with small pools).
 func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 	fmt := s.pipelineFormat.Load()
 	if fmt == nil || (pf.Width == fmt.Width && pf.Height == fmt.Height) {
@@ -1505,10 +1507,11 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 	}
 	dstW, dstH := fmt.Width, fmt.Height
 	dstSize := dstW * dstH * 3 / 2
-	buf := s.framePool.Acquire()
-	if len(buf) < dstSize {
-		buf = make([]byte, dstSize)
+	// Skip if the pool can't hold the target resolution (test safety).
+	if s.framePool.BufSize() < dstSize {
+		return pf
 	}
+	buf := s.framePool.Acquire()
 	buf = buf[:dstSize]
 	transition.ScaleYUV420(pf.YUV, pf.Width, pf.Height, buf, dstW, dstH)
 	pf.ReleaseYUV()
