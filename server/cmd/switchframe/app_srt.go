@@ -253,6 +253,14 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	relayVideoCh := make(chan videoJob, 4) // → H.264 encode + relay
 	audioCh := make(chan audioJob, 8)      // → IngestPCM + AAC encode + relay
 
+	// Replay channel: when preview proxy is active and replay is configured,
+	// a separate full-quality encode goroutine feeds the replay viewer directly.
+	var replayVideoCh chan videoJob
+	var replayViewer interface {
+		SendVideo(frame *media.VideoFrame)
+		SendAudio(frame *media.AudioFrame)
+	}
+
 	// Shared PTS linearizer for video and audio. Uses a single offset so
 	// both streams stay aligned after PTS jumps (SRT source loop/reconnect).
 	ptsLin := srt.NewPTSLinearizer()
@@ -297,6 +305,17 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		}
 	}
 
+	// When preview proxy is active and replay is configured, set up dual-encode:
+	// preview encoder feeds relay (browsers), full-quality encode feeds replay.
+	if previewEnc != nil && a.replayMgr != nil {
+		if err := a.replayMgr.AddSource(key); err != nil {
+			slog.Warn("srt: could not add replay source", "key", key, "err", err)
+		} else if v := a.replayMgr.Viewer(key); v != nil {
+			replayViewer = v
+			replayVideoCh = make(chan videoJob, 4)
+		}
+	}
+
 	// --- Goroutine 2: Relay video encode ---
 	// When preview proxy is enabled, the preview.Encoder handles scaling
 	// and encoding at low bitrate. Otherwise, use existing full-quality encode.
@@ -312,7 +331,88 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			}
 			previewEnc.Stop()
 		}()
-	} else {
+	}
+
+	// --- Goroutine 2b: Replay full-quality encode (only when preview proxy + replay) ---
+	if replayVideoCh != nil {
+		go func() {
+			var (
+				videoEncoder  transition.VideoEncoder
+				groupID       atomic.Uint32
+				encoderYUV    []byte
+				lastW, lastH  int
+			)
+			replayEncFactory := encoderFactory()
+			for job := range replayVideoCh {
+				w, h, pts := job.w, job.h, job.pts
+
+				// Resolution change → recreate encoder.
+				if videoEncoder != nil && (w != lastW || h != lastH) {
+					videoEncoder.Close()
+					videoEncoder = nil
+				}
+
+				if videoEncoder == nil {
+					enc, err := replayEncFactory(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
+					if err != nil {
+						slog.Error("srt: replay encoder init failed", "key", key, "error", err)
+						if framePool != nil {
+							framePool.Release(job.yuv)
+						}
+						continue
+					}
+					videoEncoder = enc
+					lastW = w
+					lastH = h
+				}
+
+				needed := len(job.yuv)
+				if cap(encoderYUV) < needed {
+					encoderYUV = make([]byte, needed)
+				}
+				encoderYUV = encoderYUV[:needed]
+				copy(encoderYUV, job.yuv)
+				if framePool != nil {
+					framePool.Release(job.yuv)
+				}
+
+				encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
+				if err != nil || len(encoded) == 0 {
+					continue
+				}
+
+				avc1 := codec.AnnexBToAVC1(encoded)
+				if isKeyframe {
+					groupID.Add(1)
+				}
+
+				frame := &media.VideoFrame{
+					PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+					WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+				}
+
+				if isKeyframe {
+					for _, nalu := range codec.ExtractNALUs(avc1) {
+						if len(nalu) == 0 {
+							continue
+						}
+						switch nalu[0] & 0x1F {
+						case 7:
+							frame.SPS = nalu
+						case 8:
+							frame.PPS = nalu
+						}
+					}
+				}
+				replayViewer.SendVideo(frame)
+			}
+			if videoEncoder != nil {
+				videoEncoder.Close()
+			}
+		}()
+	}
+
+	if previewEnc == nil {
 		// Relay encode goroutine: ultrafast/baseline at configured resolution.
 		relayW, relayH := parseRelayResolution(a.cfg.RelayResolution)
 
@@ -472,10 +572,14 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 					continue
 				}
 				if len(encoded) > 0 {
-					relay.BroadcastAudio(&media.AudioFrame{
+					af := &media.AudioFrame{
 						PTS: audioPTS, Data: encoded,
 						SampleRate: job.sampleRate, Channels: job.channels,
-					})
+					}
+					relay.BroadcastAudio(af)
+					if replayViewer != nil {
+						replayViewer.SendAudio(af)
+					}
 				}
 				audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
 				audioBuf = audioBuf[chunkSize:]
@@ -537,6 +641,25 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				framePool.Release(relayBuf)
 			}
 		}
+
+		// Replay path: separate pool buffer for full-quality encode.
+		if replayVideoCh != nil {
+			var replayBuf []byte
+			if framePool != nil && len(yuv) <= framePool.BufSize() {
+				replayBuf = framePool.Acquire()[:len(yuv)]
+			} else {
+				replayBuf = make([]byte, len(yuv))
+			}
+			copy(replayBuf, yuv)
+
+			select {
+			case replayVideoCh <- videoJob{yuv: replayBuf, w: w, h: h, pts: pts}:
+			default:
+				if framePool != nil {
+					framePool.Release(replayBuf)
+				}
+			}
+		}
 	}
 
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
@@ -560,6 +683,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		close(pipelineCh)
 		close(relayVideoCh)
 		close(audioCh)
+		if replayVideoCh != nil {
+			close(replayVideoCh)
+		}
 
 		// Remove from active sources map.
 		a.srtSourcesMu.Lock()
@@ -587,7 +713,8 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	a.srtSourcesMu.Unlock()
 
 	// Register replay viewer on the source relay (same pattern as app_streams.go).
-	if a.replayMgr != nil {
+	// Skip if already wired directly via dual-encode mode above.
+	if a.replayMgr != nil && replayViewer == nil {
 		if err := a.replayMgr.AddSource(key); err != nil {
 			slog.Warn("srt: could not add replay source", "key", key, "err", err)
 		} else if v := a.replayMgr.Viewer(key); v != nil {
