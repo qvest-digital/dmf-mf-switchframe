@@ -242,6 +242,8 @@ describe('PrismRenderer', () => {
 		it('draws frames when video is within 100ms of audio (normal operation)', () => {
 			// With server-side PTS alignment (SeedPTSFromVideo + frame counter),
 			// video PTS should be within ~50ms of audio. Renderer draws normally.
+			// Feed frames one-at-a-time to avoid triggering live-edge skip
+			// (which correctly fires when >2 frames queue up at once).
 			let audioPTS = 10_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
@@ -249,15 +251,11 @@ describe('PrismRenderer', () => {
 
 			const PTS_OFFSET = 50_000; // 50ms video-ahead (typical)
 
-			// Fill queue with frames slightly ahead of audio
-			for (let i = 0; i < 8; i++) {
-				const framePTS = audioPTS + PTS_OFFSET + i * 33_333;
-				buffer.addFrame(new MockVideoFrame(framePTS) as unknown as VideoFrame);
-			}
-
-			// Render multiple ticks, advancing audio PTS each time
+			// Simulate steady-state: add one frame, render, advance audio
 			let totalDrawn = 0;
-			for (let tick = 0; tick < 10; tick++) {
+			for (let tick = 0; tick < 8; tick++) {
+				const framePTS = audioPTS + PTS_OFFSET;
+				buffer.addFrame(new MockVideoFrame(framePTS) as unknown as VideoFrame);
 				renderer.renderOnce();
 				audioPTS += 33_333; // advance audio by one frame interval
 				const diag = renderer.getDiagnostics();
@@ -266,6 +264,42 @@ describe('PrismRenderer', () => {
 
 			// Should draw frames as audio catches up to video PTS
 			expect(totalDrawn).toBeGreaterThanOrEqual(5);
+		});
+	});
+
+	describe('live-edge skip', () => {
+		it('skips to newest frame when buffer exceeds target depth', () => {
+			const buffer = new VideoRenderBuffer();
+			const closeFns: ReturnType<typeof vi.fn>[] = [];
+			// Add 5 frames — exceeds target depth of 2
+			for (let i = 0; i < 5; i++) {
+				const close = vi.fn();
+				closeFns.push(close);
+				buffer.addFrame({
+					timestamp: i * 33333,
+					duration: 33333,
+					displayWidth: 320,
+					displayHeight: 240,
+					close,
+				} as unknown as VideoFrame);
+			}
+
+			const audioClock = { getPlaybackPTS: () => -1 };
+			const canvas = createMockCanvas();
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			renderer.renderOnce();
+
+			// Frames 0-3 should be closed (skipped), frame 4 displayed
+			expect(closeFns[0]).toHaveBeenCalled();
+			expect(closeFns[1]).toHaveBeenCalled();
+			expect(closeFns[2]).toHaveBeenCalled();
+			expect(closeFns[3]).toHaveBeenCalled();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.liveEdgeSkips).toBeGreaterThan(0);
 		});
 	});
 

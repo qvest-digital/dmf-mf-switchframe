@@ -1,5 +1,7 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
+const LIVE_EDGE_TARGET_DEPTH = 2;
+
 /** Provides the current audio playback PTS for A/V sync. Returns -1 when audio is unavailable. */
 interface AudioClock {
 	getPlaybackPTS(): number;
@@ -32,6 +34,7 @@ export interface RendererDiagnostics {
 	avSyncMax: number;
 	avSyncAvg: number;
 	clockMode: string;
+	liveEdgeSkips: number;
 	emptyBufferHits: number;
 	currentVideoPTS: number;
 	currentAudioPTS: number;
@@ -91,6 +94,7 @@ export class PrismRenderer {
 	private _diagAvSyncMax = -Infinity;
 	private _diagLastAvSync = 0;
 	private _diagEmptyBufferHits = 0;
+	private _diagLiveEdgeSkips = 0;
 
 	constructor(
 		canvas: HTMLCanvasElement,
@@ -146,6 +150,51 @@ export class PrismRenderer {
 			if (interval < this._diagRafIntervalMin) this._diagRafIntervalMin = interval;
 		}
 		this._diagLastRafTime = now;
+
+		// Live-edge enforcement: if buffer has accumulated beyond target
+		// depth, skip directly to the newest frame. This prevents latency
+		// buildup from encode jitter, network batching, or decode stalls.
+		const preSkipStats = this.videoBuffer.getStats();
+		if (preSkipStats.queueSize > LIVE_EDGE_TARGET_DEPTH) {
+			const skipResult = this.videoBuffer.takeNewestFrame();
+			if (skipResult.frame) {
+				this._diagLiveEdgeSkips++;
+				if (this.lastDrawnFrame) {
+					this.lastDrawnFrame.close();
+				}
+				this.lastDrawnFrame = skipResult.frame;
+
+				const t0 = performance.now();
+				this.drawFrame(skipResult.frame);
+				const drawMs = performance.now() - t0;
+				this._diagDrawTimeSum += drawMs;
+				if (drawMs > this._diagDrawTimeMax) this._diagDrawTimeMax = drawMs;
+
+				this._diagFramesDrawn++;
+				if (this._diagLastFrameDrawTime > 0) {
+					const fInterval = now - this._diagLastFrameDrawTime;
+					this._diagFrameIntervalSum += fInterval;
+					if (fInterval > this._diagFrameIntervalMax) this._diagFrameIntervalMax = fInterval;
+					if (fInterval < this._diagFrameIntervalMin) this._diagFrameIntervalMin = fInterval;
+				}
+				this._diagLastFrameDrawTime = now;
+
+				this.currentVideoPTS = skipResult.frame.timestamp;
+
+				// Re-anchor any freerun clocks to the new PTS
+				if (this.freeRunStart >= 0) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = skipResult.frame.timestamp;
+				}
+				if (this.audioStallFreeRunStart >= 0) {
+					this.audioStallFreeRunStart = now;
+					this.audioStallFreeRunBasePTS = skipResult.frame.timestamp;
+				}
+
+				this.reportStats(now);
+				return;
+			}
+		}
 
 		let targetPTS: number;
 		// Always check the audio clock — it returns -1 dynamically when
@@ -476,6 +525,7 @@ export class PrismRenderer {
 			clockMode: this.freeRunStart >= 0 ? "freerun"
 				: this.audioStallFreeRunStart >= 0 ? "audio-stall-freerun"
 				: "audio",
+			liveEdgeSkips: this._diagLiveEdgeSkips,
 			emptyBufferHits: this._diagEmptyBufferHits,
 			currentVideoPTS: this.currentVideoPTS,
 			currentAudioPTS: this.currentAudioPTS,
