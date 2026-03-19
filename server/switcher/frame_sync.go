@@ -282,8 +282,10 @@ type FrameSynchronizer struct {
 	// Program-source-driven release: when the program source ingests a
 	// fresh frame, the tick loop fires immediately instead of waiting for
 	// the fixed-rate timer. This eliminates sync wait latency (~17ms→<1ms).
+	// Disabled in clock-driven mode (clockDriven=true) for steady output timing.
 	programSource     string        // key of current program source
 	programFrameReady chan struct{} // buffered(1) signal from IngestRawVideo
+	clockDriven       bool          // when true, only timer drives output (no early release)
 
 	// Observability counters for release trigger type.
 	programDrivenReleases atomic.Int64
@@ -484,7 +486,9 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 
 	// Signal tick loop for immediate release when program source has a fresh frame.
 	// Non-blocking: if signal already pending, skip (buffered channel, size 1).
-	if canSignal {
+	// Disabled in clock-driven mode: output timing is strictly timer-driven,
+	// decoupling program output from source jitter (like a hardware frame sync).
+	if canSignal && !fs.clockDriven {
 		select {
 		case fs.programFrameReady <- struct{}{}:
 		default:
@@ -689,6 +693,21 @@ func (fs *FrameSynchronizer) SetProgramSource(key string) {
 	fs.mu.Unlock()
 }
 
+// SetClockDriven enables or disables clock-driven output mode.
+// When true, the frame sync uses only timer-driven releases at a fixed
+// rate (like a hardware frame sync / TBC). This decouples output timing
+// from source jitter at the cost of up to one frame of latency (~33ms).
+// When false (default), the program source drives early releases for
+// minimum latency, but output timing inherits source jitter.
+func (fs *FrameSynchronizer) SetClockDriven(enabled bool) {
+	fs.mu.Lock()
+	fs.clockDriven = enabled
+	fs.mu.Unlock()
+	if enabled {
+		fs.log.Info("clock-driven mode enabled (timer-only output)")
+	}
+}
+
 // DebugSnapshot returns a point-in-time snapshot of the frame synchronizer
 // state for diagnostic display. Includes per-source buffer counts, audio
 // miss counts, and FRC state (when enabled).
@@ -722,6 +741,7 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 	return map[string]any{
 		"sources":                 sources,
 		"frc_quality":             fs.frcQuality.String(),
+		"clock_driven":            fs.clockDriven,
 		"program_source":          fs.programSource,
 		"program_driven_releases": fs.programDrivenReleases.Load(),
 		"timer_driven_releases":   fs.timerDrivenReleases.Load(),
@@ -1115,7 +1135,9 @@ func (fs *FrameSynchronizer) releaseTick() {
 	// Phase 2 FRC computation. This eliminates ~6.6ms of waiting for other
 	// sources' MCFI to complete. The program source is the only one the
 	// pipeline processes — other sources' frames are buffered for transitions.
-	if programReleaseIdx >= 0 {
+	// Disabled in clock-driven mode: all sources delivered together in Phase 3
+	// for consistent timing.
+	if programReleaseIdx >= 0 && !fs.clockDriven {
 		fs.deliverRelease(&fs.releases[programReleaseIdx], tickIntervalPTS, ptsRemNum, ptsRemDen)
 	}
 
@@ -1137,10 +1159,13 @@ func (fs *FrameSynchronizer) releaseTick() {
 		wg.Wait()
 	}
 
-	// Phase 3: Deliver remaining sources (skip program source already delivered
-	// in Phase 1.5). No locks held — prevents deadlocks with downstream handlers.
+	// Phase 3: Deliver remaining sources. Skip program source if already
+	// delivered in Phase 1.5 (non-clock-driven mode). In clock-driven mode,
+	// Phase 1.5 is disabled so all sources are delivered here together.
+	// No locks held — prevents deadlocks with downstream handlers.
+	skipProgram := programReleaseIdx >= 0 && !fs.clockDriven
 	for i := range fs.releases {
-		if i == programReleaseIdx {
+		if skipProgram && i == programReleaseIdx {
 			continue // already delivered in Phase 1.5
 		}
 		fs.deliverRelease(&fs.releases[i], tickIntervalPTS, ptsRemNum, ptsRemDen)

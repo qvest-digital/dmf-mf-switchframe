@@ -986,6 +986,18 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 	s.frameSyncActive = enabled
 }
 
+// SetClockDrivenSync enables clock-driven frame sync output. When enabled,
+// the frame sync uses only timer-driven releases at a fixed rate, decoupling
+// output timing from source jitter. Adds up to one frame of latency (~33ms)
+// but produces rock-steady output timing like a hardware TBC/frame sync.
+func (s *Switcher) SetClockDrivenSync(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frameSync != nil {
+		s.frameSync.SetClockDriven(enabled)
+	}
+}
+
 // SetFRCQuality sets the frame rate conversion quality for all sources.
 // Only effective when frame sync is enabled.
 func (s *Switcher) SetFRCQuality(q FRCQuality) {

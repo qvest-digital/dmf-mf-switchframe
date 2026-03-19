@@ -15,6 +15,7 @@ vi.mock('./audio-ring-buffer', () => {
 			writeBuffers = vi.fn().mockReturnValue(128);
 			destroy = vi.fn();
 			play = vi.fn();
+			clear = vi.fn();
 			readPTS = vi.fn().mockReturnValue(0);
 			readLevels = vi.fn().mockReturnValue({ peak: [0, 0], rms: [0, 0] });
 			getSharedBuffers = vi.fn().mockReturnValue({
@@ -268,5 +269,108 @@ describe('PrismAudioDecoder', () => {
 
 		const diag = decoder.getDiagnostics();
 		expect(diag.inputPtsWraps).toBe(1);
+	});
+
+	describe('resumeContext A/V sync fix', () => {
+		it('should clear ring buffer on resume to discard stale audio', async () => {
+			const decoder = new PrismAudioDecoder();
+			await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+
+			// Simulate decoded frames arriving during suspension
+			if (decoderOutputCb) {
+				const mockAudioData = {
+					numberOfFrames: 1024,
+					sampleRate: 48000,
+					timestamp: 1_000_000,
+					duration: 21333,
+					numberOfChannels: 2,
+					format: 'f32-planar',
+					copyTo: vi.fn(),
+					clone: vi.fn(),
+					close: vi.fn(),
+				};
+				// Feed enough to trigger playback (sets playing = true)
+				for (let i = 0; i < 30; i++) {
+					decoderOutputCb(mockAudioData as unknown as AudioData);
+				}
+			}
+
+			// Get ring buffer clear spy from the mock
+			// The mock's clear is not directly accessible, but we can check
+			// that resumeContext sends set-pts with sampleOffset: 0 (fresh anchor)
+			// instead of the old -bufferedSamples (which was wrong when ring overflowed)
+			mockWorkletPort.postMessage.mockClear();
+
+			await decoder.resumeContext();
+
+			// Should have sent set-pts with sampleOffset: 0 (approximate anchor)
+			const setPtsCalls = mockWorkletPort.postMessage.mock.calls.filter(
+				(call: any[]) => call[0]?.type === 'set-pts'
+			);
+			expect(setPtsCalls.length).toBe(1);
+			// sampleOffset should be 0 (fresh start), NOT -38400 (old stale calculation)
+			expect(setPtsCalls[0][0].sampleOffset).toBe(0);
+		});
+
+		it('should re-anchor PTS from next decoded frame after resume', async () => {
+			const decoder = new PrismAudioDecoder();
+			await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+
+			// Start playback
+			if (decoderOutputCb) {
+				const mockAudioData = {
+					numberOfFrames: 1024,
+					sampleRate: 48000,
+					timestamp: 1_000_000,
+					duration: 21333,
+					numberOfChannels: 2,
+					format: 'f32-planar',
+					copyTo: vi.fn(),
+					clone: vi.fn(),
+					close: vi.fn(),
+				};
+				for (let i = 0; i < 30; i++) {
+					decoderOutputCb(mockAudioData as unknown as AudioData);
+				}
+			}
+
+			// Simulate ring overflow: _diagLastPTS tracks decoded frames
+			// but ring buffer is full and dropping writes.
+			// Feed frames with advancing PTS to simulate time passing.
+			for (let i = 0; i < 50; i++) {
+				decoder.decode(new Uint8Array([1]), 1_000_000 + (i + 30) * 21333, false);
+			}
+
+			// Resume context (this should flush stale audio and set epoch reset)
+			mockWorkletPort.postMessage.mockClear();
+			await decoder.resumeContext();
+
+			// Now feed a new decoded frame at "current server time"
+			const currentPTS = 5_000_000;
+			if (decoderOutputCb) {
+				const freshFrame = {
+					numberOfFrames: 1024,
+					sampleRate: 48000,
+					timestamp: currentPTS,
+					duration: 21333,
+					numberOfChannels: 2,
+					format: 'f32-planar',
+					copyTo: vi.fn(),
+					clone: vi.fn(),
+					close: vi.fn(),
+				};
+				decoderOutputCb(freshFrame as unknown as AudioData);
+			}
+
+			// Should have sent a second set-pts from the epoch reset
+			// with the fresh frame's PTS
+			const allSetPts = mockWorkletPort.postMessage.mock.calls.filter(
+				(call: any[]) => call[0]?.type === 'set-pts'
+			);
+			// First set-pts: approximate anchor from resumeContext
+			// Second set-pts: precise re-anchor from epoch reset in onDecodedAudio
+			expect(allSetPts.length).toBe(2);
+			expect(allSetPts[1][0].pts).toBe(currentPTS);
+		});
 	});
 });

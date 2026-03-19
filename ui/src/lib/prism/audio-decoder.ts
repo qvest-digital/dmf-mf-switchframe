@@ -567,32 +567,33 @@ export class PrismAudioDecoder {
 	/** Resume the AudioContext. Must be called from a user gesture handler. */
 	async resumeContext(): Promise<void> {
 		if (this.context && this.context.state === "suspended") {
-			// Re-anchor the worklet PTS to the most recent decoded frame,
-			// accounting for samples already in the ring buffer. This prevents
-			// permanent A/V desync when audio accumulated during autoplay
-			// suspension: firstPTS is stale (from the first frame, possibly
-			// seconds ago), and sampleOffset:0 causes the hard flush to
-			// inflate the PTS by the accumulated buffer duration.
-			if (this.workletNode && this.playing && this.ringBuffer) {
-				const pts = this._diagLastPTS >= 0 ? this._diagLastPTS : this.firstPTS;
-				const contextRate = this.context.sampleRate;
-				const bufferedSamples = Math.round(
-					(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
-				);
+			// Flush stale audio accumulated during autoplay suspension.
+			// When the AudioContext is suspended, the ring buffer fills up
+			// (worklet isn't consuming) and eventually overflows. _diagLastPTS
+			// tracks decoded frames even when ring writes fail, so it diverges
+			// from the ring buffer's actual content. Using _diagLastPTS with
+			// -bufferedSamples to re-anchor PTS creates a permanent A/V sync
+			// offset equal to the overflow duration (typically 800-1100ms).
+			//
+			// Fix: clear the stale ring buffer, set an approximate PTS for
+			// the brief transition, and re-anchor precisely from the next
+			// decoded frame which represents current server time.
+			if (this.ringBuffer) {
+				this.ringBuffer.clear();
+			}
+			if (this.workletNode && this.playing) {
+				// Set approximate PTS so the renderer doesn't see stale values
+				// during the brief gap before the epoch reset fires.
+				const approxPTS = this._diagLastInputPTS >= 0 ? this._diagLastInputPTS :
+					(this._diagLastPTS >= 0 ? this._diagLastPTS : this.firstPTS);
 				this.workletNode.port.postMessage({
 					type: "set-pts",
-					pts: pts,
-					sampleOffset: -bufferedSamples,
-				});
-			} else if (this.workletNode && this.playing) {
-				this.workletNode.port.postMessage({
-					type: "set-pts",
-					pts: this.firstPTS,
+					pts: approxPTS,
 					sampleOffset: 0,
 				});
 			}
-			// Clear any pending epoch reset — we just re-anchored authoritatively.
-			this._ptsEpochReset = false;
+			// Re-anchor PTS precisely on the next decoded frame.
+			this._ptsEpochReset = true;
 			this._ptsEpochResetTargetPTS = -1;
 			await this.context.resume();
 		}

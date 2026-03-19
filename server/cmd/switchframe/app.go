@@ -338,6 +338,12 @@ func (a *App) initCoreEngine() error {
 	// Enable frame sync if requested.
 	if a.cfg.FrameSync {
 		a.sw.SetFrameSync(true, 0) // 0 = default 30fps
+		// Default: clock-driven output (steady timing like a hardware frame sync).
+		// --low-latency-sync disables this for minimum latency at the cost of
+		// output jitter from source delivery patterns.
+		if !a.cfg.LowLatencySync {
+			a.sw.SetClockDrivenSync(true)
+		}
 		// Enable frame rate conversion if requested.
 		q := switcher.ParseFRCQuality(a.cfg.FRCQuality)
 		if q != switcher.FRCNone {

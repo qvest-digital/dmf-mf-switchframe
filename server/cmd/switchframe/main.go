@@ -33,6 +33,7 @@ func init() {
 type AppConfig struct {
 	Demo             bool
 	FrameSync        bool
+	LowLatencySync   bool
 	FRCQuality       string
 	Format           string
 	DemoVideoDir     string
@@ -181,6 +182,7 @@ func parseConfig() (AppConfig, error) {
 	allowedOriginsFlag := flag.String("allowed-origins", "", "Comma-separated allowed CORS origins (e.g., https://switchframe.dev); empty = allow all")
 	apiTokenFlag := flag.String("api-token", "", "Bearer token for API authentication (env: SWITCHFRAME_API_TOKEN)")
 	frameSyncFlag := flag.Bool("frame-sync", false, "Enable freerun frame synchronizer (aligns sources to common frame boundary)")
+	lowLatencySyncFlag := flag.Bool("low-latency-sync", false, "Use source-driven frame sync (lower latency, less smooth output)")
 	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
 	formatFlag := flag.String("format", "1080p29.97", "Video standard (e.g. 1080p29.97, 1080p25, 720p59.94)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 60, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
@@ -323,6 +325,7 @@ func parseConfig() (AppConfig, error) {
 	return AppConfig{
 		Demo:                 *demoFlag,
 		FrameSync:            *frameSyncFlag,
+		LowLatencySync:      *lowLatencySyncFlag,
 		FRCQuality:           *frcQualityFlag,
 		Format:               *formatFlag,
 		DemoVideoDir:         *demoVideoDir,
