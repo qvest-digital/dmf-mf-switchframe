@@ -384,6 +384,28 @@ func TestOperatorDelete_Forbidden(t *testing.T) {
 	require.Contains(t, resp, "error")
 }
 
+// setupOperatorTestAPIWithInviteTokens creates a test API with invite tokens configured.
+func setupOperatorTestAPIWithInviteTokens(t *testing.T, tokens map[string]string) (*API, *http.ServeMux) {
+	t.Helper()
+
+	storePath := filepath.Join(t.TempDir(), "operators.json")
+	store, err := operator.NewStore(storePath)
+	require.NoError(t, err)
+
+	sm := operator.NewSessionManager()
+	t.Cleanup(sm.Close)
+
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+
+	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm), WithInviteTokens(tokens))
+
+	mux := http.NewServeMux()
+	api.RegisterOnMux(mux)
+
+	return api, mux
+}
+
 func TestOperatorDelete_NoAuth(t *testing.T) {
 	_, mux := setupOperatorTestAPI(t)
 
@@ -401,4 +423,184 @@ func TestOperatorDelete_NoAuth(t *testing.T) {
 	var resp map[string]string
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	require.Contains(t, resp, "error")
+}
+
+// --- Invite token tests ---
+
+func TestOperatorRegister_InviteToken_Success(t *testing.T) {
+	tokens := map[string]string{
+		"dir-tok-123": "director",
+		"aud-tok-456": "audio",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	body := map[string]string{"name": "Alice", "inviteToken": "dir-tok-123"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "Alice", resp["name"])
+	require.Equal(t, "director", resp["role"], "role should come from invite token, not request")
+}
+
+func TestOperatorRegister_InviteToken_OverridesRequestRole(t *testing.T) {
+	tokens := map[string]string{
+		"aud-tok-456": "audio",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	// Client sends role=director but invite token maps to audio.
+	body := map[string]string{"name": "Bob", "role": "director", "inviteToken": "aud-tok-456"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "audio", resp["role"], "role should be overridden by invite token")
+}
+
+func TestOperatorRegister_InviteToken_InvalidToken(t *testing.T) {
+	tokens := map[string]string{
+		"dir-tok-123": "director",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	body := map[string]string{"name": "Eve", "inviteToken": "wrong-token"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "invalid invite token", resp["error"])
+}
+
+func TestOperatorRegister_InviteToken_MissingWhenRequired(t *testing.T) {
+	tokens := map[string]string{
+		"dir-tok-123": "director",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	// No inviteToken field at all.
+	body := map[string]string{"name": "Eve", "role": "director"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, "invite token required", resp["error"])
+}
+
+func TestOperatorRegister_NoInviteTokens_BackwardCompat(t *testing.T) {
+	// No invite tokens configured — should work like before.
+	_, mux := setupOperatorTestAPI(t)
+
+	resp := registerOperatorHelper(t, mux, "Alice", "director")
+	require.Equal(t, "director", resp["role"])
+}
+
+// --- Invite tokens endpoint tests ---
+
+func TestOperatorInviteTokens_DirectorSuccess(t *testing.T) {
+	tokens := map[string]string{
+		"dir-tok-123": "director",
+		"aud-tok-456": "audio",
+		"gfx-tok-789": "graphics",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	// Register a director using an invite token.
+	body := map[string]string{"name": "Director", "inviteToken": "dir-tok-123"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var regResp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&regResp)
+	dirToken := regResp["token"].(string)
+
+	// GET invite tokens as director.
+	req = bearerRequest("GET", "/api/operator/invite-tokens", nil, dirToken)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var result map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	require.Equal(t, "dir-tok-123", result["director"])
+	require.Equal(t, "aud-tok-456", result["audio"])
+	require.Equal(t, "gfx-tok-789", result["graphics"])
+}
+
+func TestOperatorInviteTokens_NonDirectorForbidden(t *testing.T) {
+	tokens := map[string]string{
+		"aud-tok-456": "audio",
+	}
+	_, mux := setupOperatorTestAPIWithInviteTokens(t, tokens)
+
+	// Register an audio operator.
+	body := map[string]string{"name": "AudioOp", "inviteToken": "aud-tok-456"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var regResp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&regResp)
+	audioToken := regResp["token"].(string)
+
+	// GET invite tokens as non-director — should be forbidden.
+	req = bearerRequest("GET", "/api/operator/invite-tokens", nil, audioToken)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, "body: %s", rec.Body.String())
+}
+
+func TestOperatorInviteTokens_NoAuth(t *testing.T) {
+	_, mux := setupOperatorTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/operator/invite-tokens", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "body: %s", rec.Body.String())
+}
+
+func TestOperatorInviteTokens_EmptyWhenNotConfigured(t *testing.T) {
+	_, mux := setupOperatorTestAPI(t)
+
+	// Register a director (no invite tokens = backward compat).
+	regResp := registerOperatorHelper(t, mux, "Director", "director")
+	dirToken := regResp["token"].(string)
+
+	req := bearerRequest("GET", "/api/operator/invite-tokens", nil, dirToken)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var result map[string]string
+	_ = json.NewDecoder(rec.Body).Decode(&result)
+	require.Empty(t, result, "should return empty map when no invite tokens configured")
 }
