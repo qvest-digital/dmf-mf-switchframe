@@ -26,12 +26,14 @@ func (a *API) registerOperatorRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/operator/unlock", a.handleOperatorUnlock)
 	mux.HandleFunc("POST /api/operator/force-unlock", a.handleOperatorForceUnlock)
 	mux.HandleFunc("DELETE /api/operator/{id}", a.handleOperatorDelete)
+	mux.HandleFunc("GET /api/operator/invite-tokens", a.handleOperatorInviteTokens)
 }
 
 func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name string        `json:"name"`
-		Role operator.Role `json:"role"`
+		Name        string        `json:"name"`
+		Role        operator.Role `json:"role"`
+		InviteToken string        `json:"inviteToken"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
@@ -40,6 +42,20 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 	if err := validateStringLen("name", req.Name, MaxNameLen); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// If invite tokens are configured, validate and override role from token.
+	if len(a.inviteTokens) > 0 {
+		if req.InviteToken == "" {
+			httperr.Write(w, http.StatusForbidden, "invite token required")
+			return
+		}
+		role, ok := a.inviteTokens[req.InviteToken]
+		if !ok {
+			httperr.Write(w, http.StatusForbidden, "invalid invite token")
+			return
+		}
+		req.Role = operator.Role(role)
 	}
 
 	op, err := a.operatorStore.Register(req.Name, req.Role)
@@ -226,4 +242,39 @@ func (a *API) handleOperatorDelete(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleOperatorInviteTokens returns the role -> token map for building invite links.
+// Only accessible to operators with the director role.
+func (a *API) handleOperatorInviteTokens(w http.ResponseWriter, r *http.Request) {
+	token := operator.ExtractBearerToken(r)
+	if token == "" {
+		httperr.Write(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+
+	op, err := a.operatorStore.GetByToken(token)
+	if err != nil {
+		httperr.Write(w, http.StatusUnauthorized, "invalid token")
+		return
+	}
+	if op.Role != operator.RoleDirector {
+		httperr.Write(w, http.StatusForbidden, "director role required")
+		return
+	}
+
+	if len(a.inviteTokens) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+		return
+	}
+
+	// Invert the lookup map: token -> role becomes role -> token.
+	result := make(map[string]string, len(a.inviteTokens))
+	for tok, role := range a.inviteTokens {
+		result[role] = tok
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
