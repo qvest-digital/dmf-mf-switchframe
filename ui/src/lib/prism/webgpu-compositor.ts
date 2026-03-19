@@ -586,6 +586,8 @@ export class WebGPUCompositor {
 			videoQueueSize: vStats.queueSize,
 			videoQueueMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
+			liveEdgeSkips: 0,
+			useSetTimeoutFallback: false,
 		};
 	}
 
