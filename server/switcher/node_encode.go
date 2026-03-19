@@ -83,11 +83,12 @@ func (n *encodeNode) AsyncMetrics() map[string]any {
 // start launches the async encode goroutine. Must be called before Process()
 // for async operation. If not called, Process() falls back to synchronous encode.
 func (n *encodeNode) start() {
-	// Buffer of 2: absorbs one frame of encode latency spike without
-	// dropping. At 30fps (33ms budget), this allows one frame where
-	// encode takes up to 66ms before drops occur. Keeps latency bounded
-	// to one extra frame (33ms) in the worst case.
-	n.encodeCh = make(chan encodeWork, 2)
+	// Buffer of 4: absorbs encode latency spikes without dropping.
+	// At 30fps (33ms budget), this allows bursts where multiple frames
+	// arrive before the encoder finishes the current one. Keeps latency
+	// bounded to ~3 extra frames (100ms) in the worst case. Previously
+	// 2, but software x264 on single-core VPS dropped 3-4% of frames.
+	n.encodeCh = make(chan encodeWork, 4)
 	n.wg.Add(1)
 	go n.encodeLoop()
 }
