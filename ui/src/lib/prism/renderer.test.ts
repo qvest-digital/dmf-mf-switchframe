@@ -73,15 +73,29 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(0);
 		});
 
-		it('skips frame when video is 150ms+ ahead of audio', () => {
-			// 150ms exceeds the 100ms look-ahead tolerance — should skip.
-			// Server-side PTS alignment (SeedPTSFromVideo + frame counter)
-			// keeps offsets well under 100ms during normal operation.
+		it('draws frame when video is 130ms ahead of audio (within 150ms tolerance)', () => {
+			// 130ms ahead — within the 150ms look-ahead tolerance that
+			// accommodates the ~96ms offset + 33ms frame interval.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			buffer.addFrame(new MockVideoFrame(1_150_000) as unknown as VideoFrame);
+			buffer.addFrame(new MockVideoFrame(1_130_000) as unknown as VideoFrame);
+
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			expect(diag.framesDrawn).toBe(1);
+			expect(diag.framesSkipped).toBe(0);
+		});
+
+		it('skips frame when video is 200ms+ ahead of audio', () => {
+			// 200ms exceeds the 150ms look-ahead tolerance — should skip.
+			const audioClock = { getPlaybackPTS: () => 1_000_000 };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_200_000) as unknown as VideoFrame);
 
 			renderer.renderOnce();
 
@@ -239,11 +253,11 @@ describe('PrismRenderer', () => {
 			expect(diag.framesDrawn).toBe(1);
 		});
 
-		it('draws frames when video is within 100ms of audio (normal operation)', () => {
+		it('draws frames when video is within 150ms of audio (normal operation)', () => {
 			// With server-side PTS alignment (SeedPTSFromVideo + frame counter),
-			// video PTS should be within ~50ms of audio. Renderer draws normally.
+			// video PTS should be within ~96ms of audio. Renderer draws normally.
 			// Feed frames one-at-a-time to avoid triggering live-edge skip
-			// (which correctly fires when >4 frames queue up at once).
+			// (which correctly fires when >10 frames queue up at once).
 			let audioPTS = 10_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
@@ -271,8 +285,8 @@ describe('PrismRenderer', () => {
 		it('skips to newest frame when buffer exceeds target depth', () => {
 			const buffer = new VideoRenderBuffer();
 			const closeFns: ReturnType<typeof vi.fn>[] = [];
-			// Add 7 frames — exceeds target depth of 4
-			for (let i = 0; i < 7; i++) {
+			// Add 12 frames — exceeds target depth of 10
+			for (let i = 0; i < 12; i++) {
 				const close = vi.fn();
 				closeFns.push(close);
 				buffer.addFrame({
@@ -291,8 +305,8 @@ describe('PrismRenderer', () => {
 
 			renderer.renderOnce();
 
-			// Frames 0-5 should be closed (skipped), frame 6 displayed
-			for (let i = 0; i < 6; i++) {
+			// Frames 0-10 should be closed (skipped), frame 11 displayed
+			for (let i = 0; i < 11; i++) {
 				expect(closeFns[i]).toHaveBeenCalled();
 			}
 
