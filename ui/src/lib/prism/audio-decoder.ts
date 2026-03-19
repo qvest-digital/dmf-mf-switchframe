@@ -209,12 +209,18 @@ export class PrismAudioDecoder {
 				this._diagInputPtsWraps++;
 				this._ptsEpochReset = true;
 				this._ptsEpochResetTargetPTS = timestamp;
-			} else if (gap > 500_000 && this.playing) {
+			} else if (gap > 500_000) {
 				// PTS discontinuity >500ms (source cut, mixer gap, backward jump).
 				// Re-anchor worklet PTS to prevent clock drift.
 				// Record the target PTS so onDecodedAudio only consumes the
 				// reset when the correct frame arrives (not an earlier queued frame
 				// from the old PTS epoch still in WebCodecs' decode queue).
+				//
+				// No `this.playing` guard: the PTS jump from the server's mixer
+				// temp-counter → SeedPTSFromVideo can arrive before the ring
+				// buffer reaches MIN_BUFFER_MS (50ms), i.e. before startPlayback()
+				// sets playing=true. Without the reset, firstPTS stays anchored
+				// to the temp-counter epoch, causing permanent A/V desync.
 				this._ptsEpochReset = true;
 				this._ptsEpochResetTargetPTS = timestamp;
 			}
@@ -476,6 +482,9 @@ export class PrismAudioDecoder {
 			if (isTargetFrame) {
 				this._ptsEpochReset = false;
 				this._ptsEpochResetTargetPTS = -1;
+				// Update firstPTS so startPlayback() uses the corrected epoch
+				// if it hasn't fired yet (PTS jump arrived during initial buffering).
+				this.firstPTS = pts;
 				// Re-anchor the worklet's PTS clock to the current decoded frame.
 				// sampleOffset accounts for samples already in the ring buffer
 				// from the old PTS epoch — when samplesConsumed catches up,
