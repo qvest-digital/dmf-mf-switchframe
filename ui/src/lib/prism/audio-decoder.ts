@@ -99,6 +99,7 @@ export class PrismAudioDecoder {
 	private _diagInputPtsJumps = 0;
 	private _diagInputPtsWraps = 0;
 	private _ptsEpochReset = false;
+	private _ptsEpochResetTargetPTS = -1; // PTS of the frame that triggered the reset
 	private _configuredCodec = "";
 
 	// --- resampling (source rate → context rate) ---
@@ -207,10 +208,15 @@ export class PrismAudioDecoder {
 				this._diagLastInputPTS - timestamp > 30_000_000) {
 				this._diagInputPtsWraps++;
 				this._ptsEpochReset = true;
+				this._ptsEpochResetTargetPTS = timestamp;
 			} else if (gap > 500_000 && this.playing) {
 				// PTS discontinuity >500ms (source cut, mixer gap, backward jump).
 				// Re-anchor worklet PTS to prevent clock drift.
+				// Record the target PTS so onDecodedAudio only consumes the
+				// reset when the correct frame arrives (not an earlier queued frame
+				// from the old PTS epoch still in WebCodecs' decode queue).
 				this._ptsEpochReset = true;
+				this._ptsEpochResetTargetPTS = timestamp;
 			}
 		}
 		this._diagLastInputPTS = timestamp;
@@ -369,6 +375,7 @@ export class PrismAudioDecoder {
 		this._diagInputPtsJumps = 0;
 		this._diagInputPtsWraps = 0;
 		this._ptsEpochReset = false;
+		this._ptsEpochResetTargetPTS = -1;
 	}
 
 	reset(): void {
@@ -397,6 +404,7 @@ export class PrismAudioDecoder {
 		this.starting = false;
 		this.firstPTS = -1;
 		this._ptsEpochReset = false;
+		this._ptsEpochResetTargetPTS = -1;
 		this.totalScheduled = 0;
 		this.totalSilenceMs = 0;
 		this.samplesWritten = 0;
@@ -446,22 +454,33 @@ export class PrismAudioDecoder {
 		}
 
 		if (this._ptsEpochReset) {
-			this._ptsEpochReset = false;
-			// Re-anchor the worklet's PTS clock to the current decoded frame.
-			// sampleOffset accounts for samples already in the ring buffer
-			// from the old PTS epoch — when samplesConsumed catches up,
-			// the worklet's PTS equals `pts` (the frame being decoded now).
-			// Use context sample rate since ring buffer content is at context rate.
-			if (this.workletNode && this.ringBuffer) {
-				const contextRate = this.context.sampleRate;
-				const bufferedSamples = Math.round(
-					(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
-				);
-				this.workletNode.port.postMessage({
-					type: "set-pts",
-					pts: pts,
-					sampleOffset: -bufferedSamples,
-				});
+			// Only consume the reset when the decoded frame matches the PTS
+			// that triggered it. WebCodecs buffers frames internally, so
+			// onDecodedAudio may fire for older frames (from the previous
+			// PTS epoch) before the discontinuity frame arrives. Consuming
+			// the flag on the wrong frame would re-anchor the worklet to
+			// the old epoch's PTS, causing permanent A/V desync.
+			const isTargetFrame = this._ptsEpochResetTargetPTS < 0 ||
+				Math.abs(pts - this._ptsEpochResetTargetPTS) < 100_000; // 100ms tolerance
+			if (isTargetFrame) {
+				this._ptsEpochReset = false;
+				this._ptsEpochResetTargetPTS = -1;
+				// Re-anchor the worklet's PTS clock to the current decoded frame.
+				// sampleOffset accounts for samples already in the ring buffer
+				// from the old PTS epoch — when samplesConsumed catches up,
+				// the worklet's PTS equals `pts` (the frame being decoded now).
+				// Use context sample rate since ring buffer content is at context rate.
+				if (this.workletNode && this.ringBuffer) {
+					const contextRate = this.context.sampleRate;
+					const bufferedSamples = Math.round(
+						(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
+					);
+					this.workletNode.port.postMessage({
+						type: "set-pts",
+						pts: pts,
+						sampleOffset: -bufferedSamples,
+					});
+				}
 			}
 		}
 
@@ -574,6 +593,7 @@ export class PrismAudioDecoder {
 			}
 			// Clear any pending epoch reset — we just re-anchored authoritatively.
 			this._ptsEpochReset = false;
+			this._ptsEpochResetTargetPTS = -1;
 			await this.context.resume();
 		}
 	}
