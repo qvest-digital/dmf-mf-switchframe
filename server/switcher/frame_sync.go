@@ -112,8 +112,8 @@ type syncSource struct {
 	lastAudio    *media.AudioFrame
 
 	// audioMissCount tracks consecutive ticks with no new audio frame.
-	// After 2 repeated frames, audio emission stops to prevent a glitch loop
-	// with encoded AAC (which sounds worse than silence).
+	// Used for diagnostics. Audio is always repeated (no limit) to keep
+	// the mixer fed — silence in the output is worse than brief repeats.
 	audioMissCount int
 
 	// lastReleasedPTS tracks the PTS of the last video frame released by this
@@ -1081,10 +1081,15 @@ func (fs *FrameSynchronizer) releaseTick() {
 				releaseAudio = newest
 				freshAudio = true
 			} else if ss.lastAudio != nil {
+				// Repeat the last audio frame to keep the mixer fed.
+				// The mixer's clock-driven output loop handles silence
+				// gracefully (ring buffer underrun → silence), but NOT
+				// receiving frames at all causes audio dropouts visible
+				// to downstream consumers (VLC, SRT output, recording).
+				// Continuous delivery — even of repeated data — keeps
+				// the mixer's ring buffer populated and the output clean.
 				ss.audioMissCount++
-				if ss.audioMissCount <= 2 {
-					releaseAudio = ss.lastAudio
-				}
+				releaseAudio = ss.lastAudio
 			}
 		}
 
