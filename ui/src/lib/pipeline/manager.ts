@@ -352,8 +352,10 @@ export class PipelineManager {
 		}
 		this.sourceLevels = levels;
 
-		// Sample program output peak from program audio decoder
-		const programDecoder = this.pipeline.getAudioDecoder('program');
+		// Sample program output peak from the active program audio decoder.
+		// Prefer program-preview (low-bitrate) over program (full-quality).
+		const programDecoder = this.pipeline.getAudioDecoder('program-preview')
+			?? this.pipeline.getAudioDecoder('program');
 		if (programDecoder) {
 			const pl = programDecoder.getLevels();
 			this.programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };
