@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultMaxConns    = 8
-	listenerChanBuffer = 64
+	listenerChanBuffer = 512 // Must exceed AsyncAdapter's 256-slot buffer to avoid silent drops
 )
 
 // SRTListenerConfig holds configuration for SRT listener (pull mode).
@@ -45,6 +45,7 @@ type SRTListener struct {
 	cancel context.CancelFunc
 
 	bytesWritten atomic.Int64
+	clientDrops  atomic.Int64 // TS chunks dropped due to slow client dataCh
 	state        atomic.Pointer[AdapterState]
 	lastError    atomic.Pointer[string]
 	startedAt    time.Time
@@ -186,7 +187,9 @@ func (l *SRTListener) Write(tsData []byte) (int, error) {
 		select {
 		case lc.dataCh <- cp:
 		default:
-			// Slow client — drop this chunk
+			// Slow client — drop this chunk. This is the most likely
+			// cause of low FPS on SRT output clients (e.g., VLC).
+			l.clientDrops.Add(1)
 		}
 	}
 
