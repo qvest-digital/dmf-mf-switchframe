@@ -160,6 +160,10 @@ type Mixer struct {
 	// Raw audio output tap for MXL (atomic, lock-free read)
 	rawAudioSink atomic.Pointer[RawAudioSink]
 
+	// Direct output callback — bypasses the relay for zero-latency
+	// delivery to the MPEG-TS muxer. Called from the output ticker goroutine.
+	outputAudioCallback atomic.Pointer[func(*media.AudioFrame)]
+
 	// Debug counters (atomic, no lock needed)
 	framesMixed  atomic.Int64
 	decodeErrors atomic.Int64
@@ -194,6 +198,17 @@ func NewMixer(config MixerConfig) *Mixer {
 	m.tickerWg.Add(1)
 	go m.outputTicker()
 	return m
+}
+
+// SetOutputAudioCallback registers a direct audio output callback that
+// bypasses the relay for zero-latency delivery to the MPEG-TS muxer.
+// Called synchronously from the output ticker goroutine. Pass nil to clear.
+func (m *Mixer) SetOutputAudioCallback(fn func(*media.AudioFrame)) {
+	if fn != nil {
+		m.outputAudioCallback.Store(&fn)
+	} else {
+		m.outputAudioCallback.Store(nil)
+	}
 }
 
 // SetMetrics attaches Prometheus metrics to the mixer.
@@ -753,6 +768,10 @@ func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
 		atomicutil.UpdateMax(&m.maxInterFrameNano, gap)
 	}
 	m.output(frame)
+	// Direct output path: zero-latency delivery to MPEG-TS muxer.
+	if cb := m.outputAudioCallback.Load(); cb != nil {
+		(*cb)(frame)
+	}
 }
 
 // ResetMaxInterFrameGap resets the max inter-frame gap counter, allowing

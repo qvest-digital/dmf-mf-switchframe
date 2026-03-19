@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/metrics"
 )
@@ -24,21 +23,23 @@ type scte35InjectorInterface interface {
 	SyntheticBreakState() []byte
 }
 
-// Manager orchestrates the outputViewer, TSMuxer, and output adapters.
-// It auto-starts the viewer (registers on the program relay) when the first
-// output is enabled and removes it when the last output is disabled, ensuring
-// zero CPU overhead when no outputs are active.
+// Manager orchestrates the TSMuxer and output adapters for SRT/recording.
+// Frames arrive via DirectWriteVideo/DirectWriteAudio callbacks from the
+// switcher and mixer, bypassing the program relay entirely.
+// It creates the muxer when the first output is enabled and tears it down
+// when the last output is disabled, ensuring zero CPU when inactive.
 //
 // Lock ordering: Manager.mu must be acquired before Destination.mu.
 // Never acquire Manager.mu while holding a destination lock.
 type Manager struct {
-	log   *slog.Logger
-	relay *distribution.Relay
+	log *slog.Logger
 
-	mu       sync.Mutex
-	viewer   *Viewer
-	muxer    *TSMuxer
-	viewerWg sync.WaitGroup // tracks the viewer Run goroutine
+	mu    sync.Mutex
+	muxer *TSMuxer
+
+	// Direct muxer reference for zero-latency writes from switcher/mixer.
+	// Bypasses the relay → viewer → channel path entirely.
+	directMuxer atomic.Pointer[TSMuxer]
 
 	recorder     *FileRecorder
 	srtOutput    Adapter // SRTCaller or SRTListener (legacy single output)
@@ -64,7 +65,7 @@ type Manager struct {
 	onState    func() // triggers ControlRoomState broadcast
 	onMuxStart func() // triggers IDR keyframe request when muxer starts
 	closed     bool
-	stopping   bool               // true while stopMuxerLocked is draining the viewer (lock released)
+	stopping   bool               // true while stopMuxerLocked is in progress (guards ensureMuxerLocked)
 	ctx        context.Context    // cancelled on Close()
 	cancel     context.CancelFunc // cancels ctx
 
@@ -75,8 +76,9 @@ type Manager struct {
 	srtConnectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
 	srtAcceptFn  func(ctx context.Context, config SRTListenerConfig, listener *SRTListener) error
 
-	// Confidence monitor for program output thumbnails.
-	confidence *ConfidenceMonitor
+	// Confidence monitor for program output thumbnails (atomic for lock-free
+	// read from DirectWriteVideo hot path).
+	confidence atomic.Pointer[ConfidenceMonitor]
 
 	// SCTE-35 injector provides synthetic break state for late-joining viewers.
 	scte35Injector scte35InjectorInterface
@@ -85,12 +87,13 @@ type Manager struct {
 	scte35PID uint16
 }
 
-// NewManager creates a Manager bound to the given program relay.
-func NewManager(relay *distribution.Relay) *Manager {
+// NewManager creates an output Manager. Frames are delivered via
+// DirectWriteVideo/DirectWriteAudio callbacks from the switcher/mixer,
+// bypassing the relay entirely for zero-latency output.
+func NewManager() *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		log:          slog.With("component", "output"),
-		relay:        relay,
 		destinations: make(map[string]*Destination),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -140,9 +143,9 @@ func (m *Manager) OnStateChange(fn func()) {
 }
 
 // OnMuxerStart registers a callback fired when the output muxer starts
-// (i.e., when the first output is enabled and the viewer joins the relay).
-// Used to request an IDR keyframe from the encoder so the muxer can
-// initialize immediately instead of waiting for the next GOP boundary.
+// (i.e., when the first output is enabled). Used to request an IDR keyframe
+// from the encoder so the muxer can initialize immediately instead of
+// waiting for the next GOP boundary.
 func (m *Manager) OnMuxerStart(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -705,8 +708,7 @@ func (m *Manager) SRTOutputStatus() SRTStatus {
 	return status
 }
 
-// Close stops all outputs, the muxer, and the viewer. Safe to call
-// multiple times.
+// Close stops all outputs and the muxer. Safe to call multiple times.
 func (m *Manager) Close() error {
 	m.cancel() // signal all adapters started with m.ctx
 
@@ -743,8 +745,7 @@ func (m *Manager) Close() error {
 	wrappers := m.asyncWrappers
 	m.asyncWrappers = nil
 
-	cm := m.confidence
-	m.confidence = nil
+	cm := m.confidence.Swap(nil)
 	m.stopMuxerLocked()
 	m.mu.Unlock()
 
@@ -877,18 +878,21 @@ func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 	return stale
 }
 
-// ensureMuxerLocked creates the muxer, viewer, and registers the viewer
-// on the relay if they don't already exist. Must be called with m.mu held.
+// ensureMuxerLocked creates the muxer if it doesn't already exist.
+// Uses direct write mode: frames arrive via DirectWriteVideo/DirectWriteAudio
+// callbacks from the switcher/mixer, bypassing the relay → viewer → channel
+// path entirely. This eliminates 3 goroutine hops and 3 channel buffers
+// from the output path.
+// Must be called with m.mu held.
 // Returns true if a new muxer was created (caller should fire onMuxStart
 // outside the lock).
 func (m *Manager) ensureMuxerLocked() bool {
-	if m.viewer != nil {
+	if m.muxer != nil {
 		// Already running.
 		return false
 	}
 	if m.stopping {
-		// A stop is in progress (lock temporarily released during viewer drain).
-		// Don't create a new muxer — the stop will re-acquire the lock shortly.
+		// A stop is in progress. Don't create a new muxer.
 		return false
 	}
 
@@ -924,73 +928,41 @@ func (m *Manager) ensureMuxerLocked() bool {
 		pacer.Start()
 	}
 
-	var onVideo func(*media.VideoFrame)
-	if m.confidence != nil {
-		onVideo = m.confidence.IngestVideo
-	}
-	viewer := NewViewer(muxer, onVideo)
 	m.muxer = muxer
-	m.viewer = viewer
+	// Store in atomic pointer for lock-free access from direct write callbacks.
+	m.directMuxer.Store(muxer)
 
-	// Start the viewer's drain goroutine.
-	m.viewerWg.Add(1)
-	go func() {
-		defer m.viewerWg.Done()
-		viewer.Run()
-	}()
-
-	// Register viewer on the relay so it receives program frames.
-	m.relay.AddViewer(viewer)
-
-	m.log.Info("output pipeline started")
+	m.log.Info("output pipeline started (direct mode)")
 	return true
 }
 
-// stopMuxerIfNoAdaptersLocked tears down the muxer and viewer if no
+// stopMuxerIfNoAdaptersLocked tears down the muxer if no
 // adapters remain. Must be called with m.mu held.
 func (m *Manager) stopMuxerIfNoAdaptersLocked() {
-	if len(*m.adapters.Load()) > 0 || m.viewer == nil {
+	if len(*m.adapters.Load()) > 0 || m.muxer == nil {
 		return
 	}
 	m.stopMuxerLocked()
 }
 
-// stopMuxerLocked tears down the muxer and viewer unconditionally.
-// Must be called with m.mu held. Temporarily releases the lock while
-// waiting for the viewer goroutine to exit.
+// stopMuxerLocked tears down the muxer unconditionally.
+// Must be called with m.mu held.
 func (m *Manager) stopMuxerLocked() {
-	if m.viewer == nil {
+	if m.muxer == nil {
 		return
 	}
 
-	viewer := m.viewer
 	muxer := m.muxer
 	pacer := m.cbrPacer.Load()
-	m.viewer = nil
 	m.muxer = nil
+	// Clear atomic pointer first so no new direct writes start.
+	m.directMuxer.Store(nil)
 	m.cbrPacer.Store(nil)
 
-	// Guard against concurrent ensureMuxerLocked() calls while the lock is
-	// released below. Without this, a concurrent start could create a new
-	// muxer/viewer and increment viewerWg, causing the Wait() below to
-	// block on the *new* viewer (which won't stop until the next shutdown).
 	m.stopping = true
 
-	// Remove viewer from relay first so no new frames arrive.
-	m.relay.RemoveViewer(viewer.ID())
-
-	// Release the lock before blocking on viewer stop. The viewer's
-	// drain loop invokes the muxer output callback which needs m.mu.
-	// Without releasing here, we'd deadlock.
-	m.mu.Unlock()
-
-	// Stop the viewer (signals its drain goroutine to exit).
-	viewer.Stop()
-
-	// Wait for the viewer goroutine to finish.
-	m.viewerWg.Wait()
-
-	// Close the muxer.
+	// Close the muxer. Any in-progress DirectWriteVideo/DirectWriteAudio
+	// calls will complete (muxer has its own mutex) before Close returns.
 	if err := muxer.Close(); err != nil {
 		m.log.Error("error closing muxer", "err", err)
 	}
@@ -1000,17 +972,11 @@ func (m *Manager) stopMuxerLocked() {
 		pacer.Stop()
 	}
 
-	// Re-acquire the lock (callers expect it held on return).
-	m.mu.Lock()
 	m.stopping = false
 
-	// If adapters were added while we were draining (ensureMuxerLocked
-	// would have been a no-op due to the stopping flag), start a new
+	// If adapters were added while we were stopping, start a new
 	// muxer now so they can receive data.
 	if len(*m.adapters.Load()) > 0 && m.ensureMuxerLocked() {
-		// Fire the muxer-start callback outside the lock. We capture the
-		// callback here; the caller of stopMuxerLocked will handle its own
-		// mux start notification separately if needed.
 		muxFn := m.onMuxStart
 		if muxFn != nil {
 			m.mu.Unlock()
@@ -1040,10 +1006,6 @@ type ManagerStatus struct {
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *Manager) DebugSnapshot() map[string]any {
 	m.mu.Lock()
-	var viewerSnap map[string]any
-	if m.viewer != nil {
-		viewerSnap = m.viewer.DebugSnapshot()
-	}
 	var muxerPTS int64
 	var hasMuxer bool
 	if m.muxer != nil {
@@ -1053,7 +1015,6 @@ func (m *Manager) DebugSnapshot() map[string]any {
 	m.mu.Unlock()
 
 	snap := map[string]any{
-		"viewer":    viewerSnap,
 		"recording": m.RecordingStatus(),
 		"srt":       m.SRTOutputStatus(),
 	}
@@ -1076,13 +1037,13 @@ func (m *Manager) DebugSnapshot() map[string]any {
 }
 
 // SetConfidenceMonitor attaches a confidence monitor to the output manager.
-// The monitor will receive video frames from the output viewer when active.
-// Must be called before any outputs are started (the callback is set at
-// viewer construction time for thread safety).
+// The monitor receives video frames via DirectWriteVideo. Pass nil to clear.
 func (m *Manager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.confidence = cm
+	if cm != nil {
+		m.confidence.Store(cm)
+	} else {
+		m.confidence.Store(nil)
+	}
 }
 
 // SetSCTE35Injector attaches a SCTE-35 injector to the output manager.
@@ -1110,9 +1071,7 @@ func (m *Manager) InjectSCTE35(data []byte) error {
 // ConfidenceThumbnail returns the latest JPEG thumbnail from the confidence
 // monitor, or nil if unavailable.
 func (m *Manager) ConfidenceThumbnail() []byte {
-	m.mu.Lock()
-	cm := m.confidence
-	m.mu.Unlock()
+	cm := m.confidence.Load()
 	if cm == nil {
 		return nil
 	}
@@ -1159,6 +1118,38 @@ type CBRPacerStatus struct {
 	RealBytesTotal   int64 `json:"realBytesTotal"`
 	PadBytesTotal    int64 `json:"padBytesTotal"`
 	BurstTicksTotal  int64 `json:"burstTicksTotal"`
+}
+
+// DirectWriteVideo writes a video frame directly to the MPEG-TS muxer,
+// bypassing the relay → viewer → channel path. Called synchronously from
+// the switcher's encode goroutine — no channels, no goroutine hops.
+// No-op when no outputs are active (muxer is nil).
+func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
+	muxer := m.directMuxer.Load()
+	if muxer == nil {
+		return
+	}
+	if err := muxer.WriteVideo(frame); err != nil {
+		m.log.Error("direct video write error", "err", err)
+	}
+	// Feed the confidence monitor (1fps JPEG thumbnail).
+	if cm := m.confidence.Load(); cm != nil {
+		cm.IngestVideo(frame)
+	}
+}
+
+// DirectWriteAudio writes an audio frame directly to the MPEG-TS muxer,
+// bypassing the relay → viewer → channel path. Called synchronously from
+// the mixer's output ticker goroutine.
+// No-op when no outputs are active (muxer is nil).
+func (m *Manager) DirectWriteAudio(frame *media.AudioFrame) {
+	muxer := m.directMuxer.Load()
+	if muxer == nil {
+		return
+	}
+	if err := muxer.WriteAudio(frame); err != nil {
+		m.log.Error("direct audio write error", "err", err)
+	}
 }
 
 // HasActiveOutputs returns true if at least one output is active.

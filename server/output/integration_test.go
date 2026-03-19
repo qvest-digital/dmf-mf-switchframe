@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 )
 
@@ -55,18 +54,17 @@ func TestIntegration_RecordingProducesValidTS(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	relay := distribution.NewRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send a mini-GOP: keyframe + P-frame with interleaved audio.
-	relay.BroadcastVideo(makeKeyframe(90000))
-	relay.BroadcastAudio(makeAudioFrame(90000))
-	relay.BroadcastVideo(makePFrame(93000))
-	relay.BroadcastAudio(makeAudioFrame(93000))
+	mgr.DirectWriteVideo(makeKeyframe(90000))
+	mgr.DirectWriteAudio(makeAudioFrame(90000))
+	mgr.DirectWriteVideo(makePFrame(93000))
+	mgr.DirectWriteAudio(makeAudioFrame(93000))
 
 	// Allow the async viewer goroutine to drain frames through the muxer.
 	time.Sleep(100 * time.Millisecond)
@@ -97,22 +95,21 @@ func TestIntegration_ManagerLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	relay := distribution.NewRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 
 	// Before any output, the viewer should not exist.
-	require.Nil(t, mgr.viewer, "viewer must be nil before any output is started")
+	require.Nil(t, mgr.muxer, "muxer must be nil before any output is started")
 
 	// Starting recording should create the viewer.
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
-	require.NotNil(t, mgr.viewer, "viewer must be created when recording starts")
+	require.NotNil(t, mgr.muxer, "muxer must be created when recording starts")
 	require.NotNil(t, mgr.muxer, "muxer must be created when recording starts")
 
 	// Stopping recording should tear down the viewer (last adapter removed).
 	require.NoError(t, mgr.StopRecording())
 	time.Sleep(20 * time.Millisecond) // allow async teardown
-	require.Nil(t, mgr.viewer, "viewer must be nil after last output is stopped")
+	require.Nil(t, mgr.muxer, "muxer must be nil after last output is stopped")
 	require.Nil(t, mgr.muxer, "muxer must be nil after last output is stopped")
 
 	// Close should succeed cleanly.
@@ -125,8 +122,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	relay := distribution.NewRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -151,7 +147,7 @@ func TestIntegration_MultipleAdapters(t *testing.T) {
 	mgr.directAdapters.Store(&newAdapters)
 
 	// Broadcast a keyframe so the muxer initializes and produces TS output.
-	relay.BroadcastVideo(makeKeyframe(90000))
+	mgr.DirectWriteVideo(makeKeyframe(90000))
 	time.Sleep(50 * time.Millisecond)
 
 	// Both the file recorder and mock adapter should have received data.
@@ -170,14 +166,13 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	relay := distribution.NewRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send a keyframe to initialize the muxer.
-	relay.BroadcastVideo(makeKeyframe(90000))
+	mgr.DirectWriteVideo(makeKeyframe(90000))
 	time.Sleep(50 * time.Millisecond)
 
 	// Close the manager, which removes the viewer from the relay.
@@ -194,8 +189,8 @@ func TestIntegration_FramesStopAfterManagerClose(t *testing.T) {
 	sizeBefore := len(dataBefore)
 
 	// Send more frames — these must NOT reach the (now closed) recorder.
-	relay.BroadcastVideo(makeKeyframe(180000))
-	relay.BroadcastAudio(makeAudioFrame(180000))
+	mgr.DirectWriteVideo(makeKeyframe(180000))
+	mgr.DirectWriteAudio(makeAudioFrame(180000))
 	time.Sleep(50 * time.Millisecond)
 
 	dataAfter, err := os.ReadFile(path)
@@ -211,17 +206,16 @@ func TestIntegration_PreKeyframeDropped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	relay := distribution.NewRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
 	// Send P-frames and audio before any keyframe.
-	relay.BroadcastVideo(makePFrame(90000))
-	relay.BroadcastAudio(makeAudioFrame(90000))
-	relay.BroadcastVideo(makePFrame(93000))
+	mgr.DirectWriteVideo(makePFrame(90000))
+	mgr.DirectWriteAudio(makeAudioFrame(90000))
+	mgr.DirectWriteVideo(makePFrame(93000))
 	time.Sleep(50 * time.Millisecond)
 
 	// No data should have been written (muxer not initialized).
@@ -230,7 +224,7 @@ func TestIntegration_PreKeyframeDropped(t *testing.T) {
 		"no TS data should be written before first keyframe")
 
 	// Now send a keyframe — muxer should initialize and produce output.
-	relay.BroadcastVideo(makeKeyframe(96000))
+	mgr.DirectWriteVideo(makeKeyframe(96000))
 	time.Sleep(50 * time.Millisecond)
 
 	status = mgr.RecordingStatus()

@@ -233,17 +233,9 @@ type PerfGapCurrent struct {
 
 // PerfOutputSnapshot holds output subsystem data.
 type PerfOutputSnapshot struct {
-	Viewer    PerfViewerSnapshot    `json:"viewer"`
 	MuxerPTS  int64                 `json:"muxer_pts"`
 	SRT       PerfSRTSnapshot       `json:"srt"`
 	Recording PerfRecordingSnapshot `json:"recording"`
-}
-
-// PerfViewerSnapshot holds viewer delivery data.
-type PerfViewerSnapshot struct {
-	VideoSent    int64 `json:"video_sent"`
-	VideoDropped int64 `json:"video_dropped"`
-	AudioDropped int64 `json:"audio_dropped"`
 }
 
 // PerfSRTSnapshot holds SRT output data.
@@ -394,11 +386,6 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 			},
 		},
 		Output: PerfOutputSnapshot{
-			Viewer: PerfViewerSnapshot{
-				VideoSent:    out.ViewerVideoSent,
-				VideoDropped: out.ViewerVideoDropped,
-				AudioDropped: out.ViewerAudioDropped,
-			},
 			MuxerPTS: out.MuxerPTS,
 			SRT: PerfSRTSnapshot{
 				BytesWritten:  out.SRTBytesWritten,

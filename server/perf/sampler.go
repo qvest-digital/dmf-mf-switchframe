@@ -141,14 +141,10 @@ type OutputPerf interface {
 
 // OutputSample holds per-tick output performance data.
 type OutputSample struct {
-	ViewerVideoSent    int64
-	ViewerVideoDropped int64
-	ViewerAudioSent    int64
-	ViewerAudioDropped int64
-	MuxerPTS           int64
-	SRTBytesWritten    int64
-	SRTOverflowCount   int64
-	RecordingActive    bool
+	MuxerPTS         int64
+	SRTBytesWritten  int64
+	SRTOverflowCount int64
+	RecordingActive  bool
 }
 
 // PreviewEncoderStats holds point-in-time stats for a single preview encoder.

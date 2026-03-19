@@ -7,23 +7,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 )
 
-func newTestRelay() *distribution.Relay {
-	return distribution.NewRelay()
-}
-
 func TestOutputManager_New(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	require.NotNil(t, mgr)
 }
 
 func TestOutputManager_StartRecording(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -36,8 +29,7 @@ func TestOutputManager_StartRecording(t *testing.T) {
 }
 
 func TestOutputManager_StopRecording(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -49,8 +41,7 @@ func TestOutputManager_StopRecording(t *testing.T) {
 }
 
 func TestOutputManager_DoubleStartRecording(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -60,8 +51,7 @@ func TestOutputManager_DoubleStartRecording(t *testing.T) {
 }
 
 func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	err := mgr.StopRecording()
@@ -69,36 +59,33 @@ func TestOutputManager_StopRecordingWhenNotActive(t *testing.T) {
 }
 
 func TestOutputManager_MuxerStartsOnFirstOutput(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
-	require.Nil(t, mgr.viewer)
+	require.Nil(t, mgr.muxer)
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
-	require.NotNil(t, mgr.viewer)
+	require.NotNil(t, mgr.muxer)
 	require.NotNil(t, mgr.muxer)
 }
 
 func TestOutputManager_MuxerStopsOnLastOutput(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
-	require.NotNil(t, mgr.viewer)
+	require.NotNil(t, mgr.muxer)
 
 	require.NoError(t, mgr.StopRecording())
 	time.Sleep(10 * time.Millisecond)
-	require.Nil(t, mgr.viewer)
+	require.Nil(t, mgr.muxer)
 }
 
 func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -113,7 +100,7 @@ func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 		WireData:   []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
 		Codec:      "h264",
 	}
-	relay.BroadcastVideo(idrFrame)
+	mgr.DirectWriteVideo(idrFrame)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -122,8 +109,7 @@ func TestOutputManager_RecordingReceivesFrames(t *testing.T) {
 }
 
 func TestOutputManager_StateCallback(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
@@ -141,8 +127,7 @@ func TestOutputManager_StateCallback(t *testing.T) {
 }
 
 func TestOutputManager_MuxStartCallback(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	muxStartCount := 0
@@ -167,8 +152,7 @@ func TestOutputManager_MuxStartCallback(t *testing.T) {
 }
 
 func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	status := mgr.SRTOutputStatus()
@@ -176,41 +160,40 @@ func TestOutputManager_SRTOutputStatus_NotActive(t *testing.T) {
 }
 
 func TestOutputManager_DebugSnapshot(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	snap := mgr.DebugSnapshot()
 	require.NotNil(t, snap["recording"], "expected recording in snapshot")
 	require.NotNil(t, snap["srt"], "expected srt in snapshot")
-	// viewer should be nil when no outputs active
-	require.Nil(t, snap["viewer"], "expected nil viewer when no outputs active")
+	// muxer_pts should not be present when no outputs active
+	_, hasMuxerPTS := snap["muxer_pts"]
+	require.False(t, hasMuxerPTS, "expected no muxer_pts when no outputs active")
 }
 
-func TestOutputManager_DebugSnapshot_WithViewer(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+func TestOutputManager_DebugSnapshot_WithMuxer(t *testing.T) {
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
 	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
 
-	snap := mgr.DebugSnapshot()
-	require.NotNil(t, snap["viewer"], "expected viewer snapshot when output active")
+	// Feed a keyframe so the muxer records a PTS.
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}
+	mgr.DirectWriteVideo(idrFrame)
 
-	viewerSnap, ok := snap["viewer"].(map[string]any)
-	require.True(t, ok, "viewer snapshot should be a map")
-	require.Contains(t, viewerSnap, "video_sent")
-	require.Contains(t, viewerSnap, "audio_sent")
-	require.Contains(t, viewerSnap, "caption_sent")
-	require.Contains(t, viewerSnap, "video_dropped")
-	require.Contains(t, viewerSnap, "audio_dropped")
-	require.Contains(t, viewerSnap, "caption_dropped")
+	snap := mgr.DebugSnapshot()
+	require.Contains(t, snap, "muxer_pts", "expected muxer_pts in snapshot when output active")
 }
 
 func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -235,8 +218,7 @@ func TestOutputManager_RecordingStatus_DroppedPackets(t *testing.T) {
 }
 
 func TestOutputManager_Close(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 
 	dir := t.TempDir()
 	_ = mgr.StartRecording(RecorderConfig{Dir: dir})
@@ -255,8 +237,7 @@ func TestOutputManager_Close(t *testing.T) {
 // viewerWg.Wait() then blocks on the *new* viewer — causing a hang because
 // that viewer won't stop until the next explicit shutdown.
 func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -272,7 +253,7 @@ func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
 		Codec:    "h264",
 	}
-	relay.BroadcastVideo(idrFrame)
+	mgr.DirectWriteVideo(idrFrame)
 	time.Sleep(20 * time.Millisecond) // let the viewer ingest
 
 	// Race stop + start. The stop will enter stopMuxerLocked which releases
@@ -304,21 +285,14 @@ func TestOutputManager_StopMuxerLocked_RaceWithStart(t *testing.T) {
 	}
 
 	// After both settle, state must be consistent.
-	mgr.mu.Lock()
-	hasViewer := mgr.viewer != nil
-	hasMuxer := mgr.muxer != nil
-	mgr.mu.Unlock()
-
-	require.Equal(t, hasViewer, hasMuxer,
-		"viewer/muxer mismatch: viewer=%v, muxer=%v", hasViewer, hasMuxer)
+	// (Just verify no panic or deadlock occurred — muxer may or may not be running.)
 }
 
 // TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping verifies
 // that ensureMuxerLocked() returns an error (or is a no-op) while a stop
 // is in progress. This tests the stopping guard directly.
 func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	// Simulate many concurrent stop+start cycles. With -race, this catches
@@ -340,15 +314,6 @@ func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testi
 
 		<-done
 
-		// Consistent state: viewer and muxer must both be nil or both non-nil.
-		mgr.mu.Lock()
-		hasViewer := mgr.viewer != nil
-		hasMuxer := mgr.muxer != nil
-		mgr.mu.Unlock()
-
-		require.Equal(t, hasViewer, hasMuxer,
-			"iteration %d: viewer/muxer mismatch (viewer=%v, muxer=%v)", i, hasViewer, hasMuxer)
-
 		// Cleanup for next iteration.
 		_ = mgr.StopRecording()
 	}
@@ -357,8 +322,7 @@ func TestOutputManager_StopMuxerLocked_EnsureMuxerRejectsDuringStopping(t *testi
 // TestOutputManager_StoppingGuardBlocksEnsureMuxer directly verifies that
 // the stopping flag prevents ensureMuxerLocked from creating a new muxer.
 func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	// Simulate the stopping state.
@@ -368,7 +332,6 @@ func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
 	mgr.mu.Unlock()
 
 	require.False(t, created, "ensureMuxerLocked should not create muxer while stopping")
-	require.Nil(t, mgr.viewer, "viewer should not be created while stopping")
 	require.Nil(t, mgr.muxer, "muxer should not be created while stopping")
 
 	// Clear stopping and verify it works again.
@@ -378,15 +341,13 @@ func TestOutputManager_StoppingGuardBlocksEnsureMuxer(t *testing.T) {
 	mgr.mu.Unlock()
 
 	require.True(t, created, "ensureMuxerLocked should create muxer when not stopping")
-	require.NotNil(t, mgr.viewer, "viewer should be created")
 	require.NotNil(t, mgr.muxer, "muxer should be created")
 }
 
 // --- CBR pacer wiring tests ---
 
 func TestManager_CBRPacerCreatedOnMuxStart(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(5_000_000)
@@ -403,8 +364,7 @@ func TestManager_CBRPacerCreatedOnMuxStart(t *testing.T) {
 }
 
 func TestManager_NoPacerWhenDisabled(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	// No SetCBRMuxrate call — CBR disabled.
@@ -419,8 +379,7 @@ func TestManager_NoPacerWhenDisabled(t *testing.T) {
 }
 
 func TestManager_RecorderIsDirectNotPaced(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(5_000_000)
@@ -435,8 +394,7 @@ func TestManager_RecorderIsDirectNotPaced(t *testing.T) {
 }
 
 func TestManager_SRTDestinationIsPaced(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(5_000_000)
@@ -475,8 +433,7 @@ func TestManager_SRTDestinationIsPaced(t *testing.T) {
 }
 
 func TestManager_CBRSplitPath_RecorderAndSRT(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(5_000_000)
@@ -512,8 +469,7 @@ func TestManager_CBRSplitPath_RecorderAndSRT(t *testing.T) {
 }
 
 func TestManager_CBRPacerStoppedOnMuxerStop(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(5_000_000)
@@ -537,8 +493,7 @@ func TestManager_CBRPacerStoppedOnMuxerStop(t *testing.T) {
 }
 
 func TestManager_CBRPacerReceivesData(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(1_000_000) // 1 Mbps
@@ -569,7 +524,7 @@ func TestManager_CBRPacerReceivesData(t *testing.T) {
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
 		Codec:    "h264",
 	}
-	relay.BroadcastVideo(idrFrame)
+	mgr.DirectWriteVideo(idrFrame)
 
 	// Wait for pacer to tick and send data.
 	time.Sleep(100 * time.Millisecond)
@@ -580,8 +535,7 @@ func TestManager_CBRPacerReceivesData(t *testing.T) {
 }
 
 func TestManager_NoCBR_AllAdaptersDirect(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	// No CBR — SRT should be in direct adapters.
@@ -613,8 +567,7 @@ func TestManager_NoCBR_AllAdaptersDirect(t *testing.T) {
 }
 
 func TestOutputManager_DebugSnapshot_IncludesCBRPacer(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(10_000_000) // 10 Mbps
@@ -633,8 +586,7 @@ func TestOutputManager_DebugSnapshot_IncludesCBRPacer(t *testing.T) {
 }
 
 func TestOutputManager_DebugSnapshot_NoCBRPacerWhenDisabled(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	snap := mgr.DebugSnapshot()
@@ -643,8 +595,7 @@ func TestOutputManager_DebugSnapshot_NoCBRPacerWhenDisabled(t *testing.T) {
 }
 
 func TestOutputManager_DebugSnapshot_IncludesMuxerPTS(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -658,7 +609,7 @@ func TestOutputManager_DebugSnapshot_IncludesMuxerPTS(t *testing.T) {
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
 		Codec:    "h264",
 	}
-	relay.BroadcastVideo(idrFrame)
+	mgr.DirectWriteVideo(idrFrame)
 
 	// Wait for the viewer to process the frame.
 	time.Sleep(50 * time.Millisecond)
@@ -672,8 +623,7 @@ func TestOutputManager_DebugSnapshot_IncludesMuxerPTS(t *testing.T) {
 }
 
 func TestOutputManager_DebugSnapshot_NoMuxerPTSWhenInactive(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	snap := mgr.DebugSnapshot()
@@ -682,8 +632,7 @@ func TestOutputManager_DebugSnapshot_NoMuxerPTSWhenInactive(t *testing.T) {
 }
 
 func TestManager_CBRStatus_Disabled(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	status := mgr.CBRStatus()
@@ -691,8 +640,7 @@ func TestManager_CBRStatus_Disabled(t *testing.T) {
 }
 
 func TestManager_CBRStatus_Enabled(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	mgr.SetCBRMuxrate(10_000_000) // 10 Mbps
@@ -708,8 +656,7 @@ func TestManager_CBRStatus_Enabled(t *testing.T) {
 }
 
 func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	dir := t.TempDir()
@@ -752,8 +699,7 @@ func TestOutputManagerMuxerCallbackNoLock(t *testing.T) {
 // The race detector (-race) will catch unsynchronized map access if the
 // destination is iterated during removal.
 func TestOutputManager_RemoveDestination_ConcurrentWithList(t *testing.T) {
-	relay := newTestRelay()
-	mgr := NewManager(relay)
+	mgr := NewManager()
 	defer func() { _ = mgr.Close() }()
 
 	// Mock SRT connect so StartDestination succeeds.

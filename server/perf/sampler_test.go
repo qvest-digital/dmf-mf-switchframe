@@ -151,7 +151,7 @@ func TestSampler_Tick(t *testing.T) {
 		FramesOutput:   100,
 	}}
 	out := &mockOutputPerf{sample: OutputSample{
-		ViewerVideoSent: 500,
+		MuxerPTS: 90000,
 	}}
 
 	s := NewSampler(sw, mx, out)
@@ -285,7 +285,7 @@ func TestSampler_ConcurrentAccess(t *testing.T) {
 		FrameBudgetNs:  33333,
 	}}
 	mx := &mockMixerPerf{sample: MixerSample{MixCycleLastNs: 2000}}
-	out := &mockOutputPerf{sample: OutputSample{ViewerVideoSent: 500}}
+	out := &mockOutputPerf{sample: OutputSample{MuxerPTS: 90000}}
 
 	s := NewSampler(sw, mx, out)
 

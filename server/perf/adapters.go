@@ -77,13 +77,9 @@ type OutputAdapter struct {
 func (a *OutputAdapter) PerfSample() OutputSample {
 	raw := a.Manager.PerfSample()
 	return OutputSample{
-		ViewerVideoSent:    raw.ViewerVideoSent,
-		ViewerVideoDropped: raw.ViewerVideoDropped,
-		ViewerAudioSent:    raw.ViewerAudioSent,
-		ViewerAudioDropped: raw.ViewerAudioDropped,
-		MuxerPTS:           raw.MuxerPTS,
-		SRTBytesWritten:    raw.SRTBytesWritten,
-		SRTOverflowCount:   raw.SRTOverflowCount,
-		RecordingActive:    raw.RecordingActive,
+		MuxerPTS:         raw.MuxerPTS,
+		SRTBytesWritten:  raw.SRTBytesWritten,
+		SRTOverflowCount: raw.SRTOverflowCount,
+		RecordingActive:  raw.RecordingActive,
 	}
 }

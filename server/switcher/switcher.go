@@ -397,6 +397,12 @@ type Switcher struct {
 	// Raw preview output — feeds program preview encoder (low-bitrate browser delivery).
 	rawPreviewSink atomic.Pointer[RawVideoSink]
 
+	// Direct output callback — bypasses the relay for zero-latency delivery
+	// to the MPEG-TS muxer (SRT/recording output). The relay path adds 3
+	// goroutine hops and 3 channel buffers; the direct path is a synchronous
+	// function call from the encode goroutine.
+	outputVideoCallback atomic.Pointer[func(*media.VideoFrame)]
+
 	// Caption manager — handles CEA-608/708 caption encoding, pass-through,
 	// and SEI injection into encoded video frames. Optional (nil = no captions).
 	captionMgr captionManager
@@ -633,6 +639,18 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 	s.rebuildPipeline()
 }
 
+
+// SetOutputVideoCallback registers a direct video output callback that
+// bypasses the relay for zero-latency delivery to the MPEG-TS muxer.
+// Called synchronously from the encode goroutine — no channels, no
+// goroutine hops. Pass nil to clear.
+func (s *Switcher) SetOutputVideoCallback(fn func(*media.VideoFrame)) {
+	if fn != nil {
+		s.outputVideoCallback.Store(&fn)
+	} else {
+		s.outputVideoCallback.Store(nil)
+	}
+}
 
 // SetRawPreviewSink sets or clears the raw preview output tap.
 // Same pattern as RawVideoSink and RawMonitorSink — receives a deep copy
@@ -1252,6 +1270,11 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(&f)
+	// Direct output path: zero-latency delivery to MPEG-TS muxer,
+	// bypassing relay → viewer channel → drain goroutine.
+	if cb := s.outputVideoCallback.Load(); cb != nil {
+		(*cb)(&f)
+	}
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
@@ -1271,6 +1294,10 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	s.trackOutputFPS()
 	s.videoBroadcastCount.Add(1)
 	s.programRelay.BroadcastVideo(frame)
+	// Direct output path: zero-latency delivery to MPEG-TS muxer.
+	if cb := s.outputVideoCallback.Load(); cb != nil {
+		(*cb)(frame)
+	}
 }
 
 // ProgramRelay returns the program relay for external broadcast (e.g. authored captions).

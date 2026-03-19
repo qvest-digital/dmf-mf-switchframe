@@ -390,7 +390,7 @@ func (a *App) initCoreEngine() error {
 // initOutput creates the output manager, wires SRT, and attaches the
 // confidence monitor.
 func (a *App) initOutput() error {
-	a.outputMgr = output.NewManager(a.programRelay)
+	a.outputMgr = output.NewManager()
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
@@ -411,6 +411,14 @@ func (a *App) initOutput() error {
 			a.sw.RequestKeyframe()
 		}
 	})
+
+	// Wire direct output path: video frames go straight from the pipeline
+	// encode goroutine to the MPEG-TS muxer, bypassing the relay → viewer
+	// → channel path (3 goroutine hops + 3 channel buffers eliminated).
+	a.sw.SetOutputVideoCallback(a.outputMgr.DirectWriteVideo)
+
+	// Wire direct audio path: mixer output goes straight to the muxer.
+	a.mixer.SetOutputAudioCallback(a.outputMgr.DirectWriteAudio)
 
 	return nil
 }

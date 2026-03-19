@@ -35,7 +35,7 @@ func (m *mockSCTE35Injector) SyntheticBreakState() []byte {
 func TestManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
 	// Verify that rebuildAdaptersLocked wraps destination adapters with
 	// scte35Filter when SCTE35Enabled is false.
-	m := NewManager(nil)
+	m := NewManager()
 
 	// Create two destinations: one with SCTE-35 enabled, one without.
 	destEnabled := &Destination{
