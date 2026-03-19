@@ -11,7 +11,7 @@ require (
 	github.com/prometheus/client_model v0.5.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zsiec/ccx v0.2.0
-	github.com/zsiec/prism v0.1.6-0.20260318213326-fa139d84b184
+	github.com/zsiec/prism v0.1.6-0.20260319030549-427bb7ae9b9d
 	github.com/zsiec/srtgo v0.2.4
 	golang.org/x/image v0.37.0
 	golang.org/x/sys v0.41.0
