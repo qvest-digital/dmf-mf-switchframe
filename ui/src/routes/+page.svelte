@@ -329,6 +329,7 @@
 	pipeline.addSource('program');
 	// Program preview: low-bitrate H.264 (3 Mbps) for browser monitoring.
 	// Preferred over full-quality "program" (10 Mbps) to reduce bandwidth.
+	pipeline.setSourceMuted('program-preview', false);
 	pipeline.addSource('program-preview');
 	// Only add program-raw if WebGL is available (needed for YUV rendering).
 	// Without WebGL, subscribing to program-raw wastes bandwidth (~1.5 MB/frame).
