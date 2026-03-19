@@ -511,6 +511,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 	function destroy(): void {
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
+		window.removeEventListener("focus", handleWindowFocus);
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
@@ -535,7 +536,25 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
+	function handleWindowFocus(): void {
+		// Snap all video buffers to live edge — discard stale frames
+		// accumulated while the window was unfocused
+		for (const source of sources.values()) {
+			source.videoBuffer.takeNewestFrame();
+			for (const buf of source.secondaryBuffers.values()) {
+				buf.takeNewestFrame();
+			}
+			// Reset renderer sync so PTS tracking starts fresh
+			for (const renderer of source.renderers.values()) {
+				renderer.resetSync();
+			}
+		}
+		// Resume audio contexts that may have been deprioritized
+		resumeAllAudio();
+	}
+
 	document.addEventListener("visibilitychange", handleVisibilityChange);
+	window.addEventListener("focus", handleWindowFocus);
 
 	/** Track which sources should be unmuted (set before audio decoder is ready). */
 	const unmutedSources = new Set<string>();
