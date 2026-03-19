@@ -28,6 +28,7 @@
 	import ClipsPanel from '../components/ClipsPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
+	import TeamPanel from '../components/TeamPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
@@ -774,6 +775,10 @@
 						{:else if activeTab === 'Clips'}
 							<div class="tab-panel">
 								<ClipsPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Team'}
+							<div class="tab-panel">
+								<TeamPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

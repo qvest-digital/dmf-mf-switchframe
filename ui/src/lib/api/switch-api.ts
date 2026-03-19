@@ -665,6 +665,10 @@ export function operatorDelete(id: string): Promise<{ ok: boolean }> {
 	return request(`/api/operator/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export function operatorInviteTokens(): Promise<Record<string, string>> {
+	return request('/api/operator/invite-tokens');
+}
+
 // --- Pipeline Format API ---
 
 export function getFormat(): Promise<{ format: PipelineFormatInfo; presets: string[] }> {
