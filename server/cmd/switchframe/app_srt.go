@@ -36,13 +36,11 @@ type srtSourceState struct {
 	relayAudioDrops *atomic.Int64
 }
 
-// initSRT initializes the SRT listener, caller, store, and stats manager.
-// Called after initSubsystems, before initAPI. No-op if --srt-listen is empty.
+// initSRT initializes the SRT store, stats manager, caller, and optionally the
+// listener. Called after initSubsystems, before initAPI. The store, stats, and
+// caller are always initialized so the SRT pull API works without --srt-listen.
+// The listener is only created when --srt-listen is non-empty.
 func (a *App) initSRT() error {
-	if a.cfg.SRTListen == "" {
-		return nil // SRT not configured
-	}
-
 	// Initialize the active sources map.
 	a.srtSources = make(map[string]*srtSourceState)
 
@@ -63,25 +61,28 @@ func (a *App) initSRT() error {
 
 	latency := time.Duration(a.cfg.SRTLatencyMs) * time.Millisecond
 
-	// Create listener.
-	listener, err := srt.NewListener(srt.ListenerConfig{
-		Addr:           a.cfg.SRTListen,
-		Store:          store,
-		DefaultLatency: latency,
-		OnSource:       a.onSRTListenerSource,
-	})
-	if err != nil {
-		return fmt.Errorf("srt: create listener: %w", err)
-	}
-	a.srtListener = listener
-
 	// Create caller (outbound pulls with auto-reconnect).
+	// Always available — does not require --srt-listen.
 	caller := srt.NewCaller(srt.CallerConfig{
 		Store:          store,
 		DefaultLatency: latency,
 		OnSource:       a.onSRTCallerSource,
 	})
 	a.srtCaller = caller
+
+	// Create listener only when --srt-listen is configured.
+	if a.cfg.SRTListen != "" {
+		listener, err := srt.NewListener(srt.ListenerConfig{
+			Addr:           a.cfg.SRTListen,
+			Store:          store,
+			DefaultLatency: latency,
+			OnSource:       a.onSRTListenerSource,
+		})
+		if err != nil {
+			return fmt.Errorf("srt: create listener: %w", err)
+		}
+		a.srtListener = listener
+	}
 
 	slog.Info("srt initialized",
 		"listen", a.cfg.SRTListen,
