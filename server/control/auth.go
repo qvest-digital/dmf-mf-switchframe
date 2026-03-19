@@ -20,12 +20,20 @@ var authExemptPaths = map[string]bool{
 	"/api/v1/operator/register": true,
 }
 
+// OperatorTokenChecker checks if a token belongs to a registered operator.
+// Used by AuthMiddleware to accept operator tokens alongside the session API token.
+type OperatorTokenChecker func(token string) bool
+
 // AuthMiddleware returns HTTP middleware that enforces Bearer token
-// authentication on all requests except exempt paths. It uses
-// crypto/subtle.ConstantTimeCompare for timing-safe token comparison
-// to prevent timing side-channel attacks.
-func AuthMiddleware(token string) func(http.Handler) http.Handler {
+// authentication on all requests except exempt paths. It accepts the
+// session API token (timing-safe comparison) and optionally operator
+// tokens via the checker function.
+func AuthMiddleware(token string, operatorCheck ...OperatorTokenChecker) func(http.Handler) http.Handler {
 	tokenBytes := []byte(token)
+	var checkOperator OperatorTokenChecker
+	if len(operatorCheck) > 0 {
+		checkOperator = operatorCheck[0]
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Skip auth for exempt paths.
@@ -34,7 +42,7 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Extract and validate Bearer token.
+			// Extract Bearer token.
 			authHeader := r.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
 				w.Header().Set("Content-Type", "application/json")
@@ -44,16 +52,24 @@ func AuthMiddleware(token string) func(http.Handler) http.Handler {
 				return
 			}
 
-			provided := []byte(strings.TrimPrefix(authHeader, "Bearer "))
-			if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
-				w.WriteHeader(http.StatusUnauthorized)
-				_, _ = w.Write([]byte(`{"error":"invalid token"}`))
+			provided := strings.TrimPrefix(authHeader, "Bearer ")
+
+			// Check session API token first (timing-safe).
+			if subtle.ConstantTimeCompare([]byte(provided), tokenBytes) == 1 {
+				next.ServeHTTP(w, r)
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			// Fall back to operator token check.
+			if checkOperator != nil && checkOperator(provided) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("WWW-Authenticate", `Bearer realm="switchframe"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid token"}`))
 		})
 	}
 }

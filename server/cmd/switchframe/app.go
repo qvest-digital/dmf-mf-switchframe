@@ -230,9 +230,15 @@ func (a *App) initInfra() error {
 	a.controlPub = control.NewChannelPublisher(64)
 
 	// In demo mode, skip auth entirely for ease of use.
-	a.authMW = control.AuthMiddleware(a.cfg.APIToken)
+	// Otherwise, accept both the session API token and registered operator tokens.
 	if a.cfg.Demo {
 		a.authMW = control.NoopAuthMiddleware()
+	} else {
+		operatorCheck := control.OperatorTokenChecker(func(token string) bool {
+			_, err := a.operatorStore.GetByToken(token)
+			return err == nil
+		})
+		a.authMW = control.AuthMiddleware(a.cfg.APIToken, operatorCheck)
 	}
 
 	return nil

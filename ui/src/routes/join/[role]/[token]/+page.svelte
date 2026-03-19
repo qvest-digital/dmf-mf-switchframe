@@ -13,7 +13,7 @@
 
 	const role = $derived($page.params.role);
 	const token = $derived($page.params.token);
-	const roleName = $derived(roleNames[role] || 'Viewer');
+	const roleName = $derived(role ? roleNames[role] || 'Viewer' : 'Viewer');
 
 	let name = $state('');
 	let error = $state('');
