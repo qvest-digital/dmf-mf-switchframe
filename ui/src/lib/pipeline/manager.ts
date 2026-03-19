@@ -194,10 +194,13 @@ export class PipelineManager {
 					this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
 					this.currentProgramCanvas = programKey;
 					this.currentProgramCanvasEl = programCanvasEl;
-					// Disconnect full-quality program when preview is active
-					// to stop wasting ~10 Mbps of bandwidth.
+					// Disconnect and mute full-quality program when preview is active.
+					// Stops wasting ~10 Mbps bandwidth and prevents the program
+					// AudioContext from outputting silence (which can interfere
+					// with program-preview's audio on some systems).
 					if (programKey === 'program-preview') {
 						this.pipeline.disconnectSource('program');
+						this.pipeline.setSourceMuted('program', true);
 					}
 				} else {
 					this.currentProgramCanvas = null;
