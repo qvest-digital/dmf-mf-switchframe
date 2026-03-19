@@ -13,11 +13,15 @@ import (
 // bootstrapping), health checks, metrics scraping, and operator
 // registration (authenticated via invite token instead of session API token).
 var authExemptPaths = map[string]bool{
-	"/api/cert-hash":          true,
-	"/health":                 true,
-	"/metrics":                true,
-	"/api/operator/register":  true,
-	"/api/v1/operator/register": true,
+	"/api/cert-hash":              true,
+	"/health":                     true,
+	"/metrics":                    true,
+	"/api/operator/register":      true,
+	"/api/v1/operator/register":   true,
+	"/api/operator/reconnect":     true,
+	"/api/v1/operator/reconnect":  true,
+	"/api/operator/heartbeat":     true,
+	"/api/v1/operator/heartbeat":  true,
 }
 
 // OperatorTokenChecker checks if a token belongs to a registered operator.
