@@ -151,13 +151,13 @@ func TestFramePacer_QueueDepthTracking(t *testing.T) {
 	assert.GreaterOrEqual(t, snap.queueDepth, int64(1), "queue should have pending frames")
 }
 
-func TestFramePacer_DrainsCatchupWhenQueueBuilds(t *testing.T) {
-	// When frames arrive faster than the tick rate, the pacer should
-	// release multiple frames per tick to drain the queue back to ≤1.
-	// This prevents unbounded queue growth when source FPS > pacer FPS.
+func TestFramePacer_CatchupReleasesTwo(t *testing.T) {
+	// When queue depth > 1, the pacer releases 2 frames per tick to
+	// gradually catch up without bursting. This prevents unbounded queue
+	// growth when source FPS slightly exceeds pacer tick rate.
 	var mu sync.Mutex
 	var delivered []*media.VideoFrame
-	p := newFramePacer(20*time.Millisecond, func(f *media.VideoFrame) {
+	p := newFramePacer(15*time.Millisecond, func(f *media.VideoFrame) {
 		mu.Lock()
 		delivered = append(delivered, f)
 		mu.Unlock()
@@ -169,8 +169,9 @@ func TestFramePacer_DrainsCatchupWhenQueueBuilds(t *testing.T) {
 		p.submit(&media.VideoFrame{PTS: int64(i * 1000)})
 	}
 
-	// Wait for 3 ticks — should be enough to drain all 6 frames
-	time.Sleep(70 * time.Millisecond)
+	// Wait for 5 ticks (75ms) — releasing 2/tick drains 6 frames in 3 ticks,
+	// but give extra margin for scheduler jitter.
+	time.Sleep(90 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()

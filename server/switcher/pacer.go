@@ -92,13 +92,18 @@ func (p *framePacer) run() {
 				p.mu.Unlock()
 				continue
 			}
-			// Release one frame per tick in steady state. When the queue
-			// has built up (source FPS > tick rate), release all queued
-			// frames to catch up. This prevents unbounded queue growth
-			// while preserving the FIFO ordering that H.264 requires.
-			batch := p.queue[:n]
-			p.queue = p.queue[n:]
-			p.pacedCount += int64(n)
+			// Release 1 frame per tick in steady state (n == 1).
+			// When the queue has built up (n > 1), release 2 to
+			// gradually catch up without bursting. This keeps the
+			// output cadence smooth while preventing unbounded queue
+			// growth when source FPS slightly exceeds tick rate.
+			release := 1
+			if n > 1 {
+				release = 2
+			}
+			batch := p.queue[:release]
+			p.queue = p.queue[release:]
+			p.pacedCount += int64(release)
 			p.mu.Unlock()
 			for _, f := range batch {
 				p.deliver(f)
