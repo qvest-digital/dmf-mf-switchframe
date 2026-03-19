@@ -612,9 +612,18 @@ export class PrismAudioDecoder {
 					sampleOffset: 0,
 				});
 			}
-			// Re-anchor PTS precisely on the next decoded frame.
-			this._ptsEpochReset = true;
-			this._ptsEpochResetTargetPTS = -1;
+			// Do NOT set _ptsEpochReset here. After resume, the WebCodecs
+			// AudioDecoder queue bursts all decoded frames accumulated during
+			// suspension. These flood the ring buffer, triggering hard flushes
+			// that accumulate sampleOffset (each flush adds skipSamples to
+			// sampleOffset, advancing PTS by seconds). An epoch reset with
+			// targetPTS=-1 fires mid-burst on a stale frame, but the continued
+			// burst still causes hard-flush accumulation afterward.
+			//
+			// If there's already a pending epoch reset from a PTS jump in
+			// decode() (e.g., temp-counter → SeedPTSFromVideo), let it fire
+			// on its correct target frame — don't override its targetPTS.
+			// The approximate set-pts above is sufficient (~18ms accuracy).
 			await this.context.resume();
 		}
 	}

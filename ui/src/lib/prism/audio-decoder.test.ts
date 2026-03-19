@@ -312,7 +312,7 @@ describe('PrismAudioDecoder', () => {
 			expect(setPtsCalls[0][0].sampleOffset).toBe(0);
 		});
 
-		it('should re-anchor PTS from next decoded frame after resume', async () => {
+		it('should not set epoch reset to avoid hard-flush burst accumulation', async () => {
 			const decoder = new PrismAudioDecoder();
 			await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
 
@@ -334,18 +334,16 @@ describe('PrismAudioDecoder', () => {
 				}
 			}
 
-			// Simulate ring overflow: _diagLastPTS tracks decoded frames
-			// but ring buffer is full and dropping writes.
-			// Feed frames with advancing PTS to simulate time passing.
+			// Feed frames to advance _diagLastInputPTS
 			for (let i = 0; i < 50; i++) {
 				decoder.decode(new Uint8Array([1]), 1_000_000 + (i + 30) * 21333, false);
 			}
 
-			// Resume context (this should flush stale audio and set epoch reset)
 			mockWorkletPort.postMessage.mockClear();
 			await decoder.resumeContext();
 
-			// Now feed a new decoded frame at "current server time"
+			// Feed a decoded frame — should NOT trigger epoch reset
+			// because resumeContext no longer sets _ptsEpochReset
 			const currentPTS = 5_000_000;
 			if (decoderOutputCb) {
 				const freshFrame = {
@@ -362,15 +360,14 @@ describe('PrismAudioDecoder', () => {
 				decoderOutputCb(freshFrame as unknown as AudioData);
 			}
 
-			// Should have sent a second set-pts from the epoch reset
-			// with the fresh frame's PTS
+			// Only ONE set-pts: the approximate anchor from resumeContext.
+			// No second set-pts from epoch reset (which caused hard-flush
+			// sampleOffset accumulation during the WebCodecs queue burst).
 			const allSetPts = mockWorkletPort.postMessage.mock.calls.filter(
 				(call: any[]) => call[0]?.type === 'set-pts'
 			);
-			// First set-pts: approximate anchor from resumeContext
-			// Second set-pts: precise re-anchor from epoch reset in onDecodedAudio
-			expect(allSetPts.length).toBe(2);
-			expect(allSetPts[1][0].pts).toBe(currentPTS);
+			expect(allSetPts.length).toBe(1);
+			expect(allSetPts[0][0].sampleOffset).toBe(0);
 		});
 	});
 
