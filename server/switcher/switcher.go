@@ -2555,7 +2555,7 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		result["pacer"] = map[string]any{
 			"paced_frames": snap.paced,
 			"empty_ticks":  snap.emptyTicks,
-			"replaced":     snap.replaced,
+			"queue_depth":  snap.queueDepth,
 			"interval_ms":  float64(s.pacer.interval.Nanoseconds()) / 1e6,
 			"bypass":       s.pacer.bypass,
 		}

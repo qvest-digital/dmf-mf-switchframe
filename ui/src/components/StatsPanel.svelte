@@ -1724,7 +1724,7 @@
 								<span class="health-dot {(pacer.empty_ticks ?? 0) > 0 ? 'warn' : 'ok'}"></span>
 								{fmtCount(pacer.empty_ticks)} empty
 							</span>
-							<span class="stat-val">{fmtCount(pacer.replaced)} replaced</span>
+							<span class="stat-val">q:{pacer.queue_depth ?? 0}</span>
 						</div>
 					{/if}
 					{#if snapshot?.switcher?.source_decoders}

@@ -2,7 +2,6 @@ package switcher
 
 import (
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
@@ -12,25 +11,28 @@ import (
 type pacerSnapshot struct {
 	paced      int64 // frames delivered on tick
 	emptyTicks int64 // ticks with no pending frame
-	replaced   int64 // frames replaced before delivery (newest-wins)
+	replaced   int64 // always 0 for FIFO pacer (kept for interface compat)
+	queueDepth int64 // current queue depth
 }
 
-// framePacer smooths frame delivery by holding a single pending frame
-// and releasing it on a fixed-cadence ticker. This prevents bursty
-// encode timing from causing uneven frame delivery to subscribers.
+// framePacer smooths frame delivery using a FIFO queue with a fixed-cadence
+// ticker. Every submitted frame is delivered in order — none are dropped.
+// This is critical for H.264 where P-frames depend on previous reference
+// frames; dropping any frame breaks the decode chain.
 //
-// When bypass is true, submit() calls deliver() synchronously (no
-// ticker goroutine). Used in tests for deterministic frame delivery.
+// When bypass is true, submit() calls deliver() synchronously (no ticker
+// goroutine). Used in tests for deterministic frame delivery.
 type framePacer struct {
-	pending  atomic.Pointer[media.VideoFrame]
 	deliver  func(f *media.VideoFrame)
 	interval time.Duration
 	bypass   bool
 
-	// diagnostics
-	pacedCount    atomic.Int64
-	emptyTicks    atomic.Int64
-	replacedCount atomic.Int64
+	mu    sync.Mutex
+	queue []*media.VideoFrame
+
+	// diagnostics (accessed under mu)
+	pacedCount int64
+	emptyCount int64
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -58,7 +60,7 @@ func newBypassPacer(deliver func(f *media.VideoFrame)) *framePacer {
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
 	}
-	close(p.doneCh) // already "done" — no goroutine to wait for
+	close(p.doneCh)
 	return p
 }
 
@@ -70,37 +72,52 @@ func (p *framePacer) run() {
 	for {
 		select {
 		case <-p.stopCh:
-			// Deliver any final pending frame
-			if f := p.pending.Swap(nil); f != nil {
+			// Drain all remaining queued frames on stop
+			p.mu.Lock()
+			remaining := p.queue
+			p.queue = nil
+			p.mu.Unlock()
+			for _, f := range remaining {
 				p.deliver(f)
-				p.pacedCount.Add(1)
+				p.mu.Lock()
+				p.pacedCount++
+				p.mu.Unlock()
 			}
 			return
 		case <-ticker.C:
-			f := p.pending.Swap(nil)
-			if f != nil {
+			p.mu.Lock()
+			if len(p.queue) > 0 {
+				f := p.queue[0]
+				p.queue = p.queue[1:]
+				p.pacedCount++
+				p.mu.Unlock()
 				p.deliver(f)
-				p.pacedCount.Add(1)
 			} else {
-				p.emptyTicks.Add(1)
+				p.emptyCount++
+				p.mu.Unlock()
 			}
 		}
 	}
 }
 
-// submit stores a frame for delivery on the next tick. If a frame is
-// already pending, it is replaced (newest-wins, no lock needed).
-// In bypass mode, delivers synchronously.
+// submit enqueues a frame for delivery on the next tick. All frames are
+// delivered in FIFO order — none are dropped or replaced.
 func (p *framePacer) submit(f *media.VideoFrame) {
 	if p.bypass {
 		p.deliver(f)
-		p.pacedCount.Add(1)
+		p.mu.Lock()
+		p.pacedCount++
+		p.mu.Unlock()
 		return
 	}
-	old := p.pending.Swap(f)
-	if old != nil {
-		p.replacedCount.Add(1)
+	select {
+	case <-p.stopCh:
+		return // pacer stopped, discard
+	default:
 	}
+	p.mu.Lock()
+	p.queue = append(p.queue, f)
+	p.mu.Unlock()
 }
 
 func (p *framePacer) stop() {
@@ -111,9 +128,12 @@ func (p *framePacer) stop() {
 }
 
 func (p *framePacer) snapshot() pacerSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return pacerSnapshot{
-		paced:      p.pacedCount.Load(),
-		emptyTicks: p.emptyTicks.Load(),
-		replaced:   p.replacedCount.Load(),
+		paced:      p.pacedCount,
+		emptyTicks: p.emptyCount,
+		replaced:   0,
+		queueDepth: int64(len(p.queue)),
 	}
 }
