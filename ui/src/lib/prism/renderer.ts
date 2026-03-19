@@ -14,6 +14,7 @@ export interface RendererStats {
 	videoQueueSize: number;
 	videoQueueLengthMs: number;
 	videoTotalDiscarded: number;
+	liveEdgeSkips: number;
 }
 
 /** Comprehensive renderer diagnostics for perf snapshots, covering rAF timing, draw cost, A/V sync, and buffer state. */
@@ -476,6 +477,7 @@ export class PrismRenderer {
 			videoQueueSize: vStats.queueSize,
 			videoQueueLengthMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
+			liveEdgeSkips: this._diagLiveEdgeSkips,
 		});
 	}
 
