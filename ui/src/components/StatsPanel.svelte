@@ -260,6 +260,7 @@
 			codec?: { encoder: string; decoder: string; hw_accel: boolean };
 			frame_sync?: FrameSyncData;
 			frame_rate_converter?: { quality: string };
+			pacer?: { paced_frames: number; empty_ticks: number; queue_depth: number };
 			program_relay_viewers?: RelayViewer[];
 		};
 		mixer?: {
