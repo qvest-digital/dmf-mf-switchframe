@@ -32,6 +32,19 @@
 	async function join(operatorName: string): Promise<void> {
 		joining = true;
 		error = '';
+
+		// Resume an AudioContext on this user gesture so autoplay is
+		// pre-unlocked by the time the main session loads (client-side nav
+		// preserves the gesture context). Store on window so the main page
+		// can detect that audio is already unlocked.
+		try {
+			const ctx = new AudioContext();
+			await ctx.resume();
+			(window as any).__switchframe_audio_unlocked = true;
+		} catch {
+			// Non-fatal — audio will prompt later if needed.
+		}
+
 		try {
 			const resp = await fetch('/api/operator/register', {
 				method: 'POST',
