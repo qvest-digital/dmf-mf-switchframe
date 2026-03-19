@@ -1332,7 +1332,16 @@ func (a *App) Run(ctx context.Context) error {
 			a.debugCollector.Register("preview:program", pe)
 
 			a.sw.SetRawPreviewSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
-				pe.Send(frame.YUV, frame.Width, frame.Height, frame.PTS)
+				// Use the wall-clock-rewritten PTS from the program relay output,
+				// not the source PTS from the pipeline frame. The raw sink receives
+				// frames BEFORE wallClockVideoPTS rewrites, so source PTS can jump
+				// on cuts while the mixer's audio PTS is monotonic. Using the
+				// broadcast PTS keeps video and audio on the same timeline.
+				pts := a.sw.LastBroadcastVideoPTS()
+				if pts <= 0 {
+					pts = frame.PTS // fallback before first broadcast
+				}
+				pe.Send(frame.YUV, frame.Width, frame.Height, pts)
 			}))
 
 			slog.Info("program preview encoder enabled",
