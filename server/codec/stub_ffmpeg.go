@@ -95,7 +95,7 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 }
 
 // NewPreviewEncoder is a stub that returns an error when FFmpeg is not available.
-func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int, preset ...string) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
