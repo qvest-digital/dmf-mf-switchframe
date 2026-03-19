@@ -30,13 +30,15 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 }
 
 // NewPreviewEncoder creates a lightweight preview encoder using libx264 with
-// ultrafast preset and baseline profile. Unlike NewVideoEncoder, it always uses
-// software encoding — hardware encoders are reserved for the program output path.
+// baseline profile. Unlike NewVideoEncoder, it always uses software encoding —
+// hardware encoders are reserved for the program output path.
+// Optional preset parameter (default "ultrafast"). Use "veryfast" for better
+// compression at the cost of higher CPU.
 //
 // fpsNum/fpsDen express the frame rate as a rational number (e.g. 30/1 for 30fps).
-func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int, preset ...string) (transition.VideoEncoder, error) {
 	gopSecs := transition.DefaultGOPSecs
-	return NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs)
+	return NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs, preset...)
 }
 
 // NewVideoDecoder creates a video decoder using the best available backend.

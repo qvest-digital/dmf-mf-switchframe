@@ -200,12 +200,13 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 }
 
 // ffenc_open_preview initializes a lightweight preview encoder.
-// Always uses libx264 with ultrafast preset, baseline profile, zerolatency tune.
+// Uses libx264 with the given preset, baseline profile, zerolatency tune.
 // Designed for low-bitrate preview proxy encoding — hardware encoders are
 // reserved for the program output path.
 // Returns 0 on success, negative on error.
 static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
-                              int fps_num, int fps_den, int gop_secs) {
+                              int fps_num, int fps_den, int gop_secs,
+                              const char* preset) {
 	memset(h, 0, sizeof(ffenc_t));
 
 	const AVCodec* codec = avcodec_find_encoder_by_name("libx264");
@@ -246,8 +247,8 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 	// in the Annex B bitstream on keyframes, matching the production encoder
 	// pattern. The MoQ relay extracts them from AVC1 NALUs directly.
 
-	// ultrafast preset, baseline profile, zerolatency tune.
-	av_opt_set(h->ctx->priv_data, "preset", "ultrafast", 0);
+	// baseline profile, zerolatency tune. Preset set by caller via parameter.
+	av_opt_set(h->ctx->priv_data, "preset", preset, 0);
 	av_opt_set(h->ctx->priv_data, "profile", "baseline", 0);
 	av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
 	av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
@@ -457,12 +458,13 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 }
 
 // NewFFmpegPreviewEncoder creates a lightweight preview encoder using libx264
-// with ultrafast preset and baseline profile. It always uses software encoding
-// (hardware encoders are reserved for the program output path).
+// with the given preset (e.g. "ultrafast", "veryfast") and baseline profile.
+// It always uses software encoding — hardware encoders are reserved for the
+// program output path.
 //
 // width, height, bitrate, fpsNum, and fpsDen configure the output stream.
 // gopSecs sets the IDR keyframe interval in seconds.
-func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegEncoder, error) {
+func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int, preset ...string) (*FFmpegEncoder, error) {
 	initFFmpegLogLevel()
 
 	if width <= 0 || height <= 0 {
@@ -478,11 +480,18 @@ func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int
 		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
 	}
 
+	p := "ultrafast"
+	if len(preset) > 0 && preset[0] != "" {
+		p = preset[0]
+	}
+	cPreset := C.CString(p)
+	defer C.free(unsafe.Pointer(cPreset))
+
 	e := &FFmpegEncoder{}
 	rc := C.ffenc_open_preview(&e.handle,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs))
+		C.int(gopSecs), cPreset)
 	if rc != 0 {
 		desc := map[int]string{
 			-1: "codec not found",

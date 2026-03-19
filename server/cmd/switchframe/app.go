@@ -1331,6 +1331,7 @@ func (a *App) Run(ctx context.Context) error {
 			FPSNum:    pf.FPSNum,
 			FPSDen:    pf.FPSDen,
 			Relay:     a.programPreviewRelay,
+			Preset:    "veryfast",
 		})
 		if err != nil {
 			slog.Error("program preview encoder failed", "error", err)

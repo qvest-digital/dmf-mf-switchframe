@@ -41,6 +41,7 @@ type Config struct {
 	FPSDen        int    // Frame rate denominator (e.g. 1)
 	Relay         Relay  // MoQ relay for broadcast
 	FrameInterval int    // Encode every Nth frame (1=all, 2=half rate, etc). 0 treated as 1.
+	Preset        string // x264 preset (default "ultrafast"). "veryfast" for better compression.
 }
 
 // Stats tracks preview encoder performance counters using atomic operations.
@@ -260,7 +261,7 @@ func (e *Encoder) loop() {
 
 		// Lazy encoder creation.
 		if encoder == nil {
-			enc, err := codec.NewPreviewEncoder(targetW, targetH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen)
+			enc, err := codec.NewPreviewEncoder(targetW, targetH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen, e.cfg.Preset)
 			if err != nil {
 				slog.Error("preview: encoder init failed",
 					"key", e.cfg.SourceKey, "error", err)
