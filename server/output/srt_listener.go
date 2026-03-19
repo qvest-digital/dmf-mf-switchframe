@@ -52,6 +52,10 @@ type SRTListener struct {
 	// acceptFn is overridden in tests to avoid real network I/O.
 	// When set, Start() launches it in a background goroutine.
 	acceptFn func(ctx context.Context, config SRTListenerConfig) error
+
+	// onConnect is called when a new SRT client connects.
+	// Used to force IDR keyframes so the client can start decoding immediately.
+	onConnect func()
 }
 
 // NewSRTListener creates an SRT listener adapter.
@@ -70,6 +74,13 @@ func NewSRTListener(config SRTListenerConfig) *SRTListener {
 	l.state.Store(ptrTo(StateStopped))
 	l.lastError.Store(ptrTo(""))
 	return l
+}
+
+// OnConnect registers a callback invoked when a new SRT client connects.
+// Used to force IDR keyframes so clients can start decoding immediately
+// without waiting for the next natural keyframe (up to 2s GOP interval).
+func (l *SRTListener) OnConnect(fn func()) {
+	l.onConnect = fn
 }
 
 // ID returns the adapter identifier.
@@ -119,6 +130,12 @@ func (l *SRTListener) AddConnection(id string, conn srtConn) error {
 	go l.connWriter(ctx, lc)
 
 	slog.Info("SRT listener client connected", "id", id, "total", len(l.conns))
+
+	// Request keyframe so the new client can start decoding immediately.
+	if l.onConnect != nil {
+		l.onConnect()
+	}
+
 	return nil
 }
 

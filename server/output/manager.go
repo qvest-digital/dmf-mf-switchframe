@@ -287,6 +287,12 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 				return m.srtAcceptFn(ctx, lCfg, listener)
 			}
 		}
+		// Force IDR keyframe when a new SRT client connects so it can
+		// start decoding immediately without waiting up to 2s for the
+		// next natural keyframe in the GOP.
+		if m.onMuxStart != nil {
+			listener.OnConnect(m.onMuxStart)
+		}
 		adapter = listener
 	default:
 		m.mu.Unlock()
