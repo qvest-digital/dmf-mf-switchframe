@@ -50,6 +50,12 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/replay/mark-out", SubsystemReplay, true},
 		{"/api/replay/play", SubsystemReplay, true},
 		{"/api/replay/stop", SubsystemReplay, true},
+		{"/api/replay/quick", SubsystemReplay, true},
+		{"/api/replay/pause", SubsystemReplay, true},
+		{"/api/replay/resume", SubsystemReplay, true},
+		{"/api/replay/seek", SubsystemReplay, true},
+		{"/api/replay/speed", SubsystemReplay, true},
+		{"/api/replay/marks", SubsystemReplay, true},
 
 		// Output (exact matches)
 		{"/api/recording/start", SubsystemOutput, true},
@@ -106,6 +112,11 @@ func TestEndpointSubsystem(t *testing.T) {
 
 		// Encoder (unmapped — should be switching)
 		{"/api/encoder", SubsystemSwitching, true},
+
+		// Comms — no lockable subsystem, should pass through
+		{"/api/comms/join", "", false},
+		{"/api/comms/leave", "", false},
+		{"/api/comms/mute", "", false},
 
 		// Exempt / unmapped (should return false)
 		{"/api/switch/state", "", false},
@@ -334,6 +345,12 @@ func TestEndpointSubsystem_V1Prefix(t *testing.T) {
 		{"/api/v1/audio/cam1/eq", SubsystemAudio, true},
 		{"/api/v1/graphics/3/on", SubsystemGraphics, true},
 		{"/api/v1/replay/play", SubsystemReplay, true},
+		{"/api/v1/replay/quick", SubsystemReplay, true},
+		{"/api/v1/replay/pause", SubsystemReplay, true},
+		{"/api/v1/replay/resume", SubsystemReplay, true},
+		{"/api/v1/replay/seek", SubsystemReplay, true},
+		{"/api/v1/replay/speed", SubsystemReplay, true},
+		{"/api/v1/replay/marks", SubsystemReplay, true},
 		{"/api/v1/recording/start", SubsystemOutput, true},
 		{"/api/v1/layout/slots/0/on", SubsystemSwitching, true},
 		{"/api/v1/scte35/cue", SubsystemOutput, true},
@@ -377,6 +394,128 @@ func TestMiddleware_V1PrefixEnforcesPermissions(t *testing.T) {
 
 	require.Equal(t, http.StatusForbidden, rr.Code,
 		"expected 403 for audio role on /api/v1/switch/cut, got %d (permission bypass via v1 prefix)", rr.Code)
+}
+
+func TestMiddleware_ReplayTransportEndpointsEnforceLock(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	alice, _ := store.Register("Alice", RoleDirector)
+	bob, _ := store.Register("Bob", RoleDirector)
+	sm.Connect(alice.ID, alice.Name, alice.Role)
+	sm.Connect(bob.ID, bob.Name, bob.Role)
+
+	// Alice locks replay.
+	_ = sm.AcquireLock(alice.ID, SubsystemReplay)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// All replay transport endpoints should be blocked for Bob.
+	replayEndpoints := []string{
+		"/api/replay/quick",
+		"/api/replay/pause",
+		"/api/replay/resume",
+		"/api/replay/seek",
+		"/api/replay/speed",
+		"/api/replay/marks",
+	}
+
+	for _, ep := range replayEndpoints {
+		req := httptest.NewRequest("POST", ep, nil)
+		req.Header.Set("Authorization", "Bearer "+bob.Token)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusConflict, rr.Code,
+			"expected 409 for Bob on %s (replay locked by Alice)", ep)
+	}
+
+	// Alice (lock owner) should be allowed on all of them.
+	for _, ep := range replayEndpoints {
+		req := httptest.NewRequest("POST", ep, nil)
+		req.Header.Set("Authorization", "Bearer "+alice.Token)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code,
+			"expected 200 for Alice (lock owner) on %s", ep)
+	}
+}
+
+func TestMiddleware_ViewerForbiddenOnReplayTransport(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	op, _ := store.Register("Viewer", RoleViewer)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// Viewer role should be forbidden from replay endpoints.
+	replayEndpoints := []string{
+		"/api/replay/quick",
+		"/api/replay/pause",
+		"/api/replay/resume",
+		"/api/replay/seek",
+		"/api/replay/speed",
+		"/api/replay/marks",
+	}
+
+	for _, ep := range replayEndpoints {
+		req := httptest.NewRequest("POST", ep, nil)
+		req.Header.Set("Authorization", "Bearer "+op.Token)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusForbidden, rr.Code,
+			"expected 403 for viewer on %s", ep)
+	}
+}
+
+func TestMiddleware_CommsPassesThrough(t *testing.T) {
+	store, _ := NewStore(tempStorePath(t))
+	sm := NewSessionManager()
+	defer sm.Close()
+
+	// Register a viewer — most restricted role.
+	op, _ := store.Register("Viewer", RoleViewer)
+	sm.Connect(op.ID, op.Name, op.Role)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := NewMiddleware(store, sm)
+	wrapped := mw(handler)
+
+	// Comms endpoints have no lockable subsystem, so even a viewer can use them.
+	commsEndpoints := []string{
+		"/api/comms/join",
+		"/api/comms/leave",
+		"/api/comms/mute",
+	}
+
+	for _, ep := range commsEndpoints {
+		req := httptest.NewRequest("POST", ep, nil)
+		req.Header.Set("Authorization", "Bearer "+op.Token)
+		rr := httptest.NewRecorder()
+		wrapped.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code,
+			"expected 200 for comms endpoint %s (no lockable subsystem)", ep)
+	}
 }
 
 func TestMiddleware_UnknownEndpointPassesThrough(t *testing.T) {
