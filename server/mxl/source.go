@@ -81,6 +81,14 @@ type SourceConfig struct {
 		Send(yuv []byte, w, h int, pts int64)
 	}
 
+	// ReplayViewer, if set, receives full-quality encoded frames directly
+	// (bypassing the relay). Used when PreviewEncoder is also set, so that
+	// replay buffers capture full resolution instead of preview quality.
+	ReplayViewer interface {
+		SendVideo(frame *media.VideoFrame)
+		SendAudio(frame *media.AudioFrame)
+	}
+
 	// OnVideoInfo is called once after the first keyframe is encoded,
 	// providing SPS/PPS so the caller can set VideoInfo on the relay
 	// (required for browser decoder initialization).
@@ -352,12 +360,20 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 
 // encodeAndBroadcastVideo encodes a YUV420p frame to H.264 and broadcasts it.
 // Called only from the single videoFanOut goroutine, so lazy-init is safe.
+//
+// Three modes:
+//   - PreviewEncoder set, ReplayViewer nil: preview-only (existing behavior).
+//   - PreviewEncoder set, ReplayViewer set: dual-encode — preview feeds relay,
+//     full-quality encode feeds replay viewer directly.
+//   - PreviewEncoder nil: full-quality encode feeds relay (original path).
 func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int64) {
-	if s.config.PreviewEncoder != nil {
+	// Preview-only path: delegate to preview encoder, skip full-quality encode.
+	if s.config.PreviewEncoder != nil && s.config.ReplayViewer == nil {
 		s.config.PreviewEncoder.Send(yuv, width, height, pts)
 		return
 	}
 
+	// Full-quality encode (for relay when no preview, or for replay when preview active).
 	if s.videoEncoder == nil {
 		bitrate := s.config.Bitrate
 		if bitrate == 0 {
@@ -366,6 +382,10 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 		enc, err := s.config.EncoderFactory(width, height, bitrate, s.config.FPSNum, s.config.FPSDen)
 		if err != nil {
 			s.log.Error("mxl source: failed to create video encoder", "error", err)
+			if s.config.PreviewEncoder != nil {
+				// Still feed preview even if full-quality encoder fails.
+				s.config.PreviewEncoder.Send(yuv, width, height, pts)
+			}
 			return
 		}
 		s.videoEncoder = enc
@@ -416,7 +436,17 @@ func (s *Source) encodeAndBroadcastVideo(yuv []byte, width, height int, pts int6
 		}
 	}
 
-	s.config.Relay.BroadcastVideo(frame)
+	if s.config.PreviewEncoder != nil {
+		// Dual-encode: preview encoder feeds relay, full-quality feeds replay.
+		s.config.PreviewEncoder.Send(yuv, width, height, pts)
+		s.config.ReplayViewer.SendVideo(frame)
+	} else {
+		// Standard: full-quality encode feeds relay (and replay if wired).
+		s.config.Relay.BroadcastVideo(frame)
+		if s.config.ReplayViewer != nil {
+			s.config.ReplayViewer.SendVideo(frame)
+		}
+	}
 }
 
 func (s *Source) audioFanOut(ctx context.Context) {
@@ -511,6 +541,11 @@ func (s *Source) encodeAndBroadcastAudio(pcm []float32, sampleRate, channels int
 		Channels:   channels,
 	}
 	s.config.Relay.BroadcastAudio(frame)
+
+	// Feed replay viewer directly when in dual-encode mode.
+	if s.config.ReplayViewer != nil {
+		s.config.ReplayViewer.SendAudio(frame)
+	}
 }
 
 // interleaveChannelsInto converts de-interleaved channels to interleaved,

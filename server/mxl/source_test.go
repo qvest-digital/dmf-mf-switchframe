@@ -2,9 +2,14 @@ package mxl
 
 import (
 	"context"
+	"encoding/binary"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zsiec/prism/media"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // --- Test helpers ---
@@ -626,5 +631,347 @@ func TestSource_NilFlowsNoOp(t *testing.T) {
 	src.Start(ctx, nil, nil) // Both nil — should not crash.
 
 	cancel()
+	src.Stop()
+}
+
+// --- Mock types for dual-encode tests ---
+
+// mockPreviewEncoder records raw YUV sends.
+type mockPreviewEncoder struct {
+	mu     sync.Mutex
+	frames []previewFrame
+}
+
+type previewFrame struct {
+	yuv []byte
+	w   int
+	h   int
+	pts int64
+}
+
+func (m *mockPreviewEncoder) Send(yuv []byte, w, h int, pts int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]byte, len(yuv))
+	copy(cp, yuv)
+	m.frames = append(m.frames, previewFrame{yuv: cp, w: w, h: h, pts: pts})
+}
+
+func (m *mockPreviewEncoder) getFrames() []previewFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]previewFrame, len(m.frames))
+	copy(cp, m.frames)
+	return cp
+}
+
+// mockReplayViewer records encoded video and audio frames sent directly.
+type mockReplayViewer struct {
+	mu          sync.Mutex
+	videoFrames []*media.VideoFrame
+	audioFrames []*media.AudioFrame
+}
+
+func (m *mockReplayViewer) SendVideo(frame *media.VideoFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoFrames = append(m.videoFrames, frame)
+}
+
+func (m *mockReplayViewer) SendAudio(frame *media.AudioFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioFrames = append(m.audioFrames, frame)
+}
+
+func (m *mockReplayViewer) getVideoFrames() []*media.VideoFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*media.VideoFrame, len(m.videoFrames))
+	copy(cp, m.videoFrames)
+	return cp
+}
+
+func (m *mockReplayViewer) getAudioFrames() []*media.AudioFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*media.AudioFrame, len(m.audioFrames))
+	copy(cp, m.audioFrames)
+	return cp
+}
+
+// mockMediaBroadcasterForTest records broadcasts for verification.
+type mockMediaBroadcasterForTest struct {
+	mu          sync.Mutex
+	videoFrames []*media.VideoFrame
+	audioFrames []*media.AudioFrame
+}
+
+func (m *mockMediaBroadcasterForTest) BroadcastVideo(frame *media.VideoFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoFrames = append(m.videoFrames, frame)
+}
+
+func (m *mockMediaBroadcasterForTest) BroadcastAudio(frame *media.AudioFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioFrames = append(m.audioFrames, frame)
+}
+
+func (m *mockMediaBroadcasterForTest) getVideoFrames() []*media.VideoFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*media.VideoFrame, len(m.videoFrames))
+	copy(cp, m.videoFrames)
+	return cp
+}
+
+func (m *mockMediaBroadcasterForTest) getAudioFrames() []*media.AudioFrame {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*media.AudioFrame, len(m.audioFrames))
+	copy(cp, m.audioFrames)
+	return cp
+}
+
+// fakeVideoEncoder produces minimal valid Annex B output.
+// First call produces SPS + PPS + IDR (keyframe). Subsequent calls produce P-frames.
+type fakeVideoEncoder struct {
+	callCount int
+}
+
+func (e *fakeVideoEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	e.callCount++
+	if e.callCount == 1 || forceIDR {
+		// Keyframe: SPS (NAL type 7) + PPS (NAL type 8) + IDR (NAL type 5)
+		var out []byte
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x67, 0x42, 0xC0, 0x1E)  // SPS: type 7, baseline, constraint, level 3.0
+		out = append(out, 0x00, 0x00, 0x00, 0x01)  // start code
+		out = append(out, 0x68, 0xCE, 0x38, 0x80)  // PPS: type 8
+		out = append(out, 0x00, 0x00, 0x00, 0x01)  // start code
+		out = append(out, 0x65, 0x88)               // IDR: type 5
+		return out, true, nil
+	}
+	// P-frame (NAL type 1)
+	var out []byte
+	out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+	out = append(out, 0x41, 0x9A)              // non-IDR: type 1
+	return out, false, nil
+}
+
+func (e *fakeVideoEncoder) Close() {}
+
+// fakeAudioEncoder produces minimal AAC-like output.
+type fakeAudioEncoder struct{}
+
+func (e *fakeAudioEncoder) Encode(pcm []float32) ([]byte, error) {
+	// Return minimal non-empty data to simulate AAC encoding.
+	return []byte{0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00, 0xFC, 0xDE, 0x04, 0x00}, nil
+}
+
+func (e *fakeAudioEncoder) Close() error { return nil }
+
+func TestSource_DualEncode_PreviewAndReplay(t *testing.T) {
+	// When both PreviewEncoder and ReplayViewer are set:
+	// - PreviewEncoder should receive raw YUV (for browser relay at preview quality)
+	// - ReplayViewer should receive full-quality encoded H.264 frames
+	// - The relay broadcaster should NOT receive video (preview encoder handles relay)
+
+	preview := &mockPreviewEncoder{}
+	replay := &mockReplayViewer{}
+	relay := &mockMediaBroadcasterForTest{}
+
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    12,
+		Height:   2,
+		Relay:    relay,
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &fakeVideoEncoder{}, nil
+		},
+		AudioEncoderFactory: func(sampleRate, channels int) (AudioEnc, error) {
+			return &fakeAudioEncoder{}, nil
+		},
+		PreviewEncoder: preview,
+		ReplayViewer:   replay,
+		OnRawVideo:     func(string, []byte, int, int, int64) {},
+		OnRawAudio:     func(string, []float32, int64, int) {},
+	})
+
+	now := time.Now()
+
+	// Process 2 video frames directly (bypassing MXL reader for test isolation).
+	src.processVideoGrain(VideoGrain{
+		V210:     makeV210Frame(12, 2),
+		Width:    12,
+		Height:   2,
+		PTS:      1,
+		ReadTime: now,
+	})
+	src.processVideoGrain(VideoGrain{
+		V210:     makeV210Frame(12, 2),
+		Width:    12,
+		Height:   2,
+		PTS:      2,
+		ReadTime: now.Add(33 * time.Millisecond),
+	})
+
+	// Process 1 audio grain.
+	src.processAudioGrain(AudioGrain{
+		PCM:        [][]float32{{0.1, 0.2}, {0.3, 0.4}},
+		SampleRate: 48000,
+		Channels:   2,
+		ReadTime:   now,
+	})
+
+	// Verify preview encoder received raw YUV for both frames.
+	previewFrames := preview.getFrames()
+	if len(previewFrames) != 2 {
+		t.Fatalf("preview encoder: expected 2 frames, got %d", len(previewFrames))
+	}
+	expectedYUVSize := 12*2 + 6*1 + 6*1 // 12x2 YUV420p
+	if len(previewFrames[0].yuv) != expectedYUVSize {
+		t.Fatalf("preview frame YUV size: expected %d, got %d", expectedYUVSize, len(previewFrames[0].yuv))
+	}
+
+	// Verify replay viewer received encoded H.264 video frames.
+	replayVideoFrames := replay.getVideoFrames()
+	if len(replayVideoFrames) != 2 {
+		t.Fatalf("replay viewer: expected 2 video frames, got %d", len(replayVideoFrames))
+	}
+
+	// First frame should be a keyframe with SPS/PPS.
+	if !replayVideoFrames[0].IsKeyframe {
+		t.Fatal("replay first frame should be a keyframe")
+	}
+	if replayVideoFrames[0].SPS == nil {
+		t.Fatal("replay first frame should have SPS")
+	}
+	if replayVideoFrames[0].PPS == nil {
+		t.Fatal("replay first frame should have PPS")
+	}
+	if replayVideoFrames[0].Codec != "h264" {
+		t.Fatalf("replay frame codec: expected h264, got %s", replayVideoFrames[0].Codec)
+	}
+
+	// WireData should be AVC1 format (4-byte length prefix, not Annex B start codes).
+	wd := replayVideoFrames[0].WireData
+	if len(wd) < 4 {
+		t.Fatal("replay frame WireData too short")
+	}
+	firstNALULen := binary.BigEndian.Uint32(wd[:4])
+	if firstNALULen == 0 || firstNALULen > uint32(len(wd)) {
+		t.Fatalf("replay frame WireData not valid AVC1: first NALU length = %d", firstNALULen)
+	}
+
+	// Second frame should be a P-frame (not keyframe).
+	if replayVideoFrames[1].IsKeyframe {
+		t.Fatal("replay second frame should not be a keyframe")
+	}
+
+	// Verify replay viewer received encoded audio.
+	replayAudioFrames := replay.getAudioFrames()
+	if len(replayAudioFrames) != 1 {
+		t.Fatalf("replay viewer: expected 1 audio frame, got %d", len(replayAudioFrames))
+	}
+	if len(replayAudioFrames[0].Data) == 0 {
+		t.Fatal("replay audio frame should have non-empty data")
+	}
+
+	// Verify relay did NOT receive video (preview encoder handles relay path).
+	relayVideoFrames := relay.getVideoFrames()
+	if len(relayVideoFrames) != 0 {
+		t.Fatalf("relay should NOT receive video in dual-encode mode, got %d frames", len(relayVideoFrames))
+	}
+
+	// Verify relay DID receive audio (audio always goes through relay).
+	relayAudioFrames := relay.getAudioFrames()
+	if len(relayAudioFrames) != 1 {
+		t.Fatalf("relay: expected 1 audio frame, got %d", len(relayAudioFrames))
+	}
+
+	src.Stop()
+}
+
+func TestSource_PreviewOnlyPath_NoReplay(t *testing.T) {
+	// When PreviewEncoder is set but ReplayViewer is nil:
+	// - PreviewEncoder should receive raw YUV
+	// - No full-quality encode should happen (existing behavior)
+
+	preview := &mockPreviewEncoder{}
+	relay := &mockMediaBroadcasterForTest{}
+
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    12,
+		Height:   2,
+		Relay:    relay,
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			t.Fatal("encoder factory should not be called in preview-only mode")
+			return nil, nil
+		},
+		PreviewEncoder: preview,
+		OnRawVideo:     func(string, []byte, int, int, int64) {},
+	})
+
+	now := time.Now()
+	src.processVideoGrain(VideoGrain{
+		V210:     makeV210Frame(12, 2),
+		Width:    12,
+		Height:   2,
+		PTS:      1,
+		ReadTime: now,
+	})
+
+	previewFrames := preview.getFrames()
+	if len(previewFrames) != 1 {
+		t.Fatalf("preview encoder: expected 1 frame, got %d", len(previewFrames))
+	}
+
+	// Relay should not receive anything (preview encoder handles it).
+	relayVideoFrames := relay.getVideoFrames()
+	if len(relayVideoFrames) != 0 {
+		t.Fatalf("relay should NOT receive video in preview-only mode, got %d frames", len(relayVideoFrames))
+	}
+
+	src.Stop()
+}
+
+func TestSource_StandardPath_NoPreview(t *testing.T) {
+	// When neither PreviewEncoder nor ReplayViewer is set:
+	// - Full-quality encode should feed the relay
+
+	relay := &mockMediaBroadcasterForTest{}
+
+	src := NewSource(SourceConfig{
+		FlowName: "cam1",
+		Width:    12,
+		Height:   2,
+		Relay:    relay,
+		EncoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &fakeVideoEncoder{}, nil
+		},
+		OnRawVideo: func(string, []byte, int, int, int64) {},
+	})
+
+	now := time.Now()
+	src.processVideoGrain(VideoGrain{
+		V210:     makeV210Frame(12, 2),
+		Width:    12,
+		Height:   2,
+		PTS:      1,
+		ReadTime: now,
+	})
+
+	relayVideoFrames := relay.getVideoFrames()
+	if len(relayVideoFrames) != 1 {
+		t.Fatalf("relay: expected 1 video frame, got %d", len(relayVideoFrames))
+	}
+	if !relayVideoFrames[0].IsKeyframe {
+		t.Fatal("relay first frame should be a keyframe")
+	}
+
 	src.Stop()
 }
