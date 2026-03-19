@@ -203,7 +203,10 @@ export class MoQTransport {
 		const mediaSubscriptions: Promise<number>[] = [];
 		for (const track of catalog.tracks) {
 			if (track.name === "catalog") continue;
-			const priority = track.name === "video" ? 0 : track.name.startsWith("audio") ? 64 : 128;
+			// Audio gets highest priority (0) — broadcast principle: viewers
+			// tolerate a frozen frame but notice audio glitches instantly.
+			// Video at 64, captions at 128.
+			const priority = track.name.startsWith("audio") ? 0 : track.name === "video" ? 64 : 128;
 			mediaSubscriptions.push(this.subscribe(this.namespace, track.name, priority));
 		}
 		await Promise.all(mediaSubscriptions);
