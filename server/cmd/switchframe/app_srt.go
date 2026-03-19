@@ -572,6 +572,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			a.srtListener.ReleaseSource()
 		}
 
+		// Remove replay viewer from the source relay.
+		if a.replayMgr != nil {
+			a.replayMgr.RemoveSource(sourceKey)
+		}
+
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.
 		// The health monitor will mark it stale/no_signal automatically.
 	}
