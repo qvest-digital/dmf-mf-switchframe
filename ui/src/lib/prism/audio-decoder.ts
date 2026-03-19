@@ -485,20 +485,20 @@ export class PrismAudioDecoder {
 				// Update firstPTS so startPlayback() uses the corrected epoch
 				// if it hasn't fired yet (PTS jump arrived during initial buffering).
 				this.firstPTS = pts;
-				// Re-anchor the worklet's PTS clock to the current decoded frame.
-				// sampleOffset accounts for samples already in the ring buffer
-				// from the old PTS epoch — when samplesConsumed catches up,
-				// the worklet's PTS equals `pts` (the frame being decoded now).
-				// Use context sample rate since ring buffer content is at context rate.
+				// Clear the ring buffer before re-anchoring. The ring may
+				// contain samples from the OLD PTS epoch whose timeline
+				// doesn't match the new epoch. Using -bufferedSamples with
+				// mixed-epoch content causes PTS to be offset by the gap
+				// between epochs (typically seconds). Clearing also prevents
+				// the worklet's hard-flush from racing with this set-pts
+				// message — an empty ring means no flush, so the worklet
+				// processes set-pts cleanly.
 				if (this.workletNode && this.ringBuffer) {
-					const contextRate = this.context.sampleRate;
-					const bufferedSamples = Math.round(
-						(this.ringBuffer.getStats().queueLengthMs / 1000) * contextRate
-					);
+					this.ringBuffer.clear();
 					this.workletNode.port.postMessage({
 						type: "set-pts",
 						pts: pts,
-						sampleOffset: -bufferedSamples,
+						sampleOffset: 0,
 					});
 				}
 			}

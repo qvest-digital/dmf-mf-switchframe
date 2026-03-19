@@ -156,9 +156,9 @@ describe('PrismAudioDecoder', () => {
 		);
 		expect(setPtsCalls.length).toBe(1);
 		expect(setPtsCalls[0][0].pts).toBe(2_000_000);
-		// Mock ring buffer returns queueLengthMs: 800
-		// Expected: -Math.round((800/1000) * 48000) = -38400
-		expect(setPtsCalls[0][0].sampleOffset).toBe(-38400);
+		// Ring is cleared before set-pts to discard old-epoch audio,
+		// so sampleOffset is 0 (not -bufferedSamples).
+		expect(setPtsCalls[0][0].sampleOffset).toBe(0);
 	});
 
 	it('should not send set-pts for small PTS gaps during playback', async () => {
