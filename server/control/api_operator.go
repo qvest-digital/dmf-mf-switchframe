@@ -45,17 +45,24 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If invite tokens are configured, validate and override role from token.
+	// Skip this check if the caller authenticated with the session API token
+	// (session owner registering via the normal UI, not an invite link).
 	if len(a.inviteTokens) > 0 {
-		if req.InviteToken == "" {
-			httperr.Write(w, http.StatusForbidden, "invite token required")
-			return
+		bearerToken := operator.ExtractBearerToken(r)
+		isSessionOwner := a.sessionAPIToken != "" && bearerToken == a.sessionAPIToken
+
+		if !isSessionOwner {
+			if req.InviteToken == "" {
+				httperr.Write(w, http.StatusForbidden, "invite token required")
+				return
+			}
+			role, ok := a.inviteTokens[req.InviteToken]
+			if !ok {
+				httperr.Write(w, http.StatusForbidden, "invalid invite token")
+				return
+			}
+			req.Role = operator.Role(role)
 		}
-		role, ok := a.inviteTokens[req.InviteToken]
-		if !ok {
-			httperr.Write(w, http.StatusForbidden, "invalid invite token")
-			return
-		}
-		req.Role = operator.Role(role)
 	}
 
 	op, err := a.operatorStore.Register(req.Name, req.Role)

@@ -1027,6 +1027,7 @@ func (a *App) initAPI() error {
 	// Pass invite tokens if cloud provided them.
 	if len(a.cfg.InviteTokens) > 0 {
 		apiOpts = append(apiOpts, control.WithInviteTokens(a.cfg.InviteTokens))
+		apiOpts = append(apiOpts, control.WithSessionAPIToken(a.cfg.APIToken))
 	}
 
 	// Constrain SRT listener output ports if cloud provided a range.

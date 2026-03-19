@@ -261,6 +261,12 @@ func WithInviteTokens(tokens map[string]string) APIOption {
 	return func(a *API) { a.inviteTokens = tokens }
 }
 
+// WithSessionAPIToken stores the session API token so the register handler
+// can bypass invite token requirements for session owners.
+func WithSessionAPIToken(token string) APIOption {
+	return func(a *API) { a.sessionAPIToken = token }
+}
+
 
 // WithAllowedOutputPorts constrains SRT listener output to the given ports.
 func WithAllowedOutputPorts(ports []int) APIOption {
@@ -309,6 +315,7 @@ type API struct {
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
+	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
 	mux                *http.ServeMux
 	enrichFn           atomic.Pointer[enrichFunc]
