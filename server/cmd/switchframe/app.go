@@ -325,9 +325,18 @@ func (a *App) initCoreEngine() error {
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
-			a.programRelay.BroadcastAudio(frame)
+			// Adjust audio PTS for browser relay to reflect actual content age.
+			// Audio content is delayed by the ring buffer FIFO (~30ms) relative
+			// to video content (newest-wins, zero delay). Subtracting the ring
+			// buffer depth makes audio PTS older, so the browser renderer holds
+			// video frames until audio catches up — aligning content ages.
+			// The muxer path (SRT/recording) has its own lip-sync offset.
+			relayPTS := frame.PTS - a.mixer.RingBufferLatency90k()
+			relayFrame := *frame // shallow copy
+			relayFrame.PTS = relayPTS
+			a.programRelay.BroadcastAudio(&relayFrame)
 			if a.programPreviewRelay != nil {
-				a.programPreviewRelay.BroadcastAudio(frame)
+				a.programPreviewRelay.BroadcastAudio(&relayFrame)
 			}
 		},
 		DecoderFactory: audioDecoderFactory(),
