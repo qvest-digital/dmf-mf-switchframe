@@ -1,6 +1,6 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-const LIVE_EDGE_TARGET_DEPTH = 6;
+const LIVE_EDGE_TARGET_DEPTH = 10;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
@@ -67,7 +67,6 @@ export class PrismRenderer {
 	private currentAudioPTS = -1;
 	private lastDrawnFrame: VideoFrame | null = null;
 	private onStats: ((stats: RendererStats) => void) | null = null;
-	private decodePump: (() => void) | null;
 	private freeRunStart = -1;
 	private freeRunBasePTS = -1;
 	/** @deprecated freeRunOnly is no longer used; audioClock returns -1 dynamically when unavailable */
@@ -113,14 +112,12 @@ export class PrismRenderer {
 		videoBuffer: VideoRenderBuffer,
 		audioClock: AudioClock,
 		onStats?: (stats: RendererStats) => void,
-		decodePump?: () => void,
 	) {
 		this.canvas = canvas;
 		this.ctx = canvas.getContext("2d")!;
 		this.videoBuffer = videoBuffer;
 		this.audioClock = audioClock;
 		this.onStats = onStats ?? null;
-		this.decodePump = decodePump ?? null;
 	}
 
 	set freeRunOnly(v: boolean) {
@@ -171,10 +168,6 @@ export class PrismRenderer {
 	};
 
 	private renderTick(now: number): void {
-		// Pump compressed frames into the VideoDecoder based on audio clock.
-		// Must run every tick so frames are decoded just-in-time for display.
-		if (this.decodePump) this.decodePump();
-
 		this._diagRafCount++;
 		if (this._diagLastRafTime > 0) {
 			const interval = now - this._diagLastRafTime;
@@ -269,7 +262,7 @@ export class PrismRenderer {
 			const peekDiverge = this.videoBuffer.peekFirstFrame();
 			const avDiverged = peekDiverge != null && audioPTS >= 0 &&
 				peekDiverge.timestamp - audioPTS > 3_000_000 &&
-				this.videoBuffer.getStats().queueSize > 4;
+				this.videoBuffer.getStats().queueSize > 10;
 
 			// Only reset audio-stall tracking when audio advances AND
 			// A/V PTS are reasonably aligned. During divergence, keep

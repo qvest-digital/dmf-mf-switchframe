@@ -1,4 +1,3 @@
-import { CompressedFrameQueue } from "./compressed-frame-queue";
 import { VideoRenderBuffer } from "./video-render-buffer";
 
 /** Diagnostic counters and timing statistics from the video decoder worker. */
@@ -46,14 +45,6 @@ export class PrismVideoDecoder {
 	private _diagResolve: ((d: VideoDecoderDiagnostics) => void) | null = null;
 	private _bufferDropped = 0;
 	private _paused = false;
-	private compressedQueue = new CompressedFrameQueue(5_000_000); // 5s max
-	private audioClock: { getPlaybackPTS(): number } | null = null;
-	private _bootstrapCount = 0;
-	private _lastDescription: Uint8Array | undefined;
-	private _lastPumpAudioPTS = -1;
-	private _audioStallStartMs = 0;
-	private _lastDrainTimeMs = 0;
-	private _lastDrainCount = 0;
 
 	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
@@ -67,10 +58,6 @@ export class PrismVideoDecoder {
 			{ type: "module" },
 		);
 		this.worker.onmessage = (e) => this.handleWorkerMessage(e);
-	}
-
-	setAudioClock(clock: { getPlaybackPTS(): number }): void {
-		this.audioClock = clock;
 	}
 
 	configure(codec: string, width: number, height: number, description?: ArrayBuffer): void {
@@ -98,10 +85,6 @@ export class PrismVideoDecoder {
 		}, description ? [description] : []);
 
 		this.configured = true;
-
-		if (description) {
-			this._lastDescription = new Uint8Array(description);
-		}
 	}
 
 	pause(): void {
@@ -116,127 +99,18 @@ export class PrismVideoDecoder {
 		}
 		// Clear stale frames from all buffers
 		this.renderBuffer.clear();
-		this.compressedQueue.flush();
-		this._bootstrapCount = 0;
-		this._lastPumpAudioPTS = -1;
-		this._audioStallStartMs = 0;
-		this._lastDrainTimeMs = 0;
-		this._lastDrainCount = 0;
 	}
 
 	decode(data: Uint8Array, isKeyframe: boolean, timestamp: number, isDisco: boolean): void {
 		if (!this.worker || !this.configured || this._paused) return;
 
-		this.compressedQueue.push(
-			new Uint8Array(data),  // copy — caller may transfer original
-			timestamp,
-			isKeyframe,
-			isKeyframe ? this._lastDescription : undefined,
-		);
-
-		// Pump immediately to minimize latency
-		this.pumpDecode();
-	}
-
-	/** Release compressed frames to the VideoDecoder worker based on audio clock position. */
-	pumpDecode(): void {
-		if (!this.worker || !this.configured) return;
-		if (this.compressedQueue.size() === 0) return;
-
-		const LOOKAHEAD_US = 200_000; // 200ms decode lead time
-		const BOOTSTRAP_FRAMES = 3;   // frames to decode before audio starts
-
-		const audioPTS = this.audioClock?.getPlaybackPTS() ?? -1;
-
-		// Safety valve: if the queue has had frames for >1 second without
-		// any being drained, force-drain everything. This handles PTS
-		// mismatches, unit conversion issues, or any other case where the
-		// audio-gated drain silently fails.
-		const now = performance.now();
-		if (this._lastDrainTimeMs === 0) {
-			this._lastDrainTimeMs = now;
-		}
-		if (now - this._lastDrainTimeMs > 1000 && this._lastDrainCount === 0) {
-			const frames = this.compressedQueue.drain(Infinity, 0);
-			for (const f of frames) {
-				this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
-			}
-			this._lastDrainTimeMs = now;
-			this._lastDrainCount = frames.length;
-			return;
-		}
-
-		if (audioPTS < 0) {
-			// No audio yet — bootstrap: decode a few frames so renderer shows something
-			if (this._bootstrapCount >= BOOTSTRAP_FRAMES) return;
-
-			const available = this.compressedQueue.size();
-			if (available === 0) return;
-
-			const toDrain = Math.min(available, BOOTSTRAP_FRAMES - this._bootstrapCount);
-			const frames = this.compressedQueue.drain(Infinity, 0);
-			const toSend = frames.slice(0, toDrain);
-			for (let i = frames.length - 1; i >= toDrain; i--) {
-				const f = frames[i];
-				this.compressedQueue.push(f.data, f.timestamp, f.isKeyframe, f.description);
-			}
-			for (const f of toSend) {
-				this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
-			}
-			this._bootstrapCount += toSend.length;
-			this._lastDrainCount += toSend.length;
-			return;
-		}
-
-		// Audio stall detection: if audio hasn't advanced for 500ms, drain
-		// one frame per pump tick to prevent compressed queue from growing
-		// unbounded.
-		if (audioPTS === this._lastPumpAudioPTS && this._lastPumpAudioPTS >= 0) {
-			if (this._audioStallStartMs === 0) {
-				this._audioStallStartMs = performance.now();
-			}
-			if (now - this._audioStallStartMs > 500 && this.compressedQueue.size() > 0) {
-				const staleFrames = this.compressedQueue.drain(this.compressedQueue.oldestPTS(), 0);
-				for (const f of staleFrames) {
-					this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
-				}
-				this._lastDrainCount += staleFrames.length;
-				this._lastDrainTimeMs = now;
-				return;
-			}
-		} else {
-			this._audioStallStartMs = 0;
-			this._lastPumpAudioPTS = audioPTS;
-		}
-
-		// Audio is active — drain frames up to audioPTS + lookahead
-		this._bootstrapCount = BOOTSTRAP_FRAMES;
-		let frames = this.compressedQueue.drain(audioPTS, LOOKAHEAD_US);
-
-		// PTS discontinuity: if no frames drained but queue has frames,
-		// either a source cut or PTS mismatch. Force-drain.
-		if (frames.length === 0 && this.compressedQueue.size() > 0) {
-			frames = this.compressedQueue.drain(Infinity, 0);
-		}
-
-		for (const f of frames) {
-			this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
-		}
-		if (frames.length > 0) {
-			this._lastDrainCount += frames.length;
-			this._lastDrainTimeMs = now;
-		}
-	}
-
-	private sendToWorker(data: Uint8Array, isKeyframe: boolean, timestamp: number): void {
-		if (!this.worker) return;
 		this.worker.postMessage(
 			{
 				type: "decode",
 				data: data.buffer,
 				isKeyframe,
 				timestamp,
-				isDisco: false,
+				isDisco,
 			},
 			[data.buffer],
 		);
@@ -249,12 +123,6 @@ export class PrismVideoDecoder {
 			this.worker = null;
 		}
 		this.renderBuffer.clear();
-		this.compressedQueue.flush();
-		this._bootstrapCount = 0;
-		this._lastPumpAudioPTS = -1;
-		this._audioStallStartMs = 0;
-		this._lastDrainTimeMs = 0;
-		this._lastDrainCount = 0;
 		this.configured = false;
 	}
 
