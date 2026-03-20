@@ -414,9 +414,10 @@ func TestTSMuxer_UpstreamPTSRebase_AVAligned(t *testing.T) {
 		pts |= int64(ptsBytes[3]) << 7
 		pts |= int64(ptsBytes[4]>>1) & 0x7F
 
-		if pid == videoPID {
+		switch pid {
+		case videoPID:
 			videoPTSValues = append(videoPTSValues, pts)
-		} else if pid == audioPID {
+		case audioPID:
 			audioPTSValues = append(audioPTSValues, pts)
 		}
 	}

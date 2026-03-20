@@ -27,10 +27,6 @@ const (
 	// defaultSCTE35PID is the default MPEG-TS packet identifier for the SCTE-35 cue stream.
 	// Used by tests and as the fallback when no PID is explicitly configured.
 	defaultSCTE35PID uint16 = 0x102
-	// maxPendingAudio is the maximum number of audio frames buffered
-	// before the muxer is initialized (first keyframe). At 48kHz with
-	// 1024-sample AAC frames, 50 frames ≈ ~1 second of audio.
-	maxPendingAudio = 50
 	// maxPendingSCTE35 is the maximum number of SCTE-35 sections buffered
 	// before the muxer is initialized (first keyframe).
 	maxPendingSCTE35 = 10
