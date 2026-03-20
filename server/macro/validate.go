@@ -58,7 +58,9 @@ var actionsRequiringSource = map[Action]bool{
 	ActionReplayMarkIn:    true,
 	ActionReplayMarkOut:   true,
 	ActionReplayPlay:      true,
-	ActionReplayQuickClip: true,
+	ActionReplayQuickClip:   true,
+	ActionSTMapAssignSource: true,
+	ActionSTMapRemoveSource: true,
 }
 
 // ValidateSteps validates the steps of a macro and returns errors and warnings.
@@ -137,6 +139,22 @@ func validateStep(i int, step Step, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: "layout_slot_source requires 'source' param",
+			})
+		}
+
+	// ST map actions.
+	case ActionSTMapAssignSource:
+		if !hasStringParam(step.Params, "map") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "stmap_assign_source requires 'map' param",
+			})
+		}
+	case ActionSTMapAssignProgram:
+		if !hasStringParam(step.Params, "map") {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: "stmap_assign_program requires 'map' param",
 			})
 		}
 
