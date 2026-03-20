@@ -244,6 +244,7 @@ export class PrismRenderer {
 		}
 
 		let targetPTS: number;
+		let audioDriven = false;
 		// Always check the audio clock — it returns -1 dynamically when
 		// unavailable (audioDecoder not yet configured, not playing, etc.).
 		// This allows the renderer to transition from freerun to audio-driven
@@ -322,7 +323,8 @@ export class PrismRenderer {
 						targetPTS = -1;
 					}
 				} else {
-					targetPTS = audioPTS - this._avSyncCorrectionUs;
+					targetPTS = audioPTS;
+					audioDriven = true;
 				}
 			}
 		} else {
@@ -380,16 +382,18 @@ export class PrismRenderer {
 				}
 			}
 
-			// Look-ahead + PTS discontinuity recovery:
-			// 1. If next frame is within 150ms of audio → display (normal jitter)
-			// 2. If next frame is >500ms from target → PTS discontinuity (source
-			//    cut), re-anchor the clock to recover instead of freezing
+			// Look-ahead + PTS discontinuity recovery.
+			// In audio-driven mode: NO look-ahead. Let the binary search find
+			// frames naturally. If video PTS is ahead of audio PTS, the frame
+			// stays in the buffer until audio catches up. This prevents the
+			// renderer from displaying video ahead of audio.
+			// In free-run/stall mode: use 150ms look-ahead for smooth playback.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS) {
 					const gap = peek.timestamp - targetPTS;
-					if (gap < 150_000) {
-						// Normal jitter — display the slightly-ahead frame
+					if (!audioDriven && gap < 150_000) {
+						// Free-run jitter tolerance — display slightly-ahead frame
 						frame = this.videoBuffer.takeNextFrame();
 					} else if (gap > 500_000) {
 						// PTS discontinuity (source cut) — re-anchor clock to
@@ -448,14 +452,6 @@ export class PrismRenderer {
 					if (syncMs < this._diagAvSyncMin) this._diagAvSyncMin = syncMs;
 					if (syncMs > this._diagAvSyncMax) this._diagAvSyncMax = syncMs;
 
-					// A/V sync feedback loop: if video is consistently ahead
-					// (positive syncMs), gradually increase the correction to
-					// pull targetPTS back. EMA with α=0.03 converges in ~1s.
-					const syncUs = syncMs * 1000;
-					this._avSyncCorrectionUs = this._avSyncCorrectionUs * 0.97 + syncUs * 0.03;
-					// Clamp to ±200ms to prevent runaway
-					this._avSyncCorrectionUs = Math.max(-200_000,
-						Math.min(200_000, this._avSyncCorrectionUs));
 				}
 			}
 		} else {
