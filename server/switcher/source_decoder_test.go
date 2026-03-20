@@ -21,7 +21,7 @@ func TestSourceDecoderCreation(t *testing.T) {
 		called.Add(1)
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -37,7 +37,7 @@ func TestSourceDecoderFactoryError(t *testing.T) {
 		return nil, fmt.Errorf("no codec")
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil)
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil, nil)
 	if sd != nil {
 		sd.Close()
 		t.Fatal("expected nil sourceDecoder when factory fails")
@@ -59,7 +59,7 @@ func TestSourceDecoderSendAndCallback(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	// Send a keyframe (needed to init mock decoder)
@@ -127,7 +127,7 @@ func TestSourceDecoderNewestWinsDrop(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	// Send 5 frames rapidly — channel capacity is 2, so oldest should be dropped
@@ -180,7 +180,7 @@ func TestSourceDecoderCloseStopsGoroutine(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil)
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil, nil)
 
 	// Close should return without hanging
 	done := make(chan struct{})
@@ -213,7 +213,7 @@ func TestSourceDecoderDecodeError(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	// Send 3 frames sequentially — first 2 should fail, third should succeed.
@@ -254,7 +254,7 @@ func TestSourceDecoderStats(t *testing.T) {
 		return transition.NewMockDecoder(320, 240), nil
 	}
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil)
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, nil, nil)
 	defer sd.Close()
 
 	// Send a few frames to build stats
@@ -296,7 +296,7 @@ func TestSourceDecoderBufferReuse(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	// Send 3 keyframes — each reuses the annexB/prepend buffers.
@@ -391,7 +391,7 @@ func TestSourceDecoder_DecodeTimingRecorded(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{
@@ -448,7 +448,7 @@ func TestSourceDecoder_DropCounting(t *testing.T) {
 
 	callback := func(sourceKey string, pf *ProcessingFrame) {}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	// Send one frame to get the decoder loop blocked
@@ -527,7 +527,7 @@ func TestSourceDecoder_TimestampsStamped(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	arrivalNano := time.Now().UnixNano()
@@ -599,7 +599,7 @@ func TestSourceDecoderPipelineFormat(t *testing.T) {
 	format := &PipelineFormat{Width: 1920, Height: 1080, FPSNum: 30000, FPSDen: 1001, Name: "1080p29.97"}
 	pf.Store(format)
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, &pf)
+	sd := newSourceDecoder("cam1", factory, callback, nil, &pf, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -639,7 +639,7 @@ func TestSourceDecoderPipelineFormatScaleBuf(t *testing.T) {
 	format := &PipelineFormat{Width: 1920, Height: 1080, FPSNum: 30, FPSDen: 1, Name: "1080p30"}
 	pf.Store(format)
 
-	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, &pf)
+	sd := newSourceDecoder("cam1", factory, func(string, *ProcessingFrame) {}, nil, &pf, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -669,7 +669,7 @@ func TestSourceDecoder_ScalesToPipelineFormat(t *testing.T) {
 	format := &PipelineFormat{Width: 640, Height: 480, FPSNum: 30, FPSDen: 1, Name: "480p30"}
 	pf.Store(format)
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, &pf)
+	sd := newSourceDecoder("cam1", factory, callback, nil, &pf, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -734,7 +734,7 @@ func TestSourceDecoder_SkipsScaleWhenResolutionMatches(t *testing.T) {
 	format := &PipelineFormat{Width: 320, Height: 240, FPSNum: 30, FPSDen: 1, Name: "240p30"}
 	pf.Store(format)
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, &pf)
+	sd := newSourceDecoder("cam1", factory, callback, nil, &pf, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -805,7 +805,7 @@ func TestSourceDecoder_PipelineFormatChangeUpdatesScaling(t *testing.T) {
 	initialFormat := &PipelineFormat{Width: 640, Height: 480, FPSNum: 30, FPSDen: 1, Name: "480p30"}
 	pfPtr.Store(initialFormat)
 
-	sd := newSourceDecoder("cam1", factory, callback, nil, &pfPtr)
+	sd := newSourceDecoder("cam1", factory, callback, nil, &pfPtr, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}
@@ -900,7 +900,7 @@ func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	// Pool is sized for 320x240 — smaller than the 640x480 decoded frame.
 	pool := NewFramePool(4, 320, 240)
 
-	sd := newSourceDecoder("cam1", factory, callback, pool, nil)
+	sd := newSourceDecoder("cam1", factory, callback, pool, nil, nil)
 	if sd == nil {
 		t.Fatal("newSourceDecoder returned nil")
 	}

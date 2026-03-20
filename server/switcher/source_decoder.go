@@ -10,6 +10,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -49,6 +50,11 @@ type sourceDecoder struct {
 	scaleBuf      []byte
 	scaleWarnOnce sync.Once // log mismatch warning once per source
 
+	// ST map registry for per-source lens correction / warping.
+	// Looked up per-frame via SourceProcessor(sourceKey).
+	stmapRegistry *stmap.Registry
+	stmapBuf      []byte // reusable buffer for stmap warp output (lazy-allocated)
+
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
 	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
@@ -69,7 +75,7 @@ type sourceDecoder struct {
 // decode goroutine, and returns the decoder. Returns nil if the factory fails.
 // pipelineFormat is the shared atomic pointer from Switcher for per-source
 // resolution normalization (may be nil if no normalization is needed).
-func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool, pipelineFormat *atomic.Pointer[PipelineFormat]) *sourceDecoder {
+func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool, pipelineFormat *atomic.Pointer[PipelineFormat], stmapRegistry *stmap.Registry) *sourceDecoder {
 	dec, err := factory()
 	if err != nil {
 		slog.Warn("source decoder creation failed", "source", key, "error", err)
@@ -84,6 +90,7 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 		done:           make(chan struct{}),
 		pool:           pool,
 		pipelineFormat: pipelineFormat,
+		stmapRegistry:  stmapRegistry,
 	}
 	go sd.decodeLoop()
 	return sd
@@ -268,6 +275,19 @@ func (sd *sourceDecoder) decodeLoop() {
 				buf = make([]byte, yuvSize)
 			}
 			copy(buf, yuv[:yuvSize])
+		}
+
+		// Apply per-source ST map correction (post-decode, pre-fan-out).
+		// All consumers (preview, replay, pipeline) see corrected frames.
+		if sd.stmapRegistry != nil {
+			if proc := sd.stmapRegistry.SourceProcessor(sd.sourceKey); proc != nil && proc.Active() {
+				dstSize := w * h * 3 / 2
+				if len(sd.stmapBuf) < dstSize {
+					sd.stmapBuf = make([]byte, dstSize)
+				}
+				proc.ProcessYUV(sd.stmapBuf[:dstSize], buf[:yuvSize], w, h)
+				copy(buf[:yuvSize], sd.stmapBuf[:dstSize])
+			}
 		}
 
 		pf := &ProcessingFrame{

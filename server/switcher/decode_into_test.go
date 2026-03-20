@@ -71,7 +71,7 @@ func TestDecodeInto_DirectWriteSkipsCopy(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam-test", factory, callback, pool, nil)
+	sd := newSourceDecoder("cam-test", factory, callback, pool, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{
@@ -152,7 +152,7 @@ func TestDecodeInto_FallbackWhenPoolTooSmall(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam-test-small", factory, callback, pool, nil)
+	sd := newSourceDecoder("cam-test-small", factory, callback, pool, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{
@@ -229,7 +229,7 @@ func TestDecodeInto_FallbackForNonDecodeIntoDecoder(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam-fallback", factory, callback, pool, nil)
+	sd := newSourceDecoder("cam-fallback", factory, callback, pool, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{
@@ -291,7 +291,7 @@ func TestDecodeInto_NilPool(t *testing.T) {
 	}
 
 	// Pass nil pool — should fall back to Decode() not DecodeInto().
-	sd := newSourceDecoder("cam-nopool", factory, callback, nil, nil)
+	sd := newSourceDecoder("cam-nopool", factory, callback, nil, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{

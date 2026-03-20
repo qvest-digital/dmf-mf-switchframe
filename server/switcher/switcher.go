@@ -24,6 +24,7 @@ import (
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -276,6 +277,9 @@ type Switcher struct {
 
 	// Layout compositor — applies PIP/split-screen/quad layouts in YUV420 domain.
 	layoutCompositor *layout.Compositor
+
+	// ST map registry — per-source lens correction applied in sourceDecoder.
+	stmapRegistry *stmap.Registry
 
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
@@ -796,6 +800,15 @@ func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
 		lc.OnActiveChange = func() { s.rebuildPipeline() }
 	}
 	s.rebuildPipeline()
+}
+
+// SetSTMapRegistry sets the ST map registry for per-source correction.
+// When set, each source decoder applies the assigned ST map warp after
+// decode and resolution normalization, before fan-out to all consumers.
+func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
+	s.mu.Lock()
+	s.stmapRegistry = r
+	s.mu.Unlock()
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
@@ -2125,7 +2138,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry)
 		if sd != nil {
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
