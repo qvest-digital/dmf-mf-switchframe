@@ -282,7 +282,11 @@ export class PrismAudioDecoder {
 		const bufferDepthMs = this.ringBuffer.readBufferDepthMs();
 		const ctx = this.context as AudioContext & { outputLatency?: number };
 		const outputLatencyMs = (ctx?.outputLatency ?? 0) * 1000;
-		const compensationUs = (bufferDepthMs + outputLatencyMs) * 1000;
+		// Small static nudge for server-side content age gap: video uses
+		// newest-wins (zero FIFO) while audio traverses mixer ring buffer,
+		// making video content slightly newer at the same wall-clock PTS.
+		const serverContentNudgeMs = 60;
+		const compensationUs = (bufferDepthMs + outputLatencyMs + serverContentNudgeMs) * 1000;
 
 		return pts - compensationUs;
 	}
