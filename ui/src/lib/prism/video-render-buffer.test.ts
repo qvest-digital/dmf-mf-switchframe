@@ -71,12 +71,13 @@ describe('VideoRenderBuffer', () => {
 		it('evicts oldest when full', () => {
 			const buf = new VideoRenderBuffer();
 			const frames: VideoFrame[] = [];
-			for (let i = 0; i < 31; i++) {
+			// MAX_ELEMENTS is 60; adding 61 triggers eviction of oldest
+			for (let i = 0; i < 61; i++) {
 				frames.push(makeFrame(i * 1000));
 				buf.addFrame(frames[i]);
 			}
 			expect(frames[0].close).toHaveBeenCalled();
-			expect(buf.getStats().queueSize).toBe(30);
+			expect(buf.getStats().queueSize).toBe(60);
 		});
 	});
 });

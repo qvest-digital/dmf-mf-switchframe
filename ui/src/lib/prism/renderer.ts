@@ -1,6 +1,11 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-const LIVE_EDGE_TARGET_DEPTH = 10;
+// Allow up to 30 frames (~1s at 30fps) before live-edge skip.
+// The A/V sync feedback loop needs video frames to pile up to
+// ~12 frames (400ms) before audio PTS catches up. With the old
+// threshold of 10, the skip fires first and jumps to the newest
+// frame, defeating the feedback loop's correction.
+const LIVE_EDGE_TARGET_DEPTH = 30;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back

@@ -269,37 +269,20 @@ export class PrismAudioDecoder {
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0) return pts;
 
-		// Compensate for the full audio-vs-video latency chain.
+		// Compensate for audio pipeline latency beyond PTS tracking.
+		// readPTS() reports what the AudioWorklet has OUTPUT, but the audio
+		// still travels through two more buffers before reaching ears:
+		//   1. Ring buffer depth: decoded audio queued ahead of playback
+		//   2. AudioContext output latency: hardware output pipeline
 		//
-		// The server rewrites both video and audio PTS to wall-clock
-		// counters (wallClockVideoPTS / advanceOutputPTS). This makes PTS
-		// match at the browser (~0ms syncMs) but hides a CONTENT AGE
-		// difference: video uses newest-wins (content from "now") while
-		// audio uses FIFO ring buffers (content from further in the past).
-		// The SRT muxer compensates via lip-sync offset + TS interleaving,
-		// but the browser path has no equivalent.
-		//
-		// Measured with A/V sync test pattern (flash+beep over SRT):
-		//   Total perceptual offset:     ~400ms (video ahead of audio)
-		//   Browser ring buffer depth:   ~104ms (dynamic, readBufferDepthMs)
-		//   AudioContext output latency:  ~32ms  (dynamic, ctx.outputLatency)
-		//   Server content age gap:       ~264ms (video pipeline faster than
-		//     audio mixer path — newest-wins frameSync vs FIFO ring buffer)
-		//
-		// Subtracting these from the PTS makes the renderer select video
-		// frames from further in the past, matching the audio content age.
+		// The remaining server-side content age gap (~264ms) is handled by
+		// the renderer's adaptive feedback loop (not here), because a large
+		// static PTS subtraction causes video frames to pile up past the
+		// live-edge threshold, triggering skips that make sync worse.
 		const bufferDepthMs = this.ringBuffer.readBufferDepthMs();
 		const ctx = this.context as AudioContext & { outputLatency?: number };
 		const outputLatencyMs = (ctx?.outputLatency ?? 0) * 1000;
-
-		// Server-side content age compensation: video content is newer than
-		// audio content at the same wall-clock PTS because video uses
-		// newest-wins (zero FIFO delay) while audio traverses the mixer's
-		// ring buffer + ticker cadence. This constant is the residual after
-		// browser-side compensation. Derived from test pattern measurement.
-		const serverContentAgeMs = 264;
-
-		const compensationUs = (bufferDepthMs + outputLatencyMs + serverContentAgeMs) * 1000;
+		const compensationUs = (bufferDepthMs + outputLatencyMs) * 1000;
 
 		return pts - compensationUs;
 	}

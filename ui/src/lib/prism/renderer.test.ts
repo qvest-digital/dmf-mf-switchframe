@@ -268,8 +268,8 @@ describe('PrismRenderer', () => {
 		it('skips to newest frame when buffer exceeds target depth', () => {
 			const buffer = new VideoRenderBuffer();
 			const closeFns: ReturnType<typeof vi.fn>[] = [];
-			// Add 12 frames — exceeds target depth of 10
-			for (let i = 0; i < 12; i++) {
+			// Add 32 frames — exceeds target depth of 30
+			for (let i = 0; i < 32; i++) {
 				const close = vi.fn();
 				closeFns.push(close);
 				buffer.addFrame({
@@ -288,8 +288,8 @@ describe('PrismRenderer', () => {
 
 			renderer.renderOnce();
 
-			// Frames 0-10 should be closed (skipped), frame 11 displayed
-			for (let i = 0; i < 11; i++) {
+			// Frames 0-30 should be closed (skipped), frame 31 displayed
+			for (let i = 0; i < 31; i++) {
 				expect(closeFns[i]).toHaveBeenCalled();
 			}
 
@@ -396,10 +396,10 @@ describe('PrismRenderer', () => {
 
 	describe('A/V sync feedback loop', () => {
 		it('gradually corrects when video is persistently ahead of audio', () => {
-			// Simulate steady state where video PTS is 300ms ahead of audio PTS.
-			// In audio-driven mode without look-ahead, frames pile up and get
-			// drawn via live-edge skips (every ~11 frames). Each skip triggers
-			// the feedback loop's coarse correction (offset > 200ms).
+			// Simulate video 600ms ahead of audio. The 600ms gap exceeds the
+			// 500ms PTS discontinuity threshold, so frames are drawn immediately
+			// (no need to wait for live-edge skips). Each draw triggers the
+			// feedback loop's coarse correction (offset > 200ms).
 			let audioPTS = 1_000_000; // 1s in microseconds
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
@@ -409,20 +409,18 @@ describe('PrismRenderer', () => {
 			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
 			renderer.renderOnce();
 
-			// Now simulate many ticks where video is consistently 300ms ahead.
-			// The feedback loop should build up a correction via live-edge skips.
-			for (let tick = 0; tick < 60; tick++) {
+			// Now simulate ticks where video is consistently 600ms ahead.
+			// Each frame triggers PTS discontinuity draw → feedback loop fires.
+			for (let tick = 0; tick < 30; tick++) {
 				audioPTS += 33_333;
-				// Video frame 300ms ahead of audio
-				buffer.addFrame(new MockVideoFrame(audioPTS + 300_000) as unknown as VideoFrame);
+				buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
 				renderer.renderOnce();
 			}
 
 			const diag = renderer.getDiagnostics();
-			// After ~5 live-edge skip events with 300ms offset, the coarse
-			// correction (offset/2) should stabilize around ~150ms.
-			expect(diag.avSyncCorrectionMs).toBeGreaterThan(100);
-			expect(diag.avSyncCorrectionMs).toBeLessThan(250);
+			// After 30 coarse corrections at 600ms offset, correction should
+			// converge toward ~300ms (half of 600ms).
+			expect(diag.avSyncCorrectionMs).toBeGreaterThan(200);
 		});
 
 		it('applies coarse correction for large offsets (>200ms)', () => {

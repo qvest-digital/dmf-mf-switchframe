@@ -1,7 +1,11 @@
 // Cap render buffer to 30 frames (~1s at 30fps). Large enough to absorb
 // decode bursts and PTS discontinuities during source cuts, while keeping
 // latency bounded (was 90 = 3s which caused persistent A/V desync).
-const MAX_ELEMENTS = 30;
+// Allow up to 60 frames (~2s at 30fps). Large enough for the A/V sync
+// feedback loop to hold video while audio PTS catches up (~400ms = 12
+// frames), plus headroom for jitter. The live-edge skip at 30 frames
+// provides the safety limit for runaway accumulation.
+const MAX_ELEMENTS = 60;
 
 /** Result of a timestamp-based frame lookup, including the selected frame and discard statistics. */
 interface VideoRenderResult {
