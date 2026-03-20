@@ -1,6 +1,6 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-const LIVE_EDGE_TARGET_DEPTH = 10;
+const LIVE_EDGE_TARGET_DEPTH = 6;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
@@ -269,7 +269,7 @@ export class PrismRenderer {
 			const peekDiverge = this.videoBuffer.peekFirstFrame();
 			const avDiverged = peekDiverge != null && audioPTS >= 0 &&
 				peekDiverge.timestamp - audioPTS > 3_000_000 &&
-				this.videoBuffer.getStats().queueSize > 10;
+				this.videoBuffer.getStats().queueSize > 4;
 
 			// Only reset audio-stall tracking when audio advances AND
 			// A/V PTS are reasonably aligned. During divergence, keep

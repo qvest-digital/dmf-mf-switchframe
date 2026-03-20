@@ -285,8 +285,8 @@ describe('PrismRenderer', () => {
 		it('skips to newest frame when buffer exceeds target depth', () => {
 			const buffer = new VideoRenderBuffer();
 			const closeFns: ReturnType<typeof vi.fn>[] = [];
-			// Add 12 frames — exceeds target depth of 10
-			for (let i = 0; i < 12; i++) {
+			// Add 7 frames — exceeds target depth of 6 (buffer max is 8)
+			for (let i = 0; i < 7; i++) {
 				const close = vi.fn();
 				closeFns.push(close);
 				buffer.addFrame({
@@ -305,8 +305,8 @@ describe('PrismRenderer', () => {
 
 			renderer.renderOnce();
 
-			// Frames 0-10 should be closed (skipped), frame 11 displayed
-			for (let i = 0; i < 11; i++) {
+			// Frames 0-5 should be closed (skipped), frame 6 displayed
+			for (let i = 0; i < 6; i++) {
 				expect(closeFns[i]).toHaveBeenCalled();
 			}
 
