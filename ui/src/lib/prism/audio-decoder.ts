@@ -268,7 +268,22 @@ export class PrismAudioDecoder {
 		if (!this.ringBuffer || !this.playing) return -1;
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0) return pts;
-		return pts;
+
+		// Compensate for audio pipeline latency beyond PTS tracking.
+		// readPTS() reports what the AudioWorklet has OUTPUT, but the audio
+		// still travels through two more buffers before reaching ears:
+		//   1. Ring buffer depth: decoded audio queued ahead of playback position
+		//   2. AudioContext output latency: hardware output pipeline
+		// Without this, PTS appears aligned but the user hears audio late,
+		// causing video-ahead-of-audio (measured ~400ms with test pattern).
+		// Subtracting these makes the renderer select older video frames,
+		// matching what the user actually hears.
+		const bufferDepthMs = this.ringBuffer.readBufferDepthMs();
+		const ctx = this.context as AudioContext & { outputLatency?: number };
+		const outputLatencyMs = (ctx?.outputLatency ?? 0) * 1000;
+		const compensationUs = (bufferDepthMs + outputLatencyMs) * 1000;
+
+		return pts - compensationUs;
 	}
 
 	getLevels(): AudioLevels {

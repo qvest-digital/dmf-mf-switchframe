@@ -373,7 +373,7 @@ describe('PrismAudioDecoder', () => {
 	});
 
 	describe('getPlaybackPTS output latency compensation', () => {
-		it('should subtract AudioContext output latency from playback PTS', async () => {
+		it('should subtract ring buffer depth + AudioContext output latency from playback PTS', async () => {
 			// Create context with known latency values
 			const ctxWithLatency = {
 				...mockContext,
@@ -407,8 +407,9 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			// Raw PTS returned
-			expect(pts).toBe(rawPTS);
+			// readBufferDepthMs mock returns 100, outputLatency = 32ms
+			// compensation = (100 + 32) * 1000 = 132,000 µs
+			expect(pts).toBe(rawPTS - 132_000);
 		});
 
 		it('should return raw PTS when no output latency info available', async () => {
@@ -445,9 +446,11 @@ describe('PrismAudioDecoder', () => {
 			const ringBuf = (decoder as any).ringBuffer;
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
-			// No baseLatency/outputLatency → raw PTS returned
+			// No outputLatency → only ring buffer depth subtracted
+			// readBufferDepthMs mock returns 100, outputLatency = 0
+			// compensation = (100 + 0) * 1000 = 100,000 µs
 			const pts = decoder.getPlaybackPTS();
-			expect(pts).toBe(rawPTS);
+			expect(pts).toBe(rawPTS - 100_000);
 		});
 	});
 });
