@@ -275,6 +275,92 @@ func TestMuxerFlushesAudioOnInit(t *testing.T) {
 	}
 }
 
+func TestMuxerDiscardsAudioBeforeFirstVideoKeyframe(t *testing.T) {
+	// Audio frames that arrive before the first video keyframe should be
+	// discarded if their PTS is before the keyframe PTS. Writing them
+	// creates a PTS gap where the player plays audio before any video
+	// appears, causing perceived A/V desync.
+	m := NewTSMuxer()
+
+	var outputData []byte
+	m.SetOutput(func(data []byte) {
+		outputData = append(outputData, data...)
+	})
+
+	// Send audio frames with PTS BEFORE the video keyframe PTS.
+	// These should be discarded on init, not flushed.
+	for i := 0; i < 5; i++ {
+		require.NoError(t, m.WriteAudio(&media.AudioFrame{
+			PTS:        int64(80000 + i*1920), // PTS 80000-87680 (before video at 90000)
+			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000,
+			Channels:   2,
+		}))
+	}
+
+	// Send video keyframe at PTS 90000.
+	require.NoError(t, m.WriteVideo(&media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
+		Codec:    "h264",
+	}))
+
+	// Parse the output to find audio PES packets and check their PTS.
+	// No audio PES should have PTS < 90000.
+	foundAudioBeforeVideo := false
+	for i := 0; i+188 <= len(outputData); i += 188 {
+		pkt := outputData[i : i+188]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pid := (uint16(pkt[1]&0x1F) << 8) | uint16(pkt[2])
+		if pid != audioPID {
+			continue
+		}
+		// Check PUSI (Payload Unit Start Indicator)
+		pusi := (pkt[1] & 0x40) != 0
+		if !pusi {
+			continue
+		}
+		// Find PES header — skip adaptation field if present
+		afc := (pkt[3] >> 4) & 0x03
+		payloadStart := 4
+		if afc == 0x03 || afc == 0x02 {
+			afLen := int(pkt[4])
+			payloadStart = 5 + afLen
+		}
+		if payloadStart+14 > 188 {
+			continue
+		}
+		// PES header: 00 00 01 streamID ...
+		if pkt[payloadStart] != 0x00 || pkt[payloadStart+1] != 0x00 || pkt[payloadStart+2] != 0x01 {
+			continue
+		}
+		// Check PTS in PES optional header
+		pesFlags := pkt[payloadStart+7]
+		if pesFlags&0x80 == 0 {
+			continue // no PTS
+		}
+		// Extract 33-bit PTS from PES header
+		ptsBytes := pkt[payloadStart+9 : payloadStart+14]
+		pts := (int64(ptsBytes[0]>>1) & 0x07) << 30
+		pts |= int64(ptsBytes[1]) << 22
+		pts |= (int64(ptsBytes[2]>>1) & 0x7F) << 15
+		pts |= int64(ptsBytes[3]) << 7
+		pts |= int64(ptsBytes[4]>>1) & 0x7F
+		if pts < 90000 {
+			foundAudioBeforeVideo = true
+			t.Errorf("found audio PES with PTS %d, which is before video keyframe PTS 90000", pts)
+		}
+	}
+
+	if foundAudioBeforeVideo {
+		t.Error("muxer should not output audio frames with PTS before the first video keyframe")
+	}
+}
+
 func TestTSMuxer_Close(t *testing.T) {
 	m := NewTSMuxer()
 	err := m.Close()

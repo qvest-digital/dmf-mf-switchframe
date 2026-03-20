@@ -220,7 +220,7 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		if !frame.IsKeyframe {
 			return nil
 		}
-		if err := m.init(); err != nil {
+		if err := m.init(frame.PTS); err != nil {
 			return err
 		}
 	}
@@ -355,7 +355,7 @@ func (m *TSMuxer) Close() error {
 
 // init creates the go-astits muxer and registers elementary streams.
 // Must be called with m.mu held.
-func (m *TSMuxer) init() error {
+func (m *TSMuxer) init(firstVideoPTS int64) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 
@@ -409,11 +409,15 @@ func (m *TSMuxer) init() error {
 
 	m.initialized = true
 
-	// Flush any audio frames that were buffered before initialization.
-	// These are written now so they appear in the output before the
-	// first video keyframe, preventing AV sync drift at recording start.
+	// Flush pending audio frames that are temporally aligned with the
+	// first video keyframe. Discard any with PTS before the video PTS —
+	// writing them creates a gap where the player plays audio before
+	// any video appears, causing perceived A/V desync.
 	if len(m.pendingAudio) > 0 {
 		for _, af := range m.pendingAudio {
+			if af.PTS < firstVideoPTS {
+				continue // discard — before video start
+			}
 			data := codec.EnsureADTS(af.Data, af.SampleRate, af.Channels)
 			ptsRef := &astits.ClockReference{Base: af.PTS}
 			md := &astits.MuxerData{
