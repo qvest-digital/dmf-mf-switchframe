@@ -50,6 +50,8 @@ export class PrismVideoDecoder {
 	private audioClock: { getPlaybackPTS(): number } | null = null;
 	private _bootstrapCount = 0;
 	private _lastDescription: Uint8Array | undefined;
+	private _lastPumpAudioPTS = -1;
+	private _audioStallStartMs = 0;
 
 	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
@@ -114,6 +116,8 @@ export class PrismVideoDecoder {
 		this.renderBuffer.clear();
 		this.compressedQueue.flush();
 		this._bootstrapCount = 0;
+		this._lastPumpAudioPTS = -1;
+		this._audioStallStartMs = 0;
 	}
 
 	decode(data: Uint8Array, isKeyframe: boolean, timestamp: number, isDisco: boolean): void {
@@ -162,11 +166,43 @@ export class PrismVideoDecoder {
 			return;
 		}
 
+		// Audio stall detection: if audio hasn't advanced for 500ms, drain
+		// one frame per pump tick to prevent compressed queue from growing
+		// unbounded. The renderer handles wall-clock pacing for display.
+		if (audioPTS === this._lastPumpAudioPTS && this._lastPumpAudioPTS >= 0) {
+			if (this._audioStallStartMs === 0) {
+				this._audioStallStartMs = performance.now();
+			}
+			if (performance.now() - this._audioStallStartMs > 500 && this.compressedQueue.size() > 0) {
+				// Stalled — drain one frame at a time (wall-clock pacing)
+				const staleFrames = this.compressedQueue.drain(this.compressedQueue.oldestPTS(), 0);
+				for (const f of staleFrames) {
+					this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
+				}
+				return;
+			}
+		} else {
+			this._audioStallStartMs = 0;
+			this._lastPumpAudioPTS = audioPTS;
+		}
+
 		// Audio is active — drain frames up to audioPTS + lookahead
 		this._bootstrapCount = BOOTSTRAP_FRAMES; // mark bootstrap done
-		const frames = this.compressedQueue.drain(audioPTS, LOOKAHEAD_US);
+		let frames = this.compressedQueue.drain(audioPTS, LOOKAHEAD_US);
 		for (const f of frames) {
 			this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
+		}
+
+		// PTS discontinuity: if oldest remaining frame is far ahead of audio,
+		// a source cut happened. Drain everything so the renderer can re-anchor.
+		if (frames.length === 0 && this.compressedQueue.size() > 0) {
+			const oldest = this.compressedQueue.oldestPTS();
+			if (oldest - audioPTS > LOOKAHEAD_US + 500_000) {
+				frames = this.compressedQueue.drain(Infinity, 0);
+				for (const f of frames) {
+					this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
+				}
+			}
 		}
 	}
 
@@ -193,6 +229,8 @@ export class PrismVideoDecoder {
 		this.renderBuffer.clear();
 		this.compressedQueue.flush();
 		this._bootstrapCount = 0;
+		this._lastPumpAudioPTS = -1;
+		this._audioStallStartMs = 0;
 		this.configured = false;
 	}
 
