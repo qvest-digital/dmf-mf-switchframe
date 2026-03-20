@@ -303,13 +303,12 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 				return m.srtAcceptFn(ctx, lCfg, listener)
 			}
 		}
-		// Reset muxer + force IDR when a new SRT client connects.
-		listener.OnConnect(func() {
-			m.ResetMuxer()
-			if m.onMuxStart != nil {
-				m.onMuxStart()
-			}
-		})
+		// Force IDR keyframe when a new SRT client connects so it can
+		// start decoding immediately without waiting up to 2s for the
+		// next natural keyframe in the GOP.
+		if m.onMuxStart != nil {
+			listener.OnConnect(m.onMuxStart)
+		}
 		adapter = listener
 	default:
 		m.mu.Unlock()
@@ -554,17 +553,11 @@ func (m *Manager) StartDestination(id string) error {
 				return m.srtAcceptFn(ctx, lCfg, listener)
 			}
 		}
-		// Reset muxer counters when a new SRT client connects so the TS
-		// stream starts with PTS near zero. Without this, late-connecting
-		// clients see PTS values accumulated since muxer creation, causing
-		// SRT's TSBPD to buffer packets for minutes.
-		listener.OnConnect(func() {
-			m.ResetMuxer()
-			// Request IDR keyframe so the muxer re-initializes immediately.
-			if m.onMuxStart != nil {
-				m.onMuxStart()
-			}
-		})
+		// Force IDR keyframe when a new SRT client connects so it can
+		// start decoding immediately without waiting for the next GOP.
+		if m.onMuxStart != nil {
+			listener.OnConnect(m.onMuxStart)
+		}
 		adapter = listener
 	}
 
@@ -1178,22 +1171,6 @@ func (m *Manager) DirectWriteAudio(frame *media.AudioFrame) {
 	if err := muxer.WriteAudio(frame); err != nil {
 		m.log.Error("direct audio write error", "err", err)
 	}
-}
-
-// ResetMuxer stops and recreates the muxer, flushing all intermediate
-// buffers (AsyncAdapter, SRT per-client channels). Called when a new SRT
-// client connects so the TS stream starts with PTS near zero.
-func (m *Manager) ResetMuxer() {
-	m.mu.Lock()
-	if m.muxer == nil {
-		m.mu.Unlock()
-		return
-	}
-	// Stop existing muxer — this drains async adapter buffers.
-	m.stopMuxerLocked()
-	// Recreate immediately — ensureMuxerLocked resets all state.
-	m.ensureMuxerLocked()
-	m.mu.Unlock()
 }
 
 // HasActiveOutputs returns true if at least one output is active.
