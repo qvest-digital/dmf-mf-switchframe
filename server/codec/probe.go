@@ -132,14 +132,16 @@ func probeEncoder() string {
 // and close it. Returns true if the codec is functional.
 // With sliced threading (tune zerolatency), libx264 produces output on frame 1.
 // 30 frames provides headroom for hardware encoders with warmup latency.
+// Probe uses 256×256 because NVENC has a minimum resolution requirement
+// and crashes (SIGSEGV) on FFmpeg 7.x with smaller dimensions like 64×64.
 func tryEncoder(codecName string) bool {
-	enc, err := NewFFmpegEncoder(codecName, 64, 64, 100000, 30, 1, 2, nil)
+	enc, err := NewFFmpegEncoder(codecName, 256, 256, 100000, 30, 1, 2, nil)
 	if err != nil {
 		return false
 	}
 	defer enc.Close()
 
-	yuvSize := 64 * 64 * 3 / 2
+	yuvSize := 256 * 256 * 3 / 2
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128
