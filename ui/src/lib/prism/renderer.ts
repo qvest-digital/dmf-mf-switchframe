@@ -67,6 +67,7 @@ export class PrismRenderer {
 	private currentAudioPTS = -1;
 	private lastDrawnFrame: VideoFrame | null = null;
 	private onStats: ((stats: RendererStats) => void) | null = null;
+	private decodePump: (() => void) | null;
 	private freeRunStart = -1;
 	private freeRunBasePTS = -1;
 	/** @deprecated freeRunOnly is no longer used; audioClock returns -1 dynamically when unavailable */
@@ -112,12 +113,14 @@ export class PrismRenderer {
 		videoBuffer: VideoRenderBuffer,
 		audioClock: AudioClock,
 		onStats?: (stats: RendererStats) => void,
+		decodePump?: () => void,
 	) {
 		this.canvas = canvas;
 		this.ctx = canvas.getContext("2d")!;
 		this.videoBuffer = videoBuffer;
 		this.audioClock = audioClock;
 		this.onStats = onStats ?? null;
+		this.decodePump = decodePump ?? null;
 	}
 
 	set freeRunOnly(v: boolean) {
@@ -168,6 +171,10 @@ export class PrismRenderer {
 	};
 
 	private renderTick(now: number): void {
+		// Pump compressed frames into the VideoDecoder based on audio clock.
+		// Must run every tick so frames are decoded just-in-time for display.
+		if (this.decodePump) this.decodePump();
+
 		this._diagRafCount++;
 		if (this._diagLastRafTime > 0) {
 			const interval = now - this._diagLastRafTime;

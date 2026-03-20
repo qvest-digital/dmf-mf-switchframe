@@ -139,7 +139,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			}
 		});
 
-		return {
+		const sourceMedia: SourceMedia = {
 			key,
 			videoBuffer,
 			videoDecoder,
@@ -158,6 +158,16 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			isRawYUV: false,
 			rawDropCount: 0,
 		};
+
+		// Wire audio clock to video decoder for clock-gated decode.
+		// The closure captures sourceMedia so it dynamically resolves the audio decoder.
+		videoDecoder.setAudioClock({
+			getPlaybackPTS(): number {
+				return sourceMedia.audioDecoder?.getPlaybackPTS() ?? -1;
+			},
+		});
+
+		return sourceMedia;
 	}
 
 	/** Set once after the first MoQ catalog is received. */
@@ -483,7 +493,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.secondaryBuffers.set(canvasId, buffer);
 		}
 
-		const renderer = new PrismRenderer(canvas, buffer, audioClock);
+		const renderer = new PrismRenderer(canvas, buffer, audioClock, undefined, () => {
+			source.videoDecoder.pumpDecode();
+		});
 		// No freeRunOnly flag — audioClock dynamically returns -1 when audio
 		// isn't ready yet, so the renderer naturally uses freerun mode and
 		// transitions to audio-driven once the decoder finishes configuring.

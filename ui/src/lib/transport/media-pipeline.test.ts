@@ -12,6 +12,8 @@ vi.mock('$lib/prism/video-decoder', () => {
 			decode = vi.fn();
 			reset = vi.fn();
 			getDiagnostics = vi.fn().mockResolvedValue({});
+			setAudioClock = vi.fn();
+			pumpDecode = vi.fn();
 		},
 	};
 });
