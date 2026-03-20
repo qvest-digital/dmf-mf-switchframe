@@ -532,7 +532,9 @@ func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*
 	})
 
 	d := &FFmpegDecoder{}
+	FFmpegOpenMu.Lock()
 	rc := C.ffdec_open(&d.handle, hwDeviceCtx, C.int(threadCount))
+	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create FFmpeg decoder: code %d", int(rc))
 	}

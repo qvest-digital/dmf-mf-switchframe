@@ -632,6 +632,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/codec"
 )
 
 // decoderRegistry maps opaque IDs to StreamDecoder instances for C callbacks.
@@ -722,7 +724,9 @@ func NewStreamDecoder(cfg StreamDecoderConfig) (*StreamDecoder, error) {
 		maxThreads = 4
 	}
 
+	codec.FFmpegOpenMu.Lock()
 	rc := C.srtdec_open(&d.handle, C.int(d.id), C.int(maxThreads))
+	codec.FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		unregisterDecoder(d.id)
 		return nil, errors.New("failed to open stream decoder")

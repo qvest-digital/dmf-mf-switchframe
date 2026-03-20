@@ -435,10 +435,12 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	}
 
 	e := &FFmpegEncoder{}
+	FFmpegOpenMu.Lock()
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
 		C.int(gopSecs), hwDeviceCtx)
+	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
 			-1: "codec not found",

@@ -196,7 +196,9 @@ func initHWDeviceCtx() {
 		return // software encoder, no matching hw device
 	}
 
+	FFmpegOpenMu.Lock()
 	ctx := CreateHWDeviceCtx(hwType)
+	FFmpegOpenMu.Unlock()
 	if ctx != nil {
 		hwDeviceCtxPtr = ctx
 		slog.Info("codec: hardware decode enabled", "type", hwType)

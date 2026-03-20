@@ -32,3 +32,11 @@ func initFFmpegLogLevel() {
 		C.av_log_set_level(C.AV_LOG_FATAL)
 	})
 }
+
+// FFmpegOpenMu serializes all avcodec_open2 and avformat_open_input calls.
+// NVENC initializes the CUDA runtime inside avcodec_open2. When the SRT
+// decoder calls avformat_open_input (which probes codecs) concurrently with
+// an NVENC encoder open, the CUDA driver crashes with SIGSEGV. This mutex
+// ensures only one FFmpeg codec/format initialization runs at a time.
+// Once open, encode/decode operations are thread-safe per-context.
+var FFmpegOpenMu sync.Mutex
