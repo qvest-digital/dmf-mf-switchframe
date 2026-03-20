@@ -52,6 +52,8 @@ type TSMuxer struct {
 	pendingSCTE35 [][]byte
 	lastVideoPTS  int64
 	lastPCRPTS    int64
+	ptsOffset     int64 // subtracted from all PTS to rebase to near-zero
+	ptsOffsetSet  bool
 	scte35CC      uint8 // continuity counter for SCTE-35 PID
 }
 
@@ -225,7 +227,20 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		}
 	}
 
-	m.lastVideoPTS = frame.PTS
+	// Rebase PTS to near-zero on first keyframe. Wall-clock PTS values
+	// (e.g., 29 billion at 90kHz after hours of uptime) cause SRT's TSBPD
+	// to buffer packets for hours because the PTS is far in the "future"
+	// relative to the SRT connection start time. Rebasing keeps PTS small.
+	if !m.ptsOffsetSet {
+		m.ptsOffset = frame.PTS - 90000 // start at 1 second
+		m.ptsOffsetSet = true
+	}
+
+	// Apply offset to create rebased PTS for muxing.
+	rebasedPTS := (frame.PTS - m.ptsOffset) & 0x1FFFFFFFF
+	rebasedDTS := (frame.DTS - m.ptsOffset) & 0x1FFFFFFFF
+
+	m.lastVideoPTS = rebasedPTS
 
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
 	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
@@ -240,9 +255,9 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		annexB = m.prependBuf
 	}
 
-	// Build PES data for video.
-	ptsRef := &astits.ClockReference{Base: frame.PTS}
-	dtsRef := &astits.ClockReference{Base: frame.DTS}
+	// Build PES data for video using rebased PTS.
+	ptsRef := &astits.ClockReference{Base: rebasedPTS}
+	dtsRef := &astits.ClockReference{Base: rebasedDTS}
 
 	ptsDTSIndicator := uint8(astits.PTSDTSIndicatorBothPresent)
 	if frame.PTS == frame.DTS {
@@ -260,10 +275,10 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// Use wrap-aware comparison: PTS is a 33-bit field in MPEG-TS and wraps
 	// from 2^33-1 back to 0. Masking the subtraction to 33 bits ensures the
 	// delta is always positive and forward-looking across the wrap boundary.
-	if frame.IsKeyframe || (frame.PTS-m.lastPCRPTS)&0x1FFFFFFFF >= pcrInterval {
+	if frame.IsKeyframe || (rebasedPTS-m.lastPCRPTS)&0x1FFFFFFFF >= pcrInterval {
 		af.HasPCR = true
-		af.PCR = &astits.ClockReference{Base: frame.PTS}
-		m.lastPCRPTS = frame.PTS
+		af.PCR = &astits.ClockReference{Base: rebasedPTS}
+		m.lastPCRPTS = rebasedPTS
 	}
 
 	md := &astits.MuxerData{
@@ -313,7 +328,9 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 	// Ensure ADTS header is present.
 	data := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 
-	ptsRef := &astits.ClockReference{Base: frame.PTS}
+	// Rebase audio PTS using the same offset as video.
+	rebasedPTS := (frame.PTS - m.ptsOffset) & 0x1FFFFFFFF
+	ptsRef := &astits.ClockReference{Base: rebasedPTS}
 
 	md := &astits.MuxerData{
 		PID: audioPID,
@@ -348,6 +365,8 @@ func (m *TSMuxer) Close() error {
 	m.muxer = nil
 	m.initialized = false
 	m.pendingAudio = nil
+	m.ptsOffset = 0
+	m.ptsOffsetSet = false
 	m.pendingSCTE35 = nil
 	m.lastPCRPTS = 0
 	return nil
@@ -419,7 +438,8 @@ func (m *TSMuxer) init(firstVideoPTS int64) error {
 				continue // discard — before video start
 			}
 			data := codec.EnsureADTS(af.Data, af.SampleRate, af.Channels)
-			ptsRef := &astits.ClockReference{Base: af.PTS}
+			rebasedAudioPTS := (af.PTS - m.ptsOffset) & 0x1FFFFFFFF
+			ptsRef := &astits.ClockReference{Base: rebasedAudioPTS}
 			md := &astits.MuxerData{
 				PID: audioPID,
 				PES: &astits.PESData{
