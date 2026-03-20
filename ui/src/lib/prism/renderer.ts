@@ -375,17 +375,16 @@ export class PrismRenderer {
 			}
 
 			// Look-ahead + PTS discontinuity recovery:
-			// 1. If next frame is within 150ms of audio → display (normal jitter)
-			//    150ms accommodates the ~96ms video-ahead offset + one 33ms frame
-			//    interval, preventing frame drops when back-to-back frames arrive
-			//    in a network burst.
+			// 1. If next frame is within 40ms of audio → display (one frame jitter)
+			//    40ms ≈ one video frame at 30fps (33ms) + 7ms transport jitter.
+			//    Tighter than the old 150ms to prevent video-ahead of audio.
 			// 2. If next frame is >500ms from target → PTS discontinuity (source
 			//    cut), re-anchor the clock to recover instead of freezing
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS) {
 					const gap = peek.timestamp - targetPTS;
-					if (gap < 150_000) {
+					if (gap < 40_000) {
 						// Normal jitter — display the slightly-ahead frame
 						frame = this.videoBuffer.takeNextFrame();
 					} else if (gap > 500_000) {
