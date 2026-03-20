@@ -1175,9 +1175,9 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 		m.lipSyncLogCounter++
 		if m.lipSyncLogCounter%150 == 1 { // ~5s at 30fps
 			m.log.Info("lip-sync offset",
+				"total_90k", m.smoothedLipSync,
+				"total_ms", float64(m.smoothedLipSync)/90.0,
 				"raw_90k", raw,
-				"smoothed_90k", m.smoothedLipSync,
-				"smoothed_ms", float64(m.smoothedLipSync)/90.0,
 				"video_pts", frame.PTS,
 			)
 		}

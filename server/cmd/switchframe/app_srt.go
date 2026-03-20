@@ -602,6 +602,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	src.OnRawVideo = func(sourceKey string, yuv []byte, w, h int, pts int64) {
 		pts = ptsLin.Linearize(pts, srt.StreamVideo)
 
+		// Track source video PTS for A/V gap measurement.
+		a.sourceLastVideoPTS.Store(pts)
+		if a.sourceLastAudioPTS.Load() != 0 {
+			a.sourceAVGapInited.Store(true)
+		}
+
 		// Pipeline and relay get SEPARATE buffers to prevent wrong-frame
 		// corruption if the relay falls behind. Pipeline buffer is owned by
 		// ProcessingFrame lifecycle; relay buffer is released by the relay
@@ -664,6 +670,12 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {
 		pts = ptsLin.Linearize(pts, srt.StreamAudio)
+
+		// Track source audio PTS for A/V gap measurement.
+		a.sourceLastAudioPTS.Store(pts)
+		if a.sourceLastVideoPTS.Load() != 0 {
+			a.sourceAVGapInited.Store(true)
+		}
 
 		pcmCopy := make([]float32, len(pcm))
 		copy(pcmCopy, pcm)

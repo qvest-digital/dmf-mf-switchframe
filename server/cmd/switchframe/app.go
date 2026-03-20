@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -141,6 +142,14 @@ type App struct {
 	srtSources   map[string]*srtSourceState
 	srtSourcesMu sync.Mutex
 	srtCtx       context.Context
+
+	// Source A/V PTS tracking: broadcast encoders often set audio PTS ahead
+	// of video PTS by several hundred ms. Our system discards source PTS
+	// and assigns wall-clock PTS, destroying this relationship. We track
+	// the source PTS gap and add it to the lip-sync offset to compensate.
+	sourceLastVideoPTS atomic.Int64 // latest source video PTS (linearized)
+	sourceLastAudioPTS atomic.Int64 // latest source audio PTS (linearized)
+	sourceAVGapInited  atomic.Bool  // true after both video and audio PTS seen
 
 	// MXL integration
 	mxlInstance *mxl.Instance
@@ -394,11 +403,28 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Dynamic lip-sync: the muxer reads the mixer's ring buffer depth
-	// each video frame and applies it as a video PTS offset. This compensates
-	// for the FIFO audio ring buffer latency that the newest-wins video
-	// frame sync doesn't have, keeping A/V content aligned in the output.
-	a.outputMgr.SetLipSyncSource(a.mixer.RingBufferLatency90k)
+	// Dynamic lip-sync: combines two sources of A/V content offset:
+	// 1. Ring buffer depth: FIFO audio latency that newest-wins video doesn't have
+	// 2. Source A/V PTS gap: broadcast encoders set audio PTS ahead of video PTS
+	//    (destroyed when we assign wall-clock PTS). Both are in 90kHz ticks.
+	a.outputMgr.SetLipSyncSource(func() int64 {
+		ringBuf := a.mixer.RingBufferLatency90k()
+
+		// Source A/V gap: video PTS - audio PTS. If positive, video PTS is
+		// ahead of audio PTS at the source, meaning audio content is from
+		// an earlier source moment. We need to delay video by this amount.
+		var sourceGap int64
+		if a.sourceAVGapInited.Load() {
+			vPTS := a.sourceLastVideoPTS.Load()
+			aPTS := a.sourceLastAudioPTS.Load()
+			gap := vPTS - aPTS
+			if gap > 0 && gap < 270000 { // sanity: 0 to 3 seconds
+				sourceGap = gap
+			}
+		}
+
+		return ringBuf + sourceGap
+	})
 
 	// CBR pacing is NOT enabled for SRT output. SRT has its own congestion
 	// control and jitter buffer that handle VBR natively. CBR null-padding
