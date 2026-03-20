@@ -1180,14 +1180,20 @@ func (m *Manager) DirectWriteAudio(frame *media.AudioFrame) {
 	}
 }
 
-// ResetMuxer resets the muxer's frame counters and forces re-initialization
-// on the next keyframe. Called when a new SRT client connects so the TS
-// stream starts with PTS near zero for the new client.
+// ResetMuxer stops and recreates the muxer, flushing all intermediate
+// buffers (AsyncAdapter, SRT per-client channels). Called when a new SRT
+// client connects so the TS stream starts with PTS near zero.
 func (m *Manager) ResetMuxer() {
-	muxer := m.directMuxer.Load()
-	if muxer != nil {
-		muxer.ResetCounters()
+	m.mu.Lock()
+	if m.muxer == nil {
+		m.mu.Unlock()
+		return
 	}
+	// Stop existing muxer — this drains async adapter buffers.
+	m.stopMuxerLocked()
+	// Recreate immediately — ensureMuxerLocked resets all state.
+	m.ensureMuxerLocked()
+	m.mu.Unlock()
 }
 
 // HasActiveOutputs returns true if at least one output is active.
