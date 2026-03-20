@@ -243,7 +243,10 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		// matching the audio mixer's forward-gap behavior and preventing
 		// permanent A/V desync.
 	}
-	outPTS &= ptsMask33
+	// Note: no 33-bit PTS masking here. The muxer handles PTS rebasing
+	// and wrapping. Masking here would put video PTS in a different
+	// domain than audio PTS (which comes from the mixer unmasked),
+	// causing A/V desync in the muxed output.
 	pc.lastOutputPTS = outPTS
 
 	frame := &media.VideoFrame{

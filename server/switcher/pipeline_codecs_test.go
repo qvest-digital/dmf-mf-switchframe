@@ -193,10 +193,11 @@ func TestPipelineCodecs_ForwardPTSJumpReseeds(t *testing.T) {
 		"next frame should continue from reseeded PTS")
 }
 
-func TestPipelineCodecs_OutputPTSWrapsAt33Bits(t *testing.T) {
-	// Bug: pc.lastOutputPTS grows unbounded past the 33-bit PTS range
-	// after ~26.5 hours of continuous operation. The pipeline must mask
-	// lastOutputPTS to 33 bits to prevent corrupted timestamps.
+func TestPipelineCodecs_OutputPTSPassesThroughUnmasked(t *testing.T) {
+	// The pipeline encoder no longer masks PTS to 33 bits. The muxer
+	// handles PTS rebasing and wrapping. This ensures video and audio
+	// PTS stay in the same domain (both use wall-clock values that may
+	// exceed 33 bits after hours of operation).
 	pc := &pipelineCodecs{
 		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -210,39 +211,22 @@ func TestPipelineCodecs_OutputPTSWrapsAt33Bits(t *testing.T) {
 		}
 	}
 
-	// Set lastOutputPTS near the 33-bit boundary by encoding a frame there.
-	nearBoundary := ptsMask33 - 6000
-	f1, err := pc.encode(mkFrame(nearBoundary), true)
+	// Use PTS values that exceed 33 bits (simulating hours of uptime).
+	largePTS := int64(29_000_000_000) // ~89 hours at 90kHz
+	f1, err := pc.encode(mkFrame(largePTS), true)
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
-	// Encode subsequent frames that would push past 2^33.
-	// Default frame duration at 30000/1001 fps = 3003 ticks.
-	// After 3 more frames: nearBoundary + 3*3003 = ptsMask33 - 6000 + 9009
-	// = ptsMask33 + 3009, which exceeds 33 bits.
-	var outputPTS []int64
-	for i := 1; i <= 5; i++ {
-		pts := nearBoundary + int64(i)*3003
-		f, err := pc.encode(mkFrame(pts), true)
-		require.NoError(t, err)
-		require.NotNil(t, f)
-		outputPTS = append(outputPTS, f.PTS)
-	}
+	// Output PTS should pass through unmasked.
+	require.Equal(t, largePTS, f1.PTS,
+		"encode should not mask PTS to 33 bits — muxer handles wrapping")
 
-	// All output PTS values must be within the 33-bit range.
-	for i, p := range outputPTS {
-		require.LessOrEqual(t, p, ptsMask33,
-			"output PTS[%d]=%d exceeds 33-bit range (max %d)", i, p, ptsMask33)
-		require.GreaterOrEqual(t, p, int64(0),
-			"output PTS[%d]=%d is negative", i, p)
-	}
-
-	// lastOutputPTS should also be within range.
-	pc.mu.Lock()
-	lastPTS := pc.lastOutputPTS
-	pc.mu.Unlock()
-	require.LessOrEqual(t, lastPTS, ptsMask33,
-		"lastOutputPTS=%d exceeds 33-bit range", lastPTS)
+	// Subsequent frames should also pass through.
+	f2, err := pc.encode(mkFrame(largePTS+3750), true)
+	require.NoError(t, err)
+	require.NotNil(t, f2)
+	require.Equal(t, largePTS+3750, f2.PTS,
+		"subsequent frame PTS should pass through unmasked")
 }
 
 func TestPipelineCodecs_DefaultBitrateForResolution(t *testing.T) {

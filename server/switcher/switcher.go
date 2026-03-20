@@ -1249,7 +1249,9 @@ func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 		s.videoPTS -= frameDur / 2
 	}
 
-	return s.videoPTS & 0x1FFFFFFFF
+	// No 33-bit mask here — the muxer handles PTS rebasing and wrapping.
+	// Masking would put video PTS in a different domain than audio PTS.
+	return s.videoPTS
 }
 
 // broadcastToProgram sends a video frame to the program relay with a

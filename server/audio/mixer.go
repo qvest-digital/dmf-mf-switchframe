@@ -364,7 +364,7 @@ func (m *Mixer) advanceOutputPTS(inputPTS int64) int64 {
 			m.outputPTS -= m.frameDuration90k() / 2
 		}
 	}
-	m.outputPTS &= 0x1FFFFFFFF
+	// No 33-bit mask — the muxer handles PTS rebasing and wrapping.
 	return m.outputPTS
 }
 
