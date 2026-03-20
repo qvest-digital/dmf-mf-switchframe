@@ -300,7 +300,6 @@
 	});
 
 	// Media pipeline for MoQ video/audio decode
-	// Expose on window for console diagnostics (e.g. A/V sync debugging)
 	const pipeline = createMediaPipeline({
 		onControlState: (data) => {
 			connectionManager.handleControlData(data);
@@ -324,9 +323,6 @@
 			}
 		},
 	});
-	// Expose pipeline on window for console diagnostics (A/V sync debugging).
-	(window as unknown as Record<string, unknown>).__pipeline = pipeline;
-
 	// Pre-register "program" source so ProgramPreview's $effect can attach
 	// the canvas renderer before onMount (which connects the MoQ transport).
 	pipeline.setSourceMuted('program', false);

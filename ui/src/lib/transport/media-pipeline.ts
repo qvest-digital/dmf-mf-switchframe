@@ -484,7 +484,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 
 		const renderer = new PrismRenderer(canvas, buffer, audioClock);
-		renderer.label = `${sourceKey}/${canvasId}`;
 		// No freeRunOnly flag — audioClock dynamically returns -1 when audio
 		// isn't ready yet, so the renderer naturally uses freerun mode and
 		// transitions to audio-driven once the decoder finishes configuring.

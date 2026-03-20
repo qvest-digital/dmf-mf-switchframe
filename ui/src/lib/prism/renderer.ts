@@ -119,7 +119,6 @@ export class PrismRenderer {
 	private _normalRafCount = 0;
 	private _useSetTimeoutFallback = false;
 	private _timeoutId: ReturnType<typeof setTimeout> | null = null;
-	private _label = '';
 
 	constructor(
 		canvas: HTMLCanvasElement,
@@ -133,8 +132,6 @@ export class PrismRenderer {
 		this.audioClock = audioClock;
 		this.onStats = onStats ?? null;
 	}
-
-	set label(v: string) { this._label = v; }
 
 	set freeRunOnly(v: boolean) {
 		this._freeRunOnly = v;
@@ -216,7 +213,6 @@ export class PrismRenderer {
 			const skipResult = this.videoBuffer.takeNewestFrame();
 			if (skipResult.frame) {
 				this._diagLiveEdgeSkips++;
-				console.warn(`[AV-SYNC:${this._label}] LIVE-EDGE SKIP: buf=${preSkipStats.queueSize} discarded=${skipResult.discarded} framePTS=${(skipResult.frame.timestamp/1000).toFixed(0)}ms audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms`);
 				if (this.lastDrawnFrame) {
 					this.lastDrawnFrame.close();
 				}
@@ -479,8 +475,6 @@ export class PrismRenderer {
 	 * path — without the latter, the feedback loop would never fire when
 	 * video is persistently ahead (audio-driven mode has no look-ahead).
 	 */
-	private _syncLogCounter = 0;
-
 	private updateAvSyncCorrection(): void {
 		if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0) {
 			const delta = Math.abs(this.currentVideoPTS - this.currentAudioPTS);
@@ -496,7 +490,6 @@ export class PrismRenderer {
 				// gradually adjust targetPTS to eliminate it.
 				const syncUs = syncMs * 1000;
 				const absSyncUs = Math.abs(syncUs);
-				const prevCorrection = this._avSyncCorrectionUs;
 				if (absSyncUs > 200_000) {
 					this._avSyncCorrectionUs = syncUs * 0.5;
 				} else {
@@ -505,21 +498,6 @@ export class PrismRenderer {
 				// Clamp to ±500ms to prevent runaway
 				this._avSyncCorrectionUs = Math.max(-500_000,
 					Math.min(500_000, this._avSyncCorrectionUs));
-
-				// DEBUG: log every 30th measurement (~1/sec at 30fps)
-				if (this._syncLogCounter++ % 30 === 0) {
-					const mode = this.freeRunStart >= 0 ? "freerun"
-						: this.audioStallFreeRunStart >= 0 ? "stall-freerun"
-						: "audio";
-					console.log(
-						`[AV-SYNC:${this._label}] syncMs=${syncMs.toFixed(1)} correction=${(this._avSyncCorrectionUs/1000).toFixed(1)}ms` +
-						` mode=${mode}` +
-						` videoPTS=${(this.currentVideoPTS/1000).toFixed(0)}ms` +
-						` audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms` +
-						` buf=${this.videoBuffer.getStats().queueSize}` +
-						` drawn=${this._diagFramesDrawn} skips=${this._diagLiveEdgeSkips}`
-					);
-				}
 			}
 		}
 	}
