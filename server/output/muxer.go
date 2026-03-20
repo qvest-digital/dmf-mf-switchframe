@@ -50,10 +50,11 @@ type TSMuxer struct {
 	prependBuf    []byte
 	scte35PID     uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35 [][]byte
-	lastVideoPTS  int64
-	lastPCRPTS    int64
-	ptsOffset     int64 // subtracted from all PTS to rebase to near-zero
-	ptsOffsetSet  bool
+	lastVideoPTS    int64
+	lastPCRPTS      int64
+	ptsOffset       int64 // subtracted from all PTS to rebase to near-zero
+	ptsOffsetSet    bool
+	firstVideoWritten bool // true after the first video frame has been muxed
 	scte35CC      uint8 // continuity counter for SCTE-35 PID
 }
 
@@ -237,6 +238,7 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	rebasedDTS := (frame.DTS - m.ptsOffset) & 0x1FFFFFFFF
 
 	m.lastVideoPTS = rebasedPTS
+	m.firstVideoWritten = true
 
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
 	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
@@ -321,6 +323,14 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 		return nil
 	}
 
+	// Don't write audio until the first video frame has been muxed.
+	// Audio arrives continuously from the mixer ticker, but video has
+	// processing latency (pipeline + encode). Writing audio before the
+	// first video creates a PTS gap that causes A/V desync on playback.
+	if !m.firstVideoWritten {
+		return nil
+	}
+
 	// Ensure ADTS header is present.
 	data := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 
@@ -363,6 +373,7 @@ func (m *TSMuxer) Close() error {
 	m.pendingAudio = nil
 	m.ptsOffset = 0
 	m.ptsOffsetSet = false
+	m.firstVideoWritten = false
 	m.pendingSCTE35 = nil
 	m.lastPCRPTS = 0
 	return nil
