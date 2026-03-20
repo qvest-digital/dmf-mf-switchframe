@@ -25,7 +25,9 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 	case "none":
 		return nil, errors.New("no H.264 encoder available")
 	default:
-		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, HWDeviceCtx())
+		// Pass nil hwDeviceCtx so the encoder creates its own CUDA context.
+		// See NewPreviewEncoder comment for thread-safety rationale.
+		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
 	}
 }
 
@@ -42,9 +44,14 @@ func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int, preset ...str
 	gopSecs := transition.DefaultGOPSecs
 	// Use hardware encoder for previews when available (NVENC/VA-API/VT).
 	// GPU encode is near-zero CPU, freeing cores for decode and compositing.
+	// Pass nil hwDeviceCtx so each encoder creates its own CUDA context.
+	// Sharing a single CUDA context across concurrent encoder goroutines
+	// causes frame corruption because cuCtxPushCurrent/cuCtxPopCurrent
+	// (used by FFmpeg around nvEncEncodePicture) is not thread-safe when
+	// multiple threads share the same context.
 	switch enc {
 	case "h264_nvenc", "h264_vaapi", "h264_videotoolbox":
-		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, HWDeviceCtx())
+		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
 	default:
 		return NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs, preset...)
 	}
