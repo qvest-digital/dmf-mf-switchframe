@@ -74,8 +74,10 @@ func NewTSMuxer() *TSMuxer {
 		muxerEpoch:    90000, // start at 1 second
 		videoFrameDur: 3750,  // default 24fps (90000/24)
 		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
-		lipSyncOffset: 5760,  // ~64ms at 90kHz (3 audio frames) — delays video PTS
-		                      // to compensate for video arriving at muxer before audio
+		lipSyncOffset: 11520, // ~128ms at 90kHz (6 audio frames) — delays video PTS
+		                      // to compensate for video content being ahead of audio
+		                      // due to newest-wins video (frame sync) vs FIFO audio
+		                      // (ring buffer holds 2-4 frames = 42-85ms of latency)
 	}
 }
 

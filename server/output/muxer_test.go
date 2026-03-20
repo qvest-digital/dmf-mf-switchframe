@@ -427,7 +427,7 @@ func TestTSMuxer_MuxerOwnedClock_AVAligned(t *testing.T) {
 	// The offset delays video PTS to compensate for video frames arriving
 	// at the muxer before the corresponding audio frames.
 	epoch := int64(90000)
-	lipSync := int64(5760) // default lip-sync offset
+	lipSync := int64(11520) // default lip-sync offset
 	require.Equal(t, epoch+lipSync, videoPTSValues[0], "first video PTS should be epoch+lipSync")
 	require.Equal(t, epoch+lipSync+3750, videoPTSValues[1], "second video PTS should advance by frameDur")
 
