@@ -407,9 +407,8 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			// readBufferDepthMs=100, outputLatency=32ms, serverNudge=60ms
-			// compensation = (100 + 32 + 60) * 1000 = 192,000 µs
-			expect(pts).toBe(rawPTS - 192_000);
+			// No browser-side compensation — server handles it via relay PTS adjustment
+			expect(pts).toBe(rawPTS);
 		});
 
 		it('should return raw PTS when no output latency info available', async () => {
@@ -446,11 +445,9 @@ describe('PrismAudioDecoder', () => {
 			const ringBuf = (decoder as any).ringBuffer;
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
-			// No outputLatency → ring buffer depth + server nudge
-			// readBufferDepthMs=100, outputLatency=0, serverNudge=60ms
-			// compensation = (100 + 0 + 60) * 1000 = 160,000 µs
+			// No browser-side compensation — server handles it
 			const pts = decoder.getPlaybackPTS();
-			expect(pts).toBe(rawPTS - 160_000);
+			expect(pts).toBe(rawPTS);
 		});
 	});
 });

@@ -269,26 +269,17 @@ export class PrismAudioDecoder {
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0) return pts;
 
-		// Compensate for audio pipeline latency beyond PTS tracking.
-		// readPTS() reports what the AudioWorklet has OUTPUT, but the audio
-		// still travels through two more buffers before reaching ears:
-		//   1. Ring buffer depth: decoded audio queued ahead of playback
-		//   2. AudioContext output latency: hardware output pipeline
-		//
-		// The remaining server-side content age gap (~264ms) is handled by
-		// the renderer's adaptive feedback loop (not here), because a large
-		// static PTS subtraction causes video frames to pile up past the
-		// live-edge threshold, triggering skips that make sync worse.
-		const bufferDepthMs = this.ringBuffer.readBufferDepthMs();
-		const ctx = this.context as AudioContext & { outputLatency?: number };
-		const outputLatencyMs = (ctx?.outputLatency ?? 0) * 1000;
-		// Small static nudge for server-side content age gap: video uses
-		// newest-wins (zero FIFO) while audio traverses mixer ring buffer,
-		// making video content slightly newer at the same wall-clock PTS.
-		const serverContentNudgeMs = 60;
-		const compensationUs = (bufferDepthMs + outputLatencyMs + serverContentNudgeMs) * 1000;
-
-		return pts - compensationUs;
+		// No browser-side PTS compensation needed. The server already
+		// subtracts the mixer ring buffer depth (~357ms) from the audio
+		// relay PTS (app.go Output callback), making video PTS higher
+		// than audio PTS by that amount. The renderer's binary search
+		// naturally holds video frames until audio PTS catches up
+		// (~11 frames at 30fps), which is within the live-edge
+		// threshold of 30 frames. Adding browser compensation here
+		// would push the gap past the PTS discontinuity threshold
+		// (500ms), causing every frame to be drawn immediately and
+		// defeating the sync mechanism.
+		return pts;
 	}
 
 	getLevels(): AudioLevels {
