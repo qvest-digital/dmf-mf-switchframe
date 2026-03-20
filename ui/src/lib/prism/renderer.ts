@@ -114,6 +114,7 @@ export class PrismRenderer {
 	private _normalRafCount = 0;
 	private _useSetTimeoutFallback = false;
 	private _timeoutId: ReturnType<typeof setTimeout> | null = null;
+	private _label = '';
 
 	constructor(
 		canvas: HTMLCanvasElement,
@@ -127,6 +128,8 @@ export class PrismRenderer {
 		this.audioClock = audioClock;
 		this.onStats = onStats ?? null;
 	}
+
+	set label(v: string) { this._label = v; }
 
 	set freeRunOnly(v: boolean) {
 		this._freeRunOnly = v;
@@ -208,7 +211,7 @@ export class PrismRenderer {
 			const skipResult = this.videoBuffer.takeNewestFrame();
 			if (skipResult.frame) {
 				this._diagLiveEdgeSkips++;
-				console.warn(`[AV-SYNC] LIVE-EDGE SKIP: buf=${preSkipStats.queueSize} discarded=${skipResult.discarded} framePTS=${(skipResult.frame.timestamp/1000).toFixed(0)}ms audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms`);
+				console.warn(`[AV-SYNC:${this._label}] LIVE-EDGE SKIP: buf=${preSkipStats.queueSize} discarded=${skipResult.discarded} framePTS=${(skipResult.frame.timestamp/1000).toFixed(0)}ms audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms`);
 				if (this.lastDrawnFrame) {
 					this.lastDrawnFrame.close();
 				}
@@ -504,8 +507,8 @@ export class PrismRenderer {
 						: this.audioStallFreeRunStart >= 0 ? "stall-freerun"
 						: "audio";
 					console.log(
-						`[AV-SYNC] syncMs=${syncMs.toFixed(1)} correction=${(this._avSyncCorrectionUs/1000).toFixed(1)}ms` +
-						` prev=${(prevCorrection/1000).toFixed(1)}ms mode=${mode}` +
+						`[AV-SYNC:${this._label}] syncMs=${syncMs.toFixed(1)} correction=${(this._avSyncCorrectionUs/1000).toFixed(1)}ms` +
+						` mode=${mode}` +
 						` videoPTS=${(this.currentVideoPTS/1000).toFixed(0)}ms` +
 						` audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms` +
 						` buf=${this.videoBuffer.getStats().queueSize}` +
