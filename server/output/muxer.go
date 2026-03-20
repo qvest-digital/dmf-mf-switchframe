@@ -222,18 +222,14 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		if !frame.IsKeyframe {
 			return nil
 		}
+		// Set PTS offset BEFORE init so pending audio flush uses rebased PTS.
+		// Wall-clock PTS values (billions at 90kHz) cause SRT's TSBPD to
+		// buffer for hours. Rebasing to near-zero fixes this.
+		m.ptsOffset = frame.PTS - 90000 // start at 1 second
+		m.ptsOffsetSet = true
 		if err := m.init(frame.PTS); err != nil {
 			return err
 		}
-	}
-
-	// Rebase PTS to near-zero on first keyframe. Wall-clock PTS values
-	// (e.g., 29 billion at 90kHz after hours of uptime) cause SRT's TSBPD
-	// to buffer packets for hours because the PTS is far in the "future"
-	// relative to the SRT connection start time. Rebasing keeps PTS small.
-	if !m.ptsOffsetSet {
-		m.ptsOffset = frame.PTS - 90000 // start at 1 second
-		m.ptsOffsetSet = true
 	}
 
 	// Apply offset to create rebased PTS for muxing.
