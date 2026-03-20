@@ -407,8 +407,8 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			// PTS + 66ms (2-frame offset for A/V sync)
-			expect(pts).toBe(rawPTS + 66_000);
+			// Raw PTS returned
+			expect(pts).toBe(rawPTS);
 		});
 
 		it('should return raw PTS when no output latency info available', async () => {
@@ -445,9 +445,9 @@ describe('PrismAudioDecoder', () => {
 			const ringBuf = (decoder as any).ringBuffer;
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
-			// No baseLatency/outputLatency → only 2-frame offset applied
+			// No baseLatency/outputLatency → raw PTS returned
 			const pts = decoder.getPlaybackPTS();
-			expect(pts).toBe(rawPTS + 66_000);
+			expect(pts).toBe(rawPTS);
 		});
 	});
 });

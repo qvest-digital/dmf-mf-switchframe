@@ -268,12 +268,7 @@ export class PrismAudioDecoder {
 		if (!this.ringBuffer || !this.playing) return -1;
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0) return pts;
-		// Add 2-frame offset (66ms at 30fps) to compensate for the WebAudio
-		// output pipeline latency (~38ms) plus the content age difference
-		// between newest-wins video and FIFO audio. This makes the renderer
-		// hold video frames ~66ms longer before displaying, aligning video
-		// with when the user actually hears the corresponding audio.
-		return pts + 66_000;
+		return pts;
 	}
 
 	getLevels(): AudioLevels {
