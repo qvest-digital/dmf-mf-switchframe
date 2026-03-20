@@ -43,13 +43,17 @@ describe('PrismRenderer', () => {
 	});
 
 	describe('look-ahead tolerance for video-ahead-of-audio', () => {
-		it('draws frame when video is 20ms ahead of audio', () => {
-			// 20ms ahead — within the 40ms look-ahead tolerance (one frame)
+		// targetPTS = audioPTS - 60ms (A/V sync bias). Look-ahead threshold = 100ms.
+		// Effective video-ahead = gap - 60ms. Max displayable = 100ms gap = 40ms ahead.
+
+		it('draws frame when video is 30ms ahead of audio (gap 90ms < 100ms)', () => {
+			// audioPTS = 1s, targetPTS = 1s - 60ms = 940ms
+			// video PTS = 1.030s → gap = 1.030s - 0.940s = 90ms < 100ms → display
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			buffer.addFrame(new MockVideoFrame(1_020_000) as unknown as VideoFrame);
+			buffer.addFrame(new MockVideoFrame(1_030_000) as unknown as VideoFrame);
 
 			renderer.renderOnce();
 
@@ -58,23 +62,9 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(0);
 		});
 
-		it('draws frame when video is 35ms ahead of audio', () => {
-			// 35ms ahead — within the 40ms tolerance (one frame + jitter)
-			const audioClock = { getPlaybackPTS: () => 1_000_000 };
-			const renderer = new PrismRenderer(canvas, buffer, audioClock);
-			renderer.externallyDriven = true;
-
-			buffer.addFrame(new MockVideoFrame(1_035_000) as unknown as VideoFrame);
-
-			renderer.renderOnce();
-
-			const diag = renderer.getDiagnostics();
-			expect(diag.framesDrawn).toBe(1);
-			expect(diag.framesSkipped).toBe(0);
-		});
-
-		it('skips frame when video is 50ms ahead of audio', () => {
-			// 50ms exceeds the 40ms look-ahead tolerance
+		it('skips frame when video is 50ms ahead of audio (gap 110ms > 100ms)', () => {
+			// audioPTS = 1s, targetPTS = 940ms
+			// video PTS = 1.050s → gap = 110ms > 100ms → skip
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -89,7 +79,8 @@ describe('PrismRenderer', () => {
 		});
 
 		it('skips frame when video is 200ms+ ahead of audio', () => {
-			// 200ms far exceeds the 40ms look-ahead tolerance — should skip.
+			// audioPTS = 1s, targetPTS = 940ms
+			// video PTS = 1.200s → gap = 260ms > 100ms → skip
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -252,17 +243,15 @@ describe('PrismRenderer', () => {
 			expect(diag.framesDrawn).toBe(1);
 		});
 
-		it('draws frames when video is within 40ms of audio (normal operation)', () => {
-			// With ring buffer latency compensation in getPlaybackPTS(),
-			// video PTS should be within ~30ms of audio. Renderer draws normally.
-			// Feed frames one-at-a-time to avoid triggering live-edge skip
-			// (which correctly fires when >10 frames queue up at once).
+		it('draws frames when video is within normal range of audio', () => {
+			// With 60ms A/V sync bias, targetPTS = audioPTS - 60ms.
+			// Video at audioPTS + 30ms → gap = 90ms < 100ms → draws normally.
 			let audioPTS = 10_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			const PTS_OFFSET = 30_000; // 30ms video-ahead (within one frame)
+			const PTS_OFFSET = 30_000; // 30ms video-ahead (typical)
 
 			// Simulate steady-state: add one frame, render, advance audio
 			let totalDrawn = 0;
