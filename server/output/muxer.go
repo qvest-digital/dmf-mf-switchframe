@@ -54,15 +54,18 @@ type TSMuxer struct {
 	lastPCRPTS    int64
 	scte35CC      uint8 // continuity counter for SCTE-35 PID
 
-	// Muxer-owned clock: PTS assigned from monotonic counters, not inherited
-	// from upstream. Both video and audio derive from the same epoch, so
-	// A/V sync is correct by construction.
-	muxerEpoch      int64 // starting PTS (90000 = 1 second)
-	videoFrameCount int64 // incremented on each WriteVideo
-	audioFrameCount int64 // incremented on each WriteAudio
-	videoFrameDur   int64 // 90kHz ticks per video frame (e.g., 3750 for 24fps)
-	audioFrameDur   int64 // 90kHz ticks per audio frame (1920 for 48kHz/1024)
-	lipSyncOffset   int64 // 90kHz ticks added to video PTS (positive = delay video)
+	// PTS rebasing: upstream wall-clock PTS is rebased to near-zero for
+	// SRT TSBPD compatibility. Both video and audio use the same base.
+	muxerEpoch int64 // starting PTS after rebase (default 90000 = 1 second)
+	ptsBase    int64 // first video frame's upstream PTS — subtracted from all PTS
+	ptsBaseSet bool  // true after first video frame sets the base
+
+	// Lip-sync compensation: video PTS is delayed by this amount to
+	// compensate for the FIFO latency in the audio ring buffer. The video
+	// path uses newest-wins (zero content latency) while the audio path
+	// uses a FIFO ring buffer (content delayed by buffer depth). Without
+	// compensation, video content appears ahead of audio content.
+	lipSyncOffset int64 // 90kHz ticks added to video PTS only
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -71,73 +74,32 @@ func NewTSMuxer() *TSMuxer {
 	return &TSMuxer{
 		annexBBuf:     make([]byte, 0, muxerBufCap),
 		prependBuf:    make([]byte, 0, muxerBufCap),
-		muxerEpoch:    90000, // start at 1 second
-		videoFrameDur: 3750,  // default 24fps (90000/24)
-		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
-		lipSyncOffset: 54000, // 600ms at 90kHz — empirically measured via VLC
-	                      // Track Synchronization. Compensates for video content
-	                      // being ahead of audio due to SRT decode startup latency
-	                      // + newest-wins frame sync vs FIFO audio ring buffer.
-	}
-}
-
-// SetVideoFrameRate sets the video frame duration for the muxer-owned clock.
-// Must be called before writing frames. fpsNum/fpsDen express the frame rate
-// as a rational number (e.g., 24/1 for 24fps, 30000/1001 for 29.97fps).
-func (m *TSMuxer) SetVideoFrameRate(fpsNum, fpsDen int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if fpsNum > 0 && fpsDen > 0 {
-		m.videoFrameDur = int64(90000) * int64(fpsDen) / int64(fpsNum)
+		muxerEpoch: 90000, // start at 1 second after rebase
 	}
 }
 
 // SetOutput sets the callback that receives muxed MPEG-TS data.
-// The callback is invoked after each frame is written, with data
-// that is always a multiple of 188 bytes.
 func (m *TSMuxer) SetOutput(fn func([]byte)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.output = fn
 }
 
-// ResetCounters resets the frame counters to zero and forces the muxer to
-// re-initialize on the next keyframe. Called when a new SRT client connects
-// so the first data it receives has PTS near zero — otherwise SRT's TSBPD
-// would buffer packets for the accumulated PTS duration (potentially minutes).
-func (m *TSMuxer) ResetCounters() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.videoFrameCount = 0
-	m.audioFrameCount = 0
-	m.lastPCRPTS = 0
-	m.lastVideoPTS = 0
-	// Force re-init so the next keyframe triggers PAT/PMT + fresh start.
-	if m.muxer != nil {
-		if m.cancel != nil {
-			m.cancel()
-			m.cancel = nil
-		}
-		m.muxer = nil
-	}
-	m.initialized = false
-}
-
-// SetLipSyncOffset90k sets the lip-sync adjustment in 90kHz ticks.
-// Called dynamically from the mixer to track ring buffer depth.
+// SetLipSyncOffset90k sets the lip-sync compensation offset in 90kHz ticks.
+// This value is added to video PTS only, delaying video presentation relative
+// to audio to compensate for the audio ring buffer's FIFO latency.
+// Thread-safe — can be called concurrently with WriteVideo/WriteAudio.
 func (m *TSMuxer) SetLipSyncOffset90k(ticks int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lipSyncOffset = ticks
 }
 
-// SetLipSyncOffset sets the lip-sync adjustment in milliseconds.
-// Positive values delay video relative to audio (use when video is
-// ahead of audio). Negative values advance video.
-func (m *TSMuxer) SetLipSyncOffset(ms int) {
+// LipSyncOffset90k returns the current lip-sync offset in 90kHz ticks.
+func (m *TSMuxer) LipSyncOffset90k() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lipSyncOffset = int64(ms) * 90 // ms → 90kHz ticks
+	return m.lipSyncOffset
 }
 
 // SetSCTE35PID configures the SCTE-35 PID for this muxer. A non-zero PID
@@ -292,11 +254,20 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		}
 	}
 
-	// Muxer-owned clock: assign PTS from monotonic frame counter.
-	// Upstream PTS is ignored — both video and audio derive from the
-	// same epoch, so A/V sync is correct by construction.
-	muxerPTS := (m.muxerEpoch + m.videoFrameCount*m.videoFrameDur + m.lipSyncOffset) & 0x1FFFFFFFF
-	m.videoFrameCount++
+	// Use upstream PTS (wall-clock domain) rebased to near-zero.
+	// Both video and audio use the same wall-clock PTS system (seeded from
+	// SeedPTSFromVideo), so their PTS reflects the actual source content
+	// timing. Rebasing keeps values small for SRT TSBPD compatibility.
+	if !m.ptsBaseSet {
+		m.ptsBase = frame.PTS
+		m.ptsBaseSet = true
+	}
+	// Add lip-sync offset to VIDEO PTS only. This delays video
+	// presentation to compensate for the audio ring buffer's FIFO latency.
+	// The video path uses newest-wins (content is current), while the audio
+	// path uses a FIFO ring buffer (content is delayed by buffer depth).
+	// Without this offset, video content appears ahead of audio content.
+	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
 	m.lastVideoPTS = muxerPTS
 
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
@@ -372,9 +343,8 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 		return nil
 	}
 
-	// Muxer-owned clock: assign PTS from monotonic frame counter.
-	muxerPTS := (m.muxerEpoch + m.audioFrameCount*m.audioFrameDur) & 0x1FFFFFFFF
-	m.audioFrameCount++
+	// Use upstream PTS rebased to near-zero (same base as video).
+	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch) & 0x1FFFFFFFF
 
 	// Ensure ADTS header is present.
 	data := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
@@ -416,8 +386,8 @@ func (m *TSMuxer) Close() error {
 	m.pendingAudio = nil
 	m.pendingSCTE35 = nil
 	m.lastPCRPTS = 0
-	m.videoFrameCount = 0
-	m.audioFrameCount = 0
+	m.ptsBase = 0
+	m.ptsBaseSet = false
 	return nil
 }
 

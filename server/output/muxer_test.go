@@ -338,43 +338,44 @@ func TestMuxerDiscardsAudioBeforeFirstVideoKeyframe(t *testing.T) {
 	}
 }
 
-func TestTSMuxer_MuxerOwnedClock_AVAligned(t *testing.T) {
-	// The muxer assigns PTS from its own monotonic counters, ignoring
-	// upstream PTS. This ensures A/V sync by construction — both video
-	// and audio PTS derive from the same epoch.
+func TestTSMuxer_UpstreamPTSRebase_AVAligned(t *testing.T) {
+	// The muxer rebases upstream PTS to near-zero, preserving the relative
+	// timing between video and audio. Both streams share the same wall-clock
+	// PTS domain from the switcher/mixer, so A/V sync is preserved.
 	m := NewTSMuxer()
-	m.SetVideoFrameRate(24, 1) // 24fps → 3750 ticks per frame
 
 	var outputData []byte
 	m.SetOutput(func(data []byte) {
 		outputData = append(outputData, data...)
 	})
 
-	// Send video and audio with WILDLY different upstream PTS.
-	// The muxer should ignore these and assign its own sequential PTS.
+	// Simulate wall-clock PTS from switcher (video) and mixer (audio).
+	// Both use the same epoch, so they're aligned. Audio may arrive
+	// slightly after video in wall-clock time but with matching PTS.
+	basePTS := int64(29_000_000_000) // large PTS simulating hours of uptime
 
-	// Video keyframe with huge upstream PTS (simulating hours of uptime)
+	// Video keyframe
 	require.NoError(t, m.WriteVideo(&media.VideoFrame{
-		PTS: 29_000_000_000, DTS: 29_000_000_000, IsKeyframe: true,
+		PTS: basePTS, DTS: basePTS, IsKeyframe: true,
 		SPS: []byte{0x67, 0x42, 0xC0, 0x1E}, PPS: []byte{0x68, 0xCE, 0x38, 0x80},
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}, Codec: "h264",
 	}))
 
-	// Audio with completely different upstream PTS
+	// Audio at the same base PTS (aligned from same wall-clock epoch)
 	require.NoError(t, m.WriteAudio(&media.AudioFrame{
-		PTS: 28_999_000_000, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		PTS: basePTS, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
 		SampleRate: 48000, Channels: 2,
 	}))
 
-	// Second video frame
+	// Second video frame (3750 ticks later = 1 frame at 24fps)
 	require.NoError(t, m.WriteVideo(&media.VideoFrame{
-		PTS: 29_000_003_750, DTS: 29_000_003_750, IsKeyframe: false,
+		PTS: basePTS + 3750, DTS: basePTS + 3750, IsKeyframe: false,
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x9A}, Codec: "h264",
 	}))
 
-	// Second audio frame
+	// Second audio frame (1920 ticks later = 1 AAC frame at 48kHz)
 	require.NoError(t, m.WriteAudio(&media.AudioFrame{
-		PTS: 28_999_001_920, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		PTS: basePTS + 1920, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
 		SampleRate: 48000, Channels: 2,
 	}))
 
@@ -423,22 +424,98 @@ func TestTSMuxer_MuxerOwnedClock_AVAligned(t *testing.T) {
 	require.GreaterOrEqual(t, len(videoPTSValues), 2, "should have at least 2 video PTS")
 	require.GreaterOrEqual(t, len(audioPTSValues), 2, "should have at least 2 audio PTS")
 
-	// Video PTS starts at epoch + lipSyncOffset (default 5760 = ~64ms).
-	// The offset delays video PTS to compensate for video frames arriving
-	// at the muxer before the corresponding audio frames.
 	epoch := int64(90000)
-	lipSync := int64(54000) // 600ms empirically measured lip-sync offset
-	require.Equal(t, epoch+lipSync, videoPTSValues[0], "first video PTS should be epoch+lipSync")
-	require.Equal(t, epoch+lipSync+3750, videoPTSValues[1], "second video PTS should advance by frameDur")
 
-	// Audio PTS starts at epoch (no offset).
+	// Video PTS rebased: (basePTS - basePTS + epoch) = epoch
+	require.Equal(t, epoch, videoPTSValues[0], "first video PTS should be epoch")
+	require.Equal(t, epoch+3750, videoPTSValues[1], "second video PTS should advance by frame duration")
+
+	// Audio PTS rebased: (basePTS - basePTS + epoch) = epoch
 	require.Equal(t, epoch, audioPTSValues[0], "first audio PTS should be epoch")
 	require.Equal(t, epoch+1920, audioPTSValues[1], "second audio PTS should advance by 1920")
 
-	// Video is intentionally delayed relative to audio by lipSyncOffset.
-	// This compensates for the video pipeline delivering frames to the
-	// muxer ~64ms before the corresponding audio arrives.
-	require.Equal(t, lipSync, videoPTSValues[0]-audioPTSValues[0],
+	// Video and audio start at the same PTS — no artificial offset.
+	// Source A/V alignment is preserved through the processing chain.
+	require.Equal(t, int64(0), videoPTSValues[0]-audioPTSValues[0],
+		"video and audio should start at the same PTS")
+}
+
+func TestTSMuxer_LipSyncOffset_DelaysVideoPTS(t *testing.T) {
+	// The lip-sync offset delays video PTS relative to audio PTS,
+	// compensating for the audio ring buffer's FIFO latency.
+	m := NewTSMuxer()
+	m.SetLipSyncOffset90k(9000) // 100ms offset
+
+	var outputData []byte
+	m.SetOutput(func(data []byte) {
+		outputData = append(outputData, data...)
+	})
+
+	basePTS := int64(1_000_000)
+
+	// Video keyframe
+	require.NoError(t, m.WriteVideo(&media.VideoFrame{
+		PTS: basePTS, DTS: basePTS, IsKeyframe: true,
+		SPS: []byte{0x67, 0x42, 0xC0, 0x1E}, PPS: []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}, Codec: "h264",
+	}))
+
+	// Audio at same base PTS
+	require.NoError(t, m.WriteAudio(&media.AudioFrame{
+		PTS: basePTS, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		SampleRate: 48000, Channels: 2,
+	}))
+
+	// Parse PTS values from output.
+	var videoPTS, audioPTS int64
+	for i := 0; i+188 <= len(outputData); i += 188 {
+		pkt := outputData[i : i+188]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pid := (uint16(pkt[1]&0x1F) << 8) | uint16(pkt[2])
+		pusi := (pkt[1] & 0x40) != 0
+		if !pusi {
+			continue
+		}
+		afc := (pkt[3] >> 4) & 0x03
+		payloadStart := 4
+		if afc == 0x03 || afc == 0x02 {
+			payloadStart = 5 + int(pkt[4])
+		}
+		if payloadStart+14 > 188 {
+			continue
+		}
+		if pkt[payloadStart] != 0x00 || pkt[payloadStart+1] != 0x00 || pkt[payloadStart+2] != 0x01 {
+			continue
+		}
+		pesFlags := pkt[payloadStart+7]
+		if pesFlags&0x80 == 0 {
+			continue
+		}
+		ptsBytes := pkt[payloadStart+9 : payloadStart+14]
+		pts := (int64(ptsBytes[0]>>1) & 0x07) << 30
+		pts |= int64(ptsBytes[1]) << 22
+		pts |= (int64(ptsBytes[2]>>1) & 0x7F) << 15
+		pts |= int64(ptsBytes[3]) << 7
+		pts |= int64(ptsBytes[4]>>1) & 0x7F
+
+		if pid == videoPID && videoPTS == 0 {
+			videoPTS = pts
+		} else if pid == audioPID && audioPTS == 0 {
+			audioPTS = pts
+		}
+	}
+
+	epoch := int64(90000)
+	lipSync := int64(9000)
+
+	// Video PTS = epoch + lipSyncOffset (delayed by 100ms)
+	require.Equal(t, epoch+lipSync, videoPTS, "video PTS should include lip-sync offset")
+	// Audio PTS = epoch (no offset)
+	require.Equal(t, epoch, audioPTS, "audio PTS should not include lip-sync offset")
+	// The difference is exactly the lip-sync offset
+	require.Equal(t, lipSync, videoPTS-audioPTS,
 		"video should be delayed by lip-sync offset")
 }
 

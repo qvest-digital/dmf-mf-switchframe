@@ -619,8 +619,9 @@ func TestOutputManager_DebugSnapshot_IncludesMuxerPTS(t *testing.T) {
 
 	muxerPTS, ok := snap["muxer_pts"].(int64)
 	require.True(t, ok, "muxer_pts should be int64")
-	// Video PTS = epoch (90000) + lip-sync offset (54000) = 144000
-	require.Equal(t, int64(144000), muxerPTS)
+	// Video PTS = epoch (90000), rebased from upstream PTS 90000
+	// ptsBase = 90000 (first video PTS), so muxerPTS = (90000 - 90000 + 90000) = 90000
+	require.Equal(t, int64(90000), muxerPTS)
 }
 
 func TestOutputManager_DebugSnapshot_NoMuxerPTSWhenInactive(t *testing.T) {

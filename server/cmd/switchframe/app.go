@@ -394,9 +394,11 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Set video frame rate for the muxer-owned clock (A/V sync).
-	pf := a.sw.PipelineFormat()
-	a.outputMgr.SetVideoFrameRate(pf.FPSNum, pf.FPSDen)
+	// Dynamic lip-sync: the muxer reads the mixer's ring buffer depth
+	// each video frame and applies it as a video PTS offset. This compensates
+	// for the FIFO audio ring buffer latency that the newest-wins video
+	// frame sync doesn't have, keeping A/V content aligned in the output.
+	a.outputMgr.SetLipSyncSource(a.mixer.RingBufferLatency90k)
 
 	// CBR pacing is NOT enabled for SRT output. SRT has its own congestion
 	// control and jitter buffer that handle VBR natively. CBR null-padding
@@ -423,12 +425,6 @@ func (a *App) initOutput() error {
 
 	// Wire direct audio path: mixer output goes straight to the muxer.
 	a.mixer.SetOutputAudioCallback(a.outputMgr.DirectWriteAudio)
-
-	// Dynamic lip-sync: the muxer reads the mixer's ring buffer depth
-	// each video frame and applies it as a PTS offset. This compensates
-	// for the FIFO audio ring buffer latency that the newest-wins video
-	// frame sync doesn't have.
-	a.outputMgr.SetLipSyncSource(a.mixer.RingBufferLatency90k)
 
 	return nil
 }
