@@ -588,6 +588,7 @@ export class WebGPUCompositor {
 			videoTotalDiscarded: vStats.totalDiscarded,
 			liveEdgeSkips: 0,
 			useSetTimeoutFallback: false,
+			avSyncCorrectionMs: 0,
 		};
 	}
 
