@@ -424,6 +424,12 @@ func (a *App) initOutput() error {
 	// Wire direct audio path: mixer output goes straight to the muxer.
 	a.mixer.SetOutputAudioCallback(a.outputMgr.DirectWriteAudio)
 
+	// Dynamic lip-sync: the muxer reads the mixer's ring buffer depth
+	// each video frame and applies it as a PTS offset. This compensates
+	// for the FIFO audio ring buffer latency that the newest-wins video
+	// frame sync doesn't have.
+	a.outputMgr.SetLipSyncSource(a.mixer.RingBufferLatency90k)
+
 	return nil
 }
 

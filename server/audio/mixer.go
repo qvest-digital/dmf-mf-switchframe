@@ -169,6 +169,11 @@ type Mixer struct {
 	decodeErrors atomic.Int64
 	encodeErrors atomic.Int64
 
+	// Ring buffer latency: depth of the program source's ring buffer in
+	// samples at the moment each tick reads from it. Converted to 90kHz
+	// ticks for lip-sync offset. Updated every tick.
+	ringBufLatency90k atomic.Int64
+
 	// Audio timing diagnostics (atomic, lock-free)
 	outputFrameCount  atomic.Int64 // total frames output
 	lastOutputNano    atomic.Int64 // UnixNano of last output frame
@@ -772,6 +777,14 @@ func (m *Mixer) recordAndOutput(frame *media.AudioFrame) {
 	if cb := m.outputAudioCallback.Load(); cb != nil {
 		(*cb)(frame)
 	}
+}
+
+// RingBufferLatency90k returns the program source's ring buffer depth in
+// 90kHz ticks. Used by the muxer as a dynamic lip-sync offset — the ring
+// buffer adds FIFO latency to audio that the video path (newest-wins frame
+// sync) doesn't have.
+func (m *Mixer) RingBufferLatency90k() int64 {
+	return m.ringBufLatency90k.Load()
 }
 
 // ResetMaxInterFrameGap resets the max inter-frame gap counter, allowing

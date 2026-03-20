@@ -59,6 +59,23 @@ func (m *Mixer) tick() *media.AudioFrame {
 	}
 
 	hasOutput := false
+	// Measure ring buffer depth of active channels before reading.
+	// This tells us how much FIFO latency audio has — used as lip-sync offset.
+	var maxRingDepth int
+	for _, ch := range m.channels {
+		if ch.active && !ch.muted && ch.ringBuf != nil {
+			depth := ch.ringBuf.Len()
+			if depth > maxRingDepth {
+				maxRingDepth = depth
+			}
+		}
+	}
+	if maxRingDepth > 0 {
+		// Convert samples to 90kHz ticks: samples / channels / sampleRate * 90000
+		latency90k := int64(maxRingDepth) * 90000 / int64(m.numChannels) / int64(m.sampleRate)
+		m.ringBufLatency90k.Store(latency90k)
+	}
+
 	for sourceKey, ch := range m.channels {
 		if !ch.active || ch.muted || ch.ringBuf == nil {
 			continue

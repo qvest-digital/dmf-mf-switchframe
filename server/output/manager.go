@@ -89,6 +89,9 @@ type Manager struct {
 	// Video frame rate for the muxer-owned clock.
 	videoFPSNum int
 	videoFPSDen int
+
+	// Dynamic lip-sync: reads ring buffer latency from the mixer each video frame.
+	lipSyncSource func() int64 // returns 90kHz ticks of audio ring buffer depth
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -138,6 +141,15 @@ func (m *Manager) SetVideoFrameRate(fpsNum, fpsDen int) {
 	defer m.mu.Unlock()
 	m.videoFPSNum = fpsNum
 	m.videoFPSDen = fpsDen
+}
+
+// SetLipSyncSource registers a function that returns the current audio
+// ring buffer depth in 90kHz ticks. Called each video frame to dynamically
+// update the muxer's lip-sync offset.
+func (m *Manager) SetLipSyncSource(fn func() int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lipSyncSource = fn
 }
 
 func (m *Manager) SetCBRMuxrate(muxrateBps int64) {
@@ -1149,6 +1161,10 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	muxer := m.directMuxer.Load()
 	if muxer == nil {
 		return
+	}
+	// Update lip-sync offset from mixer's ring buffer depth.
+	if m.lipSyncSource != nil {
+		muxer.SetLipSyncOffset90k(m.lipSyncSource())
 	}
 	if err := muxer.WriteVideo(frame); err != nil {
 		m.log.Error("direct video write error", "err", err)
