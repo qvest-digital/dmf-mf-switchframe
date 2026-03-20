@@ -1,3 +1,4 @@
+import { CompressedFrameQueue } from "./compressed-frame-queue";
 import { VideoRenderBuffer } from "./video-render-buffer";
 
 /** Diagnostic counters and timing statistics from the video decoder worker. */
@@ -45,6 +46,10 @@ export class PrismVideoDecoder {
 	private _diagResolve: ((d: VideoDecoderDiagnostics) => void) | null = null;
 	private _bufferDropped = 0;
 	private _paused = false;
+	private compressedQueue = new CompressedFrameQueue(5_000_000); // 5s max
+	private audioClock: { getPlaybackPTS(): number } | null = null;
+	private _bootstrapCount = 0;
+	private _lastDescription: Uint8Array | undefined;
 
 	constructor(renderBuffer: VideoRenderBuffer, onFrameReceived?: (frame: VideoFrame) => void) {
 		this.renderBuffer = renderBuffer;
@@ -58,6 +63,10 @@ export class PrismVideoDecoder {
 			{ type: "module" },
 		);
 		this.worker.onmessage = (e) => this.handleWorkerMessage(e);
+	}
+
+	setAudioClock(clock: { getPlaybackPTS(): number }): void {
+		this.audioClock = clock;
 	}
 
 	configure(codec: string, width: number, height: number, description?: ArrayBuffer): void {
@@ -85,6 +94,10 @@ export class PrismVideoDecoder {
 		}, description ? [description] : []);
 
 		this.configured = true;
+
+		if (description) {
+			this._lastDescription = new Uint8Array(description);
+		}
 	}
 
 	pause(): void {
@@ -99,18 +112,73 @@ export class PrismVideoDecoder {
 		}
 		// Clear stale frames from all buffers
 		this.renderBuffer.clear();
+		this.compressedQueue.flush();
+		this._bootstrapCount = 0;
 	}
 
 	decode(data: Uint8Array, isKeyframe: boolean, timestamp: number, isDisco: boolean): void {
 		if (!this.worker || !this.configured || this._paused) return;
 
+		this.compressedQueue.push(
+			new Uint8Array(data),  // copy — caller may transfer original
+			timestamp,
+			isKeyframe,
+			isKeyframe ? this._lastDescription : undefined,
+		);
+
+		// Pump immediately to minimize latency
+		this.pumpDecode();
+	}
+
+	/** Release compressed frames to the VideoDecoder worker based on audio clock position. */
+	pumpDecode(): void {
+		if (!this.worker || !this.configured) return;
+
+		const LOOKAHEAD_US = 200_000; // 200ms decode lead time
+		const BOOTSTRAP_FRAMES = 3;   // frames to decode before audio starts
+
+		const audioPTS = this.audioClock?.getPlaybackPTS() ?? -1;
+
+		if (audioPTS < 0) {
+			// No audio yet — bootstrap: decode a few frames so renderer shows something
+			if (this._bootstrapCount >= BOOTSTRAP_FRAMES) return;
+
+			const available = this.compressedQueue.size();
+			if (available === 0) return;
+
+			// Drain up to remaining bootstrap count
+			const toDrain = Math.min(available, BOOTSTRAP_FRAMES - this._bootstrapCount);
+			const frames = this.compressedQueue.drain(Infinity, 0);
+			const toSend = frames.slice(0, toDrain);
+			// Re-push extras back to queue (in reverse to preserve order)
+			for (let i = frames.length - 1; i >= toDrain; i--) {
+				const f = frames[i];
+				this.compressedQueue.push(f.data, f.timestamp, f.isKeyframe, f.description);
+			}
+			for (const f of toSend) {
+				this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
+			}
+			this._bootstrapCount += toSend.length;
+			return;
+		}
+
+		// Audio is active — drain frames up to audioPTS + lookahead
+		this._bootstrapCount = BOOTSTRAP_FRAMES; // mark bootstrap done
+		const frames = this.compressedQueue.drain(audioPTS, LOOKAHEAD_US);
+		for (const f of frames) {
+			this.sendToWorker(f.data, f.isKeyframe, f.timestamp);
+		}
+	}
+
+	private sendToWorker(data: Uint8Array, isKeyframe: boolean, timestamp: number): void {
+		if (!this.worker) return;
 		this.worker.postMessage(
 			{
 				type: "decode",
 				data: data.buffer,
 				isKeyframe,
 				timestamp,
-				isDisco,
+				isDisco: false,
 			},
 			[data.buffer],
 		);
@@ -123,6 +191,8 @@ export class PrismVideoDecoder {
 			this.worker = null;
 		}
 		this.renderBuffer.clear();
+		this.compressedQueue.flush();
+		this._bootstrapCount = 0;
 		this.configured = false;
 	}
 
