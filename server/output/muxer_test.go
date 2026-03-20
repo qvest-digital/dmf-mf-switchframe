@@ -440,11 +440,12 @@ func TestTSMuxer_UpstreamPTSRebase_AVAligned(t *testing.T) {
 		"video and audio should start at the same PTS")
 }
 
-func TestTSMuxer_LipSyncOffset_DelaysVideoPTS(t *testing.T) {
-	// The lip-sync offset delays video PTS relative to audio PTS,
-	// compensating for the audio ring buffer's FIFO latency.
+func TestTSMuxer_LipSyncAppliedUpstream(t *testing.T) {
+	// Lip-sync offset is now applied upstream in the switcher's video
+	// processing loop (before the PTS reaches the muxer). The muxer
+	// receives video PTS that already includes the lip-sync delay.
+	// This test verifies the muxer preserves the upstream offset.
 	m := NewTSMuxer()
-	m.SetLipSyncOffset90k(9000) // 100ms offset
 
 	var outputData []byte
 	m.SetOutput(func(data []byte) {
@@ -452,15 +453,16 @@ func TestTSMuxer_LipSyncOffset_DelaysVideoPTS(t *testing.T) {
 	})
 
 	basePTS := int64(1_000_000)
+	lipSync := int64(9000) // 100ms offset applied upstream
 
-	// Video keyframe
+	// Video keyframe with upstream lip-sync already added to PTS
 	require.NoError(t, m.WriteVideo(&media.VideoFrame{
-		PTS: basePTS, DTS: basePTS, IsKeyframe: true,
+		PTS: basePTS + lipSync, DTS: basePTS + lipSync, IsKeyframe: true,
 		SPS: []byte{0x67, 0x42, 0xC0, 0x1E}, PPS: []byte{0x68, 0xCE, 0x38, 0x80},
 		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}, Codec: "h264",
 	}))
 
-	// Audio at same base PTS
+	// Audio at base PTS (no offset — audio PTS is wall-clock only)
 	require.NoError(t, m.WriteAudio(&media.AudioFrame{
 		PTS: basePTS, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
 		SampleRate: 48000, Channels: 2,
@@ -508,15 +510,15 @@ func TestTSMuxer_LipSyncOffset_DelaysVideoPTS(t *testing.T) {
 	}
 
 	epoch := int64(90000)
-	lipSync := int64(9000)
 
-	// Video PTS = epoch + lipSyncOffset (delayed by 100ms)
-	require.Equal(t, epoch+lipSync, videoPTS, "video PTS should include lip-sync offset")
-	// Audio PTS = epoch (no offset)
-	require.Equal(t, epoch, audioPTS, "audio PTS should not include lip-sync offset")
-	// The difference is exactly the lip-sync offset
+	// ptsBase is set from first video PTS (basePTS + lipSync).
+	// Video muxerPTS = (basePTS + lipSync) - (basePTS + lipSync) + epoch = epoch
+	require.Equal(t, epoch, videoPTS, "video PTS rebased to epoch")
+	// Audio muxerPTS = basePTS - (basePTS + lipSync) + epoch = epoch - lipSync
+	// The lip-sync gap is preserved: audio PTS is earlier than video PTS.
+	require.Equal(t, epoch-lipSync, audioPTS, "audio PTS should be offset by lip-sync")
 	require.Equal(t, lipSync, videoPTS-audioPTS,
-		"video should be delayed by lip-sync offset")
+		"video should be delayed relative to audio by lip-sync offset")
 }
 
 func TestTSMuxer_Close(t *testing.T) {

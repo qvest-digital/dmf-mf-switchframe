@@ -403,11 +403,10 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Dynamic lip-sync: combines two sources of A/V content offset:
-	// 1. Ring buffer depth: FIFO audio latency that newest-wins video doesn't have
-	// 2. Source A/V PTS gap: broadcast encoders set audio PTS ahead of video PTS
-	//    (destroyed when we assign wall-clock PTS). Both are in 90kHz ticks.
-	a.outputMgr.SetLipSyncSource(func() int64 {
+	// Dynamic lip-sync: applied in the switcher's video processing loop so
+	// ALL downstream consumers (browser relay, muxer, raw monitor) benefit.
+	// Combines ring buffer depth + source A/V PTS gap.
+	a.sw.SetLipSyncSource(func() int64 {
 		ringBuf := a.mixer.RingBufferLatency90k()
 
 		// Source A/V gap: video PTS - audio PTS. If positive, video PTS is

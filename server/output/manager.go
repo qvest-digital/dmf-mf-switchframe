@@ -85,16 +85,6 @@ type Manager struct {
 
 	// scte35PID is the configured SCTE-35 MPEG-TS PID. 0 = disabled.
 	scte35PID uint16
-
-	// Dynamic lip-sync: reads ring buffer latency from the mixer each video frame.
-	// Returns 90kHz ticks of audio ring buffer depth. This latency is applied
-	// as a video PTS offset to compensate for the FIFO delay in the audio path.
-	lipSyncSource func() int64
-
-	// smoothedLipSync tracks an exponential moving average of the lip-sync offset
-	// to prevent PTS jitter from frame-to-frame ring buffer depth fluctuations.
-	smoothedLipSync    int64
-	lipSyncLogCounter  int // logs lip-sync offset every N video frames
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -131,16 +121,6 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
-}
-
-// SetLipSyncSource registers a function that returns the current audio
-// ring buffer depth in 90kHz ticks. Called each video frame to dynamically
-// update the muxer's lip-sync offset, compensating for the content age
-// difference between newest-wins video and FIFO audio.
-func (m *Manager) SetLipSyncSource(fn func() int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lipSyncSource = fn
 }
 
 // SetCBRMuxrate configures CBR pacing for SRT outputs. When muxrateBps > 0,
@@ -1157,30 +1137,6 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	muxer := m.directMuxer.Load()
 	if muxer == nil {
 		return
-	}
-	// Update lip-sync offset from mixer's ring buffer depth.
-	// Uses exponential moving average (EMA) to smooth frame-to-frame
-	// jitter. The EMA converges in ~16 frames (~533ms at 30fps).
-	if m.lipSyncSource != nil {
-		raw := m.lipSyncSource()
-		if m.smoothedLipSync == 0 {
-			m.smoothedLipSync = raw // initialize on first call
-		} else {
-			// EMA with alpha ≈ 1/16: mostly keep old value.
-			m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
-		}
-		muxer.SetLipSyncOffset90k(m.smoothedLipSync)
-
-		// Log lip-sync offset every ~5 seconds for diagnostics.
-		m.lipSyncLogCounter++
-		if m.lipSyncLogCounter%150 == 1 { // ~5s at 30fps
-			m.log.Info("lip-sync offset",
-				"total_90k", m.smoothedLipSync,
-				"total_ms", float64(m.smoothedLipSync)/90.0,
-				"raw_90k", raw,
-				"video_pts", frame.PTS,
-			)
-		}
 	}
 	if err := muxer.WriteVideo(frame); err != nil {
 		m.log.Error("direct video write error", "err", err)
