@@ -316,13 +316,7 @@ export class PrismRenderer {
 						targetPTS = -1;
 					}
 				} else {
-					// A/V sync compensation: video uses newest-wins (zero content
-					// delay) but audio goes through server ring buffer (~30ms) +
-					// browser AudioWorklet ring buffer (~30ms) + pipeline encode
-					// delay (~30ms) = ~90ms of content delay. Subtracting this
-					// from targetPTS makes the renderer select a video frame from
-					// ~90ms ago, matching the audio content age.
-					targetPTS = audioPTS - 120_000;
+					targetPTS = audioPTS;
 				}
 			}
 		} else {
@@ -381,17 +375,14 @@ export class PrismRenderer {
 			}
 
 			// Look-ahead + PTS discontinuity recovery:
-			// 1. If next frame is within 160ms of adjusted target → display.
-			//    targetPTS is biased back by 120ms for A/V sync, so the
-			//    effective video-ahead is gap - 90ms. With 160ms threshold,
-			//    video can be at most 40ms ahead (one frame at 30fps).
+			// 1. If next frame is within 150ms of audio → display (normal jitter)
 			// 2. If next frame is >500ms from target → PTS discontinuity (source
 			//    cut), re-anchor the clock to recover instead of freezing
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
 				if (peek && peek.timestamp > targetPTS) {
 					const gap = peek.timestamp - targetPTS;
-					if (gap < 160_000) {
+					if (gap < 150_000) {
 						// Normal jitter — display the slightly-ahead frame
 						frame = this.videoBuffer.takeNextFrame();
 					} else if (gap > 500_000) {
