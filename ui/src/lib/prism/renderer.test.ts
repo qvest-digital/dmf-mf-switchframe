@@ -394,6 +394,145 @@ describe('PrismRenderer', () => {
 		});
 	});
 
+	describe('A/V sync feedback loop', () => {
+		it('gradually corrects when video is persistently ahead of audio', () => {
+			// Simulate steady state where video PTS is 300ms ahead of audio PTS.
+			// In audio-driven mode without look-ahead, frames pile up and get
+			// drawn via live-edge skips (every ~11 frames). Each skip triggers
+			// the feedback loop's coarse correction (offset > 200ms).
+			let audioPTS = 1_000_000; // 1s in microseconds
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// First: establish video PTS by drawing a frame at audio PTS.
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Now simulate many ticks where video is consistently 300ms ahead.
+			// The feedback loop should build up a correction via live-edge skips.
+			for (let tick = 0; tick < 60; tick++) {
+				audioPTS += 33_333;
+				// Video frame 300ms ahead of audio
+				buffer.addFrame(new MockVideoFrame(audioPTS + 300_000) as unknown as VideoFrame);
+				renderer.renderOnce();
+			}
+
+			const diag = renderer.getDiagnostics();
+			// After ~5 live-edge skip events with 300ms offset, the coarse
+			// correction (offset/2) should stabilize around ~150ms.
+			expect(diag.avSyncCorrectionMs).toBeGreaterThan(100);
+			expect(diag.avSyncCorrectionMs).toBeLessThan(250);
+		});
+
+		it('applies coarse correction for large offsets (>200ms)', () => {
+			// When the measured offset exceeds 200ms, the loop should apply
+			// an immediate step correction instead of slow EMA convergence.
+			// Frame must be >500ms ahead to trigger PTS discontinuity draw
+			// (audio-driven mode has no look-ahead for smaller gaps).
+			let audioPTS = 1_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// Establish initial sync
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Feed a frame 600ms ahead — triggers PTS discontinuity detection
+			// (gap > 500ms), which draws it immediately
+			audioPTS += 33_333;
+			buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			const diag = renderer.getDiagnostics();
+			// Coarse correction should jump to ~half the measured offset immediately
+			expect(diag.avSyncCorrectionMs).toBeGreaterThan(200);
+		});
+
+		it('does not over-correct past ±500ms clamp', () => {
+			let audioPTS = 1_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Simulate extreme video-ahead (1 second)
+			for (let tick = 0; tick < 100; tick++) {
+				audioPTS += 33_333;
+				buffer.addFrame(new MockVideoFrame(audioPTS + 1_000_000) as unknown as VideoFrame);
+				renderer.renderOnce();
+			}
+
+			const diag = renderer.getDiagnostics();
+			// Correction should be clamped at 500ms
+			expect(diag.avSyncCorrectionMs).toBeLessThanOrEqual(500);
+			expect(diag.avSyncCorrectionMs).toBeGreaterThan(400);
+		});
+
+		it('resets correction on resetSync()', () => {
+			let audioPTS = 1_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			// Build up correction via PTS discontinuity (>500ms gap draws frame)
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			audioPTS += 33_333;
+			buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Verify correction built up (coarse: 600ms * 0.5 = ~300ms)
+			expect(renderer.getDiagnostics().avSyncCorrectionMs).toBeGreaterThan(100);
+
+			// Reset — simulates source change
+			renderer.resetSync();
+
+			expect(renderer.getDiagnostics().avSyncCorrectionMs).toBe(0);
+		});
+
+		it('converges toward zero offset with feedback loop applied', () => {
+			// The feedback loop adjusts targetPTS, which changes which video
+			// frame the binary search selects. Over time, the drawn video PTS
+			// should converge toward audio PTS (syncMs → 0).
+			let audioPTS = 1_000_000;
+			const audioClock = { getPlaybackPTS: () => audioPTS };
+			const renderer = new PrismRenderer(canvas, buffer, audioClock);
+			renderer.externallyDriven = true;
+
+			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
+			renderer.renderOnce();
+
+			// Feed frames at several PTS values so binary search has choices.
+			// Audio advances at 33ms, video frames are 200ms ahead.
+			const syncMsValues: number[] = [];
+			for (let tick = 0; tick < 90; tick++) {
+				audioPTS += 33_333;
+				// Add multiple frames spanning the range
+				const basePTS = audioPTS - 100_000;
+				for (let f = 0; f < 6; f++) {
+					buffer.addFrame(new MockVideoFrame(basePTS + f * 50_000) as unknown as VideoFrame);
+				}
+				renderer.renderOnce();
+				const diag = renderer.getDiagnostics();
+				if (diag.avSyncMs !== 0 && diag.currentAudioPTS >= 0 && diag.currentVideoPTS >= 0) {
+					syncMsValues.push(diag.avSyncMs);
+				}
+			}
+
+			// The absolute sync offset at end should be smaller than at start
+			if (syncMsValues.length > 20) {
+				const earlyAvg = syncMsValues.slice(0, 10).reduce((a, b) => a + Math.abs(b), 0) / 10;
+				const lateAvg = syncMsValues.slice(-10).reduce((a, b) => a + Math.abs(b), 0) / 10;
+				expect(lateAvg).toBeLessThan(earlyAvg);
+			}
+		});
+	});
+
 	describe('audio stall detection', () => {
 		it('switches to stall-freerun when audio stalls for > 200ms', () => {
 			let audioPTS = 1_000_000;

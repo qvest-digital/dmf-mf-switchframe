@@ -46,6 +46,7 @@ export interface RendererDiagnostics {
 	videoQueueMs: number;
 	videoTotalDiscarded: number;
 	useSetTimeoutFallback: boolean;
+	avSyncCorrectionMs: number;
 }
 
 /**
@@ -103,8 +104,9 @@ export class PrismRenderer {
 
 	// --- A/V sync feedback loop ---
 	// Tracks the running average of video-ahead offset (μs). Subtracted
-	// from targetPTS to gradually eliminate measured A/V desync. Converges
-	// in ~1 second. Capped at ±200ms to prevent runaway.
+	// from targetPTS to gradually eliminate measured A/V desync.
+	// EMA α=0.03 for fine correction (<200ms), immediate step for coarse
+	// correction (>200ms). Capped at ±500ms to prevent runaway.
 	private _avSyncCorrectionUs = 0;
 
 	// --- rAF throttle detection ---
@@ -228,6 +230,12 @@ export class PrismRenderer {
 
 				this.currentVideoPTS = skipResult.frame.timestamp;
 
+				// Sample audio clock so A/V sync feedback can measure the gap.
+				const skipAudioPTS = this.audioClock.getPlaybackPTS();
+				if (skipAudioPTS >= 0) {
+					this.currentAudioPTS = skipAudioPTS;
+				}
+
 				// Re-anchor any freerun clocks to the new PTS
 				if (this.freeRunStart >= 0) {
 					this.freeRunStart = now;
@@ -237,6 +245,12 @@ export class PrismRenderer {
 					this.audioStallFreeRunStart = now;
 					this.audioStallFreeRunBasePTS = skipResult.frame.timestamp;
 				}
+
+				// Update A/V sync feedback loop on live-edge skips too.
+				// Without this, the feedback never fires because audio-driven
+				// mode with no look-ahead means frames only get drawn via
+				// live-edge skips when video is persistently ahead.
+				this.updateAvSyncCorrection();
 
 				this.reportStats(now);
 				return;
@@ -323,7 +337,7 @@ export class PrismRenderer {
 						targetPTS = -1;
 					}
 				} else {
-					targetPTS = audioPTS;
+					targetPTS = audioPTS - this._avSyncCorrectionUs;
 					audioDriven = true;
 				}
 			}
@@ -442,23 +456,50 @@ export class PrismRenderer {
 
 			this.currentVideoPTS = frame.timestamp;
 
-			if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0) {
-				const delta = Math.abs(this.currentVideoPTS - this.currentAudioPTS);
-				if (delta < 30_000_000) {
-					const syncMs = (this.currentVideoPTS - this.currentAudioPTS) / 1000;
-					this._diagLastAvSync = syncMs;
-					this._diagAvSyncSum += syncMs;
-					this._diagAvSyncCount++;
-					if (syncMs < this._diagAvSyncMin) this._diagAvSyncMin = syncMs;
-					if (syncMs > this._diagAvSyncMax) this._diagAvSyncMax = syncMs;
-
-				}
-			}
+			this.updateAvSyncCorrection();
 		} else {
 			this._diagFramesSkipped++;
 		}
 
 		this.reportStats(now);
+	}
+
+	/**
+	 * Measure A/V sync offset and update the feedback loop correction.
+	 * Called from both the normal frame draw path and the live-edge skip
+	 * path — without the latter, the feedback loop would never fire when
+	 * video is persistently ahead (audio-driven mode has no look-ahead).
+	 */
+	private updateAvSyncCorrection(): void {
+		if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0) {
+			const delta = Math.abs(this.currentVideoPTS - this.currentAudioPTS);
+			if (delta < 30_000_000) {
+				const syncMs = (this.currentVideoPTS - this.currentAudioPTS) / 1000;
+				this._diagLastAvSync = syncMs;
+				this._diagAvSyncSum += syncMs;
+				this._diagAvSyncCount++;
+				if (syncMs < this._diagAvSyncMin) this._diagAvSyncMin = syncMs;
+				if (syncMs > this._diagAvSyncMax) this._diagAvSyncMax = syncMs;
+
+				// A/V sync feedback loop: measure the actual offset and
+				// gradually adjust targetPTS to eliminate it.
+				const syncUs = syncMs * 1000;
+				const absSyncUs = Math.abs(syncUs);
+				if (absSyncUs > 200_000) {
+					// Coarse correction: large offset (>200ms) — step
+					// immediately to half the measured value. This avoids
+					// waiting seconds for the EMA to converge on startup
+					// or after a stall recovery.
+					this._avSyncCorrectionUs = syncUs * 0.5;
+				} else {
+					// Fine correction: EMA with α=0.03, converges in ~1s.
+					this._avSyncCorrectionUs = this._avSyncCorrectionUs * 0.97 + syncUs * 0.03;
+				}
+				// Clamp to ±500ms to prevent runaway
+				this._avSyncCorrectionUs = Math.max(-500_000,
+					Math.min(500_000, this._avSyncCorrectionUs));
+			}
+		}
 	}
 
 	// Cached draw rect — used to avoid redundant fillRect calls for
@@ -550,6 +591,7 @@ export class PrismRenderer {
 		this._diagAvSyncMin = Infinity;
 		this._diagAvSyncMax = -Infinity;
 		this._diagLastAvSync = 0;
+		this._avSyncCorrectionUs = 0;
 		// Reset RAF timing stats so the background gap doesn't pollute them
 		this._diagLastRafTime = 0;
 		this._diagRafIntervalMax = 0;
@@ -586,6 +628,7 @@ export class PrismRenderer {
 			videoQueueMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
 			useSetTimeoutFallback: this._useSetTimeoutFallback,
+			avSyncCorrectionMs: this._avSyncCorrectionUs / 1000,
 		};
 	}
 
