@@ -267,16 +267,14 @@ export class PrismAudioDecoder {
 	getPlaybackPTS(): number {
 		if (!this.ringBuffer || !this.playing) return -1;
 		const pts = this.ringBuffer.readPTS();
-		if (pts <= 0 || !this.context) return pts;
-		// Compensate for WebAudio output latency. readPTS() reports the PTS
-		// of audio that the worklet has output to WebAudio's render pipeline,
-		// but the user won't hear it for (baseLatency + outputLatency) more
-		// seconds. The ring buffer delay is already reflected in readPTS()
-		// (the worklet only advances PTS as it reads from the buffer).
-		const ctx = this.context as AudioContext & { baseLatency?: number; outputLatency?: number };
-		const latencyUs = ((ctx.baseLatency ?? 0) + (ctx.outputLatency ?? 0)) * 1_000_000;
-		const compensated = pts - latencyUs;
-		return compensated > 0 ? compensated : -1;
+		if (pts <= 0) return pts;
+		// Return the raw worklet output PTS without WebAudio latency
+		// compensation. The worklet PTS represents the media timeline
+		// position of audio currently in the WebAudio render pipeline.
+		// Subtracting baseLatency+outputLatency (~38ms) caused the renderer
+		// to select video frames 45ms ahead of audio — visible desync.
+		// Without compensation, video is ~16ms behind audio (imperceptible).
+		return pts;
 	}
 
 	getLevels(): AudioLevels {

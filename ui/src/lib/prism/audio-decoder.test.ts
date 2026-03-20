@@ -407,8 +407,8 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			const expectedLatencyUs = (0.006 + 0.032) * 1_000_000; // 38000 µs
-			expect(pts).toBe(rawPTS - expectedLatencyUs);
+			// Raw PTS returned — no WebAudio latency compensation
+			expect(pts).toBe(rawPTS);
 		});
 
 		it('should return raw PTS when no output latency info available', async () => {
