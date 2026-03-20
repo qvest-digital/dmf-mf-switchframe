@@ -3,6 +3,7 @@ package switcher
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -665,6 +666,90 @@ func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 
 	snap := p.Snapshot()
 	require.Len(t, snap["active_nodes"].([]map[string]any), 0)
+}
+
+func TestVideoProcessingLoop_RewritesPTSBeforePipelineRun(t *testing.T) {
+	// When wall-clock PTS is enabled, videoProcessingLoop should rewrite
+	// ProcessingFrame.PTS BEFORE pipeline.Run() so that all pipeline nodes
+	// (including raw sinks like the preview encoder) see the wall-clock PTS,
+	// not the raw source PTS. This prevents A/V desync where preview video
+	// PTS is in a different domain than the mixer's audio PTS.
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.EnableWallClockVideoPTS()
+
+	// Seed the wall-clock PTS epoch with a known value.
+	// Use the public seeding path to avoid races with videoProcessingLoop.
+	sw.mu.Lock()
+	sw.wallClockVideoEnabled = true
+	sw.videoPTSStart = 1000000 // 90kHz
+	sw.videoPTSEpoch = time.Now()
+	sw.videoPTS = 1000000
+	sw.videoPTSInited = true
+	sw.firstVideoPTSSeeded = true // prevent re-seeding from handleRawVideoFrame
+	sw.mu.Unlock()
+
+	// Record what PTS the raw preview sink receives.
+	var sinkPTS atomic.Int64
+	sinkDone := make(chan struct{}, 1)
+	sink := RawVideoSink(func(pf *ProcessingFrame) {
+		sinkPTS.Store(pf.PTS)
+		select {
+		case sinkDone <- struct{}{}:
+		default:
+		}
+	})
+	sw.SetRawPreviewSink(sink)
+
+	// Rebuild pipeline so the raw sink node is active.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.rebuildPipeline()
+
+	// Create a frame with a raw source PTS that differs from wall-clock.
+	// The raw source PTS 9999 is arbitrary — wall-clock should override it.
+	rawSourcePTS := int64(9999)
+	yuvSize := DefaultFormat.Width * DefaultFormat.Height * 3 / 2
+	yuv := make([]byte, yuvSize)
+	pf := &ProcessingFrame{
+		YUV:    yuv,
+		Width:  DefaultFormat.Width,
+		Height: DefaultFormat.Height,
+		PTS:    rawSourcePTS,
+	}
+	pf.SetRefs(1)
+
+	// Enqueue and process.
+	sw.enqueueVideoWork(videoProcWork{
+		yuvFrame:    pf,
+		epoch:       sw.programEpoch.Load(),
+		enqueueNano: time.Now().UnixNano(),
+	})
+
+	// Wait for processing.
+	select {
+	case <-sinkDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("raw preview sink was not called within timeout")
+	}
+
+	gotPTS := sinkPTS.Load()
+
+	// The sink should NOT have received the raw source PTS (9999).
+	// It should have received the wall-clock PTS (1000000 + frameDuration).
+	require.NotEqual(t, rawSourcePTS, gotPTS,
+		"raw preview sink received raw source PTS — should receive wall-clock PTS")
+
+	// The wall-clock PTS should be based on the seeded epoch (1000000)
+	// plus one frame duration (~3750 at 24fps in 90kHz).
+	pipeFormat := sw.PipelineFormat()
+	frameDur := int64(90000) * int64(pipeFormat.FPSDen) / int64(pipeFormat.FPSNum)
+	expectedPTS := (1000000 + frameDur) & 0x1FFFFFFFF
+	require.Equal(t, expectedPTS, gotPTS,
+		"raw preview sink should receive wall-clock PTS")
 }
 
 func TestRebuildPipeline_RedundantCallsIncrementEpoch(t *testing.T) {

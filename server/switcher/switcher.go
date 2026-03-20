@@ -1257,7 +1257,8 @@ func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
 // rewrites PTS to stay aligned with the mixer's wall-clock audio PTS.
 func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	f := *frame // shallow struct copy — avoids mutating shared frame
-	f.PTS = s.wallClockVideoPTS(f.PTS)
+	// PTS is already in wall-clock domain — rewritten in videoProcessingLoop
+	// before pipeline.Run(). No wallClockVideoPTS call here.
 	f.DTS = f.PTS
 	if f.IsKeyframe {
 		f.GroupID = s.programGroupID.Add(1)
@@ -1281,7 +1282,7 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 // program relay with a monotonically increasing GroupID. Rewrites PTS
 // to wall-clock time.
 func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
-	frame.PTS = s.wallClockVideoPTS(frame.PTS)
+	// PTS is already in wall-clock domain — rewritten in videoProcessingLoop.
 	frame.DTS = frame.PTS
 	if frame.IsKeyframe {
 		frame.GroupID = s.programGroupID.Add(1)
@@ -1426,6 +1427,14 @@ func (s *Switcher) videoProcessingLoop() {
 		// + 1080p file). Scaling here rather than on the delivery hot path
 		// avoids blocking source frame delivery goroutines.
 		work.yuvFrame = s.normalizeResolution(work.yuvFrame)
+
+		// Rewrite PTS to wall-clock domain BEFORE pipeline.Run() so that
+		// all pipeline nodes — including raw sinks (preview encoder, MXL
+		// output) — see the same PTS as the program relay and audio mixer.
+		// Previously, wallClockVideoPTS was called in broadcastToProgram
+		// (after the encode node), so raw sinks received the raw source PTS
+		// which was in a different domain than the mixer's audio PTS.
+		work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
 
 		if p := s.pipeline.Load(); p != nil {
 			work.yuvFrame = p.Run(work.yuvFrame)
