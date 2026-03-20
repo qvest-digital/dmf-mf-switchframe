@@ -268,15 +268,21 @@ export class PrismAudioDecoder {
 		if (!this.ringBuffer || !this.playing) return -1;
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0 || !this.context) return pts;
-		// Compensate for AudioContext output latency. readPTS() reports the
-		// PTS of audio that the worklet has output to WebAudio's render
+		// Compensate for the full audio pipeline latency. readPTS() reports
+		// the PTS of audio that the worklet has output to WebAudio's render
 		// pipeline, but the user won't hear it for another (baseLatency +
-		// outputLatency) seconds. Without this, the renderer selects video
-		// frames matching audio that hasn't been heard yet, making video
-		// appear ahead of audio by ~38ms (typical macOS: 6ms base + 32ms output).
+		// outputLatency) seconds. Additionally, the AudioWorklet ring buffer
+		// holds ~100ms of audio between the decoder output and the worklet's
+		// read position — the PTS reflects what the worklet has output, not
+		// what the user hears, so we subtract the ring buffer target depth too.
+		// Without these corrections, the renderer selects video frames matching
+		// audio the user hasn't heard yet, making video appear ahead of audio.
 		const ctx = this.context as AudioContext & { baseLatency?: number; outputLatency?: number };
-		const latencyUs = ((ctx.baseLatency ?? 0) + (ctx.outputLatency ?? 0)) * 1_000_000;
-		const compensated = pts - latencyUs;
+		const webAudioLatencyUs = ((ctx.baseLatency ?? 0) + (ctx.outputLatency ?? 0)) * 1_000_000;
+		// Ring buffer target depth: audio-worklet.ts TARGET_BUFFER_MS = 100.
+		// The worklet's adaptive rate control keeps the buffer near this depth.
+		const ringBufferLatencyUs = 100_000; // 100ms in μs
+		const compensated = pts - webAudioLatencyUs - ringBufferLatencyUs;
 		return compensated > 0 ? compensated : -1;
 	}
 

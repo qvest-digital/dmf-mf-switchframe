@@ -268,15 +268,6 @@ type Switcher struct {
 	videoPTSInited        bool
 	wallClockVideoEnabled bool
 
-	// Lip-sync compensation: added to video PTS to delay video presentation
-	// relative to audio. Compensates for the audio ring buffer's FIFO latency
-	// and any source A/V PTS gap. Applied in the video processing loop so
-	// ALL downstream consumers (browser relay, muxer, raw monitor) benefit.
-	lipSyncSource  func() int64 // returns total offset in 90kHz ticks
-	lipSyncSmooth  int64        // EMA-smoothed offset
-	lipSyncInited  bool
-	lipSyncLogTick int // periodic logging counter
-
 	// DSK graphics compositor — applies overlay in YUV420 domain.
 	compositorRef *graphics.Compositor
 
@@ -648,14 +639,6 @@ func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
 	s.rebuildPipeline()
 }
 
-
-// SetLipSyncSource registers a function that returns the total lip-sync
-// offset in 90kHz ticks. This offset is added to video PTS in the
-// processing loop, delaying video presentation relative to audio for
-// ALL downstream consumers (browser relay, muxer, raw monitor).
-func (s *Switcher) SetLipSyncSource(fn func() int64) {
-	s.lipSyncSource = fn
-}
 
 // SetOutputVideoCallback registers a direct video output callback that
 // bypasses the relay for zero-latency delivery to the MPEG-TS muxer.
@@ -1454,32 +1437,6 @@ func (s *Switcher) videoProcessingLoop() {
 		// (after the encode node), so raw sinks received the raw source PTS
 		// which was in a different domain than the mixer's audio PTS.
 		work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
-
-		// Lip-sync compensation: delay video PTS by the audio ring buffer
-		// depth (+ source A/V gap). The video path uses newest-wins (content
-		// is current) while the audio path uses a FIFO ring buffer (content
-		// is delayed). Adding the offset to video PTS tells all downstream
-		// consumers (browser relay, muxer, raw monitor) to present video
-		// later, aligning it with the delayed audio content.
-		if s.lipSyncSource != nil {
-			raw := s.lipSyncSource()
-			if !s.lipSyncInited {
-				s.lipSyncSmooth = raw
-				s.lipSyncInited = true
-			} else {
-				s.lipSyncSmooth = (s.lipSyncSmooth*15 + raw) / 16
-			}
-			work.yuvFrame.PTS += s.lipSyncSmooth
-
-			s.lipSyncLogTick++
-			if s.lipSyncLogTick%150 == 1 {
-				slog.Info("video lip-sync offset",
-					"raw_90k", raw,
-					"smoothed_90k", s.lipSyncSmooth,
-					"smoothed_ms", float64(s.lipSyncSmooth)/90.0,
-				)
-			}
-		}
 
 		if p := s.pipeline.Load(); p != nil {
 			work.yuvFrame = p.Run(work.yuvFrame)

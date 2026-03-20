@@ -85,6 +85,10 @@ type Manager struct {
 
 	// scte35PID is the configured SCTE-35 MPEG-TS PID. 0 = disabled.
 	scte35PID uint16
+
+	// Lip-sync for SRT/recording output: reads ring buffer depth from mixer.
+	lipSyncSource   func() int64
+	smoothedLipSync int64
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -121,6 +125,15 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
+}
+
+// SetLipSyncSource registers a function that returns the total lip-sync
+// offset in 90kHz ticks for SRT/recording output. Applied to video PTS
+// in the muxer to delay video relative to audio.
+func (m *Manager) SetLipSyncSource(fn func() int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lipSyncSource = fn
 }
 
 // SetCBRMuxrate configures CBR pacing for SRT outputs. When muxrateBps > 0,
@@ -1137,6 +1150,16 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	muxer := m.directMuxer.Load()
 	if muxer == nil {
 		return
+	}
+	// Update muxer lip-sync offset (SRT/recording path only).
+	if m.lipSyncSource != nil {
+		raw := m.lipSyncSource()
+		if m.smoothedLipSync == 0 {
+			m.smoothedLipSync = raw
+		} else {
+			m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
+		}
+		muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 	}
 	if err := muxer.WriteVideo(frame); err != nil {
 		m.log.Error("direct video write error", "err", err)

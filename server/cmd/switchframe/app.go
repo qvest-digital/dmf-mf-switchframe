@@ -403,10 +403,10 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Dynamic lip-sync: applied in the switcher's video processing loop so
-	// ALL downstream consumers (browser relay, muxer, raw monitor) benefit.
+	// Dynamic lip-sync for SRT/recording output (muxer path only).
+	// The browser path handles its own compensation in audio-decoder.ts.
 	// Combines ring buffer depth + source A/V PTS gap.
-	a.sw.SetLipSyncSource(func() int64 {
+	a.outputMgr.SetLipSyncSource(func() int64 {
 		ringBuf := a.mixer.RingBufferLatency90k()
 
 		// Source A/V gap: video PTS - audio PTS. If positive, video PTS is

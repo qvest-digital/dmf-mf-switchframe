@@ -271,10 +271,11 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		m.ptsBase = frame.PTS
 		m.ptsBaseSet = true
 	}
-	// Lip-sync offset is already applied upstream in the video processing
-	// loop (switcher.go) so all consumers (browser relay, muxer, raw monitor)
-	// get the correction. The muxer just rebases to near-zero.
-	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch) & 0x1FFFFFFFF
+	// Add lip-sync offset to VIDEO PTS only. This delays video
+	// presentation for SRT/recording output to compensate for the audio
+	// ring buffer's FIFO latency. The browser path handles its own
+	// compensation in audio-decoder.ts getPlaybackPTS().
+	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
 	m.lastVideoPTS = muxerPTS
 	m.lastUpstreamVideoPTS = frame.PTS
 	m.lastMuxedVideoPTS = muxerPTS
