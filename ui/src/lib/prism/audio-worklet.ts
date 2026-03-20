@@ -33,11 +33,12 @@ const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 // The previous ±10% caused noticeable pitch changes and garbling.
 //
 // Buffer depth directly determines A/V sync offset: video displays immediately
-// but audio plays through the buffer, so avSyncMs ≈ buffer depth. Targets are
-// set to keep steady-state depth at ~80-120ms for <150ms A/V sync.
-const TARGET_BUFFER_MS = 100;
-const LOW_WATER_MS = 50;
-const HIGH_WATER_MS = 200;
+// but audio plays through the buffer, so avSyncMs ≈ buffer depth. Smaller
+// buffers improve A/V sync but reduce jitter tolerance. 30ms (≈1.4 AAC frames)
+// provides smooth playback while keeping sync tight.
+const TARGET_BUFFER_MS = 30;
+const LOW_WATER_MS = 15;
+const HIGH_WATER_MS = 80;
 const MAX_SPEED_RATIO = 1.02;
 const MIN_SPEED_RATIO = 0.98;
 // Above this threshold, hard-flush the ring buffer to TARGET_BUFFER_MS.
