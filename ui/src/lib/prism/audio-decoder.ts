@@ -268,20 +268,20 @@ export class PrismAudioDecoder {
 		if (!this.ringBuffer || !this.playing) return -1;
 		const pts = this.ringBuffer.readPTS();
 		if (pts <= 0 || !this.context) return pts;
-		// Compensate for the full audio pipeline latency. readPTS() reports
-		// the PTS of audio that the worklet has output to WebAudio's render
-		// pipeline, but the user won't hear it for another (baseLatency +
-		// outputLatency) seconds. Additionally, the AudioWorklet ring buffer
-		// holds ~100ms of audio between the decoder output and the worklet's
-		// read position — the PTS reflects what the worklet has output, not
-		// what the user hears, so we subtract the ring buffer target depth too.
-		// Without these corrections, the renderer selects video frames matching
-		// audio the user hasn't heard yet, making video appear ahead of audio.
+		// Compensate for the full audio pipeline latency:
+		// 1. WebAudio output latency (baseLatency + outputLatency ≈ 38ms)
+		// 2. AudioWorklet ring buffer depth (measured, typically ~100ms)
+		//
+		// readPTS() reports the PTS of audio output to WebAudio's render
+		// pipeline. The user won't hear it for (1) + the ring buffer holds
+		// decoded audio that hasn't been output yet (2). Without both
+		// corrections, the renderer selects video frames matching audio
+		// the user hasn't heard yet, making video appear ahead of audio.
 		const ctx = this.context as AudioContext & { baseLatency?: number; outputLatency?: number };
 		const webAudioLatencyUs = ((ctx.baseLatency ?? 0) + (ctx.outputLatency ?? 0)) * 1_000_000;
-		// Ring buffer target depth: audio-worklet.ts TARGET_BUFFER_MS = 100.
-		// The worklet's adaptive rate control keeps the buffer near this depth.
-		const ringBufferLatencyUs = 100_000; // 100ms in μs
+		// Read actual ring buffer depth from the worklet (written via SharedArrayBuffer).
+		const ringBufferMs = this.ringBuffer.readBufferDepthMs();
+		const ringBufferLatencyUs = ringBufferMs * 1_000;
 		const compensated = pts - webAudioLatencyUs - ringBufferLatencyUs;
 		return compensated > 0 ? compensated : -1;
 	}

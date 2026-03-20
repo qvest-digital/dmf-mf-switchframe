@@ -17,6 +17,7 @@ vi.mock('./audio-ring-buffer', () => {
 			play = vi.fn();
 			clear = vi.fn();
 			readPTS = vi.fn().mockReturnValue(0);
+			readBufferDepthMs = vi.fn().mockReturnValue(100);
 			readLevels = vi.fn().mockReturnValue({ peak: [0, 0], rms: [0, 0] });
 			getSharedBuffers = vi.fn().mockReturnValue({
 				audioBuffers: [new SharedArrayBuffer(1024), new SharedArrayBuffer(1024)],
@@ -406,8 +407,9 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			const expectedLatencyUs = (0.006 + 0.032) * 1_000_000; // 38000 µs
-			expect(pts).toBe(rawPTS - expectedLatencyUs);
+			const webAudioLatencyUs = (0.006 + 0.032) * 1_000_000; // 38000 µs
+			const ringBufferLatencyUs = 100 * 1_000; // 100ms from mock readBufferDepthMs
+			expect(pts).toBe(rawPTS - webAudioLatencyUs - ringBufferLatencyUs);
 		});
 
 		it('should return raw PTS when no output latency info available', async () => {
@@ -444,9 +446,10 @@ describe('PrismAudioDecoder', () => {
 			const ringBuf = (decoder as any).ringBuffer;
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
-			// No baseLatency/outputLatency → 0 latency subtracted → raw PTS returned
+			// No baseLatency/outputLatency → only ring buffer latency subtracted
 			const pts = decoder.getPlaybackPTS();
-			expect(pts).toBe(rawPTS);
+			const ringBufferLatencyUs = 100 * 1_000; // 100ms from mock readBufferDepthMs
+			expect(pts).toBe(rawPTS - ringBufferLatencyUs);
 		});
 	});
 });

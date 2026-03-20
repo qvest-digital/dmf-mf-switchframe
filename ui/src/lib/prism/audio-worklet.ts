@@ -16,6 +16,7 @@ const SharedStates = {
 	NUM_CHANNELS: 6,
 	SAMPLE_RATE: 7,
 	PEAK_BASE: 8,
+	BUFFER_DEPTH_MS: 8 + 8 + 8, // PEAK_BASE + MAX_CHANNELS + MAX_CHANNELS (after RMS)
 } as const;
 
 const MAX_CHANNELS = 8;
@@ -122,6 +123,9 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 		}
 
 		let bufferMs = (available / this.localSampleRate) * 1000;
+
+		// Write buffer depth for A/V sync compensation in getPlaybackPTS().
+		Atomics.store(this.sharedStates, SharedStates.BUFFER_DEPTH_MS, Math.round(bufferMs));
 
 		// Hard flush: if buffer exceeds threshold (extreme stall recovery),
 		// skip forward to TARGET_BUFFER_MS. Adjust sampleOffset so PTS

@@ -12,9 +12,10 @@ const SharedStates = {
 	SAMPLE_RATE: 7,
 	PEAK_BASE: 8,
 	RMS_BASE: 8 + MAX_CHANNELS,
+	BUFFER_DEPTH_MS: 8 + MAX_CHANNELS + MAX_CHANNELS, // after RMS_BASE + MAX_CHANNELS
 } as const;
 
-const NUM_SHARED_STATES = SharedStates.RMS_BASE + MAX_CHANNELS;
+const NUM_SHARED_STATES = SharedStates.BUFFER_DEPTH_MS + 1;
 
 export { SharedStates, NUM_SHARED_STATES, MAX_CHANNELS };
 
@@ -156,6 +157,11 @@ export class AudioRingBuffer {
 
 	readPTS(): number {
 		return readPTSFromStates(this.sharedStates);
+	}
+
+	/** Returns the AudioWorklet ring buffer depth in milliseconds. */
+	readBufferDepthMs(): number {
+		return Atomics.load(this.sharedStates, SharedStates.BUFFER_DEPTH_MS);
 	}
 
 	readLevels(): { peak: number[], rms: number[] } {
