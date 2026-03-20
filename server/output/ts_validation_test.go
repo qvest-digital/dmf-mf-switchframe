@@ -950,8 +950,11 @@ func TestTSOutputValidation(t *testing.T) {
 	})
 
 	t.Run("av_drift", func(t *testing.T) {
-		require.LessOrEqual(t, a.AVDriftMs, 100.0,
-			"max A/V PTS drift must be <= 100ms; got %.2fms", a.AVDriftMs)
+		// The muxer applies a 600ms lip-sync offset to video PTS to compensate
+		// for video content being ahead of audio due to SRT decode startup
+		// latency. Allow up to 700ms (600ms offset + 100ms tolerance).
+		require.LessOrEqual(t, a.AVDriftMs, 700.0,
+			"max A/V PTS drift must be <= 700ms (includes 600ms lip-sync offset); got %.2fms", a.AVDriftMs)
 	})
 
 	t.Run("no_video_pts_gaps", func(t *testing.T) {

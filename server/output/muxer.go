@@ -74,7 +74,10 @@ func NewTSMuxer() *TSMuxer {
 		muxerEpoch:    90000, // start at 1 second
 		videoFrameDur: 3750,  // default 24fps (90000/24)
 		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
-		lipSyncOffset: 0, // dynamic — set from mixer's ring buffer depth
+		lipSyncOffset: 54000, // 600ms at 90kHz — empirically measured via VLC
+	                      // Track Synchronization. Compensates for video content
+	                      // being ahead of audio due to SRT decode startup latency
+	                      // + newest-wins frame sync vs FIFO audio ring buffer.
 	}
 }
 
