@@ -50,20 +50,40 @@ type TSMuxer struct {
 	prependBuf    []byte
 	scte35PID     uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35 [][]byte
-	lastVideoPTS    int64
-	lastPCRPTS      int64
-	ptsOffset       int64 // subtracted from all PTS to rebase to near-zero
-	ptsOffsetSet    bool
-	firstVideoWritten bool // true after the first video frame has been muxed
+	lastVideoPTS  int64
+	lastPCRPTS    int64
 	scte35CC      uint8 // continuity counter for SCTE-35 PID
+
+	// Muxer-owned clock: PTS assigned from monotonic counters, not inherited
+	// from upstream. Both video and audio derive from the same epoch, so
+	// A/V sync is correct by construction.
+	muxerEpoch      int64 // starting PTS (90000 = 1 second)
+	videoFrameCount int64 // incremented on each WriteVideo
+	audioFrameCount int64 // incremented on each WriteAudio
+	videoFrameDur   int64 // 90kHz ticks per video frame (e.g., 3750 for 24fps)
+	audioFrameDur   int64 // 90kHz ticks per audio frame (1920 for 48kHz/1024)
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
 // writing frames. The muxer initializes on the first keyframe.
 func NewTSMuxer() *TSMuxer {
 	return &TSMuxer{
-		annexBBuf:  make([]byte, 0, muxerBufCap),
-		prependBuf: make([]byte, 0, muxerBufCap),
+		annexBBuf:     make([]byte, 0, muxerBufCap),
+		prependBuf:    make([]byte, 0, muxerBufCap),
+		muxerEpoch:    90000, // start at 1 second
+		videoFrameDur: 3750,  // default 24fps (90000/24)
+		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
+	}
+}
+
+// SetVideoFrameRate sets the video frame duration for the muxer-owned clock.
+// Must be called before writing frames. fpsNum/fpsDen express the frame rate
+// as a rational number (e.g., 24/1 for 24fps, 30000/1001 for 29.97fps).
+func (m *TSMuxer) SetVideoFrameRate(fpsNum, fpsDen int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if fpsNum > 0 && fpsDen > 0 {
+		m.videoFrameDur = int64(90000) * int64(fpsDen) / int64(fpsNum)
 	}
 }
 
@@ -223,22 +243,17 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		if !frame.IsKeyframe {
 			return nil
 		}
-		// Set PTS offset BEFORE init so pending audio flush uses rebased PTS.
-		// Wall-clock PTS values (billions at 90kHz) cause SRT's TSBPD to
-		// buffer for hours. Rebasing to near-zero fixes this.
-		m.ptsOffset = frame.PTS - 90000 // start at 1 second
-		m.ptsOffsetSet = true
 		if err := m.init(frame.PTS); err != nil {
 			return err
 		}
 	}
 
-	// Apply offset to create rebased PTS for muxing.
-	rebasedPTS := (frame.PTS - m.ptsOffset) & 0x1FFFFFFFF
-	rebasedDTS := (frame.DTS - m.ptsOffset) & 0x1FFFFFFFF
-
-	m.lastVideoPTS = rebasedPTS
-	m.firstVideoWritten = true
+	// Muxer-owned clock: assign PTS from monotonic frame counter.
+	// Upstream PTS is ignored — both video and audio derive from the
+	// same epoch, so A/V sync is correct by construction.
+	muxerPTS := (m.muxerEpoch + m.videoFrameCount*m.videoFrameDur) & 0x1FFFFFFFF
+	m.videoFrameCount++
+	m.lastVideoPTS = muxerPTS
 
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
 	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
@@ -253,15 +268,11 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		annexB = m.prependBuf
 	}
 
-	// Build PES data for video using rebased PTS.
-	ptsRef := &astits.ClockReference{Base: rebasedPTS}
-	dtsRef := &astits.ClockReference{Base: rebasedDTS}
-
-	ptsDTSIndicator := uint8(astits.PTSDTSIndicatorBothPresent)
-	if frame.PTS == frame.DTS {
-		ptsDTSIndicator = uint8(astits.PTSDTSIndicatorOnlyPTS)
-		dtsRef = nil
-	}
+	// Build PES data for video.
+	ptsRef := &astits.ClockReference{Base: muxerPTS}
+	// No B-frames: DTS always equals PTS.
+	ptsDTSIndicator := uint8(astits.PTSDTSIndicatorOnlyPTS)
+	var dtsRef *astits.ClockReference
 
 	af := &astits.PacketAdaptationField{
 		RandomAccessIndicator: frame.IsKeyframe,
@@ -273,10 +284,10 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// Use wrap-aware comparison: PTS is a 33-bit field in MPEG-TS and wraps
 	// from 2^33-1 back to 0. Masking the subtraction to 33 bits ensures the
 	// delta is always positive and forward-looking across the wrap boundary.
-	if frame.IsKeyframe || (rebasedPTS-m.lastPCRPTS)&0x1FFFFFFFF >= pcrInterval {
+	if frame.IsKeyframe || (muxerPTS-m.lastPCRPTS)&0x1FFFFFFFF >= pcrInterval {
 		af.HasPCR = true
-		af.PCR = &astits.ClockReference{Base: rebasedPTS}
-		m.lastPCRPTS = rebasedPTS
+		af.PCR = &astits.ClockReference{Base: muxerPTS}
+		m.lastPCRPTS = muxerPTS
 	}
 
 	md := &astits.MuxerData{
@@ -313,30 +324,18 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 	defer m.mu.Unlock()
 
 	if !m.initialized {
-		// Buffer audio frames before muxer initialization so they
-		// can be flushed when the first keyframe arrives, preventing
-		// AV sync drift at recording start.
-		m.pendingAudio = append(m.pendingAudio, frame)
-		if len(m.pendingAudio) > maxPendingAudio {
-			m.pendingAudio = m.pendingAudio[len(m.pendingAudio)-maxPendingAudio:]
-		}
+		// Drop audio before muxer is initialized (waiting for first keyframe).
 		return nil
 	}
 
-	// Don't write audio until the first video frame has been muxed.
-	// Audio arrives continuously from the mixer ticker, but video has
-	// processing latency (pipeline + encode). Writing audio before the
-	// first video creates a PTS gap that causes A/V desync on playback.
-	if !m.firstVideoWritten {
-		return nil
-	}
+	// Muxer-owned clock: assign PTS from monotonic frame counter.
+	muxerPTS := (m.muxerEpoch + m.audioFrameCount*m.audioFrameDur) & 0x1FFFFFFFF
+	m.audioFrameCount++
 
 	// Ensure ADTS header is present.
 	data := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
 
-	// Rebase audio PTS using the same offset as video.
-	rebasedPTS := (frame.PTS - m.ptsOffset) & 0x1FFFFFFFF
-	ptsRef := &astits.ClockReference{Base: rebasedPTS}
+	ptsRef := &astits.ClockReference{Base: muxerPTS}
 
 	md := &astits.MuxerData{
 		PID: audioPID,
@@ -371,17 +370,16 @@ func (m *TSMuxer) Close() error {
 	m.muxer = nil
 	m.initialized = false
 	m.pendingAudio = nil
-	m.ptsOffset = 0
-	m.ptsOffsetSet = false
-	m.firstVideoWritten = false
 	m.pendingSCTE35 = nil
 	m.lastPCRPTS = 0
+	m.videoFrameCount = 0
+	m.audioFrameCount = 0
 	return nil
 }
 
 // init creates the go-astits muxer and registers elementary streams.
 // Must be called with m.mu held.
-func (m *TSMuxer) init(firstVideoPTS int64) error {
+func (m *TSMuxer) init(_ int64) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 

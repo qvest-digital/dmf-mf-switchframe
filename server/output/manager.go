@@ -85,6 +85,10 @@ type Manager struct {
 
 	// scte35PID is the configured SCTE-35 MPEG-TS PID. 0 = disabled.
 	scte35PID uint16
+
+	// Video frame rate for the muxer-owned clock.
+	videoFPSNum int
+	videoFPSDen int
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -127,6 +131,15 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 // SRT adapters receive null-padded CBR TS via the pacer. The recorder
 // continues to receive raw variable-rate TS. Must be called before starting
 // any outputs.
+// SetVideoFrameRate configures the video frame rate for the muxer-owned
+// clock. Must be called before any outputs are started.
+func (m *Manager) SetVideoFrameRate(fpsNum, fpsDen int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoFPSNum = fpsNum
+	m.videoFPSDen = fpsDen
+}
+
 func (m *Manager) SetCBRMuxrate(muxrateBps int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -897,6 +910,9 @@ func (m *Manager) ensureMuxerLocked() bool {
 	}
 
 	muxer := NewTSMuxer()
+	if m.videoFPSNum > 0 && m.videoFPSDen > 0 {
+		muxer.SetVideoFrameRate(m.videoFPSNum, m.videoFPSDen)
+	}
 	if m.scte35PID != 0 {
 		muxer.SetSCTE35PID(m.scte35PID)
 	}

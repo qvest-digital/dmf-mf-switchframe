@@ -186,39 +186,33 @@ func TestMuxerDiscardsAudioBeforeKeyframe(t *testing.T) {
 	}
 }
 
-func TestMuxerDropsExcessPendingAudio(t *testing.T) {
+func TestMuxerDropsAudioBeforeInit(t *testing.T) {
+	// Audio arriving before the first video keyframe is silently dropped.
+	// The muxer-owned clock starts on first WriteVideo, so pre-init audio
+	// has no valid PTS to assign.
 	m := NewTSMuxer()
 	m.SetOutput(func(data []byte) {})
 
-	// Send 60 audio frames — only the last 50 should be kept.
 	for i := 0; i < 60; i++ {
-		audioFrame := &media.AudioFrame{
-			PTS:        int64(90000 + i*1024),
-			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
-			SampleRate: 48000,
-			Channels:   2,
-		}
-		err := m.WriteAudio(audioFrame)
+		err := m.WriteAudio(&media.AudioFrame{
+			PTS: int64(90000 + i*1024), Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000, Channels: 2,
+		})
 		require.NoError(t, err)
 	}
 
-	// Verify internal buffer is capped at 50.
+	// No audio should be buffered — it's all dropped.
 	m.mu.Lock()
-	require.Len(t, m.pendingAudio, 50, "pending audio buffer should be capped at 50")
-	// The oldest frames should have been dropped — first frame in buffer
-	// should be the 11th frame sent (index 10, PTS = 90000 + 10*1024).
-	require.Equal(t, int64(90000+10*1024), m.pendingAudio[0].PTS,
-		"oldest frames should have been dropped")
+	require.Nil(t, m.pendingAudio, "audio before init should be dropped, not buffered")
 	m.mu.Unlock()
 }
 
-func TestMuxerFlushesAudioOnInit(t *testing.T) {
+func TestMuxerInitOnKeyframe_NoPreAudioFlush(t *testing.T) {
+	// With muxer-owned clock, audio before the first keyframe is dropped.
+	// After init, subsequent audio gets muxer-assigned PTS.
 	m := NewTSMuxer()
 
-	// Track output in order: each callback is one flush.
-	type outputChunk struct {
-		data []byte
-	}
+	type outputChunk struct{ data []byte }
 	var chunks []outputChunk
 	m.SetOutput(func(data []byte) {
 		c := make([]byte, len(data))
@@ -226,50 +220,34 @@ func TestMuxerFlushesAudioOnInit(t *testing.T) {
 		chunks = append(chunks, outputChunk{data: c})
 	})
 
-	// Send 3 audio frames before keyframe.
+	// Send 3 audio frames before keyframe — all dropped.
 	for i := 0; i < 3; i++ {
-		audioFrame := &media.AudioFrame{
-			PTS:        int64(90000 + i*1024),
-			Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
-			SampleRate: 48000,
-			Channels:   2,
-		}
-		require.NoError(t, m.WriteAudio(audioFrame))
+		require.NoError(t, m.WriteAudio(&media.AudioFrame{
+			PTS: int64(90000 + i*1024), Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+			SampleRate: 48000, Channels: 2,
+		}))
 	}
+	require.Empty(t, chunks, "no output before keyframe")
 
-	// Send keyframe — should init + flush buffered audio + write video.
-	idrFrame := &media.VideoFrame{
+	// Send keyframe — triggers init, writes video only (no audio flush).
+	require.NoError(t, m.WriteVideo(&media.VideoFrame{
 		PTS: 90000, DTS: 90000, IsKeyframe: true,
-		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
-		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
-		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88},
-		Codec:    "h264",
-	}
-	require.NoError(t, m.WriteVideo(idrFrame))
+		SPS: []byte{0x67, 0x42, 0xC0, 0x1E}, PPS: []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}, Codec: "h264",
+	}))
+	require.NotEmpty(t, chunks, "should have output after keyframe")
 
-	// After init, the pending audio buffer should be cleared.
-	m.mu.Lock()
-	require.Nil(t, m.pendingAudio, "pending audio should be nil after flush")
-	m.mu.Unlock()
-
-	// Now send a subsequent audio frame — should output immediately.
+	// Subsequent audio — should output with muxer-assigned PTS.
 	require.NoError(t, m.WriteAudio(&media.AudioFrame{
 		PTS: 93072, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
 		SampleRate: 48000, Channels: 2,
 	}))
+	require.GreaterOrEqual(t, len(chunks), 2, "should have video + audio output")
 
-	// We should have at least 2 chunks: one from WriteVideo (init+flush audio+video),
-	// and one from the subsequent WriteAudio.
-	require.GreaterOrEqual(t, len(chunks), 2,
-		"should have output from init+flush and from subsequent audio")
-
-	// Every chunk must be valid TS packets.
 	for ci, chunk := range chunks {
-		require.Equal(t, 0, len(chunk.data)%188,
-			"chunk %d must be multiple of 188 bytes", ci)
+		require.Equal(t, 0, len(chunk.data)%188, "chunk %d must be multiple of 188", ci)
 		for i := 0; i < len(chunk.data); i += 188 {
-			require.Equal(t, byte(0x47), chunk.data[i],
-				"chunk %d packet at offset %d must have sync byte", ci, i)
+			require.Equal(t, byte(0x47), chunk.data[i], "chunk %d sync byte at %d", ci, i)
 		}
 	}
 }
@@ -358,6 +336,106 @@ func TestMuxerDiscardsAudioBeforeFirstVideoKeyframe(t *testing.T) {
 	if foundAudioBeforeVideo {
 		t.Error("muxer should not output audio frames with PTS before the first video keyframe")
 	}
+}
+
+func TestTSMuxer_MuxerOwnedClock_AVAligned(t *testing.T) {
+	// The muxer assigns PTS from its own monotonic counters, ignoring
+	// upstream PTS. This ensures A/V sync by construction — both video
+	// and audio PTS derive from the same epoch.
+	m := NewTSMuxer()
+	m.SetVideoFrameRate(24, 1) // 24fps → 3750 ticks per frame
+
+	var outputData []byte
+	m.SetOutput(func(data []byte) {
+		outputData = append(outputData, data...)
+	})
+
+	// Send video and audio with WILDLY different upstream PTS.
+	// The muxer should ignore these and assign its own sequential PTS.
+
+	// Video keyframe with huge upstream PTS (simulating hours of uptime)
+	require.NoError(t, m.WriteVideo(&media.VideoFrame{
+		PTS: 29_000_000_000, DTS: 29_000_000_000, IsKeyframe: true,
+		SPS: []byte{0x67, 0x42, 0xC0, 0x1E}, PPS: []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0x88}, Codec: "h264",
+	}))
+
+	// Audio with completely different upstream PTS
+	require.NoError(t, m.WriteAudio(&media.AudioFrame{
+		PTS: 28_999_000_000, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		SampleRate: 48000, Channels: 2,
+	}))
+
+	// Second video frame
+	require.NoError(t, m.WriteVideo(&media.VideoFrame{
+		PTS: 29_000_003_750, DTS: 29_000_003_750, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x02, 0x41, 0x9A}, Codec: "h264",
+	}))
+
+	// Second audio frame
+	require.NoError(t, m.WriteAudio(&media.AudioFrame{
+		PTS: 28_999_001_920, Data: []byte{0xDE, 0x04, 0x00, 0x26, 0x20},
+		SampleRate: 48000, Channels: 2,
+	}))
+
+	// Parse output and extract PTS values.
+	var videoPTSValues []int64
+	var audioPTSValues []int64
+	for i := 0; i+188 <= len(outputData); i += 188 {
+		pkt := outputData[i : i+188]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pid := (uint16(pkt[1]&0x1F) << 8) | uint16(pkt[2])
+		pusi := (pkt[1] & 0x40) != 0
+		if !pusi {
+			continue
+		}
+		afc := (pkt[3] >> 4) & 0x03
+		payloadStart := 4
+		if afc == 0x03 || afc == 0x02 {
+			payloadStart = 5 + int(pkt[4])
+		}
+		if payloadStart+14 > 188 {
+			continue
+		}
+		if pkt[payloadStart] != 0x00 || pkt[payloadStart+1] != 0x00 || pkt[payloadStart+2] != 0x01 {
+			continue
+		}
+		pesFlags := pkt[payloadStart+7]
+		if pesFlags&0x80 == 0 {
+			continue
+		}
+		ptsBytes := pkt[payloadStart+9 : payloadStart+14]
+		pts := (int64(ptsBytes[0]>>1) & 0x07) << 30
+		pts |= int64(ptsBytes[1]) << 22
+		pts |= (int64(ptsBytes[2]>>1) & 0x7F) << 15
+		pts |= int64(ptsBytes[3]) << 7
+		pts |= int64(ptsBytes[4]>>1) & 0x7F
+
+		if pid == videoPID {
+			videoPTSValues = append(videoPTSValues, pts)
+		} else if pid == audioPID {
+			audioPTSValues = append(audioPTSValues, pts)
+		}
+	}
+
+	require.GreaterOrEqual(t, len(videoPTSValues), 2, "should have at least 2 video PTS")
+	require.GreaterOrEqual(t, len(audioPTSValues), 2, "should have at least 2 audio PTS")
+
+	// Video PTS should start at epoch (90000) and advance by 3750 per frame.
+	epoch := int64(90000)
+	require.Equal(t, epoch, videoPTSValues[0], "first video PTS should be epoch")
+	require.Equal(t, epoch+3750, videoPTSValues[1], "second video PTS should be epoch+frameDur")
+
+	// Audio PTS should start at epoch and advance by 1920 per frame.
+	require.Equal(t, epoch, audioPTSValues[0], "first audio PTS should be epoch")
+	require.Equal(t, epoch+1920, audioPTSValues[1], "second audio PTS should be epoch+1920")
+
+	// The key: video[0] and audio[0] start at the SAME epoch.
+	// This guarantees A/V alignment regardless of upstream PTS.
+	require.Equal(t, videoPTSValues[0], audioPTSValues[0],
+		"video and audio should start at same epoch — A/V aligned by construction")
 }
 
 func TestTSMuxer_Close(t *testing.T) {

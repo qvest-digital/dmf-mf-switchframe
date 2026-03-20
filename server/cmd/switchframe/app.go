@@ -394,6 +394,10 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
+	// Set video frame rate for the muxer-owned clock (A/V sync).
+	pf := a.sw.PipelineFormat()
+	a.outputMgr.SetVideoFrameRate(pf.FPSNum, pf.FPSDen)
+
 	// CBR pacing is NOT enabled for SRT output. SRT has its own congestion
 	// control and jitter buffer that handle VBR natively. CBR null-padding
 	// adds buffering latency (10ms tick) and at typical video bitrates the
