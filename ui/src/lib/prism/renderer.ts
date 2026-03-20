@@ -101,6 +101,12 @@ export class PrismRenderer {
 	private _diagEmptyBufferHits = 0;
 	private _diagLiveEdgeSkips = 0;
 
+	// --- A/V sync feedback loop ---
+	// Tracks the running average of video-ahead offset (μs). Subtracted
+	// from targetPTS to gradually eliminate measured A/V desync. Converges
+	// in ~1 second. Capped at ±200ms to prevent runaway.
+	private _avSyncCorrectionUs = 0;
+
 	// --- rAF throttle detection ---
 	private _slowRafCount = 0;
 	private _normalRafCount = 0;
@@ -316,7 +322,7 @@ export class PrismRenderer {
 						targetPTS = -1;
 					}
 				} else {
-					targetPTS = audioPTS;
+					targetPTS = audioPTS - this._avSyncCorrectionUs;
 				}
 			}
 		} else {
@@ -441,6 +447,15 @@ export class PrismRenderer {
 					this._diagAvSyncCount++;
 					if (syncMs < this._diagAvSyncMin) this._diagAvSyncMin = syncMs;
 					if (syncMs > this._diagAvSyncMax) this._diagAvSyncMax = syncMs;
+
+					// A/V sync feedback loop: if video is consistently ahead
+					// (positive syncMs), gradually increase the correction to
+					// pull targetPTS back. EMA with α=0.03 converges in ~1s.
+					const syncUs = syncMs * 1000;
+					this._avSyncCorrectionUs = this._avSyncCorrectionUs * 0.97 + syncUs * 0.03;
+					// Clamp to ±200ms to prevent runaway
+					this._avSyncCorrectionUs = Math.max(-200_000,
+						Math.min(200_000, this._avSyncCorrectionUs));
 				}
 			}
 		} else {
