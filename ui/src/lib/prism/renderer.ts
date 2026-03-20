@@ -208,6 +208,7 @@ export class PrismRenderer {
 			const skipResult = this.videoBuffer.takeNewestFrame();
 			if (skipResult.frame) {
 				this._diagLiveEdgeSkips++;
+				console.warn(`[AV-SYNC] LIVE-EDGE SKIP: buf=${preSkipStats.queueSize} discarded=${skipResult.discarded} framePTS=${(skipResult.frame.timestamp/1000).toFixed(0)}ms audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms`);
 				if (this.lastDrawnFrame) {
 					this.lastDrawnFrame.close();
 				}
@@ -470,6 +471,8 @@ export class PrismRenderer {
 	 * path — without the latter, the feedback loop would never fire when
 	 * video is persistently ahead (audio-driven mode has no look-ahead).
 	 */
+	private _syncLogCounter = 0;
+
 	private updateAvSyncCorrection(): void {
 		if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0) {
 			const delta = Math.abs(this.currentVideoPTS - this.currentAudioPTS);
@@ -485,19 +488,30 @@ export class PrismRenderer {
 				// gradually adjust targetPTS to eliminate it.
 				const syncUs = syncMs * 1000;
 				const absSyncUs = Math.abs(syncUs);
+				const prevCorrection = this._avSyncCorrectionUs;
 				if (absSyncUs > 200_000) {
-					// Coarse correction: large offset (>200ms) — step
-					// immediately to half the measured value. This avoids
-					// waiting seconds for the EMA to converge on startup
-					// or after a stall recovery.
 					this._avSyncCorrectionUs = syncUs * 0.5;
 				} else {
-					// Fine correction: EMA with α=0.03, converges in ~1s.
 					this._avSyncCorrectionUs = this._avSyncCorrectionUs * 0.97 + syncUs * 0.03;
 				}
 				// Clamp to ±500ms to prevent runaway
 				this._avSyncCorrectionUs = Math.max(-500_000,
 					Math.min(500_000, this._avSyncCorrectionUs));
+
+				// DEBUG: log every 30th measurement (~1/sec at 30fps)
+				if (this._syncLogCounter++ % 30 === 0) {
+					const mode = this.freeRunStart >= 0 ? "freerun"
+						: this.audioStallFreeRunStart >= 0 ? "stall-freerun"
+						: "audio";
+					console.log(
+						`[AV-SYNC] syncMs=${syncMs.toFixed(1)} correction=${(this._avSyncCorrectionUs/1000).toFixed(1)}ms` +
+						` prev=${(prevCorrection/1000).toFixed(1)}ms mode=${mode}` +
+						` videoPTS=${(this.currentVideoPTS/1000).toFixed(0)}ms` +
+						` audioPTS=${(this.currentAudioPTS/1000).toFixed(0)}ms` +
+						` buf=${this.videoBuffer.getStats().queueSize}` +
+						` drawn=${this._diagFramesDrawn} skips=${this._diagLiveEdgeSkips}`
+					);
+				}
 			}
 		}
 	}
