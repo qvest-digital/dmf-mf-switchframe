@@ -146,8 +146,10 @@ func TestEncoder_ProducesFrames(t *testing.T) {
 	if info == nil {
 		t.Fatal("expected VideoInfo to be set on relay")
 	}
-	if info.Width != 426 || info.Height != 240 {
-		t.Errorf("expected VideoInfo dimensions 426x240, got %dx%d", info.Width, info.Height)
+	// Preview encoder now encodes at source resolution (no CPU scaling),
+	// so VideoInfo should report the source dimensions (1920x1080).
+	if info.Width != 1920 || info.Height != 1080 {
+		t.Errorf("expected VideoInfo dimensions 1920x1080 (native), got %dx%d", info.Width, info.Height)
 	}
 }
 

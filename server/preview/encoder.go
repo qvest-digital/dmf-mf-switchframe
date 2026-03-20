@@ -230,9 +230,6 @@ func (e *Encoder) loop() {
 		lastSrcH int
 	)
 
-	targetW := e.cfg.Width
-	targetH := e.cfg.Height
-
 	var frameCount int64
 
 	for job := range e.ch {
@@ -256,18 +253,14 @@ func (e *Encoder) loop() {
 		lastSrcW = w
 		lastSrcH = h
 
-		// Determine encode resolution: use source resolution if smaller
-		// than target (avoids pointless upscale), otherwise use target.
-		// NVENC handles any resolution; the browser scales to fit the tile.
-		encW, encH := w, h
-		if encW > targetW || encH > targetH {
-			encW, encH = targetW, targetH
-		}
-		// Ensure even dimensions (H.264 requirement).
-		encW = encW &^ 1
-		encH = encH &^ 1
+		// Encode at source resolution — no CPU scaling. NVENC handles
+		// any resolution (~1µs regardless of size), and the browser's
+		// <canvas>/<video> scales to fit the tile. This eliminates
+		// scaleBilinearRow from the hot path entirely.
+		encW := w &^ 1 // even dimensions (H.264 requirement)
+		encH := h &^ 1
 
-		// Lazy encoder creation at the chosen resolution.
+		// Lazy encoder creation at source resolution.
 		if encoder == nil {
 			enc, err := codec.NewPreviewEncoder(encW, encH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen, e.cfg.Preset)
 			if err != nil {
@@ -281,34 +274,13 @@ func (e *Encoder) loop() {
 			encoder = enc
 		}
 
-		// Scale only when source is larger than target (downscale).
-		// Skip scaling entirely when source <= target (encode at source res).
-		var frameYUV []byte
+		// Copy into encoder buffer (encoder may hold a reference to previous frame).
 		encSize := encW * encH * 3 / 2
-		if w == encW && h == encH {
-			frameYUV = job.yuv
-		} else if w > targetW || h > targetH {
-			// Downscale needed (source larger than target).
-			if cap(encYUV) < encSize {
-				encYUV = make([]byte, encSize)
-			}
-			encYUV = encYUV[:encSize]
-			transition.ScaleYUV420(job.yuv, w, h, encYUV, encW, encH)
-			frameYUV = encYUV
-		} else {
-			frameYUV = job.yuv
+		if cap(encYUV) < encSize {
+			encYUV = make([]byte, encSize)
 		}
-
-		// Copy into encoder buffer (encoder may hold a reference).
-		needsCopy := len(frameYUV) > 0 && &frameYUV[0] == &job.yuv[0]
-		if needsCopy {
-			if cap(encYUV) < encSize {
-				encYUV = make([]byte, encSize)
-			}
-			encYUV = encYUV[:encSize]
-			copy(encYUV, frameYUV)
-			frameYUV = encYUV
-		}
+		encYUV = encYUV[:encSize]
+		copy(encYUV, job.yuv[:encSize])
 
 		// Release the source buffer now that it's been copied/scaled.
 		if job.release != nil {
@@ -377,14 +349,14 @@ func (e *Encoder) loop() {
 				if avcC != nil {
 					e.cfg.Relay.SetVideoInfo(distribution.VideoInfo{
 						Codec:         codec.ParseSPSCodecString(frame.SPS),
-						Width:         targetW,
-						Height:        targetH,
+						Width:         encW,
+						Height:        encH,
 						DecoderConfig: avcC,
 					})
 					slog.Info("preview: VideoInfo set",
 						"key", e.cfg.SourceKey,
-						"width", targetW,
-						"height", targetH,
+						"width", encW,
+						"height", encH,
 					)
 					infoSent = true
 				}
