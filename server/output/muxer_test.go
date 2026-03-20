@@ -423,19 +423,23 @@ func TestTSMuxer_MuxerOwnedClock_AVAligned(t *testing.T) {
 	require.GreaterOrEqual(t, len(videoPTSValues), 2, "should have at least 2 video PTS")
 	require.GreaterOrEqual(t, len(audioPTSValues), 2, "should have at least 2 audio PTS")
 
-	// Video PTS should start at epoch (90000) and advance by 3750 per frame.
+	// Video PTS starts at epoch + lipSyncOffset (default 5760 = ~64ms).
+	// The offset delays video PTS to compensate for video frames arriving
+	// at the muxer before the corresponding audio frames.
 	epoch := int64(90000)
-	require.Equal(t, epoch, videoPTSValues[0], "first video PTS should be epoch")
-	require.Equal(t, epoch+3750, videoPTSValues[1], "second video PTS should be epoch+frameDur")
+	lipSync := int64(5760) // default lip-sync offset
+	require.Equal(t, epoch+lipSync, videoPTSValues[0], "first video PTS should be epoch+lipSync")
+	require.Equal(t, epoch+lipSync+3750, videoPTSValues[1], "second video PTS should advance by frameDur")
 
-	// Audio PTS should start at epoch and advance by 1920 per frame.
+	// Audio PTS starts at epoch (no offset).
 	require.Equal(t, epoch, audioPTSValues[0], "first audio PTS should be epoch")
-	require.Equal(t, epoch+1920, audioPTSValues[1], "second audio PTS should be epoch+1920")
+	require.Equal(t, epoch+1920, audioPTSValues[1], "second audio PTS should advance by 1920")
 
-	// The key: video[0] and audio[0] start at the SAME epoch.
-	// This guarantees A/V alignment regardless of upstream PTS.
-	require.Equal(t, videoPTSValues[0], audioPTSValues[0],
-		"video and audio should start at same epoch — A/V aligned by construction")
+	// Video is intentionally delayed relative to audio by lipSyncOffset.
+	// This compensates for the video pipeline delivering frames to the
+	// muxer ~64ms before the corresponding audio arrives.
+	require.Equal(t, lipSync, videoPTSValues[0]-audioPTSValues[0],
+		"video should be delayed by lip-sync offset")
 }
 
 func TestTSMuxer_Close(t *testing.T) {

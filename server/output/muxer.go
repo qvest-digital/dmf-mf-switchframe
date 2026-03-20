@@ -62,6 +62,7 @@ type TSMuxer struct {
 	audioFrameCount int64 // incremented on each WriteAudio
 	videoFrameDur   int64 // 90kHz ticks per video frame (e.g., 3750 for 24fps)
 	audioFrameDur   int64 // 90kHz ticks per audio frame (1920 for 48kHz/1024)
+	lipSyncOffset   int64 // 90kHz ticks added to video PTS (positive = delay video)
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -73,6 +74,8 @@ func NewTSMuxer() *TSMuxer {
 		muxerEpoch:    90000, // start at 1 second
 		videoFrameDur: 3750,  // default 24fps (90000/24)
 		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
+		lipSyncOffset: 5760,  // ~64ms at 90kHz (3 audio frames) — delays video PTS
+		                      // to compensate for video arriving at muxer before audio
 	}
 }
 
@@ -116,6 +119,15 @@ func (m *TSMuxer) ResetCounters() {
 		m.muxer = nil
 	}
 	m.initialized = false
+}
+
+// SetLipSyncOffset sets the lip-sync adjustment in milliseconds.
+// Positive values delay video relative to audio (use when video is
+// ahead of audio). Negative values advance video.
+func (m *TSMuxer) SetLipSyncOffset(ms int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lipSyncOffset = int64(ms) * 90 // ms → 90kHz ticks
 }
 
 // SetSCTE35PID configures the SCTE-35 PID for this muxer. A non-zero PID
@@ -273,7 +285,7 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// Muxer-owned clock: assign PTS from monotonic frame counter.
 	// Upstream PTS is ignored — both video and audio derive from the
 	// same epoch, so A/V sync is correct by construction.
-	muxerPTS := (m.muxerEpoch + m.videoFrameCount*m.videoFrameDur) & 0x1FFFFFFFF
+	muxerPTS := (m.muxerEpoch + m.videoFrameCount*m.videoFrameDur + m.lipSyncOffset) & 0x1FFFFFFFF
 	m.videoFrameCount++
 	m.lastVideoPTS = muxerPTS
 
