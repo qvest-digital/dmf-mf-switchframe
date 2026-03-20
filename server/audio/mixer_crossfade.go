@@ -14,7 +14,19 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 		if !ch.afv {
 			continue
 		}
+		wasActive := ch.active
 		ch.active = (key == newProgramSource)
+
+		// Flush the ring buffer when a source first goes on program.
+		// Audio accumulates in the FIFO ring buffer from the moment the
+		// source connects, but video doesn't start until the first keyframe
+		// is decoded (~500-1000ms later). Without flushing, the mixer outputs
+		// stale audio from before video started, causing video to appear
+		// 500-1000ms ahead of audio. Flushing aligns the audio start with
+		// the video start.
+		if ch.active && !wasActive && ch.ringBuf != nil {
+			ch.ringBuf.Reset()
+		}
 	}
 }
 

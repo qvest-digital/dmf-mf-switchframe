@@ -74,7 +74,7 @@ func NewTSMuxer() *TSMuxer {
 		muxerEpoch:    90000, // start at 1 second
 		videoFrameDur: 3750,  // default 24fps (90000/24)
 		audioFrameDur: 1920,  // 48kHz / 1024 samples per AAC frame
-		lipSyncOffset: 0, // dynamic — set from mixer's ring buffer depth each tick
+		lipSyncOffset: 0, // dynamic — set from mixer's ring buffer depth
 	}
 }
 
