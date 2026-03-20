@@ -77,10 +77,11 @@ func Identity(width, height int) *STMap {
 
 // AnimatedSTMap holds a sequence of ST map frames for animated effects.
 type AnimatedSTMap struct {
-	Name   string
-	Frames []*STMap
-	FPS    int
-	index  atomic.Int64
+	Name       string
+	Frames     []*STMap
+	FPS        int
+	index      atomic.Int64
+	processors []*Processor // lazily built per-frame processors
 }
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.
@@ -107,6 +108,29 @@ func (a *AnimatedSTMap) Advance() *STMap {
 func (a *AnimatedSTMap) CurrentFrame() *STMap {
 	idx := a.index.Load()
 	return a.Frames[int(idx)%len(a.Frames)]
+}
+
+// AdvanceIndex increments the internal frame counter and returns the
+// wrapped frame index. Use with ProcessorAt for allocation-free pipeline
+// processing of animated maps.
+func (a *AnimatedSTMap) AdvanceIndex() int {
+	idx := a.index.Add(1)
+	return int(idx) % len(a.Frames)
+}
+
+// ProcessorAt returns a precomputed Processor for the given frame index.
+// Processors are built lazily on first access and cached for the lifetime
+// of the AnimatedSTMap. This avoids rebuilding the LUT (~5ms at 1080p)
+// on every frame.
+func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
+	idx = idx % len(a.Frames)
+	if a.processors == nil {
+		a.processors = make([]*Processor, len(a.Frames))
+	}
+	if a.processors[idx] == nil {
+		a.processors[idx] = NewProcessor(a.Frames[idx])
+	}
+	return a.processors[idx]
 }
 
 // ValidateName rejects names that could cause path traversal or are otherwise

@@ -846,12 +846,13 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
+// Node order: upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&layoutCompositorNode{compositor: s.layoutCompositor},
 		&compositorNode{compositor: s.compositorRef},
+		&stmapProgramNode{registry: s.stmapRegistry},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
 		&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
