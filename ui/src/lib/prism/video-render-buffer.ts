@@ -1,7 +1,7 @@
-// Cap render buffer to 30 frames (~1s at 30fps). Large enough to absorb
-// decode bursts and PTS discontinuities during source cuts, while keeping
-// latency bounded (was 90 = 3s which caused persistent A/V desync).
-const MAX_ELEMENTS = 30;
+// With clock-gated decode, frames arrive just-in-time (~200ms ahead of
+// audio). 8 frames provides enough buffer for decode jitter while keeping
+// GPU memory low (~64MB vs ~240MB at 1080p with 30 frames).
+const MAX_ELEMENTS = 8;
 
 /** Result of a timestamp-based frame lookup, including the selected frame and discard statistics. */
 interface VideoRenderResult {

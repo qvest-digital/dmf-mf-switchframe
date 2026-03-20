@@ -71,12 +71,13 @@ describe('VideoRenderBuffer', () => {
 		it('evicts oldest when full', () => {
 			const buf = new VideoRenderBuffer();
 			const frames: VideoFrame[] = [];
-			for (let i = 0; i < 31; i++) {
+			// Buffer capacity is 8 (clock-gated decode keeps it small)
+			for (let i = 0; i < 9; i++) {
 				frames.push(makeFrame(i * 1000));
 				buf.addFrame(frames[i]);
 			}
 			expect(frames[0].close).toHaveBeenCalled();
-			expect(buf.getStats().queueSize).toBe(30);
+			expect(buf.getStats().queueSize).toBe(8);
 		});
 	});
 });
