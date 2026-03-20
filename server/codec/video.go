@@ -29,16 +29,25 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 	}
 }
 
-// NewPreviewEncoder creates a lightweight preview encoder using libx264 with
-// baseline profile. Unlike NewVideoEncoder, it always uses software encoding —
-// hardware encoders are reserved for the program output path.
-// Optional preset parameter (default "ultrafast"). Use "veryfast" for better
-// compression at the cost of higher CPU.
+// NewPreviewEncoder creates a preview encoder for browser multiview.
+// When a hardware encoder (NVENC) is available, it uses that — GPU encode
+// is essentially free and avoids consuming CPU cores. Falls back to libx264
+// with baseline profile when no hardware encoder is detected.
+// Optional preset parameter (default "ultrafast") is only used for the
+// software fallback path.
 //
 // fpsNum/fpsDen express the frame rate as a rational number (e.g. 30/1 for 30fps).
 func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int, preset ...string) (transition.VideoEncoder, error) {
+	enc, _ := ProbeEncoders()
 	gopSecs := transition.DefaultGOPSecs
-	return NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs, preset...)
+	// Use hardware encoder for previews when available (NVENC/VA-API/VT).
+	// GPU encode is near-zero CPU, freeing cores for decode and compositing.
+	switch enc {
+	case "h264_nvenc", "h264_vaapi", "h264_videotoolbox":
+		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, HWDeviceCtx())
+	default:
+		return NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs, preset...)
+	}
 }
 
 // NewVideoDecoder creates a video decoder using the best available backend.
