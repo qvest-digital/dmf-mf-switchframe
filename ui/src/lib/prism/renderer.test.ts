@@ -43,12 +43,12 @@ describe('PrismRenderer', () => {
 	});
 
 	describe('look-ahead tolerance for video-ahead-of-audio', () => {
-		// targetPTS = audioPTS - 90ms (A/V sync bias). Look-ahead threshold = 130ms.
-		// Effective video-ahead = gap - 90ms. Max displayable = 130ms gap = 40ms ahead.
+		// targetPTS = audioPTS - 120ms (A/V sync bias). Look-ahead threshold = 160ms.
+		// Effective video-ahead = gap - 120ms. Max displayable = 160ms gap = 40ms ahead.
 
-		it('draws frame when video is 30ms ahead of audio (gap 120ms < 130ms)', () => {
-			// audioPTS = 1s, targetPTS = 1s - 90ms = 910ms
-			// video PTS = 1.030s → gap = 1.030s - 0.910s = 120ms < 130ms → display
+		it('draws frame when video is 30ms ahead of audio (gap 150ms < 160ms)', () => {
+			// audioPTS = 1s, targetPTS = 1s - 120ms = 880ms
+			// video PTS = 1.030s → gap = 1.030s - 0.880s = 150ms < 160ms → display
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -62,9 +62,9 @@ describe('PrismRenderer', () => {
 			expect(diag.framesSkipped).toBe(0);
 		});
 
-		it('skips frame when video is 50ms ahead of audio (gap 140ms > 130ms)', () => {
-			// audioPTS = 1s, targetPTS = 910ms
-			// video PTS = 1.050s → gap = 140ms > 130ms → skip
+		it('skips frame when video is 50ms ahead of audio (gap 170ms > 160ms)', () => {
+			// audioPTS = 1s, targetPTS = 880ms
+			// video PTS = 1.050s → gap = 170ms > 160ms → skip
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -79,8 +79,8 @@ describe('PrismRenderer', () => {
 		});
 
 		it('skips frame when video is 200ms+ ahead of audio', () => {
-			// audioPTS = 1s, targetPTS = 910ms
-			// video PTS = 1.200s → gap = 290ms > 130ms → skip
+			// audioPTS = 1s, targetPTS = 880ms
+			// video PTS = 1.200s → gap = 320ms > 160ms → skip
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
