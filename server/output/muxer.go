@@ -96,6 +96,28 @@ func (m *TSMuxer) SetOutput(fn func([]byte)) {
 	m.output = fn
 }
 
+// ResetCounters resets the frame counters to zero and forces the muxer to
+// re-initialize on the next keyframe. Called when a new SRT client connects
+// so the first data it receives has PTS near zero — otherwise SRT's TSBPD
+// would buffer packets for the accumulated PTS duration (potentially minutes).
+func (m *TSMuxer) ResetCounters() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoFrameCount = 0
+	m.audioFrameCount = 0
+	m.lastPCRPTS = 0
+	m.lastVideoPTS = 0
+	// Force re-init so the next keyframe triggers PAT/PMT + fresh start.
+	if m.muxer != nil {
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
+		}
+		m.muxer = nil
+	}
+	m.initialized = false
+}
+
 // SetSCTE35PID configures the SCTE-35 PID for this muxer. A non-zero PID
 // enables SCTE-35 support; zero disables it. When enabled, the PMT will
 // include a SCTE-35 elementary stream with a CUEI registration descriptor.

@@ -303,12 +303,13 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 				return m.srtAcceptFn(ctx, lCfg, listener)
 			}
 		}
-		// Force IDR keyframe when a new SRT client connects so it can
-		// start decoding immediately without waiting up to 2s for the
-		// next natural keyframe in the GOP.
-		if m.onMuxStart != nil {
-			listener.OnConnect(m.onMuxStart)
-		}
+		// Reset muxer + force IDR when a new SRT client connects.
+		listener.OnConnect(func() {
+			m.ResetMuxer()
+			if m.onMuxStart != nil {
+				m.onMuxStart()
+			}
+		})
 		adapter = listener
 	default:
 		m.mu.Unlock()
@@ -553,6 +554,17 @@ func (m *Manager) StartDestination(id string) error {
 				return m.srtAcceptFn(ctx, lCfg, listener)
 			}
 		}
+		// Reset muxer counters when a new SRT client connects so the TS
+		// stream starts with PTS near zero. Without this, late-connecting
+		// clients see PTS values accumulated since muxer creation, causing
+		// SRT's TSBPD to buffer packets for minutes.
+		listener.OnConnect(func() {
+			m.ResetMuxer()
+			// Request IDR keyframe so the muxer re-initializes immediately.
+			if m.onMuxStart != nil {
+				m.onMuxStart()
+			}
+		})
 		adapter = listener
 	}
 
@@ -1165,6 +1177,16 @@ func (m *Manager) DirectWriteAudio(frame *media.AudioFrame) {
 	}
 	if err := muxer.WriteAudio(frame); err != nil {
 		m.log.Error("direct audio write error", "err", err)
+	}
+}
+
+// ResetMuxer resets the muxer's frame counters and forces re-initialization
+// on the next keyframe. Called when a new SRT client connects so the TS
+// stream starts with PTS near zero for the new client.
+func (m *Manager) ResetMuxer() {
+	muxer := m.directMuxer.Load()
+	if muxer != nil {
+		muxer.ResetCounters()
 	}
 }
 
