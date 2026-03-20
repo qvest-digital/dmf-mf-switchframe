@@ -222,19 +222,16 @@ func (e *Encoder) loop() {
 	defer close(e.done)
 
 	var (
-		encoder   transition.VideoEncoder
-		groupID   atomic.Uint32
-		infoSent  bool
-		scaledYUV []byte // persistent scale buffer (reused across frames)
-		encYUV    []byte // persistent encoder input buffer (reused)
-		boxBuf    []byte // persistent box-shrink intermediate (amd64 only)
-		lastSrcW  int
-		lastSrcH  int
+		encoder  transition.VideoEncoder
+		groupID  atomic.Uint32
+		infoSent bool
+		encYUV   []byte // persistent encoder input buffer (reused)
+		lastSrcW int
+		lastSrcH int
 	)
 
 	targetW := e.cfg.Width
 	targetH := e.cfg.Height
-	targetSize := targetW * targetH * 3 / 2
 
 	var frameCount int64
 
@@ -259,9 +256,20 @@ func (e *Encoder) loop() {
 		lastSrcW = w
 		lastSrcH = h
 
-		// Lazy encoder creation.
+		// Determine encode resolution: use source resolution if smaller
+		// than target (avoids pointless upscale), otherwise use target.
+		// NVENC handles any resolution; the browser scales to fit the tile.
+		encW, encH := w, h
+		if encW > targetW || encH > targetH {
+			encW, encH = targetW, targetH
+		}
+		// Ensure even dimensions (H.264 requirement).
+		encW = encW &^ 1
+		encH = encH &^ 1
+
+		// Lazy encoder creation at the chosen resolution.
 		if encoder == nil {
-			enc, err := codec.NewPreviewEncoder(targetW, targetH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen, e.cfg.Preset)
+			enc, err := codec.NewPreviewEncoder(encW, encH, e.cfg.Bitrate, e.cfg.FPSNum, e.cfg.FPSDen, e.cfg.Preset)
 			if err != nil {
 				slog.Error("preview: encoder init failed",
 					"key", e.cfg.SourceKey, "error", err)
@@ -273,27 +281,34 @@ func (e *Encoder) loop() {
 			encoder = enc
 		}
 
-		// Scale to target resolution if needed.
+		// Scale only when source is larger than target (downscale).
+		// Skip scaling entirely when source <= target (encode at source res).
 		var frameYUV []byte
-		if w == targetW && h == targetH {
-			// No scaling needed -- use directly.
+		encSize := encW * encH * 3 / 2
+		if w == encW && h == encH {
 			frameYUV = job.yuv
-		} else {
-			// Grow scaledYUV buffer if needed (reused across frames).
-			if cap(scaledYUV) < targetSize {
-				scaledYUV = make([]byte, targetSize)
+		} else if w > targetW || h > targetH {
+			// Downscale needed (source larger than target).
+			if cap(encYUV) < encSize {
+				encYUV = make([]byte, encSize)
 			}
-			scaledYUV = scaledYUV[:targetSize]
-			transition.ScaleYUV420Preview(job.yuv, w, h, scaledYUV, targetW, targetH, &boxBuf)
-			frameYUV = scaledYUV
+			encYUV = encYUV[:encSize]
+			transition.ScaleYUV420(job.yuv, w, h, encYUV, encW, encH)
+			frameYUV = encYUV
+		} else {
+			frameYUV = job.yuv
 		}
 
 		// Copy into encoder buffer (encoder may hold a reference).
-		if cap(encYUV) < targetSize {
-			encYUV = make([]byte, targetSize)
+		needsCopy := len(frameYUV) > 0 && &frameYUV[0] == &job.yuv[0]
+		if needsCopy {
+			if cap(encYUV) < encSize {
+				encYUV = make([]byte, encSize)
+			}
+			encYUV = encYUV[:encSize]
+			copy(encYUV, frameYUV)
+			frameYUV = encYUV
 		}
-		encYUV = encYUV[:targetSize]
-		copy(encYUV, frameYUV)
 
 		// Release the source buffer now that it's been copied/scaled.
 		if job.release != nil {
