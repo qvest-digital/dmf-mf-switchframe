@@ -424,38 +424,11 @@ func (m *TSMuxer) init(firstVideoPTS int64) error {
 
 	m.initialized = true
 
-	// Flush pending audio frames that are temporally aligned with the
-	// first video keyframe. Discard any with PTS before the video PTS —
-	// writing them creates a gap where the player plays audio before
-	// any video appears, causing perceived A/V desync.
-	if len(m.pendingAudio) > 0 {
-		for _, af := range m.pendingAudio {
-			if af.PTS < firstVideoPTS {
-				continue // discard — before video start
-			}
-			data := codec.EnsureADTS(af.Data, af.SampleRate, af.Channels)
-			rebasedAudioPTS := (af.PTS - m.ptsOffset) & 0x1FFFFFFFF
-			ptsRef := &astits.ClockReference{Base: rebasedAudioPTS}
-			md := &astits.MuxerData{
-				PID: audioPID,
-				PES: &astits.PESData{
-					Header: &astits.PESHeader{
-						StreamID: 0xC0,
-						OptionalHeader: &astits.PESOptionalHeader{
-							PTSDTSIndicator: uint8(astits.PTSDTSIndicatorOnlyPTS),
-							PTS:             ptsRef,
-						},
-					},
-					Data: data,
-				},
-			}
-			if _, err := m.muxer.WriteData(md); err != nil {
-				m.pendingAudio = nil
-				return err
-			}
-		}
-		m.pendingAudio = nil
-	}
+	// Discard all pending audio. Audio that arrived before the first video
+	// keyframe is stale — writing it creates a PTS gap where the player
+	// plays audio before any video appears, causing A/V desync. Fresh
+	// audio will arrive via WriteAudio after init returns.
+	m.pendingAudio = nil
 
 	// Flush any SCTE-35 sections that were buffered before initialization.
 	if len(m.pendingSCTE35) > 0 {

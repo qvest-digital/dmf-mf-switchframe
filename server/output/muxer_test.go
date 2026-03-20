@@ -144,7 +144,10 @@ func TestTSMuxer_WriteAudio_BeforeInit(t *testing.T) {
 	require.Empty(t, output, "should not produce output before muxer is initialized")
 }
 
-func TestMuxerBuffersAudioBeforeKeyframe(t *testing.T) {
+func TestMuxerDiscardsAudioBeforeKeyframe(t *testing.T) {
+	// Audio frames arriving before the first video keyframe are discarded
+	// on init. Writing them would create a PTS gap where the player plays
+	// audio before any video appears, causing A/V desync.
 	m := NewTSMuxer()
 	var output []byte
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
@@ -172,19 +175,15 @@ func TestMuxerBuffersAudioBeforeKeyframe(t *testing.T) {
 	}
 	err := m.WriteVideo(idrFrame)
 	require.NoError(t, err)
-	require.NotEmpty(t, output, "output should contain PAT/PMT + buffered audio + video")
+	require.NotEmpty(t, output, "output should contain PAT/PMT + video")
 	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
 
-	// The output should contain audio PID (0x101) packets from the buffered audio.
-	foundAudioPID := false
+	// The output should NOT contain audio PID packets — all pre-keyframe
+	// audio was discarded.
 	for i := 0; i < len(output); i += 188 {
 		pid := (uint16(output[i+1]&0x1F) << 8) | uint16(output[i+2])
-		if pid == audioPID {
-			foundAudioPID = true
-			break
-		}
+		require.NotEqual(t, audioPID, pid, "output should not contain pre-keyframe audio")
 	}
-	require.True(t, foundAudioPID, "output should contain buffered audio packets")
 }
 
 func TestMuxerDropsExcessPendingAudio(t *testing.T) {
