@@ -5,6 +5,7 @@ package output
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"reflect"
 	"sync"
 	"unsafe"
@@ -66,6 +67,14 @@ type TSMuxer struct {
 	// uses a FIFO ring buffer (content delayed by buffer depth). Without
 	// compensation, video content appears ahead of audio content.
 	lipSyncOffset int64 // 90kHz ticks added to video PTS only
+
+	// Diagnostics: track upstream PTS values and rebased output PTS
+	// to identify A/V sync drift.
+	lastUpstreamVideoPTS int64 // upstream PTS before rebasing
+	lastUpstreamAudioPTS int64 // upstream PTS before rebasing
+	lastMuxedVideoPTS    int64 // PTS written to TS (after rebase + lip-sync)
+	lastMuxedAudioPTS    int64 // PTS written to TS (after rebase)
+	diagCounter          int   // for periodic logging
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -269,6 +278,27 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// Without this offset, video content appears ahead of audio content.
 	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
 	m.lastVideoPTS = muxerPTS
+	m.lastUpstreamVideoPTS = frame.PTS
+	m.lastMuxedVideoPTS = muxerPTS
+
+	// Periodic A/V sync diagnostics: log PTS values every ~5s.
+	m.diagCounter++
+	if m.diagCounter%150 == 1 && m.lastUpstreamAudioPTS != 0 {
+		upstreamGap := m.lastUpstreamVideoPTS - m.lastUpstreamAudioPTS
+		muxedGap := m.lastMuxedVideoPTS - m.lastMuxedAudioPTS
+		slog.Info("muxer A/V PTS diagnostic",
+			"upstream_video", m.lastUpstreamVideoPTS,
+			"upstream_audio", m.lastUpstreamAudioPTS,
+			"upstream_gap_90k", upstreamGap,
+			"upstream_gap_ms", float64(upstreamGap)/90.0,
+			"muxed_video", m.lastMuxedVideoPTS,
+			"muxed_audio", m.lastMuxedAudioPTS,
+			"muxed_gap_90k", muxedGap,
+			"muxed_gap_ms", float64(muxedGap)/90.0,
+			"lip_sync_90k", m.lipSyncOffset,
+			"lip_sync_ms", float64(m.lipSyncOffset)/90.0,
+		)
+	}
 
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
 	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
@@ -345,6 +375,8 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 
 	// Use upstream PTS rebased to near-zero (same base as video).
 	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch) & 0x1FFFFFFFF
+	m.lastUpstreamAudioPTS = frame.PTS
+	m.lastMuxedAudioPTS = muxerPTS
 
 	// Ensure ADTS header is present.
 	data := codec.EnsureADTS(frame.Data, frame.SampleRate, frame.Channels)
