@@ -1,7 +1,5 @@
 package stmap
 
-import "sync"
-
 // Processor applies an ST map warp to YUV420 frames using bilinear
 // interpolation. It precomputes 16.16 fixed-point lookup tables from the
 // float32 ST map coordinates so the per-pixel hot path is integer-only.
@@ -32,14 +30,14 @@ func (p *Processor) Active() bool {
 }
 
 // ProcessYUV applies the ST map warp to a YUV420 frame. src and dst must
-// both be w*h*3/2 bytes. The three planes (Y, Cb, Cr) are warped in
-// parallel — one goroutine per plane. Wall-clock time is bounded by the
-// Y plane (which has 4x the pixels of each chroma plane).
+// both be w*h*3/2 bytes. The three planes (Y, Cb, Cr) are warped
+// sequentially on the calling goroutine.
 //
-// Previous approach split Y into 4 sub-bands, but pprof showed 7ms/frame
-// of goroutine sync overhead (pthread_cond_signal/wait) — nearly as much
-// as the chroma planes themselves. 3 goroutines (one per plane) with a
-// single WaitGroup eliminates the sub-band overhead and parallelizes chroma.
+// Profiling showed that goroutine parallelism (both 4-worker Y split and
+// per-plane parallel) added 7-10ms/frame of pthread_cond sync overhead
+// under production load, negating any speedup from multi-core execution.
+// The sequential approach has zero coordination cost and benefits from
+// better cache locality (no cross-core cache line bouncing).
 func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
 	if p.stmap == nil {
 		return
@@ -49,29 +47,17 @@ func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
 	cw := w / 2
 	ch := h / 2
 	cSize := cw * ch
-	cbOff := ySize
-	crOff := ySize + cSize
 
-	// Run all 3 planes in parallel: Y on main goroutine, Cb+Cr on workers.
-	// This is cheaper than WaitGroup for 3 goroutines: we run Y inline and
-	// only spawn 2 goroutines for chroma, halving sync overhead.
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		warpPlane(dst[cbOff:cbOff+cSize], src[cbOff:cbOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
-	}()
-
-	go func() {
-		defer wg.Done()
-		warpPlane(dst[crOff:crOff+cSize], src[crOff:crOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
-	}()
-
-	// Y plane runs on the calling goroutine (no spawn overhead for the biggest plane).
+	// Y plane (full resolution)
 	warpPlane(dst[:ySize], src[:ySize], w, h, p.lutSX, p.lutSY)
 
-	wg.Wait()
+	// Cb plane (quarter resolution)
+	cbOff := ySize
+	warpPlane(dst[cbOff:cbOff+cSize], src[cbOff:cbOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
+
+	// Cr plane (quarter resolution)
+	crOff := ySize + cSize
+	warpPlane(dst[crOff:crOff+cSize], src[crOff:crOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
 }
 
 // buildLUT precomputes the 16.16 fixed-point source coordinate lookup
