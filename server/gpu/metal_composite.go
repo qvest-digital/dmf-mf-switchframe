@@ -1,0 +1,101 @@
+//go:build darwin
+
+package gpu
+
+/*
+#include "metal_bridge.h"
+*/
+import "C"
+
+import "fmt"
+
+// PIPComposite scales a source GPU frame and composites it into a destination
+// frame at the specified rectangle.
+func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	alpha256 := int(alpha * 256.0)
+	if alpha256 < 0 {
+		alpha256 = 0
+	} else if alpha256 > 256 {
+		alpha256 = 256
+	}
+
+	mtl := ctx.mtl
+
+	// Y plane
+	yPipeline, err := mtl.getPipeline("pip_composite_y")
+	if err != nil {
+		return fmt.Errorf("gpu: pip composite Y: %w", err)
+	}
+	yParams := C.MetalPIPCompositeYParams{
+		dstW: C.uint32_t(dst.Width), dstH: C.uint32_t(dst.Height), dstPitch: C.uint32_t(dst.Pitch),
+		srcW: C.uint32_t(src.Width), srcH: C.uint32_t(src.Height), srcPitch: C.uint32_t(src.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		alpha256: C.int32_t(alpha256),
+	}
+	rc := C.metal_pip_composite_y(mtl.queue, yPipeline, dst.MetalBuf, src.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: pip composite Y failed: %d", rc)
+	}
+
+	// UV plane
+	// TODO: Implement UV-plane PIP composite with buffer offsets
+	return nil
+}
+
+// DrawBorder draws a colored border outside the given rectangle on a GPU frame.
+func DrawBorder(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickness int) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("draw_border_nv12")
+	if err != nil {
+		return fmt.Errorf("gpu: draw border: %w", err)
+	}
+
+	params := C.MetalBorderParams{
+		dstW: C.uint32_t(frame.Width), dstH: C.uint32_t(frame.Height), dstPitch: C.uint32_t(frame.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		thickness: C.int32_t(thickness),
+		colorY: C.uint8_t(color.Y), colorCb: C.uint8_t(color.Cb), colorCr: C.uint8_t(color.Cr),
+	}
+
+	rc := C.metal_draw_border(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: draw border failed: %d", rc)
+	}
+	return nil
+}
+
+// FillRect fills a rectangular region with a constant color on a GPU frame.
+func FillRect(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("fill_rect_nv12")
+	if err != nil {
+		return fmt.Errorf("gpu: fill rect: %w", err)
+	}
+
+	params := C.MetalFillRectParams{
+		dstW: C.uint32_t(frame.Width), dstH: C.uint32_t(frame.Height), dstPitch: C.uint32_t(frame.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		colorY: C.uint8_t(color.Y), colorCb: C.uint8_t(color.Cb), colorCr: C.uint8_t(color.Cr),
+	}
+
+	rc := C.metal_fill_rect(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: fill rect failed: %d", rc)
+	}
+	return nil
+}
