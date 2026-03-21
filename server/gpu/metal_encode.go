@@ -176,6 +176,11 @@ func (e *GPUEncoder) IsNativeVT() bool {
 	return e.vtEnc != nil
 }
 
+// IsHWFrames returns false on Metal builds (uses native VideoToolbox instead).
+func (e *GPUEncoder) IsHWFrames() bool {
+	return false
+}
+
 // Close releases encoder resources.
 func (e *GPUEncoder) Close() {
 	if e.vtEnc != nil {

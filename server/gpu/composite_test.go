@@ -144,6 +144,101 @@ func TestFillRect(t *testing.T) {
 	assert.Equal(t, byte(235), outsideY, "outside rect should be white")
 }
 
+func TestPIPCompositeWithCrop(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	dstW, dstH := 640, 480
+	srcW, srcH := 640, 480
+
+	dstPool, err := NewFramePool(ctx, dstW, dstH, 2)
+	require.NoError(t, err)
+	defer dstPool.Close()
+
+	srcPool, err := NewFramePool(ctx, srcW, srcH, 2)
+	require.NoError(t, err)
+	defer srcPool.Close()
+
+	dst, _ := dstPool.Acquire()
+	src, _ := srcPool.Acquire()
+	defer dst.Release()
+	defer src.Release()
+
+	// Fill dst with black
+	require.NoError(t, FillBlack(ctx, dst))
+
+	// Fill src with a horizontal split: left half Y=100, right half Y=200
+	srcYUV := make([]byte, srcW*srcH*3/2)
+	for y := 0; y < srcH; y++ {
+		for x := 0; x < srcW; x++ {
+			if x < srcW/2 {
+				srcYUV[y*srcW+x] = 100
+			} else {
+				srcYUV[y*srcW+x] = 200
+			}
+		}
+	}
+	for i := srcW * srcH; i < len(srcYUV); i++ {
+		srcYUV[i] = 128
+	}
+	require.NoError(t, Upload(ctx, src, srcYUV, srcW, srcH))
+
+	// Composite with crop: use right half of source (x=320, w=320)
+	// Dest rect covers the full frame — should show only the right half (Y≈200)
+	rect := Rect{X: 0, Y: 0, W: dstW, H: dstH}
+	err = PIPCompositeWithCrop(ctx, dst, src, rect, 1.0,
+		320, 0, 320, 480) // crop right half
+	require.NoError(t, err)
+
+	result := make([]byte, dstW*dstH*3/2)
+	require.NoError(t, Download(ctx, result, dst, dstW, dstH))
+
+	// Center pixel should be ~200 (from the cropped right half)
+	centerY := result[dstH/2*dstW+dstW/2]
+	assert.InDelta(t, 200, int(centerY), 5, "cropped PIP center should be ~200 (right half), got Y=%d", centerY)
+
+	t.Logf("PIPCompositeWithCrop: center Y=%d (want ~200)", centerY)
+}
+
+func TestPIPCompositeWithCropZero(t *testing.T) {
+	// Verify that crop=(0,0,0,0) behaves like full-source PIPComposite
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	w, h := 320, 240
+	pool, err := NewFramePool(ctx, w, h, 3)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	dst, _ := pool.Acquire()
+	src, _ := pool.Acquire()
+	defer dst.Release()
+	defer src.Release()
+
+	require.NoError(t, FillBlack(ctx, dst))
+
+	srcYUV := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		srcYUV[i] = 180
+	}
+	for i := w * h; i < len(srcYUV); i++ {
+		srcYUV[i] = 128
+	}
+	require.NoError(t, Upload(ctx, src, srcYUV, w, h))
+
+	rect := Rect{X: 0, Y: 0, W: w, H: h}
+	err = PIPCompositeWithCrop(ctx, dst, src, rect, 1.0, 0, 0, 0, 0)
+	require.NoError(t, err)
+
+	result := make([]byte, w*h*3/2)
+	require.NoError(t, Download(ctx, result, dst, w, h))
+
+	centerY := result[h/2*w+w/2]
+	assert.InDelta(t, 180, int(centerY), 3, "crop=(0,0,0,0) should show full source Y≈180, got Y=%d", centerY)
+}
+
 func TestCompositeNilArgs(t *testing.T) {
 	require.ErrorIs(t, PIPComposite(nil, nil, nil, Rect{}, 1.0), ErrGPUNotAvailable)
 	require.ErrorIs(t, DrawBorder(nil, nil, Rect{}, YUVColor{}, 2), ErrGPUNotAvailable)

@@ -2,10 +2,14 @@
 
 package gpu
 
-import "time"
+import (
+	"time"
+	"unsafe"
+)
 
-// Ensure time is used (referenced by GPUPipelineNode interface).
+// Ensure time and unsafe are used.
 var _ = time.Duration(0)
+var _ = unsafe.Pointer(nil)
 
 // Context is a stub for non-GPU builds.
 type Context struct{}
@@ -42,6 +46,9 @@ func (c *Context) SetPool(pool *FramePool) {}
 
 // Pool returns nil on non-GPU builds.
 func (c *Context) Pool() *FramePool { return nil }
+
+// CUDAContext returns nil on non-GPU builds.
+func (c *Context) CUDAContext() unsafe.Pointer { return nil }
 
 // DeviceProperties holds GPU device information.
 type DeviceProperties struct {
@@ -404,6 +411,9 @@ func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 // IsNativeVT returns false on non-GPU builds.
 func (e *GPUEncoder) IsNativeVT() bool { return false }
+
+// IsHWFrames returns false on non-GPU builds.
+func (e *GPUEncoder) IsHWFrames() bool { return false }
 
 // Close is a no-op on non-GPU builds.
 func (e *GPUEncoder) Close() {}

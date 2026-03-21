@@ -203,6 +203,23 @@ func (c *Context) MemoryStats() MemoryStats {
 	}
 }
 
+// CUDAContext returns the current CUcontext pointer for use with FFmpeg's
+// CUDA hw_device_ctx. The CUDA Runtime API shares the primary context across
+// all threads, so cuCtxGetCurrent() returns the correct context after
+// cudaSetDevice() has been called.
+// Returns nil if the context is closed or CUDA context retrieval fails.
+func (c *Context) CUDAContext() unsafe.Pointer {
+	if c.closed.Load() {
+		return nil
+	}
+	var cuCtx C.CUcontext
+	// cuCtxGetCurrent is a Driver API call that works alongside Runtime API.
+	if rc := C.cuCtxGetCurrent(&cuCtx); rc != C.CUDA_SUCCESS {
+		return nil
+	}
+	return unsafe.Pointer(cuCtx)
+}
+
 // ensureLanczosTemp ensures the Lanczos-3 temporary float32 device buffer is
 // at least `needed` floats in size. Lazily allocates or grows as required.
 // Must be called under the same serialization as scale_lanczos3_nv12 (i.e.

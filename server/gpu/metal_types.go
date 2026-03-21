@@ -127,6 +127,9 @@ func (c *Context) Pool() *FramePool {
 	return c.mtl.Pool()
 }
 
+// CUDAContext returns nil on Metal builds (no CUDA).
+func (c *Context) CUDAContext() unsafe.Pointer { return nil }
+
 // GPUFrame holds a single NV12 frame in Metal GPU memory.
 // On Apple Silicon, the buffer is in unified memory — CPU and GPU
 // can both access it directly with zero-copy.

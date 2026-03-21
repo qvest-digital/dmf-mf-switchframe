@@ -11,7 +11,9 @@ cudaError_t pip_composite_nv12(
     uint8_t* dst, int dstW, int dstH, int dstPitch,
     const uint8_t* src, int srcW, int srcH, int srcPitch,
     int rectX, int rectY, int rectW, int rectH,
-    int alpha256, cudaStream_t stream);
+    int alpha256,
+    int cropX, int cropY, int cropW, int cropH,
+    cudaStream_t stream);
 cudaError_t draw_border_nv12(
     uint8_t* dst, int dstW, int dstH, int dstPitch,
     int rectX, int rectY, int rectW, int rectH,
@@ -54,18 +56,12 @@ func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) er
 // composites it into a destination frame at the specified rectangle.
 // cropX/cropY/cropW/cropH define the source crop region; 0,0,0,0 means use
 // the full source (backward compatible with PIPComposite).
-// NOTE: CUDA path does not yet support crop — non-zero crop is ignored.
+// All crop coordinates must be even-aligned for YUV420 correctness.
 func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64,
 	cropX, cropY, cropW, cropH int) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
-
-	// CUDA kernel does not yet support crop params — ignored for now.
-	_ = cropX
-	_ = cropY
-	_ = cropW
-	_ = cropH
 
 	alpha256 := int(alpha * 256.0)
 	if alpha256 < 0 {
@@ -81,6 +77,7 @@ func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha flo
 		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
 		C.int(rect.X), C.int(rect.Y), C.int(rect.W), C.int(rect.H),
 		C.int(alpha256),
+		C.int(cropX), C.int(cropY), C.int(cropW), C.int(cropH),
 		ctx.stream,
 	)
 	if rc != C.cudaSuccess {

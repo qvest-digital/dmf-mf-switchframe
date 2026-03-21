@@ -35,6 +35,22 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 // Close is a no-op stub.
 func (e *FFmpegEncoder) Close() {}
 
+// FFmpegHWFramesEncoder is a stub for builds without FFmpeg support.
+type FFmpegHWFramesEncoder struct{}
+
+// NewFFmpegHWFramesEncoder returns an error when FFmpeg is not available.
+func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegHWFramesEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// EncodeNV12CUDA is a stub that always returns an error.
+func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool) ([]byte, bool, error) {
+	return nil, false, errFFmpegDisabled
+}
+
+// Close is a no-op stub.
+func (e *FFmpegHWFramesEncoder) Close() {}
+
 // FFmpegDecoder is a stub for builds without FFmpeg support.
 type FFmpegDecoder struct{}
 

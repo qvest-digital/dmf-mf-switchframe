@@ -160,3 +160,53 @@ func TestGPUEncodeNilFrame(t *testing.T) {
 	_, _, err = enc.EncodeGPU(nil, false)
 	require.Error(t, err)
 }
+
+func TestGPUEncodeHWFrames(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	w, h := 640, 480
+	pool, err := NewFramePool(ctx, w, h, 2)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	frame, err := pool.Acquire()
+	require.NoError(t, err)
+	defer frame.Release()
+
+	// Upload a test pattern
+	testYUV := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		testYUV[i] = byte(i%220) + 16
+	}
+	for i := w * h; i < len(testYUV); i++ {
+		testYUV[i] = 128
+	}
+	err = Upload(ctx, frame, testYUV, w, h)
+	require.NoError(t, err)
+
+	// Create GPU encoder — should prefer hw_frames on CUDA
+	enc, err := NewGPUEncoder(ctx, w, h, 30, 1, 2_000_000)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	t.Logf("GPU encoder: hwFrames=%v, nativeVT=%v", enc.IsHWFrames(), enc.IsNativeVT())
+
+	// Encode multiple frames
+	var data []byte
+	for i := 0; i < 10; i++ {
+		frame.PTS = int64(i * 3000)
+		data, _, err = enc.EncodeGPU(frame, i == 0)
+		if err != nil {
+			t.Logf("HW frames encode frame %d: %v", i, err)
+			continue
+		}
+		if len(data) > 0 {
+			break
+		}
+	}
+	require.NotEmpty(t, data, "hw_frames encoder should produce output")
+	t.Logf("HW frames encode: %d bytes", len(data))
+	assert.True(t, len(data) > 4, "encoded data should be > 4 bytes")
+}

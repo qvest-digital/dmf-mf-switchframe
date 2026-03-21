@@ -115,6 +115,76 @@ func TestGPUScaleUpscale(t *testing.T) {
 	}
 }
 
+func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
+	// Verify that UV plane scaling preserves CbCr channel independence.
+	// Before the fix, the UV plane was scaled byte-by-byte, which mixed
+	// Cb and Cr values and caused color corruption.
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	srcW, srcH := 640, 480
+	dstW, dstH := 320, 240
+
+	srcPool, err := NewFramePool(ctx, srcW, srcH, 2)
+	require.NoError(t, err)
+	defer srcPool.Close()
+
+	dstPool, err := NewFramePool(ctx, dstW, dstH, 2)
+	require.NoError(t, err)
+	defer dstPool.Close()
+
+	src, err := srcPool.Acquire()
+	require.NoError(t, err)
+	defer src.Release()
+
+	dst, err := dstPool.Acquire()
+	require.NoError(t, err)
+	defer dst.Release()
+
+	// Create source with known UV pattern: Cb=50, Cr=200 everywhere.
+	// If scaling mixes channels, we'll see values in between.
+	srcYUV := make([]byte, srcW*srcH*3/2)
+	for i := 0; i < srcW*srcH; i++ {
+		srcYUV[i] = 128 // Y = mid-gray
+	}
+	// U (Cb) plane
+	uvStart := srcW * srcH
+	for i := 0; i < srcW/2*srcH/2; i++ {
+		srcYUV[uvStart+i] = 50 // Cb
+	}
+	// V (Cr) plane
+	crStart := uvStart + srcW/2*srcH/2
+	for i := 0; i < srcW/2*srcH/2; i++ {
+		srcYUV[crStart+i] = 200 // Cr
+	}
+
+	err = Upload(ctx, src, srcYUV, srcW, srcH)
+	require.NoError(t, err)
+
+	err = ScaleBilinear(ctx, dst, src)
+	require.NoError(t, err)
+
+	dstYUV := make([]byte, dstW*dstH*3/2)
+	err = Download(ctx, dstYUV, dst, dstW, dstH)
+	require.NoError(t, err)
+
+	// Check Cb and Cr values in the output. They should remain separated:
+	// Cb ≈ 50, Cr ≈ 200. If mixing occurred, both would be ~125.
+	dstUVStart := dstW * dstH
+	dstCrStart := dstUVStart + dstW/2*dstH/2
+
+	// Sample Cb values (should be ~50)
+	cbVal := dstYUV[dstUVStart+dstW/4*dstH/4/2+dstW/8]
+	assert.InDelta(t, 50, int(cbVal), 10, "Cb should be ~50 after scaling, got %d", cbVal)
+
+	// Sample Cr values (should be ~200)
+	crVal := dstYUV[dstCrStart+dstW/4*dstH/4/2+dstW/8]
+	assert.InDelta(t, 200, int(crVal), 10, "Cr should be ~200 after scaling, got %d", crVal)
+
+	t.Logf("UV-aware scale: Cb=%d (want ~50), Cr=%d (want ~200)", cbVal, crVal)
+}
+
 func TestGPUScaleNilArgs(t *testing.T) {
 	err := ScaleBilinear(nil, nil, nil)
 	require.ErrorIs(t, err, ErrGPUNotAvailable)

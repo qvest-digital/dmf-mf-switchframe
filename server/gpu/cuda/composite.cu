@@ -1,12 +1,14 @@
 #include "common.cuh"
 
-// PIP composite: scale source and place into destination region
+// PIP composite: scale source (or source crop region) and place into destination region
 // One thread per output pixel in the rect. Bilinear interpolation for scaling.
+// cropX/cropY/cropW/cropH define the source crop region; cropW=0 means full source.
 __global__ void pip_composite_y_kernel(
     uint8_t* __restrict__ dst, int dstW, int dstH, int dstPitch,
     const uint8_t* __restrict__ src, int srcW, int srcH, int srcPitch,
     int rectX, int rectY, int rectW, int rectH,
-    int alpha256)  // 0-256 for dissolve, 256 = opaque
+    int alpha256,  // 0-256 for dissolve, 256 = opaque
+    int cropX, int cropY, int cropW, int cropH)
 {
     int lx = blockIdx.x * blockDim.x + threadIdx.x;
     int ly = blockIdx.y * blockDim.y + threadIdx.y;
@@ -16,9 +18,15 @@ __global__ void pip_composite_y_kernel(
     int dy = rectY + ly;
     if (dx >= dstW || dy >= dstH || dx < 0 || dy < 0) return;
 
-    // Map local rect coords to source coords (float to avoid overflow)
-    float srcXf = (float)lx * (float)(srcW - 1) / (float)max(rectW - 1, 1);
-    float srcYf = (float)ly * (float)(srcH - 1) / (float)max(rectH - 1, 1);
+    // Determine source region: use crop rect if specified, otherwise full source.
+    int srcRegionX = (cropW > 0) ? cropX : 0;
+    int srcRegionY = (cropW > 0) ? cropY : 0;
+    int srcRegionW = (cropW > 0) ? cropW : srcW;
+    int srcRegionH = (cropW > 0) ? cropH : srcH;
+
+    // Map local rect coords to source crop region coords
+    float srcXf = (float)srcRegionX + (float)lx * (float)(srcRegionW - 1) / (float)max(rectW - 1, 1);
+    float srcYf = (float)srcRegionY + (float)ly * (float)(srcRegionH - 1) / (float)max(rectH - 1, 1);
     int sx = (int)srcXf;
     int sy = (int)srcYf;
     float fx = srcXf - sx;
@@ -46,11 +54,13 @@ __global__ void pip_composite_y_kernel(
 }
 
 // PIP composite for UV plane (NV12 interleaved, half resolution)
+// cropX/cropY/cropCW/cropCH are in chroma samples (halved from luma crop).
 __global__ void pip_composite_uv_kernel(
     uint8_t* __restrict__ dstUV, int dstW, int dstChromaH, int dstPitch,
     const uint8_t* __restrict__ srcUV, int srcW, int srcChromaH, int srcPitch,
     int rectX, int rectY, int rectCW, int rectCH,
-    int alpha256)
+    int alpha256,
+    int cropX, int cropY, int cropCW, int cropCH)
 {
     int lx = blockIdx.x * blockDim.x + threadIdx.x;
     int ly = blockIdx.y * blockDim.y + threadIdx.y;
@@ -60,13 +70,16 @@ __global__ void pip_composite_uv_kernel(
     int dy = rectY / 2 + ly;
     if (dx + 1 >= dstW || dy >= dstChromaH || dx < 0 || dy < 0) return;
 
-    // Map to source chroma coords
-    float srcXf = (float)lx * (float)(srcW / 2 - 1) / (float)max(rectCW - 1, 1);
-    float srcYf = (float)ly * (float)(srcChromaH - 1) / (float)max(rectCH - 1, 1);
-    int sx = (int)srcXf;
-    int sy = (int)srcYf;
-    sx = min(sx, srcW / 2 - 1);
-    sy = min(sy, srcChromaH - 1);
+    // Determine source chroma region: use crop rect if specified, otherwise full source.
+    int srcChromaX = (cropCW > 0) ? cropX : 0;
+    int srcChromaY = (cropCW > 0) ? cropY : 0;
+    int srcChromaW = (cropCW > 0) ? cropCW : srcW / 2;
+    int srcChromaHR = (cropCW > 0) ? cropCH : srcChromaH;
+
+    float srcXf = (float)srcChromaX + (float)lx * (float)(srcChromaW - 1) / (float)max(rectCW - 1, 1);
+    float srcYf = (float)srcChromaY + (float)ly * (float)(srcChromaHR - 1) / (float)max(rectCH - 1, 1);
+    int sx = min((int)srcXf, srcW / 2 - 1);
+    int sy = min((int)srcYf, srcChromaH - 1);
 
     int srcIdx = sy * srcPitch + sx * 2;
     int dstIdx = dy * dstPitch + (rectX / 2) * 2 + lx * 2;
@@ -147,7 +160,9 @@ cudaError_t pip_composite_nv12(
     uint8_t* dst, int dstW, int dstH, int dstPitch,
     const uint8_t* src, int srcW, int srcH, int srcPitch,
     int rectX, int rectY, int rectW, int rectH,
-    int alpha256, cudaStream_t stream)
+    int alpha256,
+    int cropX, int cropY, int cropW, int cropH,
+    cudaStream_t stream)
 {
     dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
 
@@ -156,17 +171,23 @@ cudaError_t pip_composite_nv12(
     pip_composite_y_kernel<<<gridY, block, 0, stream>>>(
         dst, dstW, dstH, dstPitch,
         src, srcW, srcH, srcPitch,
-        rectX, rectY, rectW, rectH, alpha256);
+        rectX, rectY, rectW, rectH, alpha256,
+        cropX, cropY, cropW, cropH);
 
-    // UV plane
+    // UV plane: chroma crop is halved from luma crop
     int chromaRW = rectW / 2;
     int chromaRH = rectH / 2;
+    int chromaCropX = cropX / 2;
+    int chromaCropY = cropY / 2;
+    int chromaCropW = cropW / 2;
+    int chromaCropH = cropH / 2;
     if (chromaRW > 0 && chromaRH > 0) {
         dim3 gridUV((chromaRW + block.x - 1) / block.x, (chromaRH + block.y - 1) / block.y);
         pip_composite_uv_kernel<<<gridUV, block, 0, stream>>>(
             dst + dstPitch * dstH, dstW, dstH / 2, dstPitch,
             src + srcPitch * srcH, srcW, srcH / 2, srcPitch,
-            rectX, rectY, chromaRW, chromaRH, alpha256);
+            rectX, rectY, chromaRW, chromaRH, alpha256,
+            chromaCropX, chromaCropY, chromaCropW, chromaCropH);
     }
 
     return cudaGetLastError();
