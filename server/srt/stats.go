@@ -162,15 +162,26 @@ func (cs *ConnStats) ToSRTSourceInfo() SRTSourceInfo {
 	defer cs.mu.RUnlock()
 
 	return SRTSourceInfo{
-		Mode:        cs.mode,
-		StreamID:    cs.streamID,
-		RemoteAddr:  cs.remoteAddr,
-		LatencyMs:   cs.latencyMs,
-		RTTMs:       cs.rttMs,
-		LossRate:    cs.lossRatePct,
-		BitrateKbps: cs.recvRateMbps * 1000,
-		RecvBufMs:   cs.recvBufMs,
-		Connected:   cs.connected,
+		Mode:                 cs.mode,
+		StreamID:             cs.streamID,
+		RemoteAddr:           cs.remoteAddr,
+		LatencyMs:            cs.latencyMs,
+		NegotiatedLatencyMs:  cs.negotiatedLatencyMs,
+		RTTMs:                cs.rttMs,
+		RTTVarMs:             cs.rttVarMs,
+		LossRate:             cs.lossRatePct,
+		BitrateKbps:          cs.recvRateMbps * 1000,
+		RecvBufMs:            cs.recvBufMs,
+		RecvBufPackets:       cs.recvBufPackets,
+		FlightSize:           cs.flightSize,
+		Connected:            cs.connected,
+		UptimeMs:             time.Since(cs.startTime).Milliseconds(),
+		PacketsReceived:      cs.packetsReceived,
+		PacketsLost:          cs.packetsLost,
+		PacketsDropped:       cs.packetsDropped,
+		PacketsRetransmitted: cs.packetsRetransmitted,
+		PacketsBelated:       cs.packetsBelated,
+		ReconnectCount:       cs.reconnectCount,
 	}
 }
 

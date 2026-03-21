@@ -6,11 +6,22 @@ export interface SRTSourceInfo {
 	streamID: string;
 	remoteAddr?: string;
 	latencyMs: number;
+	negotiatedLatencyMs: number;
 	rttMs: number;
+	rttVarMs: number;
 	lossRate: number;
 	bitrateKbps: number;
 	recvBufMs: number;
+	recvBufPackets: number;
+	flightSize: number;
 	connected: boolean;
+	uptimeMs: number;
+	packetsReceived: number;
+	packetsLost: number;
+	packetsDropped: number;
+	packetsRetransmitted: number;
+	packetsBelated: number;
+	reconnectCount?: number;
 }
 
 export interface SourceInfo {

@@ -21,6 +21,8 @@
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import { formatBytes, computeOutputHealth } from '$lib/util/srt-health';
+	import SRTHealthDot from './SRTHealthDot.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -77,13 +79,6 @@
 		} catch {
 			// Ignore clipboard errors
 		}
-	}
-
-	function fmtBytes(bytes: number): string {
-		if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
-		if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
-		if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
-		return `${bytes} B`;
 	}
 
 	function fmtDuration(secs: number): string {
@@ -323,6 +318,20 @@
 	let recording = $derived(crState.recording);
 	let legacySRT = $derived(crState.srtOutput);
 
+	let outputHealth = $derived(computeOutputHealth(destinations));
+
+	// --- Per-destination health level ---
+	function destHealthLevel(dest: DestinationInfo): 'green' | 'yellow' | 'red' | 'gray' {
+		if (dest.state === 'error' || dest.error) return 'red';
+		if (dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening') {
+			if ((dest.droppedPackets ?? 0) > 100) return 'red';
+			if ((dest.droppedPackets ?? 0) > 0) return 'yellow';
+			return 'green';
+		}
+		if (dest.state === 'reconnecting' || dest.state === 'starting') return 'yellow';
+		return 'gray';
+	}
+
 	// Available SRT output ports: allocated ports minus already-in-use listener ports.
 	let usedListenerPorts = $derived(
 		new Set(
@@ -465,7 +474,7 @@
 											</div>
 											<div class="detail-row">
 												<span class="detail-label">Recv Buf</span>
-												<span class="detail-value mono">{stats.recvBufMs} ms ({stats.recvBufPackets} pkts)</span>
+												<span class="detail-value mono">{stats.recvBufMs.toFixed(1)} ms ({stats.recvBufPackets} pkts)</span>
 											</div>
 											<div class="detail-row">
 												<span class="detail-label">Flight Size</span>
@@ -587,6 +596,9 @@
 			>
 				<span class="section-chevron">{outputsExpanded ? '\u25BE' : '\u25B8'}</span>
 				<span class="section-label">OUTPUTS ({destinations.length + (legacySRT?.active ? 1 : 0)})</span>
+				{#if outputHealth}
+					<SRTHealthDot level={outputHealth} />
+				{/if}
 			</button>
 
 			{#if outputsExpanded}
@@ -598,7 +610,7 @@
 								<span class="type-badge type-srt">Legacy SRT</span>
 								<span class="row-label">{legacySRT.address ?? 'SRT'}:{legacySRT.port ?? ''}</span>
 								<span class="status-dot {destStateClass(legacySRT.state ?? 'stopped')}"></span>
-								<span class="row-detail">{legacySRT.bytesWritten != null ? fmtBytes(legacySRT.bytesWritten) : ''}</span>
+								<span class="row-detail">{legacySRT.bytesWritten != null ? formatBytes(legacySRT.bytesWritten) : ''}</span>
 								<button class="action-btn stop" onclick={handleStopLegacySRT} title="Stop">&#x23F9;</button>
 							</div>
 						</div>
@@ -614,8 +626,8 @@
 								>
 									<span class="type-badge type-srt">{destTypeBadge(dest)}</span>
 									<span class="row-label">{dest.name || `${dest.address ?? ''}:${dest.port}`}</span>
-									<span class="status-dot {destStateClass(dest.state)}"></span>
-									<span class="row-detail">{dest.bytesWritten != null ? fmtBytes(dest.bytesWritten) : ''}</span>
+									<SRTHealthDot level={destHealthLevel(dest)} />
+									<span class="row-detail">{dest.bytesWritten != null ? formatBytes(dest.bytesWritten) : ''}</span>
 									<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
 								</button>
 								<button
@@ -644,6 +656,10 @@
 										<span class="detail-label">Type</span>
 										<span class="detail-value">{dest.type}</span>
 									</div>
+									<div class="detail-row">
+										<span class="detail-label">State</span>
+										<span class="detail-value {destStateClass(dest.state)}">{dest.state}</span>
+									</div>
 									{#if dest.address}
 										<div class="detail-row">
 											<span class="detail-label">Address</span>
@@ -661,10 +677,16 @@
 											<span class="detail-value mono">{dest.connections}</span>
 										</div>
 									{/if}
+									{#if dest.bytesWritten != null}
+										<div class="detail-row">
+											<span class="detail-label">Written</span>
+											<span class="detail-value mono">{formatBytes(dest.bytesWritten)}</span>
+										</div>
+									{/if}
 									{#if dest.droppedPackets != null}
 										<div class="detail-row">
 											<span class="detail-label">Dropped</span>
-											<span class="detail-value mono">{dest.droppedPackets} packets</span>
+											<span class="detail-value mono {dest.droppedPackets > 100 ? 'val-red' : dest.droppedPackets > 0 ? 'val-yellow' : ''}">{dest.droppedPackets.toLocaleString()} packets</span>
 										</div>
 									{/if}
 									{#if dest.error}
@@ -788,7 +810,7 @@
 								<span class="rec-duration">{fmtDuration(recording.durationSecs)}</span>
 							{/if}
 							{#if recording.bytesWritten != null}
-								<span class="rec-bytes">{fmtBytes(recording.bytesWritten)}</span>
+								<span class="rec-bytes">{formatBytes(recording.bytesWritten)}</span>
 							{/if}
 						{:else}
 							<span class="rec-dot inactive"></span>
@@ -1110,6 +1132,34 @@
 
 	.detail-value.error {
 		color: var(--color-error);
+	}
+
+	.detail-value.healthy {
+		color: #22c55e;
+	}
+
+	.detail-value.stale {
+		color: #eab308;
+	}
+
+	.detail-value.offline {
+		color: #ef4444;
+	}
+
+	.detail-value.inactive {
+		color: var(--text-tertiary);
+	}
+
+	.val-green {
+		color: #22c55e;
+	}
+
+	.val-yellow {
+		color: #eab308;
+	}
+
+	.val-red {
+		color: #ef4444;
 	}
 
 	/* --- Editable fields --- */

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import SourceTile from './SourceTile.svelte';
+	import SRTStatsPopover from './SRTStatsPopover.svelte';
 	import { cut, apiCall } from '$lib/api/switch-api';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
@@ -8,8 +9,19 @@
 		state: ControlRoomState;
 		onCut?: (key: string) => void;
 	}
-	let { state, onCut }: Props = $props();
-	let sourceKeys = $derived(sortedSourceKeys(state.sources));
+	let { state: crState, onCut }: Props = $props();
+	let sourceKeys = $derived(sortedSourceKeys(crState.sources));
+	let srtPopoverKey: string | null = $state(null);
+	let srtPopoverPos = $state({ x: 0, y: 0 });
+
+	function handleSRTClick(key: string, e: MouseEvent) {
+		if (srtPopoverKey === key) {
+			srtPopoverKey = null;
+		} else {
+			srtPopoverKey = key;
+			srtPopoverPos = { x: e.clientX, y: e.clientY - 10 };
+		}
+	}
 </script>
 
 <div class="bus program-bus">
@@ -18,16 +30,27 @@
 	<div class="bus-buttons">
 		{#each sourceKeys as key, i}
 			<SourceTile
-				source={state.sources[key]}
-				tally={state.programSource === key ? 'program' : 'idle'}
+				source={crState.sources[key]}
+				tally={crState.programSource === key ? 'program' : 'idle'}
 				index={i}
-				audioLevelDb={state.audioChannels?.[key] ? Math.max(state.audioChannels[key].peakL, state.audioChannels[key].peakR) : undefined}
-				layoutSlots={state.layout?.slots}
+				audioLevelDb={crState.audioChannels?.[key] ? Math.max(crState.audioChannels[key].peakL, crState.audioChannels[key].peakR) : undefined}
+				layoutSlots={crState.layout?.slots}
 				onclick={() => onCut ? onCut(key) : apiCall(cut(key), 'Cut failed')}
+				onSRTClick={crState.sources[key]?.srt ? (e) => handleSRTClick(key, e) : undefined}
 			/>
 		{/each}
 	</div>
 </div>
+
+{#if srtPopoverKey && crState.sources[srtPopoverKey]?.srt}
+	<SRTStatsPopover
+		srt={crState.sources[srtPopoverKey].srt!}
+		sourceLabel={crState.sources[srtPopoverKey].label || srtPopoverKey}
+		x={srtPopoverPos.x}
+		y={srtPopoverPos.y}
+		onclose={() => srtPopoverKey = null}
+	/>
+{/if}
 
 <style>
 	.bus {
