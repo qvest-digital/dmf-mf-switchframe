@@ -49,7 +49,10 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 	defer ctx.mu.Unlock()
 
 	// Lazily allocate or grow persistent staging buffers.
-	if ctx.stagingSize < ySize {
+	// Track both Y and chroma sizes separately for safety — even though
+	// cbSize is always ySize/4 for YUV420p, explicit tracking prevents
+	// bugs if assumptions change.
+	if ctx.stagingSize < ySize || ctx.stagingCbSize < cbSize {
 		if ctx.stagingY != nil {
 			C.cudaFree(ctx.stagingY)
 			ctx.stagingY = nil
@@ -72,6 +75,7 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 			return fmt.Errorf("gpu: upload: alloc staging Cr failed: %d", rc)
 		}
 		ctx.stagingSize = ySize
+		ctx.stagingCbSize = cbSize
 	}
 
 	// Copy planar data from host to persistent staging buffers (async so the

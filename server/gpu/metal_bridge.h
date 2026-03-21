@@ -29,6 +29,7 @@ MetalResult metal_init(MetalDeviceRef* device, MetalQueueRef* queue, MetalLibrar
                        const char* metallib_path);
 void metal_release(MetalDeviceRef device, MetalQueueRef queue, MetalLibraryRef library);
 MetalQueueRef metal_create_queue(MetalDeviceRef device);
+void metal_queue_release(MetalQueueRef queue);
 const char* metal_device_name(MetalDeviceRef device);
 uint64_t metal_device_memory(MetalDeviceRef device);
 

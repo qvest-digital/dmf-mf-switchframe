@@ -42,7 +42,8 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 	defer ctx.mu.Unlock()
 
 	// Lazily allocate or grow persistent staging buffers.
-	if ctx.stagingSize < ySize {
+	// Track both Y and chroma sizes separately for safety.
+	if ctx.stagingSize < ySize || ctx.stagingCbSize < cbSize {
 		if ctx.stagingY != nil {
 			C.cudaFree(ctx.stagingY)
 			ctx.stagingY = nil
@@ -65,6 +66,7 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 			return fmt.Errorf("gpu: download: alloc staging Cr failed: %d", rc)
 		}
 		ctx.stagingSize = ySize
+		ctx.stagingCbSize = cbSize
 	}
 
 	// Launch conversion kernel: NV12 → YUV420p into persistent staging buffers.

@@ -26,10 +26,12 @@ func NewWorkQueue(ctx *Context) (*GPUWorkQueue, error) {
 	return &GPUWorkQueue{handle: uintptr(unsafe.Pointer(queue))}, nil
 }
 
-// CloseWorkQueue releases the work queue. On Metal, ARC manages the
-// underlying MTLCommandQueue lifetime, so we just zero the handle.
+// CloseWorkQueue releases the work queue. Under MRC (-fno-objc-arc),
+// the MTLCommandQueue created by [dev newCommandQueue] is retained and
+// must be explicitly released via CFRelease.
 func CloseWorkQueue(q *GPUWorkQueue) {
-	if q != nil {
+	if q != nil && q.handle != 0 {
+		C.metal_queue_release(C.MetalQueueRef(unsafe.Pointer(q.handle)))
 		q.handle = 0
 	}
 }

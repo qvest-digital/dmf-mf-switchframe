@@ -34,6 +34,7 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 }
 
 // CopyGPUFrame is a no-op on non-GPU builds.
+// TODO: Change signature to return error instead of silently no-opping.
 func CopyGPUFrame(dst, src *GPUFrame) {}
 
 // CopyGPUFrameOn returns ErrGPUNotAvailable on non-GPU builds.

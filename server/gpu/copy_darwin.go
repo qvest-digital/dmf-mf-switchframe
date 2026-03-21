@@ -19,6 +19,9 @@ import (
 //
 // On Apple Silicon, contentsPtr() returns a CPU-accessible pointer to the
 // Metal buffer's unified memory, so a simple memcpy suffices.
+//
+// TODO: Change signature to return error instead of silently logging on mismatch.
+// This requires updating all callers across the codebase.
 func CopyGPUFrame(dst, src *GPUFrame) {
 	if dst.Pitch != src.Pitch || dst.Height != src.Height {
 		slog.Error("CopyGPUFrame: dimension mismatch",

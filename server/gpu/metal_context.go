@@ -176,7 +176,10 @@ func (c *metalContext) Close() error {
 
 // ensureLanczosTemp ensures the Lanczos-3 temporary float32 buffer is
 // large enough for the given number of floats. Grows but never shrinks.
+// Thread-safe: acquires c.mu to protect lazy allocation.
 func (c *metalContext) ensureLanczosTemp(needed int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if needed <= c.lanczosTmpSize {
 		return nil
 	}

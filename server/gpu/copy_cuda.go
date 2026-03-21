@@ -20,6 +20,9 @@ import (
 // stream) followed by cudaStreamSynchronize to ensure the copy completes
 // before returning. This replaces the old cudaMemcpy (null stream) approach
 // which could race with kernel launches on non-blocking streams.
+//
+// TODO: Change signature to return error instead of silently logging on mismatch.
+// This requires updating all callers across the codebase.
 func CopyGPUFrame(dst, src *GPUFrame) {
 	if dst.Pitch != src.Pitch || dst.Height != src.Height {
 		slog.Error("CopyGPUFrame: dimension mismatch",

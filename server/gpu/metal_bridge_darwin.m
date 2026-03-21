@@ -149,6 +149,10 @@ MetalQueueRef metal_create_queue(MetalDeviceRef device) {
     return (MetalQueueRef)q;
 }
 
+void metal_queue_release(MetalQueueRef queue) {
+    if (queue) CFRelease(queue);
+}
+
 const char* metal_device_name(MetalDeviceRef device) {
     id<MTLDevice> dev = (id<MTLDevice>)device;
     // Returns a pointer into the NSString's UTF8 buffer — valid for the device's lifetime.
@@ -589,8 +593,6 @@ typedef struct VTEncoderState {
     int outputLen;
     int outputIsIDR;
     dispatch_semaphore_t sem;  // synchronize async callback
-    // Cached CVPixelBuffer — reused across frames to avoid per-frame IOSurface allocation.
-    CVPixelBufferRef cachedPixelBuffer;
 } VTEncoderState;
 
 static void vtOutputCallback(void *outputCallbackRefCon,
@@ -759,11 +761,7 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
     VTSessionSetProperty(session, kVTCompressionPropertyKey_ExpectedFrameRate, fpsRef);
     CFRelease(fpsRef);
 
-    // No B-frames for zero-latency
-    int maxBFrames = 0;
-    CFNumberRef bRef = CFNumberCreate(NULL, kCFNumberIntType, &maxBFrames);
-    VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, NULL);
-    CFRelease(bRef);
+    // No B-frames already enforced by AllowFrameReordering = kCFBooleanFalse above.
 
     VTCompressionSessionPrepareToEncodeFrames(session);
 
@@ -778,9 +776,6 @@ void metal_vt_encoder_destroy(VTEncoderRef enc) {
         VTCompressionSessionCompleteFrames(state->session, kCMTimeInvalid);
         VTCompressionSessionInvalidate(state->session);
         CFRelease(state->session);
-    }
-    if (state->cachedPixelBuffer) {
-        CVPixelBufferRelease(state->cachedPixelBuffer);
     }
     if (state->outputBuf) free(state->outputBuf);
     dispatch_release(state->sem);

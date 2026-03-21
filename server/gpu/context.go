@@ -56,10 +56,11 @@ type Context struct {
 	// Persistent staging buffers for Upload/Download — lazily allocated
 	// on first use, freed in Close(). Avoids 180 cudaMalloc/cudaFree per
 	// second at 30fps (6 allocs per upload + 6 per download × 30fps).
-	stagingY    unsafe.Pointer
-	stagingCb   unsafe.Pointer
-	stagingCr   unsafe.Pointer
-	stagingSize int // size of each of the three staging buffers (Y size)
+	stagingY      unsafe.Pointer
+	stagingCb     unsafe.Pointer
+	stagingCr     unsafe.Pointer
+	stagingSize   int // Y plane size (width * height)
+	stagingCbSize int // chroma plane size ((width/2) * (height/2))
 
 	// Persistent staging buffer for UploadV210/DownloadV210.
 	// Lazily allocated under ctx.mu, freed in Close().
@@ -137,6 +138,7 @@ func (c *Context) Close() error {
 	if c.stream != nil {
 		C.cudaStreamDestroy(c.stream)
 		c.stream = nil
+		defaultCUDAStream = nil
 	}
 	if c.encStream != nil {
 		C.cudaStreamDestroy(c.encStream)
@@ -156,6 +158,7 @@ func (c *Context) Close() error {
 		c.stagingCr = nil
 	}
 	c.stagingSize = 0
+	c.stagingCbSize = 0
 	if c.stagingV210 != nil {
 		C.cudaFree(c.stagingV210)
 		c.stagingV210 = nil
