@@ -390,6 +390,5 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 	}
 }
 
-// previewLoop and queuePreviewFrame are defined in platform-specific files:
-// - source_manager_preview_darwin.go (CPU scale + Upload)
-// - source_manager_preview_cuda.go (GPU frame copy + ScaleBilinear + NVENC)
+// previewLoop, queuePreviewFrame, and scaleYUV420pCPU are defined in
+// source_manager_preview.go (unified GPU frame copy + ScaleBilinearOn + encode).

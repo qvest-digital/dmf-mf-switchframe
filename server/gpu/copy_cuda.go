@@ -79,34 +79,3 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
-// CopyGPUFrameOnStream copies NV12 data from src to dst on a specific CUDA
-// stream. Both frames must have the same dimensions and pitch.
-// The copy is asynchronous — the caller must synchronize the stream before
-// reading the destination data.
-//
-// Deprecated: Use CopyGPUFrameOn with a GPUWorkQueue instead.
-func CopyGPUFrameOnStream(dst, src *GPUFrame, stream C.cudaStream_t) error {
-	if dst.Pitch != src.Pitch || dst.Height != src.Height {
-		return fmt.Errorf("CopyGPUFrameOnStream: dimension mismatch: dst=%dx%d p=%d src=%dx%d p=%d",
-			dst.Width, dst.Height, dst.Pitch, src.Width, src.Height, src.Pitch)
-	}
-
-	size := C.size_t(src.Pitch * src.Height * 3 / 2)
-	rc := C.cudaMemcpyAsync(
-		unsafe.Pointer(uintptr(dst.DevPtr)),
-		unsafe.Pointer(uintptr(src.DevPtr)),
-		size,
-		C.cudaMemcpyDeviceToDevice,
-		stream,
-	)
-	if rc != C.cudaSuccess {
-		return fmt.Errorf("CopyGPUFrameOnStream: cudaMemcpyAsync failed: %d", rc)
-	}
-	return nil
-}
-
-// LockGPUOp / UnlockGPUOp are no-ops — CUDA stream serialization replaces
-// the old mutex-based approach. Retained for API compatibility with callers
-// that haven't been updated yet.
-func LockGPUOp()   {}
-func UnlockGPUOp() {}

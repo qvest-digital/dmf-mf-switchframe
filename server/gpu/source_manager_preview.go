@@ -1,22 +1,21 @@
-//go:build cgo && cuda
+//go:build darwin || (cgo && cuda)
 
 package gpu
 
 import "log/slog"
 
 // previewGPUFrame carries a private GPU frame copy to the preview goroutine.
-// On CUDA, GPU ScaleBilinear + NVENC encode runs entirely in VRAM.
-// CUDA's ctx.mu serialization prevents the command queue interleaving
-// that caused corruption on Metal.
+// The GPU frame copy ensures the preview goroutine can scale+encode without
+// racing with the main pipeline's access to the source's current frame.
 type previewGPUFrame struct {
 	frame *GPUFrame
 	pts   int64
 }
 
 // queuePreviewFrame sends a GPU frame copy to the preview goroutine.
-// CUDA path: copies the NV12 frame to a private GPU buffer (device-to-device
-// cudaMemcpy), then the preview goroutine does GPU scale + NVENC encode
-// entirely in VRAM — no CPU pixel processing.
+// Copies the NV12 frame to a private GPU buffer (device-to-device on CUDA,
+// unified memory memcpy on Metal), then the preview goroutine does GPU
+// scale + encode entirely in VRAM.
 func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ int, _ int, pts int64) {
 	if entry.prevCh == nil {
 		return
@@ -51,6 +50,30 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 		case entry.prevCh <- any(pf):
 		default:
 			previewFrame.Release()
+		}
+	}
+}
+
+// previewLoop reads GPU frame copies and encodes via PreviewEncoder.Encode().
+// Scale + encode run on the preview encoder's dedicated work queue, enabling
+// concurrent GPU execution with the program pipeline.
+func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
+	defer close(entry.prevDone)
+
+	forceIDR := true
+	for item := range entry.prevCh {
+		pf := item.(*previewGPUFrame)
+		data, isIDR, err := entry.prevEnc.Encode(pf.frame, forceIDR)
+		pf.frame.Release()
+
+		if err != nil {
+			slog.Warn("gpu: source manager: preview encode failed",
+				"source", sourceKey, "error", err)
+			continue
+		}
+		forceIDR = false
+		if len(data) > 0 && entry.onPreview != nil {
+			entry.onPreview(data, isIDR, pf.pts)
 		}
 	}
 }
@@ -107,33 +130,6 @@ func scaleYUV420pCPU(dst []byte, dstW, dstH int, src []byte, srcW, srcH int) {
 				sx = srcCW - 1
 			}
 			dst[dstCrOff+dy*dstCW+dx] = src[srcCrOff+sy*srcCW+sx]
-		}
-	}
-}
-
-// previewLoop reads GPU frame copies and encodes via PreviewEncoder.Encode().
-// CUDA path: GPU ScaleBilinear + NVENC encode — zero CPU pixel processing.
-// Each preview encoder has its own CUDA stream, so scale + encode operations
-// run concurrently with the program pipeline without mutex serialization.
-func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
-	defer close(entry.prevDone)
-
-	forceIDR := true
-	for item := range entry.prevCh {
-		pf := item.(*previewGPUFrame)
-		// PreviewEncoder.Encode() runs scale + encode on its own CUDA stream.
-		// No mutex needed — stream serialization handles concurrent GPU access.
-		data, isIDR, err := entry.prevEnc.Encode(pf.frame, forceIDR)
-		pf.frame.Release()
-
-		if err != nil {
-			slog.Warn("gpu: source manager: preview encode failed",
-				"source", sourceKey, "error", err)
-			continue
-		}
-		forceIDR = false
-		if len(data) > 0 && entry.onPreview != nil {
-			entry.onPreview(data, isIDR, pf.pts)
 		}
 	}
 }

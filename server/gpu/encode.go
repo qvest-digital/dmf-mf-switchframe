@@ -174,47 +174,6 @@ func (e *GPUEncoder) EncodeGPUOn(frame *GPUFrame, forceIDR bool, q *GPUWorkQueue
 	return data, isIDR, nil
 }
 
-// EncodeGPUOnStream encodes a GPU-resident NV12 frame using a specific CUDA
-// stream for the device-to-device copy into FFmpeg's hw_frame. This enables
-// preview encoders to run on their own streams without blocking the main
-// pipeline's encode operations.
-//
-// Deprecated: Use EncodeGPUOn with a GPUWorkQueue instead.
-func (e *GPUEncoder) EncodeGPUOnStream(frame *GPUFrame, forceIDR bool, stream C.cudaStream_t) ([]byte, bool, error) {
-	if frame == nil {
-		return nil, false, fmt.Errorf("gpu: encode: nil frame")
-	}
-
-	// Zero-copy path: pass CUDA device pointers directly to NVENC.
-	// Use the provided stream for device-to-device copies.
-	if e.hwEnc != nil {
-		yDevPtr := unsafe.Pointer(uintptr(frame.DevPtr))
-		uvDevPtr := unsafe.Pointer(uintptr(frame.DevPtr) + uintptr(frame.Pitch*frame.Height))
-
-		data, isIDR, err := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, frame.Pitch, frame.PTS, forceIDR, unsafe.Pointer(stream))
-		if err != nil {
-			return nil, false, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
-		}
-		return data, isIDR, nil
-	}
-
-	// Fallback: download GPU NV12 → CPU YUV420p, then encode
-	e.cpuBufMu.Lock()
-	err := Download(e.gpuCtx, e.cpuBuf, frame, frame.Width, frame.Height)
-	if err != nil {
-		e.cpuBufMu.Unlock()
-		return nil, false, fmt.Errorf("gpu: encode: download failed: %w", err)
-	}
-
-	data, isIDR, encErr := e.ffEnc.Encode(e.cpuBuf, frame.PTS, forceIDR)
-	e.cpuBufMu.Unlock()
-
-	if encErr != nil {
-		return nil, false, fmt.Errorf("gpu: encode failed: %w", encErr)
-	}
-	return data, isIDR, nil
-}
-
 // EncodeCPU encodes a CPU-side YUV420p frame (passthrough to underlying encoder).
 // Used when frames are already on CPU (e.g., MXL raw input, CPU pipeline fallback).
 func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {

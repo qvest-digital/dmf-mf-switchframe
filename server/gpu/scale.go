@@ -71,20 +71,6 @@ func ScaleBilinearOn(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
-// ScaleBilinearOnStream scales an NV12 GPU frame using bilinear interpolation
-// on a caller-specified CUDA stream. This enables concurrent scaling on
-// different streams (e.g., preview encoders run on their own streams without
-// blocking the main pipeline).
-//
-// Deprecated: Use ScaleBilinearOn with a GPUWorkQueue instead.
-func ScaleBilinearOnStream(ctx *Context, dst, src *GPUFrame, stream C.cudaStream_t) error {
-	if ctx == nil || dst == nil || src == nil {
-		return ErrGPUNotAvailable
-	}
-	q := &GPUWorkQueue{handle: uintptr(unsafe.Pointer(stream))}
-	return ScaleBilinearOn(ctx, dst, src, q)
-}
-
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3
 // kernel. It allocates (and caches on the Context) a temporary float device
 // buffer sized dstW * srcH floats, sufficient for both Y and UV passes.

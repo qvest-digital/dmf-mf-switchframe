@@ -39,6 +39,3 @@ func CopyGPUFrame(dst, src *GPUFrame) {}
 // CopyGPUFrameOn returns ErrGPUNotAvailable on non-GPU builds.
 func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error { return ErrGPUNotAvailable }
 
-// LockGPUOp / UnlockGPUOp are no-ops on non-GPU builds.
-func LockGPUOp()   {}
-func UnlockGPUOp() {}

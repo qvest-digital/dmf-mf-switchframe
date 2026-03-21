@@ -780,10 +780,10 @@ func TestErrGPUNotAvailableMessage(t *testing.T) {
 }
 
 // ============================================================================
-// Staging buffer caching test (I3)
+// Direct CPU download test (I3)
 // ============================================================================
 
-func TestMetalStagingBufferReuse(t *testing.T) {
+func TestMetalDownloadDirectCPU(t *testing.T) {
 	ctx, err := NewContext()
 	if err != nil {
 		t.Skipf("Metal not available: %v", err)
@@ -807,25 +807,33 @@ func TestMetalStagingBufferReuse(t *testing.T) {
 		yuv[i] = byte(i % 256)
 	}
 
-	// Upload twice — second should reuse staging buffers
+	// Upload then download — uses direct CPU read (no staging buffers)
 	err = Upload(ctx, frame, yuv, width, height)
 	require.NoError(t, err)
 
-	err = Upload(ctx, frame, yuv, width, height)
-	require.NoError(t, err)
-
-	// Download twice — should also reuse
 	out := make([]byte, len(yuv))
 	err = Download(ctx, out, frame, width, height)
 	require.NoError(t, err)
 
-	err = Download(ctx, out, frame, width, height)
+	// Verify round-trip correctness
+	for i := 0; i < ySize; i++ {
+		assert.Equal(t, yuv[i], out[i], "Y mismatch at index %d", i)
+	}
+	for i := 0; i < cbSize; i++ {
+		assert.Equal(t, yuv[ySize+i], out[ySize+i], "Cb mismatch at index %d", i)
+	}
+	for i := 0; i < crSize; i++ {
+		assert.Equal(t, yuv[ySize+cbSize+i], out[ySize+cbSize+i], "Cr mismatch at index %d", i)
+	}
+
+	// Download again to verify no state corruption
+	out2 := make([]byte, len(yuv))
+	err = Download(ctx, out2, frame, width, height)
 	require.NoError(t, err)
 
-	// Verify the staging buffer cache has an entry
-	ctx.mtl.stagingBufsMu.Lock()
-	assert.Len(t, ctx.mtl.stagingBufs, 1, "should have exactly 1 staging buffer set cached")
-	ctx.mtl.stagingBufsMu.Unlock()
+	for i := 0; i < len(yuv); i++ {
+		assert.Equal(t, out[i], out2[i], "repeat download mismatch at index %d", i)
+	}
 }
 
 // ============================================================================

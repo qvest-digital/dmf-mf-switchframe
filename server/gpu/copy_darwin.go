@@ -45,7 +45,3 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
-// LockGPUOp / UnlockGPUOp are no-ops on Metal.
-// Metal command queues handle serialization internally.
-func LockGPUOp()   {}
-func UnlockGPUOp() {}

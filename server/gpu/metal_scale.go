@@ -84,19 +84,6 @@ func ScaleBilinearOn(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
-// ScaleBilinearWithQueue is like ScaleBilinear but uses a dedicated command
-// queue instead of the shared context queue. This prevents command buffer
-// interleaving when multiple goroutines perform GPU work concurrently.
-//
-// Deprecated: Use ScaleBilinearOn with a GPUWorkQueue instead.
-func ScaleBilinearWithQueue(ctx *Context, dst, src *GPUFrame, queue C.MetalQueueRef) error {
-	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
-		return ErrGPUNotAvailable
-	}
-	q := &GPUWorkQueue{handle: uintptr(unsafe.Pointer(queue))}
-	return ScaleBilinearOn(ctx, dst, src, q)
-}
-
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3
 // kernel. It allocates (and caches on the Context) a temporary float buffer
 // sized dstW * srcH floats, sufficient for both Y and UV passes.

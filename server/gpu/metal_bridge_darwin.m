@@ -914,3 +914,36 @@ void metal_yuv420p_to_nv12_cpu(void* dst, int dstPitch,
         }
     }
 }
+
+// ============================================================================
+// Direct CPU NV12 → YUV420p conversion (Apple Silicon unified memory)
+// ============================================================================
+
+void metal_nv12_to_yuv420p_cpu(const void* src, int srcPitch,
+                                void* y, void* cb, void* cr,
+                                int width, int height) {
+    const uint8_t* srcBytes = (const uint8_t*)src;
+    uint8_t* yBytes = (uint8_t*)y;
+    uint8_t* cbBytes = (uint8_t*)cb;
+    uint8_t* crBytes = (uint8_t*)cr;
+
+    // Y plane: copy row-by-row (pitch may differ from width due to 256-byte alignment)
+    for (int row = 0; row < height; row++) {
+        memcpy(yBytes + row * width, srcBytes + row * srcPitch, width);
+    }
+
+    // UV plane: deinterleave NV12 CbCr pairs into planar Cb and Cr.
+    // On ARM64, Clang auto-vectorizes this with NEON vld2 (deinterleave load).
+    int chromaW = width / 2;
+    int chromaH = height / 2;
+    const uint8_t* uvSrc = srcBytes + srcPitch * height;
+    for (int row = 0; row < chromaH; row++) {
+        const uint8_t* uvRow = uvSrc + row * srcPitch;
+        uint8_t* cbRow = cbBytes + row * chromaW;
+        uint8_t* crRow = crBytes + row * chromaW;
+        for (int x = 0; x < chromaW; x++) {
+            cbRow[x] = uvRow[x * 2];
+            crRow[x] = uvRow[x * 2 + 1];
+        }
+    }
+}
