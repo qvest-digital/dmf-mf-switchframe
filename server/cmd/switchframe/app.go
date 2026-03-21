@@ -138,6 +138,9 @@ type App struct {
 	gpuRawVideoSink   *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for MXL output
 	gpuRawPreviewSink *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for preview output
 
+	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
+	segEngine *gpu.SegmentationEngine
+
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
 	scte35Rules    *scte35.RulesStore
@@ -1567,6 +1570,10 @@ func (a *App) closeSubsystems() {
 	}
 	if a.sw != nil {
 		a.sw.Close()
+	}
+	// AI segmentation engine cleanup before GPU (holds GPU resources).
+	if a.segEngine != nil {
+		a.segEngine.Close()
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
 	closeGPU(a.gpuState)

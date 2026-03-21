@@ -95,6 +95,9 @@ type AppConfig struct {
 	MXLOutputAudioDef string   // Path to output audio flow definition JSON
 	MXLDomain         string   // MXL shared memory domain path
 	MXLDiscover       bool     // List available MXL flows and exit
+
+	// AI segmentation.
+	AIModelPath string // Path to ONNX segmentation model (empty = disabled)
 }
 
 func main() {
@@ -232,6 +235,9 @@ func parseConfig() (AppConfig, error) {
 	mxlDomain := flag.String("mxl-domain", "/dev/shm/mxl", "MXL shared memory domain path")
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
 
+	// AI segmentation flags.
+	aiModelFlag := flag.String("ai-model", "", "Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT)")
+
 	flag.Parse()
 
 	// Parse SRT output port range if provided.
@@ -361,6 +367,7 @@ func parseConfig() (AppConfig, error) {
 		MXLDomain:            *mxlDomain,
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
+		AIModelPath:          *aiModelFlag,
 	}, nil
 }
 

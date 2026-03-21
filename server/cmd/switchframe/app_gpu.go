@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
@@ -85,6 +86,23 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// Register on switcher — gates CPU fill paths in handleRawVideoFrame.
 	sw.SetGPUSourceManager(sourceMgr)
 
+	// Initialize AI segmentation engine if model path is configured and backend is CUDA.
+	var segAdapter gpu.SegmentationState
+	if app.cfg.AIModelPath != "" && gs.ctx.Backend() == "cuda" {
+		segEngine, segErr := gpu.NewSegmentationEngine(gs.ctx, app.cfg.AIModelPath)
+		if segErr != nil {
+			slog.Warn("AI segmentation unavailable", "error", segErr)
+		} else {
+			sourceMgr.SetSegmentationEngine(segEngine)
+			app.segEngine = segEngine
+			segAdapter = &segmentationStateAdapter{
+				engine:   segEngine,
+				switcher: sw,
+			}
+			slog.Info("AI segmentation engine initialized", "model", app.cfg.AIModelPath)
+		}
+	}
+
 	// Create adapter types for state interfaces.
 	keyAdapter := &keyBridgeAdapter{bridge: app.keyBridge, sourceMgr: sourceMgr}
 	compositorAdapter := &compositorStateAdapter{compositor: app.compositor}
@@ -153,11 +171,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	}
 
 	// Build GPU pipeline node chain:
-	//   gpu_key → gpu_layout → gpu_compositor → gpu_stmap → raw_sinks → gpu_encode
+	//   gpu_key → gpu_layout → gpu_compositor → gpu_ai_segment → gpu_stmap → raw_sinks → gpu_encode
 	nodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
 		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
+		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter), // AI background replacement (nil on non-TensorRT)
 		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawVideoSink),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawPreviewSink),
@@ -607,3 +626,73 @@ func (a *layoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
 type gpuNoOpPreviewEncoder struct{}
 
 func (gpuNoOpPreviewEncoder) Send(_ []byte, _, _ int, _ int64) {}
+
+// --- Segmentation State Adapter ---
+
+// segmentationStateAdapter bridges SegmentationEngine + Switcher to the
+// gpu.SegmentationState interface consumed by gpuAISegmentNode.
+type segmentationStateAdapter struct {
+	engine   *gpu.SegmentationEngine
+	switcher *switcher.Switcher
+
+	// Per-source configs, managed by the REST API (Phase 4).
+	// For now, a simple map protected by a mutex.
+	mu      sync.Mutex
+	configs map[string]*gpu.AISegmentConfig
+}
+
+func (a *segmentationStateAdapter) HasEnabledSources() bool {
+	if a.engine == nil {
+		return false
+	}
+	// Check if the current program source has segmentation enabled.
+	progKey := a.switcher.ProgramSource()
+	if progKey == "" {
+		return false
+	}
+	return a.engine.IsEnabled(progKey)
+}
+
+func (a *segmentationStateAdapter) ProgramSourceKey() string {
+	return a.switcher.ProgramSource()
+}
+
+func (a *segmentationStateAdapter) MaskForSource(key string) *gpu.GPUFrame {
+	if a.engine == nil {
+		return nil
+	}
+	return a.engine.MaskForSource(key)
+}
+
+func (a *segmentationStateAdapter) ConfigForSource(key string) *gpu.AISegmentConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.configs == nil {
+		return nil
+	}
+	return a.configs[key]
+}
+
+// SetConfig sets the AI segmentation configuration for a source.
+// Called by the REST API (Phase 4) to configure background mode.
+func (a *segmentationStateAdapter) SetConfig(key string, cfg *gpu.AISegmentConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.configs == nil {
+		a.configs = make(map[string]*gpu.AISegmentConfig)
+	}
+	if cfg == nil {
+		delete(a.configs, key)
+	} else {
+		a.configs[key] = cfg
+	}
+}
+
+// DeleteConfig removes the AI segmentation configuration for a source.
+func (a *segmentationStateAdapter) DeleteConfig(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.configs != nil {
+		delete(a.configs, key)
+	}
+}
