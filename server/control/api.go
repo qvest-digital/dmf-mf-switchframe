@@ -219,6 +219,24 @@ type CaptionManagerAPI interface {
 	State() caption.State
 }
 
+// AISegmentManager is the interface for AI background segmentation operations.
+// This is implemented by an adapter in the app layer that bridges the GPU
+// SegmentationEngine with the per-source config store. All methods are
+// safe to call when the underlying engine is nil (non-GPU builds).
+type AISegmentManager interface {
+	// EnableAISegment configures and starts AI segmentation for a source.
+	// sensitivity: 0.0-1.0, edgeSmooth: 0.0-1.0, background: "" | "transparent" | "blur:N" | "color:RRGGBB"
+	EnableAISegment(source string, sensitivity, edgeSmooth float32, background string) error
+	// DisableAISegment stops AI segmentation for a source and frees GPU resources.
+	DisableAISegment(source string)
+	// GetAISegmentConfig returns the current AI segmentation config for a source.
+	// Returns (zero, false) if no config is set for this source.
+	GetAISegmentConfig(source string) (internal.AISegmentConfig, bool)
+	// IsAISegmentAvailable returns true when a GPU segmentation engine is present
+	// and the feature can be used.
+	IsAISegmentAvailable() bool
+}
+
 // CommsManagerAPI is the interface for operator voice comms operations.
 type CommsManagerAPI interface {
 	Join(operatorID, name string) error
@@ -255,6 +273,11 @@ func WithSRTManager(m SRTManager) APIOption {
 // WithCommsManager attaches a comms manager to the API.
 func WithCommsManager(cm CommsManagerAPI) APIOption {
 	return func(a *API) { a.commsMgr = cm }
+}
+
+// WithAISegmentManager attaches an AI segmentation manager to the API.
+func WithAISegmentManager(m AISegmentManager) APIOption {
+	return func(a *API) { a.aiSegmentMgr = m }
 }
 
 // WithSTMapRegistry attaches an ST map registry to the API.
@@ -324,6 +347,7 @@ type API struct {
 	tickerEngine       *graphics.TickerEngine
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
+	aiSegmentMgr       AISegmentManager
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
@@ -488,6 +512,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerClipRoutes(mux)
 	a.registerCommsRoutes(mux)
 	a.registerSTMapRoutes(mux)
+	a.registerAISegmentRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }

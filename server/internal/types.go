@@ -280,6 +280,7 @@ type ControlRoomState struct {
 	Captions             *CaptionState           `json:"captions,omitempty"`
 	Comms                *CommsState             `json:"comms,omitempty"`
 	STMap                *STMapState             `json:"stmap,omitempty"`
+	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
@@ -439,6 +440,24 @@ type ClipInfo struct {
 type LayoutState struct {
 	ActivePreset string            `json:"activePreset"`
 	Slots        []LayoutSlotState `json:"slots"`
+}
+
+// AISegmentConfig describes the AI segmentation configuration for a source.
+// Background values: "" or "transparent" (pass-through), "blur:N" (N=1-50),
+// "color:RRGGBB" (hex color).
+type AISegmentConfig struct {
+	Enabled     bool    `json:"enabled"`
+	Sensitivity float32 `json:"sensitivity"`
+	EdgeSmooth  float32 `json:"edgeSmooth"`
+	Background  string  `json:"background"`
+}
+
+// AISegmentationState is broadcast in ControlRoomState when AI segmentation
+// is available (GPU + TensorRT). Omitted entirely on non-GPU builds.
+type AISegmentationState struct {
+	Available bool                       `json:"available"`
+	ModelName string                     `json:"modelName,omitempty"`
+	Sources   map[string]AISegmentConfig `json:"sources,omitempty"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.

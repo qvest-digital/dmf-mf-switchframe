@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1074,4 +1074,25 @@ export function stmapAssignProgram(mapName: string): Promise<STMapState> {
 
 export function stmapRemoveProgram(): Promise<void> {
 	return request('/api/stmap/program', { method: 'DELETE' });
+}
+
+// ── AI Background Segmentation ──
+
+export function setAISegment(source: string, config: Partial<AISegmentConfig>): Promise<Response> {
+	return fetch(resolveApiUrl(`/api/sources/${encodeURIComponent(source)}/ai-segment`), {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify(config),
+	});
+}
+
+export function getAISegment(source: string): Promise<AISegmentConfig> {
+	return request<AISegmentConfig>(`/api/sources/${encodeURIComponent(source)}/ai-segment`);
+}
+
+export function deleteAISegment(source: string): Promise<Response> {
+	return fetch(resolveApiUrl(`/api/sources/${encodeURIComponent(source)}/ai-segment`), {
+		method: 'DELETE',
+		headers: authHeaders(),
+	});
 }

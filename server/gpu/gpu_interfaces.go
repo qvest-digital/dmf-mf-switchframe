@@ -93,6 +93,29 @@ type SourceSTMapProvider interface {
 	SourceSTArrays(sourceKey string) (s, t []float32)
 }
 
+// SegmentationState provides AI segmentation state for the GPU pipeline node.
+// Implemented by an adapter bridging SegmentationEngine + Switcher.
+type SegmentationState interface {
+	// HasEnabledSources returns true if any source has AI segmentation active.
+	HasEnabledSources() bool
+	// ProgramSourceKey returns the current program source key.
+	ProgramSourceKey() string
+	// MaskForSource returns the latest GPU-resident segmentation mask for the source.
+	// Returns nil if no mask is available. The returned GPUFrame is a uint8
+	// single-plane mask (255 = foreground, 0 = background).
+	MaskForSource(key string) *GPUFrame
+	// ConfigForSource returns the AI segmentation config for a source.
+	// Returns nil if the source has no AI segmentation config.
+	ConfigForSource(key string) *AISegmentConfig
+}
+
+// AISegmentConfig holds the background replacement configuration for a source.
+type AISegmentConfig struct {
+	Background  string  // "transparent"|"blur:N"|"color:RRGGBB"
+	Sensitivity float32 // 0.0-1.0 (maps to segmentation threshold)
+	EdgeSmooth  float32 // 0.0-1.0 (maps to EMA temporal smoothing alpha)
+}
+
 // PreviewConfig configures per-source GPU preview encoding.
 type PreviewConfig struct {
 	Width, Height  int

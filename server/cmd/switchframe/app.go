@@ -138,6 +138,10 @@ type App struct {
 	gpuRawVideoSink   *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for MXL output
 	gpuRawPreviewSink *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for preview output
 
+	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
+	segEngine  *gpu.SegmentationEngine
+	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
+
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
 	scte35Rules    *scte35.RulesStore
@@ -1208,6 +1212,12 @@ func (a *App) initAPI() error {
 			store:  a.srtStore,
 		}))
 	}
+	if a.segEngine != nil && a.segAdapter != nil {
+		apiOpts = append(apiOpts, control.WithAISegmentManager(&aiSegmentManagerAdapter{
+			engine:  a.segEngine,
+			adapter: a.segAdapter,
+		}))
+	}
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
@@ -1567,6 +1577,10 @@ func (a *App) closeSubsystems() {
 	}
 	if a.sw != nil {
 		a.sw.Close()
+	}
+	// AI segmentation engine cleanup before GPU (holds GPU resources).
+	if a.segEngine != nil {
+		a.segEngine.Close()
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
 	closeGPU(a.gpuState)
