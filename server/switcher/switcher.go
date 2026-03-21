@@ -281,6 +281,15 @@ type Switcher struct {
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
+	// GPU pipeline nodes — when set, buildNodeList() inserts GPU upload/download
+	// bridge nodes that route processing through the GPU pipeline. The GPU upload
+	// node converts CPU YUV420p to GPU NV12 (stored on ProcessingFrame.GPUData),
+	// GPU processing nodes operate in VRAM, and the GPU download node converts back
+	// to CPU YUV420p. This replaces CPU processing nodes (key, layout, compositor,
+	// stmap) with their GPU equivalents when available.
+	// Typed as []PipelineNode to avoid circular import with gpu package.
+	gpuNodes []PipelineNode
+
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
 	// This eliminates keyframe wait on cuts/transitions (always-decode mode).
@@ -795,6 +804,21 @@ func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
 	s.mu.Unlock()
 }
 
+// SetGPUNodes registers GPU pipeline nodes that replace CPU processing nodes.
+// The nodes must implement PipelineNode. When set, buildNodeList() returns a
+// GPU pipeline chain: [gpu-upload → gpu processing nodes → gpu-download → raw-sinks → encode].
+// Pass nil to revert to CPU-only processing.
+//
+// The nodes slice should be ordered: upload node first, processing nodes in the middle,
+// download node last. The caller (app layer) creates these nodes in the gpu package
+// and passes them here to avoid circular imports.
+func (s *Switcher) SetGPUNodes(nodes []PipelineNode) {
+	s.mu.Lock()
+	s.gpuNodes = nodes
+	s.mu.Unlock()
+	s.rebuildPipeline()
+}
+
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
 // creates a per-source decoder that decodes H.264 to raw YUV at ingest time,
 // eliminating keyframe waits on cuts and transitions. Must be called before
@@ -829,9 +853,25 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
-// s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
+// s.keyBridge, s.compositorRef, s.pipeCodecs, s.gpuNodes, and s.promMetrics.
+//
+// When GPU nodes are set, returns:
+//   [gpu-upload → gpu-key → gpu-layout → gpu-compositor → gpu-stmap → gpu-download → raw-sinks → encode]
+// Otherwise (CPU-only):
+//   [upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
+	if len(s.gpuNodes) > 0 {
+		// GPU pipeline: GPU nodes handle upload, processing, and download.
+		// Append raw sinks and encode after the GPU download node.
+		nodes := make([]PipelineNode, 0, len(s.gpuNodes)+3)
+		nodes = append(nodes, s.gpuNodes...)
+		nodes = append(nodes,
+			&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
+			&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
+			newAsyncEncodeNode(s),
+		)
+		return nodes
+	}
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&layoutCompositorNode{compositor: s.layoutCompositor},

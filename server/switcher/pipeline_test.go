@@ -728,6 +728,61 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	require.Equal(t, "h264-encode", nodes[6].Name())
 }
 
+func TestBuildNodeList_GPUNodes(t *testing.T) {
+	// When GPU nodes are set, buildNodeList returns the GPU chain + raw-sinks + encode.
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	defer sw.Close()
+
+	// Create mock GPU nodes (using simple passthrough PipelineNodes).
+	mockUpload := &mockPipelineNode{name: "gpu-upload"}
+	mockKey := &mockPipelineNode{name: "gpu-key"}
+	mockLayout := &mockPipelineNode{name: "gpu-layout"}
+	mockCompositor := &mockPipelineNode{name: "gpu-compositor"}
+	mockSTMap := &mockPipelineNode{name: "gpu-stmap"}
+	mockDownload := &mockPipelineNode{name: "gpu-download"}
+
+	gpuNodes := []PipelineNode{mockUpload, mockKey, mockLayout, mockCompositor, mockSTMap, mockDownload}
+	sw.mu.Lock()
+	sw.gpuNodes = gpuNodes
+	sw.mu.Unlock()
+
+	sw.mu.RLock()
+	nodes := sw.buildNodeList()
+	sw.mu.RUnlock()
+
+	// Should be: 6 GPU nodes + 2 raw sinks + 1 encode = 9
+	require.Len(t, nodes, 9)
+	require.Equal(t, "gpu-upload", nodes[0].Name())
+	require.Equal(t, "gpu-key", nodes[1].Name())
+	require.Equal(t, "gpu-layout", nodes[2].Name())
+	require.Equal(t, "gpu-compositor", nodes[3].Name())
+	require.Equal(t, "gpu-stmap", nodes[4].Name())
+	require.Equal(t, "gpu-download", nodes[5].Name())
+	require.Equal(t, "raw-sink-mxl", nodes[6].Name())
+	require.Equal(t, "raw-sink-preview", nodes[7].Name())
+	require.Equal(t, "h264-encode", nodes[8].Name())
+}
+
+// mockPipelineNode is a simple passthrough PipelineNode for testing.
+type mockPipelineNode struct {
+	name string
+}
+
+func (n *mockPipelineNode) Name() string                             { return n.name }
+func (n *mockPipelineNode) Configure(format PipelineFormat) error    { return nil }
+func (n *mockPipelineNode) Active() bool                             { return false }
+func (n *mockPipelineNode) Process(dst, src *ProcessingFrame) *ProcessingFrame { return src }
+func (n *mockPipelineNode) Err() error                               { return nil }
+func (n *mockPipelineNode) Latency() time.Duration                   { return 0 }
+func (n *mockPipelineNode) Close() error                             { return nil }
+
 func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
 	// BuildPipeline with no encoder configured should be a no-op.
 	programRelay := newTestRelay()

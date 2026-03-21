@@ -132,6 +132,9 @@ type App struct {
 	clipStore  *clip.Store
 	clipRelays [clip.MaxPlayers]*distribution.Relay
 
+	// GPU pipeline (Metal on macOS, CUDA on Linux)
+	gpuState *gpuState
+
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
 	scte35Rules    *scte35.RulesStore
@@ -597,6 +600,11 @@ func (a *App) initSubsystems() error {
 	a.keyProcessor.OnChange(func() {
 		a.sw.RebuildPipeline()
 	})
+
+	// GPU pipeline auto-detection and wiring.
+	// Must happen after stmap registry is set and before BuildPipeline().
+	a.gpuState = initGPU(a.sw, a.stmapRegistry)
+	wireGPUPipeline(a.gpuState, a.sw, a)
 
 	// Pipeline encoder for the video processing chain.
 	a.sw.SetPipelineCodecs(encoderFactory())
@@ -1481,6 +1489,8 @@ func (a *App) closeSubsystems() {
 	if a.sw != nil {
 		a.sw.Close()
 	}
+	// GPU cleanup after switcher (pipeline frames must be released first).
+	closeGPU(a.gpuState)
 	if a.mixer != nil {
 		_ = a.mixer.Close()
 	}
