@@ -105,14 +105,49 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// matching the CPU pipeline's encode path (pipeline_codecs.go:208).
 	// broadcastWithCaptions expects AVC1 and converts back to Annex B
 	// for caption SEI injection.
+	//
+	// On IDR keyframes, extract SPS/PPS and set VideoInfo on the program
+	// relay so the browser can configure its VideoDecoder. The CPU path
+	// does this in pipeline_codecs.go via onVideoInfoChange.
 	broadcastFn := sw.BroadcastWithCaptionsFunc()
+	videoInfoCb := app.videoInfoCallback("gpu-pipeline")
+	var gpuSPS, gpuPPS []byte
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
 		avc1 := codec.AnnexBToAVC1Into(data, nil)
+
+		// Extract SPS/PPS from IDR keyframes for VideoInfo.
+		if isIDR {
+			nalus := codec.ExtractNALUs(avc1)
+			for _, nalu := range nalus {
+				if len(nalu) == 0 {
+					continue
+				}
+				naluType := nalu[0] & 0x1F
+				switch naluType {
+				case 7: // SPS
+					sps := make([]byte, len(nalu))
+					copy(sps, nalu)
+					gpuSPS = sps
+				case 8: // PPS
+					pps := make([]byte, len(nalu))
+					copy(pps, nalu)
+					gpuPPS = pps
+				}
+			}
+			if gpuSPS != nil && gpuPPS != nil {
+				videoInfoCb(gpuSPS, gpuPPS, pf.Width, pf.Height)
+			}
+		}
+
 		frame := &media.VideoFrame{
 			PTS:        pts,
 			IsKeyframe: isIDR,
 			WireData:   avc1,
 			Codec:      "H264",
+		}
+		if isIDR && gpuSPS != nil {
+			frame.SPS = gpuSPS
+			frame.PPS = gpuPPS
 		}
 		broadcastFn(frame)
 	}
