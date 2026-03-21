@@ -195,6 +195,39 @@ func DSKCompositeRect(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect R
 	return ErrGPUNotAvailable
 }
 
+// GPUSTMap is a stub for non-CUDA builds.
+type GPUSTMap struct{ Width, Height int }
+
+// UploadSTMap returns ErrGPUNotAvailable on non-CUDA builds.
+func UploadSTMap(ctx *Context, s, t []float32, width, height int) (*GPUSTMap, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// Free is a no-op on non-CUDA builds.
+func (m *GPUSTMap) Free() {}
+
+// STMapWarp returns ErrGPUNotAvailable on non-CUDA builds.
+func STMapWarp(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
+	return ErrGPUNotAvailable
+}
+
+// GPUAnimatedSTMap is a stub for non-CUDA builds.
+type GPUAnimatedSTMap struct{ Width, Height, FPS int }
+
+// NewGPUAnimatedSTMap returns ErrGPUNotAvailable on non-CUDA builds.
+func NewGPUAnimatedSTMap(ctx *Context, sMaps, tMaps [][]float32, width, height, fps int) (*GPUAnimatedSTMap, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// CurrentFrame returns nil on non-CUDA builds.
+func (a *GPUAnimatedSTMap) CurrentFrame() *GPUSTMap { return nil }
+
+// FrameCount returns 0 on non-CUDA builds.
+func (a *GPUAnimatedSTMap) FrameCount() int { return 0 }
+
+// Free is a no-op on non-CUDA builds.
+func (a *GPUAnimatedSTMap) Free() {}
+
 // GPUEncoder is a stub for non-CUDA builds.
 type GPUEncoder struct{}
 
