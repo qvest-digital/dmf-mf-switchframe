@@ -22,6 +22,7 @@ import (
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -256,6 +257,11 @@ func WithCommsManager(cm CommsManagerAPI) APIOption {
 	return func(a *API) { a.commsMgr = cm }
 }
 
+// WithSTMapRegistry attaches an ST map registry to the API.
+func WithSTMapRegistry(r *stmap.Registry) APIOption {
+	return func(a *API) { a.stmapRegistry = r }
+}
+
 // WithInviteTokens sets the invite token map (token -> role) for operator registration gating.
 func WithInviteTokens(tokens map[string]string) APIOption {
 	return func(a *API) { a.inviteTokens = tokens }
@@ -314,6 +320,7 @@ type API struct {
 	tickerEngine       *graphics.TickerEngine
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
+	stmapRegistry      *stmap.Registry
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
@@ -475,6 +482,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerLayoutRoutes(mux)
 	a.registerClipRoutes(mux)
 	a.registerCommsRoutes(mux)
+	a.registerSTMapRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }

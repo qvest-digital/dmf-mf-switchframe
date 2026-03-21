@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/stinger"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -46,6 +47,7 @@ var errorMappings = []errorMapping{
 	{clip.ErrNotFound, http.StatusNotFound},
 	{scte35.ErrRuleNotFound, http.StatusNotFound},
 	{scte35.ErrTemplateNotFound, http.StatusNotFound},
+	{stmap.ErrNotFound, http.StatusNotFound},
 
 	// 409 Conflict
 	{switcher.ErrFormatDuringTransition, http.StatusConflict},
@@ -127,6 +129,8 @@ var errorMappings = []errorMapping{
 	{clip.ErrOddDimensions, http.StatusBadRequest},
 	{clip.ErrNoVideo, http.StatusBadRequest},
 	{srt.ErrInvalidConfig, http.StatusBadRequest},
+	{stmap.ErrInvalidDimensions, http.StatusBadRequest},
+	{stmap.ErrInvalidName, http.StatusBadRequest},
 
 	// Comms
 	{comms.ErrNotInComms, http.StatusNotFound},
