@@ -50,16 +50,20 @@ func TestGPUScaleBilinear(t *testing.T) {
 	err = Download(ctx, dstYUV, dst, 960, 540)
 	require.NoError(t, err)
 
-	// Check several interior pixels are non-zero (avoid edges where interpolation may clamp)
-	// Use row 100, col 200 as a safe interior sample point
-	sampleIdx := 100*960 + 200
-	assert.NotEqual(t, byte(0), dstYUV[sampleIdx], "interior pixel should not be zero")
-
-	// Verify center region has reasonable Y values
-	centerIdx := 270*960 + 480
-	assert.Greater(t, dstYUV[centerIdx], byte(0), "center pixel should not be zero")
-
-	t.Logf("Scale 1920x1080 → 960x540: center Y=%d, sample Y=%d", dstYUV[centerIdx], dstYUV[sampleIdx])
+	// Count non-zero Y pixels — scaled gradient should have many non-zero values
+	nonZero := 0
+	dstW, dstH := 960, 540
+	for y := 10; y < dstH-10; y++ {
+		for x := 10; x < dstW-10; x++ {
+			if dstYUV[y*dstW+x] > 0 {
+				nonZero++
+			}
+		}
+	}
+	total := (dstH - 20) * (dstW - 20)
+	ratio := float64(nonZero) / float64(total)
+	assert.Greater(t, ratio, 0.5, "most interior pixels should be non-zero after scaling gradient")
+	t.Logf("Scale 1920x1080 → 960x540: %.1f%% non-zero interior Y pixels", ratio*100)
 }
 
 func TestGPUScaleUpscale(t *testing.T) {
