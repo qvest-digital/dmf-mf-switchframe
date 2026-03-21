@@ -939,7 +939,7 @@ func (m *gpuTransitionMock) RunFromCache(sourceKey string, pts int64) error {
 	return nil
 }
 
-func (m *gpuTransitionMock) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error {
+func (m *gpuTransitionMock) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.runTransCalls = append(m.runTransCalls, gpuTransitionCall{

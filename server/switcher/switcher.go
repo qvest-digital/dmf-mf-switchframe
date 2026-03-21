@@ -3227,7 +3227,22 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 					blendPos = 1.0
 				}
 
-				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, nil); err != nil {
+				// Extract stinger frame data if this is a stinger transition.
+				var stinger *GPUStingerFrame
+				if tt == transition.Stinger {
+					yuv, alpha, sw, sh, cutPt := engine.StingerFrameAt(blendPos)
+					if yuv != nil && alpha != nil {
+						stinger = &GPUStingerFrame{
+							YUV:      yuv,
+							Alpha:    alpha,
+							Width:    sw,
+							Height:   sh,
+							CutPoint: cutPt,
+						}
+					}
+				}
+
+				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, stinger); err != nil {
 					s.log.Debug("GPU transition blend failed, no fallback",
 						"err", err, "from", fromKey, "to", toKey, "type", tt)
 				}

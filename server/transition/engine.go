@@ -222,6 +222,39 @@ func (e *Engine) ToSource() string {
 	return e.toSource
 }
 
+// StingerFrameAt returns the stinger overlay YUV, alpha, and cut point for
+// the given transition position. Returns nil slices if no stinger is configured.
+// Used by the GPU transition path to upload stinger data to GPU.
+func (e *Engine) StingerFrameAt(pos float64) (yuv, alpha []byte, width, height int, cutPoint float64) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	sd := e.config.Stinger
+	if sd == nil || len(sd.Frames) == 0 {
+		return nil, nil, 0, 0, 0.5
+	}
+
+	// Use scaled frames if available, otherwise original.
+	frames := sd.Frames
+	w, h := sd.Width, sd.Height
+	if e.stingerScaled != nil {
+		frames = e.stingerScaled
+		w = e.width
+		h = e.height
+	}
+
+	frameIdx := int(pos * float64(len(frames)))
+	if frameIdx >= len(frames) {
+		frameIdx = len(frames) - 1
+	}
+	if frameIdx < 0 {
+		frameIdx = 0
+	}
+
+	sf := &frames[frameIdx]
+	return sf.YUV, sf.Alpha, w, h, sd.CutPoint
+}
+
 // WipeDirection returns the wipe direction for the current transition.
 func (e *Engine) WipeDirection() WipeDirection {
 	e.mu.RLock()

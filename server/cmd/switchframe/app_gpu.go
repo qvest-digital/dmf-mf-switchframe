@@ -291,7 +291,7 @@ func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, pts int64) error 
 	return nil
 }
 
-func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error {
+func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *switcher.GPUStingerFrame) error {
 	if r.sourceManager == nil {
 		return fmt.Errorf("no GPU source manager")
 	}
@@ -370,44 +370,65 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		}
 		maskBuf.Release()
 	case "stinger":
-		// Stinger with per-pixel alpha plane. If alpha data is provided,
-		// upload it to a GPU frame and use BlendStinger. Otherwise fall
-		// back to mix blend.
-		if stingerAlpha != nil && len(stingerAlpha) > 0 {
+		// Stinger: composite stinger overlay with per-pixel alpha onto
+		// base source (A before cut point, B after).
+		if stinger != nil && len(stinger.YUV) > 0 && len(stinger.Alpha) > 0 {
+			// Upload stinger overlay YUV to GPU as NV12.
+			overlayFrame, overlayErr := pool.Acquire()
+			if overlayErr != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger: acquire overlay: %w", overlayErr)
+			}
+			if err := gpu.Upload(ctx, overlayFrame, stinger.YUV, stinger.Width, stinger.Height); err != nil {
+				overlayFrame.Release()
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger: upload overlay: %w", err)
+			}
+			// Set correct dimensions (pool frame may be larger).
+			overlayFrame.Width = stinger.Width
+			overlayFrame.Height = stinger.Height
+
+			// Upload alpha plane. Alpha is luma-resolution (width*height bytes).
+			// We need it as a "frame" for BlendStinger — Y plane holds alpha,
+			// UV plane is used as scratch for downsampled chroma alpha.
 			alphaFrame, alphaErr := pool.Acquire()
 			if alphaErr != nil {
+				overlayFrame.Release()
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: acquire alpha: %w", alphaErr)
 			}
-			// Upload alpha plane to GPU frame's Y plane. The alpha data is
-			// luma-resolution (width*height bytes). Upload fills Y, UV is
-			// used as scratch by BlendStinger for downsampled chroma alpha.
-			if err := gpu.Upload(ctx, alphaFrame, stingerAlpha, frameA.Width, frameA.Height); err != nil {
+			// Build a YUV420p buffer where Y = alpha, Cb/Cr = 128 (neutral).
+			alphaYUV := make([]byte, stinger.Width*stinger.Height*3/2)
+			copy(alphaYUV[:len(stinger.Alpha)], stinger.Alpha)
+			cbOff := stinger.Width * stinger.Height
+			for i := cbOff; i < len(alphaYUV); i++ {
+				alphaYUV[i] = 128
+			}
+			if err := gpu.Upload(ctx, alphaFrame, alphaYUV, stinger.Width, stinger.Height); err != nil {
 				alphaFrame.Release()
+				overlayFrame.Release()
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: upload alpha: %w", err)
 			}
+			alphaFrame.Width = stinger.Width
+			alphaFrame.Height = stinger.Height
 
 			// Determine base source: A before cut point, B after.
-			// For now, use 0.5 as cut point (matches default stinger behavior).
 			base := frameA
-			overlay := frameB
-			if position >= 0.5 && frameB != nil {
+			if position >= stinger.CutPoint && frameB != nil {
 				base = frameB
-				overlay = frameA
-			}
-			if overlay == nil {
-				overlay = frameA
 			}
 
-			if err := gpu.BlendStinger(ctx, dst, base, overlay, alphaFrame); err != nil {
+			if err := gpu.BlendStinger(ctx, dst, base, overlayFrame, alphaFrame); err != nil {
 				alphaFrame.Release()
+				overlayFrame.Release()
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: %w", err)
 			}
 			alphaFrame.Release()
+			overlayFrame.Release()
 		} else {
-			// No alpha data — fall back to mix blend.
+			// No stinger data — fall back to mix blend.
 			if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger fallback: %w", err)

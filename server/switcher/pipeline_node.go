@@ -34,11 +34,18 @@ type GPUPipelineRunner interface {
 	// stmap → raw sinks → encode). Both source frames are read from the
 	// GPU source cache. transType is "mix", "dip", "wipe", "ftb",
 	// "ftb_reverse", or "stinger". wipeDir is an int matching gpu.WipeDirection.
-	// position is 0.0 (all A) to 1.0 (all B). stingerAlpha carries
-	// the per-pixel alpha plane for stinger transitions (nil otherwise).
-	// Returns an error if either source frame is not cached, in which case
-	// the caller should fall back to the CPU transition path.
-	RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error
+	// position is 0.0 (all A) to 1.0 (all B). stinger carries the overlay
+	// YUV + alpha for stinger transitions (nil otherwise).
+	RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error
+}
+
+// GPUStingerFrame carries the stinger overlay and alpha for GPU transitions.
+type GPUStingerFrame struct {
+	YUV      []byte  // YUV420p overlay (stinger graphic)
+	Alpha    []byte  // per-luma-pixel alpha [0-255]
+	Width    int
+	Height   int
+	CutPoint float64 // position where base switches from A to B
 }
 
 // GPUSourceManagerIface provides GPU source frame management.

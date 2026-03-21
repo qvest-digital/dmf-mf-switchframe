@@ -779,7 +779,7 @@ func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, pts int64) error 
 	return fmt.Errorf("mock: no cached GPU frame")
 }
 
-func (m *mockGPUPipelineRunner) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error {
+func (m *mockGPUPipelineRunner) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
 	if m.onRun != nil {
 		m.onRun()
 	}
