@@ -397,12 +397,21 @@ export interface EncoderState {
 	available: EncoderInfo[];
 }
 
-export type CaptionMode = 'off' | 'passthrough' | 'author';
+export type CaptionMode = 'off' | 'passthrough' | 'author' | 'auto';
 
 export interface CaptionState {
 	mode: CaptionMode;
 	authorBuffer?: string;
 	sourceCaptions?: Record<string, boolean>;
+}
+
+export interface ASRState {
+	available: boolean;
+	active: boolean;
+	modelName?: string;
+	language?: string;
+	tentative?: string;
+	confidence?: number;
 }
 
 export type ClipUploadStage = 'uploading' | 'analyzing' | 'transcoding' | 'validating';
@@ -595,6 +604,7 @@ export interface ControlRoomState {
 	scte35?: SCTE35State;
 	connectionInfo?: ConnectionInfo;
 	captions?: CaptionState;
+	asr?: ASRState;
 	clipPlayers?: ClipPlayerState[];
 	clipCount?: number;
 	clipUpload?: ClipUploadProgress;

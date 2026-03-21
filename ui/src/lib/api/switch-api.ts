@@ -1076,6 +1076,20 @@ export function stmapRemoveProgram(): Promise<void> {
 	return request('/api/stmap/program', { method: 'DELETE' });
 }
 
+// ── ASR (Automatic Speech Recognition) ──
+
+export function getASRStatus(): Promise<any> {
+	return request('/api/asr/status');
+}
+
+export function setASRConfig(config: { active?: boolean; language?: string }): Promise<any> {
+	return request('/api/asr/config', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
+}
+
 // ── AI Background Segmentation ──
 
 export function setAISegment(source: string, config: Partial<AISegmentConfig>): Promise<Response> {
