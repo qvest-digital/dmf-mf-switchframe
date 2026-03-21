@@ -12,9 +12,15 @@
 	let { state: crState, onCut }: Props = $props();
 	let sourceKeys = $derived(sortedSourceKeys(crState.sources));
 	let srtPopoverKey: string | null = $state(null);
+	let srtPopoverPos = $state({ x: 0, y: 0 });
 
-	function handleSRTClick(key: string) {
-		srtPopoverKey = srtPopoverKey === key ? null : key;
+	function handleSRTClick(key: string, e: MouseEvent) {
+		if (srtPopoverKey === key) {
+			srtPopoverKey = null;
+		} else {
+			srtPopoverKey = key;
+			srtPopoverPos = { x: e.clientX, y: e.clientY - 10 };
+		}
 	}
 </script>
 
@@ -30,7 +36,7 @@
 				audioLevelDb={crState.audioChannels?.[key] ? Math.max(crState.audioChannels[key].peakL, crState.audioChannels[key].peakR) : undefined}
 				layoutSlots={crState.layout?.slots}
 				onclick={() => onCut ? onCut(key) : apiCall(cut(key), 'Cut failed')}
-				onSRTClick={crState.sources[key]?.srt ? () => handleSRTClick(key) : undefined}
+				onSRTClick={crState.sources[key]?.srt ? (e) => handleSRTClick(key, e) : undefined}
 			/>
 		{/each}
 	</div>
@@ -40,6 +46,8 @@
 	<SRTStatsPopover
 		srt={crState.sources[srtPopoverKey].srt!}
 		sourceLabel={crState.sources[srtPopoverKey].label || srtPopoverKey}
+		x={srtPopoverPos.x}
+		y={srtPopoverPos.y}
 		onclose={() => srtPopoverKey = null}
 	/>
 {/if}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	type SRTHealthLevel = 'green' | 'yellow' | 'red' | 'gray';
+	import type { SRTHealthLevel } from '$lib/util/srt-health';
 
 	interface Props {
 		level: SRTHealthLevel;

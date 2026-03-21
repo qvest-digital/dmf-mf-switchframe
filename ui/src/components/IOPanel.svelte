@@ -81,13 +81,6 @@
 		}
 	}
 
-	function fmtBytes(bytes: number): string {
-		if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
-		if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
-		if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
-		return `${bytes} B`;
-	}
-
 	function fmtDuration(secs: number): string {
 		const h = Math.floor(secs / 3600);
 		const m = Math.floor((secs % 3600) / 60);
@@ -481,7 +474,7 @@
 											</div>
 											<div class="detail-row">
 												<span class="detail-label">Recv Buf</span>
-												<span class="detail-value mono">{stats.recvBufMs} ms ({stats.recvBufPackets} pkts)</span>
+												<span class="detail-value mono">{stats.recvBufMs.toFixed(1)} ms ({stats.recvBufPackets} pkts)</span>
 											</div>
 											<div class="detail-row">
 												<span class="detail-label">Flight Size</span>
@@ -617,7 +610,7 @@
 								<span class="type-badge type-srt">Legacy SRT</span>
 								<span class="row-label">{legacySRT.address ?? 'SRT'}:{legacySRT.port ?? ''}</span>
 								<span class="status-dot {destStateClass(legacySRT.state ?? 'stopped')}"></span>
-								<span class="row-detail">{legacySRT.bytesWritten != null ? fmtBytes(legacySRT.bytesWritten) : ''}</span>
+								<span class="row-detail">{legacySRT.bytesWritten != null ? formatBytes(legacySRT.bytesWritten) : ''}</span>
 								<button class="action-btn stop" onclick={handleStopLegacySRT} title="Stop">&#x23F9;</button>
 							</div>
 						</div>
@@ -817,7 +810,7 @@
 								<span class="rec-duration">{fmtDuration(recording.durationSecs)}</span>
 							{/if}
 							{#if recording.bytesWritten != null}
-								<span class="rec-bytes">{fmtBytes(recording.bytesWritten)}</span>
+								<span class="rec-bytes">{formatBytes(recording.bytesWritten)}</span>
 							{/if}
 						{:else}
 							<span class="rec-dot inactive"></span>

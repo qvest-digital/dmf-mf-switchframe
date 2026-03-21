@@ -6,10 +6,21 @@
 	interface Props {
 		srt: SRTSourceInfo;
 		sourceLabel: string;
+		x?: number;
+		y?: number;
 		onclose: () => void;
 	}
 
-	let { srt, sourceLabel, onclose }: Props = $props();
+	let { srt, sourceLabel, x = 0, y = 0, onclose }: Props = $props();
+
+	// Clamp position to keep popover in viewport
+	let popoverStyle = $derived.by(() => {
+		const maxX = typeof window !== 'undefined' ? window.innerWidth - 330 : x;
+		const maxY = typeof window !== 'undefined' ? window.innerHeight - 400 : y;
+		const clampedX = Math.max(8, Math.min(x, maxX));
+		const clampedY = Math.max(8, Math.min(y, maxY));
+		return `top: ${clampedY}px; left: ${clampedX}px;`;
+	});
 
 	let health = $derived(computeSRTHealth(srt));
 
@@ -45,7 +56,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="popover-backdrop" onclick={onclose} onkeydown={() => {}}></div>
 
-<div class="srt-popover" role="dialog" aria-label="SRT statistics for {sourceLabel}">
+<div class="srt-popover" role="dialog" aria-label="SRT statistics for {sourceLabel}" style={popoverStyle}>
 	<!-- Header -->
 	<div class="popover-header">
 		{#if health}
@@ -113,7 +124,7 @@
 		<div class="stat-row">
 			<span class="stat-label">Recv Buffer</span>
 			<span class="stat-value mono {bufClass(srt.recvBufMs)}"
-				>{srt.recvBufMs}ms ({srt.recvBufPackets} pkts)</span
+				>{srt.recvBufMs.toFixed(1)}ms ({srt.recvBufPackets} pkts)</span
 			>
 		</div>
 		<div class="stat-row">
