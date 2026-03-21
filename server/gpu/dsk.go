@@ -51,16 +51,26 @@ func UploadOverlay(ctx *Context, rgba []byte, width, height int) (*GPUOverlay, e
 		return nil, fmt.Errorf("gpu: overlay alloc failed: %d", rc)
 	}
 
-	// Copy RGBA to GPU (row by row for pitched alignment)
-	rc = C.cudaMemcpy2D(
+	// Copy RGBA to GPU (row by row for pitched alignment).
+	// Uses cudaMemcpy2DAsync on ctx.stream to avoid the null stream, which
+	// does NOT synchronize with non-blocking streams and can race with
+	// concurrent kernel launches.
+	rc = C.cudaMemcpy2DAsync(
 		devPtr, pitch,
 		unsafe.Pointer(&rgba[0]), C.size_t(width*4),
 		C.size_t(width*4), C.size_t(height),
 		C.cudaMemcpyHostToDevice,
+		ctx.stream,
 	)
 	if rc != C.cudaSuccess {
 		C.cudaFree(devPtr)
 		return nil, fmt.Errorf("gpu: overlay upload failed: %d", rc)
+	}
+	// Synchronize to ensure the upload completes before returning the overlay
+	// pointer — callers may immediately use it in kernel launches.
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		C.cudaFree(devPtr)
+		return nil, fmt.Errorf("gpu: overlay upload sync failed: %d", rc)
 	}
 
 	return &GPUOverlay{

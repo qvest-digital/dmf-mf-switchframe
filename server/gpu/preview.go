@@ -2,26 +2,36 @@
 
 package gpu
 
+/*
+#include <cuda.h>
+#include <cuda_runtime.h>
+*/
+import "C"
+
 import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"unsafe"
 )
 
 // PreviewEncoder provides GPU-accelerated preview encoding.
 // Combines GPU bilinear scale (e.g., 1080p→480p) + NVENC encode
-// in a single GPU pipeline. Uses the L4's second NVENC engine,
-// running concurrently with the program encoder via separate CUDA streams.
+// in a single GPU pipeline. Each preview encoder owns a dedicated CUDA
+// stream for workflow isolation — scale + encode operations run on the
+// preview stream without blocking or racing with the program pipeline's
+// ctx.stream.
 type PreviewEncoder struct {
 	gpuCtx   *Context
 	encoder  *GPUEncoder
-	pool     *FramePool // pool for scaled preview frames
-	scaleDst *GPUFrame  // pre-allocated scaled frame buffer
-	srcW     int        // expected source width
-	srcH     int        // expected source height
-	dstW     int        // preview output width
-	dstH     int        // preview output height
-	mu       sync.Mutex // protects Encode (single-writer but defensive)
+	pool     *FramePool    // pool for scaled preview frames
+	scaleDst *GPUFrame     // pre-allocated scaled frame buffer
+	stream   C.cudaStream_t // dedicated CUDA stream for this preview encoder
+	srcW     int           // expected source width
+	srcH     int           // expected source height
+	dstW     int           // preview output width
+	dstH     int           // preview output height
+	mu       sync.Mutex    // protects Encode (single-writer but defensive)
 }
 
 // NewPreviewEncoder creates a GPU preview encoder that scales and encodes
@@ -36,25 +46,36 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 		return nil, ErrGPUNotAvailable
 	}
 
-	// Create frame pool for the preview resolution
-	pool, err := NewFramePool(ctx, dstW, dstH, 2)
+	// Create a dedicated CUDA stream for this preview encoder.
+	// This isolates scale + encode operations from the main pipeline stream,
+	// enabling true GPU concurrency without mutex serialization.
+	stream, err := ctx.NewStream()
 	if err != nil {
-		return nil, fmt.Errorf("gpu: preview pool failed: %w", err)
+		return nil, fmt.Errorf("gpu: preview stream create failed: %w", err)
+	}
+
+	// Create frame pool for the preview resolution
+	pool, poolErr := NewFramePool(ctx, dstW, dstH, 2)
+	if poolErr != nil {
+		ctx.DestroyStream(stream)
+		return nil, fmt.Errorf("gpu: preview pool failed: %w", poolErr)
 	}
 
 	// Pre-allocate the scaled frame buffer
-	scaleDst, err := pool.Acquire()
-	if err != nil {
+	scaleDst, scaleErr := pool.Acquire()
+	if scaleErr != nil {
 		pool.Close()
-		return nil, fmt.Errorf("gpu: preview frame alloc failed: %w", err)
+		ctx.DestroyStream(stream)
+		return nil, fmt.Errorf("gpu: preview frame alloc failed: %w", scaleErr)
 	}
 
 	// Create NVENC encoder at preview resolution
-	encoder, err := NewGPUEncoder(ctx, dstW, dstH, fpsNum, fpsDen, bitrate)
-	if err != nil {
+	encoder, encErr := NewGPUEncoder(ctx, dstW, dstH, fpsNum, fpsDen, bitrate)
+	if encErr != nil {
 		scaleDst.Release()
 		pool.Close()
-		return nil, fmt.Errorf("gpu: preview encoder failed: %w", err)
+		ctx.DestroyStream(stream)
+		return nil, fmt.Errorf("gpu: preview encoder failed: %w", encErr)
 	}
 
 	slog.Info("gpu: preview encoder created",
@@ -67,6 +88,7 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 		encoder:  encoder,
 		pool:     pool,
 		scaleDst: scaleDst,
+		stream:   stream,
 		srcW:     srcW,
 		srcH:     srcH,
 		dstW:     dstW,
@@ -77,6 +99,9 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 // Encode scales a GPU frame to preview resolution and encodes to H.264.
 // Returns the encoded bitstream, whether it's an IDR, and any error.
 // The source frame is not modified.
+//
+// Scale and encode run on the preview encoder's dedicated CUDA stream,
+// enabling concurrent GPU execution with the program pipeline.
 func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, error) {
 	if p == nil || src == nil {
 		return nil, false, ErrGPUNotAvailable
@@ -85,16 +110,17 @@ func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Scale source → preview resolution on GPU
-	if err := ScaleBilinear(p.gpuCtx, p.scaleDst, src); err != nil {
+	// Scale source → preview resolution on the preview stream.
+	if err := ScaleBilinearOnStream(p.gpuCtx, p.scaleDst, src, p.stream); err != nil {
 		return nil, false, fmt.Errorf("gpu: preview scale failed: %w", err)
 	}
 
 	// Set PTS from source
 	p.scaleDst.PTS = src.PTS
 
-	// Encode the scaled frame via NVENC
-	return p.encoder.EncodeGPU(p.scaleDst, forceIDR)
+	// Encode the scaled frame via NVENC using the preview stream
+	// for the device-to-device copy into FFmpeg's hw_frame.
+	return p.encoder.EncodeGPUOnStream(p.scaleDst, forceIDR, p.stream)
 }
 
 // Close releases all preview encoder resources.
@@ -114,4 +140,16 @@ func (p *PreviewEncoder) Close() {
 		p.pool.Close()
 		p.pool = nil
 	}
+	if p.stream != nil {
+		p.gpuCtx.DestroyStream(p.stream)
+		p.stream = nil
+	}
+}
+
+// Stream returns the dedicated CUDA stream for this preview encoder.
+func (p *PreviewEncoder) Stream() unsafe.Pointer {
+	if p == nil {
+		return nil
+	}
+	return unsafe.Pointer(p.stream)
 }

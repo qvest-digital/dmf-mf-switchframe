@@ -29,3 +29,8 @@ func CopyGPUFrame(dst, src *GPUFrame) {
 	size := C.size_t(src.Pitch * src.Height * 3 / 2)
 	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
 }
+
+// LockGPUOp / UnlockGPUOp are no-ops on Metal.
+// Metal command queues handle serialization internally.
+func LockGPUOp()   {}
+func UnlockGPUOp() {}

@@ -17,7 +17,7 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 }
 
 // EncodeNV12CUDA is a stub that always returns an error.
-func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool) ([]byte, bool, error) {
+func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("CUDA hw_frames encoder not available")
 }
 

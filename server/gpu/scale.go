@@ -58,6 +58,32 @@ func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
 	return nil
 }
 
+// ScaleBilinearOnStream scales an NV12 GPU frame using bilinear interpolation
+// on a caller-specified CUDA stream. This enables concurrent scaling on
+// different streams (e.g., preview encoders run on their own streams without
+// blocking the main pipeline).
+func ScaleBilinearOnStream(ctx *Context, dst, src *GPUFrame, stream C.cudaStream_t) error {
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	rc := C.scale_bilinear_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: scale bilinear (on stream) failed: %d", rc)
+	}
+
+	if syncRc := C.cudaStreamSynchronize(stream); syncRc != C.cudaSuccess {
+		return fmt.Errorf("gpu: scale sync (on stream) failed: %d", syncRc)
+	}
+	return nil
+}
+
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3
 // kernel. It allocates (and caches on the Context) a temporary float device
 // buffer sized dstW * srcH floats, sufficient for both Y and UV passes.

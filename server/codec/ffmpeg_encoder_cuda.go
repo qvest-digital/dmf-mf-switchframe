@@ -195,11 +195,14 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 // y_dev_ptr points to Y plane, uv_dev_ptr points to UV plane (both device pointers).
 // pitch is the row stride in bytes.
 // cuda_ctx is the CUcontext to push before encoding (cgo goroutines may migrate threads).
+// cuda_stream is the CUDA stream to use for device-to-device copies. If NULL,
+// falls back to synchronous cuMemcpy2D (legacy behavior). Using an explicit
+// stream prevents races with kernel launches on non-blocking streams.
 // Returns 0 on success, 1 if EAGAIN, negative on error.
 static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
                                    void* y_dev_ptr, void* uv_dev_ptr,
                                    int pitch, int64_t input_pts, int force_idr,
-                                   void* cuda_ctx,
+                                   void* cuda_ctx, void* cuda_stream,
                                    unsigned char** out_buf, int* out_len, int* is_idr) {
 	*out_buf = NULL;
 	*out_len = 0;
@@ -214,9 +217,16 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	int w = h->base.width;
 	int ht = h->base.height;
 
+	CUstream cu_stream = (CUstream)cuda_stream;
+
 	// Copy NV12 data from our GPU frame pool into FFmpeg's hw_frame allocation
-	// via device-to-device cuMemcpy2D. FFmpeg's hw_frame was allocated by
-	// av_hwframe_get_buffer() and has its own CUDA memory + buffer references.
+	// via device-to-device cuMemcpy2DAsync on the provided stream. FFmpeg's
+	// hw_frame was allocated by av_hwframe_get_buffer() and has its own CUDA
+	// memory + buffer references.
+	//
+	// Using cuMemcpy2DAsync with an explicit stream instead of cuMemcpy2D
+	// (which uses the legacy/default stream) prevents data races with kernel
+	// launches on non-blocking streams created with cudaStreamNonBlocking.
 	// Y plane: pitch x height
 	CUDA_MEMCPY2D copyY = {0};
 	copyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -227,7 +237,7 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	copyY.dstPitch      = frame->linesize[0];
 	copyY.WidthInBytes  = w;
 	copyY.Height        = ht;
-	CUresult crc = cuMemcpy2D(&copyY);
+	CUresult crc = cuMemcpy2DAsync(&copyY, cu_stream);
 	if (crc != CUDA_SUCCESS) {
 		cuCtxPopCurrent(&prev_ctx);
 		return -8;
@@ -243,10 +253,17 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	copyUV.dstPitch      = frame->linesize[1];
 	copyUV.WidthInBytes  = w;
 	copyUV.Height        = ht / 2;
-	crc = cuMemcpy2D(&copyUV);
+	crc = cuMemcpy2DAsync(&copyUV, cu_stream);
 	if (crc != CUDA_SUCCESS) {
 		cuCtxPopCurrent(&prev_ctx);
 		return -9;
+	}
+
+	// Synchronize the stream to ensure copies complete before NVENC reads.
+	crc = cuStreamSynchronize(cu_stream);
+	if (crc != CUDA_SUCCESS) {
+		cuCtxPopCurrent(&prev_ctx);
+		return -8;
 	}
 
 	frame->pts = input_pts;
@@ -381,8 +398,12 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 // yDevPtr is the device pointer to the Y plane, uvDevPtr to the UV plane.
 // pitch is the row stride in bytes for both planes.
 // pts is the presentation timestamp in 90 kHz MPEG-TS units.
+// cudaStream is the CUDA stream to use for device-to-device copies into
+// FFmpeg's hw_frame. Pass nil to use the default stream (not recommended
+// with non-blocking streams). Callers should pass their workflow's stream
+// to prevent data races.
 // Returns the encoded Annex B H.264 bitstream, whether it's an IDR, and any error.
-func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool) ([]byte, bool, error) {
+func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]byte, bool, error) {
 	if e.closed {
 		return nil, false, errors.New("encoder is closed")
 	}
@@ -398,7 +419,7 @@ func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer,
 	rc := C.ffenc_encode_nv12_cuda(&e.handle,
 		yDevPtr, uvDevPtr,
 		C.int(pitch), C.int64_t(pts), forceIDRInt,
-		e.cudaCtx,
+		e.cudaCtx, cudaStream,
 		&outBuf, &outLen, &isIDR)
 	if rc < 0 {
 		return nil, false, fmt.Errorf("NVENC hw_frames encode error: code %d", int(rc))

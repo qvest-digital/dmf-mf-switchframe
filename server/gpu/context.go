@@ -31,6 +31,15 @@ type MemoryStats struct {
 	UsedMB  int
 }
 
+// defaultCUDAStream is the main pipeline CUDA stream, set when NewContext()
+// creates the context. Used by CopyGPUFrame and other functions that need
+// stream-aware operation but don't receive a *Context parameter. All kernel
+// launches and memory copies MUST use an explicit stream (never the null
+// stream), because ctx.stream is created with cudaStreamNonBlocking — the
+// null stream does NOT synchronize with non-blocking streams, so operations
+// on the null stream can race with kernel launches on ctx.stream.
+var defaultCUDAStream C.cudaStream_t
+
 // Context manages the shared CUDA context for all GPU operations.
 // Uses the CUDA Runtime API's primary context (via cudaSetDevice) which is
 // automatically shared across all OS threads — critical for cgo where
@@ -82,7 +91,11 @@ func NewContext() (*Context, error) {
 
 	c := &Context{device: 0}
 
-	// Create CUDA streams for concurrent operations
+	// Create CUDA streams for concurrent operations.
+	// cudaStreamNonBlocking means these streams do NOT synchronize with the
+	// null/default stream. All memory copies MUST use explicit streams to
+	// prevent data races — cudaMemcpy (null stream) can run concurrently
+	// with kernels on non-blocking streams.
 	if rc := C.cudaStreamCreateWithFlags(&c.stream, C.cudaStreamNonBlocking); rc != C.cudaSuccess {
 		c.Close()
 		return nil, fmt.Errorf("gpu: stream create failed: %d", rc)
@@ -91,6 +104,10 @@ func NewContext() (*Context, error) {
 		c.Close()
 		return nil, fmt.Errorf("gpu: enc stream create failed: %d", rc)
 	}
+
+	// Store as package-level for CopyGPUFrame and other functions that
+	// don't receive a *Context parameter.
+	defaultCUDAStream = c.stream
 
 	// Query device properties
 	var props C.struct_cudaDeviceProp
@@ -234,6 +251,40 @@ func (c *Context) CUDAContext() unsafe.Pointer {
 		return nil
 	}
 	return unsafe.Pointer(cuCtx)
+}
+
+// NewStream creates a new non-blocking CUDA stream for independent GPU
+// workflow isolation (e.g., per-preview-encoder). Operations submitted to
+// different streams can execute concurrently on the GPU. The caller must
+// call DestroyStream when done.
+func (c *Context) NewStream() (C.cudaStream_t, error) {
+	if c.closed.Load() {
+		return nil, fmt.Errorf("gpu: context closed")
+	}
+	var stream C.cudaStream_t
+	if rc := C.cudaStreamCreateWithFlags(&stream, C.cudaStreamNonBlocking); rc != C.cudaSuccess {
+		return nil, fmt.Errorf("gpu: create stream failed: %d", rc)
+	}
+	return stream, nil
+}
+
+// DestroyStream destroys a CUDA stream created by NewStream.
+func (c *Context) DestroyStream(stream C.cudaStream_t) {
+	if stream != nil {
+		C.cudaStreamDestroy(stream)
+	}
+}
+
+// SyncStream synchronizes a specific CUDA stream, blocking until all
+// previously queued operations on that stream complete.
+func (c *Context) SyncStream(stream C.cudaStream_t) error {
+	if c.closed.Load() {
+		return nil
+	}
+	if rc := C.cudaStreamSynchronize(stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: stream sync failed: %d", rc)
+	}
+	return nil
 }
 
 // ensureLanczosTemp ensures the Lanczos-3 temporary float32 device buffer is

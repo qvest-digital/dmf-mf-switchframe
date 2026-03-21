@@ -27,3 +27,7 @@ func (m *GPUSourceManager) Close() {}
 
 // CopyGPUFrame is a no-op on non-GPU builds.
 func CopyGPUFrame(dst, src *GPUFrame) {}
+
+// LockGPUOp / UnlockGPUOp are no-ops on non-GPU builds.
+func LockGPUOp()   {}
+func UnlockGPUOp() {}

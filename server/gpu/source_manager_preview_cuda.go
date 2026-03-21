@@ -57,12 +57,16 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 
 // previewLoop reads GPU frame copies and encodes via PreviewEncoder.Encode().
 // CUDA path: GPU ScaleBilinear + NVENC encode — zero CPU pixel processing.
+// Each preview encoder has its own CUDA stream, so scale + encode operations
+// run concurrently with the program pipeline without mutex serialization.
 func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
 	defer close(entry.prevDone)
 
 	forceIDR := true
 	for item := range entry.prevCh {
 		pf := item.(*previewGPUFrame)
+		// PreviewEncoder.Encode() runs scale + encode on its own CUDA stream.
+		// No mutex needed — stream serialization handles concurrent GPU access.
 		data, isIDR, err := entry.prevEnc.Encode(pf.frame, forceIDR)
 		pf.frame.Release()
 
