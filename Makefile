@@ -128,3 +128,4 @@ format:
 
 clean:
 	rm -rf bin/ $(EMBED_LINK)
+	@if [ -f server/gpu/metal/Makefile ]; then cd server/gpu/metal && $(MAKE) -s clean 2>/dev/null || true; fi
