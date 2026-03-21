@@ -176,3 +176,68 @@ func TestUploadBufferTooSmall(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too small")
 }
+
+// TestUploadResolutionChange verifies that the persistent staging buffer in
+// Context correctly reallocates when a larger frame is uploaded after a smaller
+// one.  This exercises the "grow" branch of the lazy-alloc path.
+func TestUploadResolutionChange(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	// Small pool: 320x240
+	smallW, smallH := 320, 240
+	smallPool, err := NewFramePool(ctx, smallW, smallH, 2)
+	require.NoError(t, err)
+	defer smallPool.Close()
+
+	// Large pool: 640x480
+	largeW, largeH := 640, 480
+	largePool, err := NewFramePool(ctx, largeW, largeH, 2)
+	require.NoError(t, err)
+	defer largePool.Close()
+
+	// --- First upload: 320x240 -----------------------------------------------
+	smallFrame, err := smallPool.Acquire()
+	require.NoError(t, err)
+	defer smallFrame.Release()
+
+	smallYUV := make([]byte, smallW*smallH*3/2)
+	for i := 0; i < smallW*smallH; i++ {
+		smallYUV[i] = 64 // dark gray Y
+	}
+	for i := smallW * smallH; i < len(smallYUV); i++ {
+		smallYUV[i] = 128
+	}
+	require.NoError(t, Upload(ctx, smallFrame, smallYUV, smallW, smallH))
+
+	// Verify small frame round-trips correctly.
+	smallResult := make([]byte, smallW*smallH*3/2)
+	require.NoError(t, Download(ctx, smallResult, smallFrame, smallW, smallH))
+	assert.Equal(t, byte(64), smallResult[0], "small frame Y[0] should be 64")
+
+	// --- Second upload: 640x480 (forces staging buffer realloc) ---------------
+	largeFrame, err := largePool.Acquire()
+	require.NoError(t, err)
+	defer largeFrame.Release()
+
+	largeYUV := make([]byte, largeW*largeH*3/2)
+	for i := 0; i < largeW*largeH; i++ {
+		largeYUV[i] = 192 // bright gray Y
+	}
+	for i := largeW * largeH; i < len(largeYUV); i++ {
+		largeYUV[i] = 128
+	}
+	require.NoError(t, Upload(ctx, largeFrame, largeYUV, largeW, largeH))
+
+	// Verify large frame round-trips correctly after the realloc.
+	largeResult := make([]byte, largeW*largeH*3/2)
+	require.NoError(t, Download(ctx, largeResult, largeFrame, largeW, largeH))
+	assert.Equal(t, byte(192), largeResult[0], "large frame Y[0] should be 192 after staging realloc")
+
+	// Spot-check a few more pixels to confirm data integrity.
+	assert.Equal(t, byte(192), largeResult[largeH/2*largeW+largeW/2], "center pixel should be 192")
+	assert.Equal(t, byte(128), largeResult[largeW*largeH], "Cb[0] should be 128")
+
+	t.Logf("ResolutionChange: small Y[0]=%d, large Y[0]=%d", smallResult[0], largeResult[0])
+}

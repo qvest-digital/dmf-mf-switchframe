@@ -110,6 +110,9 @@ const (
 // ScaleBilinear returns ErrGPUNotAvailable on non-CUDA builds.
 func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
 
+// ScaleLanczos3 returns ErrGPUNotAvailable on non-CUDA builds.
+func ScaleLanczos3(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
+
 // Scale returns ErrGPUNotAvailable on non-CUDA builds.
 func Scale(ctx *Context, dst, src *GPUFrame, quality ScaleQuality) error { return ErrGPUNotAvailable }
 

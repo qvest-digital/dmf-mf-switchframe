@@ -74,14 +74,15 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 		ctx.stagingSize = ySize
 	}
 
-	// Copy planar data from host to persistent staging buffers.
-	if rc := C.cudaMemcpy(ctx.stagingY, unsafe.Pointer(&yData[0]), C.size_t(ySize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	// Copy planar data from host to persistent staging buffers (async so the
+	// subsequent kernel launch can overlap with the DMA transfer on the stream).
+	if rc := C.cudaMemcpyAsync(ctx.stagingY, unsafe.Pointer(&yData[0]), C.size_t(ySize), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Y failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(ctx.stagingCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpyAsync(ctx.stagingCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cb failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(ctx.stagingCr, unsafe.Pointer(&crData[0]), C.size_t(crSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpyAsync(ctx.stagingCr, unsafe.Pointer(&crData[0]), C.size_t(crSize), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cr failed: %d", rc)
 	}
 

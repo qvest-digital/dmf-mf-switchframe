@@ -149,3 +149,56 @@ func TestCompositeNilArgs(t *testing.T) {
 	require.ErrorIs(t, DrawBorder(nil, nil, Rect{}, YUVColor{}, 2), ErrGPUNotAvailable)
 	require.ErrorIs(t, FillRect(nil, nil, Rect{}, YUVColor{}), ErrGPUNotAvailable)
 }
+
+func TestDrawBorder(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	w, h := 320, 240
+	pool, err := NewFramePool(ctx, w, h, 2)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	frame, _ := pool.Acquire()
+	defer frame.Release()
+
+	// Fill the frame with mid-gray (Y=128)
+	yuv := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		yuv[i] = 128
+	}
+	for i := w * h; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+	require.NoError(t, Upload(ctx, frame, yuv, w, h))
+
+	// Draw a white border (Y=235) with thickness=4 around a centered rect.
+	// The kernel draws outside the rect, so the rect must be inset enough
+	// that the border pixels still land inside the frame.
+	thickness := 4
+	rect := Rect{X: 40, Y: 30, W: 240, H: 180}
+	borderColor := YUVColor{Y: 235, Cb: 128, Cr: 128}
+	err = DrawBorder(ctx, frame, rect, borderColor, thickness)
+	require.NoError(t, err)
+
+	result := make([]byte, w*h*3/2)
+	require.NoError(t, Download(ctx, result, frame, w, h))
+
+	// A pixel just above the rect top edge should be colored (white Y=235).
+	// Border is drawn at rows [rect.Y-thickness .. rect.Y-1], cols [rect.X .. rect.X+rect.W-1].
+	borderRow := rect.Y - 1
+	borderCol := rect.X + rect.W/2
+	borderY := result[borderRow*w+borderCol]
+	assert.InDelta(t, 235, int(borderY), 3, "border pixel at (%d,%d) should be white Y≈235, got %d",
+		borderRow, borderCol, borderY)
+
+	// A pixel well inside the rect should be unchanged (gray Y=128).
+	interiorRow := rect.Y + rect.H/2
+	interiorCol := rect.X + rect.W/2
+	interiorY := result[interiorRow*w+interiorCol]
+	assert.InDelta(t, 128, int(interiorY), 3, "interior pixel at (%d,%d) should be gray Y≈128, got %d",
+		interiorRow, interiorCol, interiorY)
+
+	t.Logf("DrawBorder: border Y=%d (want ~235), interior Y=%d (want ~128)", borderY, interiorY)
+}

@@ -2,7 +2,7 @@
 
 // Motion-compensated frame interpolation using optical flow vectors.
 // Flow vectors are int16_t pairs (dx, dy) at 4x4 block granularity
-// with quarter-pixel precision (divide by 4 to get pixel displacement).
+// in NVOFA S10.5 format (5 fractional bits = divide by 32 for pixel displacement).
 //
 // For each output pixel, we look up the flow vector for its 4x4 block,
 // compute the source position in both prev and curr frames at the
@@ -26,8 +26,8 @@ __global__ void fruc_interpolate_y_kernel(
     int bx = x / 4;
     int by = y / 4;
     int flowIdx = by * flowStride + bx * 2;  // interleaved dx, dy
-    float dx = (float)flowXY[flowIdx] * 0.25f;      // quarter-pixel to pixel
-    float dy = (float)flowXY[flowIdx + 1] * 0.25f;
+    float dx = (float)flowXY[flowIdx] * 0.03125f;      // S10.5 to pixel (1/32)
+    float dy = (float)flowXY[flowIdx + 1] * 0.03125f;
 
     // Source positions in prev and curr (bidirectional interpolation)
     float prevX = (float)x - dx * alpha;
@@ -89,8 +89,8 @@ __global__ void fruc_interpolate_uv_kernel(
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 2; i++) {
             int idx = bys[j] * flowW + bxs[i] * 2;
-            dx += (float)flowXY[idx] * 0.25f;
-            dy += (float)flowXY[idx + 1] * 0.25f;
+            dx += (float)flowXY[idx] * 0.03125f;      // S10.5 to pixel (1/32)
+            dy += (float)flowXY[idx + 1] * 0.03125f;
             count++;
         }
     }

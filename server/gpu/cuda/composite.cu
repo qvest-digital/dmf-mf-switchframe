@@ -83,21 +83,23 @@ __global__ void pip_composite_uv_kernel(
 }
 
 // Draw border around a rectangle (4 strips: top, bottom, left, right)
+// Thread indices are relative to the outer bounding box origin (outerX, outerY).
+// outerX and outerY are passed explicitly so the kernel can map back to absolute
+// frame coordinates without recomputing them from rectX/rectY/thickness.
 __global__ void draw_border_nv12_kernel(
     uint8_t* __restrict__ dst, int dstW, int dstH, int dstPitch,
     int rectX, int rectY, int rectW, int rectH,
+    int outerX, int outerY, int outerW, int outerH,
     int thickness, uint8_t colorY, uint8_t colorCb, uint8_t colorCr)
 {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
 
-    // Compute border region: outside rect, within thickness
-    int outerX = rectX - thickness;
-    int outerY = rectY - thickness;
-    int outerW = rectW + thickness * 2;
-    int outerH = rectH + thickness * 2;
+    // Convert local (outer-box-relative) coords to absolute frame coords
+    int x = outerX + lx;
+    int y = outerY + ly;
 
-    if (x < outerX || x >= outerX + outerW || y < outerY || y >= outerY + outerH) return;
+    if (lx >= outerW || ly >= outerH) return;
     if (x >= dstW || y >= dstH || x < 0 || y < 0) return;
 
     // Inside the rect itself? Skip (not border)
@@ -176,6 +178,8 @@ cudaError_t draw_border_nv12(
     int thickness, uint8_t colorY, uint8_t colorCb, uint8_t colorCr,
     cudaStream_t stream)
 {
+    int outerX = rectX - thickness;
+    int outerY = rectY - thickness;
     int outerW = rectW + thickness * 2;
     int outerH = rectH + thickness * 2;
     dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
@@ -183,6 +187,7 @@ cudaError_t draw_border_nv12(
     draw_border_nv12_kernel<<<grid, block, 0, stream>>>(
         dst, dstW, dstH, dstPitch,
         rectX, rectY, rectW, rectH,
+        outerX, outerY, outerW, outerH,
         thickness, colorY, colorCb, colorCr);
     return cudaGetLastError();
 }
