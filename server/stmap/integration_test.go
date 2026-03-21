@@ -442,12 +442,3 @@ func TestIntegration_AllGeneratorsProduceValidMaps(t *testing.T) {
 		})
 	}
 }
-
-// sumFloat32 computes the sum of a float32 slice, used for quick difference checks.
-func sumFloat32(s []float32) float64 {
-	var sum float64
-	for _, v := range s {
-		sum += float64(v)
-	}
-	return sum
-}

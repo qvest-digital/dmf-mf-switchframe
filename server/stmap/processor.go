@@ -122,18 +122,6 @@ func (p *Processor) buildLUT() {
 	}
 }
 
-// warpPlaneBand applies bilinear interpolation for a band of output pixels.
-// dst receives len(lutX) output pixels. src is the FULL source plane (w*h bytes).
-// Uses the platform-specific warpBilinearRow kernel (assembly on amd64/arm64,
-// Go fallback on other platforms).
-func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int32) {
-	n := len(lutX)
-	if n == 0 {
-		return
-	}
-	warpBilinearRow(&dst[0], &src[0], w, h, n, &lutX[0], &lutY[0])
-}
-
 // warpPlane applies bilinear interpolation for one complete plane.
 func warpPlane(dst, src []byte, w, h int, lutX, lutY []int32) {
 	n := w * h

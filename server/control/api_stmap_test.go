@@ -396,7 +396,7 @@ func buildMinimalEXR(t *testing.T, width, height int) []byte {
 	}
 
 	// Magic + version
-	appendLE32(0x762F3101)
+	appendLE32(0x01312F76)
 	appendLE32(2)
 
 	// Channel list: G(float) + R(float) alphabetically

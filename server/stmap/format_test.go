@@ -24,7 +24,7 @@ func makeTestPNG16(w, h int) []byte {
 		}
 	}
 	var buf bytes.Buffer
-	png.Encode(&buf, img)
+	_ = png.Encode(&buf, img)
 	return buf.Bytes()
 }
 
@@ -38,7 +38,7 @@ func makeTestPNG8(w, h int) []byte {
 		}
 	}
 	var buf bytes.Buffer
-	png.Encode(&buf, img)
+	_ = png.Encode(&buf, img)
 	return buf.Bytes()
 }
 
@@ -151,8 +151,8 @@ func TestReadWriteRaw_RoundTrip(t *testing.T) {
 func TestReadRaw_TooShort(t *testing.T) {
 	// Valid header but truncated data.
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(4))
-	binary.Write(&buf, binary.BigEndian, uint32(2))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(4))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(2))
 	// Need 4*2*4*2 = 64 more bytes, but only write 10.
 	buf.Write(make([]byte, 10))
 
@@ -167,8 +167,8 @@ func TestReadRaw_TooShort(t *testing.T) {
 func TestReadRaw_OddDimensions(t *testing.T) {
 	var buf bytes.Buffer
 	// 3x2: odd width.
-	binary.Write(&buf, binary.BigEndian, uint32(3))
-	binary.Write(&buf, binary.BigEndian, uint32(2))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(3))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(2))
 	buf.Write(make([]byte, 3*2*4*2))
 
 	_, err := ReadRaw(buf.Bytes(), "odd")
@@ -178,16 +178,16 @@ func TestReadRaw_OddDimensions(t *testing.T) {
 func TestReadRaw_InvalidHeader(t *testing.T) {
 	// Zero width.
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.BigEndian, uint32(0))
-	binary.Write(&buf, binary.BigEndian, uint32(2))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(0))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(2))
 
 	_, err := ReadRaw(buf.Bytes(), "zero-w")
 	require.ErrorIs(t, err, ErrInvalidDimensions)
 
 	// Zero height.
 	buf.Reset()
-	binary.Write(&buf, binary.BigEndian, uint32(4))
-	binary.Write(&buf, binary.BigEndian, uint32(0))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(4))
+	_ = binary.Write(&buf, binary.BigEndian, uint32(0))
 
 	_, err = ReadRaw(buf.Bytes(), "zero-h")
 	require.ErrorIs(t, err, ErrInvalidDimensions)
@@ -238,7 +238,7 @@ func TestReadPNG_RGBA64(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	png.Encode(&buf, img)
+	_ = png.Encode(&buf, img)
 
 	m, err := ReadPNG(buf.Bytes(), "rgba64")
 	require.NoError(t, err)

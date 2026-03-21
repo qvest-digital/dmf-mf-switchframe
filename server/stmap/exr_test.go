@@ -60,9 +60,9 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 	var buf bytes.Buffer
 
 	// Magic number
-	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	// Version: 2, scanline (no flags in bits 9-31)
-	binary.Write(&buf, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	// --- Header attributes ---
 
@@ -73,7 +73,7 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 		buf.WriteByte(0) // null terminator for name
 		buf.WriteString(typeName)
 		buf.WriteByte(0) // null terminator for type name
-		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(data)))
 		buf.Write(data)
 	}
 
@@ -82,19 +82,19 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 	// Channel G
 	chData.WriteString("G")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
 	chData.WriteByte(0)                                   // pLinear
 	chData.Write([]byte{0, 0, 0})                         // reserved
-	binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
-	binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
 	// Channel R
 	chData.WriteString("R")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
 	chData.WriteByte(0)                                   // pLinear
 	chData.Write([]byte{0, 0, 0})                         // reserved
-	binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
-	binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
 	// Terminating null byte for channel list
 	chData.WriteByte(0)
 
@@ -105,10 +105,10 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 
 	// dataWindow attribute (box2i: xMin, yMin, xMax, yMax)
 	var dwData bytes.Buffer
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(width-1))
-	binary.Write(&dwData, binary.LittleEndian, int32(height-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(width-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(height-1))
 	writeAttr("dataWindow", "box2i", dwData.Bytes())
 
 	// displayWindow attribute
@@ -143,7 +143,7 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 	// Reserve space for offset table
 	offsets := make([]int64, scanlineBlockCount)
 	for range offsets {
-		binary.Write(&buf, binary.LittleEndian, int64(0)) // placeholder
+		_ = binary.Write(&buf, binary.LittleEndian, int64(0)) // placeholder
 	}
 
 	// --- Scanline blocks ---
@@ -158,19 +158,19 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 		offsets[block] = int64(buf.Len())
 
 		// y-coordinate of first scanline in this block
-		binary.Write(&buf, binary.LittleEndian, int32(startY))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(startY))
 
 		// Build pixel data for this block: channels in alphabetical order (G, R)
 		// Each channel's pixels for all rows in the block are contiguous.
 		var pixelData bytes.Buffer
 		for row := startY; row < endY; row++ {
 			for x := 0; x < width; x++ {
-				binary.Write(&pixelData, binary.LittleEndian, gVals[row*width+x])
+				_ = binary.Write(&pixelData, binary.LittleEndian, gVals[row*width+x])
 			}
 		}
 		for row := startY; row < endY; row++ {
 			for x := 0; x < width; x++ {
-				binary.Write(&pixelData, binary.LittleEndian, rVals[row*width+x])
+				_ = binary.Write(&pixelData, binary.LittleEndian, rVals[row*width+x])
 			}
 		}
 
@@ -178,7 +178,7 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 
 		if compression == 0 {
 			// Uncompressed: write size then data
-			binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
+			_ = binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
 			buf.Write(rawPixels)
 		} else {
 			// ZIPS or ZIP: apply EXR preprocessing (deinterleave + predictor)
@@ -192,7 +192,7 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 			require.NoError(t, err)
 			require.NoError(t, w.Close())
 
-			binary.Write(&buf, binary.LittleEndian, int32(compressed.Len()))
+			_ = binary.Write(&buf, binary.LittleEndian, int32(compressed.Len()))
 			buf.Write(compressed.Bytes())
 		}
 	}
@@ -360,43 +360,43 @@ func buildSyntheticEXROddDims(t *testing.T, width, height int, rVals, gVals []fl
 	require.Equal(t, width*height, len(gVals))
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
-	binary.Write(&buf, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
 		buf.WriteString(name)
 		buf.WriteByte(0)
 		buf.WriteString(typeName)
 		buf.WriteByte(0)
-		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(data)))
 		buf.Write(data)
 	}
 
 	var chData bytes.Buffer
 	chData.WriteString("G")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2))
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteString("R")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2))
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteByte(0)
 	writeAttr("channels", "chlist", chData.Bytes())
 
 	writeAttr("compression", "compression", []byte{0})
 
 	var dwData bytes.Buffer
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(width-1))
-	binary.Write(&dwData, binary.LittleEndian, int32(height-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(width-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(height-1))
 	writeAttr("dataWindow", "box2i", dwData.Bytes())
 	writeAttr("displayWindow", "box2i", dwData.Bytes())
 	writeAttr("lineOrder", "lineOrder", []byte{0})
@@ -405,23 +405,23 @@ func buildSyntheticEXROddDims(t *testing.T, width, height int, rVals, gVals []fl
 	offsetTableStart := buf.Len()
 	offsets := make([]int64, height)
 	for range offsets {
-		binary.Write(&buf, binary.LittleEndian, int64(0))
+		_ = binary.Write(&buf, binary.LittleEndian, int64(0))
 	}
 
 	for y := 0; y < height; y++ {
 		offsets[y] = int64(buf.Len())
-		binary.Write(&buf, binary.LittleEndian, int32(y))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(y))
 
 		var pixelData bytes.Buffer
 		for x := 0; x < width; x++ {
-			binary.Write(&pixelData, binary.LittleEndian, gVals[y*width+x])
+			_ = binary.Write(&pixelData, binary.LittleEndian, gVals[y*width+x])
 		}
 		for x := 0; x < width; x++ {
-			binary.Write(&pixelData, binary.LittleEndian, rVals[y*width+x])
+			_ = binary.Write(&pixelData, binary.LittleEndian, rVals[y*width+x])
 		}
 
 		rawPixels := pixelData.Bytes()
-		binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
 		buf.Write(rawPixels)
 	}
 
@@ -437,15 +437,15 @@ func buildSyntheticEXRHalf(t *testing.T, width, height int, rVals, gVals []float
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
-	binary.Write(&buf, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
 		buf.WriteString(name)
 		buf.WriteByte(0)
 		buf.WriteString(typeName)
 		buf.WriteByte(0)
-		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(data)))
 		buf.Write(data)
 	}
 
@@ -453,29 +453,29 @@ func buildSyntheticEXRHalf(t *testing.T, width, height int, rVals, gVals []float
 	// G channel as HALF
 	chData.WriteString("G")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(1)) // HALF
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // HALF
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	// R channel as HALF
 	chData.WriteString("R")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(1)) // HALF
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // HALF
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteByte(0)
 	writeAttr("channels", "chlist", chData.Bytes())
 
 	writeAttr("compression", "compression", []byte{0})
 
 	var dwData bytes.Buffer
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(width-1))
-	binary.Write(&dwData, binary.LittleEndian, int32(height-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(width-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(height-1))
 	writeAttr("dataWindow", "box2i", dwData.Bytes())
 	writeAttr("displayWindow", "box2i", dwData.Bytes())
 	writeAttr("lineOrder", "lineOrder", []byte{0})
@@ -484,23 +484,23 @@ func buildSyntheticEXRHalf(t *testing.T, width, height int, rVals, gVals []float
 	offsetTableStart := buf.Len()
 	offsets := make([]int64, height)
 	for range offsets {
-		binary.Write(&buf, binary.LittleEndian, int64(0))
+		_ = binary.Write(&buf, binary.LittleEndian, int64(0))
 	}
 
 	for y := 0; y < height; y++ {
 		offsets[y] = int64(buf.Len())
-		binary.Write(&buf, binary.LittleEndian, int32(y))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(y))
 
 		var pixelData bytes.Buffer
 		for x := 0; x < width; x++ {
-			binary.Write(&pixelData, binary.LittleEndian, floatToHalf(gVals[y*width+x]))
+			_ = binary.Write(&pixelData, binary.LittleEndian, floatToHalf(gVals[y*width+x]))
 		}
 		for x := 0; x < width; x++ {
-			binary.Write(&pixelData, binary.LittleEndian, floatToHalf(rVals[y*width+x]))
+			_ = binary.Write(&pixelData, binary.LittleEndian, floatToHalf(rVals[y*width+x]))
 		}
 
 		rawPixels := pixelData.Bytes()
-		binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
 		buf.Write(rawPixels)
 	}
 
@@ -540,36 +540,36 @@ func buildSyntheticEXRSingleChannel(t *testing.T, width, height int, channelName
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
-	binary.Write(&buf, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
 		buf.WriteString(name)
 		buf.WriteByte(0)
 		buf.WriteString(typeName)
 		buf.WriteByte(0)
-		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(data)))
 		buf.Write(data)
 	}
 
 	var chData bytes.Buffer
 	chData.WriteString(channelName)
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteByte(0)
 	writeAttr("channels", "chlist", chData.Bytes())
 
 	writeAttr("compression", "compression", []byte{0})
 
 	var dwData bytes.Buffer
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(width-1))
-	binary.Write(&dwData, binary.LittleEndian, int32(height-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(width-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(height-1))
 	writeAttr("dataWindow", "box2i", dwData.Bytes())
 	writeAttr("displayWindow", "box2i", dwData.Bytes())
 	writeAttr("lineOrder", "lineOrder", []byte{0})
@@ -579,18 +579,18 @@ func buildSyntheticEXRSingleChannel(t *testing.T, width, height int, channelName
 	offsetTableStart := buf.Len()
 	offsets := make([]int64, height)
 	for range offsets {
-		binary.Write(&buf, binary.LittleEndian, int64(0))
+		_ = binary.Write(&buf, binary.LittleEndian, int64(0))
 	}
 
 	for y := 0; y < height; y++ {
 		offsets[y] = int64(buf.Len())
-		binary.Write(&buf, binary.LittleEndian, int32(y))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(y))
 		var pixelData bytes.Buffer
 		for x := 0; x < width; x++ {
-			binary.Write(&pixelData, binary.LittleEndian, float32(0))
+			_ = binary.Write(&pixelData, binary.LittleEndian, float32(0))
 		}
 		rawPixels := pixelData.Bytes()
-		binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
 		buf.Write(rawPixels)
 	}
 
@@ -608,43 +608,43 @@ func buildSyntheticEXRWithCompression(t *testing.T, width, height int, compressi
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
-	binary.Write(&buf, binary.LittleEndian, uint32(2))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
+	_ = binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
 		buf.WriteString(name)
 		buf.WriteByte(0)
 		buf.WriteString(typeName)
 		buf.WriteByte(0)
-		binary.Write(&buf, binary.LittleEndian, int32(len(data)))
+		_ = binary.Write(&buf, binary.LittleEndian, int32(len(data)))
 		buf.Write(data)
 	}
 
 	var chData bytes.Buffer
 	chData.WriteString("G")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2))
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteString("R")
 	chData.WriteByte(0)
-	binary.Write(&chData, binary.LittleEndian, int32(2))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(2))
 	chData.WriteByte(0)
 	chData.Write([]byte{0, 0, 0})
-	binary.Write(&chData, binary.LittleEndian, int32(1))
-	binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1))
 	chData.WriteByte(0)
 	writeAttr("channels", "chlist", chData.Bytes())
 
 	writeAttr("compression", "compression", []byte{compression})
 
 	var dwData bytes.Buffer
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(0))
-	binary.Write(&dwData, binary.LittleEndian, int32(width-1))
-	binary.Write(&dwData, binary.LittleEndian, int32(height-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(0))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(width-1))
+	_ = binary.Write(&dwData, binary.LittleEndian, int32(height-1))
 	writeAttr("dataWindow", "box2i", dwData.Bytes())
 	writeAttr("displayWindow", "box2i", dwData.Bytes())
 	writeAttr("lineOrder", "lineOrder", []byte{0})
