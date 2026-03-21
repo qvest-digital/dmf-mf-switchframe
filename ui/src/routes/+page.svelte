@@ -702,7 +702,7 @@
 			<section class="bottom-panel">
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
-					aiSegmentAvailable={store.effectiveState.aiSegmentation?.available === true}
+					aiAvailable={store.effectiveState.aiSegmentation?.available === true}
 					onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
@@ -770,12 +770,12 @@
 							<div class="tab-panel">
 								<STMapPanel state={store.effectiveState} />
 							</div>
-						{:else if activeTab === 'AI BG'}
+						{:else if activeTab === 'AI'}
 							<div class="tab-panel">
 								{#if store.effectiveState.aiSegmentation?.available}
 									<AISegmentPanel state={store.effectiveState} />
 								{:else}
-									<div class="panel-disabled">AI Background Removal not available on this server</div>
+									<div class="panel-disabled">AI features not available on this server</div>
 								{/if}
 							</div>
 						{/if}

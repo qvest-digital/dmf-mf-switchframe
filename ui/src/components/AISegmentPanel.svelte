@@ -97,7 +97,7 @@
 				}),
 				'AI Segment',
 			);
-			notify('info', `AI BG disabled on ${label}`);
+			notify('info', `AI background disabled on ${label}`);
 			return;
 		}
 
@@ -114,7 +114,7 @@
 			}),
 			'AI Segment',
 		);
-		notify('info', `AI BG enabled on ${label}`);
+		notify('info', `AI background enabled on ${label}`);
 	}
 
 	function removeSegment() {
@@ -128,7 +128,7 @@
 		);
 
 		const label = crState.sources[activeSource]?.label || activeSource;
-		notify('info', `AI BG removed from ${label}`);
+		notify('info', `AI background removed from ${label}`);
 		resetDefaults();
 	}
 

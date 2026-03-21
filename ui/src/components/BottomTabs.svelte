@@ -5,24 +5,24 @@
 		children: import('svelte').Snippet<[string]>;
 		onTabChange?: (tab: string) => void;
 		replayActive?: boolean;
-		aiSegmentAvailable?: boolean;
+		aiAvailable?: boolean;
 	}
-	let { children, onTabChange, replayActive = false, aiSegmentAvailable = false }: Props = $props();
+	let { children, onTabChange, replayActive = false, aiAvailable = false }: Props = $props();
 
 	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap'] as const;
 	type StaticTabId = typeof staticTabs[number];
-	type TabId = StaticTabId | 'AI BG';
+	type TabId = StaticTabId | 'AI';
 
 	let tabs = $derived(
-		aiSegmentAvailable
-			? ([...staticTabs, 'AI BG'] as TabId[])
+		aiAvailable
+			? ([...staticTabs, 'AI'] as TabId[])
 			: ([...staticTabs] as TabId[]),
 	);
 
 	function loadSavedTab(): TabId {
 		if (typeof localStorage === 'undefined') return 'Audio';
 		const saved = localStorage.getItem('sf-active-tab');
-		// Accept any known tab name — 'AI BG' is valid if server reports available
+		// Accept any known tab name — 'AI' is valid if server reports available
 		if (saved) return saved as TabId;
 		return 'Audio';
 	}
@@ -64,7 +64,7 @@
 				id="tab-{tab.toLowerCase().replace(' ', '-')}"
 				class="tab"
 				class:active={activeTab === tab}
-				class:tab--ai={tab === 'AI BG'}
+				class:tab--ai={tab === 'AI'}
 				role="tab"
 				aria-selected={activeTab === tab}
 				aria-controls="tabpanel-{tab.toLowerCase().replace(' ', '-')}"
@@ -74,7 +74,7 @@
 				{#if tab === 'Replay' && replayActive}
 					<span class="replay-dot"></span>
 				{/if}
-				{#if tab === 'AI BG'}
+				{#if tab === 'AI'}
 					<span class="ai-dot"></span>
 				{/if}
 				<span class="tab-shortcut">^{(i + 1) % 10}</span>
