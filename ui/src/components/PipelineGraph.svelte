@@ -136,6 +136,9 @@
 				return '#a78bfa';
 			case 'Demo':
 				return '#6b7280';
+			case 'METAL':
+			case 'CUDA':
+				return '#0ea5e9';
 			default:
 				return '#6b7280';
 		}

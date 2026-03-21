@@ -49,7 +49,14 @@ const pipelineNodeLabels: Record<string, string> = {
 	'dsk-compositor': 'DSK Compositor',
 	'raw-sink': 'Raw Sink',
 	'raw-monitor-sink': 'Raw Monitor',
-	'h264-encode': 'H.264 Encode'
+	'h264-encode': 'H.264 Encode',
+	// GPU nodes
+	'gpu_key': 'GPU Key',
+	'gpu_layout': 'GPU Layout',
+	'gpu_dsk': 'GPU DSK',
+	'gpu_stmap': 'GPU ST Map',
+	'gpu_raw_sink': 'GPU Raw Sink',
+	'gpu_encode': 'GPU Encode'
 };
 
 export function pipelineNodeLabel(name: string): string {
@@ -64,6 +71,16 @@ const pipelineNodeOrder = [
 	'raw-sink',
 	'raw-monitor-sink',
 	'h264-encode'
+];
+
+/** Canonical GPU pipeline node ordering. */
+const gpuPipelineNodeOrder = [
+	'gpu_key',
+	'gpu_layout',
+	'gpu_dsk',
+	'gpu_stmap',
+	'gpu_raw_sink',
+	'gpu_encode'
 ];
 
 /* ---------- builder ---------- */
@@ -252,6 +269,50 @@ export function buildGraph(perf: any, browserDiag: Record<string, any> | null = 
 
 		prevNodeId = nodeId;
 	});
+
+	// GPU pipeline nodes (when GPU pipeline is active)
+	const gpuData = perf.pipeline?.gpu;
+	if (gpuData?.active && gpuData.nodes) {
+		const gpuNodeNames = Object.keys(gpuData.nodes);
+		// Sort by canonical order, then append any unknown GPU nodes
+		const orderedGpuNodes = gpuPipelineNodeOrder.filter((name) => gpuNodeNames.includes(name));
+		for (const name of gpuNodeNames) {
+			if (!orderedGpuNodes.includes(name)) orderedGpuNodes.push(name);
+		}
+
+		let gpuPrevNodeId = prevNodeId;
+		orderedGpuNodes.forEach((name) => {
+			const nodeData = gpuData.nodes![name];
+			const lastNs = nodeData?.current?.last_ns ?? 0;
+			const nodeId = `gpu-${name}`;
+
+			const kpis: Record<string, string> = {
+				latency: nsToMs(lastNs)
+			};
+
+			nodes.push({
+				id: nodeId,
+				label: pipelineNodeLabel(name),
+				category: 'gpu-pipeline-node',
+				column: 'processing',
+				row: processingRow++,
+				badge: gpuData.backend?.toUpperCase(),
+				kpis,
+				health: pipelineNodeHealth(lastNs, frameBudgetNs),
+				detail: nodeData
+			});
+
+			if (gpuPrevNodeId) {
+				edges.push({ from: gpuPrevNodeId, to: nodeId });
+			}
+			gpuPrevNodeId = nodeId;
+		});
+
+		// GPU output connects to relay instead of CPU output
+		if (gpuPrevNodeId && gpuPrevNodeId !== prevNodeId) {
+			prevNodeId = gpuPrevNodeId;
+		}
+	}
 
 	// Audio mixer node (parallel lane)
 	const audioRow = processingRow++;

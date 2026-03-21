@@ -652,3 +652,54 @@ export interface STMapGenerateRequest {
 	assign_program?: boolean;
 	frame_count?: number;
 }
+
+// ── GPU Pipeline Types ──
+
+export interface PerfGPUCurrent {
+	last_ns: number;
+}
+
+export interface PerfWindowStats {
+	min_ns: number;
+	max_ns: number;
+	mean_ns: number;
+	p95_ns: number;
+}
+
+export interface PerfWindows {
+	'1s': PerfWindowStats;
+	'10s': PerfWindowStats;
+	'60s': PerfWindowStats;
+}
+
+export interface PerfNodeSnapshot {
+	current: { last_ns: number };
+	windows: PerfWindows;
+}
+
+export interface PerfGPUSnapshot {
+	active: boolean;
+	backend: string;
+	device: string;
+	current: PerfGPUCurrent;
+	nodes?: Record<string, PerfNodeSnapshot>;
+}
+
+export interface GPUPipelineDebugNode {
+	name: string;
+	last_ns: number;
+	max_ns: number;
+	latency_us: number;
+	last_error?: string;
+}
+
+export interface GPUPipelineDebugSnapshot {
+	gpu: boolean;
+	backend: string;
+	active_nodes: GPUPipelineDebugNode[];
+	total_nodes: number;
+	run_count: number;
+	last_run_ns: number;
+	max_run_ns: number;
+	total_latency_us: number;
+}

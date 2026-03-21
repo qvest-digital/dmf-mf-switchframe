@@ -11,6 +11,17 @@
 	interface PerfWindowStats { min_ns: number; max_ns: number; mean_ns: number; p95_ns: number }
 	interface PerfWindows { "1s": PerfWindowStats; "10s": PerfWindowStats; "60s": PerfWindowStats }
 
+	interface PerfGPUSnapshot {
+		active: boolean;
+		backend: string;
+		device: string;
+		current: { last_ns: number };
+		nodes?: Record<string, {
+			current: { last_ns: number };
+			windows: PerfWindows;
+		}>;
+	}
+
 	interface PerfSnapshot {
 		timestamp: string;
 		uptime_ms: number;
@@ -31,6 +42,7 @@
 			}>;
 			deadline_violations: number;
 			budget_pct: number;
+			gpu?: PerfGPUSnapshot;
 		};
 		e2e: {
 			current: { last_ns: number };
@@ -211,6 +223,25 @@
 		reconnectCount?: number;
 	}
 
+	interface GPUPipelineDebugNode {
+		name: string;
+		last_ns: number;
+		max_ns: number;
+		latency_us: number;
+		last_error?: string;
+	}
+
+	interface GPUPipelineDebugSnapshot {
+		gpu: boolean;
+		backend: string;
+		active_nodes: GPUPipelineDebugNode[];
+		total_nodes: number;
+		run_count: number;
+		last_run_ns: number;
+		max_run_ns: number;
+		total_latency_us: number;
+	}
+
 	interface DebugSnapshot {
 		uptime_ms?: number;
 		srt?: {
@@ -226,6 +257,7 @@
 			sources?: Record<string, SourceDebug>;
 			source_decoders?: { active_count: number; estimated_yuv_mb: number };
 			pipeline?: PipelineSnapshot;
+			gpu_pipeline?: GPUPipelineDebugSnapshot;
 			video_pipeline?: {
 				output_fps: number;
 				frames_processed: number;
@@ -320,6 +352,13 @@
 		'raw-sink-mxl':      { display: 'Raw Sink MXL',      short: 'MXL',  color: 'rgba(234, 179, 8, 0.7)' },
 		'raw-sink-monitor':  { display: 'Raw Monitor',        short: 'MON',  color: 'rgba(245, 158, 11, 0.7)' },
 		'h264-encode':       { display: 'H.264 Encode',      short: 'ENC',  color: 'rgba(52, 211, 153, 0.7)' },
+		// GPU pipeline nodes
+		'gpu_key':           { display: 'GPU Key',            short: 'KEY',  color: 'rgba(56, 189, 248, 0.7)' },
+		'gpu_layout':        { display: 'GPU Layout',         short: 'LAY',  color: 'rgba(99, 102, 241, 0.7)' },
+		'gpu_dsk':           { display: 'GPU DSK',            short: 'DSK',  color: 'rgba(14, 165, 233, 0.7)' },
+		'gpu_stmap':         { display: 'GPU ST Map',         short: 'MAP',  color: 'rgba(168, 85, 247, 0.7)' },
+		'gpu_raw_sink':      { display: 'GPU Raw Sink',       short: 'SNK',  color: 'rgba(234, 179, 8, 0.7)' },
+		'gpu_encode':        { display: 'GPU Encode',         short: 'ENC',  color: 'rgba(16, 185, 129, 0.7)' },
 	};
 
 	// Canonical pipeline order for display (MON inline after MXL)
@@ -469,6 +508,11 @@
 	function fmtMs(ns: number | undefined | null): string {
 		if (ns === undefined || ns === null) return '-';
 		return (ns / 1e6).toFixed(2);
+	}
+
+	function fmtUs(ns: number | undefined | null): string {
+		if (ns === undefined || ns === null) return '-';
+		return (ns / 1e3).toFixed(0);
 	}
 
 	function fmtCount(n: number | undefined | null): string {
@@ -916,6 +960,48 @@
 						{/each}
 					</div>
 				</div>
+
+				<!-- GPU Pipeline (perf view) -->
+				{#if perfData.pipeline.gpu?.active}
+					<div class="section">
+						<div class="section-label">
+							GPU PIPELINE
+							<span class="gpu-backend-badge">{perfData.pipeline.gpu.backend.toUpperCase()}</span>
+							{#if perfData.pipeline.gpu.device}
+								<span class="node-count">{perfData.pipeline.gpu.device}</span>
+							{/if}
+						</div>
+						<div class="perf-stat-row">
+							<span>Current</span>
+							<span>{fmtUs(perfData.pipeline.gpu.current.last_ns)}us</span>
+						</div>
+
+						{#if perfData.pipeline.gpu.nodes && Object.keys(perfData.pipeline.gpu.nodes).length > 0}
+							<div class="gpu-node-table">
+								<div class="gpu-node-header">
+									<span class="gpu-node-name-col">Node</span>
+									<span class="gpu-node-val-col">Current</span>
+									<span class="gpu-node-val-col">{perfWindow} p95</span>
+								</div>
+								{#each Object.entries(perfData.pipeline.gpu.nodes) as [name, node]}
+									<div class="gpu-node-row">
+										<span class="gpu-node-name-col">
+											<span class="gpu-dot"></span>
+											{NODE_META[name]?.display ?? name}
+										</span>
+										<span class="gpu-node-val-col">{fmtUs(node.current.last_ns)}us</span>
+										<span class="gpu-node-val-col">{fmtUs(getWindow(node.windows).p95_ns)}us</span>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{:else}
+					<div class="section">
+						<div class="section-label">GPU PIPELINE</div>
+						<div class="gpu-inactive-label">GPU: inactive (CPU pipeline)</div>
+					</div>
+				{/if}
 
 				<!-- Per-Source Decode -->
 				<div class="section">
@@ -1397,10 +1483,76 @@
 				</div>
 			{/if}
 
+			<!-- GPU Pipeline (debug view) -->
+			{#if snapshot?.switcher?.gpu_pipeline}
+				{@const gpuPipe = snapshot.switcher.gpu_pipeline}
+				<div class="section">
+					<div class="section-label">
+						GPU PIPELINE
+						<span class="gpu-backend-badge">{gpuPipe.backend?.toUpperCase() ?? 'GPU'}</span>
+						<span class="node-count">{gpuPipe.active_nodes?.length ?? 0}/{gpuPipe.total_nodes ?? 0} nodes</span>
+					</div>
+					<div class="pipeline-flow">
+						<!-- GPU Input -->
+						<div class="flow-input gpu-flow-input">
+							<span class="flow-box-label">GPU UPLOAD</span>
+							<span class="flow-box-detail">
+								YUV420p &rarr; NV12
+								· {fmtCount(gpuPipe.run_count)} runs
+							</span>
+						</div>
+
+						<!-- GPU Node chain -->
+						{#each (gpuPipe.active_nodes ?? []) as node}
+							{@const lastUs = (node.last_ns / 1e3)}
+							{@const maxUs = (node.max_ns / 1e3)}
+							{@const frameBudgetNs = snapshot?.switcher?.frame_budget_ms ? snapshot.switcher.frame_budget_ms * 1e6 : DEFAULT_FRAME_BUDGET_NS}
+							{@const status = nodeStatus(node.last_ns, frameBudgetNs)}
+							{@const budgetRatio = Math.min(node.last_ns / frameBudgetNs, 1)}
+							<div
+								class="flow-node {status} gpu-flow-node"
+								class:has-error={node.last_error}
+								title="{NODE_META[node.name]?.display ?? node.name}: {lastUs.toFixed(0)}us (max {maxUs.toFixed(0)}us)"
+							>
+								<div class="flow-node-top">
+									<span class="flow-node-left">
+										<span class="node-name">{NODE_META[node.name]?.short ?? node.name.replace('gpu_', '').toUpperCase()}</span>
+										<span class="flow-node-fullname">{NODE_META[node.name]?.display ?? node.name}</span>
+									</span>
+									<span class="flow-node-right">
+										<span class="node-time">{lastUs.toFixed(0)}us</span>
+									</span>
+								</div>
+								<div class="flow-node-detail">
+									<span>max {maxUs.toFixed(0)}us</span>
+									<span class="flow-budget-pct">{((node.last_ns / frameBudgetNs) * 100).toFixed(1)}%</span>
+								</div>
+								{#if node.last_error}
+									<div class="gpu-node-error">{node.last_error}</div>
+								{/if}
+								<div class="node-micro-bar">
+									<div class="node-micro-fill {status}" style="width: {budgetRatio * 100}%"></div>
+								</div>
+							</div>
+						{/each}
+
+						<!-- GPU Output -->
+						<div class="flow-output gpu-flow-output">
+							<span class="flow-box-label">GPU DOWNLOAD</span>
+							<span class="flow-box-detail">
+								NV12 &rarr; YUV420p
+								· total {fmtUs(gpuPipe.last_run_ns)}us
+								· max {fmtUs(gpuPipe.max_run_ns)}us
+							</span>
+						</div>
+					</div>
+				</div>
+			{/if}
+
 			<!-- Pipeline Graph -->
 			<div class="section">
 				<div class="section-label">
-					PIPELINE
+					{#if snapshot?.switcher?.gpu_pipeline}CPU{/if} PIPELINE
 					{#if pipelineData}
 						<span class="epoch-badge">epoch {pipelineData.epoch}</span>
 						{#if pipelineData.totalNodes}
@@ -3320,4 +3472,104 @@
 		font-size: 0.75em;
 		opacity: 0.5;
 	}
+
+	/* --- GPU Pipeline --- */
+	.gpu-backend-badge {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		color: #38bdf8;
+		background: rgba(56, 189, 248, 0.15);
+		padding: 1px 6px;
+		border-radius: 3px;
+		letter-spacing: 0.5px;
+	}
+
+	.gpu-flow-node {
+		border-left-color: #38bdf8;
+	}
+
+	.gpu-flow-node.ok {
+		border-left-color: #38bdf8;
+		background: rgba(56, 189, 248, 0.04);
+	}
+
+	.gpu-flow-input,
+	.gpu-flow-output {
+		border-left-color: #38bdf8;
+	}
+
+	.gpu-node-error {
+		font-size: var(--text-2xs);
+		color: var(--status-crit);
+		margin-top: 2px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.gpu-inactive-label {
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+		font-style: italic;
+		padding: 2px 0;
+	}
+
+	/* GPU node table for perf view */
+	.gpu-node-table {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		margin-top: 6px;
+	}
+
+	.gpu-node-header {
+		display: flex;
+		gap: 8px;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.3px;
+		padding-bottom: 2px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.gpu-node-row {
+		display: flex;
+		gap: 8px;
+		font-size: var(--text-xs);
+		padding: 1px 0;
+	}
+
+	.gpu-node-name-col {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.gpu-node-val-col {
+		width: 60px;
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-secondary);
+		flex-shrink: 0;
+	}
+
+	.gpu-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: #38bdf8;
+		flex-shrink: 0;
+	}
+
+	/* Extra section transition delays for GPU sections */
+	.stats-panel.visible .section:nth-child(14) { transition-delay: 420ms; }
+	.stats-panel.visible .section:nth-child(15) { transition-delay: 450ms; }
 </style>

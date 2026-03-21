@@ -10,6 +10,7 @@ export type NodeCategory =
 	| 'decode'
 	| 'frame-sync'
 	| 'pipeline-node'
+	| 'gpu-pipeline-node'
 	| 'audio-mixer'
 	| 'program-relay'
 	| 'preview-encode'
