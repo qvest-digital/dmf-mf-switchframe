@@ -3,6 +3,7 @@
 package gpu
 
 import (
+	"sync/atomic"
 	"testing"
 )
 
@@ -309,7 +310,7 @@ func BenchmarkFullPipeline1080p(b *testing.B) {
 	defer enc.Close()
 
 	pipe := NewGPUPipeline(ctx, pool)
-	forceIDR := &atomicBool{}
+	forceIDR := &atomic.Bool{}
 	pipe.Build(1920, 1080, pool.Pitch(), []GPUPipelineNode{
 		NewGPUPassthroughNode("gpu_key", false),
 		NewGPUPassthroughNode("gpu_layout", false),
@@ -331,21 +332,4 @@ func BenchmarkFullPipeline1080p(b *testing.B) {
 			frame.Release()
 		}
 	}
-}
-
-// atomicBool is a minimal wrapper for benchmarks to avoid importing sync/atomic.
-type atomicBool struct{ v int32 }
-
-func (b *atomicBool) Load() bool  { return b.v != 0 }
-func (b *atomicBool) Store(v bool) {
-	if v {
-		b.v = 1
-	} else {
-		b.v = 0
-	}
-}
-func (b *atomicBool) Swap(v bool) bool {
-	old := b.v
-	b.Store(v)
-	return old != 0
 }
