@@ -11,7 +11,7 @@ import (
 
 // EXR format constants.
 const (
-	exrMagic = 0x762F3101
+	exrMagic = 0x01312F76 // bytes on disk: 76 2F 31 01, read as little-endian uint32
 
 	// Version flags (bits 9-11).
 	exrTiledFlag    = 0x200
@@ -423,7 +423,9 @@ func halfToFloat(h uint16) float32 {
 // (a 4K ZIP block is ~491KB uncompressed).
 const maxDecompressedSize = 100 << 20
 
-// zlibDecompress decompresses zlib-compressed data with a size limit.
+// zlibDecompress decompresses zlib-compressed data and applies the EXR
+// predictor reconstruction + byte interleave postprocessing.
+// See OpenEXR ImfZip.cpp: uncompress → zlib inflate → reconstruct → interleave.
 func zlibDecompress(data []byte) ([]byte, error) {
 	r, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -431,7 +433,39 @@ func zlibDecompress(data []byte) ([]byte, error) {
 	}
 	defer r.Close()
 
-	return io.ReadAll(io.LimitReader(r, maxDecompressedSize))
+	tmp, err := io.ReadAll(io.LimitReader(r, maxDecompressedSize))
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 1: Reconstruct (predictor decode).
+	// Delta decode with bias 128: t[i] = (t[i-1] + t[i] - 128) & 0xFF
+	// See ImfZip.cpp reconstruct_scalar().
+	for i := 1; i < len(tmp); i++ {
+		d := int(tmp[i-1]) + int(tmp[i]) - 128
+		tmp[i] = byte(d)
+	}
+
+	// Step 2: Interleave.
+	// The compressor split even/odd bytes into two halves.
+	// First half = bytes at positions 0, 2, 4, ...
+	// Second half = bytes at positions 1, 3, 5, ...
+	// Reconstruct the original interleaved order.
+	// See ImfZip.cpp interleave_scalar().
+	out := make([]byte, len(tmp))
+	t1 := 0                    // index into first half
+	t2 := (len(tmp) + 1) / 2  // index into second half
+	for s := 0; s < len(out); s++ {
+		if s%2 == 0 {
+			out[s] = tmp[t1]
+			t1++
+		} else {
+			out[s] = tmp[t2]
+			t2++
+		}
+	}
+
+	return out, nil
 }
 
 // channelNames returns a comma-separated list of channel names for error messages.

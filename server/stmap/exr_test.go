@@ -60,7 +60,7 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 	var buf bytes.Buffer
 
 	// Magic number
-	binary.Write(&buf, binary.LittleEndian, uint32(0x762F3101))
+	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	// Version: 2, scanline (no flags in bits 9-31)
 	binary.Write(&buf, binary.LittleEndian, uint32(2))
 
@@ -181,11 +181,14 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 			binary.Write(&buf, binary.LittleEndian, int32(len(rawPixels)))
 			buf.Write(rawPixels)
 		} else {
-			// ZIPS or ZIP: zlib compress
+			// ZIPS or ZIP: apply EXR preprocessing (deinterleave + predictor)
+			// then zlib compress. This is the inverse of zlibDecompress.
+			preprocessed := exrPreprocess(rawPixels)
+
 			var compressed bytes.Buffer
 			w, err := zlib.NewWriterLevel(&compressed, zlib.DefaultCompression)
 			require.NoError(t, err)
-			_, err = w.Write(rawPixels)
+			_, err = w.Write(preprocessed)
 			require.NoError(t, err)
 			require.NoError(t, w.Close())
 
@@ -213,7 +216,7 @@ func TestReadEXR_InvalidMagic(t *testing.T) {
 func TestReadEXR_TruncatedHeader(t *testing.T) {
 	// Valid magic but truncated after version
 	data := make([]byte, 8)
-	binary.LittleEndian.PutUint32(data[0:4], 0x762F3101)
+	binary.LittleEndian.PutUint32(data[0:4], 0x01312F76)
 	binary.LittleEndian.PutUint32(data[4:8], 2)
 
 	_, err := ReadEXR(data, "test")
@@ -223,7 +226,7 @@ func TestReadEXR_TruncatedHeader(t *testing.T) {
 func TestReadEXR_TiledNotSupported(t *testing.T) {
 	// Version with tiled flag set (bit 9)
 	data := make([]byte, 100)
-	binary.LittleEndian.PutUint32(data[0:4], 0x762F3101)
+	binary.LittleEndian.PutUint32(data[0:4], 0x01312F76)
 	binary.LittleEndian.PutUint32(data[4:8], 2|0x200) // bit 9 = tiled
 
 	_, err := ReadEXR(data, "test")
@@ -357,7 +360,7 @@ func buildSyntheticEXROddDims(t *testing.T, width, height int, rVals, gVals []fl
 	require.Equal(t, width*height, len(gVals))
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x762F3101))
+	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
@@ -434,7 +437,7 @@ func buildSyntheticEXRHalf(t *testing.T, width, height int, rVals, gVals []float
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x762F3101))
+	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
@@ -537,7 +540,7 @@ func buildSyntheticEXRSingleChannel(t *testing.T, width, height int, channelName
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x762F3101))
+	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
@@ -605,7 +608,7 @@ func buildSyntheticEXRWithCompression(t *testing.T, width, height int, compressi
 	t.Helper()
 
 	var buf bytes.Buffer
-	binary.Write(&buf, binary.LittleEndian, uint32(0x762F3101))
+	binary.Write(&buf, binary.LittleEndian, uint32(0x01312F76))
 	binary.Write(&buf, binary.LittleEndian, uint32(2))
 
 	writeAttr := func(name, typeName string, data []byte) {
@@ -648,4 +651,39 @@ func buildSyntheticEXRWithCompression(t *testing.T, width, height int, compressi
 	buf.WriteByte(0)
 
 	return buf.Bytes()
+}
+
+// exrPreprocess applies the EXR compression preprocessing steps:
+// 1. Deinterleave: split even/odd bytes into two halves
+// 2. Predictor encode: delta encode with bias 128
+// This is the inverse of zlibDecompress's reconstruct + interleave.
+// See ImfZip.cpp Zip::compress().
+func exrPreprocess(raw []byte) []byte {
+	n := len(raw)
+	tmp := make([]byte, n)
+
+	// Step 1: Deinterleave — even-indexed bytes go to first half,
+	// odd-indexed bytes go to second half.
+	t1 := 0
+	t2 := (n + 1) / 2
+	for i := 0; i < n; i++ {
+		if i%2 == 0 {
+			tmp[t1] = raw[i]
+			t1++
+		} else {
+			tmp[t2] = raw[i]
+			t2++
+		}
+	}
+
+	// Step 2: Predictor encode — delta encode with bias 128.
+	// d[i] = t[i] - t[i-1] + 128
+	prev := tmp[0]
+	for i := 1; i < n; i++ {
+		cur := tmp[i]
+		tmp[i] = byte(int(cur) - int(prev) + (128 + 256))
+		prev = cur
+	}
+
+	return tmp
 }
