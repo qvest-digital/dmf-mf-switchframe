@@ -859,3 +859,36 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
 
     return 0;
 }
+
+// ============================================================================
+// Direct CPU YUV420p → NV12 conversion (Apple Silicon unified memory)
+// ============================================================================
+
+void metal_yuv420p_to_nv12_cpu(void* dst, int dstPitch,
+                                const void* y, const void* cb, const void* cr,
+                                int width, int height) {
+    uint8_t* dstBytes = (uint8_t*)dst;
+    const uint8_t* yBytes = (const uint8_t*)y;
+    const uint8_t* cbBytes = (const uint8_t*)cb;
+    const uint8_t* crBytes = (const uint8_t*)cr;
+
+    // Y plane: copy row-by-row (pitch may differ from width due to 256-byte alignment)
+    for (int row = 0; row < height; row++) {
+        memcpy(dstBytes + row * dstPitch, yBytes + row * width, width);
+    }
+
+    // UV plane: interleave Cb + Cr into NV12 format.
+    // On ARM64, Clang auto-vectorizes this with NEON vst2 (zip interleave).
+    int chromaW = width / 2;
+    int chromaH = height / 2;
+    uint8_t* uvDst = dstBytes + dstPitch * height;
+    for (int row = 0; row < chromaH; row++) {
+        const uint8_t* cbRow = cbBytes + row * chromaW;
+        const uint8_t* crRow = crBytes + row * chromaW;
+        uint8_t* dstRow = uvDst + row * dstPitch;
+        for (int x = 0; x < chromaW; x++) {
+            dstRow[x * 2]     = cbRow[x];
+            dstRow[x * 2 + 1] = crRow[x];
+        }
+    }
+}

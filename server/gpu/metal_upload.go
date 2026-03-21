@@ -4,7 +4,6 @@ package gpu
 
 /*
 #include "metal_bridge.h"
-#include <string.h>
 */
 import "C"
 
@@ -15,13 +14,13 @@ import (
 
 // Upload transfers a CPU YUV420p frame to a GPU NV12 frame.
 //
-// On Apple Silicon with unified memory, this is a memcpy into the
-// Metal buffer (CPU and GPU share the same physical RAM), followed
-// by a compute kernel to convert YUV420p planar to NV12 interleaved.
-// Much faster than CUDA (no PCIe transfer).
+// On Apple Silicon with unified memory, this writes NV12 data directly
+// into the frame's Metal buffer via CPU. Each GPUFrame has its own
+// MTLBuffer (StorageModeShared), so concurrent uploads to different
+// frames are inherently race-free — no staging buffers needed.
 //
-// Staging buffers are cached per-dimension to avoid per-call allocation.
-// The lock is only held during staging buffer access, not the kernel dispatch.
+// The YUV420p→NV12 conversion (CbCr interleave) is done in C where
+// Clang auto-vectorizes the inner loop with ARM64 NEON vst2 instructions.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
 	if ctx == nil || ctx.mtl == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -35,44 +34,19 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 		return fmt.Errorf("gpu: upload: YUV buffer too small: %d < %d", len(yuv), expectedSize)
 	}
 
-	mtl := ctx.mtl
-
-	// Get or create cached staging buffers (lock held briefly)
-	staging, err := mtl.getOrCreateStagingBuffers(width, height)
-	if err != nil {
-		return fmt.Errorf("gpu: upload: %w", err)
-	}
-
-	// Copy planar data into Metal buffers (zero-copy on unified memory —
-	// this is just a memcpy within the same address space).
-	//
-	// INVARIANT: Upload is called from the single video processing goroutine
-	// (Pipeline.Run on LockOSThread). Staging buffers are shared per-dimension,
-	// so concurrent Upload calls at the same resolution would race on the
-	// staging buffer contents. This is safe as long as the pipeline is the
-	// sole caller. If preview encoding or other paths need GPU upload at the
-	// same resolution, they must use separate staging buffers.
-	C.memcpy(C.metal_buffer_contents(staging.yBuf), unsafe.Pointer(&yuv[0]), C.size_t(ySize))
-	C.memcpy(C.metal_buffer_contents(staging.cbBuf), unsafe.Pointer(&yuv[ySize]), C.size_t(cbSize))
-	C.memcpy(C.metal_buffer_contents(staging.crBuf), unsafe.Pointer(&yuv[ySize+cbSize]), C.size_t(crSize))
-
-	// Launch conversion kernel: YUV420p -> NV12 (no lock — Metal command queues are thread-safe)
-	pipeline, err := mtl.getPipeline("yuv420p_to_nv12")
-	if err != nil {
-		return fmt.Errorf("gpu: upload: %w", err)
-	}
-
-	params := C.MetalConvertParams{
-		width:     C.uint32_t(width),
-		height:    C.uint32_t(height),
-		nv12Pitch: C.uint32_t(frame.Pitch),
-		srcStride: C.uint32_t(width),
-	}
-
-	rc := C.metal_yuv420p_to_nv12(mtl.queue, pipeline, staging.yBuf, staging.cbBuf, staging.crBuf, frame.MetalBuf, &params)
-	if rc != C.METAL_SUCCESS {
-		return fmt.Errorf("gpu: upload: yuv420p_to_nv12 kernel failed: %d", rc)
-	}
+	// Apple Silicon unified memory: write NV12 directly into the frame's
+	// Metal buffer via CPU. No staging buffers, no GPU kernel needed.
+	// Each frame has its own memory, so concurrent uploads to different
+	// frames are inherently race-free.
+	C.metal_yuv420p_to_nv12_cpu(
+		frame.contentsPtr(),
+		C.int(frame.Pitch),
+		unsafe.Pointer(&yuv[0]),
+		unsafe.Pointer(&yuv[ySize]),
+		unsafe.Pointer(&yuv[ySize+cbSize]),
+		C.int(width),
+		C.int(height),
+	)
 
 	return nil
 }

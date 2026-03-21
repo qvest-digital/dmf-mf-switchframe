@@ -321,4 +321,11 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
                     int64_t pts, int force_idr,
                     uint8_t** out_buf, int* out_len, int* out_is_idr);
 
+// --- Direct CPU YUV420p → NV12 conversion (Apple Silicon unified memory) ---
+// Writes directly into the destination buffer — no staging needed.
+// Each frame has its own memory, so concurrent uploads are race-free.
+void metal_yuv420p_to_nv12_cpu(void* dst, int dstPitch,
+                                const void* y, const void* cb, const void* cr,
+                                int width, int height);
+
 #endif // SWITCHFRAME_METAL_BRIDGE_H
