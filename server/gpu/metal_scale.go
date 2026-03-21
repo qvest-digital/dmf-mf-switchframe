@@ -13,72 +13,26 @@ import (
 )
 
 // ScaleBilinear scales an NV12 GPU frame using bilinear interpolation.
+// Uses the context's default command queue.
 func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
-	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
-		return ErrGPUNotAvailable
-	}
-
-	mtl := ctx.mtl
-	pipeline, err := mtl.getPipeline("scale_bilinear")
-	if err != nil {
-		return fmt.Errorf("gpu: scale bilinear: %w", err)
-	}
-
-	// Scale Y plane
-	yParams := C.MetalScaleParams{
-		srcW:     C.uint32_t(src.Width),
-		srcH:     C.uint32_t(src.Height),
-		srcPitch: C.uint32_t(src.Pitch),
-		dstW:     C.uint32_t(dst.Width),
-		dstH:     C.uint32_t(dst.Height),
-		dstPitch: C.uint32_t(dst.Pitch),
-	}
-	rc := C.metal_scale_bilinear(mtl.queue, pipeline, dst.MetalBuf, src.MetalBuf, &yParams)
-	if rc != C.METAL_SUCCESS {
-		return fmt.Errorf("gpu: scale bilinear Y failed: %d", rc)
-	}
-
-	// Scale UV plane using UV-aware kernel that interpolates CbCr pairs
-	// independently. Width is in CHROMA SAMPLES (width/2), not bytes.
-	uvPipeline, err := mtl.getPipeline("scale_bilinear_uv")
-	if err != nil {
-		return fmt.Errorf("gpu: scale bilinear UV pipeline: %w", err)
-	}
-
-	srcUVOffset := C.int64_t(src.Pitch * src.Height)
-	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
-	chromaSrcW := src.Width / 2
-	chromaDstW := dst.Width / 2
-	uvParams := C.MetalScaleParams{
-		srcW:     C.uint32_t(chromaSrcW),
-		srcH:     C.uint32_t(src.Height / 2),
-		srcPitch: C.uint32_t(src.Pitch),
-		dstW:     C.uint32_t(chromaDstW),
-		dstH:     C.uint32_t(dst.Height / 2),
-		dstPitch: C.uint32_t(dst.Pitch),
-	}
-	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
-	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
-	rc = C.metal_dispatch_2d_offset(mtl.queue, uvPipeline,
-		&uvBufs[0], &uvOffsets[0], 2,
-		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
-		C.uint32_t(chromaDstW), C.uint32_t(dst.Height/2))
-	if rc != C.METAL_SUCCESS {
-		return fmt.Errorf("gpu: scale bilinear UV failed: %d", rc)
-	}
-
-	return nil
+	return ScaleBilinearOn(ctx, dst, src, nil)
 }
 
-// ScaleBilinearWithQueue is like ScaleBilinear but uses a dedicated command
-// queue instead of the shared context queue. This prevents command buffer
-// interleaving when multiple goroutines perform GPU work concurrently.
-func ScaleBilinearWithQueue(ctx *Context, dst, src *GPUFrame, queue C.MetalQueueRef) error {
+// ScaleBilinearOn scales an NV12 GPU frame using bilinear interpolation
+// on the specified work queue. If q is nil, the context's default queue is used.
+func ScaleBilinearOn(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
 	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
 
 	mtl := ctx.mtl
+
+	// Use the work queue's Metal command queue, or fall back to the default.
+	queue := metalQueueRef(q)
+	if queue == nil {
+		queue = mtl.queue
+	}
+
 	pipeline, err := mtl.getPipeline("scale_bilinear")
 	if err != nil {
 		return fmt.Errorf("gpu: scale bilinear: %w", err)
@@ -128,6 +82,19 @@ func ScaleBilinearWithQueue(ctx *Context, dst, src *GPUFrame, queue C.MetalQueue
 	}
 
 	return nil
+}
+
+// ScaleBilinearWithQueue is like ScaleBilinear but uses a dedicated command
+// queue instead of the shared context queue. This prevents command buffer
+// interleaving when multiple goroutines perform GPU work concurrently.
+//
+// Deprecated: Use ScaleBilinearOn with a GPUWorkQueue instead.
+func ScaleBilinearWithQueue(ctx *Context, dst, src *GPUFrame, queue C.MetalQueueRef) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+	q := &GPUWorkQueue{handle: uintptr(unsafe.Pointer(queue))}
+	return ScaleBilinearOn(ctx, dst, src, q)
 }
 
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3

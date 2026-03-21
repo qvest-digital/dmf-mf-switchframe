@@ -127,6 +127,11 @@ const (
 // ScaleBilinear returns ErrGPUNotAvailable on non-GPU builds.
 func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
 
+// ScaleBilinearOn returns ErrGPUNotAvailable on non-GPU builds.
+func ScaleBilinearOn(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
+	return ErrGPUNotAvailable
+}
+
 // ScaleLanczos3 returns ErrGPUNotAvailable on non-GPU builds.
 func ScaleLanczos3(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
 
@@ -418,6 +423,11 @@ func NewGPUEncoder(ctx *Context, width, height, fpsNum, fpsDen, bitrate int) (*G
 
 // EncodeGPU returns ErrGPUNotAvailable on non-GPU builds.
 func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, error) {
+	return nil, false, ErrGPUNotAvailable
+}
+
+// EncodeGPUOn returns ErrGPUNotAvailable on non-GPU builds.
+func (e *GPUEncoder) EncodeGPUOn(frame *GPUFrame, forceIDR bool, q *GPUWorkQueue) ([]byte, bool, error) {
 	return nil, false, ErrGPUNotAvailable
 }
 

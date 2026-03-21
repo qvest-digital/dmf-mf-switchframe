@@ -131,10 +131,55 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 	return data, isIDR, nil
 }
 
+// EncodeGPUOn encodes a GPU-resident NV12 frame to H.264 using the specified
+// work queue for the device-to-device copy into FFmpeg's hw_frame.
+// If q is nil, the context's encode stream is used.
+func (e *GPUEncoder) EncodeGPUOn(frame *GPUFrame, forceIDR bool, q *GPUWorkQueue) ([]byte, bool, error) {
+	if frame == nil {
+		return nil, false, fmt.Errorf("gpu: encode: nil frame")
+	}
+
+	// Zero-copy path: pass CUDA device pointers directly to NVENC.
+	// Use the provided work queue's stream, or fall back to encStream.
+	if e.hwEnc != nil {
+		yDevPtr := unsafe.Pointer(uintptr(frame.DevPtr))
+		uvDevPtr := unsafe.Pointer(uintptr(frame.DevPtr) + uintptr(frame.Pitch*frame.Height))
+
+		stream := cudaStream(q)
+		if stream == nil {
+			stream = e.gpuCtx.EncStream()
+		}
+
+		data, isIDR, err := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, frame.Pitch, frame.PTS, forceIDR, unsafe.Pointer(stream))
+		if err != nil {
+			return nil, false, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
+		}
+		return data, isIDR, nil
+	}
+
+	// Fallback: download GPU NV12 -> CPU YUV420p, then encode
+	e.cpuBufMu.Lock()
+	err := Download(e.gpuCtx, e.cpuBuf, frame, frame.Width, frame.Height)
+	if err != nil {
+		e.cpuBufMu.Unlock()
+		return nil, false, fmt.Errorf("gpu: encode: download failed: %w", err)
+	}
+
+	data, isIDR, encErr := e.ffEnc.Encode(e.cpuBuf, frame.PTS, forceIDR)
+	e.cpuBufMu.Unlock()
+
+	if encErr != nil {
+		return nil, false, fmt.Errorf("gpu: encode failed: %w", encErr)
+	}
+	return data, isIDR, nil
+}
+
 // EncodeGPUOnStream encodes a GPU-resident NV12 frame using a specific CUDA
 // stream for the device-to-device copy into FFmpeg's hw_frame. This enables
 // preview encoders to run on their own streams without blocking the main
 // pipeline's encode operations.
+//
+// Deprecated: Use EncodeGPUOn with a GPUWorkQueue instead.
 func (e *GPUEncoder) EncodeGPUOnStream(frame *GPUFrame, forceIDR bool, stream C.cudaStream_t) ([]byte, bool, error) {
 	if frame == nil {
 		return nil, false, fmt.Errorf("gpu: encode: nil frame")

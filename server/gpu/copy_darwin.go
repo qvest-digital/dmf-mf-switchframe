@@ -30,6 +30,21 @@ func CopyGPUFrame(dst, src *GPUFrame) {
 	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
 }
 
+// CopyGPUFrameOn copies NV12 data from src to dst. On Apple Silicon, unified
+// memory means a simple memcpy suffices — the work queue is irrelevant.
+func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
+	if dst == nil || src == nil {
+		return fmt.Errorf("CopyGPUFrameOn: nil frame")
+	}
+	if dst.Pitch != src.Pitch || dst.Height != src.Height {
+		return fmt.Errorf("CopyGPUFrameOn: dimension mismatch: dst=%dx%d p=%d src=%dx%d p=%d",
+			dst.Width, dst.Height, dst.Pitch, src.Width, src.Height, src.Pitch)
+	}
+	size := C.size_t(src.Pitch * src.Height * 3 / 2)
+	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
+	return nil
+}
+
 // LockGPUOp / UnlockGPUOp are no-ops on Metal.
 // Metal command queues handle serialization internally.
 func LockGPUOp()   {}

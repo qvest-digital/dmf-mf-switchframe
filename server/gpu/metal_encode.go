@@ -170,6 +170,14 @@ func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 	return nil, false, fmt.Errorf("gpu: EncodeCPU not supported with native VT encoder")
 }
 
+// EncodeGPUOn encodes a GPU-resident NV12 frame to H.264 using the specified
+// work queue. On Metal, VideoToolbox manages its own command queue internally,
+// so the work queue parameter is ignored and this delegates to EncodeGPU.
+func (e *GPUEncoder) EncodeGPUOn(frame *GPUFrame, forceIDR bool, q *GPUWorkQueue) ([]byte, bool, error) {
+	// VideoToolbox manages its own GPU queue — the work queue is irrelevant.
+	return e.EncodeGPU(frame, forceIDR)
+}
+
 // IsNativeVT returns true if the encoder is using the native VideoToolbox path
 // (zero-copy from unified memory) rather than the FFmpeg fallback.
 func (e *GPUEncoder) IsNativeVT() bool {
