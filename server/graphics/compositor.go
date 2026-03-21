@@ -799,7 +799,51 @@ type VisibleLayerSnap struct {
 // SnapshotVisibleLayers returns a deep-copied snapshot of all visible layers
 // sorted by z-order. The GPU compositor node calls this once per frame to get
 // all RGBA overlays and positions, then dispatches GPU kernels without locks.
+//
+// Uses a write lock to advance frame-locked tickers before snapshotting.
+// This ensures tickers scroll at the correct rate regardless of whether
+// the CPU or GPU pipeline is active.
 func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
+	// Advance tickers under write lock (same as ProcessYUV does).
+	c.mu.Lock()
+	if c.pipelineFPSNum > 0 && c.pipelineFPSDen > 0 {
+		for _, id := range c.sortedIDs {
+			layer := c.layers[id]
+			if layer.ticker == nil || !layer.active || layer.ticker.done {
+				continue
+			}
+			ts := layer.ticker
+			pixelsPerFrame := ts.speed * float64(c.pipelineFPSDen) / float64(c.pipelineFPSNum)
+			ts.xOffset += pixelsPerFrame
+
+			if ts.loopPoint > 0 {
+				for ts.xOffset >= float64(ts.loopPoint) {
+					ts.xOffset -= float64(ts.loopPoint)
+				}
+			} else {
+				stripW := ts.strip.Bounds().Dx()
+				if int(ts.xOffset)+ts.viewW > stripW {
+					ts.done = true
+					layer.active = false
+					if ts.doneCh != nil {
+						close(ts.doneCh)
+						ts.doneCh = nil
+					}
+					continue
+				}
+			}
+
+			xInt := int(ts.xOffset)
+			if ts.strip != nil && ts.viewport != nil {
+				extractTickerViewport(ts.strip, xInt, ts.viewW, ts.viewH, ts.viewport)
+				layer.overlay = ts.viewport
+				layer.overlayWidth = ts.viewW
+				layer.overlayHeight = ts.viewH
+			}
+		}
+	}
+	c.mu.Unlock()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
