@@ -13,12 +13,14 @@ package srt
 #include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 // Forward declarations for Go callback functions.
 extern int goSRTRead(void *opaque, uint8_t *buf, int buf_size);
 extern void goOnVideoFrame(int id, uint8_t *data, int len, int width, int height, int64_t pts);
+extern void goOnVideoFrameGPU(int id, uint64_t devPtr, int pitch, int width, int height, int64_t pts);
 extern void goOnAudioFrame(int id, float *data, int samples, int channels, int64_t pts);
 extern void goOnCaptionData(int id, uint8_t *data, int size, int64_t pts);
 extern void goOnSCTE35Data(int id, uint8_t *data, int size, int64_t pts);
@@ -78,13 +80,48 @@ typedef struct {
     // Interrupt
     int                interrupted;
     int                decoder_id;
+
+    // Hardware decode (NVDEC)
+    void              *hw_device_ctx;   // AVBufferRef* from codec.HWDeviceCtx(), NULL for software
+    int                hw_decode_active; // 1 if NVDEC is producing CUDA frames
 } srtdec_t;
+
+// srtdec_is_nvdec_supported returns 1 if the codec can be decoded by NVDEC.
+static int srtdec_is_nvdec_supported(enum AVCodecID codec_id) {
+    switch (codec_id) {
+        case AV_CODEC_ID_H264:
+        case AV_CODEC_ID_HEVC:
+        case AV_CODEC_ID_VP9:
+        case AV_CODEC_ID_AV1:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+// srtdec_get_hw_format is the get_format callback that tells FFmpeg to use
+// CUDA pixel format (NVDEC) when available.
+static enum AVPixelFormat srtdec_get_hw_format(AVCodecContext *ctx,
+                                                const enum AVPixelFormat *pix_fmts) {
+    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == AV_PIX_FMT_CUDA) {
+            return AV_PIX_FMT_CUDA;
+        }
+    }
+    return AV_PIX_FMT_YUV420P;
+}
+
+// srtdec_is_hw_decode returns 1 if the video decoder is using hardware acceleration.
+static int srtdec_is_hw_decode(srtdec_t *h) {
+    return h->video_dec_ctx && h->video_dec_ctx->hw_device_ctx ? 1 : 0;
+}
 
 // srtdec_open sets up the AVIO bridge and opens the input stream.
 // decoder_id is used to identify the Go StreamDecoder instance in callbacks.
 // max_threads limits per-decoder thread count (0 = auto, capped at 4).
+// hw_device_ctx is an AVBufferRef* for NVDEC hardware decode, or NULL for software.
 // Returns 0 on success, negative on error.
-static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
+static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads, void *hw_device_ctx) {
     memset(h, 0, sizeof(srtdec_t));
     int ret = 0;
 
@@ -213,6 +250,18 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads) {
             // time (e.g., 25ms → 8ms) so audio packets aren't blocked as long.
             h->video_dec_ctx->thread_type = FF_THREAD_SLICE;
             h->video_dec_ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
+
+            // NVDEC: if hw_device_ctx is provided and codec is supported,
+            // enable hardware decode. NVDEC does its own parallelism so
+            // we disable CPU threading.
+            if (hw_device_ctx && srtdec_is_nvdec_supported(vstream->codecpar->codec_id)) {
+                h->video_dec_ctx->hw_device_ctx = av_buffer_ref((AVBufferRef*)hw_device_ctx);
+                h->video_dec_ctx->get_format = srtdec_get_hw_format;
+                h->hw_device_ctx = hw_device_ctx;
+                // NVDEC handles parallelism internally.
+                h->video_dec_ctx->thread_count = 1;
+                h->video_dec_ctx->thread_type = 0;
+            }
 
             ret = avcodec_open2(h->video_dec_ctx, vdec, NULL);
             if (ret < 0) {
@@ -374,6 +423,14 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
     w = w & ~1;
     h_val = h_val & ~1;
     if (w <= 0 || h_val <= 0) return;
+
+    // NVDEC path: frame is NV12 on CUDA device memory.
+    if (frame->format == AV_PIX_FMT_CUDA && frame->data[0]) {
+        h->hw_decode_active = 1;
+        uint64_t devPtr = (uint64_t)(uintptr_t)frame->data[0];
+        goOnVideoFrameGPU(h->decoder_id, devPtr, frame->linesize[0], w, h_val, pts);
+        return;
+    }
 
     int total = w * h_val * 3 / 2;
 
@@ -676,6 +733,7 @@ type StreamDecoderConfig struct {
 	Reader     io.Reader
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
+	OnVideoGPU func(devPtr uintptr, pitch, width, height int, pts int64) // NVDEC zero-copy CUDA frames
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
 	// OnCaptions is called when CEA-608/708 closed caption data is extracted
 	// from H.264 SEI NALUs (A53 CC side data) during video decode.
@@ -684,6 +742,12 @@ type StreamDecoderConfig struct {
 	// OnSCTE35 is called when SCTE-35 splice_info_section data is found on
 	// a data PID in the MPEG-TS stream.
 	OnSCTE35 func(data []byte, pts int64) // optional
+
+	// HWDeviceCtx is an FFmpeg AVBufferRef* for NVDEC hardware decode.
+	// When non-nil and the stream codec is supported (H.264/HEVC/VP9/AV1),
+	// NVDEC will be used and decoded frames delivered via OnVideoGPU.
+	// Obtain from codec.HWDeviceCtx(). nil for software decode.
+	HWDeviceCtx unsafe.Pointer
 }
 
 // StreamDecoder bridges an io.Reader to FFmpeg's avformat/avcodec for live
@@ -725,7 +789,7 @@ func NewStreamDecoder(cfg StreamDecoderConfig) (*StreamDecoder, error) {
 	}
 
 	codec.FFmpegOpenMu.Lock()
-	rc := C.srtdec_open(&d.handle, C.int(d.id), C.int(maxThreads))
+	rc := C.srtdec_open(&d.handle, C.int(d.id), C.int(maxThreads), cfg.HWDeviceCtx)
 	codec.FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		unregisterDecoder(d.id)
@@ -754,6 +818,11 @@ func (d *StreamDecoder) Stop() {
 			_ = closer.Close()
 		}
 	}
+}
+
+// IsHWDecode returns true if the video decoder is using hardware acceleration (NVDEC).
+func (d *StreamDecoder) IsHWDecode() bool {
+	return C.srtdec_is_hw_decode(&d.handle) != 0
 }
 
 // close releases all FFmpeg resources and unregisters from the global map.
@@ -823,6 +892,15 @@ func goOnVideoFrame(id C.int, data *C.uint8_t, length C.int, width C.int, height
 	copy(d.videoGoBuf, unsafe.Slice((*byte)(unsafe.Pointer(data)), n))
 
 	d.cfg.OnVideo(d.videoGoBuf, int(width), int(height), int64(pts))
+}
+
+//export goOnVideoFrameGPU
+func goOnVideoFrameGPU(id C.int, devPtr C.uint64_t, pitch C.int, width C.int, height C.int, pts C.int64_t) {
+	d := lookupDecoder(int(id))
+	if d == nil || d.cfg.OnVideoGPU == nil {
+		return
+	}
+	d.cfg.OnVideoGPU(uintptr(devPtr), int(pitch), int(width), int(height), int64(pts))
 }
 
 //export goOnAudioFrame
