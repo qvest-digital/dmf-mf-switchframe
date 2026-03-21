@@ -3,6 +3,9 @@
 package asr
 
 /*
+#cgo CFLAGS: -I/usr/local/cuda/include
+#cgo LDFLAGS: -L/usr/local/cuda/lib64 -lcudart
+
 #include <cuda_runtime.h>
 #include <stdlib.h>
 #include <string.h>
