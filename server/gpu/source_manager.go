@@ -49,6 +49,9 @@ type gpuSourceEntry struct {
 	stmapName string
 	stmapTmp  *GPUFrame // temp buffer for ST map warp
 
+	// CPU scale buffer for resolution normalization (reused across frames).
+	scaleBuf []byte
+
 	width, height int
 }
 
@@ -187,8 +190,28 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		return
 	}
 
+	// Scale to pool dimensions if source is at a different resolution.
+	// SRT sources arrive at their native resolution (e.g., 1280x720) but
+	// the pool frames are sized for the pipeline format (e.g., 1920x1080).
+	// Without scaling, Upload writes a small NV12 region into a large frame,
+	// and downstream consumers (VT encode) read garbage beyond the valid data.
+	uploadYUV := yuv
+	uploadW, uploadH := w, h
+	if w != frame.Width || h != frame.Height {
+		targetW, targetH := frame.Width, frame.Height
+		scaledSize := targetW * targetH * 3 / 2
+		// Use entry's cached scale buffer to avoid per-frame allocation.
+		if len(entry.scaleBuf) < scaledSize {
+			entry.scaleBuf = make([]byte, scaledSize)
+		}
+		scaleYUV420pCPU(entry.scaleBuf[:scaledSize], targetW, targetH, yuv, w, h)
+		uploadYUV = entry.scaleBuf[:scaledSize]
+		uploadW = targetW
+		uploadH = targetH
+	}
+
 	// Upload CPU YUV420p to GPU NV12.
-	if err := Upload(m.ctx, frame, yuv, w, h); err != nil {
+	if err := Upload(m.ctx, frame, uploadYUV, uploadW, uploadH); err != nil {
 		slog.Warn("gpu: source manager: upload failed",
 			"source", sourceKey, "error", err)
 		frame.Release()
