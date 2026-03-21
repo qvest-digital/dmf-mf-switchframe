@@ -85,11 +85,12 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 	}
 
 	// Launch conversion kernel: YUV420p → NV12
+	// CUdeviceptr is uint64 (device address), cast via uintptr → unsafe.Pointer
 	cerr := C.yuv420p_to_nv12(
-		(*C.uint8_t)(unsafe.Pointer(frame.DevPtr)),
-		(*C.uint8_t)(unsafe.Pointer(devY)),
-		(*C.uint8_t)(unsafe.Pointer(devCb)),
-		(*C.uint8_t)(unsafe.Pointer(devCr)),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devY))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devCb))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devCr))),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
 		ctx.stream,
@@ -113,7 +114,7 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 	}
 
 	cerr := C.nv12_fill(
-		(*C.uint8_t)(unsafe.Pointer(frame.DevPtr)),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
 		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
 		C.uint8_t(16), C.uint8_t(128), C.uint8_t(128),
 		ctx.stream,

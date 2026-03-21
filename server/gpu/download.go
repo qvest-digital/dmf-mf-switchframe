@@ -60,11 +60,12 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 	defer C.cuMemFree(devCr)
 
 	// Launch conversion kernel: NV12 → YUV420p
+	// CUdeviceptr is uint64 (device address), cast via uintptr → unsafe.Pointer
 	cerr := C.nv12_to_yuv420p(
-		(*C.uint8_t)(unsafe.Pointer(devY)),
-		(*C.uint8_t)(unsafe.Pointer(devCb)),
-		(*C.uint8_t)(unsafe.Pointer(devCr)),
-		(*C.uint8_t)(unsafe.Pointer(frame.DevPtr)),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devY))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devCb))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(devCr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
 		ctx.stream,
