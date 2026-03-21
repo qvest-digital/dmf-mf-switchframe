@@ -6,11 +6,11 @@ func parsePreviewResolution(res string) (int, int) {
 	case "360p":
 		return 640, 360
 	case "480p":
-		return 854, 480
+		return 852, 480 // even-aligned (854 is odd, breaks NV12 UV plane math on GPU)
 	case "720p":
 		return 1280, 720
 	default:
-		return 854, 480
+		return 852, 480
 	}
 }
 
@@ -23,7 +23,7 @@ func parseRelayResolution(res string) (int, int) {
 	case "360p":
 		return 640, 360
 	case "480p":
-		return 854, 480
+		return 852, 480
 	case "720p":
 		return 1280, 720
 	default:
