@@ -281,7 +281,9 @@ func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEn
 	}
 
 	// Copy warped result back to the original frame.
-	CopyGPUFrame(frame, entry.stmapTmp)
+	if err := CopyGPUFrame(frame, entry.stmapTmp); err != nil {
+		slog.Warn("gpu: source manager: stmap copy back failed", "error", err)
+	}
 }
 
 // autoRegister creates a new source entry with no preview encoder. Called

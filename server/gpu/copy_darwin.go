@@ -10,27 +10,19 @@ import "C"
 
 import (
 	"fmt"
-	"log/slog"
 )
 
 // CopyGPUFrame copies NV12 data from src to dst using unified memory memcpy.
-// Both frames must have the same dimensions and pitch. No-ops with an error
-// log if dimensions mismatch.
-//
 // On Apple Silicon, contentsPtr() returns a CPU-accessible pointer to the
 // Metal buffer's unified memory, so a simple memcpy suffices.
-//
-// TODO: Change signature to return error instead of silently logging on mismatch.
-// This requires updating all callers across the codebase.
-func CopyGPUFrame(dst, src *GPUFrame) {
+func CopyGPUFrame(dst, src *GPUFrame) error {
 	if dst.Pitch != src.Pitch || dst.Height != src.Height {
-		slog.Error("CopyGPUFrame: dimension mismatch",
-			"dst", fmt.Sprintf("%dx%d p=%d", dst.Width, dst.Height, dst.Pitch),
-			"src", fmt.Sprintf("%dx%d p=%d", src.Width, src.Height, src.Pitch))
-		return
+		return fmt.Errorf("CopyGPUFrame: dimension mismatch: dst=%dx%d p=%d src=%dx%d p=%d",
+			dst.Width, dst.Height, dst.Pitch, src.Width, src.Height, src.Pitch)
 	}
 	size := C.size_t(src.Pitch * src.Height * 3 / 2)
 	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
+	return nil
 }
 
 // CopyGPUFrameOn copies NV12 data from src to dst. On Apple Silicon, unified

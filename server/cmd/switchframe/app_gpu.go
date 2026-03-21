@@ -280,7 +280,10 @@ func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, pts int64) error 
 	}
 
 	// Copy NV12 data from cached source frame to pipeline frame.
-	gpu.CopyGPUFrame(frame, cached)
+	if err := gpu.CopyGPUFrame(frame, cached); err != nil {
+		frame.Release()
+		return fmt.Errorf("gpu pipeline: copy from cache failed: %w", err)
+	}
 	frame.PTS = pts
 
 	if err := r.pipeline.Run(frame); err != nil {

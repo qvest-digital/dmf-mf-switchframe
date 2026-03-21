@@ -31,7 +31,10 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 	if err != nil {
 		return
 	}
-	CopyGPUFrame(previewFrame, cached)
+	if err := CopyGPUFrame(previewFrame, cached); err != nil {
+		previewFrame.Release()
+		return
+	}
 	previewFrame.PTS = pts
 
 	pf := &previewGPUFrame{frame: previewFrame, pts: pts}

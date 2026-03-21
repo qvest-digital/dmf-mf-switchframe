@@ -9,7 +9,6 @@ import "C"
 
 import (
 	"fmt"
-	"log/slog"
 	"unsafe"
 )
 
@@ -21,14 +20,10 @@ import (
 // before returning. This replaces the old cudaMemcpy (null stream) approach
 // which could race with kernel launches on non-blocking streams.
 //
-// TODO: Change signature to return error instead of silently logging on mismatch.
-// This requires updating all callers across the codebase.
-func CopyGPUFrame(dst, src *GPUFrame) {
+func CopyGPUFrame(dst, src *GPUFrame) error {
 	if dst.Pitch != src.Pitch || dst.Height != src.Height {
-		slog.Error("CopyGPUFrame: dimension mismatch",
-			"dst", fmt.Sprintf("%dx%d p=%d", dst.Width, dst.Height, dst.Pitch),
-			"src", fmt.Sprintf("%dx%d p=%d", src.Width, src.Height, src.Pitch))
-		return
+		return fmt.Errorf("CopyGPUFrame: dimension mismatch: dst=%dx%d p=%d src=%dx%d p=%d",
+			dst.Width, dst.Height, dst.Pitch, src.Width, src.Height, src.Pitch)
 	}
 
 	size := C.size_t(src.Pitch * src.Height * 3 / 2)
@@ -40,12 +35,12 @@ func CopyGPUFrame(dst, src *GPUFrame) {
 		defaultCUDAStream,
 	)
 	if rc != C.cudaSuccess {
-		slog.Error("CopyGPUFrame: cudaMemcpyAsync failed", "error", int(rc))
-		return
+		return fmt.Errorf("CopyGPUFrame: cudaMemcpyAsync failed: %d", rc)
 	}
 	if rc := C.cudaStreamSynchronize(defaultCUDAStream); rc != C.cudaSuccess {
-		slog.Error("CopyGPUFrame: stream sync failed", "error", int(rc))
+		return fmt.Errorf("CopyGPUFrame: stream sync failed: %d", rc)
 	}
+	return nil
 }
 
 // CopyGPUFrameOn copies NV12 data from src to dst using the specified work

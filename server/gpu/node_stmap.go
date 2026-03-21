@@ -3,6 +3,7 @@
 package gpu
 
 import (
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -154,7 +155,10 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	}
 
 	// Copy warped result back to the original frame.
-	CopyGPUFrame(frame, tempFrame)
+	if err := CopyGPUFrame(frame, tempFrame); err != nil {
+		tempFrame.Release()
+		return fmt.Errorf("gpu stmap: copy back failed: %w", err)
+	}
 
 	tempFrame.Release()
 	if freeAfter {
