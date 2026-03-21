@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
+	import { computeSRTHealth } from '$lib/util/srt-health';
+	import SRTHealthDot from './SRTHealthDot.svelte';
 
 	interface Props {
 		source: SourceInfo;
@@ -9,11 +11,13 @@
 		layoutSlots?: LayoutSlotState[];
 		onclick?: () => void;
 		onLabelChange?: (key: string, label: string) => void;
+		onSRTClick?: (e: MouseEvent) => void;
 	}
 
-	let { source, tally, index, audioLevelDb = -96, layoutSlots, onclick, onLabelChange }: Props = $props();
+	let { source, tally, index, audioLevelDb = -96, layoutSlots, onclick, onLabelChange, onSRTClick }: Props = $props();
 
 	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
+	let srtHealth = $derived(computeSRTHealth(source.srt));
 
 	let editing = $state(false);
 	let editValue = $state('');
@@ -111,6 +115,13 @@
 
 	{#if source.delayMs && source.delayMs > 0}
 		<span class="delay-badge">D:{source.delayMs}ms</span>
+	{/if}
+
+	{#if srtHealth}
+		<SRTHealthDot
+			level={srtHealth}
+			onclick={onSRTClick ? (e) => { e.stopPropagation(); onSRTClick(e); } : undefined}
+		/>
 	{/if}
 
 	<!-- Audio level bar (right edge) -->
@@ -242,6 +253,12 @@
 		background: var(--overlay-heavy);
 		padding: 0 2px;
 		border-radius: var(--radius-xs);
+	}
+
+	.source-tile :global(.srt-dot) {
+		position: absolute;
+		top: 3px;
+		left: 3px;
 	}
 
 	/* Audio level bar - right edge of tile */
